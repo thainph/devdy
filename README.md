@@ -1,59 +1,59 @@
 # Devdy
 
-> Ứng dụng desktop dành cho lập trình viên — quản lý AI Skills/Rules và tự động hóa phân tích GitHub Issue / review Pull Request, chạy trực tiếp trên subscription CLI sẵn có của bạn.
+> A desktop app for developers — manage AI Skills/Rules and automate GitHub Issue analysis / Pull Request review, running directly on your existing CLI subscription.
 
-## Devdy là gì?
+## What is Devdy?
 
-**Devdy** là ứng dụng desktop (ưu tiên macOS) xây trên **Tauri 2 + Vue 3 + Rust**. Nó quản lý tập trung **AI Skills / Rules** và tự động hóa các tác vụ phát triển bằng cách điều khiển hai engine AI: `claude` và `codex`.
+**Devdy** is a desktop app (macOS-first) built on **Tauri 2 + Vue 3 + Rust**. It centrally manages **AI Skills / Rules** and automates development tasks by driving two AI engines: `claude` and `codex`.
 
-Điểm khác biệt cốt lõi:
+Core differentiators:
 
-- ✅ **Không cần API key** — chạy dựa trên đăng nhập/subscription CLI sẵn có (`claude` đăng nhập subscription, `codex` đăng nhập ChatGPT).
-- ✅ **Local-first** — toàn bộ dữ liệu lưu trong SQLite trên máy, không đồng bộ cloud.
-- ✅ **Bảo mật** — GitHub PAT chỉ lưu trong OS Keychain, không bao giờ ghi ra disk hay log.
+- ✅ **No API keys** — runs on your existing CLI login/subscription (`claude` logged into a subscription, `codex` logged into ChatGPT).
+- ✅ **Local-first** — all data stored in local SQLite, no cloud sync.
+- ✅ **Secure** — GitHub PATs kept only in the OS Keychain, never written to disk or logs.
 
-## Các chức năng chính
+## Key features
 
-### 1. Chạy AI engine (the "run")
-Trái tim của ứng dụng. Mỗi **run** là một lần thực thi AI trên một prompt, với 3 dạng:
+### 1. Run an AI engine (the "run")
+The heart of the app. Each **run** is one execution of an AI engine over a prompt, in three forms:
 
-- 🔍 **Phân tích GitHub Issue**
-- 👀 **Review Pull Request**
-- 💬 **Phiên làm việc tự do** (free session)
+- 🔍 **GitHub Issue analysis**
+- 👀 **Pull Request review**
+- 💬 **Free session**
 
-Hỗ trợ:
-- **Multi-turn** — hội thoại nhiều lượt trong cùng một phiên.
-- **Resume** — tiếp tục phiên đã kết thúc.
-- **Streaming đồng thời** — nhiều run chạy và stream output cùng lúc; output được giữ nguyên khi chuyển màn hình.
+Supports:
+- **Multi-turn** — multiple conversation turns within one session.
+- **Resume** — continue a finished session.
+- **Concurrent streaming** — multiple runs streaming output at once; output is preserved across navigation.
 
-### 2. Hai engine thay thế lẫn nhau
-- `claude` — qua **Claude Agent SDK**.
-- `codex` — qua **codex app-server** (JSON-RPC).
-- **Handoff** — chuyển toàn bộ ngữ cảnh từ engine này sang engine kia.
+### 2. Two interchangeable engines
+- `claude` — via the **Claude Agent SDK**.
+- `codex` — via **codex app-server** (JSON-RPC).
+- **Handoff** — carry the full context from one engine to the other.
 
-Cả hai engine nói chung một giao thức nội bộ, nên giao diện hiển thị, modal xin quyền... dùng chung mà không cần sửa đổi.
+Both engines speak the same internal protocol, so the rendering UI, permission modals, etc. are shared without modification.
 
-### 3. Quản lý Skills & Rules
-- Soạn thảo ngay trong app bằng **CodeMirror 6**.
-- **Apply** vào cây thư mục của project, target cho `claude`, `codex` hoặc cả hai.
-- Theo dõi đồng bộ bằng **hash**; khi bản copy ở project lệch với nguồn → tạo **sync conflict** để xử lý có kiểm soát.
+### 3. Skills & Rules management
+- Edit directly in-app with **CodeMirror 6**.
+- **Apply** into a project's working tree, targeting `claude`, `codex`, or both.
+- Hash-tracked sync; when a project's copy drifts from the source → a **sync conflict** is created for controlled resolution.
 
-### 4. Quản lý tài khoản & bảo mật
-- GitHub PAT chỉ lưu trong **OS Keychain** (qua `keyring`).
-- DB chỉ lưu tham chiếu khóa, không lưu secret.
-- Engine tự xác thực qua login CLI sẵn có — app không quản lý API key nào.
+### 4. Account management & security
+- GitHub PATs kept only in the **OS Keychain** (via `keyring`).
+- The DB stores only the key reference, never the secret.
+- Engines authenticate via the existing CLI login — the app manages no API keys.
 
-### 5. Theo dõi sử dụng & chi phí
-- Hiển thị **mức sử dụng rate-limit** thật của gói claude.ai (dữ liệu `/usage`).
-- Ghi lại **token & chi phí** mỗi run: ưu tiên cost thật từ Claude SDK, ước lượng cho Codex.
-- Bản ghi usage lưu tự chứa (self-contained) nên vẫn tồn tại kể cả khi xóa run hoặc project.
+### 5. Usage & cost tracking
+- Shows the real **rate-limit utilization** of your claude.ai plan (`/usage` data).
+- Records **tokens & cost** per run: prefers the real cost from the Claude SDK, estimates for Codex.
+- Usage rows are stored self-contained, so they survive deletion of the run or project.
 
 ### 6. Session mirroring
-Tự động phát hiện và phản chiếu các transcript Claude dùng chung (từ CLI / VSCode) qua file watcher.
+Automatically discovers and mirrors shared Claude transcripts (from the CLI / VSCode) via a file watcher.
 
-## Kiến trúc tổng quan
+## Architecture overview
 
-Luồng dữ liệu của một **run** chạy qua bốn lớp:
+The data flow of a **run** spans four layers:
 
 ```
 Vue (liveRuns store) ──invoke──▶ Rust commands ──spawn──▶ Node sidecar ──stdio──▶ claude/codex CLI
@@ -61,39 +61,37 @@ Vue (liveRuns store) ──invoke──▶ Rust commands ──spawn──▶ No
        └────── Tauri events ──────────┴── NDJSON drain ─────────┘
 ```
 
-1. **Frontend** (Vue 3) gọi `start_run` / `resume_run` / `send_user_message` qua Tauri `invoke`, lắng nghe sự kiện theo từng run.
-2. **Rust commands** resolve engine + model + paths, spawn **Node sidecar**, đăng ký vào `RunRegistry` và chạy task `drain_sidecar`.
-3. **Sidecars** dịch giữa broker và engine thật:
-   - `sidecar/` — host Claude Agent SDK.
-   - `sidecar-codex/` — điều khiển `codex app-server` và **dịch output sang định dạng stream-json giống Claude**.
-4. **`drain_sidecar`** đọc stdout của sidecar theo dòng, lưu log stream-json, ghi nhận usage, và re-emit về frontend.
+1. **Frontend** (Vue 3) calls `start_run` / `resume_run` / `send_user_message` via Tauri `invoke`, and listens to per-run events.
+2. **Rust commands** resolve engine + model + paths, spawn the **Node sidecar**, register it in the `RunRegistry`, and launch a `drain_sidecar` task.
+3. **Sidecars** translate between the broker and the actual engine:
+   - `sidecar/` — hosts the Claude Agent SDK.
+   - `sidecar-codex/` — drives `codex app-server` and **translates its output into Claude-shaped stream-json**.
+4. **`drain_sidecar`** reads the sidecar's stdout line-by-line, persists the stream-json log, captures usage, and re-emits to the frontend.
 
 ## Tech stack
 
-| Lớp | Công nghệ |
-|-----|-----------|
+| Layer | Technology |
+|-------|------------|
 | Frontend | Vue 3, Pinia, TanStack Query, Tailwind v4, CodeMirror 6 |
 | Backend | Rust, Tauri 2, sqlx (SQLite) |
 | Sidecar | Node.js (≥ 22), `@anthropic-ai/claude-agent-sdk`, codex app-server |
-| Lưu trữ | SQLite local + file log stream-json |
+| Storage | Local SQLite + stream-json log files |
 
-## Yêu cầu môi trường
+## Requirements
 
-- **Node ≥ 22**, **pnpm** (qua corepack)
+- **Node ≥ 22**, **pnpm** (via corepack)
 - **Rust stable** + Tauri 2 toolchain
-- `claude` CLI đã đăng nhập subscription
-- `codex` CLI đã đăng nhập ChatGPT
+- `claude` CLI logged into a subscription
+- `codex` CLI logged into ChatGPT
 
-## Bắt đầu nhanh
+## Quick start
 
 ```bash
 pnpm install                  # frontend deps
 npm --prefix sidecar install  # Claude Agent SDK sidecar deps
 
-pnpm tauri dev                # chạy app (Vite + Tauri, hot reload)
-pnpm tauri build              # build bản production
+pnpm tauri dev                # run the app (Vite + Tauri, hot reload)
+pnpm tauri build              # build a production bundle
 ```
 
 ---
-
-*Xem `SPEC.md` để biết spec chức năng đầy đủ, và `docs/` cho ghi chú từng tính năng.*
