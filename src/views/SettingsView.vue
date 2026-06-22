@@ -91,10 +91,14 @@ const settings = ref<AppSettings>({
   budget_warn_percent: '80',
 })
 
+// `[1m]` selects the 1M-context variant; the bare alias uses the 200K default.
+// Aliases (not pinned ids) keep these current as new model versions ship.
 const CLAUDE_MODEL_OPTIONS = [
   { value: '', label: 'Default (engine decides)' },
-  { value: 'opus', label: 'Opus' },
-  { value: 'sonnet', label: 'Sonnet' },
+  { value: 'opus', label: 'Opus (200K)' },
+  { value: 'opus[1m]', label: 'Opus (1M)' },
+  { value: 'sonnet', label: 'Sonnet (200K)' },
+  { value: 'sonnet[1m]', label: 'Sonnet (1M)' },
   { value: 'haiku', label: 'Haiku' },
 ]
 const CODEX_MODEL_OPTIONS = [

@@ -59,8 +59,11 @@ const effectiveEngine = computed(() => engineOverride.value || project.value?.de
 const MODEL_OPTIONS: Record<string, Array<{ value: string; label: string }>> = {
   claude: [
     { value: '', label: 'Default (from settings)' },
-    { value: 'opus', label: 'Opus' },
-    { value: 'sonnet', label: 'Sonnet' },
+    // `[1m]` selects the 1M-context variant; the bare alias uses the 200K default.
+    { value: 'opus', label: 'Opus (200K)' },
+    { value: 'opus[1m]', label: 'Opus (1M)' },
+    { value: 'sonnet', label: 'Sonnet (200K)' },
+    { value: 'sonnet[1m]', label: 'Sonnet (1M)' },
     { value: 'haiku', label: 'Haiku' },
   ],
   codex: [
@@ -98,6 +101,9 @@ const viewingLog = ref<string>('')
 const historyEntries = ref<StreamEntry[]>([])
 const historyHasStream = ref(false)
 const historyToolIndex = new Map<string, number>()
+// Context-window state reconstructed from a persisted log (history view).
+const historyContextTokens = ref(0)
+const historyModel = ref<string | null>(null)
 
 const inputContent = ref<string>('')
 const inputContentRunId = ref<string | null>(null)
@@ -115,9 +121,12 @@ const liveOutputLines = computed(() => session.value?.outputLines ?? [])
 const liveHasStream = computed(() => session.value?.hasStreamEvents ?? false)
 const permissionQueue = computed(() => session.value?.permissionQueue ?? [])
 const allowedToolsList = computed(() => session.value?.allowedTools ?? [])
-// Context-window meter state for the focused run.
-const contextTokens = computed(() => session.value?.contextTokens ?? 0)
-const contextModel = computed(() => session.value?.model ?? currentRun.value?.engine ?? null)
+// Context-window meter state for the focused run. Prefer the live session; for
+// a past run with no live session, use the figures reconstructed from its log.
+const contextTokens = computed(() => session.value?.contextTokens ?? historyContextTokens.value)
+const contextModel = computed(
+  () => session.value?.model ?? historyModel.value ?? currentRun.value?.engine ?? null,
+)
 const contextRateLimit = computed(() => session.value?.rateLimit ?? null)
 // Prefer the live session's status, fall back to the persisted run row.
 const currentStatus = computed(() => session.value?.status ?? currentRun.value?.status ?? 'idle')
@@ -394,6 +403,8 @@ function clearHistoryView() {
   historyEntries.value = []
   historyHasStream.value = false
   historyToolIndex.clear()
+  historyContextTokens.value = 0
+  historyModel.value = null
 }
 
 async function handleFetch(linkedIssueOverride?: number) {
@@ -1387,6 +1398,8 @@ async function loadRunLog(runId: string, opts: { preferDisk?: boolean } = {}) {
   historyEntries.value = []
   historyHasStream.value = false
   historyToolIndex.clear()
+  historyContextTokens.value = 0
+  historyModel.value = null
   viewingLogRunId.value = runId
   viewingLog.value = 'Loading…'
   try {
@@ -1396,6 +1409,8 @@ async function loadRunLog(runId: string, opts: { preferDisk?: boolean } = {}) {
       historyEntries.value = parsed.entries
       for (const [k, v] of parsed.toolIndex) historyToolIndex.set(k, v)
       historyHasStream.value = true
+      historyContextTokens.value = parsed.contextTokens
+      historyModel.value = parsed.model
       viewingLog.value = content
       // Jump to the end so the latest AI result is visible right away.
       nextTick(() => {
@@ -2053,21 +2068,21 @@ function handleRefInput(val: string) {
                     <span class="text-[10px] font-mono text-muted-foreground shrink-0">perm</span>
                   </template>
                 </AppSelect>
+                <AppSelect
+                  v-model="modelOverride"
+                  size="sm"
+                  variant="ghost"
+                  :options="modelOptions"
+                  :disabled="currentStatus === 'running'"
+                  class="w-40 h-8 shrink-0"
+                  title="Model for this run (empty = engine/settings default)"
+                >
+                  <template #leading>
+                    <Sparkles class="h-3 w-3 text-muted-foreground shrink-0" :stroke-width="1.5" />
+                  </template>
+                </AppSelect>
 
                 <div class="ml-auto flex items-center gap-1.5 shrink-0">
-                  <AppSelect
-                    v-model="modelOverride"
-                    size="sm"
-                    variant="ghost"
-                    :options="modelOptions"
-                    :disabled="currentStatus === 'running'"
-                    class="w-40 h-8"
-                    title="Model for this run (empty = engine/settings default)"
-                  >
-                    <template #leading>
-                      <Sparkles class="h-3 w-3 text-muted-foreground shrink-0" :stroke-width="1.5" />
-                    </template>
-                  </AppSelect>
                   <Button
                     v-if="currentStatus === 'running'"
                     variant="destructive"

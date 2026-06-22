@@ -6,11 +6,94 @@ export interface ImageAttachment {
   data: string
 }
 
+/**
+ * A piece of editor context the IDE integration auto-injects into a user turn
+ * (e.g. the file currently open, or the user's selection). It arrives wrapped in
+ * an `<ide_*>` tag inside the user message text — not something the user typed —
+ * so we lift it out into its own compact entry instead of rendering raw XML.
+ */
+export interface IdeContextItem {
+  kind: 'opened' | 'selection' | 'other'
+  /** Absolute file path the context refers to, when present. */
+  path?: string
+  /** Extra detail, e.g. a line range for a selection. */
+  detail?: string
+}
+
+// Matches a complete `<ide_xxx>…</ide_xxx>` block (the IDE integration's
+// context wrapper). Used to lift these out of the visible user text.
+const IDE_TAG_RE = /<(ide_[a-z_]+)>([\s\S]*?)<\/\1>/g
+
+function interpretIdeTag(tag: string, inner: string): IdeContextItem {
+  const body = inner.trim()
+  if (tag === 'ide_opened_file') {
+    const m = body.match(/opened the file (.+?) in the IDE/i)
+    return { kind: 'opened', path: m?.[1]?.trim() }
+  }
+  if (tag === 'ide_selection') {
+    const range = body.match(/lines?\s+(\d+)\s+to\s+(\d+)\s+from\s+(.+?)\s*[:.]/i)
+    if (range) return { kind: 'selection', path: range[3].trim(), detail: `L${range[1]}–${range[2]}` }
+    const from = body.match(/from\s+(.+?)\s*[:.]/i)
+    return { kind: 'selection', path: from?.[1]?.trim() }
+  }
+  return { kind: 'other', detail: body.slice(0, 80) }
+}
+
+/** Split IDE context tags out of a user message: returns the lifted items plus
+ * the remaining text the user actually typed. */
+export function parseIdeContext(text: string): { items: IdeContextItem[]; rest: string } {
+  if (!text.includes('<ide_')) return { items: [], rest: text }
+  const items: IdeContextItem[] = []
+  const rest = text
+    .replace(IDE_TAG_RE, (_m, tag: string, inner: string) => {
+      items.push(interpretIdeTag(tag, inner))
+      return ''
+    })
+    .trim()
+  return { items, rest }
+}
+
+/**
+ * Push a user turn, lifting any IDE context tags out of the raw `<ide_*>` XML
+ * so it never shows up verbatim. The editor sends opened-file/selection context
+ * as its own synthetic user message right before the one the user types, so we
+ * also absorb a standalone `ide-context` entry sitting immediately before this
+ * turn — the chip then rides inside the user bubble for a seamless look. A
+ * truly orphan context (no typed message follows) stays as its own entry.
+ */
+function finalizeUserEntry(
+  state: Pick<StreamState, 'entries'>,
+  text: string,
+  images?: ImageAttachment[],
+): void {
+  const { items, rest } = parseIdeContext(text)
+  const merged = [...items]
+  // Pull in any immediately-preceding standalone IDE context (chronological
+  // order preserved: earlier synthetic context first, then this turn's own).
+  while (state.entries.length) {
+    const last = state.entries[state.entries.length - 1]
+    if (last.kind !== 'ide-context') break
+    merged.unshift(...last.items)
+    state.entries.pop()
+  }
+  if (rest || images?.length) {
+    state.entries.push({
+      kind: 'user',
+      text: rest,
+      ...(images?.length ? { images } : {}),
+      ...(merged.length ? { ideContext: merged } : {}),
+    })
+  } else if (merged.length) {
+    state.entries.push({ kind: 'ide-context', items: merged })
+  }
+}
+
 export type StreamEntry =
   | { kind: 'system'; model?: string; tools?: string[]; cwd?: string; sessionId?: string; slashCommands?: string[] }
   | { kind: 'text'; text: string }
   | { kind: 'thinking'; text: string }
-  | { kind: 'user'; text: string; images?: ImageAttachment[] }
+  | { kind: 'user'; text: string; images?: ImageAttachment[]; ideContext?: IdeContextItem[] }
+  | { kind: 'ide-context'; items: IdeContextItem[] }
   | {
       kind: 'tool'
       id: string
@@ -34,10 +117,14 @@ export type StreamEntry =
 export interface StreamState {
   entries: StreamEntry[]
   toolIndex: Map<string, number>
+  /** Context-window occupancy after the last turn (parsed from a saved log). */
+  contextTokens: number
+  /** Model id seen on the latest `system.init` (for the context-window limit). */
+  model: string | null
 }
 
 export function createStreamState(): StreamState {
-  return { entries: [], toolIndex: new Map() }
+  return { entries: [], toolIndex: new Map(), contextTokens: 0, model: null }
 }
 
 function blockText(content: unknown): string {
@@ -71,7 +158,10 @@ function parseImageBlock(b: Record<string, unknown>): ImageAttachment | null {
   return null
 }
 
-export function applyStreamEvent(state: StreamState, evt: unknown): void {
+export function applyStreamEvent(
+  state: Pick<StreamState, 'entries' | 'toolIndex'>,
+  evt: unknown,
+): void {
   if (!evt || typeof evt !== 'object') return
   const e = evt as Record<string, unknown>
   const type = e.type
@@ -120,7 +210,7 @@ export function applyStreamEvent(state: StreamState, evt: unknown): void {
     // (the original prompt or a follow-up). Surface it as a 'user' entry.
     if (typeof rawContent === 'string') {
       const text = rawContent.trim()
-      if (text) state.entries.push({ kind: 'user', text })
+      if (text) finalizeUserEntry(state, text)
       return
     }
     const content = (rawContent ?? []) as unknown[]
@@ -152,11 +242,7 @@ export function applyStreamEvent(state: StreamState, evt: unknown): void {
       }
     }
     if (userText || userImages.length) {
-      state.entries.push({
-        kind: 'user',
-        text: userText,
-        ...(userImages.length ? { images: userImages } : {}),
-      })
+      finalizeUserEntry(state, userText, userImages)
     }
     return
   }
@@ -204,30 +290,48 @@ export function applyStreamEvent(state: StreamState, evt: unknown): void {
   }
 }
 
-/**
- * Compute how full the context window is *after* a stream event, by summing the
- * input-side tokens (incl. cache) plus the output of the latest turn. Reads
- * `usage` from `result` events and from streaming `assistant` messages. Returns
- * null when the event carries no usable usage.
- */
-export function extractContextTokens(evt: unknown): number | null {
-  if (!evt || typeof evt !== 'object') return null
-  const e = evt as Record<string, unknown>
-  let usage: Record<string, unknown> | undefined
-  if (e.type === 'result') {
-    usage = e.usage as Record<string, unknown> | undefined
-  } else if (e.type === 'assistant') {
-    const message = e.message as Record<string, unknown> | undefined
-    usage = message?.usage as Record<string, unknown> | undefined
-  }
+/** Sum every input-side token (incl. cache) plus output for one `usage` blob. */
+function sumUsage(usage: Record<string, unknown> | undefined): number | null {
   if (!usage || typeof usage !== 'object') return null
-  const tok = (k: string) => (typeof usage![k] === 'number' ? (usage![k] as number) : 0)
+  const tok = (k: string) => (typeof usage[k] === 'number' ? (usage[k] as number) : 0)
   const total =
     tok('input_tokens') +
     tok('output_tokens') +
     tok('cache_creation_input_tokens') +
     tok('cache_read_input_tokens')
   return total > 0 ? total : null
+}
+
+/**
+ * Tokens occupying the context window after a single `assistant` message — its
+ * per-API-call `usage` (uncached input + cache read/creation + output). This is
+ * the true window occupancy at that point in the turn: the whole prior history
+ * rides in as `cache_read_input_tokens`, so the figure grows turn over turn.
+ *
+ * Deliberately ignores `result` events: in an agentic turn the SDK makes many
+ * model calls and the `result` usage is their *cumulative sum*, which massively
+ * over-counts the window (and swings with how many tool calls ran). Use
+ * `extractTurnTotalTokens` for that cumulative figure instead.
+ */
+export function extractContextTokens(evt: unknown): number | null {
+  if (!evt || typeof evt !== 'object') return null
+  const e = evt as Record<string, unknown>
+  if (e.type !== 'assistant') return null
+  const message = e.message as Record<string, unknown> | undefined
+  return sumUsage(message?.usage as Record<string, unknown> | undefined)
+}
+
+/**
+ * Cumulative token usage for a whole turn, read from the `result` event. Sums
+ * across every model call the turn made, so it is *not* a context-window size —
+ * use it only as a last-resort occupancy estimate for engines that never emit
+ * per-message `assistant` usage.
+ */
+export function extractTurnTotalTokens(evt: unknown): number | null {
+  if (!evt || typeof evt !== 'object') return null
+  const e = evt as Record<string, unknown>
+  if (e.type !== 'result') return null
+  return sumUsage(e.usage as Record<string, unknown> | undefined)
 }
 
 /** True when the event is a compaction boundary (context was just shrunk). */
@@ -259,6 +363,11 @@ export function parseStreamLog(raw: string): StreamState | null {
   }
 
   const state = createStreamState()
+  // Reconstruct context-window occupancy the same way the live store does:
+  // high-water mark of per-message `assistant` usage, reset on compaction, with
+  // the cumulative `result` total only as a fallback for engines that never
+  // emit per-message usage. See `extractContextTokens`.
+  let sawAssistantUsage = false
   for (const line of lines) {
     const logMatch = line.match(/^\[log:([a-z]+)\]\s?([\s\S]*)$/)
     if (logMatch) {
@@ -272,10 +381,36 @@ export function parseStreamLog(raw: string): StreamState | null {
     try {
       const parsed = JSON.parse(line)
       applyStreamEvent(state, parsed)
+      if (isCompactBoundary(parsed)) {
+        state.contextTokens = 0
+        sawAssistantUsage = false
+      } else {
+        const ctx = extractContextTokens(parsed)
+        if (ctx !== null) {
+          state.contextTokens = Math.max(state.contextTokens, ctx)
+          sawAssistantUsage = true
+        } else if (!sawAssistantUsage) {
+          const total = extractTurnTotalTokens(parsed)
+          if (total !== null) state.contextTokens = total
+        }
+      }
     } catch {
     }
   }
+  // Latest model id seen on a system.init entry — feeds the context limit.
+  for (let i = state.entries.length - 1; i >= 0; i--) {
+    const e = state.entries[i]
+    if (e.kind === 'system' && e.model) {
+      state.model = e.model
+      break
+    }
+  }
   return state
+}
+
+function ideContextLine(it: IdeContextItem): string {
+  const verb = it.kind === 'selection' ? 'Selected' : it.kind === 'opened' ? 'Opened' : 'Context'
+  return `⊕ ${verb}${it.path ? ` ${it.path}` : ''}${it.detail ? ` ${it.detail}` : ''}`.trimEnd()
 }
 
 export function entriesToPlainText(entries: StreamEntry[]): string {
@@ -288,8 +423,13 @@ export function entriesToPlainText(entries: StreamEntry[]): string {
       case 'text':
         parts.push(e.text)
         break
-      case 'user':
-        parts.push(`> ${e.text}`)
+      case 'user': {
+        const ctx = (e.ideContext ?? []).map(ideContextLine)
+        parts.push([...ctx, `> ${e.text}`].join('\n'))
+        break
+      }
+      case 'ide-context':
+        for (const it of e.items) parts.push(ideContextLine(it))
         break
       case 'thinking':
         parts.push(`(thinking) ${e.text}`)

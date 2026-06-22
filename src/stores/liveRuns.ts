@@ -4,6 +4,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import {
   applyStreamEvent,
   extractContextTokens,
+  extractTurnTotalTokens,
   isCompactBoundary,
   type StreamEntry,
   type ImageAttachment,
@@ -33,6 +34,8 @@ export interface LiveSession {
   model: string | null
   /** Estimated tokens occupying the context window after the latest turn. */
   contextTokens: number
+  /** True once a per-message `assistant` usage has set contextTokens this run. */
+  sawAssistantUsage: boolean
   /** Slash commands advertised by the engine on `system.init` (Claude). */
   slashCommands: string[]
   /** Real claude.ai subscription rate-limit windows, when reported (Claude). */
@@ -116,6 +119,7 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
         allowedTools: [] as string[],
         model: null as string | null,
         contextTokens: 0,
+        sawAssistantUsage: false,
         slashCommands: [] as string[],
         rateLimit: null as RateLimitWindows | null,
         budgetBlocked: false,
@@ -233,11 +237,23 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
         // Capture real claude.ai rate-limit windows (Claude subscription only).
         captureRateLimit(s, p)
         // Track context-window occupancy from usage; reset on compaction.
+        // Prefer per-message `assistant` usage (true window size, grows turn
+        // over turn) and keep the high-water mark — a turn's calls only add to
+        // the window, so the largest single call is its occupancy. The `result`
+        // event's usage is a cumulative per-turn sum that over-counts, so it is
+        // only a fallback for engines that never emit per-message usage.
         if (isCompactBoundary(event.payload)) {
           s.contextTokens = 0
+          s.sawAssistantUsage = false
         } else {
           const ctx = extractContextTokens(event.payload)
-          if (ctx !== null) s.contextTokens = ctx
+          if (ctx !== null) {
+            s.contextTokens = Math.max(s.contextTokens, ctx)
+            s.sawAssistantUsage = true
+          } else if (!s.sawAssistantUsage) {
+            const total = extractTurnTotalTokens(event.payload)
+            if (total !== null) s.contextTokens = total
+          }
         }
       }),
     )

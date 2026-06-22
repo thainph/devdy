@@ -5,6 +5,7 @@ import {
   Terminal, FilePen, FilePlus2, FileText, Search, Globe, ListTodo, User,
 } from 'lucide-vue-next'
 import type { StreamEntry } from '@/lib/streamEvents'
+import IdeContextChip from './IdeContextChip.vue'
 
 const props = defineProps<{
   entries: StreamEntry[]
@@ -143,6 +144,42 @@ function toggle(i: number) {
   expanded.value[i] = !expanded.value[i]
 }
 
+// A run of user text: either plain prose or an `@file` mention that resolves to
+// a real project file (and is therefore clickable to open in the viewer).
+interface TextSegment {
+  text: string
+  path?: string
+}
+
+// `@`-mention token: `@` followed by a run of non-whitespace path chars.
+const MENTION_RE = /@(\S+)/g
+
+// Split a user message into plain + clickable-mention segments. Only `@tokens`
+// that fileMatcher resolves to an actual project file become links; everything
+// else (emails, `@` in prose, unknown paths) stays plain text.
+function userSegments(text: string): TextSegment[] {
+  const match = props.fileMatcher
+  if (!match || !text.includes('@')) return [{ text }]
+  const segs: TextSegment[] = []
+  let last = 0
+  MENTION_RE.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = MENTION_RE.exec(text))) {
+    const path = match(m[1])
+    if (!path) continue
+    if (m.index > last) segs.push({ text: text.slice(last, m.index) })
+    // Keep trailing punctuation (`,` `.` `)`…) outside the link, matching how
+    // fileMatcher itself trims it when resolving the path.
+    const core = m[1].replace(/[)\].,:;'"`]+$/, '')
+    segs.push({ text: '@' + core, path })
+    const trailing = m[1].slice(core.length)
+    if (trailing) segs.push({ text: trailing })
+    last = m.index + m[0].length
+  }
+  if (last < text.length) segs.push({ text: text.slice(last) })
+  return segs.length ? segs : [{ text }]
+}
+
 function previewInput(input: unknown): string {
   if (input == null) return ''
   if (typeof input === 'string') return input
@@ -215,8 +252,14 @@ const lastEntryIsResult = computed(() => {
       <!-- User follow-up — right-aligned chat bubble with avatar -->
       <div v-else-if="entry.kind === 'user'" class="flex justify-end items-end gap-2 pl-10 my-1">
         <div
-          class="max-w-[82%] rounded-2xl rounded-br-md bg-primary/15 border border-primary/25 px-3.5 py-2 text-sm leading-relaxed text-foreground/90 shadow-sm"
+          class="max-w-[82%] rounded-2xl rounded-br-md bg-muted/70 border border-border px-3.5 py-2 text-sm leading-relaxed text-foreground shadow-sm"
         >
+          <div
+            v-if="entry.ideContext?.length"
+            class="mb-2 pb-2 border-b border-border flex flex-col items-end"
+          >
+            <IdeContextChip :items="entry.ideContext" variant="inside" @open-file="(p) => emit('open-file', p)" />
+          </div>
           <div
             v-if="entry.images && entry.images.length"
             class="flex flex-wrap gap-1.5"
@@ -230,14 +273,30 @@ const lastEntryIsResult = computed(() => {
               alt="attachment"
             />
           </div>
-          <div v-if="entry.text" class="whitespace-pre-wrap">{{ entry.text }}</div>
+          <div v-if="entry.text" class="whitespace-pre-wrap"><template
+              v-for="(seg, si) in userSegments(entry.text)"
+              :key="si"
+            ><span
+                v-if="seg.path"
+                class="font-medium text-primary cursor-pointer underline decoration-dotted underline-offset-2 hover:text-primary/75"
+                :title="'Open ' + seg.path"
+                role="button"
+                @click="emit('open-file', seg.path!)"
+              >{{ seg.text }}</span><template v-else>{{ seg.text }}</template></template></div>
         </div>
         <div
-          class="shrink-0 h-7 w-7 rounded-full bg-primary/20 border border-primary/30 flex items-center justify-center"
+          class="shrink-0 h-7 w-7 rounded-full bg-muted border border-border flex items-center justify-center"
           title="You"
         >
-          <User class="h-3.5 w-3.5 text-primary" :stroke-width="2" />
+          <User class="h-3.5 w-3.5 text-primary/70" :stroke-width="2" />
         </div>
+      </div>
+
+      <!-- IDE context — file the editor auto-attached to the turn (opened file
+           or selection). A subtle chip, not a chat bubble: the user didn't type
+           it. The filename opens the file in the viewer. -->
+      <div v-else-if="entry.kind === 'ide-context'" class="flex justify-end pl-10 -my-0.5">
+        <IdeContextChip :items="entry.items" variant="standalone" @open-file="(p) => emit('open-file', p)" />
       </div>
 
       <!-- Assistant text -->
@@ -319,24 +378,19 @@ const lastEntryIsResult = computed(() => {
         </div>
       </div>
 
-      <!-- Result summary -->
+      <!-- Result summary — only shown on failure (or when it carries its own
+           text). A successful turn's final message is already rendered as its
+           own entry, so the "Completed" box would just be empty noise. -->
       <div
-        v-else-if="entry.kind === 'result'"
+        v-else-if="entry.kind === 'result' && (entry.is_error || entry.text)"
         class="mt-2 rounded-md border p-3"
         :class="entry.is_error
           ? 'border-red-500/30 bg-red-500/5'
           : 'border-emerald-500/20 bg-emerald-500/5'"
       >
-        <div class="flex items-center gap-2 mb-2">
-          <component
-            :is="entry.is_error ? XCircle : CheckCircle2"
-            class="h-4 w-4"
-            :class="entry.is_error ? 'text-red-400' : 'text-emerald-400'"
-            :stroke-width="2"
-          />
-          <span class="text-xs font-medium" :class="entry.is_error ? 'text-red-300' : 'text-emerald-300'">
-            {{ entry.is_error ? 'Failed' : 'Completed' }}
-          </span>
+        <div v-if="entry.is_error" class="flex items-center gap-2 mb-2">
+          <component :is="XCircle" class="h-4 w-4 text-red-400" :stroke-width="2" />
+          <span class="text-xs font-medium text-red-300">Failed</span>
           <div class="ml-auto flex items-center gap-3 text-[10px] font-mono text-foreground/40">
             <span v-if="entry.duration_ms">{{ formatDuration(entry.duration_ms) }}</span>
             <span v-if="entry.num_turns">{{ entry.num_turns }} turns</span>
