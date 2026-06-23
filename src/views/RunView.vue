@@ -21,6 +21,9 @@ import StreamLog from '@/components/StreamLog.vue'
 import ContextMeter from '@/components/ContextMeter.vue'
 import PermissionPrompt from '@/components/PermissionPrompt.vue'
 import { Button, Input, StatusBadge, Badge, Modal } from '@/components/ui'
+import { applyMermaidFence, vMermaid } from '@/lib/mermaid'
+import { vCopyCode } from '@/lib/copyCode'
+import type MarkdownIt from 'markdown-it'
 import {
   entriesToPlainText,
   parseStreamLog,
@@ -160,7 +163,7 @@ async function openRunInBrowser(run: RunRecord) {
 }
 
 const mdReady = ref(false)
-let _md: { render: (s: string) => string } | null = null
+let _md: MarkdownIt | null = null
 
 // `viewingLogRunId` is set only while showing an on-disk log (it's cleared the
 // moment a run goes live), so its presence alone means we're in history view.
@@ -250,6 +253,7 @@ async function loadMarkdown() {
   try {
     const MarkdownIt = (await import('markdown-it')).default
     _md = new MarkdownIt({ html: false, linkify: true, typographer: true, breaks: true })
+    applyMermaidFence(_md)
     mdReady.value = true
   } catch {
     // leave _md null; renderText falls back to escaped text
@@ -1795,6 +1799,8 @@ function handleRefInput(val: string) {
               <template v-else-if="inputContent">
                 <div
                   v-file-links
+                  v-mermaid
+                  v-copy-code
                   v-html="renderText(inputContent)"
                   class="markdown-output text-sm leading-relaxed text-foreground"
                   @click="onProseClick"
@@ -1858,6 +1864,8 @@ function handleRefInput(val: string) {
               <div
                 v-else
                 v-file-links
+                v-mermaid
+                v-copy-code
                 v-html="historyLegacyHtml"
                 class="markdown-output text-sm leading-relaxed text-foreground"
                 @click="onProseClick"
@@ -1883,6 +1891,8 @@ function handleRefInput(val: string) {
               <template v-else>
                 <div
                   v-file-links
+                  v-mermaid
+                  v-copy-code
                   v-html="liveLegacyHtml"
                   class="markdown-output text-sm leading-relaxed text-foreground"
                   @click="onProseClick"
@@ -2246,6 +2256,8 @@ function handleRefInput(val: string) {
       <div
         v-else-if="isMarkdownFile && fileViewerMode === 'preview'"
         v-file-links
+        v-mermaid
+        v-copy-code
         v-html="renderText(fileViewerContent)"
         class="markdown-output p-4 leading-relaxed text-foreground"
         :style="{ fontSize: fileViewerFontSize + 'px' }"

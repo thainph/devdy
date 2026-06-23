@@ -88,12 +88,57 @@ function finalizeUserEntry(
   }
 }
 
+const CMD_NAME_RE = /<command-name>([\s\S]*?)<\/command-name>/
+const CMD_ARGS_RE = /<command-args>([\s\S]*?)<\/command-args>/
+const CMD_MSG_RE = /<command-message>([\s\S]*?)<\/command-message>/
+const CMD_STDOUT_RE = /<local-command-stdout>([\s\S]*?)<\/local-command-stdout>/
+const CMD_CAVEAT_RE = /<local-command-caveat>[\s\S]*?<\/local-command-caveat>/
+
+/**
+ * Local slash commands (`/compact`, `/login`, …) arrive as synthetic user
+ * messages wrapped in `<command-*>` / `<local-command-stdout>` tags rather than
+ * anything the user typed — preceded by a standalone `<local-command-caveat>`
+ * preamble meant only for the model. Detect those, lift the structured bits
+ * out, drop the caveat, and return whatever real text is left over (`null` when
+ * the message had none of these tags; `''` when it was pure boilerplate). The
+ * invocation and its stdout come as two adjacent messages, so a stdout-only
+ * message is folded back into the preceding `command` entry.
+ */
+function handleCommandMessage(state: Pick<StreamState, 'entries'>, text: string): string | null {
+  if (
+    !text.includes('<command-name>') &&
+    !text.includes('<local-command-stdout>') &&
+    !text.includes('<local-command-caveat>')
+  ) {
+    return null
+  }
+  const name = CMD_NAME_RE.exec(text)?.[1]?.trim()
+  const args = CMD_ARGS_RE.exec(text)?.[1]?.trim()
+  const stdout = CMD_STDOUT_RE.exec(text)?.[1]?.trim()
+  if (name) {
+    state.entries.push({ kind: 'command', name, ...(args ? { args } : {}), ...(stdout ? { stdout } : {}) })
+  } else if (stdout) {
+    const last = state.entries[state.entries.length - 1]
+    if (last && last.kind === 'command' && !last.stdout) last.stdout = stdout
+    else state.entries.push({ kind: 'command', name: '', stdout })
+  }
+  return text
+    .replace(CMD_CAVEAT_RE, '')
+    .replace(CMD_NAME_RE, '')
+    .replace(CMD_MSG_RE, '')
+    .replace(CMD_ARGS_RE, '')
+    .replace(CMD_STDOUT_RE, '')
+    .trim()
+}
+
 export type StreamEntry =
   | { kind: 'system'; model?: string; tools?: string[]; cwd?: string; sessionId?: string; slashCommands?: string[] }
   | { kind: 'text'; text: string }
   | { kind: 'thinking'; text: string }
   | { kind: 'user'; text: string; images?: ImageAttachment[]; ideContext?: IdeContextItem[] }
   | { kind: 'ide-context'; items: IdeContextItem[] }
+  | { kind: 'compact'; summary: string }
+  | { kind: 'command'; name: string; args?: string; stdout?: string }
   | {
       kind: 'tool'
       id: string
@@ -206,11 +251,25 @@ export function applyStreamEvent(
   if (type === 'user') {
     const message = e.message as Record<string, unknown> | undefined
     const rawContent = message?.content
+    // Compaction summary — when context is compacted, Claude injects the
+    // prior-conversation summary as a synthetic user message. Render it as a
+    // divider, not a user bubble (it isn't something the user actually typed).
+    if (isCompactSummaryEvent(e, rawContent)) {
+      const summary = (typeof rawContent === 'string' ? rawContent : blockText(rawContent)).trim()
+      if (summary) state.entries.push({ kind: 'compact', summary })
+      return
+    }
     // Plain-string content represents a user message we wrote via stdin
     // (the original prompt or a follow-up). Surface it as a 'user' entry.
     if (typeof rawContent === 'string') {
       const text = rawContent.trim()
-      if (text) finalizeUserEntry(state, text)
+      if (!text) return
+      const rest = handleCommandMessage(state, text)
+      if (rest !== null) {
+        if (rest) finalizeUserEntry(state, rest)
+        return
+      }
+      finalizeUserEntry(state, text)
       return
     }
     const content = (rawContent ?? []) as unknown[]
@@ -240,6 +299,10 @@ export function applyStreamEvent(
         const img = parseImageBlock(b)
         if (img) userImages.push(img)
       }
+    }
+    if (userText) {
+      const rest = handleCommandMessage(state, userText)
+      if (rest !== null) userText = rest
     }
     if (userText || userImages.length) {
       finalizeUserEntry(state, userText, userImages)
@@ -341,6 +404,21 @@ export function isCompactBoundary(evt: unknown): boolean {
   return e.type === 'system' && e.subtype === 'compact_boundary'
 }
 
+/** Fixed prelude Claude prepends to the post-compaction summary message. */
+const COMPACT_PRELUDE = 'This session is being continued from a previous conversation'
+
+/**
+ * True when a `type: 'user'` event is actually the post-compaction summary that
+ * Claude injects (not something the user typed). Primary signal is the
+ * top-level `isCompactSummary` flag the SDK/transcript carries; the fixed text
+ * prelude is a fallback for paths that drop the flag.
+ */
+function isCompactSummaryEvent(e: Record<string, unknown>, rawContent: unknown): boolean {
+  if (e.isCompactSummary === true) return true
+  const text = typeof rawContent === 'string' ? rawContent : blockText(rawContent)
+  return text.trimStart().startsWith(COMPACT_PRELUDE)
+}
+
 export function parseStreamLog(raw: string): StreamState | null {
   const lines = raw.split(/\r?\n/).filter((l) => l.trim().length > 0)
   if (lines.length === 0) return null
@@ -431,6 +509,14 @@ export function entriesToPlainText(entries: StreamEntry[]): string {
       case 'ide-context':
         for (const it of e.items) parts.push(ideContextLine(it))
         break
+      case 'compact':
+        parts.push('— context compacted —')
+        break
+      case 'command': {
+        const head = `⌘ ${e.name}${e.args ? ` ${e.args}` : ''}`.trimEnd()
+        parts.push(e.stdout ? `${head}\n  → ${e.stdout}` : head)
+        break
+      }
       case 'thinking':
         parts.push(`(thinking) ${e.text}`)
         break

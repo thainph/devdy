@@ -2,9 +2,11 @@
 import { ref, computed, watch, type Component } from 'vue'
 import {
   ChevronRight, Wrench, Sparkles, CheckCircle2, XCircle, Cpu, Brain, AlertTriangle, Info,
-  Terminal, FilePen, FilePlus2, FileText, Search, Globe, ListTodo, User,
+  Terminal, FilePen, FilePlus2, FileText, Search, Globe, ListTodo, User, Archive,
 } from 'lucide-vue-next'
 import type { StreamEntry } from '@/lib/streamEvents'
+import { vMermaid } from '@/lib/mermaid'
+import { vCopyCode } from '@/lib/copyCode'
 import IdeContextChip from './IdeContextChip.vue'
 
 const props = defineProps<{
@@ -19,6 +21,14 @@ const emit = defineEmits<{
   (e: 'open-file', path: string, line?: number | null): void
   (e: 'open-url', url: string): void
 }>()
+
+// Per-entry expand state for compaction-summary dividers (collapsed by default).
+const expandedCompacts = ref(new Set<number>())
+function toggleCompact(i: number) {
+  const next = new Set(expandedCompacts.value)
+  next.has(i) ? next.delete(i) : next.add(i)
+  expandedCompacts.value = next
+}
 
 // Pull a 1-based line number from a link target like `foo.ts#L635`,
 // `foo.ts#L177-L189`, or `foo.ts:635`. Returns null when there's none.
@@ -299,10 +309,51 @@ const lastEntryIsResult = computed(() => {
         <IdeContextChip :items="entry.items" variant="standalone" @open-file="(p) => emit('open-file', p)" />
       </div>
 
+      <!-- Compaction summary — context was condensed; show a divider, expandable to read it -->
+      <div v-else-if="entry.kind === 'compact'" class="my-3">
+        <div class="flex items-center gap-2 text-foreground/40">
+          <span class="h-px flex-1 bg-border" />
+          <button
+            class="inline-flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide hover:text-foreground/70 transition-colors"
+            :title="expandedCompacts.has(i) ? 'Hide summary' : 'Show summary'"
+            @click="toggleCompact(i)"
+          >
+            <Archive class="h-3 w-3" :stroke-width="1.75" />
+            Context compacted
+            <ChevronRight class="h-3 w-3 transition-transform" :class="expandedCompacts.has(i) ? 'rotate-90' : ''" :stroke-width="2" />
+          </button>
+          <span class="h-px flex-1 bg-border" />
+        </div>
+        <div
+          v-if="expandedCompacts.has(i)"
+          v-file-links
+          v-mermaid
+          v-copy-code
+          v-html="renderText(entry.summary)"
+          class="markdown-output mt-2 text-xs leading-relaxed text-foreground/70 bg-muted/40 border border-border rounded-lg px-3 py-2.5"
+          @click="onProseClick"
+        />
+      </div>
+
+      <!-- Local slash command (e.g. /compact) the user ran — a slim marker, not a chat bubble -->
+      <div v-else-if="entry.kind === 'command'" class="my-1.5 flex flex-col items-center gap-1">
+        <div
+          v-if="entry.name"
+          class="inline-flex items-center gap-1.5 rounded-full bg-muted/60 border border-border px-2.5 py-1 text-[11px]"
+        >
+          <Terminal class="h-3 w-3 text-foreground/50" :stroke-width="1.75" />
+          <span class="font-mono font-medium text-foreground/75">{{ entry.name }}</span>
+          <span v-if="entry.args" class="font-mono text-foreground/55">{{ entry.args }}</span>
+        </div>
+        <div v-if="entry.stdout" class="text-[11px] font-mono text-foreground/45">{{ entry.stdout }}</div>
+      </div>
+
       <!-- Assistant text -->
       <div
         v-else-if="entry.kind === 'text'"
         v-file-links
+        v-mermaid
+        v-copy-code
         v-html="renderText(entry.text)"
         class="markdown-output text-sm leading-relaxed text-foreground"
         @click="onProseClick"
@@ -401,6 +452,8 @@ const lastEntryIsResult = computed(() => {
         <div
           v-if="entry.text"
           v-file-links
+          v-mermaid
+          v-copy-code
           v-html="renderText(entry.text)"
           class="markdown-output text-sm leading-relaxed text-foreground"
           @click="onProseClick"

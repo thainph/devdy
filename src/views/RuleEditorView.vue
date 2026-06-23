@@ -4,6 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { useRulesStore, type RuleTarget } from '@/stores/rules'
 import SkillEditor from '@/components/SkillEditor.vue'
 import { Button, AppSelect } from '@/components/ui'
+import { applyMermaidFence, vMermaid } from '@/lib/mermaid'
+import { vCopyCode } from '@/lib/copyCode'
 import { ArrowLeft, ScrollText, Save, LayoutTemplate, AlertCircle, FolderOpen } from 'lucide-vue-next'
 
 const route = useRoute()
@@ -58,6 +60,7 @@ async function updatePreview(md: string) {
   try {
     const MarkdownIt = (await import('markdown-it')).default
     const mdi = new MarkdownIt({ html: false, linkify: true, typographer: true })
+    applyMermaidFence(mdi)
     previewHtml.value = mdi.render(md)
   } catch {
     previewHtml.value = `<pre>${md}</pre>`
@@ -237,6 +240,8 @@ async function handleSave() {
         </div>
         <div class="flex-1 overflow-auto p-5">
           <div
+            v-mermaid
+            v-copy-code
             v-html="previewHtml"
             class="text-sm leading-relaxed
               [&_h1]:text-lg [&_h1]:font-bold [&_h1]:mb-3 [&_h1]:mt-0
