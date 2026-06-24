@@ -5,24 +5,26 @@ import { useProjectsStore, type Repo } from '@/stores/projects'
 import { useRunsStore, type RunRecord, type ProjectEntry } from '@/stores/runs'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { invoke } from '@/lib/tauri'
-import { openUrl, openPath, revealItemInDir } from '@tauri-apps/plugin-opener'
-import { convertFileSrc } from '@tauri-apps/api/core'
+import { openUrl } from '@tauri-apps/plugin-opener'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import {
   Play, Square, GitPullRequest, Bug,
-  Clock, Cpu, Terminal, FileText, RotateCcw,
+  Clock, Cpu, Terminal, FileText, RotateCcw, RefreshCw,
   Send, MessageSquare, Trash2, Settings, Code2, FolderClosed, Sparkles, ExternalLink,
-  Copy, FileCode2, ChevronDown, Maximize2, Minimize2, AArrowDown, AArrowUp,
-  FileQuestion, FolderOpen, ImagePlus, X,
+  ChevronDown, Maximize2, Minimize2, AppWindow,
+  ImagePlus, X,
   ShieldQuestion, MessageCircleQuestion
 } from 'lucide-vue-next'
 import AppSelect from '@/components/AppSelect.vue'
 import StreamLog from '@/components/StreamLog.vue'
 import ContextMeter from '@/components/ContextMeter.vue'
 import PermissionPrompt from '@/components/PermissionPrompt.vue'
+import FileViewer from '@/components/FileViewer.vue'
 import { Button, Input, StatusBadge, Badge, Modal } from '@/components/ui'
 import { applyMermaidFence, vMermaid } from '@/lib/mermaid'
 import { vCopyCode } from '@/lib/copyCode'
+import { matchProjectFile, parseLineRef, decorateFileLinks } from '@/lib/fileLinks'
+import { openFileWindow } from '@/lib/fileWindow'
 import type MarkdownIt from 'markdown-it'
 import {
   entriesToPlainText,
@@ -379,7 +381,6 @@ onUnmounted(() => {
   // survive this component unmounting — that's what lets runs keep streaming
   // while the user is on another screen.
   if (isResizing.value) stopResize()
-  window.removeEventListener('keydown', onViewerKey)
   window.removeEventListener('focus', refreshViewedRunOnFocus)
   sessionsChangedUnlisten?.()
   sessionsChangedUnlisten = null
@@ -817,254 +818,50 @@ async function ensureProjectFiles() {
 }
 
 // ── File viewer (click a file the AI created/mentioned to preview it) ─────
+// The viewer body lives in the reusable <FileViewer> component; RunView only
+// tracks which file/line is shown and the modal's open / full-screen state.
 const fileViewerOpen = ref(false)
 const fileViewerPath = ref('')
-const fileViewerContent = ref('')
-const fileViewerTruncated = ref(false)
-const fileViewerLoading = ref(false)
-const fileViewerError = ref<string | null>(null)
-const fileCopied = ref(false)
 // Target line to highlight + scroll to (from a `file:NN` / `#LNN` link), or null.
 const fileViewerLine = ref<number | null>(null)
-const fileViewerBodyEl = ref<HTMLElement | null>(null)
-const fileViewerLines = computed(() => fileViewerContent.value.split('\n'))
-// Markdown files can be shown rendered ('preview') or as raw, line-numbered source ('code').
-const fileViewerMode = ref<'code' | 'preview'>('code')
-const isMarkdownFile = computed(() => /\.(md|markdown|mdx)$/i.test(fileViewerPath.value))
-
-// Syntax highlighting for the raw view: shiki tokens per line ({content,color}),
-// or null when the language is unknown / the file is too big / highlighting failed.
-type HlToken = { content: string; color?: string }
-const highlightedLines = ref<HlToken[][] | null>(null)
-// Skip highlighting beyond this size to keep the modal snappy (raw text still shows).
-const MAX_HIGHLIGHT_BYTES = 200_000
-
-// Viewer chrome: full-screen toggle + adjustable font size (px).
 const fileViewerFullscreen = ref(false)
-const fileViewerFontSize = ref(13)
-const FONT_MIN = 10
-const FONT_MAX = 28
-function bumpFontSize(delta: number) {
-  fileViewerFontSize.value = Math.max(FONT_MIN, Math.min(FONT_MAX, fileViewerFontSize.value + delta))
-}
-
-// What sort of file we're showing. Media kinds render via the asset protocol;
-// 'other' (office docs, archives, binaries) can only be opened externally.
-type FileKind = 'text' | 'image' | 'video' | 'audio' | 'pdf' | 'other'
-const fileViewerKind = ref<FileKind>('text')
-const fileViewerAssetUrl = ref('') // asset:// URL for media kinds
-const fileViewerAbsPath = ref('')  // absolute path, for open-in-app / reveal
-
-const IMAGE_EXT = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif', 'apng']
-const VIDEO_EXT = ['mp4', 'webm', 'mov', 'm4v', 'ogv', 'mkv']
-const AUDIO_EXT = ['mp3', 'wav', 'ogg', 'oga', 'flac', 'm4a', 'aac']
-// Known non-text formats we can't render in a webview — offer "open externally".
-const OTHER_EXT = [
-  'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp', 'rtf', 'pages', 'numbers', 'key',
-  'zip', 'tar', 'gz', 'tgz', 'bz2', 'xz', 'rar', '7z',
-  'exe', 'dmg', 'pkg', 'app', 'msi', 'deb', 'bin', 'so', 'dylib', 'dll', 'o', 'a', 'class', 'jar', 'wasm',
-  'ttf', 'otf', 'woff', 'woff2', 'eot', 'psd', 'ai', 'sketch', 'fig', 'xcf', 'heic', 'tiff', 'tif', 'raw',
-]
-function extOf(path: string): string {
-  const base = (path.split('/').pop() ?? path).toLowerCase()
-  return base.includes('.') ? base.slice(base.lastIndexOf('.') + 1) : ''
-}
-function fileKind(path: string): FileKind {
-  const ext = extOf(path)
-  if (IMAGE_EXT.includes(ext)) return 'image'
-  if (VIDEO_EXT.includes(ext)) return 'video'
-  if (AUDIO_EXT.includes(ext)) return 'audio'
-  if (ext === 'pdf') return 'pdf'
-  if (OTHER_EXT.includes(ext)) return 'other'
-  return 'text'
-}
-
-function onOpenInApp() {
-  if (fileViewerAbsPath.value) openPath(fileViewerAbsPath.value).catch(() => { /* opener unavailable */ })
-}
-function onRevealInFolder() {
-  if (fileViewerAbsPath.value) revealItemInDir(fileViewerAbsPath.value).catch(() => { /* opener unavailable */ })
-}
-
-// Map a file path to a shiki language id, or null when we shouldn't highlight.
-const LANG_BY_EXT: Record<string, string> = {
-  ts: 'typescript', tsx: 'tsx', mts: 'typescript', cts: 'typescript',
-  js: 'javascript', jsx: 'jsx', mjs: 'javascript', cjs: 'javascript',
-  vue: 'vue', svelte: 'svelte',
-  rs: 'rust', go: 'go', py: 'python', rb: 'ruby', php: 'php',
-  java: 'java', kt: 'kotlin', kts: 'kotlin', swift: 'swift', scala: 'scala',
-  c: 'c', h: 'c', cpp: 'cpp', cc: 'cpp', cxx: 'cpp', hpp: 'cpp', hh: 'cpp',
-  cs: 'csharp', m: 'objective-c', mm: 'objective-cpp',
-  json: 'json', jsonc: 'jsonc', json5: 'json5',
-  yaml: 'yaml', yml: 'yaml', toml: 'toml', ini: 'ini',
-  xml: 'xml', html: 'html', htm: 'html',
-  css: 'css', scss: 'scss', sass: 'sass', less: 'less',
-  sh: 'bash', bash: 'bash', zsh: 'bash', fish: 'fish',
-  sql: 'sql', graphql: 'graphql', gql: 'graphql',
-  lua: 'lua', dart: 'dart', r: 'r', pl: 'perl',
-  md: 'markdown', markdown: 'markdown', mdx: 'mdx',
-  proto: 'proto', diff: 'diff', patch: 'diff',
-}
-function langFromPath(path: string): string | null {
-  const base = (path.split('/').pop() ?? path).toLowerCase()
-  if (base === 'dockerfile') return 'docker'
-  if (base === 'makefile') return 'make'
-  const ext = base.includes('.') ? base.slice(base.lastIndexOf('.') + 1) : ''
-  return LANG_BY_EXT[ext] ?? null
-}
-
-let highlightSeq = 0
-async function refreshHighlight() {
-  highlightedLines.value = null
-  if (!fileViewerOpen.value || fileViewerMode.value !== 'code') return
-  const code = fileViewerContent.value
-  if (!code || code.length > MAX_HIGHLIGHT_BYTES) return
-  const lang = langFromPath(fileViewerPath.value)
-  if (!lang) return
-  const seq = ++highlightSeq
-  try {
-    const { codeToTokens } = await import('shiki')
-    const dark = document.documentElement.classList.contains('dark')
-    const opts = { lang, theme: dark ? 'github-dark' : 'github-light' } as Parameters<typeof codeToTokens>[1]
-    const { tokens } = await codeToTokens(code, opts)
-    // Ignore stale results if the user opened another file meanwhile.
-    if (seq === highlightSeq && fileViewerOpen.value) {
-      highlightedLines.value = tokens.map((line) => line.map((t) => ({ content: t.content, color: t.color })))
-    }
-  } catch {
-    /* unsupported language or load failure — fall back to plain text */
-  }
-}
-watch([fileViewerContent, fileViewerMode], refreshHighlight)
 
 // Set of known project file paths, for resolving inline-code mentions.
 const projectFileSet = computed(() => new Set(projectFiles.value.map(e => !e.is_dir && e.path).filter(Boolean) as string[]))
 
 // Resolve a raw inline-code token (e.g. `src/foo.ts` or just `foo.ts`) to a
-// project file path, or null when it doesn't name a real file. Kept strict to
-// avoid turning every bit of inline code into a misleading link.
+// project file path, or null when it doesn't name a real file.
 function fileMatcher(raw: string): string | null {
-  if (!raw || raw.length > 200 || /\s/.test(raw)) return null
-  let token = raw.trim().replace(/[)\].,:;'"`]+$/, '')
-  if (token.startsWith('./')) token = token.slice(2)
-  if (!token) return null
-  const set = projectFileSet.value
-  if (set.has(token)) return token
-  // Basename / suffix match: unambiguous tail like `dir/file.ts`.
-  if (token.includes('/')) {
-    for (const p of set) if (p === token || p.endsWith('/' + token)) return p
-  } else if (/\.[a-zA-Z0-9]+$/.test(token)) {
-    // Bare filename with an extension — match only if exactly one file ends with it.
-    let hit: string | null = null
-    for (const p of set) {
-      if (p === token || p.endsWith('/' + token)) {
-        if (hit) return null // ambiguous
-        hit = p
-      }
-    }
-    if (hit) return hit
-  }
-  return null
+  return matchProjectFile(raw, projectFileSet.value)
 }
 
-// Pull a 1-based line number from a link target like `foo.ts#L635`,
-// `foo.ts#L177-L189`, or `foo.ts:635`. Returns null when there's none.
-function parseLineRef(ref: string): number | null {
-  const m = ref.match(/#L?(\d+)/i) ?? ref.match(/:(\d+)(?:-\d+)?$/)
-  return m ? parseInt(m[1], 10) : null
-}
-
-function scrollToViewerLine() {
-  const line = fileViewerLine.value
-  if (!line) return
-  const el = fileViewerBodyEl.value?.querySelector(`[data-line="${line}"]`) as HTMLElement | null
-  el?.scrollIntoView({ block: 'center' })
-}
-
-async function openFileViewer(path: string, line?: number | null) {
-  const projPath = project.value?.path
-  if (!projPath) return
-  const abs = path.startsWith('/') ? path : `${projPath}/${path}`
-  fileViewerOpen.value = true
+// Open a file in the in-app modal viewer. The <FileViewer> component does the
+// actual reading / rendering; we just point it at the file + line.
+function openFileViewer(path: string, line?: number | null) {
+  if (!project.value?.path) return
   fileViewerPath.value = path
-  fileViewerAbsPath.value = abs
   fileViewerLine.value = line ?? null
-  // Markdown opens rendered by default, unless a specific line was requested
-  // (the line-numbered raw view is what can scroll to it).
-  fileViewerMode.value = /\.(md|markdown|mdx)$/i.test(path) && !line ? 'preview' : 'code'
-  fileViewerError.value = null
-  fileViewerContent.value = ''
-  fileViewerTruncated.value = false
-  fileCopied.value = false
-  fileViewerAssetUrl.value = ''
-  const kind = fileKind(path)
-  fileViewerKind.value = kind
-
-  // Media renders straight from disk via the asset protocol — no text read.
-  // Office docs / archives / binaries ('other') can only be opened externally.
-  if (kind !== 'text') {
-    if (kind !== 'other') fileViewerAssetUrl.value = convertFileSrc(abs)
-    fileViewerLoading.value = false
-    return
-  }
-
-  fileViewerLoading.value = true
-  try {
-    const res = await runsStore.readProjectFile(projPath, path)
-    fileViewerPath.value = res.path
-    fileViewerContent.value = res.content
-    fileViewerTruncated.value = res.truncated
-  } catch (e) {
-    fileViewerError.value = String(e)
-  } finally {
-    fileViewerLoading.value = false
-  }
-  // Scroll only after loading flips false, so the line rows are in the DOM.
-  if (!fileViewerError.value && fileViewerLine.value) {
-    await nextTick()
-    scrollToViewerLine()
-  }
+  fileViewerFullscreen.value = false
+  fileViewerOpen.value = true
 }
 
 function closeFileViewer() {
   fileViewerOpen.value = false
 }
 
-// Close the viewer on Esc — only listen while it's open.
-function onViewerKey(e: KeyboardEvent) {
-  if (e.key === 'Escape') closeFileViewer()
-}
-watch(fileViewerOpen, (open) => {
-  if (open) window.addEventListener('keydown', onViewerKey)
-  else window.removeEventListener('keydown', onViewerKey)
-})
-
-async function copyFileContent() {
-  try {
-    await navigator.clipboard.writeText(fileViewerContent.value)
-    fileCopied.value = true
-    setTimeout(() => { fileCopied.value = false }, 1500)
-  } catch { /* clipboard unavailable */ }
+// Pop the current file out into a standalone OS window (for side-by-side
+// viewing on another monitor), then close the in-app modal.
+function popOutFileViewer() {
+  const p = project.value?.path
+  if (p && fileViewerPath.value) openFileWindow(p, fileViewerPath.value, fileViewerLine.value)
+  closeFileViewer()
 }
 
 // Directive for RunView's own markdown containers (issue/PR Content, legacy
 // HTML). Marks inline `<code>` that names a project file as a clickable link.
 const vFileLinks = {
-  mounted: (el: HTMLElement) => decorateFileLinks(el),
-  updated: (el: HTMLElement) => decorateFileLinks(el),
-}
-function decorateFileLinks(el: HTMLElement) {
-  el.querySelectorAll('code').forEach((code) => {
-    if (code.closest('pre')) return
-    const path = fileMatcher((code.textContent ?? '').trim())
-    if (path) {
-      code.classList.add('file-link')
-      code.setAttribute('data-file-path', path)
-    } else {
-      code.classList.remove('file-link')
-      code.removeAttribute('data-file-path')
-    }
-  })
+  mounted: (el: HTMLElement) => decorateFileLinks(el, fileMatcher),
+  updated: (el: HTMLElement) => decorateFileLinks(el, fileMatcher),
 }
 function onProseClick(e: MouseEvent) {
   const target = e.target as HTMLElement
@@ -1287,16 +1084,23 @@ async function handlePermissionAnswer(answers: Record<string, string>) {
   nextTick(() => composerEl.value?.focus())
 }
 
-async function handleRerun(sourceRunId: string) {
+// Re-fetch fresh PR/issue content from GitHub and overwrite this run's input
+// markdown IN PLACE. The existing AI result (output/session) is preserved so
+// the user can keep working on it with the refreshed context.
+async function handleRefetch(sourceRunId: string) {
+  fetchError.value = null
+  refetchingRunId.value = sourceRunId
   try {
-    const newRun = await runsStore.rerunRun(sourceRunId)
-    currentRunId.value = newRun.id
-    clearHistoryView()
-    await loadInputContent(newRun.id)
-    await runsStore.fetchRuns(projectId.value)
-    await handleStartRun()
+    await runsStore.refetchRun(sourceRunId)
+    // Force-refresh the input markdown shown in the view (output untouched).
+    if (inputContentRunId.value === sourceRunId) {
+      inputContentRunId.value = null
+      await loadInputContent(sourceRunId)
+    }
   } catch (e) {
     fetchError.value = String(e)
+  } finally {
+    refetchingRunId.value = null
   }
 }
 
@@ -1313,6 +1117,7 @@ async function handleCancel() {
 }
 
 const deletingRunId = ref<string | null>(null)
+const refetchingRunId = ref<string | null>(null)
 const clearingAll = ref(false)
 
 function clearActiveRunState() {
@@ -1714,11 +1519,12 @@ function handleRefInput(val: string) {
                 v-if="run.run_type !== 'session'"
                 variant="ghost"
                 size="icon-sm"
-                :aria-label="'Re-run AI on this ' + (run.run_type === 'analyze_issue' ? 'issue' : 'PR')"
-                :title="'Re-run AI on this ' + (run.run_type === 'analyze_issue' ? 'issue' : 'PR')"
-                @click.stop="handleRerun(run.id)"
+                :disabled="refetchingRunId === run.id"
+                :aria-label="'Re-fetch this ' + (run.run_type === 'analyze_issue' ? 'issue' : 'PR') + ' content from GitHub (keeps AI result)'"
+                :title="'Re-fetch this ' + (run.run_type === 'analyze_issue' ? 'issue' : 'PR') + ' content from GitHub (keeps AI result)'"
+                @click.stop="handleRefetch(run.id)"
               >
-                <RotateCcw class="h-3.5 w-3.5" :stroke-width="1.75" />
+                <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': refetchingRunId === run.id }" :stroke-width="1.75" />
               </Button>
               <Button
                 variant="destructive-ghost"
@@ -2127,172 +1933,48 @@ function handleRefInput(val: string) {
     </div>
 
     <!-- File viewer: preview a file the AI created/edited/mentioned -->
-    <Modal :open="fileViewerOpen" :size="fileViewerFullscreen ? 'full' : 'xl'" scroll-body @close="closeFileViewer">
-      <template #header>
-        <FileCode2 class="h-4 w-4 text-primary shrink-0" :stroke-width="1.75" />
-        <span class="text-xs font-mono text-foreground/90 truncate flex-1" :title="fileViewerPath">{{ fileViewerPath }}</span>
-        <span v-if="fileViewerTruncated" class="text-[10px] text-amber-500 shrink-0">truncated</span>
-        <!-- Raw / rendered toggle, only meaningful for markdown files -->
-        <div
-          v-if="isMarkdownFile && fileViewerContent"
-          class="flex items-center rounded-md border border-border overflow-hidden shrink-0 text-[10px] font-medium"
-        >
-          <button
-            class="px-2 py-1 transition-colors cursor-pointer"
-            :class="fileViewerMode === 'preview' ? 'bg-primary/15 text-primary' : 'text-foreground/50 hover:text-foreground'"
-            @click="fileViewerMode = 'preview'"
-          >Preview</button>
-          <button
-            class="px-2 py-1 border-l border-border transition-colors cursor-pointer"
-            :class="fileViewerMode === 'code' ? 'bg-primary/15 text-primary' : 'text-foreground/50 hover:text-foreground'"
-            @click="fileViewerMode = 'code'"
-          >Raw</button>
-        </div>
-        <!-- Font size controls -->
-        <div
-          v-if="fileViewerContent"
-          class="flex items-center rounded-md border border-border overflow-hidden shrink-0"
-        >
-          <button
-            class="flex items-center justify-center h-6 w-6 text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
-            title="Smaller font"
-            :disabled="fileViewerFontSize <= FONT_MIN"
-            @click="bumpFontSize(-1)"
-          >
-            <AArrowDown class="h-3.5 w-3.5" :stroke-width="1.75" />
-          </button>
-          <span class="px-1.5 text-[10px] tabular-nums text-foreground/50 border-x border-border select-none">{{ fileViewerFontSize }}</span>
-          <button
-            class="flex items-center justify-center h-6 w-6 text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
-            title="Larger font"
-            :disabled="fileViewerFontSize >= FONT_MAX"
-            @click="bumpFontSize(1)"
-          >
-            <AArrowUp class="h-3.5 w-3.5" :stroke-width="1.75" />
-          </button>
-        </div>
-        <!-- Open in the OS default app — most useful for media / office files -->
-        <button
-          v-if="fileViewerKind !== 'text'"
-          class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
-          title="Open in default app"
-          @click="onOpenInApp"
-        >
-          <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
-        </button>
-        <!-- Full-screen toggle -->
-        <button
-          class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
-          :title="fileViewerFullscreen ? 'Exit full screen' : 'Full screen'"
-          @click="fileViewerFullscreen = !fileViewerFullscreen"
-        >
-          <component :is="fileViewerFullscreen ? Minimize2 : Maximize2" class="h-3.5 w-3.5" :stroke-width="1.75" />
-        </button>
-        <Button
-          v-if="fileViewerContent"
-          variant="outline"
-          size="xs"
-          class="shrink-0"
-          :title="fileCopied ? 'Copied!' : 'Copy content'"
-          @click="copyFileContent"
-        >
-          <Copy class="h-3 w-3" :stroke-width="1.75" />
-          {{ fileCopied ? 'Copied' : 'Copy' }}
-        </Button>
-      </template>
-
-      <div v-if="fileViewerLoading" class="p-4 text-xs text-muted-foreground">Loading…</div>
-      <div v-else-if="fileViewerError" class="p-6 flex flex-col items-center gap-3 text-center">
-        <FileQuestion class="h-10 w-10 text-foreground/30" :stroke-width="1.5" />
-        <div>
-          <p class="text-sm font-medium text-destructive mb-1">Could not open file</p>
-          <p class="text-xs text-foreground/50 font-mono break-all max-w-md">{{ fileViewerError }}</p>
-        </div>
-        <div class="flex gap-2">
-          <Button size="sm" @click="onOpenInApp">
-            <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" /> Open in default app
-          </Button>
-          <Button size="sm" variant="outline" @click="onRevealInFolder">
-            <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" /> Reveal in folder
-          </Button>
-        </div>
-      </div>
-      <!-- Image -->
-      <div v-else-if="fileViewerKind === 'image'" class="flex items-center justify-center p-4 bg-foreground/5 min-h-[200px]">
-        <img :src="fileViewerAssetUrl" :alt="fileViewerPath" class="max-w-full max-h-full object-contain" />
-      </div>
-      <!-- Video -->
-      <div v-else-if="fileViewerKind === 'video'" class="flex items-center justify-center bg-black">
-        <video :src="fileViewerAssetUrl" controls class="max-w-full max-h-[85vh]" />
-      </div>
-      <!-- Audio -->
-      <div v-else-if="fileViewerKind === 'audio'" class="p-8 flex items-center justify-center">
-        <audio :src="fileViewerAssetUrl" controls class="w-full max-w-lg" />
-      </div>
-      <!-- PDF -->
-      <iframe
-        v-else-if="fileViewerKind === 'pdf'"
-        :src="fileViewerAssetUrl"
-        class="w-full h-[85vh] bg-white"
-        title="PDF preview"
-      />
-      <!-- Non-previewable (office docs, archives, binaries) -->
-      <div v-else-if="fileViewerKind === 'other'" class="p-10 flex flex-col items-center gap-3 text-center">
-        <FileQuestion class="h-12 w-12 text-foreground/30" :stroke-width="1.5" />
-        <div>
-          <p class="text-sm font-medium text-foreground/80 mb-1">Preview not available</p>
-          <p class="text-xs text-foreground/50">This file type can't be shown here. Open it in its native app instead.</p>
-        </div>
-        <div class="flex gap-2">
-          <Button size="sm" @click="onOpenInApp">
-            <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" /> Open in default app
-          </Button>
-          <Button size="sm" variant="outline" @click="onRevealInFolder">
-            <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" /> Reveal in folder
-          </Button>
-        </div>
-      </div>
-      <!-- Rendered markdown preview -->
-      <div
-        v-else-if="isMarkdownFile && fileViewerMode === 'preview'"
-        v-file-links
-        v-mermaid
-        v-copy-code
-        v-html="renderText(fileViewerContent)"
-        class="markdown-output p-4 leading-relaxed text-foreground"
-        :style="{ fontSize: fileViewerFontSize + 'px' }"
-        @click="onProseClick"
-      />
-      <!-- Raw, line-numbered source -->
-      <div
-        v-else
-        ref="fileViewerBodyEl"
-        class="py-2 leading-relaxed font-mono text-foreground/90"
-        :style="{ fontSize: fileViewerFontSize + 'px' }"
+    <Modal
+      :open="fileViewerOpen"
+      :size="fileViewerFullscreen ? 'full' : 'xl'"
+      scroll-body
+      hide-header
+      @close="closeFileViewer"
+    >
+      <FileViewer
+        v-if="fileViewerOpen"
+        :project-path="project?.path || ''"
+        :path="fileViewerPath"
+        :line="fileViewerLine"
+        @open-file="openFileViewer"
+        @open-url="onOpenUrl"
       >
-        <div
-          v-for="(ln, idx) in fileViewerLines"
-          :key="idx"
-          :data-line="idx + 1"
-          class="flex min-w-max"
-          :class="{ 'bg-primary/15': idx + 1 === fileViewerLine }"
-        >
-          <span
-            class="sticky left-0 select-none text-right tabular-nums shrink-0 w-12 pr-3 pl-2 border-r border-border bg-card"
-            :class="idx + 1 === fileViewerLine ? 'text-primary' : 'text-foreground/30'"
-          >{{ idx + 1 }}</span>
-          <span class="px-3 whitespace-pre flex-1">
-            <template v-if="highlightedLines && highlightedLines[idx] && highlightedLines[idx].length">
-              <span
-                v-for="(t, ti) in highlightedLines[idx]"
-                :key="ti"
-                :style="t.color ? { color: t.color } : undefined"
-              >{{ t.content }}</span>
-            </template>
-            <template v-else>{{ ln || ' ' }}</template>
-          </span>
-        </div>
-      </div>
+        <template #actions>
+          <!-- Pop the file out into a standalone OS window for side-by-side viewing -->
+          <button
+            class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
+            title="Mở ra cửa sổ mới"
+            @click="popOutFileViewer"
+          >
+            <AppWindow class="h-3.5 w-3.5" :stroke-width="1.75" />
+          </button>
+          <!-- Full-screen toggle -->
+          <button
+            class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
+            :title="fileViewerFullscreen ? 'Exit full screen' : 'Full screen'"
+            @click="fileViewerFullscreen = !fileViewerFullscreen"
+          >
+            <component :is="fileViewerFullscreen ? Minimize2 : Maximize2" class="h-3.5 w-3.5" :stroke-width="1.75" />
+          </button>
+          <!-- Close -->
+          <button
+            class="flex items-center justify-center h-6 w-6 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
+            title="Close (Esc)"
+            @click="closeFileViewer"
+          >
+            <X class="h-4 w-4" :stroke-width="1.75" />
+          </button>
+        </template>
+      </FileViewer>
     </Modal>
 
     <!-- Engine-switch dialog: new session vs. continue (carry context) -->

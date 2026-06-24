@@ -70,45 +70,24 @@ fn review_state_label(state: Option<octocrab::models::pulls::ReviewState>) -> &'
     }
 }
 
-#[tauri::command]
-pub async fn fetch_issue(
-    db: State<'_, Db>,
-    project_id: String,
-    repo_id: String,
+/// Fetch an issue + its human comments from GitHub and render the task markdown.
+/// Shared by `fetch_issue` (new run) and `refetch_run` (overwrite in place).
+async fn build_issue_markdown(
+    client: &octocrab::Octocrab,
+    owner: &str,
+    repo: &str,
     issue_number: u64,
-) -> Result<RunRecord, String> {
-    use sqlx::Row;
-
-    let project_row = sqlx::query("SELECT path FROM projects WHERE id = ?")
-        .bind(&project_id)
-        .fetch_one(db.inner())
-        .await
-        .map_err(|e| e.to_string())?;
-    let project_path: String = project_row.get("path");
-
-    let repo_row = sqlx::query("SELECT github_owner, github_repo FROM repos WHERE id = ?")
-        .bind(&repo_id)
-        .fetch_one(db.inner())
-        .await
-        .map_err(|e| e.to_string())?;
-    let owner: Option<String> = repo_row.get("github_owner");
-    let repo: Option<String> = repo_row.get("github_repo");
-
-    let owner = owner.ok_or("Repo has no GitHub owner configured")?;
-    let repo = repo.ok_or("Repo has no GitHub repo configured")?;
-
-    let client = github::client_for_project(db.inner(), &project_id).await.map_err(|e| e.to_string())?;
-
+) -> Result<String, String> {
     // Fetch issue
     let issue = client
-        .issues(&owner, &repo)
+        .issues(owner, repo)
         .get(issue_number)
         .await
         .map_err(|e| e.to_string())?;
 
     // Fetch comments
     let comments = client
-        .issues(&owner, &repo)
+        .issues(owner, repo)
         .list_comments(issue_number)
         .per_page(100)
         .send()
@@ -138,6 +117,40 @@ pub async fn fetch_issue(
             comment.body.as_deref().unwrap_or(""),
         ));
     }
+
+    Ok(md)
+}
+
+#[tauri::command]
+pub async fn fetch_issue(
+    db: State<'_, Db>,
+    project_id: String,
+    repo_id: String,
+    issue_number: u64,
+) -> Result<RunRecord, String> {
+    use sqlx::Row;
+
+    let project_row = sqlx::query("SELECT path FROM projects WHERE id = ?")
+        .bind(&project_id)
+        .fetch_one(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+    let project_path: String = project_row.get("path");
+
+    let repo_row = sqlx::query("SELECT github_owner, github_repo FROM repos WHERE id = ?")
+        .bind(&repo_id)
+        .fetch_one(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+    let owner: Option<String> = repo_row.get("github_owner");
+    let repo: Option<String> = repo_row.get("github_repo");
+
+    let owner = owner.ok_or("Repo has no GitHub owner configured")?;
+    let repo = repo.ok_or("Repo has no GitHub repo configured")?;
+
+    let client = github::client_for_project(db.inner(), &project_id).await.map_err(|e| e.to_string())?;
+
+    let md = build_issue_markdown(&client, &owner, &repo, issue_number).await?;
 
     // Write file: .devdy/tasks/issue-<n>/issue.md
     let task_dir = Path::new(&project_path)
@@ -216,39 +229,19 @@ async fn detect_linked_issue(
         .min()
 }
 
-#[tauri::command]
-pub async fn fetch_pr(
-    db: State<'_, Db>,
-    project_id: String,
-    repo_id: String,
+/// Fetch a PR (metadata, diffs, comments, reviews, inline comments) from GitHub
+/// and render the task markdown. Returns the markdown plus the resolved linked
+/// issue number. Shared by `fetch_pr` (new run) and `refetch_run` (overwrite).
+async fn build_pr_markdown(
+    client: &octocrab::Octocrab,
+    owner: &str,
+    repo: &str,
     pr_number: u64,
     linked_issue: Option<u64>,
-) -> Result<RunRecord, String> {
-    use sqlx::Row;
-
-    let project_row = sqlx::query("SELECT path FROM projects WHERE id = ?")
-        .bind(&project_id)
-        .fetch_one(db.inner())
-        .await
-        .map_err(|e| e.to_string())?;
-    let project_path: String = project_row.get("path");
-
-    let repo_row = sqlx::query("SELECT github_owner, github_repo FROM repos WHERE id = ?")
-        .bind(&repo_id)
-        .fetch_one(db.inner())
-        .await
-        .map_err(|e| e.to_string())?;
-    let owner: Option<String> = repo_row.get("github_owner");
-    let repo: Option<String> = repo_row.get("github_repo");
-
-    let owner = owner.ok_or("Repo has no GitHub owner configured")?;
-    let repo = repo.ok_or("Repo has no GitHub repo configured")?;
-
-    let client = github::client_for_project(db.inner(), &project_id).await.map_err(|e| e.to_string())?;
-
+) -> Result<(String, u64), String> {
     // Fetch PR
     let pr = client
-        .pulls(&owner, &repo)
+        .pulls(owner, repo)
         .get(pr_number)
         .await
         .map_err(|e| e.to_string())?;
@@ -256,7 +249,7 @@ pub async fn fetch_pr(
     // Resolve linked issue: explicit param > GitHub "Development" linkage (GraphQL)
     let linked_issue_number = match linked_issue {
         Some(n) => n,
-        None => match detect_linked_issue(&client, &owner, &repo, pr_number).await {
+        None => match detect_linked_issue(client, owner, repo, pr_number).await {
             Some(n) => n,
             None => return Err("NO_LINKED_ISSUE".to_string()),
         },
@@ -278,7 +271,7 @@ pub async fn fetch_pr(
 
     // Fetch files changed
     match client
-        .pulls(&owner, &repo)
+        .pulls(owner, repo)
         .list_files(pr_number)
         .await
     {
@@ -309,7 +302,7 @@ pub async fn fetch_pr(
 
     // Fetch issue (general / conversation) comments — paginated.
     match client
-        .issues(&owner, &repo)
+        .issues(owner, repo)
         .list_comments(pr_number)
         .per_page(100)
         .send()
@@ -341,7 +334,7 @@ pub async fn fetch_pr(
 
     // Fetch PR reviews (the "pullrequestreview-*" entries: summary body +
     // APPROVE / REQUEST_CHANGES state) — paginated.
-    if let Ok(first_page) = client.pulls(&owner, &repo).list_reviews(pr_number).per_page(100).send().await {
+    if let Ok(first_page) = client.pulls(owner, repo).list_reviews(pr_number).per_page(100).send().await {
         let reviews = client.all_pages(first_page).await.unwrap_or_default();
         let mut rendered = String::new();
         for review in &reviews {
@@ -385,7 +378,7 @@ pub async fn fetch_pr(
 
     // Fetch inline review comments (comments anchored to specific lines of the
     // diff) — paginated.
-    if let Ok(first_page) = client.pulls(&owner, &repo).list_comments(Some(pr_number)).per_page(100).send().await {
+    if let Ok(first_page) = client.pulls(owner, repo).list_comments(Some(pr_number)).per_page(100).send().await {
         let comments = client.all_pages(first_page).await.unwrap_or_default();
         let mut rendered = String::new();
         for comment in &comments {
@@ -412,6 +405,41 @@ pub async fn fetch_pr(
             md.push_str(&rendered);
         }
     }
+
+    Ok((md, linked_issue_number))
+}
+
+#[tauri::command]
+pub async fn fetch_pr(
+    db: State<'_, Db>,
+    project_id: String,
+    repo_id: String,
+    pr_number: u64,
+    linked_issue: Option<u64>,
+) -> Result<RunRecord, String> {
+    use sqlx::Row;
+
+    let project_row = sqlx::query("SELECT path FROM projects WHERE id = ?")
+        .bind(&project_id)
+        .fetch_one(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+    let project_path: String = project_row.get("path");
+
+    let repo_row = sqlx::query("SELECT github_owner, github_repo FROM repos WHERE id = ?")
+        .bind(&repo_id)
+        .fetch_one(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+    let owner: Option<String> = repo_row.get("github_owner");
+    let repo: Option<String> = repo_row.get("github_repo");
+
+    let owner = owner.ok_or("Repo has no GitHub owner configured")?;
+    let repo = repo.ok_or("Repo has no GitHub repo configured")?;
+
+    let client = github::client_for_project(db.inner(), &project_id).await.map_err(|e| e.to_string())?;
+
+    let (md, linked_issue_number) = build_pr_markdown(&client, &owner, &repo, pr_number, linked_issue).await?;
 
     // Write file: .devdy/tasks/issue-<linked>/pr-<pr_number>.md
     let task_dir = Path::new(&project_path)
@@ -463,6 +491,86 @@ pub async fn fetch_pr(
         created_at: now,
         title: None,
     })
+}
+
+/// Re-fetch fresh PR/issue content from GitHub for an EXISTING run and overwrite
+/// its input markdown file in place. The run record, its AI output, and session
+/// are left untouched — so the user keeps the existing result and can continue
+/// working with the refreshed context. Returns the (unchanged) run record.
+#[tauri::command]
+pub async fn refetch_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord, String> {
+    use sqlx::Row;
+
+    let row = sqlx::query(
+        "SELECT id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, session_id, started_at, finished_at, created_at, title FROM runs WHERE id = ?",
+    )
+    .bind(&run_id)
+    .fetch_one(db.inner())
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let project_id: String = row.get("project_id");
+    let repo_id: Option<String> = row.get("repo_id");
+    let run_type: String = row.get("type");
+    let ref_number: Option<i64> = row.get("ref_number");
+    let input_path: Option<String> = row.get("input_path");
+
+    let repo_id_val = repo_id.clone().ok_or("Run has no repository configured")?;
+    let ref_num = ref_number.ok_or("Run has no issue/PR number")? as u64;
+    let input_path_val = input_path.clone().ok_or("Run has no input file to refresh")?;
+
+    let repo_row = sqlx::query("SELECT github_owner, github_repo FROM repos WHERE id = ?")
+        .bind(&repo_id_val)
+        .fetch_one(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+    let owner: Option<String> = repo_row.get("github_owner");
+    let repo: Option<String> = repo_row.get("github_repo");
+    let owner = owner.ok_or("Repo has no GitHub owner configured")?;
+    let repo = repo.ok_or("Repo has no GitHub repo configured")?;
+
+    let client = github::client_for_project(db.inner(), &project_id).await.map_err(|e| e.to_string())?;
+
+    let md = match run_type.as_str() {
+        "analyze_issue" => build_issue_markdown(&client, &owner, &repo, ref_num).await?,
+        "review_pr" => {
+            // Keep the same linked issue as the original fetch by reading it back
+            // from the existing markdown's frontmatter, so the refresh stays
+            // consistent (and never hits NO_LINKED_ISSUE).
+            let existing = fs::read_to_string(&input_path_val).unwrap_or_default();
+            let linked = parse_frontmatter_u64(&existing, "linked_issue");
+            build_pr_markdown(&client, &owner, &repo, ref_num, linked).await?.0
+        }
+        other => return Err(format!("Cannot re-fetch a run of type '{}'", other)),
+    };
+
+    fs::write(&input_path_val, &md).map_err(|e| e.to_string())?;
+
+    Ok(RunRecord {
+        id: row.get("id"),
+        project_id,
+        repo_id,
+        run_type,
+        ref_number,
+        status: row.get("status"),
+        engine: row.get("engine"),
+        input_path,
+        output_path: row.get("output_path"),
+        session_id: row.get("session_id"),
+        started_at: row.get("started_at"),
+        finished_at: row.get("finished_at"),
+        created_at: row.get("created_at"),
+        title: row.get("title"),
+    })
+}
+
+/// Parse a numeric `key: value` field from a leading YAML-ish frontmatter block.
+fn parse_frontmatter_u64(content: &str, key: &str) -> Option<u64> {
+    let prefix = format!("{}:", key);
+    content
+        .lines()
+        .find_map(|line| line.trim().strip_prefix(&prefix))
+        .and_then(|v| v.trim().parse::<u64>().ok())
 }
 
 #[tauri::command]

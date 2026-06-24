@@ -15,6 +15,7 @@
 
 import type { Directive } from 'vue'
 import type MarkdownIt from 'markdown-it'
+import { enableMermaidZoom } from './mermaidZoom'
 
 /** Register a custom fence renderer so ```mermaid blocks become diagram placeholders. */
 export function applyMermaidFence(md: MarkdownIt): void {
@@ -100,6 +101,7 @@ export async function renderMermaidIn(el: HTMLElement): Promise<void> {
     if (cached) {
       target.innerHTML = cached
       block.dataset.rendered = cacheKey
+      enableMermaidZoom(block)
       continue
     }
 
@@ -118,6 +120,7 @@ export async function renderMermaidIn(el: HTMLElement): Promise<void> {
       svgCache.set(cacheKey, svg)
       target.innerHTML = svg
       block.dataset.rendered = cacheKey
+      enableMermaidZoom(block)
     } catch {
       // Unexpected render failure: leave the raw-source fallback visible.
     }

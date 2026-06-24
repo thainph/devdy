@@ -23,7 +23,7 @@ use commands::projects::{
     list_repos, add_repo, update_repo, remove_repo,
     open_in_vscode, open_in_terminal,
 };
-use commands::github::{fetch_issue, fetch_pr, list_runs};
+use commands::github::{fetch_issue, fetch_pr, refetch_run, list_runs};
 use commands::github_accounts::{
     list_github_accounts, create_github_account, update_github_account,
     delete_github_account, validate_github_account, set_project_github_account,
@@ -113,6 +113,7 @@ pub fn run() {
             open_in_terminal,
             fetch_issue,
             fetch_pr,
+            refetch_run,
             list_runs,
             start_run,
             cancel_run,

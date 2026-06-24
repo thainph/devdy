@@ -136,6 +136,12 @@ export const useRunsStore = defineStore('runs', () => {
     return invoke<RunRecord>('rerun_run', { runId: run_id })
   }
 
+  // Re-fetch fresh PR/issue content from GitHub and overwrite the run's input
+  // markdown in place. The AI output/session are preserved. Returns the run.
+  async function refetchRun(run_id: string): Promise<RunRecord> {
+    return invoke<RunRecord>('refetch_run', { runId: run_id })
+  }
+
   async function cancelRun(run_id: string): Promise<void> {
     await invoke('cancel_run', { runId: run_id })
   }
@@ -216,7 +222,7 @@ export const useRunsStore = defineStore('runs', () => {
   return {
     runs, loading,
     fetchRuns, fetchIssue, fetchPr,
-    startRun, rerunRun, cancelRun, resumeRun,
+    startRun, rerunRun, refetchRun, cancelRun, resumeRun,
     getRunLog, readRunInput,
     respondPermission, sendUserMessage, endRunInput,
     listProjectFiles, readProjectFile, createHandoffRun, createSessionRun,

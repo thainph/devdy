@@ -6,6 +6,11 @@ import { useAppSettingsStore } from '@/stores/appSettings'
 import { Puzzle, ScrollText, FolderOpen, BarChart3, Settings, Info } from 'lucide-vue-next'
 import PermissionNotifier from '@/components/PermissionNotifier.vue'
 import BudgetBadge from '@/components/BudgetBadge.vue'
+import FileViewerWindow from '@/views/FileViewerWindow.vue'
+
+// Pop-out file viewer windows load the same SPA with `?fileWindow=1`; render a
+// bare, chrome-less viewer (no sidebar / nav / background work) in that case.
+const isFileWindow = new URLSearchParams(window.location.search).get('fileWindow') === '1'
 
 const route = useRoute()
 const projectsStore = useProjectsStore()
@@ -41,6 +46,16 @@ function applyTheme(theme: string) {
 }
 
 onMounted(async () => {
+  if (isFileWindow) {
+    // Pop-out window: only theme matters; skip the main app's data fetches.
+    try {
+      await appSettings.refresh()
+      applyTheme(appSettings.settings?.theme ?? 'system')
+    } catch {
+      applyTheme('system')
+    }
+    return
+  }
   // Load projects up front so app-wide UI (e.g. permission notifications) can
   // resolve project names without waiting for the Projects view to open.
   projectsStore.fetchProjects()
@@ -56,7 +71,10 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="flex h-screen bg-background text-foreground overflow-hidden">
+  <!-- Pop-out file viewer window: bare layout, no app chrome. -->
+  <FileViewerWindow v-if="isFileWindow" />
+
+  <div v-else class="flex h-screen bg-background text-foreground overflow-hidden">
     <!-- Sidebar -->
     <aside class="w-[220px] shrink-0 flex flex-col bg-sidebar border-r border-border/50">
       <!-- Brand -->

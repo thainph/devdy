@@ -299,9 +299,58 @@
   justify-content: center;
   width: 100%;
 }
-.mermaid-diagram > svg {
+/* Once interactive (zoom/pan enabled), the render wrapper becomes the clipping
+   viewport: the inner <svg> is transformed (translate + scale) within it. */
+.mermaid-diagram .mermaid-render:has(> svg) {
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+}
+.mermaid-diagram .mermaid-render.is-panning {
+  cursor: grabbing;
+}
+.mermaid-diagram > svg,
+.mermaid-diagram .mermaid-render > svg {
   max-width: 100%;
   height: auto;
+  will-change: transform;
+}
+
+/* Zoom/pan toolbar injected into rendered diagrams (see src/lib/mermaidZoom.ts).
+   Global (not under .markdown-output) so it also works in the rule/skill editor
+   previews. Hidden until the diagram is hovered. */
+.mermaid-zoom-controls {
+  position: absolute;
+  top: 0.4rem;
+  left: 0.4rem;
+  z-index: 2;
+  display: flex;
+  gap: 0.25rem;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.mermaid-diagram:hover .mermaid-zoom-controls,
+.mermaid-zoom-controls:focus-within {
+  opacity: 1;
+}
+.mermaid-zoom-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 1.6rem;
+  width: 1.6rem;
+  padding: 0;
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.35rem;
+  background: hsl(var(--background) / 0.85);
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+  backdrop-filter: blur(2px);
+}
+.mermaid-zoom-btn:hover {
+  color: hsl(var(--foreground));
+  background: hsl(var(--muted));
 }
 .mermaid-diagram .mermaid-src {
   width: 100%;

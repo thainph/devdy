@@ -14,10 +14,14 @@ const props = withDefaults(defineProps<{
   closable?: boolean
   /** Caps panel height and makes the body scroll. */
   scrollBody?: boolean
+  /** Suppress the built-in header (the body provides its own). Esc / overlay
+   *  dismissal still work when `closable`. */
+  hideHeader?: boolean
 }>(), {
   size: 'md',
   closable: true,
   scrollBody: false,
+  hideHeader: false,
 })
 
 const emit = defineEmits<{ close: []; 'update:open': [value: boolean] }>()
@@ -62,7 +66,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
     <div :class="panelClass">
       <!-- Header -->
       <div
-        v-if="title || slots.header || closable"
+        v-if="!hideHeader && (title || slots.header || closable)"
         class="flex items-center gap-2 border-b border-border px-4 py-3 shrink-0"
       >
         <slot name="header">
