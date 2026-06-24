@@ -33,7 +33,9 @@ const panelClass = computed(() =>
     'w-full rounded-lg border border-border bg-card shadow-xl',
     SIZES[props.size],
     props.scrollBody &&
-      (props.size === 'full' ? 'h-[94vh] flex flex-col' : 'max-h-[80vh] flex flex-col'),
+      (props.size === 'full'
+        ? 'h-[94vh] flex flex-col overflow-hidden'
+        : 'max-h-[80vh] flex flex-col overflow-hidden'),
   ),
 )
 

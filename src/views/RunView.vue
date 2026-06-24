@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useProjectsStore, type Repo } from '@/stores/projects'
 import { useRunsStore, type RunRecord, type ProjectEntry } from '@/stores/runs'
 import { useLiveRunsStore } from '@/stores/liveRuns'
+import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { invoke } from '@/lib/tauri'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -17,6 +18,7 @@ import {
 } from 'lucide-vue-next'
 import AppSelect from '@/components/AppSelect.vue'
 import StreamLog from '@/components/StreamLog.vue'
+import MentionedFiles from '@/components/MentionedFiles.vue'
 import ContextMeter from '@/components/ContextMeter.vue'
 import PermissionPrompt from '@/components/PermissionPrompt.vue'
 import FileViewer from '@/components/FileViewer.vue'
@@ -38,6 +40,7 @@ const router = useRouter()
 const projectStore = useProjectsStore()
 const runsStore = useRunsStore()
 const live = useLiveRunsStore()
+const tabsStore = useWorkspaceTabsStore()
 
 const projectId = computed(() => route.params.projectId as string)
 const project = computed(() => projectStore.projects.find(p => p.id === projectId.value))
@@ -172,6 +175,9 @@ let _md: MarkdownIt | null = null
 // This also surfaces a partial log recovered from disk for a run left as
 // 'running' by a previous app session that died mid-run.
 const isViewingHistory = computed(() => !!viewingLogRunId.value)
+// Entries currently shown in the AI Result column — drives the "files mentioned"
+// quick-access list so it matches whatever the user is looking at.
+const displayedEntries = computed(() => isViewingHistory.value ? historyEntries.value : liveEntries.value)
 const hasLiveOutput = computed(
   () => liveOutputLines.value.length > 0 || liveEntries.value.length > 0 || currentStatus.value === 'running'
 )
@@ -283,12 +289,39 @@ function onOutputScroll() {
   if (outputEl.value) stickToBottom.value = isNearBottom(outputEl.value)
 }
 
+// While the user is actively interacting with the output — holding the mouse
+// down to drag-select, or with text already selected inside it — we must NOT
+// yank the view to the bottom when new streamed content arrives. Otherwise a
+// click/selection near the bottom gets interrupted the moment a new chunk lands.
+const pointerDownInOutput = ref(false)
+function onOutputPointerDown() {
+  pointerDownInOutput.value = true
+}
+function onWindowPointerUp() {
+  pointerDownInOutput.value = false
+}
+function hasOutputSelection() {
+  const sel = window.getSelection()
+  if (!sel || sel.isCollapsed || !outputEl.value) return false
+  return (
+    (sel.anchorNode != null && outputEl.value.contains(sel.anchorNode)) ||
+    (sel.focusNode != null && outputEl.value.contains(sel.focusNode))
+  )
+}
+
 // Keep the live output pinned to the bottom as new entries/lines arrive for
-// the focused, running run — but only while the user is parked at the bottom.
+// the focused, running run — but only while the user is parked at the bottom
+// and not in the middle of selecting/clicking inside the output.
 watch(
   () => [liveEntries.value.length, liveOutputLines.value.length, currentStatus.value] as const,
   () => {
-    if (currentStatus.value === 'running' && !isViewingHistory.value && stickToBottom.value) {
+    if (
+      currentStatus.value === 'running' &&
+      !isViewingHistory.value &&
+      stickToBottom.value &&
+      !pointerDownInOutput.value &&
+      !hasOutputSelection()
+    ) {
       scrollOutputToBottom()
     }
   }
@@ -336,6 +369,7 @@ onMounted(async () => {
     await loadRunLog(activeRunId.value)
   }
   window.addEventListener('focus', refreshViewedRunOnFocus)
+  window.addEventListener('pointerup', onWindowPointerUp)
 
   // Mirror in any sessions created/continued outside Devdy while it was closed
   // (both engines), then surface them in the sidebar.
@@ -382,6 +416,7 @@ onUnmounted(() => {
   // while the user is on another screen.
   if (isResizing.value) stopResize()
   window.removeEventListener('focus', refreshViewedRunOnFocus)
+  window.removeEventListener('pointerup', onWindowPointerUp)
   sessionsChangedUnlisten?.()
   sessionsChangedUnlisten = null
 })
@@ -885,18 +920,43 @@ function onOpenUrl(url: string) {
   openUrl(url).catch(() => { /* opener unavailable */ })
 }
 
+// Score an entry against the query. Higher = more relevant; -1 = no match.
+// Order of preference: exact basename > basename prefix > basename substring >
+// path substring > fuzzy subsequence over the path. This is what lets the file
+// you're actually typing surface ahead of alphabetically-earlier paths that
+// merely contain the same characters (the old code just took the first 50 in
+// alphabetical order, so deep/late matches never showed up).
+function scoreMention(path: string, q: string): number {
+  const lp = path.toLowerCase()
+  const slash = lp.lastIndexOf('/')
+  const base = slash >= 0 ? lp.slice(slash + 1) : lp
+  if (base === q) return 1000
+  if (base.startsWith(q)) return 900 - base.length
+  const bi = base.indexOf(q)
+  if (bi >= 0) return 700 - bi - base.length * 0.01
+  const pi = lp.indexOf(q)
+  if (pi >= 0) return 500 - pi - lp.length * 0.01
+  // Fuzzy: every query char appears in order somewhere in the path.
+  let qi = 0
+  for (let i = 0; i < lp.length && qi < q.length; i++) {
+    if (lp[i] === q[qi]) qi++
+  }
+  if (qi === q.length) return 200 - lp.length * 0.01
+  return -1
+}
+
 const mentionItems = computed<ProjectEntry[]>(() => {
   const q = mentionQuery.value.toLowerCase()
   const src = projectFiles.value
   if (!q) return src.slice(0, MENTION_LIMIT)
-  const out: ProjectEntry[] = []
+  const scored: Array<{ e: ProjectEntry; s: number }> = []
   for (const e of src) {
-    const p = e.path.toLowerCase()
-    // Prefer basename matches, then anywhere in the path.
-    if (p.includes(q)) out.push(e)
-    if (out.length >= MENTION_LIMIT) break
+    const s = scoreMention(e.path, q)
+    if (s >= 0) scored.push({ e, s })
   }
-  return out
+  // Highest score first; ties keep the (alphabetical) source order.
+  scored.sort((a, b) => b.s - a.s)
+  return scored.slice(0, MENTION_LIMIT).map((x) => x.e)
 })
 
 // Detect an active `@token` immediately before the caret (no whitespace inside).
@@ -1142,7 +1202,9 @@ async function handleDeleteRun(runId: string, e?: MouseEvent) {
     } else {
       live.discard(runId)
     }
-    // Navigate away from a deep-linked deleted run so the URL is consistent.
+    // Forget the deleted run so its project tab won't resume onto it, and
+    // navigate away from a deep-linked deleted run so the URL stays consistent.
+    tabsStore.forgetRun(runId)
     if (activeRunId.value === runId) {
       router.replace(`/projects/${projectId.value}`)
     }
@@ -1647,6 +1709,7 @@ function handleRefInput(val: string) {
                   {{ currentRun ? runLabel(currentRun) : 'No run selected' }}
                 </span>
                 <div class="ml-auto flex items-center gap-2 shrink-0">
+                  <MentionedFiles :entries="displayedEntries" @open-file="openFileViewer" />
                   <span v-if="currentStatus === 'running'" class="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
                 </div>
               </div>
@@ -1684,6 +1747,7 @@ function handleRefInput(val: string) {
               ref="outputEl"
               class="flex-1 min-h-0 overflow-auto p-4"
               @scroll="onOutputScroll"
+              @pointerdown="onOutputPointerDown"
             >
               <StreamLog
                 v-if="liveHasStream"

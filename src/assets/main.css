@@ -313,8 +313,13 @@
 .mermaid-diagram .mermaid-render > svg {
   max-width: 100%;
   height: auto;
-  will-change: transform;
 }
+/* Never promote the <svg> to a cached raster layer (no `will-change: transform`).
+   A cached layer is rasterized once at 1x and then the bitmap is scaled, so the
+   diagram looks blurry both when zoomed in AND while panning (the scaled bitmap
+   just gets translated). Without it the browser keeps the SVG as vector and
+   re-rasterizes at the current scale, staying crisp. Translate-only panning is
+   cheap enough to stay smooth without the GPU-layer hint. */
 
 /* Zoom/pan toolbar injected into rendered diagrams (see src/lib/mermaidZoom.ts).
    Global (not under .markdown-output) so it also works in the rule/skill editor

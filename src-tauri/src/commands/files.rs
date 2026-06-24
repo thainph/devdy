@@ -10,7 +10,10 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 /// Hard ceiling so huge repos can't flood the IPC channel or the picker.
-const MAX_ENTRIES: usize = 8000;
+/// Paths are tiny (just relative strings), so this can be generous — the old
+/// 8k cap silently dropped files in larger monorepos, making the `@`-mention
+/// picker look like it "couldn't find" perfectly real files.
+const MAX_ENTRIES: usize = 50000;
 
 /// Cap a single file read so a huge/binary file can't flood the IPC channel.
 const MAX_FILE_BYTES: usize = 2 * 1024 * 1024; // 2 MiB

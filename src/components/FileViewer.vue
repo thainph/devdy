@@ -269,7 +269,7 @@ defineExpose({ onRevealInFolder, onOpenInApp })
 <template>
   <div class="flex flex-col h-full min-h-0">
     <!-- Toolbar -->
-    <div class="flex items-center gap-2 border-b border-border px-4 py-3 shrink-0">
+    <div class="sticky top-0 z-10 flex items-center gap-2 border-b border-border bg-card px-4 py-3 shrink-0">
       <FileCode2 class="h-4 w-4 text-primary shrink-0" :stroke-width="1.75" />
       <span class="text-xs font-mono text-foreground/90 truncate flex-1" :title="curPath">{{ curPath }}</span>
       <span v-if="truncated" class="text-[10px] text-amber-500 shrink-0">truncated</span>

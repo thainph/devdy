@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 import { useProjectsStore } from '@/stores/projects'
 import { useAppSettingsStore } from '@/stores/appSettings'
+import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { Puzzle, ScrollText, FolderOpen, BarChart3, Settings, Info } from 'lucide-vue-next'
 import PermissionNotifier from '@/components/PermissionNotifier.vue'
 import BudgetBadge from '@/components/BudgetBadge.vue'
+import WorkspaceTabs from '@/components/WorkspaceTabs.vue'
+import ActiveRunsDock from '@/components/ActiveRunsDock.vue'
 import FileViewerWindow from '@/views/FileViewerWindow.vue'
 
 // Pop-out file viewer windows load the same SPA with `?fileWindow=1`; render a
@@ -15,6 +18,31 @@ const isFileWindow = new URLSearchParams(window.location.search).get('fileWindow
 const route = useRoute()
 const projectsStore = useProjectsStore()
 const appSettings = useAppSettingsStore()
+const tabsStore = useWorkspaceTabsStore()
+
+const isRunRoute = computed(
+  () => route.name === 'project-run' || route.name === 'project-run-detail',
+)
+
+// Force a clean RunView remount only when the *project* changes (heavy stream
+// state survives in the liveRuns store); switching runs within a project is
+// handled in-place by RunView's own activeRunId watcher. Non-run routes keep a
+// stable per-view key so their existing reuse behaviour is unchanged.
+const routeKey = computed(() =>
+  isRunRoute.value ? `run-${route.params.projectId}` : String(route.name ?? route.path),
+)
+
+// Pin every project the user opens as a workspace tab; remember the run being
+// viewed so re-selecting the tab returns to it.
+watch(
+  () => [route.name, route.params.projectId, route.params.runId] as const,
+  ([name, projectId, runId]) => {
+    if ((name === 'project-run' || name === 'project-run-detail') && typeof projectId === 'string') {
+      tabsStore.open(projectId, typeof runId === 'string' ? runId : null)
+    }
+  },
+  { immediate: true },
+)
 
 const navItems = [
   { path: '/projects', label: 'Projects', icon: FolderOpen },
@@ -112,6 +140,9 @@ onMounted(async () => {
         </RouterLink>
       </nav>
 
+      <!-- App-wide monitor of concurrent runs + permission center -->
+      <ActiveRunsDock />
+
       <!-- Global token-budget warning (shows only when near/over budget) -->
       <BudgetBadge />
 
@@ -122,8 +153,12 @@ onMounted(async () => {
     </aside>
 
     <!-- Main content -->
-    <main class="flex-1 min-w-0 overflow-auto">
-      <RouterView />
+    <main class="flex-1 min-w-0 flex flex-col overflow-hidden">
+      <!-- Open-run tabs (only in the run workspace) -->
+      <WorkspaceTabs v-if="isRunRoute" />
+      <div class="flex-1 min-w-0 overflow-auto">
+        <RouterView :key="routeKey" />
+      </div>
     </main>
 
     <!-- Headless: fires native OS notifications for runs awaiting input while the
