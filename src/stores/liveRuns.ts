@@ -264,7 +264,15 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
         s.permissionQueue = []
         const r = runsStore.runs.find((x) => x.id === runId)
         if (r) r.status = event.payload.status as typeof r.status
-        runsStore.fetchRuns(projectId).catch(() => {})
+        // Only refresh the shared run list when it actually belongs to this
+        // run's project. With multi-project tabs the foreground RunView may be
+        // showing a DIFFERENT project; refetching here would clobber its list
+        // (`currentRun` would vanish, popping panels open). The owning project's
+        // list refreshes on its own when its tab is next viewed (RunView mount),
+        // and the in-place `r.status` above keeps it correct if it is loaded.
+        if (runsStore.loadedProjectId === projectId) {
+          runsStore.fetchRuns(projectId).catch(() => {})
+        }
         stopListening(runId)
       }),
     )

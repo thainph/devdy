@@ -7,7 +7,7 @@ import { useRulesStore } from '@/stores/rules'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import {
   Play, AlertTriangle, Puzzle, ScrollText, Github,
-  GitMerge, CheckCircle2, XCircle, Trash2, Plus, GitBranch, Code2, Settings, SquareTerminal
+  GitMerge, CheckCircle2, XCircle, Trash2, Plus, GitBranch, Code2, Settings, SquareTerminal, FolderOpen
 } from 'lucide-vue-next'
 import { Button, Input, Card, Badge, AppSelect } from '@/components/ui'
 import { invoke } from '@/lib/tauri'
@@ -324,6 +324,15 @@ async function handleOpenInVscode() {
   }
 }
 
+async function handleOpenInFolder() {
+  if (!project.value) return
+  try {
+    await projectStore.openInFolder(project.value.path)
+  } catch (e) {
+    alert(String(e))
+  }
+}
+
 async function handleOpenInTerminal() {
   if (!project.value) return
   try {
@@ -358,6 +367,14 @@ async function handleOpenInTerminal() {
         >
           <Code2 class="h-3.5 w-3.5" :stroke-width="1.75" />
           VS Code
+        </Button>
+        <Button
+          variant="outline"
+          title="Open project folder"
+          @click="handleOpenInFolder"
+        >
+          <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" />
+          Folder
         </Button>
         <Button
           variant="outline"

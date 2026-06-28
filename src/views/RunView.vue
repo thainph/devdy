@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick, type ComponentPublicInstance } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectsStore, type Repo } from '@/stores/projects'
 import { useRunsStore, type RunRecord, type ProjectEntry } from '@/stores/runs'
@@ -11,10 +11,11 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import {
   Play, Square, GitPullRequest, Bug,
   Clock, Cpu, Terminal, FileText, RotateCcw, RefreshCw,
-  Send, MessageSquare, Trash2, Settings, Code2, FolderClosed, Sparkles, ExternalLink,
+  Send, MessageSquare, Trash2, Settings, Code2, FolderClosed, FolderOpen, Sparkles, ExternalLink,
   ChevronDown, Maximize2, Minimize2, AppWindow,
   ImagePlus, X,
-  ShieldQuestion, MessageCircleQuestion
+  ShieldQuestion, MessageCircleQuestion,
+  Pin, PinOff, Pencil, Check
 } from 'lucide-vue-next'
 import AppSelect from '@/components/AppSelect.vue'
 import StreamLog from '@/components/StreamLog.vue'
@@ -61,8 +62,19 @@ const linkedIssueInput = ref('')
 
 const engineOverride = ref('')
 const modelOverride = ref('')
-// Effective engine for the run (selector value, else the project default).
-const effectiveEngine = computed(() => engineOverride.value || project.value?.default_engine || 'claude')
+// Engine that produced the currently loaded conversation. The selector can
+// temporarily hold a not-yet-started override, so keep the persisted run engine
+// explicit for labels, resume, and handoff decisions.
+const loadedRunEngine = ref<string>('')
+function resolveEngineChoice(value: string | null | undefined): string {
+  return value || project.value?.default_engine || 'claude'
+}
+function syncLoadedRunEngine(engine: string) {
+  engineOverride.value = engine
+  loadedRunEngine.value = engine
+}
+// Effective engine for the next start/handoff (selector value, else default).
+const effectiveEngine = computed(() => resolveEngineChoice(engineOverride.value))
 // Model choices depend on the engine. Empty value = let the engine/setting decide.
 const MODEL_OPTIONS: Record<string, Array<{ value: string; label: string }>> = {
   claude: [
@@ -120,6 +132,13 @@ const inputContentLoading = ref(false)
 
 const currentRun = computed(() => runsStore.runs.find(r => r.id === currentRunId.value))
 const currentIsSession = computed(() => currentRun.value?.run_type === 'session')
+
+watch(
+  () => [currentRun.value?.id, currentRun.value?.engine] as const,
+  ([id, engine]) => {
+    if (id && id === currentRunId.value && engine) syncLoadedRunEngine(engine)
+  },
+)
 
 // Live streaming state for the focused run is owned by the liveRuns store so it
 // survives navigation and lets multiple runs stream at once.
@@ -355,6 +374,7 @@ watch(activeRunId, (id) => {
 
 onMounted(async () => {
   loadMarkdown()
+  nextTick(autoResizeComposer)
   if (projectStore.projects.length === 0) {
     await projectStore.fetchProjects()
   }
@@ -486,9 +506,12 @@ async function handleSubmitLinkedIssue() {
   await handleFetch(n)
 }
 
-function setLocalRunStatus(runId: string, status: RunRecord['status']) {
+function setLocalRunStatus(runId: string, status: RunRecord['status'], engine?: string) {
   const run = runsStore.runs.find(r => r.id === runId)
-  if (run) run.status = status
+  if (run) {
+    run.status = status
+    if (engine) run.engine = engine
+  }
 }
 
 // A start/resume/follow-up was refused for exceeding the global budget.
@@ -523,16 +546,18 @@ async function withBudgetOverride(
 async function handleStartRun(overrideBudget = false) {
   if (!currentRunId.value) return
   const id = currentRunId.value
+  const engine = effectiveEngine.value
 
   clearHistoryView()
   live.reset(id, projectId.value)
-  setLocalRunStatus(id, 'running')
+  syncLoadedRunEngine(engine)
+  setLocalRunStatus(id, 'running', engine)
   await live.startListening(id, projectId.value)
 
   try {
     await runsStore.startRun(
       id,
-      engineOverride.value || undefined,
+      engine,
       permissionMode.value || undefined,
       undefined,
       modelOverride.value || undefined,
@@ -553,11 +578,11 @@ async function handleStartRun(overrideBudget = false) {
 // Create a standalone work session (not tied to a GitHub issue/PR) and focus
 // the composer so the user can type the first instruction right away.
 const creatingSession = ref(false)
-async function handleNewSession() {
+async function createSessionWithEngine(engine?: string) {
   if (creatingSession.value) return
   creatingSession.value = true
   try {
-    const run = await runsStore.createSessionRun(projectId.value, engineOverride.value || undefined)
+    const run = await runsStore.createSessionRun(projectId.value, engine)
     await runsStore.fetchRuns(projectId.value)
     await loadRunLog(run.id)
     nextTick(() => composerEl.value?.focus())
@@ -568,8 +593,9 @@ async function handleNewSession() {
   }
 }
 
-// Engine that produced the currently loaded conversation (for handoff detection).
-const loadedRunEngine = ref<string>('')
+async function handleNewSession() {
+  await createSessionWithEngine(engineOverride.value || undefined)
+}
 
 // Start a brand-new turn on `runId` with `text` as the prompt. Shared by the
 // "fetched" first-run path and by engine handoffs.
@@ -580,16 +606,17 @@ async function launchFreshRun(
   images: ImageAttachment[] = [],
   overrideBudget = false,
 ) {
+  const selectedEngine = engine || effectiveEngine.value
   currentRunId.value = runId
   clearHistoryView()
   live.reset(runId, projectId.value)
   live.pushUser(runId, projectId.value, text, images)
   stickToBottom.value = true // re-pin: the user just sent a message
-  setLocalRunStatus(runId, 'running')
-  if (engine) loadedRunEngine.value = engine
+  syncLoadedRunEngine(selectedEngine)
+  setLocalRunStatus(runId, 'running', selectedEngine)
   await live.startListening(runId, projectId.value)
   try {
-    await runsStore.startRun(runId, engine || undefined, permissionMode.value || undefined, text, modelOverride.value || undefined, images, overrideBudget)
+    await runsStore.startRun(runId, selectedEngine, permissionMode.value || undefined, text, modelOverride.value || undefined, images, overrideBudget)
   } catch (e) {
     if (!overrideBudget && budgetOverrideConfirmed(e)) {
       await launchFreshRun(runId, engine, text, images, true)
@@ -602,28 +629,33 @@ async function launchFreshRun(
 // ── Cross-engine handoff (Claude ↔ Codex) ────────────────────────────────
 const handoffTarget = ref<string | null>(null)
 const handingOff = ref(false)
+const startingEngineSession = ref(false)
+const engineSwitchBusy = computed(() => handingOff.value || startingEngineSession.value)
 
 // Called when the engine selector changes. Offer to carry context only when a
 // real conversation exists and the user picked a *different* engine than the
 // one that produced it.
 function onEngineChange(next: string) {
   if (next === engineOverride.value) return
-  engineOverride.value = next
+  const nextEngine = resolveEngineChoice(next)
+  const currentEngine = loadedRunEngine.value || currentRun.value?.engine || effectiveEngine.value
   // Works for both Claude (streamEntries) and Codex (raw log) runs.
   const hasConversation =
     !!currentRunId.value &&
     currentStatus.value !== 'fetched' &&
     sourceText.value.trim().length > 0
-  if (next && hasConversation && next !== loadedRunEngine.value) {
-    handoffTarget.value = next
+  if (hasConversation && nextEngine !== currentEngine) {
+    handoffTarget.value = nextEngine
+    return
   }
+  engineOverride.value = next
 }
 
 async function doHandoff(targetEngine: string) {
-  if (!currentRunId.value || handingOff.value) return
+  if (!currentRunId.value || engineSwitchBusy.value) return
   handingOff.value = true
   const sourceId = currentRunId.value
-  const sourceEngine = loadedRunEngine.value || 'claude'
+  const sourceEngine = loadedRunEngine.value || currentRun.value?.engine || 'claude'
   try {
     // Snapshot the transcript before any state reset wipes streamEntries.
     const transcript = sourceText.value
@@ -633,7 +665,7 @@ async function doHandoff(targetEngine: string) {
     }
     const { run, context_path } = await runsStore.createHandoffRun(sourceId, targetEngine, transcript)
     await runsStore.fetchRuns(projectId.value) // surface the new run in the sidebar
-    engineOverride.value = targetEngine
+    syncLoadedRunEngine(targetEngine)
     const seed =
       `Tiếp tục công việc đang dở từ phiên trước (engine: ${sourceEngine}).\n\n` +
       `Toàn bộ ngữ cảnh/hội thoại trước đó được lưu ở file:\n${context_path}\n\n` +
@@ -645,6 +677,17 @@ async function doHandoff(targetEngine: string) {
   } finally {
     handingOff.value = false
     handoffTarget.value = null
+  }
+}
+
+async function startNewEngineSession(targetEngine: string) {
+  if (engineSwitchBusy.value) return
+  startingEngineSession.value = true
+  try {
+    handoffTarget.value = null
+    await createSessionWithEngine(targetEngine)
+  } finally {
+    startingEngineSession.value = false
   }
 }
 
@@ -727,7 +770,7 @@ const chatEligible = computed(() => {
   return ['done', 'cancelled', 'failed'].includes(currentStatus.value)
 })
 
-const engineLabel = computed(() => loadedRunEngine.value || engineOverride.value || 'the agent')
+const engineLabel = computed(() => loadedRunEngine.value || currentRun.value?.engine || effectiveEngine.value || 'the agent')
 
 const chatPlaceholder = computed(() => {
   if (currentStatus.value === 'running') {
@@ -785,6 +828,36 @@ function sendSlashCommand(cmd: string) {
   handlePrimaryAction()
 }
 
+// ── Composer auto-resize / expand ─────────────────────────────────────────
+// The composer grows with its content (great for pasted long text) up to a
+// cap, then scrolls internally. "Expanded" raises that cap to most of the
+// viewport so long text is comfortable to read and edit.
+const composerExpanded = ref(false)
+
+function autoResizeComposer() {
+  const el = composerEl.value
+  if (!el) return
+  const maxPx = composerExpanded.value
+    ? Math.round(window.innerHeight * 0.6)
+    : 180
+  el.style.height = 'auto'
+  const next = Math.min(el.scrollHeight, maxPx)
+  el.style.height = `${next}px`
+  el.style.overflowY = el.scrollHeight > maxPx ? 'auto' : 'hidden'
+}
+
+function toggleComposerExpand() {
+  composerExpanded.value = !composerExpanded.value
+  nextTick(() => {
+    autoResizeComposer()
+    composerEl.value?.focus()
+  })
+}
+
+// Resize on every value change: typing, paste, programmatic edits
+// (slash/mention insert), and clearing after a send.
+watch(followUpInput, () => autoResizeComposer(), { flush: 'post' })
+
 // ── @-mention file/folder autocomplete ───────────────────────────────────
 const composerEl = ref<HTMLTextAreaElement | null>(null)
 const projectFiles = ref<ProjectEntry[]>([])
@@ -819,7 +892,12 @@ const slashItems = computed(() => {
 
 // Open the palette while the whole composer is a bare `/command` token.
 function detectSlash() {
-  const m = /^\/([a-zA-Z0-9_-]*)$/.exec(followUpInput.value)
+  // Read straight from the DOM element rather than the v-model ref: while an IME
+  // (e.g. Vietnamese Telex) is composing, Vue defers updating `followUpInput`
+  // until `compositionend`, so the ref is stale on every `input` event. The
+  // element's own `.value` is always current. Fall back to the ref pre-mount.
+  const text = composerEl.value?.value ?? followUpInput.value
+  const m = /^\/([a-zA-Z0-9_-]*)$/.exec(text)
   if (!m || !slashCommands.value.length) { slashOpen.value = false; return }
   slashQuery.value = m[1]
   slashIndex.value = 0
@@ -964,7 +1042,10 @@ function detectMention() {
   const el = composerEl.value
   if (!el) { mentionOpen.value = false; return }
   const caret = el.selectionStart ?? 0
-  const text = followUpInput.value
+  // Read from the DOM element, not the v-model ref: during IME composition Vue
+  // keeps `followUpInput` stale until `compositionend`, which would make the
+  // query empty and surface the first-50 (alphabetical) files instead.
+  const text = el.value
   let i = caret - 1
   while (i >= 0) {
     const ch = text[i]
@@ -1179,10 +1260,68 @@ async function handleCancel() {
 const deletingRunId = ref<string | null>(null)
 const refetchingRunId = ref<string | null>(null)
 const clearingAll = ref(false)
+const pinningRunId = ref<string | null>(null)
+
+// Inline rename state for the History list.
+const renamingRunId = ref<string | null>(null)
+const renameDraft = ref('')
+const renameInputEl = ref<HTMLInputElement | null>(null)
+// Only one rename overlay is rendered at a time (v-if on the matching run id),
+// so this ref always points at the active input (or null when none is open).
+function setRenameInputRef(el: Element | ComponentPublicInstance | null) {
+  renameInputEl.value = (el as HTMLInputElement | null) ?? null
+}
+
+function startRename(run: RunRecord, e?: MouseEvent) {
+  e?.stopPropagation()
+  renamingRunId.value = run.id
+  renameDraft.value = run.title ?? runLabel(run)
+  nextTick(() => {
+    renameInputEl.value?.focus()
+    renameInputEl.value?.select()
+  })
+}
+
+function cancelRename() {
+  renamingRunId.value = null
+  renameDraft.value = ''
+}
+
+async function commitRename(runId: string) {
+  if (renamingRunId.value !== runId) return
+  const title = renameDraft.value.trim()
+  const run = runsStore.runs.find(r => r.id === runId)
+  // No change (or empty for a run that already has no custom title) → just close.
+  if (run && title === (run.title ?? '')) {
+    cancelRename()
+    return
+  }
+  try {
+    await runsStore.renameRun(runId, title)
+  } catch (err) {
+    alert(String(err))
+  } finally {
+    cancelRename()
+  }
+}
+
+async function handleTogglePin(run: RunRecord, e?: MouseEvent) {
+  e?.stopPropagation()
+  pinningRunId.value = run.id
+  try {
+    await runsStore.setRunPinned(run.id, !run.pinned)
+  } catch (err) {
+    alert(String(err))
+  } finally {
+    pinningRunId.value = null
+  }
+}
 
 function clearActiveRunState() {
   if (currentRunId.value) live.discard(currentRunId.value)
   currentRunId.value = null
+  engineOverride.value = ''
+  loadedRunEngine.value = ''
   clearHistoryView()
   inputContent.value = ''
   inputContentRunId.value = null
@@ -1237,8 +1376,7 @@ async function loadRunLog(runId: string, opts: { preferDisk?: boolean } = {}) {
   // Reflect this run's metadata so the chat composer can decide eligibility.
   const meta = runsStore.runs.find(r => r.id === runId)
   if (meta?.engine) {
-    engineOverride.value = meta.engine
-    loadedRunEngine.value = meta.engine
+    syncLoadedRunEngine(meta.engine)
   }
   // Kick off loading PR/Issue content in parallel so the Content tab is ready.
   // Standalone sessions have no input markdown — skip.
@@ -1319,6 +1457,15 @@ async function handleOpenInVscode() {
   }
 }
 
+async function handleOpenInFolder() {
+  if (!project.value) return
+  try {
+    await projectStore.openInFolder(project.value.path)
+  } catch (e) {
+    alert(String(e))
+  }
+}
+
 async function handleOpenInTerminal() {
   if (!project.value) return
   try {
@@ -1362,6 +1509,15 @@ function handleRefInput(val: string) {
         >
           <Code2 class="h-3.5 w-3.5" :stroke-width="1.75" />
           VS Code
+        </Button>
+        <Button
+          variant="outline"
+          :disabled="!project"
+          title="Open project folder"
+          @click="handleOpenInFolder"
+        >
+          <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" />
+          Folder
         </Button>
         <Button
           variant="outline"
@@ -1530,6 +1686,12 @@ function handleRefInput(val: string) {
                   class="h-4 w-4 text-muted-foreground shrink-0"
                   :stroke-width="1.75"
                 />
+                <Pin
+                  v-if="run.pinned"
+                  class="h-3 w-3 shrink-0 text-primary"
+                  :stroke-width="2"
+                  aria-label="Pinned"
+                />
                 <span class="flex-1 min-w-0 truncate text-[13px] font-medium leading-tight">{{ runLabel(run) }}</span>
                 <!-- Animated attention marker: this run is waiting for a
                      permission / question answer (replaces the floating toast). -->
@@ -1551,8 +1713,9 @@ function handleRefInput(val: string) {
                 </span>
                 <StatusBadge :status="run.status" size="xs" class="shrink-0" />
               </div>
-              <!-- Meta: date + engine. Right side stays clear for the actions. -->
-              <div class="flex items-center gap-2 mt-2 pl-6 pr-24 text-[10px] text-muted-foreground/70">
+              <!-- Meta: date + engine. Fades out on hover so the actions can
+                   take over the same band instead of overlapping it. -->
+              <div class="flex items-center gap-2 mt-2 pl-6 pr-3 text-[10px] text-muted-foreground/70 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0">
                 <span class="flex items-center gap-1 shrink-0">
                   <Clock class="h-2.5 w-2.5" :stroke-width="1.5" />
                   {{ new Date(run.created_at).toLocaleDateString() }}
@@ -1589,6 +1752,25 @@ function handleRefInput(val: string) {
                 <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': refetchingRunId === run.id }" :stroke-width="1.75" />
               </Button>
               <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Rename"
+                title="Rename"
+                @click.stop="startRename(run, $event)"
+              >
+                <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                :disabled="pinningRunId === run.id"
+                :aria-label="run.pinned ? 'Unpin from top' : 'Pin to top'"
+                :title="run.pinned ? 'Unpin from top' : 'Pin to top'"
+                @click.stop="handleTogglePin(run, $event)"
+              >
+                <component :is="run.pinned ? PinOff : Pin" class="h-3.5 w-3.5" :stroke-width="1.75" />
+              </Button>
+              <Button
                 variant="destructive-ghost"
                 size="icon-sm"
                 :disabled="deletingRunId === run.id"
@@ -1597,6 +1779,31 @@ function handleRefInput(val: string) {
                 @click.stop="handleDeleteRun(run.id, $event)"
               >
                 <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+              </Button>
+            </div>
+
+            <!-- Inline rename: overlays the row title while editing. -->
+            <div
+              v-if="renamingRunId === run.id"
+              class="absolute inset-0 z-20 flex items-center gap-2 px-3 bg-card"
+              @click.stop
+            >
+              <Pencil class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
+              <input
+                :ref="setRenameInputRef"
+                v-model="renameDraft"
+                type="text"
+                class="flex-1 min-w-0 bg-transparent text-[13px] font-medium leading-tight outline-none border-b border-primary/60 pb-0.5"
+                placeholder="Run name"
+                @keyup.enter="commitRename(run.id)"
+                @keyup.esc="cancelRename()"
+                @blur="commitRename(run.id)"
+              />
+              <Button variant="ghost" size="icon-sm" aria-label="Save name" title="Save" @mousedown.prevent @click.stop="commitRename(run.id)">
+                <Check class="h-3.5 w-3.5" :stroke-width="2" />
+              </Button>
+              <Button variant="ghost" size="icon-sm" aria-label="Cancel rename" title="Cancel" @mousedown.prevent @click.stop="cancelRename()">
+                <X class="h-3.5 w-3.5" :stroke-width="2" />
               </Button>
             </div>
           </div>
@@ -1900,11 +2107,12 @@ function handleRefInput(val: string) {
                 v-model="followUpInput"
                 rows="2"
                 :placeholder="chatPlaceholder"
-                class="w-full resize-none px-3 pt-2.5 pb-1 bg-transparent text-xs focus:outline-none font-mono"
+                class="w-full resize-none px-3 pt-2.5 pb-1 bg-transparent text-xs focus:outline-none font-mono min-h-[2.75rem] leading-relaxed"
                 :disabled="sendingFollowUp"
                 @keydown="onComposerKeydown"
                 @input="onComposerInput"
                 @click="onComposerInput"
+                @compositionend="onComposerInput"
                 @paste="onComposerPaste"
                 @blur="mentionOpen = false; slashOpen = false"
               />
@@ -1918,6 +2126,13 @@ function handleRefInput(val: string) {
                   @click="imageInputEl?.click()"
                 >
                   <ImagePlus class="h-4 w-4" :stroke-width="2" />
+                </button>
+                <button
+                  class="inline-flex items-center justify-center h-8 w-8 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 shrink-0"
+                  :title="composerExpanded ? 'Thu gọn ô soạn thảo' : 'Mở rộng ô soạn thảo (dễ đọc/sửa văn bản dài)'"
+                  @click="toggleComposerExpand"
+                >
+                  <component :is="composerExpanded ? Minimize2 : Maximize2" class="h-4 w-4" :stroke-width="2" />
                 </button>
                 <AppSelect
                   :model-value="engineOverride"
@@ -2045,7 +2260,7 @@ function handleRefInput(val: string) {
     <Modal
       :open="!!handoffTarget"
       size="sm"
-      :closable="!handingOff"
+      :closable="!engineSwitchBusy"
       @close="handoffTarget = null"
     >
       <template #header>
@@ -2063,15 +2278,16 @@ function handleRefInput(val: string) {
         </p>
         <ul class="list-disc pl-4 text-foreground/60 space-y-0.5">
           <li><b>Tiếp tục phiên hiện tại</b>: tạo phiên mới trên <span class="font-mono">{{ handoffTarget }}</span> và nạp lại toàn bộ ngữ cảnh đang có.</li>
-          <li><b>Bắt đầu phiên mới</b>: chỉ đổi engine, không mang ngữ cảnh cũ.</li>
+          <li><b>Bắt đầu phiên mới</b>: tạo session mới trên engine đã chọn, không mang ngữ cảnh cũ.</li>
         </ul>
       </div>
 
       <template #footer>
-        <Button variant="outline" :disabled="handingOff" @click="handoffTarget = null">
-          Bắt đầu phiên mới
+        <Button variant="outline" :disabled="engineSwitchBusy" @click="startNewEngineSession(handoffTarget!)">
+          <RotateCcw v-if="startingEngineSession" class="h-3.5 w-3.5 animate-spin" :stroke-width="2" />
+          {{ startingEngineSession ? 'Đang tạo…' : 'Bắt đầu phiên mới' }}
         </Button>
-        <Button :disabled="handingOff" @click="doHandoff(handoffTarget!)">
+        <Button :disabled="engineSwitchBusy" @click="doHandoff(handoffTarget!)">
           <RotateCcw v-if="handingOff" class="h-3.5 w-3.5 animate-spin" :stroke-width="2" />
           {{ handingOff ? 'Đang nạp ngữ cảnh…' : 'Tiếp tục phiên hiện tại' }}
         </Button>

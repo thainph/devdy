@@ -202,6 +202,10 @@ export const useProjectsStore = defineStore('projects', () => {
     await invoke('open_in_vscode', { path, file: file ?? null })
   }
 
+  async function openInFolder(path: string): Promise<void> {
+    await invoke('open_in_folder', { path })
+  }
+
   async function openInTerminal(path: string, terminalApp: string): Promise<void> {
     await invoke('open_in_terminal', { path, terminalApp })
   }
@@ -233,7 +237,7 @@ export const useProjectsStore = defineStore('projects', () => {
     listRepos, addRepo, updateRepo, removeRepo,
     getAppliedSkills, applySkill, removeSkillFromProject,
     setProjectAccount, fetchConflicts, resolveConflict,
-    openInVscode, openInTerminal,
+    openInVscode, openInFolder, openInTerminal,
     getAppliedRules, applyRule, removeRuleFromProject,
     fetchRuleConflicts, resolveRuleConflict,
   }

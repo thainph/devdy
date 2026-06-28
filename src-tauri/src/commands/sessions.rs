@@ -305,6 +305,22 @@ pub(crate) async fn upsert_session_run_core(
 
     let runs_dir = Path::new(project_path).join(".devdy").join("runs");
 
+    // Was this session explicitly deleted? If so, never re-import it from the
+    // lingering shared transcript — that's exactly the reappear-after-delete bug
+    // the tombstone exists to prevent. A tombstoned session has no run row, so
+    // this only ever short-circuits the "new session" import path below.
+    let tombstoned: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM deleted_sessions WHERE project_id = ? AND session_id = ?",
+    )
+    .bind(project_id)
+    .bind(session_id)
+    .fetch_one(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    if tombstoned > 0 {
+        return Ok(SyncOutcome::Skipped);
+    }
+
     // Existing run for this session?
     if let Some(row) =
         sqlx::query("SELECT id, status, transcript_synced_size FROM runs WHERE project_id = ? AND session_id = ?")

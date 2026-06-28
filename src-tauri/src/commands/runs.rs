@@ -786,6 +786,7 @@ pub async fn rerun_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord, S
         finished_at: None,
         created_at: now,
         title: None,
+        pinned: false,
     })
 }
 
@@ -863,6 +864,7 @@ pub async fn create_handoff_run(
             finished_at: None,
             created_at: now,
             title: None,
+            pinned: false,
         },
         context_path,
     })
@@ -919,6 +921,7 @@ pub async fn create_session_run(
         finished_at: None,
         created_at: now,
         title: None,
+        pinned: false,
     })
 }
 
@@ -940,7 +943,7 @@ pub(crate) async fn delete_run_inner(
     }
 
     let row = sqlx::query(
-        "SELECT r.status, r.input_path, p.path as project_path
+        "SELECT r.status, r.input_path, r.project_id, r.session_id, r.engine, p.path as project_path
          FROM runs r JOIN projects p ON p.id = r.project_id
          WHERE r.id = ?",
     )
@@ -955,12 +958,31 @@ pub(crate) async fn delete_run_inner(
     }
     let input_path: Option<String> = row.get("input_path");
     let project_path: String = row.get("project_path");
+    let project_id: String = row.get("project_id");
+    let session_id: Option<String> = row.get("session_id");
+    let engine: String = row.get("engine");
 
     sqlx::query("DELETE FROM runs WHERE id = ?")
         .bind(run_id)
         .execute(db)
         .await
         .map_err(|e| e.to_string())?;
+
+    // Tombstone the session so the reconcile/watcher can't re-import it from the
+    // still-present shared transcript on the next launch. Only session runs are
+    // mirrored, so only they can come back — but recording any run with a
+    // session_id is harmless and future-proof.
+    if let Some(sid) = session_id.as_deref() {
+        let _ = sqlx::query(
+            "INSERT OR IGNORE INTO deleted_sessions (project_id, session_id, engine, deleted_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(&project_id)
+        .bind(sid)
+        .bind(&engine)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(db)
+        .await;
+    }
 
     // Usage rows are an independent ledger: keep them, just flag that their
     // originating run no longer exists (so the UI can't link back to it).
@@ -1003,6 +1025,41 @@ pub async fn delete_run(
     run_id: String,
 ) -> Result<(), String> {
     delete_run_inner(db.inner(), registry.inner(), &run_id).await
+}
+
+/// Rename a run's title (shown in the History list). An empty/whitespace title
+/// clears it back to NULL, letting the UI fall back to its derived label.
+#[tauri::command]
+pub async fn rename_run(
+    db: State<'_, Db>,
+    run_id: String,
+    title: String,
+) -> Result<(), String> {
+    let trimmed = title.trim();
+    let value: Option<&str> = if trimmed.is_empty() { None } else { Some(trimmed) };
+    sqlx::query("UPDATE runs SET title = ? WHERE id = ?")
+        .bind(value)
+        .bind(&run_id)
+        .execute(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Pin or unpin a run so it sorts to the top of the History list.
+#[tauri::command]
+pub async fn set_run_pinned(
+    db: State<'_, Db>,
+    run_id: String,
+    pinned: bool,
+) -> Result<(), String> {
+    sqlx::query("UPDATE runs SET pinned = ? WHERE id = ?")
+        .bind(if pinned { 1 } else { 0 })
+        .bind(&run_id)
+        .execute(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Bulk delete all non-running runs for a project. Returns the number deleted.

@@ -6,7 +6,7 @@
 // specific buttons (full-screen, pop-out, close) via the #actions slot.
 import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import {
-  FileCode2, AArrowDown, AArrowUp, ExternalLink, Copy, FileQuestion, FolderOpen,
+  FileCode2, AArrowDown, AArrowUp, ExternalLink, Copy, FileQuestion, FolderOpen, RotateCw,
 } from 'lucide-vue-next'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener'
@@ -67,6 +67,7 @@ const truncated = ref(false)
 const loading = ref(false)
 const error = ref<string | null>(null)
 const copied = ref(false)
+const reloading = ref(false)
 const kind = ref<FileKind>('text')
 const assetUrl = ref('')
 const absPath = ref('')
@@ -253,6 +254,31 @@ async function copyContent() {
   } catch { /* clipboard unavailable */ }
 }
 
+// Re-read the file from disk, preserving the current view mode / font size /
+// scroll position (unlike load(), which resets them on a fresh open).
+async function reload() {
+  const projPath = props.projectPath
+  const path = props.path
+  if (!projPath || !path || reloading.value) return
+  if (kind.value !== 'text') {
+    // Re-resolve the asset URL so updated media re-fetches from disk.
+    if (kind.value !== 'other') assetUrl.value = convertFileSrc(absPath.value)
+    return
+  }
+  reloading.value = true
+  error.value = null
+  try {
+    const res = await runsStore.readProjectFile(projPath, path)
+    curPath.value = res.path
+    content.value = res.content
+    truncated.value = res.truncated
+  } catch (e) {
+    error.value = String(e)
+  } finally {
+    reloading.value = false
+  }
+}
+
 onMounted(() => {
   loadMarkdown()
   loadProjectFiles()
@@ -317,6 +343,16 @@ defineExpose({ onRevealInFolder, onOpenInApp })
         @click="onOpenInApp"
       >
         <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
+      </button>
+      <!-- Reload the file's latest content from disk -->
+      <button
+        v-if="kind === 'text'"
+        class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-default"
+        title="Reload from disk"
+        :disabled="reloading"
+        @click="reload"
+      >
+        <RotateCw class="h-3.5 w-3.5" :class="{ 'animate-spin': reloading }" :stroke-width="1.75" />
       </button>
       <Button
         v-if="content"

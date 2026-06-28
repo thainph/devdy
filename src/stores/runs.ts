@@ -18,6 +18,7 @@ export interface RunRecord {
   finished_at: string | null
   created_at: string
   title: string | null
+  pinned: boolean
 }
 
 export interface RunOutput {
@@ -48,11 +49,18 @@ export interface HandoffResult {
 export const useRunsStore = defineStore('runs', () => {
   const runs = ref<RunRecord[]>([])
   const loading = ref(false)
+  // The project whose runs currently occupy the shared `runs` array. This is a
+  // single global list (one project at a time), so with the multi-project tabs
+  // feature a background project's run finishing must NOT refetch over the
+  // foreground project's list — callers gate on this id to avoid clobbering the
+  // view of whatever project is on screen.
+  const loadedProjectId = ref<string | null>(null)
 
   async function fetchRuns(project_id: string) {
     loading.value = true
     try {
       runs.value = await invoke<RunRecord[]>('list_runs', { projectId: project_id })
+      loadedProjectId.value = project_id
     } finally {
       loading.value = false
     }
@@ -219,14 +227,39 @@ export const useRunsStore = defineStore('runs', () => {
     return count
   }
 
+  // Keep the local list ordered the same way the backend does: pinned runs
+  // first, then by created_at descending. Called after pin toggles so the row
+  // jumps to/from the top without a round-trip refetch.
+  function sortRuns() {
+    runs.value.sort((a, b) => {
+      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1
+      return b.created_at.localeCompare(a.created_at)
+    })
+  }
+
+  async function renameRun(run_id: string, title: string): Promise<void> {
+    await invoke('rename_run', { runId: run_id, title })
+    const run = runs.value.find(r => r.id === run_id)
+    if (run) run.title = title.trim() || null
+  }
+
+  async function setRunPinned(run_id: string, pinned: boolean): Promise<void> {
+    await invoke('set_run_pinned', { runId: run_id, pinned })
+    const run = runs.value.find(r => r.id === run_id)
+    if (run) {
+      run.pinned = pinned
+      sortRuns()
+    }
+  }
+
   return {
-    runs, loading,
+    runs, loading, loadedProjectId,
     fetchRuns, fetchIssue, fetchPr,
     startRun, rerunRun, refetchRun, cancelRun, resumeRun,
     getRunLog, readRunInput,
     respondPermission, sendUserMessage, endRunInput,
     listProjectFiles, readProjectFile, createHandoffRun, createSessionRun,
     reconcileClaudeSessions, reconcileCodexSessions,
-    deleteRun, deleteAllRuns,
+    deleteRun, deleteAllRuns, renameRun, setRunPinned,
   }
 })

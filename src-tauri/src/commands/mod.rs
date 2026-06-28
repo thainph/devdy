@@ -11,3 +11,4 @@ pub mod runs;
 pub mod sessions;
 pub mod settings;
 pub mod stats;
+pub mod storage;

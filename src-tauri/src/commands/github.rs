@@ -25,6 +25,9 @@ pub struct RunRecord {
     /// Human label for the run. Null for issue/PR runs (UI derives "Issue #N");
     /// set for standalone `session` runs from the first user message.
     pub title: Option<String>,
+    /// Pinned runs sort to the top of the History list.
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 /// Returns true if a GitHub user account should be treated as a bot and
@@ -203,6 +206,7 @@ pub async fn fetch_issue(
         finished_at: None,
         created_at: now,
         title: None,
+        pinned: false,
     })
 }
 
@@ -490,6 +494,7 @@ pub async fn fetch_pr(
         finished_at: None,
         created_at: now,
         title: None,
+        pinned: false,
     })
 }
 
@@ -502,7 +507,7 @@ pub async fn refetch_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord,
     use sqlx::Row;
 
     let row = sqlx::query(
-        "SELECT id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, session_id, started_at, finished_at, created_at, title FROM runs WHERE id = ?",
+        "SELECT id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, session_id, started_at, finished_at, created_at, title, pinned FROM runs WHERE id = ?",
     )
     .bind(&run_id)
     .fetch_one(db.inner())
@@ -561,6 +566,7 @@ pub async fn refetch_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord,
         finished_at: row.get("finished_at"),
         created_at: row.get("created_at"),
         title: row.get("title"),
+        pinned: row.get::<i64, _>("pinned") != 0,
     })
 }
 
@@ -580,8 +586,8 @@ pub async fn list_runs(
 ) -> Result<Vec<RunRecord>, String> {
     use sqlx::Row;
     let rows = sqlx::query(
-        "SELECT id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, session_id, started_at, finished_at, created_at, title
-         FROM runs WHERE project_id = ? ORDER BY created_at DESC LIMIT 50"
+        "SELECT id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, session_id, started_at, finished_at, created_at, title, pinned
+         FROM runs WHERE project_id = ? ORDER BY pinned DESC, created_at DESC LIMIT 50"
     )
     .bind(&project_id)
     .fetch_all(db.inner())
@@ -603,5 +609,6 @@ pub async fn list_runs(
         finished_at: row.get("finished_at"),
         created_at: row.get("created_at"),
         title: row.get("title"),
+        pinned: row.get::<i64, _>("pinned") != 0,
     }).collect())
 }

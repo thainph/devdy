@@ -21,7 +21,7 @@ use commands::projects::{
     get_applied_skills, apply_skill, remove_skill_from_project,
     list_sync_conflicts, resolve_sync_conflict,
     list_repos, add_repo, update_repo, remove_repo,
-    open_in_vscode, open_in_terminal,
+    open_in_vscode, open_in_folder, open_in_terminal,
 };
 use commands::github::{fetch_issue, fetch_pr, refetch_run, list_runs};
 use commands::github_accounts::{
@@ -32,10 +32,12 @@ use commands::files::{list_project_files, read_project_file};
 use commands::sessions::reconcile_claude_sessions;
 use commands::codex_sessions::reconcile_codex_sessions;
 use commands::stats::{get_usage_stats, backfill_usage, reset_usage_stats, get_budget_status, get_plan_usage};
+use commands::storage::{get_storage_stats, clean_storage};
 use commands::runs::{
     start_run, cancel_run, get_run_log, rerun_run, respond_permission,
     send_user_message, end_run_input, read_run_input, resume_run,
     delete_run, delete_all_runs, create_handoff_run, create_session_run,
+    rename_run, set_run_pinned,
 };
 use runs::{new_registry, RunRegistry};
 use runs::sidecar::kill_process_group;
@@ -110,6 +112,7 @@ pub fn run() {
             update_repo,
             remove_repo,
             open_in_vscode,
+            open_in_folder,
             open_in_terminal,
             fetch_issue,
             fetch_pr,
@@ -126,6 +129,8 @@ pub fn run() {
             resume_run,
             delete_run,
             delete_all_runs,
+            rename_run,
+            set_run_pinned,
             list_project_files,
             read_project_file,
             create_handoff_run,
@@ -137,6 +142,8 @@ pub fn run() {
             get_plan_usage,
             reconcile_claude_sessions,
             reconcile_codex_sessions,
+            get_storage_stats,
+            clean_storage,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
