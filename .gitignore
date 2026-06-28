@@ -23,3 +23,8 @@ dist-ssr
 *.sln
 *.sw?
 .devdy/*
+.claude
+.vscode
+.codex
+AGENTS.md
+CLAUDE.md
