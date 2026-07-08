@@ -11,6 +11,8 @@ export interface Project {
   default_engine: string
   created_at: string
   github_account_id: string | null
+  run_count: number
+  last_used_at: string | null
 }
 
 export interface Repo {

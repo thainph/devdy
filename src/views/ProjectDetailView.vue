@@ -10,6 +10,7 @@ import {
   GitMerge, CheckCircle2, XCircle, Trash2, Plus, GitBranch, Code2, Settings, SquareTerminal, FolderOpen
 } from 'lucide-vue-next'
 import { Button, Input, Card, Badge, AppSelect } from '@/components/ui'
+import { useConfirm } from '@/composables/useConfirm'
 import { invoke } from '@/lib/tauri'
 
 const route = useRoute()
@@ -18,6 +19,7 @@ const projectStore = useProjectsStore()
 const skillsStore = useSkillsStore()
 const rulesStore = useRulesStore()
 const ghStore = useGithubAccountsStore()
+const { confirm } = useConfirm()
 
 const projectId = computed(() => route.params.projectId as string)
 const project = computed(() => projectStore.projects.find(p => p.id === projectId.value))
@@ -76,7 +78,11 @@ async function handleApplyRule() {
 }
 
 async function handleRemoveRule(ruleId: string) {
-  if (!confirm('Remove this rule from the project?')) return
+  if (!(await confirm({
+    title: 'Remove rule',
+    message: 'Remove this rule from the project?',
+    confirmLabel: 'Remove',
+  }))) return
   try {
     await projectStore.removeRuleFromProject(projectId.value, ruleId)
     await loadAppliedRules()
@@ -256,7 +262,11 @@ watch([editName, editEngine], scheduleSave)
 watch(editingRepo, scheduleSave, { deep: true })
 
 async function handleRemoveRepo(id: string) {
-  if (!confirm('Remove this repository from the project?')) return
+  if (!(await confirm({
+    title: 'Remove repository',
+    message: 'Remove this repository from the project?',
+    confirmLabel: 'Remove',
+  }))) return
   try {
     await projectStore.removeRepo(id)
     await loadRepos()
@@ -306,7 +316,11 @@ async function handleApplySkill() {
 }
 
 async function handleRemoveSkill(skillId: string) {
-  if (!confirm('Remove this skill from the project?')) return
+  if (!(await confirm({
+    title: 'Remove skill',
+    message: 'Remove this skill from the project?',
+    confirmLabel: 'Remove',
+  }))) return
   try {
     await projectStore.removeSkillFromProject(projectId.value, skillId)
     await loadAppliedSkills()

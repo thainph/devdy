@@ -2,20 +2,60 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSkillsStore, type Skill } from '@/stores/skills'
+import { useProjectsStore } from '@/stores/projects'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { Button, Card, Badge } from '@/components/ui'
-import { Plus, Upload, Download, Pencil, Trash2, Puzzle, CalendarDays } from 'lucide-vue-next'
+import { useConfirm } from '@/composables/useConfirm'
+import { Plus, Upload, Download, Pencil, Trash2, Puzzle, CalendarDays, FolderCheck } from 'lucide-vue-next'
 
 const router = useRouter()
 const store = useSkillsStore()
+const projectsStore = useProjectsStore()
+const { confirm } = useConfirm()
 const deletingId = ref<string | null>(null)
+const applyingId = ref<string | null>(null)
 const importingZip = ref(false)
 const targetLabel: Record<string, string> = { claude: 'Claude', codex: 'Codex', both: 'Both' }
 
-onMounted(() => store.fetchSkills())
+onMounted(() => {
+  store.fetchSkills()
+  projectsStore.fetchProjects()
+})
+
+async function handleApplyToAll(skill: Skill) {
+  const total = projectsStore.projects.length
+  if (total === 0) {
+    alert('No projects yet. Add a project first.')
+    return
+  }
+  if (!(await confirm({
+    title: 'Apply to all projects',
+    message: `Apply skill "${skill.name}" to all ${total} project${total === 1 ? '' : 's'}? Existing artifacts will be overwritten.`,
+    confirmLabel: 'Apply',
+    variant: 'primary',
+  }))) return
+  applyingId.value = skill.id
+  try {
+    const result = await store.applySkillToAllProjects(skill.id)
+    if (result.failures.length === 0) {
+      alert(`Applied "${skill.name}" to ${result.applied} project${result.applied === 1 ? '' : 's'}.`)
+    } else {
+      const details = result.failures.map(f => `• ${f.project_name}: ${f.error}`).join('\n')
+      alert(`Applied to ${result.applied} project${result.applied === 1 ? '' : 's'}.\n\nFailed for ${result.failures.length}:\n${details}`)
+    }
+  } catch (e) {
+    alert(String(e))
+  } finally {
+    applyingId.value = null
+  }
+}
 
 async function handleDelete(skill: Skill) {
-  if (!confirm(`Delete skill "${skill.name}"? This cannot be undone.`)) return
+  if (!(await confirm({
+    title: 'Delete skill',
+    message: `Delete skill "${skill.name}"? This cannot be undone.`,
+    confirmLabel: 'Delete',
+  }))) return
   deletingId.value = skill.id
   try {
     await store.deleteSkill(skill.id)
@@ -155,6 +195,14 @@ function formatDate(iso: string) {
             </div>
             <!-- Actions on hover -->
             <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity" @click.stop>
+              <button
+                class="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-default"
+                title="Apply to all projects"
+                :disabled="applyingId === skill.id"
+                @click="handleApplyToAll(skill)"
+              >
+                <FolderCheck class="h-3.5 w-3.5" :stroke-width="1.75" />
+              </button>
               <button
                 class="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
                 title="Export ZIP"

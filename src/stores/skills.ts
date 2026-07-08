@@ -1,6 +1,9 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@/lib/tauri'
 import { ref } from 'vue'
+import type { ApplyAllOutcome } from '@/stores/rules'
+
+export type { ApplyAllOutcome } from '@/stores/rules'
 
 export type SkillTarget = 'claude' | 'codex' | 'both'
 
@@ -66,5 +69,9 @@ export const useSkillsStore = defineStore('skills', () => {
     await invoke('export_skill_zip', { id, destPath })
   }
 
-  return { skills, loading, error, fetchSkills, getSkill, createSkill, updateSkill, deleteSkill, importSkillZip, exportSkillZip }
+  async function applySkillToAllProjects(id: string): Promise<ApplyAllOutcome> {
+    return invoke<ApplyAllOutcome>('apply_skill_to_all_projects', { skillId: id })
+  }
+
+  return { skills, loading, error, fetchSkills, getSkill, createSkill, updateSkill, deleteSkill, importSkillZip, exportSkillZip, applySkillToAllProjects }
 })

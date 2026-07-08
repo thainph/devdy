@@ -6,12 +6,14 @@ import {
   CheckCircle2, AlertTriangle, Trash2, Plus, Pencil, Gauge,
 } from 'lucide-vue-next'
 import { Button, Input, Card, AppSelect } from '@/components/ui'
+import { useConfirm } from '@/composables/useConfirm'
 import { useGithubAccountsStore, type PatValidation } from '@/stores/githubAccounts'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useBudgetStore } from '@/stores/budget'
 
 const appSettings = useAppSettingsStore()
 const budget = useBudgetStore()
+const { confirm } = useConfirm()
 
 // Full subscription plan-usage breakdown for the detailed table below. The
 // budget store only holds the single guardrail verdict, so Settings fetches the
@@ -191,7 +193,11 @@ async function handleValidate(id: string) {
 }
 
 async function handleDeleteAccount(id: string) {
-  if (!confirm('Delete this GitHub account? Projects linked to it will be unlinked.')) return
+  if (!(await confirm({
+    title: 'Delete GitHub account',
+    message: 'Delete this GitHub account? Projects linked to it will be unlinked.',
+    confirmLabel: 'Delete',
+  }))) return
   try {
     await ghStore.remove(id)
   } catch (e) {

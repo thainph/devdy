@@ -10,6 +10,7 @@ import BudgetBadge from '@/components/BudgetBadge.vue'
 import WorkspaceTabs from '@/components/WorkspaceTabs.vue'
 import ActiveRunsDock from '@/components/ActiveRunsDock.vue'
 import FileViewerWindow from '@/views/FileViewerWindow.vue'
+import { ConfirmModal } from '@/components/ui'
 
 // Pop-out file viewer windows load the same SPA with `?fileWindow=1`; render a
 // bare, chrome-less viewer (no sidebar / nav / background work) in that case.
@@ -164,5 +165,8 @@ onMounted(async () => {
     <!-- Headless: fires native OS notifications for runs awaiting input while the
          app is backgrounded; the in-app signal is the History attention icon. -->
     <PermissionNotifier />
+
+    <!-- App-wide confirm dialog host (see useConfirm) -->
+    <ConfirmModal />
   </div>
 </template>

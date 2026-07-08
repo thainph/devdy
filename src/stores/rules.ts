@@ -18,6 +18,17 @@ export interface RuleContent {
   content: string
 }
 
+export interface ApplyFailure {
+  project_id: string
+  project_name: string
+  error: string
+}
+
+export interface ApplyAllOutcome {
+  applied: number
+  failures: ApplyFailure[]
+}
+
 export const useRulesStore = defineStore('rules', () => {
   const rules = ref<Rule[]>([])
   const loading = ref(false)
@@ -66,9 +77,13 @@ export const useRulesStore = defineStore('rules', () => {
     await invoke('export_rule', { id, destPath })
   }
 
+  async function applyRuleToAllProjects(id: string): Promise<ApplyAllOutcome> {
+    return invoke<ApplyAllOutcome>('apply_rule_to_all_projects', { ruleId: id })
+  }
+
   async function openRulesFolder(): Promise<void> {
     await invoke('open_rules_folder')
   }
 
-  return { rules, loading, error, fetchRules, getRule, createRule, updateRule, deleteRule, importRule, exportRule, openRulesFolder }
+  return { rules, loading, error, fetchRules, getRule, createRule, updateRule, deleteRule, importRule, exportRule, applyRuleToAllProjects, openRulesFolder }
 })

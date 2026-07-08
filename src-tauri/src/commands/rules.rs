@@ -485,10 +485,57 @@ pub async fn apply_rule(
     project_id: String,
     rule_id: String,
 ) -> Result<(), String> {
+    apply_rule_to_project(db.inner(), &project_id, &rule_id).await
+}
+
+/// Summary returned by "apply to all projects" bulk operations (rules & skills).
+#[derive(Debug, Serialize)]
+pub struct ApplyAllOutcome {
+    pub applied: usize,
+    pub failures: Vec<ApplyFailure>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ApplyFailure {
+    pub project_id: String,
+    pub project_name: String,
+    pub error: String,
+}
+
+#[tauri::command]
+pub async fn apply_rule_to_all_projects(
+    db: State<'_, Db>,
+    rule_id: String,
+) -> Result<ApplyAllOutcome, String> {
+    use sqlx::Row;
+    let rows = sqlx::query("SELECT id, name FROM projects ORDER BY name")
+        .fetch_all(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut applied = 0;
+    let mut failures = Vec::new();
+    for row in &rows {
+        let project_id: String = row.get("id");
+        let project_name: String = row.get("name");
+        match apply_rule_to_project(db.inner(), &project_id, &rule_id).await {
+            Ok(()) => applied += 1,
+            Err(error) => failures.push(ApplyFailure { project_id, project_name, error }),
+        }
+    }
+    Ok(ApplyAllOutcome { applied, failures })
+}
+
+/// Core apply logic shared by `apply_rule` and `apply_rule_to_all_projects`.
+async fn apply_rule_to_project(
+    db: &Db,
+    project_id: &str,
+    rule_id: &str,
+) -> Result<(), String> {
     use sqlx::Row;
     let rule_row = sqlx::query("SELECT name, target, source_path FROM rules WHERE id = ?")
-        .bind(&rule_id)
-        .fetch_one(db.inner())
+        .bind(rule_id)
+        .fetch_one(db)
         .await
         .map_err(|e| format!("Rule not found: {}", e))?;
     let name: String = rule_row.get("name");
@@ -496,8 +543,8 @@ pub async fn apply_rule(
     let source_path: String = rule_row.get("source_path");
 
     let project_row = sqlx::query("SELECT path FROM projects WHERE id = ?")
-        .bind(&project_id)
-        .fetch_one(db.inner())
+        .bind(project_id)
+        .fetch_one(db)
         .await
         .map_err(|e| format!("Project not found: {}", e))?;
     let project_path: String = project_row.get("path");
@@ -512,13 +559,13 @@ pub async fn apply_rule(
          (project_id, rule_id, target, synced_hash_claude, synced_hash_codex, applied_at)
          VALUES (?, ?, ?, ?, ?, ?)"
     )
-    .bind(&project_id)
-    .bind(&rule_id)
+    .bind(project_id)
+    .bind(rule_id)
     .bind(&target)
     .bind(&hash_claude)
     .bind(&hash_codex)
     .bind(&now)
-    .execute(db.inner())
+    .execute(db)
     .await
     .map_err(|e| e.to_string())?;
 

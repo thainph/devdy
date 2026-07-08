@@ -5,12 +5,14 @@ import { useProjectsStore, type DetectedProjectInfo, type DetectedRepo } from '@
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import { open } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@/lib/tauri'
-import { Plus, FolderOpen, GitBranch, Cpu, Github, ChevronRight, Trash2, X, SquareTerminal } from 'lucide-vue-next'
-import { Button, Input, Badge, Modal } from '@/components/ui'
+import { Plus, FolderOpen, GitBranch, Github, Trash2, X, SquareTerminal } from 'lucide-vue-next'
+import { Button, Input, Badge, Modal, Card } from '@/components/ui'
+import { useConfirm } from '@/composables/useConfirm'
 
 const router = useRouter()
 const store = useProjectsStore()
 const ghStore = useGithubAccountsStore()
+const { confirm } = useConfirm()
 const adding = ref(false)
 const detecting = ref(false)
 
@@ -105,7 +107,11 @@ async function confirmAdd() {
 }
 
 async function handleRemove(project: { id: string; name: string }) {
-  if (!confirm(`Remove project "${project.name}"? (Files are NOT deleted)`)) return
+  if (!(await confirm({
+    title: 'Remove project',
+    message: `Remove project "${project.name}"? (Files are NOT deleted)`,
+    confirmLabel: 'Remove',
+  }))) return
   try {
     await store.removeProject(project.id)
   } catch (e) {
@@ -147,8 +153,8 @@ async function handleOpenInTerminal(project: { path: string }) {
 
     <!-- Content -->
     <div class="flex-1 overflow-auto p-6">
-      <div v-if="store.loading" class="space-y-2">
-        <div v-for="i in 3" :key="i" class="h-16 rounded-lg border border-border bg-card animate-pulse" />
+      <div v-if="store.loading" class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        <div v-for="i in 8" :key="i" class="h-32 rounded-xl border border-border bg-card animate-pulse" />
       </div>
 
       <div v-else-if="store.error" class="p-4 bg-destructive/10 text-destructive rounded-lg text-sm border border-destructive/20">
@@ -170,53 +176,58 @@ async function handleOpenInTerminal(project: { path: string }) {
         </Button>
       </div>
 
-      <div v-else class="grid gap-2.5">
-        <div
+      <div v-else class="grid grid-cols-2 xl:grid-cols-3 gap-3">
+        <Card
           v-for="project in store.projects"
           :key="project.id"
-          class="group relative flex items-center gap-4 overflow-hidden bg-card border border-border rounded-xl px-4 py-3.5 transition-all duration-150 cursor-pointer hover:border-primary/40 hover:bg-accent/30 hover:shadow-[0_1px_3px_0_rgb(0_0_0/0.08)]"
+          class="group relative flex flex-col transition-all duration-150 cursor-pointer hover:border-primary/40 hover:shadow-[0_1px_3px_0_rgb(0_0_0/0.08)] hover:-translate-y-0.5"
+          body-class="flex flex-col flex-1 p-4"
           @click="router.push(`/projects/${project.id}`)"
         >
-          <!-- hover accent bar -->
-          <span class="absolute left-0 top-1/2 h-0 w-0.75 -translate-y-1/2 rounded-r-full bg-primary transition-all duration-200 group-hover:h-8" />
+          <!-- hover accent line -->
+          <span class="absolute inset-x-0 top-0 h-0.5 origin-left scale-x-0 bg-linear-to-r from-primary to-primary/30 transition-transform duration-200 group-hover:scale-x-100" />
 
-          <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 border border-primary/15 text-primary transition-colors group-hover:bg-primary/15 group-hover:border-primary/25">
-            <FolderOpen class="h-4.5 w-4.5" :stroke-width="1.75" />
-          </div>
-
-          <div class="flex-1 min-w-0">
-            <div class="flex items-center gap-2 mb-1">
-              <span class="text-sm font-semibold truncate group-hover:text-foreground">{{ project.name }}</span>
-              <span class="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-mono font-medium bg-muted text-muted-foreground rounded-md border border-border/60">
-                <Cpu class="h-2.5 w-2.5" :stroke-width="1.75" />
-                {{ project.default_engine }}
-              </span>
+          <!-- Icon + name/path -->
+          <div class="flex items-start gap-3 mb-3">
+            <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 border border-primary/15 text-primary transition-colors group-hover:bg-primary/15 group-hover:border-primary/25">
+              <FolderOpen class="h-4.5 w-4.5" :stroke-width="1.75" />
             </div>
-            <span class="block font-mono text-[11px] text-muted-foreground/80 truncate">{{ project.path }}</span>
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-1.5">
+                <p class="text-sm font-semibold truncate leading-tight">{{ project.name }}</p>
+                <Badge tone="neutral" size="xs" class="shrink-0 uppercase tracking-wide">
+                  {{ project.default_engine }}
+                </Badge>
+              </div>
+              <p class="text-xs text-muted-foreground mt-1 line-clamp-2 leading-relaxed font-mono break-all">{{ project.path }}</p>
+            </div>
           </div>
 
-          <div class="flex items-center gap-2 shrink-0" @click.stop>
+          <!-- Footer -->
+          <div class="flex items-center justify-between pt-2.5 border-t border-border/60 mt-auto">
             <Badge :tone="project.github_account_id ? 'success' : 'neutral'">
               <Github class="h-2.5 w-2.5" :stroke-width="2" />
               {{ accountLabel(project.github_account_id) ?? 'No account' }}
             </Badge>
-            <button
-              class="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/60 hover:text-foreground hover:bg-accent transition-all cursor-pointer opacity-0 group-hover:opacity-100"
-              title="Open project folder in terminal"
-              @click="handleOpenInTerminal(project)"
-            >
-              <SquareTerminal class="h-3.5 w-3.5" :stroke-width="1.75" />
-            </button>
-            <button
-              class="flex h-7 w-7 items-center justify-center rounded-md text-destructive/50 hover:text-destructive hover:bg-destructive/10 transition-all cursor-pointer opacity-0 group-hover:opacity-100"
-              title="Remove project"
-              @click="handleRemove(project)"
-            >
-              <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-            </button>
-            <ChevronRight class="h-4 w-4 text-muted-foreground/40 transition-all group-hover:text-primary group-hover:translate-x-0.5" :stroke-width="1.75" />
+            <!-- Actions on hover -->
+            <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity" @click.stop>
+              <button
+                class="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+                title="Open project folder in terminal"
+                @click="handleOpenInTerminal(project)"
+              >
+                <SquareTerminal class="h-3.5 w-3.5" :stroke-width="1.75" />
+              </button>
+              <button
+                class="flex h-6 w-6 items-center justify-center rounded text-destructive/60 hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer"
+                title="Remove project"
+                @click="handleRemove(project)"
+              >
+                <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+              </button>
+            </div>
           </div>
-        </div>
+        </Card>
       </div>
     </div>
 

@@ -1,5 +1,6 @@
 use crate::db::Db;
 use crate::commands::skills::{remove_skill_artifacts, write_skill_artifacts};
+use crate::commands::rules::{ApplyAllOutcome, ApplyFailure};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Command;
@@ -16,6 +17,12 @@ pub struct Project {
     pub default_engine: String,
     pub created_at: String,
     pub github_account_id: Option<String>,
+    /// Number of runs recorded against this project (usage frequency).
+    #[serde(default)]
+    pub run_count: i64,
+    /// Timestamp of the most recent run, if any (recency).
+    #[serde(default)]
+    pub last_used_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -264,8 +271,14 @@ pub async fn detect_project_info(path: String) -> Result<DetectedProjectInfo, St
 #[tauri::command]
 pub async fn list_projects(db: State<'_, Db>) -> Result<Vec<Project>, String> {
     use sqlx::Row;
+    // Sort by usage frequency (number of runs), then recency, then name.
     let rows = sqlx::query(
-        "SELECT id, name, path, default_engine, created_at, github_account_id FROM projects ORDER BY name"
+        "SELECT p.id, p.name, p.path, p.default_engine, p.created_at, p.github_account_id, \
+                COUNT(r.id) AS run_count, MAX(r.created_at) AS last_used_at \
+         FROM projects p \
+         LEFT JOIN runs r ON r.project_id = p.id \
+         GROUP BY p.id \
+         ORDER BY run_count DESC, last_used_at DESC, p.name COLLATE NOCASE ASC"
     )
     .fetch_all(db.inner())
     .await
@@ -281,6 +294,8 @@ pub async fn list_projects(db: State<'_, Db>) -> Result<Vec<Project>, String> {
             default_engine: row.get("default_engine"),
             created_at: row.get("created_at"),
             github_account_id: row.get("github_account_id"),
+            run_count: row.get("run_count"),
+            last_used_at: row.get("last_used_at"),
         }
     }).collect();
 
@@ -345,6 +360,8 @@ pub async fn add_project(
         default_engine: "claude".to_string(),
         created_at: now,
         github_account_id: None,
+        run_count: 0,
+        last_used_at: None,
     })
 }
 
@@ -379,7 +396,11 @@ pub async fn update_project(
     .await
     .map_err(|e| e.to_string())?;
 
-    let row = sqlx::query("SELECT id, name, path, default_engine, created_at, github_account_id FROM projects WHERE id = ?")
+    let row = sqlx::query(
+        "SELECT p.id, p.name, p.path, p.default_engine, p.created_at, p.github_account_id, \
+                COUNT(r.id) AS run_count, MAX(r.created_at) AS last_used_at \
+         FROM projects p LEFT JOIN runs r ON r.project_id = p.id WHERE p.id = ? GROUP BY p.id"
+    )
         .bind(&id)
         .fetch_one(db.inner())
         .await
@@ -394,6 +415,8 @@ pub async fn update_project(
         default_engine: row.get("default_engine"),
         created_at: row.get("created_at"),
         github_account_id: row.get("github_account_id"),
+        run_count: row.get("run_count"),
+        last_used_at: row.get("last_used_at"),
     })
 }
 
@@ -542,11 +565,44 @@ pub async fn apply_skill(
     project_id: String,
     skill_id: String,
 ) -> Result<(), String> {
+    apply_skill_to_project(db.inner(), &project_id, &skill_id).await
+}
+
+#[tauri::command]
+pub async fn apply_skill_to_all_projects(
+    db: State<'_, Db>,
+    skill_id: String,
+) -> Result<ApplyAllOutcome, String> {
+    use sqlx::Row;
+    let rows = sqlx::query("SELECT id, name FROM projects ORDER BY name")
+        .fetch_all(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut applied = 0;
+    let mut failures = Vec::new();
+    for row in &rows {
+        let project_id: String = row.get("id");
+        let project_name: String = row.get("name");
+        match apply_skill_to_project(db.inner(), &project_id, &skill_id).await {
+            Ok(()) => applied += 1,
+            Err(error) => failures.push(ApplyFailure { project_id, project_name, error }),
+        }
+    }
+    Ok(ApplyAllOutcome { applied, failures })
+}
+
+/// Core apply logic shared by `apply_skill` and `apply_skill_to_all_projects`.
+async fn apply_skill_to_project(
+    db: &Db,
+    project_id: &str,
+    skill_id: &str,
+) -> Result<(), String> {
     use sqlx::Row;
 
     let skill_row = sqlx::query("SELECT name, description, target, source_path FROM skills WHERE id = ?")
-        .bind(&skill_id)
-        .fetch_one(db.inner())
+        .bind(skill_id)
+        .fetch_one(db)
         .await
         .map_err(|e| format!("Skill not found: {}", e))?;
 
@@ -556,8 +612,8 @@ pub async fn apply_skill(
     let source_path: String = skill_row.get("source_path");
 
     let project_row = sqlx::query("SELECT path FROM projects WHERE id = ?")
-        .bind(&project_id)
-        .fetch_one(db.inner())
+        .bind(project_id)
+        .fetch_one(db)
         .await
         .map_err(|e| format!("Project not found: {}", e))?;
 
@@ -572,13 +628,13 @@ pub async fn apply_skill(
          (project_id, skill_id, target, synced_hash_claude, synced_hash_codex, applied_at)
          VALUES (?, ?, ?, ?, ?, ?)"
     )
-    .bind(&project_id)
-    .bind(&skill_id)
+    .bind(project_id)
+    .bind(skill_id)
     .bind(&target)
     .bind(&hash_claude)
     .bind(&hash_codex)
     .bind(&now)
-    .execute(db.inner())
+    .execute(db)
     .await
     .map_err(|e| e.to_string())?;
 

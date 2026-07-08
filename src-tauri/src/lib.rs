@@ -13,12 +13,12 @@ use commands::skills::{
 use commands::rules::{
     list_rules, get_rule, create_rule, update_rule, delete_rule,
     export_rule, import_rule, open_rules_folder,
-    get_applied_rules, apply_rule, remove_rule_from_project,
+    get_applied_rules, apply_rule, apply_rule_to_all_projects, remove_rule_from_project,
     list_rule_sync_conflicts, resolve_rule_sync_conflict,
 };
 use commands::projects::{
     detect_project_info, list_projects, add_project, remove_project, update_project,
-    get_applied_skills, apply_skill, remove_skill_from_project,
+    get_applied_skills, apply_skill, apply_skill_to_all_projects, remove_skill_from_project,
     list_sync_conflicts, resolve_sync_conflict,
     list_repos, add_repo, update_repo, remove_repo,
     open_in_vscode, open_in_folder, open_in_terminal,
@@ -88,6 +88,7 @@ pub fn run() {
             open_rules_folder,
             get_applied_rules,
             apply_rule,
+            apply_rule_to_all_projects,
             remove_rule_from_project,
             list_rule_sync_conflicts,
             resolve_rule_sync_conflict,
@@ -104,6 +105,7 @@ pub fn run() {
             set_project_github_account,
             get_applied_skills,
             apply_skill,
+            apply_skill_to_all_projects,
             remove_skill_from_project,
             list_sync_conflicts,
             resolve_sync_conflict,

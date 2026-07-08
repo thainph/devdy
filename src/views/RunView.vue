@@ -24,6 +24,7 @@ import ContextMeter from '@/components/ContextMeter.vue'
 import PermissionPrompt from '@/components/PermissionPrompt.vue'
 import FileViewer from '@/components/FileViewer.vue'
 import { Button, Input, StatusBadge, Badge, Modal } from '@/components/ui'
+import { useConfirm } from '@/composables/useConfirm'
 import { applyMermaidFence, vMermaid } from '@/lib/mermaid'
 import { vCopyCode } from '@/lib/copyCode'
 import { matchProjectFile, parseLineRef, decorateFileLinks } from '@/lib/fileLinks'
@@ -42,6 +43,7 @@ const projectStore = useProjectsStore()
 const runsStore = useRunsStore()
 const live = useLiveRunsStore()
 const tabsStore = useWorkspaceTabsStore()
+const { confirm } = useConfirm()
 
 const projectId = computed(() => route.params.projectId as string)
 const project = computed(() => projectStore.projects.find(p => p.id === projectId.value))
@@ -205,6 +207,12 @@ const splitContainerEl = ref<HTMLElement | null>(null)
 const leftWidthPct = ref(50)
 const isResizing = ref(false)
 
+// Inner split inside the AI Result column: AI result (left) vs question /
+// permission prompt (right). Percentage is the question panel's width.
+const resultSplitEl = ref<HTMLElement | null>(null)
+const questionWidthPct = ref(50)
+const isResizingQuestion = ref(false)
+
 // Panel visibility: user can show Content only, AI Result only, or both.
 // Sessions have no issue/PR content, so Content is never shown for them.
 const showContent = ref(true)
@@ -250,6 +258,30 @@ function stopResize() {
   window.removeEventListener('mouseup', stopResize)
 }
 
+function startQuestionResize(e: MouseEvent) {
+  e.preventDefault()
+  isResizingQuestion.value = true
+  document.body.style.cursor = 'col-resize'
+  document.body.style.userSelect = 'none'
+  window.addEventListener('mousemove', onQuestionResize)
+  window.addEventListener('mouseup', stopQuestionResize)
+}
+
+function onQuestionResize(e: MouseEvent) {
+  if (!resultSplitEl.value) return
+  const rect = resultSplitEl.value.getBoundingClientRect()
+  const pct = ((rect.right - e.clientX) / rect.width) * 100
+  questionWidthPct.value = Math.max(20, Math.min(80, pct))
+}
+
+function stopQuestionResize() {
+  isResizingQuestion.value = false
+  document.body.style.cursor = ''
+  document.body.style.userSelect = ''
+  window.removeEventListener('mousemove', onQuestionResize)
+  window.removeEventListener('mouseup', stopQuestionResize)
+}
+
 const sourceText = computed(() => {
   if (isViewingHistory.value) {
     if (historyHasStream.value) return entriesToPlainText(historyEntries.value)
@@ -263,10 +295,25 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
+// Memoize rendered markdown per source string. `renderText` is called from
+// inside a v-for's template (StreamLog), so Vue re-invokes it for EVERY entry
+// on every re-render. Without a cache, a single streamed event (and especially
+// the burst released when a permission is allowed) re-parses the whole
+// conversation's markdown synchronously, freezing the main thread and blanking
+// the AI-result column for seconds. Only the still-growing last entry misses
+// the cache; all prior entries are served from it.
+const _mdCache = new Map<string, string>()
+const MD_CACHE_MAX = 800
 function renderText(md: string): string {
   // Read mdReady so this is reactive to renderer load.
   if (!mdReady.value || !_md) return escapeHtml(md ?? '').replace(/\n/g, '<br/>')
-  return _md.render(md ?? '')
+  const key = md ?? ''
+  const cached = _mdCache.get(key)
+  if (cached !== undefined) return cached
+  const html = _md.render(key)
+  if (_mdCache.size >= MD_CACHE_MAX) _mdCache.clear()
+  _mdCache.set(key, html)
+  return html
 }
 
 // Legacy (non-stream) markdown for each view column.
@@ -435,6 +482,7 @@ onUnmounted(() => {
   // survive this component unmounting — that's what lets runs keep streaming
   // while the user is on another screen.
   if (isResizing.value) stopResize()
+  if (isResizingQuestion.value) stopQuestionResize()
   window.removeEventListener('focus', refreshViewedRunOnFocus)
   window.removeEventListener('pointerup', onWindowPointerUp)
   sessionsChangedUnlisten?.()
@@ -520,8 +568,9 @@ function isBudgetError(e: unknown): boolean {
   return String(e).includes('BUDGET_EXCEEDED')
 }
 // When a budget refusal happens, confirm an override. Returns true to proceed.
-function budgetOverrideConfirmed(e: unknown): boolean {
-  return isBudgetError(e) && confirm(BUDGET_CONFIRM_MSG)
+async function budgetOverrideConfirmed(e: unknown): Promise<boolean> {
+  if (!isBudgetError(e)) return false
+  return confirm({ title: 'Vượt ngân sách', message: BUDGET_CONFIRM_MSG, confirmLabel: 'Tiếp tục', variant: 'primary' })
 }
 
 // Run a budget-gated backend call. On BUDGET_EXCEEDED, ask the user; if they
@@ -535,7 +584,7 @@ async function withBudgetOverride(
     await fn(false)
   } catch (e) {
     if (!isBudgetError(e)) throw e
-    if (confirm(BUDGET_CONFIRM_MSG)) {
+    if (await confirm({ title: 'Vượt ngân sách', message: BUDGET_CONFIRM_MSG, confirmLabel: 'Tiếp tục', variant: 'primary' })) {
       await fn(true)
       return
     }
@@ -565,7 +614,7 @@ async function handleStartRun(overrideBudget = false) {
       overrideBudget,
     )
   } catch (e) {
-    if (!overrideBudget && budgetOverrideConfirmed(e)) {
+    if (!overrideBudget && await budgetOverrideConfirmed(e)) {
       await handleStartRun(true)
       return
     }
@@ -618,7 +667,7 @@ async function launchFreshRun(
   try {
     await runsStore.startRun(runId, selectedEngine, permissionMode.value || undefined, text, modelOverride.value || undefined, images, overrideBudget)
   } catch (e) {
-    if (!overrideBudget && budgetOverrideConfirmed(e)) {
+    if (!overrideBudget && await budgetOverrideConfirmed(e)) {
       await launchFreshRun(runId, engine, text, images, true)
       return
     }
@@ -837,9 +886,16 @@ const composerExpanded = ref(false)
 function autoResizeComposer() {
   const el = composerEl.value
   if (!el) return
-  const maxPx = composerExpanded.value
-    ? Math.round(window.innerHeight * 0.6)
-    : 180
+  // Expanded: pin the textarea to a large fixed height so "maximize" is
+  // immediately visible even when there's little/no content to grow into.
+  if (composerExpanded.value) {
+    const expandedPx = Math.round(window.innerHeight * 0.6)
+    el.style.height = `${expandedPx}px`
+    el.style.overflowY = 'auto'
+    return
+  }
+  // Collapsed: grow with content up to a cap, then scroll internally.
+  const maxPx = 180
   el.style.height = 'auto'
   const next = Math.min(el.scrollHeight, maxPx)
   el.style.height = `${next}px`
@@ -918,10 +974,13 @@ function onComposerInput() {
   detectSlash()
 }
 
-async function ensureProjectFiles() {
+async function ensureProjectFiles(force = false) {
   const path = project.value?.path
   if (!path) return
-  if (projectFilesPath.value === path && projectFiles.value.length) return
+  // Skip the walk only when the cache is warm AND no refresh was requested.
+  // `force` is passed when a new @-mention session starts so newly-added files
+  // (e.g. a file just copied into the folder) show up without a reload.
+  if (!force && projectFilesPath.value === path && projectFiles.value.length) return
   try {
     projectFiles.value = await runsStore.listProjectFiles(path)
     projectFilesPath.value = path
@@ -1057,11 +1116,14 @@ function detectMention() {
   // `@` must start a token (preceded by whitespace or be at the very start).
   const prev = i > 0 ? text[i - 1] : ''
   if (prev && !/\s/.test(prev)) { mentionOpen.value = false; return }
+  const wasOpen = mentionOpen.value
   mentionStart.value = i
   mentionQuery.value = text.slice(i + 1, caret)
   mentionIndex.value = 0
   mentionOpen.value = true
-  ensureProjectFiles()
+  // Refresh the file list when a mention session first opens (not on every
+  // keystroke) so files added to the folder since the last session appear.
+  ensureProjectFiles(!wasOpen)
 }
 
 function selectMention(entry: ProjectEntry) {
@@ -1332,7 +1394,11 @@ async function handleDeleteRun(runId: string, e?: MouseEvent) {
   e?.stopPropagation()
   const run = runsStore.runs.find(r => r.id === runId)
   const label = run ? runLabel(run) : 'this run'
-  if (!confirm(`Delete fetched ${label}? Cached markdown and logs will be removed.`)) return
+  if (!(await confirm({
+    title: 'Delete run',
+    message: `Delete fetched ${label}? Cached markdown and logs will be removed.`,
+    confirmLabel: 'Delete',
+  }))) return
   deletingRunId.value = runId
   try {
     await runsStore.deleteRun(runId)
@@ -1356,7 +1422,11 @@ async function handleDeleteRun(runId: string, e?: MouseEvent) {
 
 async function handleClearAllRuns() {
   if (runsStore.runs.length === 0) return
-  if (!confirm(`Delete all fetched runs for this project? Running runs will be skipped.`)) return
+  if (!(await confirm({
+    title: 'Delete all runs',
+    message: `Delete all fetched runs for this project? Running runs will be skipped.`,
+    confirmLabel: 'Delete all',
+  }))) return
   clearingAll.value = true
   try {
     await runsStore.deleteAllRuns(projectId.value)
@@ -1905,9 +1975,14 @@ function handleRefInput(val: string) {
           <!-- AI Result column (full width for sessions or when Content is hidden) -->
           <div
             v-if="resultVisible"
-            class="relative flex flex-col overflow-hidden bg-background min-w-0 min-h-0"
+            ref="resultSplitEl"
+            class="flex overflow-hidden bg-background min-w-0 min-h-0"
             :style="{ width: resultWidth }"
           >
+            <!-- AI result main content (left; always flex-1 so it fills the
+                 space the moment the question panel appears/disappears — no
+                 intermediate frame where the column is stuck at a fixed width). -->
+            <div class="relative flex-1 flex flex-col overflow-hidden min-w-0 min-h-0">
             <div class="bg-card border-b border-border shrink-0">
               <!-- Title row: shows the current run / session title -->
               <div class="flex items-center gap-2 px-3 py-2">
@@ -2005,19 +2080,38 @@ function handleRefInput(val: string) {
               <ChevronDown class="h-3.5 w-3.5" :stroke-width="2" />
               Latest
             </button>
+            </div>
+
+            <!-- Resize handle between AI result and the question panel -->
+            <div
+              v-if="permissionQueue.length > 0"
+              class="group relative shrink-0 w-px bg-border cursor-col-resize select-none"
+              :class="{ 'bg-primary/60': isResizingQuestion }"
+              @mousedown="startQuestionResize"
+            >
+              <div
+                class="absolute inset-y-0 -left-1.5 -right-1.5 z-10 transition-colors group-hover:bg-primary/30"
+                :class="{ 'bg-primary/40': isResizingQuestion }"
+              />
+            </div>
+
+            <!-- Question / permission prompt: docked side-by-side (right) with
+                 the AI result so it stays within this run's view. -->
+            <div
+              v-if="permissionQueue.length > 0"
+              class="shrink-0 overflow-auto min-h-0 bg-card/30"
+              :style="{ width: questionWidthPct + '%' }"
+            >
+              <PermissionPrompt
+                :key="permissionQueue[0].request_id"
+                :request="permissionQueue[0]"
+                :allowed-tools="allowedToolsList"
+                @decide="handlePermissionDecision"
+                @answer="handlePermissionAnswer"
+              />
+            </div>
           </div>
         </div>
-
-        <!-- Permission / question prompt: docked inline above the composer so it
-             stays within this run's view and never blocks the rest of the app. -->
-        <PermissionPrompt
-          v-if="permissionQueue.length > 0"
-          :key="permissionQueue[0].request_id"
-          :request="permissionQueue[0]"
-          :allowed-tools="allowedToolsList"
-          @decide="handlePermissionDecision"
-          @answer="handlePermissionAnswer"
-        />
 
         <!-- Composer: prompt input on top, run controls in the footer below -->
         <div

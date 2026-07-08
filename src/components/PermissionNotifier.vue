@@ -11,6 +11,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import type { PluginListener } from '@tauri-apps/api/core'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useProjectsStore } from '@/stores/projects'
+import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
 
 /**
@@ -32,6 +33,7 @@ const route = useRoute()
 const router = useRouter()
 const live = useLiveRunsStore()
 const projectsStore = useProjectsStore()
+const tabsStore = useWorkspaceTabsStore()
 
 // The run currently open in RunView — its request is already shown there.
 const activeRunId = computed(() =>
@@ -63,7 +65,13 @@ function projectName(projectId: string): string {
 }
 
 function navigateToRun(projectId: string, runId: string) {
-  router.push(`/projects/${projectId}/run/${runId}`)
+  // Register/open the project's workspace tab BEFORE routing — the run
+  // workspace is keyed by projectId and driven by the tabs store, so a bare
+  // router.push lands on an empty view when the tab isn't open yet.
+  tabsStore.open(projectId, runId)
+  router
+    .push({ name: 'project-run-detail', params: { projectId, runId } })
+    .catch(() => {})
 }
 
 // --- Native OS notifications ---------------------------------------------

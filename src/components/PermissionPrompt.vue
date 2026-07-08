@@ -489,60 +489,70 @@ function onKeydown(e: KeyboardEvent) {
         </details>
       </div>
 
-      <div class="px-5 py-3 border-t border-border flex flex-wrap items-center gap-2 justify-end shrink-0">
-        <span class="mr-auto hidden text-[10px] text-foreground/40 sm:block">
-          <template v-if="isQuestions">↑↓ Move · Space Select · ←→ Question · Enter Next · Esc Cancel</template>
-          <template v-else>Enter Allow once · ⇧Enter Allow always · Esc Deny</template>
-        </span>
-        <template v-if="isQuestions">
-          <span
-            v-if="stepCount > 1"
-            class="self-center text-[11px] font-medium text-foreground/50 tabular-nums"
-          >{{ step + 1 }}/{{ stepCount }}</span>
-          <Button
-            v-if="stepCount > 1"
-            variant="outline"
-            :disabled="step === 0"
-            @click="goPrev"
-          >
-            <ChevronLeft class="h-3.5 w-3.5" :stroke-width="2" /> Back
-          </Button>
-          <Button variant="destructive" @click="emit('decide', 'deny', false)">
-            <X class="h-3.5 w-3.5" :stroke-width="2" /> Cancel
-          </Button>
-          <Button
-            v-if="!isLastStep"
-            variant="primary"
-            :disabled="!currentAnswered"
-            @click="goNext"
-          >
-            Next <ChevronRight class="h-3.5 w-3.5" :stroke-width="2" />
-          </Button>
-          <Button v-else variant="primary" :disabled="!canSubmit" @click="submitAnswers">
-            <Check class="h-3.5 w-3.5" :stroke-width="2" /> Submit answers
-          </Button>
-        </template>
-        <template v-else>
-          <Button
-            variant="destructive"
-            @click="emit('decide', 'deny', false)"
-          >
-            <X class="h-3.5 w-3.5" :stroke-width="2" /> Deny
-          </Button>
-          <Button
-            variant="primary"
-            @click="emit('decide', 'allow', true)"
-            title="Allow now and auto-allow this tool for the rest of this run"
-          >
-            <Check class="h-3.5 w-3.5" :stroke-width="2" /> Allow always
-          </Button>
-          <Button
-            variant="primary"
-            @click="emit('decide', 'allow', false)"
-          >
-            <Check class="h-3.5 w-3.5" :stroke-width="2" /> Allow once
-          </Button>
-        </template>
+      <div class="@container/footer px-5 py-3 border-t border-border shrink-0">
+        <div class="flex flex-col gap-2 @[26rem]/footer:flex-row @[26rem]/footer:items-center">
+          <span class="hidden min-w-0 truncate text-[10px] text-foreground/40 @[26rem]/footer:mr-auto @[26rem]/footer:block">
+            <template v-if="isQuestions">↑↓ Select · ←→ Nav · ↵ Next · Esc Cancel</template>
+            <template v-else>↵ Allow · ⇧↵ Always · Esc Deny</template>
+          </span>
+          <!-- Action buttons: never wrap; stack full-width only in a narrow panel. -->
+          <div class="flex flex-col gap-2 @[26rem]/footer:flex-row @[26rem]/footer:items-center @[26rem]/footer:shrink-0">
+            <template v-if="isQuestions">
+              <span
+                v-if="stepCount > 1"
+                class="self-center text-[11px] font-medium text-foreground/50 tabular-nums"
+              >{{ step + 1 }}/{{ stepCount }}</span>
+              <Button
+                v-if="stepCount > 1"
+                variant="outline"
+                :disabled="step === 0"
+                class="w-full @[26rem]/footer:w-auto"
+                @click="goPrev"
+              >
+                <ChevronLeft class="h-3.5 w-3.5" :stroke-width="2" /> Back
+              </Button>
+              <Button variant="destructive" class="w-full @[26rem]/footer:w-auto" @click="emit('decide', 'deny', false)">
+                <X class="h-3.5 w-3.5" :stroke-width="2" /> Cancel
+              </Button>
+              <Button
+                v-if="!isLastStep"
+                variant="primary"
+                :disabled="!currentAnswered"
+                class="w-full @[26rem]/footer:w-auto"
+                @click="goNext"
+              >
+                Next <ChevronRight class="h-3.5 w-3.5" :stroke-width="2" />
+              </Button>
+              <Button v-else variant="primary" :disabled="!canSubmit" class="w-full @[26rem]/footer:w-auto" @click="submitAnswers">
+                <Check class="h-3.5 w-3.5" :stroke-width="2" /> Submit
+              </Button>
+            </template>
+            <template v-else>
+              <Button
+                variant="destructive"
+                class="w-full @[26rem]/footer:w-auto"
+                @click="emit('decide', 'deny', false)"
+              >
+                <X class="h-3.5 w-3.5" :stroke-width="2" /> Deny
+              </Button>
+              <Button
+                variant="primary"
+                class="w-full @[26rem]/footer:w-auto"
+                @click="emit('decide', 'allow', true)"
+                title="Allow now and auto-allow this tool for the rest of this run"
+              >
+                <Check class="h-3.5 w-3.5" :stroke-width="2" /> Always
+              </Button>
+              <Button
+                variant="primary"
+                class="w-full @[26rem]/footer:w-auto"
+                @click="emit('decide', 'allow', false)"
+              >
+                <Check class="h-3.5 w-3.5" :stroke-width="2" /> Allow
+              </Button>
+            </template>
+          </div>
+        </div>
       </div>
     </div>
 </template>
