@@ -144,7 +144,7 @@ onMounted(async () => {
       <!-- App-wide monitor of concurrent runs + permission center -->
       <ActiveRunsDock />
 
-      <!-- Global token-budget warning (shows only when near/over budget) -->
+      <!-- Global usage / budget status -->
       <BudgetBadge />
 
       <!-- Version footer -->

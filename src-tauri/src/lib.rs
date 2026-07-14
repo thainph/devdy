@@ -31,7 +31,10 @@ use commands::github_accounts::{
 use commands::files::{list_project_files, read_project_file};
 use commands::sessions::reconcile_claude_sessions;
 use commands::codex_sessions::reconcile_codex_sessions;
-use commands::stats::{get_usage_stats, backfill_usage, reset_usage_stats, get_budget_status, get_plan_usage};
+use commands::stats::{
+    get_usage_stats, backfill_usage, reset_usage_stats, get_budget_status, get_plan_usage,
+    refresh_plan_usage,
+};
 use commands::storage::{get_storage_stats, clean_storage};
 use commands::runs::{
     start_run, cancel_run, get_run_log, rerun_run, respond_permission,
@@ -142,6 +145,7 @@ pub fn run() {
             reset_usage_stats,
             get_budget_status,
             get_plan_usage,
+            refresh_plan_usage,
             reconcile_claude_sessions,
             reconcile_codex_sessions,
             get_storage_stats,

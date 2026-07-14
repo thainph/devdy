@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, computed, watch } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from '@/lib/tauri'
 import {
   Cpu, Palette, FileText, Check, ShieldAlert, Sparkles, Github,
@@ -25,6 +26,14 @@ interface PlanUsageData {
   windows: Record<'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day_sonnet', PlanWindowData>
 }
 const planUsage = ref<PlanUsageData | null>(null)
+const now = ref(Date.now())
+let unlistenPlanUsage: UnlistenFn | null = null
+let unlistenBudgetStatus: UnlistenFn | null = null
+let clockTimer: ReturnType<typeof setInterval> | null = null
+
+async function refreshPlanUsage() {
+  planUsage.value = await invoke<PlanUsageData | null>('get_plan_usage')
+}
 
 // Read-only view of the real subscription plan usage, refreshed on mount.
 const PLAN_WINDOWS: { key: 'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day_sonnet'; label: string }[] = [
@@ -47,12 +56,15 @@ const planRows = computed(() => {
 })
 function planResetText(iso: string | null): string {
   if (!iso) return ''
-  const ms = new Date(iso).getTime() - Date.now()
+  const ms = new Date(iso).getTime() - now.value
   if (ms <= 0) return 'resets soon'
-  const hours = ms / 3_600_000
-  if (hours >= 48) return `resets in ${Math.round(hours / 24)}d`
-  if (hours >= 1) return `resets in ${Math.round(hours)}h`
-  return `resets in ${Math.max(1, Math.round(ms / 60_000))}m`
+  const totalMinutes = Math.max(1, Math.ceil(ms / 60_000))
+  const days = Math.floor(totalMinutes / 1440)
+  const hours = Math.floor((totalMinutes % 1440) / 60)
+  const minutes = totalMinutes % 60
+  if (days > 0) return hours > 0 ? `resets in ${days}d ${hours}h` : `resets in ${days}d`
+  if (hours > 0) return minutes > 0 ? `resets in ${hours}h ${minutes}m` : `resets in ${hours}h`
+  return `resets in ${minutes}m`
 }
 
 interface AppSettings {
@@ -210,11 +222,24 @@ onMounted(async () => {
     settings.value = await invoke<AppSettings>('get_settings')
     lastSaved = { ...settings.value }
     await ghStore.fetch()
+    now.value = Date.now()
+    clockTimer = setInterval(() => { now.value = Date.now() }, 30_000)
     budget.refresh()
-    planUsage.value = await invoke<PlanUsageData | null>('get_plan_usage')
+    await refreshPlanUsage()
+    unlistenPlanUsage = await listen('plan_usage_updated', () => {
+      refreshPlanUsage().catch(() => {})
+      if (!budget.refreshingPlan) budget.refresh()
+    })
+    unlistenBudgetStatus = await listen('budget_status_updated', () => budget.refresh())
   } finally {
     loading.value = false
   }
+})
+
+onUnmounted(() => {
+  if (clockTimer) clearInterval(clockTimer)
+  if (unlistenPlanUsage) unlistenPlanUsage()
+  if (unlistenBudgetStatus) unlistenBudgetStatus()
 })
 
 function applyTheme(theme: string) {
