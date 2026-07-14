@@ -388,7 +388,72 @@ function scrollOutputToBottom() {
 // Re-evaluate the pin whenever the user scrolls the live output.
 function onOutputScroll() {
   if (outputEl.value) stickToBottom.value = isNearBottom(outputEl.value)
+  captureScrollAnchor()
 }
+
+// --- Scroll anchoring across layout resizes ---------------------------------
+// When the question panel opens/closes (or the split is dragged), the output
+// column changes width, text re-wraps and the total scrollHeight changes. A
+// pixel-based scrollTop then points at different content, so the reader jumps.
+// We fix this by anchoring on an *element* near the top of the viewport and
+// restoring scrollTop after the reflow so that element stays put.
+type ScrollAnchor = { bottom: true } | { el: Element; offset: number } | null
+let scrollAnchor: ScrollAnchor = null
+
+// The scrollable output may wrap its content in a single container (StreamLog's
+// `.space-y-3` root, or the legacy markdown div). Descend through single-child
+// wrappers to reach the actual list of block entries we can anchor on.
+function outputBlocks(root: HTMLElement): Element[] {
+  let node: Element = root
+  while (node.children.length === 1) node = node.children[0]
+  return Array.from(node.children)
+}
+
+function captureScrollAnchor() {
+  const el = outputEl.value
+  if (!el) return
+  // If pinned to the bottom, keep it pinned — no element anchor needed.
+  if (stickToBottom.value) { scrollAnchor = { bottom: true }; return }
+  const top = el.getBoundingClientRect().top
+  for (const node of outputBlocks(el)) {
+    const r = node.getBoundingClientRect()
+    if (r.height > 0 && r.bottom >= top) {
+      scrollAnchor = { el: node, offset: r.top - top }
+      return
+    }
+  }
+  scrollAnchor = null
+}
+
+function restoreScrollAnchor() {
+  const el = outputEl.value
+  const a = scrollAnchor
+  if (!el || !a) return
+  if ('bottom' in a) { el.scrollTop = el.scrollHeight; return }
+  const top = el.getBoundingClientRect().top
+  const delta = (a.el.getBoundingClientRect().top - top) - a.offset
+  if (delta) el.scrollTop += delta
+}
+
+// Attach a ResizeObserver to the output element whenever it mounts, so any
+// width/height change restores the reading position. The output appears and
+// disappears via v-if, so we track the ref rather than observing once at mount.
+let outputRO: ResizeObserver | null = null
+watch(outputEl, (el) => {
+  outputRO?.disconnect()
+  outputRO = null
+  if (el) {
+    outputRO = new ResizeObserver(() => restoreScrollAnchor())
+    outputRO.observe(el)
+  }
+})
+
+// The question panel opening/closing is the main trigger for the reflow. This
+// watcher runs before Vue patches the DOM (default 'pre' flush), so it snapshots
+// the reading position *before* the width changes; the ResizeObserver then
+// restores it after layout settles — covering the case where the user hasn't
+// scrolled yet and no anchor was captured otherwise.
+watch(() => permissionQueue.value.length > 0, () => captureScrollAnchor())
 
 // While the user is actively interacting with the output — holding the mouse
 // down to drag-select, or with text already selected inside it — we must NOT
@@ -533,6 +598,8 @@ onUnmounted(() => {
   // while the user is on another screen.
   if (isResizing.value) stopResize()
   if (isResizingQuestion.value) stopQuestionResize()
+  outputRO?.disconnect()
+  outputRO = null
   window.removeEventListener('focus', refreshViewedRunOnFocus)
   window.removeEventListener('pointerup', onWindowPointerUp)
   sessionsChangedUnlisten?.()
