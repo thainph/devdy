@@ -90,6 +90,19 @@ pub struct Repo {
     pub github_owner: Option<String>,
     pub github_repo: Option<String>,
     pub created_at: String,
+    /// Git host provider: `github` (default) or `gitlab` (BR-001).
+    #[serde(default = "default_provider")]
+    pub provider: String,
+    /// GitLab `namespace/project` path (display + fallback API id). None for GitHub.
+    #[serde(default)]
+    pub gitlab_project_path: Option<String>,
+    /// GitLab numeric project id (preferred API id). None for GitHub.
+    #[serde(default)]
+    pub gitlab_project_id: Option<i64>,
+}
+
+fn default_provider() -> String {
+    "github".to_string()
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -421,21 +434,11 @@ pub async fn update_project(
     })
 }
 
-#[tauri::command]
-pub async fn list_repos(
-    db: State<'_, Db>,
-    project_id: String,
-) -> Result<Vec<Repo>, String> {
+/// Map a `repos` row into a `Repo`, tolerating older rows that predate the
+/// provider/gitlab columns (NULL provider -> `github`, per BR-001).
+fn row_to_repo(row: &sqlx::sqlite::SqliteRow) -> Repo {
     use sqlx::Row;
-    let rows = sqlx::query(
-        "SELECT id, project_id, name, path, github_owner, github_repo, created_at FROM repos WHERE project_id = ? ORDER BY name"
-    )
-    .bind(&project_id)
-    .fetch_all(db.inner())
-    .await
-    .map_err(|e| e.to_string())?;
-
-    Ok(rows.iter().map(|row| Repo {
+    Repo {
         id: row.get("id"),
         project_id: row.get("project_id"),
         name: row.get("name"),
@@ -443,10 +446,35 @@ pub async fn list_repos(
         github_owner: row.get("github_owner"),
         github_repo: row.get("github_repo"),
         created_at: row.get("created_at"),
-    }).collect())
+        provider: row
+            .get::<Option<String>, _>("provider")
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(default_provider),
+        gitlab_project_path: row.get("gitlab_project_path"),
+        gitlab_project_id: row.get("gitlab_project_id"),
+    }
+}
+
+const REPO_COLUMNS: &str = "id, project_id, name, path, github_owner, github_repo, created_at, provider, gitlab_project_path, gitlab_project_id";
+
+#[tauri::command]
+pub async fn list_repos(
+    db: State<'_, Db>,
+    project_id: String,
+) -> Result<Vec<Repo>, String> {
+    let rows = sqlx::query(
+        &format!("SELECT {REPO_COLUMNS} FROM repos WHERE project_id = ? ORDER BY name")
+    )
+    .bind(&project_id)
+    .fetch_all(db.inner())
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(rows.iter().map(row_to_repo).collect())
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn add_repo(
     db: State<'_, Db>,
     project_id: String,
@@ -454,11 +482,15 @@ pub async fn add_repo(
     path: String,
     github_owner: Option<String>,
     github_repo: Option<String>,
+    provider: Option<String>,
+    gitlab_project_path: Option<String>,
+    gitlab_project_id: Option<i64>,
 ) -> Result<Repo, String> {
     let id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
+    let provider = provider.filter(|p| !p.is_empty()).unwrap_or_else(default_provider);
     sqlx::query(
-        "INSERT INTO repos (id, project_id, name, path, github_owner, github_repo, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO repos (id, project_id, name, path, github_owner, github_repo, created_at, provider, gitlab_project_path, gitlab_project_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .bind(&id)
     .bind(&project_id)
@@ -467,50 +499,77 @@ pub async fn add_repo(
     .bind(&github_owner)
     .bind(&github_repo)
     .bind(&now)
+    .bind(&provider)
+    .bind(&gitlab_project_path)
+    .bind(gitlab_project_id)
     .execute(db.inner())
     .await
     .map_err(|e| e.to_string())?;
 
-    Ok(Repo { id, project_id, name, path, github_owner, github_repo, created_at: now })
+    Ok(Repo {
+        id,
+        project_id,
+        name,
+        path,
+        github_owner,
+        github_repo,
+        created_at: now,
+        provider,
+        gitlab_project_path,
+        gitlab_project_id,
+    })
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn update_repo(
     db: State<'_, Db>,
     id: String,
     name: String,
     github_owner: Option<String>,
     github_repo: Option<String>,
+    provider: Option<String>,
+    gitlab_project_path: Option<String>,
+    gitlab_project_id: Option<i64>,
 ) -> Result<Repo, String> {
-    use sqlx::Row;
-    sqlx::query(
-        "UPDATE repos SET name = ?, github_owner = ?, github_repo = ? WHERE id = ?"
-    )
-    .bind(&name)
-    .bind(&github_owner)
-    .bind(&github_repo)
-    .bind(&id)
-    .execute(db.inner())
-    .await
-    .map_err(|e| e.to_string())?;
+    // Preserve existing provider identity when the caller omits it — the current
+    // GitHub-only repo editor doesn't send these fields, and we must not silently
+    // downgrade a GitLab repo back to `github` (BR-001).
+    let provider = provider.filter(|p| !p.is_empty());
+    if provider.is_some() {
+        sqlx::query(
+            "UPDATE repos SET name = ?, github_owner = ?, github_repo = ?, provider = ?, gitlab_project_path = ?, gitlab_project_id = ? WHERE id = ?"
+        )
+        .bind(&name)
+        .bind(&github_owner)
+        .bind(&github_repo)
+        .bind(&provider)
+        .bind(&gitlab_project_path)
+        .bind(gitlab_project_id)
+        .bind(&id)
+        .execute(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+    } else {
+        sqlx::query("UPDATE repos SET name = ?, github_owner = ?, github_repo = ? WHERE id = ?")
+            .bind(&name)
+            .bind(&github_owner)
+            .bind(&github_repo)
+            .bind(&id)
+            .execute(db.inner())
+            .await
+            .map_err(|e| e.to_string())?;
+    }
 
     let row = sqlx::query(
-        "SELECT id, project_id, name, path, github_owner, github_repo, created_at FROM repos WHERE id = ?"
+        &format!("SELECT {REPO_COLUMNS} FROM repos WHERE id = ?")
     )
     .bind(&id)
     .fetch_one(db.inner())
     .await
     .map_err(|e| e.to_string())?;
 
-    Ok(Repo {
-        id: row.get("id"),
-        project_id: row.get("project_id"),
-        name: row.get("name"),
-        path: row.get("path"),
-        github_owner: row.get("github_owner"),
-        github_repo: row.get("github_repo"),
-        created_at: row.get("created_at"),
-    })
+    Ok(row_to_repo(&row))
 }
 
 #[tauri::command]

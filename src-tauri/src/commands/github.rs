@@ -1,5 +1,7 @@
 use crate::db::Db;
 use crate::github;
+use crate::gitlab;
+use crate::secrets;
 
 use serde::Serialize;
 use std::fs;
@@ -28,6 +30,103 @@ pub struct RunRecord {
     /// Pinned runs sort to the top of the History list.
     #[serde(default)]
     pub pinned: bool,
+}
+
+/// Repo identity loaded from the `repos` row, used to branch fetch by provider
+/// (FR-005/BR-001) and to build the `repo_slug` task directory (BR-008).
+struct RepoIdentity {
+    id: String,
+    provider: String,
+    github_owner: Option<String>,
+    github_repo: Option<String>,
+    gitlab_project_path: Option<String>,
+    gitlab_project_id: Option<i64>,
+}
+
+impl RepoIdentity {
+    /// `<owner_or_namespace>`/`<repo>` pair used to build the repo_slug.
+    /// For GitHub uses owner/repo; for GitLab splits `namespace/project` from
+    /// the stored path (last segment = repo, the rest = namespace).
+    fn slug_owner_repo(&self) -> (String, String) {
+        match self.provider.as_str() {
+            "gitlab" => {
+                let path = self.gitlab_project_path.clone().unwrap_or_default();
+                match path.rsplit_once('/') {
+                    Some((ns, proj)) => (ns.to_string(), proj.to_string()),
+                    None => (String::new(), path),
+                }
+            }
+            _ => (
+                self.github_owner.clone().unwrap_or_default(),
+                self.github_repo.clone().unwrap_or_default(),
+            ),
+        }
+    }
+
+    fn slug(&self) -> String {
+        let (owner, repo) = self.slug_owner_repo();
+        gitlab::repo_slug(&self.provider, &owner, &repo, &self.id)
+    }
+}
+
+/// Load a repo's provider identity from the DB.
+async fn load_repo_identity(db: &Db, repo_id: &str) -> Result<RepoIdentity, String> {
+    use sqlx::Row;
+    let row = sqlx::query(
+        "SELECT id, provider, github_owner, github_repo, gitlab_project_path, gitlab_project_id FROM repos WHERE id = ?",
+    )
+    .bind(repo_id)
+    .fetch_one(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(RepoIdentity {
+        id: row.get("id"),
+        // Older rows may predate the column; treat NULL/empty as github (BR-001).
+        provider: row
+            .get::<Option<String>, _>("provider")
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| "github".to_string()),
+        github_owner: row.get("github_owner"),
+        github_repo: row.get("github_repo"),
+        gitlab_project_path: row.get("gitlab_project_path"),
+        gitlab_project_id: row.get("gitlab_project_id"),
+    })
+}
+
+/// Build a GitLab REST client for a project's linked GitLab account (SEC-001/002).
+/// Resolves host from the account and the PAT from the Keychain at call time.
+async fn gitlab_client_for(
+    db: &Db,
+    project_id: &str,
+    repo: &RepoIdentity,
+) -> Result<gitlab::GitlabClient, String> {
+    use sqlx::Row;
+    let row = sqlx::query("SELECT gitlab_account_id FROM projects WHERE id = ?")
+        .bind(project_id)
+        .fetch_one(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    let account_id: Option<String> = row.get("gitlab_account_id");
+    let account_id = account_id
+        .filter(|s| !s.is_empty())
+        .ok_or("Chưa cấu hình GitLab account cho project. Hãy link account trong cài đặt project.")?;
+
+    let acc_row = sqlx::query("SELECT host FROM gitlab_accounts WHERE id = ?")
+        .bind(&account_id)
+        .fetch_one(db)
+        .await
+        .map_err(|_| "Không tìm thấy GitLab account đã link.".to_string())?;
+    let host: Option<String> = acc_row.get("host");
+
+    let pat = secrets::get_gitlab_account_pat(&account_id)
+        .map_err(|_| "GitLab account chưa có PAT. Hãy nhập lại token trong cài đặt.".to_string())?;
+
+    gitlab::GitlabClient::new(
+        host.as_deref(),
+        repo.gitlab_project_id,
+        repo.gitlab_project_path.as_deref(),
+        pat,
+    )
 }
 
 /// Returns true if a GitHub user account should be treated as a bot and
@@ -140,25 +239,37 @@ pub async fn fetch_issue(
         .map_err(|e| e.to_string())?;
     let project_path: String = project_row.get("path");
 
-    let repo_row = sqlx::query("SELECT github_owner, github_repo FROM repos WHERE id = ?")
-        .bind(&repo_id)
-        .fetch_one(db.inner())
-        .await
-        .map_err(|e| e.to_string())?;
-    let owner: Option<String> = repo_row.get("github_owner");
-    let repo: Option<String> = repo_row.get("github_repo");
+    let repo = load_repo_identity(db.inner(), &repo_id).await?;
+    let repo_slug = repo.slug();
 
-    let owner = owner.ok_or("Repo has no GitHub owner configured")?;
-    let repo = repo.ok_or("Repo has no GitHub repo configured")?;
+    // Branch by provider (FR-005/BR-001). Both branches namespace the task dir
+    // by repo_slug (BR-008/AC-10) so distinct repos never collide.
+    let md = match repo.provider.as_str() {
+        "gitlab" => {
+            let client = gitlab_client_for(db.inner(), &project_id, &repo).await?;
+            client.build_issue_markdown(issue_number).await?
+        }
+        _ => {
+            let owner = repo
+                .github_owner
+                .clone()
+                .ok_or("Repo has no GitHub owner configured")?;
+            let gh_repo = repo
+                .github_repo
+                .clone()
+                .ok_or("Repo has no GitHub repo configured")?;
+            let client = github::client_for_project(db.inner(), &project_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            build_issue_markdown(&client, &owner, &gh_repo, issue_number).await?
+        }
+    };
 
-    let client = github::client_for_project(db.inner(), &project_id).await.map_err(|e| e.to_string())?;
-
-    let md = build_issue_markdown(&client, &owner, &repo, issue_number).await?;
-
-    // Write file: .devdy/tasks/issue-<n>/issue.md
+    // Write file: .devdy/tasks/<repo_slug>/issue-<n>/issue.md
     let task_dir = Path::new(&project_path)
         .join(".devdy")
         .join("tasks")
+        .join(&repo_slug)
         .join(format!("issue-{}", issue_number));
     fs::create_dir_all(&task_dir).map_err(|e| e.to_string())?;
     let file_path = task_dir.join("issue.md");
@@ -425,28 +536,44 @@ pub async fn fetch_pr(
         .map_err(|e| e.to_string())?;
     let project_path: String = project_row.get("path");
 
-    let repo_row = sqlx::query("SELECT github_owner, github_repo FROM repos WHERE id = ?")
-        .bind(&repo_id)
-        .fetch_one(db.inner())
-        .await
-        .map_err(|e| e.to_string())?;
-    let owner: Option<String> = repo_row.get("github_owner");
-    let repo: Option<String> = repo_row.get("github_repo");
+    let repo = load_repo_identity(db.inner(), &repo_id).await?;
+    let repo_slug = repo.slug();
 
-    let owner = owner.ok_or("Repo has no GitHub owner configured")?;
-    let repo = repo.ok_or("Repo has no GitHub repo configured")?;
+    // Branch by provider (FR-005/BR-001).
+    let (md, linked_issue_number) = match repo.provider.as_str() {
+        "gitlab" => {
+            let client = gitlab_client_for(db.inner(), &project_id, &repo).await?;
+            client.build_mr_markdown(pr_number, linked_issue).await?
+        }
+        _ => {
+            let owner = repo
+                .github_owner
+                .clone()
+                .ok_or("Repo has no GitHub owner configured")?;
+            let gh_repo = repo
+                .github_repo
+                .clone()
+                .ok_or("Repo has no GitHub repo configured")?;
+            let client = github::client_for_project(db.inner(), &project_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            build_pr_markdown(&client, &owner, &gh_repo, pr_number, linked_issue).await?
+        }
+    };
 
-    let client = github::client_for_project(db.inner(), &project_id).await.map_err(|e| e.to_string())?;
-
-    let (md, linked_issue_number) = build_pr_markdown(&client, &owner, &repo, pr_number, linked_issue).await?;
-
-    // Write file: .devdy/tasks/issue-<linked>/pr-<pr_number>.md
+    // Write file: .devdy/tasks/<repo_slug>/issue-<linked>/<file>.md
+    // GitHub keeps its historical `pr-<n>.md` name; GitLab uses `mr-<n>.md`.
+    let file_name = match repo.provider.as_str() {
+        "gitlab" => format!("mr-{}.md", pr_number),
+        _ => format!("pr-{}.md", pr_number),
+    };
     let task_dir = Path::new(&project_path)
         .join(".devdy")
         .join("tasks")
+        .join(&repo_slug)
         .join(format!("issue-{}", linked_issue_number));
     fs::create_dir_all(&task_dir).map_err(|e| e.to_string())?;
-    let file_path = task_dir.join(format!("pr-{}.md", pr_number));
+    let file_path = task_dir.join(file_name);
     fs::write(&file_path, &md).map_err(|e| e.to_string())?;
 
     let engine = crate::commands::settings::resolve_default_engine(db.inner()).await;
@@ -514,29 +641,47 @@ pub async fn refetch_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord,
     let ref_num = ref_number.ok_or("Run has no issue/PR number")? as u64;
     let input_path_val = input_path.clone().ok_or("Run has no input file to refresh")?;
 
-    let repo_row = sqlx::query("SELECT github_owner, github_repo FROM repos WHERE id = ?")
-        .bind(&repo_id_val)
-        .fetch_one(db.inner())
-        .await
-        .map_err(|e| e.to_string())?;
-    let owner: Option<String> = repo_row.get("github_owner");
-    let repo: Option<String> = repo_row.get("github_repo");
-    let owner = owner.ok_or("Repo has no GitHub owner configured")?;
-    let repo = repo.ok_or("Repo has no GitHub repo configured")?;
+    let repo = load_repo_identity(db.inner(), &repo_id_val).await?;
 
-    let client = github::client_for_project(db.inner(), &project_id).await.map_err(|e| e.to_string())?;
-
-    let md = match run_type.as_str() {
-        "analyze_issue" => build_issue_markdown(&client, &owner, &repo, ref_num).await?,
-        "review_pr" => {
-            // Keep the same linked issue as the original fetch by reading it back
-            // from the existing markdown's frontmatter, so the refresh stays
-            // consistent (and never hits NO_LINKED_ISSUE).
-            let existing = fs::read_to_string(&input_path_val).unwrap_or_default();
-            let linked = parse_frontmatter_u64(&existing, "linked_issue");
-            build_pr_markdown(&client, &owner, &repo, ref_num, linked).await?.0
+    // Provider derived from the run's repo (BR-007). Refetch overwrites the
+    // existing input_path in place; run record/output/session stay untouched.
+    let md = match repo.provider.as_str() {
+        "gitlab" => {
+            let client = gitlab_client_for(db.inner(), &project_id, &repo).await?;
+            match run_type.as_str() {
+                "analyze_issue" => client.build_issue_markdown(ref_num).await?,
+                "review_pr" => {
+                    // Reuse the linked issue from the existing frontmatter so the
+                    // refresh never re-derives closes_issues or hits NO_LINKED_ISSUE.
+                    let existing = fs::read_to_string(&input_path_val).unwrap_or_default();
+                    let linked = parse_frontmatter_u64(&existing, "linked_issue");
+                    client.build_mr_markdown(ref_num, linked).await?.0
+                }
+                other => return Err(format!("Cannot re-fetch a run of type '{}'", other)),
+            }
         }
-        other => return Err(format!("Cannot re-fetch a run of type '{}'", other)),
+        _ => {
+            let owner = repo
+                .github_owner
+                .clone()
+                .ok_or("Repo has no GitHub owner configured")?;
+            let gh_repo = repo
+                .github_repo
+                .clone()
+                .ok_or("Repo has no GitHub repo configured")?;
+            let client = github::client_for_project(db.inner(), &project_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            match run_type.as_str() {
+                "analyze_issue" => build_issue_markdown(&client, &owner, &gh_repo, ref_num).await?,
+                "review_pr" => {
+                    let existing = fs::read_to_string(&input_path_val).unwrap_or_default();
+                    let linked = parse_frontmatter_u64(&existing, "linked_issue");
+                    build_pr_markdown(&client, &owner, &gh_repo, ref_num, linked).await?.0
+                }
+                other => return Err(format!("Cannot re-fetch a run of type '{}'", other)),
+            }
+        }
     };
 
     fs::write(&input_path_val, &md).map_err(|e| e.to_string())?;

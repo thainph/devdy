@@ -220,11 +220,28 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null
 
 const repos = ref<Repo[]>([])
 const reposLoading = ref(false)
-const editingRepo = ref<{ [id: string]: { name: string; github_owner: string; github_repo: string } }>({})
+const editingRepo = ref<{
+  [id: string]: {
+    name: string
+    provider: 'github' | 'gitlab'
+    github_owner: string
+    github_repo: string
+    gitlab_project_path: string
+    gitlab_project_id: string
+  }
+}>({})
+
+const providerOptions: { value: 'github' | 'gitlab'; label: string }[] = [
+  { value: 'github', label: 'GitHub' },
+  { value: 'gitlab', label: 'GitLab' },
+]
 
 const newRepoName = ref('')
+const newRepoProvider = ref<'github' | 'gitlab'>('github')
 const newRepoOwner = ref('')
 const newRepoRepo = ref('')
+const newRepoGitlabPath = ref('')
+const newRepoGitlabId = ref('')
 const addingRepo = ref(false)
 
 const availableSkillIds = computed(() =>
@@ -272,8 +289,11 @@ async function loadRepos() {
     for (const r of repos.value) {
       editingRepo.value[r.id] = {
         name: r.name,
+        provider: r.provider ?? 'github',
         github_owner: r.github_owner ?? '',
         github_repo: r.github_repo ?? '',
+        gitlab_project_path: r.gitlab_project_path ?? '',
+        gitlab_project_id: r.gitlab_project_id != null ? String(r.gitlab_project_id) : '',
       }
     }
   } finally {
@@ -313,21 +333,34 @@ async function autoSaveProject() {
     for (const r of repos.value) {
       const edit = editingRepo.value[r.id]
       if (!edit || !edit.name.trim()) continue
+      const editProvider = edit.provider ?? 'github'
+      const editGitlabId = edit.gitlab_project_id.trim()
+        ? Number(edit.gitlab_project_id.trim())
+        : null
       if (
         edit.name === r.name &&
+        editProvider === (r.provider ?? 'github') &&
         (edit.github_owner || '') === (r.github_owner ?? '') &&
-        (edit.github_repo || '') === (r.github_repo ?? '')
+        (edit.github_repo || '') === (r.github_repo ?? '') &&
+        (edit.gitlab_project_path || '') === (r.gitlab_project_path ?? '') &&
+        editGitlabId === (r.gitlab_project_id ?? null)
       ) continue
       await projectStore.updateRepo({
         id: r.id,
         name: edit.name,
         github_owner: edit.github_owner || null,
         github_repo: edit.github_repo || null,
+        provider: editProvider,
+        gitlab_project_path: edit.gitlab_project_path || null,
+        gitlab_project_id: editGitlabId,
       })
       // Sync the local source row so the next pass sees no diff.
       r.name = edit.name
+      r.provider = editProvider
       r.github_owner = edit.github_owner || null
       r.github_repo = edit.github_repo || null
+      r.gitlab_project_path = edit.gitlab_project_path || null
+      r.gitlab_project_id = editGitlabId
       changed = true
     }
     if (changed) toast.success('Saved')
@@ -363,16 +396,25 @@ async function handleAddRepo() {
   if (!newRepoName.value.trim()) return
   addingRepo.value = true
   try {
+    const isGitlab = newRepoProvider.value === 'gitlab'
     await projectStore.addRepo({
       project_id: projectId.value,
       name: newRepoName.value.trim(),
       path: project.value?.path ?? '',
-      github_owner: newRepoOwner.value || undefined,
-      github_repo: newRepoRepo.value || undefined,
+      provider: newRepoProvider.value,
+      github_owner: isGitlab ? undefined : newRepoOwner.value || undefined,
+      github_repo: isGitlab ? undefined : newRepoRepo.value || undefined,
+      gitlab_project_path: isGitlab ? newRepoGitlabPath.value || null : null,
+      gitlab_project_id: isGitlab && newRepoGitlabId.value.trim()
+        ? Number(newRepoGitlabId.value.trim())
+        : null,
     })
     newRepoName.value = ''
+    newRepoProvider.value = 'github'
     newRepoOwner.value = ''
     newRepoRepo.value = ''
+    newRepoGitlabPath.value = ''
+    newRepoGitlabId.value = ''
     await loadRepos()
   } catch (e) {
     alert(String(e))
@@ -603,7 +645,17 @@ async function handleOpenInTerminal() {
                   </Button>
                 </div>
                 <div class="text-[11px] text-muted-foreground font-mono truncate px-0.5">{{ repo.path }}</div>
-                <div class="flex gap-1.5 items-center">
+                <AppSelect
+                  size="sm"
+                  :model-value="editingRepo[repo.id].provider"
+                  :options="providerOptions"
+                  @update:model-value="editingRepo[repo.id].provider = $event as 'github' | 'gitlab'"
+                />
+                <!-- GitHub: owner / repo -->
+                <div
+                  v-if="editingRepo[repo.id].provider === 'github'"
+                  class="flex gap-1.5 items-center"
+                >
                   <Input
                     v-model="editingRepo[repo.id].github_owner"
                     type="text"
@@ -618,6 +670,22 @@ async function handleOpenInTerminal() {
                     placeholder="repo"
                   />
                 </div>
+                <!-- GitLab: project path + optional numeric project ID -->
+                <div v-else class="space-y-1.5">
+                  <Input
+                    v-model="editingRepo[repo.id].gitlab_project_path"
+                    type="text"
+                    size="sm"
+                    placeholder="namespace/project"
+                  />
+                  <Input
+                    v-model="editingRepo[repo.id].gitlab_project_id"
+                    type="text"
+                    inputmode="numeric"
+                    size="sm"
+                    placeholder="Project ID (optional)"
+                  />
+                </div>
               </div>
 
               <!-- Add new repo -->
@@ -629,7 +697,14 @@ async function handleOpenInTerminal() {
                   size="sm"
                   placeholder="Repo name"
                 />
-                <div class="flex gap-1.5 items-center">
+                <AppSelect
+                  size="sm"
+                  :model-value="newRepoProvider"
+                  :options="providerOptions"
+                  @update:model-value="newRepoProvider = $event as 'github' | 'gitlab'"
+                />
+                <!-- GitHub: owner / repo -->
+                <div v-if="newRepoProvider === 'github'" class="flex gap-1.5 items-center">
                   <Input
                     v-model="newRepoOwner"
                     type="text"
@@ -642,6 +717,22 @@ async function handleOpenInTerminal() {
                     type="text"
                     size="sm"
                     placeholder="repo"
+                  />
+                </div>
+                <!-- GitLab: project path + optional numeric project ID -->
+                <div v-else class="space-y-1.5">
+                  <Input
+                    v-model="newRepoGitlabPath"
+                    type="text"
+                    size="sm"
+                    placeholder="namespace/project"
+                  />
+                  <Input
+                    v-model="newRepoGitlabId"
+                    type="text"
+                    inputmode="numeric"
+                    size="sm"
+                    placeholder="Project ID (optional)"
                   />
                 </div>
                 <Button

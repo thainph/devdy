@@ -23,6 +23,10 @@ export interface Repo {
   github_owner: string | null
   github_repo: string | null
   created_at: string
+  // Git host provider; defaults to 'github' for legacy repos (BR-001).
+  provider: 'github' | 'gitlab'
+  gitlab_project_path: string | null
+  gitlab_project_id: number | null
 }
 
 export interface AppliedSkill {
@@ -144,6 +148,9 @@ export const useProjectsStore = defineStore('projects', () => {
     path: string
     github_owner?: string
     github_repo?: string
+    provider?: 'github' | 'gitlab'
+    gitlab_project_path?: string | null
+    gitlab_project_id?: number | null
   }): Promise<Repo> {
     return invoke<Repo>('add_repo', {
       projectId: payload.project_id,
@@ -151,6 +158,9 @@ export const useProjectsStore = defineStore('projects', () => {
       path: payload.path,
       githubOwner: payload.github_owner,
       githubRepo: payload.github_repo,
+      provider: payload.provider ?? null,
+      gitlabProjectPath: payload.gitlab_project_path ?? null,
+      gitlabProjectId: payload.gitlab_project_id ?? null,
     })
   }
 
@@ -159,12 +169,18 @@ export const useProjectsStore = defineStore('projects', () => {
     name: string
     github_owner: string | null
     github_repo: string | null
+    provider?: 'github' | 'gitlab'
+    gitlab_project_path?: string | null
+    gitlab_project_id?: number | null
   }): Promise<Repo> {
     return invoke<Repo>('update_repo', {
       id: payload.id,
       name: payload.name,
       githubOwner: payload.github_owner,
       githubRepo: payload.github_repo,
+      provider: payload.provider ?? null,
+      gitlabProjectPath: payload.gitlab_project_path ?? null,
+      gitlabProjectId: payload.gitlab_project_id ?? null,
     })
   }
 
