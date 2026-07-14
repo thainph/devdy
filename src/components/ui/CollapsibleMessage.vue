@@ -14,10 +14,13 @@ const props = withDefaults(defineProps<{
   fade?: string
   /** Toggle button alignment. */
   align?: 'left' | 'center' | 'right'
+  /** Never collapse — always render the content in full (e.g. the latest message). */
+  disabled?: boolean
 }>(), {
   maxHeight: 384,
   fade: 'hsl(var(--background))',
   align: 'left',
+  disabled: false,
 })
 
 const expanded = ref(false)
@@ -66,7 +69,7 @@ function measure() {
   overflowing.value = el.offsetHeight > props.maxHeight + 24
 }
 
-const collapsed = computed(() => overflowing.value && !expanded.value)
+const collapsed = computed(() => !props.disabled && overflowing.value && !expanded.value)
 const alignClass = computed(() =>
   props.align === 'center' ? 'justify-center' : props.align === 'right' ? 'justify-end' : 'justify-start',
 )
@@ -96,7 +99,7 @@ onBeforeUnmount(() => ro?.disconnect())
       />
     </div>
 
-    <div v-if="overflowing" ref="toggleRef" class="flex mt-1" :class="alignClass">
+    <div v-if="!disabled && overflowing" ref="toggleRef" class="flex mt-1" :class="alignClass">
       <button
         type="button"
         class="inline-flex items-center gap-1 text-xs text-foreground/50 hover:text-foreground transition-colors cursor-pointer"
