@@ -57,6 +57,7 @@ function isQuestion(req: PermissionRequest): boolean {
 
 function label(req: PermissionRequest): string {
   if (isQuestion(req)) return 'Claude is asking you a question'
+  if (req.tool_name === 'ExitPlanMode') return 'Claude finished planning — review the plan'
   return req.title || req.display_name || `Wants to run ${req.tool_name}`
 }
 

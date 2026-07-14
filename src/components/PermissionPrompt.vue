@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { ShieldAlert, Check, X, FileEdit, HelpCircle, ChevronLeft, ChevronRight } from 'lucide-vue-next'
+import { ShieldAlert, Check, X, FileEdit, HelpCircle, ChevronLeft, ChevronRight, ClipboardList } from 'lucide-vue-next'
 import { Button } from '@/components/ui'
 
 export interface PermissionRequest {
@@ -22,6 +22,8 @@ const props = defineProps<{
   request: PermissionRequest
   /** Names of tools the user already chose "allow always" for, this session. */
   allowedTools?: string[]
+  /** Markdown → HTML renderer (used to show the plan for ExitPlanMode). */
+  renderText?: (md: string) => string
 }>()
 
 const emit = defineEmits<{
@@ -73,6 +75,18 @@ const hasDiff = computed(() => diffParts.value.length > 0)
 
 /** AskUserQuestion: render the structured questions as selectable options. */
 const isQuestions = computed(() => props.request.tool_name === 'AskUserQuestion')
+
+// ExitPlanMode isn't a risky side-effecting tool — it's Claude presenting a plan
+// and asking to leave plan mode. Render it as a plan review (Approve / Keep
+// planning) instead of the generic "allow this tool call?" permission prompt.
+const isPlan = computed(() => props.request.tool_name === 'ExitPlanMode')
+const planText = computed(() => {
+  const p = input.value['plan']
+  return typeof p === 'string' ? p : ''
+})
+const planHtml = computed(() =>
+  props.renderText && planText.value ? props.renderText(planText.value) : '',
+)
 
 interface QuestionOption {
   label: string
@@ -235,9 +249,10 @@ function submitAnswers() {
   emit('answer', answers)
 }
 
-const headerTitle = computed(() =>
-  props.request.title || (isQuestions.value ? `Claude has a question` : `Claude requests permission`),
-)
+const headerTitle = computed(() => {
+  if (isPlan.value) return `Claude finished planning`
+  return props.request.title || (isQuestions.value ? `Claude has a question` : `Claude requests permission`)
+})
 
 const commandPreview = computed(() => {
   const inp = input.value
@@ -321,10 +336,12 @@ function onKeydown(e: KeyboardEvent) {
   }
 
   // Permission mode: Enter = allow once, Shift+Enter = allow always, Esc = deny.
+  // Plan mode (ExitPlanMode): Enter = approve (never auto-allow — a plan review
+  // isn't a tool to remember), Esc = keep planning.
   switch (e.key) {
     case 'Enter':
       e.preventDefault()
-      emit('decide', 'allow', e.shiftKey)
+      emit('decide', 'allow', isPlan.value ? false : e.shiftKey)
       break
     case 'Escape':
       e.preventDefault()
@@ -342,7 +359,7 @@ function onKeydown(e: KeyboardEvent) {
     ref="rootEl"
     tabindex="-1"
     class="prompt-attention shrink-0 flex flex-col max-h-[55vh] border-t-2 bg-card shadow-[0_-8px_24px_-12px_rgba(0,0,0,0.4)] outline-none"
-    :class="isQuestions ? 'border-t-indigo-500/70' : 'border-t-amber-400/70'"
+    :class="isQuestions || isPlan ? 'border-t-indigo-500/70' : 'border-t-amber-400/70'"
     role="dialog"
     :aria-label="headerTitle"
     @keydown="onKeydown"
@@ -354,14 +371,17 @@ function onKeydown(e: KeyboardEvent) {
       :class="isQuestions ? 'py-2' : 'py-3 items-start'"
     >
         <component
-          :is="isQuestions ? HelpCircle : hasDiff ? FileEdit : ShieldAlert"
+          :is="isQuestions ? HelpCircle : isPlan ? ClipboardList : hasDiff ? FileEdit : ShieldAlert"
           class="shrink-0"
-          :class="[isQuestions ? 'h-4 w-4' : 'h-5 w-5 mt-0.5', isQuestions ? 'text-indigo-400' : 'text-amber-400']"
+          :class="[isQuestions ? 'h-4 w-4' : 'h-5 w-5 mt-0.5', isQuestions || isPlan ? 'text-indigo-400' : 'text-amber-400']"
           :stroke-width="1.75"
         />
         <div class="flex-1 min-w-0">
           <h2 class="text-sm font-medium text-foreground" :class="isQuestions ? 'leading-tight' : ''">{{ headerTitle }}</h2>
-          <p v-if="!isQuestions && request.description" class="text-xs text-foreground/60 mt-0.5">
+          <p v-if="isPlan" class="text-xs text-foreground/60 mt-0.5">
+            Review the plan below, then approve to start — or keep planning to refine it.
+          </p>
+          <p v-else-if="!isQuestions && request.description" class="text-xs text-foreground/60 mt-0.5">
             {{ request.description }}
           </p>
           <p v-else-if="!isQuestions" class="text-xs text-foreground/60 mt-0.5">
@@ -437,6 +457,20 @@ function onKeydown(e: KeyboardEvent) {
         </div>
       </div>
 
+      <!-- ExitPlanMode: show the proposed plan (rendered markdown), not a raw
+           tool-input dump. -->
+      <div v-else-if="isPlan" class="flex-1 min-h-0 px-5 py-4 overflow-auto">
+        <div
+          v-if="planHtml"
+          v-html="planHtml"
+          class="markdown-output text-sm leading-relaxed text-foreground"
+        />
+        <pre
+          v-else
+          class="text-xs font-mono text-foreground/80 whitespace-pre-wrap break-words"
+        >{{ planText || 'Claude has no plan details to show.' }}</pre>
+      </div>
+
       <div v-else class="flex-1 min-h-0 px-5 py-4 space-y-3 overflow-auto">
         <div class="flex items-center gap-2 flex-wrap">
           <span class="text-[10px] uppercase tracking-wider text-foreground/40">Tool</span>
@@ -493,6 +527,7 @@ function onKeydown(e: KeyboardEvent) {
         <div class="flex flex-col gap-2 @[26rem]/footer:flex-row @[26rem]/footer:items-center">
           <span class="hidden min-w-0 truncate text-[10px] text-foreground/40 @[26rem]/footer:mr-auto @[26rem]/footer:block">
             <template v-if="isQuestions">↑↓ Select · ←→ Nav · ↵ Next · Esc Cancel</template>
+            <template v-else-if="isPlan">↵ Approve · Esc Keep planning</template>
             <template v-else>↵ Allow · ⇧↵ Always · Esc Deny</template>
           </span>
           <!-- Action buttons: never wrap; stack full-width only in a narrow panel. -->
@@ -525,6 +560,22 @@ function onKeydown(e: KeyboardEvent) {
               </Button>
               <Button v-else variant="primary" :disabled="!canSubmit" class="w-full @[26rem]/footer:w-auto" @click="submitAnswers">
                 <Check class="h-3.5 w-3.5" :stroke-width="2" /> Submit
+              </Button>
+            </template>
+            <template v-else-if="isPlan">
+              <Button
+                variant="outline"
+                class="w-full @[26rem]/footer:w-auto"
+                @click="emit('decide', 'deny', false)"
+              >
+                <X class="h-3.5 w-3.5" :stroke-width="2" /> Keep planning
+              </Button>
+              <Button
+                variant="primary"
+                class="w-full @[26rem]/footer:w-auto"
+                @click="emit('decide', 'allow', false)"
+              >
+                <Check class="h-3.5 w-3.5" :stroke-width="2" /> Approve
               </Button>
             </template>
             <template v-else>
