@@ -1,0 +1,72 @@
+name: Release macOS
+
+# Runs when you push a tag matching v* (e.g. v0.3.0, v1.0.0)
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Write permission is required to create/update the GitHub Release and upload assets
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Setup Rust (Intel + Apple Silicon targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The Node sidecar is bundled as an app resource, so its
+      # dependencies (@anthropic-ai/claude-agent-sdk) must be installed
+      # before Tauri builds the app.
+      - name: Install sidecar dependencies
+        working-directory: sidecar
+        run: npm ci --omit=dev
+
+      - name: Build app & upload to Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # --- Code signing / notarization (optional) ---
+          # Uncomment and configure secrets if you want the app signed &
+          # notarized, avoiding Gatekeeper warnings on other machines.
+          # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          # APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # APPLE_ID: ${{ secrets.APPLE_ID }}
+          # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          # Attach assets to the Release matching the pushed tag
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Devdy ${{ github.ref_name }}'
+          releaseBody: 'Download the .dmg from the assets below to install.'
+          releaseDraft: false
+          prerelease: false
+          # Build a universal binary that runs on both Intel and Apple Silicon
+          args: --target universal-apple-darwin
