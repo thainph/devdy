@@ -4,7 +4,7 @@ import { RouterLink, RouterView, useRoute } from 'vue-router'
 import { useProjectsStore } from '@/stores/projects'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
-import { Puzzle, ScrollText, FolderOpen, BarChart3, Settings, Info } from 'lucide-vue-next'
+import { Puzzle, ScrollText, FolderOpen, BarChart3, CalendarClock, Settings, Info } from 'lucide-vue-next'
 import PermissionNotifier from '@/components/PermissionNotifier.vue'
 import BudgetBadge from '@/components/BudgetBadge.vue'
 import WorkspaceTabs from '@/components/WorkspaceTabs.vue'
@@ -50,6 +50,7 @@ const navItems = [
   { path: '/skills', label: 'Skills', icon: Puzzle },
   { path: '/rules', label: 'Rules', icon: ScrollText },
   { path: '/stats', label: 'Stats', icon: BarChart3 },
+  { path: '/work-digest', label: 'Digest', icon: CalendarClock },
   { path: '/settings', label: 'Settings', icon: Settings },
   { path: '/about', label: 'About', icon: Info },
 ]
@@ -74,12 +75,21 @@ function applyTheme(theme: string) {
   }
 }
 
+// Named color palette. Sets the `data-theme` attribute on <html> (see main.css);
+// the default (indigo) theme uses no attribute so it falls back to :root/.dark.
+function applyColorTheme(theme: string) {
+  const t = theme && theme !== 'default' ? theme : ''
+  if (t) document.documentElement.setAttribute('data-theme', t)
+  else document.documentElement.removeAttribute('data-theme')
+}
+
 onMounted(async () => {
   if (isFileWindow) {
     // Pop-out window: only theme matters; skip the main app's data fetches.
     try {
       await appSettings.refresh()
       applyTheme(appSettings.settings?.theme ?? 'system')
+      applyColorTheme(appSettings.settings?.color_theme ?? 'default')
     } catch {
       applyTheme('system')
     }
@@ -93,6 +103,7 @@ onMounted(async () => {
   try {
     await appSettings.refresh()
     applyTheme(appSettings.settings?.theme ?? 'system')
+    applyColorTheme(appSettings.settings?.color_theme ?? 'default')
   } catch {
     applyTheme('system')
   }

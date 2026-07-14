@@ -16,6 +16,7 @@ export interface AppSettings {
   codex_model: string
   extra_args: string
   theme: string
+  color_theme: string
   analyze_issue_prompt: string
   review_pr_prompt: string
   default_permission_mode: string
