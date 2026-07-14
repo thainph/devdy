@@ -75,6 +75,7 @@ interface AppSettings {
   codex_model: string
   extra_args: string
   theme: string
+  color_theme: string
   analyze_issue_prompt: string
   review_pr_prompt: string
   default_permission_mode: string
@@ -94,6 +95,7 @@ const settings = ref<AppSettings>({
   codex_model: '',
   extra_args: '',
   theme: 'system',
+  color_theme: 'default',
   analyze_issue_prompt: '',
   review_pr_prompt: '',
   default_permission_mode: 'default',
@@ -253,6 +255,12 @@ function applyTheme(theme: string) {
   }
 }
 
+function applyColorTheme(theme: string) {
+  const t = theme && theme !== 'default' ? theme : ''
+  if (t) document.documentElement.setAttribute('data-theme', t)
+  else document.documentElement.removeAttribute('data-theme')
+}
+
 async function persistChanges() {
   if (!lastSaved) return
   const changed = Object.entries(settings.value).filter(
@@ -284,6 +292,9 @@ watch(settings, () => {
 // Apply theme instantly (don't wait for the debounced save).
 watch(() => settings.value.theme, (t) => {
   if (!loading.value) applyTheme(t)
+})
+watch(() => settings.value.color_theme, (t) => {
+  if (!loading.value) applyColorTheme(t)
 })
 </script>
 
@@ -365,6 +376,20 @@ watch(() => settings.value.theme, (t) => {
                   { value: 'dark', label: 'Dark' },
                 ]"
               />
+            </div>
+            <div class="space-y-1.5">
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Color Theme</label>
+              <AppSelect
+                v-model="settings.color_theme"
+                :options="[
+                  { value: 'default', label: 'Default (Indigo)' },
+                  { value: 'ocean', label: 'Ocean' },
+                  { value: 'forest', label: 'Forest' },
+                  { value: 'sunset', label: 'Sunset' },
+                  { value: 'rose', label: 'Rose' },
+                ]"
+              />
+              <p class="text-[11px] text-muted-foreground">Works with both light and dark mode.</p>
             </div>
             <div class="space-y-1.5">
               <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Terminal App</label>
