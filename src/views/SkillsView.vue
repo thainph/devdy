@@ -69,7 +69,7 @@ async function handleDelete(skill: Skill) {
 async function handleImport() {
   const selected = await open({
     multiple: false,
-    filters: [{ name: 'Zip', extensions: ['zip'] }],
+    filters: [{ name: 'Skill', extensions: ['zip', 'skill'] }],
   })
   if (!selected) return
   importingZip.value = true
@@ -120,7 +120,7 @@ function formatDate(iso: string) {
           @click="handleImport"
         >
           <Upload class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ importingZip ? 'Importing…' : 'Import ZIP' }}
+          {{ importingZip ? 'Importing…' : 'Import' }}
         </Button>
         <Button
           @click="router.push('/skills/new')"
