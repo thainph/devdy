@@ -23,6 +23,13 @@ struct SecretStore {
     github: HashMap<String, String>,
     #[serde(default)]
     gitlab: HashMap<String, String>,
+    /// Per-process guard: `"<provider>:<account_id>"` keys we already attempted to
+    /// migrate from a legacy per-account item. A denied or missing legacy read is
+    /// recorded here so it is NEVER retried within the same run — otherwise a
+    /// user who clicks "Deny" would be re-prompted on every subsequent git op.
+    /// Not persisted (rebuilt each launch).
+    #[serde(skip)]
+    tried_legacy: std::collections::HashSet<String>,
 }
 
 /// Process-lifetime cache of the decrypted store.
@@ -53,6 +60,13 @@ fn legacy_key(provider: &Provider, account_id: &str) -> String {
     match provider {
         Provider::Github => format!("account_{}", account_id),
         Provider::Gitlab => format!("gitlab_account_{}", account_id),
+    }
+}
+
+fn provider_tag(provider: &Provider) -> &'static str {
+    match provider {
+        Provider::Github => "github",
+        Provider::Gitlab => "gitlab",
     }
 }
 
@@ -145,11 +159,18 @@ fn get_pat(provider: Provider, account_id: &str) -> Result<String> {
     if let Some(pat) = map_of(store, &provider).get(account_id) {
         return Ok(pat.clone());
     }
-    // Transparent migration from a pre-consolidation install.
-    if let Some(pat) = take_legacy(&provider, account_id) {
-        map_of_mut(store, &provider).insert(account_id.to_string(), pat.clone());
-        let _ = persist(store);
-        return Ok(pat);
+    // Transparent one-time migration from a pre-consolidation install. Attempt at
+    // most ONCE per account per process: record the attempt BEFORE reading so a
+    // denied/missing legacy read is never retried (which would re-prompt on every
+    // git op). `legacy_exists` is metadata-only (no prompt), so a non-existent
+    // legacy item costs nothing and never shows a dialog.
+    let marker = format!("{}:{}", provider_tag(&provider), account_id);
+    if store.tried_legacy.insert(marker) && legacy_exists(&provider, account_id) {
+        if let Some(pat) = take_legacy(&provider, account_id) {
+            map_of_mut(store, &provider).insert(account_id.to_string(), pat.clone());
+            let _ = persist(store);
+            return Ok(pat);
+        }
     }
     Err(anyhow!("No PAT stored for account"))
 }
@@ -214,4 +235,61 @@ pub fn delete_gitlab_account_pat(account_id: &str) -> Result<()> {
 
 pub fn has_gitlab_account_pat(account_id: &str) -> bool {
     has_pat(Provider::Gitlab, account_id)
+}
+
+// ---- MCP server secrets ----------------------------------------------------
+//
+// Each MCP server stores ONE Keychain item (service `devdy-mcp`, account =
+// server_id) holding a JSON payload `{"env":{KEY:VALUE...},"headers":{KEY:VALUE...}}`.
+// SQLite never holds the VALUEs — only the KEY names, for form rendering.
+//
+// Unlike PATs we keep one item per server (not a consolidated store): servers
+// are created/deleted individually and there are few of them, so the extra
+// reinstall prompts are acceptable and the code stays simple.
+
+const MCP_SERVICE_NAME: &str = "devdy-mcp";
+
+/// Decrypted secret payload for a single MCP server.
+#[derive(Default, Serialize, Deserialize, Clone)]
+pub struct McpSecrets {
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+}
+
+fn mcp_entry(server_id: &str) -> Result<Entry> {
+    Ok(Entry::new(MCP_SERVICE_NAME, server_id)?)
+}
+
+/// Persist a server's secret env/header VALUEs to the Keychain (overwrites).
+pub fn set_mcp_secrets(
+    server_id: &str,
+    env: &HashMap<String, String>,
+    headers: &HashMap<String, String>,
+) -> Result<()> {
+    let payload = McpSecrets {
+        env: env.clone(),
+        headers: headers.clone(),
+    };
+    let json = serde_json::to_string(&payload)?;
+    mcp_entry(server_id)?.set_password(&json)?;
+    Ok(())
+}
+
+/// Read a server's secret env/header VALUEs. Fail-closed: returns an empty
+/// payload if the item is missing or unreadable (never errors the caller).
+pub fn get_mcp_secrets(server_id: &str) -> McpSecrets {
+    match mcp_entry(server_id).ok().and_then(|e| e.get_password().ok()) {
+        Some(json) => serde_json::from_str(&json).unwrap_or_default(),
+        None => McpSecrets::default(),
+    }
+}
+
+/// Delete a server's Keychain item (no-op if absent).
+pub fn delete_mcp_secrets(server_id: &str) -> Result<()> {
+    if let Ok(entry) = mcp_entry(server_id) {
+        let _ = entry.delete_credential();
+    }
+    Ok(())
 }
