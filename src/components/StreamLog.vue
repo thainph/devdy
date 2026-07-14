@@ -335,6 +335,17 @@ function isWebTool(name: string): boolean {
   return n === 'webfetch' || n === 'websearch'
 }
 
+// The most recent message (assistant reply or user turn) is what the user is
+// actively reading — and while running it's still streaming — so it always
+// renders in full, never collapsed.
+const lastMessageIndex = computed(() => {
+  for (let i = props.entries.length - 1; i >= 0; i--) {
+    const k = props.entries[i].kind
+    if (k === 'text' || k === 'user') return i
+  }
+  return -1
+})
+
 const expanded = ref<Record<number, boolean>>({})
 
 watch(
@@ -483,7 +494,7 @@ const lastEntryIsResult = computed(() => {
               alt="attachment"
             />
           </div>
-          <CollapsibleMessage v-if="entry.text" :max-height="256" fade="hsl(var(--muted))">
+          <CollapsibleMessage v-if="entry.text" :max-height="256" fade="hsl(var(--muted))" :disabled="i === lastMessageIndex">
             <div class="whitespace-pre-wrap"><template
                 v-for="(seg, si) in userSegments(entry.text)"
                 :key="si"
@@ -555,6 +566,7 @@ const lastEntryIsResult = computed(() => {
         v-else-if="entry.kind === 'text'"
         :max-height="384"
         fade="hsl(var(--background))"
+        :disabled="i === lastMessageIndex"
       >
         <div
           v-file-links
