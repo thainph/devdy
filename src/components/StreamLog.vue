@@ -8,6 +8,7 @@ import type { StreamEntry } from '@/lib/streamEvents'
 import { vMermaid } from '@/lib/mermaid'
 import { vCopyCode } from '@/lib/copyCode'
 import IdeContextChip from './IdeContextChip.vue'
+import { CollapsibleMessage } from '@/components/ui'
 
 const props = defineProps<{
   entries: StreamEntry[]
@@ -283,16 +284,18 @@ const lastEntryIsResult = computed(() => {
               alt="attachment"
             />
           </div>
-          <div v-if="entry.text" class="whitespace-pre-wrap"><template
-              v-for="(seg, si) in userSegments(entry.text)"
-              :key="si"
-            ><span
-                v-if="seg.path"
-                class="font-medium text-primary cursor-pointer underline decoration-dotted underline-offset-2 hover:text-primary/75"
-                :title="'Open ' + seg.path"
-                role="button"
-                @click="emit('open-file', seg.path!)"
-              >{{ seg.text }}</span><template v-else>{{ seg.text }}</template></template></div>
+          <CollapsibleMessage v-if="entry.text" :max-height="256" fade="hsl(var(--muted))">
+            <div class="whitespace-pre-wrap"><template
+                v-for="(seg, si) in userSegments(entry.text)"
+                :key="si"
+              ><span
+                  v-if="seg.path"
+                  class="font-medium text-primary cursor-pointer underline decoration-dotted underline-offset-2 hover:text-primary/75"
+                  :title="'Open ' + seg.path"
+                  role="button"
+                  @click="emit('open-file', seg.path!)"
+                >{{ seg.text }}</span><template v-else>{{ seg.text }}</template></template></div>
+          </CollapsibleMessage>
         </div>
         <div
           class="shrink-0 h-7 w-7 rounded-full bg-muted border border-border flex items-center justify-center"
@@ -349,15 +352,20 @@ const lastEntryIsResult = computed(() => {
       </div>
 
       <!-- Assistant text -->
-      <div
+      <CollapsibleMessage
         v-else-if="entry.kind === 'text'"
-        v-file-links
-        v-mermaid
-        v-copy-code
-        v-html="renderText(entry.text)"
-        class="markdown-output text-sm leading-relaxed text-foreground"
-        @click="onProseClick"
-      />
+        :max-height="384"
+        fade="hsl(var(--background))"
+      >
+        <div
+          v-file-links
+          v-mermaid
+          v-copy-code
+          v-html="renderText(entry.text)"
+          class="markdown-output text-sm leading-relaxed text-foreground"
+          @click="onProseClick"
+        />
+      </CollapsibleMessage>
 
       <!-- Thinking -->
       <div

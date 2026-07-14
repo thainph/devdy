@@ -360,11 +360,22 @@ function onOutputScroll() {
 // yank the view to the bottom when new streamed content arrives. Otherwise a
 // click/selection near the bottom gets interrupted the moment a new chunk lands.
 const pointerDownInOutput = ref(false)
+// Timestamp (ms) of the user's last pointer interaction inside the output. We
+// hold off auto-scroll for a short window afterwards so a click/selection near
+// the bottom isn't yanked away by a stream chunk landing right as the pointer
+// is released — the moment a plain click collapses the selection guard.
+const lastOutputInteractionAt = ref(0)
+const OUTPUT_INTERACTION_COOLDOWN = 600 // ms
 function onOutputPointerDown() {
   pointerDownInOutput.value = true
+  lastOutputInteractionAt.value = Date.now()
 }
 function onWindowPointerUp() {
+  if (pointerDownInOutput.value) lastOutputInteractionAt.value = Date.now()
   pointerDownInOutput.value = false
+}
+function recentlyInteractedWithOutput() {
+  return Date.now() - lastOutputInteractionAt.value < OUTPUT_INTERACTION_COOLDOWN
 }
 function hasOutputSelection() {
   const sel = window.getSelection()
@@ -386,6 +397,7 @@ watch(
       !isViewingHistory.value &&
       stickToBottom.value &&
       !pointerDownInOutput.value &&
+      !recentlyInteractedWithOutput() &&
       !hasOutputSelection()
     ) {
       scrollOutputToBottom()
