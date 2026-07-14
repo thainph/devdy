@@ -1,0 +1,6 @@
+#!/usr/bin/env node
+// Devdy glab shim — see shim.mjs. Named exactly `glab` so it intercepts `glab`
+// calls when this directory is prepended to the sidecar PATH.
+import { run } from './shim.mjs'
+
+run('glab')

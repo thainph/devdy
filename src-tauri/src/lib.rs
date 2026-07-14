@@ -28,6 +28,10 @@ use commands::github_accounts::{
     list_github_accounts, create_github_account, update_github_account,
     delete_github_account, validate_github_account, set_project_github_account,
 };
+use commands::gitlab_accounts::{
+    list_gitlab_accounts, create_gitlab_account, update_gitlab_account,
+    delete_gitlab_account, validate_gitlab_account, set_project_gitlab_account,
+};
 use commands::files::{list_project_files, read_project_file};
 use commands::sessions::reconcile_claude_sessions;
 use commands::codex_sessions::reconcile_codex_sessions;
@@ -36,13 +40,14 @@ use commands::stats::{
     refresh_plan_usage,
 };
 use commands::storage::{get_storage_stats, clean_storage};
+use commands::work_digest::get_work_digest;
 use commands::runs::{
     start_run, cancel_run, get_run_log, rerun_run, respond_permission,
     send_user_message, end_run_input, read_run_input, resume_run,
     delete_run, delete_all_runs, create_handoff_run, create_session_run,
     rename_run, set_run_pinned,
 };
-use runs::{new_registry, RunRegistry};
+use runs::{new_broker_approvals, new_registry, RunRegistry};
 use runs::sidecar::kill_process_group;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -67,6 +72,7 @@ pub fn run() {
             runs::session_watcher::start(db.clone(), app.handle().clone());
             app.manage(db);
             app.manage(new_registry());
+            app.manage(new_broker_approvals());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -106,6 +112,12 @@ pub fn run() {
             delete_github_account,
             validate_github_account,
             set_project_github_account,
+            list_gitlab_accounts,
+            create_gitlab_account,
+            update_gitlab_account,
+            delete_gitlab_account,
+            validate_gitlab_account,
+            set_project_gitlab_account,
             get_applied_skills,
             apply_skill,
             apply_skill_to_all_projects,
@@ -141,6 +153,7 @@ pub fn run() {
             create_handoff_run,
             create_session_run,
             get_usage_stats,
+            get_work_digest,
             backfill_usage,
             reset_usage_stats,
             get_budget_status,

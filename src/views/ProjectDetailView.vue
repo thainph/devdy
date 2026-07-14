@@ -5,8 +5,9 @@ import { useProjectsStore, type AppliedSkill, type AppliedRule, type Repo } from
 import { useSkillsStore } from '@/stores/skills'
 import { useRulesStore } from '@/stores/rules'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
+import { useGitlabAccountsStore } from '@/stores/gitlabAccounts'
 import {
-  Play, AlertTriangle, Puzzle, ScrollText, Github,
+  Play, AlertTriangle, Puzzle, ScrollText, Github, Gitlab,
   GitMerge, CheckCircle2, XCircle, Trash2, Plus, GitBranch, Code2, Settings, SquareTerminal, FolderOpen
 } from 'lucide-vue-next'
 import { Button, Input, Card, Badge, AppSelect } from '@/components/ui'
@@ -19,17 +20,19 @@ const projectStore = useProjectsStore()
 const skillsStore = useSkillsStore()
 const rulesStore = useRulesStore()
 const ghStore = useGithubAccountsStore()
+const glStore = useGitlabAccountsStore()
 const { confirm } = useConfirm()
 
 const projectId = computed(() => route.params.projectId as string)
 const project = computed(() => projectStore.projects.find(p => p.id === projectId.value))
 
-const activeTab = ref<'overview' | 'skills' | 'rules' | 'github' | 'conflicts'>('overview')
+const activeTab = ref<'overview' | 'skills' | 'rules' | 'github' | 'gitlab' | 'conflicts'>('overview')
 const SECTIONS = [
   { id: 'overview', label: 'Overview', icon: Settings },
   { id: 'skills', label: 'Skills', icon: Puzzle },
   { id: 'rules', label: 'Rules', icon: ScrollText },
   { id: 'github', label: 'GitHub', icon: Github },
+  { id: 'gitlab', label: 'GitLab', icon: Gitlab },
 ] as const
 const projectConflicts = computed(() => projectStore.conflicts.filter(c => c.project_id === projectId.value))
 const projectRuleConflicts = computed(() => projectStore.ruleConflicts.filter(c => c.project_id === projectId.value))
@@ -129,6 +132,47 @@ async function handleValidateAccount() {
   }
 }
 
+// --- GitLab account linking (mirror of GitHub) ---
+const gitlabValidation = ref<{ username: string; email: string | null; scopes: string[] } | null>(null)
+const validatingGitlab = ref(false)
+const gitlabValidationError = ref<string | null>(null)
+
+const linkedGitlabAccountId = computed(() => project.value?.gitlab_account_id ?? null)
+const linkedGitlabAccount = computed(
+  () => glStore.accounts.find(a => a.id === linkedGitlabAccountId.value) ?? null,
+)
+const gitlabAccountOptions = computed(() => [
+  { value: '', label: 'None' },
+  ...glStore.accounts.map(a => ({
+    value: a.id,
+    label: a.username ? `${a.label} (@${a.username})` : a.label,
+  })),
+])
+
+async function handleSelectGitlabAccount(accountId: string) {
+  gitlabValidation.value = null
+  gitlabValidationError.value = null
+  try {
+    await projectStore.setProjectGitlabAccount(projectId.value, accountId || null)
+  } catch (e) {
+    alert(String(e))
+  }
+}
+
+async function handleValidateGitlabAccount() {
+  if (!linkedGitlabAccountId.value) return
+  validatingGitlab.value = true
+  gitlabValidation.value = null
+  gitlabValidationError.value = null
+  try {
+    gitlabValidation.value = await glStore.validate(linkedGitlabAccountId.value)
+  } catch (e) {
+    gitlabValidationError.value = String(e)
+  } finally {
+    validatingGitlab.value = false
+  }
+}
+
 const editName = ref('')
 const editEngine = ref('claude')
 const saved = ref(false)
@@ -170,6 +214,9 @@ onMounted(async () => {
   }
   if (ghStore.accounts.length === 0) {
     await ghStore.fetch()
+  }
+  if (glStore.accounts.length === 0) {
+    await glStore.fetch()
   }
   await loadAppliedSkills()
   await loadAppliedRules()
@@ -913,6 +960,70 @@ async function handleOpenInTerminal() {
               <div class="flex items-center gap-1.5 text-destructive">
                 <XCircle class="h-3.5 w-3.5" :stroke-width="1.75" />
                 {{ validationError }}
+              </div>
+            </div>
+          </Card>
+        </div>
+
+        <!-- GitLab tab -->
+        <div v-if="activeTab === 'gitlab'" class="max-w-lg space-y-4">
+          <Card bodyClass="p-4">
+            <div class="flex items-center gap-2 mb-3">
+              <Gitlab class="h-4 w-4 text-muted-foreground" :stroke-width="1.5" />
+              <h3 class="text-sm font-medium">Linked GitLab Account</h3>
+            </div>
+            <p class="text-xs text-muted-foreground mb-4 leading-relaxed">
+              Choose which GitLab account is used to fetch issues and merge requests for this project.
+              Manage accounts in
+              <RouterLink to="/settings" class="text-primary hover:underline">Settings</RouterLink>.
+            </p>
+
+            <div v-if="glStore.accounts.length === 0" class="text-xs text-muted-foreground">
+              No GitLab accounts yet.
+              <RouterLink to="/settings" class="text-primary hover:underline">Add one in Settings</RouterLink>
+              to link it here.
+            </div>
+            <AppSelect
+              v-else
+              :model-value="linkedGitlabAccountId ?? ''"
+              :options="gitlabAccountOptions"
+              placeholder="Select an account…"
+              @update:model-value="handleSelectGitlabAccount"
+            />
+
+            <div v-if="linkedGitlabAccount" class="mt-3 text-[11px] text-muted-foreground">
+              <span v-if="linkedGitlabAccount.username">@{{ linkedGitlabAccount.username }}</span>
+              <span v-if="linkedGitlabAccount.host"> · {{ linkedGitlabAccount.host }}</span>
+            </div>
+          </Card>
+
+          <!-- Validate section -->
+          <Card v-if="linkedGitlabAccountId" bodyClass="p-4">
+            <h4 class="text-xs font-medium mb-3">Validate Linked Account</h4>
+            <Button
+              variant="outline"
+              :disabled="validatingGitlab"
+              @click="handleValidateGitlabAccount"
+            >
+              {{ validatingGitlab ? 'Validating…' : 'Validate' }}
+            </Button>
+            <div
+              v-if="gitlabValidation"
+              class="mt-3 p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-md text-xs"
+            >
+              <div class="flex items-center gap-1.5 text-emerald-500 font-medium mb-1">
+                <CheckCircle2 class="h-3.5 w-3.5" :stroke-width="2" />
+                Valid — {{ gitlabValidation.username }}
+              </div>
+              <p v-if="gitlabValidation.email" class="text-muted-foreground">{{ gitlabValidation.email }}</p>
+            </div>
+            <div
+              v-if="gitlabValidationError"
+              class="mt-3 p-3 bg-destructive/10 border border-destructive/20 rounded-md text-xs"
+            >
+              <div class="flex items-center gap-1.5 text-destructive">
+                <XCircle class="h-3.5 w-3.5" :stroke-width="1.75" />
+                {{ gitlabValidationError }}
               </div>
             </div>
           </Card>

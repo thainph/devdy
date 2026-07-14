@@ -39,7 +39,8 @@
     ],
     "resources": {
       "../sidecar": "sidecar",
-      "../sidecar-codex": "sidecar-codex"
+      "../sidecar-codex": "sidecar-codex",
+      "../sidecar-proxy": "sidecar-proxy"
     }
   }
 }
