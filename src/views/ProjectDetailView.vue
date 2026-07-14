@@ -50,11 +50,20 @@ const loadingSkills = ref(false)
 const targetLabel: Record<string, string> = { claude: 'Claude', codex: 'Codex', both: 'Both' }
 const appliedRules = ref<AppliedRule[]>([])
 const loadingRules = ref(false)
-const availableRuleIds = computed(() =>
-  rulesStore.rules.filter(r => !appliedRules.value.find(a => a.rule_id === r.id))
+const togglingRuleId = ref<string | null>(null)
+// Unified list of every rule with its per-project applied state, mirroring the
+// MCP servers tab (single toggleable list instead of add/applied panels).
+const ruleItems = computed(() =>
+  rulesStore.rules.map(r => {
+    const applied = appliedRules.value.find(a => a.rule_id === r.id)
+    return {
+      ...r,
+      applied: !!applied,
+      has_claude: applied?.has_claude ?? false,
+      has_codex: applied?.has_codex ?? false,
+    }
+  })
 )
-const selectedRuleIds = ref<string[]>([])
-const applyingRules = ref(false)
 
 // --- MCP servers (per-project enable/disable) ---
 const mcpServers = ref<ProjectMcpServer[]>([])
@@ -88,12 +97,6 @@ async function handleToggleMcpServer(server: ProjectMcpServer) {
   }
 }
 
-function toggleRuleSelection(id: string) {
-  const idx = selectedRuleIds.value.indexOf(id)
-  if (idx >= 0) selectedRuleIds.value.splice(idx, 1)
-  else selectedRuleIds.value.push(id)
-}
-
 async function loadAppliedRules() {
   loadingRules.value = true
   try {
@@ -103,33 +106,19 @@ async function loadAppliedRules() {
   }
 }
 
-async function handleApplyRule() {
-  if (selectedRuleIds.value.length === 0) return
-  applyingRules.value = true
+async function handleToggleRule(rule: { id: string; applied: boolean }) {
+  togglingRuleId.value = rule.id
   try {
-    for (const id of selectedRuleIds.value) {
-      await projectStore.applyRule(projectId.value, id)
+    if (rule.applied) {
+      await projectStore.removeRuleFromProject(projectId.value, rule.id)
+    } else {
+      await projectStore.applyRule(projectId.value, rule.id)
     }
     await loadAppliedRules()
-    selectedRuleIds.value = []
   } catch (e) {
     alert(String(e))
   } finally {
-    applyingRules.value = false
-  }
-}
-
-async function handleRemoveRule(ruleId: string) {
-  if (!(await confirm({
-    title: 'Remove rule',
-    message: 'Remove this rule from the project?',
-    confirmLabel: 'Remove',
-  }))) return
-  try {
-    await projectStore.removeRuleFromProject(projectId.value, ruleId)
-    await loadAppliedRules()
-  } catch (e) {
-    alert(String(e))
+    togglingRuleId.value = null
   }
 }
 
@@ -244,16 +233,19 @@ const newRepoGitlabPath = ref('')
 const newRepoGitlabId = ref('')
 const addingRepo = ref(false)
 
-const availableSkillIds = computed(() =>
-  skillsStore.skills.filter(s => !appliedSkills.value.find(a => a.skill_id === s.id))
+const togglingSkillId = ref<string | null>(null)
+// Unified list of every skill with its per-project applied state (see ruleItems).
+const skillItems = computed(() =>
+  skillsStore.skills.map(s => {
+    const applied = appliedSkills.value.find(a => a.skill_id === s.id)
+    return {
+      ...s,
+      applied: !!applied,
+      has_claude: applied?.has_claude ?? false,
+      has_codex: applied?.has_codex ?? false,
+    }
+  })
 )
-const selectedSkillIds = ref<string[]>([])
-
-function toggleSkillSelection(id: string) {
-  const idx = selectedSkillIds.value.indexOf(id)
-  if (idx >= 0) selectedSkillIds.value.splice(idx, 1)
-  else selectedSkillIds.value.push(id)
-}
 
 onMounted(async () => {
   if (projectStore.projects.length === 0) {
@@ -423,35 +415,19 @@ async function handleAddRepo() {
   }
 }
 
-const applyingSkills = ref(false)
-
-async function handleApplySkill() {
-  if (selectedSkillIds.value.length === 0) return
-  applyingSkills.value = true
+async function handleToggleSkill(skill: { id: string; applied: boolean }) {
+  togglingSkillId.value = skill.id
   try {
-    for (const id of selectedSkillIds.value) {
-      await projectStore.applySkill(projectId.value, id)
+    if (skill.applied) {
+      await projectStore.removeSkillFromProject(projectId.value, skill.id)
+    } else {
+      await projectStore.applySkill(projectId.value, skill.id)
     }
     await loadAppliedSkills()
-    selectedSkillIds.value = []
   } catch (e) {
     alert(String(e))
   } finally {
-    applyingSkills.value = false
-  }
-}
-
-async function handleRemoveSkill(skillId: string) {
-  if (!(await confirm({
-    title: 'Remove skill',
-    message: 'Remove this skill from the project?',
-    confirmLabel: 'Remove',
-  }))) return
-  try {
-    await projectStore.removeSkillFromProject(projectId.value, skillId)
-    await loadAppliedSkills()
-  } catch (e) {
-    alert(String(e))
+    togglingSkillId.value = null
   }
 }
 
@@ -750,90 +726,21 @@ async function handleOpenInTerminal() {
 
         <!-- Skills tab -->
         <div v-if="activeTab === 'skills'" class="max-w-lg space-y-5">
-
-          <!-- Add Skills panel -->
-          <Card>
-            <template #header>
-              <Plus class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="2" />
-              <span class="text-xs font-semibold">Add Skills</span>
-              <span
-                v-if="selectedSkillIds.length > 0"
-                class="flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium text-primary-foreground leading-none"
-              >{{ selectedSkillIds.length }}</span>
-              <Button
-                v-if="selectedSkillIds.length > 0"
-                class="ml-auto"
-                :disabled="applyingSkills"
-                @click="handleApplySkill"
-              >
-                <Plus class="h-3 w-3" :stroke-width="2.5" />
-                {{ applyingSkills ? 'Applying…' : `Apply ${selectedSkillIds.length}` }}
-              </Button>
-            </template>
-
-            <!-- No available skills -->
-            <div
-              v-if="availableSkillIds.length === 0"
-              class="px-4 py-6 text-center text-xs text-muted-foreground"
-            >
-              All skills are already applied
-            </div>
-
-            <!-- Skill checklist -->
-            <div v-else class="divide-y divide-border/50">
-              <button
-                v-for="skill in availableSkillIds"
-                :key="skill.id"
-                type="button"
-                class="w-full flex items-center gap-3 px-4 py-3 text-left transition-colors cursor-pointer"
-                :class="selectedSkillIds.includes(skill.id)
-                  ? 'bg-primary/8 hover:bg-primary/12'
-                  : 'hover:bg-accent/60'"
-                @click="toggleSkillSelection(skill.id)"
-              >
-                <!-- Checkbox indicator -->
-                <div
-                  class="shrink-0 flex h-4 w-4 items-center justify-center rounded border transition-colors"
-                  :class="selectedSkillIds.includes(skill.id)
-                    ? 'bg-primary border-primary'
-                    : 'border-border bg-background'"
-                >
-                  <svg
-                    v-if="selectedSkillIds.includes(skill.id)"
-                    class="h-2.5 w-2.5 text-primary-foreground"
-                    viewBox="0 0 12 12" fill="none"
-                  >
-                    <path d="M2 6l3 3 5-5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
-                  </svg>
-                </div>
-                <div class="flex-1 min-w-0">
-                  <div class="flex items-center gap-1.5">
-                    <p class="text-xs font-medium font-mono truncate">{{ skill.name }}</p>
-                    <Badge tone="neutral" size="xs" class="shrink-0 uppercase tracking-wide">
-                      {{ targetLabel[skill.target] }}
-                    </Badge>
-                  </div>
-                  <p v-if="skill.description" class="text-[10px] text-muted-foreground truncate mt-0.5">{{ skill.description }}</p>
-                </div>
-              </button>
-            </div>
-          </Card>
-
-          <!-- Applied Skills -->
           <Card>
             <template #header>
               <Puzzle class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-              <span class="text-xs font-semibold">Applied Skills</span>
+              <span class="text-xs font-semibold">Skills</span>
               <span
                 v-if="appliedSkills.length > 0"
                 class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1 text-[10px] font-medium text-muted-foreground leading-none"
               >{{ appliedSkills.length }}</span>
+              <RouterLink to="/skills" class="ml-auto text-[11px] text-primary hover:underline">Manage</RouterLink>
             </template>
 
             <!-- Loading -->
             <div v-if="loadingSkills" class="divide-y divide-border/50">
               <div v-for="i in 2" :key="i" class="flex items-center gap-3 px-4 py-3">
-                <div class="h-7 w-7 rounded-md bg-muted animate-pulse shrink-0" />
+                <div class="h-4 w-4 rounded bg-muted animate-pulse shrink-0" />
                 <div class="flex-1 space-y-1.5">
                   <div class="h-2.5 w-24 bg-muted animate-pulse rounded" />
                   <div class="h-2 w-36 bg-muted animate-pulse rounded" />
@@ -843,94 +750,32 @@ async function handleOpenInTerminal() {
 
             <!-- Empty -->
             <div
-              v-else-if="appliedSkills.length === 0"
+              v-else-if="skillItems.length === 0"
               class="px-4 py-6 text-center text-xs text-muted-foreground"
             >
-              No skills applied yet
+              No skills defined yet.
+              <RouterLink to="/skills" class="text-primary hover:underline">Create one</RouterLink>
+              to enable it here.
             </div>
 
-            <!-- Applied skills list -->
-            <div v-else class="divide-y divide-border/50">
-              <div
-                v-for="skill in appliedSkills"
-                :key="skill.skill_id"
-                class="group flex items-center gap-3 px-4 py-3"
-              >
-                <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10">
-                  <Puzzle class="h-3.5 w-3.5 text-primary" :stroke-width="1.75" />
-                </div>
-                <div class="flex-1 min-w-0">
-                  <p class="text-xs font-medium font-mono truncate">{{ skill.skill_name }}</p>
-                  <p class="text-[10px] text-muted-foreground truncate">{{ skill.skill_description }}</p>
-                </div>
-                <div class="flex items-center gap-1 shrink-0">
-                  <Badge v-if="skill.has_claude" tone="primary" size="xs">.claude/skills</Badge>
-                  <Badge v-if="skill.has_codex" tone="neutral" size="xs">.codex/skills</Badge>
-                </div>
-                <Button
-                  variant="destructive-ghost"
-                  size="icon-sm"
-                  class="opacity-0 group-hover:opacity-100"
-                  title="Remove skill"
-                  @click="handleRemoveSkill(skill.skill_id)"
-                >
-                  <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-                </Button>
-              </div>
-            </div>
-          </Card>
-
-        </div>
-
-        <!-- Rules tab -->
-        <div v-if="activeTab === 'rules'" class="max-w-lg space-y-5">
-
-          <!-- Add Rules panel -->
-          <Card>
-            <template #header>
-              <Plus class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="2" />
-              <span class="text-xs font-semibold">Add Rules</span>
-              <span
-                v-if="selectedRuleIds.length > 0"
-                class="flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium text-primary-foreground leading-none"
-              >{{ selectedRuleIds.length }}</span>
-              <Button
-                v-if="selectedRuleIds.length > 0"
-                class="ml-auto"
-                :disabled="applyingRules"
-                @click="handleApplyRule"
-              >
-                <Plus class="h-3 w-3" :stroke-width="2.5" />
-                {{ applyingRules ? 'Applying…' : `Apply ${selectedRuleIds.length}` }}
-              </Button>
-            </template>
-
-            <div
-              v-if="availableRuleIds.length === 0"
-              class="px-4 py-6 text-center text-xs text-muted-foreground"
-            >
-              All rules are already applied
-            </div>
-
+            <!-- Skill checklist -->
             <div v-else class="divide-y divide-border/50">
               <button
-                v-for="rule in availableRuleIds"
-                :key="rule.id"
+                v-for="skill in skillItems"
+                :key="skill.id"
                 type="button"
-                class="w-full flex items-center gap-3 px-4 py-3 text-left transition-colors cursor-pointer"
-                :class="selectedRuleIds.includes(rule.id)
-                  ? 'bg-primary/8 hover:bg-primary/12'
-                  : 'hover:bg-accent/60'"
-                @click="toggleRuleSelection(rule.id)"
+                class="w-full flex items-center gap-3 px-4 py-3 text-left transition-colors cursor-pointer disabled:opacity-50"
+                :class="skill.applied ? 'bg-primary/8 hover:bg-primary/12' : 'hover:bg-accent/60'"
+                :disabled="togglingSkillId === skill.id"
+                @click="handleToggleSkill(skill)"
               >
+                <!-- Checkbox indicator -->
                 <div
                   class="shrink-0 flex h-4 w-4 items-center justify-center rounded border transition-colors"
-                  :class="selectedRuleIds.includes(rule.id)
-                    ? 'bg-primary border-primary'
-                    : 'border-border bg-background'"
+                  :class="skill.applied ? 'bg-primary border-primary' : 'border-border bg-background'"
                 >
                   <svg
-                    v-if="selectedRuleIds.includes(rule.id)"
+                    v-if="skill.applied"
                     class="h-2.5 w-2.5 text-primary-foreground"
                     viewBox="0 0 12 12" fill="none"
                   >
@@ -938,32 +783,38 @@ async function handleOpenInTerminal() {
                   </svg>
                 </div>
                 <div class="flex-1 min-w-0">
-                  <div class="flex items-center gap-1.5">
-                    <p class="text-xs font-medium font-mono truncate">{{ rule.name }}</p>
+                  <div class="flex items-center gap-1.5 flex-wrap">
+                    <p class="text-xs font-medium font-mono truncate">{{ skill.name }}</p>
                     <Badge tone="neutral" size="xs" class="shrink-0 uppercase tracking-wide">
-                      {{ targetLabel[rule.target] }}
+                      {{ targetLabel[skill.target] }}
                     </Badge>
+                    <Badge v-if="skill.has_claude" tone="primary" size="xs" class="shrink-0">.claude/skills</Badge>
+                    <Badge v-if="skill.has_codex" tone="neutral" size="xs" class="shrink-0">.codex/skills</Badge>
                   </div>
-                  <p v-if="rule.description" class="text-[10px] text-muted-foreground truncate mt-0.5">{{ rule.description }}</p>
+                  <p v-if="skill.description" class="text-[10px] text-muted-foreground truncate mt-0.5">{{ skill.description }}</p>
                 </div>
               </button>
             </div>
           </Card>
+        </div>
 
-          <!-- Applied Rules -->
+        <!-- Rules tab -->
+        <div v-if="activeTab === 'rules'" class="max-w-lg space-y-5">
           <Card>
             <template #header>
               <ScrollText class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-              <span class="text-xs font-semibold">Applied Rules</span>
+              <span class="text-xs font-semibold">Rules</span>
               <span
                 v-if="appliedRules.length > 0"
                 class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1 text-[10px] font-medium text-muted-foreground leading-none"
               >{{ appliedRules.length }}</span>
+              <RouterLink to="/rules" class="ml-auto text-[11px] text-primary hover:underline">Manage</RouterLink>
             </template>
 
+            <!-- Loading -->
             <div v-if="loadingRules" class="divide-y divide-border/50">
               <div v-for="i in 2" :key="i" class="flex items-center gap-3 px-4 py-3">
-                <div class="h-7 w-7 rounded-md bg-muted animate-pulse shrink-0" />
+                <div class="h-4 w-4 rounded bg-muted animate-pulse shrink-0" />
                 <div class="flex-1 space-y-1.5">
                   <div class="h-2.5 w-24 bg-muted animate-pulse rounded" />
                   <div class="h-2 w-36 bg-muted animate-pulse rounded" />
@@ -971,43 +822,54 @@ async function handleOpenInTerminal() {
               </div>
             </div>
 
+            <!-- Empty -->
             <div
-              v-else-if="appliedRules.length === 0"
+              v-else-if="ruleItems.length === 0"
               class="px-4 py-6 text-center text-xs text-muted-foreground"
             >
-              No rules applied yet
+              No rules defined yet.
+              <RouterLink to="/rules" class="text-primary hover:underline">Create one</RouterLink>
+              to enable it here.
             </div>
 
+            <!-- Rule checklist -->
             <div v-else class="divide-y divide-border/50">
-              <div
-                v-for="rule in appliedRules"
-                :key="rule.rule_id"
-                class="group flex items-center gap-3 px-4 py-3"
+              <button
+                v-for="rule in ruleItems"
+                :key="rule.id"
+                type="button"
+                class="w-full flex items-center gap-3 px-4 py-3 text-left transition-colors cursor-pointer disabled:opacity-50"
+                :class="rule.applied ? 'bg-primary/8 hover:bg-primary/12' : 'hover:bg-accent/60'"
+                :disabled="togglingRuleId === rule.id"
+                @click="handleToggleRule(rule)"
               >
-                <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10">
-                  <ScrollText class="h-3.5 w-3.5 text-primary" :stroke-width="1.75" />
+                <!-- Checkbox indicator -->
+                <div
+                  class="shrink-0 flex h-4 w-4 items-center justify-center rounded border transition-colors"
+                  :class="rule.applied ? 'bg-primary border-primary' : 'border-border bg-background'"
+                >
+                  <svg
+                    v-if="rule.applied"
+                    class="h-2.5 w-2.5 text-primary-foreground"
+                    viewBox="0 0 12 12" fill="none"
+                  >
+                    <path d="M2 6l3 3 5-5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
                 </div>
                 <div class="flex-1 min-w-0">
-                  <p class="text-xs font-medium font-mono truncate">{{ rule.rule_name }}</p>
-                  <p class="text-[10px] text-muted-foreground truncate">{{ rule.rule_description }}</p>
+                  <div class="flex items-center gap-1.5 flex-wrap">
+                    <p class="text-xs font-medium font-mono truncate">{{ rule.name }}</p>
+                    <Badge tone="neutral" size="xs" class="shrink-0 uppercase tracking-wide">
+                      {{ targetLabel[rule.target] }}
+                    </Badge>
+                    <Badge v-if="rule.has_claude" tone="primary" size="xs" class="shrink-0">.claude/rules</Badge>
+                    <Badge v-if="rule.has_codex" tone="neutral" size="xs" class="shrink-0">AGENTS.md</Badge>
+                  </div>
+                  <p v-if="rule.description" class="text-[10px] text-muted-foreground truncate mt-0.5">{{ rule.description }}</p>
                 </div>
-                <div class="flex items-center gap-1 shrink-0">
-                  <Badge v-if="rule.has_claude" tone="primary" size="xs">.claude/rules</Badge>
-                  <Badge v-if="rule.has_codex" tone="neutral" size="xs">AGENTS.md</Badge>
-                </div>
-                <Button
-                  variant="destructive-ghost"
-                  size="icon-sm"
-                  class="opacity-0 group-hover:opacity-100"
-                  title="Remove rule"
-                  @click="handleRemoveRule(rule.rule_id)"
-                >
-                  <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-                </Button>
-              </div>
+              </button>
             </div>
           </Card>
-
         </div>
 
         <!-- MCP Servers tab -->
