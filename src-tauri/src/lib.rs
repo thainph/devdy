@@ -1,6 +1,7 @@
 mod commands;
 mod db;
 mod github;
+mod gitlab;
 mod runs;
 mod secrets;
 
