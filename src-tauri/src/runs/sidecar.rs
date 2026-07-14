@@ -364,8 +364,9 @@ pub async fn drain_sidecar(
                             // budget badge / settings panel refresh.
                             (Some(v), "_devdy_usage") => {
                                 if let Some(usage) = v.get("usage") {
-                                    persist_plan_usage(&db_pool, usage).await;
-                                    let _ = app.emit("plan_usage_updated", serde_json::json!({ "run_id": run_id }));
+                                    if persist_plan_usage(&db_pool, usage).await {
+                                        let _ = app.emit("plan_usage_updated", serde_json::json!({ "run_id": run_id }));
+                                    }
                                 }
                             }
                             // ---- control: lifecycle (swallow) -------------------
@@ -382,17 +383,37 @@ pub async fn drain_sidecar(
                                     if let Some(m) = v.get("model").and_then(|x| x.as_str()) {
                                         last_model = Some(m.to_string());
                                     }
+                                    if persist_plan_init_rate_limits(&db_pool, v).await {
+                                        let _ = app.emit(
+                                            "plan_usage_updated",
+                                            serde_json::json!({ "run_id": run_id }),
+                                        );
+                                    }
+                                }
+                                if v.get("type").and_then(|x| x.as_str()) == Some("rate_limit_event")
+                                    && persist_plan_rate_limit_event(&db_pool, v).await
+                                {
+                                    let _ = app.emit(
+                                        "plan_usage_updated",
+                                        serde_json::json!({ "run_id": run_id }),
+                                    );
                                 }
                                 // End the turn: closing stdin makes the sidecar's
                                 // input stream close, the query finish, and the
                                 // process exit so `run:done` can fire. Follow-ups
                                 // continue via resume_run.
                                 if v.get("type").and_then(|x| x.as_str()) == Some("result") {
-                                    capture_usage(
+                                    let usage_recorded = capture_usage(
                                         &db_pool, &run_id, &project_id, &project_name,
                                         &engine, last_model.as_deref(), v,
                                     )
                                     .await;
+                                    if usage_recorded {
+                                        let _ = app.emit(
+                                            "budget_status_updated",
+                                            serde_json::json!({ "run_id": run_id }),
+                                        );
+                                    }
                                     {
                                         let mut reg = registry.lock().await;
                                         if let Some(handles) = reg.get_mut(&run_id) {
@@ -518,17 +539,30 @@ async fn capture_session_id(
 /// `plan_usage`, as a normalized JSON blob stamped with the capture time. We
 /// store only the fields the UI needs so we're insulated from churn in the
 /// experimental SDK response shape.
-async fn persist_plan_usage(db_pool: &sqlx::SqlitePool, usage: &Value) {
+pub(crate) async fn persist_plan_usage(db_pool: &sqlx::SqlitePool, usage: &Value) -> bool {
+    if !usage
+        .get("rate_limits_available")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    let limits = usage.get("rate_limits");
+    if !limits.and_then(|v| v.as_object()).is_some() {
+        return false;
+    }
+
     // Extract one window ({ utilization, resets_at }) from the rate_limits map.
     let window = |limits: Option<&Value>, key: &str| -> Value {
         let w = limits.and_then(|l| l.get(key));
         serde_json::json!({
             "utilization": w.and_then(|x| x.get("utilization")).and_then(|x| x.as_f64()),
             "resets_at": w.and_then(|x| x.get("resets_at")).and_then(|x| x.as_str()),
+            "status": null,
+            "status_at": null,
         })
     };
-    let limits = usage.get("rate_limits");
-    let snapshot = serde_json::json!({
+    let mut snapshot = serde_json::json!({
         "captured_at": chrono::Utc::now().to_rfc3339(),
         "subscription_type": usage.get("subscription_type").and_then(|v| v.as_str()),
         "rate_limits_available": usage
@@ -542,11 +576,217 @@ async fn persist_plan_usage(db_pool: &sqlx::SqlitePool, usage: &Value) {
             "seven_day_sonnet": window(limits, "seven_day_sonnet"),
         },
     });
+    // Keep the live status captured from rate_limit_events (which have no %).
+    let prior = load_plan_usage_snapshot(db_pool).await;
+    merge_prior_window_status(&mut snapshot, &prior);
 
-    let _ = sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES ('plan_usage', ?)")
+    sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES ('plan_usage', ?)")
         .bind(snapshot.to_string())
         .execute(db_pool)
-        .await;
+        .await
+        .is_ok()
+}
+
+/// Persist `rate_limits` carried on Claude's `system.init`. This is the first
+/// and often most reliable signal available to an idle usage probe, before the
+/// experimental control `/usage` request has a chance to return.
+pub(crate) async fn persist_plan_init_rate_limits(db_pool: &sqlx::SqlitePool, event: &Value) -> bool {
+    if event.get("type").and_then(|v| v.as_str()) != Some("system")
+        || event.get("subtype").and_then(|v| v.as_str()) != Some("init")
+    {
+        return false;
+    }
+    let Some(limits) = event.get("rate_limits") else {
+        return false;
+    };
+    if !limits.is_object() {
+        return false;
+    }
+
+    let window = |key: &str| -> Value {
+        let w = limits.get(key);
+        serde_json::json!({
+            "utilization": w.and_then(|x| x.get("utilization")).and_then(|x| x.as_f64()),
+            "resets_at": w.and_then(|x| x.get("resets_at")).and_then(|x| x.as_str()),
+            "status": null,
+            "status_at": null,
+        })
+    };
+    let mut snapshot = serde_json::json!({
+        "captured_at": chrono::Utc::now().to_rfc3339(),
+        "subscription_type": event.get("subscription_type").and_then(|v| v.as_str()),
+        "rate_limits_available": true,
+        "windows": {
+            "five_hour": window("five_hour"),
+            "seven_day": window("seven_day"),
+            "seven_day_opus": window("seven_day_opus"),
+            "seven_day_sonnet": window("seven_day_sonnet"),
+        },
+    });
+    let prior = load_plan_usage_snapshot(db_pool).await;
+    merge_prior_window_status(&mut snapshot, &prior);
+
+    sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES ('plan_usage', ?)")
+        .bind(snapshot.to_string())
+        .execute(db_pool)
+        .await
+        .is_ok()
+}
+
+/// Merge a live Claude `rate_limit_event` into the same `plan_usage` snapshot
+/// used by the global budget badge. These events can arrive before the
+/// experimental `/usage` helper returns, so they keep the warning at the newest
+/// known utilization while a turn is streaming.
+pub(crate) async fn persist_plan_rate_limit_event(db_pool: &sqlx::SqlitePool, event: &Value) -> bool {
+    let Some(info) = event.get("rate_limit_info").and_then(|v| v.as_object()) else {
+        return false;
+    };
+    let Some(window_key) = info
+        .get("rateLimitType")
+        .or_else(|| info.get("rate_limit_type"))
+        .and_then(|v| v.as_str())
+        .and_then(plan_window_key)
+    else {
+        return false;
+    };
+    // These events carry live status + reset time but NO utilization %. Update
+    // the reset/status without touching the % (only `/usage` knows the real %),
+    // and DON'T bump `captured_at` — that stamps the freshness of the %.
+    let resets_at = info
+        .get("resetsAt")
+        .or_else(|| info.get("resets_at"))
+        .and_then(plan_reset_to_string);
+    let status = info
+        .get("status")
+        .or_else(|| info.get("overageStatus"))
+        .and_then(|v| v.as_str())
+        .map(plan_status_severity);
+    let now = chrono::Utc::now().to_rfc3339();
+
+    let mut snapshot = load_plan_usage_snapshot(db_pool)
+        .await
+        .unwrap_or_else(empty_plan_usage_snapshot);
+
+    snapshot["rate_limits_available"] = serde_json::json!(true);
+    if snapshot.get("windows").and_then(|v| v.as_object()).is_none() {
+        snapshot["windows"] = empty_plan_usage_snapshot()["windows"].clone();
+    }
+    if let Some(windows) = snapshot.get_mut("windows").and_then(|v| v.as_object_mut()) {
+        let entry = windows.entry(window_key.to_string()).or_insert_with(
+            || serde_json::json!({ "utilization": null, "resets_at": null, "status": null, "status_at": null }),
+        );
+        if let Some(obj) = entry.as_object_mut() {
+            if resets_at.is_some() {
+                obj.insert("resets_at".to_string(), serde_json::json!(resets_at));
+            }
+            if let Some(status) = status {
+                obj.insert("status".to_string(), serde_json::json!(status));
+                obj.insert("status_at".to_string(), serde_json::json!(now));
+            }
+        }
+    }
+
+    sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES ('plan_usage', ?)")
+        .bind(snapshot.to_string())
+        .execute(db_pool)
+        .await
+        .is_ok()
+}
+
+fn empty_plan_usage_snapshot() -> Value {
+    serde_json::json!({
+        "captured_at": chrono::Utc::now().to_rfc3339(),
+        "subscription_type": null,
+        "rate_limits_available": false,
+        "windows": {
+            "five_hour": { "utilization": null, "resets_at": null, "status": null, "status_at": null },
+            "seven_day": { "utilization": null, "resets_at": null, "status": null, "status_at": null },
+            "seven_day_opus": { "utilization": null, "resets_at": null, "status": null, "status_at": null },
+            "seven_day_sonnet": { "utilization": null, "resets_at": null, "status": null, "status_at": null },
+        },
+    })
+}
+
+/// Read the current `plan_usage` snapshot from settings, if any.
+async fn load_plan_usage_snapshot(db_pool: &sqlx::SqlitePool) -> Option<Value> {
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'plan_usage'")
+            .fetch_optional(db_pool)
+            .await
+            .ok()
+            .flatten();
+    stored
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<Value>(json).ok())
+}
+
+/// Copy the live `status`/`status_at` per window from a prior snapshot onto a
+/// freshly-built one. The `/usage` control response carries accurate
+/// `utilization` but no status, while `rate_limit_event`s carry live status but
+/// no `utilization` — so each source must preserve the other's fields.
+fn merge_prior_window_status(snapshot: &mut Value, prior: &Option<Value>) {
+    let Some(prior_windows) = prior
+        .as_ref()
+        .and_then(|s| s.get("windows"))
+        .and_then(|w| w.as_object())
+    else {
+        return;
+    };
+    if let Some(windows) = snapshot.get_mut("windows").and_then(|v| v.as_object_mut()) {
+        for (key, win) in windows.iter_mut() {
+            let (Some(obj), Some(prior_win)) = (
+                win.as_object_mut(),
+                prior_windows.get(key).and_then(|v| v.as_object()),
+            ) else {
+                continue;
+            };
+            if let Some(status) = prior_win.get("status") {
+                obj.insert("status".to_string(), status.clone());
+            }
+            if let Some(status_at) = prior_win.get("status_at") {
+                obj.insert("status_at".to_string(), status_at.clone());
+            }
+        }
+    }
+}
+
+/// Map a raw `rate_limit_event` status string onto our tri-state severity.
+fn plan_status_severity(raw: &str) -> &'static str {
+    let s = raw.to_ascii_lowercase();
+    if s.contains("reject") || s.contains("block") || s.contains("exceed") || s.contains("over_limit")
+    {
+        "blocked"
+    } else if s.contains("warn") || s.contains("approach") || s.contains("near") {
+        "warning"
+    } else {
+        "allowed"
+    }
+}
+
+fn plan_window_key(raw: &str) -> Option<&'static str> {
+    match raw {
+        "five_hour" => Some("five_hour"),
+        "seven_day" => Some("seven_day"),
+        "seven_day_opus" => Some("seven_day_opus"),
+        "seven_day_sonnet" => Some("seven_day_sonnet"),
+        _ => None,
+    }
+}
+
+fn plan_reset_to_string(value: &Value) -> Option<String> {
+    if let Some(s) = value.as_str() {
+        return Some(s.to_string());
+    }
+    let raw = value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|n| i64::try_from(n).ok()))
+        .or_else(|| value.as_f64().map(|n| n as i64))?;
+    let ms = if raw > 1_000_000_000_000 {
+        raw
+    } else {
+        raw * 1000
+    };
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms).map(|dt| dt.to_rfc3339())
 }
 
 /// Live-capture a usage row at turn end, stamped with the current time.
@@ -558,12 +798,12 @@ async fn capture_usage(
     engine: &str,
     model: Option<&str>,
     value: &Value,
-) {
+) -> bool {
     let created_at = chrono::Utc::now().to_rfc3339();
     insert_usage_from_result(
         db_pool, run_id, project_id, project_name, engine, model, value, &created_at,
     )
-    .await;
+    .await
 }
 
 /// Persist one usage row from a `result` stream event. Prefers the SDK-reported
@@ -654,4 +894,49 @@ pub(crate) async fn insert_usage_from_result(
     .await;
 
     res.is_ok()
+}
+
+#[cfg(test)]
+mod plan_usage_tests {
+    use super::*;
+
+    #[test]
+    fn status_severity_mapping() {
+        assert_eq!(plan_status_severity("allowed"), "allowed");
+        assert_eq!(plan_status_severity("allowed_warning"), "warning");
+        assert_eq!(plan_status_severity("approaching_limit"), "warning");
+        assert_eq!(plan_status_severity("rejected"), "blocked");
+        assert_eq!(plan_status_severity("blocked"), "blocked");
+        assert_eq!(plan_status_severity("something_else"), "allowed");
+    }
+
+    #[test]
+    fn merge_preserves_prior_live_status() {
+        // Fresh /usage snapshot has the % but no status yet.
+        let mut fresh = serde_json::json!({
+            "windows": {
+                "five_hour": { "utilization": 12.0, "resets_at": "R", "status": null, "status_at": null },
+            }
+        });
+        // Prior snapshot carries live status from a rate_limit_event.
+        let prior = Some(serde_json::json!({
+            "windows": {
+                "five_hour": { "utilization": null, "resets_at": "R", "status": "warning", "status_at": "T" },
+            }
+        }));
+        merge_prior_window_status(&mut fresh, &prior);
+        let w = &fresh["windows"]["five_hour"];
+        assert_eq!(w["utilization"].as_f64(), Some(12.0)); // % kept
+        assert_eq!(w["status"].as_str(), Some("warning")); // live status merged in
+        assert_eq!(w["status_at"].as_str(), Some("T"));
+    }
+
+    #[test]
+    fn merge_is_noop_without_prior() {
+        let mut fresh = serde_json::json!({
+            "windows": { "five_hour": { "utilization": 5.0, "status": null } }
+        });
+        merge_prior_window_status(&mut fresh, &None);
+        assert_eq!(fresh["windows"]["five_hour"]["utilization"].as_f64(), Some(5.0));
+    }
 }

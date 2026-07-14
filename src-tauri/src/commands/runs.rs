@@ -70,6 +70,13 @@ fn log_user_content(text: &str, images: &[ImageAttachment]) -> serde_json::Value
     serde_json::Value::Array(blocks)
 }
 
+async fn claude_usage_capture_mode(db: &Db) -> &'static str {
+    match crate::commands::stats::budget_status(db).await {
+        Ok(status) if status.source == "plan" && (status.is_warning || status.is_over) => "warning",
+        _ => "normal",
+    }
+}
+
 #[tauri::command]
 pub async fn start_run(
     app: AppHandle,
@@ -243,6 +250,8 @@ pub async fn start_run(
         if claude_path != "claude" && !claude_path.trim().is_empty() {
             cmd.env("DEVDY_CLAUDE_PATH", &claude_path);
         }
+        cmd.env("DEVDY_USAGE_CAPTURE_MODE", claude_usage_capture_mode(db.inner()).await);
+        cmd.env("DEVDY_USAGE_POLL_MS", "60000");
         if let Some(m) = &model {
             cmd.env("DEVDY_MODEL", m);
         }
@@ -671,7 +680,20 @@ struct ClonableRun {
     /// Resolved, existing input markdown path (issue/PR details).
     resolved_input: String,
     engine: String,
+}
+
+/// Source-run fields needed for cross-engine handoff. Unlike rerun, a handoff
+/// can originate from a standalone chat session, which intentionally has no
+/// input markdown file.
+struct HandoffSourceRun {
+    project_id: String,
+    repo_id: Option<String>,
+    run_type: String,
+    ref_number: Option<i64>,
+    input_path: Option<String>,
+    engine: String,
     project_path: String,
+    title: Option<String>,
 }
 
 /// Load a run and resolve its original input markdown so it can be re-run or
@@ -739,7 +761,82 @@ async fn load_clonable_run(
         ref_number,
         resolved_input,
         engine,
+    })
+}
+
+/// Load a run for cross-engine handoff. Free-form session runs have no input
+/// file, so keep their input nullable; issue/PR runs still resolve and validate
+/// their cached markdown because `start_run` needs it.
+async fn load_handoff_source_run(
+    db: &sqlx::SqlitePool,
+    run_id: &str,
+) -> Result<HandoffSourceRun, String> {
+    use sqlx::Row;
+
+    let row = sqlx::query(
+        "SELECT r.project_id, r.repo_id, r.type, r.ref_number, r.input_path, r.output_path, r.engine, r.status,
+                r.title, p.path as project_path
+         FROM runs r
+         JOIN projects p ON p.id = r.project_id
+         WHERE r.id = ?",
+    )
+    .bind(run_id)
+    .fetch_one(db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let project_id: String = row.get("project_id");
+    let repo_id: Option<String> = row.get("repo_id");
+    let run_type: String = row.get("type");
+    let ref_number: Option<i64> = row.get("ref_number");
+    let stored_input: Option<String> = row.get("input_path");
+    let stored_output: Option<String> = row.get("output_path");
+    let status: String = row.get("status");
+    let engine: String = row.get("engine");
+    let project_path: String = row.get("project_path");
+    let title: Option<String> = row.get("title");
+
+    let input_path = if run_type == "session" {
+        None
+    } else {
+        let resolved_input = stored_input
+            .or_else(|| if status == "fetched" { stored_output } else { None })
+            .or_else(|| {
+                if run_type == "analyze_issue" {
+                    ref_number.map(|n| {
+                        PathBuf::from(&project_path)
+                            .join(".devdy")
+                            .join("tasks")
+                            .join(format!("issue-{}", n))
+                            .join("issue.md")
+                            .to_string_lossy()
+                            .to_string()
+                    })
+                } else {
+                    None
+                }
+            })
+            .ok_or("Cannot locate original input file — please fetch this PR/issue again")?;
+
+        if !Path::new(&resolved_input).exists() {
+            return Err(format!(
+                "Input file no longer exists: {} — please fetch again",
+                resolved_input
+            ));
+        }
+
+        Some(resolved_input)
+    };
+
+    Ok(HandoffSourceRun {
+        project_id,
+        repo_id,
+        run_type,
+        ref_number,
+        input_path,
+        engine,
         project_path,
+        title,
     })
 }
 
@@ -814,7 +911,7 @@ pub async fn create_handoff_run(
         return Err(format!("Unknown engine: {target_engine}"));
     }
 
-    let src = load_clonable_run(db.inner(), &run_id).await?;
+    let src = load_handoff_source_run(db.inner(), &run_id).await?;
 
     let new_id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -832,8 +929,8 @@ pub async fn create_handoff_run(
     let context_path = context_path.to_string_lossy().to_string();
 
     sqlx::query(
-        "INSERT INTO runs (id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, created_at)
-         VALUES (?, ?, ?, ?, ?, 'fetched', ?, ?, ?, ?)",
+        "INSERT INTO runs (id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, created_at, title)
+         VALUES (?, ?, ?, ?, ?, 'fetched', ?, ?, ?, ?, ?)",
     )
     .bind(&new_id)
     .bind(&src.project_id)
@@ -841,9 +938,10 @@ pub async fn create_handoff_run(
     .bind(&src.run_type)
     .bind(src.ref_number)
     .bind(&target_engine)
-    .bind(&src.resolved_input)
-    .bind(&src.resolved_input)
+    .bind(src.input_path.as_deref())
+    .bind(src.input_path.as_deref())
     .bind(&now)
+    .bind(src.title.as_deref())
     .execute(db.inner())
     .await
     .map_err(|e| e.to_string())?;
@@ -857,13 +955,13 @@ pub async fn create_handoff_run(
             ref_number: src.ref_number,
             status: "fetched".to_string(),
             engine: target_engine,
-            input_path: Some(src.resolved_input.clone()),
-            output_path: Some(src.resolved_input),
+            input_path: src.input_path.clone(),
+            output_path: src.input_path,
             session_id: None,
             started_at: None,
             finished_at: None,
             created_at: now,
-            title: None,
+            title: src.title,
             pinned: false,
         },
         context_path,
@@ -1235,6 +1333,8 @@ pub async fn resume_run(
         if claude_path != "claude" && !claude_path.trim().is_empty() {
             cmd.env("DEVDY_CLAUDE_PATH", &claude_path);
         }
+        cmd.env("DEVDY_USAGE_CAPTURE_MODE", claude_usage_capture_mode(db.inner()).await);
+        cmd.env("DEVDY_USAGE_POLL_MS", "60000");
         if let Some(m) = &model {
             cmd.env("DEVDY_MODEL", m);
         }

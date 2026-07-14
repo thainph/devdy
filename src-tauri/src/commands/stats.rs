@@ -7,13 +7,20 @@
 
 use crate::commands::runs::delete_run_inner;
 use crate::db::Db;
-use crate::runs::sidecar::insert_usage_from_result;
+use crate::runs::sidecar::{
+    augment_command_path, detach_process_group, insert_usage_from_result,
+    persist_plan_init_rate_limits, persist_plan_usage, persist_plan_rate_limit_event,
+    resolve_sidecar,
+};
 use crate::runs::RunRegistry;
 use chrono::{Datelike, Duration, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{QueryBuilder, Row, Sqlite};
 use std::collections::{HashMap, HashSet};
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::Command;
+use tokio::time;
 
 #[derive(Debug, Default, Deserialize)]
 pub struct StatsFilter {
@@ -439,6 +446,19 @@ pub struct BudgetStatus {
     pub limit_tokens: i64,
     /// RFC3339 reset instant, or null for a rolling window with no fixed reset.
     pub reset: Option<String>,
+    /// RFC3339 time the plan snapshot was captured, if source = plan.
+    pub captured_at: Option<String>,
+    /// True when the displayed plan snapshot is older than the live-refresh
+    /// window. UI should label it as cached instead of live.
+    pub is_stale: bool,
+    /// Live severity for the active plan window: allowed|warning|blocked, from
+    /// the newest rate_limit_event. None for token/disabled sources.
+    #[serde(default)]
+    pub status: Option<String>,
+    /// True when the active window's reset time has passed since the % was
+    /// captured, so the displayed percent is a stale pre-reset value.
+    #[serde(default)]
+    pub rolled_over: bool,
 }
 
 // ── Plan (subscription) usage — real /usage data ───────────────────────────
@@ -456,6 +476,12 @@ pub struct PlanWindow {
     pub utilization: Option<f64>,
     /// ISO 8601 instant the window resets. None for non-subscription sessions.
     pub resets_at: Option<String>,
+    /// Live severity from the latest `rate_limit_event`: allowed|warning|blocked.
+    #[serde(default)]
+    pub status: Option<String>,
+    /// RFC3339 time `status` was last observed (independent of `utilization`).
+    #[serde(default)]
+    pub status_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -481,9 +507,13 @@ pub struct PlanUsage {
 /// (no Claude run has executed since install, or the user is on API billing).
 #[tauri::command]
 pub async fn get_plan_usage(db: State<'_, Db>) -> Result<Option<PlanUsage>, String> {
+    load_plan_usage(db.inner()).await
+}
+
+async fn load_plan_usage(db: &Db) -> Result<Option<PlanUsage>, String> {
     let stored: Option<String> =
         sqlx::query_scalar("SELECT value FROM settings WHERE key = 'plan_usage'")
-            .fetch_optional(db.inner())
+            .fetch_optional(db)
             .await
             .map_err(|e| e.to_string())?;
     match stored {
@@ -492,12 +522,147 @@ pub async fn get_plan_usage(db: State<'_, Db>) -> Result<Option<PlanUsage>, Stri
     }
 }
 
+#[tauri::command]
+pub async fn refresh_plan_usage(
+    app: AppHandle,
+    db: State<'_, Db>,
+) -> Result<Option<PlanUsage>, String> {
+    let rows = sqlx::query("SELECT key, value FROM settings")
+        .fetch_all(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut node_path = "node".to_string();
+    let mut sidecar_path = String::new();
+    let mut claude_path = "claude".to_string();
+    for row in &rows {
+        let key: String = row.get("key");
+        let value: String = row.get("value");
+        match key.as_str() {
+            "node_path" => node_path = value,
+            "sidecar_path" => sidecar_path = value,
+            "claude_path" => claude_path = value,
+            _ => {}
+        }
+    }
+
+    let cwd: String = sqlx::query_scalar("SELECT path FROM projects ORDER BY created_at DESC LIMIT 1")
+        .fetch_optional(db.inner())
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| {
+            std::env::current_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| ".".to_string())
+        });
+
+    let (node_bin, sidecar_script) = resolve_sidecar(&app, &node_path, &sidecar_path)?;
+    let mut cmd = Command::new(&node_bin);
+    cmd.current_dir(&cwd).arg(&sidecar_script);
+    augment_command_path(&mut cmd);
+    if claude_path != "claude" && !claude_path.trim().is_empty() {
+        cmd.env("DEVDY_CLAUDE_PATH", &claude_path);
+    }
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    detach_process_group(&mut cmd);
+    cmd.kill_on_drop(true);
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn usage probe ({}): {}", node_bin, e))?;
+    let mut stdin = child.stdin.take().ok_or("usage probe stdin unavailable")?;
+    let stdout = child.stdout.take().ok_or("usage probe stdout unavailable")?;
+    let mut lines = BufReader::new(stdout).lines();
+
+    let probe = serde_json::json!({
+        "type": "usage_probe",
+        "options": { "cwd": cwd },
+    });
+    stdin
+        .write_all(format!("{}\n", probe).as_bytes())
+        .await
+        .map_err(|e| format!("write usage probe: {}", e))?;
+    stdin.flush().await.map_err(|e| format!("flush usage probe: {}", e))?;
+
+    let db_pool = db.inner().clone();
+    let read_usage = async {
+        while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            match value.get("type").and_then(|v| v.as_str()) {
+                Some("_devdy_usage") => {
+                    if let Some(usage) = value.get("usage") {
+                        if usage
+                            .get("rate_limits_available")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                            && usage.get("rate_limits").and_then(|v| v.as_object()).is_some()
+                        {
+                            if persist_plan_usage(&db_pool, usage).await {
+                                let _ = app.emit("plan_usage_updated", serde_json::json!({ "source": "probe" }));
+                                return Ok(true);
+                            }
+                        }
+                    }
+                }
+                Some("system") => {
+                    if persist_plan_init_rate_limits(&db_pool, &value).await {
+                        let _ = app.emit("plan_usage_updated", serde_json::json!({ "source": "probe" }));
+                        return Ok(true);
+                    }
+                }
+                Some("rate_limit_event") => {
+                    if persist_plan_rate_limit_event(&db_pool, &value).await {
+                        let _ = app.emit("plan_usage_updated", serde_json::json!({ "source": "probe" }));
+                        return Ok(true);
+                    }
+                }
+                Some("_devdy_done") | Some("_devdy_closed") => return Ok(false),
+                Some("_devdy_error") => {
+                    let err = value
+                        .get("error")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("usage probe failed");
+                    return Err(err.to_string());
+                }
+                _ => {}
+            }
+        }
+        Ok(false)
+    };
+
+    let outcome = time::timeout(std::time::Duration::from_secs(15), read_usage).await;
+    if let Some(pid) = child.id() {
+        crate::runs::sidecar::kill_process_group(pid);
+    }
+    let _ = child.kill().await;
+
+    match outcome {
+        Ok(Ok(true)) => load_plan_usage(db.inner()).await,
+        Ok(Ok(false)) => Err("usage probe completed without a fresh usage snapshot".to_string()),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err("usage probe timed out".to_string()),
+    }
+}
+
 /// Map the configured budget period onto a real claude.ai plan window from the
 /// latest `/usage` snapshot. Returns `(utilization_percent, resets_at)` only
 /// when accurate plan data backs the period: rolling 5h → five_hour, weekly →
 /// seven_day. "Monthly" has no plan window, so it always falls through to the
 /// token estimate. Mirrors the mapping in `src/stores/budget.ts`.
-fn plan_window_for(period: &str, snapshot: &serde_json::Value) -> Option<(f64, Option<String>)> {
+struct PlanWindowView {
+    utilization: f64,
+    resets_at: Option<String>,
+    captured_at: Option<String>,
+    is_stale: bool,
+    status: Option<String>,
+    rolled_over: bool,
+}
+
+fn plan_window_for(period: &str, snapshot: &serde_json::Value, stale_secs: i64) -> Option<PlanWindowView> {
     if !snapshot.get("rate_limits_available").and_then(|v| v.as_bool()).unwrap_or(false) {
         return None;
     }
@@ -507,9 +672,43 @@ fn plan_window_for(period: &str, snapshot: &serde_json::Value) -> Option<(f64, O
         _ => return None,
     };
     let w = snapshot.get("windows").and_then(|w| w.get(key))?;
-    let util = w.get("utilization").and_then(|v| v.as_f64())?;
     let resets_at = w.get("resets_at").and_then(|v| v.as_str()).map(|s| s.to_string());
-    Some((util, resets_at))
+    let status = w.get("status").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let captured_at = snapshot
+        .get("captured_at")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // The window has rolled over when its reset instant is already in the past:
+    // the stored % predates the reset and no longer reflects the fresh window.
+    let now = Utc::now();
+    let rolled_over = resets_at
+        .as_deref()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| now > dt.with_timezone(&Utc))
+        .unwrap_or(false);
+
+    // Utilization only comes from `/usage`. Missing % is fine after a rollover
+    // (treat as 0); otherwise there's no plan verdict yet — fall through.
+    let util = match w.get("utilization").and_then(|v| v.as_f64()) {
+        Some(u) if !rolled_over => u,
+        _ if rolled_over => 0.0,
+        _ => return None,
+    };
+
+    let is_stale = captured_at
+        .as_deref()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| now.signed_duration_since(dt.with_timezone(&Utc)) > Duration::seconds(stale_secs.max(1)))
+        .unwrap_or(true);
+    Some(PlanWindowView {
+        utilization: util,
+        resets_at,
+        captured_at,
+        is_stale,
+        status,
+        rolled_over,
+    })
 }
 
 /// The one place that decides whether usage is near/over budget. Reads the
@@ -525,6 +724,7 @@ pub async fn budget_status(db: &Db) -> Result<BudgetStatus, String> {
     let mut period = "month".to_string();
     let mut limit_tokens: i64 = 0;
     let mut warn_percent: i64 = 80;
+    let mut stale_secs: i64 = 120;
     let mut plan_json: Option<String> = None;
     for row in &rows {
         let key: String = row.get("key");
@@ -533,6 +733,7 @@ pub async fn budget_status(db: &Db) -> Result<BudgetStatus, String> {
             "token_budget_period" => period = value,
             "token_budget_limit" => limit_tokens = value.trim().parse::<i64>().unwrap_or(0).max(0),
             "budget_warn_percent" => warn_percent = value.trim().parse::<i64>().unwrap_or(80).clamp(1, 100),
+            "plan_stale_secs" => stale_secs = value.trim().parse::<i64>().unwrap_or(120).clamp(10, 3600),
             "plan_usage" => plan_json = Some(value),
             _ => {}
         }
@@ -542,17 +743,25 @@ pub async fn budget_status(db: &Db) -> Result<BudgetStatus, String> {
 
     // 1) Real subscription plan window (most accurate — the true ceiling).
     if let Some(snapshot) = plan_json.as_deref().and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok()) {
-        if let Some((util, resets_at)) = plan_window_for(&period, &snapshot) {
-            let percent = util.round() as i64;
+        if let Some(view) = plan_window_for(&period, &snapshot, stale_secs) {
+            let percent = view.utilization.round() as i64;
+            let blocked = view.status.as_deref() == Some("blocked");
+            let warning_status = view.status.as_deref() == Some("warning");
             return Ok(BudgetStatus {
                 source: "plan".into(),
                 period,
                 percent,
-                is_warning: percent >= warn_percent,
-                is_over: percent >= 100,
+                // Live status escalates the verdict even when the % is slightly
+                // stale; a rolled-over window can never be warning/over.
+                is_warning: !view.rolled_over && (percent >= warn_percent || warning_status || blocked),
+                is_over: !view.rolled_over && (percent >= 100 || blocked),
                 used_tokens: 0,
                 limit_tokens: 0,
-                reset: resets_at,
+                reset: view.resets_at,
+                captured_at: view.captured_at,
+                is_stale: view.is_stale,
+                status: view.status,
+                rolled_over: view.rolled_over,
             });
         }
     }
@@ -571,6 +780,10 @@ pub async fn budget_status(db: &Db) -> Result<BudgetStatus, String> {
             used_tokens,
             limit_tokens,
             reset,
+            captured_at: None,
+            is_stale: false,
+            status: None,
+            rolled_over: false,
         });
     }
 
@@ -584,6 +797,10 @@ pub async fn budget_status(db: &Db) -> Result<BudgetStatus, String> {
         used_tokens: 0,
         limit_tokens: 0,
         reset,
+        captured_at: None,
+        is_stale: false,
+        status: None,
+        rolled_over: false,
     })
 }
 
@@ -608,4 +825,69 @@ pub async fn enforce_budget(db: &Db, override_budget: bool) -> Result<(), String
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod plan_window_tests {
+    use super::*;
+
+    fn snapshot(five_hour: serde_json::Value, captured_at: &str) -> serde_json::Value {
+        serde_json::json!({
+            "captured_at": captured_at,
+            "rate_limits_available": true,
+            "windows": { "five_hour": five_hour },
+        })
+    }
+
+    #[test]
+    fn fresh_utilization_is_not_stale() {
+        let now = Utc::now().to_rfc3339();
+        let future = (Utc::now() + Duration::hours(2)).to_rfc3339();
+        let snap = snapshot(
+            serde_json::json!({ "utilization": 42.0, "resets_at": future, "status": "allowed" }),
+            &now,
+        );
+        let v = plan_window_for("5h", &snap, 120).expect("plan window");
+        assert_eq!(v.utilization.round() as i64, 42);
+        assert!(!v.is_stale);
+        assert!(!v.rolled_over);
+        assert_eq!(v.status.as_deref(), Some("allowed"));
+    }
+
+    #[test]
+    fn old_snapshot_is_stale() {
+        let old = (Utc::now() - Duration::minutes(30)).to_rfc3339();
+        let future = (Utc::now() + Duration::hours(2)).to_rfc3339();
+        let snap = snapshot(
+            serde_json::json!({ "utilization": 10.0, "resets_at": future }),
+            &old,
+        );
+        let v = plan_window_for("5h", &snap, 120).expect("plan window");
+        assert!(v.is_stale);
+    }
+
+    #[test]
+    fn past_reset_rolls_over_to_zero() {
+        let now = Utc::now().to_rfc3339();
+        let past = (Utc::now() - Duration::minutes(5)).to_rfc3339();
+        let snap = snapshot(
+            serde_json::json!({ "utilization": 88.0, "resets_at": past }),
+            &now,
+        );
+        let v = plan_window_for("5h", &snap, 120).expect("plan window");
+        assert!(v.rolled_over);
+        assert_eq!(v.utilization.round() as i64, 0);
+    }
+
+    #[test]
+    fn missing_utilization_without_rollover_yields_no_verdict() {
+        let now = Utc::now().to_rfc3339();
+        let future = (Utc::now() + Duration::hours(2)).to_rfc3339();
+        // Only a rate_limit_event landed (status/reset but no %): no plan verdict.
+        let snap = snapshot(
+            serde_json::json!({ "utilization": null, "resets_at": future, "status": "allowed" }),
+            &now,
+        );
+        assert!(plan_window_for("5h", &snap, 120).is_none());
+    }
 }
