@@ -4,14 +4,17 @@ import { useRoute, useRouter } from 'vue-router'
 import { useProjectsStore, type AppliedSkill, type AppliedRule, type Repo } from '@/stores/projects'
 import { useSkillsStore } from '@/stores/skills'
 import { useRulesStore } from '@/stores/rules'
+import { useMcpServersStore, type ProjectMcpServer } from '@/stores/mcpServers'
+import { useAppSettingsStore } from '@/stores/appSettings'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import { useGitlabAccountsStore } from '@/stores/gitlabAccounts'
 import {
-  Play, AlertTriangle, Puzzle, ScrollText, Github, Gitlab,
+  Play, AlertTriangle, Puzzle, ScrollText, Server, Github, Gitlab,
   GitMerge, CheckCircle2, XCircle, Trash2, Plus, GitBranch, Code2, Settings, SquareTerminal, FolderOpen
 } from 'lucide-vue-next'
 import { Button, Input, Card, Badge, AppSelect } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
+import { useToast } from '@/composables/useToast'
 import { invoke } from '@/lib/tauri'
 
 const route = useRoute()
@@ -19,18 +22,22 @@ const router = useRouter()
 const projectStore = useProjectsStore()
 const skillsStore = useSkillsStore()
 const rulesStore = useRulesStore()
+const mcpStore = useMcpServersStore()
+const appSettings = useAppSettingsStore()
 const ghStore = useGithubAccountsStore()
 const glStore = useGitlabAccountsStore()
 const { confirm } = useConfirm()
+const { toast } = useToast()
 
 const projectId = computed(() => route.params.projectId as string)
 const project = computed(() => projectStore.projects.find(p => p.id === projectId.value))
 
-const activeTab = ref<'overview' | 'skills' | 'rules' | 'github' | 'gitlab' | 'conflicts'>('overview')
+const activeTab = ref<'overview' | 'skills' | 'rules' | 'mcp' | 'github' | 'gitlab' | 'conflicts'>('overview')
 const SECTIONS = [
   { id: 'overview', label: 'Overview', icon: Settings },
   { id: 'skills', label: 'Skills', icon: Puzzle },
   { id: 'rules', label: 'Rules', icon: ScrollText },
+  { id: 'mcp', label: 'MCP Servers', icon: Server },
   { id: 'github', label: 'GitHub', icon: Github },
   { id: 'gitlab', label: 'GitLab', icon: Gitlab },
 ] as const
@@ -48,6 +55,38 @@ const availableRuleIds = computed(() =>
 )
 const selectedRuleIds = ref<string[]>([])
 const applyingRules = ref(false)
+
+// --- MCP servers (per-project enable/disable) ---
+const mcpServers = ref<ProjectMcpServer[]>([])
+const loadingMcp = ref(false)
+const savingMcp = ref(false)
+// Warn (not block) when a remote server is enabled but the default engine is
+// Codex, which can't use http/sse transports.
+const defaultIsCodex = computed(() => appSettings.settings?.default_engine === 'codex')
+
+async function loadProjectMcpServers() {
+  loadingMcp.value = true
+  try {
+    mcpServers.value = await mcpStore.listForProject(projectId.value)
+  } finally {
+    loadingMcp.value = false
+  }
+}
+
+async function handleToggleMcpServer(server: ProjectMcpServer) {
+  const next = !server.enabled_for_project
+  server.enabled_for_project = next
+  savingMcp.value = true
+  try {
+    const ids = mcpServers.value.filter(s => s.enabled_for_project).map(s => s.id)
+    await mcpStore.setForProject(projectId.value, ids)
+  } catch (e) {
+    server.enabled_for_project = !next
+    alert(String(e))
+  } finally {
+    savingMcp.value = false
+  }
+}
 
 function toggleRuleSelection(id: string) {
   const idx = selectedRuleIds.value.indexOf(id)
@@ -174,13 +213,10 @@ async function handleValidateGitlabAccount() {
 }
 
 const editName = ref('')
-const editEngine = ref('claude')
-const saved = ref(false)
 // Guards auto-save so initial population of the edit fields (from `project`
 // and `loadRepos`) doesn't trigger a write.
 const overviewReady = ref(false)
 let saveTimer: ReturnType<typeof setTimeout> | null = null
-let savedTimer: ReturnType<typeof setTimeout> | null = null
 
 const repos = ref<Repo[]>([])
 const reposLoading = ref(false)
@@ -218,8 +254,10 @@ onMounted(async () => {
   if (glStore.accounts.length === 0) {
     await glStore.fetch()
   }
+  await appSettings.ensureLoaded()
   await loadAppliedSkills()
   await loadAppliedRules()
+  await loadProjectMcpServers()
   await projectStore.fetchConflicts()
   await projectStore.fetchRuleConflicts()
   await loadRepos()
@@ -246,7 +284,6 @@ async function loadRepos() {
 watch(project, (p) => {
   if (p) {
     editName.value = p.name
-    editEngine.value = p.default_engine
   }
 }, { immediate: true })
 
@@ -261,16 +298,17 @@ async function loadAppliedSkills() {
 
 async function autoSaveProject() {
   if (!project.value) return
+  let changed = false
   try {
     if (
       editName.value.trim() &&
-      (editName.value !== project.value.name || editEngine.value !== project.value.default_engine)
+      editName.value !== project.value.name
     ) {
       await projectStore.updateProject({
         id: projectId.value,
         name: editName.value,
-        default_engine: editEngine.value,
       })
+      changed = true
     }
     for (const r of repos.value) {
       const edit = editingRepo.value[r.id]
@@ -290,12 +328,11 @@ async function autoSaveProject() {
       r.name = edit.name
       r.github_owner = edit.github_owner || null
       r.github_repo = edit.github_repo || null
+      changed = true
     }
-    saved.value = true
-    if (savedTimer) clearTimeout(savedTimer)
-    savedTimer = setTimeout(() => { saved.value = false }, 1500)
+    if (changed) toast.success('Saved')
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   }
 }
 
@@ -305,7 +342,7 @@ function scheduleSave() {
   saveTimer = setTimeout(autoSaveProject, 500)
 }
 
-watch([editName, editEngine], scheduleSave)
+watch(editName, scheduleSave)
 watch(editingRepo, scheduleSave, { deep: true })
 
 async function handleRemoveRepo(id: string) {
@@ -411,9 +448,6 @@ async function handleOpenInTerminal() {
     <div class="flex items-center justify-between gap-3 px-6 h-13 border-b border-border/60 shrink-0">
       <div class="flex items-center gap-2 min-w-0">
         <h1 class="text-sm font-semibold truncate">{{ project?.name ?? 'Project' }}</h1>
-        <Badge v-if="project" tone="neutral" class="font-mono shrink-0">
-          {{ project.default_engine }}
-        </Badge>
         <span
           v-if="project"
           class="text-[11px] text-muted-foreground font-mono truncate hidden md:inline"
@@ -512,55 +546,44 @@ async function handleOpenInTerminal() {
         <div class="p-6">
 
         <!-- Overview tab -->
-        <div v-if="activeTab === 'overview'" class="max-w-lg space-y-5">
-          <Transition
-            enter-active-class="transition-opacity duration-150"
-            enter-from-class="opacity-0"
-            leave-active-class="transition-opacity duration-300"
-            leave-to-class="opacity-0"
-          >
-            <span
-              v-if="saved"
-              class="flex items-center gap-1 text-xs text-emerald-500"
-            >
-              <CheckCircle2 class="h-3.5 w-3.5" :stroke-width="2" />
-              Saved
-            </span>
-          </Transition>
-          <div class="space-y-1">
-            <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider">Project Name</label>
-            <Input
-              v-model="editName"
-              size="md"
-            />
-          </div>
-          <div class="space-y-1">
-            <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider">Default Engine</label>
-            <AppSelect
-              v-model="editEngine"
-              :options="[
-                { value: 'claude', label: 'claude' },
-                { value: 'codex', label: 'codex' },
-              ]"
-            />
-          </div>
-          <!-- Repos section -->
-          <div class="pt-2 border-t border-border/60">
-            <div class="flex items-center gap-2 mb-3">
-              <GitBranch class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-              <span class="text-xs font-medium text-muted-foreground uppercase tracking-wider">Repositories</span>
+        <div v-if="activeTab === 'overview'" class="max-w-lg space-y-4">
+          <!-- General card -->
+          <Card body-class="p-4 space-y-4">
+            <template #header>
+              <Settings class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
+              <span class="text-xs font-semibold">General</span>
+            </template>
+            <div class="space-y-1.5">
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Project Name</label>
+              <Input v-model="editName" size="sm" />
             </div>
+            <div class="space-y-1.5">
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Path</label>
+              <p class="text-[11px] text-muted-foreground font-mono break-all">{{ project.path }}</p>
+            </div>
+          </Card>
+
+          <!-- Repositories card -->
+          <Card body-class="p-4 space-y-4">
+            <template #header>
+              <GitBranch class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
+              <span class="text-xs font-semibold">Repositories</span>
+              <span
+                v-if="repos.length"
+                class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1 text-[10px] font-medium text-muted-foreground leading-none"
+              >{{ repos.length }}</span>
+            </template>
 
             <div v-if="reposLoading" class="space-y-2">
               <div v-for="i in 2" :key="i" class="h-20 rounded-md bg-muted animate-pulse" />
             </div>
 
-            <div v-else class="space-y-2">
+            <template v-else>
               <!-- Existing repos -->
               <div
                 v-for="repo in repos"
                 :key="repo.id"
-                class="bg-card border border-border rounded-md p-3 space-y-2"
+                class="border border-border rounded-md p-3 space-y-2"
               >
                 <div class="flex items-center gap-2">
                   <Input
@@ -579,7 +602,7 @@ async function handleOpenInTerminal() {
                     <Trash2 class="h-3 w-3" :stroke-width="1.75" />
                   </Button>
                 </div>
-                <div class="text-[10px] text-muted-foreground font-mono truncate px-0.5">{{ repo.path }}</div>
+                <div class="text-[11px] text-muted-foreground font-mono truncate px-0.5">{{ repo.path }}</div>
                 <div class="flex gap-1.5 items-center">
                   <Input
                     v-model="editingRepo[repo.id].github_owner"
@@ -597,9 +620,9 @@ async function handleOpenInTerminal() {
                 </div>
               </div>
 
-              <!-- Add new repo row -->
-              <div class="bg-muted/30 border border-dashed border-border/60 rounded-md p-3 space-y-2">
-                <p class="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">Add repository</p>
+              <!-- Add new repo -->
+              <div class="border-t border-border/60 pt-3 space-y-2">
+                <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Add repository</div>
                 <Input
                   v-model="newRepoName"
                   type="text"
@@ -622,16 +645,15 @@ async function handleOpenInTerminal() {
                   />
                 </div>
                 <Button
-                  size="xs"
                   :disabled="addingRepo || !newRepoName.trim()"
                   @click="handleAddRepo"
                 >
-                  <Plus class="h-3 w-3" :stroke-width="2" />
+                  <Plus class="h-3.5 w-3.5" :stroke-width="2" />
                   {{ addingRepo ? 'Adding…' : 'Add' }}
                 </Button>
               </div>
-            </div>
-          </div>
+            </template>
+          </Card>
 
         </div>
 
@@ -897,25 +919,115 @@ async function handleOpenInTerminal() {
 
         </div>
 
+        <!-- MCP Servers tab -->
+        <div v-if="activeTab === 'mcp'" class="max-w-lg space-y-5">
+          <Card>
+            <template #header>
+              <Server class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
+              <span class="text-xs font-semibold">MCP Servers</span>
+              <span
+                v-if="mcpServers.filter(s => s.enabled_for_project).length > 0"
+                class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1 text-[10px] font-medium text-muted-foreground leading-none"
+              >{{ mcpServers.filter(s => s.enabled_for_project).length }}</span>
+              <RouterLink to="/mcp" class="ml-auto text-[11px] text-primary hover:underline">Manage</RouterLink>
+            </template>
+
+            <!-- Codex warning banner -->
+            <div
+              v-if="defaultIsCodex && mcpServers.some(s => (s.transport === 'http' || s.transport === 'sse') && s.enabled_for_project)"
+              class="mx-4 mt-4 flex items-start gap-2 px-3 py-2 bg-amber-500/10 border border-amber-500/20 rounded-md"
+            >
+              <AlertTriangle class="h-3.5 w-3.5 text-amber-500 mt-0.5 shrink-0" :stroke-width="1.75" />
+              <p class="text-[11px] text-amber-600 dark:text-amber-400 leading-relaxed">
+                The default engine is Codex, which only supports stdio servers. Enabled http/sse servers will be skipped on Codex runs.
+              </p>
+            </div>
+
+            <!-- Loading -->
+            <div v-if="loadingMcp" class="divide-y divide-border/50">
+              <div v-for="i in 2" :key="i" class="flex items-center gap-3 px-4 py-3">
+                <div class="h-4 w-4 rounded bg-muted animate-pulse shrink-0" />
+                <div class="flex-1 space-y-1.5">
+                  <div class="h-2.5 w-24 bg-muted animate-pulse rounded" />
+                  <div class="h-2 w-36 bg-muted animate-pulse rounded" />
+                </div>
+              </div>
+            </div>
+
+            <!-- Empty -->
+            <div
+              v-else-if="mcpServers.length === 0"
+              class="px-4 py-6 text-center text-xs text-muted-foreground"
+            >
+              No MCP servers defined yet.
+              <RouterLink to="/mcp" class="text-primary hover:underline">Create one</RouterLink>
+              to enable it here.
+            </div>
+
+            <!-- Server checklist -->
+            <div v-else class="divide-y divide-border/50">
+              <button
+                v-for="server in mcpServers"
+                :key="server.id"
+                type="button"
+                class="w-full flex items-center gap-3 px-4 py-3 text-left transition-colors cursor-pointer disabled:opacity-50"
+                :class="server.enabled_for_project ? 'bg-primary/8 hover:bg-primary/12' : 'hover:bg-accent/60'"
+                :disabled="savingMcp"
+                @click="handleToggleMcpServer(server)"
+              >
+                <!-- Checkbox indicator -->
+                <div
+                  class="shrink-0 flex h-4 w-4 items-center justify-center rounded border transition-colors"
+                  :class="server.enabled_for_project ? 'bg-primary border-primary' : 'border-border bg-background'"
+                >
+                  <svg
+                    v-if="server.enabled_for_project"
+                    class="h-2.5 w-2.5 text-primary-foreground"
+                    viewBox="0 0 12 12" fill="none"
+                  >
+                    <path d="M2 6l3 3 5-5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </div>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-1.5 flex-wrap">
+                    <p class="text-xs font-medium font-mono truncate">{{ server.name }}</p>
+                    <Badge tone="neutral" size="xs" class="shrink-0 uppercase tracking-wide">{{ server.transport }}</Badge>
+                    <Badge v-if="!server.enabled" tone="neutral" size="xs" class="shrink-0">disabled</Badge>
+                    <Badge
+                      v-if="(server.transport === 'http' || server.transport === 'sse') && defaultIsCodex"
+                      tone="warning"
+                      size="xs"
+                      class="shrink-0"
+                      title="Codex can't use http/sse servers; this will be skipped on Codex runs."
+                    >Claude only</Badge>
+                  </div>
+                  <p v-if="server.description" class="text-[10px] text-muted-foreground truncate mt-0.5">{{ server.description }}</p>
+                </div>
+              </button>
+            </div>
+          </Card>
+        </div>
+
         <!-- GitHub tab -->
         <div v-if="activeTab === 'github'" class="max-w-lg space-y-4">
-          <Card bodyClass="p-4">
-            <div class="flex items-center gap-2 mb-3">
-              <Github class="h-4 w-4 text-muted-foreground" :stroke-width="1.5" />
-              <h3 class="text-sm font-medium">Linked GitHub Account</h3>
-            </div>
-            <p class="text-xs text-muted-foreground mb-4 leading-relaxed">
+          <Card body-class="p-4 space-y-4">
+            <template #header>
+              <Github class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
+              <span class="text-xs font-semibold">Linked GitHub Account</span>
+            </template>
+            <p class="text-[11px] text-muted-foreground leading-relaxed">
               Choose which GitHub account is used to fetch issues and pull requests for this project.
               Manage accounts in
               <RouterLink to="/settings" class="text-primary hover:underline">Settings</RouterLink>.
             </p>
 
-            <div v-if="ghStore.accounts.length === 0" class="text-xs text-muted-foreground">
+            <div v-if="ghStore.accounts.length === 0" class="text-[11px] text-muted-foreground">
               No GitHub accounts yet.
               <RouterLink to="/settings" class="text-primary hover:underline">Add one in Settings</RouterLink>
               to link it here.
             </div>
             <AppSelect
+              size="sm"
               v-else
               :model-value="linkedAccountId ?? ''"
               :options="accountOptions"
@@ -923,15 +1035,18 @@ async function handleOpenInTerminal() {
               @update:model-value="handleSelectAccount"
             />
 
-            <div v-if="linkedAccount" class="mt-3 text-[11px] text-muted-foreground">
+            <div v-if="linkedAccount" class="text-[11px] text-muted-foreground">
               <span v-if="linkedAccount.username">@{{ linkedAccount.username }}</span>
               <span v-if="linkedAccount.scopes.length"> · {{ linkedAccount.scopes.join(', ') }}</span>
             </div>
           </Card>
 
           <!-- Validate section -->
-          <Card v-if="linkedAccountId" bodyClass="p-4">
-            <h4 class="text-xs font-medium mb-3">Validate Linked Account</h4>
+          <Card v-if="linkedAccountId" body-class="p-4 space-y-3">
+            <template #header>
+              <CheckCircle2 class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
+              <span class="text-xs font-semibold">Validate Linked Account</span>
+            </template>
             <Button
               variant="outline"
               :disabled="validating"
@@ -941,7 +1056,7 @@ async function handleOpenInTerminal() {
             </Button>
             <div
               v-if="accountValidation"
-              class="mt-3 p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-md text-xs"
+              class="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-md text-xs"
             >
               <div class="flex items-center gap-1.5 text-emerald-500 font-medium mb-1">
                 <CheckCircle2 class="h-3.5 w-3.5" :stroke-width="2" />
@@ -955,7 +1070,7 @@ async function handleOpenInTerminal() {
             </div>
             <div
               v-if="validationError"
-              class="mt-3 p-3 bg-destructive/10 border border-destructive/20 rounded-md text-xs"
+              class="p-3 bg-destructive/10 border border-destructive/20 rounded-md text-xs"
             >
               <div class="flex items-center gap-1.5 text-destructive">
                 <XCircle class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -967,23 +1082,24 @@ async function handleOpenInTerminal() {
 
         <!-- GitLab tab -->
         <div v-if="activeTab === 'gitlab'" class="max-w-lg space-y-4">
-          <Card bodyClass="p-4">
-            <div class="flex items-center gap-2 mb-3">
-              <Gitlab class="h-4 w-4 text-muted-foreground" :stroke-width="1.5" />
-              <h3 class="text-sm font-medium">Linked GitLab Account</h3>
-            </div>
-            <p class="text-xs text-muted-foreground mb-4 leading-relaxed">
+          <Card body-class="p-4 space-y-4">
+            <template #header>
+              <Gitlab class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
+              <span class="text-xs font-semibold">Linked GitLab Account</span>
+            </template>
+            <p class="text-[11px] text-muted-foreground leading-relaxed">
               Choose which GitLab account is used to fetch issues and merge requests for this project.
               Manage accounts in
               <RouterLink to="/settings" class="text-primary hover:underline">Settings</RouterLink>.
             </p>
 
-            <div v-if="glStore.accounts.length === 0" class="text-xs text-muted-foreground">
+            <div v-if="glStore.accounts.length === 0" class="text-[11px] text-muted-foreground">
               No GitLab accounts yet.
               <RouterLink to="/settings" class="text-primary hover:underline">Add one in Settings</RouterLink>
               to link it here.
             </div>
             <AppSelect
+              size="sm"
               v-else
               :model-value="linkedGitlabAccountId ?? ''"
               :options="gitlabAccountOptions"
@@ -991,15 +1107,18 @@ async function handleOpenInTerminal() {
               @update:model-value="handleSelectGitlabAccount"
             />
 
-            <div v-if="linkedGitlabAccount" class="mt-3 text-[11px] text-muted-foreground">
+            <div v-if="linkedGitlabAccount" class="text-[11px] text-muted-foreground">
               <span v-if="linkedGitlabAccount.username">@{{ linkedGitlabAccount.username }}</span>
               <span v-if="linkedGitlabAccount.host"> · {{ linkedGitlabAccount.host }}</span>
             </div>
           </Card>
 
           <!-- Validate section -->
-          <Card v-if="linkedGitlabAccountId" bodyClass="p-4">
-            <h4 class="text-xs font-medium mb-3">Validate Linked Account</h4>
+          <Card v-if="linkedGitlabAccountId" body-class="p-4 space-y-3">
+            <template #header>
+              <CheckCircle2 class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
+              <span class="text-xs font-semibold">Validate Linked Account</span>
+            </template>
             <Button
               variant="outline"
               :disabled="validatingGitlab"
@@ -1009,7 +1128,7 @@ async function handleOpenInTerminal() {
             </Button>
             <div
               v-if="gitlabValidation"
-              class="mt-3 p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-md text-xs"
+              class="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-md text-xs"
             >
               <div class="flex items-center gap-1.5 text-emerald-500 font-medium mb-1">
                 <CheckCircle2 class="h-3.5 w-3.5" :stroke-width="2" />
@@ -1019,7 +1138,7 @@ async function handleOpenInTerminal() {
             </div>
             <div
               v-if="gitlabValidationError"
-              class="mt-3 p-3 bg-destructive/10 border border-destructive/20 rounded-md text-xs"
+              class="p-3 bg-destructive/10 border border-destructive/20 rounded-md text-xs"
             >
               <div class="flex items-center gap-1.5 text-destructive">
                 <XCircle class="h-3.5 w-3.5" :stroke-width="1.75" />

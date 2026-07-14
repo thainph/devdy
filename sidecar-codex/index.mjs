@@ -57,8 +57,60 @@ function classifyStderrLine(raw) {
   else note(clean.replace(/^\s+/, ''), lastLogLevel)
 }
 
+// ── centrally-managed MCP servers → codex `-c mcp_servers.*` overrides ─────
+// DEVDY_CODEX_MCP is the resolved Record<name, {type:'stdio',command,args?,env?}>
+// (Rust only forwards stdio servers to Codex). We turn each into TOML config
+// override flags placed BEFORE 'app-server'.
+
+// Escape a string as a TOML basic string: wrap in double quotes, escape
+// backslash and double-quote (and control chars codex would choke on).
+function tomlString(s) {
+  const escaped = String(s)
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\t/g, '\\t')
+  return `"${escaped}"`
+}
+
+// TOML array of strings: ["a","b"]
+function tomlStringArray(arr) {
+  return `[${arr.map(tomlString).join(',')}]`
+}
+
+// TOML inline table of string values: {KEY="val",KEY2="val2"}
+function tomlInlineTable(obj) {
+  const parts = Object.entries(obj).map(([k, v]) => `${k}=${tomlString(v)}`)
+  return `{${parts.join(',')}}`
+}
+
+function buildMcpConfigArgs() {
+  const raw = process.env.DEVDY_CODEX_MCP
+  if (!raw) return []
+  let servers
+  try {
+    servers = JSON.parse(raw)
+  } catch {
+    return []
+  }
+  if (!servers || typeof servers !== 'object') return []
+  const args = []
+  for (const [name, cfg] of Object.entries(servers)) {
+    if (!cfg || cfg.type !== 'stdio' || !cfg.command) continue
+    args.push('-c', `mcp_servers.${name}.command=${tomlString(cfg.command)}`)
+    if (Array.isArray(cfg.args) && cfg.args.length) {
+      args.push('-c', `mcp_servers.${name}.args=${tomlStringArray(cfg.args)}`)
+    }
+    if (cfg.env && typeof cfg.env === 'object' && Object.keys(cfg.env).length) {
+      args.push('-c', `mcp_servers.${name}.env=${tomlInlineTable(cfg.env)}`)
+    }
+  }
+  return args
+}
+
 // ── codex app-server JSON-RPC plumbing ────────────────────────────────────
-const codex = spawn(CODEX_BIN, ['app-server'], { cwd: CWD, stdio: ['pipe', 'pipe', 'pipe'] })
+const codex = spawn(CODEX_BIN, [...buildMcpConfigArgs(), 'app-server'], { cwd: CWD, stdio: ['pipe', 'pipe', 'pipe'] })
 let rpcId = 1
 const pending = new Map() // request id → resolve
 function request(method, params) {

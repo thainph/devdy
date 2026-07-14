@@ -598,7 +598,7 @@ async function doClean() {
         <Input
           v-model="resetConfirm"
           type="text"
-          size="md"
+          size="sm"
           class="mb-4"
           placeholder="RESET"
           @keyup.enter="doReset"

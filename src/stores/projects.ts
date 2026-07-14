@@ -8,7 +8,6 @@ export interface Project {
   path: string
   github_owner: string | null
   github_repo: string | null
-  default_engine: string
   created_at: string
   github_account_id: string | null
   gitlab_account_id: string | null
@@ -126,12 +125,10 @@ export const useProjectsStore = defineStore('projects', () => {
   async function updateProject(payload: {
     id: string
     name: string
-    default_engine: string
   }): Promise<Project> {
     const project = await invoke<Project>('update_project', {
       id: payload.id,
       name: payload.name,
-      defaultEngine: payload.default_engine,
     })
     await fetchProjects()
     return project

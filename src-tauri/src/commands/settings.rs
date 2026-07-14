@@ -88,6 +88,19 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
     Ok(settings)
 }
 
+/// Resolve the global default engine, falling back to "claude" when unset or
+/// empty. Used by run-creation paths now that engine is no longer stored
+/// per-project.
+pub async fn resolve_default_engine(db: &Db) -> String {
+    sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'default_engine'")
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "claude".to_string())
+}
+
 #[tauri::command]
 pub async fn update_setting(
     db: State<'_, Db>,

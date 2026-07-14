@@ -3,6 +3,7 @@ pub mod codex_sessions;
 pub mod health;
 pub mod skills;
 pub mod rules;
+pub mod mcp;
 pub mod projects;
 pub mod files;
 pub mod github;

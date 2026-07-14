@@ -7,6 +7,7 @@ import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import { useGitlabAccountsStore } from '@/stores/gitlabAccounts'
+import { useAppSettingsStore } from '@/stores/appSettings'
 import { invoke } from '@/lib/tauri'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -47,6 +48,7 @@ const live = useLiveRunsStore()
 const tabsStore = useWorkspaceTabsStore()
 const ghStore = useGithubAccountsStore()
 const glStore = useGitlabAccountsStore()
+const appSettings = useAppSettingsStore()
 const { confirm } = useConfirm()
 
 const projectId = computed(() => route.params.projectId as string)
@@ -104,7 +106,7 @@ const modelOverride = ref('')
 // explicit for labels, resume, and handoff decisions.
 const loadedRunEngine = ref<string>('')
 function resolveEngineChoice(value: string | null | undefined): string {
-  return value || project.value?.default_engine || 'claude'
+  return value || appSettings.settings?.default_engine || 'claude'
 }
 function syncLoadedRunEngine(engine: string) {
   engineOverride.value = engine
@@ -1678,9 +1680,6 @@ function handleRefInput(val: string) {
     <div class="flex items-center justify-between gap-3 px-6 h-13 border-b border-border/60 shrink-0">
       <div class="flex items-center gap-2 min-w-0">
         <h1 class="text-sm font-semibold truncate">{{ project?.name ?? 'Project' }}</h1>
-        <Badge v-if="project" tone="neutral" class="font-mono shrink-0">
-          {{ project.default_engine }}
-        </Badge>
         <Badge
           v-for="acc in activeAccounts"
           :key="acc.key"

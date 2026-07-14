@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { ChevronDown, Check } from 'lucide-vue-next'
+import { controlSize } from './ui/controlStyles'
 
 interface Option {
   value: string
@@ -11,12 +12,14 @@ const props = withDefaults(defineProps<{
   modelValue: string
   options: Option[]
   placeholder?: string
-  size?: 'default' | 'sm'
+  // Mirrors Input's sizing (see controlStyles). Default 'sm' so a bare
+  // <AppSelect> matches a bare <Input> on every screen.
+  size?: 'sm' | 'md'
   variant?: 'default' | 'ghost'
   disabled?: boolean
 }>(), {
   placeholder: 'Select…',
-  size: 'default',
+  size: 'sm',
   variant: 'default',
   disabled: false,
 })
@@ -177,9 +180,7 @@ watch(isOpen, (val) => {
       :aria-label="displayLabel"
       class="flex w-full h-full items-center gap-2 rounded-md border transition-colors cursor-pointer select-none disabled:opacity-50 disabled:cursor-not-allowed"
       :class="[
-        size === 'sm'
-          ? 'px-2.5 py-1.5 text-xs'
-          : 'px-3 py-2 text-sm',
+        size === 'sm' ? controlSize.sm : controlSize.md,
         variant === 'ghost'
           ? 'border-transparent bg-transparent hover:bg-accent hover:text-accent-foreground'
           : 'border-border bg-background hover:bg-accent hover:text-accent-foreground',
@@ -232,7 +233,7 @@ watch(isOpen, (val) => {
           :aria-selected="option.value === modelValue"
           class="relative flex items-center gap-2 cursor-pointer select-none transition-colors"
           :class="[
-            size === 'sm' ? 'px-2.5 py-1.5 text-xs' : 'px-3 py-2 text-sm',
+            size === 'sm' ? controlSize.sm : controlSize.md,
             highlightedIndex === i
               ? 'bg-accent text-accent-foreground'
               : 'text-foreground',

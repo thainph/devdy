@@ -91,7 +91,7 @@ pub async fn start_run(
     // Load run + project info
     let run_row = sqlx::query(
         "SELECT r.id, r.project_id, r.type, r.ref_number, r.input_path, r.output_path, r.engine, r.status,
-                p.path as project_path, p.default_engine
+                p.path as project_path
          FROM runs r
          JOIN projects p ON p.id = r.project_id
          WHERE r.id = ?",
@@ -107,8 +107,6 @@ pub async fn start_run(
     let output_path: Option<String> = run_row.get("output_path");
     let status: String = run_row.get("status");
     let project_path: String = run_row.get("project_path");
-    let default_engine: String = run_row.get("default_engine");
-    let engine = payload.engine_override.unwrap_or(default_engine);
 
     let is_session = run_type == "session";
 
@@ -144,11 +142,17 @@ pub async fn start_run(
     let mut review_prompt =
         "Please review this pull request according to the configured skills.".to_string();
     let mut default_permission_mode = "default".to_string();
+    let mut default_engine = "claude".to_string();
 
     for row in &settings_rows {
         let key: String = row.get("key");
         let value: String = row.get("value");
         match key.as_str() {
+            "default_engine" => {
+                if !value.trim().is_empty() {
+                    default_engine = value;
+                }
+            }
             "claude_path" => claude_path = value,
             "codex_path" => codex_path = value,
             "node_path" => node_path = value,
@@ -163,6 +167,9 @@ pub async fn start_run(
             _ => {}
         }
     }
+
+    // Resolve the engine: per-run override wins, else the global default engine.
+    let engine = payload.engine_override.unwrap_or(default_engine);
 
     // Global budget guardrail: refuse to start a new run when over budget
     // (real plan utilization, or the self-imposed token fallback), unless the
@@ -293,6 +300,15 @@ pub async fn start_run(
             if let Some(ctx) = &account_context {
                 options["appendSystemPrompt"] = serde_json::Value::String(ctx.clone());
             }
+            // Inject the project's enabled MCP servers for the ACTUAL run engine
+            // (QĐ-2). Claude gets the full 3-transport map via options.mcpServers;
+            // MCP tools still flow through the existing canUseTool permission path.
+            let (mcp, _skipped) =
+                crate::commands::mcp::resolve_project_mcp_servers(&db_pool, &project_id, "claude")
+                    .await;
+            if !mcp.is_null() {
+                options["mcpServers"] = mcp;
+            }
             let first = serde_json::json!({
                 "type": "prompt",
                 "text": prompt,
@@ -360,6 +376,13 @@ pub async fn start_run(
     if let Some(m) = &model {
         cmd.env("DEVDY_CODEX_MODEL", m);
     }
+    // Inject the project's enabled MCP servers for Codex (QĐ-2: actual engine).
+    // Codex only supports stdio; http/sse servers land in `skipped` (QĐ-1).
+    let (codex_mcp, mcp_skipped) =
+        crate::commands::mcp::resolve_project_mcp_servers(&db_pool, &project_id, "codex").await;
+    if !codex_mcp.is_null() {
+        cmd.env("DEVDY_CODEX_MCP", codex_mcp.to_string());
+    }
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -393,6 +416,22 @@ pub async fn start_run(
         });
         buf.push_str(&synthetic.to_string());
         buf.push('\n');
+
+        // QĐ-1: Codex only supports stdio. When http/sse servers were dropped,
+        // surface a one-line note in the run log so the user knows what/why.
+        if !mcp_skipped.is_empty() {
+            let text = format!(
+                "Bỏ qua {} MCP server remote (http/sse) vì Codex chỉ hỗ trợ stdio: {}",
+                mcp_skipped.len(),
+                mcp_skipped.join(", ")
+            );
+            let note = serde_json::json!({
+                "type": "user",
+                "message": { "role": "user", "content": text },
+            });
+            buf.push_str(&note.to_string());
+            buf.push('\n');
+        }
     }
 
     {
@@ -558,6 +597,10 @@ fn wire_git_config(cmd: &mut Command, helper_path: &Path) {
     // 2: credentials keyed per host, not per repo path.
     cmd.env("GIT_CONFIG_KEY_2", "credential.useHttpPath");
     cmd.env("GIT_CONFIG_VALUE_2", "false");
+    // Fail-closed: when the Devdy helper returns no credential (project not
+    // linked to an account), git must FAIL immediately rather than fall back to
+    // an interactive username/password prompt (which would hang the sidecar).
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
 }
 
 /// Set `GIT_AUTHOR_*`/`GIT_COMMITTER_*` from the project's linked account so
@@ -1143,14 +1186,7 @@ pub async fn create_session_run(
     project_id: String,
     engine_override: Option<String>,
 ) -> Result<RunRecord, String> {
-    use sqlx::Row;
-
-    let proj = sqlx::query("SELECT default_engine FROM projects WHERE id = ?")
-        .bind(&project_id)
-        .fetch_one(db.inner())
-        .await
-        .map_err(|e| e.to_string())?;
-    let default_engine: String = proj.get("default_engine");
+    let default_engine = crate::commands::settings::resolve_default_engine(db.inner()).await;
     let engine = engine_override
         .filter(|e| !e.trim().is_empty())
         .unwrap_or(default_engine);
