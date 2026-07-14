@@ -1,10 +1,12 @@
 // Shared UI primitives. Import from '@/components/ui' for consistent styling.
 export { default as Button } from './Button.vue'
 export { default as Input } from './Input.vue'
+export { default as Textarea } from './Textarea.vue'
 export { default as Badge } from './Badge.vue'
 export { default as StatusBadge } from './StatusBadge.vue'
 export { default as Card } from './Card.vue'
 export { default as CollapsibleMessage } from './CollapsibleMessage.vue'
 export { default as Modal } from './Modal.vue'
 export { default as ConfirmModal } from './ConfirmModal.vue'
+export { default as ToastHost } from './ToastHost.vue'
 export { default as AppSelect } from '../AppSelect.vue'

@@ -200,6 +200,9 @@ function startQuery(firstText, opts = {}, firstImages) {
   if (opts.model) options.model = opts.model
   else if (process.env.DEVDY_MODEL) options.model = process.env.DEVDY_MODEL
   if (opts.cwd) options.cwd = opts.cwd
+  // Centrally-managed MCP servers injected per run (Record<name, config>).
+  // MCP tools still flow through canUseTool → the permission modal is unchanged.
+  if (opts.mcpServers && typeof opts.mcpServers === 'object') options.mcpServers = opts.mcpServers
   const resume = opts.resume || process.env.DEVDY_RESUME_SESSION
   if (resume) options.resume = resume
   if (Array.isArray(opts.allowedTools)) options.allowedTools = opts.allowedTools

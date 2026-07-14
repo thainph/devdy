@@ -3,6 +3,8 @@ import SkillsView from '../views/SkillsView.vue'
 import SkillEditorView from '../views/SkillEditorView.vue'
 import RulesView from '../views/RulesView.vue'
 import RuleEditorView from '../views/RuleEditorView.vue'
+import McpServersView from '../views/McpServersView.vue'
+import McpServerEditorView from '../views/McpServerEditorView.vue'
 import ProjectsView from '../views/ProjectsView.vue'
 import ProjectDetailView from '../views/ProjectDetailView.vue'
 import RunView from '../views/RunView.vue'
@@ -21,6 +23,9 @@ const router = createRouter({
     { path: '/rules', name: 'rules', component: RulesView },
     { path: '/rules/new', name: 'rule-new', component: RuleEditorView },
     { path: '/rules/:id/edit', name: 'rule-edit', component: RuleEditorView },
+    { path: '/mcp', name: 'mcp', component: McpServersView },
+    { path: '/mcp/new', name: 'mcp-new', component: McpServerEditorView },
+    { path: '/mcp/:id/edit', name: 'mcp-edit', component: McpServerEditorView },
     { path: '/projects', name: 'projects', component: ProjectsView },
     { path: '/projects/:projectId', name: 'project-run', component: RunView },
     { path: '/projects/:projectId/run/:runId', name: 'project-run-detail', component: RunView },

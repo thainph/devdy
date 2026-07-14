@@ -164,13 +164,8 @@ pub async fn fetch_issue(
     let file_path = task_dir.join("issue.md");
     fs::write(&file_path, &md).map_err(|e| e.to_string())?;
 
-    // Get default engine
-    let engine_row = sqlx::query("SELECT default_engine FROM projects WHERE id = ?")
-        .bind(&project_id)
-        .fetch_one(db.inner())
-        .await
-        .map_err(|e| e.to_string())?;
-    let engine: String = engine_row.get("default_engine");
+    // Use the global default engine (per-project engine has been removed).
+    let engine = crate::commands::settings::resolve_default_engine(db.inner()).await;
 
     // Insert run record
     let run_id = Uuid::new_v4().to_string();
@@ -454,12 +449,7 @@ pub async fn fetch_pr(
     let file_path = task_dir.join(format!("pr-{}.md", pr_number));
     fs::write(&file_path, &md).map_err(|e| e.to_string())?;
 
-    let engine_row = sqlx::query("SELECT default_engine FROM projects WHERE id = ?")
-        .bind(&project_id)
-        .fetch_one(db.inner())
-        .await
-        .map_err(|e| e.to_string())?;
-    let engine: String = engine_row.get("default_engine");
+    let engine = crate::commands::settings::resolve_default_engine(db.inner()).await;
 
     let run_id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();

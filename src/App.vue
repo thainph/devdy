@@ -4,13 +4,13 @@ import { RouterLink, RouterView, useRoute } from 'vue-router'
 import { useProjectsStore } from '@/stores/projects'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
-import { Puzzle, ScrollText, FolderOpen, BarChart3, CalendarClock, Settings, Info } from 'lucide-vue-next'
+import { Puzzle, ScrollText, Server, FolderOpen, BarChart3, CalendarClock, Settings, Info } from 'lucide-vue-next'
 import PermissionNotifier from '@/components/PermissionNotifier.vue'
 import BudgetBadge from '@/components/BudgetBadge.vue'
 import WorkspaceTabs from '@/components/WorkspaceTabs.vue'
 import ActiveRunsDock from '@/components/ActiveRunsDock.vue'
 import FileViewerWindow from '@/views/FileViewerWindow.vue'
-import { ConfirmModal } from '@/components/ui'
+import { ConfirmModal, ToastHost } from '@/components/ui'
 import { getVersion } from '@tauri-apps/api/app'
 
 // Pop-out file viewer windows load the same SPA with `?fileWindow=1`; render a
@@ -61,6 +61,7 @@ const navItems = [
   { path: '/projects', label: 'Projects', icon: FolderOpen },
   { path: '/skills', label: 'Skills', icon: Puzzle },
   { path: '/rules', label: 'Rules', icon: ScrollText },
+  { path: '/mcp', label: 'MCP', icon: Server },
   { path: '/stats', label: 'Stats', icon: BarChart3 },
   { path: '/work-digest', label: 'Digest', icon: CalendarClock },
   { path: '/settings', label: 'Settings', icon: Settings },
@@ -191,5 +192,8 @@ onMounted(async () => {
 
     <!-- App-wide confirm dialog host (see useConfirm) -->
     <ConfirmModal />
+
+    <!-- App-wide toast host (see useToast) -->
+    <ToastHost />
   </div>
 </template>

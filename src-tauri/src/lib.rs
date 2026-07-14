@@ -16,6 +16,11 @@ use commands::rules::{
     get_applied_rules, apply_rule, apply_rule_to_all_projects, remove_rule_from_project,
     list_rule_sync_conflicts, resolve_rule_sync_conflict,
 };
+use commands::mcp::{
+    list_mcp_servers, get_mcp_server, create_mcp_server, update_mcp_server, delete_mcp_server,
+    list_project_mcp_servers, set_project_mcp_servers, test_mcp_connection,
+    export_mcp_server, import_mcp_server,
+};
 use commands::projects::{
     detect_project_info, list_projects, add_project, remove_project, update_project,
     get_applied_skills, apply_skill, apply_skill_to_all_projects, remove_skill_from_project,
@@ -101,6 +106,16 @@ pub fn run() {
             remove_rule_from_project,
             list_rule_sync_conflicts,
             resolve_rule_sync_conflict,
+            list_mcp_servers,
+            get_mcp_server,
+            create_mcp_server,
+            update_mcp_server,
+            delete_mcp_server,
+            list_project_mcp_servers,
+            set_project_mcp_servers,
+            test_mcp_connection,
+            export_mcp_server,
+            import_mcp_server,
             detect_project_info,
             list_projects,
             add_project,

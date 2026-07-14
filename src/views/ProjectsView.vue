@@ -3,15 +3,17 @@ import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useProjectsStore, type DetectedProjectInfo, type DetectedRepo } from '@/stores/projects'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
+import { useGitlabAccountsStore } from '@/stores/gitlabAccounts'
 import { open } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@/lib/tauri'
-import { Plus, FolderOpen, GitBranch, Github, Trash2, X, SquareTerminal } from 'lucide-vue-next'
+import { Plus, FolderOpen, GitBranch, Github, Gitlab, Trash2, X, SquareTerminal, Code2, Settings } from 'lucide-vue-next'
 import { Button, Input, Badge, Modal, Card } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 
 const router = useRouter()
 const store = useProjectsStore()
 const ghStore = useGithubAccountsStore()
+const glStore = useGitlabAccountsStore()
 const { confirm } = useConfirm()
 const adding = ref(false)
 const detecting = ref(false)
@@ -19,6 +21,11 @@ const detecting = ref(false)
 function accountLabel(accountId: string | null): string | null {
   if (!accountId) return null
   return ghStore.accounts.find(a => a.id === accountId)?.label ?? 'Unknown'
+}
+
+function gitlabAccountLabel(accountId: string | null): string | null {
+  if (!accountId) return null
+  return glStore.accounts.find(a => a.id === accountId)?.label ?? 'Unknown'
 }
 
 interface PendingRepo extends DetectedRepo {
@@ -34,6 +41,7 @@ const pendingRepos = ref<PendingRepo[]>([])
 onMounted(() => {
   store.fetchProjects()
   if (ghStore.accounts.length === 0) ghStore.fetch()
+  if (glStore.accounts.length === 0) glStore.fetch()
 })
 
 async function handleAdd() {
@@ -127,6 +135,22 @@ async function handleOpenInTerminal(project: { path: string }) {
     alert(String(e))
   }
 }
+
+async function handleOpenInVscode(project: { path: string }) {
+  try {
+    await store.openInVscode(project.path)
+  } catch (e) {
+    alert(String(e))
+  }
+}
+
+async function handleOpenInFolder(project: { path: string }) {
+  try {
+    await store.openInFolder(project.path)
+  } catch (e) {
+    alert(String(e))
+  }
+}
 </script>
 
 <template>
@@ -195,9 +219,6 @@ async function handleOpenInTerminal(project: { path: string }) {
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-1.5">
                 <p class="text-sm font-semibold truncate leading-tight">{{ project.name }}</p>
-                <Badge tone="neutral" size="xs" class="shrink-0 uppercase tracking-wide">
-                  {{ project.default_engine }}
-                </Badge>
               </div>
               <p class="text-xs text-muted-foreground mt-1 line-clamp-2 leading-relaxed font-mono break-all">{{ project.path }}</p>
             </div>
@@ -205,18 +226,45 @@ async function handleOpenInTerminal(project: { path: string }) {
 
           <!-- Footer -->
           <div class="flex items-center justify-between pt-2.5 border-t border-border/60 mt-auto">
-            <Badge :tone="project.github_account_id ? 'success' : 'neutral'">
-              <Github class="h-2.5 w-2.5" :stroke-width="2" />
-              {{ accountLabel(project.github_account_id) ?? 'No account' }}
-            </Badge>
+            <div class="flex items-center gap-1.5 min-w-0">
+              <Badge v-if="project.github_account_id" tone="info">
+                <Github class="h-2.5 w-2.5" :stroke-width="2" />
+                {{ accountLabel(project.github_account_id) }}
+              </Badge>
+              <Badge v-if="project.gitlab_account_id" tone="warning">
+                <Gitlab class="h-2.5 w-2.5" :stroke-width="2" />
+                {{ gitlabAccountLabel(project.gitlab_account_id) }}
+              </Badge>
+            </div>
             <!-- Actions on hover -->
             <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity" @click.stop>
+              <button
+                class="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+                title="Open project in VS Code"
+                @click="handleOpenInVscode(project)"
+              >
+                <Code2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+              </button>
+              <button
+                class="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+                title="Open project folder"
+                @click="handleOpenInFolder(project)"
+              >
+                <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" />
+              </button>
               <button
                 class="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
                 title="Open project folder in terminal"
                 @click="handleOpenInTerminal(project)"
               >
                 <SquareTerminal class="h-3.5 w-3.5" :stroke-width="1.75" />
+              </button>
+              <button
+                class="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+                title="Project settings"
+                @click="router.push(`/projects/${project.id}/settings`)"
+              >
+                <Settings class="h-3.5 w-3.5" :stroke-width="1.75" />
               </button>
               <button
                 class="flex h-6 w-6 items-center justify-center rounded text-destructive/60 hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer"

@@ -3,11 +3,12 @@ import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from '@/lib/tauri'
 import {
-  Cpu, Palette, FileText, Check, ShieldAlert, Sparkles, Github, Gitlab,
+  Cpu, Palette, FileText, ShieldAlert, Sparkles, Github, Gitlab,
   CheckCircle2, AlertTriangle, Trash2, Plus, Pencil, Gauge,
 } from 'lucide-vue-next'
-import { Button, Input, Card, AppSelect } from '@/components/ui'
+import { Button, Input, Textarea, Card, AppSelect } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
+import { useToast } from '@/composables/useToast'
 import { useGithubAccountsStore, type PatValidation } from '@/stores/githubAccounts'
 import { useGitlabAccountsStore, type GitlabPatValidation } from '@/stores/gitlabAccounts'
 import { useAppSettingsStore } from '@/stores/appSettings'
@@ -16,6 +17,7 @@ import { useBudgetStore } from '@/stores/budget'
 const appSettings = useAppSettingsStore()
 const budget = useBudgetStore()
 const { confirm } = useConfirm()
+const { toast } = useToast()
 
 // Full subscription plan-usage breakdown for the detailed table below. The
 // budget store only holds the single guardrail verdict, so Settings fetches the
@@ -127,12 +129,10 @@ const CODEX_MODEL_OPTIONS = [
   { value: 'gpt-5.1-codex-mini', label: 'gpt-5.1-codex-mini' },
 ]
 const loading = ref(true)
-const saved = ref(false)
 // Snapshot of the last persisted settings so the auto-save watcher only
 // pushes keys that actually changed.
 let lastSaved: AppSettings | null = null
 let saveTimer: ReturnType<typeof setTimeout> | null = null
-let savedTimer: ReturnType<typeof setTimeout> | null = null
 
 const SECTIONS = [
   { id: 'general', label: 'General', icon: Palette },
@@ -370,11 +370,9 @@ async function persistChanges() {
     lastSaved = { ...settings.value }
     // Keep the shared settings store (context meter + budget badge) in sync.
     appSettings.refresh().catch(() => {})
-    saved.value = true
-    if (savedTimer) clearTimeout(savedTimer)
-    savedTimer = setTimeout(() => { saved.value = false }, 1500)
+    toast.success('Saved')
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   }
 }
 
@@ -397,22 +395,8 @@ watch(() => settings.value.color_theme, (t) => {
 <template>
   <div class="flex flex-col h-full">
     <!-- Header -->
-    <div class="flex items-center justify-between px-6 h-13 border-b border-border/60 shrink-0">
+    <div class="flex items-center px-6 h-13 border-b border-border/60 shrink-0">
       <h1 class="text-sm font-semibold">Settings</h1>
-      <Transition
-        enter-active-class="transition-opacity duration-150"
-        enter-from-class="opacity-0"
-        leave-active-class="transition-opacity duration-300"
-        leave-to-class="opacity-0"
-      >
-        <span
-          v-if="saved"
-          class="flex items-center gap-1 text-xs text-emerald-500"
-        >
-          <Check class="h-3.5 w-3.5" :stroke-width="2.5" />
-          Saved
-        </span>
-      </Transition>
     </div>
 
     <!-- Content -->
@@ -459,6 +443,7 @@ watch(() => settings.value.color_theme, (t) => {
             <div class="space-y-1.5">
               <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Default Engine</label>
               <AppSelect
+                size="sm"
                 v-model="settings.default_engine"
                 :options="[
                   { value: 'claude', label: 'claude' },
@@ -469,6 +454,7 @@ watch(() => settings.value.color_theme, (t) => {
             <div class="space-y-1.5">
               <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Theme</label>
               <AppSelect
+                size="sm"
                 v-model="settings.theme"
                 :options="[
                   { value: 'system', label: 'System' },
@@ -480,6 +466,7 @@ watch(() => settings.value.color_theme, (t) => {
             <div class="space-y-1.5">
               <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Color Theme</label>
               <AppSelect
+                size="sm"
                 v-model="settings.color_theme"
                 :options="[
                   { value: 'default', label: 'Default (Indigo)' },
@@ -494,6 +481,7 @@ watch(() => settings.value.color_theme, (t) => {
             <div class="space-y-1.5">
               <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Terminal App</label>
               <AppSelect
+                size="sm"
                 v-model="settings.terminal_app"
                 :options="[
                   { value: 'terminal', label: 'Terminal (macOS default)' },
@@ -591,13 +579,13 @@ watch(() => settings.value.color_theme, (t) => {
                 <template v-else>
                   <Input
                     v-model="editLabel[acc.id]"
-                    size="md"
+                    size="sm"
                     placeholder="Label"
                   />
                   <Input
                     v-model="editPat[acc.id]"
                     type="password"
-                    size="md"
+                    size="sm"
                     placeholder="New PAT (leave blank to keep current)"
                     class="font-mono"
                   />
@@ -626,14 +614,14 @@ watch(() => settings.value.color_theme, (t) => {
               <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Add account</div>
               <Input
                 v-model="newLabel"
-                size="md"
+                size="sm"
                 placeholder="Label (e.g. Work, Personal)"
               />
               <div class="flex gap-2">
                 <Input
                   v-model="newPat"
                   type="password"
-                  size="md"
+                  size="sm"
                   placeholder="ghp_…"
                   class="flex-1 font-mono"
                   @keyup.enter="handleAddAccount"
@@ -741,23 +729,23 @@ watch(() => settings.value.color_theme, (t) => {
                 <template v-else>
                   <Input
                     v-model="glEditLabel[acc.id]"
-                    size="md"
+                    size="sm"
                     placeholder="Label"
                   />
                   <Input
                     v-model="glEditHost[acc.id]"
-                    size="md"
+                    size="sm"
                     placeholder="https://gitlab.com"
                   />
                   <Input
                     v-model="glEditEmail[acc.id]"
-                    size="md"
+                    size="sm"
                     placeholder="Commit email (optional)"
                   />
                   <Input
                     v-model="glEditPat[acc.id]"
                     type="password"
-                    size="md"
+                    size="sm"
                     placeholder="New PAT (leave blank to keep current)"
                     class="font-mono"
                   />
@@ -786,24 +774,24 @@ watch(() => settings.value.color_theme, (t) => {
               <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Add account</div>
               <Input
                 v-model="glNewLabel"
-                size="md"
+                size="sm"
                 placeholder="Label (e.g. Work, Personal)"
               />
               <Input
                 v-model="glNewHost"
-                size="md"
+                size="sm"
                 placeholder="https://gitlab.com"
               />
               <Input
                 v-model="glNewEmail"
-                size="md"
+                size="sm"
                 placeholder="Commit email (optional)"
               />
               <div class="flex gap-2">
                 <Input
                   v-model="glNewPat"
                   type="password"
-                  size="md"
+                  size="sm"
                   placeholder="glpat-…"
                   class="flex-1 font-mono"
                   @keyup.enter="handleAddGitlabAccount"
@@ -830,7 +818,7 @@ watch(() => settings.value.color_theme, (t) => {
               <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Claude binary path</label>
               <Input
                 v-model="settings.claude_path"
-                size="md"
+                size="sm"
                 placeholder="/usr/local/bin/claude"
                 class="font-mono"
               />
@@ -839,7 +827,7 @@ watch(() => settings.value.color_theme, (t) => {
               <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Codex binary path</label>
               <Input
                 v-model="settings.codex_path"
-                size="md"
+                size="sm"
                 placeholder="/usr/local/bin/codex"
                 class="font-mono"
               />
@@ -851,7 +839,7 @@ watch(() => settings.value.color_theme, (t) => {
               </label>
               <Input
                 v-model="settings.extra_args"
-                size="md"
+                size="sm"
                 placeholder="--no-cache"
                 class="font-mono"
               />
@@ -866,11 +854,11 @@ watch(() => settings.value.color_theme, (t) => {
           </template>
             <div class="space-y-1.5">
               <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Claude model</label>
-              <AppSelect v-model="settings.claude_model" :options="CLAUDE_MODEL_OPTIONS" />
+              <AppSelect size="sm" v-model="settings.claude_model" :options="CLAUDE_MODEL_OPTIONS" />
             </div>
             <div class="space-y-1.5">
               <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Codex model</label>
-              <AppSelect v-model="settings.codex_model" :options="CODEX_MODEL_OPTIONS" />
+              <AppSelect size="sm" v-model="settings.codex_model" :options="CODEX_MODEL_OPTIONS" />
             </div>
             <p class="text-[11px] text-muted-foreground leading-relaxed">
               The default model used when a run doesn't pick one. You can still override the model per run
@@ -889,6 +877,7 @@ watch(() => settings.value.color_theme, (t) => {
                 Default permission mode
               </label>
               <AppSelect
+                size="sm"
                 v-model="settings.default_permission_mode"
                 :options="[
                   { value: 'default', label: 'Ask via UI (default)' },
@@ -1003,6 +992,7 @@ watch(() => settings.value.color_theme, (t) => {
                 <div class="space-y-1.5">
                   <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Period</label>
                   <AppSelect
+                    size="sm"
                     v-model="settings.token_budget_period"
                     :options="[
                       { value: 'month', label: 'Monthly (resets 1st)' },
@@ -1034,20 +1024,18 @@ watch(() => settings.value.color_theme, (t) => {
           </template>
             <div class="space-y-1.5">
               <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Analyze Issue prompt</label>
-              <textarea
+              <Textarea
                 v-model="settings.analyze_issue_prompt"
                 rows="3"
                 placeholder="Analyze the following GitHub issue and create a detailed implementation plan…"
-                class="w-full px-3 py-2 bg-background border border-border rounded-md text-sm focus:outline-none focus:ring-1 focus:ring-ring transition-colors resize-y"
               />
             </div>
             <div class="space-y-1.5">
               <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Review PR prompt</label>
-              <textarea
+              <Textarea
                 v-model="settings.review_pr_prompt"
                 rows="3"
                 placeholder="Review the following pull request and provide detailed feedback…"
-                class="w-full px-3 py-2 bg-background border border-border rounded-md text-sm focus:outline-none focus:ring-1 focus:ring-ring transition-colors resize-y"
               />
             </div>
         </Card>

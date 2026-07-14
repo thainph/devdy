@@ -14,7 +14,6 @@ pub struct Project {
     pub path: String,
     pub github_owner: Option<String>,
     pub github_repo: Option<String>,
-    pub default_engine: String,
     pub created_at: String,
     pub github_account_id: Option<String>,
     /// GĐ6: linked GitLab account (mirrors `github_account_id`). `None` when the
@@ -277,7 +276,7 @@ pub async fn list_projects(db: State<'_, Db>) -> Result<Vec<Project>, String> {
     use sqlx::Row;
     // Sort by usage frequency (number of runs), then recency, then name.
     let rows = sqlx::query(
-        "SELECT p.id, p.name, p.path, p.default_engine, p.created_at, p.github_account_id, p.gitlab_account_id, \
+        "SELECT p.id, p.name, p.path, p.created_at, p.github_account_id, p.gitlab_account_id, \
                 COUNT(r.id) AS run_count, MAX(r.created_at) AS last_used_at \
          FROM projects p \
          LEFT JOIN runs r ON r.project_id = p.id \
@@ -295,7 +294,6 @@ pub async fn list_projects(db: State<'_, Db>) -> Result<Vec<Project>, String> {
             path: row.get("path"),
             github_owner: None,
             github_repo: None,
-            default_engine: row.get("default_engine"),
             created_at: row.get("created_at"),
             github_account_id: row.get("github_account_id"),
             gitlab_account_id: row.get("gitlab_account_id"),
@@ -327,7 +325,7 @@ pub async fn add_project(
     let now = chrono::Utc::now().to_rfc3339();
 
     sqlx::query(
-        "INSERT INTO projects (id, name, path, default_engine, created_at) VALUES (?, ?, ?, 'claude', ?)"
+        "INSERT INTO projects (id, name, path, created_at) VALUES (?, ?, ?, ?)"
     )
     .bind(&id)
     .bind(&name)
@@ -362,7 +360,6 @@ pub async fn add_project(
         path: payload.path,
         github_owner: None,
         github_repo: None,
-        default_engine: "claude".to_string(),
         created_at: now,
         github_account_id: None,
         gitlab_account_id: None,
@@ -389,21 +386,19 @@ pub async fn update_project(
     db: State<'_, Db>,
     id: String,
     name: String,
-    default_engine: String,
 ) -> Result<Project, String> {
     use sqlx::Row;
     sqlx::query(
-        "UPDATE projects SET name = ?, default_engine = ? WHERE id = ?"
+        "UPDATE projects SET name = ? WHERE id = ?"
     )
     .bind(&name)
-    .bind(&default_engine)
     .bind(&id)
     .execute(db.inner())
     .await
     .map_err(|e| e.to_string())?;
 
     let row = sqlx::query(
-        "SELECT p.id, p.name, p.path, p.default_engine, p.created_at, p.github_account_id, p.gitlab_account_id, \
+        "SELECT p.id, p.name, p.path, p.created_at, p.github_account_id, p.gitlab_account_id, \
                 COUNT(r.id) AS run_count, MAX(r.created_at) AS last_used_at \
          FROM projects p LEFT JOIN runs r ON r.project_id = p.id WHERE p.id = ? GROUP BY p.id"
     )
@@ -418,7 +413,6 @@ pub async fn update_project(
         path: row.get("path"),
         github_owner: None,
         github_repo: None,
-        default_engine: row.get("default_engine"),
         created_at: row.get("created_at"),
         github_account_id: row.get("github_account_id"),
         gitlab_account_id: row.get("gitlab_account_id"),
