@@ -3,12 +3,13 @@ import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from '@/lib/tauri'
 import {
-  Cpu, Palette, FileText, Check, ShieldAlert, Sparkles, Github,
+  Cpu, Palette, FileText, Check, ShieldAlert, Sparkles, Github, Gitlab,
   CheckCircle2, AlertTriangle, Trash2, Plus, Pencil, Gauge,
 } from 'lucide-vue-next'
 import { Button, Input, Card, AppSelect } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useGithubAccountsStore, type PatValidation } from '@/stores/githubAccounts'
+import { useGitlabAccountsStore, type GitlabPatValidation } from '@/stores/gitlabAccounts'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useBudgetStore } from '@/stores/budget'
 
@@ -136,6 +137,7 @@ let savedTimer: ReturnType<typeof setTimeout> | null = null
 const SECTIONS = [
   { id: 'general', label: 'General', icon: Palette },
   { id: 'github', label: 'GitHub Accounts', icon: Github },
+  { id: 'gitlab', label: 'GitLab Accounts', icon: Gitlab },
   { id: 'engine', label: 'Engine Paths', icon: Cpu },
   { id: 'models', label: 'Default Models', icon: Sparkles },
   { id: 'permissions', label: 'Permissions', icon: ShieldAlert },
@@ -144,6 +146,7 @@ const SECTIONS = [
 ] as const
 const activeSection = ref<(typeof SECTIONS)[number]['id']>('general')
 const ghCount = computed(() => ghStore.accounts.length)
+const glCount = computed(() => glStore.accounts.length)
 
 // --- GitHub accounts ---
 const ghStore = useGithubAccountsStore()
@@ -219,11 +222,104 @@ async function handleDeleteAccount(id: string) {
   }
 }
 
+// --- GitLab accounts (mirror of GitHub, plus host + email) ---
+const glStore = useGitlabAccountsStore()
+const glNewLabel = ref('')
+const glNewPat = ref('')
+const glNewHost = ref('')
+const glNewEmail = ref('')
+const glAdding = ref(false)
+const glAddError = ref<string | null>(null)
+const glEditLabel = ref<Record<string, string>>({})
+const glEditPat = ref<Record<string, string>>({})
+const glEditHost = ref<Record<string, string>>({})
+const glEditEmail = ref<Record<string, string>>({})
+const glEditing = ref<string | null>(null)
+const glValidations = ref<Record<string, GitlabPatValidation>>({})
+const glAccountError = ref<Record<string, string>>({})
+const glBusyAccount = ref<string | null>(null)
+
+async function handleAddGitlabAccount() {
+  if (!glNewLabel.value.trim() || !glNewPat.value.trim()) return
+  glAdding.value = true
+  glAddError.value = null
+  try {
+    await glStore.create(
+      glNewLabel.value.trim(),
+      glNewPat.value.trim(),
+      glNewHost.value.trim(),
+      glNewEmail.value.trim(),
+    )
+    glNewLabel.value = ''
+    glNewPat.value = ''
+    glNewHost.value = ''
+    glNewEmail.value = ''
+  } catch (e) {
+    glAddError.value = String(e)
+  } finally {
+    glAdding.value = false
+  }
+}
+
+function startGitlabEdit(id: string, label: string, host: string | null, email: string | null) {
+  glEditing.value = id
+  glEditLabel.value[id] = label
+  glEditPat.value[id] = ''
+  glEditHost.value[id] = host ?? ''
+  glEditEmail.value[id] = email ?? ''
+}
+
+async function handleSaveGitlabEdit(id: string) {
+  glBusyAccount.value = id
+  glAccountError.value[id] = ''
+  try {
+    await glStore.update(
+      id,
+      glEditLabel.value[id]?.trim() || '',
+      glEditPat.value[id],
+      glEditHost.value[id],
+      glEditEmail.value[id],
+    )
+    glEditing.value = null
+  } catch (e) {
+    glAccountError.value[id] = String(e)
+  } finally {
+    glBusyAccount.value = null
+  }
+}
+
+async function handleValidateGitlab(id: string) {
+  glBusyAccount.value = id
+  glAccountError.value[id] = ''
+  delete glValidations.value[id]
+  try {
+    glValidations.value[id] = await glStore.validate(id)
+  } catch (e) {
+    glAccountError.value[id] = String(e)
+  } finally {
+    glBusyAccount.value = null
+  }
+}
+
+async function handleDeleteGitlabAccount(id: string) {
+  if (!(await confirm({
+    title: 'Delete GitLab account',
+    message: 'Delete this GitLab account? Projects linked to it will be unlinked.',
+    confirmLabel: 'Delete',
+  }))) return
+  try {
+    await glStore.remove(id)
+  } catch (e) {
+    alert(String(e))
+  }
+}
+
 onMounted(async () => {
   try {
     settings.value = await invoke<AppSettings>('get_settings')
     lastSaved = { ...settings.value }
     await ghStore.fetch()
+    await glStore.fetch()
     now.value = Date.now()
     clockTimer = setInterval(() => { now.value = Date.now() }, 30_000)
     budget.refresh()
@@ -338,6 +434,10 @@ watch(() => settings.value.color_theme, (t) => {
             v-if="s.id === 'github' && ghCount"
             class="ml-auto text-[10px] tabular-nums text-muted-foreground"
           >{{ ghCount }}</span>
+          <span
+            v-if="s.id === 'gitlab' && glCount"
+            class="ml-auto text-[10px] tabular-nums text-muted-foreground"
+          >{{ glCount }}</span>
         </button>
       </nav>
 
@@ -415,6 +515,17 @@ watch(() => settings.value.color_theme, (t) => {
               <code class="font-mono bg-muted px-1 rounded text-[11px]">repo</code> (private) or
               <code class="font-mono bg-muted px-1 rounded text-[11px]">public_repo</code> (public).
             </p>
+
+            <div class="p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-md text-[11px] leading-relaxed flex gap-2">
+              <ShieldAlert class="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" :stroke-width="1.75" />
+              <span class="text-muted-foreground">
+                Keep this machine logged <strong class="text-foreground">out</strong> of gh globally: do
+                <strong class="text-foreground">not</strong> run
+                <code class="font-mono bg-muted px-1 rounded">gh auth login</code> or set
+                <code class="font-mono bg-muted px-1 rounded">GH_TOKEN</code> system-wide. Devdy wires the
+                correct per-project credential at run time; a global login would let runs bypass that isolation.
+              </span>
+            </div>
 
             <!-- Account list -->
             <div v-if="ghStore.accounts.length" class="space-y-2">
@@ -536,6 +647,176 @@ watch(() => settings.value.color_theme, (t) => {
                 </Button>
               </div>
               <p v-if="addError" class="text-[11px] text-destructive">{{ addError }}</p>
+            </div>
+        </Card>
+
+        <!-- GitLab Accounts section -->
+        <Card v-show="activeSection === 'gitlab'" body-class="p-4 space-y-4">
+          <template #header>
+            <Gitlab class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
+            <span class="text-xs font-semibold">GitLab Accounts</span>
+          </template>
+            <p class="text-[11px] text-muted-foreground leading-relaxed">
+              Add GitLab accounts once and link them to projects. PATs are stored securely in your OS
+              Keychain (never written to disk). Set a custom host for self-hosted GitLab, and an optional
+              commit email. Required scope:
+              <code class="font-mono bg-muted px-1 rounded">api</code> (or
+              <code class="font-mono bg-muted px-1 rounded">read_api</code> +
+              <code class="font-mono bg-muted px-1 rounded">write_repository</code>) — a repository-only
+              token is rejected by the validation endpoint.
+            </p>
+
+            <div class="p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-md text-[11px] leading-relaxed flex gap-2">
+              <ShieldAlert class="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" :stroke-width="1.75" />
+              <span class="text-muted-foreground">
+                Keep this machine logged <strong class="text-foreground">out</strong> of glab globally: do
+                <strong class="text-foreground">not</strong> run
+                <code class="font-mono bg-muted px-1 rounded">glab auth login</code> or set
+                <code class="font-mono bg-muted px-1 rounded">GITLAB_TOKEN</code> system-wide. Devdy wires the
+                correct per-project credential at run time; a global login would let runs bypass that isolation.
+              </span>
+            </div>
+
+            <!-- Account list -->
+            <div v-if="glStore.accounts.length" class="space-y-2">
+              <div
+                v-for="acc in glStore.accounts"
+                :key="acc.id"
+                class="border border-border rounded-md p-3 space-y-2"
+              >
+                <!-- View mode -->
+                <template v-if="glEditing !== acc.id">
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="min-w-0">
+                      <div class="text-sm font-medium truncate">{{ acc.label }}</div>
+                      <div class="text-[11px] text-muted-foreground truncate">
+                        <span v-if="acc.username">@{{ acc.username }}</span>
+                        <span v-else>not validated</span>
+                        <span v-if="acc.host" class="ml-1">· {{ acc.host }}</span>
+                        <span v-if="acc.email" class="ml-1">· {{ acc.email }}</span>
+                      </div>
+                    </div>
+                    <div class="flex items-center gap-1 shrink-0">
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        :disabled="glBusyAccount === acc.id"
+                        @click="handleValidateGitlab(acc.id)"
+                      >
+                        {{ glBusyAccount === acc.id ? '…' : 'Validate' }}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        title="Edit"
+                        @click="startGitlabEdit(acc.id, acc.label, acc.host, acc.email)"
+                      >
+                        <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
+                      </Button>
+                      <Button
+                        variant="destructive-ghost"
+                        size="icon-sm"
+                        title="Delete"
+                        @click="handleDeleteGitlabAccount(acc.id)"
+                      >
+                        <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+                      </Button>
+                    </div>
+                  </div>
+                  <div
+                    v-if="glValidations[acc.id]"
+                    class="p-2 bg-emerald-500/10 border border-emerald-500/20 rounded-md text-[11px]"
+                  >
+                    <div class="flex items-center gap-1.5 text-emerald-500 font-medium">
+                      <CheckCircle2 class="h-3 w-3" :stroke-width="2" />
+                      Valid — {{ glValidations[acc.id].username }}
+                    </div>
+                    <p v-if="glValidations[acc.id].email" class="text-muted-foreground mt-1">
+                      {{ glValidations[acc.id].email }}
+                    </p>
+                  </div>
+                </template>
+
+                <!-- Edit mode -->
+                <template v-else>
+                  <Input
+                    v-model="glEditLabel[acc.id]"
+                    size="md"
+                    placeholder="Label"
+                  />
+                  <Input
+                    v-model="glEditHost[acc.id]"
+                    size="md"
+                    placeholder="https://gitlab.com"
+                  />
+                  <Input
+                    v-model="glEditEmail[acc.id]"
+                    size="md"
+                    placeholder="Commit email (optional)"
+                  />
+                  <Input
+                    v-model="glEditPat[acc.id]"
+                    type="password"
+                    size="md"
+                    placeholder="New PAT (leave blank to keep current)"
+                    class="font-mono"
+                  />
+                  <div class="flex items-center gap-2">
+                    <Button
+                      :disabled="!glEditLabel[acc.id]?.trim() || glBusyAccount === acc.id"
+                      @click="handleSaveGitlabEdit(acc.id)"
+                    >
+                      {{ glBusyAccount === acc.id ? 'Saving…' : 'Save' }}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      @click="glEditing = null"
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </template>
+
+                <p v-if="glAccountError[acc.id]" class="text-[11px] text-destructive">{{ glAccountError[acc.id] }}</p>
+              </div>
+            </div>
+
+            <!-- Add account -->
+            <div class="border-t border-border/60 pt-3 space-y-2">
+              <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Add account</div>
+              <Input
+                v-model="glNewLabel"
+                size="md"
+                placeholder="Label (e.g. Work, Personal)"
+              />
+              <Input
+                v-model="glNewHost"
+                size="md"
+                placeholder="https://gitlab.com"
+              />
+              <Input
+                v-model="glNewEmail"
+                size="md"
+                placeholder="Commit email (optional)"
+              />
+              <div class="flex gap-2">
+                <Input
+                  v-model="glNewPat"
+                  type="password"
+                  size="md"
+                  placeholder="glpat-…"
+                  class="flex-1 font-mono"
+                  @keyup.enter="handleAddGitlabAccount"
+                />
+                <Button
+                  :disabled="!glNewLabel.trim() || !glNewPat.trim() || glAdding"
+                  @click="handleAddGitlabAccount"
+                >
+                  <Plus class="h-3.5 w-3.5" :stroke-width="2" />
+                  {{ glAdding ? 'Adding…' : 'Add' }}
+                </Button>
+              </div>
+              <p v-if="glAddError" class="text-[11px] text-destructive">{{ glAddError }}</p>
             </div>
         </Card>
 

@@ -5,6 +5,8 @@ import { useProjectsStore, type Repo } from '@/stores/projects'
 import { useRunsStore, type RunRecord, type ProjectEntry } from '@/stores/runs'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
+import { useGithubAccountsStore } from '@/stores/githubAccounts'
+import { useGitlabAccountsStore } from '@/stores/gitlabAccounts'
 import { invoke } from '@/lib/tauri'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -15,7 +17,7 @@ import {
   ChevronDown, Maximize2, Minimize2, AppWindow,
   ImagePlus, X,
   ShieldQuestion, MessageCircleQuestion,
-  Pin, PinOff, Pencil, Check
+  Pin, PinOff, Pencil, Check, Github, Gitlab
 } from 'lucide-vue-next'
 import AppSelect from '@/components/AppSelect.vue'
 import StreamLog from '@/components/StreamLog.vue'
@@ -43,10 +45,43 @@ const projectStore = useProjectsStore()
 const runsStore = useRunsStore()
 const live = useLiveRunsStore()
 const tabsStore = useWorkspaceTabsStore()
+const ghStore = useGithubAccountsStore()
+const glStore = useGitlabAccountsStore()
 const { confirm } = useConfirm()
 
 const projectId = computed(() => route.params.projectId as string)
 const project = computed(() => projectStore.projects.find(p => p.id === projectId.value))
+
+// GĐ6 (AC3): the project's active git account(s). Shows one badge per linked
+// provider (GitHub first, then GitLab) so both attached accounts are visible.
+const activeAccounts = computed(() => {
+  const badges: { key: string; icon: typeof Github; username: string; title: string }[] = []
+  const ghId = project.value?.github_account_id
+  if (ghId) {
+    const acc = ghStore.accounts.find(a => a.id === ghId)
+    if (acc) {
+      badges.push({
+        key: 'github',
+        icon: Github,
+        username: acc.username ? `@${acc.username}` : acc.label,
+        title: `GitHub account: ${acc.label}${acc.username ? ` (@${acc.username})` : ''}`,
+      })
+    }
+  }
+  const glId = project.value?.gitlab_account_id
+  if (glId) {
+    const acc = glStore.accounts.find(a => a.id === glId)
+    if (acc) {
+      badges.push({
+        key: 'gitlab',
+        icon: Gitlab,
+        username: acc.username ? `@${acc.username}` : acc.label,
+        title: `GitLab account: ${acc.label}${acc.username ? ` (@${acc.username})` : ''}${acc.host ? ` on ${acc.host}` : ''}`,
+      })
+    }
+  }
+  return badges
+})
 
 const activeRunId = computed(() => route.params.runId as string | undefined)
 
@@ -437,6 +472,9 @@ onMounted(async () => {
   if (projectStore.projects.length === 0) {
     await projectStore.fetchProjects()
   }
+  // GĐ6 (AC3): ensure account metadata is available for the header badge.
+  if (ghStore.accounts.length === 0) ghStore.fetch().catch(() => {})
+  if (glStore.accounts.length === 0) glStore.fetch().catch(() => {})
   repos.value = await projectStore.listRepos(projectId.value)
   if (repos.value.length === 1) {
     selectedRepoId.value = repos.value[0].id
@@ -1575,6 +1613,17 @@ function handleRefInput(val: string) {
         <h1 class="text-sm font-semibold truncate">{{ project?.name ?? 'Project' }}</h1>
         <Badge v-if="project" tone="neutral" class="font-mono shrink-0">
           {{ project.default_engine }}
+        </Badge>
+        <Badge
+          v-for="acc in activeAccounts"
+          :key="acc.key"
+          tone="primary"
+          size="sm"
+          class="font-mono shrink-0 inline-flex items-center gap-1"
+          :title="acc.title"
+        >
+          <component :is="acc.icon" class="h-3 w-3" :stroke-width="1.75" />
+          {{ acc.username }}
         </Badge>
         <span
           v-if="project"

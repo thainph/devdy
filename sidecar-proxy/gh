@@ -1,0 +1,6 @@
+#!/usr/bin/env node
+// Devdy gh shim — see shim.mjs. Named exactly `gh` so it intercepts `gh` calls
+// when this directory is prepended to the sidecar PATH.
+import { run } from './shim.mjs'
+
+run('gh')

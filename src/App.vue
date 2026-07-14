@@ -11,6 +11,7 @@ import WorkspaceTabs from '@/components/WorkspaceTabs.vue'
 import ActiveRunsDock from '@/components/ActiveRunsDock.vue'
 import FileViewerWindow from '@/views/FileViewerWindow.vue'
 import { ConfirmModal } from '@/components/ui'
+import { getVersion } from '@tauri-apps/api/app'
 
 // Pop-out file viewer windows load the same SPA with `?fileWindow=1`; render a
 // bare, chrome-less viewer (no sidebar / nav / background work) in that case.
@@ -44,6 +45,17 @@ watch(
   },
   { immediate: true },
 )
+
+// App version shown in the sidebar footer; read from Tauri so it always matches
+// the packaged build (tauri.conf.json) instead of a hardcoded string.
+const appVersion = ref('')
+onMounted(async () => {
+  try {
+    appVersion.value = await getVersion()
+  } catch {
+    // Ignore (e.g. running outside the Tauri shell during dev in a browser).
+  }
+})
 
 const navItems = [
   { path: '/projects', label: 'Projects', icon: FolderOpen },
@@ -160,7 +172,7 @@ onMounted(async () => {
 
       <!-- Version footer -->
       <div class="px-4 py-3 border-t border-border/50">
-        <p class="text-[10px] text-muted-foreground/50 font-mono">v0.1.0</p>
+        <p v-if="appVersion" class="text-[10px] text-muted-foreground/50 font-mono">v{{ appVersion }}</p>
       </div>
     </aside>
 

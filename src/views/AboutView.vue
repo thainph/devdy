@@ -1,6 +1,18 @@
 <script setup lang="ts">
+import { onMounted, ref } from 'vue'
 import { Globe } from 'lucide-vue-next'
 import { Badge } from '@/components/ui'
+import { getVersion } from '@tauri-apps/api/app'
+
+// Read from Tauri so it always matches the packaged build (tauri.conf.json).
+const appVersion = ref('')
+onMounted(async () => {
+  try {
+    appVersion.value = await getVersion()
+  } catch {
+    // Ignore (e.g. running outside the Tauri shell during dev in a browser).
+  }
+})
 </script>
 
 <template>
@@ -16,8 +28,8 @@ import { Badge } from '@/components/ui'
 
         <h2 class="text-xl font-bold tracking-tight">Devdy</h2>
         <p class="text-sm text-muted-foreground mt-1">AI coding agent for developers</p>
-        <Badge class="mt-2 px-2 py-0.5 text-[10px] font-mono font-medium">
-          v0.1.0
+        <Badge v-if="appVersion" class="mt-2 px-2 py-0.5 text-[10px] font-mono font-medium">
+          v{{ appVersion }}
         </Badge>
 
         <p class="mt-6 text-xs text-muted-foreground leading-relaxed">

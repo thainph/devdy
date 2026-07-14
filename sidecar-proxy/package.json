@@ -1,0 +1,6 @@
+{
+  "name": "devdy-sidecar-proxy",
+  "private": true,
+  "type": "module",
+  "description": "gh/glab shims that route through the Devdy credential broker"
+}

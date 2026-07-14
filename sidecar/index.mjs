@@ -206,6 +206,16 @@ function startQuery(firstText, opts = {}, firstImages) {
   // Pin to a specific claude binary when the broker provides one; otherwise the
   // SDK uses its bundled CLI (both read the same macOS Keychain login).
   if (process.env.DEVDY_CLAUDE_PATH) options.pathToClaudeCodeExecutable = process.env.DEVDY_CLAUDE_PATH
+  // GĐ6 (AC1): per-project git account context. Keep the default Claude Code
+  // preset system prompt and APPEND our context (a plain string would replace
+  // the whole prompt and lose tool guidance).
+  if (opts.appendSystemPrompt) {
+    options.systemPrompt = {
+      type: 'preset',
+      preset: 'claude_code',
+      append: String(opts.appendSystemPrompt),
+    }
+  }
   // 'warning' mode additionally polls /usage on an interval WHILE a run streams
   // (used when already near the plan limit). In every mode we still capture once
   // at `init` and once at `result` — piggybacking on this run's already-open

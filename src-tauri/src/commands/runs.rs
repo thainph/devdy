@@ -1,12 +1,14 @@
 use crate::commands::github::RunRecord;
 use crate::db::Db;
 use crate::runs::sidecar::{augment_command_path, detach_process_group, drain_sidecar, kill_process_group, resolve_codex_sidecar, resolve_sidecar, sdk_permission_mode};
-use crate::runs::{RunHandles, RunRegistry};
+use crate::runs::broker::approver::{Approver, ModalApprover};
+use crate::runs::broker::{start_broker, BrokerConfig, BrokerHandle};
+use crate::runs::{BrokerApprovals, RunHandles, RunRegistry};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::Mutex as TokioMutex;
@@ -100,6 +102,7 @@ pub async fn start_run(
     .map_err(|e| e.to_string())?;
 
     let run_type: String = run_row.get("type");
+    let project_id: String = run_row.get("project_id");
     let input_path: Option<String> = run_row.get("input_path");
     let output_path: Option<String> = run_row.get("output_path");
     let status: String = run_row.get("status");
@@ -245,6 +248,12 @@ pub async fn start_run(
         let mut cmd = Command::new(&node_bin);
         cmd.current_dir(&project_path).arg(&sidecar_script);
         augment_command_path(&mut cmd);
+        // GĐ3: per-run credential broker + gh/glab shim. Prepends the shim dir to
+        // PATH and sets DEVDY_BROKER_SOCK/DEVDY_PROJECT_ID. Fail-closed: no token
+        // is ever placed on the sidecar env. Held in RunHandles for Drop cleanup.
+        let broker_handle =
+            wire_broker(&app, db.inner(), &mut cmd, &payload.run_id, &project_id, &project_path)
+                .await?;
         // Honor a custom claude binary if the user configured one; default uses
         // the SDK's bundled CLI (both read the same Keychain login).
         if claude_path != "claude" && !claude_path.trim().is_empty() {
@@ -270,15 +279,25 @@ pub async fn start_run(
 
         // Kick off the first turn.
         if let Some(stdin) = stdin_handle.as_mut() {
+            // GĐ6 (AC1): describe the project's pre-wired git account(s) to Claude
+            // via an appended system prompt. `None` when nothing is linked → no
+            // field is added and the run behaves exactly as before (AC6). Never
+            // contains a token — label/username/host metadata only.
+            let account_context =
+                crate::runs::broker::token::build_account_context(&db_pool, &project_id).await;
+            let mut options = serde_json::json!({
+                "cwd": project_path,
+                "permissionMode": sdk_permission_mode(&permission_mode),
+                "model": model,
+            });
+            if let Some(ctx) = &account_context {
+                options["appendSystemPrompt"] = serde_json::Value::String(ctx.clone());
+            }
             let first = serde_json::json!({
                 "type": "prompt",
                 "text": prompt,
                 "images": images_payload(&payload.images),
-                "options": {
-                    "cwd": project_path,
-                    "permissionMode": sdk_permission_mode(&permission_mode),
-                    "model": model,
-                },
+                "options": options,
             });
             stdin.write_all(format!("{}\n", first).as_bytes()).await.ok();
             stdin.flush().await.ok();
@@ -304,6 +323,7 @@ pub async fn start_run(
                     stdin: stdin_handle,
                     session_id: session_id.clone(),
                     log_buf: log_buf.clone(),
+                    broker: Some(broker_handle),
                 },
             );
         }
@@ -384,6 +404,8 @@ pub async fn start_run(
                 stdin: stdin_handle,
                 session_id: session_id.clone(),
                 log_buf: log_buf.clone(),
+                // Codex is untouched by GĐ3: no broker/shim wiring.
+                broker: None,
             },
         );
     }
@@ -421,6 +443,137 @@ fn is_valid_permission_mode(mode: &str) -> bool {
         mode,
         "default" | "acceptEdits" | "bypassPermissions" | "plan" | "auto" | "dontAsk"
     )
+}
+
+/// Resolve the `sidecar-proxy/` directory holding the `gh`/`glab` shims. Mirrors
+/// `resolve_sidecar_script`: explicit `DEVDY_SHIM_DIR` env → bundled
+/// `<resource_dir>/sidecar-proxy` → dev fallback `<crate>/../sidecar-proxy`.
+fn resolve_shim_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    if let Ok(p) = std::env::var("DEVDY_SHIM_DIR") {
+        let p = PathBuf::from(p);
+        if p.exists() {
+            return Ok(p);
+        }
+    }
+    let bundled = app
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|r| r.join("sidecar-proxy"))
+        .filter(|p| p.exists());
+    let dir = bundled.unwrap_or_else(|| {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("sidecar-proxy")
+    });
+    if !dir.exists() {
+        return Err(format!(
+            "shim dir not found at {}. Ensure the sidecar-proxy/ directory is \
+             present, or set DEVDY_SHIM_DIR.",
+            dir.display()
+        ));
+    }
+    Ok(dir)
+}
+
+/// Prepend the shim dir to the command's PATH so `gh`/`glab` resolve to the
+/// Devdy shims first. Must be called AFTER `augment_command_path` so the shim
+/// dir ends up ABSOLUTELY first, ahead of the real binaries in the login PATH.
+fn prepend_shim_path(cmd: &mut Command, shim_dir: &Path) {
+    // Read the PATH already set on the command (by augment_command_path); fall
+    // back to the process PATH if it was somehow not set.
+    let current = cmd
+        .as_std()
+        .get_envs()
+        .find(|(k, _)| *k == std::ffi::OsStr::new("PATH"))
+        .and_then(|(_, v)| v)
+        .map(|v| v.to_string_lossy().into_owned())
+        .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
+    let joined = if current.is_empty() {
+        shim_dir.display().to_string()
+    } else {
+        format!("{}:{}", shim_dir.display(), current)
+    };
+    cmd.env("PATH", joined);
+}
+
+/// Start a per-run credential broker (with a `ModalApprover`) and wire its socket
+/// + shim PATH into the sidecar command. Returns the `BrokerHandle` to store in
+/// `RunHandles` so its Drop cleans up the socket with the run.
+///
+/// Fail-closed: this NEVER sets `GH_TOKEN`/`GITLAB_TOKEN` on the sidecar env —
+/// tokens only ever reach the real gh/glab via the shim's child process.
+async fn wire_broker(
+    app: &AppHandle,
+    db: &Db,
+    cmd: &mut Command,
+    run_id: &str,
+    project_id: &str,
+    project_path: &str,
+) -> Result<BrokerHandle, String> {
+    let approvals = app.state::<BrokerApprovals>().inner().clone();
+    let approver: Arc<dyn Approver> = Arc::new(ModalApprover::new(
+        app.clone(),
+        run_id.to_string(),
+        approvals,
+        Some(project_path.to_string()),
+    ));
+    let handle = start_broker(
+        db.clone(),
+        BrokerConfig { run_id: run_id.to_string(), approver },
+    )
+    .await?;
+
+    // Shim dir goes FIRST on PATH (after augment_command_path has run).
+    let shim_dir = resolve_shim_dir(app)?;
+    prepend_shim_path(cmd, &shim_dir);
+    cmd.env("DEVDY_BROKER_SOCK", &handle.path);
+    cmd.env("DEVDY_PROJECT_ID", project_id);
+
+    // GĐ4: route `git` HTTPS auth through the Devdy credential helper (per-run,
+    // never touching global git config) + set the commit identity from the
+    // linked account. Codex does NOT call wire_broker, so it is unaffected.
+    let helper_path = shim_dir.join("git-credential-devdy");
+    wire_git_config(cmd, &helper_path);
+    wire_commit_identity(cmd, db, project_id).await;
+
+    Ok(handle)
+}
+
+/// Configure `git` for this run to use the Devdy credential helper via
+/// `GIT_CONFIG_COUNT` + `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`. This is per-run
+/// and NEVER touches `~/.gitconfig` or system config.
+///
+/// The first `credential.helper=""` entry RESETS any inherited helper chain
+/// (e.g. osxkeychain), so the run can only auth via Devdy → fail-closed to the
+/// project's account. No token is ever set in the environment here.
+fn wire_git_config(cmd: &mut Command, helper_path: &Path) {
+    cmd.env("GIT_CONFIG_COUNT", "3");
+    // 0: reset the accumulated credential helper list (system/global).
+    cmd.env("GIT_CONFIG_KEY_0", "credential.helper");
+    cmd.env("GIT_CONFIG_VALUE_0", "");
+    // 1: the Devdy helper (absolute path → independent of PATH resolution).
+    cmd.env("GIT_CONFIG_KEY_1", "credential.helper");
+    cmd.env("GIT_CONFIG_VALUE_1", helper_path.as_os_str());
+    // 2: credentials keyed per host, not per repo path.
+    cmd.env("GIT_CONFIG_KEY_2", "credential.useHttpPath");
+    cmd.env("GIT_CONFIG_VALUE_2", "false");
+}
+
+/// Set `GIT_AUTHOR_*`/`GIT_COMMITTER_*` from the project's linked account so
+/// commits carry the right identity. Only sets an env var when the corresponding
+/// account field is present — never fabricates a name/email. Identity resolution
+/// failures degrade silently (identity is not a secret and must not fail a run).
+async fn wire_commit_identity(cmd: &mut Command, db: &Db, project_id: &str) {
+    let identity = crate::runs::broker::token::resolve_commit_identity(db, project_id).await;
+    if let Some(name) = identity.name {
+        cmd.env("GIT_AUTHOR_NAME", &name);
+        cmd.env("GIT_COMMITTER_NAME", &name);
+    }
+    if let Some(email) = identity.email {
+        cmd.env("GIT_AUTHOR_EMAIL", &email);
+        cmd.env("GIT_COMMITTER_EMAIL", &email);
+    }
 }
 
 #[tauri::command]
@@ -549,10 +702,23 @@ pub struct RespondPermissionPayload {
 #[tauri::command]
 pub async fn respond_permission(
     registry: State<'_, RunRegistry>,
+    broker_approvals: State<'_, crate::runs::BrokerApprovals>,
     payload: RespondPermissionPayload,
 ) -> Result<(), String> {
     if !matches!(payload.decision.as_str(), "allow" | "deny" | "ask") {
         return Err(format!("unknown permission decision: {}", payload.decision));
+    }
+    // GĐ3: a broker-side `Ask` (gh/glab) registers its request_id here. If this
+    // response matches one, resolve its oneshot and return — the sidecar knows
+    // nothing about it, so we must NOT route it over stdin. Non-matching ids fall
+    // through to the unchanged sidecar path below.
+    {
+        let mut pending = broker_approvals.lock().await;
+        if let Some(tx) = pending.remove(&payload.request_id) {
+            let allow = payload.decision == "allow";
+            let _ = tx.send(allow);
+            return Ok(());
+        }
     }
     // Route the decision back to the sidecar's canUseTool callback over stdin.
     let line = format!(
@@ -1243,7 +1409,7 @@ pub async fn resume_run(
     crate::commands::stats::enforce_budget(db.inner(), override_budget.unwrap_or(false)).await?;
 
     let row = sqlx::query(
-        "SELECT r.engine, r.status, r.session_id, p.path as project_path
+        "SELECT r.engine, r.status, r.session_id, r.project_id, p.path as project_path
          FROM runs r JOIN projects p ON p.id = r.project_id
          WHERE r.id = ?",
     )
@@ -1255,6 +1421,7 @@ pub async fn resume_run(
     let engine: String = row.get("engine");
     let status: String = row.get("status");
     let session_id: Option<String> = row.get("session_id");
+    let project_id: String = row.get("project_id");
     let project_path: String = row.get("project_path");
 
     if engine != "claude" && engine != "codex" {
@@ -1341,6 +1508,17 @@ pub async fn resume_run(
         // The sidecar resumes this session/thread on its first prompt.
         .env("DEVDY_RESUME_SESSION", &session_id);
     augment_command_path(&mut cmd);
+    // GĐ3: wire the broker + gh/glab shim for Claude resumes too, so resumed
+    // sessions get the same per-project account treatment as fresh runs. Codex is
+    // untouched. Fail-closed: never sets a token on the sidecar env.
+    let broker_handle: Option<BrokerHandle> = if engine == "claude" {
+        Some(
+            wire_broker(&app, db.inner(), &mut cmd, &run_id, &project_id, &project_path)
+                .await?,
+        )
+    } else {
+        None
+    };
     if engine == "codex" {
         cmd.env("DEVDY_PERMISSION_MODE", &permission_mode);
         if codex_path != "codex" && !codex_path.trim().is_empty() {
@@ -1397,6 +1575,7 @@ pub async fn resume_run(
                 stdin: stdin_handle,
                 session_id: session_id_state.clone(),
                 log_buf: log_buf.clone(),
+                broker: broker_handle,
             },
         );
     }

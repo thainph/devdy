@@ -17,6 +17,10 @@ pub struct Project {
     pub default_engine: String,
     pub created_at: String,
     pub github_account_id: Option<String>,
+    /// GĐ6: linked GitLab account (mirrors `github_account_id`). `None` when the
+    /// project has no GitLab account attached (backward-compatible default).
+    #[serde(default)]
+    pub gitlab_account_id: Option<String>,
     /// Number of runs recorded against this project (usage frequency).
     #[serde(default)]
     pub run_count: i64,
@@ -273,7 +277,7 @@ pub async fn list_projects(db: State<'_, Db>) -> Result<Vec<Project>, String> {
     use sqlx::Row;
     // Sort by usage frequency (number of runs), then recency, then name.
     let rows = sqlx::query(
-        "SELECT p.id, p.name, p.path, p.default_engine, p.created_at, p.github_account_id, \
+        "SELECT p.id, p.name, p.path, p.default_engine, p.created_at, p.github_account_id, p.gitlab_account_id, \
                 COUNT(r.id) AS run_count, MAX(r.created_at) AS last_used_at \
          FROM projects p \
          LEFT JOIN runs r ON r.project_id = p.id \
@@ -294,6 +298,7 @@ pub async fn list_projects(db: State<'_, Db>) -> Result<Vec<Project>, String> {
             default_engine: row.get("default_engine"),
             created_at: row.get("created_at"),
             github_account_id: row.get("github_account_id"),
+            gitlab_account_id: row.get("gitlab_account_id"),
             run_count: row.get("run_count"),
             last_used_at: row.get("last_used_at"),
         }
@@ -360,6 +365,7 @@ pub async fn add_project(
         default_engine: "claude".to_string(),
         created_at: now,
         github_account_id: None,
+        gitlab_account_id: None,
         run_count: 0,
         last_used_at: None,
     })
@@ -397,7 +403,7 @@ pub async fn update_project(
     .map_err(|e| e.to_string())?;
 
     let row = sqlx::query(
-        "SELECT p.id, p.name, p.path, p.default_engine, p.created_at, p.github_account_id, \
+        "SELECT p.id, p.name, p.path, p.default_engine, p.created_at, p.github_account_id, p.gitlab_account_id, \
                 COUNT(r.id) AS run_count, MAX(r.created_at) AS last_used_at \
          FROM projects p LEFT JOIN runs r ON r.project_id = p.id WHERE p.id = ? GROUP BY p.id"
     )
@@ -415,6 +421,7 @@ pub async fn update_project(
         default_engine: row.get("default_engine"),
         created_at: row.get("created_at"),
         github_account_id: row.get("github_account_id"),
+        gitlab_account_id: row.get("gitlab_account_id"),
         run_count: row.get("run_count"),
         last_used_at: row.get("last_used_at"),
     })
