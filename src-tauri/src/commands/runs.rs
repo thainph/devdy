@@ -1041,7 +1041,7 @@ pub(crate) async fn delete_run_inner(
     }
 
     let row = sqlx::query(
-        "SELECT r.status, r.input_path, r.project_id, r.session_id, r.engine, p.path as project_path
+        "SELECT r.status, r.input_path, r.project_id, r.session_id, r.engine, r.transcript_path, p.path as project_path
          FROM runs r JOIN projects p ON p.id = r.project_id
          WHERE r.id = ?",
     )
@@ -1059,6 +1059,7 @@ pub(crate) async fn delete_run_inner(
     let project_id: String = row.get("project_id");
     let session_id: Option<String> = row.get("session_id");
     let engine: String = row.get("engine");
+    let transcript_path: Option<String> = row.get("transcript_path");
 
     sqlx::query("DELETE FROM runs WHERE id = ?")
         .bind(run_id)
@@ -1092,6 +1093,26 @@ pub(crate) async fn delete_run_inner(
     let runs_dir = Path::new(&project_path).join(".devdy").join("runs");
     let _ = fs::remove_file(runs_dir.join(format!("{}.log", run_id)));
     let _ = fs::remove_dir_all(runs_dir.join(run_id));
+
+    // Also delete the shared engine transcript so the session can't be
+    // re-mirrored back into history (and disappears from the CLI/VS Code resume
+    // list too). Prefer the exact path we mirrored from; otherwise reconstruct it
+    // from the engine + session id. The tombstone above still guards the window
+    // in case this file can't be removed.
+    if let Some(sid) = session_id.as_deref() {
+        let transcript_file: Option<PathBuf> = match transcript_path.as_deref() {
+            Some(p) => Some(PathBuf::from(p)),
+            None => match engine.as_str() {
+                "claude" => crate::commands::sessions::claude_sessions_dir(&project_path)
+                    .map(|dir| dir.join(format!("{}.jsonl", sid))),
+                "codex" => crate::commands::codex_sessions::codex_session_file(sid),
+                _ => None,
+            },
+        };
+        if let Some(file) = transcript_file {
+            let _ = fs::remove_file(file);
+        }
+    }
 
     if let Some(path) = input_path.as_deref() {
         let still_referenced: i64 = sqlx::query_scalar(
