@@ -32,7 +32,7 @@ pub(crate) fn encode_project_dir(path: &str) -> String {
         .collect()
 }
 
-fn claude_sessions_dir(project_path: &str) -> Option<PathBuf> {
+pub(crate) fn claude_sessions_dir(project_path: &str) -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
     let dir = Path::new(&home)
         .join(".claude")
