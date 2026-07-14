@@ -2234,6 +2234,7 @@ function handleRefInput(val: string) {
                 :key="permissionQueue[0].request_id"
                 :request="permissionQueue[0]"
                 :allowed-tools="allowedToolsList"
+                :render-text="renderText"
                 @decide="handlePermissionDecision"
                 @answer="handlePermissionAnswer"
               />

@@ -3,7 +3,7 @@ import { ref, computed, watch, type Component } from 'vue'
 import {
   ChevronRight, Wrench, Sparkles, CheckCircle2, XCircle, Cpu, Brain, AlertTriangle, Info,
   Terminal, FilePen, FilePlus2, FileText, Search, Globe, ListTodo, User, Archive, Copy, Check,
-  Bot, MessageCircleQuestion, Circle, CircleDot,
+  Bot, MessageCircleQuestion, Circle, CircleDot, ClipboardList,
 } from 'lucide-vue-next'
 import type { StreamEntry } from '@/lib/streamEvents'
 import { vMermaid } from '@/lib/mermaid'
@@ -142,6 +142,8 @@ function toolStyle(name: string): ToolStyle {
     return { icon: MessageCircleQuestion, iconClass: 'text-blue-400', nameClass: 'text-blue-600 dark:text-blue-300', barClass: 'border-l-blue-500/60' }
   if (n === 'toolsearch')
     return { icon: Search, iconClass: 'text-teal-400', nameClass: 'text-teal-600 dark:text-teal-300', barClass: 'border-l-teal-500/60' }
+  if (n === 'exitplanmode')
+    return { icon: ClipboardList, iconClass: 'text-indigo-400', nameClass: 'text-indigo-600 dark:text-indigo-300', barClass: 'border-l-indigo-500/60' }
   return DEFAULT_TOOL_STYLE
 }
 
@@ -335,6 +337,15 @@ function isWebTool(name: string): boolean {
   return n === 'webfetch' || n === 'websearch'
 }
 
+// --- ExitPlanMode: Claude presenting a plan to leave plan mode --------------
+// Render the proposed plan as markdown, not a raw tool-input dump.
+function isPlanTool(name: string): boolean {
+  return (name || '').toLowerCase() === 'exitplanmode'
+}
+function planContent(input: unknown): string {
+  return asStr(asObj(input).plan)
+}
+
 // The most recent message (assistant reply or user turn) is what the user is
 // actively reading — and while running it's still streaming — so it always
 // renders in full, never collapsed.
@@ -354,7 +365,9 @@ watch(
     for (let i = 0; i < props.entries.length; i++) {
       const e = props.entries[i]
       if (e.kind === 'tool' && expanded.value[i] === undefined) {
-        expanded.value[i] = !!e.result?.is_error
+        // Plans are meant to be read — show them open; other tools start collapsed
+        // unless they errored.
+        expanded.value[i] = isPlanTool(e.name) || !!e.result?.is_error
       }
     }
   },
@@ -855,6 +868,28 @@ const lastEntryIsResult = computed(() => {
             @click="onProseClick"
           />
           <pre v-else class="text-[11px] font-mono text-red-600 dark:text-red-300/90 whitespace-pre-wrap break-words max-h-96 overflow-auto">{{ entry.result.content }}</pre>
+        </div>
+      </div>
+
+      <!-- ExitPlanMode: Claude's proposed plan, rendered as markdown. -->
+      <div
+        v-else-if="entry.kind === 'tool' && isPlanTool(entry.name)"
+        class="rounded-md border border-l-[3px] bg-foreground/2 overflow-hidden"
+        :class="['border-border', toolStyle(entry.name).barClass]"
+      >
+        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/4 transition-colors cursor-pointer" @click="toggle(i)">
+          <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[i] }" />
+          <ClipboardList class="h-3.5 w-3.5 shrink-0 text-indigo-400" :stroke-width="1.75" />
+          <span class="text-xs font-mono font-semibold shrink-0 text-indigo-600 dark:text-indigo-300">plan</span>
+          <span class="text-[11px] text-foreground/45 truncate">Proposed plan</span>
+        </button>
+        <div v-if="expanded[i]" class="border-t border-border px-3 py-2">
+          <div
+            v-file-links v-mermaid v-copy-code
+            v-html="renderText(planContent(entry.input))"
+            class="markdown-output text-sm leading-relaxed text-foreground"
+            @click="onProseClick"
+          />
         </div>
       </div>
 
