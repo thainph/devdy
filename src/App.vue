@@ -10,12 +10,16 @@ import BudgetBadge from '@/components/BudgetBadge.vue'
 import WorkspaceTabs from '@/components/WorkspaceTabs.vue'
 import ActiveRunsDock from '@/components/ActiveRunsDock.vue'
 import FileViewerWindow from '@/views/FileViewerWindow.vue'
+import PermissionWindow from '@/views/PermissionWindow.vue'
 import { ConfirmModal, ToastHost } from '@/components/ui'
 import { getVersion } from '@tauri-apps/api/app'
 
-// Pop-out file viewer windows load the same SPA with `?fileWindow=1`; render a
-// bare, chrome-less viewer (no sidebar / nav / background work) in that case.
+// Pop-out windows load the same SPA with a query flag; render a bare,
+// chrome-less host (no sidebar / nav / background work) in those cases.
 const isFileWindow = new URLSearchParams(window.location.search).get('fileWindow') === '1'
+const isPermissionWindow = new URLSearchParams(window.location.search).get('permissionWindow') === '1'
+// Both pop-out kinds only need the theme applied; skip the main app's data work.
+const isPopoutWindow = isFileWindow || isPermissionWindow
 
 const route = useRoute()
 const projectsStore = useProjectsStore()
@@ -97,7 +101,7 @@ function applyColorTheme(theme: string) {
 }
 
 onMounted(async () => {
-  if (isFileWindow) {
+  if (isPopoutWindow) {
     // Pop-out window: only theme matters; skip the main app's data fetches.
     try {
       await appSettings.refresh()
@@ -126,6 +130,9 @@ onMounted(async () => {
 <template>
   <!-- Pop-out file viewer window: bare layout, no app chrome. -->
   <FileViewerWindow v-if="isFileWindow" />
+
+  <!-- Pop-out permission prompt window: bare layout, mirrors the main window. -->
+  <PermissionWindow v-else-if="isPermissionWindow" />
 
   <div v-else class="flex h-screen bg-background text-foreground overflow-hidden">
     <!-- Sidebar -->
