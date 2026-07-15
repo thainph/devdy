@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@/lib/tauri'
-import { ref } from 'vue'
+import { ref, reactive } from 'vue'
 import type { ImageAttachment } from '@/lib/streamEvents'
 
 export interface RunRecord {
@@ -56,11 +56,23 @@ export const useRunsStore = defineStore('runs', () => {
   // view of whatever project is on screen.
   const loadedProjectId = ref<string | null>(null)
 
+  // Metadata for every run we've loaded this session, keyed by run id and kept
+  // across project switches. The `runs` array only ever holds ONE project's
+  // runs (it gets replaced on every tab switch), so app-wide surfaces like the
+  // active-runs dock can't rely on it to label a background project's run. They
+  // read titles from this accumulated cache instead.
+  const runMeta = reactive(new Map<string, RunRecord>())
+
+  function rememberRuns(list: RunRecord[]) {
+    for (const r of list) runMeta.set(r.id, r)
+  }
+
   async function fetchRuns(project_id: string) {
     loading.value = true
     try {
       runs.value = await invoke<RunRecord[]>('list_runs', { projectId: project_id })
       loadedProjectId.value = project_id
+      rememberRuns(runs.value)
     } finally {
       loading.value = false
     }
@@ -226,6 +238,7 @@ export const useRunsStore = defineStore('runs', () => {
   async function deleteRun(run_id: string): Promise<void> {
     await invoke('delete_run', { runId: run_id })
     runs.value = runs.value.filter(r => r.id !== run_id)
+    runMeta.delete(run_id)
   }
 
   async function deleteAllRuns(project_id: string): Promise<number> {
@@ -246,8 +259,11 @@ export const useRunsStore = defineStore('runs', () => {
 
   async function renameRun(run_id: string, title: string): Promise<void> {
     await invoke('rename_run', { runId: run_id, title })
+    const next = title.trim() || null
     const run = runs.value.find(r => r.id === run_id)
-    if (run) run.title = title.trim() || null
+    if (run) run.title = next
+    const cached = runMeta.get(run_id)
+    if (cached) cached.title = next
   }
 
   async function setRunPinned(run_id: string, pinned: boolean): Promise<void> {
@@ -260,7 +276,7 @@ export const useRunsStore = defineStore('runs', () => {
   }
 
   return {
-    runs, loading, loadedProjectId,
+    runs, loading, loadedProjectId, runMeta,
     fetchRuns, fetchIssue, fetchPr,
     startRun, rerunRun, refetchRun, cancelRun, resumeRun,
     getRunLog, getRunLogPath, readRunInput,
