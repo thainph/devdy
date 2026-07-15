@@ -10,7 +10,7 @@ import { useGitlabAccountsStore } from '@/stores/gitlabAccounts'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { invoke } from '@/lib/tauri'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import {
   Play, Square, GitPullRequest, Bug,
   Clock, Cpu, Terminal, FileText, RotateCcw, RefreshCw,
@@ -30,11 +30,12 @@ import FileViewer from '@/components/FileViewer.vue'
 import { Button, Input, StatusBadge, Badge, Modal } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
-import { applyMermaidFence, vMermaid } from '@/lib/mermaid'
+import { vMermaid } from '@/lib/mermaid'
 import { vCopyCode } from '@/lib/copyCode'
 import { matchProjectFile, parseLineRef, decorateFileLinks } from '@/lib/fileLinks'
 import { openFileWindow } from '@/lib/fileWindow'
-import type MarkdownIt from 'markdown-it'
+import { openPermissionWindow, closePermissionWindow } from '@/lib/permissionWindow'
+import { useMarkdown } from '@/lib/markdown'
 import {
   entriesToPlainText,
   parseStreamLog,
@@ -228,8 +229,7 @@ async function openRunInBrowser(run: RunRecord) {
   if (url) await openUrl(url)
 }
 
-const mdReady = ref(false)
-let _md: MarkdownIt | null = null
+const { renderText, loadMarkdown } = useMarkdown()
 
 // `viewingLogRunId` is set only while showing an on-disk log (it's cleared the
 // moment a run goes live), so its presence alone means we're in history view.
@@ -252,6 +252,11 @@ const isResizing = ref(false)
 const resultSplitEl = ref<HTMLElement | null>(null)
 const questionWidthPct = ref(50)
 const isResizingQuestion = ref(false)
+
+// When true, the permission prompt is detached into a standalone pop-out window
+// (see permissionWindow.ts). The inline panel is hidden so the chat reclaims
+// full width and stops reflowing; this window mirrors its state to the pop-out.
+const poppedOut = ref(false)
 
 // Panel visibility: user can show Content only, AI Result only, or both.
 // Sessions have no issue/PR content, so Content is never shown for them.
@@ -331,48 +336,11 @@ const sourceText = computed(() => {
   return liveOutputLines.value.map(l => l.text).join('\n')
 })
 
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-}
-
-// Memoize rendered markdown per source string. `renderText` is called from
-// inside a v-for's template (StreamLog), so Vue re-invokes it for EVERY entry
-// on every re-render. Without a cache, a single streamed event (and especially
-// the burst released when a permission is allowed) re-parses the whole
-// conversation's markdown synchronously, freezing the main thread and blanking
-// the AI-result column for seconds. Only the still-growing last entry misses
-// the cache; all prior entries are served from it.
-const _mdCache = new Map<string, string>()
-const MD_CACHE_MAX = 800
-function renderText(md: string): string {
-  // Read mdReady so this is reactive to renderer load.
-  if (!mdReady.value || !_md) return escapeHtml(md ?? '').replace(/\n/g, '<br/>')
-  const key = md ?? ''
-  const cached = _mdCache.get(key)
-  if (cached !== undefined) return cached
-  const html = _md.render(key)
-  if (_mdCache.size >= MD_CACHE_MAX) _mdCache.clear()
-  _mdCache.set(key, html)
-  return html
-}
-
 // Legacy (non-stream) markdown for each view column.
 const liveLegacyHtml = computed(() => liveHasStream.value ? '' : renderText(
   liveOutputLines.value.map(l => l.text).join('\n')
 ))
 const historyLegacyHtml = computed(() => historyHasStream.value ? '' : renderText(viewingLog.value))
-
-async function loadMarkdown() {
-  if (_md) return
-  try {
-    const MarkdownIt = (await import('markdown-it')).default
-    _md = new MarkdownIt({ html: false, linkify: true, typographer: true, breaks: true })
-    applyMermaidFence(_md)
-    mdReady.value = true
-  } catch {
-    // leave _md null; renderText falls back to escaped text
-  }
-}
 
 // Whether the live output is "pinned" to the bottom. We only auto-scroll when
 // the user is already near the bottom; if they scroll up to read earlier
@@ -459,6 +427,9 @@ watch(outputEl, (el) => {
 // restores it after layout settles — covering the case where the user hasn't
 // scrolled yet and no anchor was captured otherwise.
 watch(() => permissionQueue.value.length > 0, () => captureScrollAnchor())
+// Detaching/re-docking the prompt also changes the chat column's width; anchor
+// the reading position across that toggle too so it doesn't jump.
+watch(poppedOut, () => captureScrollAnchor())
 
 // While the user is actively interacting with the output — holding the mouse
 // down to drag-select, or with text already selected inside it — we must NOT
@@ -557,6 +528,7 @@ onMounted(async () => {
   }
   window.addEventListener('focus', refreshViewedRunOnFocus)
   window.addEventListener('pointerup', onWindowPointerUp)
+  setupPopoutBridge()
 
   // Mirror in any sessions created/continued outside Devdy while it was closed
   // (both engines), then surface them in the sidebar.
@@ -609,6 +581,10 @@ onUnmounted(() => {
   window.removeEventListener('pointerup', onWindowPointerUp)
   sessionsChangedUnlisten?.()
   sessionsChangedUnlisten = null
+  popoutUnlisten.forEach((fn) => fn())
+  popoutUnlisten = []
+  // Tear down the pop-out with its owner view so it can't outlive the run.
+  closePermissionWindow()
 })
 
 async function loadInputContent(runId: string) {
@@ -1394,6 +1370,73 @@ async function handlePermissionDecision(decision: 'allow' | 'deny' | 'ask', reme
   nextTick(() => composerEl.value?.focus())
 }
 
+// --- Detachable permission window ------------------------------------------
+// The pop-out window is a remote view; this component stays the single source
+// of truth. We mirror the current head request to it, and run the real resolve
+// logic here when it forwards the user's decision back.
+function syncPermissionToPopout() {
+  if (!poppedOut.value) return
+  const head = permissionQueue.value[0] ?? null
+  // Nothing left to answer (resolved or run finished) → close the pop-out and
+  // re-dock, so the window doesn't linger after the user responds.
+  if (!head) {
+    redockPermission()
+    return
+  }
+  emit('permission:sync', { request: head, allowedTools: allowedToolsList.value })
+}
+
+async function openPermissionPopout() {
+  poppedOut.value = true
+  const win = await openPermissionWindow()
+  // Re-dock whenever the window goes away, regardless of who closed it (OS close
+  // button, "Thu về", or programmatic close). The lifecycle event is reliable,
+  // unlike an app-level event emitted mid-teardown.
+  win.once('tauri://destroyed', () => {
+    poppedOut.value = false
+  })
+  // Initial state is also pushed on the window's 'ready' ping, but send now too
+  // in case it was already open (focus path emits no ready event).
+  syncPermissionToPopout()
+}
+
+// Re-dock: return the prompt to the inline panel and close the pop-out. Flip the
+// flag immediately (don't wait for the destroyed event) so the panel comes back
+// even if the window is slow to tear down.
+function redockPermission() {
+  poppedOut.value = false
+  closePermissionWindow()
+}
+
+// Keep the pop-out in sync whenever the head request changes (queue advances,
+// new request arrives, or the run finishes and clears it).
+watch(
+  () => [permissionQueue.value[0]?.request_id ?? null, poppedOut.value] as const,
+  () => syncPermissionToPopout(),
+)
+
+let popoutUnlisten: UnlistenFn[] = []
+async function setupPopoutBridge() {
+  popoutUnlisten.push(
+    await listen('permission:window-ready', () => syncPermissionToPopout()),
+    await listen<{ request_id: string; decision: 'allow' | 'deny'; remember: boolean }>(
+      'permission:decide',
+      (e) => {
+        // Ignore stale decisions that don't match the current head request.
+        if (e.payload?.request_id !== permissionQueue.value[0]?.request_id) return
+        handlePermissionDecision(e.payload.decision, e.payload.remember)
+      },
+    ),
+    await listen<{ request_id: string; answers: Record<string, string> }>(
+      'permission:answer',
+      (e) => {
+        if (e.payload?.request_id !== permissionQueue.value[0]?.request_id) return
+        handlePermissionAnswer(e.payload.answers)
+      },
+    ),
+  )
+}
+
 async function handlePermissionAnswer(answers: Record<string, string>) {
   const id = currentRunId.value
   if (!id) return
@@ -2165,6 +2208,28 @@ function handleRefInput(val: string) {
                 </span>
                 <div class="ml-auto flex items-center gap-2 shrink-0">
                   <MentionedFiles :entries="displayedEntries" @open-file="openFileViewer" />
+                  <!-- Detach the pending permission/question into its own window
+                       so the chat keeps full width and can be read side-by-side. -->
+                  <button
+                    v-if="permissionQueue.length > 0 && !poppedOut"
+                    type="button"
+                    class="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-foreground/60 hover:bg-accent/60 hover:text-foreground transition-colors cursor-pointer"
+                    title="Tách câu hỏi ra cửa sổ riêng (kéo sang màn hình khác)"
+                    @click="openPermissionPopout"
+                  >
+                    <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
+                    Tách cửa sổ
+                  </button>
+                  <button
+                    v-else-if="poppedOut"
+                    type="button"
+                    class="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-indigo-500 hover:bg-accent/60 transition-colors cursor-pointer"
+                    title="Câu hỏi đang ở cửa sổ riêng — bấm để thu về panel"
+                    @click="redockPermission"
+                  >
+                    <AppWindow class="h-3.5 w-3.5" :stroke-width="1.75" />
+                    Thu về
+                  </button>
                   <span v-if="currentStatus === 'running'" class="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
                 </div>
               </div>
@@ -2257,7 +2322,7 @@ function handleRefInput(val: string) {
 
             <!-- Resize handle between AI result and the question panel -->
             <div
-              v-if="permissionQueue.length > 0"
+              v-if="permissionQueue.length > 0 && !poppedOut"
               class="group relative shrink-0 w-px bg-border cursor-col-resize select-none"
               :class="{ 'bg-primary/60': isResizingQuestion }"
               @mousedown="startQuestionResize"
@@ -2271,7 +2336,7 @@ function handleRefInput(val: string) {
             <!-- Question / permission prompt: docked side-by-side (right) with
                  the AI result so it stays within this run's view. -->
             <div
-              v-if="permissionQueue.length > 0"
+              v-if="permissionQueue.length > 0 && !poppedOut"
               class="shrink-0 overflow-auto min-h-0 bg-card/30"
               :style="{ width: questionWidthPct + '%' }"
             >
