@@ -18,7 +18,8 @@ import {
   ChevronDown, Maximize2, Minimize2, AppWindow,
   ImagePlus, X,
   ShieldQuestion, MessageCircleQuestion,
-  Pin, PinOff, Pencil, Check, Github, Gitlab
+  Pin, PinOff, Pencil, Check, Github, Gitlab,
+  ClipboardCopy, ScrollText
 } from 'lucide-vue-next'
 import AppSelect from '@/components/AppSelect.vue'
 import StreamLog from '@/components/StreamLog.vue'
@@ -28,6 +29,7 @@ import PermissionPrompt from '@/components/PermissionPrompt.vue'
 import FileViewer from '@/components/FileViewer.vue'
 import { Button, Input, StatusBadge, Badge, Modal } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
+import { useToast } from '@/composables/useToast'
 import { applyMermaidFence, vMermaid } from '@/lib/mermaid'
 import { vCopyCode } from '@/lib/copyCode'
 import { matchProjectFile, parseLineRef, decorateFileLinks } from '@/lib/fileLinks'
@@ -50,6 +52,7 @@ const ghStore = useGithubAccountsStore()
 const glStore = useGitlabAccountsStore()
 const appSettings = useAppSettingsStore()
 const { confirm } = useConfirm()
+const { toast } = useToast()
 
 const projectId = computed(() => route.params.projectId as string)
 const project = computed(() => projectStore.projects.find(p => p.id === projectId.value))
@@ -1463,6 +1466,31 @@ function startRename(run: RunRecord, e?: MouseEvent) {
   })
 }
 
+// Copy the absolute path of this run/session's log file to the clipboard.
+async function copyLogPath(run: RunRecord) {
+  try {
+    const path = await runsStore.getRunLogPath(run.id)
+    if (!path) { toast.info('No log file for this session yet'); return }
+    await navigator.clipboard.writeText(path)
+    toast.success('Log path copied')
+  } catch (e) {
+    toast.error(String(e))
+  }
+}
+
+// Open this run/session's log file in a standalone file viewer window.
+async function viewLogFile(run: RunRecord) {
+  const p = project.value
+  if (!p) return
+  try {
+    const path = await runsStore.getRunLogPath(run.id)
+    if (!path) { toast.info('No log file for this session yet'); return }
+    await openFileWindow(p.path, path)
+  } catch (e) {
+    toast.error(String(e))
+  }
+}
+
 function cancelRename() {
   renamingRunId.value = null
   renameDraft.value = ''
@@ -1947,6 +1975,24 @@ function handleRefInput(val: string) {
                 @click.stop="handleRefetch(run.id)"
               >
                 <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': refetchingRunId === run.id }" :stroke-width="1.75" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Copy log file path"
+                title="Copy log file path"
+                @click.stop="copyLogPath(run)"
+              >
+                <ClipboardCopy class="h-3.5 w-3.5" :stroke-width="1.75" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="View log file"
+                title="View log file"
+                @click.stop="viewLogFile(run)"
+              >
+                <ScrollText class="h-3.5 w-3.5" :stroke-width="1.75" />
               </Button>
               <Button
                 variant="ghost"

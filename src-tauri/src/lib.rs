@@ -48,7 +48,7 @@ use commands::stats::{
 use commands::storage::{get_storage_stats, clean_storage};
 use commands::work_digest::get_work_digest;
 use commands::runs::{
-    start_run, cancel_run, get_run_log, rerun_run, respond_permission,
+    start_run, cancel_run, get_run_log, get_run_log_path, rerun_run, respond_permission,
     send_user_message, end_run_input, read_run_input, resume_run,
     delete_run, delete_all_runs, create_handoff_run, create_session_run,
     rename_run, set_run_pinned,
@@ -181,6 +181,7 @@ pub fn run() {
             start_run,
             cancel_run,
             get_run_log,
+            get_run_log_path,
             rerun_run,
             respond_permission,
             send_user_message,

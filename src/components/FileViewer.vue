@@ -6,13 +6,14 @@
 // specific buttons (full-screen, pop-out, close) via the #actions slot.
 import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import {
-  FileCode2, AArrowDown, AArrowUp, ExternalLink, Copy, FileQuestion, FolderOpen, RotateCw,
+  FileCode2, AArrowDown, AArrowUp, ExternalLink, Copy, FileQuestion, FileWarning, FolderOpen, RotateCw, Code2,
 } from 'lucide-vue-next'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener'
 import type MarkdownIt from 'markdown-it'
 import { Button } from '@/components/ui'
 import { useRunsStore } from '@/stores/runs'
+import { useProjectsStore } from '@/stores/projects'
 import { applyMermaidFence, vMermaid } from '@/lib/mermaid'
 import { vCopyCode } from '@/lib/copyCode'
 import { matchProjectFile, parseLineRef, decorateFileLinks } from '@/lib/fileLinks'
@@ -33,6 +34,7 @@ const emit = defineEmits<{
 }>()
 
 const runsStore = useRunsStore()
+const projectsStore = useProjectsStore()
 
 // ── File-type classification ──────────────────────────────────────────────
 type FileKind = 'text' | 'image' | 'video' | 'audio' | 'pdf' | 'other'
@@ -227,8 +229,10 @@ async function load() {
   try {
     const res = await runsStore.readProjectFile(projPath, path)
     curPath.value = res.path
-    content.value = res.content
     truncated.value = res.truncated
+    // Never render a partial view for oversized files — the "too large" notice
+    // plus an external-editor button replaces the misleadingly incomplete text.
+    content.value = res.truncated ? '' : res.content
   } catch (e) {
     error.value = String(e)
   } finally {
@@ -245,6 +249,9 @@ function onOpenInApp() {
 }
 function onRevealInFolder() {
   if (absPath.value) revealItemInDir(absPath.value).catch(() => { /* opener unavailable */ })
+}
+function onOpenInVscode() {
+  if (absPath.value) projectsStore.openInVscode(absPath.value).catch(() => { /* VS Code unavailable */ })
 }
 async function copyContent() {
   try {
@@ -270,8 +277,8 @@ async function reload() {
   try {
     const res = await runsStore.readProjectFile(projPath, path)
     curPath.value = res.path
-    content.value = res.content
     truncated.value = res.truncated
+    content.value = res.truncated ? '' : res.content
   } catch (e) {
     error.value = String(e)
   } finally {
@@ -298,7 +305,6 @@ defineExpose({ onRevealInFolder, onOpenInApp })
     <div class="sticky top-0 z-10 flex items-center gap-2 border-b border-border bg-card px-4 py-3 shrink-0">
       <FileCode2 class="h-4 w-4 text-primary shrink-0" :stroke-width="1.75" />
       <span class="text-xs font-mono text-foreground/90 truncate flex-1" :title="curPath">{{ curPath }}</span>
-      <span v-if="truncated" class="text-[10px] text-amber-500 shrink-0">truncated</span>
       <!-- Raw / rendered toggle, only meaningful for markdown files -->
       <div
         v-if="isMarkdown && content"
@@ -416,6 +422,23 @@ defineExpose({ onRevealInFolder, onOpenInApp })
         <div class="flex gap-2">
           <Button size="sm" @click="onOpenInApp">
             <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" /> Open in default app
+          </Button>
+          <Button size="sm" variant="outline" @click="onRevealInFolder">
+            <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" /> Reveal in folder
+          </Button>
+        </div>
+      </div>
+      <!-- Oversized text file: refuse to render a partial view, point the user
+           at an external editor that can open the whole thing. -->
+      <div v-else-if="truncated" class="p-10 flex flex-col items-center gap-3 text-center">
+        <FileWarning class="h-12 w-12 text-amber-500/70" :stroke-width="1.5" />
+        <div>
+          <p class="text-sm font-medium text-foreground/80 mb-1">File too large to preview</p>
+          <p class="text-xs text-foreground/50 max-w-md">This file is larger than 2&nbsp;MB. Open it in an external editor to view the full contents.</p>
+        </div>
+        <div class="flex gap-2">
+          <Button size="sm" @click="onOpenInVscode">
+            <Code2 class="h-3.5 w-3.5" :stroke-width="1.75" /> Open in VS Code
           </Button>
           <Button size="sm" variant="outline" @click="onRevealInFolder">
             <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" /> Reveal in folder
