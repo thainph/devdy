@@ -887,6 +887,83 @@ pub async fn get_run_log(db: State<'_, Db>, run_id: String) -> Result<RunLog, St
     Ok(RunLog { content })
 }
 
+#[derive(Debug, Serialize)]
+pub struct RunLogPath {
+    /// Absolute path of the log file backing the run, or `None` when no log file
+    /// exists on disk yet (so the UI can disable the copy / view actions).
+    pub path: Option<String>,
+}
+
+/// Resolve the absolute path of the log file backing a run/session, using the
+/// same priority `get_run_log` reads its content from:
+///   1. the conventional `.devdy/runs/<id>.log` written by start_run/resume_run,
+///   2. the shared Claude/Codex transcript (`transcript_path`) for mirrored
+///      sessions — falling back to the conventional session-store location when
+///      the cached path is missing,
+///   3. the recorded `output_path`.
+/// Unlike `get_run_log` this returns the path (not the content) so the frontend
+/// can copy it to the clipboard or open it in the file viewer.
+#[tauri::command]
+pub async fn get_run_log_path(db: State<'_, Db>, run_id: String) -> Result<RunLogPath, String> {
+    use sqlx::Row;
+    let row = sqlx::query(
+        "SELECT r.output_path, r.engine, r.session_id, r.transcript_path, p.path as project_path
+         FROM runs r JOIN projects p ON p.id = r.project_id
+         WHERE r.id = ?",
+    )
+    .bind(&run_id)
+    .fetch_one(db.inner())
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let output_path: Option<String> = row.get("output_path");
+    let engine: Option<String> = row.get("engine");
+    let session_id: Option<String> = row.get("session_id");
+    let transcript_path: Option<String> = row.get("transcript_path");
+    let project_path: String = row.get("project_path");
+
+    // 1. Conventional log written by the run drain task.
+    let conv_path = Path::new(&project_path)
+        .join(".devdy")
+        .join("runs")
+        .join(format!("{}.log", run_id));
+    if let Ok(content) = fs::read_to_string(&conv_path) {
+        if !content.trim().is_empty() {
+            return Ok(RunLogPath {
+                path: Some(conv_path.to_string_lossy().into_owned()),
+            });
+        }
+    }
+
+    // 2. Shared transcript store (mirrored Claude/Codex sessions). Prefer the
+    // cached path; only re-derive it from the session id when it's stale/missing.
+    let transcript = transcript_path
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+        .or_else(|| match (engine.as_deref(), session_id.as_deref()) {
+            (Some("claude"), Some(sid)) => {
+                crate::commands::sessions::claude_sessions_dir(&project_path)
+                    .map(|d| d.join(format!("{}.jsonl", sid)))
+                    .filter(|p| p.is_file())
+            }
+            (Some("codex"), Some(sid)) => {
+                crate::commands::codex_sessions::codex_session_file(sid)
+            }
+            _ => None,
+        });
+    if let Some(p) = transcript {
+        return Ok(RunLogPath {
+            path: Some(p.to_string_lossy().into_owned()),
+        });
+    }
+
+    // 3. Recorded output path, if it still points at a real file.
+    let output = output_path.map(PathBuf::from).filter(|p| p.is_file());
+    Ok(RunLogPath {
+        path: output.map(|p| p.to_string_lossy().into_owned()),
+    })
+}
+
 /// Source-run fields needed to clone a run into a new `fetched` record.
 struct ClonableRun {
     project_id: String,

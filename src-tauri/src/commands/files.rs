@@ -59,6 +59,23 @@ pub async fn read_project_file(
         .map_err(|e| format!("join error: {e}"))?
 }
 
+/// True when `path` lives under one of the shared AI transcript stores
+/// (`~/.claude` or `~/.codex`). These hold the session logs Devdy mirrors, so
+/// the file viewer is allowed to read them even though they sit outside any
+/// project directory.
+fn transcript_root_allows(path: &Path) -> bool {
+    let Ok(home) = std::env::var("HOME") else {
+        return false;
+    };
+    let home = Path::new(&home);
+    [".claude", ".codex"].iter().any(|sub| {
+        home.join(sub)
+            .canonicalize()
+            .map(|root| path.starts_with(&root))
+            .unwrap_or(false)
+    })
+}
+
 fn read_within(project_path: &str, file_path: &str) -> Result<FileContent, String> {
     let root = Path::new(project_path)
         .canonicalize()
@@ -76,8 +93,10 @@ fn read_within(project_path: &str, file_path: &str) -> Result<FileContent, Strin
         .canonicalize()
         .map_err(|_| format!("File not found: {file_path}"))?;
 
-    // Refuse anything outside the project root.
-    if !canonical.starts_with(&root) {
+    // Allow the project root plus the shared AI transcript stores. Session logs
+    // Devdy mirrors live under `~/.claude` / `~/.codex`, so the file viewer must
+    // be able to read them even though they sit outside any project.
+    if !canonical.starts_with(&root) && !transcript_root_allows(&canonical) {
         return Err("Refusing to read a file outside the project".to_string());
     }
     if canonical.is_dir() {

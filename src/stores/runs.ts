@@ -159,6 +159,13 @@ export const useRunsStore = defineStore('runs', () => {
     return result.content
   }
 
+  // Absolute path of the log file backing a run/session (`.devdy/runs/<id>.log`
+  // or the mirrored Claude/Codex transcript). Null when no log file exists yet.
+  async function getRunLogPath(run_id: string): Promise<string | null> {
+    const result = await invoke<{ path: string | null }>('get_run_log_path', { runId: run_id })
+    return result.path
+  }
+
   async function readRunInput(run_id: string): Promise<string> {
     return invoke<string>('read_run_input', { runId: run_id })
   }
@@ -256,7 +263,7 @@ export const useRunsStore = defineStore('runs', () => {
     runs, loading, loadedProjectId,
     fetchRuns, fetchIssue, fetchPr,
     startRun, rerunRun, refetchRun, cancelRun, resumeRun,
-    getRunLog, readRunInput,
+    getRunLog, getRunLogPath, readRunInput,
     respondPermission, sendUserMessage, endRunInput,
     listProjectFiles, readProjectFile, createHandoffRun, createSessionRun,
     reconcileClaudeSessions, reconcileCodexSessions,
