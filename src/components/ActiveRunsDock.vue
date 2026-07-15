@@ -49,7 +49,11 @@ const activeRunId = computed(() =>
 )
 
 function label(row: DockRow): string {
-  const run = runsStore.runs.find((r) => r.id === row.runId)
+  // Read from the session-wide metadata cache, not `runsStore.runs` — that
+  // array only holds the foreground project's runs and is replaced on every tab
+  // switch, so a background project's active run would otherwise fall back to
+  // the project name (the "title changes on tab switch" bug).
+  const run = runsStore.runMeta.get(row.runId)
   if (run && run.run_type !== 'session') {
     if (run.ref_number != null) return `${run.run_type === 'analyze_issue' ? 'Issue' : 'PR'} #${run.ref_number}`
   } else if (run?.title) {
