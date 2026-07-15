@@ -53,8 +53,11 @@ use commands::runs::{
     delete_run, delete_all_runs, create_handoff_run, create_session_run,
     rename_run, set_run_pinned,
 };
-use runs::{new_broker_approvals, new_registry, RunRegistry};
+use runs::{new_broker_approvals, new_broker_runs, new_registry, RunRegistry};
+use runs::broker::approver::ModalApproverResolver;
+use runs::broker::{start_broker, ApproverResolver, BrokerConfig};
 use runs::sidecar::kill_process_group;
+use std::sync::Arc;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -76,9 +79,33 @@ pub fn run() {
             // Watch the shared Claude transcript store so sessions created or
             // continued outside Devdy (claude CLI / VS Code) mirror in live.
             runs::session_watcher::start(db.clone(), app.handle().clone());
+
+            // App-wide singleton credential broker (GĐ7). One Unix socket serves
+            // every run for the whole app lifetime, so runs never race a per-run
+            // socket that appears/disappears with them (fixes the sporadic
+            // "broker unreachable" deny). Token isolation is unchanged: each
+            // request is still resolved by its own `project_id`, and an `Ask` is
+            // routed to the issuing run's modal (fail-closed if the run ended).
+            let approvals = new_broker_approvals();
+            let broker_runs = new_broker_runs();
+            let resolver: Arc<dyn ApproverResolver> = Arc::new(ModalApproverResolver::new(
+                app.handle().clone(),
+                approvals.clone(),
+                broker_runs.clone(),
+            ));
+            let broker_handle = tauri::async_runtime::block_on(start_broker(
+                db.clone(),
+                BrokerConfig { socket_label: "app".to_string(), resolver },
+            ))
+            .expect("Failed to start credential broker");
+
             app.manage(db);
             app.manage(new_registry());
-            app.manage(new_broker_approvals());
+            app.manage(approvals);
+            app.manage(broker_runs);
+            // Keep the broker alive for the whole app lifetime (Drop removes the
+            // socket on exit).
+            app.manage(broker_handle);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

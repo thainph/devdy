@@ -9,11 +9,13 @@
 //! The trait is async (GĐ3): `ModalApprover` must `await` a oneshot resolved by
 //! `respond_permission`. The GĐ2 fail-closed / test impls are trivially async.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 
-use super::BrokerRequest;
+use super::{ApproverResolver, BrokerRequest};
 use crate::runs::permission::PermissionRequestEvent;
-use crate::runs::BrokerApprovals;
+use crate::runs::{BrokerApprovals, BrokerRuns};
 use tauri::{AppHandle, Emitter};
 
 /// Decides whether an `Ask` request should proceed. Must be `Send + Sync` so it
@@ -111,5 +113,40 @@ impl Approver for ModalApprover {
             Ok(allow) => allow,
             Err(_) => false,
         }
+    }
+}
+
+/// GĐ7 resolver for the app-wide singleton broker. Given a request's `run_id`,
+/// it looks the run up in `BrokerRuns`; if the run is alive it builds a
+/// `ModalApprover` bound to that run (with its cwd for the modal), otherwise it
+/// returns `None` so the broker fail-closed denies the `Ask`.
+///
+/// Reuses the exact same modal machinery as before — only the *lifetime* of the
+/// broker changed (one socket for the whole app, not one per run).
+pub struct ModalApproverResolver {
+    app: AppHandle,
+    approvals: BrokerApprovals,
+    runs: BrokerRuns,
+}
+
+impl ModalApproverResolver {
+    pub fn new(app: AppHandle, approvals: BrokerApprovals, runs: BrokerRuns) -> Self {
+        Self { app, approvals, runs }
+    }
+}
+
+#[async_trait]
+impl ApproverResolver for ModalApproverResolver {
+    async fn resolve(&self, run_id: Option<&str>) -> Option<Arc<dyn Approver>> {
+        let run_id = run_id?;
+        // Copy the run's context out under a short synchronous lock; None (run
+        // not registered / already ended) → caller fail-closed denies.
+        let ctx = self.runs.lock().ok()?.get(run_id)?.clone();
+        Some(Arc::new(ModalApprover::new(
+            self.app.clone(),
+            run_id.to_string(),
+            self.approvals.clone(),
+            ctx.cwd,
+        )))
     }
 }

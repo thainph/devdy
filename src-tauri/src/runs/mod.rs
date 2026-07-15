@@ -5,7 +5,7 @@ pub mod session_watcher;
 pub mod sidecar;
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::{oneshot, Mutex};
 
@@ -21,19 +21,67 @@ pub struct RunHandles {
     /// so user follow-up messages are persisted to the log file alongside the
     /// stream from the subprocess.
     pub log_buf: Arc<Mutex<String>>,
-    /// GĐ3: per-run credential broker handle (Claude runs only; None for codex).
-    /// Held here so it lives exactly as long as the run — when the registry drops
-    /// the `RunHandles`, `BrokerHandle::drop` aborts the accept loop and removes
-    /// the socket (mirrors `kill_on_drop`). No explicit teardown is needed.
-    // Set once the broker is wired into the run spawn path (GĐ3); held-for-drop.
+    /// GĐ7: registration of this run in the app-wide singleton broker (Claude
+    /// runs only; None for codex). The broker outlives every run; this guard only
+    /// records that the run is alive — so its `Ask` modal can be routed — and, on
+    /// Drop, removes that record from `BrokerRuns`. Held here so it lives exactly
+    /// as long as the run: when the registry drops the `RunHandles`, the run is
+    /// automatically deregistered. No socket is created or torn down per run.
     #[allow(dead_code)]
-    pub broker: Option<broker::BrokerHandle>,
+    pub broker_run: Option<BrokerRunGuard>,
 }
 
 pub type RunRegistry = Arc<Mutex<HashMap<String, RunHandles>>>;
 
 pub fn new_registry() -> RunRegistry {
     Arc::new(Mutex::new(HashMap::new()))
+}
+
+/// Per-run context the singleton broker needs to serve a request for that run.
+/// Currently just the working directory (surfaced as the `Ask` modal's `cwd`);
+/// never holds a token. `Clone` so the resolver can copy it out under a short
+/// lock without holding the map locked across the await.
+#[derive(Clone, Default)]
+pub struct BrokerRunCtx {
+    pub cwd: Option<String>,
+}
+
+/// Live runs known to the singleton broker, keyed by `run_id`. Presence in this
+/// map == "this run is alive, its `Ask` modal can be shown". Absence == the run
+/// ended → the broker fail-closed denies any `Ask` for it (a read/allow needs no
+/// approver and still works). A plain `std::sync::Mutex` (not tokio) so
+/// `BrokerRunGuard::drop` can deregister synchronously from any context.
+pub type BrokerRuns = Arc<StdMutex<HashMap<String, BrokerRunCtx>>>;
+
+pub fn new_broker_runs() -> BrokerRuns {
+    Arc::new(StdMutex::new(HashMap::new()))
+}
+
+/// RAII registration of one run in `BrokerRuns`. Constructing it inserts the
+/// run's context; dropping it removes the run. Stored in `RunHandles` so the
+/// existing registry teardown (cancel_run / drain end) deregisters the run for
+/// free — no extra cleanup call sites.
+pub struct BrokerRunGuard {
+    runs: BrokerRuns,
+    run_id: String,
+}
+
+impl BrokerRunGuard {
+    /// Register `run_id` (with its context) as alive and return the guard.
+    pub fn register(runs: BrokerRuns, run_id: String, ctx: BrokerRunCtx) -> Self {
+        if let Ok(mut map) = runs.lock() {
+            map.insert(run_id.clone(), ctx);
+        }
+        Self { runs, run_id }
+    }
+}
+
+impl Drop for BrokerRunGuard {
+    fn drop(&mut self) {
+        if let Ok(mut map) = self.runs.lock() {
+            map.remove(&self.run_id);
+        }
+    }
 }
 
 /// Pending broker `Ask` approvals, keyed by a fresh `request_id`. A `ModalApprover`

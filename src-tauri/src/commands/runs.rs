@@ -1,9 +1,8 @@
 use crate::commands::github::RunRecord;
 use crate::db::Db;
 use crate::runs::sidecar::{augment_command_path, detach_process_group, drain_sidecar, kill_process_group, resolve_codex_sidecar, resolve_sidecar, sdk_permission_mode};
-use crate::runs::broker::approver::{Approver, ModalApprover};
-use crate::runs::broker::{start_broker, BrokerConfig, BrokerHandle};
-use crate::runs::{BrokerApprovals, RunHandles, RunRegistry};
+use crate::runs::broker::BrokerHandle;
+use crate::runs::{BrokerRunCtx, BrokerRunGuard, BrokerRuns, RunHandles, RunRegistry};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -258,7 +257,7 @@ pub async fn start_run(
         // GĐ3: per-run credential broker + gh/glab shim. Prepends the shim dir to
         // PATH and sets DEVDY_BROKER_SOCK/DEVDY_PROJECT_ID. Fail-closed: no token
         // is ever placed on the sidecar env. Held in RunHandles for Drop cleanup.
-        let broker_handle =
+        let broker_run =
             wire_broker(&app, db.inner(), &mut cmd, &payload.run_id, &project_id, &project_path)
                 .await?;
         // Honor a custom claude binary if the user configured one; default uses
@@ -339,7 +338,7 @@ pub async fn start_run(
                     stdin: stdin_handle,
                     session_id: session_id.clone(),
                     log_buf: log_buf.clone(),
-                    broker: Some(broker_handle),
+                    broker_run: Some(broker_run),
                 },
             );
         }
@@ -444,7 +443,7 @@ pub async fn start_run(
                 session_id: session_id.clone(),
                 log_buf: log_buf.clone(),
                 // Codex is untouched by GĐ3: no broker/shim wiring.
-                broker: None,
+                broker_run: None,
             },
         );
     }
@@ -536,9 +535,11 @@ fn prepend_shim_path(cmd: &mut Command, shim_dir: &Path) {
     cmd.env("PATH", joined);
 }
 
-/// Start a per-run credential broker (with a `ModalApprover`) and wire its socket
-/// + shim PATH into the sidecar command. Returns the `BrokerHandle` to store in
-/// `RunHandles` so its Drop cleans up the socket with the run.
+/// Register this run with the app-wide singleton broker and wire the broker
+/// socket + shim PATH into the sidecar command. Returns a `BrokerRunGuard` to
+/// store in `RunHandles`; its Drop deregisters the run (the socket itself lives
+/// for the whole app and is NOT torn down per run — that is the fix for the
+/// per-run "broker unreachable" race).
 ///
 /// Fail-closed: this NEVER sets `GH_TOKEN`/`GITLAB_TOKEN` on the sidecar env —
 /// tokens only ever reach the real gh/glab via the shim's child process.
@@ -549,25 +550,31 @@ async fn wire_broker(
     run_id: &str,
     project_id: &str,
     project_path: &str,
-) -> Result<BrokerHandle, String> {
-    let approvals = app.state::<BrokerApprovals>().inner().clone();
-    let approver: Arc<dyn Approver> = Arc::new(ModalApprover::new(
-        app.clone(),
+) -> Result<BrokerRunGuard, String> {
+    // The singleton broker (and its socket) were started at app setup and live
+    // in managed state. Read its stable socket path.
+    let sock_path = app
+        .try_state::<BrokerHandle>()
+        .ok_or_else(|| "credential broker not initialized".to_string())?
+        .path
+        .clone();
+
+    // Register the run as alive so its `Ask` modal can be routed. The guard
+    // deregisters on Drop when the run's `RunHandles` is dropped.
+    let runs = app.state::<BrokerRuns>().inner().clone();
+    let guard = BrokerRunGuard::register(
+        runs,
         run_id.to_string(),
-        approvals,
-        Some(project_path.to_string()),
-    ));
-    let handle = start_broker(
-        db.clone(),
-        BrokerConfig { run_id: run_id.to_string(), approver },
-    )
-    .await?;
+        BrokerRunCtx { cwd: Some(project_path.to_string()) },
+    );
 
     // Shim dir goes FIRST on PATH (after augment_command_path has run).
     let shim_dir = resolve_shim_dir(app)?;
     prepend_shim_path(cmd, &shim_dir);
-    cmd.env("DEVDY_BROKER_SOCK", &handle.path);
+    cmd.env("DEVDY_BROKER_SOCK", &sock_path);
     cmd.env("DEVDY_PROJECT_ID", project_id);
+    // GĐ7: the shim echoes this back so the broker can route `Ask` to this run.
+    cmd.env("DEVDY_RUN_ID", run_id);
 
     // GĐ4: route `git` HTTPS auth through the Devdy credential helper (per-run,
     // never touching global git config) + set the commit identity from the
@@ -576,7 +583,7 @@ async fn wire_broker(
     wire_git_config(cmd, &helper_path);
     wire_commit_identity(cmd, db, project_id).await;
 
-    Ok(handle)
+    Ok(guard)
 }
 
 /// Configure `git` for this run to use the Devdy credential helper via
@@ -1547,7 +1554,7 @@ pub async fn resume_run(
     // GĐ3: wire the broker + gh/glab shim for Claude resumes too, so resumed
     // sessions get the same per-project account treatment as fresh runs. Codex is
     // untouched. Fail-closed: never sets a token on the sidecar env.
-    let broker_handle: Option<BrokerHandle> = if engine == "claude" {
+    let broker_run: Option<BrokerRunGuard> = if engine == "claude" {
         Some(
             wire_broker(&app, db.inner(), &mut cmd, &run_id, &project_id, &project_path)
                 .await?,
@@ -1563,6 +1570,15 @@ pub async fn resume_run(
         if let Some(m) = &model {
             cmd.env("DEVDY_CODEX_MODEL", m);
         }
+        // Re-inject the project's MCP servers on resume: a resumed run spawns a
+        // FRESH sidecar/query whose first prompt arrives via send_user_message
+        // WITHOUT options, so (unlike start_run) MCP would otherwise be lost.
+        let (codex_mcp, _skipped) =
+            crate::commands::mcp::resolve_project_mcp_servers(db.inner(), &project_id, "codex")
+                .await;
+        if !codex_mcp.is_null() {
+            cmd.env("DEVDY_CODEX_MCP", codex_mcp.to_string());
+        }
     } else {
         cmd.env("DEVDY_PERMISSION_MODE", sdk_permission_mode(&permission_mode));
         if claude_path != "claude" && !claude_path.trim().is_empty() {
@@ -1572,6 +1588,14 @@ pub async fn resume_run(
         cmd.env("DEVDY_USAGE_POLL_MS", "60000");
         if let Some(m) = &model {
             cmd.env("DEVDY_MODEL", m);
+        }
+        // Re-inject MCP on resume (see the Codex branch above). The sidecar reads
+        // DEVDY_MCP_SERVERS as a fallback when the first prompt carries no options.
+        let (mcp, _skipped) =
+            crate::commands::mcp::resolve_project_mcp_servers(db.inner(), &project_id, "claude")
+                .await;
+        if !mcp.is_null() {
+            cmd.env("DEVDY_MCP_SERVERS", mcp.to_string());
         }
     }
     cmd.stdin(std::process::Stdio::piped())
@@ -1611,7 +1635,7 @@ pub async fn resume_run(
                 stdin: stdin_handle,
                 session_id: session_id_state.clone(),
                 log_buf: log_buf.clone(),
-                broker: broker_handle,
+                broker_run,
             },
         );
     }
