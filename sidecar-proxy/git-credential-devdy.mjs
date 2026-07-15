@@ -108,6 +108,7 @@ export async function run(action) {
       tool: 'git',
       argv: ['credential', 'get'],
       host,
+      run_id: process.env.DEVDY_RUN_ID || null,
     })
   } catch {
     // Broker unreachable → fail-closed, print nothing, do NOT crash the run.

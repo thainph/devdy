@@ -24,6 +24,7 @@ use tokio::net::{UnixListener, UnixStream};
 
 use crate::db::Db;
 use approver::Approver;
+use async_trait::async_trait;
 use policy::PolicyDecision;
 
 /// Request sent by the shim over the socket (one NDJSON line).
@@ -34,6 +35,12 @@ pub struct BrokerRequest {
     pub argv: Vec<String>,
     #[serde(default)]
     pub host: Option<String>,
+    /// GĐ7: the run that issued this request. The app-wide singleton broker uses
+    /// it to route an `Ask` to the right run's permission modal. Optional for
+    /// backward-compat: absent → no live run to approve against, so any `Ask`
+    /// fail-closed denies (reads/allows are unaffected).
+    #[serde(default)]
+    pub run_id: Option<String>,
 }
 
 /// Response returned to the shim (one NDJSON line). `token` is a secret and only
@@ -74,10 +81,23 @@ impl BrokerResponse {
     }
 }
 
-/// Config for a per-run broker instance.
+/// Resolves the right `Approver` for a request at serve time. The singleton
+/// broker serves many runs from one socket, so it cannot hold a single
+/// run-bound approver; instead it asks this resolver, per request, for the
+/// approver of `run_id`. Returning `None` means "no live run to approve
+/// against" → the caller fail-closed denies any `Ask`.
+#[async_trait]
+pub trait ApproverResolver: Send + Sync {
+    async fn resolve(&self, run_id: Option<&str>) -> Option<Arc<dyn Approver>>;
+}
+
+/// Config for the app-wide singleton broker.
 pub struct BrokerConfig {
-    pub run_id: String,
-    pub approver: Arc<dyn Approver>,
+    /// Label used for the socket file name (`<label>.sock`). One stable label
+    /// ("app") gives one long-lived socket shared by every run.
+    pub socket_label: String,
+    /// Per-request approver resolver (see `ApproverResolver`).
+    pub resolver: Arc<dyn ApproverResolver>,
 }
 
 /// Handle to a running broker. Dropping it aborts the accept loop and removes the
@@ -103,18 +123,20 @@ impl Drop for BrokerHandle {
     }
 }
 
-fn socket_path(run_id: &str) -> PathBuf {
-    std::env::temp_dir().join("devdy-broker").join(format!("{run_id}.sock"))
+fn socket_path(label: &str) -> PathBuf {
+    std::env::temp_dir().join("devdy-broker").join(format!("{label}.sock"))
 }
 
-/// Bind a run-scoped Unix socket, spawn the accept loop, and return a handle.
-/// The socket path is `BrokerHandle.path`; pass it to the shim via env in GĐ3.
+/// Bind the app-wide Unix socket, spawn the accept loop, and return a handle.
+/// The socket path is `BrokerHandle.path`; pass it to every run's shim via env.
+/// Lives for the whole app lifetime (dropped only on app exit), so runs never
+/// race a per-run socket that appears/disappears with them.
 pub async fn start_broker(db: Db, cfg: BrokerConfig) -> Result<BrokerHandle, String> {
-    let path = socket_path(&cfg.run_id);
+    let path = socket_path(&cfg.socket_label);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    // Remove any stale socket to avoid AddrInUse.
+    // Remove any stale socket (e.g. from a previous app run) to avoid AddrInUse.
     let _ = std::fs::remove_file(&path);
 
     let listener = UnixListener::bind(&path).map_err(|e| e.to_string())?;
@@ -130,8 +152,7 @@ pub async fn start_broker(db: Db, cfg: BrokerConfig) -> Result<BrokerHandle, Str
         }
     }
 
-    let run_id = cfg.run_id.clone();
-    let approver = cfg.approver.clone();
+    let resolver = cfg.resolver.clone();
     let db_clone = db.clone();
 
     let task = tokio::spawn(async move {
@@ -139,11 +160,10 @@ pub async fn start_broker(db: Db, cfg: BrokerConfig) -> Result<BrokerHandle, Str
             match listener.accept().await {
                 Ok((stream, _addr)) => {
                     let db = db_clone.clone();
-                    let approver = approver.clone();
-                    let run_id = run_id.clone();
+                    let resolver = resolver.clone();
                     // One task per connection; a bad client must not kill the loop.
                     tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, &db, &run_id, approver).await {
+                        if let Err(e) = handle_connection(stream, &db, resolver).await {
                             tracing::warn!(target: "devdy::broker", "connection error: {e}");
                         }
                     });
@@ -163,8 +183,7 @@ pub async fn start_broker(db: Db, cfg: BrokerConfig) -> Result<BrokerHandle, Str
 async fn handle_connection(
     stream: UnixStream,
     db: &Db,
-    run_id: &str,
-    approver: Arc<dyn Approver>,
+    resolver: Arc<dyn ApproverResolver>,
 ) -> Result<(), String> {
     let (read_half, mut write_half) = stream.into_split();
     let mut lines = BufReader::new(read_half).lines();
@@ -173,7 +192,7 @@ async fn handle_connection(
         if line.trim().is_empty() {
             continue;
         }
-        let resp = process_line(&line, db, run_id, approver.as_ref()).await;
+        let resp = process_line(&line, db, resolver.as_ref()).await;
         let mut out = serde_json::to_string(&resp).map_err(|e| e.to_string())?;
         out.push('\n');
         write_half.write_all(out.as_bytes()).await.map_err(|e| e.to_string())?;
@@ -187,17 +206,19 @@ async fn handle_connection(
 async fn process_line(
     line: &str,
     db: &Db,
-    run_id: &str,
-    approver: &dyn Approver,
+    resolver: &dyn ApproverResolver,
 ) -> BrokerResponse {
     // 1. Parse — malformed → deny (fail-closed).
     let req: BrokerRequest = match serde_json::from_str(line) {
         Ok(r) => r,
         Err(_) => {
-            audit::audit_request(run_id, "?", &[], "deny", Some("malformed request"));
+            audit::audit_request("?", "?", &[], "deny", Some("malformed request"));
             return BrokerResponse::deny("malformed request");
         }
     };
+
+    // Audit under the run that issued the request (falls back to "?").
+    let run_id = req.run_id.as_deref().unwrap_or("?");
 
     // 2. Pure policy.
     let decision = policy::evaluate_policy(&req.tool, &req.argv);
@@ -209,12 +230,17 @@ async fn process_line(
             (false, Some(BrokerResponse::deny(reason.clone())))
         }
         PolicyDecision::Ask { reason } => {
-            let approved = approver.approve(&req, reason).await;
+            // Route the Ask to the issuing run's approver. No live run (ended, or
+            // no run_id) → fail-closed deny; we never auto-approve a write.
+            let approved = match resolver.resolve(req.run_id.as_deref()).await {
+                Some(approver) => approver.approve(&req, reason).await,
+                None => false,
+            };
             if approved {
                 // Approved Ask → proceed like Allow.
                 (true, None)
             } else {
-                // Approver rejected the Ask → fail-closed deny (plan §3.3 step 3).
+                // Rejected / no live run → fail-closed deny (plan §3.3 step 3).
                 audit::audit_request(run_id, &req.tool, &req.argv, "deny", Some(reason));
                 (false, Some(BrokerResponse::deny(reason.clone())))
             }
@@ -279,10 +305,21 @@ fn credential_username_fallback(host: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::approver::{DenyAllApprover, FixedApprover};
+    use super::approver::{Approver, DenyAllApprover, FixedApprover};
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    /// Test resolver: always returns the same approver regardless of `run_id`,
+    /// so the existing round-trip tests exercise the approver branch directly.
+    struct StaticResolver(Arc<dyn Approver>);
+
+    #[async_trait]
+    impl ApproverResolver for StaticResolver {
+        async fn resolve(&self, _run_id: Option<&str>) -> Option<Arc<dyn Approver>> {
+            Some(self.0.clone())
+        }
+    }
 
     async fn mem_db() -> Db {
         let pool = SqlitePoolOptions::new()
@@ -306,8 +343,9 @@ mod tests {
     }
 
     async fn round_trip(db: Db, approver: Arc<dyn Approver>, req_json: &str) -> BrokerResponse {
-        let run_id = uuid::Uuid::new_v4().to_string();
-        let handle = start_broker(db, BrokerConfig { run_id, approver }).await.unwrap();
+        let socket_label = uuid::Uuid::new_v4().to_string();
+        let resolver: Arc<dyn ApproverResolver> = Arc::new(StaticResolver(approver));
+        let handle = start_broker(db, BrokerConfig { socket_label, resolver }).await.unwrap();
         let stream = UnixStream::connect(&handle.path).await.unwrap();
         let (r, mut w) = stream.into_split();
         let mut line = req_json.to_string();
@@ -352,6 +390,35 @@ mod tests {
         .await;
         assert_eq!(resp.decision, "deny");
         assert!(resp.token.is_none());
+    }
+
+    #[tokio::test]
+    async fn round_trip_ask_no_live_run_is_deny() {
+        // Resolver returns None (run ended / no run_id) → Ask must fail-closed
+        // deny WITHOUT consulting any approver. This is the singleton-broker
+        // guarantee: a write issued outside a live run is never auto-approved.
+        struct NoneResolver;
+        #[async_trait]
+        impl ApproverResolver for NoneResolver {
+            async fn resolve(&self, _run_id: Option<&str>) -> Option<Arc<dyn Approver>> {
+                None
+            }
+        }
+        let db = mem_db().await;
+        let socket_label = uuid::Uuid::new_v4().to_string();
+        let resolver: Arc<dyn ApproverResolver> = Arc::new(NoneResolver);
+        let handle = start_broker(db, BrokerConfig { socket_label, resolver }).await.unwrap();
+        let stream = UnixStream::connect(&handle.path).await.unwrap();
+        let (r, mut w) = stream.into_split();
+        w.write_all(b"{\"project_id\":\"p1\",\"tool\":\"gh\",\"argv\":[\"issue\",\"comment\"]}\n")
+            .await
+            .unwrap();
+        w.flush().await.unwrap();
+        let mut lines = BufReader::new(r).lines();
+        let resp_line = lines.next_line().await.unwrap().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp_line).unwrap();
+        assert_eq!(v["decision"].as_str().unwrap(), "deny");
+        assert!(v.get("token").and_then(|x| x.as_str()).is_none());
     }
 
     #[tokio::test]
@@ -435,8 +502,9 @@ mod tests {
     #[tokio::test]
     async fn socket_cleaned_up_on_drop() {
         let db = mem_db().await;
-        let run_id = uuid::Uuid::new_v4().to_string();
-        let handle = start_broker(db, BrokerConfig { run_id, approver: Arc::new(DenyAllApprover) })
+        let socket_label = uuid::Uuid::new_v4().to_string();
+        let resolver: Arc<dyn ApproverResolver> = Arc::new(StaticResolver(Arc::new(DenyAllApprover)));
+        let handle = start_broker(db, BrokerConfig { socket_label, resolver })
             .await
             .unwrap();
         let path = handle.path.clone();

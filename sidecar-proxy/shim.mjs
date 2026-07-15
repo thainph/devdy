@@ -102,6 +102,10 @@ function resolveReal(tool) {
 export async function run(tool) {
   const sock = process.env.DEVDY_BROKER_SOCK
   const projectId = process.env.DEVDY_PROJECT_ID
+  // GĐ7: the app-wide broker serves many runs from one socket; run_id tells it
+  // which run's modal to route an `Ask` to. Absent → broker fail-closed denies
+  // any `Ask` (reads/allows still work).
+  const runId = process.env.DEVDY_RUN_ID || null
   const argv = process.argv.slice(2) // drop [node, shimPath]
 
   if (!sock || !projectId) {
@@ -118,6 +122,7 @@ export async function run(tool) {
       tool,
       argv,
       host: null,
+      run_id: runId,
     })
   } catch {
     process.stderr.write(
@@ -144,6 +149,7 @@ export async function run(tool) {
   const childEnv = { ...process.env }
   delete childEnv.DEVDY_BROKER_SOCK
   delete childEnv.DEVDY_PROJECT_ID
+  delete childEnv.DEVDY_RUN_ID
   if (resp.token) {
     if (tool === 'gh') {
       childEnv.GH_TOKEN = resp.token
