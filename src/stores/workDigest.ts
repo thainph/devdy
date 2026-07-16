@@ -52,3 +52,12 @@ export interface WorkDigestResult {
 export function getWorkDigest(filter: WorkDigestFilter): Promise<WorkDigestResult> {
   return invoke<WorkDigestResult>('get_work_digest', { filter })
 }
+
+/**
+ * Ask Claude to summarize the work done across the selected range/projects.
+ * Returns a Markdown work report (English). One-shot, on-demand — this triggers
+ * an LLM run, so only call it when the user explicitly requests it.
+ */
+export function summarizeWorkDigest(filter: WorkDigestFilter): Promise<string> {
+  return invoke<string>('summarize_work_digest', { filter })
+}

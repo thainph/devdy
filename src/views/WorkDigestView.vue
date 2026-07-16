@@ -3,11 +3,14 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   CalendarClock, Clock, Activity, DollarSign, ListChecks, Loader2, FolderOpen,
+  Sparkles,
 } from 'lucide-vue-next'
 import { Button, Card, Input, Badge, StatusBadge, AppSelect } from '@/components/ui'
 import { useProjectsStore } from '@/stores/projects'
+import { useMarkdown } from '@/lib/markdown'
 import {
   getWorkDigest,
+  summarizeWorkDigest,
   type WorkDigestResult,
   type WorkDigestFilter,
   type WorkItem,
@@ -125,9 +128,35 @@ async function load() {
   }
 }
 
-watch(currentFilter, load, { deep: true })
+watch(currentFilter, () => {
+  // Filter changed → any prior summary is stale.
+  summary.value = null
+  summaryError.value = null
+  load()
+}, { deep: true })
+
+// ── AI work summary (on-demand) ───────────────────────────────────────────────
+const { renderText, loadMarkdown } = useMarkdown()
+const summary = ref<string | null>(null)
+const summarizing = ref(false)
+const summaryError = ref<string | null>(null)
+
+async function generateSummary() {
+  if (summarizing.value || !hasData.value) return
+  summarizing.value = true
+  summaryError.value = null
+  summary.value = null
+  try {
+    summary.value = await summarizeWorkDigest(currentFilter.value)
+  } catch (e) {
+    summaryError.value = String(e)
+  } finally {
+    summarizing.value = false
+  }
+}
 
 onMounted(async () => {
+  loadMarkdown()
   if (projectsStore.projects.length === 0) await projectsStore.fetchProjects()
   // Default: select all projects.
   selectAll()
@@ -190,9 +219,21 @@ function openItem(item: WorkItem) {
     <!-- Header -->
     <div class="flex items-center justify-between px-6 h-13 border-b border-border/60 shrink-0">
       <h1 class="text-sm font-semibold">Work Digest</h1>
-      <span v-if="loading" class="flex items-center gap-1.5 text-xs text-muted-foreground">
-        <Loader2 class="h-3.5 w-3.5 animate-spin" /> Loading…
-      </span>
+      <div class="flex items-center gap-3">
+        <span v-if="loading" class="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Loader2 class="h-3.5 w-3.5 animate-spin" /> Loading…
+        </span>
+        <Button
+          variant="outline"
+          size="sm"
+          :disabled="!hasData || summarizing"
+          @click="generateSummary"
+        >
+          <Loader2 v-if="summarizing" class="h-3.5 w-3.5 animate-spin" />
+          <Sparkles v-else class="h-3.5 w-3.5" />
+          {{ summarizing ? 'Summarizing…' : 'Generate summary' }}
+        </Button>
+      </div>
     </div>
 
     <!-- Body -->
@@ -264,6 +305,27 @@ function openItem(item: WorkItem) {
       </div>
 
       <template v-if="hasData && digest && !rangeError && !noProjectSelected">
+        <!-- AI work summary (on-demand) -->
+        <Card
+          v-if="summarizing || summary || summaryError"
+          class="border-border/60"
+          body-class="p-4"
+        >
+          <div class="flex items-center gap-1.5 text-xs font-medium text-muted-foreground mb-2">
+            <Sparkles class="h-3.5 w-3.5" :stroke-width="1.75" /> AI summary
+          </div>
+          <div v-if="summarizing" class="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Loader2 class="h-3.5 w-3.5 animate-spin" /> Claude is summarizing your work…
+          </div>
+          <p v-else-if="summaryError" class="text-xs text-red-500">{{ summaryError }}</p>
+          <!-- eslint-disable-next-line vue/no-v-html -->
+          <div
+            v-else-if="summary"
+            class="markdown-output text-sm leading-relaxed text-foreground"
+            v-html="renderText(summary)"
+          />
+        </Card>
+
         <!-- Summary cards -->
         <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <Card class="border-border/60" body-class="p-4">
