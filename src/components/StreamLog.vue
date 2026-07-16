@@ -346,15 +346,16 @@ function planContent(input: unknown): string {
   return asStr(asObj(input).plan)
 }
 
-// The most recent message (assistant reply or user turn) is what the user is
-// actively reading — and while running it's still streaming — so it always
-// renders in full, never collapsed.
-const lastMessageIndex = computed(() => {
-  for (let i = props.entries.length - 1; i >= 0; i--) {
+// The two most recent messages (assistant replies or user turns) are what the
+// user is actively reading — and while running the last one is still streaming
+// — so they always render in full, never collapsed.
+const expandedMessageIndices = computed(() => {
+  const indices = new Set<number>()
+  for (let i = props.entries.length - 1; i >= 0 && indices.size < 2; i--) {
     const k = props.entries[i].kind
-    if (k === 'text' || k === 'user') return i
+    if (k === 'text' || k === 'user') indices.add(i)
   }
-  return -1
+  return indices
 })
 
 const expanded = ref<Record<number, boolean>>({})
@@ -521,7 +522,7 @@ const lastEntryIsResult = computed(() => {
               alt="attachment"
             />
           </div>
-          <CollapsibleMessage v-if="entry.text" :max-height="256" fade="hsl(var(--muted))" :disabled="i === lastMessageIndex">
+          <CollapsibleMessage v-if="entry.text" :max-height="256" fade="hsl(var(--muted))" :disabled="expandedMessageIndices.has(i)">
             <div class="whitespace-pre-wrap"><template
                 v-for="(seg, si) in userSegments(entry.text)"
                 :key="si"
@@ -593,7 +594,7 @@ const lastEntryIsResult = computed(() => {
         v-else-if="entry.kind === 'text'"
         :max-height="384"
         fade="hsl(var(--background))"
-        :disabled="i === lastMessageIndex"
+        :disabled="expandedMessageIndices.has(i)"
       >
         <div
           v-file-links
