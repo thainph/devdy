@@ -385,28 +385,42 @@ interface TextSegment {
   path?: string
 }
 
-// `@`-mention token: `@` followed by a run of non-whitespace path chars.
-const MENTION_RE = /@(\S+)/g
+// Clickable file token in a user message, matched as either:
+//   1. A backticked absolute path — `/Users/.../file.md` — produced by the
+//      drag-drop composer's file-attachment block. Always clickable.
+//   2. An `@`-mention — `@src/foo.ts` — clickable only when fileMatcher resolves
+//      it to an actual project file.
+const FILE_TOKEN_RE = /`(\/[^`\n]+)`|@(\S+)/g
 
-// Split a user message into plain + clickable-mention segments. Only `@tokens`
-// that fileMatcher resolves to an actual project file become links; everything
+// Split a user message into plain + clickable segments. Backticked absolute
+// paths (dropped-file attachments) become links regardless of the project;
+// `@tokens` become links only when they resolve to a project file. Everything
 // else (emails, `@` in prose, unknown paths) stays plain text.
 function userSegments(text: string): TextSegment[] {
   const match = props.fileMatcher
-  if (!match || !text.includes('@')) return [{ text }]
   const segs: TextSegment[] = []
   let last = 0
-  MENTION_RE.lastIndex = 0
+  FILE_TOKEN_RE.lastIndex = 0
   let m: RegExpExecArray | null
-  while ((m = MENTION_RE.exec(text))) {
-    const path = match(m[1])
-    if (!path) continue
-    if (m.index > last) segs.push({ text: text.slice(last, m.index) })
+  while ((m = FILE_TOKEN_RE.exec(text))) {
+    // Branch 1: backticked absolute path — attachment reference, always linked.
+    if (m[1] !== undefined) {
+      if (m.index > last) segs.push({ text: text.slice(last, m.index) })
+      segs.push({ text: m[1], path: m[1] })
+      last = m.index + m[0].length
+      continue
+    }
+    // Branch 2: `@`-mention — link only when it resolves to a project file.
+    const raw = m[2]
+    if (!match) continue
     // Keep trailing punctuation (`,` `.` `)`…) outside the link, matching how
     // fileMatcher itself trims it when resolving the path.
-    const core = m[1].replace(/[)\].,:;'"`]+$/, '')
+    const core = raw.replace(/[)\].,:;'"`]+$/, '')
+    const path = match(core)
+    if (!path) continue
+    if (m.index > last) segs.push({ text: text.slice(last, m.index) })
     segs.push({ text: '@' + core, path })
-    const trailing = m[1].slice(core.length)
+    const trailing = raw.slice(core.length)
     if (trailing) segs.push({ text: trailing })
     last = m.index + m[0].length
   }
