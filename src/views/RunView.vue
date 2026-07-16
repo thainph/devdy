@@ -250,7 +250,8 @@ const isResizing = ref(false)
 // Inner split inside the AI Result column: AI result (left) vs question /
 // permission prompt (right). Percentage is the question panel's width.
 const resultSplitEl = ref<HTMLElement | null>(null)
-const questionWidthPct = ref(50)
+// Width of the permission drawer as a % of the AI-result column.
+const questionWidthPct = ref(42)
 const isResizingQuestion = ref(false)
 
 // When true, the permission prompt is detached into a standalone pop-out window
@@ -2192,7 +2193,7 @@ function handleRefInput(val: string) {
           <div
             v-if="resultVisible"
             ref="resultSplitEl"
-            class="flex overflow-hidden bg-background min-w-0 min-h-0"
+            class="relative flex overflow-hidden bg-background min-w-0 min-h-0"
             :style="{ width: resultWidth }"
           >
             <!-- AI result main content (left; always flex-1 so it fills the
@@ -2208,23 +2209,14 @@ function handleRefInput(val: string) {
                 </span>
                 <div class="ml-auto flex items-center gap-2 shrink-0">
                   <MentionedFiles :entries="displayedEntries" @open-file="openFileViewer" />
-                  <!-- Detach the pending permission/question into its own window
-                       so the chat keeps full width and can be read side-by-side. -->
+                  <!-- When popped out the drawer is hidden, so surface the
+                       re-dock control here (the pop-out control lives in the
+                       drawer itself, see below). -->
                   <button
-                    v-if="permissionQueue.length > 0 && !poppedOut"
-                    type="button"
-                    class="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-foreground/60 hover:bg-accent/60 hover:text-foreground transition-colors cursor-pointer"
-                    title="Tách câu hỏi ra cửa sổ riêng (kéo sang màn hình khác)"
-                    @click="openPermissionPopout"
-                  >
-                    <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
-                    Tách cửa sổ
-                  </button>
-                  <button
-                    v-else-if="poppedOut"
+                    v-if="poppedOut"
                     type="button"
                     class="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-indigo-500 hover:bg-accent/60 transition-colors cursor-pointer"
-                    title="Câu hỏi đang ở cửa sổ riêng — bấm để thu về panel"
+                    title="Câu hỏi đang ở cửa sổ riêng — bấm để thu về drawer"
                     @click="redockPermission"
                   >
                     <AppWindow class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -2320,34 +2312,46 @@ function handleRefInput(val: string) {
             </button>
             </div>
 
-            <!-- Resize handle between AI result and the question panel -->
+            <!-- Question / permission prompt: an overlay drawer sliding in from
+                 the right. It floats ABOVE the AI result (absolute) instead of
+                 sharing the flex row, so the chat keeps its full width and never
+                 reflows / loses the reading position when a prompt appears. -->
             <div
               v-if="permissionQueue.length > 0 && !poppedOut"
-              class="group relative shrink-0 w-px bg-border cursor-col-resize select-none"
-              :class="{ 'bg-primary/60': isResizingQuestion }"
-              @mousedown="startQuestionResize"
-            >
-              <div
-                class="absolute inset-y-0 -left-1.5 -right-1.5 z-10 transition-colors group-hover:bg-primary/30"
-                :class="{ 'bg-primary/40': isResizingQuestion }"
-              />
-            </div>
-
-            <!-- Question / permission prompt: docked side-by-side (right) with
-                 the AI result so it stays within this run's view. -->
-            <div
-              v-if="permissionQueue.length > 0 && !poppedOut"
-              class="shrink-0 overflow-auto min-h-0 bg-card/30"
+              class="absolute inset-y-0 right-0 z-20 flex bg-card border-l border-border shadow-[-8px_0_24px_-12px_rgba(0,0,0,0.45)]"
               :style="{ width: questionWidthPct + '%' }"
             >
-              <PermissionPrompt
-                :key="permissionQueue[0].request_id"
-                :request="permissionQueue[0]"
-                :allowed-tools="allowedToolsList"
-                :render-text="renderText"
-                @decide="handlePermissionDecision"
-                @answer="handlePermissionAnswer"
-              />
+              <!-- Left-edge resize handle to widen / narrow the drawer. -->
+              <div
+                class="group relative shrink-0 w-px bg-border cursor-col-resize select-none"
+                :class="{ 'bg-primary/60': isResizingQuestion }"
+                @mousedown="startQuestionResize"
+              >
+                <div
+                  class="absolute inset-y-0 -left-1.5 -right-1.5 z-10 transition-colors group-hover:bg-primary/30"
+                  :class="{ 'bg-primary/40': isResizingQuestion }"
+                />
+              </div>
+
+              <div class="relative flex-1 min-w-0 min-h-0 overflow-auto">
+                <!-- Detach into a standalone window (drag to another monitor). -->
+                <button
+                  type="button"
+                  class="absolute top-2 right-2 z-10 flex items-center justify-center rounded p-1 text-foreground/50 hover:bg-accent/60 hover:text-foreground transition-colors cursor-pointer"
+                  title="Tách câu hỏi ra cửa sổ riêng (kéo sang màn hình khác)"
+                  @click="openPermissionPopout"
+                >
+                  <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
+                </button>
+                <PermissionPrompt
+                  :key="permissionQueue[0].request_id"
+                  :request="permissionQueue[0]"
+                  :allowed-tools="allowedToolsList"
+                  :render-text="renderText"
+                  @decide="handlePermissionDecision"
+                  @answer="handlePermissionAnswer"
+                />
+              </div>
             </div>
           </div>
         </div>

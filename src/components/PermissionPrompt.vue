@@ -352,13 +352,13 @@ function onKeydown(e: KeyboardEvent) {
 </script>
 
 <template>
-  <!-- Inline, non-blocking panel docked inside the run view (not a full-screen
-       overlay), so the user can still switch sessions / projects and read
-       history while a permission request or question is pending. -->
+  <!-- Fills its host container (a right-side drawer in the run view, or the
+       pop-out window), so the user can still read chat history / switch sessions
+       while a permission request or question is pending. -->
   <div
     ref="rootEl"
     tabindex="-1"
-    class="prompt-attention shrink-0 flex flex-col max-h-[55vh] border-t-2 bg-card shadow-[0_-8px_24px_-12px_rgba(0,0,0,0.4)] outline-none"
+    class="prompt-attention flex h-full min-h-0 flex-col border-t-2 bg-card outline-none"
     :class="isQuestions || isPlan ? 'border-t-indigo-500/70' : 'border-t-amber-400/70'"
     role="dialog"
     :aria-label="headerTitle"
@@ -616,15 +616,14 @@ function onKeydown(e: KeyboardEvent) {
 }
 @keyframes prompt-in {
   0% {
-    transform: translateY(8px);
+    transform: translateX(16px);
     opacity: 0;
-    box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0);
   }
   40% {
-    box-shadow: inset 0 2px 0 0 rgba(99, 102, 241, 0.45);
+    box-shadow: inset 2px 0 0 0 rgba(99, 102, 241, 0.45);
   }
   100% {
-    transform: translateY(0);
+    transform: translateX(0);
     opacity: 1;
   }
 }
