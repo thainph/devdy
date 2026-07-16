@@ -47,6 +47,7 @@ use commands::stats::{
 };
 use commands::storage::{get_storage_stats, clean_storage};
 use commands::work_digest::get_work_digest;
+use commands::work_summary::summarize_work_digest;
 use commands::runs::{
     start_run, cancel_run, get_run_log, get_run_log_path, rerun_run, respond_permission,
     send_user_message, end_run_input, read_run_input, resume_run,
@@ -199,6 +200,7 @@ pub fn run() {
             create_session_run,
             get_usage_stats,
             get_work_digest,
+            summarize_work_digest,
             backfill_usage,
             reset_usage_stats,
             get_budget_status,

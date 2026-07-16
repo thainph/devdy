@@ -15,3 +15,4 @@ pub mod settings;
 pub mod stats;
 pub mod storage;
 pub mod work_digest;
+pub mod work_summary;
