@@ -38,7 +38,7 @@ use commands::gitlab_accounts::{
     list_gitlab_accounts, create_gitlab_account, update_gitlab_account,
     delete_gitlab_account, validate_gitlab_account, set_project_gitlab_account,
 };
-use commands::files::{list_project_files, read_project_file};
+use commands::files::{list_project_files, read_file_base64, read_project_file};
 use commands::sessions::reconcile_claude_sessions;
 use commands::codex_sessions::reconcile_codex_sessions;
 use commands::stats::{
@@ -194,6 +194,7 @@ pub fn run() {
             set_run_pinned,
             list_project_files,
             read_project_file,
+            read_file_base64,
             create_handoff_run,
             create_session_run,
             get_usage_stats,

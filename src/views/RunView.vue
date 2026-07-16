@@ -11,12 +11,14 @@ import { useAppSettingsStore } from '@/stores/appSettings'
 import { invoke } from '@/lib/tauri'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { getCurrentWebview } from '@tauri-apps/api/webview'
+import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
 import {
   Play, Square, GitPullRequest, Bug,
   Clock, Cpu, Terminal, FileText, RotateCcw, RefreshCw,
   Send, MessageSquare, Trash2, Settings, Code2, FolderClosed, FolderOpen, Sparkles, ExternalLink,
   ChevronDown, Maximize2, Minimize2, AppWindow,
-  ImagePlus, X,
+  ImagePlus, X, Paperclip,
   ShieldQuestion, MessageCircleQuestion,
   Pin, PinOff, Pencil, Check, Github, Gitlab,
   ClipboardCopy, ScrollText
@@ -531,6 +533,22 @@ onMounted(async () => {
   window.addEventListener('pointerup', onWindowPointerUp)
   setupPopoutBridge()
 
+  // Drag-and-drop files into the composer. Tauri intercepts OS file drops at the
+  // native layer (dragDropEnabled defaults on), so the webview's HTML5 `drop`
+  // carries no paths — we must use the native event, which gives absolute paths.
+  dragDropUnlisten = await getCurrentWebview().onDragDropEvent((event) => {
+    if (!composerVisible.value) return
+    const type = event.payload.type
+    if (type === 'enter' || type === 'over') {
+      isDraggingFile.value = true
+    } else if (type === 'leave') {
+      isDraggingFile.value = false
+    } else if (type === 'drop') {
+      isDraggingFile.value = false
+      void addDroppedPaths(event.payload.paths)
+    }
+  })
+
   // Mirror in any sessions created/continued outside Devdy while it was closed
   // (both engines), then surface them in the sidebar.
   Promise.all([
@@ -561,6 +579,7 @@ onMounted(async () => {
 // transcript). Re-read its on-disk log so those external turns show up.
 // Skip live sessions — those stream their own updates in real time.
 let sessionsChangedUnlisten: UnlistenFn | null = null
+let dragDropUnlisten: UnlistenFn | null = null
 
 async function refreshViewedRunOnFocus() {
   const id = currentRunId.value
@@ -582,6 +601,8 @@ onUnmounted(() => {
   window.removeEventListener('pointerup', onWindowPointerUp)
   sessionsChangedUnlisten?.()
   sessionsChangedUnlisten = null
+  dragDropUnlisten?.()
+  dragDropUnlisten = null
   popoutUnlisten.forEach((fn) => fn())
   popoutUnlisten = []
   // Tear down the pop-out with its owner view so it can't outlive the run.
@@ -853,6 +874,34 @@ let imageSeq = 0
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024 // ~10MB per image, matches engine limits
 
+// ── Dragged-in files referenced by path ───────────────────────────────────
+// Non-image files are attached by absolute path (not embedded); the agent opens
+// them via its Read/Edit tools. See SRS FR-002/FR-004.
+interface PendingFile {
+  id: string
+  name: string
+  path: string
+}
+const pendingFiles = ref<PendingFile[]>([])
+let fileSeq = 0
+// Whether an OS file is being dragged over the window (drives the dropzone hint).
+const isDraggingFile = ref(false)
+
+// Extensions we treat as inline images (base64 + thumbnail). Everything else is
+// attached by path.
+const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp)$/i
+
+// Push a raw-base64 image onto the pending strip, rebuilding the data URL used
+// for the thumbnail preview. Shared by paste, file-picker and drag-drop paths.
+function pushPendingImage(media_type: string, data: string) {
+  pendingImages.value.push({
+    id: `img-${imageSeq++}`,
+    media_type,
+    data,
+    url: `data:${media_type};base64,${data}`,
+  })
+}
+
 // Read a File/Blob into a base64 attachment and add it to the pending strip.
 function addImageFile(file: File | null) {
   if (!file || !file.type.startsWith('image/')) return
@@ -865,14 +914,62 @@ function addImageFile(file: File | null) {
     const url = String(reader.result || '')
     const comma = url.indexOf(',')
     if (comma < 0) return
-    pendingImages.value.push({
-      id: `img-${imageSeq++}`,
-      media_type: file.type,
-      data: url.slice(comma + 1),
-      url,
-    })
+    pushPendingImage(file.type, url.slice(comma + 1))
   }
   reader.readAsDataURL(file)
+}
+
+// Handle a batch of absolute paths from a drag-drop (or the file picker): images
+// are read to base64 through the backend (frontend fs scope can't reach arbitrary
+// paths); other files are attached by reference.
+async function addDroppedPaths(paths: string[]) {
+  for (const path of paths) {
+    if (IMAGE_EXT_RE.test(path)) {
+      try {
+        const img = await invoke<{ media_type: string; data: string }>('read_file_base64', { path })
+        pushPendingImage(img.media_type, img.data)
+      } catch (e) {
+        alert(String(e))
+      }
+    } else {
+      addPendingFile(path)
+    }
+  }
+}
+
+function addPendingFile(path: string) {
+  if (pendingFiles.value.some((f) => f.path === path)) return // dedupe (BR-004)
+  const name = path.split(/[/\\]/).pop() || path
+  pendingFiles.value.push({ id: `file-${fileSeq++}`, name, path })
+}
+
+function removePendingFile(id: string) {
+  pendingFiles.value = pendingFiles.value.filter((f) => f.id !== id)
+}
+
+// Attach files via the native picker (second entry point alongside drag-drop).
+// Returns absolute paths, consistent with the drag-drop flow.
+async function onPickFiles() {
+  const selected = await openFileDialog({ multiple: true, directory: false })
+  if (!selected) return
+  const paths = Array.isArray(selected) ? selected : [selected]
+  await addDroppedPaths(paths)
+}
+
+function takePendingFilePaths(): string[] {
+  const paths = pendingFiles.value.map((f) => f.path)
+  pendingFiles.value = []
+  return paths
+}
+
+// Append dropped file references to the outgoing prompt as absolute paths so the
+// agent can Read/Edit them. Literal backticked paths (not `@mentions`) — the
+// sidecar stream mode doesn't expand `@`, and both engines accept absolute paths.
+function composePrompt(text: string, paths: string[]): string {
+  if (!paths.length) return text
+  const list = paths.map((p) => `- \`${p}\``).join('\n')
+  const block = `Đính kèm file:\n${list}`
+  return text ? `${text}\n\n${block}` : block
 }
 
 // Capture images pasted into the textarea (Cmd+V from a screenshot, etc.).
@@ -953,7 +1050,7 @@ const composerVisible = computed(() => !!currentRunId.value)
 const primaryDisabled = computed(() => {
   if (sendingFollowUp.value) return true
   if (currentStatus.value === 'fetched' || !chatEligible.value) return false
-  return !followUpInput.value.trim() && !pendingImages.value.length
+  return !followUpInput.value.trim() && !pendingImages.value.length && !pendingFiles.value.length
 })
 
 // One entry point for the footer's primary button: cancel while running is a
@@ -961,7 +1058,7 @@ const primaryDisabled = computed(() => {
 // the default-prompt run when nothing was typed.
 function handlePrimaryAction() {
   if (currentStatus.value === 'running') { handleSendFollowUp(); return }
-  const hasInput = followUpInput.value.trim().length > 0 || pendingImages.value.length > 0
+  const hasInput = followUpInput.value.trim().length > 0 || pendingImages.value.length > 0 || pendingFiles.value.length > 0
   if (!hasInput && (currentStatus.value === 'fetched' || !chatEligible.value)) {
     handleStartRun()
     return
@@ -1296,7 +1393,8 @@ async function handleSendFollowUp() {
   mentionOpen.value = false
   const text = followUpInput.value.trim()
   const hasImages = pendingImages.value.length > 0
-  if ((!text && !hasImages) || !currentRunId.value || sendingFollowUp.value) return
+  const hasFiles = pendingFiles.value.length > 0
+  if ((!text && !hasImages && !hasFiles) || !currentRunId.value || sendingFollowUp.value) return
   const id = currentRunId.value
   const wasRunning = currentStatus.value === 'running'
   sendingFollowUp.value = true
@@ -1304,7 +1402,8 @@ async function handleSendFollowUp() {
     if (currentStatus.value === 'fetched') {
       // First run on this fetched record — use the typed text as the prompt.
       const images = takePendingImages()
-      await launchFreshRun(id, engineOverride.value || undefined, text, images)
+      const prompt = composePrompt(text, takePendingFilePaths())
+      await launchFreshRun(id, engineOverride.value || undefined, prompt, images)
       followUpInput.value = ''
       return
     }
@@ -1324,8 +1423,9 @@ async function handleSendFollowUp() {
     clearHistoryView()
 
     const images = takePendingImages()
+    const prompt = composePrompt(text, takePendingFilePaths())
     // Show the user message right away in the timeline (running / resume paths).
-    live.pushUser(id, projectId.value, text, images)
+    live.pushUser(id, projectId.value, prompt, images)
     stickToBottom.value = true // re-pin: the user just sent a message
     scrollOutputToBottom()
 
@@ -1344,7 +1444,7 @@ async function handleSendFollowUp() {
       )
     }
 
-    await withBudgetOverride((o) => runsStore.sendUserMessage(id, text, images, o))
+    await withBudgetOverride((o) => runsStore.sendUserMessage(id, prompt, images, o))
     followUpInput.value = ''
   } catch (e) {
     live.get(id)?.outputLines.push({ text: `Send failed: ${String(e)}`, isStderr: true })
@@ -2420,6 +2520,26 @@ function handleRefInput(val: string) {
               </div>
             </div>
 
+            <!-- Attached files referenced by path (drag-dropped non-images) -->
+            <div v-if="pendingFiles.length" class="flex flex-wrap gap-1.5 mb-2">
+              <div
+                v-for="file in pendingFiles"
+                :key="file.id"
+                class="group flex items-center gap-1.5 h-7 pl-2 pr-1 rounded-md border border-border bg-muted/40 text-xs max-w-64"
+                :title="file.path"
+              >
+                <FileText class="h-3.5 w-3.5 shrink-0 opacity-60" :stroke-width="2" />
+                <span class="truncate font-mono">{{ file.name }}</span>
+                <button
+                  class="h-4 w-4 rounded-full flex items-center justify-center text-foreground/50 hover:text-foreground hover:bg-background cursor-pointer shrink-0"
+                  title="Remove file"
+                  @click="removePendingFile(file.id)"
+                >
+                  <X class="h-2.5 w-2.5" :stroke-width="2.5" />
+                </button>
+              </div>
+            </div>
+
             <input
               ref="imageInputEl"
               type="file"
@@ -2438,7 +2558,15 @@ function handleRefInput(val: string) {
             />
 
             <!-- Prompt input card: textarea on top, controls toolbar below -->
-            <div class="rounded-lg border border-border bg-background focus-within:ring-1 focus-within:ring-ring transition-colors">
+            <div class="relative rounded-lg border border-border bg-background focus-within:ring-1 focus-within:ring-ring transition-colors">
+              <!-- Drag-and-drop hint: shown while an OS file is dragged over the window -->
+              <div
+                v-if="isDraggingFile"
+                class="absolute inset-0 z-10 flex items-center justify-center gap-2 rounded-lg border-2 border-dashed border-primary bg-primary/10 text-xs font-medium text-primary pointer-events-none"
+              >
+                <Paperclip class="h-4 w-4" :stroke-width="2" />
+                Thả file để đính kèm vào hội thoại
+              </div>
               <textarea
                 ref="composerEl"
                 v-model="followUpInput"
@@ -2463,6 +2591,14 @@ function handleRefInput(val: string) {
                   @click="imageInputEl?.click()"
                 >
                   <ImagePlus class="h-4 w-4" :stroke-width="2" />
+                </button>
+                <button
+                  class="inline-flex items-center justify-center h-8 w-8 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 shrink-0"
+                  :disabled="sendingFollowUp"
+                  title="Attach a file by path (or drag &amp; drop into the composer)"
+                  @click="onPickFiles"
+                >
+                  <Paperclip class="h-4 w-4" :stroke-width="2" />
                 </button>
                 <button
                   class="inline-flex items-center justify-center h-8 w-8 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 shrink-0"
