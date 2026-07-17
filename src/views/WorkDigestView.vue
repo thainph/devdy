@@ -7,10 +7,11 @@ import {
 } from 'lucide-vue-next'
 import { Button, Card, Input, Badge, StatusBadge, AppSelect } from '@/components/ui'
 import { useProjectsStore } from '@/stores/projects'
+import { useWorkSummaryStore } from '@/stores/workSummary'
 import { useMarkdown } from '@/lib/markdown'
+import StreamLog from '@/components/StreamLog.vue'
 import {
   getWorkDigest,
-  summarizeWorkDigest,
   type WorkDigestResult,
   type WorkDigestFilter,
   type WorkItem,
@@ -128,35 +129,39 @@ async function load() {
   }
 }
 
-watch(currentFilter, () => {
-  // Filter changed → any prior summary is stale.
-  summary.value = null
-  summaryError.value = null
-  load()
-}, { deep: true })
+watch(currentFilter, load, { deep: true })
 
-// ── AI work summary (on-demand) ───────────────────────────────────────────────
+// ── AI work summary (on-demand, streamed, survives navigation) ────────────────
+// State lives in a Pinia store so leaving and re-entering this view keeps a
+// running summary and its streamed text. The store is keyed by the filter it
+// ran for, so a summary is only shown for the matching selection.
+const summaryStore = useWorkSummaryStore()
 const { renderText, loadMarkdown } = useMarkdown()
-const summary = ref<string | null>(null)
-const summarizing = ref(false)
-const summaryError = ref<string | null>(null)
 
-async function generateSummary() {
-  if (summarizing.value || !hasData.value) return
-  summarizing.value = true
-  summaryError.value = null
-  summary.value = null
-  try {
-    summary.value = await summarizeWorkDigest(currentFilter.value)
-  } catch (e) {
-    summaryError.value = String(e)
-  } finally {
-    summarizing.value = false
-  }
+const summaryForCurrent = computed(() => summaryStore.isFor(currentFilter.value))
+const summarizing = computed(
+  () => summaryForCurrent.value && summaryStore.status === 'running',
+)
+const summaryEntries = computed(() =>
+  summaryForCurrent.value ? summaryStore.entries : [],
+)
+const showSummaryCard = computed(
+  () => summaryForCurrent.value && summaryStore.status !== 'idle',
+)
+
+function generateSummary() {
+  if (!hasData.value || summarizing.value) return
+  summaryStore.start(currentFilter.value)
+}
+function stopSummary() {
+  summaryStore.cancel()
 }
 
 onMounted(async () => {
   loadMarkdown()
+  // Re-attach event listeners in case a summary is still streaming from a
+  // previous visit.
+  summaryStore.bind()
   if (projectsStore.projects.length === 0) await projectsStore.fetchProjects()
   // Default: select all projects.
   selectAll()
@@ -223,15 +228,21 @@ function openItem(item: WorkItem) {
         <span v-if="loading" class="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Loader2 class="h-3.5 w-3.5 animate-spin" /> Loading…
         </span>
+        <template v-if="summarizing">
+          <span class="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Loader2 class="h-3.5 w-3.5 animate-spin" /> Summarizing…
+          </span>
+          <Button variant="ghost" size="sm" @click="stopSummary">Stop</Button>
+        </template>
         <Button
+          v-else
           variant="outline"
           size="sm"
-          :disabled="!hasData || summarizing"
+          :disabled="!hasData"
           @click="generateSummary"
         >
-          <Loader2 v-if="summarizing" class="h-3.5 w-3.5 animate-spin" />
-          <Sparkles v-else class="h-3.5 w-3.5" />
-          {{ summarizing ? 'Summarizing…' : 'Generate summary' }}
+          <Sparkles class="h-3.5 w-3.5" />
+          Generate summary
         </Button>
       </div>
     </div>
@@ -305,25 +316,26 @@ function openItem(item: WorkItem) {
       </div>
 
       <template v-if="hasData && digest && !rangeError && !noProjectSelected">
-        <!-- AI work summary (on-demand) -->
+        <!-- AI work summary (on-demand, streamed — same view as project AI result) -->
         <Card
-          v-if="summarizing || summary || summaryError"
+          v-if="showSummaryCard"
           class="border-border/60"
           body-class="p-4"
         >
-          <div class="flex items-center gap-1.5 text-xs font-medium text-muted-foreground mb-2">
+          <div class="flex items-center gap-1.5 text-xs font-medium text-muted-foreground mb-3">
             <Sparkles class="h-3.5 w-3.5" :stroke-width="1.75" /> AI summary
           </div>
-          <div v-if="summarizing" class="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <Loader2 class="h-3.5 w-3.5 animate-spin" /> Claude is summarizing your work…
-          </div>
-          <p v-else-if="summaryError" class="text-xs text-red-500">{{ summaryError }}</p>
-          <!-- eslint-disable-next-line vue/no-v-html -->
-          <div
-            v-else-if="summary"
-            class="markdown-output text-sm leading-relaxed text-foreground"
-            v-html="renderText(summary)"
+          <StreamLog
+            :entries="summaryEntries"
+            :running="summarizing"
+            :render-text="renderText"
           />
+          <div
+            v-if="summarizing && summaryEntries.length === 0"
+            class="flex items-center gap-1.5 text-xs text-muted-foreground mt-2"
+          >
+            <Loader2 class="h-3.5 w-3.5 animate-spin" /> Starting…
+          </div>
         </Card>
 
         <!-- Summary cards -->
