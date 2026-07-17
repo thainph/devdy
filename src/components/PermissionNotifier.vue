@@ -1,14 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import {
-  isPermissionGranted,
-  requestPermission,
-  sendNotification,
-  onAction,
-} from '@tauri-apps/plugin-notification'
+import { isPermissionGranted, requestPermission } from '@tauri-apps/plugin-notification'
+import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import type { PluginListener } from '@tauri-apps/api/core'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useProjectsStore } from '@/stores/projects'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
@@ -78,7 +74,7 @@ function navigateToRun(projectId: string, runId: string) {
 // --- Native OS notifications ---------------------------------------------
 
 let permissionGranted = false
-let actionListener: PluginListener | null = null
+let unlistenClick: UnlistenFn | null = null
 const notified = new Set<string>()
 
 onMounted(async () => {
@@ -91,24 +87,30 @@ onMounted(async () => {
     permissionGranted = false
   }
 
+  // Click handling is done natively (see src-tauri notifications.rs): the plugin's
+  // `onAction` never fires on desktop, so the Rust side emits this event carrying
+  // the run identity when the user clicks the notification.
   try {
-    actionListener = await onAction((n) => {
-      const extra = (n.extra ?? {}) as { projectId?: string; runId?: string }
-      getCurrentWindow()
-        .setFocus()
-        .catch(() => {})
-      if (extra.projectId && extra.runId) {
-        navigateToRun(extra.projectId, extra.runId)
-      }
-    })
+    unlistenClick = await listen<{ projectId?: string; runId?: string }>(
+      'permission-notification-clicked',
+      (e) => {
+        const { projectId, runId } = e.payload ?? {}
+        getCurrentWindow()
+          .setFocus()
+          .catch(() => {})
+        if (projectId && runId) {
+          navigateToRun(projectId, runId)
+        }
+      },
+    )
   } catch {
-    actionListener = null
+    unlistenClick = null
   }
 })
 
 onBeforeUnmount(() => {
-  actionListener?.unregister().catch(() => {})
-  actionListener = null
+  unlistenClick?.()
+  unlistenClick = null
 })
 
 // Fire a native notification once per new pending request (not on the run the
@@ -130,17 +132,16 @@ watch(
       const id = t.request.request_id
       if (notified.has(id)) continue
       notified.add(id)
-      try {
-        sendNotification({
-          title: `${projectName(t.projectId)} needs permission`,
-          body: label(t.request),
-          // macOS: "default" plays the system default notification sound.
-          sound: 'default',
-          extra: { projectId: t.projectId, runId: t.runId },
-        })
-      } catch {
+      // Fire via the native Rust command so notification clicks route back to
+      // this run (the plugin's sendNotification has no working desktop click).
+      invoke('show_permission_notification', {
+        title: `${projectName(t.projectId)} needs permission`,
+        body: label(t.request),
+        projectId: t.projectId,
+        runId: t.runId,
+      }).catch(() => {
         // ignore — the History attention icon still covers it in-app
-      }
+      })
     }
   },
   { deep: true },
