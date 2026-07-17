@@ -4,6 +4,7 @@ pub mod health;
 pub mod skills;
 pub mod rules;
 pub mod mcp;
+pub mod notifications;
 pub mod projects;
 pub mod files;
 pub mod github;

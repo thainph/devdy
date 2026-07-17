@@ -39,6 +39,7 @@ use commands::gitlab_accounts::{
     delete_gitlab_account, validate_gitlab_account, set_project_gitlab_account,
 };
 use commands::files::{list_project_files, read_file_base64, read_project_file};
+use commands::notifications::show_permission_notification;
 use commands::sessions::reconcile_claude_sessions;
 use commands::codex_sessions::reconcile_codex_sessions;
 use commands::stats::{
@@ -47,7 +48,7 @@ use commands::stats::{
 };
 use commands::storage::{get_storage_stats, clean_storage};
 use commands::work_digest::get_work_digest;
-use commands::work_summary::summarize_work_digest;
+use commands::work_summary::{summarize_work_digest, cancel_work_summary, WorkSummaryState};
 use commands::runs::{
     start_run, cancel_run, get_run_log, get_run_log_path, rerun_run, respond_permission,
     send_user_message, end_run_input, read_run_input, resume_run,
@@ -101,6 +102,7 @@ pub fn run() {
             .expect("Failed to start credential broker");
 
             app.manage(db);
+            app.manage(WorkSummaryState::default());
             app.manage(new_registry());
             app.manage(approvals);
             app.manage(broker_runs);
@@ -201,6 +203,7 @@ pub fn run() {
             get_usage_stats,
             get_work_digest,
             summarize_work_digest,
+            cancel_work_summary,
             backfill_usage,
             reset_usage_stats,
             get_budget_status,
@@ -210,6 +213,7 @@ pub fn run() {
             reconcile_codex_sessions,
             get_storage_stats,
             clean_storage,
+            show_permission_notification,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
