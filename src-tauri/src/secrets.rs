@@ -28,6 +28,11 @@ struct SecretStore {
     /// prompt after a reinstall (see WHY ONE ITEM above).
     #[serde(default)]
     mcp: HashMap<String, McpSecrets>,
+    /// Server secrets (SSH private-key passphrase), keyed by server_id. Kept in
+    /// the SAME consolidated item as PATs/MCP so the whole app costs at most ONE
+    /// Keychain prompt after a reinstall (see WHY ONE ITEM above).
+    #[serde(default)]
+    servers: HashMap<String, ServerSecrets>,
     /// Per-process guard: `"<provider>:<account_id>"` keys we already attempted to
     /// migrate from a legacy per-account item. A denied or missing legacy read is
     /// recorded here so it is NEVER retried within the same run — otherwise a
@@ -358,4 +363,72 @@ pub fn delete_mcp_secrets(server_id: &str) -> Result<()> {
     let _ = persist(store);
     drop_legacy_mcp(server_id);
     Ok(())
+}
+
+// ---- VPS/server secrets ----------------------------------------------------
+//
+// The SSH private-key passphrase (if any) for a managed VPS lives in the SAME
+// consolidated Keychain item as the PATs/MCP secrets, keyed by server_id.
+// SQLite never holds the passphrase. This table is NEW (no pre-consolidation
+// per-item history), so there is no legacy migration path.
+
+/// Decrypted secret payload for a single managed server.
+#[derive(Default, Serialize, Deserialize, Clone)]
+pub struct ServerSecrets {
+    #[serde(default)]
+    pub passphrase: Option<String>,
+}
+
+/// Persist a server's SSH private-key passphrase into the consolidated store.
+pub fn set_server_secret(server_id: &str, passphrase: &str) -> Result<()> {
+    let mut guard = CACHE.lock().map_err(|_| anyhow!("secret cache poisoned"))?;
+    ensure_loaded(&mut guard);
+    let store = guard.as_mut().expect("store loaded");
+    store.servers.insert(
+        server_id.to_string(),
+        ServerSecrets {
+            passphrase: Some(passphrase.to_string()),
+        },
+    );
+    persist(store)?;
+    Ok(())
+}
+
+/// Read a server's secret payload. Fail-closed: returns an empty payload if the
+/// item is missing or unreadable (never errors the caller).
+pub fn get_server_secret(server_id: &str) -> ServerSecrets {
+    let mut guard = match CACHE.lock() {
+        Ok(g) => g,
+        Err(_) => return ServerSecrets::default(),
+    };
+    ensure_loaded(&mut guard);
+    let store = guard.as_mut().expect("store loaded");
+    store.servers.get(server_id).cloned().unwrap_or_default()
+}
+
+/// Delete a server's secret from the consolidated store (no-op if absent).
+pub fn delete_server_secret(server_id: &str) -> Result<()> {
+    let mut guard = CACHE.lock().map_err(|_| anyhow!("secret cache poisoned"))?;
+    ensure_loaded(&mut guard);
+    let store = guard.as_mut().expect("store loaded");
+    store.servers.remove(server_id);
+    persist(store)?;
+    Ok(())
+}
+
+/// Whether a passphrase is stored for `server_id` WITHOUT reading its value
+/// (no prompt). If the store is cached, answer precisely from memory; otherwise
+/// fall back to "the consolidated store exists" (prompt-free, approximate like
+/// `has_pat`).
+pub fn has_server_secret(server_id: &str) -> bool {
+    if let Ok(guard) = CACHE.lock() {
+        if let Some(store) = guard.as_ref() {
+            return store
+                .servers
+                .get(server_id)
+                .map(|s| s.passphrase.is_some())
+                .unwrap_or(false);
+        }
+    }
+    store_exists()
 }
