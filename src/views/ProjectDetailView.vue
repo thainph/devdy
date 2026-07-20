@@ -5,12 +5,14 @@ import { useProjectsStore, type AppliedSkill, type AppliedRule, type Repo } from
 import { useSkillsStore } from '@/stores/skills'
 import { useRulesStore } from '@/stores/rules'
 import { useMcpServersStore, type ProjectMcpServer } from '@/stores/mcpServers'
+import { useServersStore, type ProjectServer } from '@/stores/servers'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import { useGitlabAccountsStore } from '@/stores/gitlabAccounts'
 import {
   Play, AlertTriangle, Puzzle, ScrollText, Server, Github, Gitlab,
-  GitMerge, CheckCircle2, XCircle, Trash2, Plus, GitBranch, Code2, Settings, SquareTerminal, FolderOpen
+  GitMerge, CheckCircle2, XCircle, Trash2, Plus, GitBranch, Code2, Settings, SquareTerminal, FolderOpen,
+  Rocket
 } from 'lucide-vue-next'
 import { Button, Input, Card, Badge, AppSelect } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
@@ -23,6 +25,7 @@ const projectStore = useProjectsStore()
 const skillsStore = useSkillsStore()
 const rulesStore = useRulesStore()
 const mcpStore = useMcpServersStore()
+const serversStore = useServersStore()
 const appSettings = useAppSettingsStore()
 const ghStore = useGithubAccountsStore()
 const glStore = useGitlabAccountsStore()
@@ -32,12 +35,13 @@ const { toast } = useToast()
 const projectId = computed(() => route.params.projectId as string)
 const project = computed(() => projectStore.projects.find(p => p.id === projectId.value))
 
-const activeTab = ref<'overview' | 'skills' | 'rules' | 'mcp' | 'github' | 'gitlab' | 'conflicts'>('overview')
+const activeTab = ref<'overview' | 'skills' | 'rules' | 'mcp' | 'deploy' | 'github' | 'gitlab' | 'conflicts'>('overview')
 const SECTIONS = [
   { id: 'overview', label: 'Overview', icon: Settings },
   { id: 'skills', label: 'Skills', icon: Puzzle },
   { id: 'rules', label: 'Rules', icon: ScrollText },
   { id: 'mcp', label: 'MCP Servers', icon: Server },
+  { id: 'deploy', label: 'Deploy', icon: Rocket },
   { id: 'github', label: 'GitHub', icon: Github },
   { id: 'gitlab', label: 'GitLab', icon: Gitlab },
 ] as const
@@ -94,6 +98,68 @@ async function handleToggleMcpServer(server: ProjectMcpServer) {
     alert(String(e))
   } finally {
     savingMcp.value = false
+  }
+}
+
+// --- Deploy: per-project VPS mapping (role-based) ---
+const projectServers = ref<ProjectServer[]>([])
+const loadingDeploy = ref(false)
+const newDeployServerId = ref('')
+const newDeployRole = ref('production')
+const addingDeploy = ref(false)
+const removingDeployKey = ref<string | null>(null)
+
+// Every managed VPS the user can pick from (loaded from the servers store).
+const availableServerOptions = computed(() => [
+  { value: '', label: 'Select a VPS…' },
+  ...serversStore.items.map(s => ({
+    value: s.id,
+    label: `${s.label} (${s.username}@${s.host}:${s.port})`,
+  })),
+])
+
+// UI-suggested roles (BR-101: no hard whitelist; the free-typed role is also
+// accepted server-side, but the select covers the common cases).
+const deployRoleOptions = [
+  { value: 'staging', label: 'staging' },
+  { value: 'production', label: 'production' },
+]
+
+async function loadProjectServers() {
+  loadingDeploy.value = true
+  try {
+    projectServers.value = await serversStore.listForProject(projectId.value)
+  } finally {
+    loadingDeploy.value = false
+  }
+}
+
+async function handleAddDeployServer() {
+  const serverId = newDeployServerId.value
+  if (!serverId) return
+  addingDeploy.value = true
+  try {
+    await serversStore.mapToProject(projectId.value, serverId, newDeployRole.value)
+    newDeployServerId.value = ''
+    newDeployRole.value = 'production'
+    await loadProjectServers()
+  } catch (e) {
+    alert(String(e))
+  } finally {
+    addingDeploy.value = false
+  }
+}
+
+async function handleRemoveDeployServer(server: ProjectServer) {
+  const key = `${server.id}:${server.role}`
+  removingDeployKey.value = key
+  try {
+    await serversStore.unmap(projectId.value, server.id, server.role)
+    await loadProjectServers()
+  } catch (e) {
+    alert(String(e))
+  } finally {
+    removingDeployKey.value = null
   }
 }
 
@@ -267,6 +333,8 @@ onMounted(async () => {
   await loadAppliedSkills()
   await loadAppliedRules()
   await loadProjectMcpServers()
+  await serversStore.fetchServers()
+  await loadProjectServers()
   await projectStore.fetchConflicts()
   await projectStore.fetchRuleConflicts()
   await loadRepos()
@@ -958,6 +1026,118 @@ async function handleOpenInTerminal() {
                 </div>
               </button>
             </div>
+          </Card>
+        </div>
+
+        <!-- Deploy tab (per-project VPS mapping by role) -->
+        <div v-if="activeTab === 'deploy'" class="max-w-lg space-y-5">
+          <!-- Assigned servers -->
+          <Card>
+            <template #header>
+              <Rocket class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
+              <span class="text-xs font-semibold">Assigned VPS</span>
+              <span
+                v-if="projectServers.length > 0"
+                class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1 text-[10px] font-medium text-muted-foreground leading-none"
+              >{{ projectServers.length }}</span>
+              <RouterLink to="/servers" class="ml-auto text-[11px] text-primary hover:underline">Manage</RouterLink>
+            </template>
+
+            <!-- Loading -->
+            <div v-if="loadingDeploy" class="divide-y divide-border/50">
+              <div v-for="i in 2" :key="i" class="flex items-center gap-3 px-4 py-3">
+                <div class="h-4 w-4 rounded bg-muted animate-pulse shrink-0" />
+                <div class="flex-1 space-y-1.5">
+                  <div class="h-2.5 w-24 bg-muted animate-pulse rounded" />
+                  <div class="h-2 w-36 bg-muted animate-pulse rounded" />
+                </div>
+              </div>
+            </div>
+
+            <!-- Empty -->
+            <div
+              v-else-if="projectServers.length === 0"
+              class="px-4 py-6 text-center text-xs text-muted-foreground"
+            >
+              No VPS assigned to this project yet. Add one below to enable deployments.
+            </div>
+
+            <!-- Assigned list -->
+            <div v-else class="divide-y divide-border/50">
+              <div
+                v-for="server in projectServers"
+                :key="`${server.id}:${server.role}`"
+                class="flex items-center gap-3 px-4 py-3"
+              >
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-1.5 flex-wrap">
+                    <p class="text-xs font-medium truncate">{{ server.label }}</p>
+                    <Badge tone="primary" size="xs" class="shrink-0 uppercase tracking-wide">{{ server.role }}</Badge>
+                    <Badge v-if="server.has_passphrase" tone="neutral" size="xs" class="shrink-0">passphrase</Badge>
+                  </div>
+                  <p class="text-[10px] text-muted-foreground font-mono truncate mt-0.5">
+                    {{ server.username }}@{{ server.host }}:{{ server.port }}
+                  </p>
+                </div>
+                <Button
+                  variant="destructive-ghost"
+                  size="icon-sm"
+                  class="shrink-0"
+                  :disabled="removingDeployKey === `${server.id}:${server.role}`"
+                  title="Remove this mapping"
+                  @click="handleRemoveDeployServer(server)"
+                >
+                  <Trash2 class="h-3 w-3" :stroke-width="1.75" />
+                </Button>
+              </div>
+            </div>
+          </Card>
+
+          <!-- Add mapping -->
+          <Card body-class="p-4 space-y-3">
+            <template #header>
+              <Plus class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
+              <span class="text-xs font-semibold">Assign a VPS</span>
+            </template>
+
+            <div v-if="serversStore.items.length === 0" class="text-[11px] text-muted-foreground">
+              No VPS defined yet.
+              <RouterLink to="/servers" class="text-primary hover:underline">Add one</RouterLink>
+              to assign it here.
+            </div>
+            <template v-else>
+              <div class="space-y-1.5">
+                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">VPS</label>
+                <AppSelect
+                  size="sm"
+                  :model-value="newDeployServerId"
+                  :options="availableServerOptions"
+                  @update:model-value="newDeployServerId = $event"
+                />
+              </div>
+              <div class="space-y-1.5">
+                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Role</label>
+                <AppSelect
+                  size="sm"
+                  :model-value="newDeployRole"
+                  :options="deployRoleOptions"
+                  @update:model-value="newDeployRole = $event"
+                />
+                <Input
+                  v-model="newDeployRole"
+                  type="text"
+                  size="sm"
+                  placeholder="Or type a custom role (empty → production)"
+                />
+              </div>
+              <Button
+                :disabled="addingDeploy || !newDeployServerId"
+                @click="handleAddDeployServer"
+              >
+                <Plus class="h-3.5 w-3.5" :stroke-width="2" />
+                {{ addingDeploy ? 'Adding…' : 'Add' }}
+              </Button>
+            </template>
           </Card>
         </div>
 
