@@ -35,7 +35,9 @@ pub struct VpsServer {
     pub created_at: String,
 }
 
-#[derive(Debug, Deserialize)]
+// No `Debug` derive: this payload holds a secret (`passphrase`), so we never
+// want it accidentally rendered via `{:?}` in a log/error (SEC-001).
+#[derive(Deserialize)]
 pub struct CreateServerPayload {
     pub label: String,
     pub host: String,
@@ -51,7 +53,8 @@ pub struct CreateServerPayload {
     pub passphrase: Option<String>, // Some(v) → store in Keychain; None → skip
 }
 
-#[derive(Debug, Deserialize)]
+// No `Debug` derive: holds a secret (`passphrase`) — see CreateServerPayload (SEC-001).
+#[derive(Deserialize)]
 pub struct UpdateServerPayload {
     pub id: String,
     pub label: String,
