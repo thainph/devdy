@@ -360,11 +360,12 @@ pub async fn list_deploy_history(
     project_id: String,
 ) -> Result<Vec<DeployHistoryItem>, String> {
     let rows = sqlx::query(
-        "SELECT r.id AS run_id, r.server_id AS server_id, s.label AS server_label, \
+        "SELECT r.id AS run_id, r.server_id AS server_id, \
+                COALESCE(s.label, '(deleted server)') AS server_label, \
                 r.deploy_role AS role, r.status AS status, r.engine AS engine, \
                 r.title AS title, r.created_at AS created_at \
          FROM runs r \
-         JOIN servers s ON s.id = r.server_id \
+         LEFT JOIN servers s ON s.id = r.server_id \
          WHERE r.project_id = ? AND r.server_id IS NOT NULL \
          ORDER BY r.created_at DESC",
     )
