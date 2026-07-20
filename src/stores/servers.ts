@@ -41,6 +41,12 @@ export interface TestConnectionResult {
   message: string
 }
 
+/** A server mapped to a project under a deployment role — mirrors the Rust
+ * `ProjectServer` (server summary + `role`, never the passphrase VALUE). */
+export interface ProjectServer extends VpsServer {
+  role: string
+}
+
 export const useServersStore = defineStore('servers', () => {
   const items = ref<VpsServer[]>([])
   const loading = ref(false)
@@ -82,6 +88,27 @@ export const useServersStore = defineStore('servers', () => {
     return result
   }
 
+  // --- Per-project mapping (GĐ2) ---
+
+  /** List the servers mapped to a project (server summary + role). */
+  async function listForProject(projectId: string): Promise<ProjectServer[]> {
+    return invoke<ProjectServer[]>('list_project_servers', { projectId })
+  }
+
+  /** Map a server to a project under a role (empty role → 'production'). */
+  async function mapToProject(
+    projectId: string,
+    serverId: string,
+    role: string,
+  ): Promise<void> {
+    await invoke('map_server_to_project', { projectId, serverId, role })
+  }
+
+  /** Remove exactly the (project, server, role) mapping. */
+  async function unmap(projectId: string, serverId: string, role: string): Promise<void> {
+    await invoke('unmap_server', { projectId, serverId, role })
+  }
+
   return {
     items,
     loading,
@@ -91,5 +118,8 @@ export const useServersStore = defineStore('servers', () => {
     updateServer,
     deleteServer,
     testConnection,
+    listForProject,
+    mapToProject,
+    unmap,
   }
 })
