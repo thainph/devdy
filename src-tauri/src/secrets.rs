@@ -420,19 +420,24 @@ pub fn delete_server_secret(server_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Whether a passphrase is stored for `server_id` WITHOUT reading its value
-/// (no prompt). If the store is cached, answer precisely from memory; otherwise
-/// fall back to "the consolidated store exists" (prompt-free, approximate like
-/// `has_pat`).
+/// Whether a passphrase is stored for `server_id` WITHOUT reading its value.
+///
+/// LOW-1 fix (AC-108): answer PRECISELY from the consolidated store instead of
+/// the old `store_exists()` fallback, which was a false positive — the store
+/// item exists as soon as ANY secret (a PAT, an MCP secret) is written, so a
+/// server created without a passphrase would wrongly report `has_passphrase =
+/// true`. We `ensure_loaded` (the single existing load path — no NEW Keychain
+/// prompt beyond the one already amortized across the app) and read the exact
+/// `servers` map entry. Fail-closed to `false` if the cache lock is poisoned.
 pub fn has_server_secret(server_id: &str) -> bool {
-    if let Ok(guard) = CACHE.lock() {
-        if let Some(store) = guard.as_ref() {
-            return store
-                .servers
-                .get(server_id)
-                .map(|s| s.passphrase.is_some())
-                .unwrap_or(false);
-        }
-    }
-    store_exists()
+    let mut guard = match CACHE.lock() {
+        Ok(g) => g,
+        Err(_) => return false,
+    };
+    ensure_loaded(&mut guard);
+    guard
+        .as_ref()
+        .and_then(|store| store.servers.get(server_id))
+        .map(|s| s.passphrase.is_some())
+        .unwrap_or(false)
 }
