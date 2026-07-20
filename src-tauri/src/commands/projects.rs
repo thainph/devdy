@@ -207,12 +207,27 @@ pub fn open_in_terminal(path: String, terminal_app: String) -> Result<(), String
 
     #[cfg(target_os = "macos")]
     {
-        // `open -a <App> <path>` launches the app with a new window/tab cd'd into `path`.
-        let app = if terminal_app == "iterm" {
-            "iTerm"
+        let use_iterm = terminal_app == "iterm";
+
+        // The canonical (symlink-resolved) path is what `lsof` reports as a
+        // process cwd, so match against that.
+        let target = std::fs::canonicalize(&path)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| path.clone());
+
+        // If a tab is already open on this project folder, just bring it to the
+        // front instead of spawning yet another tab/window.
+        let focused = if use_iterm {
+            focus_existing_iterm_tab(&target)
         } else {
-            "Terminal"
+            focus_existing_terminal_tab(&target)
         };
+        if focused {
+            return Ok(());
+        }
+
+        // `open -a <App> <path>` launches the app with a new window/tab cd'd into `path`.
+        let app = if use_iterm { "iTerm" } else { "Terminal" };
         std::process::Command::new("open")
             .args(["-a", app, &path])
             .spawn()
@@ -226,6 +241,174 @@ pub fn open_in_terminal(path: String, terminal_app: String) -> Result<(), String
     }
 
     Ok(())
+}
+
+/// Run an AppleScript snippet via `osascript`, returning stdout on success.
+#[cfg(target_os = "macos")]
+fn run_osascript(script: &str) -> Result<String, String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new("osascript")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| "failed to open osascript stdin".to_string())?
+        .write_all(script.as_bytes())
+        .map_err(|e| e.to_string())?;
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// Working directories of the processes attached to a tty (e.g. `/dev/ttys001`).
+#[cfg(target_os = "macos")]
+fn cwds_for_tty(tty: &str) -> Vec<String> {
+    let short = tty.trim_start_matches("/dev/");
+    let mut cwds = Vec::new();
+    let pids = match std::process::Command::new("ps")
+        .args(["-t", short, "-o", "pid="])
+        .output()
+    {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).to_string(),
+        Err(_) => return cwds,
+    };
+    for pid in pids.split_whitespace() {
+        if let Ok(o) = std::process::Command::new("lsof")
+            .args(["-a", "-d", "cwd", "-p", pid, "-Fn"])
+            .output()
+        {
+            for line in String::from_utf8_lossy(&o.stdout).lines() {
+                if let Some(p) = line.strip_prefix('n') {
+                    cwds.push(p.to_string());
+                }
+            }
+        }
+    }
+    cwds
+}
+
+#[cfg(target_os = "macos")]
+fn paths_match(a: &str, b: &str) -> bool {
+    a.trim_end_matches('/') == b.trim_end_matches('/')
+}
+
+/// Focus an existing Terminal.app tab whose cwd is `target`. Returns true if found.
+#[cfg(target_os = "macos")]
+fn focus_existing_terminal_tab(target: &str) -> bool {
+    // `tab`/`linefeed` are shadowed by Terminal's own `tab` class inside a
+    // `tell` block, so build the field/record separators outside it.
+    let list_script = r#"
+tell application "System Events"
+    if not (exists process "Terminal") then return ""
+end tell
+set d to "|"
+set nl to linefeed
+set output to ""
+tell application "Terminal"
+    set winList to windows
+    repeat with wi from 1 to count of winList
+        set w to item wi of winList
+        set tabList to tabs of w
+        repeat with ti from 1 to count of tabList
+            set t to item ti of tabList
+            set output to output & ((id of w) as string) & d & ti & d & (tty of t) & nl
+        end repeat
+    end repeat
+end tell
+return output
+"#;
+    let listing = match run_osascript(list_script) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    for line in listing.lines() {
+        let parts: Vec<&str> = line.split('|').collect();
+        if parts.len() != 3 {
+            continue;
+        }
+        let (win_id, tab_idx, tty) = (parts[0], parts[1], parts[2]);
+        if cwds_for_tty(tty).iter().any(|c| paths_match(c, target)) {
+            let activate = format!(
+                r#"
+tell application "Terminal"
+    set w to (first window whose id is {win})
+    set index of w to 1
+    set selected tab of w to (item {tab} of tabs of w)
+    activate
+end tell
+"#,
+                win = win_id,
+                tab = tab_idx
+            );
+            let _ = run_osascript(&activate);
+            return true;
+        }
+    }
+    false
+}
+
+/// Focus an existing iTerm session whose cwd is `target`. Returns true if found.
+#[cfg(target_os = "macos")]
+fn focus_existing_iterm_tab(target: &str) -> bool {
+    let list_script = r#"
+tell application "System Events"
+    if not (exists process "iTerm2") then return ""
+end tell
+set d to "|"
+set nl to linefeed
+set output to ""
+tell application "iTerm"
+    repeat with w in windows
+        repeat with t in tabs of w
+            repeat with s in sessions of t
+                set output to output & ((id of s) as string) & d & (tty of s) & nl
+            end repeat
+        end repeat
+    end repeat
+end tell
+return output
+"#;
+    let listing = match run_osascript(list_script) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    for line in listing.lines() {
+        let parts: Vec<&str> = line.split('|').collect();
+        if parts.len() != 2 {
+            continue;
+        }
+        let (session_id, tty) = (parts[0], parts[1]);
+        if cwds_for_tty(tty).iter().any(|c| paths_match(c, target)) {
+            let activate = format!(
+                r#"
+tell application "iTerm"
+    repeat with w in windows
+        repeat with t in tabs of w
+            repeat with s in sessions of t
+                if (id of s) is "{sid}" then
+                    select s
+                end if
+            end repeat
+        end repeat
+    end repeat
+    activate
+end tell
+"#,
+                sid = session_id
+            );
+            let _ = run_osascript(&activate);
+            return true;
+        }
+    }
+    false
 }
 
 #[tauri::command]
