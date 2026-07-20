@@ -381,3 +381,119 @@ async fn run_ssh_probe(server: &VpsServer) -> TestConnectionResult {
         }
     }
 }
+
+// ---- Per-project assignment (GĐ2) ------------------------------------------
+//
+// Maps a managed server to a project under a deployment role. Mirrors the
+// `project_mcp_servers` precedent. SEC-101: never carries the passphrase VALUE —
+// only the derived `has_passphrase` flag, exactly like `VpsServer`.
+
+/// A server mapped to a project, carrying the full server summary plus the
+/// deployment `role`. Never includes the passphrase (SEC-101) — only
+/// `has_passphrase`.
+#[derive(Debug, Serialize, Clone)]
+pub struct ProjectServer {
+    pub id: String,
+    pub label: String,
+    pub host: String,
+    pub port: i64,
+    pub username: String,
+    pub auth_method: String,
+    pub private_key_path: Option<String>,
+    pub tags: Option<String>,
+    pub status: Option<String>,
+    pub last_checked_at: Option<String>,
+    pub has_passphrase: bool,
+    pub created_at: String,
+    pub role: String,
+}
+
+fn row_to_project_server(row: &sqlx::sqlite::SqliteRow) -> ProjectServer {
+    let id: String = row.get("id");
+    let has_passphrase = secrets::has_server_secret(&id);
+    ProjectServer {
+        label: row.get("label"),
+        host: row.get("host"),
+        port: row.get("port"),
+        username: row.get("username"),
+        auth_method: row.get("auth_method"),
+        private_key_path: row.get("private_key_path"),
+        tags: row.get("tags"),
+        status: row.get("status"),
+        last_checked_at: row.get("last_checked_at"),
+        has_passphrase,
+        created_at: row.get("created_at"),
+        role: row.get("role"),
+        id,
+    }
+}
+
+/// FR-101 / AC-101,102: list every server mapped to `project_id`. JOIN
+/// `project_servers` × `servers`, ordered by role then label. A server mapped
+/// under two roles yields two rows. Empty project → `[]` (no error).
+#[tauri::command]
+pub async fn list_project_servers(
+    db: State<'_, Db>,
+    project_id: String,
+) -> Result<Vec<ProjectServer>, String> {
+    let rows = sqlx::query(&format!(
+        "SELECT {}, ps.role AS role FROM project_servers ps \
+         JOIN servers ON servers.id = ps.server_id \
+         WHERE ps.project_id = ? ORDER BY ps.role, servers.label",
+        SELECT_COLS
+    ))
+    .bind(&project_id)
+    .fetch_all(db.inner())
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(rows.iter().map(row_to_project_server).collect())
+}
+
+/// FR-102 / AC-103,104,105: map a server to a project under a role.
+/// BR-101: role is trimmed; empty → `'production'`. BR-102: idempotent via
+/// `INSERT OR IGNORE` on the (project, server, role) PK. BR-103: FK guarantees
+/// both ids exist — a violation returns `Err`, never panics.
+#[tauri::command]
+pub async fn map_server_to_project(
+    db: State<'_, Db>,
+    project_id: String,
+    server_id: String,
+    role: String,
+) -> Result<(), String> {
+    let role = role.trim();
+    let role = if role.is_empty() { "production" } else { role };
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "INSERT OR IGNORE INTO project_servers (project_id, server_id, role, created_at) \
+         VALUES (?, ?, ?, ?)",
+    )
+    .bind(&project_id)
+    .bind(&server_id)
+    .bind(role)
+    .bind(&now)
+    .execute(db.inner())
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// FR-103 / AC-106 / BR-104: remove exactly the (project, server, role) triple.
+/// Other mappings of the same server/project are untouched.
+#[tauri::command]
+pub async fn unmap_server(
+    db: State<'_, Db>,
+    project_id: String,
+    server_id: String,
+    role: String,
+) -> Result<(), String> {
+    sqlx::query(
+        "DELETE FROM project_servers WHERE project_id = ? AND server_id = ? AND role = ?",
+    )
+    .bind(&project_id)
+    .bind(&server_id)
+    .bind(&role)
+    .execute(db.inner())
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
