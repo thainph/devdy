@@ -396,6 +396,10 @@ pub fn set_server_secret(server_id: &str, passphrase: &str) -> Result<()> {
 
 /// Read a server's secret payload. Fail-closed: returns an empty payload if the
 /// item is missing or unreadable (never errors the caller).
+///
+/// Foundation API: GĐ1 stores the passphrase; the reader is consumed by the
+/// later AI-deploy phase (GĐ3) that actually opens the SSH session.
+#[allow(dead_code)]
 pub fn get_server_secret(server_id: &str) -> ServerSecrets {
     let mut guard = match CACHE.lock() {
         Ok(g) => g,
