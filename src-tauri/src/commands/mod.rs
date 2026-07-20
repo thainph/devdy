@@ -15,5 +15,6 @@ pub mod sessions;
 pub mod settings;
 pub mod stats;
 pub mod storage;
+pub mod vps_servers;
 pub mod work_digest;
 pub mod work_summary;
