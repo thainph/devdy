@@ -47,6 +47,9 @@ use commands::stats::{
     refresh_plan_usage,
 };
 use commands::storage::{get_storage_stats, clean_storage};
+use commands::vps_servers::{
+    list_vps_servers, create_vps_server, update_vps_server, delete_vps_server, test_vps_connection,
+};
 use commands::work_digest::get_work_digest;
 use commands::work_summary::{summarize_work_digest, cancel_work_summary, WorkSummaryState};
 use commands::runs::{
@@ -147,6 +150,11 @@ pub fn run() {
             test_mcp_connection,
             export_mcp_server,
             import_mcp_server,
+            list_vps_servers,
+            create_vps_server,
+            update_vps_server,
+            delete_vps_server,
+            test_vps_connection,
             detect_project_info,
             list_projects,
             add_project,
