@@ -4,7 +4,7 @@ import { RouterLink, RouterView, useRoute } from 'vue-router'
 import { useProjectsStore } from '@/stores/projects'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
-import { Puzzle, ScrollText, Server, FolderOpen, BarChart3, CalendarClock, Settings, Info } from 'lucide-vue-next'
+import { Puzzle, ScrollText, Server, HardDrive, FolderOpen, BarChart3, CalendarClock, Settings, Info } from 'lucide-vue-next'
 import PermissionNotifier from '@/components/PermissionNotifier.vue'
 import BudgetBadge from '@/components/BudgetBadge.vue'
 import WorkspaceTabs from '@/components/WorkspaceTabs.vue'
@@ -66,6 +66,7 @@ const navItems = [
   { path: '/skills', label: 'Skills', icon: Puzzle },
   { path: '/rules', label: 'Rules', icon: ScrollText },
   { path: '/mcp', label: 'MCP', icon: Server },
+  { path: '/servers', label: 'Servers', icon: HardDrive },
   { path: '/stats', label: 'Stats', icon: BarChart3 },
   { path: '/work-digest', label: 'Digest', icon: CalendarClock },
   { path: '/settings', label: 'Settings', icon: Settings },
