@@ -3,6 +3,7 @@ pub mod permission;
 pub mod pricing;
 pub mod session_watcher;
 pub mod sidecar;
+pub mod ssh_access;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
