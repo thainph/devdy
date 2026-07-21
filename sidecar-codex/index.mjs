@@ -58,9 +58,9 @@ function classifyStderrLine(raw) {
 }
 
 // ── centrally-managed MCP servers → codex `-c mcp_servers.*` overrides ─────
-// DEVDY_CODEX_MCP is the resolved Record<name, {type:'stdio',command,args?,env?}>
-// (Rust only forwards stdio servers to Codex). We turn each into TOML config
-// override flags placed BEFORE 'app-server'.
+// DEVDY_CODEX_MCP is the resolved Record<name, config>. Rust forwards stdio and
+// streamable HTTP servers to Codex. We turn each into TOML config override flags
+// placed BEFORE 'app-server'.
 
 // Escape a string as a TOML basic string: wrap in double quotes, escape
 // backslash and double-quote (and control chars codex would choke on).
@@ -74,6 +74,10 @@ function tomlString(s) {
   return `"${escaped}"`
 }
 
+function tomlKey(s) {
+  return tomlString(s)
+}
+
 // TOML array of strings: ["a","b"]
 function tomlStringArray(arr) {
   return `[${arr.map(tomlString).join(',')}]`
@@ -81,36 +85,65 @@ function tomlStringArray(arr) {
 
 // TOML inline table of string values: {KEY="val",KEY2="val2"}
 function tomlInlineTable(obj) {
-  const parts = Object.entries(obj).map(([k, v]) => `${k}=${tomlString(v)}`)
+  const parts = Object.entries(obj).map(([k, v]) => `${tomlKey(k)}=${tomlString(v)}`)
   return `{${parts.join(',')}}`
 }
 
-function buildMcpConfigArgs() {
+function envNamePart(s) {
+  const cleaned = String(s).replace(/[^A-Za-z0-9_]/g, '_').replace(/^_+|_+$/g, '')
+  return (cleaned || 'SERVER').toUpperCase()
+}
+
+function buildMcpConfig() {
   const raw = process.env.DEVDY_CODEX_MCP
-  if (!raw) return []
+  const env = { ...process.env }
+  // Keep the resolved secret bundle in the Node sidecar only; Codex receives the
+  // specific config/env it needs below.
+  delete env.DEVDY_CODEX_MCP
+  if (!raw) return { args: [], env }
   let servers
   try {
     servers = JSON.parse(raw)
   } catch {
-    return []
+    return { args: [], env }
   }
-  if (!servers || typeof servers !== 'object') return []
+  if (!servers || typeof servers !== 'object') return { args: [], env }
   const args = []
+  let serverIndex = 0
   for (const [name, cfg] of Object.entries(servers)) {
-    if (!cfg || cfg.type !== 'stdio' || !cfg.command) continue
-    args.push('-c', `mcp_servers.${name}.command=${tomlString(cfg.command)}`)
-    if (Array.isArray(cfg.args) && cfg.args.length) {
-      args.push('-c', `mcp_servers.${name}.args=${tomlStringArray(cfg.args)}`)
+    const currentServerIndex = serverIndex++
+    if (!cfg || typeof cfg !== 'object') continue
+    if (cfg.type === 'stdio' && cfg.command) {
+      args.push('-c', `mcp_servers.${name}.command=${tomlString(cfg.command)}`)
+      if (Array.isArray(cfg.args) && cfg.args.length) {
+        args.push('-c', `mcp_servers.${name}.args=${tomlStringArray(cfg.args)}`)
+      }
+      if (cfg.env && typeof cfg.env === 'object' && Object.keys(cfg.env).length) {
+        args.push('-c', `mcp_servers.${name}.env=${tomlInlineTable(cfg.env)}`)
+      }
+      continue
     }
-    if (cfg.env && typeof cfg.env === 'object' && Object.keys(cfg.env).length) {
-      args.push('-c', `mcp_servers.${name}.env=${tomlInlineTable(cfg.env)}`)
+
+    if ((cfg.type === 'http' || cfg.type === 'streamable_http') && cfg.url) {
+      args.push('-c', `mcp_servers.${name}.url=${tomlString(cfg.url)}`)
+      if (cfg.headers && typeof cfg.headers === 'object' && Object.keys(cfg.headers).length) {
+        const headerEnvRefs = {}
+        let i = 0
+        for (const [header, value] of Object.entries(cfg.headers)) {
+          const envName = `DEVDY_MCP_HTTP_${envNamePart(name)}_${currentServerIndex}_${i++}`
+          env[envName] = String(value)
+          headerEnvRefs[header] = envName
+        }
+        args.push('-c', `mcp_servers.${name}.env_http_headers=${tomlInlineTable(headerEnvRefs)}`)
+      }
     }
   }
-  return args
+  return { args, env }
 }
 
 // ── codex app-server JSON-RPC plumbing ────────────────────────────────────
-const codex = spawn(CODEX_BIN, [...buildMcpConfigArgs(), 'app-server'], { cwd: CWD, stdio: ['pipe', 'pipe', 'pipe'] })
+const mcpConfig = buildMcpConfig()
+const codex = spawn(CODEX_BIN, [...mcpConfig.args, 'app-server'], { cwd: CWD, stdio: ['pipe', 'pipe', 'pipe'], env: mcpConfig.env })
 let rpcId = 1
 const pending = new Map() // request id → resolve
 function request(method, params) {
@@ -146,16 +179,197 @@ function policyFor(mode) {
 }
 
 // ── pending permission requests: codex rpc id ↔ devdy requestId ────────────
-const permWaiters = new Map() // requestId → { rpcId, command }
+const permWaiters = new Map() // requestId → { rpcId, command, kind, ... }
 // Commands the user denied — so the matching commandExecution item renders as
 // rejected (not as a succeeded run).
 const declinedCommands = new Set()
 const cmdKey = (c) => (Array.isArray(c) ? c.join(' ') : String(c ?? '')).trim()
 
-function emitPermission(rpcReqId, { tool_name, tool_input, title, description }) {
+function emitPermission(rpcReqId, { tool_name, tool_input, title, description, display_name }, waiter = {}) {
   const requestId = `codex-${rpcReqId}`
-  permWaiters.set(requestId, { rpcId: rpcReqId, command: tool_input?.command })
-  ctrl('_devdy_permission_request', { requestId, tool_name, tool_input, title, description })
+  permWaiters.set(requestId, { rpcId: rpcReqId, command: tool_input?.command, kind: 'approval', ...waiter })
+  ctrl('_devdy_permission_request', { requestId, tool_name, tool_input, title, description, display_name })
+}
+
+function enumOptions(schema) {
+  if (Array.isArray(schema?.enum)) {
+    return schema.enum.map((v) => ({ label: String(v), description: '' }))
+  }
+  if (Array.isArray(schema?.oneOf)) {
+    return schema.oneOf.map((opt) => ({
+      label: String(opt?.const ?? opt?.title ?? ''),
+      description: String(opt?.description ?? opt?.title ?? ''),
+    })).filter((opt) => opt.label)
+  }
+  return []
+}
+
+function elicitationQuestions(params) {
+  const schema = params?.requestedSchema
+  const props = schema?.properties && typeof schema.properties === 'object' ? schema.properties : {}
+  const required = new Set(Array.isArray(schema?.required) ? schema.required : [])
+  const questions = []
+  const answerKeys = {}
+
+  for (const [key, prop] of Object.entries(props)) {
+    if (!prop || typeof prop !== 'object') continue
+    const title = String(prop.title || key)
+    let question = title
+    if (answerKeys[question]) question = `${title} (${key})`
+    const options = enumOptions(prop)
+    if (prop.type === 'boolean' && !options.length) {
+      options.push(
+        { label: 'true', description: 'Yes' },
+        { label: 'false', description: 'No' },
+      )
+    }
+    questions.push({
+      header: `${params?.serverName || 'MCP'}${required.has(key) ? ' · required' : ''}`,
+      question,
+      multiSelect: prop.type === 'array',
+      options,
+    })
+    answerKeys[question] = { key, type: prop.type }
+  }
+  return { questions, answerKeys }
+}
+
+function coerceElicitationAnswer(value, type) {
+  if (type === 'boolean') return String(value).trim().toLowerCase() === 'true'
+  if (type === 'number' || type === 'integer') {
+    const n = Number(value)
+    return Number.isFinite(n) ? n : value
+  }
+  if (type === 'array') {
+    return String(value).split(',').map((v) => v.trim()).filter(Boolean)
+  }
+  return value
+}
+
+function elicitationContentFromAnswers(answers, answerKeys) {
+  const content = {}
+  for (const [question, value] of Object.entries(answers || {})) {
+    const meta = answerKeys?.[question]
+    if (!meta) continue
+    content[meta.key] = coerceElicitationAnswer(value, meta.type)
+  }
+  return content
+}
+
+function pickString(obj, keys) {
+  for (const key of keys) {
+    const value = obj?.[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return ''
+}
+
+function mcpToolUseId(rpcReqId) {
+  return `mcp_${String(rpcReqId).replace(/[^A-Za-z0-9_-]/g, '_')}`
+}
+
+function mcpDisplayName(params, fallback) {
+  return pickString(params, ['displayName', 'toolDisplayName', 'toolTitle', 'title', 'toolName', 'name']) || fallback
+}
+
+function mcpServerDisplayName(params, server) {
+  return pickString(params, ['serverDisplayName', 'serverTitle']) || server
+}
+
+function mcpTranscriptInput(params, server, questions = []) {
+  const schema = params?.requestedSchema
+  const fields = schema?.properties && typeof schema.properties === 'object'
+    ? Object.keys(schema.properties)
+    : []
+  return {
+    serverName: server,
+    mode: params?.mode,
+    message: params?.message,
+    url: params?.url,
+    toolName: pickString(params, ['toolName', 'name']) || undefined,
+    ...(fields.length ? { fields } : {}),
+    ...(questions.length
+      ? {
+          questions: questions.map((q) => ({
+            header: q.header,
+            question: q.question,
+            options: q.options.map((o) => o.label),
+          })),
+        }
+      : {}),
+  }
+}
+
+function emitMcpToolUse(rpcReqId, params, { displayName, input }) {
+  const id = mcpToolUseId(rpcReqId)
+  const server = input.serverName || params?.serverName || 'MCP server'
+  out({
+    type: 'assistant',
+    message: {
+      role: 'assistant',
+      content: [{ type: 'tool_use', id, name: 'MCP', input }],
+    },
+    tool_use_meta: [{
+      id,
+      display_name: displayName,
+      server_display_name: mcpServerDisplayName(params, server),
+    }],
+  })
+  return id
+}
+
+function emitMcpToolResult(toolUseId, accepted) {
+  if (!toolUseId) return
+  out({
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [{
+        type: 'tool_result',
+        tool_use_id: toolUseId,
+        content: accepted ? 'Accepted by user.' : 'Denied by user.',
+        is_error: !accepted,
+      }],
+    },
+  })
+}
+
+function emitMcpElicitation(rpcReqId, params) {
+  const server = params?.serverName || 'MCP server'
+  if (params?.mode === 'form') {
+    const { questions, answerKeys } = elicitationQuestions(params)
+    if (questions.length) {
+      const toolUseId = emitMcpToolUse(rpcReqId, params, {
+        displayName: mcpDisplayName(params, 'MCP input'),
+        input: mcpTranscriptInput(params, server, questions),
+      })
+      emitPermission(rpcReqId, {
+        tool_name: 'AskUserQuestion',
+        tool_input: { questions, mcp: { serverName: server, message: params.message, mode: params.mode } },
+        title: `${server} requests input`,
+        description: params.message,
+        display_name: 'MCP input',
+      }, { kind: 'mcp_elicitation_form', answerKeys, toolUseId })
+      return
+    }
+  }
+
+  const toolUseId = emitMcpToolUse(rpcReqId, params, {
+    displayName: mcpDisplayName(params, 'MCP request'),
+    input: mcpTranscriptInput(params, server),
+  })
+  emitPermission(rpcReqId, {
+    tool_name: 'MCP',
+    tool_input: {
+      serverName: server,
+      mode: params?.mode,
+      message: params?.message,
+      url: params?.url,
+    },
+    title: `${server} requests permission`,
+    description: params?.message || 'Allow this MCP request to continue?',
+    display_name: 'MCP request',
+  }, { kind: 'mcp_elicitation', toolUseId })
 }
 
 // ── translate codex item → Claude-shaped stream-json ──────────────────────
@@ -254,12 +468,11 @@ function onServerMessage(msg) {
       case 'applyPatchApproval':
         emitPermission(msg.id, { tool_name: 'Edit', tool_input: p, title: p.reason || 'Apply a patch' })
         return
-      // ---- requests we auto-decline with their CORRECT response shape -------
-      // (each codex server-request has a distinct response type; a generic
-      //  `{decision}` fails to deserialize — that caused the elicitation error.)
       case 'mcpServer/elicitation/request':
-        note(`[codex] auto-declined MCP elicitation from ${p.serverName ?? 'server'}`, 'warn')
-        rpcRespond(msg.id, { action: 'decline', content: null, _meta: null })
+        if (process.env.DEVDY_CODEX_MCP_TRACE) {
+          note(`[codex] MCP elicitation from ${p.serverName ?? 'server'}: ${p.mode ?? 'unknown'}`, 'debug')
+        }
+        emitMcpElicitation(msg.id, p)
         return
       case 'item/tool/requestUserInput':
         rpcRespond(msg.id, { answers: {} })
@@ -429,6 +642,17 @@ function handleCommand(cmd) {
       permWaiters.delete(cmd.requestId)
       const accept = cmd.decision === 'allow'
       if (!accept && w.command != null) declinedCommands.add(cmdKey(w.command))
+      if (w.kind === 'mcp_elicitation_form') {
+        const content = accept ? elicitationContentFromAnswers(cmd.answers, w.answerKeys) : null
+        emitMcpToolResult(w.toolUseId, accept)
+        rpcRespond(w.rpcId, { action: accept ? 'accept' : 'decline', content, _meta: null })
+        break
+      }
+      if (w.kind === 'mcp_elicitation') {
+        emitMcpToolResult(w.toolUseId, accept)
+        rpcRespond(w.rpcId, { action: accept ? 'accept' : 'decline', content: null, _meta: null })
+        break
+      }
       // v2 approvals use accept/decline; legacy uses approved/denied. The
       // app-server accepts the v2 vocabulary for the v2 request methods we use.
       rpcRespond(w.rpcId, { decision: accept ? 'accept' : 'decline' })

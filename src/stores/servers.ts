@@ -27,6 +27,7 @@ export interface CreateServerPayload {
   username: string
   auth_method: AuthMethod
   private_key_path?: string | null
+  private_key_source_path?: string | null
   tags?: string | null
   // null/'' → not stored (create) / kept unchanged (update).
   passphrase?: string | null

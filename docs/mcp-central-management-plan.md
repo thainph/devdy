@@ -11,7 +11,7 @@ Mục tiêu: thêm một nơi tập trung trong Devdy để **định nghĩa** c
 Hỗ trợ 2 transport: **stdio** (command/args/env) và **HTTP/SSE** (url/headers). MCP là config bơm lúc chạy — **không** cần sync file ra đĩa như skills/rules.
 
 ## Quyết định đã chốt (nguồn: BA review)
-- **QĐ-1 (Codex + remote):** Codex chỉ nhận server **stdio**. Server **http/sse** bị **bỏ qua** khi run bằng Codex, và ghi **1 dòng note vào log run** để user biết (server nào bị bỏ, lý do "Codex chỉ hỗ trợ stdio").
+- **QĐ-1 (Codex + remote):** Codex nhận server **stdio** và **streamable HTTP**. Server **sse** bị **bỏ qua** khi run bằng Codex, và ghi **1 dòng note vào log run** để user biết (server nào bị bỏ, lý do "Codex chỉ hỗ trợ stdio/streamable HTTP").
 - **QĐ-2 (Engine resolve):** Việc inject quyết định theo **engine thực tế lúc run** (đã tính `engine_override` per-run), không theo `default_engine`. Badge "Claude-only" trên UI **chỉ mang tính cảnh báo** dựa trên `default_engine` của project.
 - **QĐ-3 (Secret):** Giá trị nhạy cảm trong `env` và `headers` **bắt buộc lưu macOS Keychain ngay từ v1** (giống PAT). SQLite **không** chứa `env`/`headers` plaintext.
 - **QĐ-4 (Scope v1):** Ngoài CRUD + toggle + gán per-project, v1 gồm cả **import/export** cấu hình và **test-connection**.
@@ -70,7 +70,7 @@ Theo khuôn `commands/skills.rs`:
 - **Helper dùng chung** `resolve_project_mcp_servers(db, project_id, engine) -> (serde_json::Value, Vec<String> skipped)`:
   - Lấy server `enabled=1` AND thuộc `project_mcp_servers`; nạp VALUE env/headers từ Keychain.
   - **Claude**: build map `{ name: {type:'stdio', command, args, env} | {type:'http'|'sse', url, headers} }`.
-  - **Codex**: chỉ lấy stdio; các server http/sse cho vào `skipped` (phục vụ QĐ-1).
+  - **Codex**: lấy stdio + http; các server sse cho vào `skipped` (phục vụ QĐ-1).
 
 Đăng ký `mod mcp;` + `use` + entries vào `tauri::generate_handler![...]` trong `src-tauri/src/lib.rs` (block quanh `lib.rs:9,78-84`).
 
@@ -83,15 +83,15 @@ Validate create/update: `name` khớp `^[a-zA-Z0-9_-]+$` + unique; stdio bắt b
   if !mcp.is_null() { options["mcpServers"] = mcp; }
   ```
   MCP tool đi qua `canUseTool` sẵn có (`sidecar/index.mjs:193`) → permission modal chạy nguyên vẹn, **không** đụng `allowedTools`.
-- Nhánh Codex (quanh `runs.rs:352-362`): `resolve_project_mcp_servers(.., "codex")`, set env `DEVDY_CODEX_MCP` = JSON server stdio. Nếu `skipped` không rỗng → ghi 1 dòng note vào `log_buf` (QĐ-1), ví dụ: *"Bỏ qua N MCP server remote (http/sse) vì Codex chỉ hỗ trợ stdio: <tên...>"*.
+- Nhánh Codex (quanh `runs.rs:352-362`): `resolve_project_mcp_servers(.., "codex")`, set env `DEVDY_CODEX_MCP` = JSON server stdio/http. Nếu `skipped` không rỗng → ghi 1 dòng note vào `log_buf` (QĐ-1), ví dụ: *"Bỏ qua N MCP server SSE vì Codex chỉ hỗ trợ stdio/streamable HTTP: <tên...>"*.
 
 ## Sidecar
 - `sidecar/index.mjs` (quanh dòng 202): thêm `if (opts.mcpServers) options.mcpServers = opts.mcpServers`.
-- `sidecar-codex/index.mjs` (quanh spawn dòng 61): đọc `process.env.DEVDY_CODEX_MCP`, với mỗi server stdio dựng args `-c` **đặt trước** `'app-server'`: `mcp_servers.<name>.command="..."`, `-c 'mcp_servers.<name>.args=[...]'`, `-c 'mcp_servers.<name>.env={...}'`. Cần **escape TOML** cẩn thận (xem Risks).
+- `sidecar-codex/index.mjs` (quanh spawn dòng 61): đọc `process.env.DEVDY_CODEX_MCP`, với mỗi server stdio/http dựng args `-c` **đặt trước** `'app-server'`: `mcp_servers.<name>.command="..."`, `-c 'mcp_servers.<name>.args=[...]'`, `-c 'mcp_servers.<name>.env={...}'`, hoặc `mcp_servers.<name>.url="..."` + `env_http_headers`. Cần **escape TOML** cẩn thận (xem Risks).
 
 ## Frontend (Vue)
 - Store `src/stores/mcpServers.ts` (khuôn `stores/skills.ts`): `items/loading/error`, CRUD, `listForProject`, `setForProject`, `testConnection`, `exportServer`, `importServer`.
-- List `src/views/McpServersView.vue` (mirror `views/SkillsView.vue`): header (title + count + **Import** + **New**), grid card. Card: tên (mono), `Badge` transport, badge cảnh báo "Claude-only" cho server remote khi `project.default_engine==='codex'` (chỉ cảnh báo — QĐ-2), mô tả, nút edit/delete/**export**/toggle `enabled`. `useConfirm()` cho delete.
+- List `src/views/McpServersView.vue` (mirror `views/SkillsView.vue`): header (title + count + **Import** + **New**), grid card. Card: tên (mono), `Badge` transport, badge cảnh báo "Claude-only" cho server SSE khi `project.default_engine==='codex'` (chỉ cảnh báo — QĐ-2), mô tả, nút edit/delete/**export**/toggle `enabled`. `useConfirm()` cho delete.
 - Editor `src/views/McpServerEditorView.vue` (mirror `views/SkillEditorView.vue`): name, description, `AppSelect` transport; field theo transport (stdio: command + args list + env key-value rows; http/sse: url + headers key-value rows); nút **Test connection** hiển thị kết quả `{ok,message}`; toggle enabled. Dùng `Button/Input/AppSelect/Card`. VALUE secret nhập mới hoặc để trống = giữ nguyên (không hiển thị lại VALUE cũ đọc từ Keychain — chỉ báo "đã có").
 - Router `src/router/index.ts`: `/mcp`, `/mcp/new`, `/mcp/:id/edit`.
 - Nav: thêm "MCP" vào sidebar `src/App.vue` (sau Rules).
@@ -105,15 +105,15 @@ Validate create/update: `name` khớp `^[a-zA-Z0-9_-]+$` + unique; stdio bắt b
 ## Risks / lưu ý
 - **Escape TOML cho Codex `-c`**: `args`/`env` chứa dấu nháy, khoảng trắng, ký tự đặc biệt dễ vỡ cú pháp → cần hàm escape + test case riêng.
 - **Export chứa secret**: file export có VALUE secret → phải cảnh báo rõ, khuyến nghị không commit; import ghi thẳng vào Keychain.
-- **Codex remote MCP**: không hỗ trợ ở v1 (đã theo QĐ-1).
+- **Codex SSE MCP**: không hỗ trợ ở v1 (đã theo QĐ-1); HTTP dùng streamable HTTP.
 - Tên MCP hợp lệ + unique → validate cả FE lẫn BE.
 
 ## Verification (end-to-end)
 1. `cargo build` OK; migration `0016` áp thành công; tạo server → Keychain có entry, SQLite không chứa VALUE secret.
 2. Tạo stdio server (`npx -y @modelcontextprotocol/server-filesystem <path>`), env có 1 secret → **Test connection** trả `ok`. Bật cho 1 project.
 3. Chạy session **Claude** → tool MCP xuất hiện & gọi được (permission modal đúng). Tắt server → chạy lại → tool biến mất.
-4. Chạy **Codex** (stdio) → xác nhận `-c mcp_servers.*` được truyền (log codex/tracing).
-5. Bật thêm server **http/sse** rồi chạy **Codex** → server remote bị bỏ qua + **log run có dòng note** liệt kê server bị bỏ (QĐ-1). Chạy **Claude** → server remote kết nối được.
+4. Chạy **Codex** (stdio/http) → xác nhận `-c mcp_servers.*` được truyền (log codex/tracing).
+5. Bật thêm server **sse** rồi chạy **Codex** → server SSE bị bỏ qua + **log run có dòng note** liệt kê server bị bỏ (QĐ-1). Chạy **Claude** → server SSE kết nối được.
 6. **Engine override**: project `default_engine=codex` nhưng run override sang Claude → server remote vẫn được inject (QĐ-2).
 7. **Error path**: server sai command/URL → Test connection trả lỗi rõ; nếu vẫn bật và chạy → run không crash, log hiện lỗi MCP từ engine.
 8. **Import/export**: export 1 server ra JSON (thấy cảnh báo chứa secret) → xóa → import lại → server + secret khôi phục, Test connection `ok`.

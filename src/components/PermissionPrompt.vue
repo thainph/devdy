@@ -80,6 +80,7 @@ const isQuestions = computed(() => props.request.tool_name === 'AskUserQuestion'
 // and asking to leave plan mode. Render it as a plan review (Approve / Keep
 // planning) instead of the generic "allow this tool call?" permission prompt.
 const isPlan = computed(() => props.request.tool_name === 'ExitPlanMode')
+const canRemember = computed(() => !isPlan.value && props.request.tool_name !== 'MCP')
 const planText = computed(() => {
   const p = input.value['plan']
   return typeof p === 'string' ? p : ''
@@ -341,7 +342,7 @@ function onKeydown(e: KeyboardEvent) {
   switch (e.key) {
     case 'Enter':
       e.preventDefault()
-      emit('decide', 'allow', isPlan.value ? false : e.shiftKey)
+      emit('decide', 'allow', canRemember.value && e.shiftKey)
       break
     case 'Escape':
       e.preventDefault()
@@ -587,6 +588,7 @@ function onKeydown(e: KeyboardEvent) {
                 <X class="h-3.5 w-3.5" :stroke-width="2" /> Deny
               </Button>
               <Button
+                v-if="canRemember"
                 variant="primary"
                 class="w-full @[26rem]/footer:w-auto"
                 @click="emit('decide', 'allow', true)"

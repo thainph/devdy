@@ -1,7 +1,10 @@
 use crate::commands::github::RunRecord;
 use crate::db::Db;
-use crate::runs::sidecar::{augment_command_path, detach_process_group, drain_sidecar, kill_process_group, resolve_codex_sidecar, resolve_sidecar, sdk_permission_mode};
 use crate::runs::broker::BrokerHandle;
+use crate::runs::sidecar::{
+    augment_command_path, detach_process_group, drain_sidecar, kill_process_group,
+    resolve_codex_sidecar, resolve_sidecar, sdk_permission_mode,
+};
 use crate::runs::ssh_access::{self, SshAccessGuard};
 use crate::runs::{BrokerRunCtx, BrokerRunGuard, BrokerRuns, RunHandles, RunRegistry};
 use serde::{Deserialize, Serialize};
@@ -118,7 +121,13 @@ pub async fn start_run(
     } else {
         Some(
             input_path
-                .or_else(|| if status == "fetched" { output_path } else { None })
+                .or_else(|| {
+                    if status == "fetched" {
+                        output_path
+                    } else {
+                        None
+                    }
+                })
                 .ok_or("No input file for this run — please re-fetch the issue/PR")?,
         )
     };
@@ -189,7 +198,11 @@ pub async fn start_run(
 
     // Resolve the model: per-run override wins, else the per-engine default
     // setting. An empty result means "let the engine pick its default".
-    let engine_default_model = if engine == "codex" { codex_model } else { claude_model };
+    let engine_default_model = if engine == "codex" {
+        codex_model
+    } else {
+        claude_model
+    };
     let model = resolve_model(payload.model_override, engine_default_model);
 
     let custom_prompt = payload
@@ -205,10 +218,18 @@ pub async fn start_run(
             .to_string()
     } else if run_type == "analyze_issue" {
         let base = custom_prompt.unwrap_or(analyze_prompt.as_str());
-        format!("{}\n\nThe issue details are in: {}", base, input_path.as_deref().unwrap_or(""))
+        format!(
+            "{}\n\nThe issue details are in: {}",
+            base,
+            input_path.as_deref().unwrap_or("")
+        )
     } else {
         let base = custom_prompt.unwrap_or(review_prompt.as_str());
-        format!("{}\n\nThe PR details are in: {}", base, input_path.as_deref().unwrap_or(""))
+        format!(
+            "{}\n\nThe PR details are in: {}",
+            base,
+            input_path.as_deref().unwrap_or("")
+        )
     };
 
     // For a session, derive a sidebar title from the first message (once).
@@ -258,15 +279,24 @@ pub async fn start_run(
         // GĐ3: per-run credential broker + gh/glab shim. Prepends the shim dir to
         // PATH and sets DEVDY_BROKER_SOCK/DEVDY_PROJECT_ID. Fail-closed: no token
         // is ever placed on the sidecar env. Held in RunHandles for Drop cleanup.
-        let (broker_run, ssh_access) =
-            wire_broker(&app, db.inner(), &mut cmd, &payload.run_id, &project_id, &project_path)
-                .await?;
+        let (broker_run, ssh_access) = wire_broker(
+            &app,
+            db.inner(),
+            &mut cmd,
+            &payload.run_id,
+            &project_id,
+            &project_path,
+        )
+        .await?;
         // Honor a custom claude binary if the user configured one; default uses
         // the SDK's bundled CLI (both read the same Keychain login).
         if claude_path != "claude" && !claude_path.trim().is_empty() {
             cmd.env("DEVDY_CLAUDE_PATH", &claude_path);
         }
-        cmd.env("DEVDY_USAGE_CAPTURE_MODE", claude_usage_capture_mode(db.inner()).await);
+        cmd.env(
+            "DEVDY_USAGE_CAPTURE_MODE",
+            claude_usage_capture_mode(db.inner()).await,
+        );
         cmd.env("DEVDY_USAGE_POLL_MS", "60000");
         if let Some(m) = &model {
             cmd.env("DEVDY_MODEL", m);
@@ -315,7 +345,10 @@ pub async fn start_run(
                 "images": images_payload(&payload.images),
                 "options": options,
             });
-            stdin.write_all(format!("{}\n", first).as_bytes()).await.ok();
+            stdin
+                .write_all(format!("{}\n", first).as_bytes())
+                .await
+                .ok();
             stdin.flush().await.ok();
         }
 
@@ -378,7 +411,7 @@ pub async fn start_run(
         cmd.env("DEVDY_CODEX_MODEL", m);
     }
     // Inject the project's enabled MCP servers for Codex (QĐ-2: actual engine).
-    // Codex only supports stdio; http/sse servers land in `skipped` (QĐ-1).
+    // Codex supports stdio + streamable HTTP; legacy SSE servers land in `skipped`.
     let (codex_mcp, mcp_skipped) =
         crate::commands::mcp::resolve_project_mcp_servers(&db_pool, &project_id, "codex").await;
     if !codex_mcp.is_null() {
@@ -404,7 +437,10 @@ pub async fn start_run(
             "text": prompt,
             "images": images_payload(&payload.images),
         });
-        stdin.write_all(format!("{}\n", first).as_bytes()).await.ok();
+        stdin
+            .write_all(format!("{}\n", first).as_bytes())
+            .await
+            .ok();
         stdin.flush().await.ok();
     }
 
@@ -418,11 +454,11 @@ pub async fn start_run(
         buf.push_str(&synthetic.to_string());
         buf.push('\n');
 
-        // QĐ-1: Codex only supports stdio. When http/sse servers were dropped,
+        // Codex app-server does not support legacy SSE. When such servers are dropped,
         // surface a one-line note in the run log so the user knows what/why.
         if !mcp_skipped.is_empty() {
             let text = format!(
-                "Bỏ qua {} MCP server remote (http/sse) vì Codex chỉ hỗ trợ stdio: {}",
+                "Bỏ qua {} MCP server SSE vì Codex chỉ hỗ trợ stdio/streamable HTTP: {}",
                 mcp_skipped.len(),
                 mcp_skipped.join(", ")
             );
@@ -476,7 +512,11 @@ fn resolve_model(override_model: Option<String>, default_model: String) -> Optio
         .filter(|s| !s.is_empty())
         .or_else(|| {
             let d = default_model.trim().to_string();
-            if d.is_empty() { None } else { Some(d) }
+            if d.is_empty() {
+                None
+            } else {
+                Some(d)
+            }
         })
 }
 
@@ -569,7 +609,9 @@ async fn wire_broker(
     let guard = BrokerRunGuard::register(
         runs,
         run_id.to_string(),
-        BrokerRunCtx { cwd: Some(project_path.to_string()) },
+        BrokerRunCtx {
+            cwd: Some(project_path.to_string()),
+        },
     );
 
     // Shim dir goes FIRST on PATH (after augment_command_path has run).
@@ -736,10 +778,7 @@ pub async fn send_user_message(
 }
 
 #[tauri::command]
-pub async fn end_run_input(
-    registry: State<'_, RunRegistry>,
-    run_id: String,
-) -> Result<(), String> {
+pub async fn end_run_input(registry: State<'_, RunRegistry>, run_id: String) -> Result<(), String> {
     let mut reg = registry.lock().await;
     let handle = reg
         .get_mut(&run_id)
@@ -963,9 +1002,7 @@ pub async fn get_run_log_path(db: State<'_, Db>, run_id: String) -> Result<RunLo
                     .map(|d| d.join(format!("{}.jsonl", sid)))
                     .filter(|p| p.is_file())
             }
-            (Some("codex"), Some(sid)) => {
-                crate::commands::codex_sessions::codex_session_file(sid)
-            }
+            (Some("codex"), Some(sid)) => crate::commands::codex_sessions::codex_session_file(sid),
             _ => None,
         });
     if let Some(p) = transcript {
@@ -1008,10 +1045,7 @@ struct HandoffSourceRun {
 
 /// Load a run and resolve its original input markdown so it can be re-run or
 /// handed off to another engine without re-fetching from GitHub.
-async fn load_clonable_run(
-    db: &sqlx::SqlitePool,
-    run_id: &str,
-) -> Result<ClonableRun, String> {
+async fn load_clonable_run(db: &sqlx::SqlitePool, run_id: &str) -> Result<ClonableRun, String> {
     use sqlx::Row;
 
     let row = sqlx::query(
@@ -1039,7 +1073,13 @@ async fn load_clonable_run(
     // Resolve input file: prefer stored input_path, else output_path (only valid
     // when status='fetched'), else derive from run_type+ref_number for issues.
     let resolved_input = stored_input
-        .or_else(|| if status == "fetched" { stored_output } else { None })
+        .or_else(|| {
+            if status == "fetched" {
+                stored_output
+            } else {
+                None
+            }
+        })
         .or_else(|| {
             if run_type == "analyze_issue" {
                 ref_number.map(|n| {
@@ -1110,7 +1150,13 @@ async fn load_handoff_source_run(
         None
     } else {
         let resolved_input = stored_input
-            .or_else(|| if status == "fetched" { stored_output } else { None })
+            .or_else(|| {
+                if status == "fetched" {
+                    stored_output
+                } else {
+                    None
+                }
+            })
             .or_else(|| {
                 if run_type == "analyze_issue" {
                     ref_number.map(|n| {
@@ -1418,14 +1464,13 @@ pub(crate) async fn delete_run_inner(
     }
 
     if let Some(path) = input_path.as_deref() {
-        let still_referenced: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM runs WHERE input_path = ? OR output_path = ?",
-        )
-        .bind(path)
-        .bind(path)
-        .fetch_one(db)
-        .await
-        .map_err(|e| e.to_string())?;
+        let still_referenced: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM runs WHERE input_path = ? OR output_path = ?")
+                .bind(path)
+                .bind(path)
+                .fetch_one(db)
+                .await
+                .map_err(|e| e.to_string())?;
         if still_referenced == 0 {
             let file = Path::new(path);
             let _ = fs::remove_file(file);
@@ -1452,13 +1497,13 @@ pub async fn delete_run(
 /// Rename a run's title (shown in the History list). An empty/whitespace title
 /// clears it back to NULL, letting the UI fall back to its derived label.
 #[tauri::command]
-pub async fn rename_run(
-    db: State<'_, Db>,
-    run_id: String,
-    title: String,
-) -> Result<(), String> {
+pub async fn rename_run(db: State<'_, Db>, run_id: String, title: String) -> Result<(), String> {
     let trimmed = title.trim();
-    let value: Option<&str> = if trimmed.is_empty() { None } else { Some(trimmed) };
+    let value: Option<&str> = if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    };
     sqlx::query("UPDATE runs SET title = ? WHERE id = ?")
         .bind(value)
         .bind(&run_id)
@@ -1470,11 +1515,7 @@ pub async fn rename_run(
 
 /// Pin or unpin a run so it sorts to the top of the History list.
 #[tauri::command]
-pub async fn set_run_pinned(
-    db: State<'_, Db>,
-    run_id: String,
-    pinned: bool,
-) -> Result<(), String> {
+pub async fn set_run_pinned(db: State<'_, Db>, run_id: String, pinned: bool) -> Result<(), String> {
     sqlx::query("UPDATE runs SET pinned = ? WHERE id = ?")
         .bind(if pinned { 1 } else { 0 })
         .bind(&run_id)
@@ -1493,18 +1534,19 @@ pub async fn delete_all_runs(
 ) -> Result<u32, String> {
     use sqlx::Row;
 
-    let rows = sqlx::query(
-        "SELECT id FROM runs WHERE project_id = ? AND status != 'running'",
-    )
-    .bind(&project_id)
-    .fetch_all(db.inner())
-    .await
-    .map_err(|e| e.to_string())?;
+    let rows = sqlx::query("SELECT id FROM runs WHERE project_id = ? AND status != 'running'")
+        .bind(&project_id)
+        .fetch_all(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
 
     let mut deleted = 0u32;
     for row in &rows {
         let id: String = row.get("id");
-        if delete_run_inner(db.inner(), registry.inner(), &id).await.is_ok() {
+        if delete_run_inner(db.inner(), registry.inner(), &id)
+            .await
+            .is_ok()
+        {
             deleted += 1;
         }
     }
@@ -1522,7 +1564,9 @@ pub async fn read_run_input(db: State<'_, Db>, run_id: String) -> Result<String,
     let path: Option<String> = row.get("input_path");
     // Standalone session runs have no input markdown — return empty so the UI
     // simply shows no Content tab rather than an error.
-    let Some(path) = path else { return Ok(String::new()) };
+    let Some(path) = path else {
+        return Ok(String::new());
+    };
     fs::read_to_string(&path).map_err(|e| format!("read {}: {}", path, e))
 }
 
@@ -1608,7 +1652,11 @@ pub async fn resume_run(
         }
     }
 
-    let engine_default_model = if engine == "codex" { codex_model } else { claude_model };
+    let engine_default_model = if engine == "codex" {
+        codex_model
+    } else {
+        claude_model
+    };
     let model = resolve_model(model_override, engine_default_model);
 
     let permission_mode = permission_mode_override
@@ -1627,12 +1675,14 @@ pub async fn resume_run(
 
     // Mark running; finished_at cleared so the UI reflects the active state.
     let started_at = chrono::Utc::now().to_rfc3339();
-    sqlx::query("UPDATE runs SET status = 'running', started_at = ?, finished_at = NULL WHERE id = ?")
-        .bind(&started_at)
-        .bind(&run_id)
-        .execute(db.inner())
-        .await
-        .map_err(|e| e.to_string())?;
+    sqlx::query(
+        "UPDATE runs SET status = 'running', started_at = ?, finished_at = NULL WHERE id = ?",
+    )
+    .bind(&started_at)
+    .bind(&run_id)
+    .execute(db.inner())
+    .await
+    .map_err(|e| e.to_string())?;
 
     let (node_bin, sidecar_script) = if engine == "codex" {
         resolve_codex_sidecar(&app, &node_path, &codex_sidecar_path)?
@@ -1650,9 +1700,15 @@ pub async fn resume_run(
     // untouched. Fail-closed: never sets a token on the sidecar env.
     let (broker_run, ssh_access): (Option<BrokerRunGuard>, Option<SshAccessGuard>) =
         if engine == "claude" {
-            let (broker, ssh) =
-                wire_broker(&app, db.inner(), &mut cmd, &run_id, &project_id, &project_path)
-                    .await?;
+            let (broker, ssh) = wire_broker(
+                &app,
+                db.inner(),
+                &mut cmd,
+                &run_id,
+                &project_id,
+                &project_path,
+            )
+            .await?;
             (Some(broker), ssh)
         } else {
             (None, None)
@@ -1675,11 +1731,17 @@ pub async fn resume_run(
             cmd.env("DEVDY_CODEX_MCP", codex_mcp.to_string());
         }
     } else {
-        cmd.env("DEVDY_PERMISSION_MODE", sdk_permission_mode(&permission_mode));
+        cmd.env(
+            "DEVDY_PERMISSION_MODE",
+            sdk_permission_mode(&permission_mode),
+        );
         if claude_path != "claude" && !claude_path.trim().is_empty() {
             cmd.env("DEVDY_CLAUDE_PATH", &claude_path);
         }
-        cmd.env("DEVDY_USAGE_CAPTURE_MODE", claude_usage_capture_mode(db.inner()).await);
+        cmd.env(
+            "DEVDY_USAGE_CAPTURE_MODE",
+            claude_usage_capture_mode(db.inner()).await,
+        );
         cmd.env("DEVDY_USAGE_POLL_MS", "60000");
         if let Some(m) = &model {
             cmd.env("DEVDY_MODEL", m);

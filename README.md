@@ -58,7 +58,7 @@ Manage **Model Context Protocol** servers in one place and enable them per proje
 - **Two transports** — `stdio` (command + args + env) and remote **HTTP / SSE** (url + headers).
 - **Central definition, per-project enable** — define a server once, then toggle which projects may use it.
 - **Injected at launch** — enabled servers are wired into a run automatically: Claude via the Agent SDK `mcpServers` option, Codex via `-c mcp_servers.*` config overrides.
-- **Engine-aware** — Codex runs use `stdio` servers only; remote (HTTP/SSE) servers are skipped for Codex and a note is written to the run log. Resolution follows the run's *actual* engine (honoring per-run overrides).
+- **Engine-aware** — Codex runs use `stdio` and streamable HTTP servers; legacy SSE servers are skipped for Codex and a note is written to the run log. Resolution follows the run's *actual* engine (honoring per-run overrides).
 - **Test connection** — verify a server with a real MCP `initialize` handshake before saving.
 - **Import / export** server definitions as JSON.
 - **Secrets protected** — `env` / header values are stored in the **OS Keychain**; the database keeps only the key names, never the values.
