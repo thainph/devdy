@@ -7,6 +7,8 @@ import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import { useGitlabAccountsStore } from '@/stores/gitlabAccounts'
+import { useServersStore, type ProjectServer } from '@/stores/servers'
+import { useAwsAccountsStore } from '@/stores/awsAccounts'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { invoke } from '@/lib/tauri'
 import { openUrl } from '@tauri-apps/plugin-opener'
@@ -21,7 +23,7 @@ import {
   ImagePlus, X, Paperclip,
   ShieldQuestion, MessageCircleQuestion,
   Pin, PinOff, Pencil, Check, Github, Gitlab,
-  ClipboardCopy, ScrollText
+  ClipboardCopy, ScrollText, Server, Cloud
 } from 'lucide-vue-next'
 import AppSelect from '@/components/AppSelect.vue'
 import StreamLog from '@/components/StreamLog.vue'
@@ -53,6 +55,8 @@ const live = useLiveRunsStore()
 const tabsStore = useWorkspaceTabsStore()
 const ghStore = useGithubAccountsStore()
 const glStore = useGitlabAccountsStore()
+const serversStore = useServersStore()
+const awsStore = useAwsAccountsStore()
 const appSettings = useAppSettingsStore()
 const { confirm } = useConfirm()
 const { toast } = useToast()
@@ -89,6 +93,55 @@ const activeAccounts = computed(() => {
     }
   }
   return badges
+})
+
+// VPS servers mapped to this project — pre-wired for transparent SSH on each run.
+// Loaded per-project (list_project_servers); the header surfaces which hosts the
+// AI can reach, mirroring the git-account badges above.
+const projectServers = ref<ProjectServer[]>([])
+async function loadProjectServers() {
+  try {
+    projectServers.value = await serversStore.listForProject(projectId.value)
+  } catch {
+    projectServers.value = []
+  }
+}
+
+// Max distinct server chips before collapsing the rest into a single "+N" chip,
+// keeping the (narrow) header from overflowing when many servers are mapped.
+const MAX_SERVER_CHIPS = 2
+type ServerChip = { key: string; label: string; tone: 'success' | 'error' | 'neutral'; title: string }
+const serverChips = computed<ServerChip[]>(() =>
+  projectServers.value.map((s) => {
+    const tone = s.status === 'online' ? 'success' : s.status === 'offline' ? 'error' : 'neutral'
+    const auth = s.auth_method === 'key' ? 'key' : 'ssh-agent'
+    const status = s.status ? ` · ${s.status}` : ''
+    return {
+      key: `${s.id}-${s.role}`,
+      label: s.label,
+      tone,
+      title: `${s.role}: ${s.username}@${s.host}:${s.port} · auth ${auth}${status}`,
+    }
+  }),
+)
+const visibleServerChips = computed(() => serverChips.value.slice(0, MAX_SERVER_CHIPS))
+const hiddenServerChips = computed(() => serverChips.value.slice(MAX_SERVER_CHIPS))
+const hiddenServerTitle = computed(() =>
+  hiddenServerChips.value.map((c) => c.label).join('\n'),
+)
+
+// The project's linked AWS account (credentials brokered per run). Label + region
+// on the chip; account id + ARN in the tooltip.
+const awsChip = computed(() => {
+  const id = project.value?.aws_account_id
+  if (!id) return null
+  const acc = awsStore.accounts.find((a) => a.id === id)
+  if (!acc) return null
+  const parts = [`AWS: ${acc.label}`]
+  if (acc.account_id) parts.push(`account ${acc.account_id}`)
+  parts.push(`region ${acc.region}`)
+  const title = parts.join(' · ') + (acc.arn ? `\n${acc.arn}` : '')
+  return { label: acc.label, region: acc.region, title }
 })
 
 const activeRunId = computed(() => route.params.runId as string | undefined)
@@ -510,6 +563,11 @@ watch(activeRunId, (id) => {
   if (id && id !== currentRunId.value) loadRunLog(id)
 })
 
+// Keep the server chips in sync if the active project changes without a remount.
+watch(projectId, () => {
+  loadProjectServers()
+})
+
 onMounted(async () => {
   loadMarkdown()
   nextTick(autoResizeComposer)
@@ -519,6 +577,9 @@ onMounted(async () => {
   // GĐ6 (AC3): ensure account metadata is available for the header badge.
   if (ghStore.accounts.length === 0) ghStore.fetch().catch(() => {})
   if (glStore.accounts.length === 0) glStore.fetch().catch(() => {})
+  // Header chips: which VPS servers + AWS account this project is wired to.
+  if (awsStore.accounts.length === 0) awsStore.fetch().catch(() => {})
+  loadProjectServers()
   repos.value = await projectStore.listRepos(projectId.value)
   if (repos.value.length === 1) {
     selectedRepoId.value = repos.value[0].id
@@ -1852,6 +1913,40 @@ function handleRefInput(val: string) {
         >
           <component :is="acc.icon" class="h-3 w-3" :stroke-width="1.75" />
           {{ acc.username }}
+        </Badge>
+        <!-- VPS servers wired to this project (transparent SSH per run). -->
+        <Badge
+          v-for="chip in visibleServerChips"
+          :key="chip.key"
+          :tone="chip.tone"
+          size="sm"
+          class="shrink-0 inline-flex items-center gap-1"
+          :title="chip.title"
+        >
+          <Server class="h-3 w-3" :stroke-width="1.75" />
+          {{ chip.label }}
+        </Badge>
+        <Badge
+          v-if="hiddenServerChips.length"
+          tone="neutral"
+          size="sm"
+          class="shrink-0 inline-flex items-center gap-1"
+          :title="hiddenServerTitle"
+        >
+          <Server class="h-3 w-3" :stroke-width="1.75" />
+          +{{ hiddenServerChips.length }}
+        </Badge>
+        <!-- Linked AWS account (credentials brokered per run). -->
+        <Badge
+          v-if="awsChip"
+          tone="warning"
+          size="sm"
+          class="shrink-0 inline-flex items-center gap-1"
+          :title="awsChip.title"
+        >
+          <Cloud class="h-3 w-3" :stroke-width="1.75" />
+          {{ awsChip.label }}
+          <span class="opacity-70 font-mono">{{ awsChip.region }}</span>
         </Badge>
         <span
           v-if="project"
