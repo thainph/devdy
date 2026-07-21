@@ -13,7 +13,7 @@ use crate::runs::sidecar::{
     resolve_codex_sidecar, resolve_sidecar,
 };
 use crate::runs::RunRegistry;
-use chrono::{Datelike, Duration, TimeZone, Utc};
+use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{QueryBuilder, Row, Sqlite};
 use std::collections::{HashMap, HashSet};
@@ -375,67 +375,26 @@ pub async fn reset_usage_stats(
     })
 }
 
-// ── Global token budget ───────────────────────────────────────────────────
+// ── Run-blocking budget guardrail ──────────────────────────────────────────
 //
-// A guardrail over total token consumption across ALL runs (unrelated to the
-// per-run context-window meter). Only two periods exist, mirroring the real
-// Claude/Codex subscription limits: "5h" (rolling session window) and "week"
-// (weekly window). When real plan data backs the period the account's own reset
-// instant is used; this fallback computation only applies when no plan data is
-// available (e.g. API-key sessions) and is approximated in UTC to match the
-// RFC3339 UTC timestamps stored in `run_usage.created_at`. Any unknown/legacy
-// period (e.g. a previously-stored "month") is treated as weekly.
+// A guardrail over real subscription plan usage. Two windows mirror the actual
+// Claude/Codex limits: "5h" (rolling session window) and "week" (weekly window,
+// resets per account). Each has its own block-at-% threshold; a run is refused
+// when its engine reaches any configured window. There is no token-based
+// fallback — the guardrail applies only when real plan data is available.
 
-/// Inclusive lower bound of the current budget period.
-pub fn period_start(period: &str) -> chrono::DateTime<Utc> {
-    let now = Utc::now();
-    if period == "5h" {
-        now - Duration::hours(5)
-    } else {
-        // Weekly fallback: Monday 00:00 UTC of the current week. The real weekly
-        // window resets per account, but without plan data we approximate here.
-        let days = now.weekday().num_days_from_monday() as i64;
-        let monday = (now - Duration::days(days)).date_naive();
-        Utc.with_ymd_and_hms(monday.year(), monday.month(), monday.day(), 0, 0, 0)
-            .unwrap()
-    }
-}
-
-/// When the current period resets, or None for the rolling "5h" window.
-pub fn next_reset(period: &str) -> Option<chrono::DateTime<Utc>> {
-    match period {
-        "5h" => None,
-        _ => Some(period_start("week") + Duration::days(7)),
-    }
-}
-
-/// Sum of `total_tokens` across all runs since `since` (RFC3339).
-pub async fn token_usage_since(pool: &Db, since: &str) -> Result<i64, String> {
-    let total: i64 =
-        sqlx::query_scalar("SELECT COALESCE(SUM(total_tokens), 0) FROM run_usage WHERE created_at >= ?")
-            .bind(since)
-            .fetch_one(pool)
-            .await
-            .map_err(|e| e.to_string())?;
-    Ok(total)
-}
-
-/// The single budget verdict shared by the backend guardrail and the frontend
-/// badge. Prefers real subscription plan utilization (`/usage`); falls back to
-/// the self-imposed token budget; otherwise disabled. Computed in one place
-/// (`budget_status`) so the badge and the run-blocking logic can never diverge.
+/// A budget verdict: real subscription plan utilization (`/usage`) or disabled.
+/// The badge display (`plan_display_status`) and the run-blocking guardrail
+/// (`budget_status_for`) both produce this shape but from independent inputs.
 #[derive(Debug, Serialize)]
 pub struct BudgetStatus {
-    /// "plan" (real /usage window) | "tokens" (self-imposed) | "disabled".
+    /// "plan" (real /usage window) | "disabled".
     pub source: String,
     pub period: String,
-    /// 0-100+; percent of the effective limit currently consumed.
+    /// 0-100+; percent of the window's limit currently consumed.
     pub percent: i64,
     pub is_warning: bool,
     pub is_over: bool,
-    /// Local token tally for the period (only meaningful when source = tokens).
-    pub used_tokens: i64,
-    pub limit_tokens: i64,
     /// RFC3339 reset instant, or null for a rolling window with no fixed reset.
     pub reset: Option<String>,
     /// RFC3339 time the plan snapshot was captured, if source = plan.
@@ -752,11 +711,9 @@ pub async fn refresh_codex_plan_usage(
     }
 }
 
-/// Map the configured budget period onto a real claude.ai plan window from the
-/// latest `/usage` snapshot. Returns `(utilization_percent, resets_at)` only
-/// when accurate plan data backs the period: rolling 5h → five_hour, weekly →
-/// seven_day. Any unknown/legacy period has no plan window, so it falls through
-/// to the token estimate. Mirrors the mapping in `src/stores/budget.ts`.
+/// A single plan window resolved from the latest `/usage` snapshot: its
+/// utilization plus the freshness/rollover metadata needed by both the badge
+/// display and the run-blocking guardrail.
 struct PlanWindowView {
     utilization: f64,
     resets_at: Option<String>,
@@ -766,16 +723,7 @@ struct PlanWindowView {
     rolled_over: bool,
 }
 
-/// Configured period → its natural plan-window key (monthly has none).
-fn period_to_window_key(period: &str) -> Option<&'static str> {
-    match period {
-        "5h" => Some("five_hour"),
-        "week" => Some("seven_day"),
-        _ => None,
-    }
-}
-
-/// Plan-window key → the period label the badge should show for it.
+/// Plan-window key → the period label to show for it.
 fn window_key_to_period(key: &str) -> &'static str {
     match key {
         "five_hour" => "5h",
@@ -783,36 +731,19 @@ fn window_key_to_period(key: &str) -> &'static str {
     }
 }
 
-/// Resolve which plan window to surface for `period`. Prefers the window that
-/// matches the configured period; when that window carries no data and
-/// `fallback` is set, falls back to whichever window the provider DID report
-/// (rolling 5h first, then weekly, then per-model). Returns the EFFECTIVE period
-/// label so the badge shows the window it's actually displaying — e.g. a Codex
-/// account that only exposes a weekly window still shows a % under a 5h setting.
-fn resolve_plan_view(
-    period: &str,
-    snapshot: &serde_json::Value,
-    stale_secs: i64,
-    fallback: bool,
-) -> Option<(String, PlanWindowView)> {
-    if let Some(k) = period_to_window_key(period) {
+/// Highest-utilization weekly window (all-models `seven_day` plus the per-model
+/// weekly windows when present) — the binding weekly constraint for the guardrail.
+fn weekly_window(snapshot: &serde_json::Value, stale_secs: i64) -> Option<PlanWindowView> {
+    let mut best: Option<PlanWindowView> = None;
+    for k in ["seven_day", "seven_day_opus", "seven_day_sonnet"] {
         if let Some(v) = plan_window_by_key(k, snapshot, stale_secs) {
-            return Some((period.to_string(), v));
+            let better = best.as_ref().map(|b| v.utilization > b.utilization).unwrap_or(true);
+            if better {
+                best = Some(v);
+            }
         }
     }
-    if !fallback {
-        return None;
-    }
-    let preferred = period_to_window_key(period);
-    for k in ["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"] {
-        if Some(k) == preferred {
-            continue; // already tried above
-        }
-        if let Some(v) = plan_window_by_key(k, snapshot, stale_secs) {
-            return Some((window_key_to_period(k).to_string(), v));
-        }
-    }
-    None
+    best
 }
 
 fn plan_window_by_key(key: &str, snapshot: &serde_json::Value, stale_secs: i64) -> Option<PlanWindowView> {
@@ -859,29 +790,16 @@ fn plan_window_by_key(key: &str, snapshot: &serde_json::Value, stale_secs: i64) 
     })
 }
 
-/// The one place that decides whether usage is near/over budget. Reads the
-/// configured period / token limit / warn threshold from settings, the latest
-/// plan-usage snapshot, and the period's token tally — then prefers real plan
-/// utilization over the self-imposed token estimate. Used by both the
-/// `get_budget_status` command (badge) and `enforce_budget` (run blocking).
-///
-/// `fallback` controls what happens when the configured period's plan window has
-/// no data: the badge passes `true` so it still shows whatever window the
-/// provider reported (under that window's own period label); run-blocking passes
-/// `false` to keep enforcement tied strictly to the configured period.
-pub async fn budget_status(db: &Db) -> Result<BudgetStatus, String> {
-    budget_status_inner(db, false).await
-}
-
 /// Display threshold for the badge's warning tone, deliberately decoupled from
-/// the user's guardrail `budget_warn_percent`. The badge reflects the account's
-/// REAL plan usage; the configured Usage budget only gates run-blocking (see
-/// `enforce_budget`). 80% is a fixed, sensible "getting close" heuristic.
+/// the guardrail's block thresholds (`budget_5h_percent` / `budget_week_percent`).
+/// The badge reflects the account's REAL plan usage; the configured Usage budget
+/// only gates run-blocking (see `enforce_budget`). 80% is a fixed, sensible
+/// "getting close" heuristic.
 const PLAN_DISPLAY_WARN_PERCENT: i64 = 80;
 
 /// Read the latest plan snapshot JSON (`key`) and `plan_stale_secs` from the
-/// settings KV — everything the badge needs, without touching the budget period
-/// / token-limit / warn settings.
+/// settings KV — everything the badge needs, without touching the guardrail's
+/// block-threshold / token-limit settings.
 async fn read_plan_snapshot(db: &Db, key: &str) -> Result<(Option<String>, i64), String> {
     let rows = sqlx::query("SELECT key, value FROM settings")
         .fetch_all(db)
@@ -903,32 +821,27 @@ async fn read_plan_snapshot(db: &Db, key: &str) -> Result<(Option<String>, i64),
     Ok((plan_json, stale_secs))
 }
 
-/// Pick the MOST-CONSTRAINING plan window (highest utilization) across every
-/// window the snapshot reports, independent of any configured budget period.
-/// This is what the badge shows — a real plan-usage glance, not the guardrail.
+/// Pick the SMALLEST available plan window, independent of any configured budget
+/// period. Preference order: rolling 5h first, then the weekly windows. So the
+/// badge always shows the 5h window when its data is present, and only falls
+/// back to weekly when it isn't. This is a real plan-usage glance, not the
+/// guardrail.
 fn plan_display_view(
     snapshot: &serde_json::Value,
     stale_secs: i64,
 ) -> Option<(String, PlanWindowView)> {
-    let mut best: Option<(String, PlanWindowView)> = None;
     for k in ["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"] {
         if let Some(v) = plan_window_by_key(k, snapshot, stale_secs) {
-            let is_better = best
-                .as_ref()
-                .map(|(_, b)| v.utilization > b.utilization)
-                .unwrap_or(true);
-            if is_better {
-                best = Some((window_key_to_period(k).to_string(), v));
-            }
+            return Some((window_key_to_period(k).to_string(), v));
         }
     }
-    best
+    None
 }
 
 /// Build the badge verdict from a plan snapshot, independent of the Usage budget
 /// setting. Warning/over come from the plan's own live status plus a fixed
-/// display threshold — never from `budget_warn_percent`. Returns `disabled` when
-/// no plan window is present (e.g. API-key sessions with no subscription data).
+/// display threshold — never from the guardrail block thresholds. Returns
+/// `disabled` when no plan window is present (e.g. API-key sessions).
 fn plan_display_status(plan_json: Option<&str>, stale_secs: i64) -> BudgetStatus {
     if let Some(snapshot) =
         plan_json.and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
@@ -936,16 +849,17 @@ fn plan_display_status(plan_json: Option<&str>, stale_secs: i64) -> BudgetStatus
         if let Some((period, view)) = plan_display_view(&snapshot, stale_secs) {
             let percent = view.utilization.round() as i64;
             let blocked = view.status.as_deref() == Some("blocked");
-            let warning_status = view.status.as_deref() == Some("warning");
             return BudgetStatus {
                 source: "plan".into(),
                 period,
                 percent,
-                is_warning: !view.rolled_over
-                    && (percent >= PLAN_DISPLAY_WARN_PERCENT || warning_status || blocked),
+                // Amber is driven purely by the DISPLAYED window's own %. The live
+                // `warning` status is deliberately NOT used here: Claude attaches
+                // an "allowed_warning" state to a window even when that window's %
+                // is low (the warning is about a different constraint), which made
+                // the badge turn amber at ~18%. A real hard block still shows red.
+                is_warning: !view.rolled_over && percent >= PLAN_DISPLAY_WARN_PERCENT,
                 is_over: !view.rolled_over && (percent >= 100 || blocked),
-                used_tokens: 0,
-                limit_tokens: 0,
                 reset: view.resets_at,
                 captured_at: view.captured_at,
                 is_stale: view.is_stale,
@@ -960,8 +874,6 @@ fn plan_display_status(plan_json: Option<&str>, stale_secs: i64) -> BudgetStatus
         percent: 0,
         is_warning: false,
         is_over: false,
-        used_tokens: 0,
-        limit_tokens: 0,
         reset: None,
         captured_at: None,
         is_stale: false,
@@ -970,87 +882,100 @@ fn plan_display_status(plan_json: Option<&str>, stale_secs: i64) -> BudgetStatus
     }
 }
 
-async fn budget_status_inner(db: &Db, fallback: bool) -> Result<BudgetStatus, String> {
+/// Warning margin: a window is "approaching" its block threshold once it reaches
+/// this fraction of it. Drives the more-careful Claude usage-capture mode.
+const GUARDRAIL_WARN_RATIO: f64 = 0.9;
+
+/// The run-blocking guardrail verdict for a specific `engine`. Checks that
+/// engine's REAL plan windows — the rolling 5h window and the weekly window —
+/// against the separately-configured block thresholds (`budget_5h_percent` /
+/// `budget_week_percent`). Blocks when ANY configured window reaches its
+/// threshold; a window with no threshold (empty) or no data is skipped. When the
+/// engine has no plan data (e.g. API-key sessions) the guardrail is inactive.
+/// Used by `enforce_budget` (run blocking), the Claude usage-capture mode, and
+/// the composer lock.
+pub async fn budget_status_for(db: &Db, engine: &str) -> Result<BudgetStatus, String> {
     let rows = sqlx::query("SELECT key, value FROM settings")
         .fetch_all(db)
         .await
         .map_err(|e| e.to_string())?;
-    let mut period = "week".to_string();
-    let mut limit_tokens: i64 = 0;
-    let mut warn_percent: i64 = 80;
+    let mut block_5h: i64 = 0;
+    let mut block_week: i64 = 0;
     let mut stale_secs: i64 = 120;
-    let mut plan_json: Option<String> = None;
+    let mut plan_claude: Option<String> = None;
+    let mut plan_codex: Option<String> = None;
     for row in &rows {
         let key: String = row.get("key");
         let value: String = row.get("value");
         match key.as_str() {
-            "token_budget_period" => period = value,
-            "token_budget_limit" => limit_tokens = value.trim().parse::<i64>().unwrap_or(0).max(0),
-            "budget_warn_percent" => warn_percent = value.trim().parse::<i64>().unwrap_or(80).clamp(1, 100),
+            "budget_5h_percent" => block_5h = value.trim().parse::<i64>().unwrap_or(0).clamp(0, 100),
+            "budget_week_percent" => block_week = value.trim().parse::<i64>().unwrap_or(0).clamp(0, 100),
             "plan_stale_secs" => stale_secs = value.trim().parse::<i64>().unwrap_or(120).clamp(10, 3600),
-            "plan_usage" => plan_json = Some(value),
+            "plan_usage" => plan_claude = Some(value),
+            "plan_usage_codex" => plan_codex = Some(value),
             _ => {}
         }
     }
 
-    let reset = next_reset(&period).map(|d| d.to_rfc3339());
+    let plan_json = if engine == "codex" { plan_codex } else { plan_claude };
 
-    // 1) Real subscription plan window (most accurate — the true ceiling).
-    if let Some(snapshot) = plan_json.as_deref().and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok()) {
-        if let Some((period, view)) = resolve_plan_view(&period, &snapshot, stale_secs, fallback) {
-            let percent = view.utilization.round() as i64;
-            let blocked = view.status.as_deref() == Some("blocked");
-            let warning_status = view.status.as_deref() == Some("warning");
-            return Ok(BudgetStatus {
-                source: "plan".into(),
-                period,
-                percent,
-                // Live status escalates the verdict even when the % is slightly
-                // stale; a rolled-over window can never be warning/over.
-                is_warning: !view.rolled_over && (percent >= warn_percent || warning_status || blocked),
-                is_over: !view.rolled_over && (percent >= 100 || blocked),
-                used_tokens: 0,
-                limit_tokens: 0,
-                reset: view.resets_at,
-                captured_at: view.captured_at,
-                is_stale: view.is_stale,
-                status: view.status,
-                rolled_over: view.rolled_over,
-            });
+    // 1) Real plan windows for this engine (the true ceiling).
+    if let Some(snapshot) = plan_json
+        .as_deref()
+        .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
+    {
+        let five = plan_window_by_key("five_hour", &snapshot, stale_secs);
+        let week = weekly_window(&snapshot, stale_secs);
+        if five.is_some() || week.is_some() {
+            let mut is_over = false;
+            let mut is_warning = false;
+            // Report the window nearest to (or furthest over) its threshold; a
+            // configured window always outranks an unconfigured one.
+            let mut report: Option<(i64, &'static str, PlanWindowView)> = None;
+            for (view_opt, threshold, period) in [(five, block_5h, "5h"), (week, block_week, "week")] {
+                let Some(view) = view_opt else { continue };
+                let util = view.utilization.round() as i64;
+                let blocked = view.status.as_deref() == Some("blocked");
+                let warning_status = view.status.as_deref() == Some("warning");
+                if threshold > 0 && !view.rolled_over {
+                    if util >= threshold || blocked {
+                        is_over = true;
+                    }
+                    if util as f64 >= threshold as f64 * GUARDRAIL_WARN_RATIO || warning_status || blocked {
+                        is_warning = true;
+                    }
+                }
+                let rank = if threshold > 0 { util - threshold } else { util - 1000 };
+                let better = report.as_ref().map(|(r, _, _)| rank > *r).unwrap_or(true);
+                if better {
+                    report = Some((rank, period, view));
+                }
+            }
+            if let Some((_, period, view)) = report {
+                return Ok(BudgetStatus {
+                    source: "plan".into(),
+                    period: period.into(),
+                    percent: view.utilization.round() as i64,
+                    is_warning,
+                    is_over,
+                    reset: view.resets_at,
+                    captured_at: view.captured_at,
+                    is_stale: view.is_stale,
+                    status: view.status,
+                    rolled_over: view.rolled_over,
+                });
+            }
         }
     }
 
-    // 2) Self-imposed token budget (fallback: Codex, monthly, API sessions).
-    if limit_tokens > 0 {
-        let start = period_start(&period).to_rfc3339();
-        let used_tokens = token_usage_since(db, &start).await?;
-        let percent = ((used_tokens as f64 / limit_tokens as f64) * 100.0).round() as i64;
-        return Ok(BudgetStatus {
-            source: "tokens".into(),
-            period,
-            percent,
-            is_warning: percent >= warn_percent,
-            is_over: used_tokens >= limit_tokens,
-            used_tokens,
-            limit_tokens,
-            reset,
-            captured_at: None,
-            is_stale: false,
-            status: None,
-            rolled_over: false,
-        });
-    }
-
-    // 3) No guardrail configured and no plan data — disabled.
+    // 2) No usable plan data for this engine — guardrail inactive.
     Ok(BudgetStatus {
         source: "disabled".into(),
-        period,
+        period: "week".into(),
         percent: 0,
         is_warning: false,
         is_over: false,
-        used_tokens: 0,
-        limit_tokens: 0,
-        reset,
+        reset: None,
         captured_at: None,
         is_stale: false,
         status: None,
@@ -1079,11 +1004,11 @@ pub async fn get_codex_budget_status(db: State<'_, Db>) -> Result<BudgetStatus, 
 /// follow-up). Refuses when the budget is over, unless the user explicitly
 /// overrode it. The error is prefixed `BUDGET_EXCEEDED` so the UI can offer a
 /// one-click override.
-pub async fn enforce_budget(db: &Db, override_budget: bool) -> Result<(), String> {
+pub async fn enforce_budget(db: &Db, engine: &str, override_budget: bool) -> Result<(), String> {
     if override_budget {
         return Ok(());
     }
-    let status = budget_status(db).await?;
+    let status = budget_status_for(db, engine).await?;
     if status.is_over {
         return Err(format!(
             "BUDGET_EXCEEDED: {} usage at {}% of the {} limit",
@@ -1158,40 +1083,18 @@ mod plan_window_tests {
     }
 
     #[test]
-    fn resolve_falls_back_to_available_window_under_mismatched_period() {
+    fn weekly_window_picks_highest_utilization() {
         let now = Utc::now().to_rfc3339();
         let future = (Utc::now() + Duration::hours(48)).to_rfc3339();
-        // Provider only reports a weekly window (e.g. a Codex account); config
-        // asks for the 5h period, which has no data.
         let snap = serde_json::json!({
             "captured_at": now,
             "rate_limits_available": true,
             "windows": {
-                "seven_day": { "utilization": 38.0, "resets_at": future, "status": null, "status_at": null },
+                "seven_day": { "utilization": 38.0, "resets_at": future },
+                "seven_day_opus": { "utilization": 71.0, "resets_at": future },
             },
         });
-        // Strict (run-blocking): no 5h window → no verdict.
-        assert!(resolve_plan_view("5h", &snap, 120, false).is_none());
-        // Display: falls back to the weekly window under its own "week" label.
-        let (eff_period, view) = resolve_plan_view("5h", &snap, 120, true).expect("fallback view");
-        assert_eq!(eff_period, "week");
-        assert_eq!(view.utilization.round() as i64, 38);
-    }
-
-    #[test]
-    fn resolve_prefers_matching_period_when_present() {
-        let now = Utc::now().to_rfc3339();
-        let future = (Utc::now() + Duration::hours(2)).to_rfc3339();
-        let snap = serde_json::json!({
-            "captured_at": now,
-            "rate_limits_available": true,
-            "windows": {
-                "five_hour": { "utilization": 12.0, "resets_at": future, "status": null, "status_at": null },
-                "seven_day": { "utilization": 38.0, "resets_at": future, "status": null, "status_at": null },
-            },
-        });
-        let (eff_period, view) = resolve_plan_view("5h", &snap, 120, true).expect("matching view");
-        assert_eq!(eff_period, "5h");
-        assert_eq!(view.utilization.round() as i64, 12);
+        let v = weekly_window(&snap, 120).expect("weekly window");
+        assert_eq!(v.utilization.round() as i64, 71);
     }
 }

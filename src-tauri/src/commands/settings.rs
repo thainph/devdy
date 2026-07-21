@@ -25,12 +25,12 @@ pub struct AppSettings {
     pub context_warn_percent: String,
     /// Context-window limit override in tokens ("" = auto-resolve from model).
     pub context_limit_override: String,
-    /// Global token budget period: "week" | "5h" (legacy "month" → treated as weekly).
-    pub token_budget_period: String,
-    /// Global token budget limit in tokens ("" = feature disabled).
-    pub token_budget_limit: String,
-    /// Budget warn threshold as a percent string, e.g. "80".
-    pub budget_warn_percent: String,
+    /// Block new runs when the rolling 5h plan window reaches this percent
+    /// ("" = don't enforce the 5h window).
+    pub budget_5h_percent: String,
+    /// Block new runs when the weekly plan window reaches this percent
+    /// ("" = don't enforce the weekly window).
+    pub budget_week_percent: String,
 }
 
 #[tauri::command]
@@ -55,9 +55,8 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
         terminal_app: "terminal".to_string(),
         context_warn_percent: "80".to_string(),
         context_limit_override: "".to_string(),
-        token_budget_period: "week".to_string(),
-        token_budget_limit: "".to_string(),
-        budget_warn_percent: "80".to_string(),
+        budget_5h_percent: "".to_string(),
+        budget_week_percent: "".to_string(),
     };
 
     for row in rows {
@@ -78,9 +77,8 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
             "terminal_app" => settings.terminal_app = value,
             "context_warn_percent" => settings.context_warn_percent = value,
             "context_limit_override" => settings.context_limit_override = value,
-            "token_budget_period" => settings.token_budget_period = value,
-            "token_budget_limit" => settings.token_budget_limit = value,
-            "budget_warn_percent" => settings.budget_warn_percent = value,
+            "budget_5h_percent" => settings.budget_5h_percent = value,
+            "budget_week_percent" => settings.budget_week_percent = value,
             _ => {}
         }
     }
