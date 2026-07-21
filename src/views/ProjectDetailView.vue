@@ -9,8 +9,9 @@ import { useServersStore, type ProjectServer } from '@/stores/servers'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import { useGitlabAccountsStore } from '@/stores/gitlabAccounts'
+import { useAwsAccountsStore, type AwsValidation } from '@/stores/awsAccounts'
 import {
-  Play, AlertTriangle, Puzzle, ScrollText, Server, Github, Gitlab,
+  Play, AlertTriangle, Puzzle, ScrollText, Server, Github, Gitlab, Cloud,
   GitMerge, CheckCircle2, XCircle, Trash2, Plus, GitBranch, Code2, Settings, SquareTerminal, FolderOpen,
   Rocket
 } from 'lucide-vue-next'
@@ -29,13 +30,14 @@ const serversStore = useServersStore()
 const appSettings = useAppSettingsStore()
 const ghStore = useGithubAccountsStore()
 const glStore = useGitlabAccountsStore()
+const awsStore = useAwsAccountsStore()
 const { confirm } = useConfirm()
 const { toast } = useToast()
 
 const projectId = computed(() => route.params.projectId as string)
 const project = computed(() => projectStore.projects.find(p => p.id === projectId.value))
 
-const activeTab = ref<'overview' | 'skills' | 'rules' | 'mcp' | 'deploy' | 'github' | 'gitlab' | 'conflicts'>('overview')
+const activeTab = ref<'overview' | 'skills' | 'rules' | 'mcp' | 'deploy' | 'github' | 'gitlab' | 'aws' | 'conflicts'>('overview')
 const SECTIONS = [
   { id: 'overview', label: 'Overview', icon: Settings },
   { id: 'skills', label: 'Skills', icon: Puzzle },
@@ -44,6 +46,7 @@ const SECTIONS = [
   { id: 'deploy', label: 'Deploy', icon: Rocket },
   { id: 'github', label: 'GitHub', icon: Github },
   { id: 'gitlab', label: 'GitLab', icon: Gitlab },
+  { id: 'aws', label: 'AWS', icon: Cloud },
 ] as const
 const projectConflicts = computed(() => projectStore.conflicts.filter(c => c.project_id === projectId.value))
 const projectRuleConflicts = computed(() => projectStore.ruleConflicts.filter(c => c.project_id === projectId.value))
@@ -267,6 +270,47 @@ async function handleValidateGitlabAccount() {
   }
 }
 
+// --- AWS account linking (one account per project, mirroring Git accounts) ---
+const awsValidation = ref<AwsValidation | null>(null)
+const validatingAws = ref(false)
+const awsValidationError = ref<string | null>(null)
+
+const linkedAwsAccountId = computed(() => project.value?.aws_account_id ?? null)
+const linkedAwsAccount = computed(
+  () => awsStore.accounts.find(a => a.id === linkedAwsAccountId.value) ?? null,
+)
+const awsAccountOptions = computed(() => [
+  { value: '', label: 'None' },
+  ...awsStore.accounts.map(a => ({
+    value: a.id,
+    label: a.account_id ? `${a.label} (${a.account_id})` : a.label,
+  })),
+])
+
+async function handleSelectAwsAccount(accountId: string) {
+  awsValidation.value = null
+  awsValidationError.value = null
+  try {
+    await projectStore.setProjectAwsAccount(projectId.value, accountId || null)
+  } catch (e) {
+    alert(String(e))
+  }
+}
+
+async function handleValidateAwsAccount() {
+  if (!linkedAwsAccountId.value) return
+  validatingAws.value = true
+  awsValidation.value = null
+  awsValidationError.value = null
+  try {
+    awsValidation.value = await awsStore.validate(linkedAwsAccountId.value)
+  } catch (e) {
+    awsValidationError.value = String(e)
+  } finally {
+    validatingAws.value = false
+  }
+}
+
 const editName = ref('')
 // Guards auto-save so initial population of the edit fields (from `project`
 // and `loadRepos`) doesn't trigger a write.
@@ -328,6 +372,9 @@ onMounted(async () => {
   }
   if (glStore.accounts.length === 0) {
     await glStore.fetch()
+  }
+  if (awsStore.accounts.length === 0) {
+    await awsStore.fetch()
   }
   await appSettings.ensureLoaded()
   await loadAppliedSkills()
@@ -1278,6 +1325,76 @@ async function handleOpenInTerminal() {
               <div class="flex items-center gap-1.5 text-destructive">
                 <XCircle class="h-3.5 w-3.5" :stroke-width="1.75" />
                 {{ gitlabValidationError }}
+              </div>
+            </div>
+          </Card>
+        </div>
+
+        <!-- AWS tab -->
+        <div v-if="activeTab === 'aws'" class="max-w-lg space-y-4">
+          <Card body-class="p-4 space-y-4">
+            <template #header>
+              <Cloud class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
+              <span class="text-xs font-semibold">Linked AWS Account</span>
+            </template>
+            <p class="text-[11px] text-muted-foreground leading-relaxed">
+              Choose which AWS account is wired into Claude and Codex runs for this project.
+              Manage accounts in
+              <RouterLink to="/settings" class="text-primary hover:underline">Settings</RouterLink>.
+            </p>
+
+            <div v-if="awsStore.accounts.length === 0" class="text-[11px] text-muted-foreground">
+              No AWS accounts yet.
+              <RouterLink to="/settings" class="text-primary hover:underline">Add one in Settings</RouterLink>
+              to link it here.
+            </div>
+            <AppSelect
+              size="sm"
+              v-else
+              :model-value="linkedAwsAccountId ?? ''"
+              :options="awsAccountOptions"
+              placeholder="Select an account…"
+              @update:model-value="handleSelectAwsAccount"
+            />
+
+            <div v-if="linkedAwsAccount" class="text-[11px] text-muted-foreground">
+              <span class="uppercase">{{ linkedAwsAccount.auth_method }}</span>
+              <span> · {{ linkedAwsAccount.region }}</span>
+              <span v-if="linkedAwsAccount.account_id"> · {{ linkedAwsAccount.account_id }}</span>
+              <span v-if="linkedAwsAccount.profile_name"> · {{ linkedAwsAccount.profile_name }}</span>
+            </div>
+          </Card>
+
+          <!-- Validate section -->
+          <Card v-if="linkedAwsAccountId" body-class="p-4 space-y-3">
+            <template #header>
+              <CheckCircle2 class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
+              <span class="text-xs font-semibold">Validate Linked Account</span>
+            </template>
+            <Button
+              variant="outline"
+              :disabled="validatingAws"
+              @click="handleValidateAwsAccount"
+            >
+              {{ validatingAws ? 'Validating…' : 'Validate' }}
+            </Button>
+            <div
+              v-if="awsValidation"
+              class="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-md text-xs"
+            >
+              <div class="flex items-center gap-1.5 text-emerald-500 font-medium mb-1">
+                <CheckCircle2 class="h-3.5 w-3.5" :stroke-width="2" />
+                Valid — {{ awsValidation.account_id }}
+              </div>
+              <p class="text-muted-foreground truncate">{{ awsValidation.arn }}</p>
+            </div>
+            <div
+              v-if="awsValidationError"
+              class="p-3 bg-destructive/10 border border-destructive/20 rounded-md text-xs"
+            >
+              <div class="flex items-center gap-1.5 text-destructive">
+                <XCircle class="h-3.5 w-3.5" :stroke-width="1.75" />
+                {{ awsValidationError }}
               </div>
             </div>
           </Card>

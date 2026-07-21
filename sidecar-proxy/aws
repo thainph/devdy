@@ -1,0 +1,6 @@
+#!/usr/bin/env node
+// Devdy aws shim — see shim.mjs. Named exactly `aws` so it intercepts AWS CLI
+// calls when this directory is prepended to the sidecar PATH.
+import { run } from './shim.mjs'
+
+run('aws')

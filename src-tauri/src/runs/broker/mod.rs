@@ -43,13 +43,14 @@ pub struct BrokerRequest {
     pub run_id: Option<String>,
 }
 
-/// Response returned to the shim (one NDJSON line). `token` is a secret and only
-/// present when the decision is `allow` and a token was resolved.
-#[derive(Debug, Serialize)]
+/// Response returned to the shim (one NDJSON line). Secret fields are only
+/// present when the decision is `allow` and credentials were resolved.
+#[derive(Serialize)]
 pub struct BrokerResponse {
     pub decision: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// GitHub/GitLab token for gh/glab/git. Secret.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
     /// Credential username for the git credential helper (NOT a secret). Only set
@@ -57,6 +58,18 @@ pub struct BrokerResponse {
     /// gh/glab so the existing shim contract is unchanged (backward-compat).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
+    /// AWS credential fields for the aws shim / credential_process helper.
+    /// `aws_secret_access_key` and `aws_session_token` are secrets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aws_access_key_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aws_secret_access_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aws_session_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aws_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aws_region: Option<String>,
 }
 
 impl BrokerResponse {
@@ -66,10 +79,25 @@ impl BrokerResponse {
             reason: Some(reason.into()),
             token: None,
             username: None,
+            aws_access_key_id: None,
+            aws_secret_access_key: None,
+            aws_session_token: None,
+            aws_profile: None,
+            aws_region: None,
         }
     }
     fn allow(token: Option<String>) -> Self {
-        BrokerResponse { decision: "allow".into(), reason: None, token, username: None }
+        BrokerResponse {
+            decision: "allow".into(),
+            reason: None,
+            token,
+            username: None,
+            aws_access_key_id: None,
+            aws_secret_access_key: None,
+            aws_session_token: None,
+            aws_profile: None,
+            aws_region: None,
+        }
     }
     fn allow_credential(token: String, username: String) -> Self {
         BrokerResponse {
@@ -77,6 +105,24 @@ impl BrokerResponse {
             reason: None,
             token: Some(token),
             username: Some(username),
+            aws_access_key_id: None,
+            aws_secret_access_key: None,
+            aws_session_token: None,
+            aws_profile: None,
+            aws_region: None,
+        }
+    }
+    fn allow_aws(creds: token::ResolvedAwsCredentials) -> Self {
+        BrokerResponse {
+            decision: "allow".into(),
+            reason: None,
+            token: None,
+            username: None,
+            aws_access_key_id: creds.access_key_id,
+            aws_secret_access_key: creds.secret_access_key,
+            aws_session_token: creds.session_token,
+            aws_profile: creds.profile_name,
+            aws_region: Some(creds.region),
         }
     }
 }
@@ -124,7 +170,9 @@ impl Drop for BrokerHandle {
 }
 
 fn socket_path(label: &str) -> PathBuf {
-    std::env::temp_dir().join("devdy-broker").join(format!("{label}.sock"))
+    std::env::temp_dir()
+        .join("devdy-broker")
+        .join(format!("{label}.sock"))
 }
 
 /// Bind the app-wide Unix socket, spawn the accept loop, and return a handle.
@@ -195,7 +243,10 @@ async fn handle_connection(
         let resp = process_line(&line, db, resolver.as_ref()).await;
         let mut out = serde_json::to_string(&resp).map_err(|e| e.to_string())?;
         out.push('\n');
-        write_half.write_all(out.as_bytes()).await.map_err(|e| e.to_string())?;
+        write_half
+            .write_all(out.as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
         write_half.flush().await.map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -203,11 +254,7 @@ async fn handle_connection(
 
 /// Process a single request line into a response, auditing along the way.
 /// Never returns a token in any log or error path.
-async fn process_line(
-    line: &str,
-    db: &Db,
-    resolver: &dyn ApproverResolver,
-) -> BrokerResponse {
+async fn process_line(line: &str, db: &Db, resolver: &dyn ApproverResolver) -> BrokerResponse {
     // 1. Parse — malformed → deny (fail-closed).
     let req: BrokerRequest = match serde_json::from_str(line) {
         Ok(r) => r,
@@ -253,22 +300,47 @@ async fn process_line(
         return base_resp.unwrap_or_else(|| BrokerResponse::deny("denied"));
     }
 
+    if req.tool == "aws" {
+        return match token::resolve_aws_credentials_for_project(db, &req.project_id).await {
+            Ok(Some(resolved)) => {
+                audit::audit_request(run_id, &req.tool, &req.argv, "allow", None);
+                BrokerResponse::allow_aws(resolved)
+            }
+            Ok(None) => {
+                let reason = "no AWS account linked for this project or credential unavailable";
+                audit::audit_request(run_id, &req.tool, &req.argv, "deny", Some(reason));
+                BrokerResponse::deny(reason)
+            }
+            Err(_) => {
+                let reason = "AWS credential resolve error";
+                audit::audit_request(run_id, &req.tool, &req.argv, "deny", Some(reason));
+                BrokerResponse::deny(reason)
+            }
+        };
+    }
+
     // Is this a `git credential get` request? Only then do we return a username
     // for the git credential helper (with a provider-appropriate fallback).
     let is_credential = req.tool == "git"
-        && req.argv.first().map(|a| a.eq_ignore_ascii_case("credential")).unwrap_or(false);
+        && req
+            .argv
+            .first()
+            .map(|a| a.eq_ignore_ascii_case("credential"))
+            .unwrap_or(false);
 
     // 4. Token resolution (fail-closed).
-    match token::resolve_token_for_project(db, &req.project_id, &req.tool, req.host.as_deref()).await
+    match token::resolve_token_for_project(db, &req.project_id, &req.tool, req.host.as_deref())
+        .await
     {
         Ok(Some(resolved)) => {
             audit::audit_request(run_id, &req.tool, &req.argv, "allow", None);
             if is_credential {
                 // username = real account username if present; else a provider
                 // convention: github → `x-access-token`, gitlab → `oauth2`.
-                let username = resolved.username.clone().unwrap_or_else(|| {
-                    credential_username_fallback(&resolved.host)
-                });
+                let username = resolved
+                    .username
+                    .clone()
+                    .unwrap_or_else(|| credential_username_fallback(&resolved.host));
                 BrokerResponse::allow_credential(resolved.token, username)
             } else {
                 BrokerResponse::allow(Some(resolved.token))
@@ -327,7 +399,7 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        sqlx::query("CREATE TABLE projects (id TEXT PRIMARY KEY, github_account_id TEXT, gitlab_account_id TEXT)")
+        sqlx::query("CREATE TABLE projects (id TEXT PRIMARY KEY, github_account_id TEXT, gitlab_account_id TEXT, aws_account_id TEXT)")
             .execute(&pool)
             .await
             .unwrap();
@@ -339,13 +411,27 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+        sqlx::query(
+            "CREATE TABLE aws_accounts (id TEXT PRIMARY KEY, label TEXT, auth_method TEXT, account_id TEXT, arn TEXT, region TEXT, access_key_id TEXT, profile_name TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         pool
     }
 
     async fn round_trip(db: Db, approver: Arc<dyn Approver>, req_json: &str) -> BrokerResponse {
         let socket_label = uuid::Uuid::new_v4().to_string();
         let resolver: Arc<dyn ApproverResolver> = Arc::new(StaticResolver(approver));
-        let handle = start_broker(db, BrokerConfig { socket_label, resolver }).await.unwrap();
+        let handle = start_broker(
+            db,
+            BrokerConfig {
+                socket_label,
+                resolver,
+            },
+        )
+        .await
+        .unwrap();
         let stream = UnixStream::connect(&handle.path).await.unwrap();
         let (r, mut w) = stream.into_split();
         let mut line = req_json.to_string();
@@ -359,9 +445,38 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&resp_line).unwrap();
         BrokerResponse {
             decision: v["decision"].as_str().unwrap().to_string(),
-            reason: v.get("reason").and_then(|x| x.as_str()).map(|s| s.to_string()),
-            token: v.get("token").and_then(|x| x.as_str()).map(|s| s.to_string()),
-            username: v.get("username").and_then(|x| x.as_str()).map(|s| s.to_string()),
+            reason: v
+                .get("reason")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
+            token: v
+                .get("token")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
+            username: v
+                .get("username")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
+            aws_access_key_id: v
+                .get("aws_access_key_id")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
+            aws_secret_access_key: v
+                .get("aws_secret_access_key")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
+            aws_session_token: v
+                .get("aws_session_token")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
+            aws_profile: v
+                .get("aws_profile")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
+            aws_region: v
+                .get("aws_region")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
         }
     }
 
@@ -407,7 +522,15 @@ mod tests {
         let db = mem_db().await;
         let socket_label = uuid::Uuid::new_v4().to_string();
         let resolver: Arc<dyn ApproverResolver> = Arc::new(NoneResolver);
-        let handle = start_broker(db, BrokerConfig { socket_label, resolver }).await.unwrap();
+        let handle = start_broker(
+            db,
+            BrokerConfig {
+                socket_label,
+                resolver,
+            },
+        )
+        .await
+        .unwrap();
         let stream = UnixStream::connect(&handle.path).await.unwrap();
         let (r, mut w) = stream.into_split();
         w.write_all(b"{\"project_id\":\"p1\",\"tool\":\"gh\",\"argv\":[\"issue\",\"comment\"]}\n")
@@ -440,6 +563,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn round_trip_aws_profile_allow_returns_profile_fields() {
+        let db = mem_db().await;
+        sqlx::query("INSERT INTO aws_accounts (id, label, auth_method, account_id, arn, region, profile_name) VALUES ('aws1','Work','profile','123456789012','arn:aws:iam::123456789012:user/dev','ap-northeast-1','work-sso')")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO projects (id, aws_account_id) VALUES ('p1','aws1')")
+            .execute(&db)
+            .await
+            .unwrap();
+        let resp = round_trip(
+            db,
+            Arc::new(DenyAllApprover),
+            r#"{"project_id":"p1","tool":"aws","argv":["sts","get-caller-identity"]}"#,
+        )
+        .await;
+        assert_eq!(resp.decision, "allow");
+        assert_eq!(resp.aws_profile.as_deref(), Some("work-sso"));
+        assert_eq!(resp.aws_region.as_deref(), Some("ap-northeast-1"));
+        assert!(resp.token.is_none());
+    }
+
+    #[tokio::test]
     async fn round_trip_malformed_is_deny() {
         let db = mem_db().await;
         let resp = round_trip(db, Arc::new(DenyAllApprover), "not json").await;
@@ -451,7 +597,10 @@ mod tests {
     #[test]
     fn credential_username_fallback_by_provider() {
         assert_eq!(credential_username_fallback("github.com"), "x-access-token");
-        assert_eq!(credential_username_fallback("api.github.com"), "x-access-token");
+        assert_eq!(
+            credential_username_fallback("api.github.com"),
+            "x-access-token"
+        );
         assert_eq!(credential_username_fallback("gitlab.com"), "oauth2");
         assert_eq!(credential_username_fallback("gitlab.example.com"), "oauth2");
     }
@@ -481,10 +630,12 @@ mod tests {
         let db = mem_db().await;
         // Link a github account so a matching host would resolve — but spoofed
         // host must be rejected at resolve_git (host allowlist), yielding deny.
-        sqlx::query("INSERT INTO github_accounts (id, label, username) VALUES ('gh1','work','ghuser')")
-            .execute(&db)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO github_accounts (id, label, username) VALUES ('gh1','work','ghuser')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
         sqlx::query("INSERT INTO projects (id, github_account_id) VALUES ('p1','gh1')")
             .execute(&db)
             .await
@@ -503,10 +654,17 @@ mod tests {
     async fn socket_cleaned_up_on_drop() {
         let db = mem_db().await;
         let socket_label = uuid::Uuid::new_v4().to_string();
-        let resolver: Arc<dyn ApproverResolver> = Arc::new(StaticResolver(Arc::new(DenyAllApprover)));
-        let handle = start_broker(db, BrokerConfig { socket_label, resolver })
-            .await
-            .unwrap();
+        let resolver: Arc<dyn ApproverResolver> =
+            Arc::new(StaticResolver(Arc::new(DenyAllApprover)));
+        let handle = start_broker(
+            db,
+            BrokerConfig {
+                socket_label,
+                resolver,
+            },
+        )
+        .await
+        .unwrap();
         let path = handle.path.clone();
         assert!(path.exists());
         drop(handle);

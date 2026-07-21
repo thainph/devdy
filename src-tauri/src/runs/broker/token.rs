@@ -44,6 +44,36 @@ pub struct CommitIdentity {
     pub email: Option<String>,
 }
 
+/// Metadata for a project's linked AWS account. Contains no secret and is safe
+/// for prompts/per-run env setup.
+pub struct AwsRuntimeMetadata {
+    pub account_db_id: String,
+    pub account_label: String,
+    pub auth_method: String,
+    pub account_id: Option<String>,
+    pub arn: Option<String>,
+    pub region: String,
+    pub access_key_id: Option<String>,
+    pub profile_name: Option<String>,
+}
+
+/// Resolved AWS credential for a project. Secret fields must never be logged.
+pub struct ResolvedAwsCredentials {
+    #[allow(dead_code)]
+    pub account_label: String,
+    #[allow(dead_code)]
+    pub auth_method: String,
+    #[allow(dead_code)]
+    pub account_id: Option<String>,
+    #[allow(dead_code)]
+    pub arn: Option<String>,
+    pub region: String,
+    pub access_key_id: Option<String>,
+    pub secret_access_key: Option<String>,
+    pub session_token: Option<String>,
+    pub profile_name: Option<String>,
+}
+
 // ============================================================================
 // GĐ5 — ephemeral-token seam + TTL cache (buildable/testable core).
 //
@@ -117,7 +147,11 @@ impl TokenProvider for PatTokenProvider {
             _ => return Ok(None),
         };
         match res {
-            Ok(token) => Ok(Some(ProviderToken { token, expires_at: None, username: None })),
+            Ok(token) => Ok(Some(ProviderToken {
+                token,
+                expires_at: None,
+                username: None,
+            })),
             // Missing/absent PAT → Ok(None) fail-closed. IDENTICAL to the old
             // inline `Err(_) => return Ok(None)` behavior.
             Err(_) => Ok(None),
@@ -288,6 +322,99 @@ async fn resolve_token_for_project_with(
     }
 }
 
+/// Resolve AWS credentials for a project. Fail-closed: returns `Ok(None)` when
+/// no account is linked, metadata is incomplete, or a keys account is missing
+/// its Keychain secret.
+pub async fn resolve_aws_credentials_for_project(
+    db: &Db,
+    project_id: &str,
+) -> Result<Option<ResolvedAwsCredentials>, String> {
+    let Some(meta) = resolve_aws_runtime_metadata(db, project_id).await? else {
+        return Ok(None);
+    };
+
+    match meta.auth_method.as_str() {
+        "keys" => {
+            let access_key_id = match meta.access_key_id.clone().filter(|s| !s.trim().is_empty()) {
+                Some(v) => v,
+                None => return Ok(None),
+            };
+            let secret = match secrets::get_aws_secret(&meta.account_db_id) {
+                Ok(secret) => secret,
+                Err(_) => return Ok(None),
+            };
+            let secret_access_key = match secret.secret_access_key.filter(|s| !s.trim().is_empty())
+            {
+                Some(v) => v,
+                None => return Ok(None),
+            };
+            Ok(Some(ResolvedAwsCredentials {
+                account_label: meta.account_label,
+                auth_method: meta.auth_method,
+                account_id: meta.account_id,
+                arn: meta.arn,
+                region: meta.region,
+                access_key_id: Some(access_key_id),
+                secret_access_key: Some(secret_access_key),
+                session_token: secret.session_token.filter(|s| !s.trim().is_empty()),
+                profile_name: None,
+            }))
+        }
+        "profile" => {
+            let profile_name = match meta.profile_name.clone().filter(|s| !s.trim().is_empty()) {
+                Some(v) => v,
+                None => return Ok(None),
+            };
+            Ok(Some(ResolvedAwsCredentials {
+                account_label: meta.account_label,
+                auth_method: meta.auth_method,
+                account_id: meta.account_id,
+                arn: meta.arn,
+                region: meta.region,
+                access_key_id: None,
+                secret_access_key: None,
+                session_token: None,
+                profile_name: Some(profile_name),
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Resolve non-secret AWS metadata for prompt/context and per-run env setup.
+/// Returns `Ok(None)` when no AWS account is linked or the linked row is gone.
+pub async fn resolve_aws_runtime_metadata(
+    db: &Db,
+    project_id: &str,
+) -> Result<Option<AwsRuntimeMetadata>, String> {
+    let row = sqlx::query(
+        "SELECT a.id, a.label, a.auth_method, a.account_id, a.arn, a.region, \
+                a.access_key_id, a.profile_name \
+         FROM projects p \
+         JOIN aws_accounts a ON a.id = p.aws_account_id \
+         WHERE p.id = ?",
+    )
+    .bind(project_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let Some(row) = row else {
+        return Ok(None);
+    };
+
+    Ok(Some(AwsRuntimeMetadata {
+        account_db_id: row.get("id"),
+        account_label: row.get("label"),
+        auth_method: row.get("auth_method"),
+        account_id: row.get("account_id"),
+        arn: row.get("arn"),
+        region: row.get("region"),
+        access_key_id: row.get("access_key_id"),
+        profile_name: row.get("profile_name"),
+    }))
+}
+
 async fn resolve_github(
     provider: &dyn TokenProvider,
     db: &Db,
@@ -403,7 +530,11 @@ async fn fetch_gitlab_meta(db: &Db, account_id: &str) -> GitlabMeta {
             label: r.get("label"),
             username: r.get("username"),
         },
-        None => GitlabMeta { host: None, label: None, username: None },
+        None => GitlabMeta {
+            host: None,
+            label: None,
+            username: None,
+        },
     }
 }
 
@@ -512,17 +643,19 @@ async fn resolve_git(
 /// Fail-open for identity: DB errors degrade to `{ None, None }` (identity is not
 /// a secret and must never make a run fail).
 pub async fn resolve_commit_identity(db: &Db, project_id: &str) -> CommitIdentity {
-    let none = CommitIdentity { name: None, email: None };
-    let row = match sqlx::query(
-        "SELECT github_account_id, gitlab_account_id FROM projects WHERE id = ?",
-    )
-    .bind(project_id)
-    .fetch_optional(db)
-    .await
-    {
-        Ok(Some(r)) => r,
-        _ => return none,
+    let none = CommitIdentity {
+        name: None,
+        email: None,
     };
+    let row =
+        match sqlx::query("SELECT github_account_id, gitlab_account_id FROM projects WHERE id = ?")
+            .bind(project_id)
+            .fetch_optional(db)
+            .await
+        {
+            Ok(Some(r)) => r,
+            _ => return none,
+        };
     let github_id: Option<String> = row.get("github_account_id");
     let gitlab_id: Option<String> = row.get("gitlab_account_id");
 
@@ -564,7 +697,12 @@ pub async fn build_account_context(db: &Db, project_id: &str) -> Option<String> 
     if let Some(id) = github_id {
         let (label, username) = fetch_github_meta(db, &id).await;
         let label = label.unwrap_or(id);
-        lines.push(account_line("GitHub", &label, username.as_deref(), "github.com"));
+        lines.push(account_line(
+            "GitHub",
+            &label,
+            username.as_deref(),
+            "github.com",
+        ));
     }
     if let Some(id) = gitlab_id {
         let meta = fetch_gitlab_meta(db, &id).await;
@@ -574,7 +712,15 @@ pub async fn build_account_context(db: &Db, project_id: &str) -> Option<String> 
             .as_deref()
             .and_then(normalize_host)
             .unwrap_or_else(|| "gitlab.com".to_string());
-        lines.push(account_line("GitLab", &label, meta.username.as_deref(), &host));
+        lines.push(account_line(
+            "GitLab",
+            &label,
+            meta.username.as_deref(),
+            &host,
+        ));
+    }
+    if let Ok(Some(meta)) = resolve_aws_runtime_metadata(db, project_id).await {
+        lines.push(aws_account_line(&meta));
     }
 
     // ssh-transparent-connect (AC-308): append the project's mapped-VPS block so
@@ -593,12 +739,13 @@ pub async fn build_account_context(db: &Db, project_id: &str) -> Option<String> 
     }
 
     let account_block = format!(
-        "This project is configured with pre-attached git credentials managed by Devdy:\n\
+        "This project is configured with pre-attached credentials managed by Devdy:\n\
          {}\n\n\
-         Use gh / glab / git as normal — the correct account is already wired, you do NOT \
-         need to login or provide a token. Some credential-touching commands are blocked by \
-         policy (e.g. `gh auth token`, `gh auth login`). This machine is NOT logged in \
-         globally, so calling gh/glab/git outside this wiring will fail (fail-closed).",
+         Use gh / glab / git / aws as normal — the correct project account is already wired, \
+         you do NOT need to login or provide a token/credential. Some credential-touching \
+         commands are blocked by policy (e.g. `gh auth token`, `gh auth login`, `aws configure`). \
+         This machine should not rely on global credentials for these tools; outside this wiring \
+         calls may fail (fail-closed).",
         lines.join("\n")
     );
 
@@ -617,6 +764,27 @@ fn account_line(provider: &str, label: &str, username: Option<&str>, host: &str)
         Some(u) => format!("- {provider}: account \"{label}\" (@{u}) on {host}"),
         None => format!("- {provider}: account \"{label}\" on {host}"),
     }
+}
+
+fn aws_account_line(meta: &AwsRuntimeMetadata) -> String {
+    let account = meta
+        .account_id
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("unknown account");
+    let auth = if meta.auth_method == "profile" {
+        meta.profile_name
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .map(|p| format!("profile {p}"))
+            .unwrap_or_else(|| "profile".to_string())
+    } else {
+        "access keys".to_string()
+    };
+    format!(
+        "- AWS: account \"{}\" ({account}) in {} via {auth}",
+        meta.account_label, meta.region
+    )
 }
 
 async fn fetch_github_email(db: &Db, account_id: &str) -> Option<String> {
@@ -672,17 +840,23 @@ mod tests {
             .execute(&db)
             .await
             .unwrap();
-        let r = resolve_token_for_project(&db, "p1", "gh", None).await.unwrap();
+        let r = resolve_token_for_project(&db, "p1", "gh", None)
+            .await
+            .unwrap();
         assert!(r.is_none(), "expected None when no github account linked");
 
-        let r = resolve_token_for_project(&db, "p1", "glab", None).await.unwrap();
+        let r = resolve_token_for_project(&db, "p1", "glab", None)
+            .await
+            .unwrap();
         assert!(r.is_none(), "expected None when no gitlab account linked");
     }
 
     #[tokio::test]
     async fn resolver_fail_closed_for_unknown_project() {
         let db = mem_db().await;
-        let r = resolve_token_for_project(&db, "missing", "gh", None).await.unwrap();
+        let r = resolve_token_for_project(&db, "missing", "gh", None)
+            .await
+            .unwrap();
         assert!(r.is_none());
     }
 
@@ -693,14 +867,18 @@ mod tests {
             .execute(&db)
             .await
             .unwrap();
-        let r = resolve_token_for_project(&db, "p1", "git", None).await.unwrap();
+        let r = resolve_token_for_project(&db, "p1", "git", None)
+            .await
+            .unwrap();
         assert!(r.is_none());
     }
 
     #[tokio::test]
     async fn resolver_unknown_tool_is_none() {
         let db = mem_db().await;
-        let r = resolve_token_for_project(&db, "p1", "svn", None).await.unwrap();
+        let r = resolve_token_for_project(&db, "p1", "svn", None)
+            .await
+            .unwrap();
         assert!(r.is_none());
     }
 
@@ -712,9 +890,18 @@ mod tests {
         assert!(host_matches("GitHub.com", "github.com")); // case-insensitive
         assert!(host_matches("api.github.com", "api.github.com"));
         // valid dotted-boundary subdomain of the account host
-        assert!(host_matches("code.gitlab.example.com", "gitlab.example.com"));
-        assert!(host_matches("gitlab.example.com:8443", "gitlab.example.com")); // port stripped
-        assert!(host_matches("https://gitlab.example.com/path", "gitlab.example.com"));
+        assert!(host_matches(
+            "code.gitlab.example.com",
+            "gitlab.example.com"
+        ));
+        assert!(host_matches(
+            "gitlab.example.com:8443",
+            "gitlab.example.com"
+        )); // port stripped
+        assert!(host_matches(
+            "https://gitlab.example.com/path",
+            "gitlab.example.com"
+        ));
     }
 
     #[test]
@@ -755,9 +942,19 @@ mod tests {
             .await
             .unwrap();
 
-        for spoof in ["github.attacker.io", "notgithub.com", "evilgithub.com", "github.com.evil.io"] {
-            let r = resolve_git(&PatTokenProvider, &db, "p1", Some(spoof)).await.unwrap();
-            assert!(r.is_none(), "spoofed github host {spoof} must NOT get a token");
+        for spoof in [
+            "github.attacker.io",
+            "notgithub.com",
+            "evilgithub.com",
+            "github.com.evil.io",
+        ] {
+            let r = resolve_git(&PatTokenProvider, &db, "p1", Some(spoof))
+                .await
+                .unwrap();
+            assert!(
+                r.is_none(),
+                "spoofed github host {spoof} must NOT get a token"
+            );
         }
     }
 
@@ -766,9 +963,18 @@ mod tests {
         let db = mem_db().await;
         insert_gitlab_project(&db, "p1", "gitlab.com").await;
 
-        for spoof in ["gitlab.com.evil.io", "xgitlab.com", "gitlab.com.attacker.net"] {
-            let r = resolve_git(&PatTokenProvider, &db, "p1", Some(spoof)).await.unwrap();
-            assert!(r.is_none(), "spoofed gitlab host {spoof} must NOT get a token");
+        for spoof in [
+            "gitlab.com.evil.io",
+            "xgitlab.com",
+            "gitlab.com.attacker.net",
+        ] {
+            let r = resolve_git(&PatTokenProvider, &db, "p1", Some(spoof))
+                .await
+                .unwrap();
+            assert!(
+                r.is_none(),
+                "spoofed gitlab host {spoof} must NOT get a token"
+            );
         }
     }
 
@@ -825,7 +1031,9 @@ mod tests {
         sqlx::query("INSERT INTO gitlab_accounts (id, label, host, username, email) VALUES ('gl1','work','gitlab.com','gluser','gl@ex.com')")
             .execute(&db).await.unwrap();
         sqlx::query("INSERT INTO projects (id, gitlab_account_id) VALUES ('p1','gl1')")
-            .execute(&db).await.unwrap();
+            .execute(&db)
+            .await
+            .unwrap();
         let id = resolve_commit_identity(&db, "p1").await;
         assert_eq!(id.name.as_deref(), Some("gluser"));
         assert_eq!(id.email.as_deref(), Some("gl@ex.com"));
@@ -835,10 +1043,16 @@ mod tests {
     async fn commit_identity_null_email_is_none() {
         let db = mem_db().await;
         // github account with username but NULL email → email None, name Some.
-        sqlx::query("INSERT INTO github_accounts (id, label, username) VALUES ('gh1','work','ghuser')")
-            .execute(&db).await.unwrap();
+        sqlx::query(
+            "INSERT INTO github_accounts (id, label, username) VALUES ('gh1','work','ghuser')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
         sqlx::query("INSERT INTO projects (id, github_account_id) VALUES ('p1','gh1')")
-            .execute(&db).await.unwrap();
+            .execute(&db)
+            .await
+            .unwrap();
         let id = resolve_commit_identity(&db, "p1").await;
         assert_eq!(id.name.as_deref(), Some("ghuser"));
         assert!(id.email.is_none(), "NULL email must not be fabricated");
@@ -848,10 +1062,16 @@ mod tests {
     async fn commit_identity_null_username_is_none() {
         let db = mem_db().await;
         // github account with email but NULL username → name None.
-        sqlx::query("INSERT INTO github_accounts (id, label, email) VALUES ('gh1','work','gh@ex.com')")
-            .execute(&db).await.unwrap();
+        sqlx::query(
+            "INSERT INTO github_accounts (id, label, email) VALUES ('gh1','work','gh@ex.com')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
         sqlx::query("INSERT INTO projects (id, github_account_id) VALUES ('p1','gh1')")
-            .execute(&db).await.unwrap();
+            .execute(&db)
+            .await
+            .unwrap();
         let id = resolve_commit_identity(&db, "p1").await;
         assert!(id.name.is_none(), "NULL username must not be fabricated");
         assert_eq!(id.email.as_deref(), Some("gh@ex.com"));
@@ -862,8 +1082,12 @@ mod tests {
         // resolve_github fills username from the account row (PAT missing in this
         // env → we can't assert token, so assert via a direct row read helper).
         let db = mem_db().await;
-        sqlx::query("INSERT INTO github_accounts (id, label, username) VALUES ('gh1','work','ghuser')")
-            .execute(&db).await.unwrap();
+        sqlx::query(
+            "INSERT INTO github_accounts (id, label, username) VALUES ('gh1','work','ghuser')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
         let (label, username) = fetch_github_meta(&db, "gh1").await;
         assert_eq!(label.as_deref(), Some("work"));
         assert_eq!(username.as_deref(), Some("ghuser"));
@@ -879,7 +1103,9 @@ mod tests {
     }
     impl MockClock {
         fn new(t: i64) -> Self {
-            Self { t: AtomicI64::new(t) }
+            Self {
+                t: AtomicI64::new(t),
+            }
         }
         fn advance(&self, secs: i64) {
             self.t.fetch_add(secs, Ordering::SeqCst);
@@ -900,7 +1126,11 @@ mod tests {
     }
     impl MockProvider {
         fn new(mode: &'static str, expires_at: Option<i64>) -> Self {
-            Self { calls: AtomicUsize::new(0), mode, expires_at }
+            Self {
+                calls: AtomicUsize::new(0),
+                mode,
+                expires_at,
+            }
         }
         fn call_count(&self) -> usize {
             self.calls.load(Ordering::SeqCst)
@@ -963,7 +1193,11 @@ mod tests {
         let s = scope();
         let _ = cache.fetch(&s).unwrap();
         let _ = cache.fetch(&s).unwrap(); // same now, but within skew → refetch
-        assert_eq!(cache.inner.call_count(), 2, "within-skew token refreshes early");
+        assert_eq!(
+            cache.inner.call_count(),
+            2,
+            "within-skew token refreshes early"
+        );
     }
 
     #[test]
@@ -1033,10 +1267,16 @@ mod tests {
     #[tokio::test]
     async fn resolve_with_injected_provider_used_for_github() {
         let db = mem_db().await;
-        sqlx::query("INSERT INTO github_accounts (id, label, username) VALUES ('gh1','work','ghuser')")
-            .execute(&db).await.unwrap();
+        sqlx::query(
+            "INSERT INTO github_accounts (id, label, username) VALUES ('gh1','work','ghuser')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
         sqlx::query("INSERT INTO projects (id, github_account_id) VALUES ('p1','gh1')")
-            .execute(&db).await.unwrap();
+            .execute(&db)
+            .await
+            .unwrap();
         // Injected provider yields an expiring token → proves the seam is used
         // and expires_at flows into ResolvedToken (PAT path would be None).
         let mock = MockProvider::new("some_expiring", Some(9_999));
@@ -1054,9 +1294,13 @@ mod tests {
     async fn resolve_with_injected_provider_none_fails_closed() {
         let db = mem_db().await;
         sqlx::query("INSERT INTO github_accounts (id, label) VALUES ('gh1','work')")
-            .execute(&db).await.unwrap();
+            .execute(&db)
+            .await
+            .unwrap();
         sqlx::query("INSERT INTO projects (id, github_account_id) VALUES ('p1','gh1')")
-            .execute(&db).await.unwrap();
+            .execute(&db)
+            .await
+            .unwrap();
         let mock = MockProvider::new("err", None);
         // Provider Err → resolver collapses to Ok(None) (fail-closed intact).
         let r = resolve_token_for_project_with(&mock, &db, "gh", "gh", None).await;

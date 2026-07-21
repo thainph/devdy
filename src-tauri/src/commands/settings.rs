@@ -25,7 +25,7 @@ pub struct AppSettings {
     pub context_warn_percent: String,
     /// Context-window limit override in tokens ("" = auto-resolve from model).
     pub context_limit_override: String,
-    /// Global token budget period: "month" | "week" | "5h".
+    /// Global token budget period: "week" | "5h" (legacy "month" → treated as weekly).
     pub token_budget_period: String,
     /// Global token budget limit in tokens ("" = feature disabled).
     pub token_budget_limit: String,
@@ -55,7 +55,7 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
         terminal_app: "terminal".to_string(),
         context_warn_percent: "80".to_string(),
         context_limit_override: "".to_string(),
-        token_budget_period: "month".to_string(),
+        token_budget_period: "week".to_string(),
         token_budget_limit: "".to_string(),
         budget_warn_percent: "80".to_string(),
     };

@@ -33,6 +33,10 @@ struct SecretStore {
     /// Keychain prompt after a reinstall (see WHY ONE ITEM above).
     #[serde(default)]
     servers: HashMap<String, ServerSecrets>,
+    /// AWS account secrets, keyed by aws_account_id. Secret Access Key and
+    /// Session Token live here; SQLite only stores non-secret metadata.
+    #[serde(default)]
+    aws: HashMap<String, AwsSecrets>,
     /// Per-process guard: `"<provider>:<account_id>"` keys we already attempted to
     /// migrate from a legacy per-account item. A denied or missing legacy read is
     /// recorded here so it is NEVER retried within the same run — otherwise a
@@ -144,7 +148,10 @@ fn map_of<'a>(store: &'a SecretStore, provider: &Provider) -> &'a HashMap<String
     }
 }
 
-fn map_of_mut<'a>(store: &'a mut SecretStore, provider: &Provider) -> &'a mut HashMap<String, String> {
+fn map_of_mut<'a>(
+    store: &'a mut SecretStore,
+    provider: &Provider,
+) -> &'a mut HashMap<String, String> {
     match provider {
         Provider::Github => &mut store.github,
         Provider::Gitlab => &mut store.gitlab,
@@ -439,5 +446,80 @@ pub fn has_server_secret(server_id: &str) -> bool {
         .as_ref()
         .and_then(|store| store.servers.get(server_id))
         .map(|s| s.passphrase.is_some())
+        .unwrap_or(false)
+}
+
+// ---- AWS account secrets ---------------------------------------------------
+//
+// Secret Access Key and optional Session Token for a managed AWS account live in
+// the SAME consolidated Keychain item as the PATs/MCP/server secrets, keyed by
+// aws_account_id. SQLite never holds these values.
+
+/// Decrypted secret payload for a single AWS account.
+#[derive(Default, Serialize, Deserialize, Clone)]
+pub struct AwsSecrets {
+    #[serde(default)]
+    pub secret_access_key: Option<String>,
+    #[serde(default)]
+    pub session_token: Option<String>,
+}
+
+/// Persist an AWS account's secret material into the consolidated store.
+pub fn set_aws_secret(
+    account_id: &str,
+    secret_access_key: &str,
+    session_token: Option<&str>,
+) -> Result<()> {
+    let mut guard = CACHE.lock().map_err(|_| anyhow!("secret cache poisoned"))?;
+    ensure_loaded(&mut guard);
+    let store = guard.as_mut().expect("store loaded");
+    store.aws.insert(
+        account_id.to_string(),
+        AwsSecrets {
+            secret_access_key: Some(secret_access_key.to_string()),
+            session_token: session_token
+                .map(|s| s.to_string())
+                .filter(|s| !s.trim().is_empty()),
+        },
+    );
+    persist(store)?;
+    Ok(())
+}
+
+/// Read an AWS account's secret payload. Missing values return an error so
+/// callers can fail-closed.
+pub fn get_aws_secret(account_id: &str) -> Result<AwsSecrets> {
+    let mut guard = CACHE.lock().map_err(|_| anyhow!("secret cache poisoned"))?;
+    ensure_loaded(&mut guard);
+    let store = guard.as_mut().expect("store loaded");
+    store
+        .aws
+        .get(account_id)
+        .cloned()
+        .ok_or_else(|| anyhow!("No AWS secret stored for account"))
+}
+
+/// Delete an AWS account's secret from the consolidated store (no-op if absent).
+pub fn delete_aws_secret(account_id: &str) -> Result<()> {
+    let mut guard = CACHE.lock().map_err(|_| anyhow!("secret cache poisoned"))?;
+    ensure_loaded(&mut guard);
+    let store = guard.as_mut().expect("store loaded");
+    store.aws.remove(account_id);
+    persist(store)?;
+    Ok(())
+}
+
+/// Whether a Secret Access Key is stored for `account_id` WITHOUT returning it.
+pub fn has_aws_secret(account_id: &str) -> bool {
+    let mut guard = match CACHE.lock() {
+        Ok(g) => g,
+        Err(_) => return false,
+    };
+    ensure_loaded(&mut guard);
+    guard
+        .as_ref()
+        .and_then(|store| store.aws.get(account_id))
+        .and_then(|s| s.secret_access_key.as_ref())
+        .map(|s| !s.trim().is_empty())
         .unwrap_or(false)
 }

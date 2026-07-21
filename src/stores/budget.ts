@@ -39,12 +39,20 @@ export const useBudgetStore = defineStore('budget', () => {
   const startupProbeDone = ref(false)
   const lastFailedPlanProbeAt = ref(0)
 
+  // Codex plan verdict (second badge row) — populated from the separate
+  // `plan_usage_codex` snapshot via `get_codex_budget_status`.
+  const codexStatus = ref<BudgetStatus | null>(null)
+  const refreshingCodexPlan = ref(false)
+  const codexRefreshError = ref<string | null>(null)
+  const codexStartupProbeDone = ref(false)
+  const lastFailedCodexProbeAt = ref(0)
+
   const source = computed(() => status.value?.source ?? 'disabled')
   /** True when accurate subscription plan data backs the verdict (not estimate). */
   const hasPlan = computed(() => source.value === 'plan')
   /** Any guardrail active (plan window or self-imposed token budget). */
   const enabled = computed(() => source.value !== 'disabled')
-  const period = computed(() => status.value?.period ?? 'month')
+  const period = computed(() => status.value?.period ?? 'week')
   const percent = computed(() => status.value?.percent ?? 0)
   const isWarning = computed(() => status.value?.is_warning ?? false)
   const isOver = computed(() => status.value?.is_over ?? false)
@@ -58,9 +66,33 @@ export const useBudgetStore = defineStore('budget', () => {
     refreshError.value?.includes('without a fresh usage snapshot') ?? false
   )
 
+  // Codex mirrors of the above.
+  const codexSource = computed(() => codexStatus.value?.source ?? 'disabled')
+  const codexHasPlan = computed(() => codexSource.value === 'plan')
+  const codexEnabled = computed(() => codexSource.value !== 'disabled')
+  const codexPeriod = computed(() => codexStatus.value?.period ?? 'week')
+  const codexPercent = computed(() => codexStatus.value?.percent ?? 0)
+  const codexIsWarning = computed(() => codexStatus.value?.is_warning ?? false)
+  const codexIsOver = computed(() => codexStatus.value?.is_over ?? false)
+  const codexReset = computed(() => codexStatus.value?.reset ?? null)
+  const codexCapturedAt = computed(() => codexStatus.value?.captured_at ?? null)
+  const codexIsStale = computed(() => codexStatus.value?.is_stale ?? false)
+  const codexRolledOver = computed(() => codexStatus.value?.rolled_over ?? false)
+  const codexRefreshUnavailable = computed(() =>
+    codexRefreshError.value?.includes('without a fresh usage snapshot') ?? false
+  )
+
   async function refresh() {
     try {
       status.value = await invoke<BudgetStatus>('get_budget_status')
+    } catch {
+      // leave previous value on transient errors
+    }
+  }
+
+  async function refreshCodex() {
+    try {
+      codexStatus.value = await invoke<BudgetStatus>('get_codex_budget_status')
     } catch {
       // leave previous value on transient errors
     }
@@ -100,6 +132,37 @@ export const useBudgetStore = defineStore('budget', () => {
     }
   }
 
+  async function refreshCodexPlanUsage(options: PlanRefreshOptions = {}) {
+    const reason = options.reason ?? 'manual'
+    if (reason === 'startup') {
+      if (codexStartupProbeDone.value && !options.force) return
+      codexStartupProbeDone.value = true
+    }
+    if (refreshingCodexPlan.value) return
+
+    const now = Date.now()
+    if (
+      !options.force &&
+      lastFailedCodexProbeAt.value > 0 &&
+      now - lastFailedCodexProbeAt.value < FAILED_REFRESH_BACKOFF_MS
+    ) {
+      return
+    }
+
+    refreshingCodexPlan.value = true
+    codexRefreshError.value = null
+    try {
+      await invoke('refresh_codex_plan_usage')
+      lastFailedCodexProbeAt.value = 0
+    } catch (e) {
+      codexRefreshError.value = String(e)
+      lastFailedCodexProbeAt.value = Date.now()
+    } finally {
+      refreshingCodexPlan.value = false
+      await refreshCodex()
+    }
+  }
+
   return {
     status,
     refreshingPlan,
@@ -120,5 +183,23 @@ export const useBudgetStore = defineStore('budget', () => {
     refreshUnavailable,
     refresh,
     refreshPlanUsage,
+    // Codex
+    codexStatus,
+    refreshingCodexPlan,
+    codexRefreshError,
+    codexSource,
+    codexHasPlan,
+    codexEnabled,
+    codexPeriod,
+    codexPercent,
+    codexIsWarning,
+    codexIsOver,
+    codexReset,
+    codexCapturedAt,
+    codexIsStale,
+    codexRolledOver,
+    codexRefreshUnavailable,
+    refreshCodex,
+    refreshCodexPlanUsage,
   }
 })

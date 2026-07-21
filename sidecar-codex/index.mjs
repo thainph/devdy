@@ -37,6 +37,18 @@ function ctrl(type, extra = {}) { out({ type, ...extra }) }
 // log entry in the UI, NOT as a system error. Use for codex tracing + sidecar notes.
 function note(text, level = 'info') { ctrl('_devdy_log', { level, text }) }
 
+// Forward a codex RateLimitSnapshot to the broker as the same `_devdy_usage`
+// control message the Claude sidecar emits, tagged `provider:"codex"`. The Rust
+// drain persists it as the latest Codex plan-usage state (the equivalent of
+// Claude's `/usage`). Best-effort — never throws into the RPC loop.
+function emitCodexRateLimits(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') return
+  const rl = snapshot.rateLimits || snapshot.rateLimitsByLimitId?.codex || snapshot
+  if (!rl || typeof rl !== 'object') return
+  if (!rl.primary && !rl.secondary) return
+  out({ type: '_devdy_usage', usage: { provider: 'codex', rate_limits: rl } })
+}
+
 // codex app-server writes `tracing` records to stderr: ANSI-colored, timestamp-led,
 // e.g. "2026-…Z  ERROR codex_core::tools::router: error=…". Strip the ANSI/timestamp
 // and pull out the level so the UI can render it calmly instead of as a red error.
@@ -514,6 +526,11 @@ function onServerMessage(msg) {
         lastTokenBreakdown = tu?.last || tu?.total || tu
         break
       }
+      // Live plan rate-limit updates (5h + weekly windows). Forwarded so the
+      // budget badge / settings panel refresh mid-run, like Claude's /usage.
+      case 'account/rateLimits/updated':
+        emitCodexRateLimits(p)
+        break
       case 'turn/completed': {
         const result = { type: 'result', subtype: 'success', num_turns: 1 }
         // Newer protocol: usage came via thread/tokenUsage/updated. Older
@@ -589,8 +606,35 @@ async function bringUp() {
   out({ type: 'system', subtype: 'init', session_id: threadId, model: modelName, cwd: CWD, tools: ['Bash', 'Edit'] })
   ctrl('_devdy_ready', { threadId })
 
+  // Snapshot plan usage right away (cheap, no turn) so the badge is fresh from
+  // the start of the run. Fire-and-forget; failures are non-fatal.
+  request('account/rateLimits/read', undefined)
+    .then((r) => emitCodexRateLimits(r?.result))
+    .catch(() => {})
+
   ready = true
   for (const t of promptQueue.splice(0)) startTurn(t.text, t.images)
+}
+
+// Lightweight usage probe: initialize the app-server, read the account's plan
+// rate-limits WITHOUT starting a thread or running a turn (no quota spend), emit
+// them, then exit. Mirrors the Claude sidecar's `usage_probe`. Triggered by the
+// Rust `refresh_codex_plan_usage` command via DEVDY_CODEX_USAGE_PROBE=1.
+async function usageProbe() {
+  try {
+    await request('initialize', {
+      clientInfo: { name: 'devdy-codex', title: 'Devdy', version: '0.1.0' },
+      capabilities: { experimentalApi: true, requestAttestation: false },
+    })
+    rpcNotify('initialized', undefined)
+    const r = await request('account/rateLimits/read', undefined)
+    emitCodexRateLimits(r?.result)
+    ctrl('_devdy_done')
+  } catch (e) {
+    ctrl('_devdy_error', { error: String(e?.stack || e) })
+  } finally {
+    shutdown(0)
+  }
 }
 
 // `images` is an array of { media_type, data(base64) }. Codex app-server takes
@@ -674,4 +718,8 @@ function shutdown(code) {
   setTimeout(() => process.exit(code), 50)
 }
 
-bringUp().catch((e) => { ctrl('_devdy_error', { error: String(e?.stack || e) }); shutdown(1) })
+if (process.env.DEVDY_CODEX_USAGE_PROBE === '1') {
+  usageProbe()
+} else {
+  bringUp().catch((e) => { ctrl('_devdy_error', { error: String(e?.stack || e) }); shutdown(1) })
+}

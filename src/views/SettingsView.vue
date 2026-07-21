@@ -3,7 +3,7 @@ import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from '@/lib/tauri'
 import {
-  Cpu, Palette, FileText, ShieldAlert, Sparkles, Github, Gitlab,
+  Cpu, Palette, FileText, ShieldAlert, Sparkles, Github, Gitlab, Cloud,
   CheckCircle2, AlertTriangle, Trash2, Plus, Pencil, Gauge,
 } from 'lucide-vue-next'
 import { Button, Input, Textarea, Card, AppSelect } from '@/components/ui'
@@ -11,6 +11,7 @@ import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useGithubAccountsStore, type PatValidation } from '@/stores/githubAccounts'
 import { useGitlabAccountsStore, type GitlabPatValidation } from '@/stores/gitlabAccounts'
+import { useAwsAccountsStore, type AwsAccountPayload, type AwsAuthMethod, type AwsValidation } from '@/stores/awsAccounts'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useBudgetStore } from '@/stores/budget'
 
@@ -19,56 +20,11 @@ const budget = useBudgetStore()
 const { confirm } = useConfirm()
 const { toast } = useToast()
 
-// Full subscription plan-usage breakdown for the detailed table below. The
-// budget store only holds the single guardrail verdict, so Settings fetches the
-// raw `/usage` snapshot itself.
-interface PlanWindowData { utilization: number | null; resets_at: string | null }
-interface PlanUsageData {
-  subscription_type: string | null
-  rate_limits_available: boolean
-  windows: Record<'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day_sonnet', PlanWindowData>
-}
-const planUsage = ref<PlanUsageData | null>(null)
-const now = ref(Date.now())
+// The detailed subscription plan-usage breakdown now lives in the Stats view.
+// Settings keeps the `plan_usage_updated` listener only to keep the budget badge
+// (which derives from the same /usage data) in sync.
 let unlistenPlanUsage: UnlistenFn | null = null
 let unlistenBudgetStatus: UnlistenFn | null = null
-let clockTimer: ReturnType<typeof setInterval> | null = null
-
-async function refreshPlanUsage() {
-  planUsage.value = await invoke<PlanUsageData | null>('get_plan_usage')
-}
-
-// Read-only view of the real subscription plan usage, refreshed on mount.
-const PLAN_WINDOWS: { key: 'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day_sonnet'; label: string }[] = [
-  { key: 'five_hour', label: 'Current session (5h)' },
-  { key: 'seven_day', label: 'This week (all models)' },
-  { key: 'seven_day_opus', label: 'This week (Opus)' },
-  { key: 'seven_day_sonnet', label: 'This week (Sonnet)' },
-]
-const planRows = computed(() => {
-  const u = planUsage.value
-  if (!u || !u.rate_limits_available) return []
-  return PLAN_WINDOWS.map((w) => {
-    const win = u.windows[w.key]
-    return {
-      label: w.label,
-      utilization: win?.utilization ?? null,
-      resets_at: win?.resets_at ?? null,
-    }
-  }).filter((r) => r.utilization != null)
-})
-function planResetText(iso: string | null): string {
-  if (!iso) return ''
-  const ms = new Date(iso).getTime() - now.value
-  if (ms <= 0) return 'resets soon'
-  const totalMinutes = Math.max(1, Math.ceil(ms / 60_000))
-  const days = Math.floor(totalMinutes / 1440)
-  const hours = Math.floor((totalMinutes % 1440) / 60)
-  const minutes = totalMinutes % 60
-  if (days > 0) return hours > 0 ? `resets in ${days}d ${hours}h` : `resets in ${days}d`
-  if (hours > 0) return minutes > 0 ? `resets in ${hours}h ${minutes}m` : `resets in ${hours}h`
-  return `resets in ${minutes}m`
-}
 
 interface AppSettings {
   default_engine: string
@@ -105,7 +61,7 @@ const settings = ref<AppSettings>({
   terminal_app: 'terminal',
   context_warn_percent: '80',
   context_limit_override: '',
-  token_budget_period: 'month',
+  token_budget_period: 'week',
   token_budget_limit: '',
   budget_warn_percent: '80',
 })
@@ -138,6 +94,7 @@ const SECTIONS = [
   { id: 'general', label: 'General', icon: Palette },
   { id: 'github', label: 'GitHub Accounts', icon: Github },
   { id: 'gitlab', label: 'GitLab Accounts', icon: Gitlab },
+  { id: 'aws', label: 'AWS Accounts', icon: Cloud },
   { id: 'engine', label: 'Engine Paths', icon: Cpu },
   { id: 'models', label: 'Default Models', icon: Sparkles },
   { id: 'permissions', label: 'Permissions', icon: ShieldAlert },
@@ -147,6 +104,7 @@ const SECTIONS = [
 const activeSection = ref<(typeof SECTIONS)[number]['id']>('general')
 const ghCount = computed(() => ghStore.accounts.length)
 const glCount = computed(() => glStore.accounts.length)
+const awsCount = computed(() => awsStore.accounts.length)
 
 // --- GitHub accounts ---
 const ghStore = useGithubAccountsStore()
@@ -314,19 +272,167 @@ async function handleDeleteGitlabAccount(id: string) {
   }
 }
 
+// --- AWS accounts (mirror of Git account management, with keys/profile auth) ---
+const awsStore = useAwsAccountsStore()
+const AWS_AUTH_OPTIONS: { value: AwsAuthMethod; label: string }[] = [
+  { value: 'keys', label: 'Access keys' },
+  { value: 'profile', label: 'Named profile / SSO' },
+]
+const awsNewLabel = ref('')
+const awsNewAuthMethod = ref<AwsAuthMethod>('keys')
+const awsNewRegion = ref('ap-northeast-1')
+const awsNewAccessKeyId = ref('')
+const awsNewSecretAccessKey = ref('')
+const awsNewSessionToken = ref('')
+const awsNewProfileName = ref('')
+const awsNewTags = ref('')
+const awsAdding = ref(false)
+const awsAddError = ref<string | null>(null)
+const awsEditLabel = ref<Record<string, string>>({})
+const awsEditAuthMethod = ref<Record<string, AwsAuthMethod>>({})
+const awsEditRegion = ref<Record<string, string>>({})
+const awsEditAccessKeyId = ref<Record<string, string>>({})
+const awsEditSecretAccessKey = ref<Record<string, string>>({})
+const awsEditSessionToken = ref<Record<string, string>>({})
+const awsEditProfileName = ref<Record<string, string>>({})
+const awsEditTags = ref<Record<string, string>>({})
+const awsEditing = ref<string | null>(null)
+const awsValidations = ref<Record<string, AwsValidation>>({})
+const awsAccountError = ref<Record<string, string>>({})
+const awsBusyAccount = ref<string | null>(null)
+
+function maskAccessKey(value: string | null): string {
+  if (!value) return ''
+  if (value.length <= 8) return value
+  return `${value.slice(0, 4)}…${value.slice(-4)}`
+}
+
+function awsPayloadFromNew() {
+  return {
+    label: awsNewLabel.value.trim(),
+    authMethod: awsNewAuthMethod.value,
+    region: awsNewRegion.value.trim(),
+    accessKeyId: awsNewAccessKeyId.value.trim(),
+    secretAccessKey: awsNewSecretAccessKey.value.trim(),
+    sessionToken: awsNewSessionToken.value.trim(),
+    profileName: awsNewProfileName.value.trim(),
+    tags: awsNewTags.value.trim(),
+  }
+}
+
+function awsPayloadForEdit(id: string) {
+  const payload: AwsAccountPayload = {
+    label: awsEditLabel.value[id]?.trim() || '',
+    authMethod: awsEditAuthMethod.value[id],
+    region: awsEditRegion.value[id]?.trim() || 'ap-northeast-1',
+    accessKeyId: awsEditAccessKeyId.value[id]?.trim(),
+    profileName: awsEditProfileName.value[id]?.trim(),
+    tags: awsEditTags.value[id]?.trim(),
+  }
+  const secretAccessKey = awsEditSecretAccessKey.value[id]?.trim() || ''
+  const sessionToken = awsEditSessionToken.value[id]?.trim() || ''
+  if (secretAccessKey) {
+    payload.secretAccessKey = secretAccessKey
+    payload.sessionToken = sessionToken
+  } else if (sessionToken) {
+    payload.sessionToken = sessionToken
+  }
+  return payload
+}
+
+const canAddAwsAccount = computed(() => {
+  if (!awsNewLabel.value.trim() || !awsNewRegion.value.trim()) return false
+  if (awsNewAuthMethod.value === 'keys') {
+    return !!awsNewAccessKeyId.value.trim() && !!awsNewSecretAccessKey.value.trim()
+  }
+  return !!awsNewProfileName.value.trim()
+})
+
+async function handleAddAwsAccount() {
+  if (!canAddAwsAccount.value) return
+  awsAdding.value = true
+  awsAddError.value = null
+  try {
+    await awsStore.create(awsPayloadFromNew())
+    awsNewLabel.value = ''
+    awsNewAccessKeyId.value = ''
+    awsNewSecretAccessKey.value = ''
+    awsNewSessionToken.value = ''
+    awsNewProfileName.value = ''
+    awsNewTags.value = ''
+  } catch (e) {
+    awsAddError.value = String(e)
+  } finally {
+    awsAdding.value = false
+  }
+}
+
+function startAwsEdit(acc: { id: string; label: string; auth_method: AwsAuthMethod; region: string; access_key_id: string | null; profile_name: string | null; tags: string | null }) {
+  awsEditing.value = acc.id
+  awsEditLabel.value[acc.id] = acc.label
+  awsEditAuthMethod.value[acc.id] = acc.auth_method
+  awsEditRegion.value[acc.id] = acc.region
+  awsEditAccessKeyId.value[acc.id] = acc.access_key_id ?? ''
+  awsEditSecretAccessKey.value[acc.id] = ''
+  awsEditSessionToken.value[acc.id] = ''
+  awsEditProfileName.value[acc.id] = acc.profile_name ?? ''
+  awsEditTags.value[acc.id] = acc.tags ?? ''
+}
+
+function setAwsEditAuthMethod(id: string, value: string) {
+  awsEditAuthMethod.value[id] = value === 'profile' ? 'profile' : 'keys'
+}
+
+async function handleSaveAwsEdit(id: string) {
+  awsBusyAccount.value = id
+  awsAccountError.value[id] = ''
+  try {
+    await awsStore.update(id, awsPayloadForEdit(id))
+    awsEditing.value = null
+  } catch (e) {
+    awsAccountError.value[id] = String(e)
+  } finally {
+    awsBusyAccount.value = null
+  }
+}
+
+async function handleValidateAws(id: string) {
+  awsBusyAccount.value = id
+  awsAccountError.value[id] = ''
+  delete awsValidations.value[id]
+  try {
+    awsValidations.value[id] = await awsStore.validate(id)
+  } catch (e) {
+    awsAccountError.value[id] = String(e)
+  } finally {
+    awsBusyAccount.value = null
+  }
+}
+
+async function handleDeleteAwsAccount(id: string) {
+  if (!(await confirm({
+    title: 'Delete AWS account',
+    message: 'Delete this AWS account? Projects linked to it will be unlinked.',
+    confirmLabel: 'Delete',
+  }))) return
+  try {
+    await awsStore.remove(id)
+  } catch (e) {
+    alert(String(e))
+  }
+}
+
 onMounted(async () => {
   try {
     settings.value = await invoke<AppSettings>('get_settings')
     lastSaved = { ...settings.value }
     await ghStore.fetch()
     await glStore.fetch()
-    now.value = Date.now()
-    clockTimer = setInterval(() => { now.value = Date.now() }, 30_000)
+    await awsStore.fetch()
     budget.refresh()
-    await refreshPlanUsage()
-    unlistenPlanUsage = await listen('plan_usage_updated', () => {
-      refreshPlanUsage().catch(() => {})
-      if (!budget.refreshingPlan) budget.refresh()
+    unlistenPlanUsage = await listen<{ provider?: string }>('plan_usage_updated', (e) => {
+      // Claude plan usage feeds the budget guardrail verdict — keep the badge synced.
+      if (e.payload?.provider !== 'codex' && !budget.refreshingPlan) budget.refresh()
     })
     unlistenBudgetStatus = await listen('budget_status_updated', () => budget.refresh())
   } finally {
@@ -335,7 +441,6 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  if (clockTimer) clearInterval(clockTimer)
   if (unlistenPlanUsage) unlistenPlanUsage()
   if (unlistenBudgetStatus) unlistenBudgetStatus()
 })
@@ -422,6 +527,10 @@ watch(() => settings.value.color_theme, (t) => {
             v-if="s.id === 'gitlab' && glCount"
             class="ml-auto text-[10px] tabular-nums text-muted-foreground"
           >{{ glCount }}</span>
+          <span
+            v-if="s.id === 'aws' && awsCount"
+            class="ml-auto text-[10px] tabular-nums text-muted-foreground"
+          >{{ awsCount }}</span>
         </button>
       </nav>
 
@@ -808,6 +917,185 @@ watch(() => settings.value.color_theme, (t) => {
             </div>
         </Card>
 
+        <!-- AWS Accounts section -->
+        <Card v-show="activeSection === 'aws'" body-class="p-4 space-y-4">
+          <template #header>
+            <Cloud class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
+            <span class="text-xs font-semibold">AWS Accounts</span>
+          </template>
+            <p class="text-[11px] text-muted-foreground leading-relaxed">
+              Add AWS accounts once and link one account to each project. Secret Access Keys and
+              Session Tokens are stored securely in your OS Keychain. Devdy wires the selected
+              project account to Claude and Codex runs through the broker.
+            </p>
+
+            <div class="p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-md text-[11px] leading-relaxed flex gap-2">
+              <ShieldAlert class="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" :stroke-width="1.75" />
+              <span class="text-muted-foreground">
+                Avoid setting AWS credentials globally for agent work. Devdy gates
+                <code class="font-mono bg-muted px-1 rounded">aws</code> calls through its broker;
+                credential/config mutation such as
+                <code class="font-mono bg-muted px-1 rounded">aws configure</code> is blocked.
+              </span>
+            </div>
+
+            <!-- Account list -->
+            <div v-if="awsStore.accounts.length" class="space-y-2">
+              <div
+                v-for="acc in awsStore.accounts"
+                :key="acc.id"
+                class="border border-border rounded-md p-3 space-y-2"
+              >
+                <template v-if="awsEditing !== acc.id">
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="min-w-0">
+                      <div class="text-sm font-medium truncate">{{ acc.label }}</div>
+                      <div class="text-[11px] text-muted-foreground truncate">
+                        <span class="uppercase">{{ acc.auth_method }}</span>
+                        <span> · {{ acc.region }}</span>
+                        <span v-if="acc.account_id"> · {{ acc.account_id }}</span>
+                        <span v-if="acc.auth_method === 'keys' && acc.access_key_id"> · {{ maskAccessKey(acc.access_key_id) }}</span>
+                        <span v-if="acc.auth_method === 'profile' && acc.profile_name"> · {{ acc.profile_name }}</span>
+                      </div>
+                    </div>
+                    <div class="flex items-center gap-1 shrink-0">
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        :disabled="awsBusyAccount === acc.id"
+                        @click="handleValidateAws(acc.id)"
+                      >
+                        {{ awsBusyAccount === acc.id ? '…' : 'Validate' }}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        title="Edit"
+                        @click="startAwsEdit(acc)"
+                      >
+                        <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
+                      </Button>
+                      <Button
+                        variant="destructive-ghost"
+                        size="icon-sm"
+                        title="Delete"
+                        @click="handleDeleteAwsAccount(acc.id)"
+                      >
+                        <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+                      </Button>
+                    </div>
+                  </div>
+                  <div
+                    v-if="awsValidations[acc.id]"
+                    class="p-2 bg-emerald-500/10 border border-emerald-500/20 rounded-md text-[11px]"
+                  >
+                    <div class="flex items-center gap-1.5 text-emerald-500 font-medium">
+                      <CheckCircle2 class="h-3 w-3" :stroke-width="2" />
+                      Valid — {{ awsValidations[acc.id].account_id }}
+                    </div>
+                    <p class="text-muted-foreground mt-1 truncate">{{ awsValidations[acc.id].arn }}</p>
+                  </div>
+                </template>
+
+                <template v-else>
+                  <Input v-model="awsEditLabel[acc.id]" size="sm" placeholder="Label" />
+                  <AppSelect
+                    size="sm"
+                    :model-value="awsEditAuthMethod[acc.id]"
+                    :options="AWS_AUTH_OPTIONS"
+                    @update:model-value="setAwsEditAuthMethod(acc.id, $event)"
+                  />
+                  <Input v-model="awsEditRegion[acc.id]" size="sm" placeholder="ap-northeast-1" class="font-mono" />
+                  <template v-if="awsEditAuthMethod[acc.id] === 'keys'">
+                    <Input v-model="awsEditAccessKeyId[acc.id]" size="sm" placeholder="Access Key ID" class="font-mono" />
+                    <Input
+                      v-model="awsEditSecretAccessKey[acc.id]"
+                      type="password"
+                      size="sm"
+                      placeholder="New Secret Access Key (leave blank to keep current)"
+                      class="font-mono"
+                    />
+                    <Input
+                      v-model="awsEditSessionToken[acc.id]"
+                      type="password"
+                      size="sm"
+                      placeholder="Session Token (optional; set when replacing secret)"
+                      class="font-mono"
+                    />
+                  </template>
+                  <Input
+                    v-else
+                    v-model="awsEditProfileName[acc.id]"
+                    size="sm"
+                    placeholder="AWS profile name"
+                    class="font-mono"
+                  />
+                  <Input v-model="awsEditTags[acc.id]" size="sm" placeholder="Tags (optional)" />
+                  <div class="flex items-center gap-2">
+                    <Button
+                      :disabled="!awsEditLabel[acc.id]?.trim() || awsBusyAccount === acc.id"
+                      @click="handleSaveAwsEdit(acc.id)"
+                    >
+                      {{ awsBusyAccount === acc.id ? 'Saving…' : 'Save' }}
+                    </Button>
+                    <Button variant="outline" @click="awsEditing = null">Cancel</Button>
+                  </div>
+                </template>
+
+                <p v-if="awsAccountError[acc.id]" class="text-[11px] text-destructive">{{ awsAccountError[acc.id] }}</p>
+              </div>
+            </div>
+
+            <!-- Add account -->
+            <div class="border-t border-border/60 pt-3 space-y-2">
+              <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Add account</div>
+              <Input v-model="awsNewLabel" size="sm" placeholder="Label (e.g. Work AWS, Production)" />
+              <AppSelect
+                size="sm"
+                v-model="awsNewAuthMethod"
+                :options="AWS_AUTH_OPTIONS"
+              />
+              <Input v-model="awsNewRegion" size="sm" placeholder="ap-northeast-1" class="font-mono" />
+              <template v-if="awsNewAuthMethod === 'keys'">
+                <Input v-model="awsNewAccessKeyId" size="sm" placeholder="Access Key ID" class="font-mono" />
+                <Input
+                  v-model="awsNewSecretAccessKey"
+                  type="password"
+                  size="sm"
+                  placeholder="Secret Access Key"
+                  class="font-mono"
+                />
+                <Input
+                  v-model="awsNewSessionToken"
+                  type="password"
+                  size="sm"
+                  placeholder="Session Token (optional)"
+                  class="font-mono"
+                  @keyup.enter="handleAddAwsAccount"
+                />
+              </template>
+              <Input
+                v-else
+                v-model="awsNewProfileName"
+                size="sm"
+                placeholder="AWS profile name"
+                class="font-mono"
+                @keyup.enter="handleAddAwsAccount"
+              />
+              <Input v-model="awsNewTags" size="sm" placeholder="Tags (optional)" />
+              <div class="flex justify-end">
+                <Button
+                  :disabled="!canAddAwsAccount || awsAdding"
+                  @click="handleAddAwsAccount"
+                >
+                  <Plus class="h-3.5 w-3.5" :stroke-width="2" />
+                  {{ awsAdding ? 'Adding…' : 'Add' }}
+                </Button>
+              </div>
+              <p v-if="awsAddError" class="text-[11px] text-destructive">{{ awsAddError }}</p>
+            </div>
+        </Card>
+
         <!-- Engine Paths section -->
         <Card v-show="activeSection === 'engine'" body-class="p-4 space-y-4">
           <template #header>
@@ -933,59 +1221,17 @@ watch(() => settings.value.color_theme, (t) => {
 
             <hr class="border-border/60" />
 
-            <!-- Real subscription plan usage (from /usage) -->
-            <div class="space-y-3">
-              <div>
-                <h3 class="text-xs font-semibold">Plan usage (Claude subscription)</h3>
-                <p class="text-[11px] text-muted-foreground leading-relaxed mt-0.5">
-                  Your account's <b>real</b> usage and reset times, read live from Claude's
-                  <code class="font-mono bg-muted px-1 rounded">/usage</code> data during runs.
-                  Updates after each Claude run on this machine.
-                </p>
-              </div>
-              <div v-if="planRows.length" class="space-y-2">
-                <div
-                  v-for="row in planRows"
-                  :key="row.label"
-                  class="space-y-1"
-                >
-                  <div class="flex items-baseline justify-between text-[11px]">
-                    <span class="font-medium">{{ row.label }}</span>
-                    <span class="font-mono text-muted-foreground">
-                      {{ Math.round(row.utilization!) }}%
-                      <span v-if="planResetText(row.resets_at)"> · {{ planResetText(row.resets_at) }}</span>
-                    </span>
-                  </div>
-                  <div class="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-                    <div
-                      class="h-full rounded-full transition-all"
-                      :class="row.utilization! >= 100 ? 'bg-red-500' : row.utilization! >= 80 ? 'bg-amber-500' : 'bg-indigo-500'"
-                      :style="{ width: Math.min(100, Math.round(row.utilization!)) + '%' }"
-                    />
-                  </div>
-                </div>
-                <p v-if="planUsage?.subscription_type" class="text-[11px] text-muted-foreground">
-                  Plan: <b class="capitalize">{{ planUsage.subscription_type }}</b>
-                </p>
-              </div>
-              <p v-else class="text-[11px] text-muted-foreground italic">
-                No plan usage captured yet — run a Claude task and it will populate here.
-                (Unavailable for API-key / non-subscription sessions.)
-              </p>
-            </div>
-
-            <hr class="border-border/60" />
-
             <!-- Global token budget -->
             <div class="space-y-3">
               <div>
                 <h3 class="text-xs font-semibold">Usage budget (all runs)</h3>
                 <p class="text-[11px] text-muted-foreground leading-relaxed mt-0.5">
                   A guardrail across every run. Devdy warns near the limit and <b>blocks new runs &amp; follow-ups</b>
-                  once exceeded (override per turn). For period <b>5h</b>/<b>week</b> it tracks your <b>real Claude
-                  subscription plan</b> (from <code class="font-mono bg-muted px-1 rounded">/usage</code>); the token
-                  field below is a <b>fallback</b> used only when no plan data applies — Codex, monthly period, or
-                  API-key sessions. Counts only runs executed by Devdy; windows are computed in UTC.
+                  once exceeded (override per turn). Both periods mirror the <b>real subscription plan</b> limits of
+                  Claude &amp; Codex (from <code class="font-mono bg-muted px-1 rounded">/usage</code>) — a rolling
+                  <b>5h</b> session window and a <b>weekly</b> window that <b>resets per account</b> (not a fixed weekday).
+                  The token field below is only a <b>fallback</b> used when no plan data applies — e.g. API-key sessions;
+                  the fallback weekly window is then approximated in UTC. Counts only runs executed by Devdy.
                 </p>
               </div>
               <div class="grid grid-cols-2 gap-3">
@@ -995,9 +1241,8 @@ watch(() => settings.value.color_theme, (t) => {
                     size="sm"
                     v-model="settings.token_budget_period"
                     :options="[
-                      { value: 'month', label: 'Monthly (resets 1st)' },
-                      { value: 'week', label: 'Weekly (resets Monday)' },
-                      { value: '5h', label: 'Rolling 5h (matches Claude)' },
+                      { value: '5h', label: 'Rolling 5h (matches plan)' },
+                      { value: 'week', label: 'Weekly (matches plan)' },
                     ]"
                   />
                 </div>

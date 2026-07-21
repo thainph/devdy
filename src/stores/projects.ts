@@ -11,6 +11,7 @@ export interface Project {
   created_at: string
   github_account_id: string | null
   gitlab_account_id: string | null
+  aws_account_id: string | null
   run_count: number
   last_used_at: string | null
 }
@@ -210,6 +211,11 @@ export const useProjectsStore = defineStore('projects', () => {
     await fetchProjects()
   }
 
+  async function setProjectAwsAccount(project_id: string, account_id: string | null): Promise<void> {
+    await invoke('set_project_aws_account', { projectId: project_id, accountId: account_id })
+    await fetchProjects()
+  }
+
   async function fetchConflicts(): Promise<void> {
     conflicts.value = await invoke<SyncConflict[]>('list_sync_conflicts')
   }
@@ -257,7 +263,7 @@ export const useProjectsStore = defineStore('projects', () => {
     fetchProjects, detectProjectInfo, addProject, removeProject, updateProject,
     listRepos, addRepo, updateRepo, removeRepo,
     getAppliedSkills, applySkill, removeSkillFromProject,
-    setProjectAccount, setProjectGitlabAccount, fetchConflicts, resolveConflict,
+    setProjectAccount, setProjectGitlabAccount, setProjectAwsAccount, fetchConflicts, resolveConflict,
     openInVscode, openInFolder, openInTerminal,
     getAppliedRules, applyRule, removeRuleFromProject,
     fetchRuleConflicts, resolveRuleConflict,

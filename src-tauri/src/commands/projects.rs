@@ -1,6 +1,6 @@
-use crate::db::Db;
-use crate::commands::skills::{remove_skill_artifacts, write_skill_artifacts};
 use crate::commands::rules::{ApplyAllOutcome, ApplyFailure};
+use crate::commands::skills::{remove_skill_artifacts, write_skill_artifacts};
+use crate::db::Db;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Command;
@@ -20,6 +20,10 @@ pub struct Project {
     /// project has no GitLab account attached (backward-compatible default).
     #[serde(default)]
     pub gitlab_account_id: Option<String>,
+    /// Linked AWS account, mirroring the Git account model. `None` when the
+    /// project has no AWS account attached.
+    #[serde(default)]
+    pub aws_account_id: Option<String>,
     /// Number of runs recorded against this project (usage frequency).
     #[serde(default)]
     pub run_count: i64,
@@ -472,7 +476,7 @@ pub async fn list_projects(db: State<'_, Db>) -> Result<Vec<Project>, String> {
     use sqlx::Row;
     // Sort by usage frequency (number of runs), then recency, then name.
     let rows = sqlx::query(
-        "SELECT p.id, p.name, p.path, p.created_at, p.github_account_id, p.gitlab_account_id, \
+        "SELECT p.id, p.name, p.path, p.created_at, p.github_account_id, p.gitlab_account_id, p.aws_account_id, \
                 COUNT(r.id) AS run_count, MAX(r.created_at) AS last_used_at \
          FROM projects p \
          LEFT JOIN runs r ON r.project_id = p.id \
@@ -483,8 +487,9 @@ pub async fn list_projects(db: State<'_, Db>) -> Result<Vec<Project>, String> {
     .await
     .map_err(|e| e.to_string())?;
 
-    let projects = rows.iter().map(|row| {
-        Project {
+    let projects = rows
+        .iter()
+        .map(|row| Project {
             id: row.get("id"),
             name: row.get("name"),
             path: row.get("path"),
@@ -493,19 +498,17 @@ pub async fn list_projects(db: State<'_, Db>) -> Result<Vec<Project>, String> {
             created_at: row.get("created_at"),
             github_account_id: row.get("github_account_id"),
             gitlab_account_id: row.get("gitlab_account_id"),
+            aws_account_id: row.get("aws_account_id"),
             run_count: row.get("run_count"),
             last_used_at: row.get("last_used_at"),
-        }
-    }).collect();
+        })
+        .collect();
 
     Ok(projects)
 }
 
 #[tauri::command]
-pub async fn add_project(
-    db: State<'_, Db>,
-    payload: AddProjectPayload,
-) -> Result<Project, String> {
+pub async fn add_project(db: State<'_, Db>, payload: AddProjectPayload) -> Result<Project, String> {
     if !Path::new(&payload.path).exists() {
         return Err("Project path does not exist".to_string());
     }
@@ -520,16 +523,14 @@ pub async fn add_project(
     let id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
 
-    sqlx::query(
-        "INSERT INTO projects (id, name, path, created_at) VALUES (?, ?, ?, ?)"
-    )
-    .bind(&id)
-    .bind(&name)
-    .bind(&payload.path)
-    .bind(&now)
-    .execute(db.inner())
-    .await
-    .map_err(|e| e.to_string())?;
+    sqlx::query("INSERT INTO projects (id, name, path, created_at) VALUES (?, ?, ?, ?)")
+        .bind(&id)
+        .bind(&name)
+        .bind(&payload.path)
+        .bind(&now)
+        .execute(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
 
     if let Some(repos) = payload.repos {
         for repo in repos {
@@ -559,16 +560,14 @@ pub async fn add_project(
         created_at: now,
         github_account_id: None,
         gitlab_account_id: None,
+        aws_account_id: None,
         run_count: 0,
         last_used_at: None,
     })
 }
 
 #[tauri::command]
-pub async fn remove_project(
-    db: State<'_, Db>,
-    id: String,
-) -> Result<(), String> {
+pub async fn remove_project(db: State<'_, Db>, id: String) -> Result<(), String> {
     sqlx::query("DELETE FROM projects WHERE id = ?")
         .bind(&id)
         .execute(db.inner())
@@ -584,17 +583,15 @@ pub async fn update_project(
     name: String,
 ) -> Result<Project, String> {
     use sqlx::Row;
-    sqlx::query(
-        "UPDATE projects SET name = ? WHERE id = ?"
-    )
-    .bind(&name)
-    .bind(&id)
-    .execute(db.inner())
-    .await
-    .map_err(|e| e.to_string())?;
+    sqlx::query("UPDATE projects SET name = ? WHERE id = ?")
+        .bind(&name)
+        .bind(&id)
+        .execute(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
 
     let row = sqlx::query(
-        "SELECT p.id, p.name, p.path, p.created_at, p.github_account_id, p.gitlab_account_id, \
+        "SELECT p.id, p.name, p.path, p.created_at, p.github_account_id, p.gitlab_account_id, p.aws_account_id, \
                 COUNT(r.id) AS run_count, MAX(r.created_at) AS last_used_at \
          FROM projects p LEFT JOIN runs r ON r.project_id = p.id WHERE p.id = ? GROUP BY p.id"
     )
@@ -612,6 +609,7 @@ pub async fn update_project(
         created_at: row.get("created_at"),
         github_account_id: row.get("github_account_id"),
         gitlab_account_id: row.get("gitlab_account_id"),
+        aws_account_id: row.get("aws_account_id"),
         run_count: row.get("run_count"),
         last_used_at: row.get("last_used_at"),
     })
@@ -641,13 +639,10 @@ fn row_to_repo(row: &sqlx::sqlite::SqliteRow) -> Repo {
 const REPO_COLUMNS: &str = "id, project_id, name, path, github_owner, github_repo, created_at, provider, gitlab_project_path, gitlab_project_id";
 
 #[tauri::command]
-pub async fn list_repos(
-    db: State<'_, Db>,
-    project_id: String,
-) -> Result<Vec<Repo>, String> {
-    let rows = sqlx::query(
-        &format!("SELECT {REPO_COLUMNS} FROM repos WHERE project_id = ? ORDER BY name")
-    )
+pub async fn list_repos(db: State<'_, Db>, project_id: String) -> Result<Vec<Repo>, String> {
+    let rows = sqlx::query(&format!(
+        "SELECT {REPO_COLUMNS} FROM repos WHERE project_id = ? ORDER BY name"
+    ))
     .bind(&project_id)
     .fetch_all(db.inner())
     .await
@@ -671,7 +666,9 @@ pub async fn add_repo(
 ) -> Result<Repo, String> {
     let id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
-    let provider = provider.filter(|p| !p.is_empty()).unwrap_or_else(default_provider);
+    let provider = provider
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(default_provider);
     sqlx::query(
         "INSERT INTO repos (id, project_id, name, path, github_owner, github_repo, created_at, provider, gitlab_project_path, gitlab_project_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
@@ -744,22 +741,17 @@ pub async fn update_repo(
             .map_err(|e| e.to_string())?;
     }
 
-    let row = sqlx::query(
-        &format!("SELECT {REPO_COLUMNS} FROM repos WHERE id = ?")
-    )
-    .bind(&id)
-    .fetch_one(db.inner())
-    .await
-    .map_err(|e| e.to_string())?;
+    let row = sqlx::query(&format!("SELECT {REPO_COLUMNS} FROM repos WHERE id = ?"))
+        .bind(&id)
+        .fetch_one(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
 
     Ok(row_to_repo(&row))
 }
 
 #[tauri::command]
-pub async fn remove_repo(
-    db: State<'_, Db>,
-    id: String,
-) -> Result<(), String> {
+pub async fn remove_repo(db: State<'_, Db>, id: String) -> Result<(), String> {
     sqlx::query("DELETE FROM repos WHERE id = ?")
         .bind(&id)
         .execute(db.inner())
@@ -780,26 +772,29 @@ pub async fn get_applied_skills(
          FROM project_skills ps
          JOIN skills s ON s.id = ps.skill_id
          WHERE ps.project_id = ?
-         ORDER BY s.name"
+         ORDER BY s.name",
     )
     .bind(&project_id)
     .fetch_all(db.inner())
     .await
     .map_err(|e| e.to_string())?;
 
-    Ok(rows.iter().map(|row| {
-        let claude: Option<String> = row.get("synced_hash_claude");
-        let codex: Option<String> = row.get("synced_hash_codex");
-        AppliedSkill {
-            skill_id: row.get("skill_id"),
-            skill_name: row.get("skill_name"),
-            skill_description: row.get("skill_description"),
-            target: row.get("target"),
-            has_claude: claude.is_some(),
-            has_codex: codex.is_some(),
-            applied_at: row.get("applied_at"),
-        }
-    }).collect())
+    Ok(rows
+        .iter()
+        .map(|row| {
+            let claude: Option<String> = row.get("synced_hash_claude");
+            let codex: Option<String> = row.get("synced_hash_codex");
+            AppliedSkill {
+                skill_id: row.get("skill_id"),
+                skill_name: row.get("skill_name"),
+                skill_description: row.get("skill_description"),
+                target: row.get("target"),
+                has_claude: claude.is_some(),
+                has_codex: codex.is_some(),
+                applied_at: row.get("applied_at"),
+            }
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -829,25 +824,26 @@ pub async fn apply_skill_to_all_projects(
         let project_name: String = row.get("name");
         match apply_skill_to_project(db.inner(), &project_id, &skill_id).await {
             Ok(()) => applied += 1,
-            Err(error) => failures.push(ApplyFailure { project_id, project_name, error }),
+            Err(error) => failures.push(ApplyFailure {
+                project_id,
+                project_name,
+                error,
+            }),
         }
     }
     Ok(ApplyAllOutcome { applied, failures })
 }
 
 /// Core apply logic shared by `apply_skill` and `apply_skill_to_all_projects`.
-async fn apply_skill_to_project(
-    db: &Db,
-    project_id: &str,
-    skill_id: &str,
-) -> Result<(), String> {
+async fn apply_skill_to_project(db: &Db, project_id: &str, skill_id: &str) -> Result<(), String> {
     use sqlx::Row;
 
-    let skill_row = sqlx::query("SELECT name, description, target, source_path FROM skills WHERE id = ?")
-        .bind(skill_id)
-        .fetch_one(db)
-        .await
-        .map_err(|e| format!("Skill not found: {}", e))?;
+    let skill_row =
+        sqlx::query("SELECT name, description, target, source_path FROM skills WHERE id = ?")
+            .bind(skill_id)
+            .fetch_one(db)
+            .await
+            .map_err(|e| format!("Skill not found: {}", e))?;
 
     let skill_name: String = skill_row.get("name");
     let description: String = skill_row.get("description");
@@ -862,14 +858,19 @@ async fn apply_skill_to_project(
 
     let project_path: String = project_row.get("path");
 
-    let (hash_claude, hash_codex) =
-        write_skill_artifacts(&project_path, &skill_name, &description, &target, &source_path)?;
+    let (hash_claude, hash_codex) = write_skill_artifacts(
+        &project_path,
+        &skill_name,
+        &description,
+        &target,
+        &source_path,
+    )?;
     let now = chrono::Utc::now().to_rfc3339();
 
     sqlx::query(
         "INSERT OR REPLACE INTO project_skills
          (project_id, skill_id, target, synced_hash_claude, synced_hash_codex, applied_at)
-         VALUES (?, ?, ?, ?, ?, ?)"
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(project_id)
     .bind(skill_id)
@@ -933,9 +934,7 @@ pub struct SyncConflict {
 }
 
 #[tauri::command]
-pub async fn list_sync_conflicts(
-    db: State<'_, Db>,
-) -> Result<Vec<SyncConflict>, String> {
+pub async fn list_sync_conflicts(db: State<'_, Db>) -> Result<Vec<SyncConflict>, String> {
     use sqlx::Row;
     let rows = sqlx::query(
         "SELECT sc.id, sc.project_id, sc.skill_id, s.name as skill_name, p.name as project_name,
@@ -944,27 +943,30 @@ pub async fn list_sync_conflicts(
          JOIN skills s ON s.id = sc.skill_id
          JOIN projects p ON p.id = sc.project_id
          WHERE sc.resolved = 0
-         ORDER BY sc.detected_at DESC"
+         ORDER BY sc.detected_at DESC",
     )
     .fetch_all(db.inner())
     .await
     .map_err(|e| e.to_string())?;
 
-    Ok(rows.iter().map(|row| {
-        let resolved: i64 = row.get("resolved");
-        SyncConflict {
-            id: row.get("id"),
-            project_id: row.get("project_id"),
-            skill_id: row.get("skill_id"),
-            skill_name: row.get("skill_name"),
-            project_name: row.get("project_name"),
-            engine: row.get("engine"),
-            detected_at: row.get("detected_at"),
-            local_hash: row.get("local_hash"),
-            source_hash: row.get("source_hash"),
-            resolved: resolved != 0,
-        }
-    }).collect())
+    Ok(rows
+        .iter()
+        .map(|row| {
+            let resolved: i64 = row.get("resolved");
+            SyncConflict {
+                id: row.get("id"),
+                project_id: row.get("project_id"),
+                skill_id: row.get("skill_id"),
+                skill_name: row.get("skill_name"),
+                project_name: row.get("project_name"),
+                engine: row.get("engine"),
+                detected_at: row.get("detected_at"),
+                local_hash: row.get("local_hash"),
+                source_hash: row.get("source_hash"),
+                resolved: resolved != 0,
+            }
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -982,7 +984,7 @@ pub async fn resolve_sync_conflict(
              FROM sync_conflicts sc
              JOIN skills s ON s.id = sc.skill_id
              JOIN projects p ON p.id = sc.project_id
-             WHERE sc.id = ?"
+             WHERE sc.id = ?",
         )
         .bind(&conflict_id)
         .fetch_one(db.inner())
@@ -998,8 +1000,13 @@ pub async fn resolve_sync_conflict(
         let engine: String = row.get("engine");
 
         // Re-apply only the conflicting engine (pass the engine as target).
-        let (hash_claude, hash_codex) =
-            write_skill_artifacts(&project_path, &skill_name, &description, &engine, &source_path)?;
+        let (hash_claude, hash_codex) = write_skill_artifacts(
+            &project_path,
+            &skill_name,
+            &description,
+            &engine,
+            &source_path,
+        )?;
 
         if engine == "codex" {
             sqlx::query("UPDATE project_skills SET synced_hash_codex = ? WHERE project_id = ? AND skill_id = ?")

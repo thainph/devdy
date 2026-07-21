@@ -364,7 +364,19 @@ pub async fn drain_sidecar(
                             // budget badge / settings panel refresh.
                             (Some(v), "_devdy_usage") => {
                                 if let Some(usage) = v.get("usage") {
-                                    if persist_plan_usage(&db_pool, usage).await {
+                                    // Codex sidecar tags its snapshot `provider:"codex"`
+                                    // and carries `rate_limits` directly; route it to
+                                    // the separate Codex plan-usage state.
+                                    let persisted = if usage.get("provider").and_then(|p| p.as_str()) == Some("codex") {
+                                        if let Some(rl) = usage.get("rate_limits") {
+                                            crate::commands::codex_sessions::persist_codex_plan_usage(&db_pool, rl).await
+                                        } else {
+                                            false
+                                        }
+                                    } else {
+                                        persist_plan_usage(&db_pool, usage).await
+                                    };
+                                    if persisted {
                                         let _ = app.emit("plan_usage_updated", serde_json::json!({ "run_id": run_id }));
                                     }
                                 }

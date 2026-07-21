@@ -10,7 +10,7 @@ use crate::db::Db;
 use crate::runs::sidecar::{
     augment_command_path, detach_process_group, insert_usage_from_result,
     persist_plan_init_rate_limits, persist_plan_usage, persist_plan_rate_limit_event,
-    resolve_sidecar,
+    resolve_codex_sidecar, resolve_sidecar,
 };
 use crate::runs::RunRegistry;
 use chrono::{Datelike, Duration, TimeZone, Utc};
@@ -378,42 +378,34 @@ pub async fn reset_usage_stats(
 // ── Global token budget ───────────────────────────────────────────────────
 //
 // A guardrail over total token consumption across ALL runs (unrelated to the
-// per-run context-window meter). Periods are computed in UTC to match the
-// RFC3339 UTC timestamps stored in `run_usage.created_at`. "5h" is a rolling
-// window (matching Claude's rolling session limit); "week"/"month" reset on a
-// fixed boundary (Monday / first of month).
+// per-run context-window meter). Only two periods exist, mirroring the real
+// Claude/Codex subscription limits: "5h" (rolling session window) and "week"
+// (weekly window). When real plan data backs the period the account's own reset
+// instant is used; this fallback computation only applies when no plan data is
+// available (e.g. API-key sessions) and is approximated in UTC to match the
+// RFC3339 UTC timestamps stored in `run_usage.created_at`. Any unknown/legacy
+// period (e.g. a previously-stored "month") is treated as weekly.
 
 /// Inclusive lower bound of the current budget period.
 pub fn period_start(period: &str) -> chrono::DateTime<Utc> {
     let now = Utc::now();
-    match period {
-        "5h" => now - Duration::hours(5),
-        "week" => {
-            let days = now.weekday().num_days_from_monday() as i64;
-            let monday = (now - Duration::days(days)).date_naive();
-            Utc.with_ymd_and_hms(monday.year(), monday.month(), monday.day(), 0, 0, 0)
-                .unwrap()
-        }
-        _ => Utc
-            .with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
-            .unwrap(),
+    if period == "5h" {
+        now - Duration::hours(5)
+    } else {
+        // Weekly fallback: Monday 00:00 UTC of the current week. The real weekly
+        // window resets per account, but without plan data we approximate here.
+        let days = now.weekday().num_days_from_monday() as i64;
+        let monday = (now - Duration::days(days)).date_naive();
+        Utc.with_ymd_and_hms(monday.year(), monday.month(), monday.day(), 0, 0, 0)
+            .unwrap()
     }
 }
 
 /// When the current period resets, or None for the rolling "5h" window.
 pub fn next_reset(period: &str) -> Option<chrono::DateTime<Utc>> {
-    let now = Utc::now();
     match period {
-        "week" => Some(period_start("week") + Duration::days(7)),
-        "month" => {
-            let (y, m) = if now.month() == 12 {
-                (now.year() + 1, 1)
-            } else {
-                (now.year(), now.month() + 1)
-            };
-            Some(Utc.with_ymd_and_hms(y, m, 1, 0, 0, 0).unwrap())
-        }
-        _ => None,
+        "5h" => None,
+        _ => Some(period_start("week") + Duration::days(7)),
     }
 }
 
@@ -511,15 +503,26 @@ pub async fn get_plan_usage(db: State<'_, Db>) -> Result<Option<PlanUsage>, Stri
 }
 
 async fn load_plan_usage(db: &Db) -> Result<Option<PlanUsage>, String> {
-    let stored: Option<String> =
-        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'plan_usage'")
-            .fetch_optional(db)
-            .await
-            .map_err(|e| e.to_string())?;
+    load_plan_usage_key(db, "plan_usage").await
+}
+
+async fn load_plan_usage_key(db: &Db, key: &str) -> Result<Option<PlanUsage>, String> {
+    let stored: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+        .bind(key)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| e.to_string())?;
     match stored {
         Some(json) => serde_json::from_str(&json).map(Some).map_err(|e| e.to_string()),
         None => Ok(None),
     }
+}
+
+/// Latest Codex plan-usage snapshot (the `/status` rate-limits), or None if none
+/// captured yet. Mirrors [`get_plan_usage`] for the Codex account.
+#[tauri::command]
+pub async fn get_plan_usage_codex(db: State<'_, Db>) -> Result<Option<PlanUsage>, String> {
+    load_plan_usage_key(db.inner(), "plan_usage_codex").await
 }
 
 #[tauri::command]
@@ -648,11 +651,112 @@ pub async fn refresh_plan_usage(
     }
 }
 
+/// Probe Codex now for fresh plan rate-limits via the app-server
+/// `account/rateLimits/read` RPC (no thread, no turn, no quota spend). Spawns the
+/// Codex sidecar in probe mode, persists the returned snapshot to
+/// `plan_usage_codex`, and returns it. Mirrors [`refresh_plan_usage`].
+#[tauri::command]
+pub async fn refresh_codex_plan_usage(
+    app: AppHandle,
+    db: State<'_, Db>,
+) -> Result<Option<PlanUsage>, String> {
+    let rows = sqlx::query("SELECT key, value FROM settings")
+        .fetch_all(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut node_path = "node".to_string();
+    let mut codex_sidecar_path = String::new();
+    let mut codex_path = "codex".to_string();
+    for row in &rows {
+        let key: String = row.get("key");
+        let value: String = row.get("value");
+        match key.as_str() {
+            "node_path" => node_path = value,
+            "codex_sidecar_path" => codex_sidecar_path = value,
+            "codex_path" => codex_path = value,
+            _ => {}
+        }
+    }
+
+    let cwd: String = sqlx::query_scalar("SELECT path FROM projects ORDER BY created_at DESC LIMIT 1")
+        .fetch_optional(db.inner())
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| {
+            std::env::current_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| ".".to_string())
+        });
+
+    let (node_bin, sidecar_script) = resolve_codex_sidecar(&app, &node_path, &codex_sidecar_path)?;
+    let mut cmd = Command::new(&node_bin);
+    cmd.current_dir(&cwd).arg(&sidecar_script);
+    augment_command_path(&mut cmd);
+    cmd.env("DEVDY_CODEX_USAGE_PROBE", "1");
+    if codex_path != "codex" && !codex_path.trim().is_empty() {
+        cmd.env("DEVDY_CODEX_PATH", &codex_path);
+    }
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    detach_process_group(&mut cmd);
+    cmd.kill_on_drop(true);
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn codex usage probe ({}): {}", node_bin, e))?;
+    let stdout = child.stdout.take().ok_or("codex usage probe stdout unavailable")?;
+    let mut lines = BufReader::new(stdout).lines();
+
+    let db_pool = db.inner().clone();
+    let read_usage = async {
+        while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            match value.get("type").and_then(|v| v.as_str()) {
+                Some("_devdy_usage") => {
+                    if let Some(rl) = value.get("usage").and_then(|u| u.get("rate_limits")) {
+                        if crate::commands::codex_sessions::persist_codex_plan_usage(&db_pool, rl).await {
+                            let _ = app.emit("plan_usage_updated", serde_json::json!({ "provider": "codex", "source": "probe" }));
+                            return Ok(true);
+                        }
+                    }
+                }
+                Some("_devdy_done") | Some("_devdy_closed") => return Ok(false),
+                Some("_devdy_error") => {
+                    let err = value
+                        .get("error")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("codex usage probe failed");
+                    return Err(err.to_string());
+                }
+                _ => {}
+            }
+        }
+        Ok(false)
+    };
+
+    let outcome = time::timeout(std::time::Duration::from_secs(15), read_usage).await;
+    if let Some(pid) = child.id() {
+        crate::runs::sidecar::kill_process_group(pid);
+    }
+    let _ = child.kill().await;
+
+    match outcome {
+        Ok(Ok(true)) => load_plan_usage_key(db.inner(), "plan_usage_codex").await,
+        Ok(Ok(false)) => Err("codex usage probe completed without a fresh usage snapshot".to_string()),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err("codex usage probe timed out".to_string()),
+    }
+}
+
 /// Map the configured budget period onto a real claude.ai plan window from the
 /// latest `/usage` snapshot. Returns `(utilization_percent, resets_at)` only
 /// when accurate plan data backs the period: rolling 5h → five_hour, weekly →
-/// seven_day. "Monthly" has no plan window, so it always falls through to the
-/// token estimate. Mirrors the mapping in `src/stores/budget.ts`.
+/// seven_day. Any unknown/legacy period has no plan window, so it falls through
+/// to the token estimate. Mirrors the mapping in `src/stores/budget.ts`.
 struct PlanWindowView {
     utilization: f64,
     resets_at: Option<String>,
@@ -662,15 +766,59 @@ struct PlanWindowView {
     rolled_over: bool,
 }
 
-fn plan_window_for(period: &str, snapshot: &serde_json::Value, stale_secs: i64) -> Option<PlanWindowView> {
+/// Configured period → its natural plan-window key (monthly has none).
+fn period_to_window_key(period: &str) -> Option<&'static str> {
+    match period {
+        "5h" => Some("five_hour"),
+        "week" => Some("seven_day"),
+        _ => None,
+    }
+}
+
+/// Plan-window key → the period label the badge should show for it.
+fn window_key_to_period(key: &str) -> &'static str {
+    match key {
+        "five_hour" => "5h",
+        _ => "week", // seven_day / seven_day_opus / seven_day_sonnet are weekly
+    }
+}
+
+/// Resolve which plan window to surface for `period`. Prefers the window that
+/// matches the configured period; when that window carries no data and
+/// `fallback` is set, falls back to whichever window the provider DID report
+/// (rolling 5h first, then weekly, then per-model). Returns the EFFECTIVE period
+/// label so the badge shows the window it's actually displaying — e.g. a Codex
+/// account that only exposes a weekly window still shows a % under a 5h setting.
+fn resolve_plan_view(
+    period: &str,
+    snapshot: &serde_json::Value,
+    stale_secs: i64,
+    fallback: bool,
+) -> Option<(String, PlanWindowView)> {
+    if let Some(k) = period_to_window_key(period) {
+        if let Some(v) = plan_window_by_key(k, snapshot, stale_secs) {
+            return Some((period.to_string(), v));
+        }
+    }
+    if !fallback {
+        return None;
+    }
+    let preferred = period_to_window_key(period);
+    for k in ["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"] {
+        if Some(k) == preferred {
+            continue; // already tried above
+        }
+        if let Some(v) = plan_window_by_key(k, snapshot, stale_secs) {
+            return Some((window_key_to_period(k).to_string(), v));
+        }
+    }
+    None
+}
+
+fn plan_window_by_key(key: &str, snapshot: &serde_json::Value, stale_secs: i64) -> Option<PlanWindowView> {
     if !snapshot.get("rate_limits_available").and_then(|v| v.as_bool()).unwrap_or(false) {
         return None;
     }
-    let key = match period {
-        "5h" => "five_hour",
-        "week" => "seven_day",
-        _ => return None,
-    };
     let w = snapshot.get("windows").and_then(|w| w.get(key))?;
     let resets_at = w.get("resets_at").and_then(|v| v.as_str()).map(|s| s.to_string());
     let status = w.get("status").and_then(|v| v.as_str()).map(|s| s.to_string());
@@ -716,12 +864,118 @@ fn plan_window_for(period: &str, snapshot: &serde_json::Value, stale_secs: i64) 
 /// plan-usage snapshot, and the period's token tally — then prefers real plan
 /// utilization over the self-imposed token estimate. Used by both the
 /// `get_budget_status` command (badge) and `enforce_budget` (run blocking).
+///
+/// `fallback` controls what happens when the configured period's plan window has
+/// no data: the badge passes `true` so it still shows whatever window the
+/// provider reported (under that window's own period label); run-blocking passes
+/// `false` to keep enforcement tied strictly to the configured period.
 pub async fn budget_status(db: &Db) -> Result<BudgetStatus, String> {
+    budget_status_inner(db, false).await
+}
+
+/// Display threshold for the badge's warning tone, deliberately decoupled from
+/// the user's guardrail `budget_warn_percent`. The badge reflects the account's
+/// REAL plan usage; the configured Usage budget only gates run-blocking (see
+/// `enforce_budget`). 80% is a fixed, sensible "getting close" heuristic.
+const PLAN_DISPLAY_WARN_PERCENT: i64 = 80;
+
+/// Read the latest plan snapshot JSON (`key`) and `plan_stale_secs` from the
+/// settings KV — everything the badge needs, without touching the budget period
+/// / token-limit / warn settings.
+async fn read_plan_snapshot(db: &Db, key: &str) -> Result<(Option<String>, i64), String> {
     let rows = sqlx::query("SELECT key, value FROM settings")
         .fetch_all(db)
         .await
         .map_err(|e| e.to_string())?;
-    let mut period = "month".to_string();
+    let mut plan_json: Option<String> = None;
+    let mut stale_secs: i64 = 120;
+    for row in &rows {
+        let k: String = row.get("key");
+        let value: String = row.get("value");
+        match k.as_str() {
+            s if s == key => plan_json = Some(value),
+            "plan_stale_secs" => {
+                stale_secs = value.trim().parse::<i64>().unwrap_or(120).clamp(10, 3600)
+            }
+            _ => {}
+        }
+    }
+    Ok((plan_json, stale_secs))
+}
+
+/// Pick the MOST-CONSTRAINING plan window (highest utilization) across every
+/// window the snapshot reports, independent of any configured budget period.
+/// This is what the badge shows — a real plan-usage glance, not the guardrail.
+fn plan_display_view(
+    snapshot: &serde_json::Value,
+    stale_secs: i64,
+) -> Option<(String, PlanWindowView)> {
+    let mut best: Option<(String, PlanWindowView)> = None;
+    for k in ["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"] {
+        if let Some(v) = plan_window_by_key(k, snapshot, stale_secs) {
+            let is_better = best
+                .as_ref()
+                .map(|(_, b)| v.utilization > b.utilization)
+                .unwrap_or(true);
+            if is_better {
+                best = Some((window_key_to_period(k).to_string(), v));
+            }
+        }
+    }
+    best
+}
+
+/// Build the badge verdict from a plan snapshot, independent of the Usage budget
+/// setting. Warning/over come from the plan's own live status plus a fixed
+/// display threshold — never from `budget_warn_percent`. Returns `disabled` when
+/// no plan window is present (e.g. API-key sessions with no subscription data).
+fn plan_display_status(plan_json: Option<&str>, stale_secs: i64) -> BudgetStatus {
+    if let Some(snapshot) =
+        plan_json.and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
+    {
+        if let Some((period, view)) = plan_display_view(&snapshot, stale_secs) {
+            let percent = view.utilization.round() as i64;
+            let blocked = view.status.as_deref() == Some("blocked");
+            let warning_status = view.status.as_deref() == Some("warning");
+            return BudgetStatus {
+                source: "plan".into(),
+                period,
+                percent,
+                is_warning: !view.rolled_over
+                    && (percent >= PLAN_DISPLAY_WARN_PERCENT || warning_status || blocked),
+                is_over: !view.rolled_over && (percent >= 100 || blocked),
+                used_tokens: 0,
+                limit_tokens: 0,
+                reset: view.resets_at,
+                captured_at: view.captured_at,
+                is_stale: view.is_stale,
+                status: view.status,
+                rolled_over: view.rolled_over,
+            };
+        }
+    }
+    BudgetStatus {
+        source: "disabled".into(),
+        period: "week".into(),
+        percent: 0,
+        is_warning: false,
+        is_over: false,
+        used_tokens: 0,
+        limit_tokens: 0,
+        reset: None,
+        captured_at: None,
+        is_stale: false,
+        status: None,
+        rolled_over: false,
+    }
+}
+
+async fn budget_status_inner(db: &Db, fallback: bool) -> Result<BudgetStatus, String> {
+    let rows = sqlx::query("SELECT key, value FROM settings")
+        .fetch_all(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut period = "week".to_string();
     let mut limit_tokens: i64 = 0;
     let mut warn_percent: i64 = 80;
     let mut stale_secs: i64 = 120;
@@ -743,7 +997,7 @@ pub async fn budget_status(db: &Db) -> Result<BudgetStatus, String> {
 
     // 1) Real subscription plan window (most accurate — the true ceiling).
     if let Some(snapshot) = plan_json.as_deref().and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok()) {
-        if let Some(view) = plan_window_for(&period, &snapshot, stale_secs) {
+        if let Some((period, view)) = resolve_plan_view(&period, &snapshot, stale_secs, fallback) {
             let percent = view.utilization.round() as i64;
             let blocked = view.status.as_deref() == Some("blocked");
             let warning_status = view.status.as_deref() == Some("warning");
@@ -806,7 +1060,19 @@ pub async fn budget_status(db: &Db) -> Result<BudgetStatus, String> {
 
 #[tauri::command]
 pub async fn get_budget_status(db: State<'_, Db>) -> Result<BudgetStatus, String> {
-    budget_status(db.inner()).await
+    // Badge = the account's REAL Claude plan usage (most-constraining window),
+    // independent of the Usage budget setting. That setting only gates
+    // run-blocking via `enforce_budget`.
+    let (plan_json, stale_secs) = read_plan_snapshot(db.inner(), "plan_usage").await?;
+    Ok(plan_display_status(plan_json.as_deref(), stale_secs))
+}
+
+#[tauri::command]
+pub async fn get_codex_budget_status(db: State<'_, Db>) -> Result<BudgetStatus, String> {
+    // Same as the Claude badge: the account's REAL Codex rate-limit usage,
+    // independent of the Usage budget setting.
+    let (plan_json, stale_secs) = read_plan_snapshot(db.inner(), "plan_usage_codex").await?;
+    Ok(plan_display_status(plan_json.as_deref(), stale_secs))
 }
 
 /// Guardrail used at every token-consuming entry point (start / resume /
@@ -847,7 +1113,7 @@ mod plan_window_tests {
             serde_json::json!({ "utilization": 42.0, "resets_at": future, "status": "allowed" }),
             &now,
         );
-        let v = plan_window_for("5h", &snap, 120).expect("plan window");
+        let v = plan_window_by_key("five_hour", &snap, 120).expect("plan window");
         assert_eq!(v.utilization.round() as i64, 42);
         assert!(!v.is_stale);
         assert!(!v.rolled_over);
@@ -862,7 +1128,7 @@ mod plan_window_tests {
             serde_json::json!({ "utilization": 10.0, "resets_at": future }),
             &old,
         );
-        let v = plan_window_for("5h", &snap, 120).expect("plan window");
+        let v = plan_window_by_key("five_hour", &snap, 120).expect("plan window");
         assert!(v.is_stale);
     }
 
@@ -874,7 +1140,7 @@ mod plan_window_tests {
             serde_json::json!({ "utilization": 88.0, "resets_at": past }),
             &now,
         );
-        let v = plan_window_for("5h", &snap, 120).expect("plan window");
+        let v = plan_window_by_key("five_hour", &snap, 120).expect("plan window");
         assert!(v.rolled_over);
         assert_eq!(v.utilization.round() as i64, 0);
     }
@@ -888,6 +1154,44 @@ mod plan_window_tests {
             serde_json::json!({ "utilization": null, "resets_at": future, "status": "allowed" }),
             &now,
         );
-        assert!(plan_window_for("5h", &snap, 120).is_none());
+        assert!(plan_window_by_key("five_hour", &snap, 120).is_none());
+    }
+
+    #[test]
+    fn resolve_falls_back_to_available_window_under_mismatched_period() {
+        let now = Utc::now().to_rfc3339();
+        let future = (Utc::now() + Duration::hours(48)).to_rfc3339();
+        // Provider only reports a weekly window (e.g. a Codex account); config
+        // asks for the 5h period, which has no data.
+        let snap = serde_json::json!({
+            "captured_at": now,
+            "rate_limits_available": true,
+            "windows": {
+                "seven_day": { "utilization": 38.0, "resets_at": future, "status": null, "status_at": null },
+            },
+        });
+        // Strict (run-blocking): no 5h window → no verdict.
+        assert!(resolve_plan_view("5h", &snap, 120, false).is_none());
+        // Display: falls back to the weekly window under its own "week" label.
+        let (eff_period, view) = resolve_plan_view("5h", &snap, 120, true).expect("fallback view");
+        assert_eq!(eff_period, "week");
+        assert_eq!(view.utilization.round() as i64, 38);
+    }
+
+    #[test]
+    fn resolve_prefers_matching_period_when_present() {
+        let now = Utc::now().to_rfc3339();
+        let future = (Utc::now() + Duration::hours(2)).to_rfc3339();
+        let snap = serde_json::json!({
+            "captured_at": now,
+            "rate_limits_available": true,
+            "windows": {
+                "five_hour": { "utilization": 12.0, "resets_at": future, "status": null, "status_at": null },
+                "seven_day": { "utilization": 38.0, "resets_at": future, "status": null, "status_at": null },
+            },
+        });
+        let (eff_period, view) = resolve_plan_view("5h", &snap, 120, true).expect("matching view");
+        assert_eq!(eff_period, "5h");
+        assert_eq!(view.utilization.round() as i64, 12);
     }
 }

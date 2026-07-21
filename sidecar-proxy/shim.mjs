@@ -1,19 +1,19 @@
-// Devdy gh/glab shim core (GĐ3).
+// Devdy gh/glab/aws shim core (GĐ3).
 //
 // A tiny wrapper placed at the FRONT of the sidecar PATH under the names
-// `gh`/`glab`. Every invocation asks the Devdy broker (over a per-run Unix
-// socket) whether the call is allowed and, if so, receives the token for the
-// project's linked account. The real gh/glab binary is then executed with the
-// token injected ONLY into that child process's environment.
+// `gh`/`glab`/`aws`. Every invocation asks the Devdy broker (over a per-run Unix
+// socket) whether the call is allowed and, if so, receives credentials for the
+// project's linked account. The real binary is then executed with credentials
+// injected ONLY into that child process's environment.
 //
 // Hard rules (frozen):
-//   - NEVER log/write the token anywhere (no console, no stderr, no file).
+//   - NEVER log/write credentials anywhere (no console, no stderr, no file).
 //   - Fail-closed: any misconfiguration/denial/error => non-zero exit, the real
 //     binary is NOT run.
 //   - Self-exclude the shim dir from PATH when resolving the real binary so the
 //     shim never re-invokes itself (infinite recursion).
 //   - Strip DEVDY_BROKER_SOCK / DEVDY_PROJECT_ID from the child env so the
-//     socket path never leaks to gh/glab.
+//     socket path never leaks to child tools.
 
 import net from 'node:net'
 import { spawn } from 'node:child_process'
@@ -24,7 +24,7 @@ import fs from 'node:fs'
 const EXIT_NOT_CONFIGURED = 97 // broker env missing
 const EXIT_BROKER_UNREACHABLE = 98 // could not talk to broker
 const EXIT_DENIED = 99 // broker denied by policy / fail-closed
-const EXIT_REAL_NOT_FOUND = 96 // real gh/glab not on PATH
+const EXIT_REAL_NOT_FOUND = 96 // real tool not on PATH
 const EXIT_EXEC_FAILED = 95 // spawning the real binary failed
 
 /**
@@ -32,7 +32,7 @@ const EXIT_EXEC_FAILED = 95 // spawning the real binary failed
  * NDJSON response line.
  * @param {string} sockPath
  * @param {{project_id: string, tool: string, argv: string[], host: string|null}} req
- * @returns {Promise<{decision: string, reason?: string, token?: string}>}
+ * @returns {Promise<{decision: string, reason?: string, token?: string, aws_access_key_id?: string, aws_secret_access_key?: string, aws_session_token?: string, aws_profile?: string, aws_region?: string}>}
  */
 export function ask(sockPath, req) {
   return new Promise((resolve, reject) => {
@@ -72,13 +72,13 @@ export function ask(sockPath, req) {
 }
 
 /**
- * Resolve the real gh/glab binary by scanning PATH with the shim's own
+ * Resolve the real tool binary by scanning PATH with the shim's own
  * directory removed, so we never re-invoke the shim.
  * @param {string} tool
  * @returns {string|null}
  */
 function resolveReal(tool) {
-  // process.argv[1] is the shim script path (gh/glab). Its dir is the shim dir.
+  // process.argv[1] is the shim script path. Its dir is the shim dir.
   const shimDir = path.resolve(path.dirname(process.argv[1] || ''))
   const dirs = (process.env.PATH || '')
     .split(path.delimiter)
@@ -96,7 +96,7 @@ function resolveReal(tool) {
 }
 
 /**
- * Entry point for a shim. `tool` is 'gh' or 'glab'.
+ * Entry point for a shim. `tool` is 'gh', 'glab', or 'aws'.
  * @param {string} tool
  */
 export async function run(tool) {
@@ -145,12 +145,43 @@ export async function run(tool) {
     process.exit(EXIT_REAL_NOT_FOUND)
   }
 
-  // Token goes ONLY into the child env. Never logged, never persisted.
+  // Credentials go ONLY into the child env. Never logged, never persisted.
   const childEnv = { ...process.env }
+  const originalAwsConfigFile = childEnv.DEVDY_ORIGINAL_AWS_CONFIG_FILE
+  const originalAwsCredentialsFile = childEnv.DEVDY_ORIGINAL_AWS_SHARED_CREDENTIALS_FILE
   delete childEnv.DEVDY_BROKER_SOCK
   delete childEnv.DEVDY_PROJECT_ID
   delete childEnv.DEVDY_RUN_ID
-  if (resp.token) {
+  delete childEnv.DEVDY_ORIGINAL_AWS_CONFIG_FILE
+  delete childEnv.DEVDY_ORIGINAL_AWS_SHARED_CREDENTIALS_FILE
+
+  if (tool === 'aws') {
+    if (resp.aws_region) {
+      childEnv.AWS_REGION = resp.aws_region
+      childEnv.AWS_DEFAULT_REGION = resp.aws_region
+    }
+    if (resp.aws_access_key_id && resp.aws_secret_access_key) {
+      childEnv.AWS_ACCESS_KEY_ID = resp.aws_access_key_id
+      childEnv.AWS_SECRET_ACCESS_KEY = resp.aws_secret_access_key
+      if (resp.aws_session_token) childEnv.AWS_SESSION_TOKEN = resp.aws_session_token
+      else delete childEnv.AWS_SESSION_TOKEN
+      delete childEnv.AWS_PROFILE
+      delete childEnv.AWS_DEFAULT_PROFILE
+    } else if (resp.aws_profile) {
+      childEnv.AWS_PROFILE = resp.aws_profile
+      if (originalAwsConfigFile) childEnv.AWS_CONFIG_FILE = originalAwsConfigFile
+      else delete childEnv.AWS_CONFIG_FILE
+      if (originalAwsCredentialsFile) childEnv.AWS_SHARED_CREDENTIALS_FILE = originalAwsCredentialsFile
+      else delete childEnv.AWS_SHARED_CREDENTIALS_FILE
+      delete childEnv.AWS_SDK_LOAD_CONFIG
+      delete childEnv.AWS_ACCESS_KEY_ID
+      delete childEnv.AWS_SECRET_ACCESS_KEY
+      delete childEnv.AWS_SESSION_TOKEN
+    } else {
+      process.stderr.write(`devdy: ${tool} — credential unavailable\n`)
+      process.exit(EXIT_DENIED)
+    }
+  } else if (resp.token) {
     if (tool === 'gh') {
       childEnv.GH_TOKEN = resp.token
     } else {

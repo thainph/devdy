@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { invoke } from '@/lib/tauri'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import {
   Chart as ChartJS,
   Title,
@@ -17,7 +19,7 @@ import {
 } from 'chart.js'
 import { Bar, Doughnut } from 'vue-chartjs'
 import {
-  Coins, DollarSign, Play, Repeat, RefreshCw, Trash2, Loader2, Info, AlertTriangle, HardDrive,
+  Coins, DollarSign, Play, Repeat, RefreshCw, Trash2, Loader2, Info, AlertTriangle, HardDrive, Gauge,
 } from 'lucide-vue-next'
 import { Button, Input, Card, AppSelect } from '@/components/ui'
 import { useProjectsStore } from '@/stores/projects'
@@ -104,7 +106,21 @@ watch(currentFilter, load, { deep: true })
 
 onMounted(async () => {
   if (projectsStore.projects.length === 0) await projectsStore.fetchProjects()
-  await Promise.all([load(), loadStorage()])
+  now.value = Date.now()
+  clockTimer = setInterval(() => { now.value = Date.now() }, 30_000)
+  await Promise.all([load(), loadStorage(), refreshPlanUsage(), refreshPlanUsageCodex()])
+  unlistenPlanUsage = await listen<{ provider?: string }>('plan_usage_updated', (e) => {
+    if (e.payload?.provider === 'codex') {
+      refreshPlanUsageCodex().catch(() => {})
+    } else {
+      refreshPlanUsage().catch(() => {})
+    }
+  })
+})
+
+onUnmounted(() => {
+  if (clockTimer) clearInterval(clockTimer)
+  if (unlistenPlanUsage) unlistenPlanUsage()
 })
 
 // ── formatting ────────────────────────────────────────────────────────────────
@@ -215,6 +231,65 @@ const doughnutOptions = {
 function pct(part: number, total: number): string {
   if (!total) return '0%'
   return ((part / total) * 100).toFixed(0) + '%'
+}
+
+// ── real subscription plan usage (read live from /usage during runs) ────────────
+// The budget store only holds the single guardrail verdict, so Stats fetches the
+// raw `/usage` snapshot itself for the detailed breakdown below.
+interface PlanWindowData { utilization: number | null; resets_at: string | null }
+interface PlanUsageData {
+  subscription_type: string | null
+  rate_limits_available: boolean
+  windows: Record<'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day_sonnet', PlanWindowData>
+}
+const planUsage = ref<PlanUsageData | null>(null)
+const planUsageCodex = ref<PlanUsageData | null>(null)
+const now = ref(Date.now())
+let unlistenPlanUsage: UnlistenFn | null = null
+let clockTimer: ReturnType<typeof setInterval> | null = null
+
+async function refreshPlanUsage() {
+  planUsage.value = await invoke<PlanUsageData | null>('get_plan_usage')
+}
+async function refreshPlanUsageCodex() {
+  planUsageCodex.value = await invoke<PlanUsageData | null>('get_plan_usage_codex')
+}
+
+const PLAN_WINDOWS: { key: 'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day_sonnet'; label: string }[] = [
+  { key: 'five_hour', label: 'Current session (5h)' },
+  { key: 'seven_day', label: 'This week (all models)' },
+  { key: 'seven_day_opus', label: 'This week (Opus)' },
+  { key: 'seven_day_sonnet', label: 'This week (Sonnet)' },
+]
+function planRowsFor(u: PlanUsageData | null, windows: typeof PLAN_WINDOWS) {
+  if (!u || !u.rate_limits_available) return []
+  return windows.map((w) => {
+    const win = u.windows[w.key]
+    return {
+      label: w.label,
+      utilization: win?.utilization ?? null,
+      resets_at: win?.resets_at ?? null,
+    }
+  }).filter((r) => r.utilization != null)
+}
+const planRows = computed(() => planRowsFor(planUsage.value, PLAN_WINDOWS))
+// Codex only reports two windows: rolling 5h + weekly (no per-model split).
+const CODEX_PLAN_WINDOWS: typeof PLAN_WINDOWS = [
+  { key: 'five_hour', label: 'Current session (5h)' },
+  { key: 'seven_day', label: 'This week' },
+]
+const planRowsCodex = computed(() => planRowsFor(planUsageCodex.value, CODEX_PLAN_WINDOWS))
+function planResetText(iso: string | null): string {
+  if (!iso) return ''
+  const ms = new Date(iso).getTime() - now.value
+  if (ms <= 0) return 'resets soon'
+  const totalMinutes = Math.max(1, Math.ceil(ms / 60_000))
+  const days = Math.floor(totalMinutes / 1440)
+  const hours = Math.floor((totalMinutes % 1440) / 60)
+  const minutes = totalMinutes % 60
+  if (days > 0) return hours > 0 ? `resets in ${days}d ${hours}h` : `resets in ${days}d`
+  if (hours > 0) return minutes > 0 ? `resets in ${hours}h ${minutes}m` : `resets in ${hours}h`
+  return `resets in ${minutes}m`
 }
 
 // ── actions: backfill + reset ──────────────────────────────────────────────────
@@ -342,6 +417,84 @@ async function doClean() {
 
       <p v-if="actionMsg" class="text-xs text-muted-foreground">{{ actionMsg }}</p>
       <p v-if="error" class="text-xs text-red-500">{{ error }}</p>
+
+      <!-- Real subscription plan usage (independent of token stats) -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <!-- Claude subscription plan usage (from /usage) -->
+        <Card class="border-border/60" body-class="p-4 space-y-3">
+          <div>
+            <h2 class="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              <Gauge class="h-3.5 w-3.5" :stroke-width="1.75" /> Plan usage (Claude subscription)
+            </h2>
+            <p class="text-[11px] text-muted-foreground/70 leading-relaxed mt-1">
+              Your account's <b>real</b> usage and reset times, read live from Claude's
+              <code class="font-mono bg-muted px-1 rounded">/usage</code> data during runs.
+            </p>
+          </div>
+          <div v-if="planRows.length" class="space-y-2">
+            <div v-for="row in planRows" :key="row.label" class="space-y-1">
+              <div class="flex items-baseline justify-between text-[11px]">
+                <span class="font-medium">{{ row.label }}</span>
+                <span class="font-mono text-muted-foreground">
+                  {{ Math.round(row.utilization!) }}%
+                  <span v-if="planResetText(row.resets_at)"> · {{ planResetText(row.resets_at) }}</span>
+                </span>
+              </div>
+              <div class="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                <div
+                  class="h-full rounded-full transition-all"
+                  :class="row.utilization! >= 100 ? 'bg-red-500' : row.utilization! >= 80 ? 'bg-amber-500' : 'bg-indigo-500'"
+                  :style="{ width: Math.min(100, Math.round(row.utilization!)) + '%' }"
+                />
+              </div>
+            </div>
+            <p v-if="planUsage?.subscription_type" class="text-[11px] text-muted-foreground">
+              Plan: <b class="capitalize">{{ planUsage.subscription_type }}</b>
+            </p>
+          </div>
+          <p v-else class="text-[11px] text-muted-foreground italic">
+            No plan usage captured yet — run a Claude task and it will populate here.
+            (Unavailable for API-key / non-subscription sessions.)
+          </p>
+        </Card>
+
+        <!-- Codex subscription plan usage (from account/rateLimits) -->
+        <Card class="border-border/60" body-class="p-4 space-y-3">
+          <div>
+            <h2 class="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              <Gauge class="h-3.5 w-3.5" :stroke-width="1.75" /> Plan usage (Codex subscription)
+            </h2>
+            <p class="text-[11px] text-muted-foreground/70 leading-relaxed mt-1">
+              Your Codex account's <b>real</b> rate-limit usage (the numbers behind
+              <code class="font-mono bg-muted px-1 rounded">/status</code>), updated after each Codex run.
+            </p>
+          </div>
+          <div v-if="planRowsCodex.length" class="space-y-2">
+            <div v-for="row in planRowsCodex" :key="row.label" class="space-y-1">
+              <div class="flex items-baseline justify-between text-[11px]">
+                <span class="font-medium">{{ row.label }}</span>
+                <span class="font-mono text-muted-foreground">
+                  {{ Math.round(row.utilization!) }}%
+                  <span v-if="planResetText(row.resets_at)"> · {{ planResetText(row.resets_at) }}</span>
+                </span>
+              </div>
+              <div class="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                <div
+                  class="h-full rounded-full transition-all"
+                  :class="row.utilization! >= 100 ? 'bg-red-500' : row.utilization! >= 80 ? 'bg-amber-500' : 'bg-indigo-500'"
+                  :style="{ width: Math.min(100, Math.round(row.utilization!)) + '%' }"
+                />
+              </div>
+            </div>
+            <p v-if="planUsageCodex?.subscription_type" class="text-[11px] text-muted-foreground">
+              Plan: <b class="capitalize">{{ planUsageCodex.subscription_type }}</b>
+            </p>
+          </div>
+          <p v-else class="text-[11px] text-muted-foreground italic">
+            No Codex plan usage captured yet — run a Codex task and it will populate here.
+          </p>
+        </Card>
+      </div>
 
       <!-- Empty state -->
       <div
