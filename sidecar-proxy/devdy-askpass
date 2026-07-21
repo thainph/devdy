@@ -1,0 +1,10 @@
+#!/usr/bin/env node
+// Devdy ssh askpass helper (ssh-transparent-connect pivot).
+//
+// ssh-add invokes this (via SSH_ASKPASS) to obtain a key's passphrase without a
+// tty. The passphrase is passed ONLY through the DEVDY_ASKPASS_PASS environment
+// variable of the ssh-add child process that `prepare_ssh_access` spawns — never
+// on argv, never in a persistent file (SEC-301). We print it once on stdout and
+// exit; if it is unset we print an empty line so ssh-add fails cleanly rather
+// than hanging.
+process.stdout.write((process.env.DEVDY_ASKPASS_PASS ?? '') + '\n')

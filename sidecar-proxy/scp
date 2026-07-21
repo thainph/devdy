@@ -1,0 +1,7 @@
+#!/usr/bin/env node
+// Devdy scp shim — see ssh-shim.mjs. Named exactly `scp` so it intercepts `scp`
+// calls when this directory is prepended to the sidecar PATH. Inserts
+// `-F $DEVDY_SSH_CONFIG` when set, else behaves like the real scp (BR-304).
+import { run } from './ssh-shim.mjs'
+
+run('scp')

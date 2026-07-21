@@ -1,0 +1,7 @@
+#!/usr/bin/env node
+// Devdy ssh shim — see ssh-shim.mjs. Named exactly `ssh` so it intercepts `ssh`
+// calls when this directory is prepended to the sidecar PATH. Inserts
+// `-F $DEVDY_SSH_CONFIG` when set, else behaves like the real ssh (BR-304).
+import { run } from './ssh-shim.mjs'
+
+run('ssh')
