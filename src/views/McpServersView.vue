@@ -16,9 +16,8 @@ const deletingId = ref<string | null>(null)
 const togglingId = ref<string | null>(null)
 const importing = ref(false)
 
-// The MCP list is global (not project-scoped). Per AC-14, flag remote servers
-// as "Claude-only" only when the app's default engine is Codex, since Codex
-// can't use http/sse transports.
+// The MCP list is global (not project-scoped). Codex supports stdio and
+// streamable HTTP; legacy SSE remains Claude-only.
 const defaultIsCodex = computed(() => appSettings.settings?.default_engine === 'codex')
 
 const transportTone: Record<string, 'primary' | 'info' | 'neutral'> = {
@@ -32,8 +31,8 @@ onMounted(() => {
   appSettings.ensureLoaded()
 })
 
-function isRemote(server: McpServer): boolean {
-  return server.transport === 'http' || server.transport === 'sse'
+function isSse(server: McpServer): boolean {
+  return server.transport === 'sse'
 }
 
 async function handleImport() {
@@ -189,11 +188,11 @@ function formatDate(iso: string) {
                   {{ server.transport }}
                 </Badge>
                 <Badge
-                  v-if="isRemote(server) && defaultIsCodex"
+                  v-if="isSse(server) && defaultIsCodex"
                   tone="warning"
                   size="xs"
                   class="shrink-0"
-                  title="Remote transports (http/sse) are only supported by Claude. The default engine is Codex, which will skip this server."
+                  title="SSE transport is only supported by Claude. Codex runs will skip this server."
                 >
                   <AlertTriangle class="h-2.5 w-2.5" :stroke-width="2" />
                   Claude only

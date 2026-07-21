@@ -7,9 +7,10 @@ import {
   type TestConnectionResult,
   type VpsServer,
 } from '@/stores/servers'
+import { open } from '@tauri-apps/plugin-dialog'
 import { Button, Input, Card, AppSelect } from '@/components/ui'
 import {
-  ArrowLeft, HardDrive, Save, Plug, CheckCircle2, XCircle, AlertCircle, KeyRound,
+  ArrowLeft, HardDrive, Save, Plug, CheckCircle2, XCircle, AlertCircle, KeyRound, Upload, X,
 } from 'lucide-vue-next'
 
 const route = useRoute()
@@ -25,6 +26,7 @@ const port = ref('22')
 const username = ref('')
 const authMethod = ref<AuthMethod>('agent')
 const privateKeyPath = ref('')
+const privateKeySourcePath = ref('')
 const tags = ref('')
 const passphrase = ref('')
 // True once loaded for an existing server that already has a stored passphrase;
@@ -39,6 +41,15 @@ const validationError = ref<string | null>(null)
 
 const isKey = computed(() => authMethod.value === 'key')
 
+const selectedPrivateKeyName = computed(() => basename(privateKeySourcePath.value))
+const storedPrivateKeyName = computed(() => basename(privateKeyPath.value))
+const privateKeyName = computed(() => selectedPrivateKeyName.value || storedPrivateKeyName.value)
+const privateKeyStateLabel = computed(() => {
+  if (selectedPrivateKeyName.value) return 'Selected key file'
+  if (storedPrivateKeyName.value) return 'Stored key file'
+  return 'No private key selected'
+})
+
 const authOptions = [
   { value: 'agent', label: 'agent (ssh-agent)' },
   { value: 'key', label: 'key (private key file)' },
@@ -51,8 +62,33 @@ function applyServer(s: VpsServer) {
   username.value = s.username
   authMethod.value = s.auth_method
   privateKeyPath.value = s.private_key_path ?? ''
+  privateKeySourcePath.value = ''
   tags.value = s.tags ?? ''
   hasStoredPassphrase.value = s.has_passphrase
+}
+
+function basename(path: string): string {
+  const clean = path.trim().replace(/[/\\]+$/, '')
+  if (!clean) return ''
+  const slash = Math.max(clean.lastIndexOf('/'), clean.lastIndexOf('\\'))
+  return slash >= 0 ? clean.slice(slash + 1) : clean
+}
+
+async function handleChoosePrivateKey() {
+  const selected = await open({
+    multiple: false,
+    title: 'Select SSH Private Key',
+  })
+  const path = Array.isArray(selected) ? selected[0] : selected
+  if (!path) return
+  privateKeySourcePath.value = path
+  if (validationError.value === "Auth method 'key' requires a private key file") {
+    validationError.value = null
+  }
+}
+
+function clearSelectedPrivateKey() {
+  privateKeySourcePath.value = ''
 }
 
 onMounted(async () => {
@@ -78,8 +114,8 @@ function validate(): string | null {
   if (!username.value.trim()) return 'Username is required'
   const p = Number(port.value)
   if (!Number.isInteger(p) || p < 1 || p > 65535) return 'Port must be between 1 and 65535'
-  if (isKey.value && !privateKeyPath.value.trim()) {
-    return "Auth method 'key' requires a private key path"
+  if (isKey.value && !privateKeyPath.value.trim() && !privateKeySourcePath.value.trim()) {
+    return "Auth method 'key' requires a private key file"
   }
   return null
 }
@@ -118,6 +154,9 @@ async function handleSave() {
     username: username.value.trim(),
     auth_method: authMethod.value,
     private_key_path: isKey.value ? privateKeyPath.value.trim() : null,
+    private_key_source_path: isKey.value && privateKeySourcePath.value.trim()
+      ? privateKeySourcePath.value.trim()
+      : null,
     tags: tags.value.trim() ? tags.value.trim() : null,
     passphrase: pass,
   }
@@ -232,8 +271,39 @@ async function handleSave() {
             </p>
           </div>
           <div v-if="isKey" class="space-y-1.5">
-            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Private key path</label>
-            <Input v-model="privateKeyPath" size="sm" placeholder="~/.ssh/id_ed25519" class="font-mono" />
+            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Private key file</label>
+            <div class="flex items-center gap-2">
+              <div class="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md border border-border bg-muted/30 px-2.5 text-xs">
+                <KeyRound class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
+                <div class="min-w-0 flex-1">
+                  <div class="truncate font-mono" :class="privateKeyName ? 'text-foreground' : 'text-muted-foreground'">
+                    {{ privateKeyName || privateKeyStateLabel }}
+                  </div>
+                </div>
+                <span
+                  v-if="privateKeyName"
+                  class="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                >
+                  {{ privateKeyStateLabel }}
+                </span>
+              </div>
+              <Button variant="outline" size="sm" @click="handleChoosePrivateKey">
+                <Upload class="h-3.5 w-3.5" :stroke-width="1.75" />
+                {{ privateKeyName ? 'Change' : 'Choose' }}
+              </Button>
+              <Button
+                v-if="privateKeySourcePath"
+                variant="ghost"
+                size="icon-sm"
+                title="Clear selected key"
+                @click="clearSelectedPrivateKey"
+              >
+                <X class="h-3.5 w-3.5" :stroke-width="1.75" />
+              </Button>
+            </div>
+            <p class="text-[10px] text-muted-foreground">
+              The selected key is copied into Devdy app data on save.
+            </p>
           </div>
           <div v-if="isKey" class="space-y-1.5">
             <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Passphrase</label>

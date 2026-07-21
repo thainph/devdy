@@ -3,7 +3,7 @@ import { ref, computed, watch, type Component } from 'vue'
 import {
   ChevronRight, Wrench, Sparkles, CheckCircle2, XCircle, Cpu, Brain, AlertTriangle, Info,
   Terminal, FilePen, FilePlus2, FileText, Search, Globe, ListTodo, User, Archive, Copy, Check,
-  Bot, MessageCircleQuestion, Circle, CircleDot, ClipboardList,
+  Bot, MessageCircleQuestion, Circle, CircleDot, ClipboardList, Server,
 } from 'lucide-vue-next'
 import type { StreamEntry } from '@/lib/streamEvents'
 import { vMermaid } from '@/lib/mermaid'
@@ -122,6 +122,8 @@ const DEFAULT_TOOL_STYLE: ToolStyle = {
 
 function toolStyle(name: string): ToolStyle {
   const n = (name || '').toLowerCase()
+  if (n === 'mcp' || n.startsWith('mcp__'))
+    return { icon: Server, iconClass: 'text-teal-400', nameClass: 'text-teal-600 dark:text-teal-300', barClass: 'border-l-teal-500/60' }
   if (n === 'bash' || n === 'bashoutput' || n === 'killshell' || n === 'killbash')
     return { icon: Terminal, iconClass: 'text-emerald-400', nameClass: 'text-emerald-600 dark:text-emerald-300', barClass: 'border-l-emerald-500/60' }
   if (n === 'edit' || n === 'multiedit' || n === 'notebookedit')
@@ -335,6 +337,47 @@ function todoStats(input: unknown): { done: number; total: number } {
 function isWebTool(name: string): boolean {
   const n = (name || '').toLowerCase()
   return n === 'webfetch' || n === 'websearch'
+}
+
+// --- MCP --------------------------------------------------------------------
+function isMcpTool(name: string): boolean {
+  const n = (name || '').toLowerCase()
+  return n === 'mcp' || n.startsWith('mcp__')
+}
+function titleCaseWords(raw: string): string {
+  return raw
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (m) => m.toUpperCase())
+}
+function mcpRawParts(name: string): { server: string; action: string } {
+  const parts = (name || '').split('__')
+  if (parts.length >= 3 && parts[0].toLowerCase() === 'mcp') {
+    return { server: parts[1], action: parts.slice(2).join('__') }
+  }
+  return { server: '', action: '' }
+}
+function mcpServerLabel(entry: Extract<StreamEntry, { kind: 'tool' }>): string {
+  const inputServer = asStr(asObj(entry.input).serverName)
+  return entry.serverDisplayName || inputServer || mcpRawParts(entry.name).server || 'MCP'
+}
+function mcpActionLabel(entry: Extract<StreamEntry, { kind: 'tool' }>): string {
+  if (entry.displayName) return entry.displayName
+  const inputTool = asStr(asObj(entry.input).toolName)
+  const rawAction = inputTool || mcpRawParts(entry.name).action
+  return rawAction ? titleCaseWords(rawAction) : 'MCP request'
+}
+function mcpSummary(entry: Extract<StreamEntry, { kind: 'tool' }>): string {
+  const input = asObj(entry.input)
+  const message = asStr(input.message)
+  if (message) return message
+  const questions = input.questions
+  if (Array.isArray(questions)) {
+    const first = asStr(asObj(questions[0]).question)
+    if (first) return first
+  }
+  return asStr(input.mode) || previewInput(entry.input)
 }
 
 // --- ExitPlanMode: Claude presenting a plan to leave plan mode --------------
@@ -905,6 +948,50 @@ const lastEntryIsResult = computed(() => {
             class="markdown-output text-sm leading-relaxed text-foreground"
             @click="onProseClick"
           />
+        </div>
+      </div>
+
+      <!-- MCP tool / elicitation: server + action are surfaced up front. -->
+      <div
+        v-else-if="entry.kind === 'tool' && isMcpTool(entry.name)"
+        class="rounded-md border border-l-[3px] bg-foreground/2 overflow-hidden"
+        :class="entry.result?.is_error ? 'border-border border-l-red-500/70' : ['border-border', toolStyle(entry.name).barClass]"
+      >
+        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/4 transition-colors cursor-pointer" @click="toggle(i)">
+          <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[i] }" />
+          <Server class="h-3.5 w-3.5 shrink-0 text-teal-400" :stroke-width="1.75" />
+          <span class="text-xs font-mono font-semibold shrink-0 text-teal-600 dark:text-teal-300">mcp</span>
+          <span class="text-[10px] font-mono shrink-0 rounded border border-border bg-foreground/4 px-1.5 py-0.5 text-foreground/55 truncate max-w-[10rem]" :title="mcpServerLabel(entry)">
+            {{ mcpServerLabel(entry) }}
+          </span>
+          <span class="text-xs text-foreground/80 truncate">{{ mcpActionLabel(entry) }}</span>
+          <span v-if="mcpSummary(entry)" class="text-[11px] text-foreground/45 truncate">{{ mcpSummary(entry) }}</span>
+          <span v-if="entry.result?.is_error" class="ml-auto text-[10px] text-red-500 dark:text-red-400 shrink-0 flex items-center gap-0.5"><XCircle class="h-3 w-3" :stroke-width="1.75" />denied</span>
+          <span v-else-if="entry.result" class="ml-auto text-[10px] text-emerald-600/80 dark:text-emerald-400/70 shrink-0 flex items-center gap-0.5"><CheckCircle2 class="h-3 w-3" :stroke-width="1.75" /></span>
+          <span v-else class="ml-auto text-[10px] text-amber-500/80 dark:text-amber-400/70 animate-pulse shrink-0">waiting…</span>
+        </button>
+        <div v-if="expanded[i]" class="border-t border-border">
+          <div class="grid grid-cols-[6rem_minmax(0,1fr)] gap-x-3 gap-y-1 px-3 py-2 bg-foreground/4 text-[11px]">
+            <div class="uppercase tracking-wider text-foreground/35">server</div>
+            <div class="font-mono text-foreground/75 truncate">{{ mcpServerLabel(entry) }}</div>
+            <div class="uppercase tracking-wider text-foreground/35">action</div>
+            <div class="font-mono text-foreground/75 truncate">{{ mcpActionLabel(entry) }}</div>
+            <template v-if="mcpSummary(entry)">
+              <div class="uppercase tracking-wider text-foreground/35">message</div>
+              <div class="text-foreground/70 whitespace-pre-wrap break-words">{{ mcpSummary(entry) }}</div>
+            </template>
+          </div>
+          <div class="px-3 py-2 border-t border-border">
+            <div class="text-[10px] uppercase tracking-wider text-foreground/40 mb-1">input</div>
+            <pre class="text-[11px] font-mono text-foreground/70 whitespace-pre-wrap break-words max-h-60 overflow-auto">{{ prettyInput(entry.input) }}</pre>
+          </div>
+          <div v-if="entry.result" class="px-3 py-2 border-t border-border">
+            <div class="text-[10px] uppercase tracking-wider text-foreground/40 mb-1">{{ entry.result.is_error ? 'status' : 'output' }}</div>
+            <pre
+              class="text-[11px] font-mono whitespace-pre-wrap break-words max-h-96 overflow-auto"
+              :class="entry.result.is_error ? 'text-red-600 dark:text-red-300/90' : 'text-foreground/70'"
+            >{{ entry.result.content }}</pre>
+          </div>
         </div>
       </div>
 

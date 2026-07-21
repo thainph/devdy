@@ -11,8 +11,12 @@ use crate::db::Db;
 use crate::secrets;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
-use std::time::Duration;
-use tauri::State;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
+use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
 // ---- Wire types ------------------------------------------------------------
@@ -26,8 +30,8 @@ pub struct VpsServer {
     pub host: String,
     pub port: i64,
     pub username: String,
-    pub auth_method: String, // 'agent' | 'key'
-    pub private_key_path: Option<String>,
+    pub auth_method: String,              // 'agent' | 'key'
+    pub private_key_path: Option<String>, // app-managed imported key path for key auth
     pub tags: Option<String>,
     pub status: Option<String>, // 'online' | 'offline' | 'unknown' | None
     pub last_checked_at: Option<String>,
@@ -48,6 +52,8 @@ pub struct CreateServerPayload {
     #[serde(default)]
     pub private_key_path: Option<String>,
     #[serde(default)]
+    pub private_key_source_path: Option<String>, // source file selected by the user; copied into app data
+    #[serde(default)]
     pub tags: Option<String>,
     #[serde(default)]
     pub passphrase: Option<String>, // Some(v) → store in Keychain; None → skip
@@ -66,6 +72,8 @@ pub struct UpdateServerPayload {
     #[serde(default)]
     pub private_key_path: Option<String>,
     #[serde(default)]
+    pub private_key_source_path: Option<String>, // source file selected by the user; copied into app data
+    #[serde(default)]
     pub tags: Option<String>,
     #[serde(default)]
     pub passphrase: Option<String>, // None/"" → keep; Some(non-empty) → overwrite
@@ -81,11 +89,22 @@ pub struct TestConnectionResult {
 // ---- Validation ------------------------------------------------------------
 
 /// Validated, normalized fields ready for persistence.
+#[derive(Debug)]
 struct ValidatedFields {
     port: i64,
     auth_method: String,
-    /// `Some(path)` only for auth_method == "key"; `None` (→ NULL) for "agent".
+    /// `Some(path)` only for auth_method == "key"; `None` when a selected
+    /// source key will be imported after the server id exists, or for "agent".
     private_key_path: Option<String>,
+}
+
+const SERVER_KEYS_DIR: &str = "server-keys";
+
+fn trimmed_optional(value: &Option<String>) -> Option<String> {
+    value
+        .as_ref()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
 }
 
 /// Validate BR-001..003 BEFORE any DB write. Returns cleaned fields on success,
@@ -97,6 +116,7 @@ fn validate_payload(
     port: Option<i64>,
     auth_method: &str,
     private_key_path: &Option<String>,
+    private_key_source_path: &Option<String>,
 ) -> Result<ValidatedFields, String> {
     // BR-003: label/host/username non-empty after trim.
     if label.trim().is_empty() {
@@ -123,18 +143,23 @@ fn validate_payload(
             private_key_path: None, // 'agent' ignores the key path → NULL
         }),
         "key" => {
-            // BR-002: 'key' requires a non-empty private_key_path.
-            let path = private_key_path
-                .as_ref()
-                .map(|p| p.trim().to_string())
-                .filter(|p| !p.is_empty());
+            // BR-002: 'key' requires either an already-stored key path or a
+            // newly selected source key file to import.
+            let path = trimmed_optional(private_key_path);
             match path {
                 Some(p) => Ok(ValidatedFields {
                     port,
                     auth_method: auth_method.to_string(),
                     private_key_path: Some(p),
                 }),
-                None => Err("auth_method 'key' requires a private_key_path".to_string()),
+                None if trimmed_optional(private_key_source_path).is_some() => {
+                    Ok(ValidatedFields {
+                        port,
+                        auth_method: auth_method.to_string(),
+                        private_key_path: None,
+                    })
+                }
+                None => Err("auth_method 'key' requires a private key file".to_string()),
             }
         }
         other => Err(format!(
@@ -144,10 +169,124 @@ fn validate_payload(
     }
 }
 
+fn set_private_permissions(path: &Path, mode: u32) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = mode;
+        let _ = path;
+    }
+}
+
+fn server_keys_root(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("no app data dir: {e}"))?
+        .join(SERVER_KEYS_DIR);
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create server key dir: {e}"))?;
+    set_private_permissions(&dir, 0o700);
+    Ok(dir)
+}
+
+fn server_key_dir(app: &AppHandle, server_id: &str) -> Result<PathBuf, String> {
+    let dir = server_keys_root(app)?.join(server_id);
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create server key dir: {e}"))?;
+    set_private_permissions(&dir, 0o700);
+    Ok(dir)
+}
+
+fn sanitize_key_filename(raw: &str) -> String {
+    let mut out = String::new();
+    for ch in raw.trim().chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    let out = out.trim_matches('.').to_string();
+    if out.is_empty() {
+        "id_key".to_string()
+    } else {
+        out
+    }
+}
+
+fn key_filename_from_source(source: &Path) -> String {
+    source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(sanitize_key_filename)
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "id_key".to_string())
+}
+
+fn import_private_key_file(
+    app: &AppHandle,
+    server_id: &str,
+    source_path: &str,
+) -> Result<String, String> {
+    let source_path = source_path.trim();
+    if source_path.is_empty() {
+        return Err("private key file is required".to_string());
+    }
+
+    let source = PathBuf::from(source_path);
+    let meta =
+        fs::metadata(&source).map_err(|e| format!("Private key file cannot be read: {e}"))?;
+    if !meta.is_file() {
+        return Err("Private key selection must be a file".to_string());
+    }
+
+    let dir = server_key_dir(app, server_id)?;
+    let file_name = format!("{}-{}", Uuid::new_v4(), key_filename_from_source(&source));
+    let dest = dir.join(file_name);
+    fs::copy(&source, &dest).map_err(|e| format!("Failed to import private key file: {e}"))?;
+    set_private_permissions(&dest, 0o600);
+    Ok(dest.to_string_lossy().into_owned())
+}
+
+fn server_key_dir_path(app: &AppHandle, server_id: &str) -> Option<PathBuf> {
+    app.path()
+        .app_data_dir()
+        .ok()
+        .map(|dir| dir.join(SERVER_KEYS_DIR).join(server_id))
+}
+
+fn remove_imported_private_keys(app: &AppHandle, server_id: &str) {
+    if let Some(dir) = server_key_dir_path(app, server_id) {
+        let _ = fs::remove_dir_all(dir);
+    }
+}
+
+fn prune_imported_private_keys(app: &AppHandle, server_id: &str, keep_path: &str) {
+    let Some(dir) = server_key_dir_path(app, server_id) else {
+        return;
+    };
+    let keep = PathBuf::from(keep_path);
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path != keep {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
 // ---- Row mapping -----------------------------------------------------------
 
 const SELECT_COLS: &str = "id, label, host, port, username, auth_method, private_key_path, \
      tags, status, last_checked_at, created_at";
+const PROJECT_SERVER_SELECT_COLS: &str = "servers.id, servers.label, servers.host, servers.port, \
+     servers.username, servers.auth_method, servers.private_key_path, servers.tags, servers.status, \
+     servers.last_checked_at, servers.created_at";
 
 fn row_to_server(row: &sqlx::sqlite::SqliteRow) -> VpsServer {
     let id: String = row.get("id");
@@ -191,15 +330,19 @@ pub(crate) async fn fetch_server_public(db: &Db, id: &str) -> Result<VpsServer, 
 
 #[tauri::command]
 pub async fn list_vps_servers(db: State<'_, Db>) -> Result<Vec<VpsServer>, String> {
-    let rows = sqlx::query(&format!("SELECT {} FROM servers ORDER BY label", SELECT_COLS))
-        .fetch_all(db.inner())
-        .await
-        .map_err(|e| e.to_string())?;
+    let rows = sqlx::query(&format!(
+        "SELECT {} FROM servers ORDER BY label",
+        SELECT_COLS
+    ))
+    .fetch_all(db.inner())
+    .await
+    .map_err(|e| e.to_string())?;
     Ok(rows.iter().map(row_to_server).collect())
 }
 
 #[tauri::command]
 pub async fn create_vps_server(
+    app: AppHandle,
     db: State<'_, Db>,
     payload: CreateServerPayload,
 ) -> Result<VpsServer, String> {
@@ -211,12 +354,22 @@ pub async fn create_vps_server(
         payload.port,
         &payload.auth_method,
         &payload.private_key_path,
+        &payload.private_key_source_path,
     )?;
 
     let id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
+    let imported_private_key_path = if fields.auth_method == "key" {
+        if let Some(source_path) = trimmed_optional(&payload.private_key_source_path) {
+            Some(import_private_key_file(&app, &id, &source_path)?)
+        } else {
+            fields.private_key_path.clone()
+        }
+    } else {
+        None
+    };
 
-    sqlx::query(
+    let insert_result = sqlx::query(
         "INSERT INTO servers (id, label, host, port, username, auth_method, private_key_path, \
          tags, status, last_checked_at, created_at) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)",
@@ -227,12 +380,21 @@ pub async fn create_vps_server(
     .bind(fields.port)
     .bind(payload.username.trim())
     .bind(&fields.auth_method)
-    .bind(&fields.private_key_path)
+    .bind(&imported_private_key_path)
     .bind(&payload.tags)
     .bind(&now)
     .execute(db.inner())
-    .await
-    .map_err(|e| e.to_string())?;
+    .await;
+    if let Err(e) = insert_result {
+        if imported_private_key_path.is_some() {
+            remove_imported_private_keys(&app, &id);
+        }
+        return Err(e.to_string());
+    }
+
+    if let Some(path) = imported_private_key_path.as_deref() {
+        prune_imported_private_keys(&app, &id, path);
+    }
 
     // Store the passphrase only when a non-empty one is supplied.
     if let Some(pass) = payload.passphrase.as_ref().filter(|p| !p.is_empty()) {
@@ -245,9 +407,21 @@ pub async fn create_vps_server(
 
 #[tauri::command]
 pub async fn update_vps_server(
+    app: AppHandle,
     db: State<'_, Db>,
     payload: UpdateServerPayload,
 ) -> Result<VpsServer, String> {
+    // Ensure the server exists and keep its existing key path as the default
+    // when the user edits other fields without selecting a replacement key.
+    let existing = sqlx::query("SELECT private_key_path FROM servers WHERE id = ?")
+        .bind(&payload.id)
+        .fetch_one(db.inner())
+        .await
+        .map_err(|e| format!("Server not found: {}", e))?;
+    let existing_private_key_path: Option<String> = existing.get("private_key_path");
+    let effective_private_key_path = trimmed_optional(&payload.private_key_path)
+        .or_else(|| trimmed_optional(&existing_private_key_path));
+
     // Validate BEFORE any DB write (BR-001..003).
     let fields = validate_payload(
         &payload.label,
@@ -255,15 +429,18 @@ pub async fn update_vps_server(
         &payload.username,
         payload.port,
         &payload.auth_method,
-        &payload.private_key_path,
+        &effective_private_key_path,
+        &payload.private_key_source_path,
     )?;
-
-    // Ensure the server exists.
-    let _ = sqlx::query("SELECT id FROM servers WHERE id = ?")
-        .bind(&payload.id)
-        .fetch_one(db.inner())
-        .await
-        .map_err(|e| format!("Server not found: {}", e))?;
+    let imported_private_key_path = if fields.auth_method == "key" {
+        if let Some(source_path) = trimmed_optional(&payload.private_key_source_path) {
+            Some(import_private_key_file(&app, &payload.id, &source_path)?)
+        } else {
+            fields.private_key_path.clone()
+        }
+    } else {
+        None
+    };
 
     sqlx::query(
         "UPDATE servers SET label = ?, host = ?, port = ?, username = ?, auth_method = ?, \
@@ -274,12 +451,20 @@ pub async fn update_vps_server(
     .bind(fields.port)
     .bind(payload.username.trim())
     .bind(&fields.auth_method)
-    .bind(&fields.private_key_path)
+    .bind(&imported_private_key_path)
     .bind(&payload.tags)
     .bind(&payload.id)
     .execute(db.inner())
     .await
     .map_err(|e| e.to_string())?;
+
+    if let Some(path) = imported_private_key_path.as_deref() {
+        if trimmed_optional(&payload.private_key_source_path).is_some() {
+            prune_imported_private_keys(&app, &payload.id, path);
+        }
+    } else if fields.auth_method == "agent" {
+        remove_imported_private_keys(&app, &payload.id);
+    }
 
     // BR-005 / AC-008: a new non-empty passphrase overwrites; None/"" keeps the
     // stored value untouched.
@@ -292,9 +477,14 @@ pub async fn update_vps_server(
 }
 
 #[tauri::command]
-pub async fn delete_vps_server(db: State<'_, Db>, id: String) -> Result<(), String> {
+pub async fn delete_vps_server(
+    app: AppHandle,
+    db: State<'_, Db>,
+    id: String,
+) -> Result<(), String> {
     // BR-004: remove the Keychain secret alongside the row.
     let _ = secrets::delete_server_secret(&id);
+    remove_imported_private_keys(&app, &id);
     sqlx::query("DELETE FROM servers WHERE id = ?")
         .bind(&id)
         .execute(db.inner())
@@ -311,10 +501,11 @@ const SSH_TIMEOUT: Duration = Duration::from_secs(12);
 
 /// SEC-002 / BR-006: run SSH non-interactively and report reachability.
 ///
-/// Command: `ssh -o BatchMode=yes -o ConnectTimeout=10 -p <port> [-i <key>]
-/// <user>@<host> echo devdy-ok`. `ok` requires exit 0 AND stdout containing
-/// `devdy-ok`. The result (`online`/`offline`) plus `last_checked_at` is written
-/// back to the row. Never logs the passphrase or raw ssh stdout.
+/// Command: `ssh -o BatchMode=yes -o ConnectTimeout=10 -o
+/// StrictHostKeyChecking=accept-new -p <port> [-i <key>] <user>@<host> echo
+/// devdy-ok`. `ok` requires exit 0 AND stdout containing `devdy-ok`. The result
+/// (`online`/`offline`) plus `last_checked_at` is written back to the row. Never
+/// logs the passphrase or raw ssh stdout.
 #[tauri::command]
 pub async fn test_vps_connection(
     db: State<'_, Db>,
@@ -347,6 +538,8 @@ async fn run_ssh_probe(server: &VpsServer) -> TestConnectionResult {
         .arg("BatchMode=yes")
         .arg("-o")
         .arg("ConnectTimeout=10")
+        .arg("-o")
+        .arg("StrictHostKeyChecking=accept-new")
         .arg("-p")
         .arg(server.port.to_string());
     // Only pass an identity file for key auth (agent auth relies on ssh-agent).
@@ -450,7 +643,7 @@ pub async fn list_project_servers(
         "SELECT {}, ps.role AS role FROM project_servers ps \
          JOIN servers ON servers.id = ps.server_id \
          WHERE ps.project_id = ? ORDER BY ps.role, servers.label",
-        SELECT_COLS
+        PROJECT_SERVER_SELECT_COLS
     ))
     .bind(&project_id)
     .fetch_all(db.inner())
@@ -496,14 +689,49 @@ pub async fn unmap_server(
     server_id: String,
     role: String,
 ) -> Result<(), String> {
-    sqlx::query(
-        "DELETE FROM project_servers WHERE project_id = ? AND server_id = ? AND role = ?",
-    )
-    .bind(&project_id)
-    .bind(&server_id)
-    .bind(&role)
-    .execute(db.inner())
-    .await
-    .map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM project_servers WHERE project_id = ? AND server_id = ? AND role = ?")
+        .bind(&project_id)
+        .bind(&server_id)
+        .bind(&role)
+        .execute(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_key_filename_keeps_safe_names() {
+        assert_eq!(sanitize_key_filename("id_ed25519"), "id_ed25519");
+        assert_eq!(sanitize_key_filename("prod key.pem"), "prod_key.pem");
+        assert_eq!(sanitize_key_filename("../id_rsa"), "_id_rsa");
+        assert_eq!(sanitize_key_filename("..."), "id_key");
+    }
+
+    #[test]
+    fn validate_key_auth_accepts_selected_source_file() {
+        let fields = validate_payload(
+            "Prod",
+            "example.com",
+            "root",
+            Some(22),
+            "key",
+            &None,
+            &Some("/tmp/id_ed25519".to_string()),
+        )
+        .unwrap();
+        assert_eq!(fields.port, 22);
+        assert_eq!(fields.auth_method, "key");
+        assert_eq!(fields.private_key_path, None);
+    }
+
+    #[test]
+    fn validate_key_auth_rejects_missing_key_file() {
+        let err = validate_payload("Prod", "example.com", "root", Some(22), "key", &None, &None)
+            .unwrap_err();
+        assert!(err.contains("private key file"));
+    }
 }

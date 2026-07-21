@@ -73,8 +73,8 @@ const ruleItems = computed(() =>
 const mcpServers = ref<ProjectMcpServer[]>([])
 const loadingMcp = ref(false)
 const savingMcp = ref(false)
-// Warn (not block) when a remote server is enabled but the default engine is
-// Codex, which can't use http/sse transports.
+// Warn (not block) when a legacy SSE server is enabled but the default engine is
+// Codex, which supports stdio + streamable HTTP MCP.
 const defaultIsCodex = computed(() => appSettings.settings?.default_engine === 'codex')
 
 async function loadProjectMcpServers() {
@@ -955,12 +955,12 @@ async function handleOpenInTerminal() {
 
             <!-- Codex warning banner -->
             <div
-              v-if="defaultIsCodex && mcpServers.some(s => (s.transport === 'http' || s.transport === 'sse') && s.enabled_for_project)"
+              v-if="defaultIsCodex && mcpServers.some(s => s.transport === 'sse' && s.enabled_for_project)"
               class="mx-4 mt-4 flex items-start gap-2 px-3 py-2 bg-amber-500/10 border border-amber-500/20 rounded-md"
             >
               <AlertTriangle class="h-3.5 w-3.5 text-amber-500 mt-0.5 shrink-0" :stroke-width="1.75" />
               <p class="text-[11px] text-amber-600 dark:text-amber-400 leading-relaxed">
-                The default engine is Codex, which only supports stdio servers. Enabled http/sse servers will be skipped on Codex runs.
+                The default engine is Codex. Enabled SSE servers will be skipped; stdio and HTTP servers are available to Codex runs.
               </p>
             </div>
 
@@ -1015,11 +1015,11 @@ async function handleOpenInTerminal() {
                     <Badge tone="neutral" size="xs" class="shrink-0 uppercase tracking-wide">{{ server.transport }}</Badge>
                     <Badge v-if="!server.enabled" tone="neutral" size="xs" class="shrink-0">disabled</Badge>
                     <Badge
-                      v-if="(server.transport === 'http' || server.transport === 'sse') && defaultIsCodex"
+                      v-if="server.transport === 'sse' && defaultIsCodex"
                       tone="warning"
                       size="xs"
                       class="shrink-0"
-                      title="Codex can't use http/sse servers; this will be skipped on Codex runs."
+                      title="Codex can't use SSE servers; this will be skipped on Codex runs."
                     >Claude only</Badge>
                   </div>
                   <p v-if="server.description" class="text-[10px] text-muted-foreground truncate mt-0.5">{{ server.description }}</p>

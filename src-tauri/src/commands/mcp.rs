@@ -2,7 +2,7 @@
 //!
 //! Servers are defined once (like skills/rules), toggled per project, then
 //! injected into a run at launch: Claude gets `options.mcpServers`, Codex gets
-//! `-c mcp_servers.*` config overrides (stdio only). Secret env/header VALUEs
+//! `-c mcp_servers.*` config overrides (stdio + streamable HTTP). Secret env/header VALUEs
 //! live in the macOS Keychain — SQLite only holds the KEY names.
 
 use crate::db::Db;
@@ -152,7 +152,11 @@ fn validate_shape(
 ) -> Result<(), String> {
     match transport {
         "stdio" => {
-            if command.as_ref().map(|c| c.trim().is_empty()).unwrap_or(true) {
+            if command
+                .as_ref()
+                .map(|c| c.trim().is_empty())
+                .unwrap_or(true)
+            {
                 return Err("stdio transport requires a command".to_string());
             }
         }
@@ -199,7 +203,9 @@ fn row_to_server(row: &sqlx::sqlite::SqliteRow) -> McpServer {
     McpServer {
         id: row.get("id"),
         name: row.get("name"),
-        description: row.get::<Option<String>, _>("description").unwrap_or_default(),
+        description: row
+            .get::<Option<String>, _>("description")
+            .unwrap_or_default(),
         transport: row.get("transport"),
         command: row.get("command"),
         args: parse_json_array(row.get("args")),
@@ -225,14 +231,22 @@ fn keys_of(entries: &[SecretEntry]) -> Vec<String> {
 fn map_from_entries(entries: &[SecretEntry]) -> HashMap<String, String> {
     entries
         .iter()
-        .map(|e| (e.key.trim().to_string(), e.value.clone().unwrap_or_default()))
+        .map(|e| {
+            (
+                e.key.trim().to_string(),
+                e.value.clone().unwrap_or_default(),
+            )
+        })
         .collect()
 }
 
 /// Merge update rows against the previously stored map: for each key keep the
 /// new VALUE when supplied, else fall back to the stored VALUE (or empty).
 /// Keys no longer present are dropped. Returns the merged map to persist.
-fn merge_secrets(entries: &[SecretEntry], prev: &HashMap<String, String>) -> HashMap<String, String> {
+fn merge_secrets(
+    entries: &[SecretEntry],
+    prev: &HashMap<String, String>,
+) -> HashMap<String, String> {
     let mut out = HashMap::new();
     for e in entries {
         let key = e.key.trim().to_string();
@@ -319,8 +333,12 @@ pub async fn create_mcp_server(
     .await?;
 
     // Persist secret VALUEs to the Keychain.
-    secrets::set_mcp_secrets(&id, &map_from_entries(&payload.env), &map_from_entries(&payload.headers))
-        .map_err(|e| format!("Failed to store secrets: {}", e))?;
+    secrets::set_mcp_secrets(
+        &id,
+        &map_from_entries(&payload.env),
+        &map_from_entries(&payload.headers),
+    )
+    .map_err(|e| format!("Failed to store secrets: {}", e))?;
 
     get_mcp_server(db, id).await
 }
@@ -518,11 +536,7 @@ pub async fn set_project_mcp_servers(
 // ---- Import / export -------------------------------------------------------
 
 #[tauri::command]
-pub async fn export_mcp_server(
-    db: State<'_, Db>,
-    id: String,
-    path: String,
-) -> Result<(), String> {
+pub async fn export_mcp_server(db: State<'_, Db>, id: String, path: String) -> Result<(), String> {
     let server = get_mcp_server(db, id.clone()).await?;
     // Export INCLUDES secret VALUEs (user-initiated to a chosen file).
     let secret = secrets::get_mcp_secrets(&id);
@@ -765,7 +779,10 @@ async fn test_http(url: &str, headers: &HashMap<String, String>) -> TestConnecti
         };
     }
 
-    let client = match reqwest::Client::builder().timeout(HANDSHAKE_TIMEOUT).build() {
+    let client = match reqwest::Client::builder()
+        .timeout(HANDSHAKE_TIMEOUT)
+        .build()
+    {
         Ok(c) => c,
         Err(e) => {
             return TestConnectionResult {
@@ -815,7 +832,10 @@ async fn test_http(url: &str, headers: &HashMap<String, String>) -> TestConnecti
     // Try to locate a JSON-RPC result, either as a plain JSON body or inside an
     // SSE `data:` line.
     if let Some(msg) = extract_initialize_result(&body) {
-        return TestConnectionResult { ok: true, message: msg };
+        return TestConnectionResult {
+            ok: true,
+            message: msg,
+        };
     }
     // Connected (HTTP 2xx) but no recognizable initialize result — still a
     // meaningful signal that the endpoint is reachable.
@@ -862,7 +882,7 @@ fn extract_initialize_result(body: &str) -> Option<String> {
 /// Returns `(value, skipped)`:
 /// - `value` is a `Record<name, config>` JSON object, or `Value::Null` when no
 ///   server applies.
-/// - `skipped` lists server names dropped for the engine (Codex + http/sse).
+/// - `skipped` lists server names dropped for the engine (Codex + unsupported transports).
 ///
 /// Only servers with `enabled = 1` that are assigned to the project count. VALUE
 /// secrets are read from the Keychain here — the one place they enter a config.
@@ -905,9 +925,19 @@ pub async fn resolve_project_mcp_servers(
                 }
                 map.insert(server.name.clone(), cfg);
             }
-            "http" | "sse" => {
+            "http" => {
+                let mut cfg = serde_json::json!({
+                    "type": server.transport,
+                    "url": server.url.clone().unwrap_or_default(),
+                });
+                if !secret.headers.is_empty() {
+                    cfg["headers"] = serde_json::json!(secret.headers);
+                }
+                map.insert(server.name.clone(), cfg);
+            }
+            "sse" => {
                 if engine == "codex" {
-                    // QĐ-1: Codex only supports stdio → drop remote servers.
+                    // Codex app-server supports stdio + streamable HTTP MCP; legacy SSE is Claude-only.
                     skipped.push(server.name.clone());
                     continue;
                 }

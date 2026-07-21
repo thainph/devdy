@@ -144,6 +144,8 @@ export type StreamEntry =
       id: string
       name: string
       input: unknown
+      displayName?: string
+      serverDisplayName?: string
       result?: { content: string; is_error: boolean }
     }
   | {
@@ -226,6 +228,20 @@ export function applyStreamEvent(
   if (type === 'assistant') {
     const message = e.message as Record<string, unknown> | undefined
     const content = (message?.content ?? []) as unknown[]
+    const metaById = new Map<string, { displayName?: string; serverDisplayName?: string }>()
+    const meta = e.tool_use_meta
+    if (Array.isArray(meta)) {
+      for (const raw of meta) {
+        if (!raw || typeof raw !== 'object') continue
+        const m = raw as Record<string, unknown>
+        const id = typeof m.id === 'string' ? m.id : ''
+        if (!id) continue
+        metaById.set(id, {
+          displayName: typeof m.display_name === 'string' ? m.display_name : undefined,
+          serverDisplayName: typeof m.server_display_name === 'string' ? m.server_display_name : undefined,
+        })
+      }
+    }
     for (const block of content) {
       if (!block || typeof block !== 'object') continue
       const b = block as Record<string, unknown>
@@ -236,11 +252,14 @@ export function applyStreamEvent(
       } else if (b.type === 'tool_use') {
         const id = String(b.id ?? '')
         const idx = state.entries.length
+        const toolMeta = metaById.get(id) ?? {}
         state.entries.push({
           kind: 'tool',
           id,
           name: String(b.name ?? 'tool'),
           input: b.input,
+          ...(toolMeta.displayName ? { displayName: toolMeta.displayName } : {}),
+          ...(toolMeta.serverDisplayName ? { serverDisplayName: toolMeta.serverDisplayName } : {}),
         })
         if (id) state.toolIndex.set(id, idx)
       }
@@ -523,7 +542,8 @@ export function entriesToPlainText(entries: StreamEntry[]): string {
       case 'tool': {
         const inputStr =
           typeof e.input === 'string' ? e.input : JSON.stringify(e.input ?? {})
-        parts.push(`◆ ${e.name}(${inputStr.length > 200 ? inputStr.slice(0, 200) + '…' : inputStr})`)
+        const label = e.displayName ? `${e.displayName} (${e.name})` : e.name
+        parts.push(`◆ ${e.serverDisplayName ? `${e.serverDisplayName} · ` : ''}${label}(${inputStr.length > 200 ? inputStr.slice(0, 200) + '…' : inputStr})`)
         if (e.result) {
           const head = e.result.content.split('\n').slice(0, 6).join('\n')
           parts.push(`  ${e.result.is_error ? '✗' : '→'} ${head}${

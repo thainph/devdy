@@ -44,6 +44,7 @@ const testResult = ref<TestConnectionResult | null>(null)
 const validationError = ref<string | null>(null)
 
 const isRemote = computed(() => transport.value === 'http' || transport.value === 'sse')
+const isSse = computed(() => transport.value === 'sse')
 
 const transportOptions = [
   { value: 'stdio', label: 'stdio (local process)' },
@@ -267,9 +268,9 @@ async function handleSave() {
               :options="transportOptions"
               @update:model-value="(v: string) => transport = v as McpTransport"
             />
-            <p v-if="isRemote" class="text-[10px] text-amber-500 flex items-center gap-1">
+            <p v-if="isSse" class="text-[10px] text-amber-500 flex items-center gap-1">
               <AlertCircle class="h-3 w-3 shrink-0" :stroke-width="1.75" />
-              Remote transports (http/sse) are only supported by Claude; Codex runs skip them.
+              SSE is Claude-only; Codex runs support stdio and streamable HTTP.
             </p>
           </div>
         </Card>
