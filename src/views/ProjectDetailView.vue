@@ -6,8 +6,6 @@ import { useSkillsStore } from '@/stores/skills'
 import { useRulesStore } from '@/stores/rules'
 import { useMcpServersStore, type ProjectMcpServer } from '@/stores/mcpServers'
 import { useServersStore, type ProjectServer } from '@/stores/servers'
-import { useDeploymentsStore, type DeployHistoryItem } from '@/stores/deployments'
-import { useRunsStore } from '@/stores/runs'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import { useGitlabAccountsStore } from '@/stores/gitlabAccounts'
@@ -16,7 +14,7 @@ import {
   GitMerge, CheckCircle2, XCircle, Trash2, Plus, GitBranch, Code2, Settings, SquareTerminal, FolderOpen,
   Rocket
 } from 'lucide-vue-next'
-import { Button, Input, Textarea, Card, Badge, AppSelect } from '@/components/ui'
+import { Button, Input, Card, Badge, AppSelect } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { invoke } from '@/lib/tauri'
@@ -28,8 +26,6 @@ const skillsStore = useSkillsStore()
 const rulesStore = useRulesStore()
 const mcpStore = useMcpServersStore()
 const serversStore = useServersStore()
-const deploymentsStore = useDeploymentsStore()
-const runsStore = useRunsStore()
 const appSettings = useAppSettingsStore()
 const ghStore = useGithubAccountsStore()
 const glStore = useGitlabAccountsStore()
@@ -165,121 +161,6 @@ async function handleRemoveDeployServer(server: ProjectServer) {
   } finally {
     removingDeployKey.value = null
   }
-}
-
-// --- Deploy: per-mapping playbook + run trigger (GĐ3) ---
-interface PlaybookForm {
-  remote_path: string
-  branch: string
-  instructions: string
-}
-// Keyed by `${serverId}:${role}` so each mapping keeps its own editor state.
-const playbookForms = ref<Record<string, PlaybookForm>>({})
-const expandedPlaybookKey = ref<string | null>(null)
-const savingPlaybookKey = ref<string | null>(null)
-const deployingKey = ref<string | null>(null)
-
-function mappingKey(server: ProjectServer): string {
-  return `${server.id}:${server.role}`
-}
-
-// Toggle the playbook editor for a mapping, lazily prefilling from the backend.
-async function togglePlaybook(server: ProjectServer) {
-  const key = mappingKey(server)
-  if (expandedPlaybookKey.value === key) {
-    expandedPlaybookKey.value = null
-    return
-  }
-  expandedPlaybookKey.value = key
-  if (!playbookForms.value[key]) {
-    try {
-      const pb = await deploymentsStore.getPlaybook(projectId.value, server.id, server.role)
-      playbookForms.value[key] = {
-        remote_path: pb?.remote_path ?? '',
-        branch: pb?.branch ?? '',
-        instructions: pb?.instructions ?? '',
-      }
-    } catch (e) {
-      toast.error(String(e))
-      playbookForms.value[key] = { remote_path: '', branch: '', instructions: '' }
-    }
-  }
-}
-
-async function handleSavePlaybook(server: ProjectServer) {
-  const key = mappingKey(server)
-  const form = playbookForms.value[key]
-  if (!form) return
-  savingPlaybookKey.value = key
-  try {
-    await deploymentsStore.savePlaybook({
-      project_id: projectId.value,
-      server_id: server.id,
-      role: server.role,
-      remote_path: form.remote_path.trim() || null,
-      branch: form.branch.trim() || null,
-      instructions: form.instructions.trim() || null,
-    })
-    toast.success('Playbook saved')
-  } catch (e) {
-    toast.error(String(e))
-  } finally {
-    savingPlaybookKey.value = null
-  }
-}
-
-async function handleDeployNow(server: ProjectServer) {
-  const key = mappingKey(server)
-  // BR-203 / SEC-202: a production deploy needs explicit confirmation first.
-  if (server.role === 'production') {
-    const ok = await confirm({
-      title: 'Deploy to production',
-      message:
-        `You are about to deploy to the PRODUCTION server "${server.label}" ` +
-        `(${server.username}@${server.host}:${server.port}).\n` +
-        'The agent will ask permission before each remote command. Continue?',
-      confirmLabel: 'Deploy',
-      variant: 'primary',
-    })
-    if (!ok) return
-  }
-  deployingKey.value = key
-  try {
-    const { run_id, prompt } = await deploymentsStore.startDeploy({
-      project_id: projectId.value,
-      server_id: server.id,
-      role: server.role,
-      confirm_production: server.role === 'production',
-    })
-    // Reuse the existing run pipeline: engine=claude, permission_mode='default'
-    // (SEC-202 — no bypass), prompt_override = the composed deploy prompt.
-    await runsStore.startRun(run_id, 'claude', 'default', prompt)
-    await loadDeployHistory()
-    router.push({ name: 'project-run-detail', params: { projectId: projectId.value, runId: run_id } })
-  } catch (e) {
-    toast.error(String(e))
-  } finally {
-    deployingKey.value = null
-  }
-}
-
-// --- Deploy history (AC-208) ---
-const deployHistory = ref<DeployHistoryItem[]>([])
-const loadingHistory = ref(false)
-
-async function loadDeployHistory() {
-  loadingHistory.value = true
-  try {
-    deployHistory.value = await deploymentsStore.listHistory(projectId.value)
-  } catch (e) {
-    toast.error(String(e))
-  } finally {
-    loadingHistory.value = false
-  }
-}
-
-function openDeployRun(item: DeployHistoryItem) {
-  router.push({ name: 'project-run-detail', params: { projectId: projectId.value, runId: item.run_id } })
 }
 
 async function loadAppliedRules() {
@@ -454,7 +335,6 @@ onMounted(async () => {
   await loadProjectMcpServers()
   await serversStore.fetchServers()
   await loadProjectServers()
-  await loadDeployHistory()
   await projectStore.fetchConflicts()
   await projectStore.fetchRuleConflicts()
   await loadRepos()
@@ -1187,7 +1067,7 @@ async function handleOpenInTerminal() {
               <div
                 v-for="server in projectServers"
                 :key="`${server.id}:${server.role}`"
-                class="px-4 py-3 space-y-3"
+                class="px-4 py-3"
               >
                 <div class="flex items-center gap-3">
                   <div class="flex-1 min-w-0">
@@ -1201,24 +1081,6 @@ async function handleOpenInTerminal() {
                     </p>
                   </div>
                   <Button
-                    variant="ghost"
-                    size="sm"
-                    class="shrink-0"
-                    @click="togglePlaybook(server)"
-                  >
-                    {{ expandedPlaybookKey === `${server.id}:${server.role}` ? 'Hide' : 'Playbook' }}
-                  </Button>
-                  <Button
-                    size="sm"
-                    class="shrink-0"
-                    :disabled="deployingKey === `${server.id}:${server.role}`"
-                    :title="server.role === 'production' ? 'Deploy to production (confirmation required)' : 'Deploy now'"
-                    @click="handleDeployNow(server)"
-                  >
-                    <Rocket class="h-3.5 w-3.5" :stroke-width="2" />
-                    {{ deployingKey === `${server.id}:${server.role}` ? 'Starting…' : 'Deploy now' }}
-                  </Button>
-                  <Button
                     variant="destructive-ghost"
                     size="icon-sm"
                     class="shrink-0"
@@ -1227,47 +1089,6 @@ async function handleOpenInTerminal() {
                     @click="handleRemoveDeployServer(server)"
                   >
                     <Trash2 class="h-3 w-3" :stroke-width="1.75" />
-                  </Button>
-                </div>
-
-                <!-- Playbook editor -->
-                <div
-                  v-if="expandedPlaybookKey === `${server.id}:${server.role}` && playbookForms[`${server.id}:${server.role}`]"
-                  class="space-y-2.5 rounded-md border border-border/50 bg-muted/20 p-3"
-                >
-                  <div class="space-y-1.5">
-                    <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Remote path</label>
-                    <Input
-                      v-model="playbookForms[`${server.id}:${server.role}`].remote_path"
-                      type="text"
-                      size="sm"
-                      placeholder="/var/www/app"
-                    />
-                  </div>
-                  <div class="space-y-1.5">
-                    <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Branch</label>
-                    <Input
-                      v-model="playbookForms[`${server.id}:${server.role}`].branch"
-                      type="text"
-                      size="sm"
-                      placeholder="main"
-                    />
-                  </div>
-                  <div class="space-y-1.5">
-                    <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Instructions</label>
-                    <Textarea
-                      v-model="playbookForms[`${server.id}:${server.role}`].instructions"
-                      :rows="4"
-                      placeholder="Steps for the deploy agent, e.g. pull latest, run migrations, restart service…"
-                    />
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    :disabled="savingPlaybookKey === `${server.id}:${server.role}`"
-                    @click="handleSavePlaybook(server)"
-                  >
-                    {{ savingPlaybookKey === `${server.id}:${server.role}` ? 'Saving…' : 'Save playbook' }}
                   </Button>
                 </div>
               </div>
@@ -1319,47 +1140,6 @@ async function handleOpenInTerminal() {
                 {{ addingDeploy ? 'Adding…' : 'Add' }}
               </Button>
             </template>
-          </Card>
-
-          <!-- Deploy history -->
-          <Card>
-            <template #header>
-              <SquareTerminal class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-              <span class="text-xs font-semibold">Deploy history</span>
-              <span
-                v-if="deployHistory.length > 0"
-                class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1 text-[10px] font-medium text-muted-foreground leading-none"
-              >{{ deployHistory.length }}</span>
-            </template>
-
-            <div v-if="loadingHistory" class="px-4 py-6 text-center text-xs text-muted-foreground">
-              Loading…
-            </div>
-            <div
-              v-else-if="deployHistory.length === 0"
-              class="px-4 py-6 text-center text-xs text-muted-foreground"
-            >
-              No deployments yet.
-            </div>
-            <div v-else class="divide-y divide-border/50">
-              <button
-                v-for="item in deployHistory"
-                :key="item.run_id"
-                type="button"
-                class="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted/40 transition-colors"
-                @click="openDeployRun(item)"
-              >
-                <div class="flex-1 min-w-0">
-                  <div class="flex items-center gap-1.5 flex-wrap">
-                    <p class="text-xs font-medium truncate">{{ item.title ?? item.server_label }}</p>
-                    <Badge v-if="item.role" tone="primary" size="xs" class="shrink-0 uppercase tracking-wide">{{ item.role }}</Badge>
-                  </div>
-                  <p class="text-[10px] text-muted-foreground truncate mt-0.5">
-                    {{ item.server_label }} · {{ item.status }} · {{ new Date(item.created_at).toLocaleString() }}
-                  </p>
-                </div>
-              </button>
-            </div>
           </Card>
         </div>
 

@@ -1,6 +1,5 @@
 pub mod agents_block;
 pub mod codex_sessions;
-pub mod deployments;
 pub mod health;
 pub mod skills;
 pub mod rules;
