@@ -51,8 +51,8 @@ use commands::skills::{
 };
 use commands::stats::{
     backfill_usage, get_budget_status, get_codex_budget_status, get_plan_usage,
-    get_plan_usage_codex, get_usage_stats, refresh_codex_plan_usage, refresh_plan_usage,
-    reset_usage_stats,
+    get_plan_usage_codex, get_run_budget, get_usage_stats, refresh_codex_plan_usage,
+    refresh_plan_usage, reset_usage_stats,
 };
 use commands::storage::{clean_storage, get_storage_stats};
 use commands::vps_servers::{
@@ -236,6 +236,7 @@ pub fn run() {
             reset_usage_stats,
             get_budget_status,
             get_codex_budget_status,
+            get_run_budget,
             get_plan_usage,
             get_plan_usage_codex,
             refresh_plan_usage,

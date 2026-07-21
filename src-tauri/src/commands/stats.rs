@@ -1000,6 +1000,14 @@ pub async fn get_codex_budget_status(db: State<'_, Db>) -> Result<BudgetStatus, 
     Ok(plan_display_status(plan_json.as_deref(), stale_secs))
 }
 
+/// Preflight the run-blocking guardrail for `engine` WITHOUT side effects, so
+/// the UI can confirm a budget override BEFORE it optimistically echoes the
+/// user's message. Same verdict `enforce_budget` acts on.
+#[tauri::command]
+pub async fn get_run_budget(db: State<'_, Db>, engine: String) -> Result<BudgetStatus, String> {
+    budget_status_for(db.inner(), &engine).await
+}
+
 /// Guardrail used at every token-consuming entry point (start / resume /
 /// follow-up). Refuses when the budget is over, unless the user explicitly
 /// overrode it. The error is prefixed `BUDGET_EXCEEDED` so the UI can offer a
