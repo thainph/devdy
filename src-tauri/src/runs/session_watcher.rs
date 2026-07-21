@@ -116,6 +116,14 @@ async fn handle_change(db: &Pool<Sqlite>, app: &AppHandle, path: &Path) {
             return;
         };
         upsert_for_project(db, app, ProjectMatch::Cwd(&cwd), &thread_id, EngineCall::Codex(path)).await;
+        // Plan rate-limits are account-global (not per-project): refresh the Codex
+        // budget snapshot whenever any rollout gains new usage data, so the badge
+        // stays current during live runs and from external codex CLI use.
+        if let Some(rl) = crate::commands::codex_sessions::latest_codex_rate_limits(path) {
+            if crate::commands::codex_sessions::persist_codex_plan_usage(db, &rl).await {
+                let _ = app.emit("plan_usage_updated", serde_json::json!({ "provider": "codex" }));
+            }
+        }
     } else {
         // Claude: the parent directory name is the encoded project path.
         let Some(dir_name) = path

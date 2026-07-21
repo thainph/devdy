@@ -17,6 +17,7 @@ use super::sessions::{
     upsert_session_run_core, ParsedTranscript, SyncOutcome, UsageTotals,
 };
 use crate::db::Db;
+use chrono::TimeZone;
 use serde_json::Value;
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -32,6 +33,14 @@ pub(crate) fn codex_sessions_root() -> Option<PathBuf> {
 
 /// Read just the first line of a rollout to get `(cwd, thread_id)` without
 /// parsing the whole conversation — used to map a file to a project.
+///
+/// Returns `None` for subagent/forked rollouts. Codex's multi-agent mode
+/// (`multi_agent_version: v2`, triggered e.g. by slash commands) spawns child
+/// threads that each write their OWN rollout file with the SAME `cwd` as the
+/// parent. Since Devdy maps a rollout to a project purely by `cwd`, importing
+/// these forks would surface one conversation as several duplicate sessions
+/// after a restart. Devdy only ever spawns top-level threads (`thread/start`,
+/// `thread_source: "user"`), so skipping subagent/fork rollouts is safe.
 pub(crate) fn rollout_meta(file: &Path) -> Option<(String, String)> {
     // Only the first non-empty line is needed, so stream it rather than reading
     // the whole rollout (which can be large) into memory.
@@ -45,6 +54,14 @@ pub(crate) fn rollout_meta(file: &Path) -> Option<(String, String)> {
         return None;
     }
     let p = v.get("payload")?;
+    // Skip subagent spawns / forks — they belong to their parent thread, not a
+    // standalone session.
+    if p.get("thread_source").and_then(|x| x.as_str()) == Some("subagent")
+        || p.get("parent_thread_id").is_some()
+        || p.get("forked_from_id").is_some()
+    {
+        return None;
+    }
     let cwd = p.get("cwd").and_then(|x| x.as_str())?.to_string();
     let id = p.get("id").and_then(|x| x.as_str())?.to_string();
     Some((cwd, id))
@@ -332,7 +349,139 @@ pub async fn reconcile_codex_sessions(
             _ => {}
         }
     }
+
+    // Populate the Codex plan-usage snapshot from the newest rollout so the
+    // budget badge / settings panel show a % even before the first live run.
+    if let Some(rl) = latest_codex_rate_limits_any(&root) {
+        persist_codex_plan_usage(db.inner(), &rl).await;
+    }
     Ok(changed)
+}
+
+// ── Codex plan-usage (rate-limit) capture ─────────────────────────────────
+//
+// Codex exposes the account's plan rate-limits (the "% used" behind `/status`)
+// via the app-server `account/rateLimits/read` RPC and writes the same data into
+// each rollout's `token_count` events. Both shapes are normalized here into the
+// SAME `plan_usage` snapshot the Claude path stores, under the settings key
+// `plan_usage_codex`, so the badge / settings / budget logic are shared.
+
+/// One RateLimitWindow field, tolerating both the app-server camelCase
+/// (`usedPercent`, `windowDurationMins`, `resetsAt`) and the rollout snake_case
+/// (`used_percent`, `window_minutes`, `resets_at`).
+fn cx_num(w: &Value, camel: &str, snake: &str) -> Option<f64> {
+    w.get(camel).and_then(|v| v.as_f64()).or_else(|| w.get(snake).and_then(|v| v.as_f64()))
+}
+
+/// Build a normalized plan-usage window `{ utilization, resets_at, status, status_at }`
+/// from a codex RateLimitWindow, converting the unix-seconds reset to RFC3339.
+fn cx_window(w: &Value) -> Value {
+    let util = cx_num(w, "usedPercent", "used_percent");
+    let resets_at = cx_num(w, "resetsAt", "resets_at")
+        .and_then(|ts| chrono::Utc.timestamp_opt(ts as i64, 0).single())
+        .map(|dt| dt.to_rfc3339());
+    serde_json::json!({
+        "utilization": util,
+        "resets_at": resets_at,
+        "status": null,
+        "status_at": null,
+    })
+}
+
+/// Convert a codex RateLimitSnapshot (`{ primary, secondary, planType, ... }`)
+/// into the shared plan-usage snapshot. Windows are routed by their duration:
+/// ≤ 1 day → the rolling 5h window, else the weekly window (codex reports them
+/// as `primary`/`secondary` in no fixed order). Returns `None` when neither
+/// window carries a usable `%`.
+pub(crate) fn codex_rate_limits_to_snapshot(rl: &Value) -> Option<Value> {
+    // Accept either the bare snapshot or the `{ rateLimits: {...} }` wrapper.
+    let rl = rl.get("rateLimits").unwrap_or(rl);
+    let mut five_hour = serde_json::json!({ "utilization": null, "resets_at": null, "status": null, "status_at": null });
+    let mut seven_day = five_hour.clone();
+    let mut have = false;
+
+    for key in ["primary", "secondary"] {
+        let Some(w) = rl.get(key).filter(|v| v.is_object()) else { continue };
+        if cx_num(w, "usedPercent", "used_percent").is_none() {
+            continue;
+        }
+        let mins = cx_num(w, "windowDurationMins", "window_minutes").unwrap_or(0.0);
+        if mins > 0.0 && mins <= 1440.0 {
+            five_hour = cx_window(w);
+        } else {
+            seven_day = cx_window(w);
+        }
+        have = true;
+    }
+    if !have {
+        return None;
+    }
+
+    let plan_type = rl
+        .get("planType")
+        .or_else(|| rl.get("plan_type"))
+        .and_then(|v| v.as_str());
+    Some(serde_json::json!({
+        "captured_at": chrono::Utc::now().to_rfc3339(),
+        "subscription_type": plan_type,
+        "rate_limits_available": true,
+        "windows": {
+            "five_hour": five_hour,
+            "seven_day": seven_day,
+            "seven_day_opus": { "utilization": null, "resets_at": null, "status": null, "status_at": null },
+            "seven_day_sonnet": { "utilization": null, "resets_at": null, "status": null, "status_at": null },
+        },
+    }))
+}
+
+/// Scan a rollout for the LAST `token_count` event that carries `rate_limits`.
+pub(crate) fn latest_codex_rate_limits(file: &Path) -> Option<Value> {
+    let f = fs::File::open(file).ok()?;
+    let mut latest: Option<Value> = None;
+    for line in BufReader::new(f).lines() {
+        let Ok(line) = line else { break };
+        let line = line.trim();
+        if line.is_empty() || !line.contains("rate_limits") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let p = v.get("payload").unwrap_or(&v);
+        if p.get("type").and_then(|t| t.as_str()) != Some("token_count") {
+            continue;
+        }
+        if let Some(rl) = p.get("rate_limits").filter(|x| x.is_object()) {
+            latest = Some(rl.clone());
+        }
+    }
+    latest
+}
+
+/// Newest rollout across the whole store that has usable rate-limits — used at
+/// reconcile time to seed the snapshot regardless of which project it came from.
+fn latest_codex_rate_limits_any(root: &Path) -> Option<Value> {
+    let mut files = all_rollout_files(root);
+    files.sort();
+    for file in files.into_iter().rev() {
+        if let Some(rl) = latest_codex_rate_limits(&file) {
+            if codex_rate_limits_to_snapshot(&rl).is_some() {
+                return Some(rl);
+            }
+        }
+    }
+    None
+}
+
+/// Persist a codex RateLimitSnapshot as the latest `plan_usage_codex` state.
+/// No-op (returns false) when the snapshot has no usable window.
+pub(crate) async fn persist_codex_plan_usage(db_pool: &sqlx::SqlitePool, rl: &Value) -> bool {
+    let Some(snapshot) = codex_rate_limits_to_snapshot(rl) else {
+        return false;
+    };
+    sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES ('plan_usage_codex', ?)")
+        .bind(snapshot.to_string())
+        .execute(db_pool)
+        .await
+        .is_ok()
 }
 
 #[cfg(test)]
@@ -386,11 +535,72 @@ mod tests {
     }
 
     #[test]
+    fn codex_rate_limits_routes_windows_by_duration() {
+        // app-server camelCase shape: primary is the weekly window (10080 min),
+        // secondary is the 5h window (300 min) — routed by duration, not name.
+        let rl = serde_json::json!({
+            "primary": { "usedPercent": 38.0, "windowDurationMins": 10080, "resetsAt": 1785213453i64 },
+            "secondary": { "usedPercent": 12.0, "windowDurationMins": 300, "resetsAt": 1782373251i64 },
+            "planType": "team",
+        });
+        let snap = codex_rate_limits_to_snapshot(&rl).expect("snapshot");
+        assert_eq!(snap["subscription_type"], "team");
+        assert_eq!(snap["rate_limits_available"], true);
+        assert_eq!(snap["windows"]["five_hour"]["utilization"], 12.0);
+        assert_eq!(snap["windows"]["seven_day"]["utilization"], 38.0);
+        assert_eq!(snap["windows"]["seven_day_opus"]["utilization"], Value::Null);
+        // resets_at converted from unix seconds to RFC3339.
+        assert!(snap["windows"]["seven_day"]["resets_at"].as_str().unwrap().starts_with("20"));
+    }
+
+    #[test]
+    fn codex_rate_limits_snake_case_and_null_secondary() {
+        // Rollout snake_case shape with only a weekly window populated.
+        let rl = serde_json::json!({
+            "primary": { "used_percent": 77.0, "window_minutes": 10080, "resets_at": 1776707194i64 },
+            "secondary": null,
+            "plan_type": "free",
+        });
+        let snap = codex_rate_limits_to_snapshot(&rl).expect("snapshot");
+        assert_eq!(snap["subscription_type"], "free");
+        assert_eq!(snap["windows"]["seven_day"]["utilization"], 77.0);
+        assert_eq!(snap["windows"]["five_hour"]["utilization"], Value::Null);
+    }
+
+    #[test]
+    fn codex_rate_limits_empty_returns_none() {
+        let rl = serde_json::json!({ "primary": null, "secondary": null, "planType": "pro" });
+        assert!(codex_rate_limits_to_snapshot(&rl).is_none());
+    }
+
+    #[test]
     fn rollout_meta_reads_first_line_only() {
         let f = temp_file("meta", ROLLOUT);
         let (cwd, id) = rollout_meta(&f).expect("meta");
         assert_eq!(cwd, "/proj");
         assert_eq!(id, "thread-1");
+        let _ = fs::remove_file(&f);
+    }
+
+    #[test]
+    fn rollout_meta_skips_subagent_and_fork_threads() {
+        // A subagent spawn (multi-agent v2) shares the parent's cwd but must not
+        // be imported as its own session.
+        let subagent = concat!(
+            r#"{"type":"session_meta","payload":{"cwd":"/proj","id":"thread-2","thread_source":"subagent","parent_thread_id":"thread-1","forked_from_id":"thread-1"}}"#,
+            "\n",
+        );
+        let f = temp_file("subagent", subagent);
+        assert!(rollout_meta(&f).is_none());
+        let _ = fs::remove_file(&f);
+
+        // A plain fork (parent_thread_id present, no explicit subagent source).
+        let fork = concat!(
+            r#"{"type":"session_meta","payload":{"cwd":"/proj","id":"thread-3","parent_thread_id":"thread-1"}}"#,
+            "\n",
+        );
+        let f = temp_file("fork", fork);
+        assert!(rollout_meta(&f).is_none());
         let _ = fs::remove_file(&f);
     }
 }

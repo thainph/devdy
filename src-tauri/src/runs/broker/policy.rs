@@ -39,22 +39,27 @@ fn split_argv(argv: &[String]) -> (Vec<String>, Vec<&str>) {
 }
 
 fn deny(reason: &str) -> PolicyDecision {
-    PolicyDecision::Deny { reason: reason.to_string() }
+    PolicyDecision::Deny {
+        reason: reason.to_string(),
+    }
 }
 
 fn ask(reason: &str) -> PolicyDecision {
-    PolicyDecision::Ask { reason: reason.to_string() }
+    PolicyDecision::Ask {
+        reason: reason.to_string(),
+    }
 }
 
 /// Evaluate the broker policy for a tool + argv. Pure, synchronous, no I/O.
 ///
-/// `tool` is one of `gh`, `glab`, `git` (also accepts `github`/`gitlab` aliases
+/// `tool` is one of `gh`, `glab`, `git`, `aws` (also accepts provider aliases
 /// for defensiveness). `argv` is the argument vector AFTER the tool name.
 pub fn evaluate_policy(tool: &str, argv: &[String]) -> PolicyDecision {
     match tool {
         "git" => evaluate_git(argv),
         "gh" | "github" => evaluate_gh_like(argv, false),
         "glab" | "gitlab" => evaluate_gh_like(argv, true),
+        "aws" => evaluate_aws(argv),
         _ => ask("unknown tool — needs confirmation"),
     }
 }
@@ -119,19 +124,30 @@ fn evaluate_gh_like(argv: &[String], is_glab: bool) -> PolicyDecision {
     let is_read = if is_glab {
         matches!(
             (group, action),
-            ("mr", Some("list")) | ("mr", Some("view"))
-                | ("issue", Some("list")) | ("issue", Some("view"))
-                | ("repo", Some("view")) | ("project", Some("view"))
-                | ("ci", Some("list")) | ("ci", Some("view")) | ("ci", Some("status"))
+            ("mr", Some("list"))
+                | ("mr", Some("view"))
+                | ("issue", Some("list"))
+                | ("issue", Some("view"))
+                | ("repo", Some("view"))
+                | ("project", Some("view"))
+                | ("ci", Some("list"))
+                | ("ci", Some("view"))
+                | ("ci", Some("status"))
         )
     } else {
         matches!(
             (group, action),
-            ("pr", Some("list")) | ("pr", Some("view")) | ("pr", Some("status")) | ("pr", Some("checks"))
-                | ("issue", Some("list")) | ("issue", Some("view"))
+            ("pr", Some("list"))
+                | ("pr", Some("view"))
+                | ("pr", Some("status"))
+                | ("pr", Some("checks"))
+                | ("issue", Some("list"))
+                | ("issue", Some("view"))
                 | ("repo", Some("view"))
-                | ("run", Some("list")) | ("run", Some("view"))
-                | ("ci", Some("list")) | ("ci", Some("view"))
+                | ("run", Some("list"))
+                | ("run", Some("view"))
+                | ("ci", Some("list"))
+                | ("ci", Some("view"))
         )
     };
     if is_read {
@@ -152,8 +168,17 @@ fn evaluate_gh_like(argv: &[String], is_glab: bool) -> PolicyDecision {
         if let Some(act) = action {
             let is_write_action = matches!(
                 act,
-                "create" | "merge" | "close" | "delete" | "edit" | "ready"
-                    | "review" | "upload" | "clone" | "fork" | "archive"
+                "create"
+                    | "merge"
+                    | "close"
+                    | "delete"
+                    | "edit"
+                    | "ready"
+                    | "review"
+                    | "upload"
+                    | "clone"
+                    | "fork"
+                    | "archive"
             );
             if is_write_action {
                 return ask("write operation — needs confirmation");
@@ -163,6 +188,93 @@ fn evaluate_gh_like(argv: &[String], is_glab: bool) -> PolicyDecision {
 
     // ---- 4. DEFAULT: fail-closed Ask ----
     ask("unknown or unlisted subcommand — needs confirmation")
+}
+
+/// AWS CLI policy. Shape is usually `aws <service> <operation> ...`, except
+/// global commands such as `configure`. The policy is intentionally
+/// conservative: credential/auth mutation denies, obvious reads allow, writes
+/// ask, unknowns ask.
+fn evaluate_aws(argv: &[String]) -> PolicyDecision {
+    let (pos, _flags) = split_argv(argv);
+    let service = match pos.first() {
+        Some(s) => s.as_str(),
+        None => return ask("empty aws command — needs confirmation"),
+    };
+    let op = pos.get(1).map(|s| s.as_str()).unwrap_or("");
+
+    if service == "configure" {
+        return deny("`aws configure` mutates local credential/config state");
+    }
+    if service == "iam"
+        && matches!(
+            op,
+            "create-access-key"
+                | "delete-access-key"
+                | "update-access-key"
+                | "create-login-profile"
+                | "update-login-profile"
+                | "delete-login-profile"
+                | "create-user"
+                | "delete-user"
+        )
+    {
+        return deny("AWS IAM credential/user management is blocked");
+    }
+    if service == "sts" && matches!(op, "get-session-token" | "assume-role") {
+        return deny("AWS STS credential minting is blocked");
+    }
+
+    if service == "sts" && op == "get-caller-identity" {
+        return PolicyDecision::Allow;
+    }
+    if service == "credential" && op == "get" {
+        return PolicyDecision::Allow;
+    }
+    if op.starts_with("describe-")
+        || op.starts_with("list-")
+        || op.starts_with("get-")
+        || op.starts_with("lookup-")
+    {
+        return PolicyDecision::Allow;
+    }
+
+    if service == "s3" {
+        return match op {
+            "ls" => PolicyDecision::Allow,
+            "cp" | "sync" | "rm" | "mv" | "mb" | "rb" => {
+                ask("aws s3 write operation — needs confirmation")
+            }
+            _ => ask("unknown or unlisted aws s3 command — needs confirmation"),
+        };
+    }
+
+    let write_prefixes = [
+        "create-",
+        "update-",
+        "delete-",
+        "put-",
+        "run-",
+        "start-",
+        "stop-",
+        "terminate-",
+        "reboot-",
+        "attach-",
+        "detach-",
+        "authorize-",
+        "revoke-",
+        "modify-",
+        "enable-",
+        "disable-",
+        "register-",
+        "deregister-",
+        "deploy",
+        "publish",
+    ];
+    if write_prefixes.iter().any(|prefix| op.starts_with(prefix)) {
+        return ask("AWS write operation — needs confirmation");
+    }
+
+    ask("unknown or unlisted aws command — needs confirmation")
 }
 
 #[cfg(test)]
@@ -233,7 +345,10 @@ mod tests {
     // ---- AC5: allow ----
     #[test]
     fn allow_gh_pr_list() {
-        assert_eq!(evaluate_policy("gh", &argv(&["pr", "list"])), PolicyDecision::Allow);
+        assert_eq!(
+            evaluate_policy("gh", &argv(&["pr", "list"])),
+            PolicyDecision::Allow
+        );
     }
 
     #[test]
@@ -247,19 +362,31 @@ mod tests {
             &["repo", "view"][..],
             &["run", "list"][..],
         ] {
-            assert_eq!(evaluate_policy("gh", &argv(a)), PolicyDecision::Allow, "argv={:?}", a);
+            assert_eq!(
+                evaluate_policy("gh", &argv(a)),
+                PolicyDecision::Allow,
+                "argv={:?}",
+                a
+            );
         }
     }
 
     #[test]
     fn allow_glab_mr_list() {
-        assert_eq!(evaluate_policy("glab", &argv(&["mr", "list"])), PolicyDecision::Allow);
+        assert_eq!(
+            evaluate_policy("glab", &argv(&["mr", "list"])),
+            PolicyDecision::Allow
+        );
     }
 
     #[test]
     fn allow_git_read_transport() {
         for s in ["fetch", "pull", "clone", "status", "log", "diff"] {
-            assert_eq!(evaluate_policy("git", &argv(&[s])), PolicyDecision::Allow, "git {s}");
+            assert_eq!(
+                evaluate_policy("git", &argv(&[s])),
+                PolicyDecision::Allow,
+                "git {s}"
+            );
         }
     }
 
@@ -267,9 +394,37 @@ mod tests {
     fn allow_git_credential() {
         // credential helper protocol must be Allow (not Ask) so it never pops a
         // modal mid-fetch; host allowlist is the real gate.
-        for a in [&["credential", "get"][..], &["credential", "store"][..], &["credential", "erase"][..]] {
-            assert_eq!(evaluate_policy("git", &argv(a)), PolicyDecision::Allow, "argv={a:?}");
+        for a in [
+            &["credential", "get"][..],
+            &["credential", "store"][..],
+            &["credential", "erase"][..],
+        ] {
+            assert_eq!(
+                evaluate_policy("git", &argv(a)),
+                PolicyDecision::Allow,
+                "argv={a:?}"
+            );
         }
+    }
+
+    #[test]
+    fn allow_aws_read_commands() {
+        assert_eq!(
+            evaluate_policy("aws", &argv(&["sts", "get-caller-identity"])),
+            PolicyDecision::Allow
+        );
+        assert_eq!(
+            evaluate_policy("aws", &argv(&["ec2", "describe-instances"])),
+            PolicyDecision::Allow
+        );
+        assert_eq!(
+            evaluate_policy("aws", &argv(&["credential", "get"])),
+            PolicyDecision::Allow
+        );
+        assert_eq!(
+            evaluate_policy("aws", &argv(&["s3", "ls"])),
+            PolicyDecision::Allow
+        );
     }
 
     // ---- AC5: ask ----
@@ -278,6 +433,34 @@ mod tests {
         assert!(matches!(
             evaluate_policy("gh", &argv(&["pr", "create", "--title", "x"])),
             PolicyDecision::Ask { .. }
+        ));
+    }
+
+    #[test]
+    fn ask_aws_write_commands() {
+        assert!(matches!(
+            evaluate_policy("aws", &argv(&["ec2", "terminate-instances"])),
+            PolicyDecision::Ask { .. }
+        ));
+        assert!(matches!(
+            evaluate_policy("aws", &argv(&["s3", "sync", ".", "s3://bucket"])),
+            PolicyDecision::Ask { .. }
+        ));
+    }
+
+    #[test]
+    fn deny_aws_credential_commands() {
+        assert!(matches!(
+            evaluate_policy("aws", &argv(&["configure"])),
+            PolicyDecision::Deny { .. }
+        ));
+        assert!(matches!(
+            evaluate_policy("aws", &argv(&["iam", "create-access-key"])),
+            PolicyDecision::Deny { .. }
+        ));
+        assert!(matches!(
+            evaluate_policy("aws", &argv(&["sts", "get-session-token"])),
+            PolicyDecision::Deny { .. }
         ));
     }
 

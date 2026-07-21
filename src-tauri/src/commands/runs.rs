@@ -403,6 +403,15 @@ pub async fn start_run(
     let mut cmd = Command::new(&node_bin);
     cmd.current_dir(&project_path).arg(&sidecar_script);
     augment_command_path(&mut cmd);
+    let (broker_run, ssh_access) = wire_broker(
+        &app,
+        db.inner(),
+        &mut cmd,
+        &payload.run_id,
+        &project_id,
+        &project_path,
+    )
+    .await?;
     if codex_path != "codex" && !codex_path.trim().is_empty() {
         cmd.env("DEVDY_CODEX_PATH", &codex_path);
     }
@@ -432,9 +441,15 @@ pub async fn start_run(
 
     // Kick off the first turn.
     if let Some(stdin) = stdin_handle.as_mut() {
+        let account_context =
+            crate::runs::broker::token::build_account_context(&db_pool, &project_id).await;
+        let prompt_text = account_context
+            .as_ref()
+            .map(|ctx| format!("{ctx}\n\nUser request:\n{prompt}"))
+            .unwrap_or_else(|| prompt.clone());
         let first = serde_json::json!({
             "type": "prompt",
-            "text": prompt,
+            "text": prompt_text,
             "images": images_payload(&payload.images),
         });
         stdin
@@ -480,10 +495,8 @@ pub async fn start_run(
                 stdin: stdin_handle,
                 session_id: session_id.clone(),
                 log_buf: log_buf.clone(),
-                // Codex is untouched by GĐ3: no broker/shim wiring.
-                broker_run: None,
-                // ssh-transparent-connect applies to the Claude branch only (BR-305).
-                ssh_access: None,
+                broker_run: Some(broker_run),
+                ssh_access,
             },
         );
     }
@@ -527,7 +540,7 @@ fn is_valid_permission_mode(mode: &str) -> bool {
     )
 }
 
-/// Resolve the `sidecar-proxy/` directory holding the `gh`/`glab` shims. Mirrors
+/// Resolve the `sidecar-proxy/` directory holding brokered tool shims. Mirrors
 /// `resolve_sidecar_script`: explicit `DEVDY_SHIM_DIR` env → bundled
 /// `<resource_dir>/sidecar-proxy` → dev fallback `<crate>/../sidecar-proxy`.
 fn resolve_shim_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -558,7 +571,7 @@ fn resolve_shim_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// Prepend the shim dir to the command's PATH so `gh`/`glab` resolve to the
+/// Prepend the shim dir to the command's PATH so brokered tools resolve to the
 /// Devdy shims first. Must be called AFTER `augment_command_path` so the shim
 /// dir ends up ABSOLUTELY first, ahead of the real binaries in the login PATH.
 fn prepend_shim_path(cmd: &mut Command, shim_dir: &Path) {
@@ -585,8 +598,9 @@ fn prepend_shim_path(cmd: &mut Command, shim_dir: &Path) {
 /// for the whole app and is NOT torn down per run — that is the fix for the
 /// per-run "broker unreachable" race).
 ///
-/// Fail-closed: this NEVER sets `GH_TOKEN`/`GITLAB_TOKEN` on the sidecar env —
-/// tokens only ever reach the real gh/glab via the shim's child process.
+/// Fail-closed: this NEVER sets `GH_TOKEN`/`GITLAB_TOKEN` or AWS secret values
+/// on the sidecar env — credentials only ever reach the real child tool via
+/// shim / credential_process.
 async fn wire_broker(
     app: &AppHandle,
     db: &Db,
@@ -624,10 +638,15 @@ async fn wire_broker(
 
     // GĐ4: route `git` HTTPS auth through the Devdy credential helper (per-run,
     // never touching global git config) + set the commit identity from the
-    // linked account. Codex does NOT call wire_broker, so it is unaffected.
+    // linked account.
     let helper_path = shim_dir.join("git-credential-devdy");
     wire_git_config(cmd, &helper_path);
     wire_commit_identity(cmd, db, project_id).await;
+
+    // AWS: route SDK credential loading through credential_process for keys
+    // accounts. The `aws` CLI itself is broker-gated by the PATH shim.
+    let aws_helper_path = shim_dir.join("aws-credential-devdy");
+    wire_aws_config(app, db, cmd, run_id, project_id, &aws_helper_path).await;
 
     // ssh-transparent-connect: wire per-run transparent SSH for this project's
     // mapped VPS servers. No mapping → Ok(None) (no env set, no agent — AC-305).
@@ -667,6 +686,99 @@ fn wire_git_config(cmd: &mut Command, helper_path: &Path) {
     // linked to an account), git must FAIL immediately rather than fall back to
     // an interactive username/password prompt (which would hang the sidecar).
     cmd.env("GIT_TERMINAL_PROMPT", "0");
+}
+
+async fn wire_aws_config(
+    app: &AppHandle,
+    db: &Db,
+    cmd: &mut Command,
+    run_id: &str,
+    project_id: &str,
+    helper_path: &Path,
+) {
+    // Strip inherited AWS credentials from the sidecar parent. AWS SDKs prefer
+    // env credentials over credential_process, so leaving these in place would
+    // bypass the broker.
+    for key in [
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_PROFILE",
+        "AWS_DEFAULT_PROFILE",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "AWS_ROLE_ARN",
+        "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+        "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+    ] {
+        cmd.env_remove(key);
+    }
+    if let Some(value) = std::env::var_os("AWS_CONFIG_FILE") {
+        cmd.env("DEVDY_ORIGINAL_AWS_CONFIG_FILE", value);
+    }
+    if let Some(value) = std::env::var_os("AWS_SHARED_CREDENTIALS_FILE") {
+        cmd.env("DEVDY_ORIGINAL_AWS_SHARED_CREDENTIALS_FILE", value);
+    }
+    cmd.env("AWS_EC2_METADATA_DISABLED", "true");
+
+    let app_data_dir = match app.path().app_data_dir() {
+        Ok(dir) => dir,
+        Err(_) => return,
+    };
+    let run_dir = app_data_dir.join("aws-runs").join(run_id);
+    if fs::create_dir_all(&run_dir).is_err() {
+        return;
+    }
+    let config_path = run_dir.join("config");
+    let credentials_path = run_dir.join("credentials");
+    let _ = fs::write(&credentials_path, "");
+
+    let meta = match crate::runs::broker::token::resolve_aws_runtime_metadata(db, project_id).await
+    {
+        Ok(Some(meta)) => Some(meta),
+        _ => None,
+    };
+
+    let Some(meta) = meta else {
+        let _ = fs::write(&config_path, "[default]\n");
+        cmd.env("AWS_CONFIG_FILE", config_path);
+        cmd.env("AWS_SHARED_CREDENTIALS_FILE", credentials_path);
+        cmd.env("AWS_SDK_LOAD_CONFIG", "1");
+        return;
+    };
+
+    cmd.env("AWS_REGION", &meta.region);
+    cmd.env("AWS_DEFAULT_REGION", &meta.region);
+
+    // For keys accounts, SDKs resolve credentials through the brokered
+    // credential_process and must not fall back to global credentials. For named
+    // profile/SSO accounts, the `aws` CLI shim injects AWS_PROFILE only into the
+    // real CLI child. SDK credential_process cannot emit a profile name, so do
+    // not set AWS_PROFILE on the sidecar parent.
+    if meta.auth_method != "keys" {
+        let _ = fs::write(&config_path, format!("[default]\nregion = {}\n", meta.region));
+        cmd.env("AWS_CONFIG_FILE", config_path);
+        cmd.env("AWS_SHARED_CREDENTIALS_FILE", credentials_path);
+        cmd.env("AWS_SDK_LOAD_CONFIG", "1");
+        return;
+    }
+
+    let config = format!(
+        "[default]\nregion = {}\ncredential_process = {}\n",
+        meta.region,
+        shell_quote_path(helper_path),
+    );
+    if fs::write(&config_path, config).is_err() {
+        return;
+    }
+    cmd.env("AWS_CONFIG_FILE", config_path);
+    cmd.env("AWS_SHARED_CREDENTIALS_FILE", credentials_path);
+    cmd.env("AWS_SDK_LOAD_CONFIG", "1");
+}
+
+fn shell_quote_path(path: &Path) -> String {
+    let s = path.to_string_lossy();
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 /// Set `GIT_AUTHOR_*`/`GIT_COMMITTER_*` from the project's linked account so
@@ -1695,24 +1807,18 @@ pub async fn resume_run(
         // The sidecar resumes this session/thread on its first prompt.
         .env("DEVDY_RESUME_SESSION", &session_id);
     augment_command_path(&mut cmd);
-    // GĐ3: wire the broker + gh/glab shim for Claude resumes too, so resumed
-    // sessions get the same per-project account treatment as fresh runs. Codex is
-    // untouched. Fail-closed: never sets a token on the sidecar env.
-    let (broker_run, ssh_access): (Option<BrokerRunGuard>, Option<SshAccessGuard>) =
-        if engine == "claude" {
-            let (broker, ssh) = wire_broker(
-                &app,
-                db.inner(),
-                &mut cmd,
-                &run_id,
-                &project_id,
-                &project_path,
-            )
-            .await?;
-            (Some(broker), ssh)
-        } else {
-            (None, None)
-        };
+    // Wire the broker + shims for both Claude and Codex resumes so resumed
+    // sessions get the same per-project credential treatment as fresh runs.
+    let (broker, ssh_access) = wire_broker(
+        &app,
+        db.inner(),
+        &mut cmd,
+        &run_id,
+        &project_id,
+        &project_path,
+    )
+    .await?;
+    let broker_run: Option<BrokerRunGuard> = Some(broker);
     if engine == "codex" {
         cmd.env("DEVDY_PERMISSION_MODE", &permission_mode);
         if codex_path != "codex" && !codex_path.trim().is_empty() {
