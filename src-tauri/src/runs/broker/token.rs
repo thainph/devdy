@@ -577,11 +577,22 @@ pub async fn build_account_context(db: &Db, project_id: &str) -> Option<String> 
         lines.push(account_line("GitLab", &label, meta.username.as_deref(), &host));
     }
 
+    // ssh-transparent-connect (AC-308): append the project's mapped-VPS block so
+    // Claude knows the ssh aliases. Empty string when no server is mapped
+    // (AC-305 no-op). Kept SEPARATE from the git-account block and only appended,
+    // so it never overrides the account context.
+    let ssh_block = crate::runs::ssh_access::build_project_ssh_context(db, project_id).await;
+
     if lines.is_empty() {
-        return None;
+        // No git account. Still surface ssh context if any server is mapped so a
+        // project with only VPS mappings gets its aliases (AC-305/AC-308).
+        if ssh_block.is_empty() {
+            return None;
+        }
+        return Some(ssh_block);
     }
 
-    Some(format!(
+    let account_block = format!(
         "This project is configured with pre-attached git credentials managed by Devdy:\n\
          {}\n\n\
          Use gh / glab / git as normal — the correct account is already wired, you do NOT \
@@ -589,7 +600,14 @@ pub async fn build_account_context(db: &Db, project_id: &str) -> Option<String> 
          policy (e.g. `gh auth token`, `gh auth login`). This machine is NOT logged in \
          globally, so calling gh/glab/git outside this wiring will fail (fail-closed).",
         lines.join("\n")
-    ))
+    );
+
+    if ssh_block.is_empty() {
+        Some(account_block)
+    } else {
+        // Cumulative: account context first, ssh context appended after.
+        Some(format!("{account_block}\n\n{ssh_block}"))
+    }
 }
 
 /// Format one provider line for the account context. Drops the `(@username)`

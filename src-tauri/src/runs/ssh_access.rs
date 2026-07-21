@@ -15,7 +15,11 @@
 //!     that queries the mapping, writes the config, spawns the agent and loads
 //!     keys via askpass — verified at runtime (NFR-304), not in these unit tests.
 
+use crate::db::Db;
 use std::collections::HashSet;
+use std::path::PathBuf;
+use tauri::{AppHandle, Manager};
+use tokio::process::Command;
 
 /// One project-mapped server, ready to render into an ssh config `Host` block.
 ///
@@ -135,6 +139,280 @@ pub fn build_ssh_context(servers: &[MappedServer]) -> String {
          are handled for you. Only these mapped servers are reachable.",
     );
     out
+}
+
+/// A mapped server paired with its DB id. The id is kept OUT of `MappedServer`
+/// (which flows into the pure builders) and used only to fetch the passphrase at
+/// ssh-add time — never rendered anywhere (SEC-301).
+struct MappedServerWithId {
+    server_id: String,
+    server: MappedServer,
+}
+
+/// Query the servers mapped to `project_id` (GĐ2 `project_servers` × `servers`)
+/// and resolve them into `MappedServer`s with unique aliases. Mirrors
+/// `list_project_servers`'s JOIN but scoped to the fields the ssh layer needs;
+/// `WHERE ps.project_id = ?` enforces isolation (BR-301 / SEC-302). A server
+/// mapped under multiple roles is de-duplicated by server id so it yields a
+/// single Host block. `has_passphrase` is read from the Keychain-backed store
+/// WITHOUT reading the value (SEC-301).
+async fn mapped_servers_for_project(
+    db: &Db,
+    project_id: &str,
+) -> Result<Vec<MappedServerWithId>, String> {
+    use sqlx::Row;
+
+    let rows = sqlx::query(
+        "SELECT DISTINCT servers.id AS id, servers.label AS label, servers.host AS host, \
+                servers.port AS port, servers.username AS username, \
+                servers.auth_method AS auth_method, servers.private_key_path AS private_key_path \
+         FROM project_servers ps \
+         JOIN servers ON servers.id = ps.server_id \
+         WHERE ps.project_id = ? \
+         ORDER BY servers.label",
+    )
+    .bind(project_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut aliases: HashSet<String> = HashSet::new();
+    let mut out = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let server_id: String = row.get("id");
+        let label: String = row.get("label");
+        let alias = slugify_alias(&label, &mut aliases);
+        let has_passphrase = crate::secrets::has_server_secret(&server_id);
+        out.push(MappedServerWithId {
+            server_id,
+            server: MappedServer {
+                alias,
+                host: row.get("host"),
+                port: row.get("port"),
+                username: row.get("username"),
+                auth_method: row.get("auth_method"),
+                private_key_path: row.get("private_key_path"),
+                has_passphrase,
+            },
+        });
+    }
+    Ok(out)
+}
+
+/// Resolve the ssh context block for a project's mapped servers (AC-308). Empty
+/// string when the project maps no server (AC-305 no-op). Called by
+/// `build_account_context` (token.rs) so `start_run` is not touched.
+pub async fn build_project_ssh_context(db: &Db, project_id: &str) -> String {
+    match mapped_servers_for_project(db, project_id).await {
+        Ok(list) => {
+            let servers: Vec<MappedServer> = list.into_iter().map(|m| m.server).collect();
+            build_ssh_context(&servers)
+        }
+        // Fail-soft: ssh context is not a secret and must never break a run.
+        Err(_) => String::new(),
+    }
+}
+
+/// RAII handle for a run's transparent-ssh resources. On Drop it kills the
+/// per-run ssh-agent and removes the temp config dir, so no agent or key
+/// material lingers after the run ends (§3.6). Stored in `RunHandles.ssh_access`.
+pub struct SshAccessGuard {
+    agent_pid: Option<u32>,
+    dir: PathBuf,
+}
+
+impl Drop for SshAccessGuard {
+    fn drop(&mut self) {
+        // Kill the per-run agent (best-effort; the agent holds decrypted keys).
+        if let Some(pid) = self.agent_pid {
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
+            }
+        }
+        // Remove the temp dir (config + agent socket). Best-effort.
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Prepare transparent SSH for one Claude run of `project_id`.
+///
+/// Returns `Ok(None)` when the project maps no server (AC-305 no-op): no config
+/// is written, `DEVDY_SSH_CONFIG` is not set, no agent is spawned. Otherwise it:
+///   - writes `<app_data>/ssh-runs/<run_id>/config` (dir 0700, file 0600) from
+///     `build_ssh_config`,
+///   - spawns a per-run `ssh-agent -a <dir>/agent.sock`,
+///   - for each `key` server with a stored passphrase, runs `ssh-add <key>` with
+///     the passphrase supplied via `DEVDY_ASKPASS_PASS` on the ssh-add child env
+///     + `SSH_ASKPASS`/`SSH_ASKPASS_REQUIRE=force` (SEC-301: never argv/file/log),
+///   - sets `DEVDY_SSH_CONFIG` + `SSH_AUTH_SOCK` on `cmd` (the shim dir is already
+///     on PATH via `prepend_shim_path` in `wire_broker`),
+///   - returns an `SshAccessGuard` to store in `RunHandles`.
+///
+/// Fail-soft (BR-303): agent/ssh-add failures are logged as warnings (NEVER the
+/// passphrase) and do not abort the run — ssh may still fail at use time and the
+/// agent sees the error in output.
+pub async fn prepare_ssh_access(
+    app: &AppHandle,
+    db: &Db,
+    cmd: &mut Command,
+    run_id: &str,
+    project_id: &str,
+) -> Result<Option<SshAccessGuard>, String> {
+    let mapped = mapped_servers_for_project(db, project_id).await?;
+    if mapped.is_empty() {
+        return Ok(None); // AC-305: no-op.
+    }
+
+    // Per-run scratch dir under app data: <app_data>/ssh-runs/<run_id>/.
+    let base = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("no app data dir: {e}"))?;
+    let dir = base.join("ssh-runs").join(run_id);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    }
+
+    // Write the ssh config (0600). Contains no secret (SEC-301).
+    let servers: Vec<MappedServer> = mapped.iter().map(|m| m.server.clone()).collect();
+    let config_body = build_ssh_config(&servers);
+    let config_path = dir.join("config");
+    std::fs::write(&config_path, config_body).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600));
+    }
+
+    // Spawn a per-run ssh-agent bound to a socket inside the temp dir.
+    let sock_path = dir.join("agent.sock");
+    let agent_pid = spawn_agent(&sock_path).await;
+
+    // Load passphrase-protected keys into the agent via askpass. Fail-soft.
+    if let Some(_pid) = agent_pid {
+        for m in &mapped {
+            if m.server.auth_method != "key" || !m.server.has_passphrase {
+                continue; // agent auth / no passphrase → nothing to add here.
+            }
+            let Some(key_path) = m.server.private_key_path.as_deref().filter(|p| !p.is_empty())
+            else {
+                continue;
+            };
+            add_key(app, db, &sock_path, &m.server_id, key_path).await;
+        }
+    }
+
+    // Point the sidecar (and the ssh/scp shim) at this run's config + agent.
+    cmd.env("DEVDY_SSH_CONFIG", &config_path);
+    if agent_pid.is_some() {
+        cmd.env("SSH_AUTH_SOCK", &sock_path);
+    }
+
+    Ok(Some(SshAccessGuard { agent_pid, dir }))
+}
+
+/// Spawn `ssh-agent -a <sock>` and return its pid. Returns `None` (fail-soft) if
+/// the agent could not be started; the config still lets key-without-passphrase
+/// and agent-inherited auth work.
+async fn spawn_agent(sock_path: &std::path::Path) -> Option<u32> {
+    // `ssh-agent -a <sock>` daemonizes and prints the agent pid; we parse it so
+    // the guard can kill it. `-D` (foreground) would block, so use the default.
+    let out = Command::new("ssh-agent")
+        .arg("-a")
+        .arg(sock_path)
+        .output()
+        .await;
+    match out {
+        Ok(o) if o.status.success() => {
+            let text = String::from_utf8_lossy(&o.stdout);
+            parse_agent_pid(&text)
+        }
+        Ok(_) | Err(_) => {
+            eprintln!("devdy: ssh-agent failed to start for run (transparent ssh degraded)");
+            None
+        }
+    }
+}
+
+/// Parse the `SSH_AGENT_PID=<n>;` line ssh-agent prints on stdout.
+fn parse_agent_pid(text: &str) -> Option<u32> {
+    for line in text.lines() {
+        if let Some(rest) = line.split_once("SSH_AGENT_PID=") {
+            let digits: String = rest.1.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(pid) = digits.parse::<u32>() {
+                return Some(pid);
+            }
+        }
+    }
+    None
+}
+
+/// Run `ssh-add <key>` against the per-run agent, supplying the passphrase via
+/// the child's `DEVDY_ASKPASS_PASS` env + the devdy-askpass helper (SEC-301: the
+/// passphrase is never on argv, never in a file, never logged). Fail-soft.
+async fn add_key(app: &AppHandle, _db: &Db, sock_path: &std::path::Path, server_id: &str, key_path: &str) {
+    // Read the passphrase from the Keychain-backed store at the last moment.
+    let secret = crate::secrets::get_server_secret(server_id);
+    let Some(passphrase) = secret.passphrase else {
+        return; // has_passphrase was true but value missing → skip (fail-soft).
+    };
+
+    let askpass = match resolve_askpass(app) {
+        Some(p) => p,
+        None => {
+            eprintln!("devdy: askpass helper not found; key with passphrase not loaded");
+            return;
+        }
+    };
+
+    let mut cmd = Command::new("ssh-add");
+    cmd.arg(key_path)
+        .env("SSH_AUTH_SOCK", sock_path)
+        .env("SSH_ASKPASS", &askpass)
+        // OpenSSH >= 8.4: force askpass even with no tty/DISPLAY (headless).
+        .env("SSH_ASKPASS_REQUIRE", "force")
+        .env("DISPLAY", ":0")
+        // The passphrase travels ONLY on this child process's env (SEC-301).
+        .env("DEVDY_ASKPASS_PASS", &passphrase)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    match cmd.status().await {
+        Ok(s) if s.success() => {}
+        // NEVER log the passphrase; only that the add failed.
+        _ => eprintln!("devdy: ssh-add failed for a mapped key (transparent ssh degraded)"),
+    }
+}
+
+/// Resolve the devdy-askpass helper next to the sidecar shims. Mirrors
+/// `resolve_shim_dir` resolution order: DEVDY_SHIM_DIR → bundled resource dir →
+/// dev fallback.
+fn resolve_askpass(app: &AppHandle) -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("DEVDY_SHIM_DIR") {
+        let cand = PathBuf::from(p).join("devdy-askpass");
+        if cand.exists() {
+            return Some(cand);
+        }
+    }
+    if let Ok(res) = app.path().resource_dir() {
+        let cand = res.join("sidecar-proxy").join("devdy-askpass");
+        if cand.exists() {
+            return Some(cand);
+        }
+    }
+    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("sidecar-proxy")
+        .join("devdy-askpass");
+    if dev.exists() {
+        Some(dev)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -292,5 +570,105 @@ mod tests {
         let servers = vec![key_server("web", "h", Some("/k"), true)];
         let ctx = build_ssh_context(&servers);
         assert!(!ctx.to_lowercase().contains("passphrase"));
+    }
+
+    // ---- ssh-agent pid parsing (orchestration helper) ----
+
+    #[test]
+    fn parse_agent_pid_reads_the_pid_line() {
+        let out = "SSH_AUTH_SOCK=/tmp/run/agent.sock; export SSH_AUTH_SOCK;\n\
+                   SSH_AGENT_PID=45231; export SSH_AGENT_PID;\n\
+                   echo Agent pid 45231;\n";
+        assert_eq!(parse_agent_pid(out), Some(45231));
+    }
+
+    #[test]
+    fn parse_agent_pid_none_when_absent() {
+        assert_eq!(parse_agent_pid("no pid here\n"), None);
+    }
+
+    // ---- mapped_servers_for_project: isolation + empty (BR-301 / AC-305) ----
+
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn mem_db() -> Db {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("mem db");
+        sqlx::query(
+            "CREATE TABLE servers (id TEXT PRIMARY KEY, label TEXT, host TEXT, port INTEGER, \
+             username TEXT, auth_method TEXT, private_key_path TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE project_servers (project_id TEXT, server_id TEXT, role TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn mapped_servers_empty_when_project_maps_none() {
+        // AC-305: no mapping → empty list → context is empty (no-op).
+        let db = mem_db().await;
+        let list = mapped_servers_for_project(&db, "p1").await.unwrap();
+        assert!(list.is_empty());
+        assert_eq!(build_project_ssh_context(&db, "p1").await, "");
+    }
+
+    #[tokio::test]
+    async fn mapped_servers_isolated_to_project() {
+        // BR-301 / SEC-302: only this project's servers are returned.
+        let db = mem_db().await;
+        sqlx::query(
+            "INSERT INTO servers (id, label, host, port, username, auth_method, private_key_path) \
+             VALUES ('s1','Web','h1',22,'deploy','key','/k'), \
+                    ('s2','Other','h2',22,'root','agent',NULL)",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO project_servers (project_id, server_id, role) VALUES ('p1','s1','production')")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO project_servers (project_id, server_id, role) VALUES ('p2','s2','production')")
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let list = mapped_servers_for_project(&db, "p1").await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].server.alias, "web");
+        assert_eq!(list[0].server.host, "h1");
+        // The other project's server never leaks into the context.
+        let ctx = build_project_ssh_context(&db, "p1").await;
+        assert!(ctx.contains("`web`"));
+        assert!(!ctx.contains("h2"));
+    }
+
+    #[tokio::test]
+    async fn mapped_servers_dedupes_multi_role_mapping() {
+        // A server mapped under two roles yields one Host entry (one alias).
+        let db = mem_db().await;
+        sqlx::query(
+            "INSERT INTO servers (id, label, host, port, username, auth_method, private_key_path) \
+             VALUES ('s1','Web','h1',22,'deploy','key','/k')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO project_servers (project_id, server_id, role) VALUES ('p1','s1','production'),('p1','s1','staging')")
+            .execute(&db)
+            .await
+            .unwrap();
+        let list = mapped_servers_for_project(&db, "p1").await.unwrap();
+        assert_eq!(list.len(), 1, "multi-role mapping must de-dupe to one server");
     }
 }
