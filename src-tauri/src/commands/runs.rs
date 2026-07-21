@@ -2,6 +2,7 @@ use crate::commands::github::RunRecord;
 use crate::db::Db;
 use crate::runs::sidecar::{augment_command_path, detach_process_group, drain_sidecar, kill_process_group, resolve_codex_sidecar, resolve_sidecar, sdk_permission_mode};
 use crate::runs::broker::BrokerHandle;
+use crate::runs::ssh_access::{self, SshAccessGuard};
 use crate::runs::{BrokerRunCtx, BrokerRunGuard, BrokerRuns, RunHandles, RunRegistry};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -257,7 +258,7 @@ pub async fn start_run(
         // GĐ3: per-run credential broker + gh/glab shim. Prepends the shim dir to
         // PATH and sets DEVDY_BROKER_SOCK/DEVDY_PROJECT_ID. Fail-closed: no token
         // is ever placed on the sidecar env. Held in RunHandles for Drop cleanup.
-        let broker_run =
+        let (broker_run, ssh_access) =
             wire_broker(&app, db.inner(), &mut cmd, &payload.run_id, &project_id, &project_path)
                 .await?;
         // Honor a custom claude binary if the user configured one; default uses
@@ -339,6 +340,7 @@ pub async fn start_run(
                     session_id: session_id.clone(),
                     log_buf: log_buf.clone(),
                     broker_run: Some(broker_run),
+                    ssh_access,
                 },
             );
         }
@@ -444,6 +446,8 @@ pub async fn start_run(
                 log_buf: log_buf.clone(),
                 // Codex is untouched by GĐ3: no broker/shim wiring.
                 broker_run: None,
+                // ssh-transparent-connect applies to the Claude branch only (BR-305).
+                ssh_access: None,
             },
         );
     }
@@ -550,7 +554,7 @@ async fn wire_broker(
     run_id: &str,
     project_id: &str,
     project_path: &str,
-) -> Result<BrokerRunGuard, String> {
+) -> Result<(BrokerRunGuard, Option<SshAccessGuard>), String> {
     // The singleton broker (and its socket) were started at app setup and live
     // in managed state. Read its stable socket path.
     let sock_path = app
@@ -583,7 +587,20 @@ async fn wire_broker(
     wire_git_config(cmd, &helper_path);
     wire_commit_identity(cmd, db, project_id).await;
 
-    Ok(guard)
+    // ssh-transparent-connect: wire per-run transparent SSH for this project's
+    // mapped VPS servers. No mapping → Ok(None) (no env set, no agent — AC-305).
+    // The shim dir is already on PATH (prepend_shim_path above), so the ssh/scp
+    // shims resolve; prepare_ssh_access only adds DEVDY_SSH_CONFIG + SSH_AUTH_SOCK.
+    // Fail-soft: a genuine setup error degrades to no-ssh rather than aborting.
+    let ssh_access = match ssh_access::prepare_ssh_access(app, db, cmd, run_id, project_id).await {
+        Ok(guard) => guard,
+        Err(e) => {
+            eprintln!("devdy: transparent ssh setup failed (run continues without it): {e}");
+            None
+        }
+    };
+
+    Ok((guard, ssh_access))
 }
 
 /// Configure `git` for this run to use the Devdy credential helper via
@@ -1631,14 +1648,15 @@ pub async fn resume_run(
     // GĐ3: wire the broker + gh/glab shim for Claude resumes too, so resumed
     // sessions get the same per-project account treatment as fresh runs. Codex is
     // untouched. Fail-closed: never sets a token on the sidecar env.
-    let broker_run: Option<BrokerRunGuard> = if engine == "claude" {
-        Some(
-            wire_broker(&app, db.inner(), &mut cmd, &run_id, &project_id, &project_path)
-                .await?,
-        )
-    } else {
-        None
-    };
+    let (broker_run, ssh_access): (Option<BrokerRunGuard>, Option<SshAccessGuard>) =
+        if engine == "claude" {
+            let (broker, ssh) =
+                wire_broker(&app, db.inner(), &mut cmd, &run_id, &project_id, &project_path)
+                    .await?;
+            (Some(broker), ssh)
+        } else {
+            (None, None)
+        };
     if engine == "codex" {
         cmd.env("DEVDY_PERMISSION_MODE", &permission_mode);
         if codex_path != "codex" && !codex_path.trim().is_empty() {
@@ -1713,6 +1731,7 @@ pub async fn resume_run(
                 session_id: session_id_state.clone(),
                 log_buf: log_buf.clone(),
                 broker_run,
+                ssh_access,
             },
         );
     }

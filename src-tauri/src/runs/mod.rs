@@ -30,6 +30,13 @@ pub struct RunHandles {
     /// automatically deregistered. No socket is created or torn down per run.
     #[allow(dead_code)]
     pub broker_run: Option<BrokerRunGuard>,
+    /// ssh-transparent-connect: per-run transparent-SSH resources (Claude runs
+    /// whose project maps VPS servers; None otherwise — including all codex runs).
+    /// Like `broker_run`, this guard's only job is lifetime: on Drop it kills the
+    /// per-run ssh-agent and removes the temp config dir. Held here so the
+    /// existing registry teardown cleans it up for free.
+    #[allow(dead_code)]
+    pub ssh_access: Option<ssh_access::SshAccessGuard>,
 }
 
 pub type RunRegistry = Arc<Mutex<HashMap<String, RunHandles>>>;
