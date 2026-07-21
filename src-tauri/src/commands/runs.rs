@@ -76,7 +76,7 @@ fn log_user_content(text: &str, images: &[ImageAttachment]) -> serde_json::Value
 }
 
 async fn claude_usage_capture_mode(db: &Db) -> &'static str {
-    match crate::commands::stats::budget_status(db).await {
+    match crate::commands::stats::budget_status_for(db, "claude").await {
         Ok(status) if status.source == "plan" && (status.is_warning || status.is_over) => "warning",
         _ => "normal",
     }
@@ -181,9 +181,9 @@ pub async fn start_run(
     let engine = payload.engine_override.unwrap_or(default_engine);
 
     // Global budget guardrail: refuse to start a new run when over budget
-    // (real plan utilization, or the self-imposed token fallback), unless the
-    // user explicitly overrode it.
-    crate::commands::stats::enforce_budget(db.inner(), payload.override_budget).await?;
+    // (real plan utilization for this engine, or the self-imposed token
+    // fallback), unless the user explicitly overrode it.
+    crate::commands::stats::enforce_budget(db.inner(), &engine, payload.override_budget).await?;
 
     let permission_mode = payload
         .permission_mode_override
@@ -845,8 +845,14 @@ pub async fn send_user_message(
     registry: State<'_, RunRegistry>,
     payload: SendUserMessagePayload,
 ) -> Result<(), String> {
-    // A follow-up turn consumes tokens like any other, so gate it too.
-    crate::commands::stats::enforce_budget(db.inner(), payload.override_budget).await?;
+    // A follow-up turn consumes tokens like any other, so gate it too — against
+    // the guardrail for this run's engine.
+    let engine: String = sqlx::query_scalar("SELECT engine FROM runs WHERE id = ?")
+        .bind(&payload.run_id)
+        .fetch_one(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+    crate::commands::stats::enforce_budget(db.inner(), &engine, payload.override_budget).await?;
 
     let text = payload.content.trim();
     // A turn must carry text or at least one image.
@@ -1697,10 +1703,6 @@ pub async fn resume_run(
 ) -> Result<(), String> {
     use sqlx::Row;
 
-    // Same budget guardrail as start_run — resuming a finished run starts a new
-    // turn and consumes tokens, so it must be gated too.
-    crate::commands::stats::enforce_budget(db.inner(), override_budget.unwrap_or(false)).await?;
-
     let row = sqlx::query(
         "SELECT r.engine, r.status, r.session_id, r.project_id, p.path as project_path
          FROM runs r JOIN projects p ON p.id = r.project_id
@@ -1716,6 +1718,11 @@ pub async fn resume_run(
     let session_id: Option<String> = row.get("session_id");
     let project_id: String = row.get("project_id");
     let project_path: String = row.get("project_path");
+
+    // Same budget guardrail as start_run — resuming a finished run starts a new
+    // turn and consumes tokens, so it must be gated too (per this run's engine).
+    crate::commands::stats::enforce_budget(db.inner(), &engine, override_budget.unwrap_or(false))
+        .await?;
 
     if engine != "claude" && engine != "codex" {
         return Err("Only Claude and Codex runs can be resumed".to_string());

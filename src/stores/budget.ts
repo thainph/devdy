@@ -18,13 +18,11 @@ const FAILED_REFRESH_BACKOFF_MS = 5 * 60_000
  * logic read the SAME verdict, so they can never diverge.
  */
 interface BudgetStatus {
-  source: 'plan' | 'tokens' | 'disabled'
+  source: 'plan' | 'disabled'
   period: string
   percent: number
   is_warning: boolean
   is_over: boolean
-  used_tokens: number
-  limit_tokens: number
   reset: string | null
   captured_at: string | null
   is_stale: boolean
@@ -48,17 +46,15 @@ export const useBudgetStore = defineStore('budget', () => {
   const lastFailedCodexProbeAt = ref(0)
 
   const source = computed(() => status.value?.source ?? 'disabled')
-  /** True when accurate subscription plan data backs the verdict (not estimate). */
+  /** True when accurate subscription plan data backs the verdict. */
   const hasPlan = computed(() => source.value === 'plan')
-  /** Any guardrail active (plan window or self-imposed token budget). */
+  /** True when a plan window backs the verdict (badge has a % to show). */
   const enabled = computed(() => source.value !== 'disabled')
   const period = computed(() => status.value?.period ?? 'week')
   const percent = computed(() => status.value?.percent ?? 0)
   const isWarning = computed(() => status.value?.is_warning ?? false)
   const isOver = computed(() => status.value?.is_over ?? false)
   const reset = computed(() => status.value?.reset ?? null)
-  const usedTokens = computed(() => status.value?.used_tokens ?? 0)
-  const limit = computed(() => status.value?.limit_tokens ?? 0)
   const capturedAt = computed(() => status.value?.captured_at ?? null)
   const isStale = computed(() => status.value?.is_stale ?? false)
   const rolledOver = computed(() => status.value?.rolled_over ?? false)
@@ -175,8 +171,6 @@ export const useBudgetStore = defineStore('budget', () => {
     isWarning,
     isOver,
     reset,
-    usedTokens,
-    limit,
     capturedAt,
     isStale,
     rolledOver,

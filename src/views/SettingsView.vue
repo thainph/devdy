@@ -41,9 +41,8 @@ interface AppSettings {
   terminal_app: string
   context_warn_percent: string
   context_limit_override: string
-  token_budget_period: string
-  token_budget_limit: string
-  budget_warn_percent: string
+  budget_5h_percent: string
+  budget_week_percent: string
 }
 
 const settings = ref<AppSettings>({
@@ -61,9 +60,8 @@ const settings = ref<AppSettings>({
   terminal_app: 'terminal',
   context_warn_percent: '80',
   context_limit_override: '',
-  token_budget_period: 'week',
-  token_budget_limit: '',
-  budget_warn_percent: '80',
+  budget_5h_percent: '',
+  budget_week_percent: '',
 })
 
 // `[1m]` selects the 1M-context variant; the bare alias uses the 200K default.
@@ -1221,42 +1219,28 @@ watch(() => settings.value.color_theme, (t) => {
 
             <hr class="border-border/60" />
 
-            <!-- Global token budget -->
+            <!-- Usage budget: run-blocking guardrail -->
             <div class="space-y-3">
               <div>
-                <h3 class="text-xs font-semibold">Usage budget (all runs)</h3>
+                <h3 class="text-xs font-semibold">Usage budget (blocks new runs)</h3>
                 <p class="text-[11px] text-muted-foreground leading-relaxed mt-0.5">
-                  A guardrail across every run. Devdy warns near the limit and <b>blocks new runs &amp; follow-ups</b>
-                  once exceeded (override per turn). Both periods mirror the <b>real subscription plan</b> limits of
-                  Claude &amp; Codex (from <code class="font-mono bg-muted px-1 rounded">/usage</code>) — a rolling
-                  <b>5h</b> session window and a <b>weekly</b> window that <b>resets per account</b> (not a fixed weekday).
-                  The token field below is only a <b>fallback</b> used when no plan data applies — e.g. API-key sessions;
-                  the fallback weekly window is then approximated in UTC. Counts only runs executed by Devdy.
+                  Checked before each run &amp; follow-up: Devdy <b>blocks a new run</b> (override per turn) when the
+                  run's engine reaches a limit below. Thresholds map to that engine's <b>real subscription plan</b>
+                  windows (from <code class="font-mono bg-muted px-1 rounded">/usage</code>) — a rolling <b>5h</b> window
+                  and a <b>weekly</b> window (resets per account). A run is blocked if <b>any</b> set window is reached.
+                  Codex usually exposes only the weekly window, so set <b>Weekly</b> to cover it. Leave a field empty to
+                  skip that window; with no plan data (e.g. API-key sessions) the guardrail is inactive.
                 </p>
               </div>
               <div class="grid grid-cols-2 gap-3">
                 <div class="space-y-1.5">
-                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Period</label>
-                  <AppSelect
-                    size="sm"
-                    v-model="settings.token_budget_period"
-                    :options="[
-                      { value: '5h', label: 'Rolling 5h (matches plan)' },
-                      { value: 'week', label: 'Weekly (matches plan)' },
-                    ]"
-                  />
+                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">5h window — block at (%)</label>
+                  <Input v-model="settings.budget_5h_percent" type="number" min="1" max="100" placeholder="empty = off" />
                 </div>
-                <div class="space-y-1.5" :class="{ 'opacity-50': budget.hasPlan }">
-                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Fallback budget (tokens)</label>
-                  <Input v-model="settings.token_budget_limit" type="number" min="0" placeholder="empty = disabled" />
+                <div class="space-y-1.5">
+                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Weekly window — block at (%)</label>
+                  <Input v-model="settings.budget_week_percent" type="number" min="1" max="100" placeholder="empty = off" />
                 </div>
-              </div>
-              <p v-if="budget.hasPlan" class="text-[11px] text-indigo-500">
-                Currently enforcing the real subscription plan limit ({{ budget.percent }}% used) — the fallback token value is ignored for this period.
-              </p>
-              <div class="space-y-1.5">
-                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Warn at (%)</label>
-                <Input v-model="settings.budget_warn_percent" type="number" min="1" max="100" placeholder="80" />
               </div>
             </div>
         </Card>

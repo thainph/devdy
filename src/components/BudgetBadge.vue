@@ -4,14 +4,12 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { AlertTriangle, RefreshCw } from 'lucide-vue-next'
 import { useBudgetStore } from '@/stores/budget'
 import { useAppSettingsStore } from '@/stores/appSettings'
-import { formatTokensShort } from '@/lib/contextLimits'
 
 const budget = useBudgetStore()
 const app = useAppSettingsStore()
 const now = ref(Date.now())
 
 const PERIOD_LABEL: Record<string, string> = {
-  month: 'this month',
   week: 'this week',
   '5h': 'last 5h',
 }
@@ -20,7 +18,7 @@ const PERIOD_LABEL: Record<string, string> = {
 interface ProviderView {
   key: 'claude' | 'codex'
   label: string
-  source: 'plan' | 'tokens' | 'disabled'
+  source: 'plan' | 'disabled'
   hasPlan: boolean
   enabled: boolean
   period: string
@@ -28,8 +26,6 @@ interface ProviderView {
   isWarning: boolean
   isOver: boolean
   reset: string | null
-  usedTokens: number
-  limit: number
   capturedAt: string | null
   isStale: boolean
   rolledOver: boolean
@@ -51,8 +47,6 @@ const claudeView = computed<ProviderView>(() => ({
   isWarning: budget.isWarning,
   isOver: budget.isOver,
   reset: budget.reset,
-  usedTokens: budget.usedTokens,
-  limit: budget.limit,
   capturedAt: budget.capturedAt,
   isStale: budget.isStale,
   rolledOver: budget.rolledOver,
@@ -74,8 +68,6 @@ const codexView = computed<ProviderView>(() => ({
   isWarning: budget.codexIsWarning,
   isOver: budget.codexIsOver,
   reset: budget.codexReset,
-  usedTokens: 0,
-  limit: 0,
   capturedAt: budget.codexCapturedAt,
   isStale: budget.codexIsStale,
   rolledOver: budget.codexRolledOver,
@@ -181,10 +173,6 @@ function heading(v: ProviderView): string {
     const base = `${v.percent}% of plan limit`
     return v.isStale && !v.refreshing ? `Cached: ${base}` : base
   }
-  if (v.source === 'tokens') {
-    if (v.isOver) return 'Over token budget'
-    return `${v.percent}% of token budget`
-  }
   return 'No plan usage yet'
 }
 
@@ -211,18 +199,11 @@ function detail(v: ProviderView): string {
     if (v.refreshError && !v.refreshUnavailable) parts.push(`refresh failed: ${v.refreshError}`)
     return parts.join(' · ')
   }
-  if (v.source === 'tokens') {
-    const parts = [`${formatTokensShort(v.usedTokens)} / ${formatTokensShort(v.limit)}`]
-    const rt = resetText(v)
-    if (rt) parts.push(rt)
-    return parts.join(' · ')
-  }
   return v.refreshing ? fetchingHint : noData
 }
 
 function titleFor(v: ProviderView): string {
   if (v.hasPlan) return `${v.label} subscription plan usage · ${PERIOD_LABEL[v.period] ?? v.period}`
-  if (v.source === 'tokens') return `${v.label} token budget ${PERIOD_LABEL[v.period] ?? v.period}`
   return `${v.label} usage status`
 }
 

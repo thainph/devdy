@@ -23,9 +23,8 @@ export interface AppSettings {
   terminal_app: string
   context_warn_percent: string
   context_limit_override: string
-  token_budget_period: string
-  token_budget_limit: string
-  budget_warn_percent: string
+  budget_5h_percent: string
+  budget_week_percent: string
 }
 
 export const useAppSettingsStore = defineStore('appSettings', () => {
