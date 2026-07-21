@@ -89,7 +89,26 @@ pub fn slugify_alias(label: &str, existing: &mut HashSet<String>) -> String {
 /// `StrictHostKeyChecking accept-new` + `IdentitiesOnly yes` so ssh never
 /// prompts (BR-303). NEVER contains a passphrase (SEC-301): `MappedServer` has
 /// no passphrase field.
-pub fn build_ssh_config(servers: &[MappedServer]) -> String {
+///
+/// `IdentityAgent` is pinned **per Host** so agent-auth and key-auth servers use
+/// the RIGHT ssh-agent even though the child process's ambient `SSH_AUTH_SOCK`
+/// points at the per-run agent (SRS §3.3):
+///   - `auth_method="key"`  → the per-run agent (`per_run_sock`, when present),
+///     which holds the keys Devdy `ssh-add`ed (passphrase-protected included).
+///   - `auth_method="agent"` → the USER's own agent (`user_sock`, when the user
+///     has one), so a server that relies on the user's already-loaded keys still
+///     authenticates instead of failing against an empty per-run agent. When the
+///     user has NO ambient agent, no `IdentityAgent` is emitted for that Host —
+///     ssh then fails cleanly for lack of a key (the honest outcome, not a
+///     silent failure caused by shadowing the user's agent).
+///
+/// This is still a PURE function: it reads no environment; both socket paths are
+/// passed in by the caller.
+pub fn build_ssh_config(
+    servers: &[MappedServer],
+    user_sock: Option<&str>,
+    per_run_sock: Option<&str>,
+) -> String {
     let mut out = String::new();
     for s in servers {
         out.push_str(&format!("Host {}\n", s.alias));
@@ -102,6 +121,17 @@ pub fn build_ssh_config(servers: &[MappedServer]) -> String {
         if s.auth_method == "key" {
             if let Some(path) = s.private_key_path.as_deref().filter(|p| !p.is_empty()) {
                 out.push_str(&format!("    IdentityFile {path}\n"));
+            }
+            // Key-auth servers use the per-run agent (holds ssh-add'ed keys).
+            if let Some(sock) = per_run_sock.filter(|p| !p.is_empty()) {
+                out.push_str(&format!("    IdentityAgent {sock}\n"));
+            }
+        } else if s.auth_method == "agent" {
+            // Agent-auth servers inherit the user's OWN agent, not the empty
+            // per-run one (SRS §3.3). No user agent → no IdentityAgent → ssh
+            // fails cleanly rather than silently against a keyless agent.
+            if let Some(sock) = user_sock.filter(|p| !p.is_empty()) {
+                out.push_str(&format!("    IdentityAgent {sock}\n"));
             }
         }
         out.push('\n');
@@ -277,9 +307,29 @@ pub async fn prepare_ssh_access(
         let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
     }
 
+    // Capture the user's OWN ssh-agent socket (if any) BEFORE we override
+    // SSH_AUTH_SOCK on `cmd`, so agent-auth servers can keep inheriting it via a
+    // per-Host IdentityAgent (SRS §3.3). Read from this process's environment,
+    // which the run inherits by default; None when the user has no agent.
+    let user_sock = std::env::var("SSH_AUTH_SOCK")
+        .ok()
+        .filter(|s| !s.is_empty());
+
+    // Spawn a per-run ssh-agent bound to a socket inside the temp dir. Do this
+    // BEFORE writing the config so the config can pin key-auth Hosts at the
+    // per-run agent only when it actually came up (fail-soft: if the agent did
+    // not start, key servers still fall back to their IdentityFile).
+    let sock_path = dir.join("agent.sock");
+    let agent_pid = spawn_agent(&sock_path).await;
+    let per_run_sock = if agent_pid.is_some() {
+        Some(sock_path.to_string_lossy().into_owned())
+    } else {
+        None
+    };
+
     // Write the ssh config (0600). Contains no secret (SEC-301).
     let servers: Vec<MappedServer> = mapped.iter().map(|m| m.server.clone()).collect();
-    let config_body = build_ssh_config(&servers);
+    let config_body = build_ssh_config(&servers, user_sock.as_deref(), per_run_sock.as_deref());
     let config_path = dir.join("config");
     std::fs::write(&config_path, config_body).map_err(|e| e.to_string())?;
     #[cfg(unix)]
@@ -287,10 +337,6 @@ pub async fn prepare_ssh_access(
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600));
     }
-
-    // Spawn a per-run ssh-agent bound to a socket inside the temp dir.
-    let sock_path = dir.join("agent.sock");
-    let agent_pid = spawn_agent(&sock_path).await;
 
     // Load passphrase-protected keys into the agent via askpass. Fail-soft.
     if let Some(_pid) = agent_pid {
@@ -452,7 +498,7 @@ mod tests {
             key_server("s1", "203.0.113.10", Some("/home/u/.ssh/id_ed25519"), true),
             agent_server("s2", "198.51.100.5"),
         ];
-        let cfg = build_ssh_config(&servers);
+        let cfg = build_ssh_config(&servers, None, None);
 
         // Exactly two Host blocks.
         assert_eq!(cfg.matches("Host ").count(), 2);
@@ -460,7 +506,7 @@ mod tests {
         assert!(cfg.contains("Host s2\n"));
         // S1 carries the IdentityFile; S2 (agent) does not.
         assert!(cfg.contains("    IdentityFile /home/u/.ssh/id_ed25519\n"));
-        assert_eq!(cfg.matches("IdentityFile").count(), 1);
+        assert_eq!(cfg.matches("IdentityFile ").count(), 1);
         // Both carry the non-interactive hardening.
         assert_eq!(cfg.matches("BatchMode yes").count(), 2);
         assert_eq!(cfg.matches("StrictHostKeyChecking accept-new").count(), 2);
@@ -480,7 +526,7 @@ mod tests {
     fn build_ssh_config_key_without_path_omits_identity_file() {
         // auth_method="key" but no path → still a valid block, no IdentityFile.
         let servers = vec![key_server("s1", "h", None, false)];
-        let cfg = build_ssh_config(&servers);
+        let cfg = build_ssh_config(&servers, None, None);
         assert!(cfg.contains("Host s1\n"));
         assert!(!cfg.contains("IdentityFile"));
     }
@@ -488,7 +534,7 @@ mod tests {
     #[test]
     fn build_ssh_config_empty_is_noop() {
         // AC-305: no servers → empty config (caller writes nothing).
-        assert_eq!(build_ssh_config(&[]), "");
+        assert_eq!(build_ssh_config(&[], None, None), "");
     }
 
     #[test]
@@ -499,9 +545,59 @@ mod tests {
             key_server("s1", "h1", Some("/k1"), true),
             agent_server("s2", "h2"),
         ];
-        let cfg = build_ssh_config(&servers);
+        let cfg = build_ssh_config(&servers, Some("/run/user.sock"), Some("/run/per-run.sock"));
         assert!(!cfg.to_lowercase().contains("passphrase"));
         assert!(!cfg.contains("has_passphrase"));
+    }
+
+    // ---- SRS §3.3: per-Host IdentityAgent picks the right agent per auth_method ----
+
+    #[test]
+    fn build_ssh_config_agent_host_uses_user_sock_key_host_uses_per_run_sock() {
+        // Mixed run: a key-auth server + an agent-auth server. The key Host must
+        // pin the per-run agent (holds ssh-add'ed keys); the agent Host must pin
+        // the user's OWN agent so it keeps working (SRS §3.3), NOT the empty
+        // per-run agent that would shadow it.
+        let servers = vec![
+            key_server("kx", "203.0.113.10", Some("/home/u/.ssh/id_ed25519"), true),
+            agent_server("ax", "198.51.100.5"),
+        ];
+        let cfg = build_ssh_config(&servers, Some("/run/user.sock"), Some("/run/per-run.sock"));
+
+        // The key Host block pins the per-run agent.
+        let kx = cfg.split("Host ax\n").next().unwrap();
+        assert!(kx.contains("Host kx\n"));
+        assert!(kx.contains("    IdentityAgent /run/per-run.sock\n"));
+        assert!(!kx.contains("/run/user.sock"));
+
+        // The agent Host block pins the USER's agent.
+        let ax = &cfg[cfg.find("Host ax\n").unwrap()..];
+        assert!(ax.contains("    IdentityAgent /run/user.sock\n"));
+        assert!(!ax.contains("/run/per-run.sock"));
+
+        // Two IdentityAgent lines total (one per Host), the right sock each.
+        assert_eq!(cfg.matches("IdentityAgent").count(), 2);
+    }
+
+    #[test]
+    fn build_ssh_config_agent_host_without_user_sock_omits_identity_agent() {
+        // No ambient user agent → the agent-auth Host emits NO IdentityAgent, so
+        // ssh fails cleanly for lack of a key rather than silently against the
+        // empty per-run agent that would otherwise shadow the (absent) user one.
+        let servers = vec![agent_server("ax", "198.51.100.5")];
+        let cfg = build_ssh_config(&servers, None, Some("/run/per-run.sock"));
+        assert!(cfg.contains("Host ax\n"));
+        assert!(!cfg.contains("IdentityAgent"));
+    }
+
+    #[test]
+    fn build_ssh_config_key_host_without_per_run_sock_omits_identity_agent() {
+        // Agent failed to start (per_run_sock None) → key Host keeps only its
+        // IdentityFile (fail-soft fallback), no IdentityAgent line.
+        let servers = vec![key_server("kx", "h", Some("/k"), false)];
+        let cfg = build_ssh_config(&servers, Some("/run/user.sock"), None);
+        assert!(cfg.contains("    IdentityFile /k\n"));
+        assert!(!cfg.contains("IdentityAgent"));
     }
 
     // ---- AC-304: alias slug + uniqueness ----
