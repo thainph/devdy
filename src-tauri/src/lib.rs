@@ -51,9 +51,6 @@ use commands::vps_servers::{
     list_vps_servers, create_vps_server, update_vps_server, delete_vps_server, test_vps_connection,
     list_project_servers, map_server_to_project, unmap_server,
 };
-use commands::deployments::{
-    get_deploy_playbook, save_deploy_playbook, start_deploy, list_deploy_history,
-};
 use commands::work_digest::get_work_digest;
 use commands::work_summary::{summarize_work_digest, cancel_work_summary, WorkSummaryState};
 use commands::runs::{
@@ -162,10 +159,6 @@ pub fn run() {
             list_project_servers,
             map_server_to_project,
             unmap_server,
-            get_deploy_playbook,
-            save_deploy_playbook,
-            start_deploy,
-            list_deploy_history,
             detect_project_info,
             list_projects,
             add_project,

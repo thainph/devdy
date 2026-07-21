@@ -177,8 +177,12 @@ async fn fetch_server(db: &Db, id: &str) -> Result<VpsServer, String> {
     Ok(row_to_server(&row))
 }
 
-/// Public accessor for other command modules (e.g. deploy). Returns the server
-/// summary — public metadata only, never the passphrase VALUE (SEC-101/SEC-201).
+/// Public accessor for other command modules. Returns the server summary —
+/// public metadata only, never the passphrase VALUE (SEC-101/SEC-201).
+///
+/// Kept as a foundation accessor after the GĐ3 deploy module (its sole caller)
+/// was removed in the ssh-transparent-connect pivot.
+#[allow(dead_code)]
 pub(crate) async fn fetch_server_public(db: &Db, id: &str) -> Result<VpsServer, String> {
     fetch_server(db, id).await
 }
