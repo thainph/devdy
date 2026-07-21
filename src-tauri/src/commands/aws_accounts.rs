@@ -154,6 +154,10 @@ async fn validate_aws_identity(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // GUI launches (Finder/Dock) don't inherit the login-shell PATH, so `aws`
+    // (typically /usr/local/bin or /opt/homebrew/bin) isn't found. Recover the
+    // login PATH like the sidecar/ssh commands do.
+    crate::runs::sidecar::augment_command_path(&mut cmd);
 
     match auth {
         AwsAuthForSts::Keys {
