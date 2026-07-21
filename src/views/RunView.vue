@@ -682,40 +682,39 @@ function setLocalRunStatus(runId: string, status: RunRecord['status'], engine?: 
   }
 }
 
-// A start/resume/follow-up was refused for exceeding the global budget.
-const BUDGET_CONFIRM_MSG = 'Đã vượt ngân sách (plan/token) cho chu kỳ hiện tại.\nVẫn tiếp tục?'
-function isBudgetError(e: unknown): boolean {
-  return String(e).includes('BUDGET_EXCEEDED')
-}
-// When a budget refusal happens, confirm an override. Returns true to proceed.
-async function budgetOverrideConfirmed(e: unknown): Promise<boolean> {
-  if (!isBudgetError(e)) return false
-  return confirm({ title: 'Vượt ngân sách', message: BUDGET_CONFIRM_MSG, confirmLabel: 'Tiếp tục', variant: 'primary' })
-}
+// A start/resume/follow-up would exceed the global budget.
+const BUDGET_CONFIRM_MSG = 'Đã vượt ngân sách (plan) cho chu kỳ hiện tại.\nVẫn tiếp tục?'
 
-// Run a budget-gated backend call. On BUDGET_EXCEEDED, ask the user; if they
-// confirm, retry with the override flag. If they decline, run `onDecline` and
-// swallow the error. Non-budget errors propagate to the caller.
-async function withBudgetOverride(
-  fn: (override: boolean) => Promise<void>,
-  onDecline?: () => void,
-): Promise<void> {
+// Preflight the run-blocking guardrail for `engine` BEFORE the UI echoes the
+// user's message or flips a run into "running". Returns the override flag to
+// pass to the backend (false = under budget, true = user chose to proceed
+// anyway), or `null` when the user declines — in which case the caller must
+// abort without touching the timeline.
+async function preflightBudget(engine: string): Promise<boolean | null> {
+  let isOver = false
   try {
-    await fn(false)
-  } catch (e) {
-    if (!isBudgetError(e)) throw e
-    if (await confirm({ title: 'Vượt ngân sách', message: BUDGET_CONFIRM_MSG, confirmLabel: 'Tiếp tục', variant: 'primary' })) {
-      await fn(true)
-      return
-    }
-    onDecline?.()
+    const status = await invoke<{ is_over: boolean }>('get_run_budget', { engine })
+    isOver = status.is_over
+  } catch {
+    return false // can't determine the verdict → don't block the user
   }
+  if (!isOver) return false
+  const proceed = await confirm({
+    title: 'Vượt ngân sách',
+    message: BUDGET_CONFIRM_MSG,
+    confirmLabel: 'Tiếp tục',
+    variant: 'primary',
+  })
+  return proceed ? true : null
 }
 
-async function handleStartRun(overrideBudget = false) {
+async function handleStartRun() {
   if (!currentRunId.value) return
   const id = currentRunId.value
   const engine = effectiveEngine.value
+
+  const override = await preflightBudget(engine)
+  if (override === null) return // over budget and declined — start nothing
 
   clearHistoryView()
   live.reset(id, projectId.value)
@@ -731,13 +730,9 @@ async function handleStartRun(overrideBudget = false) {
       undefined,
       modelOverride.value || undefined,
       undefined,
-      overrideBudget,
+      override,
     )
   } catch (e) {
-    if (!overrideBudget && await budgetOverrideConfirmed(e)) {
-      await handleStartRun(true)
-      return
-    }
     live.setStatus(id, 'failed')
     setLocalRunStatus(id, 'failed')
     live.get(id)?.outputLines.push({ text: `Error: ${String(e)}`, isStderr: true })
@@ -768,6 +763,8 @@ async function handleNewSession() {
 
 // Start a brand-new turn on `runId` with `text` as the prompt. Shared by the
 // "fetched" first-run path and by engine handoffs.
+// Callers MUST preflight the budget (see `preflightBudget`) and pass the
+// resulting `overrideBudget` — this executor echoes the message immediately.
 async function launchFreshRun(
   runId: string,
   engine: string | undefined,
@@ -784,15 +781,7 @@ async function launchFreshRun(
   syncLoadedRunEngine(selectedEngine)
   setLocalRunStatus(runId, 'running', selectedEngine)
   await live.startListening(runId, projectId.value)
-  try {
-    await runsStore.startRun(runId, selectedEngine, permissionMode.value || undefined, text, modelOverride.value || undefined, images, overrideBudget)
-  } catch (e) {
-    if (!overrideBudget && await budgetOverrideConfirmed(e)) {
-      await launchFreshRun(runId, engine, text, images, true)
-      return
-    }
-    throw e
-  }
+  await runsStore.startRun(runId, selectedEngine, permissionMode.value || undefined, text, modelOverride.value || undefined, images, overrideBudget)
 }
 
 // ── Cross-engine handoff (Claude ↔ Codex) ────────────────────────────────
@@ -832,6 +821,8 @@ async function doHandoff(targetEngine: string) {
     if (currentStatus.value === 'running') {
       try { await runsStore.cancelRun(sourceId) } catch { /* best effort */ }
     }
+    const override = await preflightBudget(targetEngine)
+    if (override === null) return // over budget on the target engine — abort handoff start
     const { run, context_path } = await runsStore.createHandoffRun(sourceId, targetEngine, transcript)
     await runsStore.fetchRuns(projectId.value) // surface the new run in the sidebar
     syncLoadedRunEngine(targetEngine)
@@ -840,7 +831,7 @@ async function doHandoff(targetEngine: string) {
       `Toàn bộ ngữ cảnh/hội thoại trước đó được lưu ở file:\n${context_path}\n\n` +
       `Hãy đọc file đó trước để nắm tình hình, sau đó tiếp tục từ đúng chỗ đang dở. ` +
       `Không lặp lại những việc đã hoàn thành.`
-    await launchFreshRun(run.id, targetEngine, seed)
+    await launchFreshRun(run.id, targetEngine, seed, [], override)
   } catch (e) {
     alert(`Không thể chuyển engine: ${String(e)}`)
   } finally {
@@ -1396,14 +1387,23 @@ async function handleSendFollowUp() {
   const hasFiles = pendingFiles.value.length > 0
   if ((!text && !hasImages && !hasFiles) || !currentRunId.value || sendingFollowUp.value) return
   const id = currentRunId.value
+  const isFetched = currentStatus.value === 'fetched'
   const wasRunning = currentStatus.value === 'running'
+  const runEngine =
+    (!isFetched && (loadedRunEngine.value || currentRun.value?.engine)) || effectiveEngine.value
   sendingFollowUp.value = true
   try {
-    if (currentStatus.value === 'fetched') {
+    // Always confirm the budget BEFORE echoing anything into the timeline. On
+    // decline nothing is pushed and no "thinking" indicator appears.
+    const override = await preflightBudget(runEngine)
+    if (override === null) return
+
+    const images = takePendingImages()
+    const prompt = composePrompt(text, takePendingFilePaths())
+
+    if (isFetched) {
       // First run on this fetched record — use the typed text as the prompt.
-      const images = takePendingImages()
-      const prompt = composePrompt(text, takePendingFilePaths())
-      await launchFreshRun(id, engineOverride.value || undefined, prompt, images)
+      await launchFreshRun(id, engineOverride.value || undefined, prompt, images, override)
       followUpInput.value = ''
       return
     }
@@ -1422,29 +1422,19 @@ async function handleSendFollowUp() {
     }
     clearHistoryView()
 
-    const images = takePendingImages()
-    const prompt = composePrompt(text, takePendingFilePaths())
     // Show the user message right away in the timeline (running / resume paths).
     live.pushUser(id, projectId.value, prompt, images)
     stickToBottom.value = true // re-pin: the user just sent a message
     scrollOutputToBottom()
 
-    const prevStatus = currentStatus.value
     if (!wasRunning) {
       live.setStatus(id, 'running')
       setLocalRunStatus(id, 'running')
       await live.startListening(id, projectId.value)
-      await withBudgetOverride(
-        (o) => runsStore.resumeRun(id, permissionMode.value || undefined, modelOverride.value || undefined, o),
-        () => {
-          // User declined the budget override — revert the optimistic running state.
-          live.setStatus(id, prevStatus)
-          setLocalRunStatus(id, prevStatus as RunRecord['status'])
-        },
-      )
+      await runsStore.resumeRun(id, permissionMode.value || undefined, modelOverride.value || undefined, override)
     }
 
-    await withBudgetOverride((o) => runsStore.sendUserMessage(id, prompt, images, o))
+    await runsStore.sendUserMessage(id, prompt, images, override)
     followUpInput.value = ''
   } catch (e) {
     live.get(id)?.outputLines.push({ text: `Send failed: ${String(e)}`, isStderr: true })
