@@ -180,9 +180,6 @@ function formatDate(iso: string) {
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-1.5">
                 <p class="text-sm font-semibold font-mono truncate leading-tight">{{ rule.name }}</p>
-                <Badge size="xs" class="shrink-0 uppercase tracking-wide">
-                  {{ targetLabel[rule.target] }}
-                </Badge>
               </div>
               <p class="text-xs text-muted-foreground mt-1 line-clamp-2 leading-relaxed">{{ rule.description }}</p>
             </div>
@@ -190,9 +187,14 @@ function formatDate(iso: string) {
 
           <!-- Footer -->
           <div class="flex items-center justify-between pt-2.5 border-t border-border/60 mt-auto">
-            <div class="flex items-center gap-1 text-[10px] text-muted-foreground/60">
-              <CalendarDays class="h-3 w-3" :stroke-width="1.5" />
-              <span>{{ formatDate(rule.updated_at) }}</span>
+            <div class="flex items-center gap-2 min-w-0">
+              <Badge tone="primary" size="xs" class="shrink-0 uppercase tracking-wide">
+                {{ targetLabel[rule.target] }}
+              </Badge>
+              <div class="flex items-center gap-1 text-[10px] text-muted-foreground/60">
+                <CalendarDays class="h-3 w-3" :stroke-width="1.5" />
+                <span>{{ formatDate(rule.updated_at) }}</span>
+              </div>
             </div>
             <!-- Actions on hover -->
             <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity" @click.stop>

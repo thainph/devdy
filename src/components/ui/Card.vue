@@ -14,7 +14,7 @@ withDefaults(defineProps<{
 const slots = useSlots()
 const attrs = useAttrs()
 const rootClass = computed(() =>
-  cn('bg-card border border-border rounded-lg overflow-hidden', attrs.class as string | undefined),
+  cn('glass border border-border/70 rounded-lg overflow-hidden shadow-lg shadow-black/5', attrs.class as string | undefined),
 )
 </script>
 

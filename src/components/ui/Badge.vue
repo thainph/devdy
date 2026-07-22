@@ -7,18 +7,21 @@ import { cn } from '@/lib/utils'
 
 defineOptions({ inheritAttrs: false })
 
+// Solid-fill tones: a deep saturated -600 background with white text — high
+// contrast and cleaner than the old translucent /15 + -400 text (which was
+// low-contrast at these 9-10px sizes). One rule for every chip, app-wide.
 const badge = cva(
-  'inline-flex items-center gap-1 rounded border font-medium',
+  'inline-flex items-center gap-1 rounded border font-semibold whitespace-nowrap',
   {
     variants: {
       tone: {
-        neutral: 'bg-muted text-muted-foreground border-border/60',
-        running: 'bg-blue-500/15 text-blue-400 border-blue-500/20',
-        success: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/20',
-        error: 'bg-red-500/15 text-red-400 border-red-500/20',
-        warning: 'bg-amber-500/15 text-amber-400 border-amber-500/20',
-        info: 'bg-violet-500/15 text-violet-400 border-violet-500/20',
-        primary: 'bg-primary/10 text-primary border-primary/20',
+        neutral: 'bg-slate-600 text-white border-slate-600',
+        running: 'bg-blue-600 text-white border-blue-600',
+        success: 'bg-emerald-600 text-white border-emerald-600',
+        error: 'bg-red-600 text-white border-red-600',
+        warning: 'bg-amber-600 text-white border-amber-600',
+        info: 'bg-violet-600 text-white border-violet-600',
+        primary: 'bg-indigo-600 text-white border-indigo-600',
       },
       size: {
         xs: 'px-1.5 py-0.5 text-[9px]',

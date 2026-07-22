@@ -30,7 +30,7 @@ const slots = useSlots()
 const SIZES = { sm: 'max-w-md', md: 'max-w-lg', lg: 'max-w-2xl', xl: 'max-w-3xl', full: 'max-w-[96vw]' }
 const panelClass = computed(() =>
   cn(
-    'w-full rounded-lg border border-border bg-card shadow-xl',
+    'w-full rounded-lg border border-border/70 glass shadow-2xl shadow-black/30',
     SIZES[props.size],
     props.scrollBody &&
       (props.size === 'full'
@@ -62,7 +62,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 <template>
   <div
     v-if="open"
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
     @click.self="close"
   >
     <div :class="panelClass">

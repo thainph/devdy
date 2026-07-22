@@ -12,11 +12,6 @@ const { confirm } = useConfirm()
 const deletingId = ref<string | null>(null)
 const testingId = ref<string | null>(null)
 
-const authTone: Record<string, 'primary' | 'info'> = {
-  agent: 'info',
-  key: 'primary',
-}
-
 // Status dot colour: online → green, offline → red, unknown/null → gray.
 const statusColor: Record<string, string> = {
   online: 'bg-emerald-500',
@@ -142,11 +137,6 @@ function formatDate(iso: string) {
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-1.5 flex-wrap">
                 <p class="text-sm font-semibold truncate leading-tight">{{ server.label }}</p>
-                <Badge :tone="authTone[server.auth_method]" size="xs" class="shrink-0 uppercase tracking-wide">
-                  <KeyRound v-if="server.auth_method === 'key'" class="h-2.5 w-2.5" :stroke-width="2" />
-                  <UserCog v-else class="h-2.5 w-2.5" :stroke-width="2" />
-                  {{ server.auth_method }}
-                </Badge>
               </div>
               <p class="text-xs text-muted-foreground mt-1 font-mono truncate leading-relaxed">
                 {{ server.username }}@{{ server.host }}:{{ server.port }}
@@ -173,9 +163,16 @@ function formatDate(iso: string) {
 
           <!-- Footer -->
           <div class="flex items-center justify-between pt-2.5 border-t border-border/60 mt-auto">
-            <div class="flex items-center gap-1 text-[10px] text-muted-foreground/60">
-              <CalendarDays class="h-3 w-3" :stroke-width="1.5" />
-              <span>{{ formatDate(server.created_at) }}</span>
+            <div class="flex items-center gap-2 min-w-0">
+              <Badge tone="primary" size="xs" class="shrink-0 uppercase tracking-wide">
+                <KeyRound v-if="server.auth_method === 'key'" class="h-2.5 w-2.5" :stroke-width="2" />
+                <UserCog v-else class="h-2.5 w-2.5" :stroke-width="2" />
+                {{ server.auth_method }}
+              </Badge>
+              <div class="flex items-center gap-1 text-[10px] text-muted-foreground/60">
+                <CalendarDays class="h-3 w-3" :stroke-width="1.5" />
+                <span>{{ formatDate(server.created_at) }}</span>
+              </div>
             </div>
             <!-- Actions on hover -->
             <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity" @click.stop>
