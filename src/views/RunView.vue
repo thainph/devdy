@@ -5,6 +5,7 @@ import { useProjectsStore, type Repo } from '@/stores/projects'
 import { useRunsStore, type RunRecord, type ProjectEntry } from '@/stores/runs'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
+import { useChatDraftsStore } from '@/stores/chatDrafts'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import { useGitlabAccountsStore } from '@/stores/gitlabAccounts'
 import { useServersStore, type ProjectServer } from '@/stores/servers'
@@ -53,6 +54,7 @@ const projectStore = useProjectsStore()
 const runsStore = useRunsStore()
 const live = useLiveRunsStore()
 const tabsStore = useWorkspaceTabsStore()
+const draftsStore = useChatDraftsStore()
 const ghStore = useGithubAccountsStore()
 const glStore = useGitlabAccountsStore()
 const serversStore = useServersStore()
@@ -944,6 +946,29 @@ const pendingFiles = ref<PendingFile[]>([])
 let fileSeq = 0
 // Whether an OS file is being dragged over the window (drives the dropzone hint).
 const isDraggingFile = ref(false)
+
+// ── Draft persistence ─────────────────────────────────────────────────────
+// RunView remounts on project switch (RouterView key is `run-<projectId>`), so
+// the composer would otherwise start empty. Restore any unsent draft for this
+// project — text, pasted images and attached files — and mirror later edits
+// back to the store so they survive project switches and full app reloads.
+{
+  const draft = draftsStore.get(projectId.value)
+  followUpInput.value = draft.text
+  for (const img of draft.images) pushPendingImage(img.media_type, img.data)
+  for (const f of draft.files) addPendingFile(f.path)
+}
+watch(
+  [followUpInput, pendingImages, pendingFiles],
+  () => {
+    draftsStore.set(projectId.value, {
+      text: followUpInput.value,
+      images: pendingImages.value.map(({ media_type, data }) => ({ media_type, data })),
+      files: pendingFiles.value.map(({ name, path }) => ({ name, path })),
+    })
+  },
+  { deep: true },
+)
 
 // Extensions we treat as inline images (base64 + thumbnail). Everything else is
 // attached by path.
