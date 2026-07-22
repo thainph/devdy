@@ -20,12 +20,6 @@ const importing = ref(false)
 // streamable HTTP; legacy SSE remains Claude-only.
 const defaultIsCodex = computed(() => appSettings.settings?.default_engine === 'codex')
 
-const transportTone: Record<string, 'primary' | 'info' | 'neutral'> = {
-  stdio: 'primary',
-  http: 'info',
-  sse: 'info',
-}
-
 onMounted(() => {
   store.fetchServers()
   appSettings.ensureLoaded()
@@ -184,9 +178,6 @@ function formatDate(iso: string) {
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-1.5 flex-wrap">
                 <p class="text-sm font-semibold font-mono truncate leading-tight">{{ server.name }}</p>
-                <Badge :tone="transportTone[server.transport]" size="xs" class="shrink-0 uppercase tracking-wide">
-                  {{ server.transport }}
-                </Badge>
                 <Badge
                   v-if="isSse(server) && defaultIsCodex"
                   tone="warning"
@@ -204,9 +195,14 @@ function formatDate(iso: string) {
 
           <!-- Footer -->
           <div class="flex items-center justify-between pt-2.5 border-t border-border/60 mt-auto">
-            <div class="flex items-center gap-1 text-[10px] text-muted-foreground/60">
-              <CalendarDays class="h-3 w-3" :stroke-width="1.5" />
-              <span>{{ formatDate(server.created_at) }}</span>
+            <div class="flex items-center gap-2 min-w-0">
+              <Badge tone="primary" size="xs" class="shrink-0 uppercase tracking-wide">
+                {{ server.transport }}
+              </Badge>
+              <div class="flex items-center gap-1 text-[10px] text-muted-foreground/60">
+                <CalendarDays class="h-3 w-3" :stroke-width="1.5" />
+                <span>{{ formatDate(server.created_at) }}</span>
+              </div>
             </div>
             <!-- Actions on hover -->
             <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity" @click.stop>

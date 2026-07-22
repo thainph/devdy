@@ -665,13 +665,13 @@ const lastEntryIsResult = computed(() => {
            command in a copyable terminal block, then its output. -->
       <div
         v-else-if="entry.kind === 'tool' && isBash(entry.name)"
-        class="rounded-md border border-l-[3px] bg-foreground/2 overflow-hidden"
+        class="rounded-lg border border-l-[3px] bg-card/80 backdrop-blur-sm shadow-sm shadow-black/20 overflow-hidden"
         :class="entry.result?.is_error
           ? 'border-border border-l-red-500/70'
           : ['border-border', toolStyle(entry.name).barClass]"
       >
         <button
-          class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/4 transition-colors cursor-pointer"
+          class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer"
           @click="toggle(i)"
         >
           <ChevronRight
@@ -731,13 +731,13 @@ const lastEntryIsResult = computed(() => {
       <!-- File-editing tool call (Edit / MultiEdit / Write) — unified diff view. -->
       <div
         v-else-if="entry.kind === 'tool' && isEditTool(entry.name)"
-        class="rounded-md border border-l-[3px] bg-foreground/2 overflow-hidden"
+        class="rounded-lg border border-l-[3px] bg-card/80 backdrop-blur-sm shadow-sm shadow-black/20 overflow-hidden"
         :class="entry.result?.is_error
           ? 'border-border border-l-red-500/70'
           : ['border-border', toolStyle(entry.name).barClass]"
       >
         <button
-          class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/4 transition-colors cursor-pointer"
+          class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer"
           @click="toggle(i)"
         >
           <ChevronRight
@@ -792,10 +792,10 @@ const lastEntryIsResult = computed(() => {
       <!-- Sub-agent (Task): subagent + goal in header, its report rendered as markdown. -->
       <div
         v-else-if="entry.kind === 'tool' && isAgentTool(entry.name)"
-        class="rounded-md border border-l-[3px] bg-foreground/2 overflow-hidden"
+        class="rounded-lg border border-l-[3px] bg-card/80 backdrop-blur-sm shadow-sm shadow-black/20 overflow-hidden"
         :class="entry.result?.is_error ? 'border-border border-l-red-500/70' : ['border-border', toolStyle(entry.name).barClass]"
       >
-        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/4 transition-colors cursor-pointer" @click="toggle(i)">
+        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(i)">
           <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[i] }" />
           <Bot class="h-3.5 w-3.5 shrink-0 text-fuchsia-400" :stroke-width="1.75" />
           <span class="text-xs font-mono font-semibold shrink-0 text-fuchsia-600 dark:text-fuchsia-300">{{ agentInfo(entry.input).subagent || 'agent' }}</span>
@@ -805,7 +805,7 @@ const lastEntryIsResult = computed(() => {
           <span v-else class="ml-auto text-[10px] text-amber-500/80 dark:text-amber-400/70 animate-pulse shrink-0">running…</span>
         </button>
         <div v-if="expanded[i]" class="border-t border-border">
-          <div v-if="agentInfo(entry.input).prompt" class="px-3 py-2 bg-foreground/4">
+          <div v-if="agentInfo(entry.input).prompt" class="px-3 py-2 bg-black/20 dark:bg-black/25">
             <div class="text-[10px] uppercase tracking-wider text-foreground/40 mb-1">task</div>
             <pre class="text-[11px] font-mono text-foreground/70 whitespace-pre-wrap break-words max-h-60 overflow-auto">{{ agentInfo(entry.input).prompt }}</pre>
           </div>
@@ -826,10 +826,10 @@ const lastEntryIsResult = computed(() => {
       <!-- AskUserQuestion: questions + options, and the user's answer. -->
       <div
         v-else-if="entry.kind === 'tool' && isAskUserTool(entry.name)"
-        class="rounded-md border border-l-[3px] bg-foreground/2 overflow-hidden"
+        class="rounded-lg border border-l-[3px] bg-card/80 backdrop-blur-sm shadow-sm shadow-black/20 overflow-hidden"
         :class="entry.result?.is_error ? 'border-border border-l-red-500/70' : ['border-border', toolStyle(entry.name).barClass]"
       >
-        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/4 transition-colors cursor-pointer" @click="toggle(i)">
+        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(i)">
           <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[i] }" />
           <MessageCircleQuestion class="h-3.5 w-3.5 shrink-0 text-blue-400" :stroke-width="1.75" />
           <span class="text-xs font-mono font-semibold shrink-0 text-blue-600 dark:text-blue-300">question</span>
@@ -855,10 +855,10 @@ const lastEntryIsResult = computed(() => {
       <!-- TodoWrite: render the plan as a status checklist. -->
       <div
         v-else-if="entry.kind === 'tool' && isTodoTool(entry.name)"
-        class="rounded-md border border-l-[3px] bg-foreground/2 overflow-hidden"
+        class="rounded-lg border border-l-[3px] bg-card/80 backdrop-blur-sm shadow-sm shadow-black/20 overflow-hidden"
         :class="['border-border', toolStyle(entry.name).barClass]"
       >
-        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/4 transition-colors cursor-pointer" @click="toggle(i)">
+        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(i)">
           <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[i] }" />
           <ListTodo class="h-3.5 w-3.5 shrink-0 text-blue-400" :stroke-width="1.75" />
           <span class="text-xs font-mono font-semibold shrink-0 text-blue-600 dark:text-blue-300">todos</span>
@@ -882,10 +882,10 @@ const lastEntryIsResult = computed(() => {
       <!-- ToolSearch: the search query + matched tools. -->
       <div
         v-else-if="entry.kind === 'tool' && isToolSearchTool(entry.name)"
-        class="rounded-md border border-l-[3px] bg-foreground/2 overflow-hidden"
+        class="rounded-lg border border-l-[3px] bg-card/80 backdrop-blur-sm shadow-sm shadow-black/20 overflow-hidden"
         :class="entry.result?.is_error ? 'border-border border-l-red-500/70' : ['border-border', toolStyle(entry.name).barClass]"
       >
-        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/4 transition-colors cursor-pointer" @click="toggle(i)">
+        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(i)">
           <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[i] }" />
           <Search class="h-3.5 w-3.5 shrink-0 text-teal-400" :stroke-width="1.75" />
           <span class="text-xs font-mono font-semibold shrink-0 text-teal-600 dark:text-teal-300">tool-search</span>
@@ -905,10 +905,10 @@ const lastEntryIsResult = computed(() => {
       <!-- WebFetch / WebSearch: fetched content rendered as markdown. -->
       <div
         v-else-if="entry.kind === 'tool' && isWebTool(entry.name)"
-        class="rounded-md border border-l-[3px] bg-foreground/2 overflow-hidden"
+        class="rounded-lg border border-l-[3px] bg-card/80 backdrop-blur-sm shadow-sm shadow-black/20 overflow-hidden"
         :class="entry.result?.is_error ? 'border-border border-l-red-500/70' : ['border-border', toolStyle(entry.name).barClass]"
       >
-        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/4 transition-colors cursor-pointer" @click="toggle(i)">
+        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(i)">
           <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[i] }" />
           <Globe class="h-3.5 w-3.5 shrink-0 text-cyan-400" :stroke-width="1.75" />
           <span class="text-xs font-mono font-semibold shrink-0 text-cyan-600 dark:text-cyan-300">{{ entry.name.toLowerCase() === 'websearch' ? 'web-search' : 'web-fetch' }}</span>
@@ -932,10 +932,10 @@ const lastEntryIsResult = computed(() => {
       <!-- ExitPlanMode: Claude's proposed plan, rendered as markdown. -->
       <div
         v-else-if="entry.kind === 'tool' && isPlanTool(entry.name)"
-        class="rounded-md border border-l-[3px] bg-foreground/2 overflow-hidden"
+        class="rounded-lg border border-l-[3px] bg-card/80 backdrop-blur-sm shadow-sm shadow-black/20 overflow-hidden"
         :class="['border-border', toolStyle(entry.name).barClass]"
       >
-        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/4 transition-colors cursor-pointer" @click="toggle(i)">
+        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(i)">
           <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[i] }" />
           <ClipboardList class="h-3.5 w-3.5 shrink-0 text-indigo-400" :stroke-width="1.75" />
           <span class="text-xs font-mono font-semibold shrink-0 text-indigo-600 dark:text-indigo-300">plan</span>
@@ -954,10 +954,10 @@ const lastEntryIsResult = computed(() => {
       <!-- MCP tool / elicitation: server + action are surfaced up front. -->
       <div
         v-else-if="entry.kind === 'tool' && isMcpTool(entry.name)"
-        class="rounded-md border border-l-[3px] bg-foreground/2 overflow-hidden"
+        class="rounded-lg border border-l-[3px] bg-card/80 backdrop-blur-sm shadow-sm shadow-black/20 overflow-hidden"
         :class="entry.result?.is_error ? 'border-border border-l-red-500/70' : ['border-border', toolStyle(entry.name).barClass]"
       >
-        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/4 transition-colors cursor-pointer" @click="toggle(i)">
+        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(i)">
           <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[i] }" />
           <Server class="h-3.5 w-3.5 shrink-0 text-teal-400" :stroke-width="1.75" />
           <span class="text-xs font-mono font-semibold shrink-0 text-teal-600 dark:text-teal-300">mcp</span>
@@ -971,7 +971,7 @@ const lastEntryIsResult = computed(() => {
           <span v-else class="ml-auto text-[10px] text-amber-500/80 dark:text-amber-400/70 animate-pulse shrink-0">waiting…</span>
         </button>
         <div v-if="expanded[i]" class="border-t border-border">
-          <div class="grid grid-cols-[6rem_minmax(0,1fr)] gap-x-3 gap-y-1 px-3 py-2 bg-foreground/4 text-[11px]">
+          <div class="grid grid-cols-[6rem_minmax(0,1fr)] gap-x-3 gap-y-1 px-3 py-2 bg-black/20 dark:bg-black/25 text-[11px]">
             <div class="uppercase tracking-wider text-foreground/35">server</div>
             <div class="font-mono text-foreground/75 truncate">{{ mcpServerLabel(entry) }}</div>
             <div class="uppercase tracking-wider text-foreground/35">action</div>
@@ -998,13 +998,13 @@ const lastEntryIsResult = computed(() => {
       <!-- Tool call -->
       <div
         v-else-if="entry.kind === 'tool'"
-        class="rounded-md border border-l-[3px] bg-foreground/2 overflow-hidden"
+        class="rounded-lg border border-l-[3px] bg-card/80 backdrop-blur-sm shadow-sm shadow-black/20 overflow-hidden"
         :class="entry.result?.is_error
           ? 'border-border border-l-red-500/70'
           : ['border-border', toolStyle(entry.name).barClass]"
       >
         <button
-          class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/4 transition-colors cursor-pointer"
+          class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer"
           @click="toggle(i)"
         >
           <ChevronRight
@@ -1037,7 +1037,7 @@ const lastEntryIsResult = computed(() => {
           <span v-else class="ml-auto text-[10px] text-amber-500/80 dark:text-amber-400/70 animate-pulse shrink-0">running…</span>
         </button>
         <div v-if="expanded[i]" class="border-t border-border">
-          <div class="px-3 py-2 bg-foreground/4">
+          <div class="px-3 py-2 bg-black/20 dark:bg-black/25">
             <div class="text-[10px] uppercase tracking-wider text-foreground/40 mb-1">input</div>
             <pre class="text-[11px] font-mono text-foreground/70 whitespace-pre-wrap break-words">{{ prettyInput(entry.input) }}</pre>
           </div>

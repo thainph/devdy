@@ -23,7 +23,7 @@ import {
   ImagePlus, X, Paperclip,
   ShieldQuestion, MessageCircleQuestion,
   Pin, PinOff, Pencil, Check, Github, Gitlab,
-  ClipboardCopy, ScrollText, Server, Cloud
+  ClipboardCopy, ScrollText, HardDrive, Cloud
 } from 'lucide-vue-next'
 import AppSelect from '@/components/AppSelect.vue'
 import StreamLog from '@/components/StreamLog.vue'
@@ -67,7 +67,9 @@ const project = computed(() => projectStore.projects.find(p => p.id === projectI
 // GĐ6 (AC3): the project's active git account(s). Shows one badge per linked
 // provider (GitHub first, then GitLab) so both attached accounts are visible.
 const activeAccounts = computed(() => {
-  const badges: { key: string; icon: typeof Github; username: string; title: string }[] = []
+  // Tone per provider is kept in sync with the Projects list: GitHub=info,
+  // GitLab=warning (server chips use status tones, AWS uses primary).
+  const badges: { key: string; icon: typeof Github; tone: 'info' | 'warning'; username: string; title: string }[] = []
   const ghId = project.value?.github_account_id
   if (ghId) {
     const acc = ghStore.accounts.find(a => a.id === ghId)
@@ -75,6 +77,7 @@ const activeAccounts = computed(() => {
       badges.push({
         key: 'github',
         icon: Github,
+        tone: 'info',
         username: acc.username ? `@${acc.username}` : acc.label,
         title: `GitHub account: ${acc.label}${acc.username ? ` (@${acc.username})` : ''}`,
       })
@@ -87,6 +90,7 @@ const activeAccounts = computed(() => {
       badges.push({
         key: 'gitlab',
         icon: Gitlab,
+        tone: 'warning',
         username: acc.username ? `@${acc.username}` : acc.label,
         title: `GitLab account: ${acc.label}${acc.username ? ` (@${acc.username})` : ''}${acc.host ? ` on ${acc.host}` : ''}`,
       })
@@ -110,10 +114,12 @@ async function loadProjectServers() {
 // Max distinct server chips before collapsing the rest into a single "+N" chip,
 // keeping the (narrow) header from overflowing when many servers are mapped.
 const MAX_SERVER_CHIPS = 2
-type ServerChip = { key: string; label: string; tone: 'success' | 'error' | 'neutral'; title: string }
+// Tone follows connection status; the shared Badge renders the solid high-contrast fill.
+type ServerTone = 'success' | 'error' | 'neutral'
+type ServerChip = { key: string; label: string; tone: ServerTone; title: string }
 const serverChips = computed<ServerChip[]>(() =>
   projectServers.value.map((s) => {
-    const tone = s.status === 'online' ? 'success' : s.status === 'offline' ? 'error' : 'neutral'
+    const tone: ServerTone = s.status === 'online' ? 'success' : s.status === 'offline' ? 'error' : 'neutral'
     const auth = s.auth_method === 'key' ? 'key' : 'ssh-agent'
     const status = s.status ? ` · ${s.status}` : ''
     return {
@@ -1906,7 +1912,7 @@ function handleRefInput(val: string) {
         <Badge
           v-for="acc in activeAccounts"
           :key="acc.key"
-          tone="primary"
+          :tone="acc.tone"
           size="sm"
           class="font-mono shrink-0 inline-flex items-center gap-1"
           :title="acc.title"
@@ -1923,7 +1929,7 @@ function handleRefInput(val: string) {
           class="shrink-0 inline-flex items-center gap-1"
           :title="chip.title"
         >
-          <Server class="h-3 w-3" :stroke-width="1.75" />
+          <HardDrive class="h-3 w-3" :stroke-width="2" />
           {{ chip.label }}
         </Badge>
         <Badge
@@ -1933,26 +1939,21 @@ function handleRefInput(val: string) {
           class="shrink-0 inline-flex items-center gap-1"
           :title="hiddenServerTitle"
         >
-          <Server class="h-3 w-3" :stroke-width="1.75" />
+          <HardDrive class="h-3 w-3" :stroke-width="2" />
           +{{ hiddenServerChips.length }}
         </Badge>
         <!-- Linked AWS account (credentials brokered per run). -->
         <Badge
           v-if="awsChip"
-          tone="warning"
+          tone="primary"
           size="sm"
           class="shrink-0 inline-flex items-center gap-1"
           :title="awsChip.title"
         >
-          <Cloud class="h-3 w-3" :stroke-width="1.75" />
+          <Cloud class="h-3 w-3" :stroke-width="2" />
           {{ awsChip.label }}
-          <span class="opacity-70 font-mono">{{ awsChip.region }}</span>
+          <span class="opacity-90 font-mono">{{ awsChip.region }}</span>
         </Badge>
-        <span
-          v-if="project"
-          class="text-[11px] text-muted-foreground font-mono truncate hidden md:inline"
-          :title="project.path"
-        >{{ project.path }}</span>
       </div>
       <div class="flex items-center gap-2 shrink-0">
         <Button
@@ -2290,10 +2291,10 @@ function handleRefInput(val: string) {
           v-if="!currentIsSession"
           class="flex items-center gap-1 px-3 py-1.5 border-b border-border bg-card/40 shrink-0"
         >
-          <span class="text-[11px] font-mono text-foreground/40 mr-1">View</span>
+          <span class="text-[11px] font-mono text-foreground/55 mr-1">View</span>
           <button
-            class="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] font-mono transition-colors cursor-pointer"
-            :class="contentVisible ? 'bg-primary/15 text-primary' : 'text-foreground/40 hover:text-foreground/70 hover:bg-card'"
+            class="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] font-mono font-medium border transition-colors cursor-pointer"
+            :class="contentVisible ? 'bg-primary/20 text-primary border-primary/40' : 'text-foreground/65 border-transparent hover:text-foreground hover:bg-accent'"
             title="Toggle Content panel"
             @click="togglePanel('content')"
           >
@@ -2301,8 +2302,8 @@ function handleRefInput(val: string) {
             Content
           </button>
           <button
-            class="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] font-mono transition-colors cursor-pointer"
-            :class="resultVisible ? 'bg-primary/15 text-primary' : 'text-foreground/40 hover:text-foreground/70 hover:bg-card'"
+            class="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] font-mono font-medium border transition-colors cursor-pointer"
+            :class="resultVisible ? 'bg-primary/20 text-primary border-primary/40' : 'text-foreground/65 border-transparent hover:text-foreground hover:bg-accent'"
             title="Toggle AI Result panel"
             @click="togglePanel('result')"
           >

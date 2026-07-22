@@ -262,16 +262,11 @@ onUnmounted(() => {
       :class="TONE_ROW[tone(v)]"
       :title="tooltip(v)"
     >
-      <!-- status indicator: alert icon when warning/over, else a coloured dot -->
+      <!-- status indicator: alert icon when warning/over -->
       <AlertTriangle
         v-if="tone(v) === 'over' || tone(v) === 'warning'"
         class="h-3 w-3 shrink-0"
         :stroke-width="2.5"
-      />
-      <span
-        v-else
-        class="h-1.5 w-1.5 shrink-0 rounded-full"
-        :class="TONE_FILL[tone(v)]"
       />
 
       <!-- provider label -->

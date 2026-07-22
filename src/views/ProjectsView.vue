@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useProjectsStore, type DetectedProjectInfo, type DetectedRepo } from '@/stores/projects'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import { useGitlabAccountsStore } from '@/stores/gitlabAccounts'
+import { useServersStore, type ProjectServer } from '@/stores/servers'
+import { useAwsAccountsStore } from '@/stores/awsAccounts'
 import { open } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@/lib/tauri'
-import { Plus, FolderOpen, GitBranch, Github, Gitlab, Trash2, X, SquareTerminal, Code2, Settings } from 'lucide-vue-next'
+import { Plus, FolderOpen, GitBranch, Github, Gitlab, Trash2, X, SquareTerminal, Code2, Settings, HardDrive, Cloud } from 'lucide-vue-next'
 import { Button, Input, Badge, Modal, Card } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 
@@ -14,6 +16,8 @@ const router = useRouter()
 const store = useProjectsStore()
 const ghStore = useGithubAccountsStore()
 const glStore = useGitlabAccountsStore()
+const serversStore = useServersStore()
+const awsStore = useAwsAccountsStore()
 const { confirm } = useConfirm()
 const adding = ref(false)
 const detecting = ref(false)
@@ -28,6 +32,58 @@ function gitlabAccountLabel(accountId: string | null): string | null {
   return glStore.accounts.find(a => a.id === accountId)?.label ?? 'Unknown'
 }
 
+// The AWS account linked to a project (label + region shown on its chip).
+function awsAccount(accountId: string | null) {
+  if (!accountId) return null
+  return awsStore.accounts.find(a => a.id === accountId) ?? null
+}
+
+// Mapped VPS servers per project (project_servers has no bulk endpoint, so we
+// fan out list_project_servers once after the projects load).
+const MAX_SERVER_CHIPS = 2
+type SrvTone = 'success' | 'error' | 'neutral'
+const projectServers = ref<Record<string, ProjectServer[]>>({})
+async function loadProjectServers() {
+  const entries = await Promise.all(
+    store.projects.map(async (p): Promise<[string, ProjectServer[]]> => {
+      try {
+        return [p.id, await serversStore.listForProject(p.id)]
+      } catch {
+        return [p.id, []]
+      }
+    }),
+  )
+  projectServers.value = Object.fromEntries(entries)
+}
+
+// Decorate each project's servers into header-style chips (tone by status,
+// collapsing the overflow into a single "+N").
+const projectChips = computed(() => {
+  const map: Record<string, {
+    visible: { key: string; label: string; tone: SrvTone; title: string }[]
+    hiddenCount: number
+    hiddenTitle: string
+  }> = {}
+  for (const p of store.projects) {
+    const chips = (projectServers.value[p.id] ?? []).map((s) => {
+      const tone: SrvTone = s.status === 'online' ? 'success' : s.status === 'offline' ? 'error' : 'neutral'
+      const status = s.status ? ` · ${s.status}` : ''
+      return {
+        key: `${s.id}-${s.role}`,
+        label: s.label,
+        tone,
+        title: `${s.role}: ${s.username}@${s.host}:${s.port}${status}`,
+      }
+    })
+    map[p.id] = {
+      visible: chips.slice(0, MAX_SERVER_CHIPS),
+      hiddenCount: Math.max(0, chips.length - MAX_SERVER_CHIPS),
+      hiddenTitle: chips.slice(MAX_SERVER_CHIPS).map((c) => c.label).join('\n'),
+    }
+  }
+  return map
+})
+
 interface PendingRepo extends DetectedRepo {
   _key: number
 }
@@ -38,10 +94,12 @@ const pending = ref<DetectedProjectInfo | null>(null)
 const pendingName = ref('')
 const pendingRepos = ref<PendingRepo[]>([])
 
-onMounted(() => {
-  store.fetchProjects()
+onMounted(async () => {
+  await store.fetchProjects()
   if (ghStore.accounts.length === 0) ghStore.fetch()
   if (glStore.accounts.length === 0) glStore.fetch()
+  if (awsStore.accounts.length === 0) awsStore.fetch()
+  loadProjectServers()
 })
 
 async function handleAdd() {
@@ -177,7 +235,7 @@ async function handleOpenInFolder(project: { path: string }) {
 
     <!-- Content -->
     <div class="flex-1 overflow-auto p-6">
-      <div v-if="store.loading" class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+      <div v-if="store.loading" class="grid grid-cols-1 gap-3 sm:grid-cols-2 2xl:grid-cols-3">
         <div v-for="i in 8" :key="i" class="h-32 rounded-xl border border-border bg-card animate-pulse" />
       </div>
 
@@ -200,7 +258,7 @@ async function handleOpenInFolder(project: { path: string }) {
         </Button>
       </div>
 
-      <div v-else class="grid grid-cols-2 xl:grid-cols-3 gap-3">
+      <div v-else class="grid grid-cols-1 sm:grid-cols-2 2xl:grid-cols-3 gap-3">
         <Card
           v-for="project in store.projects"
           :key="project.id"
@@ -225,15 +283,44 @@ async function handleOpenInFolder(project: { path: string }) {
           </div>
 
           <!-- Footer -->
-          <div class="flex items-center justify-between pt-2.5 border-t border-border/60 mt-auto">
-            <div class="flex items-center gap-1.5 min-w-0">
-              <Badge v-if="project.github_account_id" tone="info">
-                <Github class="h-2.5 w-2.5" :stroke-width="2" />
-                {{ accountLabel(project.github_account_id) }}
+          <div class="flex items-start justify-between gap-2 pt-2.5 border-t border-border/60 mt-auto">
+            <div class="flex items-center gap-1.5 flex-wrap min-w-0">
+              <Badge v-if="project.github_account_id" tone="info" class="max-w-[9rem]">
+                <Github class="h-2.5 w-2.5 shrink-0" :stroke-width="2" />
+                <span class="truncate">{{ accountLabel(project.github_account_id) }}</span>
               </Badge>
-              <Badge v-if="project.gitlab_account_id" tone="warning">
-                <Gitlab class="h-2.5 w-2.5" :stroke-width="2" />
-                {{ gitlabAccountLabel(project.gitlab_account_id) }}
+              <Badge v-if="project.gitlab_account_id" tone="warning" class="max-w-[9rem]">
+                <Gitlab class="h-2.5 w-2.5 shrink-0" :stroke-width="2" />
+                <span class="truncate">{{ gitlabAccountLabel(project.gitlab_account_id) }}</span>
+              </Badge>
+              <!-- Mapped VPS servers (tone by connection status). -->
+              <Badge
+                v-for="chip in projectChips[project.id]?.visible"
+                :key="chip.key"
+                :tone="chip.tone"
+                :title="chip.title"
+                class="max-w-[9rem]"
+              >
+                <HardDrive class="h-2.5 w-2.5 shrink-0" :stroke-width="2" />
+                <span class="truncate">{{ chip.label }}</span>
+              </Badge>
+              <Badge
+                v-if="projectChips[project.id]?.hiddenCount"
+                tone="neutral"
+                :title="projectChips[project.id]?.hiddenTitle"
+              >
+                <HardDrive class="h-2.5 w-2.5" :stroke-width="2" />
+                +{{ projectChips[project.id].hiddenCount }}
+              </Badge>
+              <!-- Linked AWS account. -->
+              <Badge
+                v-if="awsAccount(project.aws_account_id)"
+                tone="primary"
+                class="max-w-[9rem]"
+                :title="`AWS: ${awsAccount(project.aws_account_id)!.label} · region ${awsAccount(project.aws_account_id)!.region}`"
+              >
+                <Cloud class="h-2.5 w-2.5 shrink-0" :stroke-width="2" />
+                <span class="truncate">{{ awsAccount(project.aws_account_id)!.label }}</span>
               </Badge>
             </div>
             <!-- Actions on hover -->
