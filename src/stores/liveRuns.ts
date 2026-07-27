@@ -11,6 +11,8 @@ import {
 } from '@/lib/streamEvents'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
 import { useRunsStore } from './runs'
+import { useToolPermissionsStore } from './toolPermissions'
+import { useRemoteControlStore } from './remoteControl'
 
 /**
  * In-memory streaming state for a single run. Lives in this store (not in
@@ -28,8 +30,16 @@ export interface LiveSession {
   status: string
   sessionId: string | null
   permissionQueue: PermissionRequest[]
-  /** Tool names the user chose to auto-allow for the rest of this run. */
+  /**
+   * Tool names the user chose to auto-allow. Seeded from the project's
+   * persisted "allow always" list and extended as the user grants more.
+   */
   allowedTools: string[]
+  /**
+   * Tool names the user chose to auto-deny. Seeded from the project's
+   * persisted "deny always" list and extended as the user denies more.
+   */
+  deniedTools: string[]
   /** Model id from `system.init` — used to resolve the context-window limit. */
   model: string | null
   /** Estimated tokens occupying the context window after the latest turn. */
@@ -117,6 +127,7 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
         sessionId: null as string | null,
         permissionQueue: [] as PermissionRequest[],
         allowedTools: [] as string[],
+        deniedTools: [] as string[],
         model: null as string | null,
         contextTokens: 0,
         sawAssistantUsage: false,
@@ -124,6 +135,11 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
         rateLimit: null as RateLimitWindows | null,
         budgetBlocked: false,
       }) as LiveSession
+      // Seed the per-run allow/deny lists with the standing choices the user
+      // made for this project in earlier runs, so they apply again here.
+      const perms = useToolPermissionsStore()
+      s.allowedTools = perms.getAllow(projectId)
+      s.deniedTools = perms.getDeny(projectId)
       sessions.set(runId, s)
       toolIndexes.set(runId, new Map())
     }
@@ -201,6 +217,7 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
   async function startListening(runId: string, projectId: string) {
     if (unlisteners.has(runId)) return
     const runsStore = useRunsStore()
+    const remoteControl = useRemoteControlStore()
     const s = ensure(runId, projectId)
     const toolIndex = toolIndexes.get(runId)!
     const fns: UnlistenFn[] = []
@@ -237,9 +254,11 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
         // Capture real claude.ai rate-limit windows (Claude subscription only).
         captureRateLimit(s, p)
         // Track context-window occupancy from usage; reset on compaction.
-        // Prefer per-message `assistant` usage (true window size, grows turn
-        // over turn) and keep the high-water mark — a turn's calls only add to
-        // the window, so the largest single call is its occupancy. The `result`
+        // Use the LATEST per-message `assistant` usage (the whole prior history
+        // rides in as cache_read, so the newest message is the true current
+        // window size). A high-water max would pin the meter to an earlier spike
+        // and never fall after a compaction/resume shrinks the window — which is
+        // exactly what Claude's own context indicator reports. The `result`
         // event's usage is a cumulative per-turn sum that over-counts, so it is
         // only a fallback for engines that never emit per-message usage.
         if (isCompactBoundary(event.payload)) {
@@ -248,7 +267,7 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
         } else {
           const ctx = extractContextTokens(event.payload)
           if (ctx !== null) {
-            s.contextTokens = Math.max(s.contextTokens, ctx)
+            s.contextTokens = ctx
             s.sawAssistantUsage = true
           } else if (!s.sawAssistantUsage) {
             const total = extractTurnTotalTokens(event.payload)
@@ -296,15 +315,45 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
     fns.push(
       await listen<PermissionRequest>(`run:permission_request:${runId}`, (event) => {
         const req = event.payload
-        // AskUserQuestion must always reach the user — auto-allowing it would
-        // submit empty answers. Other tools honor the per-session allowlist.
-        if (req.tool_name !== 'AskUserQuestion' && s.allowedTools.includes(req.tool_name)) {
-          runsStore
-            .respondPermission(req.run_id, req.request_id, 'allow', 'Auto-allowed for this session')
-            .catch(() => {})
-          return
+        // When this run is actively driven by an AUTHENTICATED remote controller,
+        // the human being asked is remote — the desktop must NOT auto-allow/deny
+        // from its local per-project lists. Doing so races and beats the remote
+        // user's Deny (a local auto-`allow` fired ~24ms before the relayed deny),
+        // silently running a tool the remote user rejected. Defer to the remote:
+        // just enqueue; the controller answers and `run:permission_resolved`
+        // clears it. (A human at the desktop can still answer manually.)
+        const rc = remoteControl.status
+        const remoteDriven = !!rc?.session_authenticated && rc?.bound_run_id === req.run_id
+        // AskUserQuestion must always reach the user — auto-deciding it would
+        // submit empty answers. Other tools honor the project's standing
+        // deny/allow choices (deny wins if both somehow apply).
+        if (!remoteDriven && req.tool_name !== 'AskUserQuestion') {
+          if (s.deniedTools.includes(req.tool_name)) {
+            runsStore
+              .respondPermission(req.run_id, req.request_id, 'deny', 'Auto-denied for this project')
+              .catch(() => {})
+            return
+          }
+          if (s.allowedTools.includes(req.tool_name)) {
+            runsStore
+              .respondPermission(req.run_id, req.request_id, 'allow', 'Auto-allowed for this session')
+              .catch(() => {})
+            return
+          }
         }
         s.permissionQueue.push(req)
+      }),
+    )
+
+    fns.push(
+      // A remote Controller (or the broker) answered a permission request. The
+      // desktop's own reply path already shifts the queue, so this listener
+      // mainly covers the remote case: drop the still-pending prompt by
+      // request_id. Idempotent — a no-op if it was already removed.
+      await listen<{ request_id: string }>(`run:permission_resolved:${runId}`, (event) => {
+        const { request_id } = event.payload
+        const i = s.permissionQueue.findIndex((p) => p.request_id === request_id)
+        if (i !== -1) s.permissionQueue.splice(i, 1)
       }),
     )
 
@@ -321,7 +370,37 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
 
   function rememberAllowedTool(runId: string, tool: string) {
     const s = sessions.get(runId)
-    if (s && !s.allowedTools.includes(tool)) s.allowedTools.push(tool)
+    if (!s) return
+    if (!s.allowedTools.includes(tool)) s.allowedTools.push(tool)
+    const d = s.deniedTools.indexOf(tool)
+    if (d !== -1) s.deniedTools.splice(d, 1)
+    // Persist per project so "allow always" survives new runs and app restarts.
+    useToolPermissionsStore().allow(s.projectId, tool)
+  }
+
+  function rememberDeniedTool(runId: string, tool: string) {
+    const s = sessions.get(runId)
+    if (!s) return
+    if (!s.deniedTools.includes(tool)) s.deniedTools.push(tool)
+    const a = s.allowedTools.indexOf(tool)
+    if (a !== -1) s.allowedTools.splice(a, 1)
+    // Persist per project so "deny always" survives new runs and app restarts.
+    useToolPermissionsStore().deny(s.projectId, tool)
+  }
+
+  /**
+   * Re-seed the live allow/deny lists of every session in a project from the
+   * persisted store. Called after the user edits standing permissions so the
+   * change takes effect on runs that are already open (not just future ones).
+   */
+  function syncToolPermissions(projectId: string) {
+    const perms = useToolPermissionsStore()
+    sessions.forEach((s) => {
+      if (s.projectId === projectId) {
+        s.allowedTools = perms.getAllow(projectId)
+        s.deniedTools = perms.getDeny(projectId)
+      }
+    })
   }
 
   function shiftPermission(runId: string) {
@@ -355,6 +434,8 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
     startListening,
     stopListening,
     rememberAllowedTool,
+    rememberDeniedTool,
+    syncToolPermissions,
     shiftPermission,
     discard,
     runningIds,

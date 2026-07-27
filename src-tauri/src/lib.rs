@@ -2,6 +2,7 @@ mod commands;
 mod db;
 mod github;
 mod gitlab;
+mod remote;
 mod runs;
 mod secrets;
 
@@ -61,6 +62,12 @@ use commands::vps_servers::{
 };
 use commands::work_digest::get_work_digest;
 use commands::work_summary::{cancel_work_summary, summarize_work_digest, WorkSummaryState};
+use remote::commands::{
+    remote_create_session_link, remote_disable, remote_enable, remote_end_session,
+    remote_get_audit, remote_reveal_otp, remote_set_config, remote_set_master_password,
+    remote_status,
+};
+use remote::RemoteState;
 use runs::broker::approver::ModalApproverResolver;
 use runs::broker::{start_broker, ApproverResolver, BrokerConfig};
 use runs::sidecar::kill_process_group;
@@ -123,6 +130,45 @@ pub fn run() {
             // Keep the broker alive for the whole app lifetime (Drop removes the
             // socket on exit).
             app.manage(broker_handle);
+
+            // Remote Control (C1): managed state + event bus. The `drain_sidecar`
+            // task publishes run events onto this bus (no-op when no room is
+            // ACTIVE). If the feature was left enabled, auto-start the outbound
+            // relay agent (FR-001 "app khởi động khi tính năng đang bật").
+            let remote_state = RemoteState::default();
+            // Register the RemoteBus as its own managed state so the run event
+            // tap in `sidecar.rs` (app.try_state::<RemoteBus>()) publishes onto
+            // the SAME bus the forwarder subscribes to. Without this the tap
+            // finds no bus and never forwards stream/permission events.
+            app.manage(remote_state.bus.clone());
+            app.manage(remote_state.clone());
+            // Shared engine/model/permission-mode selection store: the desktop
+            // composer + a remote controller both read/write it so their selectors
+            // stay in lock-step (realtime, both ways).
+            app.manage(remote::RunMetaStore::default());
+            {
+                let app_handle = app.handle().clone();
+                let db_for_remote = app_handle.state::<db::Db>().inner().clone();
+                let registry = app_handle.state::<RunRegistry>().inner().clone();
+                let approvals = app_handle
+                    .state::<runs::BrokerApprovals>()
+                    .inner()
+                    .clone();
+                tauri::async_runtime::spawn(async move {
+                    let enabled = remote::get_setting(&db_for_remote, remote::KEY_ENABLED)
+                        .await
+                        .map(|v| v == "true")
+                        .unwrap_or(false);
+                    if enabled {
+                        if let Err(e) = remote_state
+                            .start(&app_handle, &db_for_remote, &registry, &approvals)
+                            .await
+                        {
+                            tracing::warn!(event = "remote_autostart_failed", error = %e);
+                        }
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -246,6 +292,16 @@ pub fn run() {
             get_storage_stats,
             clean_storage,
             show_permission_notification,
+            remote_set_config,
+            remote_enable,
+            remote_disable,
+            remote_create_session_link,
+            remote_end_session,
+            remote_reveal_otp,
+            remote_set_master_password,
+            remote_get_audit,
+            remote_status,
+            remote::meta::set_run_meta,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

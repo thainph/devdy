@@ -250,6 +250,15 @@ pub async fn drain_sidecar(
     let mut stdout_reader = BufReader::new(stdout).lines();
     let mut stderr_reader = BufReader::new(stderr).lines();
 
+    // Remote Control (C1) event tap: publish each run event onto the in-process
+    // broadcast bus AS WE emit it locally (FR-004 "ưu tiên tap tại nguồn"). When
+    // Remote Control is disabled / no forwarder is subscribed, publish is a
+    // no-op, so there is zero cost on the local path. Cloned once here (cheap:
+    // a broadcast::Sender handle). Absent state → None → never publishes.
+    let remote_bus = app
+        .try_state::<crate::remote::RemoteBus>()
+        .map(|s| s.inner().clone());
+
     async fn append_log(buf: &Arc<TokioMutex<String>>, line: &str) {
         buf.lock().await.push_str(line);
     }
@@ -276,6 +285,23 @@ pub async fn drain_sidecar(
             Err(_) => (String::new(), String::new(), String::new()),
         }
     };
+
+    // Announce this run to the desktop webview so app-wide surfaces (the active-
+    // runs dock, the permission notifier and its native OS notification) attach
+    // their per-run listeners even when the user never opened this run's view —
+    // e.g. a run started/resumed entirely from a remote Controller, or one still
+    // live after an app restart. Without this, `startListening` only ever runs
+    // from RunView, so a remotely-driven run's permission prompts reach the phone
+    // but nothing on the desktop. Keyed globally (not by run id) because the
+    // webview cannot subscribe to a run id it does not yet know. Idempotent on the
+    // JS side, so this is a no-op for runs the desktop already started locally.
+    if !project_id.is_empty() {
+        let _ = app.emit(
+            "run:activated",
+            serde_json::json!({ "run_id": run_id, "project_id": project_id }),
+        );
+    }
+
     // Most-recent model id seen on a `system.init` event; attached to usage rows.
     let mut last_model: Option<String> = None;
 
@@ -332,6 +358,17 @@ pub async fn drain_sidecar(
                                     description: v.get("description").and_then(|x| x.as_str()).map(str::to_string),
                                     display_name: v.get("display_name").and_then(|x| x.as_str()).map(str::to_string),
                                 };
+                                // Remote tap: forward the permission_request with full
+                                // context so a Controller can decide (FR-006/BR-007).
+                                if let Some(bus) = &remote_bus {
+                                    bus.publish(crate::remote::RemoteRunEvent::PermissionRequest {
+                                        run_id: run_id.clone(),
+                                        request_id: evt.request_id.clone(),
+                                        tool: evt.tool_name.clone(),
+                                        input: evt.tool_input.clone(),
+                                        cwd: evt.cwd.clone(),
+                                    });
+                                }
                                 let _ = app.emit(&format!("run:permission_request:{}", run_id), evt);
                             }
                             // ---- control: diagnostic log (codex tracing / notes) -
@@ -342,6 +379,13 @@ pub async fn drain_sidecar(
                                 let level = v.get("level").and_then(|x| x.as_str()).unwrap_or("info").to_string();
                                 let is_err = level == "error";
                                 append_log(&log_buf, &format!("[log:{}] {}\n", level, text)).await;
+                                if let Some(bus) = &remote_bus {
+                                    bus.publish(crate::remote::RemoteRunEvent::Output {
+                                        run_id: run_id.clone(),
+                                        line: text.clone(),
+                                        is_stderr: is_err,
+                                    });
+                                }
                                 let _ = app.emit(
                                     &format!("run:output:{}", run_id),
                                     serde_json::json!({ "run_id": run_id, "line": text, "is_stderr": is_err, "level": level }),
@@ -352,6 +396,13 @@ pub async fn drain_sidecar(
                                 let text = v.get("text").or_else(|| v.get("error"))
                                     .and_then(|x| x.as_str()).unwrap_or("").to_string();
                                 append_log(&log_buf, &format!("[stderr] {}\n", text)).await;
+                                if let Some(bus) = &remote_bus {
+                                    bus.publish(crate::remote::RemoteRunEvent::Output {
+                                        run_id: run_id.clone(),
+                                        line: text.clone(),
+                                        is_stderr: true,
+                                    });
+                                }
                                 let _ = app.emit(
                                     &format!("run:output:{}", run_id),
                                     serde_json::json!({ "run_id": run_id, "line": text, "is_stderr": true, "level": "error" }),
@@ -451,11 +502,24 @@ pub async fn drain_sidecar(
                                         }
                                     }
                                 }
+                                if let Some(bus) = &remote_bus {
+                                    bus.publish(crate::remote::RemoteRunEvent::Event {
+                                        run_id: run_id.clone(),
+                                        event: v.clone(),
+                                    });
+                                }
                                 let _ = app.emit(&format!("run:event:{}", run_id), v.clone());
                             }
                             // ---- non-JSON line (rare) ---------------------------
                             (None, _) => {
                                 append_log(&log_buf, &format!("{}\n", l)).await;
+                                if let Some(bus) = &remote_bus {
+                                    bus.publish(crate::remote::RemoteRunEvent::Output {
+                                        run_id: run_id.clone(),
+                                        line: l.clone(),
+                                        is_stderr: false,
+                                    });
+                                }
                                 let _ = app.emit(
                                     &format!("run:output:{}", run_id),
                                     serde_json::json!({ "run_id": run_id, "line": l, "is_stderr": false }),
@@ -469,6 +533,13 @@ pub async fn drain_sidecar(
             line = stderr_reader.next_line() => {
                 if let Ok(Some(l)) = line {
                     append_log(&log_buf, &format!("[stderr] {}\n", l)).await;
+                    if let Some(bus) = &remote_bus {
+                        bus.publish(crate::remote::RemoteRunEvent::Output {
+                            run_id: run_id.clone(),
+                            line: l.clone(),
+                            is_stderr: true,
+                        });
+                    }
                     let _ = app.emit(
                         &format!("run:output:{}", run_id),
                         serde_json::json!({ "run_id": run_id, "line": l, "is_stderr": true }),
@@ -481,6 +552,13 @@ pub async fn drain_sidecar(
     // Drain any trailing stderr after stdout closed.
     while let Ok(Some(l)) = stderr_reader.next_line().await {
         append_log(&log_buf, &format!("[stderr] {}\n", l)).await;
+        if let Some(bus) = &remote_bus {
+            bus.publish(crate::remote::RemoteRunEvent::Output {
+                run_id: run_id.clone(),
+                line: l.clone(),
+                is_stderr: true,
+            });
+        }
         let _ = app.emit(
             &format!("run:output:{}", run_id),
             serde_json::json!({ "run_id": run_id, "line": l, "is_stderr": true }),
@@ -510,6 +588,12 @@ pub async fn drain_sidecar(
         .execute(&db_pool)
         .await;
 
+    if let Some(bus) = &remote_bus {
+        bus.publish(crate::remote::RemoteRunEvent::Done {
+            run_id: run_id.clone(),
+            status: final_status.to_string(),
+        });
+    }
     let _ = app.emit(
         &format!("run:done:{}", run_id),
         serde_json::json!({ "run_id": run_id, "status": final_status }),

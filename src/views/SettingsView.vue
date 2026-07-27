@@ -4,9 +4,10 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from '@/lib/tauri'
 import {
   Cpu, Palette, FileText, ShieldAlert, Sparkles, Github, Gitlab, Cloud,
-  CheckCircle2, AlertTriangle, Trash2, Plus, Pencil, Gauge,
+  CheckCircle2, AlertTriangle, Trash2, Plus, Pencil, Gauge, Radio,
 } from 'lucide-vue-next'
 import { Button, Input, Textarea, Card, AppSelect } from '@/components/ui'
+import RemoteControlSettings from '@/components/remote/RemoteControlSettings.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useGithubAccountsStore, type PatValidation } from '@/stores/githubAccounts'
@@ -97,6 +98,7 @@ const SECTIONS = [
   { id: 'models', label: 'Default Models', icon: Sparkles },
   { id: 'permissions', label: 'Permissions', icon: ShieldAlert },
   { id: 'usage', label: 'Usage & Budget', icon: Gauge },
+  { id: 'remote', label: 'Remote Control', icon: Radio },
   { id: 'prompts', label: 'Prompt Templates', icon: FileText },
 ] as const
 const activeSection = ref<(typeof SECTIONS)[number]['id']>('general')
@@ -1180,8 +1182,10 @@ watch(() => settings.value.color_theme, (t) => {
               </p>
               <p class="text-[11px] text-muted-foreground leading-relaxed">
                 For Codex this maps to its approval policy &amp; sandbox: <b>Plan</b> → read-only,
-                <b>Auto-accept edits</b> → workspace-write (approve on failure), <b>Bypass all</b> →
-                full access, <b>others</b> → workspace-write (approve on request).
+                <b>Ask via UI</b> → workspace-write (untrusted: prompts for every command outside the
+                safe read-only allow-list, so Deny truly blocks it), <b>Auto-accept edits</b> →
+                workspace-write (approve on request), <b>Auto (classifier)</b> → workspace-write
+                (approve on request), <b>Bypass all</b> → full access.
               </p>
             </div>
         </Card>
@@ -1269,6 +1273,11 @@ watch(() => settings.value.color_theme, (t) => {
             </div>
         </Card>
 
+        </div>
+
+        <!-- Remote Control (wider than the max-w-lg forms to fit the audit table) -->
+        <div v-show="!loading && activeSection === 'remote'" class="max-w-3xl">
+          <RemoteControlSettings />
         </div>
       </div>
     </div>

@@ -461,9 +461,11 @@ export function parseStreamLog(raw: string): StreamState | null {
 
   const state = createStreamState()
   // Reconstruct context-window occupancy the same way the live store does:
-  // high-water mark of per-message `assistant` usage, reset on compaction, with
-  // the cumulative `result` total only as a fallback for engines that never
-  // emit per-message usage. See `extractContextTokens`.
+  // the LATEST per-message `assistant` usage (newest message = true current
+  // window size), reset on compaction, with the cumulative `result` total only
+  // as a fallback for engines that never emit per-message usage. A high-water
+  // max would stay pinned to an earlier spike after the window shrinks. See
+  // `extractContextTokens`.
   let sawAssistantUsage = false
   for (const line of lines) {
     const logMatch = line.match(/^\[log:([a-z]+)\]\s?([\s\S]*)$/)
@@ -484,7 +486,7 @@ export function parseStreamLog(raw: string): StreamState | null {
       } else {
         const ctx = extractContextTokens(parsed)
         if (ctx !== null) {
-          state.contextTokens = Math.max(state.contextTokens, ctx)
+          state.contextTokens = ctx
           sawAssistantUsage = true
         } else if (!sawAssistantUsage) {
           const total = extractTurnTotalTokens(parsed)

@@ -23,15 +23,59 @@
 // runs bill against the user's subscription — no API key.
 
 import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
+
+// A per-process nonce so permission `requestId`s are globally unique. Each Devdy
+// prompt spawns a FRESH sidecar (a new `codex app-server` whose JSON-RPC id
+// counter restarts at a low number), so a bare `codex-<rpcId>` would collide
+// across prompts within one remote session — and the Host's session-scoped
+// idempotency guard would reject the 2nd+ real approval as `duplicate_request`,
+// silently dropping the user's Allow/Deny. Prefixing with this nonce prevents
+// that collision (P0: remote Deny had no effect after the first turn).
+const PROC_NONCE = randomUUID().slice(0, 8)
 
 const CODEX_BIN = process.env.DEVDY_CODEX_PATH || 'codex'
 const RESUME_THREAD = process.env.DEVDY_RESUME_SESSION || null
 const PERMISSION_MODE = process.env.DEVDY_PERMISSION_MODE || 'default'
 const MODEL = process.env.DEVDY_CODEX_MODEL || null
-const CWD = process.cwd()
 
 function out(obj) { process.stdout.write(JSON.stringify(obj) + '\n') }
 function ctrl(type, extra = {}) { out({ type, ...extra }) }
+
+// --- Global safety net -------------------------------------------------------
+// Surface EVERY failure to the user as a friendly `_devdy_error` (which the
+// broker forwards to the run log as an error line) instead of letting Node
+// print a raw stack trace to stderr and exit — so the UI shows a clear message
+// rather than the process appearing to "crash".
+function reportFatal(err, context) {
+  const msg = String(err?.stack || err?.message || err)
+  try { ctrl('_devdy_error', { error: context ? `${context}: ${msg}` : msg }) } catch {}
+}
+process.on('uncaughtException', (err) => { reportFatal(err, 'Uncaught exception'); setTimeout(() => process.exit(1), 50) })
+process.on('unhandledRejection', (err) => { reportFatal(err, 'Unhandled rejection'); setTimeout(() => process.exit(1), 50) })
+
+// Reading the working directory can throw EPERM on macOS when the project folder
+// is in a TCC-protected location (Desktop/Documents/Downloads/iCloud), on a
+// network/removable volume the app can't access, or was deleted after opening.
+// Fall back to the path passed by the broker so the sidecar reports the problem
+// instead of crashing at startup with `uv_cwd`.
+function safeCwd() {
+  try {
+    return process.cwd()
+  } catch (e) {
+    const fallback = process.env.DEVDY_PROJECT_PATH || process.env.HOME || '/'
+    ctrl('_devdy_error', {
+      error:
+        `Không truy cập được thư mục làm việc (${e?.code || 'EPERM'}). ` +
+        `Thư mục dự án có thể nằm ở nơi macOS chặn quyền (Desktop/Documents/Downloads/iCloud), ` +
+        `trên ổ mạng/ổ ngoài chưa được cấp quyền, hoặc đã bị xóa/di chuyển. ` +
+        `Hãy cấp Full Disk Access cho Devdy trong System Settings → Privacy & Security, ` +
+        `hoặc chuyển dự án sang thư mục khác (ví dụ ~/Projects). Đang tạm dùng: ${fallback}`,
+    })
+    return fallback
+  }
+}
+const CWD = safeCwd()
 
 // Diagnostic log line (level: error|warn|info|debug|trace) — rendered as a muted
 // log entry in the UI, NOT as a system error. Use for codex tracing + sidecar notes.
@@ -165,6 +209,18 @@ function request(method, params) {
     codex.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n')
   })
 }
+
+function rpcResult(response, method) {
+  if (response?.error) {
+    const detail = response.error.message || JSON.stringify(response.error)
+    throw new Error(`${method} failed: ${detail}`)
+  }
+  if (!response || !('result' in response)) {
+    throw new Error(`${method} failed: missing JSON-RPC result`)
+  }
+  return response.result
+}
+
 function rpcNotify(method, params) {
   codex.stdin.write(JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n')
 }
@@ -180,8 +236,20 @@ function policyFor(mode) {
   let base
   switch (mode) {
     case 'plan':              base = { approvalPolicy: 'never',      sandbox: 'read-only' }; break
-    case 'acceptEdits':       base = { approvalPolicy: 'on-failure', sandbox: 'workspace-write' }; break
+    // "Ask via UI" (default) must genuinely gate tool calls so a remote/desktop
+    // `Deny` actually blocks execution. `on-request` lets Codex auto-run any
+    // command it deems safe (and only asks to escalate), so a denied escalation
+    // could still run in-sandbox — the P0 "Deny didn't block" bug. `untrusted`
+    // asks for every command outside Codex's safe read-only allow-list, and a
+    // `cancel`/`decline` on that prompt reliably prevents the command.
+    case 'default':           base = { approvalPolicy: 'untrusted',  sandbox: 'workspace-write' }; break
+    // Claude's `acceptEdits` has no one-to-one Codex policy. `on-request` with
+    // workspace-write is the closest equivalent: edits inside the workspace are
+    // sandboxed and allowed, while actions that need more access can still ask.
+    // Codex 0.144+ rejects the old `on-failure` value during thread/start.
+    case 'acceptEdits':       base = { approvalPolicy: 'on-request', sandbox: 'workspace-write' }; break
     case 'bypassPermissions': base = { approvalPolicy: 'never',      sandbox: 'danger-full-access' }; break
+    // `auto` (classifier) / `dontAsk` / legacy: let Codex decide when to ask.
     default:                  base = { approvalPolicy: 'on-request', sandbox: 'workspace-write' }
   }
   // Explicit overrides (tuning knob / tests).
@@ -198,7 +266,7 @@ const declinedCommands = new Set()
 const cmdKey = (c) => (Array.isArray(c) ? c.join(' ') : String(c ?? '')).trim()
 
 function emitPermission(rpcReqId, { tool_name, tool_input, title, description, display_name }, waiter = {}) {
-  const requestId = `codex-${rpcReqId}`
+  const requestId = `codex-${PROC_NONCE}-${rpcReqId}`
   permWaiters.set(requestId, { rpcId: rpcReqId, command: tool_input?.command, kind: 'approval', ...waiter })
   ctrl('_devdy_permission_request', { requestId, tool_name, tool_input, title, description, display_name })
 }
@@ -440,7 +508,9 @@ function emitItem(item) {
       out({ type: 'assistant', message: { role: 'assistant', content: [
         { type: 'tool_use', id: item.id, name: 'Bash', input: { command: item.command, description: (item.commandActions?.[0]?.name) || undefined } },
       ] } })
-      const rejected = declinedCommands.delete(cmdKey(item.command))
+      const rejected =
+        item.status === 'declined' ||
+        declinedCommands.delete(cmdKey(item.command))
       const isError = rejected || (item.exitCode != null && item.exitCode !== 0)
       const output = rejected
         ? 'Rejected by user — command was not run.'
@@ -583,24 +653,29 @@ let turnStartedAt = null
 const promptQueue = []
 
 async function bringUp() {
-  await request('initialize', {
+  rpcResult(await request('initialize', {
     clientInfo: { name: 'devdy-codex', title: 'Devdy', version: '0.1.0' },
     capabilities: { experimentalApi: true, requestAttestation: false },
-  })
+  }), 'initialize')
   rpcNotify('initialized', undefined)
 
   const { approvalPolicy, sandbox } = policyFor(PERMISSION_MODE)
   if (RESUME_THREAD) {
-    const r = await request('thread/resume', { threadId: RESUME_THREAD })
-    threadId = r.result?.thread?.id || RESUME_THREAD
-    modelName = r.result?.model || null
+    const result = rpcResult(
+      await request('thread/resume', { threadId: RESUME_THREAD }),
+      'thread/resume',
+    )
+    threadId = result?.thread?.id || RESUME_THREAD
+    modelName = result?.model || null
   } else {
     const startParams = { cwd: CWD, approvalPolicy, sandbox }
     if (MODEL) startParams.model = MODEL
-    const r = await request('thread/start', startParams)
-    threadId = r.result?.thread?.id || null
-    modelName = r.result?.model || null
+    const result = rpcResult(await request('thread/start', startParams), 'thread/start')
+    threadId = result?.thread?.id || null
+    modelName = result?.model || null
   }
+
+  if (!threadId) throw new Error('Codex initialized without a thread id')
 
   // system.init lets the broker capture session_id (= threadId) for resume.
   out({ type: 'system', subtype: 'init', session_id: threadId, model: modelName, cwd: CWD, tools: ['Bash', 'Edit'] })
@@ -622,13 +697,16 @@ async function bringUp() {
 // Rust `refresh_codex_plan_usage` command via DEVDY_CODEX_USAGE_PROBE=1.
 async function usageProbe() {
   try {
-    await request('initialize', {
+    rpcResult(await request('initialize', {
       clientInfo: { name: 'devdy-codex', title: 'Devdy', version: '0.1.0' },
       capabilities: { experimentalApi: true, requestAttestation: false },
-    })
+    }), 'initialize')
     rpcNotify('initialized', undefined)
-    const r = await request('account/rateLimits/read', undefined)
-    emitCodexRateLimits(r?.result)
+    const result = rpcResult(
+      await request('account/rateLimits/read', undefined),
+      'account/rateLimits/read',
+    )
+    emitCodexRateLimits(result)
     ctrl('_devdy_done')
   } catch (e) {
     ctrl('_devdy_error', { error: String(e?.stack || e) })
@@ -639,6 +717,17 @@ async function usageProbe() {
 
 // `images` is an array of { media_type, data(base64) }. Codex app-server takes
 // images as an `image` input item whose `url` is a base64 `data:` URL.
+// Map the thread/start `sandbox` string onto the turn/start `sandboxPolicy`
+// object shape (all variants only require `type`).
+function sandboxPolicyObject(sandbox) {
+  switch (sandbox) {
+    case 'read-only':          return { type: 'readOnly' }
+    case 'danger-full-access': return { type: 'dangerFullAccess' }
+    case 'workspace-write':
+    default:                   return { type: 'workspaceWrite' }
+  }
+}
+
 async function startTurn(text, images) {
   if (!threadId) { ctrl('_devdy_error', { error: 'no thread' }); return }
   turnStartedAt = Date.now()
@@ -650,9 +739,20 @@ async function startTurn(text, images) {
     }
   }
   if (!input.length) input.push({ type: 'text', text: '', text_elements: [] })
+  // Re-apply the permission policy on EVERY turn (it overrides "for this turn
+  // and subsequent turns"). This is essential for RESUMED threads: `thread/resume`
+  // does NOT accept a policy, so a resumed session would otherwise keep whatever
+  // policy it was first created with — the P0 where a remote `Deny` failed to
+  // block because the resumed run silently stayed on `on-request`.
+  const { approvalPolicy, sandbox } = policyFor(PERMISSION_MODE)
   // Surface a rejected turn/start (e.g. bad input shape) instead of hanging: the
   // turn outcome otherwise arrives only via the turn/completed notification.
-  const res = await request('turn/start', { threadId, input })
+  const res = await request('turn/start', {
+    threadId,
+    input,
+    approvalPolicy,
+    sandboxPolicy: sandboxPolicyObject(sandbox),
+  })
   if (res?.error) {
     ctrl('_devdy_error', { error: `turn/start failed: ${res.error.message || JSON.stringify(res.error)}` })
   }
@@ -697,9 +797,11 @@ function handleCommand(cmd) {
         rpcRespond(w.rpcId, { action: accept ? 'accept' : 'decline', content: null, _meta: null })
         break
       }
-      // v2 approvals use accept/decline; legacy uses approved/denied. The
-      // app-server accepts the v2 vocabulary for the v2 request methods we use.
-      rpcRespond(w.rpcId, { decision: accept ? 'accept' : 'decline' })
+      // Fail closed on a deny. `cancel` both rejects the pending operation and
+      // interrupts the turn, preventing a command from racing ahead while the
+      // approval response propagates through the remote controller/host path.
+      // A later prompt can resume the same conversation normally.
+      rpcRespond(w.rpcId, { decision: accept ? 'accept' : 'cancel' })
       break
     }
     case 'interrupt':

@@ -1,0 +1,63 @@
+# Devdy Remote Control Relay — systemd unit (Topology B).
+#
+# Runs as an unprivileged user behind nginx/apache (SEC-010 / CON-02).
+# Restart=always with a short window satisfies NFR-006 (recover within <=10s).
+#
+# Install:
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin devdyrelay
+#   sudo install -m 0755 devdy-relay /usr/local/bin/devdy-relay
+#   sudo install -m 0640 -o devdyrelay -g devdyrelay relay.env /etc/devdy-relay.env
+#   sudo cp relay.service /etc/systemd/system/devdy-relay.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now devdy-relay
+#
+# The auth token lives ONLY in /etc/devdy-relay.env (chmod 0640), never in this
+# unit and never in the repo (SEC-001).
+
+[Unit]
+Description=Devdy Remote Control Relay (WSS bridge, localhost)
+Documentation=https://github.com/devdy/relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=devdyrelay
+Group=devdyrelay
+
+# Secrets and tunables are read from this env file (not committed).
+EnvironmentFile=/etc/devdy-relay.env
+# Sensible defaults; override in the env file.
+Environment=RELAY_BIND=127.0.0.1:8787
+Environment=RUST_LOG=info
+
+ExecStart=/usr/local/bin/devdy-relay
+
+# Reliability (NFR-006): recover within <=10s after a crash.
+Restart=always
+RestartSec=2s
+StartLimitIntervalSec=0
+
+# Resource limits (NFR-002/CON-02): keep the relay small.
+MemoryMax=128M
+CPUQuota=50%
+TasksMax=256
+LimitNOFILE=8192
+
+# Hardening (SEC-010): least privilege, no new privileges, read-only FS.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

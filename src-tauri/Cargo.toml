@@ -41,6 +41,12 @@ walkdir = "2"
 ignore = "0.4"
 octocrab = { version = "0.44", default-features = false, features = ["default-client", "rustls", "rustls-ring", "rustls-webpki-tokio"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Remote Control (C1): outbound WSS client to the relay + shared E2E crypto.
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+rand = "0.8"
+base64 = "0.22"
+remote-e2e = { path = "../remote-e2e" }
 
 [target.'cfg(unix)'.dependencies]
 # Process-group SIGKILL on app exit / cancel, so sidecar + CLI children don't

@@ -1,0 +1,14 @@
+{
+  "_note": "TEST VECTOR — DO NOT USE IN PRODUCTION. Keys/psk/nonce are fixed test data.",
+  "version": 1,
+  "psk_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "sk_a_hex": "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a",
+  "pk_a_hex": "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a",
+  "sk_b_hex": "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb",
+  "pk_b_hex": "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f",
+  "nonce_hex": "404142434445464748494a4b4c4d4e4f5051525354555657",
+  "plaintext_utf8": "{\"kind\":\"stream\",\"run_id\":\"r_1\",\"line\":\"hello from host\"}",
+  "session_key_hex": "844e5b03d605cfa0e7429997f53bd211c8218dce3169d8841cea76b8648008fa",
+  "host_fingerprint_hex": "5a9b976a849e6b72f45064d0bf17351bc0a4982aae057737c504df70e20f1292",
+  "cipher_b64": "AUBBQkNERUZHSElKS0xNTk9QUVJTVFVWV0u7mO7JfAfJKvmsIXJSp4DdSimfX6HIQaAH4d3p6h8jinHkfa/NwB2P2iM2gf7T2iQYFAZqZD8SfB9QBm03pMQYuRfPC7eDjNU="
+}

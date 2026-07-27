@@ -589,10 +589,19 @@ function onKeydown(e: KeyboardEvent) {
               </Button>
               <Button
                 v-if="canRemember"
+                variant="outline"
+                class="w-full @[26rem]/footer:w-auto"
+                @click="emit('decide', 'deny', true)"
+                title="Deny now and auto-deny this tool for this project"
+              >
+                <X class="h-3.5 w-3.5" :stroke-width="2" /> Deny always
+              </Button>
+              <Button
+                v-if="canRemember"
                 variant="primary"
                 class="w-full @[26rem]/footer:w-auto"
                 @click="emit('decide', 'allow', true)"
-                title="Allow now and auto-allow this tool for the rest of this run"
+                title="Allow now and auto-allow this tool for this project"
               >
                 <Check class="h-3.5 w-3.5" :stroke-width="2" /> Always
               </Button>

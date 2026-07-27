@@ -37,6 +37,11 @@ struct SecretStore {
     /// Session Token live here; SQLite only stores non-secret metadata.
     #[serde(default)]
     aws: HashMap<String, AwsSecrets>,
+    /// Remote Control (C1) secrets: the Host↔relay `auth_token` (SEC-001) and the
+    /// per-device pairing `psk` values (SEC-002/BR-003), kept in the SAME
+    /// consolidated item so the whole app costs at most ONE Keychain prompt.
+    #[serde(default)]
+    remote: RemoteSecrets,
     /// Per-process guard: `"<provider>:<account_id>"` keys we already attempted to
     /// migrate from a legacy per-account item. A denied or missing legacy read is
     /// recorded here so it is NEVER retried within the same run — otherwise a
@@ -522,4 +527,141 @@ pub fn has_aws_secret(account_id: &str) -> bool {
         .and_then(|s| s.secret_access_key.as_ref())
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false)
+}
+
+// ---- Remote Control (C1) secrets -------------------------------------------
+//
+// The Host↔relay `auth_token` (SEC-001) and each paired device's pairing `psk`
+// (SEC-002/BR-003) live in the SAME consolidated Keychain item, so the whole app
+// still costs at most ONE Keychain prompt after a reinstall. SQLite never holds
+// either value. No legacy migration path (this feature is new).
+
+/// Remote Control secret material kept in the consolidated store.
+#[derive(Default, Serialize, Deserialize, Clone)]
+struct RemoteSecrets {
+    /// Host→relay auth token (SEC-001). `None` until the Owner enables remote.
+    #[serde(default)]
+    auth_token: Option<String>,
+    /// The single active remote session's reconnect credential. `None` when no
+    /// session is bound. Holds the reusable rendezvous code, the Host's E2E
+    /// keypair (so the pinned fingerprint stays valid), the `session_secret`
+    /// (mixed into the reconnect KDF instead of the OTP) and the sliding idle
+    /// expiry.
+    #[serde(default)]
+    session: Option<RemoteSession>,
+    /// Optional owner-chosen master password. When set, a controller may
+    /// authenticate with it (mixed into the pairing KDF exactly like the OTP)
+    /// instead of reading the per-join one-time code — simpler for a single
+    /// owner. `None`/empty falls back to the OTP flow.
+    #[serde(default)]
+    master_password: Option<String>,
+}
+
+/// The single active remote session's durable reconnect credential.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct RemoteSession {
+    /// The single bound run this session controls.
+    pub run_id: String,
+    /// Reusable relay rendezvous code (bearer routing key) the controller rejoins.
+    pub rendezvous_code: String,
+    /// Session secret (hex) mixed into the reconnect-KDF in place of the OTP.
+    pub session_secret: String,
+    /// Host ephemeral X25519 public key (hex) — reused so the fingerprint the
+    /// controller pinned still matches on reconnect.
+    pub host_pub: String,
+    /// Host ephemeral X25519 secret key (hex). Secret — Keychain only.
+    pub host_secret: String,
+    /// Sliding idle expiry as a Unix timestamp (seconds). Refreshed on each
+    /// accepted command; past it the session must re-authenticate with the OTP.
+    pub idle_expires_at: u64,
+}
+
+/// Persist the Host↔relay auth token.
+pub fn set_remote_auth_token(token: &str) -> Result<()> {
+    let mut guard = CACHE.lock().map_err(|_| anyhow!("secret cache poisoned"))?;
+    ensure_loaded(&mut guard);
+    let store = guard.as_mut().expect("store loaded");
+    store.remote.auth_token = Some(token.to_string());
+    persist(store)
+}
+
+/// Read the Host↔relay auth token, if any.
+pub fn get_remote_auth_token() -> Option<String> {
+    let mut guard = CACHE.lock().ok()?;
+    ensure_loaded(&mut guard);
+    guard
+        .as_ref()
+        .and_then(|store| store.remote.auth_token.clone())
+        .filter(|t| !t.trim().is_empty())
+}
+
+/// Whether a non-empty auth token is stored WITHOUT returning its value.
+pub fn has_remote_auth_token() -> bool {
+    get_remote_auth_token().is_some()
+}
+
+/// Delete the Host↔relay auth token (no-op if absent). Part of the Remote
+/// Control secret API surface (used when the Owner clears remote config).
+#[allow(dead_code)]
+pub fn delete_remote_auth_token() -> Result<()> {
+    let mut guard = CACHE.lock().map_err(|_| anyhow!("secret cache poisoned"))?;
+    ensure_loaded(&mut guard);
+    let store = guard.as_mut().expect("store loaded");
+    store.remote.auth_token = None;
+    persist(store)
+}
+
+/// Persist (or clear) the owner's remote master password. An empty string
+/// clears it (falls back to the OTP flow).
+pub fn set_remote_master_password(password: &str) -> Result<()> {
+    let mut guard = CACHE.lock().map_err(|_| anyhow!("secret cache poisoned"))?;
+    ensure_loaded(&mut guard);
+    let store = guard.as_mut().expect("store loaded");
+    store.remote.master_password = if password.trim().is_empty() {
+        None
+    } else {
+        Some(password.to_string())
+    };
+    persist(store)
+}
+
+/// Read the owner's remote master password, if a non-empty one is stored.
+pub fn get_remote_master_password() -> Option<String> {
+    let mut guard = CACHE.lock().ok()?;
+    ensure_loaded(&mut guard);
+    guard
+        .as_ref()
+        .and_then(|store| store.remote.master_password.clone())
+        .filter(|p| !p.trim().is_empty())
+}
+
+/// Whether a non-empty master password is stored WITHOUT returning its value.
+pub fn has_remote_master_password() -> bool {
+    get_remote_master_password().is_some()
+}
+
+/// Persist (or replace) the single remote session's reconnect credential.
+pub fn set_remote_session(session: &RemoteSession) -> Result<()> {
+    let mut guard = CACHE.lock().map_err(|_| anyhow!("secret cache poisoned"))?;
+    ensure_loaded(&mut guard);
+    let store = guard.as_mut().expect("store loaded");
+    store.remote.session = Some(session.clone());
+    persist(store)
+}
+
+/// Read the single remote session's reconnect credential, if any.
+pub fn get_remote_session() -> Option<RemoteSession> {
+    let mut guard = CACHE.lock().ok()?;
+    ensure_loaded(&mut guard);
+    guard.as_ref().and_then(|store| store.remote.session.clone())
+}
+
+/// Delete the remote session credential (end-session / idle expiry). No-op if
+/// absent.
+pub fn delete_remote_session() -> Result<()> {
+    let mut guard = CACHE.lock().map_err(|_| anyhow!("secret cache poisoned"))?;
+    ensure_loaded(&mut guard);
+    let store = guard.as_mut().expect("store loaded");
+    store.remote.session = None;
+    persist(store)
 }

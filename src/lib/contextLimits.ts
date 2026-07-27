@@ -34,6 +34,27 @@ export function resolveContextLimit(
   return DEFAULT_LIMIT
 }
 
+/**
+ * Reconcile the model id reported on `system.init` with the composer's model
+ * selection to resolve the *effective* context model.
+ *
+ * The Claude CLI/SDK reports the canonical model id (e.g. `claude-opus-4-8`) on
+ * `system.init` and drops the `[1m]` context-beta suffix — so a run launched with
+ * `opus[1m]` looks identical to a 200K `opus` run in the stream. The composer
+ * selection is the only place that still carries `[1m]`, so re-attach it here.
+ *
+ * @param reported Model id from `system.init` (what actually ran).
+ * @param selected Model id from the composer selection (may carry `[1m]`).
+ */
+export function mergeContextModel(
+  reported: string | null | undefined,
+  selected: string | null | undefined,
+): string | null {
+  const has1m = (s: string | null | undefined) => !!s && /1m\]/i.test(s)
+  if (has1m(selected) && reported && !has1m(reported)) return `${reported}[1m]`
+  return reported || selected || null
+}
+
 /** Format a token count compactly, e.g. 45200 -> "45.2k". */
 export function formatTokensShort(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`

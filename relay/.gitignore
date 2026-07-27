@@ -1,0 +1,4 @@
+/target
+# Never commit real secrets / env files (SEC-001).
+relay.env
+/etc/devdy-relay.env

@@ -6,7 +6,7 @@
 // specific buttons (full-screen, pop-out, close) via the #actions slot.
 import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import {
-  FileCode2, AArrowDown, AArrowUp, ExternalLink, Copy, FileQuestion, FileWarning, FolderOpen, RotateCw, Code2,
+  FileCode2, AArrowDown, AArrowUp, ExternalLink, Copy, FileQuestion, FileWarning, FolderOpen, RotateCw, Code2, ClipboardCopy, Check,
 } from 'lucide-vue-next'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener'
@@ -69,6 +69,7 @@ const truncated = ref(false)
 const loading = ref(false)
 const error = ref<string | null>(null)
 const copied = ref(false)
+const pathCopied = ref(false)
 const reloading = ref(false)
 const kind = ref<FileKind>('text')
 const assetUrl = ref('')
@@ -253,6 +254,15 @@ function onRevealInFolder() {
 function onOpenInVscode() {
   if (absPath.value) projectsStore.openInVscode(absPath.value).catch(() => { /* VS Code unavailable */ })
 }
+async function copyPath() {
+  const target = absPath.value || curPath.value
+  if (!target) return
+  try {
+    await navigator.clipboard.writeText(target)
+    pathCopied.value = true
+    setTimeout(() => { pathCopied.value = false }, 1500)
+  } catch { /* clipboard unavailable */ }
+}
 async function copyContent() {
   try {
     await navigator.clipboard.writeText(content.value)
@@ -341,6 +351,15 @@ defineExpose({ onRevealInFolder, onOpenInApp })
           <AArrowUp class="h-3.5 w-3.5" :stroke-width="1.75" />
         </button>
       </div>
+      <!-- Copy the open file's path to the clipboard -->
+      <button
+        class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
+        :title="pathCopied ? 'Path copied!' : 'Copy file path'"
+        @click="copyPath"
+      >
+        <Check v-if="pathCopied" class="h-3.5 w-3.5 text-primary" :stroke-width="1.75" />
+        <ClipboardCopy v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+      </button>
       <!-- Open in the OS default app — most useful for media / office files -->
       <button
         v-if="kind !== 'text'"
@@ -360,17 +379,15 @@ defineExpose({ onRevealInFolder, onOpenInApp })
       >
         <RotateCw class="h-3.5 w-3.5" :class="{ 'animate-spin': reloading }" :stroke-width="1.75" />
       </button>
-      <Button
+      <button
         v-if="content"
-        variant="outline"
-        size="xs"
-        class="shrink-0"
+        class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
         :title="copied ? 'Copied!' : 'Copy content'"
         @click="copyContent"
       >
-        <Copy class="h-3 w-3" :stroke-width="1.75" />
-        {{ copied ? 'Copied' : 'Copy' }}
-      </Button>
+        <Check v-if="copied" class="h-3.5 w-3.5 text-primary" :stroke-width="1.75" />
+        <Copy v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+      </button>
       <!-- Host-supplied chrome controls (full-screen, pop-out, close) -->
       <slot name="actions" />
     </div>

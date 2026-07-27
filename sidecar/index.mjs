@@ -45,6 +45,18 @@ function send(obj) {
   process.stdout.write(JSON.stringify(obj) + '\n')
 }
 
+// --- Global safety net -------------------------------------------------------
+// Surface EVERY uncaught failure to the user as a friendly `_devdy_error` (which
+// the broker forwards to the run log as an error line) instead of letting Node
+// print a raw stack trace to stderr and exit — so the UI shows a clear message
+// rather than the process appearing to "crash".
+function reportFatal(err, context) {
+  const msg = String(err && err.stack ? err.stack : err)
+  try { send({ type: '_devdy_error', error: context ? `${context}: ${msg}` : msg }) } catch {}
+}
+process.on('uncaughtException', (err) => { reportFatal(err, 'Uncaught exception'); setTimeout(() => process.exit(1), 50) })
+process.on('unhandledRejection', (err) => { reportFatal(err, 'Unhandled rejection'); setTimeout(() => process.exit(1), 50) })
+
 // Pull the structured data behind the `/usage` command (session cost + claude.ai
 // plan rate-limit utilization windows with real per-account reset times) off the
 // live query and forward it. Best-effort: the method is experimental, only
@@ -181,9 +193,6 @@ function startQuery(firstText, opts = {}, firstImages) {
         if (typeof decision.response === 'string' && decision.response) {
           result.updatedInput.response = decision.response
         }
-      }
-      if (decision.always && Array.isArray(options?.suggestions)) {
-        result.updatedPermissions = options.suggestions
       }
       return result
     }

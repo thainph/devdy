@@ -6,11 +6,13 @@ import { useRunsStore, type RunRecord, type ProjectEntry } from '@/stores/runs'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useChatDraftsStore } from '@/stores/chatDrafts'
+import { useRunPrefsStore } from '@/stores/runPrefs'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import { useGitlabAccountsStore } from '@/stores/gitlabAccounts'
 import { useServersStore, type ProjectServer } from '@/stores/servers'
 import { useAwsAccountsStore } from '@/stores/awsAccounts'
 import { useAppSettingsStore } from '@/stores/appSettings'
+import { useUILayoutStore } from '@/stores/uiLayout'
 import { invoke } from '@/lib/tauri'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -24,12 +26,13 @@ import {
   ImagePlus, X, Paperclip,
   ShieldQuestion, MessageCircleQuestion,
   Pin, PinOff, Pencil, Check, Github, Gitlab,
-  ClipboardCopy, ScrollText, HardDrive, Cloud
+  ClipboardCopy, ScrollText, HardDrive, Cloud, Radio
 } from 'lucide-vue-next'
 import AppSelect from '@/components/AppSelect.vue'
 import StreamLog from '@/components/StreamLog.vue'
 import MentionedFiles from '@/components/MentionedFiles.vue'
 import ContextMeter from '@/components/ContextMeter.vue'
+import { mergeContextModel } from '@/lib/contextLimits'
 import PermissionPrompt from '@/components/PermissionPrompt.vue'
 import FileViewer from '@/components/FileViewer.vue'
 import { Button, Input, StatusBadge, Badge, Modal } from '@/components/ui'
@@ -47,6 +50,9 @@ import {
   type StreamEntry,
   type ImageAttachment,
 } from '@/lib/streamEvents'
+import { MODEL_OPTIONS, PERMISSION_MODE_OPTIONS } from '@/lib/engineOptions'
+import RemoteSessionModal from '@/components/remote/RemoteSessionModal.vue'
+import { useRemoteControlStore } from '@/stores/remoteControl'
 
 const route = useRoute()
 const router = useRouter()
@@ -55,11 +61,14 @@ const runsStore = useRunsStore()
 const live = useLiveRunsStore()
 const tabsStore = useWorkspaceTabsStore()
 const draftsStore = useChatDraftsStore()
+const runPrefsStore = useRunPrefsStore()
+const remoteControlStore = useRemoteControlStore()
 const ghStore = useGithubAccountsStore()
 const glStore = useGitlabAccountsStore()
 const serversStore = useServersStore()
 const awsStore = useAwsAccountsStore()
 const appSettings = useAppSettingsStore()
+const uiLayout = useUILayoutStore()
 const { confirm } = useConfirm()
 const { toast } = useToast()
 
@@ -182,42 +191,142 @@ function syncLoadedRunEngine(engine: string) {
 // Effective engine for the next start/handoff (selector value, else default).
 const effectiveEngine = computed(() => resolveEngineChoice(engineOverride.value))
 // Model choices depend on the engine. Empty value = let the engine/setting decide.
-const MODEL_OPTIONS: Record<string, Array<{ value: string; label: string }>> = {
-  claude: [
-    { value: '', label: 'Default (from settings)' },
-    // `[1m]` selects the 1M-context variant; the bare alias uses the 200K default.
-    { value: 'opus', label: 'Opus (200K)' },
-    { value: 'opus[1m]', label: 'Opus (1M)' },
-    { value: 'sonnet', label: 'Sonnet (200K)' },
-    { value: 'sonnet[1m]', label: 'Sonnet (1M)' },
-    { value: 'haiku', label: 'Haiku' },
-  ],
-  codex: [
-    { value: '', label: 'Default (from settings)' },
-    { value: 'gpt-5.5', label: 'gpt-5.5' },
-    { value: 'gpt-5.4', label: 'gpt-5.4' },
-    { value: 'gpt-5.3-codex', label: 'gpt-5.3-codex' },
-    { value: 'gpt-5.2-codex', label: 'gpt-5.2-codex' },
-    { value: 'gpt-5.1-codex-mini', label: 'gpt-5.1-codex-mini' },
-  ],
-}
+// Option tables live in @/lib/engineOptions (shared with the remote controller).
 const modelOptions = computed(() => MODEL_OPTIONS[effectiveEngine.value] ?? MODEL_OPTIONS.claude)
 // Reset the model when switching to an engine that doesn't offer the current pick.
 watch(effectiveEngine, () => {
   if (!modelOptions.value.some(o => o.value === modelOverride.value)) modelOverride.value = ''
 })
 const permissionMode = ref('')
-const PERMISSION_MODE_OPTIONS = [
-  { value: '', label: 'Default (from settings)' },
-  { value: 'default', label: 'Ask via UI (default)' },
-  { value: 'acceptEdits', label: 'Auto-accept edits' },
-  { value: 'plan', label: 'Plan only (read-only)' },
-  { value: 'auto', label: 'Auto (classifier)' },
-  { value: 'bypassPermissions', label: 'Bypass all' },
-]
+
+// ── Per-project run preferences ───────────────────────────────────────────
+// Permission mode, engine and model selectors used to reset to the global
+// default on every new run / app reload. Restore the project's remembered
+// choices here and mirror later edits back so they stick. Engine is persisted
+// explicitly in `onEngineChange` (the selector value also mirrors the loaded
+// run's engine, which must not overwrite the saved default).
+{
+  const p = runPrefsStore.get(projectId.value)
+  if (p.permissionMode) permissionMode.value = p.permissionMode
+  if (p.engine) engineOverride.value = p.engine
+  if (p.model) modelOverride.value = p.model
+}
+watch(permissionMode, (v) => runPrefsStore.set(projectId.value, { permissionMode: v }))
+watch(modelOverride, (v) => runPrefsStore.set(projectId.value, { model: v }))
+
 const outputEl = ref<HTMLDivElement | null>(null)
 const historyEl = ref<HTMLDivElement | null>(null)
 const currentRunId = ref<string | null>(null)
+// Remote-control modal: create a per-run link + OTP to drive this run from a phone.
+const remoteModalOpen = ref(false)
+// Remote state for the CURRENTLY viewed run, derived reactively from the global
+// single-session status (only one run is ever bound at a time). Deriving with
+// computeds — instead of a ref refreshed imperatively — means switching sessions
+// re-evaluates against THIS run's id immediately, so the button/chip never stay
+// lit on a session that isn't the bound one (the reported confusion).
+const remoteStatus = computed(() => remoteControlStore.status)
+/** A link exists for THIS run (bound), regardless of whether a phone attached. */
+const remoteBoundHere = computed(
+  () => !!currentRunId.value && remoteStatus.value?.bound_run_id === currentRunId.value,
+)
+/** A phone has completed auth and is actively driving THIS run. */
+const remoteActive = computed(
+  () => remoteBoundHere.value && !!remoteStatus.value?.session_authenticated,
+)
+/** The remote is bound to some OTHER run — clicking here would supersede it. */
+const remoteBoundElsewhere = computed(
+  () =>
+    !!remoteStatus.value?.bound_run_id &&
+    remoteStatus.value?.bound_run_id !== currentRunId.value,
+)
+/**
+ * Remote-state marker for the History list, so the user can tell AT A GLANCE
+ * which session a phone is driving without opening it. Only the single bound run
+ * carries a marker (one run is ever bound at a time):
+ *   success → a phone is authenticated and actively driving it;
+ *   warning → a link exists but no phone has connected yet.
+ */
+const remoteRowMarker = computed<
+  { runId: string; tone: 'success' | 'warning'; title: string } | null
+>(() => {
+  const st = remoteStatus.value
+  if (!st?.bound_run_id) return null
+  return st.session_authenticated
+    ? { runId: st.bound_run_id, tone: 'success', title: 'Điện thoại đang điều khiển session này' }
+    : {
+        runId: st.bound_run_id,
+        tone: 'warning',
+        title: 'Đã tạo link remote — đang chờ điện thoại kết nối',
+      }
+})
+/** State-aware tooltip for the Remote button. */
+const remoteButtonTitle = computed(() => {
+  if (!currentRunId.value) return 'Chọn một run để điều khiển từ điện thoại'
+  if (remoteActive.value) return 'Điện thoại đang điều khiển run này — bấm để xem/dừng'
+  if (remoteBoundHere.value) return 'Đã tạo link cho run này — bấm để xem QR / trạng thái'
+  if (remoteBoundElsewhere.value) return 'Remote đang gắn ở session khác — bấm để chuyển sang run này'
+  return 'Điều khiển run này từ điện thoại'
+})
+const remoteUnlisteners: UnlistenFn[] = []
+
+// ── Remote meta sync ────────────────────────────────────────────────────────
+// The composer's engine / model / permission-mode selection is the single source
+// of truth shared with a remote controller. Local edits are pushed to the backend
+// store (which fans them out to the controller); controller-originated edits are
+// applied back onto these selectors. `applyingRemoteMeta` guards the echo so an
+// applied value doesn't bounce straight back out.
+let applyingRemoteMeta = false
+let metaUnlisten: UnlistenFn | null = null
+function pushRunMeta(): void {
+  if (applyingRemoteMeta) return
+  const id = currentRunId.value
+  if (!id) return
+  void invoke('set_run_meta', {
+    runId: id,
+    engine: effectiveEngine.value || null,
+    model: modelOverride.value || null,
+    permissionMode: permissionMode.value || null,
+  })
+}
+watch([engineOverride, modelOverride, permissionMode], () => pushRunMeta())
+watch(
+  currentRunId,
+  async (id) => {
+    if (metaUnlisten) {
+      metaUnlisten()
+      metaUnlisten = null
+    }
+    if (!id) return
+    metaUnlisten = await listen<{
+      engine?: string | null
+      model?: string | null
+      permission_mode?: string | null
+    }>(`run:meta:${id}`, (e) => {
+      const m = e.payload
+      applyingRemoteMeta = true
+      if (m.engine) engineOverride.value = m.engine
+      if (typeof m.model === 'string') modelOverride.value = m.model
+      if (typeof m.permission_mode === 'string') permissionMode.value = m.permission_mode
+      void nextTick(() => {
+        applyingRemoteMeta = false
+      })
+    })
+    // Seed the store with the current selection so a controller pairing right now
+    // lands on the correct engine instead of a blank/default.
+    pushRunMeta()
+  },
+  { immediate: true },
+)
+
+async function refreshRemoteActive(): Promise<void> {
+  // Pull the latest global status into the store; the computeds above re-derive
+  // this run's remote state from it (button dot + chip).
+  try {
+    await remoteControlStore.refreshStatus()
+  } catch {
+    // ignore — a stale status just means no remote indicator
+  }
+}
 const viewingLogRunId = ref<string | null>(null)
 const viewingLog = ref<string>('')
 
@@ -257,8 +366,13 @@ const allowedToolsList = computed(() => session.value?.allowedTools ?? [])
 // Context-window meter state for the focused run. Prefer the live session; for
 // a past run with no live session, use the figures reconstructed from its log.
 const contextTokens = computed(() => session.value?.contextTokens ?? historyContextTokens.value)
-const contextModel = computed(
-  () => session.value?.model ?? historyModel.value ?? currentRun.value?.engine ?? null,
+const contextModel = computed(() =>
+  // `system.init` drops the `[1m]` suffix; re-attach it from the composer pick so
+  // 1M runs resolve to the 1M context limit rather than 200K.
+  mergeContextModel(
+    session.value?.model ?? historyModel.value ?? currentRun.value?.engine ?? null,
+    modelOverride.value,
+  ),
 )
 const contextRateLimit = computed(() => session.value?.rateLimit ?? null)
 // Prefer the live session's status, fall back to the persisted run row.
@@ -326,7 +440,7 @@ const poppedOut = ref(false)
 // Sessions have no issue/PR content, so Content is never shown for them.
 const showContent = ref(true)
 const showResult = ref(true)
-const contentVisible = computed(() => !currentIsSession.value && showContent.value)
+const contentVisible = computed(() => !uiLayout.focusMode && !currentIsSession.value && showContent.value)
 const resultVisible = computed(() => currentIsSession.value || showResult.value)
 const showResizeHandle = computed(() => contentVisible.value && resultVisible.value)
 const contentWidth = computed(() => (showResizeHandle.value ? leftWidthPct.value + '%' : '100%'))
@@ -424,7 +538,11 @@ function scrollOutputToBottom() {
 
 // Re-evaluate the pin whenever the user scrolls the live output.
 function onOutputScroll() {
-  if (outputEl.value) stickToBottom.value = isNearBottom(outputEl.value)
+  // Pointer interaction pauses auto-follow. Do not silently re-enable it while
+  // the pointer is still down (for example while drag-selecting text).
+  if (outputEl.value && !pointerDownInOutput.value) {
+    stickToBottom.value = isNearBottom(outputEl.value)
+  }
   captureScrollAnchor()
 }
 
@@ -500,22 +618,14 @@ watch(poppedOut, () => captureScrollAnchor())
 // yank the view to the bottom when new streamed content arrives. Otherwise a
 // click/selection near the bottom gets interrupted the moment a new chunk lands.
 const pointerDownInOutput = ref(false)
-// Timestamp (ms) of the user's last pointer interaction inside the output. We
-// hold off auto-scroll for a short window afterwards so a click/selection near
-// the bottom isn't yanked away by a stream chunk landing right as the pointer
-// is released — the moment a plain click collapses the selection guard.
-const lastOutputInteractionAt = ref(0)
-const OUTPUT_INTERACTION_COOLDOWN = 600 // ms
 function onOutputPointerDown() {
   pointerDownInOutput.value = true
-  lastOutputInteractionAt.value = Date.now()
+  // A click means the user is reading/interacting with the current content.
+  // Pause auto-follow until they deliberately scroll back to the bottom.
+  stickToBottom.value = false
 }
 function onWindowPointerUp() {
-  if (pointerDownInOutput.value) lastOutputInteractionAt.value = Date.now()
   pointerDownInOutput.value = false
-}
-function recentlyInteractedWithOutput() {
-  return Date.now() - lastOutputInteractionAt.value < OUTPUT_INTERACTION_COOLDOWN
 }
 function hasOutputSelection() {
   const sel = window.getSelection()
@@ -537,10 +647,22 @@ watch(
       !isViewingHistory.value &&
       stickToBottom.value &&
       !pointerDownInOutput.value &&
-      !recentlyInteractedWithOutput() &&
       !hasOutputSelection()
     ) {
-      scrollOutputToBottom()
+      // Re-check after Vue patches the stream. A pointer interaction may begin
+      // after this watcher runs but before the queued DOM update is applied.
+      nextTick(() => {
+        if (
+          currentStatus.value === 'running' &&
+          !isViewingHistory.value &&
+          stickToBottom.value &&
+          !pointerDownInOutput.value &&
+          !hasOutputSelection() &&
+          outputEl.value
+        ) {
+          outputEl.value.scrollTop = outputEl.value.scrollHeight
+        }
+      })
     }
   }
 )
@@ -601,6 +723,18 @@ onMounted(async () => {
   window.addEventListener('focus', refreshViewedRunOnFocus)
   window.addEventListener('pointerup', onWindowPointerUp)
   setupPopoutBridge()
+
+  // Remote-control live indicator: reflect whether a phone is actively driving
+  // THIS run, updated by the host agent events (and an initial status read).
+  refreshRemoteActive()
+  for (const evt of [
+    'remote://connection-authenticated',
+    'remote://disconnected',
+    'remote://auth-failed',
+    'remote://session-expired',
+  ]) {
+    remoteUnlisteners.push(await listen(evt, () => refreshRemoteActive()))
+  }
 
   // Drag-and-drop files into the composer. Tauri intercepts OS file drops at the
   // native layer (dragDropEnabled defaults on), so the webview's HTML5 `drop`
@@ -672,6 +806,10 @@ onUnmounted(() => {
   sessionsChangedUnlisten = null
   dragDropUnlisten?.()
   dragDropUnlisten = null
+  remoteUnlisteners.forEach((fn) => fn())
+  remoteUnlisteners.length = 0
+  metaUnlisten?.()
+  metaUnlisten = null
   popoutUnlisten.forEach((fn) => fn())
   popoutUnlisten = []
   // Tear down the pop-out with its owner view so it can't outlive the run.
@@ -876,6 +1014,8 @@ function onEngineChange(next: string) {
     return
   }
   engineOverride.value = next
+  // Remember the engine as the project default for future runs.
+  runPrefsStore.set(projectId.value, { engine: next })
 }
 
 async function doHandoff(targetEngine: string) {
@@ -1543,6 +1683,8 @@ async function handlePermissionDecision(decision: 'allow' | 'deny' | 'ask', reme
   live.shiftPermission(id)
   if (remember && decision === 'allow') {
     live.rememberAllowedTool(id, req.tool_name)
+  } else if (remember && decision === 'deny') {
+    live.rememberDeniedTool(id, req.tool_name)
   }
   try {
     await runsStore.respondPermission(req.run_id, req.request_id, decision)
@@ -1755,7 +1897,8 @@ async function handleTogglePin(run: RunRecord, e?: MouseEvent) {
 function clearActiveRunState() {
   if (currentRunId.value) live.discard(currentRunId.value)
   currentRunId.value = null
-  engineOverride.value = ''
+  // A fresh run starts from the project's remembered engine default, not blank.
+  engineOverride.value = runPrefsStore.get(projectId.value).engine
   loadedRunEngine.value = ''
   clearHistoryView()
   inputContent.value = ''
@@ -1931,7 +2074,7 @@ function handleRefInput(val: string) {
 <template>
   <div class="flex flex-col h-full">
     <!-- Header -->
-    <div class="flex items-center justify-between gap-3 px-6 h-13 border-b border-border/60 shrink-0">
+    <div class="@container flex items-center justify-between gap-3 px-6 h-13 border-b border-border/60 shrink-0">
       <div class="flex items-center gap-2 min-w-0">
         <h1 class="text-sm font-semibold truncate">{{ project?.name ?? 'Project' }}</h1>
         <Badge
@@ -1983,12 +2126,35 @@ function handleRefInput(val: string) {
       <div class="flex items-center gap-2 shrink-0">
         <Button
           variant="outline"
+          :disabled="!currentRunId"
+          :title="remoteButtonTitle"
+          class="relative"
+          @click="remoteModalOpen = true"
+        >
+          <Radio
+            class="h-3.5 w-3.5"
+            :class="remoteActive ? 'text-emerald-500' : remoteBoundElsewhere ? 'text-muted-foreground' : ''"
+            :stroke-width="1.75"
+          />
+          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">Remote</span>
+          <!-- Live pulse ONLY when a phone is actively driving THIS run. -->
+          <span
+            v-if="remoteActive"
+            class="absolute -right-0.5 -top-0.5 flex h-2.5 w-2.5"
+            aria-label="Đang kết nối"
+          >
+            <span class="absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-75 animate-ping" />
+            <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-background" />
+          </span>
+        </Button>
+        <Button
+          variant="outline"
           :disabled="!project"
           :title="currentRunId ? 'Open project in VS Code with the loaded issue/PR file' : 'Open project folder in VS Code'"
           @click="handleOpenInVscode"
         >
           <Code2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-          VS Code
+          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">VS Code</span>
         </Button>
         <Button
           variant="outline"
@@ -1997,7 +2163,7 @@ function handleRefInput(val: string) {
           @click="handleOpenInFolder"
         >
           <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" />
-          Folder
+          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">Folder</span>
         </Button>
         <Button
           variant="outline"
@@ -2006,7 +2172,7 @@ function handleRefInput(val: string) {
           @click="handleOpenInTerminal"
         >
           <Terminal class="h-3.5 w-3.5" :stroke-width="1.75" />
-          Terminal
+          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">Terminal</span>
         </Button>
         <Button
           variant="outline"
@@ -2014,14 +2180,22 @@ function handleRefInput(val: string) {
           @click="router.push(`/projects/${projectId}/settings`)"
         >
           <Settings class="h-3.5 w-3.5" :stroke-width="1.75" />
-          Settings
+          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">Settings</span>
+        </Button>
+        <Button
+          variant="outline"
+          :title="uiLayout.focusMode ? 'Thoát chế độ focus (hiện lại sidebar, history)' : 'Chế độ focus: chỉ hiện phiên AI hiện tại'"
+          @click="uiLayout.toggleFocus()"
+        >
+          <component :is="uiLayout.focusMode ? Minimize2 : Maximize2" class="h-3.5 w-3.5" :stroke-width="1.75" />
+          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">Focus</span>
         </Button>
       </div>
     </div>
 
     <div class="flex flex-1 overflow-hidden">
-      <!-- Left panel: controls + history -->
-      <div class="w-72 shrink-0 border-r border-border/60 flex flex-col overflow-hidden bg-card/20">
+      <!-- Left panel: controls + history (hidden in focus mode) -->
+      <div v-if="!uiLayout.focusMode" class="w-72 shrink-0 border-r border-border/60 flex flex-col overflow-hidden bg-card/20">
 
         <!-- Compact top toolbar: New session, then a collapsible Fetch -->
         <div class="p-3 border-b border-border/60 space-y-2">
@@ -2173,6 +2347,21 @@ function handleRefInput(val: string) {
                   aria-label="Pinned"
                 />
                 <span class="flex-1 min-w-0 truncate text-[13px] font-medium leading-tight">{{ runLabel(run) }}</span>
+                <!-- Remote-control marker: a phone is driving (green, pulsing) or
+                     a link is waiting for one (amber) on THIS session. Lets the
+                     user spot the remotely-controlled session in the list. -->
+                <span
+                  v-if="remoteRowMarker && remoteRowMarker.runId === run.id"
+                  class="relative flex h-4 w-4 shrink-0 items-center justify-center"
+                  :class="remoteRowMarker.tone === 'success' ? 'text-emerald-500' : 'text-amber-500'"
+                  :title="remoteRowMarker.title"
+                >
+                  <span
+                    v-if="remoteRowMarker.tone === 'success'"
+                    class="absolute inset-0 animate-ping rounded-full bg-emerald-500/30"
+                  />
+                  <Radio class="relative h-3.5 w-3.5" :stroke-width="2" />
+                </span>
                 <!-- Animated attention marker: this run is waiting for a
                      permission / question answer (replaces the floating toast). -->
                 <span
@@ -2313,7 +2502,7 @@ function handleRefInput(val: string) {
         <!-- View toggles: show Content, AI Result, or both. Hidden for
              standalone sessions (they have no issue/PR Content). -->
         <div
-          v-if="!currentIsSession"
+          v-if="!currentIsSession && !uiLayout.focusMode"
           class="flex items-center gap-1 px-3 py-1.5 border-b border-border bg-card/40 shrink-0"
         >
           <span class="text-[11px] font-mono text-foreground/55 mr-1">View</span>
@@ -2877,6 +3066,14 @@ function handleRefInput(val: string) {
         </Button>
       </template>
     </Modal>
+
+    <!-- Remote control: create a per-run link + OTP so a phone can drive this run -->
+    <RemoteSessionModal
+      v-if="remoteModalOpen"
+      :open="remoteModalOpen"
+      :run-id="currentRunId"
+      @close="remoteModalOpen = false; refreshRemoteActive()"
+    />
   </div>
 </template>
 
