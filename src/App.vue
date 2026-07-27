@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useProjectsStore } from '@/stores/projects'
+import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
+import { useUILayoutStore } from '@/stores/uiLayout'
 import { Puzzle, ScrollText, Server, HardDrive, FolderOpen, BarChart3, CalendarClock, Settings, Info } from 'lucide-vue-next'
 import PermissionNotifier from '@/components/PermissionNotifier.vue'
 import BudgetBadge from '@/components/BudgetBadge.vue'
@@ -25,6 +28,8 @@ const route = useRoute()
 const projectsStore = useProjectsStore()
 const appSettings = useAppSettingsStore()
 const tabsStore = useWorkspaceTabsStore()
+const uiLayout = useUILayoutStore()
+const live = useLiveRunsStore()
 
 const isRunRoute = computed(
   () => route.name === 'project-run' || route.name === 'project-run-detail',
@@ -49,6 +54,15 @@ watch(
   },
   { immediate: true },
 )
+
+// Global listener that mirrors backend-reported active runs into the liveRuns
+// store (see onMounted). Torn down on unmount to avoid a dangling subscription.
+let unlistenActivated: UnlistenFn | null = null
+
+onBeforeUnmount(() => {
+  unlistenActivated?.()
+  unlistenActivated = null
+})
 
 // App version shown in the sidebar footer; read from Tauri so it always matches
 // the packaged build (tauri.conf.json) instead of a hardcoded string.
@@ -113,6 +127,24 @@ onMounted(async () => {
     }
     return
   }
+  // Attach per-run listeners for any run the backend reports as active — even
+  // ones this window never opened (started/resumed from a remote Controller, or
+  // still live after a restart). This is what lets a remotely-driven run's
+  // permission / question prompts surface on the desktop (active-runs dock +
+  // native notification), not just on the phone. `startListening` is idempotent,
+  // so re-announcing a locally-started run is a harmless no-op.
+  try {
+    unlistenActivated = await listen<{ run_id: string; project_id: string }>(
+      'run:activated',
+      (e) => {
+        const { run_id, project_id } = e.payload ?? {}
+        if (run_id && project_id) live.startListening(run_id, project_id).catch(() => {})
+      },
+    )
+  } catch {
+    // Ignore (e.g. running outside the Tauri shell during dev in a browser).
+  }
+
   // Load projects up front so app-wide UI (e.g. permission notifications) can
   // resolve project names without waiting for the Projects view to open.
   projectsStore.fetchProjects()
@@ -136,8 +168,9 @@ onMounted(async () => {
   <PermissionWindow v-else-if="isPermissionWindow" />
 
   <div v-else class="flex h-screen bg-background text-foreground overflow-hidden">
-    <!-- Sidebar -->
-    <aside class="w-[220px] shrink-0 flex flex-col bg-sidebar border-r border-border/50">
+    <!-- Sidebar (hidden in focus mode, but only while in the run workspace so
+         other routes like project settings keep their navigation) -->
+    <aside v-if="!(uiLayout.focusMode && isRunRoute)" class="w-[220px] shrink-0 flex flex-col bg-sidebar border-r border-border/50">
       <!-- Brand -->
       <div class="flex items-center gap-2.5 px-4 h-[52px] border-b border-border/50">
         <img src="/logo.png" alt="Devdy" class="h-6 w-6 rounded shrink-0" />
@@ -188,7 +221,7 @@ onMounted(async () => {
     <!-- Main content -->
     <main class="flex-1 min-w-0 flex flex-col overflow-hidden">
       <!-- Open-run tabs (only in the run workspace) -->
-      <WorkspaceTabs v-if="isRunRoute" />
+      <WorkspaceTabs v-if="isRunRoute && !uiLayout.focusMode" />
       <div class="flex-1 min-w-0 overflow-auto">
         <RouterView :key="routeKey" />
       </div>

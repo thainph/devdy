@@ -28,3 +28,5 @@ dist-ssr
 .codex
 AGENTS.md
 CLAUDE.md
+.codegraph
+.playwright-mcp

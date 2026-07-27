@@ -1,0 +1,37 @@
+# nginx reverse proxy for the Devdy relay (Topology B, INT-002).
+#
+# TLS is terminated here (SEC-009 / CON-03: WSS only to the Internet); the relay
+# itself listens on 127.0.0.1:8787 and never holds a certificate.
+#
+# Drop this into a server block for your relay subdomain.
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name relay.example.com;   # <-- your relay subdomain
+
+    ssl_certificate     /etc/letsencrypt/live/relay.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/relay.example.com/privkey.pem;
+
+    # Reject plaintext: no ws:// to the Internet (CON-03).
+    # (Redirect :80 -> :443 in a separate server block.)
+
+    location /ws {
+        proxy_pass http://127.0.0.1:8787;
+
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host       $host;
+        proxy_set_header X-Real-IP  $remote_addr;
+
+        # Long-lived WebSocket: keep the tunnel open for streaming.
+        proxy_read_timeout  3600s;
+        proxy_send_timeout  3600s;
+        proxy_buffering     off;
+    }
+}

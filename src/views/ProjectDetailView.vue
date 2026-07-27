@@ -10,10 +10,13 @@ import { useAppSettingsStore } from '@/stores/appSettings'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import { useGitlabAccountsStore } from '@/stores/gitlabAccounts'
 import { useAwsAccountsStore, type AwsValidation } from '@/stores/awsAccounts'
+import { useToolPermissionsStore } from '@/stores/toolPermissions'
+import { useLiveRunsStore } from '@/stores/liveRuns'
+import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import {
   Play, AlertTriangle, Puzzle, ScrollText, Server, Github, Gitlab, Cloud,
   GitMerge, CheckCircle2, XCircle, Trash2, Plus, GitBranch, Code2, Settings, SquareTerminal, FolderOpen,
-  Rocket
+  Rocket, ShieldCheck
 } from 'lucide-vue-next'
 import { Button, Input, Card, Badge, AppSelect } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
@@ -31,13 +34,61 @@ const appSettings = useAppSettingsStore()
 const ghStore = useGithubAccountsStore()
 const glStore = useGitlabAccountsStore()
 const awsStore = useAwsAccountsStore()
+const toolPerms = useToolPermissionsStore()
+const live = useLiveRunsStore()
+const tabsStore = useWorkspaceTabsStore()
 const { confirm } = useConfirm()
+
+// "Run AI" returns to the project's last-viewed run when one is remembered, so
+// leaving to settings and coming back resumes the same session instead of
+// dropping onto the bare project route (which loses the selected run — most
+// visible in focus mode, where the tab bar / history that would restore it are
+// hidden).
+function goToRun() {
+  const lastRunId = tabsStore.tabs.find((t) => t.projectId === projectId.value)?.lastRunId
+  if (lastRunId) {
+    router
+      .push({ name: 'project-run-detail', params: { projectId: projectId.value, runId: lastRunId } })
+      .catch(() => {})
+  } else {
+    router.push({ name: 'project-run', params: { projectId: projectId.value } }).catch(() => {})
+  }
+}
 const { toast } = useToast()
 
 const projectId = computed(() => route.params.projectId as string)
 const project = computed(() => projectStore.projects.find(p => p.id === projectId.value))
 
-const activeTab = ref<'overview' | 'skills' | 'rules' | 'mcp' | 'deploy' | 'github' | 'gitlab' | 'aws' | 'conflicts'>('overview')
+const activeTab = ref<'overview' | 'skills' | 'rules' | 'mcp' | 'deploy' | 'github' | 'gitlab' | 'aws' | 'tools' | 'conflicts'>('overview')
+
+// ── Tool permissions (allow/deny always) for this project ──────────────────
+const allowTools = computed(() => toolPerms.getAllow(projectId.value))
+const denyTools = computed(() => toolPerms.getDeny(projectId.value))
+const hasToolPerms = computed(() => allowTools.value.length > 0 || denyTools.value.length > 0)
+
+function revokeTool(tool: string) {
+  toolPerms.reset(projectId.value, tool)
+  live.syncToolPermissions(projectId.value)
+  toast.success(`Đã thu hồi quyền cho ${tool}`)
+}
+
+function flipTool(tool: string, to: 'allow' | 'deny') {
+  if (to === 'allow') toolPerms.allow(projectId.value, tool)
+  else toolPerms.deny(projectId.value, tool)
+  live.syncToolPermissions(projectId.value)
+  toast.success(`${tool} → ${to === 'allow' ? 'allow' : 'deny'} always`)
+}
+
+async function resetAllToolPerms() {
+  if (!(await confirm({
+    title: 'Reset tool permissions',
+    message: 'Xoá toàn bộ quyết định "allow/deny always" đã lưu cho project này?',
+    confirmLabel: 'Reset all',
+  }))) return
+  for (const t of [...allowTools.value, ...denyTools.value]) toolPerms.reset(projectId.value, t)
+  live.syncToolPermissions(projectId.value)
+  toast.success('Đã reset tool permissions')
+}
 const SECTIONS = [
   { id: 'overview', label: 'Overview', icon: Settings },
   { id: 'skills', label: 'Skills', icon: Puzzle },
@@ -47,6 +98,7 @@ const SECTIONS = [
   { id: 'github', label: 'GitHub', icon: Github },
   { id: 'gitlab', label: 'GitLab', icon: Gitlab },
   { id: 'aws', label: 'AWS', icon: Cloud },
+  { id: 'tools', label: 'Tool Permissions', icon: ShieldCheck },
 ] as const
 const projectConflicts = computed(() => projectStore.conflicts.filter(c => c.project_id === projectId.value))
 const projectRuleConflicts = computed(() => projectStore.ruleConflicts.filter(c => c.project_id === projectId.value))
@@ -612,7 +664,7 @@ async function handleOpenInTerminal() {
           <SquareTerminal class="h-3.5 w-3.5" :stroke-width="1.75" />
           Terminal
         </Button>
-        <Button @click="router.push(`/projects/${projectId}`)">
+        <Button @click="goToRun">
           <Play class="h-3.5 w-3.5" :stroke-width="2" />
           Run AI
         </Button>
@@ -1396,6 +1448,75 @@ async function handleOpenInTerminal() {
                 <XCircle class="h-3.5 w-3.5" :stroke-width="1.75" />
                 {{ awsValidationError }}
               </div>
+            </div>
+          </Card>
+        </div>
+
+        <!-- Tool Permissions tab -->
+        <div v-if="activeTab === 'tools'" class="max-w-lg space-y-5">
+          <Card body-class="divide-y divide-border/50">
+            <template #header>
+              <ShieldCheck class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
+              <span class="text-xs font-semibold">Tool Permissions</span>
+              <Button
+                v-if="hasToolPerms"
+                variant="destructive-ghost"
+                size="xs"
+                class="ml-auto"
+                @click="resetAllToolPerms"
+              >Reset all</Button>
+            </template>
+
+            <p class="px-4 py-3 text-[11px] text-muted-foreground leading-relaxed">
+              Các quyết định "allow always" / "deny always" đã lưu cho project này. Thu hồi để tool được hỏi lại bình thường. Áp dụng ngay cho cả run đang mở.
+            </p>
+
+            <!-- Allow always -->
+            <div class="px-4 py-3">
+              <div class="flex items-center gap-2 mb-2">
+                <CheckCircle2 class="h-3.5 w-3.5 text-emerald-500" :stroke-width="1.75" />
+                <span class="text-[11px] font-semibold">Allow always</span>
+                <span class="text-[10px] text-muted-foreground tabular-nums">{{ allowTools.length }}</span>
+              </div>
+              <div v-if="allowTools.length" class="space-y-1.5">
+                <div
+                  v-for="tool in allowTools"
+                  :key="'allow-' + tool"
+                  class="flex items-center gap-2 rounded-md border border-border px-3 py-2"
+                >
+                  <p class="flex-1 min-w-0 text-xs font-mono truncate" :title="tool">{{ tool }}</p>
+                  <Badge tone="success" size="xs" class="shrink-0">allow</Badge>
+                  <Button variant="ghost" size="xs" class="shrink-0" title="Chuyển sang deny always" @click="flipTool(tool, 'deny')">→ deny</Button>
+                  <Button variant="destructive-ghost" size="icon-sm" class="shrink-0" title="Thu hồi" @click="revokeTool(tool)">
+                    <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+                  </Button>
+                </div>
+              </div>
+              <p v-else class="text-[11px] text-muted-foreground">Chưa có tool nào.</p>
+            </div>
+
+            <!-- Deny always -->
+            <div class="px-4 py-3">
+              <div class="flex items-center gap-2 mb-2">
+                <XCircle class="h-3.5 w-3.5 text-red-500" :stroke-width="1.75" />
+                <span class="text-[11px] font-semibold">Deny always</span>
+                <span class="text-[10px] text-muted-foreground tabular-nums">{{ denyTools.length }}</span>
+              </div>
+              <div v-if="denyTools.length" class="space-y-1.5">
+                <div
+                  v-for="tool in denyTools"
+                  :key="'deny-' + tool"
+                  class="flex items-center gap-2 rounded-md border border-border px-3 py-2"
+                >
+                  <p class="flex-1 min-w-0 text-xs font-mono truncate" :title="tool">{{ tool }}</p>
+                  <Badge tone="error" size="xs" class="shrink-0">deny</Badge>
+                  <Button variant="ghost" size="xs" class="shrink-0" title="Chuyển sang allow always" @click="flipTool(tool, 'allow')">→ allow</Button>
+                  <Button variant="destructive-ghost" size="icon-sm" class="shrink-0" title="Thu hồi" @click="revokeTool(tool)">
+                    <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+                  </Button>
+                </div>
+              </div>
+              <p v-else class="text-[11px] text-muted-foreground">Chưa có tool nào.</p>
             </div>
           </Card>
         </div>

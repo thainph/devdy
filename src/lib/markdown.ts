@@ -17,6 +17,10 @@ function escapeHtml(s: string): string {
 
 export function useMarkdown() {
   const mdReady = ref(false)
+  /** True when the markdown renderer failed to load (e.g. its lazy chunk 404'd).
+   * Surfaced so a caller can warn + offer a retry instead of silently falling
+   * back to escaped text — a partial/broken deploy must not fail quietly. */
+  const mdError = ref(false)
   let _md: MarkdownIt | null = null
   const _mdCache = new Map<string, string>()
   const MD_CACHE_MAX = 800
@@ -40,10 +44,19 @@ export function useMarkdown() {
       _md = new MarkdownIt({ html: false, linkify: true, typographer: true, breaks: true })
       applyMermaidFence(_md)
       mdReady.value = true
+      mdError.value = false
     } catch {
-      // leave _md null; renderText falls back to escaped text
+      // leave _md null; renderText falls back to escaped text, but flag it so
+      // the UI can surface the failure and offer a retry.
+      mdError.value = true
     }
   }
 
-  return { mdReady, renderText, loadMarkdown }
+  /** Force a fresh load attempt after a failure (e.g. user tapped "retry"). */
+  async function retryLoadMarkdown() {
+    mdError.value = false
+    await loadMarkdown()
+  }
+
+  return { mdReady, mdError, renderText, loadMarkdown, retryLoadMarkdown }
 }

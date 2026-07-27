@@ -105,11 +105,16 @@ function elapsedText(iso: string | null): string {
   return `${days}d ago`
 }
 
-function tone(v: ProviderView): 'over' | 'warning' | 'ok' | 'neutral' {
+function tone(v: ProviderView): 'over' | 'warning' | 'stale' | 'ok' | 'neutral' {
   if (!v.hasStatus) return 'neutral'
-  if (v.refreshError && !v.refreshUnavailable && v.isStale) return 'warning'
+  // Real usage severity wins — a genuine near/over-limit must always show, even
+  // if the last refresh failed.
   if (v.isOver) return 'over'
   if (v.isWarning) return 'warning'
+  // A failed refresh with stale data is a data-freshness issue, NOT a usage
+  // warning. Render it quietly (no amber, no alert icon) so a low % like 3%
+  // doesn't masquerade as "approaching limit".
+  if (v.refreshError && !v.refreshUnavailable && v.isStale) return 'stale'
   if (v.enabled) return 'ok'
   return 'neutral'
 }
@@ -120,12 +125,16 @@ function tone(v: ProviderView): 'over' | 'warning' | 'ok' | 'neutral' {
 const TONE_ROW: Record<string, string> = {
   over: 'border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400',
   warning: 'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400',
+  // Stale reads like ok/neutral (quiet) — freshness is conveyed by the tooltip
+  // and the refresh button, not by an alarming colour.
+  stale: 'border-border/60 bg-muted/30 text-muted-foreground',
   ok: 'border-border/60 bg-muted/30 text-foreground',
   neutral: 'border-border/60 bg-muted/30 text-muted-foreground',
 }
 const TONE_FILL: Record<string, string> = {
   over: 'bg-red-500',
   warning: 'bg-amber-500',
+  stale: 'bg-muted-foreground/40',
   ok: 'bg-indigo-500',
   neutral: 'bg-muted-foreground/40',
 }

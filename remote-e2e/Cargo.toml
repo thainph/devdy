@@ -1,0 +1,26 @@
+[package]
+name = "remote-e2e"
+version = "0.1.0"
+edition = "2021"
+description = "Devdy Remote Control E2E crypto contract (PSK + X25519 ECDH + XChaCha20-Poly1305), cross-compatible with the libsodium-wrappers TS reference impl."
+license = "MIT"
+publish = false
+
+# Standalone crate on purpose: NOT part of the repo-root workspace. src-tauri
+# will path-depend on this later. Declaring an empty workspace here stops Cargo
+# from trying to attach it to any ancestor workspace.
+[lib]
+name = "remote_e2e"
+path = "src/lib.rs"
+
+[dependencies]
+# Pure-Rust, libsodium-compatible primitives (X25519, BLAKE2b, XChaCha20-Poly1305).
+# We never implement crypto by hand.
+dryoc = "1.0"
+base64 = "0.22"
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[workspace]

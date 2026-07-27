@@ -983,6 +983,17 @@ pub async fn budget_status_for(db: &Db, engine: &str) -> Result<BudgetStatus, St
     })
 }
 
+/// Plan-usage badge status for a snapshot key (`plan_usage` | `plan_usage_codex`),
+/// callable OFF the Tauri command path (e.g. the Remote Control forwarder, which
+/// mirrors these badges to a controller). Falls back to the `disabled` shape on
+/// any read error so the caller always gets a renderable status.
+pub async fn budget_status(db: &Db, key: &str) -> BudgetStatus {
+    match read_plan_snapshot(db, key).await {
+        Ok((plan_json, stale_secs)) => plan_display_status(plan_json.as_deref(), stale_secs),
+        Err(_) => plan_display_status(None, 0),
+    }
+}
+
 #[tauri::command]
 pub async fn get_budget_status(db: State<'_, Db>) -> Result<BudgetStatus, String> {
     // Badge = the account's REAL Claude plan usage (most-constraining window),

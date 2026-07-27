@@ -89,7 +89,26 @@ pub async fn start_run(
     registry: State<'_, RunRegistry>,
     payload: StartRunPayload,
 ) -> Result<(), String> {
+    start_run_inner(app, db.inner().clone(), registry.inner().clone(), payload).await
+}
+
+/// Core of [`start_run`] over owned clones so the Remote Control host agent
+/// (FR-008 `start_run`) can launch a run from a background task without a Tauri
+/// `State`. `Db` (SqlitePool) and `RunRegistry` (Arc) are cheap to clone.
+///
+/// SECURITY (BR-011/CON-05): the remote path MUST pass
+/// `permission_mode_override = Some("default")`; this function honors whatever
+/// override it is given, exactly as the command does — the lock is enforced by
+/// the caller (the host agent) so the identical local behavior is preserved.
+pub(crate) async fn start_run_inner(
+    app: AppHandle,
+    db: Db,
+    registry: RunRegistry,
+    payload: StartRunPayload,
+) -> Result<(), String> {
     use sqlx::Row;
+    let db = &db;
+    let registry = &registry;
 
     // Load run + project info
     let run_row = sqlx::query(
@@ -100,7 +119,7 @@ pub async fn start_run(
          WHERE r.id = ?",
     )
     .bind(&payload.run_id)
-    .fetch_one(db.inner())
+    .fetch_one(db)
     .await
     .map_err(|e| e.to_string())?;
 
@@ -134,7 +153,7 @@ pub async fn start_run(
 
     // Load engine settings
     let settings_rows = sqlx::query("SELECT key, value FROM settings")
-        .fetch_all(db.inner())
+        .fetch_all(db)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -177,13 +196,23 @@ pub async fn start_run(
         }
     }
 
-    // Resolve the engine: per-run override wins, else the global default engine.
-    let engine = payload.engine_override.unwrap_or(default_engine);
+    // Resolve the engine: an explicit per-run override wins, else the run's OWN
+    // persisted engine, else the global default. Falling back to the run's engine
+    // (not the global default) is critical: a follow-up/restart that omits the
+    // engine — e.g. a remote `start_run` from the controller, whose selector may
+    // be empty — must NOT silently switch engines. Clobbering the engine here
+    // resets a Codex session to the default engine and loses its conversation.
+    let existing_engine: Option<String> = run_row.get("engine");
+    let engine = payload
+        .engine_override
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| existing_engine.filter(|s| !s.trim().is_empty()))
+        .unwrap_or(default_engine);
 
     // Global budget guardrail: refuse to start a new run when over budget
     // (real plan utilization for this engine, or the self-imposed token
     // fallback), unless the user explicitly overrode it.
-    crate::commands::stats::enforce_budget(db.inner(), &engine, payload.override_budget).await?;
+    crate::commands::stats::enforce_budget(db, &engine, payload.override_budget).await?;
 
     let permission_mode = payload
         .permission_mode_override
@@ -238,7 +267,7 @@ pub async fn start_run(
         let _ = sqlx::query("UPDATE runs SET title = ? WHERE id = ? AND title IS NULL")
             .bind(title.trim())
             .bind(&payload.run_id)
-            .execute(db.inner())
+            .execute(db)
             .await;
     }
 
@@ -253,7 +282,7 @@ pub async fn start_run(
         .bind(&engine)
         .bind(&started_at)
         .bind(&payload.run_id)
-        .execute(db.inner())
+        .execute(db)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -265,8 +294,8 @@ pub async fn start_run(
         .collect();
 
     let run_id = payload.run_id.clone();
-    let db_pool = db.inner().clone();
-    let registry_arc = registry.inner().clone();
+    let db_pool = db.clone();
+    let registry_arc = registry.clone();
     let session_id = Arc::new(TokioMutex::new(None::<String>));
     let log_buf = Arc::new(TokioMutex::new(String::new()));
 
@@ -281,7 +310,7 @@ pub async fn start_run(
         // is ever placed on the sidecar env. Held in RunHandles for Drop cleanup.
         let (broker_run, ssh_access) = wire_broker(
             &app,
-            db.inner(),
+            db,
             &mut cmd,
             &payload.run_id,
             &project_id,
@@ -295,7 +324,7 @@ pub async fn start_run(
         }
         cmd.env(
             "DEVDY_USAGE_CAPTURE_MODE",
-            claude_usage_capture_mode(db.inner()).await,
+            claude_usage_capture_mode(db).await,
         );
         cmd.env("DEVDY_USAGE_POLL_MS", "60000");
         if let Some(m) = &model {
@@ -405,7 +434,7 @@ pub async fn start_run(
     augment_command_path(&mut cmd);
     let (broker_run, ssh_access) = wire_broker(
         &app,
-        db.inner(),
+        db,
         &mut cmd,
         &payload.run_id,
         &project_id,
@@ -633,6 +662,11 @@ async fn wire_broker(
     prepend_shim_path(cmd, &shim_dir);
     cmd.env("DEVDY_BROKER_SOCK", &sock_path);
     cmd.env("DEVDY_PROJECT_ID", project_id);
+    // Fallback working directory for the sidecar: if `process.cwd()` throws
+    // (e.g. EPERM on macOS when the project folder is TCC-protected / on a
+    // network volume / was deleted), the sidecar reports the error and uses
+    // this path instead of crashing at startup.
+    cmd.env("DEVDY_PROJECT_PATH", project_path);
     // GĐ7: the shim echoes this back so the broker can route `Ask` to this run.
     cmd.env("DEVDY_RUN_ID", run_id);
 
@@ -803,6 +837,17 @@ pub async fn cancel_run(
     db: State<'_, Db>,
     run_id: String,
 ) -> Result<(), String> {
+    cancel_run_inner(registry.inner(), db.inner(), &run_id).await
+}
+
+/// Core of [`cancel_run`] over concrete refs so the Remote Control host agent
+/// (FR-009 `cancel_run`) can reuse it without a Tauri `State`.
+pub(crate) async fn cancel_run_inner(
+    registry: &RunRegistry,
+    db: &sqlx::SqlitePool,
+    run_id: &str,
+) -> Result<(), String> {
+    let run_id = run_id.to_string();
     let handle = {
         let mut reg = registry.lock().await;
         reg.remove(&run_id)
@@ -820,7 +865,7 @@ pub async fn cancel_run(
     sqlx::query("UPDATE runs SET status = 'cancelled', finished_at = ? WHERE id = ?")
         .bind(chrono::Utc::now().to_rfc3339())
         .bind(&run_id)
-        .execute(db.inner())
+        .execute(db)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -845,14 +890,24 @@ pub async fn send_user_message(
     registry: State<'_, RunRegistry>,
     payload: SendUserMessagePayload,
 ) -> Result<(), String> {
+    send_user_message_inner(db.inner(), registry.inner(), payload).await
+}
+
+/// Core of [`send_user_message`] over concrete refs so the Remote Control host
+/// agent (FR-009 `send_chat_message`) can reuse it without a Tauri `State`.
+pub(crate) async fn send_user_message_inner(
+    db: &sqlx::SqlitePool,
+    registry: &RunRegistry,
+    payload: SendUserMessagePayload,
+) -> Result<(), String> {
     // A follow-up turn consumes tokens like any other, so gate it too — against
     // the guardrail for this run's engine.
     let engine: String = sqlx::query_scalar("SELECT engine FROM runs WHERE id = ?")
         .bind(&payload.run_id)
-        .fetch_one(db.inner())
+        .fetch_one(db)
         .await
         .map_err(|e| e.to_string())?;
-    crate::commands::stats::enforce_budget(db.inner(), &engine, payload.override_budget).await?;
+    crate::commands::stats::enforce_budget(db, &engine, payload.override_budget).await?;
 
     let text = payload.content.trim();
     // A turn must carry text or at least one image.
@@ -927,6 +982,17 @@ pub struct RespondPermissionPayload {
 pub async fn respond_permission(
     registry: State<'_, RunRegistry>,
     broker_approvals: State<'_, crate::runs::BrokerApprovals>,
+    payload: RespondPermissionPayload,
+) -> Result<(), String> {
+    respond_permission_inner(registry.inner(), broker_approvals.inner(), payload).await
+}
+
+/// Core of [`respond_permission`] over concrete refs so background tasks (the
+/// Remote Control host agent, FR-007) can reuse the exact same permission-answer
+/// path without a Tauri `State`. Same contract as the command.
+pub(crate) async fn respond_permission_inner(
+    registry: &RunRegistry,
+    broker_approvals: &crate::runs::BrokerApprovals,
     payload: RespondPermissionPayload,
 ) -> Result<(), String> {
     if !matches!(payload.decision.as_str(), "allow" | "deny" | "ask") {
