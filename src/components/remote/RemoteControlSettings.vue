@@ -6,11 +6,14 @@
 import { onMounted, onUnmounted, ref, computed } from 'vue'
 import { Button, Input, Card, Badge } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
+import { useConfirm } from '@/composables/useConfirm'
 import { useRemoteControlStore } from '@/stores/remoteControl'
-import { Radio, Wifi, WifiOff, ShieldCheck, RefreshCw } from 'lucide-vue-next'
+import { Radio, Wifi, WifiOff, ShieldCheck, RefreshCw, Loader2, Trash2 } from 'lucide-vue-next'
 
 const store = useRemoteControlStore()
 const { toast } = useToast()
+const { confirm } = useConfirm()
+const clearingAudit = ref(false)
 
 // --- Config form (relay URL + auth token) ---
 const relayUrl = ref('')
@@ -26,6 +29,9 @@ const status = computed(() => store.status)
 const enabled = computed(() => status.value?.enabled ?? false)
 const running = computed(() => status.value?.running ?? false)
 const connected = computed(() => status.value?.connected ?? false)
+// Can't start the agent without a relay to dial — allow turning OFF anytime, but
+// only allow turning ON once a Relay URL has been saved.
+const canToggle = computed(() => enabled.value || !!status.value?.relay_url?.trim())
 
 async function load() {
   try {
@@ -91,11 +97,32 @@ async function saveMasterPassword() {
     const had = masterPassword.value.trim().length > 0
     await store.setMasterPassword(masterPassword.value)
     masterPassword.value = ''
-    toast.success(had ? 'Đã lưu master password' : 'Đã xoá master password')
+    toast.success(had ? 'Master password saved' : 'Master password cleared')
   } catch (e) {
     toast.error(String(e))
   } finally {
     savingMasterPw.value = false
+  }
+}
+
+async function clearAudit() {
+  if (clearingAudit.value) return
+  const ok = await confirm({
+    title: 'Clear audit log',
+    message:
+      'Permanently delete all remote-control audit entries?\nThis cannot be undone.',
+    confirmLabel: 'Clear log',
+    variant: 'destructive',
+  })
+  if (!ok) return
+  clearingAudit.value = true
+  try {
+    const removed = await store.clearAudit()
+    toast.success(removed > 0 ? `Cleared ${removed} audit entries` : 'Audit log is already empty')
+  } catch (e) {
+    toast.error(String(e))
+  } finally {
+    clearingAudit.value = false
   }
 }
 
@@ -133,6 +160,42 @@ function resultTone(r: string): 'success' | 'error' | 'neutral' {
           The relay only ever sees end-to-end encrypted traffic.
         </p>
 
+        <!-- Master on/off switch. This is the primary control for the feature,
+             so it reads as a switch rather than competing with "Save settings". -->
+        <div
+          class="flex items-center justify-between gap-4 rounded-lg border border-border/60 bg-muted/20 px-3.5 py-3"
+        >
+          <div class="min-w-0">
+            <p class="text-sm font-medium text-foreground">Enable Remote Control</p>
+            <p class="mt-0.5 text-[11px] text-muted-foreground">
+              <template v-if="enabled && connected">Connected to a controller device.</template>
+              <template v-else-if="enabled">Running — waiting for a device to connect.</template>
+              <template v-else-if="!canToggle">Save a Relay URL before enabling.</template>
+              <template v-else>Off. Turn on to allow remote control.</template>
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            :aria-checked="enabled"
+            :disabled="togglingEnabled || !canToggle"
+            class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
+            :class="enabled ? 'bg-primary' : 'bg-muted'"
+            @click="toggleEnabled"
+          >
+            <span
+              class="inline-flex h-4 w-4 transform items-center justify-center rounded-full bg-white shadow transition-transform"
+              :class="enabled ? 'translate-x-6' : 'translate-x-1'"
+            >
+              <Loader2
+                v-if="togglingEnabled"
+                class="h-3 w-3 animate-spin text-primary"
+                :stroke-width="2.5"
+              />
+            </span>
+          </button>
+        </div>
+
         <div class="space-y-1.5">
           <label class="text-xs font-medium text-muted-foreground">Relay URL</label>
           <Input
@@ -158,56 +221,50 @@ function resultTone(r: string): 'success' | 'error' | 'neutral' {
           </p>
         </div>
 
-        <div class="flex items-center gap-2 pt-1">
-          <Button variant="outline" :disabled="savingConfig" @click="saveConfig">
-            Save settings
-          </Button>
-          <Button
-            :variant="enabled ? 'destructive' : 'primary'"
-            :disabled="togglingEnabled"
-            @click="toggleEnabled"
-          >
-            {{ enabled ? 'Disable' : 'Enable' }}
-          </Button>
-          <span v-if="status?.device_id" class="ml-auto text-[11px] text-muted-foreground/60 font-mono">
-            host: {{ status.device_id.slice(0, 8) }}
-          </span>
-        </div>
-
         <!-- Master password: an optional stable code that replaces the per-join
              OTP for a single owner (falls back to OTP when unset). -->
-        <div class="space-y-1.5 border-t border-border/50 pt-4">
+        <div class="space-y-1.5">
           <label class="text-xs font-medium text-muted-foreground">
             Master password
-            <span v-if="status?.has_master_password" class="text-emerald-500">(đã đặt)</span>
+            <span v-if="status?.has_master_password" class="text-emerald-500">(set)</span>
           </label>
           <div class="flex items-center gap-2">
             <Input
               v-model="masterPassword"
               type="password"
               :placeholder="status?.has_master_password
-                ? 'Nhập mật khẩu mới, hoặc để trống để xoá'
-                : 'Đặt mật khẩu để bỏ nhập OTP mỗi lần'"
+                ? 'Enter a new password, or leave blank to clear'
+                : 'Set a password to skip the OTP each time'"
               :disabled="savingMasterPw"
               class="flex-1"
               @keyup.enter="saveMasterPassword"
             />
             <Button variant="outline" :disabled="savingMasterPw" @click="saveMasterPassword">
-              {{ status?.has_master_password && !masterPassword ? 'Xoá' : 'Lưu' }}
+              {{ status?.has_master_password && !masterPassword ? 'Clear' : 'Save' }}
             </Button>
           </div>
           <p class="text-[11px] text-muted-foreground/70">
-            Khi đã đặt, trên điện thoại bạn nhập mật khẩu này thay cho mã OTP.
-            Lưu trong OS keychain. Tiện hơn nhưng cố định — chỉ nên dùng khi bạn
-            là người dùng duy nhất.
+            Once set, enter this password on your phone instead of the OTP code.
+            Stored in the OS keychain. More convenient but fixed — only use it if
+            you are the sole user.
           </p>
         </div>
 
+        <div class="flex items-center gap-2 pt-1">
+          <Button variant="outline" :disabled="savingConfig" @click="saveConfig">
+            Save settings
+          </Button>
+          <span v-if="status?.device_id" class="ml-auto text-[11px] text-muted-foreground/60 font-mono">
+            host: {{ status.device_id.slice(0, 8) }}
+          </span>
+        </div>
+
         <p class="text-[11px] text-muted-foreground/70 border-t border-border/50 pt-3">
-          Phiên remote giờ được tạo theo từng run: mở một run rồi bấm nút
-          <span class="font-medium text-foreground/80">Remote</span> trên thanh
-          công cụ để tạo link. Nhập <span class="font-medium text-foreground/80">master
-          password</span> (nếu đã đặt) hoặc mã OTP trên điện thoại để kết nối.
+          Remote sessions are now created per run: open a run and click the
+          <span class="font-medium text-foreground/80">Remote</span> button in the
+          toolbar to generate a link. Enter your
+          <span class="font-medium text-foreground/80">master password</span>
+          (if set) or the OTP code on your phone to connect.
         </p>
       </div>
     </Card>
@@ -217,13 +274,24 @@ function resultTone(r: string): 'success' | 'error' | 'neutral' {
       <template #header>
         <ShieldCheck class="h-4 w-4 text-primary" :stroke-width="1.75" />
         <h3 class="text-sm font-semibold flex-1">Audit log</h3>
-        <button
-          class="text-muted-foreground hover:text-foreground transition-colors"
-          title="Refresh"
-          @click="store.refreshAudit().catch(() => {})"
-        >
-          <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" />
-        </button>
+        <div class="flex items-center gap-1">
+          <button
+            class="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+            title="Refresh"
+            @click="store.refreshAudit().catch(() => {})"
+          >
+            <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" />
+          </button>
+          <button
+            class="p-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            title="Clear log"
+            :disabled="clearingAudit || !store.audit.length"
+            @click="clearAudit"
+          >
+            <Loader2 v-if="clearingAudit" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+            <Trash2 v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+          </button>
+        </div>
       </template>
       <div v-if="store.audit.length" class="max-h-80 overflow-auto">
         <table class="w-full text-xs">

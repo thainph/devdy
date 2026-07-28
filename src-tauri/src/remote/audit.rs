@@ -1,7 +1,11 @@
-//! Append-only audit log (DATA-003).
+//! Audit log (DATA-003).
 //!
-//! The audit table is append-only: the app only ever INSERTs (BR-013 / SEC-007)
-//! — never UPDATE/DELETE. The device registry was removed in the single-session
+//! During normal operation the audit table is append-only: command handling only
+//! ever INSERTs (BR-013 / SEC-007) — it never UPDATEs, and never DELETEs on its
+//! own. The single exception is an explicit, owner-initiated purge via
+//! [`clear_audit`] (surfaced as the "Clear" action in Settings): the local owner
+//! may wipe their own history on demand. This is a deliberate manual action, not
+//! part of automated flow. The device registry was removed in the single-session
 //! redesign; the `device_id` column remains in the schema but is unused (NULL).
 
 use crate::db::Db;
@@ -90,6 +94,17 @@ pub async fn list_audit(db: &Db, limit: i64) -> Result<Vec<AuditEntry>, String> 
         .collect())
 }
 
+/// Delete every audit entry (owner-initiated purge). Returns the number of rows
+/// removed. This is the ONE place the audit table is mutated destructively — it
+/// is driven only by an explicit user action in Settings, never by command flow.
+pub async fn clear_audit(db: &Db) -> Result<u64, String> {
+    let res = sqlx::query("DELETE FROM remote_audit")
+        .execute(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(res.rows_affected())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,5 +163,21 @@ mod tests {
         assert_eq!(entries[1].result, RESULT_ACCEPTED);
         assert_eq!(entries[1].run_id.as_deref(), Some("r_1"));
         assert!(!entries[1].ts.is_empty());
+    }
+
+    // ---- Owner-initiated purge wipes every row and reports the count ----
+    #[tokio::test]
+    async fn clear_audit_removes_all_entries() {
+        let db = mem_db().await;
+        audit(&db, None, Some("rm_1"), None, "start_run", RESULT_ACCEPTED, None).await;
+        audit(&db, None, Some("rm_1"), None, "stop_run", RESULT_ACCEPTED, None).await;
+        assert_eq!(list_audit(&db, 50).await.unwrap().len(), 2);
+
+        let removed = clear_audit(&db).await.unwrap();
+        assert_eq!(removed, 2, "both rows are deleted");
+        assert!(list_audit(&db, 50).await.unwrap().is_empty(), "log is empty after clear");
+
+        // Clearing an already-empty log is a no-op that removes zero rows.
+        assert_eq!(clear_audit(&db).await.unwrap(), 0);
     }
 }

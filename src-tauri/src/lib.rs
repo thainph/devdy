@@ -63,9 +63,9 @@ use commands::vps_servers::{
 use commands::work_digest::get_work_digest;
 use commands::work_summary::{cancel_work_summary, summarize_work_digest, WorkSummaryState};
 use remote::commands::{
-    remote_create_session_link, remote_disable, remote_enable, remote_end_session,
-    remote_get_audit, remote_reveal_otp, remote_set_config, remote_set_master_password,
-    remote_status,
+    remote_clear_audit, remote_create_session_link, remote_disable, remote_enable,
+    remote_end_session, remote_get_audit, remote_reveal_otp, remote_set_config,
+    remote_set_master_password, remote_status,
 };
 use remote::RemoteState;
 use runs::broker::approver::ModalApproverResolver;
@@ -300,6 +300,7 @@ pub fn run() {
             remote_reveal_otp,
             remote_set_master_password,
             remote_get_audit,
+            remote_clear_audit,
             remote_status,
             remote::meta::set_run_meta,
         ])

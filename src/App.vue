@@ -12,6 +12,7 @@ import PermissionNotifier from '@/components/PermissionNotifier.vue'
 import BudgetBadge from '@/components/BudgetBadge.vue'
 import WorkspaceTabs from '@/components/WorkspaceTabs.vue'
 import ActiveRunsDock from '@/components/ActiveRunsDock.vue'
+import ActiveRemoteDock from '@/components/ActiveRemoteDock.vue'
 import FileViewerWindow from '@/views/FileViewerWindow.vue'
 import PermissionWindow from '@/views/PermissionWindow.vue'
 import { ConfirmModal, ToastHost } from '@/components/ui'
@@ -208,6 +209,9 @@ onMounted(async () => {
 
       <!-- App-wide monitor of concurrent runs + permission center -->
       <ActiveRunsDock />
+
+      <!-- Active Remote Control session (phone paired to a run) -->
+      <ActiveRemoteDock />
 
       <!-- Global usage / budget status -->
       <BudgetBadge />
