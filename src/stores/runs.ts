@@ -40,6 +40,12 @@ export interface FileContent {
   truncated: boolean
 }
 
+export interface DirEntry {
+  name: string
+  path: string
+  is_dir: boolean
+}
+
 export interface HandoffResult {
   run: RunRecord
   context_path: string
@@ -204,6 +210,11 @@ export const useRunsStore = defineStore('runs', () => {
     return invoke<FileContent>('read_project_file', { projectPath: project_path, filePath: file_path })
   }
 
+  // List one level of a directory (lazy tree loading for the file-tree panel).
+  async function listDir(project_path: string, rel_dir: string): Promise<DirEntry[]> {
+    return invoke<DirEntry[]>('list_dir', { projectPath: project_path, relDir: rel_dir })
+  }
+
   async function createSessionRun(project_id: string, engine_override?: string): Promise<RunRecord> {
     return invoke<RunRecord>('create_session_run', {
       projectId: project_id,
@@ -281,7 +292,7 @@ export const useRunsStore = defineStore('runs', () => {
     startRun, rerunRun, refetchRun, cancelRun, resumeRun,
     getRunLog, getRunLogPath, readRunInput,
     respondPermission, sendUserMessage, endRunInput,
-    listProjectFiles, readProjectFile, createHandoffRun, createSessionRun,
+    listProjectFiles, readProjectFile, listDir, createHandoffRun, createSessionRun,
     reconcileClaudeSessions, reconcileCodexSessions,
     deleteRun, deleteAllRuns, renameRun, setRunPinned,
   }

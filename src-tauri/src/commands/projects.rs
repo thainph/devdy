@@ -171,6 +171,39 @@ pub fn open_in_vscode(path: String, file: Option<String>) -> Result<(), String> 
 }
 
 #[tauri::command]
+pub fn open_in_chrome(path: String) -> Result<(), String> {
+    if !Path::new(&path).exists() {
+        return Err(format!("Path does not exist: {}", path));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .args(["-a", "Google Chrome", &path])
+            .spawn()
+            .map_err(|e| format!("Failed to open Chrome: {}", e))?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "chrome", &path])
+            .spawn()
+            .map_err(|e| format!("Failed to open Chrome: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("google-chrome")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Failed to open Chrome: {}", e))?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 pub fn open_in_folder(path: String) -> Result<(), String> {
     if !Path::new(&path).exists() {
         return Err(format!("Path does not exist: {}", path));
