@@ -6,12 +6,14 @@ import { useProjectsStore } from '@/stores/projects'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { Button, Card, Badge } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
+import { useToast } from '@/composables/useToast'
 import { Plus, Upload, Download, Pencil, Trash2, Puzzle, CalendarDays, FolderCheck } from 'lucide-vue-next'
 
 const router = useRouter()
 const store = useSkillsStore()
 const projectsStore = useProjectsStore()
 const { confirm } = useConfirm()
+const { toast } = useToast()
 const deletingId = ref<string | null>(null)
 const applyingId = ref<string | null>(null)
 const importingZip = ref(false)
@@ -25,7 +27,7 @@ onMounted(() => {
 async function handleApplyToAll(skill: Skill) {
   const total = projectsStore.projects.length
   if (total === 0) {
-    alert('No projects yet. Add a project first.')
+    toast.error('No projects yet. Add a project first.')
     return
   }
   if (!(await confirm({
@@ -38,13 +40,13 @@ async function handleApplyToAll(skill: Skill) {
   try {
     const result = await store.applySkillToAllProjects(skill.id)
     if (result.failures.length === 0) {
-      alert(`Applied "${skill.name}" to ${result.applied} project${result.applied === 1 ? '' : 's'}.`)
+      toast.success(`Applied "${skill.name}" to ${result.applied} project${result.applied === 1 ? '' : 's'}.`)
     } else {
       const details = result.failures.map(f => `• ${f.project_name}: ${f.error}`).join('\n')
-      alert(`Applied to ${result.applied} project${result.applied === 1 ? '' : 's'}.\n\nFailed for ${result.failures.length}:\n${details}`)
+      toast.error(`Applied to ${result.applied} project${result.applied === 1 ? '' : 's'}.\n\nFailed for ${result.failures.length}:\n${details}`)
     }
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   } finally {
     applyingId.value = null
   }
@@ -59,8 +61,9 @@ async function handleDelete(skill: Skill) {
   deletingId.value = skill.id
   try {
     await store.deleteSkill(skill.id)
+    toast.success('Deleted')
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   } finally {
     deletingId.value = null
   }
@@ -75,8 +78,9 @@ async function handleImport() {
   importingZip.value = true
   try {
     await store.importSkillZip(selected)
+    toast.success('Imported')
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   } finally {
     importingZip.value = false
   }
@@ -90,8 +94,9 @@ async function handleExport(skill: Skill) {
   if (!destPath) return
   try {
     await store.exportSkillZip(skill.id, destPath)
+    toast.success('Exported')
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   }
 }
 

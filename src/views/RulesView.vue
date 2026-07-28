@@ -6,12 +6,14 @@ import { useProjectsStore } from '@/stores/projects'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { Button, Card, Badge } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
+import { useToast } from '@/composables/useToast'
 import { Plus, Upload, Download, Pencil, Trash2, ScrollText, CalendarDays, FolderCheck } from 'lucide-vue-next'
 
 const router = useRouter()
 const store = useRulesStore()
 const projectsStore = useProjectsStore()
 const { confirm } = useConfirm()
+const { toast } = useToast()
 const deletingId = ref<string | null>(null)
 const applyingId = ref<string | null>(null)
 const importing = ref(false)
@@ -24,7 +26,7 @@ onMounted(() => {
 async function handleApplyToAll(rule: Rule) {
   const total = projectsStore.projects.length
   if (total === 0) {
-    alert('No projects yet. Add a project first.')
+    toast.error('No projects yet. Add a project first.')
     return
   }
   if (!(await confirm({
@@ -37,13 +39,13 @@ async function handleApplyToAll(rule: Rule) {
   try {
     const result = await store.applyRuleToAllProjects(rule.id)
     if (result.failures.length === 0) {
-      alert(`Applied "${rule.name}" to ${result.applied} project${result.applied === 1 ? '' : 's'}.`)
+      toast.success(`Applied "${rule.name}" to ${result.applied} project${result.applied === 1 ? '' : 's'}.`)
     } else {
       const details = result.failures.map(f => `• ${f.project_name}: ${f.error}`).join('\n')
-      alert(`Applied to ${result.applied} project${result.applied === 1 ? '' : 's'}.\n\nFailed for ${result.failures.length}:\n${details}`)
+      toast.error(`Applied to ${result.applied} project${result.applied === 1 ? '' : 's'}.\n\nFailed for ${result.failures.length}:\n${details}`)
     }
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   } finally {
     applyingId.value = null
   }
@@ -60,8 +62,9 @@ async function handleDelete(rule: Rule) {
   deletingId.value = rule.id
   try {
     await store.deleteRule(rule.id)
+    toast.success('Deleted')
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   } finally {
     deletingId.value = null
   }
@@ -76,8 +79,9 @@ async function handleImport() {
   importing.value = true
   try {
     await store.importRule(selected as string)
+    toast.success('Imported')
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   } finally {
     importing.value = false
   }
@@ -91,8 +95,9 @@ async function handleExport(rule: Rule) {
   if (!destPath) return
   try {
     await store.exportRule(rule.id, destPath)
+    toast.success('Exported')
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   }
 }
 

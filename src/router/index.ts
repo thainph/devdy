@@ -12,6 +12,7 @@ import ProjectDetailView from '../views/ProjectDetailView.vue'
 import RunView from '../views/RunView.vue'
 import SettingsView from '../views/SettingsView.vue'
 import StatsView from '../views/StatsView.vue'
+import TodosView from '../views/TodosView.vue'
 import WorkDigestView from '../views/WorkDigestView.vue'
 import AboutView from '../views/AboutView.vue'
 
@@ -35,6 +36,7 @@ const router = createRouter({
     { path: '/projects/:projectId', name: 'project-run', component: RunView },
     { path: '/projects/:projectId/run/:runId', name: 'project-run-detail', component: RunView },
     { path: '/projects/:projectId/settings', name: 'project-settings', component: ProjectDetailView },
+    { path: '/todos', name: 'todos', component: TodosView },
     { path: '/stats', name: 'stats', component: StatsView },
     { path: '/work-digest', name: 'work-digest', component: WorkDigestView },
     { path: '/settings', name: 'settings', component: SettingsView },

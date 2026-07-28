@@ -9,6 +9,7 @@ import {
 } from '@/stores/servers'
 import { open } from '@tauri-apps/plugin-dialog'
 import { Button, Input, Card, AppSelect } from '@/components/ui'
+import { useToast } from '@/composables/useToast'
 import {
   ArrowLeft, HardDrive, Save, Plug, CheckCircle2, XCircle, AlertCircle, KeyRound, Upload, X,
 } from 'lucide-vue-next'
@@ -16,6 +17,7 @@ import {
 const route = useRoute()
 const router = useRouter()
 const store = useServersStore()
+const { toast } = useToast()
 
 const isNew = computed(() => route.name === 'server-new')
 const serverId = computed(() => route.params.id as string | undefined)
@@ -100,7 +102,7 @@ onMounted(async () => {
       if (!found) throw new Error('Server not found')
       applyServer(found)
     } catch (e) {
-      alert(String(e))
+      toast.error(String(e))
       router.push('/servers')
     } finally {
       loading.value = false
@@ -166,9 +168,10 @@ async function handleSave() {
     } else {
       await store.updateServer({ id: serverId.value!, ...base })
     }
+    toast.success('Saved')
     router.push('/servers')
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   } finally {
     saving.value = false
   }

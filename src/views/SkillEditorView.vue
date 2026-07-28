@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useSkillsStore, type SkillTarget } from '@/stores/skills'
 import SkillEditor from '@/components/SkillEditor.vue'
 import { Button, AppSelect } from '@/components/ui'
+import { useToast } from '@/composables/useToast'
 import { invoke } from '@/lib/tauri'
 import { applyMermaidFence, vMermaid } from '@/lib/mermaid'
 import { vCopyCode } from '@/lib/copyCode'
@@ -12,6 +13,7 @@ import { ArrowLeft, FileCode2, Save, LayoutTemplate, AlertCircle, FolderOpen } f
 const route = useRoute()
 const router = useRouter()
 const store = useSkillsStore()
+const { toast } = useToast()
 
 const isNew = computed(() => route.name === 'skill-new')
 const skillId = computed(() => route.params.id as string | undefined)
@@ -165,7 +167,7 @@ onMounted(async () => {
       content.value = sc.content
       sourcePath.value = sc.skill.source_path
     } catch (e) {
-      alert(String(e))
+      toast.error(String(e))
       router.push('/skills')
     } finally {
       loading.value = false
@@ -196,9 +198,10 @@ async function handleSave() {
     } else {
       await store.updateSkill({ id: skillId.value!, name: fm.name, description: fm.description, target: t, content: content.value })
     }
+    toast.success('Saved')
     router.push('/skills')
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   } finally {
     saving.value = false
   }

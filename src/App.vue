@@ -7,7 +7,7 @@ import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useUILayoutStore } from '@/stores/uiLayout'
-import { Puzzle, ScrollText, Server, HardDrive, FolderOpen, BarChart3, CalendarClock, Settings, Info } from 'lucide-vue-next'
+import { Puzzle, ScrollText, Server, HardDrive, FolderOpen, BarChart3, CalendarClock, ListTodo, Settings, Info } from 'lucide-vue-next'
 import PermissionNotifier from '@/components/PermissionNotifier.vue'
 import BudgetBadge from '@/components/BudgetBadge.vue'
 import WorkspaceTabs from '@/components/WorkspaceTabs.vue'
@@ -84,6 +84,7 @@ const navItems = [
   { path: '/servers', label: 'Servers', icon: HardDrive },
   { path: '/stats', label: 'Stats', icon: BarChart3 },
   { path: '/work-digest', label: 'Digest', icon: CalendarClock },
+  { path: '/todos', label: 'Todos', icon: ListTodo },
   { path: '/settings', label: 'Settings', icon: Settings },
   { path: '/about', label: 'About', icon: Info },
 ]

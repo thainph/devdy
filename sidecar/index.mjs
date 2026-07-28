@@ -282,6 +282,49 @@ function startQuery(firstText, opts = {}, firstImages) {
   })()
 }
 
+// List the models the account can use, via the SDK's `supportedModels()`. Runs
+// a throwaway query (no user turn) purely to open the control channel, asks for
+// the model list, then closes. Emits `_devdy_models` with the ModelInfo[] array.
+function startListModels(opts = {}) {
+  inputQueue = new MessageQueue()
+
+  const options = {
+    permissionMode: 'bypassPermissions',
+    includePartialMessages: false,
+    stderr: (data) => send({ type: '_devdy_stderr', text: data }),
+  }
+  if (opts.cwd) options.cwd = opts.cwd
+  if (process.env.DEVDY_CLAUDE_PATH) options.pathToClaudeCodeExecutable = process.env.DEVDY_CLAUDE_PATH
+
+  ;(async () => {
+    try {
+      currentQuery = query({ prompt: inputQueue, options })
+      // Pump the message loop so the control response for supportedModels() can
+      // be delivered (same reason captureUsage needs the loop running).
+      const pump = (async () => {
+        try {
+          for await (const _msg of currentQuery) { /* drain */ }
+        } catch { /* loop torn down after we close input — ignore */ }
+      })()
+      const fn = currentQuery.supportedModels
+      if (typeof fn === 'function') {
+        const models = await fn.call(currentQuery)
+        send({ type: '_devdy_models', models: Array.isArray(models) ? models : [] })
+      } else {
+        send({ type: '_devdy_models', models: [] })
+      }
+      if (inputQueue) inputQueue.close()
+      await pump
+      send({ type: '_devdy_done' })
+    } catch (err) {
+      send({ type: '_devdy_error', error: String(err && err.stack ? err.stack : err) })
+    } finally {
+      if (inputQueue) inputQueue.close()
+      send({ type: '_devdy_closed' })
+    }
+  })()
+}
+
 function startUsageProbe(opts = {}) {
   inputQueue = new MessageQueue()
   inputQueue.push(userMessage('/usage'))
@@ -377,6 +420,12 @@ rl.on('line', (raw) => {
         startUsageProbe(cmd.options || {})
       } else {
         requestUsageCapture()
+      }
+      break
+    case 'list_models':
+      if (!started) {
+        started = true
+        startListModels(cmd.options || {})
       }
       break
     case 'abort':

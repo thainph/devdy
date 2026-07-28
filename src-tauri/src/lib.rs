@@ -56,11 +56,17 @@ use commands::stats::{
     refresh_plan_usage, reset_usage_stats,
 };
 use commands::storage::{clean_storage, get_storage_stats};
+use commands::todos::{
+    add_todo, clear_completed_todos, delete_todo, list_todos, reorder_todos, toggle_todo,
+    update_todo,
+};
 use commands::vps_servers::{
     create_vps_server, delete_vps_server, list_project_servers, list_vps_servers,
     map_server_to_project, test_vps_connection, unmap_server, update_vps_server,
 };
 use commands::work_digest::get_work_digest;
+use commands::models::list_claude_models;
+use commands::translate::{cancel_translate, translate_text, TranslateState};
 use commands::work_summary::{cancel_work_summary, summarize_work_digest, WorkSummaryState};
 use remote::commands::{
     remote_clear_audit, remote_create_session_link, remote_disable, remote_enable,
@@ -124,6 +130,7 @@ pub fn run() {
 
             app.manage(db);
             app.manage(WorkSummaryState::default());
+            app.manage(TranslateState::default());
             app.manage(new_registry());
             app.manage(approvals);
             app.manage(broker_runs);
@@ -278,6 +285,9 @@ pub fn run() {
             get_work_digest,
             summarize_work_digest,
             cancel_work_summary,
+            translate_text,
+            cancel_translate,
+            list_claude_models,
             backfill_usage,
             reset_usage_stats,
             get_budget_status,
@@ -291,6 +301,13 @@ pub fn run() {
             reconcile_codex_sessions,
             get_storage_stats,
             clean_storage,
+            list_todos,
+            add_todo,
+            toggle_todo,
+            update_todo,
+            delete_todo,
+            clear_completed_todos,
+            reorder_todos,
             show_permission_notification,
             remote_set_config,
             remote_enable,

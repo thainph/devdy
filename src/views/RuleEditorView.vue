@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useRulesStore, type RuleTarget } from '@/stores/rules'
 import SkillEditor from '@/components/SkillEditor.vue'
 import { Button, AppSelect } from '@/components/ui'
+import { useToast } from '@/composables/useToast'
 import { applyMermaidFence, vMermaid } from '@/lib/mermaid'
 import { vCopyCode } from '@/lib/copyCode'
 import { ArrowLeft, ScrollText, Save, LayoutTemplate, AlertCircle, FolderOpen } from 'lucide-vue-next'
@@ -11,6 +12,7 @@ import { ArrowLeft, ScrollText, Save, LayoutTemplate, AlertCircle, FolderOpen } 
 const route = useRoute()
 const router = useRouter()
 const store = useRulesStore()
+const { toast } = useToast()
 
 const isNew = computed(() => route.name === 'rule-new')
 const ruleId = computed(() => route.params.id as string | undefined)
@@ -100,7 +102,7 @@ onMounted(async () => {
       const rc = await store.getRule(ruleId.value)
       content.value = rc.content
     } catch (e) {
-      alert(String(e))
+      toast.error(String(e))
       router.push('/rules')
     } finally {
       loading.value = false
@@ -125,9 +127,10 @@ async function handleSave() {
     } else {
       await store.updateRule({ id: ruleId.value!, name: fm.name, description: fm.description, target: t, content: content.value })
     }
+    toast.success('Saved')
     router.push('/rules')
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   } finally {
     saving.value = false
   }

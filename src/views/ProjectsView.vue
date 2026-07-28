@@ -11,6 +11,7 @@ import { invoke } from '@/lib/tauri'
 import { Plus, FolderOpen, GitBranch, Github, Gitlab, Trash2, X, SquareTerminal, Code2, Settings, HardDrive, Cloud } from 'lucide-vue-next'
 import { Button, Input, Badge, Modal, Card } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
+import { useToast } from '@/composables/useToast'
 
 const router = useRouter()
 const store = useProjectsStore()
@@ -19,6 +20,7 @@ const glStore = useGitlabAccountsStore()
 const serversStore = useServersStore()
 const awsStore = useAwsAccountsStore()
 const { confirm } = useConfirm()
+const { toast } = useToast()
 const adding = ref(false)
 const detecting = ref(false)
 
@@ -119,7 +121,7 @@ async function handleAdd() {
       pendingRepos.value.push({ name: '', path: selected, github_owner: null, github_repo: null, _key: _keyCounter++ })
     }
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   } finally {
     detecting.value = false
   }
@@ -164,9 +166,10 @@ async function confirmAdd() {
     })
     pending.value = null
     pendingRepos.value = []
+    toast.success('Project added')
     router.push(`/projects/${project.id}`)
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   } finally {
     adding.value = false
   }
@@ -180,8 +183,9 @@ async function handleRemove(project: { id: string; name: string }) {
   }))) return
   try {
     await store.removeProject(project.id)
+    toast.success('Deleted')
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   }
 }
 
@@ -190,7 +194,7 @@ async function handleOpenInTerminal(project: { path: string }) {
     const settings = await invoke<{ terminal_app: string }>('get_settings')
     await store.openInTerminal(project.path, settings.terminal_app)
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   }
 }
 
@@ -198,7 +202,7 @@ async function handleOpenInVscode(project: { path: string }) {
   try {
     await store.openInVscode(project.path)
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   }
 }
 
@@ -206,7 +210,7 @@ async function handleOpenInFolder(project: { path: string }) {
   try {
     await store.openInFolder(project.path)
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   }
 }
 </script>

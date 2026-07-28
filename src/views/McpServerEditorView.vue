@@ -8,6 +8,7 @@ import {
   type TestConnectionResult,
 } from '@/stores/mcpServers'
 import { Button, Input, Textarea, Card, Badge, AppSelect } from '@/components/ui'
+import { useToast } from '@/composables/useToast'
 import {
   ArrowLeft, Server, Save, Plus, Trash2, Plug, CheckCircle2, XCircle, AlertCircle,
 } from 'lucide-vue-next'
@@ -15,6 +16,7 @@ import {
 const route = useRoute()
 const router = useRouter()
 const store = useMcpServersStore()
+const { toast } = useToast()
 
 const isNew = computed(() => route.name === 'mcp-new')
 const serverId = computed(() => route.params.id as string | undefined)
@@ -68,7 +70,7 @@ onMounted(async () => {
       headerRows.value = s.header_keys.map(key => ({ key, value: '', existing: true }))
       enabled.value = s.enabled
     } catch (e) {
-      alert(String(e))
+      toast.error(String(e))
       router.push('/mcp')
     } finally {
       loading.value = false
@@ -173,9 +175,10 @@ async function handleSave() {
     } else {
       await store.updateServer({ id: serverId.value!, ...base })
     }
+    toast.success('Saved')
     router.push('/mcp')
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   } finally {
     saving.value = false
   }

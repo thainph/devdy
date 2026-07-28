@@ -25,6 +25,10 @@ export interface AppSettings {
   context_limit_override: string
   budget_5h_percent: string
   budget_week_percent: string
+  translate_engine: string
+  translate_model: string
+  translate_target_lang: string
+  translate_style: string
 }
 
 export const useAppSettingsStore = defineStore('appSettings', () => {

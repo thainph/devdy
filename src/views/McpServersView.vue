@@ -6,12 +6,14 @@ import { useAppSettingsStore } from '@/stores/appSettings'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { Button, Card, Badge } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
+import { useToast } from '@/composables/useToast'
 import { Plus, Upload, Download, Pencil, Trash2, Server, CalendarDays, Power, AlertTriangle } from 'lucide-vue-next'
 
 const router = useRouter()
 const store = useMcpServersStore()
 const appSettings = useAppSettingsStore()
 const { confirm } = useConfirm()
+const { toast } = useToast()
 const deletingId = ref<string | null>(null)
 const togglingId = ref<string | null>(null)
 const importing = ref(false)
@@ -38,8 +40,9 @@ async function handleImport() {
   importing.value = true
   try {
     await store.importServer(selected as string)
+    toast.success('Imported')
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   } finally {
     importing.value = false
   }
@@ -53,8 +56,9 @@ async function handleExport(server: McpServer) {
   if (!destPath) return
   try {
     await store.exportServer(server.id, destPath)
+    toast.success('Exported')
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   }
 }
 
@@ -67,8 +71,9 @@ async function handleDelete(server: McpServer) {
   deletingId.value = server.id
   try {
     await store.deleteServer(server.id)
+    toast.success('Deleted')
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   } finally {
     deletingId.value = null
   }
@@ -91,8 +96,9 @@ async function handleToggleEnabled(server: McpServer) {
       headers: server.header_keys.map(key => ({ key })),
       enabled: !server.enabled,
     })
+    toast.success(server.enabled ? 'Disabled' : 'Enabled')
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   } finally {
     togglingId.value = null
   }
