@@ -138,6 +138,90 @@ fn read_within(project_path: &str, file_path: &str) -> Result<FileContent, Strin
     Ok(FileContent { path: rel, content, truncated })
 }
 
+/// A single entry (one level) of a directory, for the RunView file-tree panel.
+#[derive(Debug, Serialize, Clone)]
+pub struct DirEntry {
+    /// Display name (basename).
+    pub name: String,
+    /// Relative POSIX path from the project root.
+    pub path: String,
+    pub is_dir: bool,
+}
+
+/// List exactly one level of `rel_dir` (relative to the project root, `""` = root)
+/// for the VSCode-style file tree. Honors `.gitignore` like [`list_project_files`]
+/// so noise dirs (`node_modules`, build output, …) stay hidden, and confines the
+/// resolved path to the project root to block traversal.
+#[tauri::command]
+pub async fn list_dir(project_path: String, rel_dir: String) -> Result<Vec<DirEntry>, String> {
+    tokio::task::spawn_blocking(move || list_dir_inner(&project_path, &rel_dir))
+        .await
+        .map_err(|e| format!("join error: {e}"))?
+}
+
+fn list_dir_inner(project_path: &str, rel_dir: &str) -> Result<Vec<DirEntry>, String> {
+    let root = Path::new(project_path)
+        .canonicalize()
+        .map_err(|e| format!("invalid project path: {e}"))?;
+
+    // Resolve the requested directory and confine it to the project root.
+    let target = if rel_dir.is_empty() {
+        root.clone()
+    } else {
+        root.join(rel_dir)
+            .canonicalize()
+            .map_err(|_| format!("Directory not found: {rel_dir}"))?
+    };
+    if !target.starts_with(&root) {
+        return Err("Refusing to list a directory outside the project".to_string());
+    }
+    if !target.is_dir() {
+        return Err(format!("{rel_dir} is not a directory"));
+    }
+
+    // One level only: max_depth(1) yields the target itself plus its direct
+    // children. `.gitignore` still applies via the WalkBuilder git flags.
+    let mut entries: Vec<DirEntry> = Vec::new();
+    let walker = WalkBuilder::new(&target)
+        .max_depth(Some(1))
+        .hidden(false) // surface dotfiles; .gitignore still applies
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .parents(true)
+        .filter_entry(|e| e.file_name() != ".git")
+        .build();
+
+    for result in walker {
+        let entry = match result {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        // Skip the target directory itself (depth 0) — only its direct children
+        // (depth 1) are listed. Without this, listing a subdir returns the subdir
+        // as a child of itself → an infinite same-named-folder loop in the tree.
+        if entry.depth() == 0 {
+            continue;
+        }
+        let rel = match entry.path().strip_prefix(&root) {
+            Ok(r) if !r.as_os_str().is_empty() => r,
+            _ => continue,
+        };
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let path = rel.to_string_lossy().replace('\\', "/");
+        entries.push(DirEntry { name, path, is_dir });
+    }
+
+    // Directories first, then files; case-insensitive by name (VSCode order).
+    entries.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    Ok(entries)
+}
+
 fn walk(root: &str) -> Result<Vec<ProjectEntry>, String> {
     let root_path = Path::new(root);
     if !root_path.is_dir() {

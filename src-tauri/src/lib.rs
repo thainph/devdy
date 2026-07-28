@@ -11,7 +11,7 @@ use commands::aws_accounts::{
     update_aws_account, validate_aws_account,
 };
 use commands::codex_sessions::reconcile_codex_sessions;
-use commands::files::{list_project_files, read_file_base64, read_project_file};
+use commands::files::{list_dir, list_project_files, read_file_base64, read_project_file};
 use commands::github::{fetch_issue, fetch_pr, list_runs, refetch_run};
 use commands::github_accounts::{
     create_github_account, delete_github_account, list_github_accounts, set_project_github_account,
@@ -30,8 +30,9 @@ use commands::mcp::{
 use commands::notifications::show_permission_notification;
 use commands::projects::{
     add_project, add_repo, apply_skill, apply_skill_to_all_projects, detect_project_info,
-    get_applied_skills, list_projects, list_repos, list_sync_conflicts, open_in_folder,
-    open_in_terminal, open_in_vscode, remove_project, remove_repo, remove_skill_from_project,
+    get_applied_skills, list_projects, list_repos, list_sync_conflicts, open_in_chrome,
+    open_in_folder, open_in_terminal, open_in_vscode, remove_project, remove_repo,
+    remove_skill_from_project,
     resolve_sync_conflict, update_project, update_repo,
 };
 use commands::rules::{
@@ -256,6 +257,7 @@ pub fn run() {
             update_repo,
             remove_repo,
             open_in_vscode,
+            open_in_chrome,
             open_in_folder,
             open_in_terminal,
             fetch_issue,
@@ -277,6 +279,7 @@ pub fn run() {
             rename_run,
             set_run_pinned,
             list_project_files,
+            list_dir,
             read_project_file,
             read_file_base64,
             create_handoff_run,

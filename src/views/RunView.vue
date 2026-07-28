@@ -27,7 +27,7 @@ import {
   ImagePlus, X, Paperclip,
   ShieldQuestion, MessageCircleQuestion,
   Pin, PinOff, Pencil, Check, Github, Gitlab,
-  ClipboardCopy, ScrollText, HardDrive, Cloud, Radio, Languages
+  ClipboardCopy, ScrollText, HardDrive, Cloud, Radio, Languages, FolderTree
 } from 'lucide-vue-next'
 import AppSelect from '@/components/AppSelect.vue'
 import StreamLog from '@/components/StreamLog.vue'
@@ -37,6 +37,7 @@ import ContextMeter from '@/components/ContextMeter.vue'
 import { mergeContextModel } from '@/lib/contextLimits'
 import PermissionPrompt from '@/components/PermissionPrompt.vue'
 import FileViewer from '@/components/FileViewer.vue'
+import FileTree from '@/components/FileTree.vue'
 import { Button, Input, StatusBadge, Badge, Modal } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
@@ -174,6 +175,8 @@ const refNumber = ref('')
 const fetching = ref(false)
 // The fetch form is collapsed by default so the run History gets the space.
 const fetchOpen = ref(false)
+// Left rail view: session controls/history, or the project file tree.
+const leftTab = ref<'session' | 'files'>('session')
 const fetchError = ref<string | null>(null)
 const needsLinkedIssue = ref(false)
 const linkedIssueInput = ref('')
@@ -1631,6 +1634,25 @@ function selectMention(entry: ProjectEntry) {
   })
 }
 
+// Insert a file mention (`@path`) into the composer from the file-tree context
+// menu. Inserts at the caret when the composer is focused, otherwise appends.
+function mentionFileInComposer(path: string) {
+  const el = composerEl.value
+  const cur = followUpInput.value
+  const focused = el && document.activeElement === el
+  const caret = focused ? (el!.selectionStart ?? cur.length) : cur.length
+  const before = cur.slice(0, caret)
+  const after = cur.slice(caret)
+  const sep = before.length && !/\s$/.test(before) ? ' ' : ''
+  const insert = `${sep}@${path} `
+  followUpInput.value = before + insert + after
+  mentionOpen.value = false
+  nextTick(() => {
+    const pos = (before + insert).length
+    if (el) { el.focus(); el.setSelectionRange(pos, pos) }
+  })
+}
+
 function onComposerKeydown(e: KeyboardEvent) {
   if (slashOpen.value && slashItems.value.length) {
     if (e.key === 'ArrowDown') {
@@ -2273,8 +2295,28 @@ function handleRefInput(val: string) {
       <!-- Left panel: controls + history (hidden in focus mode) -->
       <div v-if="!uiLayout.focusMode" class="w-72 shrink-0 border-r border-border/60 flex flex-col overflow-hidden bg-card/20">
 
+        <!-- Rail tab switcher: Session (controls + history) vs Files (tree). -->
+        <div class="flex shrink-0 border-b border-border/60 text-xs font-medium">
+          <button
+            class="flex-1 flex items-center justify-center gap-1.5 py-2 transition-colors cursor-pointer"
+            :class="leftTab === 'session' ? 'text-foreground border-b-2 border-primary' : 'text-muted-foreground hover:text-foreground'"
+            @click="leftTab = 'session'"
+          >
+            <MessageSquare class="h-3.5 w-3.5" :stroke-width="2" />
+            Session
+          </button>
+          <button
+            class="flex-1 flex items-center justify-center gap-1.5 py-2 transition-colors cursor-pointer"
+            :class="leftTab === 'files' ? 'text-foreground border-b-2 border-primary' : 'text-muted-foreground hover:text-foreground'"
+            @click="leftTab = 'files'"
+          >
+            <FolderTree class="h-3.5 w-3.5" :stroke-width="2" />
+            Files
+          </button>
+        </div>
+
         <!-- Compact top toolbar: New session, then a collapsible Fetch -->
-        <div class="p-3 border-b border-border/60 space-y-2">
+        <div v-show="leftTab === 'session'" class="p-3 border-b border-border/60 space-y-2">
           <Button class="w-full" :disabled="creatingSession" @click="handleNewSession">
             <MessageSquare class="h-3.5 w-3.5" :stroke-width="2" />
             {{ creatingSession ? 'Đang tạo…' : 'New session' }}
@@ -2375,7 +2417,7 @@ function handleRefInput(val: string) {
         </div>
 
         <!-- Run history -->
-        <div class="flex-1 overflow-auto">
+        <div v-show="leftTab === 'session'" class="flex-1 overflow-auto">
           <div class="flex items-center justify-between px-4 py-2.5 border-b border-border/40">
             <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">History</p>
             <button
@@ -2571,6 +2613,16 @@ function handleRefInput(val: string) {
             </div>
           </div>
         </div>
+
+        <!-- Files tab: VSCode-style lazy file tree for this project. -->
+        <FileTree
+          v-show="leftTab === 'files'"
+          v-if="project?.path"
+          :project-path="project.path"
+          :active-path="fileViewerOpen ? fileViewerPath : null"
+          @open-file="openFileViewer"
+          @mention-file="mentionFileInComposer"
+        />
       </div>
 
       <!-- Terminal panel (split-pane: Content | AI Result) -->
