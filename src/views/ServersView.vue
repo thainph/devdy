@@ -4,11 +4,13 @@ import { useRouter } from 'vue-router'
 import { useServersStore, type VpsServer } from '@/stores/servers'
 import { Button, Card, Badge } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
+import { useToast } from '@/composables/useToast'
 import { Plus, Pencil, Trash2, HardDrive, CalendarDays, Plug, KeyRound, UserCog } from 'lucide-vue-next'
 
 const router = useRouter()
 const store = useServersStore()
 const { confirm } = useConfirm()
+const { toast } = useToast()
 const deletingId = ref<string | null>(null)
 const testingId = ref<string | null>(null)
 
@@ -48,8 +50,9 @@ async function handleDelete(server: VpsServer) {
   deletingId.value = server.id
   try {
     await store.deleteServer(server.id)
+    toast.success('Deleted')
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   } finally {
     deletingId.value = null
   }
@@ -60,7 +63,7 @@ async function handleTest(server: VpsServer) {
   try {
     await store.testConnection(server.id)
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   } finally {
     testingId.value = null
   }

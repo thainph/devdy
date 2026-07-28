@@ -31,6 +31,14 @@ pub struct AppSettings {
     /// Block new runs when the weekly plan window reaches this percent
     /// ("" = don't enforce the weekly window).
     pub budget_week_percent: String,
+    /// Engine used by the "translate selection" feature ("claude" | "codex").
+    pub translate_engine: String,
+    /// Model used for translations ("" = a fast default, e.g. haiku for Claude).
+    pub translate_model: String,
+    /// Default target language for translations (code or name, e.g. "vi").
+    pub translate_target_lang: String,
+    /// Translation style: "natural" | "literal" | "technical" | "formal" | "casual".
+    pub translate_style: String,
 }
 
 #[tauri::command]
@@ -57,6 +65,10 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
         context_limit_override: "".to_string(),
         budget_5h_percent: "".to_string(),
         budget_week_percent: "".to_string(),
+        translate_engine: "claude".to_string(),
+        translate_model: "".to_string(),
+        translate_target_lang: "vi".to_string(),
+        translate_style: "natural".to_string(),
     };
 
     for row in rows {
@@ -79,6 +91,10 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
             "context_limit_override" => settings.context_limit_override = value,
             "budget_5h_percent" => settings.budget_5h_percent = value,
             "budget_week_percent" => settings.budget_week_percent = value,
+            "translate_engine" => settings.translate_engine = value,
+            "translate_model" => settings.translate_model = value,
+            "translate_target_lang" => settings.translate_target_lang = value,
+            "translate_style" => settings.translate_style = value,
             _ => {}
         }
     }

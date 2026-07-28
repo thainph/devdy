@@ -5,6 +5,7 @@ import { invoke } from '@/lib/tauri'
 import {
   Cpu, Palette, FileText, ShieldAlert, Sparkles, Github, Gitlab, Cloud,
   CheckCircle2, AlertTriangle, Trash2, Plus, Pencil, Gauge, Radio,
+  RefreshCw, Loader2,
 } from 'lucide-vue-next'
 import { Button, Input, Textarea, Card, AppSelect } from '@/components/ui'
 import RemoteControlSettings from '@/components/remote/RemoteControlSettings.vue'
@@ -15,9 +16,11 @@ import { useGitlabAccountsStore, type GitlabPatValidation } from '@/stores/gitla
 import { useAwsAccountsStore, type AwsAccountPayload, type AwsAuthMethod, type AwsValidation } from '@/stores/awsAccounts'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useBudgetStore } from '@/stores/budget'
+import { useModelCatalogStore } from '@/stores/modelCatalog'
 
 const appSettings = useAppSettingsStore()
 const budget = useBudgetStore()
+const modelCatalog = useModelCatalogStore()
 const { confirm } = useConfirm()
 const { toast } = useToast()
 
@@ -44,6 +47,10 @@ interface AppSettings {
   context_limit_override: string
   budget_5h_percent: string
   budget_week_percent: string
+  translate_engine: string
+  translate_model: string
+  translate_target_lang: string
+  translate_style: string
 }
 
 const settings = ref<AppSettings>({
@@ -63,7 +70,45 @@ const settings = ref<AppSettings>({
   context_limit_override: '',
   budget_5h_percent: '',
   budget_week_percent: '',
+  translate_engine: 'claude',
+  translate_model: '',
+  translate_target_lang: 'vi',
+  translate_style: 'natural',
 })
+
+// Claude model choices = curated aliases + any newly-released models discovered
+// from the account (Codex has no discovery API, so it stays curated).
+const claudeModelOptions = computed(() => modelCatalog.mergedClaudeOptions(CLAUDE_MODEL_OPTIONS))
+
+// Translation model choices follow the chosen translation engine, reusing the
+// same option tables (with dynamic Claude models merged in) as the selectors.
+const translateModelOptions = computed(() =>
+  settings.value.translate_engine === 'codex' ? CODEX_MODEL_OPTIONS : claudeModelOptions.value,
+)
+// Reset the translation model when switching to an engine that doesn't offer it.
+watch(
+  () => settings.value.translate_engine,
+  () => {
+    if (!translateModelOptions.value.some((o) => o.value === settings.value.translate_model)) {
+      settings.value.translate_model = ''
+    }
+  },
+)
+
+const TRANSLATE_TARGET_OPTIONS = [
+  { value: 'vi', label: 'Tiếng Việt' },
+  { value: 'en', label: 'English' },
+  { value: 'ja', label: '日本語 (Japanese)' },
+  { value: 'zh', label: '中文 (Chinese)' },
+  { value: 'ko', label: '한국어 (Korean)' },
+]
+const TRANSLATE_STYLE_OPTIONS = [
+  { value: 'natural', label: 'Natural — thoát ý, tự nhiên' },
+  { value: 'literal', label: 'Literal — sát nghĩa' },
+  { value: 'technical', label: 'Technical — giữ thuật ngữ/code' },
+  { value: 'formal', label: 'Formal — trang trọng' },
+  { value: 'casual', label: 'Casual — thân mật' },
+]
 
 // `[1m]` selects the 1M-context variant; the bare alias uses the 200K default.
 // Aliases (not pinned ids) keep these current as new model versions ship.
@@ -95,8 +140,7 @@ const SECTIONS = [
   { id: 'gitlab', label: 'GitLab Accounts', icon: Gitlab },
   { id: 'aws', label: 'AWS Accounts', icon: Cloud },
   { id: 'engine', label: 'Engine Paths', icon: Cpu },
-  { id: 'models', label: 'Default Models', icon: Sparkles },
-  { id: 'permissions', label: 'Permissions', icon: ShieldAlert },
+  { id: 'ai', label: 'AI & Models', icon: Sparkles },
   { id: 'usage', label: 'Usage & Budget', icon: Gauge },
   { id: 'remote', label: 'Remote Control', icon: Radio },
   { id: 'prompts', label: 'Prompt Templates', icon: FileText },
@@ -128,6 +172,7 @@ async function handleAddAccount() {
     await ghStore.create(newLabel.value.trim(), newPat.value.trim())
     newLabel.value = ''
     newPat.value = ''
+    toast.success('Account added')
   } catch (e) {
     addError.value = String(e)
   } finally {
@@ -147,6 +192,7 @@ async function handleSaveEdit(id: string) {
   try {
     await ghStore.update(id, editLabel.value[id]?.trim() || '', editPat.value[id])
     editing.value = null
+    toast.success('Account updated')
   } catch (e) {
     accountError.value[id] = String(e)
   } finally {
@@ -175,8 +221,9 @@ async function handleDeleteAccount(id: string) {
   }))) return
   try {
     await ghStore.remove(id)
+    toast.success('Account deleted')
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   }
 }
 
@@ -212,6 +259,7 @@ async function handleAddGitlabAccount() {
     glNewPat.value = ''
     glNewHost.value = ''
     glNewEmail.value = ''
+    toast.success('Account added')
   } catch (e) {
     glAddError.value = String(e)
   } finally {
@@ -239,6 +287,7 @@ async function handleSaveGitlabEdit(id: string) {
       glEditEmail.value[id],
     )
     glEditing.value = null
+    toast.success('Account updated')
   } catch (e) {
     glAccountError.value[id] = String(e)
   } finally {
@@ -267,8 +316,9 @@ async function handleDeleteGitlabAccount(id: string) {
   }))) return
   try {
     await glStore.remove(id)
+    toast.success('Account deleted')
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   }
 }
 
@@ -360,6 +410,7 @@ async function handleAddAwsAccount() {
     awsNewSessionToken.value = ''
     awsNewProfileName.value = ''
     awsNewTags.value = ''
+    toast.success('Account added')
   } catch (e) {
     awsAddError.value = String(e)
   } finally {
@@ -389,6 +440,7 @@ async function handleSaveAwsEdit(id: string) {
   try {
     await awsStore.update(id, awsPayloadForEdit(id))
     awsEditing.value = null
+    toast.success('Account updated')
   } catch (e) {
     awsAccountError.value[id] = String(e)
   } finally {
@@ -417,8 +469,9 @@ async function handleDeleteAwsAccount(id: string) {
   }))) return
   try {
     await awsStore.remove(id)
+    toast.success('Account deleted')
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   }
 }
 
@@ -435,6 +488,8 @@ onMounted(async () => {
       if (e.payload?.provider !== 'codex' && !budget.refreshingPlan) budget.refresh()
     })
     unlistenBudgetStatus = await listen('budget_status_updated', () => budget.refresh())
+    // Discover the account's Claude models (cached; augments the curated list).
+    modelCatalog.fetchClaude().catch(() => {})
   } finally {
     loading.value = false
   }
@@ -549,17 +604,6 @@ watch(() => settings.value.color_theme, (t) => {
             <Palette class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
             <span class="text-xs font-semibold">General</span>
           </template>
-            <div class="space-y-1.5">
-              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Default Engine</label>
-              <AppSelect
-                size="sm"
-                v-model="settings.default_engine"
-                :options="[
-                  { value: 'claude', label: 'claude' },
-                  { value: 'codex', label: 'codex' },
-                ]"
-              />
-            </div>
             <div class="space-y-1.5">
               <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Theme</label>
               <AppSelect
@@ -1134,59 +1178,110 @@ watch(() => settings.value.color_theme, (t) => {
             </div>
         </Card>
 
-        <!-- Default Models section -->
-        <Card v-show="activeSection === 'models'" body-class="p-4 space-y-4">
+        <!-- AI & Models section — run defaults + translation, grouped together -->
+        <Card v-show="activeSection === 'ai'" body-class="p-4 space-y-5">
           <template #header>
             <Sparkles class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-            <span class="text-xs font-semibold">Default Models</span>
+            <span class="text-xs font-semibold">AI & Models</span>
           </template>
-            <div class="space-y-1.5">
-              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Claude model</label>
-              <AppSelect size="sm" v-model="settings.claude_model" :options="CLAUDE_MODEL_OPTIONS" />
-            </div>
-            <div class="space-y-1.5">
-              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Codex model</label>
-              <AppSelect size="sm" v-model="settings.codex_model" :options="CODEX_MODEL_OPTIONS" />
-            </div>
-            <p class="text-[11px] text-muted-foreground leading-relaxed">
-              The default model used when a run doesn't pick one. You can still override the model per run
-              on the Run screen. "Default" lets the engine/subscription choose.
-            </p>
-        </Card>
 
-        <!-- Permissions section -->
-        <Card v-show="activeSection === 'permissions'" body-class="p-4 space-y-4">
-          <template #header>
-            <ShieldAlert class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-            <span class="text-xs font-semibold">Permissions</span>
-          </template>
-            <div class="space-y-1.5">
-              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-                Default permission mode
-              </label>
-              <AppSelect
-                size="sm"
-                v-model="settings.default_permission_mode"
-                :options="[
-                  { value: 'default', label: 'Ask via UI (default)' },
-                  { value: 'acceptEdits', label: 'Auto-accept edits' },
-                  { value: 'plan', label: 'Plan only (read-only)' },
-                  { value: 'auto', label: 'Auto (classifier)' },
-                  { value: 'bypassPermissions', label: 'Bypass all permissions' },
-                ]"
-              />
+            <!-- Group 1: run defaults -->
+            <div class="space-y-4">
+              <div class="flex items-center gap-1.5 text-muted-foreground">
+                <Cpu class="h-3 w-3" :stroke-width="1.75" />
+                <span class="text-[11px] font-semibold uppercase tracking-wider">Run defaults</span>
+              </div>
+              <div class="space-y-1.5">
+                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Default Engine</label>
+                <AppSelect
+                  size="sm"
+                  v-model="settings.default_engine"
+                  :options="[
+                    { value: 'claude', label: 'claude' },
+                    { value: 'codex', label: 'codex' },
+                  ]"
+                />
+              </div>
+              <div class="space-y-1.5">
+                <div class="flex items-center justify-between">
+                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Default Claude model</label>
+                  <button
+                    class="inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer disabled:opacity-50"
+                    :disabled="modelCatalog.loading"
+                    title="Tải lại danh sách model từ tài khoản Claude"
+                    @click="modelCatalog.fetchClaude(true)"
+                  >
+                    <component :is="modelCatalog.loading ? Loader2 : RefreshCw" class="h-3 w-3" :class="{ 'animate-spin': modelCatalog.loading }" :stroke-width="1.75" />
+                    {{ modelCatalog.loading ? 'Đang tải…' : 'Làm mới' }}
+                  </button>
+                </div>
+                <AppSelect size="sm" v-model="settings.claude_model" :options="claudeModelOptions" />
+                <p v-if="modelCatalog.error" class="text-[11px] text-amber-500">Không tải được model động — dùng danh sách mặc định.</p>
+                <p v-else-if="modelCatalog.claudeDynamic.length" class="text-[11px] text-muted-foreground">Tự động cập nhật {{ modelCatalog.claudeDynamic.length }} model từ tài khoản.</p>
+              </div>
+              <div class="space-y-1.5">
+                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Default Codex model</label>
+                <AppSelect size="sm" v-model="settings.codex_model" :options="CODEX_MODEL_OPTIONS" />
+                <p class="text-[11px] text-muted-foreground">Codex không hỗ trợ liệt kê model động — danh sách này cố định.</p>
+              </div>
+              <div class="space-y-1.5">
+                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
+                  <ShieldAlert class="h-3 w-3" :stroke-width="1.75" />Default permission mode
+                </label>
+                <AppSelect
+                  size="sm"
+                  v-model="settings.default_permission_mode"
+                  :options="[
+                    { value: 'default', label: 'Ask via UI (default)' },
+                    { value: 'acceptEdits', label: 'Auto-accept edits' },
+                    { value: 'plan', label: 'Plan only (read-only)' },
+                    { value: 'auto', label: 'Auto (classifier)' },
+                    { value: 'bypassPermissions', label: 'Bypass all permissions' },
+                  ]"
+                />
+                <p class="text-[11px] text-muted-foreground leading-relaxed">
+                  How tool calls are gated (Claude &amp; Codex). "Ask via UI" surfaces each request in a modal;
+                  "Bypass all" skips the modal — fast, but unsafe outside trusted directories. You can still
+                  override engine, model and permission mode per run on the Run screen.
+                </p>
+              </div>
+            </div>
+
+            <div class="h-px bg-border" />
+
+            <!-- Group 2: translation of highlighted text -->
+            <div class="space-y-4">
+              <div class="flex items-center gap-1.5 text-muted-foreground">
+                <Sparkles class="h-3 w-3" :stroke-width="1.75" />
+                <span class="text-[11px] font-semibold uppercase tracking-wider">Translation</span>
+              </div>
               <p class="text-[11px] text-muted-foreground leading-relaxed">
-                Choose how tool calls are gated. Applies to both Claude and Codex runs. "Ask via UI" surfaces
-                each request in a modal so you can approve or deny it. "Bypass all" skips the modal entirely —
-                fast, but unsafe outside trusted directories.
+                Dùng cho tính năng dịch đoạn văn bản bôi đen trong màn Run AI.
               </p>
-              <p class="text-[11px] text-muted-foreground leading-relaxed">
-                For Codex this maps to its approval policy &amp; sandbox: <b>Plan</b> → read-only,
-                <b>Ask via UI</b> → workspace-write (untrusted: prompts for every command outside the
-                safe read-only allow-list, so Deny truly blocks it), <b>Auto-accept edits</b> →
-                workspace-write (approve on request), <b>Auto (classifier)</b> → workspace-write
-                (approve on request), <b>Bypass all</b> → full access.
-              </p>
+              <div class="space-y-1.5">
+                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Translate engine</label>
+                <AppSelect
+                  size="sm"
+                  v-model="settings.translate_engine"
+                  :options="[
+                    { value: 'claude', label: 'claude' },
+                    { value: 'codex', label: 'codex' },
+                  ]"
+                />
+              </div>
+              <div class="space-y-1.5">
+                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Translate model</label>
+                <AppSelect size="sm" v-model="settings.translate_model" :options="translateModelOptions" />
+                <p class="text-[11px] text-muted-foreground">"Default" → chọn model nhanh (Claude dùng Haiku) để dịch nhanh hơn.</p>
+              </div>
+              <div class="space-y-1.5">
+                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Target language</label>
+                <AppSelect size="sm" v-model="settings.translate_target_lang" :options="TRANSLATE_TARGET_OPTIONS" />
+              </div>
+              <div class="space-y-1.5">
+                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Translation style</label>
+                <AppSelect size="sm" v-model="settings.translate_style" :options="TRANSLATE_STYLE_OPTIONS" />
+              </div>
             </div>
         </Card>
 

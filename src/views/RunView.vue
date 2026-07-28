@@ -12,6 +12,7 @@ import { useGitlabAccountsStore } from '@/stores/gitlabAccounts'
 import { useServersStore, type ProjectServer } from '@/stores/servers'
 import { useAwsAccountsStore } from '@/stores/awsAccounts'
 import { useAppSettingsStore } from '@/stores/appSettings'
+import { useModelCatalogStore } from '@/stores/modelCatalog'
 import { useUILayoutStore } from '@/stores/uiLayout'
 import { invoke } from '@/lib/tauri'
 import { openUrl } from '@tauri-apps/plugin-opener'
@@ -26,10 +27,11 @@ import {
   ImagePlus, X, Paperclip,
   ShieldQuestion, MessageCircleQuestion,
   Pin, PinOff, Pencil, Check, Github, Gitlab,
-  ClipboardCopy, ScrollText, HardDrive, Cloud, Radio
+  ClipboardCopy, ScrollText, HardDrive, Cloud, Radio, Languages
 } from 'lucide-vue-next'
 import AppSelect from '@/components/AppSelect.vue'
 import StreamLog from '@/components/StreamLog.vue'
+import TranslatePopover from '@/components/TranslatePopover.vue'
 import MentionedFiles from '@/components/MentionedFiles.vue'
 import ContextMeter from '@/components/ContextMeter.vue'
 import { mergeContextModel } from '@/lib/contextLimits'
@@ -68,6 +70,7 @@ const glStore = useGitlabAccountsStore()
 const serversStore = useServersStore()
 const awsStore = useAwsAccountsStore()
 const appSettings = useAppSettingsStore()
+const modelCatalog = useModelCatalogStore()
 const uiLayout = useUILayoutStore()
 const { confirm } = useConfirm()
 const { toast } = useToast()
@@ -191,8 +194,12 @@ function syncLoadedRunEngine(engine: string) {
 // Effective engine for the next start/handoff (selector value, else default).
 const effectiveEngine = computed(() => resolveEngineChoice(engineOverride.value))
 // Model choices depend on the engine. Empty value = let the engine/setting decide.
-// Option tables live in @/lib/engineOptions (shared with the remote controller).
-const modelOptions = computed(() => MODEL_OPTIONS[effectiveEngine.value] ?? MODEL_OPTIONS.claude)
+// Option tables live in @/lib/engineOptions (shared with the remote controller);
+// for Claude we augment them with models discovered from the account.
+const modelOptions = computed(() => {
+  const base = MODEL_OPTIONS[effectiveEngine.value] ?? MODEL_OPTIONS.claude
+  return effectiveEngine.value === 'claude' ? modelCatalog.mergedClaudeOptions(base) : base
+})
 // Reset the model when switching to an engine that doesn't offer the current pick.
 watch(effectiveEngine, () => {
   if (!modelOptions.value.some(o => o.value === modelOverride.value)) modelOverride.value = ''
@@ -443,6 +450,9 @@ const showResult = ref(true)
 const contentVisible = computed(() => !uiLayout.focusMode && !currentIsSession.value && showContent.value)
 const resultVisible = computed(() => currentIsSession.value || showResult.value)
 const showResizeHandle = computed(() => contentVisible.value && resultVisible.value)
+// No run is selected AND the project has none — hide the Content / AI Result
+// split entirely and show a single centered "No sessions yet" empty state.
+const noSession = computed(() => !currentRunId.value && runsStore.runs.length === 0)
 const contentWidth = computed(() => (showResizeHandle.value ? leftWidthPct.value + '%' : '100%'))
 const resultWidth = computed(() => (showResizeHandle.value ? 100 - leftWidthPct.value + '%' : '100%'))
 
@@ -543,6 +553,9 @@ function onOutputScroll() {
   if (outputEl.value && !pointerDownInOutput.value) {
     stickToBottom.value = isNearBottom(outputEl.value)
   }
+  // The floating translate button is anchored to a viewport rect that scrolling
+  // invalidates — hide it (the popover, once open, dismisses on its own).
+  clearTranslateTrigger()
   captureScrollAnchor()
 }
 
@@ -636,6 +649,50 @@ function hasOutputSelection() {
   )
 }
 
+// ── Translate selection ─────────────────────────────────────────────────────
+// Drag-selecting text inside the AI-result output (live or history) surfaces a
+// small floating "Dịch" button; clicking it opens a TranslatePopover that calls
+// the one-shot `translate_text` backend command. Detection is a window mouseup
+// listener that checks the selection lands inside the output/history container.
+const translateTrigger = ref<{ text: string; x: number; y: number } | null>(null)
+const activeTranslation = ref<{ text: string; x: number; y: number } | null>(null)
+const defaultTranslateLang = computed(() => appSettings.settings?.translate_target_lang || 'vi')
+
+function clearTranslateTrigger() {
+  translateTrigger.value = null
+}
+
+function nodeInOutput(node: Node | null): boolean {
+  if (!node) return false
+  return !!outputEl.value?.contains(node) || !!historyEl.value?.contains(node)
+}
+
+function onSelectionMouseUp() {
+  const sel = window.getSelection()
+  if (!sel || sel.isCollapsed) { translateTrigger.value = null; return }
+  const text = sel.toString().trim()
+  if (text.length < 2) { translateTrigger.value = null; return }
+  if (!nodeInOutput(sel.anchorNode) && !nodeInOutput(sel.focusNode)) {
+    translateTrigger.value = null
+    return
+  }
+  let rect: DOMRect | null = null
+  try { rect = sel.getRangeAt(0).getBoundingClientRect() } catch { rect = null }
+  if (!rect || (rect.width === 0 && rect.height === 0)) { translateTrigger.value = null; return }
+  translateTrigger.value = { text, x: rect.left, y: rect.bottom + 6 }
+}
+
+function openTranslate() {
+  const t = translateTrigger.value
+  if (!t) return
+  activeTranslation.value = { ...t }
+  translateTrigger.value = null
+}
+
+function closeTranslate() {
+  activeTranslation.value = null
+}
+
 // Keep the live output pinned to the bottom as new entries/lines arrive for
 // the focused, running run — but only while the user is parked at the bottom
 // and not in the middle of selecting/clicking inside the output.
@@ -671,6 +728,8 @@ watch(
 watch(currentRunId, (id) => {
   stickToBottom.value = true
   scrollOutputToBottom()
+  clearTranslateTrigger()
+  closeTranslate()
   // Keep the URL in sync with the selected run. Selecting a run from the History
   // list sets `currentRunId` locally but the route would otherwise stay at
   // `/projects/:projectId` with no runId — so a reload/remount (app backgrounding
@@ -701,6 +760,9 @@ watch(projectId, () => {
 onMounted(async () => {
   loadMarkdown()
   nextTick(autoResizeComposer)
+  // Discover the account's Claude models so the composer's model picker includes
+  // any newly-released ones (cached across views).
+  modelCatalog.fetchClaude().catch(() => {})
   if (projectStore.projects.length === 0) {
     await projectStore.fetchProjects()
   }
@@ -719,9 +781,17 @@ onMounted(async () => {
   ensureProjectFiles().catch(() => {})
   if (activeRunId.value) {
     await loadRunLog(activeRunId.value)
+  } else {
+    // Bare project route (no runId): reopen the most recent session so the user
+    // lands back on their last conversation instead of an empty screen. Runs are
+    // sorted pinned-first then created_at desc, so the first one is the latest.
+    // With no runs at all, the "chưa có session nào" empty state is shown.
+    const latest = runsStore.runs[0]
+    if (latest) await loadRunLog(latest.id)
   }
   window.addEventListener('focus', refreshViewedRunOnFocus)
   window.addEventListener('pointerup', onWindowPointerUp)
+  window.addEventListener('mouseup', onSelectionMouseUp)
   setupPopoutBridge()
 
   // Remote-control live indicator: reflect whether a phone is actively driving
@@ -802,6 +872,7 @@ onUnmounted(() => {
   outputRO = null
   window.removeEventListener('focus', refreshViewedRunOnFocus)
   window.removeEventListener('pointerup', onWindowPointerUp)
+  window.removeEventListener('mouseup', onSelectionMouseUp)
   sessionsChangedUnlisten?.()
   sessionsChangedUnlisten = null
   dragDropUnlisten?.()
@@ -958,7 +1029,7 @@ async function createSessionWithEngine(engine?: string) {
     await loadRunLog(run.id)
     nextTick(() => composerEl.value?.focus())
   } catch (e) {
-    alert(`Không tạo được session: ${String(e)}`)
+    toast.error(`Không tạo được session: ${String(e)}`)
   } finally {
     creatingSession.value = false
   }
@@ -1042,7 +1113,7 @@ async function doHandoff(targetEngine: string) {
       `Không lặp lại những việc đã hoàn thành.`
     await launchFreshRun(run.id, targetEngine, seed, [], override)
   } catch (e) {
-    alert(`Không thể chuyển engine: ${String(e)}`)
+    toast.error(`Không thể chuyển engine: ${String(e)}`)
   } finally {
     handingOff.value = false
     handoffTarget.value = null
@@ -1129,7 +1200,7 @@ function pushPendingImage(media_type: string, data: string) {
 function addImageFile(file: File | null) {
   if (!file || !file.type.startsWith('image/')) return
   if (file.size > MAX_IMAGE_BYTES) {
-    alert(`Ảnh quá lớn (tối đa ${MAX_IMAGE_BYTES / 1024 / 1024}MB).`)
+    toast.error(`Ảnh quá lớn (tối đa ${MAX_IMAGE_BYTES / 1024 / 1024}MB).`)
     return
   }
   const reader = new FileReader()
@@ -1152,7 +1223,7 @@ async function addDroppedPaths(paths: string[]) {
         const img = await invoke<{ media_type: string; data: string }>('read_file_base64', { path })
         pushPendingImage(img.media_type, img.data)
       } catch (e) {
-        alert(String(e))
+        toast.error(String(e))
       }
     } else {
       addPendingFile(path)
@@ -1805,7 +1876,7 @@ async function handleCancel() {
     live.setStatus(id, 'cancelled')
     setLocalRunStatus(id, 'cancelled')
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   }
 }
 
@@ -1875,8 +1946,9 @@ async function commitRename(runId: string) {
   }
   try {
     await runsStore.renameRun(runId, title)
+    toast.success('Run renamed')
   } catch (err) {
-    alert(String(err))
+    toast.error(String(err))
   } finally {
     cancelRename()
   }
@@ -1885,10 +1957,12 @@ async function commitRename(runId: string) {
 async function handleTogglePin(run: RunRecord, e?: MouseEvent) {
   e?.stopPropagation()
   pinningRunId.value = run.id
+  const willPin = !run.pinned
   try {
-    await runsStore.setRunPinned(run.id, !run.pinned)
+    await runsStore.setRunPinned(run.id, willPin)
+    toast.success(willPin ? 'Run pinned' : 'Run unpinned')
   } catch (err) {
-    alert(String(err))
+    toast.error(String(err))
   } finally {
     pinningRunId.value = null
   }
@@ -1929,8 +2003,9 @@ async function handleDeleteRun(runId: string, e?: MouseEvent) {
     if (activeRunId.value === runId) {
       router.replace(`/projects/${projectId.value}`)
     }
+    toast.success('Run deleted')
   } catch (err) {
-    alert(String(err))
+    toast.error(String(err))
   } finally {
     deletingRunId.value = null
   }
@@ -1950,8 +2025,9 @@ async function handleClearAllRuns() {
     if (activeRunId.value) {
       router.replace(`/projects/${projectId.value}`)
     }
+    toast.success('All runs deleted')
   } catch (err) {
-    alert(String(err))
+    toast.error(String(err))
   } finally {
     clearingAll.value = false
   }
@@ -2039,7 +2115,7 @@ async function handleOpenInVscode() {
       : null
     await projectStore.openInVscode(project.value.path, run?.input_path ?? undefined)
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   }
 }
 
@@ -2048,7 +2124,7 @@ async function handleOpenInFolder() {
   try {
     await projectStore.openInFolder(project.value.path)
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   }
 }
 
@@ -2058,7 +2134,7 @@ async function handleOpenInTerminal() {
     const settings = await invoke<{ terminal_app: string }>('get_settings')
     await projectStore.openInTerminal(project.value.path, settings.terminal_app)
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   }
 }
 
@@ -2315,7 +2391,7 @@ function handleRefInput(val: string) {
           </div>
           <div v-if="runsStore.loading" class="px-4 py-3 text-xs text-muted-foreground">Loading…</div>
           <div v-else-if="runsStore.runs.length === 0" class="px-4 py-6 text-center text-xs text-muted-foreground">
-            No runs yet
+            No sessions yet
           </div>
           <div
             v-else
@@ -2502,7 +2578,7 @@ function handleRefInput(val: string) {
         <!-- View toggles: show Content, AI Result, or both. Hidden for
              standalone sessions (they have no issue/PR Content). -->
         <div
-          v-if="!currentIsSession && !uiLayout.focusMode"
+          v-if="!currentIsSession && !uiLayout.focusMode && !noSession"
           class="flex items-center gap-1 px-3 py-1.5 border-b border-border bg-card/40 shrink-0"
         >
           <span class="text-[11px] font-mono text-foreground/55 mr-1">View</span>
@@ -2525,8 +2601,25 @@ function handleRefInput(val: string) {
             AI Result
           </button>
         </div>
+        <!-- No sessions yet: hide the Content / AI Result panels entirely and
+             show a single centered empty state. -->
+        <div v-if="noSession" class="flex-1 flex items-center justify-center p-6">
+          <div class="text-center max-w-xs">
+            <MessageSquare class="h-10 w-10 text-foreground/20 mx-auto mb-4" :stroke-width="1" />
+            <p class="text-sm font-medium text-foreground/70 mb-1.5">No sessions yet</p>
+            <p class="text-xs text-foreground/40 leading-relaxed mb-4">
+              Create a new session to start working with AI in this project.
+            </p>
+            <Button :disabled="creatingSession" @click="handleNewSession">
+              <MessageSquare class="h-3.5 w-3.5" :stroke-width="2" />
+              {{ creatingSession ? 'Creating…' : 'New session' }}
+            </Button>
+          </div>
+        </div>
+
         <!-- Split container -->
         <div
+          v-else
           ref="splitContainerEl"
           class="flex-1 flex overflow-hidden min-h-0"
         >
@@ -2632,6 +2725,7 @@ function handleRefInput(val: string) {
               v-if="isViewingHistory"
               ref="historyEl"
               class="flex-1 min-h-0 overflow-auto p-4"
+              @scroll="clearTranslateTrigger"
             >
               <StreamLog
                 v-if="historyHasStream"
@@ -3073,6 +3167,32 @@ function handleRefInput(val: string) {
       :open="remoteModalOpen"
       :run-id="currentRunId"
       @close="remoteModalOpen = false; refreshRemoteActive()"
+    />
+
+    <!-- Floating "Dịch" trigger for a text selection in the AI-result output.
+         `mousedown.prevent` keeps the selection alive through the click. -->
+    <Teleport to="body">
+      <button
+        v-if="translateTrigger"
+        class="fixed z-[65] inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[11px] font-medium text-primary shadow-lg shadow-black/30 hover:bg-accent/60 transition-colors cursor-pointer"
+        :style="{ left: translateTrigger.x + 'px', top: translateTrigger.y + 'px' }"
+        title="Dịch đoạn đã chọn"
+        @mousedown.prevent
+        @click="openTranslate"
+      >
+        <Languages class="h-3 w-3" :stroke-width="1.75" />
+        Dịch
+      </button>
+    </Teleport>
+
+    <!-- Translation result popover -->
+    <TranslatePopover
+      v-if="activeTranslation"
+      :text="activeTranslation.text"
+      :x="activeTranslation.x"
+      :y="activeTranslation.y"
+      :initial-lang="defaultTranslateLang"
+      @close="closeTranslate"
     />
   </div>
 </template>

@@ -5,23 +5,22 @@ import { useProjectsStore, type AppliedSkill, type AppliedRule, type Repo } from
 import { useSkillsStore } from '@/stores/skills'
 import { useRulesStore } from '@/stores/rules'
 import { useMcpServersStore, type ProjectMcpServer } from '@/stores/mcpServers'
-import { useServersStore, type ProjectServer } from '@/stores/servers'
+import { useServersStore, type ProjectServer, type VpsServer } from '@/stores/servers'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import { useGitlabAccountsStore } from '@/stores/gitlabAccounts'
-import { useAwsAccountsStore, type AwsValidation } from '@/stores/awsAccounts'
+import { useAwsAccountsStore } from '@/stores/awsAccounts'
 import { useToolPermissionsStore } from '@/stores/toolPermissions'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import {
   Play, AlertTriangle, Puzzle, ScrollText, Server, Github, Gitlab, Cloud,
-  GitMerge, CheckCircle2, XCircle, Trash2, Plus, GitBranch, Code2, Settings, SquareTerminal, FolderOpen,
-  Rocket, ShieldCheck
+  GitMerge, CheckCircle2, XCircle, Trash2, Plus, GitBranch, Settings,
+  Rocket, ShieldCheck, Loader2
 } from 'lucide-vue-next'
 import { Button, Input, Card, Badge, AppSelect } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
-import { invoke } from '@/lib/tauri'
 
 const route = useRoute()
 const router = useRouter()
@@ -128,6 +127,7 @@ const ruleItems = computed(() =>
 const mcpServers = ref<ProjectMcpServer[]>([])
 const loadingMcp = ref(false)
 const savingMcp = ref(false)
+const togglingMcpId = ref<string | null>(null)
 // Warn (not block) when a legacy SSE server is enabled but the default engine is
 // Codex, which supports stdio + streamable HTTP MCP.
 const defaultIsCodex = computed(() => appSettings.settings?.default_engine === 'codex')
@@ -145,40 +145,27 @@ async function handleToggleMcpServer(server: ProjectMcpServer) {
   const next = !server.enabled_for_project
   server.enabled_for_project = next
   savingMcp.value = true
+  togglingMcpId.value = server.id
   try {
     const ids = mcpServers.value.filter(s => s.enabled_for_project).map(s => s.id)
     await mcpStore.setForProject(projectId.value, ids)
+    toast.success('Saved')
   } catch (e) {
     server.enabled_for_project = !next
-    alert(String(e))
+    toast.error(String(e))
   } finally {
     savingMcp.value = false
+    togglingMcpId.value = null
   }
 }
 
-// --- Deploy: per-project VPS mapping (role-based) ---
+// --- Deploy: per-project VPS enable/disable (simple on/off, no roles) ---
 const projectServers = ref<ProjectServer[]>([])
 const loadingDeploy = ref(false)
-const newDeployServerId = ref('')
-const newDeployRole = ref('production')
-const addingDeploy = ref(false)
-const removingDeployKey = ref<string | null>(null)
+const togglingServerId = ref<string | null>(null)
 
-// Every managed VPS the user can pick from (loaded from the servers store).
-const availableServerOptions = computed(() => [
-  { value: '', label: 'Select a VPS…' },
-  ...serversStore.items.map(s => ({
-    value: s.id,
-    label: `${s.label} (${s.username}@${s.host}:${s.port})`,
-  })),
-])
-
-// UI-suggested roles (BR-101: no hard whitelist; the free-typed role is also
-// accepted server-side, but the select covers the common cases).
-const deployRoleOptions = [
-  { value: 'staging', label: 'staging' },
-  { value: 'production', label: 'production' },
-]
+// Set of VPS ids currently enabled (mapped) for this project.
+const enabledServerIds = computed(() => new Set(projectServers.value.map(s => s.id)))
 
 async function loadProjectServers() {
   loadingDeploy.value = true
@@ -189,32 +176,27 @@ async function loadProjectServers() {
   }
 }
 
-async function handleAddDeployServer() {
-  const serverId = newDeployServerId.value
-  if (!serverId) return
-  addingDeploy.value = true
+// Toggle a VPS on/off for this project. Enabling maps it with the default role;
+// disabling removes every role mapping the server has for the project.
+async function handleToggleDeployServer(server: VpsServer) {
+  if (togglingServerId.value) return
+  togglingServerId.value = server.id
+  const isEnabled = enabledServerIds.value.has(server.id)
   try {
-    await serversStore.mapToProject(projectId.value, serverId, newDeployRole.value)
-    newDeployServerId.value = ''
-    newDeployRole.value = 'production'
+    if (isEnabled) {
+      const mappings = projectServers.value.filter(s => s.id === server.id)
+      for (const m of mappings) {
+        await serversStore.unmap(projectId.value, m.id, m.role)
+      }
+    } else {
+      await serversStore.mapToProject(projectId.value, server.id, '')
+    }
     await loadProjectServers()
+    toast.success('Saved')
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   } finally {
-    addingDeploy.value = false
-  }
-}
-
-async function handleRemoveDeployServer(server: ProjectServer) {
-  const key = `${server.id}:${server.role}`
-  removingDeployKey.value = key
-  try {
-    await serversStore.unmap(projectId.value, server.id, server.role)
-    await loadProjectServers()
-  } catch (e) {
-    alert(String(e))
-  } finally {
-    removingDeployKey.value = null
+    togglingServerId.value = null
   }
 }
 
@@ -236,16 +218,13 @@ async function handleToggleRule(rule: { id: string; applied: boolean }) {
       await projectStore.applyRule(projectId.value, rule.id)
     }
     await loadAppliedRules()
+    toast.success('Saved')
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   } finally {
     togglingRuleId.value = null
   }
 }
-
-const accountValidation = ref<{ username: string; scopes: string[]; has_repo_scope: boolean } | null>(null)
-const validating = ref(false)
-const validationError = ref<string | null>(null)
 
 const linkedAccountId = computed(() => project.value?.github_account_id ?? null)
 const linkedAccount = computed(() => ghStore.accounts.find(a => a.id === linkedAccountId.value) ?? null)
@@ -258,34 +237,15 @@ const accountOptions = computed(() => [
 ])
 
 async function handleSelectAccount(accountId: string) {
-  accountValidation.value = null
-  validationError.value = null
   try {
     await projectStore.setProjectAccount(projectId.value, accountId || null)
+    toast.success('GitHub account linked')
   } catch (e) {
-    alert(String(e))
-  }
-}
-
-async function handleValidateAccount() {
-  if (!linkedAccountId.value) return
-  validating.value = true
-  accountValidation.value = null
-  validationError.value = null
-  try {
-    accountValidation.value = await ghStore.validate(linkedAccountId.value)
-  } catch (e) {
-    validationError.value = String(e)
-  } finally {
-    validating.value = false
+    toast.error(String(e))
   }
 }
 
 // --- GitLab account linking (mirror of GitHub) ---
-const gitlabValidation = ref<{ username: string; email: string | null; scopes: string[] } | null>(null)
-const validatingGitlab = ref(false)
-const gitlabValidationError = ref<string | null>(null)
-
 const linkedGitlabAccountId = computed(() => project.value?.gitlab_account_id ?? null)
 const linkedGitlabAccount = computed(
   () => glStore.accounts.find(a => a.id === linkedGitlabAccountId.value) ?? null,
@@ -299,34 +259,15 @@ const gitlabAccountOptions = computed(() => [
 ])
 
 async function handleSelectGitlabAccount(accountId: string) {
-  gitlabValidation.value = null
-  gitlabValidationError.value = null
   try {
     await projectStore.setProjectGitlabAccount(projectId.value, accountId || null)
+    toast.success('GitLab account linked')
   } catch (e) {
-    alert(String(e))
-  }
-}
-
-async function handleValidateGitlabAccount() {
-  if (!linkedGitlabAccountId.value) return
-  validatingGitlab.value = true
-  gitlabValidation.value = null
-  gitlabValidationError.value = null
-  try {
-    gitlabValidation.value = await glStore.validate(linkedGitlabAccountId.value)
-  } catch (e) {
-    gitlabValidationError.value = String(e)
-  } finally {
-    validatingGitlab.value = false
+    toast.error(String(e))
   }
 }
 
 // --- AWS account linking (one account per project, mirroring Git accounts) ---
-const awsValidation = ref<AwsValidation | null>(null)
-const validatingAws = ref(false)
-const awsValidationError = ref<string | null>(null)
-
 const linkedAwsAccountId = computed(() => project.value?.aws_account_id ?? null)
 const linkedAwsAccount = computed(
   () => awsStore.accounts.find(a => a.id === linkedAwsAccountId.value) ?? null,
@@ -340,26 +281,11 @@ const awsAccountOptions = computed(() => [
 ])
 
 async function handleSelectAwsAccount(accountId: string) {
-  awsValidation.value = null
-  awsValidationError.value = null
   try {
     await projectStore.setProjectAwsAccount(projectId.value, accountId || null)
+    toast.success('AWS account linked')
   } catch (e) {
-    alert(String(e))
-  }
-}
-
-async function handleValidateAwsAccount() {
-  if (!linkedAwsAccountId.value) return
-  validatingAws.value = true
-  awsValidation.value = null
-  awsValidationError.value = null
-  try {
-    awsValidation.value = await awsStore.validate(linkedAwsAccountId.value)
-  } catch (e) {
-    awsValidationError.value = String(e)
-  } finally {
-    validatingAws.value = false
+    toast.error(String(e))
   }
 }
 
@@ -546,8 +472,9 @@ async function handleRemoveRepo(id: string) {
   try {
     await projectStore.removeRepo(id)
     await loadRepos()
+    toast.success('Repo removed')
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   }
 }
 
@@ -575,8 +502,9 @@ async function handleAddRepo() {
     newRepoGitlabPath.value = ''
     newRepoGitlabId.value = ''
     await loadRepos()
+    toast.success('Repo added')
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   } finally {
     addingRepo.value = false
   }
@@ -591,40 +519,14 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
       await projectStore.applySkill(projectId.value, skill.id)
     }
     await loadAppliedSkills()
+    toast.success('Saved')
   } catch (e) {
-    alert(String(e))
+    toast.error(String(e))
   } finally {
     togglingSkillId.value = null
   }
 }
 
-async function handleOpenInVscode() {
-  if (!project.value) return
-  try {
-    await projectStore.openInVscode(project.value.path)
-  } catch (e) {
-    alert(String(e))
-  }
-}
-
-async function handleOpenInFolder() {
-  if (!project.value) return
-  try {
-    await projectStore.openInFolder(project.value.path)
-  } catch (e) {
-    alert(String(e))
-  }
-}
-
-async function handleOpenInTerminal() {
-  if (!project.value) return
-  try {
-    const settings = await invoke<{ terminal_app: string }>('get_settings')
-    await projectStore.openInTerminal(project.value.path, settings.terminal_app)
-  } catch (e) {
-    alert(String(e))
-  }
-}
 </script>
 
 <template>
@@ -640,30 +542,6 @@ async function handleOpenInTerminal() {
         >{{ project.path }}</span>
       </div>
       <div class="flex items-center gap-2 shrink-0">
-        <Button
-          variant="outline"
-          title="Open project folder in VS Code"
-          @click="handleOpenInVscode"
-        >
-          <Code2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-          VS Code
-        </Button>
-        <Button
-          variant="outline"
-          title="Open project folder"
-          @click="handleOpenInFolder"
-        >
-          <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" />
-          Folder
-        </Button>
-        <Button
-          variant="outline"
-          title="Open project folder in terminal"
-          @click="handleOpenInTerminal"
-        >
-          <SquareTerminal class="h-3.5 w-3.5" :stroke-width="1.75" />
-          Terminal
-        </Button>
         <Button @click="goToRun">
           <Play class="h-3.5 w-3.5" :stroke-width="2" />
           Run AI
@@ -907,11 +785,11 @@ async function handleOpenInTerminal() {
             <!-- Loading -->
             <div v-if="loadingSkills" class="divide-y divide-border/50">
               <div v-for="i in 2" :key="i" class="flex items-center gap-3 px-4 py-3">
-                <div class="h-4 w-4 rounded bg-muted animate-pulse shrink-0" />
                 <div class="flex-1 space-y-1.5">
                   <div class="h-2.5 w-24 bg-muted animate-pulse rounded" />
                   <div class="h-2 w-36 bg-muted animate-pulse rounded" />
                 </div>
+                <div class="h-6 w-11 rounded-full bg-muted animate-pulse shrink-0" />
               </div>
             </div>
 
@@ -925,30 +803,13 @@ async function handleOpenInTerminal() {
               to enable it here.
             </div>
 
-            <!-- Skill checklist -->
+            <!-- Skill list with on/off toggles -->
             <div v-else class="divide-y divide-border/50">
-              <button
+              <div
                 v-for="skill in skillItems"
                 :key="skill.id"
-                type="button"
-                class="w-full flex items-center gap-3 px-4 py-3 text-left transition-colors cursor-pointer disabled:opacity-50"
-                :class="skill.applied ? 'bg-primary/8 hover:bg-primary/12' : 'hover:bg-accent/60'"
-                :disabled="togglingSkillId === skill.id"
-                @click="handleToggleSkill(skill)"
+                class="flex items-center gap-3 px-4 py-3"
               >
-                <!-- Checkbox indicator -->
-                <div
-                  class="shrink-0 flex h-4 w-4 items-center justify-center rounded border transition-colors"
-                  :class="skill.applied ? 'bg-primary border-primary' : 'border-border bg-background'"
-                >
-                  <svg
-                    v-if="skill.applied"
-                    class="h-2.5 w-2.5 text-primary-foreground"
-                    viewBox="0 0 12 12" fill="none"
-                  >
-                    <path d="M2 6l3 3 5-5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
-                  </svg>
-                </div>
                 <div class="flex-1 min-w-0">
                   <div class="flex items-center gap-1.5 flex-wrap">
                     <p class="text-xs font-medium font-mono truncate">{{ skill.name }}</p>
@@ -960,7 +821,28 @@ async function handleOpenInTerminal() {
                   </div>
                   <p v-if="skill.description" class="text-[10px] text-muted-foreground truncate mt-0.5">{{ skill.description }}</p>
                 </div>
-              </button>
+                <button
+                  type="button"
+                  role="switch"
+                  :aria-checked="skill.applied"
+                  :disabled="togglingSkillId !== null"
+                  class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
+                  :class="skill.applied ? 'bg-primary' : 'bg-muted'"
+                  :title="skill.applied ? 'Disable for this project' : 'Enable for this project'"
+                  @click="handleToggleSkill(skill)"
+                >
+                  <span
+                    class="inline-flex h-4 w-4 transform items-center justify-center rounded-full bg-white shadow transition-transform"
+                    :class="skill.applied ? 'translate-x-6' : 'translate-x-1'"
+                  >
+                    <Loader2
+                      v-if="togglingSkillId === skill.id"
+                      class="h-3 w-3 animate-spin text-primary"
+                      :stroke-width="2.5"
+                    />
+                  </span>
+                </button>
+              </div>
             </div>
           </Card>
         </div>
@@ -981,11 +863,11 @@ async function handleOpenInTerminal() {
             <!-- Loading -->
             <div v-if="loadingRules" class="divide-y divide-border/50">
               <div v-for="i in 2" :key="i" class="flex items-center gap-3 px-4 py-3">
-                <div class="h-4 w-4 rounded bg-muted animate-pulse shrink-0" />
                 <div class="flex-1 space-y-1.5">
                   <div class="h-2.5 w-24 bg-muted animate-pulse rounded" />
                   <div class="h-2 w-36 bg-muted animate-pulse rounded" />
                 </div>
+                <div class="h-6 w-11 rounded-full bg-muted animate-pulse shrink-0" />
               </div>
             </div>
 
@@ -999,30 +881,13 @@ async function handleOpenInTerminal() {
               to enable it here.
             </div>
 
-            <!-- Rule checklist -->
+            <!-- Rule list with on/off toggles -->
             <div v-else class="divide-y divide-border/50">
-              <button
+              <div
                 v-for="rule in ruleItems"
                 :key="rule.id"
-                type="button"
-                class="w-full flex items-center gap-3 px-4 py-3 text-left transition-colors cursor-pointer disabled:opacity-50"
-                :class="rule.applied ? 'bg-primary/8 hover:bg-primary/12' : 'hover:bg-accent/60'"
-                :disabled="togglingRuleId === rule.id"
-                @click="handleToggleRule(rule)"
+                class="flex items-center gap-3 px-4 py-3"
               >
-                <!-- Checkbox indicator -->
-                <div
-                  class="shrink-0 flex h-4 w-4 items-center justify-center rounded border transition-colors"
-                  :class="rule.applied ? 'bg-primary border-primary' : 'border-border bg-background'"
-                >
-                  <svg
-                    v-if="rule.applied"
-                    class="h-2.5 w-2.5 text-primary-foreground"
-                    viewBox="0 0 12 12" fill="none"
-                  >
-                    <path d="M2 6l3 3 5-5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
-                  </svg>
-                </div>
                 <div class="flex-1 min-w-0">
                   <div class="flex items-center gap-1.5 flex-wrap">
                     <p class="text-xs font-medium font-mono truncate">{{ rule.name }}</p>
@@ -1034,7 +899,28 @@ async function handleOpenInTerminal() {
                   </div>
                   <p v-if="rule.description" class="text-[10px] text-muted-foreground truncate mt-0.5">{{ rule.description }}</p>
                 </div>
-              </button>
+                <button
+                  type="button"
+                  role="switch"
+                  :aria-checked="rule.applied"
+                  :disabled="togglingRuleId !== null"
+                  class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
+                  :class="rule.applied ? 'bg-primary' : 'bg-muted'"
+                  :title="rule.applied ? 'Disable for this project' : 'Enable for this project'"
+                  @click="handleToggleRule(rule)"
+                >
+                  <span
+                    class="inline-flex h-4 w-4 transform items-center justify-center rounded-full bg-white shadow transition-transform"
+                    :class="rule.applied ? 'translate-x-6' : 'translate-x-1'"
+                  >
+                    <Loader2
+                      v-if="togglingRuleId === rule.id"
+                      class="h-3 w-3 animate-spin text-primary"
+                      :stroke-width="2.5"
+                    />
+                  </span>
+                </button>
+              </div>
             </div>
           </Card>
         </div>
@@ -1066,11 +952,11 @@ async function handleOpenInTerminal() {
             <!-- Loading -->
             <div v-if="loadingMcp" class="divide-y divide-border/50">
               <div v-for="i in 2" :key="i" class="flex items-center gap-3 px-4 py-3">
-                <div class="h-4 w-4 rounded bg-muted animate-pulse shrink-0" />
                 <div class="flex-1 space-y-1.5">
                   <div class="h-2.5 w-24 bg-muted animate-pulse rounded" />
                   <div class="h-2 w-36 bg-muted animate-pulse rounded" />
                 </div>
+                <div class="h-6 w-11 rounded-full bg-muted animate-pulse shrink-0" />
               </div>
             </div>
 
@@ -1084,30 +970,13 @@ async function handleOpenInTerminal() {
               to enable it here.
             </div>
 
-            <!-- Server checklist -->
+            <!-- Server list with on/off toggles -->
             <div v-else class="divide-y divide-border/50">
-              <button
+              <div
                 v-for="server in mcpServers"
                 :key="server.id"
-                type="button"
-                class="w-full flex items-center gap-3 px-4 py-3 text-left transition-colors cursor-pointer disabled:opacity-50"
-                :class="server.enabled_for_project ? 'bg-primary/8 hover:bg-primary/12' : 'hover:bg-accent/60'"
-                :disabled="savingMcp"
-                @click="handleToggleMcpServer(server)"
+                class="flex items-center gap-3 px-4 py-3"
               >
-                <!-- Checkbox indicator -->
-                <div
-                  class="shrink-0 flex h-4 w-4 items-center justify-center rounded border transition-colors"
-                  :class="server.enabled_for_project ? 'bg-primary border-primary' : 'border-border bg-background'"
-                >
-                  <svg
-                    v-if="server.enabled_for_project"
-                    class="h-2.5 w-2.5 text-primary-foreground"
-                    viewBox="0 0 12 12" fill="none"
-                  >
-                    <path d="M2 6l3 3 5-5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
-                  </svg>
-                </div>
                 <div class="flex-1 min-w-0">
                   <div class="flex items-center gap-1.5 flex-wrap">
                     <p class="text-xs font-medium font-mono truncate">{{ server.name }}</p>
@@ -1123,18 +992,38 @@ async function handleOpenInTerminal() {
                   </div>
                   <p v-if="server.description" class="text-[10px] text-muted-foreground truncate mt-0.5">{{ server.description }}</p>
                 </div>
-              </button>
+                <button
+                  type="button"
+                  role="switch"
+                  :aria-checked="server.enabled_for_project"
+                  :disabled="savingMcp"
+                  class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
+                  :class="server.enabled_for_project ? 'bg-primary' : 'bg-muted'"
+                  :title="server.enabled_for_project ? 'Disable for this project' : 'Enable for this project'"
+                  @click="handleToggleMcpServer(server)"
+                >
+                  <span
+                    class="inline-flex h-4 w-4 transform items-center justify-center rounded-full bg-white shadow transition-transform"
+                    :class="server.enabled_for_project ? 'translate-x-6' : 'translate-x-1'"
+                  >
+                    <Loader2
+                      v-if="togglingMcpId === server.id"
+                      class="h-3 w-3 animate-spin text-primary"
+                      :stroke-width="2.5"
+                    />
+                  </span>
+                </button>
+              </div>
             </div>
           </Card>
         </div>
 
-        <!-- Deploy tab (per-project VPS mapping by role) -->
+        <!-- Deploy tab (per-project VPS enable/disable) -->
         <div v-if="activeTab === 'deploy'" class="max-w-lg space-y-5">
-          <!-- Assigned servers -->
           <Card>
             <template #header>
               <Rocket class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-              <span class="text-xs font-semibold">Assigned VPS</span>
+              <span class="text-xs font-semibold">Deploy Targets</span>
               <span
                 v-if="projectServers.length > 0"
                 class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1 text-[10px] font-medium text-muted-foreground leading-none"
@@ -1145,100 +1034,69 @@ async function handleOpenInTerminal() {
             <!-- Loading -->
             <div v-if="loadingDeploy" class="divide-y divide-border/50">
               <div v-for="i in 2" :key="i" class="flex items-center gap-3 px-4 py-3">
-                <div class="h-4 w-4 rounded bg-muted animate-pulse shrink-0" />
                 <div class="flex-1 space-y-1.5">
                   <div class="h-2.5 w-24 bg-muted animate-pulse rounded" />
                   <div class="h-2 w-36 bg-muted animate-pulse rounded" />
                 </div>
+                <div class="h-6 w-11 rounded-full bg-muted animate-pulse shrink-0" />
               </div>
             </div>
 
-            <!-- Empty -->
+            <!-- No VPS defined -->
             <div
-              v-else-if="projectServers.length === 0"
+              v-else-if="serversStore.items.length === 0"
               class="px-4 py-6 text-center text-xs text-muted-foreground"
             >
-              No VPS assigned to this project yet. Add one below to enable deployments.
-            </div>
-
-            <!-- Assigned list -->
-            <div v-else class="divide-y divide-border/50">
-              <div
-                v-for="server in projectServers"
-                :key="`${server.id}:${server.role}`"
-                class="px-4 py-3"
-              >
-                <div class="flex items-center gap-3">
-                  <div class="flex-1 min-w-0">
-                    <div class="flex items-center gap-1.5 flex-wrap">
-                      <p class="text-xs font-medium truncate">{{ server.label }}</p>
-                      <Badge tone="primary" size="xs" class="shrink-0 uppercase tracking-wide">{{ server.role }}</Badge>
-                      <Badge v-if="server.has_passphrase" tone="neutral" size="xs" class="shrink-0">passphrase</Badge>
-                    </div>
-                    <p class="text-[10px] text-muted-foreground font-mono truncate mt-0.5">
-                      {{ server.username }}@{{ server.host }}:{{ server.port }}
-                    </p>
-                  </div>
-                  <Button
-                    variant="destructive-ghost"
-                    size="icon-sm"
-                    class="shrink-0"
-                    :disabled="removingDeployKey === `${server.id}:${server.role}`"
-                    title="Remove this mapping"
-                    @click="handleRemoveDeployServer(server)"
-                  >
-                    <Trash2 class="h-3 w-3" :stroke-width="1.75" />
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </Card>
-
-          <!-- Add mapping -->
-          <Card body-class="p-4 space-y-3">
-            <template #header>
-              <Plus class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-              <span class="text-xs font-semibold">Assign a VPS</span>
-            </template>
-
-            <div v-if="serversStore.items.length === 0" class="text-[11px] text-muted-foreground">
               No VPS defined yet.
               <RouterLink to="/servers" class="text-primary hover:underline">Add one</RouterLink>
-              to assign it here.
+              to enable deployments.
             </div>
-            <template v-else>
-              <div class="space-y-1.5">
-                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">VPS</label>
-                <AppSelect
-                  size="sm"
-                  :model-value="newDeployServerId"
-                  :options="availableServerOptions"
-                  @update:model-value="newDeployServerId = $event"
-                />
-              </div>
-              <div class="space-y-1.5">
-                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Role</label>
-                <AppSelect
-                  size="sm"
-                  :model-value="newDeployRole"
-                  :options="deployRoleOptions"
-                  @update:model-value="newDeployRole = $event"
-                />
-                <Input
-                  v-model="newDeployRole"
-                  type="text"
-                  size="sm"
-                  placeholder="Or type a custom role (empty → production)"
-                />
-              </div>
-              <Button
-                :disabled="addingDeploy || !newDeployServerId"
-                @click="handleAddDeployServer"
+
+            <!-- VPS list with on/off toggles -->
+            <div v-else class="divide-y divide-border/50">
+              <div
+                v-for="server in serversStore.items"
+                :key="server.id"
+                class="flex items-center gap-3 px-4 py-3"
               >
-                <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-                {{ addingDeploy ? 'Adding…' : 'Add' }}
-              </Button>
-            </template>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-1.5 flex-wrap">
+                    <p class="text-xs font-medium truncate">{{ server.label }}</p>
+                    <Badge
+                      v-if="enabledServerIds.has(server.id)"
+                      tone="primary"
+                      size="xs"
+                      class="shrink-0 uppercase tracking-wide"
+                    >enabled</Badge>
+                    <Badge v-if="server.has_passphrase" tone="neutral" size="xs" class="shrink-0">passphrase</Badge>
+                  </div>
+                  <p class="text-[10px] text-muted-foreground font-mono truncate mt-0.5">
+                    {{ server.username }}@{{ server.host }}:{{ server.port }}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  :aria-checked="enabledServerIds.has(server.id)"
+                  :disabled="togglingServerId !== null"
+                  class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
+                  :class="enabledServerIds.has(server.id) ? 'bg-primary' : 'bg-muted'"
+                  :title="enabledServerIds.has(server.id) ? 'Disable for this project' : 'Enable for this project'"
+                  @click="handleToggleDeployServer(server)"
+                >
+                  <span
+                    class="inline-flex h-4 w-4 transform items-center justify-center rounded-full bg-white shadow transition-transform"
+                    :class="enabledServerIds.has(server.id) ? 'translate-x-6' : 'translate-x-1'"
+                  >
+                    <Loader2
+                      v-if="togglingServerId === server.id"
+                      class="h-3 w-3 animate-spin text-primary"
+                      :stroke-width="2.5"
+                    />
+                  </span>
+                </button>
+              </div>
+            </div>
           </Card>
         </div>
 
@@ -1272,44 +1130,6 @@ async function handleOpenInTerminal() {
             <div v-if="linkedAccount" class="text-[11px] text-muted-foreground">
               <span v-if="linkedAccount.username">@{{ linkedAccount.username }}</span>
               <span v-if="linkedAccount.scopes.length"> · {{ linkedAccount.scopes.join(', ') }}</span>
-            </div>
-          </Card>
-
-          <!-- Validate section -->
-          <Card v-if="linkedAccountId" body-class="p-4 space-y-3">
-            <template #header>
-              <CheckCircle2 class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-              <span class="text-xs font-semibold">Validate Linked Account</span>
-            </template>
-            <Button
-              variant="outline"
-              :disabled="validating"
-              @click="handleValidateAccount"
-            >
-              {{ validating ? 'Validating…' : 'Validate' }}
-            </Button>
-            <div
-              v-if="accountValidation"
-              class="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-md text-xs"
-            >
-              <div class="flex items-center gap-1.5 text-emerald-500 font-medium mb-1">
-                <CheckCircle2 class="h-3.5 w-3.5" :stroke-width="2" />
-                Valid — {{ accountValidation.username }}
-              </div>
-              <p class="text-muted-foreground">Scopes: {{ accountValidation.scopes.join(', ') || 'none' }}</p>
-              <p v-if="!accountValidation.has_repo_scope" class="text-amber-500 mt-1 flex items-center gap-1">
-                <AlertTriangle class="h-3 w-3" :stroke-width="1.75" />
-                Missing repo/public_repo scope
-              </p>
-            </div>
-            <div
-              v-if="validationError"
-              class="p-3 bg-destructive/10 border border-destructive/20 rounded-md text-xs"
-            >
-              <div class="flex items-center gap-1.5 text-destructive">
-                <XCircle class="h-3.5 w-3.5" :stroke-width="1.75" />
-                {{ validationError }}
-              </div>
             </div>
           </Card>
         </div>
@@ -1346,40 +1166,6 @@ async function handleOpenInTerminal() {
               <span v-if="linkedGitlabAccount.host"> · {{ linkedGitlabAccount.host }}</span>
             </div>
           </Card>
-
-          <!-- Validate section -->
-          <Card v-if="linkedGitlabAccountId" body-class="p-4 space-y-3">
-            <template #header>
-              <CheckCircle2 class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-              <span class="text-xs font-semibold">Validate Linked Account</span>
-            </template>
-            <Button
-              variant="outline"
-              :disabled="validatingGitlab"
-              @click="handleValidateGitlabAccount"
-            >
-              {{ validatingGitlab ? 'Validating…' : 'Validate' }}
-            </Button>
-            <div
-              v-if="gitlabValidation"
-              class="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-md text-xs"
-            >
-              <div class="flex items-center gap-1.5 text-emerald-500 font-medium mb-1">
-                <CheckCircle2 class="h-3.5 w-3.5" :stroke-width="2" />
-                Valid — {{ gitlabValidation.username }}
-              </div>
-              <p v-if="gitlabValidation.email" class="text-muted-foreground">{{ gitlabValidation.email }}</p>
-            </div>
-            <div
-              v-if="gitlabValidationError"
-              class="p-3 bg-destructive/10 border border-destructive/20 rounded-md text-xs"
-            >
-              <div class="flex items-center gap-1.5 text-destructive">
-                <XCircle class="h-3.5 w-3.5" :stroke-width="1.75" />
-                {{ gitlabValidationError }}
-              </div>
-            </div>
-          </Card>
         </div>
 
         <!-- AWS tab -->
@@ -1414,40 +1200,6 @@ async function handleOpenInTerminal() {
               <span> · {{ linkedAwsAccount.region }}</span>
               <span v-if="linkedAwsAccount.account_id"> · {{ linkedAwsAccount.account_id }}</span>
               <span v-if="linkedAwsAccount.profile_name"> · {{ linkedAwsAccount.profile_name }}</span>
-            </div>
-          </Card>
-
-          <!-- Validate section -->
-          <Card v-if="linkedAwsAccountId" body-class="p-4 space-y-3">
-            <template #header>
-              <CheckCircle2 class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-              <span class="text-xs font-semibold">Validate Linked Account</span>
-            </template>
-            <Button
-              variant="outline"
-              :disabled="validatingAws"
-              @click="handleValidateAwsAccount"
-            >
-              {{ validatingAws ? 'Validating…' : 'Validate' }}
-            </Button>
-            <div
-              v-if="awsValidation"
-              class="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-md text-xs"
-            >
-              <div class="flex items-center gap-1.5 text-emerald-500 font-medium mb-1">
-                <CheckCircle2 class="h-3.5 w-3.5" :stroke-width="2" />
-                Valid — {{ awsValidation.account_id }}
-              </div>
-              <p class="text-muted-foreground truncate">{{ awsValidation.arn }}</p>
-            </div>
-            <div
-              v-if="awsValidationError"
-              class="p-3 bg-destructive/10 border border-destructive/20 rounded-md text-xs"
-            >
-              <div class="flex items-center gap-1.5 text-destructive">
-                <XCircle class="h-3.5 w-3.5" :stroke-width="1.75" />
-                {{ awsValidationError }}
-              </div>
             </div>
           </Card>
         </div>
