@@ -90,6 +90,17 @@ export const useRemoteControlStore = defineStore('remoteControl', () => {
   }
 
   /**
+   * Purge the entire audit log (owner-initiated, destructive). Returns the
+   * number of entries removed and clears the local mirror so the UI updates
+   * without waiting for a refresh.
+   */
+  async function clearAudit(): Promise<number> {
+    const removed = await invoke<number>('remote_clear_audit')
+    audit.value = []
+    return removed
+  }
+
+  /**
    * Persist the relay URL and (optionally) the auth token. An empty/omitted
    * token leaves the stored token unchanged (never in SQLite).
    */
@@ -153,6 +164,7 @@ export const useRemoteControlStore = defineStore('remoteControl', () => {
     refreshStatus,
     refreshAudit,
     refreshAll,
+    clearAudit,
     setConfig,
     enable,
     disable,

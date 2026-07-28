@@ -252,6 +252,14 @@ pub async fn remote_get_audit(
     audit::list_audit(db.inner(), limit).await
 }
 
+/// Purge the entire audit log (owner-initiated). Returns the number of entries
+/// removed so the UI can confirm. Destructive and irreversible — the frontend
+/// gates this behind an explicit confirmation.
+#[tauri::command]
+pub async fn remote_clear_audit(db: State<'_, Db>) -> Result<u64, String> {
+    audit::clear_audit(db.inner()).await
+}
+
 /// Current Remote Control status for the UI badge.
 #[tauri::command]
 pub async fn remote_status(
