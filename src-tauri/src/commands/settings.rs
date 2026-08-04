@@ -14,8 +14,12 @@ pub struct AppSettings {
     pub codex_model: String,
     pub extra_args: String,
     pub theme: String,
-    /// Named color palette: "default" | "ocean" | "forest" | "sunset" | "rose".
+    /// Named color palette: "default" | "ocean" | "forest" | "sunset" | "rose"
+    /// | "midautumn".
     pub color_theme: String,
+    /// Enable the animated decorative background for scenic themes (e.g. the
+    /// Full Moon night scene). "true" (default) | "false".
+    pub animated_background: String,
     pub analyze_issue_prompt: String,
     pub review_pr_prompt: String,
     pub default_permission_mode: String,
@@ -39,6 +43,9 @@ pub struct AppSettings {
     pub translate_target_lang: String,
     /// Translation style: "natural" | "literal" | "technical" | "formal" | "casual".
     pub translate_style: String,
+    /// Inject the built-in `devdy` MCP server (notes + session recall + project
+    /// context + VPS) into every run. "true" (default) | "false".
+    pub mcp_builtin_devdy_enabled: String,
 }
 
 #[tauri::command]
@@ -57,6 +64,7 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
         extra_args: "".to_string(),
         theme: "system".to_string(),
         color_theme: "default".to_string(),
+        animated_background: "true".to_string(),
         analyze_issue_prompt: "Please analyze the GitHub issue described in the file and create a detailed implementation plan.".to_string(),
         review_pr_prompt: "Please review the pull request described in the file according to the configured skills.".to_string(),
         default_permission_mode: "default".to_string(),
@@ -69,6 +77,7 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
         translate_model: "".to_string(),
         translate_target_lang: "vi".to_string(),
         translate_style: "natural".to_string(),
+        mcp_builtin_devdy_enabled: "true".to_string(),
     };
 
     for row in rows {
@@ -83,6 +92,7 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
             "extra_args" => settings.extra_args = value,
             "theme" => settings.theme = value,
             "color_theme" => settings.color_theme = value,
+            "animated_background" => settings.animated_background = value,
             "analyze_issue_prompt" => settings.analyze_issue_prompt = value,
             "review_pr_prompt" => settings.review_pr_prompt = value,
             "default_permission_mode" => settings.default_permission_mode = value,
@@ -95,6 +105,7 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
             "translate_model" => settings.translate_model = value,
             "translate_target_lang" => settings.translate_target_lang = value,
             "translate_style" => settings.translate_style = value,
+            "mcp_builtin_devdy_enabled" => settings.mcp_builtin_devdy_enabled = value,
             _ => {}
         }
     }

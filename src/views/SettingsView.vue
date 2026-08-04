@@ -5,7 +5,7 @@ import { invoke } from '@/lib/tauri'
 import {
   Cpu, Palette, FileText, ShieldAlert, Sparkles, Github, Gitlab, Cloud,
   CheckCircle2, AlertTriangle, Trash2, Plus, Pencil, Gauge, Radio,
-  RefreshCw, Loader2,
+  RefreshCw, Loader2, Server,
 } from 'lucide-vue-next'
 import { Button, Input, Textarea, Card, AppSelect } from '@/components/ui'
 import RemoteControlSettings from '@/components/remote/RemoteControlSettings.vue'
@@ -39,6 +39,7 @@ interface AppSettings {
   extra_args: string
   theme: string
   color_theme: string
+  animated_background: string
   analyze_issue_prompt: string
   review_pr_prompt: string
   default_permission_mode: string
@@ -51,6 +52,7 @@ interface AppSettings {
   translate_model: string
   translate_target_lang: string
   translate_style: string
+  mcp_builtin_devdy_enabled: string
 }
 
 const settings = ref<AppSettings>({
@@ -62,6 +64,7 @@ const settings = ref<AppSettings>({
   extra_args: '',
   theme: 'system',
   color_theme: 'default',
+  animated_background: 'true',
   analyze_issue_prompt: '',
   review_pr_prompt: '',
   default_permission_mode: 'default',
@@ -74,6 +77,7 @@ const settings = ref<AppSettings>({
   translate_model: '',
   translate_target_lang: 'vi',
   translate_style: 'natural',
+  mcp_builtin_devdy_enabled: 'true',
 })
 
 // Claude model choices = curated aliases + any newly-released models discovered
@@ -141,6 +145,7 @@ const SECTIONS = [
   { id: 'aws', label: 'AWS Accounts', icon: Cloud },
   { id: 'engine', label: 'Engine Paths', icon: Cpu },
   { id: 'ai', label: 'AI & Models', icon: Sparkles },
+  { id: 'mcp', label: 'MCP Server', icon: Server },
   { id: 'usage', label: 'Usage & Budget', icon: Gauge },
   { id: 'remote', label: 'Remote Control', icon: Radio },
   { id: 'prompts', label: 'Prompt Templates', icon: FileText },
@@ -627,9 +632,22 @@ watch(() => settings.value.color_theme, (t) => {
                   { value: 'forest', label: 'Forest' },
                   { value: 'sunset', label: 'Sunset' },
                   { value: 'rose', label: 'Rose' },
+                  { value: 'midautumn', label: 'Mid-Autumn Night (Đêm Trung Thu) 🎑' },
                 ]"
               />
               <p class="text-[11px] text-muted-foreground">Works with both light and dark mode.</p>
+            </div>
+            <div class="space-y-1.5">
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Animated Background</label>
+              <AppSelect
+                size="sm"
+                v-model="settings.animated_background"
+                :options="[
+                  { value: 'true', label: 'On' },
+                  { value: 'false', label: 'Off' },
+                ]"
+              />
+              <p class="text-[11px] text-muted-foreground">Adds a living scene (e.g. the Full Moon 🌕 night sky) for scenic themes. Automatically paused under reduced-motion.</p>
             </div>
             <div class="space-y-1.5">
               <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Terminal App</label>
@@ -642,6 +660,44 @@ watch(() => settings.value.color_theme, (t) => {
                 ]"
               />
             </div>
+        </Card>
+
+        <!-- MCP Server section -->
+        <Card v-show="activeSection === 'mcp'" body-class="p-4 space-y-4">
+          <template #header>
+            <Server class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
+            <span class="text-xs font-semibold">Built-in MCP Server</span>
+          </template>
+          <div class="space-y-1.5">
+            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+              Devdy MCP Server
+            </label>
+            <AppSelect
+              size="sm"
+              v-model="settings.mcp_builtin_devdy_enabled"
+              :options="[
+                { value: 'true', label: 'Enabled (recommended)' },
+                { value: 'false', label: 'Disabled' },
+              ]"
+            />
+            <p class="text-[11px] text-muted-foreground">
+              Injects a built-in <code>devdy</code> MCP server into every run so the AI can use your
+              own data while chatting — quick notes, cross-session recall, project context (file tree
+              &amp; git) and managed VPS. Tools appear as <code>mcp__devdy__*</code>; write &amp; remote
+              actions still go through the permission prompt. Takes effect on the next run.
+            </p>
+          </div>
+          <div class="rounded-md border border-border/60 bg-muted/30 p-3 space-y-2">
+            <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Available tools</div>
+            <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+              <span>📝 notes_list / read / create / update / append</span>
+              <span>🧠 sessions_recent / search / read</span>
+              <span>✅ todos_list / add / done</span>
+              <span>📁 project_info / file_tree</span>
+              <span>🔀 git_status / git_diff</span>
+              <span>🖥️ vps_list / vps_run</span>
+            </div>
+          </div>
         </Card>
 
         <!-- GitHub Accounts section -->

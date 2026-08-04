@@ -7,7 +7,7 @@ import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useUILayoutStore } from '@/stores/uiLayout'
-import { Puzzle, ScrollText, Server, HardDrive, FolderOpen, BarChart3, CalendarClock, ListTodo, Settings, Info } from 'lucide-vue-next'
+import { Puzzle, ScrollText, Server, HardDrive, FolderOpen, BarChart3, CalendarClock, ListTodo, StickyNote, Settings, Info } from 'lucide-vue-next'
 import PermissionNotifier from '@/components/PermissionNotifier.vue'
 import BudgetBadge from '@/components/BudgetBadge.vue'
 import WorkspaceTabs from '@/components/WorkspaceTabs.vue'
@@ -15,6 +15,7 @@ import ActiveRunsDock from '@/components/ActiveRunsDock.vue'
 import ActiveRemoteDock from '@/components/ActiveRemoteDock.vue'
 import FileViewerWindow from '@/views/FileViewerWindow.vue'
 import PermissionWindow from '@/views/PermissionWindow.vue'
+import ThemeDecorations from '@/components/ThemeDecorations.vue'
 import { ConfirmModal, ToastHost } from '@/components/ui'
 import { getVersion } from '@tauri-apps/api/app'
 
@@ -34,6 +35,17 @@ const live = useLiveRunsStore()
 
 const isRunRoute = computed(
   () => route.name === 'project-run' || route.name === 'project-run-detail',
+)
+
+// Color themes that ship an animated decorative background scene. When one is
+// active AND the user hasn't turned animations off, the app root is made
+// transparent so the body-level scene (ThemeDecorations) shows through.
+const SCENIC_THEMES = new Set(['midautumn'])
+const sceneTheme = computed(() => appSettings.settings?.color_theme ?? 'default')
+const sceneOn = computed(
+  () =>
+    SCENIC_THEMES.has(sceneTheme.value) &&
+    appSettings.settings?.animated_background !== 'false',
 )
 
 // Force a clean RunView remount only when the *project* changes (heavy stream
@@ -85,6 +97,7 @@ const navItems = [
   { path: '/stats', label: 'Stats', icon: BarChart3 },
   { path: '/work-digest', label: 'Digest', icon: CalendarClock },
   { path: '/todos', label: 'Todos', icon: ListTodo },
+  { path: '/notes', label: 'Notes', icon: StickyNote },
   { path: '/settings', label: 'Settings', icon: Settings },
   { path: '/about', label: 'About', icon: Info },
 ]
@@ -170,6 +183,10 @@ onMounted(async () => {
   <PermissionWindow v-else-if="isPermissionWindow" />
 
   <div v-else class="flex h-screen bg-background text-foreground overflow-hidden">
+    <!-- Animated decorative overlay for scenic themes (e.g. Full Moon 🌕).
+         Sits ABOVE the UI as a non-interactive, screen-blended light layer so it
+         stays visible over the app's opaque panels without blocking clicks. -->
+    <ThemeDecorations :active="sceneOn" :theme="sceneTheme" />
     <!-- Sidebar (hidden in focus mode, but only while in the run workspace so
          other routes like project settings keep their navigation) -->
     <aside v-if="!(uiLayout.focusMode && isRunRoute)" class="w-[220px] shrink-0 flex flex-col bg-sidebar border-r border-border/50">
