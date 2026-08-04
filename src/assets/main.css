@@ -289,6 +289,57 @@
     --ring: 340 85% 65%;
     --sidebar: 290 24% 8%;
   }
+
+  /* ===========================================================================
+   * Mid-Autumn Festival (Tết Trung Thu) theme — festive seasonal palette.
+   * ========================================================================= */
+
+  /* Mid-Autumn Night (Đêm Trung Thu) — warm festive palette: deep lantern-red
+   * base with a moon-gold accent (red + gold). */
+  [data-theme='midautumn']:not(.dark) {
+    --background: 32 55% 97%;
+    --foreground: 350 40% 14%;
+    --card: 0 0% 100%;
+    --card-foreground: 350 40% 14%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 350 40% 14%;
+    --primary: 36 90% 46%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 30 45% 93%;
+    --secondary-foreground: 350 40% 24%;
+    --muted: 30 45% 93%;
+    --muted-foreground: 348 18% 42%;
+    --accent: 38 75% 88%;
+    --accent-foreground: 28 65% 30%;
+    --destructive: 0 74% 45%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 32 34% 87%;
+    --input: 32 34% 87%;
+    --ring: 36 90% 46%;
+    --sidebar: 34 46% 96%;
+  }
+  [data-theme='midautumn'].dark {
+    --background: 350 42% 7%;
+    --foreground: 42 38% 96%;
+    --card: 351 34% 12%;
+    --card-foreground: 42 38% 96%;
+    --popover: 351 34% 12%;
+    --popover-foreground: 42 38% 96%;
+    --primary: 44 94% 62%;
+    --primary-foreground: 350 60% 10%;
+    --secondary: 350 26% 19%;
+    --secondary-foreground: 42 38% 96%;
+    --muted: 350 26% 19%;
+    --muted-foreground: 40 24% 79%;
+    --accent: 352 46% 30%;
+    --accent-foreground: 44 45% 96%;
+    --destructive: 6 82% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 350 24% 26%;
+    --input: 350 24% 26%;
+    --ring: 44 94% 62%;
+    --sidebar: 352 46% 5%;
+  }
 }
 
 @layer base {
