@@ -17,6 +17,7 @@ export interface AppSettings {
   extra_args: string
   theme: string
   color_theme: string
+  animated_background: string
   analyze_issue_prompt: string
   review_pr_prompt: string
   default_permission_mode: string
@@ -29,6 +30,7 @@ export interface AppSettings {
   translate_model: string
   translate_target_lang: string
   translate_style: string
+  mcp_builtin_devdy_enabled: string
 }
 
 export const useAppSettingsStore = defineStore('appSettings', () => {
