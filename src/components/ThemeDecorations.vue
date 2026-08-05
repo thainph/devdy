@@ -17,12 +17,29 @@
  * All animation auto-pauses under `prefers-reduced-motion` and when the window
  * is hidden.
  */
-import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 
 const props = defineProps<{ active: boolean; theme: string }>()
 
-// The single scenic theme (midautumn) shows every decorative group at once.
-const isScene = computed(() => props.active && props.theme === 'midautumn')
+// Track the app's dark mode by reading the `dark` class on <html> directly (not
+// via scoped CSS ancestor selectors, which don't reliably match Teleported
+// nodes). A MutationObserver keeps it reactive to any toggler (App, Settings,
+// system preference).
+const isDark = ref(document.documentElement.classList.contains('dark'))
+let darkObserver: MutationObserver | null = null
+onMounted(() => {
+  // Resync in case the `dark` class was applied between setup and mount.
+  isDark.value = document.documentElement.classList.contains('dark')
+  darkObserver = new MutationObserver(() => {
+    isDark.value = document.documentElement.classList.contains('dark')
+  })
+  darkObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
+})
+
+// The Mid-Autumn night scene renders only in dark mode (in light mode a
+// full-screen blended overlay over the app's glass panels washes out to white
+// in WebKit). All decorative groups show together.
+const isScene = computed(() => props.active && props.theme === 'midautumn' && isDark.value)
 const showMoon = isScene
 const showHanging = isScene
 const showRising = isScene
@@ -335,7 +352,7 @@ function stopFireworks() {
   if (ctx) ctx.clearRect(0, 0, window.innerWidth, window.innerHeight)
 }
 
-const fireworksActive = () => props.active && props.theme === 'midautumn'
+const fireworksActive = () => props.active && props.theme === 'midautumn' && isDark.value
 
 function onVisibility() {
   if (document.hidden) {
@@ -364,6 +381,7 @@ watch(
 onBeforeUnmount(() => {
   stopFireworks()
   document.removeEventListener('visibilitychange', onVisibility)
+  darkObserver?.disconnect()
 })
 </script>
 
@@ -451,7 +469,7 @@ onBeforeUnmount(() => {
 
     <!-- Fireworks canvas (fireworks / midautumn) -->
     <canvas
-      v-if="active && theme === 'midautumn'"
+      v-if="active && theme === 'midautumn' && isDark"
       ref="fwCanvas"
       class="fw-canvas"
       aria-hidden="true"
@@ -460,32 +478,16 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* Rendered only in dark mode (gated in JS via isDark — light mode is skipped to
+ * avoid the WebKit milky wash from a blended overlay over glass panels).
+ * `screen` blend makes the moon/lanterns/embers glow over the dark UI. */
 .scene {
   position: fixed;
   inset: 0;
   z-index: 30;
   pointer-events: none;
   overflow: hidden;
-}
-/* Blend so the scene only tints, never washing out the UI or hurting text:
- * - Dark UI: `screen` → elements add light (glowing moon/lanterns).
- * - Light UI: `multiply` → elements only darken/tint (whites vanish, text stays
- *   dark and readable), so no more white haze. */
-:global(html.dark) .scene {
   mix-blend-mode: screen;
-}
-:global(html:not(.dark)) .scene {
-  mix-blend-mode: multiply;
-}
-/* Light-mode moon: saturated gold (no white core, which would vanish under
- * multiply) so it still reads as a warm corner glow. */
-:global(html:not(.dark)) .moon {
-  background: radial-gradient(
-    circle at 42% 42%,
-    hsl(45 95% 58% / 0.55),
-    hsl(38 92% 50% / 0.38) 48%,
-    hsl(38 90% 50% / 0) 72%
-  );
 }
 
 /* --- Moon (top-right corner glow) --------------------------------------- */
@@ -614,6 +616,7 @@ onBeforeUnmount(() => {
 }
 
 /* --- Fireworks canvas ---------------------------------------------------- */
+/* Only mounted in dark mode (gated in JS via isDark). */
 .fw-canvas {
   position: fixed;
   inset: 0;
@@ -621,9 +624,6 @@ onBeforeUnmount(() => {
   height: 100%;
   z-index: 30;
   pointer-events: none;
-}
-:global(html:not(.dark)) .fw-canvas {
-  opacity: 0.75;
 }
 
 /* --- Lantern scene: hanging swaying lanterns + embers -------------------- */
