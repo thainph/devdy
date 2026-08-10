@@ -365,6 +365,30 @@ pub(crate) async fn start_run_inner(
             let (mcp, _skipped) =
                 crate::commands::mcp::resolve_project_mcp_servers(&db_pool, &project_id, "claude")
                     .await;
+            // Add the built-in `devdy` MCP server (notes + recall + project + VPS)
+            // unless disabled in settings.
+            let mcp = if crate::commands::mcp::builtin_devdy_enabled(&db_pool).await {
+                crate::commands::mcp::with_builtin_devdy(
+                    mcp,
+                    &node_bin,
+                    &crate::runs::sidecar::resolve_mcp_sidecar_script(&app),
+                    &crate::runs::sidecar::resolve_db_path(&app),
+                    &project_id,
+                    &project_path,
+                )
+            } else {
+                mcp
+            };
+            // Add the built-in `gdrive` + `gmail` MCP servers when a Google
+            // account is connected (no-op otherwise).
+            let mcp = crate::commands::mcp::with_builtin_google(
+                &db_pool,
+                mcp,
+                &node_bin,
+                &crate::runs::sidecar::resolve_mcp_script(&app, "gdrive.mjs"),
+                &crate::runs::sidecar::resolve_mcp_script(&app, "gmail.mjs"),
+            )
+            .await;
             if !mcp.is_null() {
                 options["mcpServers"] = mcp;
             }
@@ -452,6 +476,26 @@ pub(crate) async fn start_run_inner(
     // Codex supports stdio + streamable HTTP; legacy SSE servers land in `skipped`.
     let (codex_mcp, mcp_skipped) =
         crate::commands::mcp::resolve_project_mcp_servers(&db_pool, &project_id, "codex").await;
+    let codex_mcp = if crate::commands::mcp::builtin_devdy_enabled(&db_pool).await {
+        crate::commands::mcp::with_builtin_devdy(
+            codex_mcp,
+            &node_bin,
+            &crate::runs::sidecar::resolve_mcp_sidecar_script(&app),
+            &crate::runs::sidecar::resolve_db_path(&app),
+            &project_id,
+            &project_path,
+        )
+    } else {
+        codex_mcp
+    };
+    let codex_mcp = crate::commands::mcp::with_builtin_google(
+        &db_pool,
+        codex_mcp,
+        &node_bin,
+        &crate::runs::sidecar::resolve_mcp_script(&app, "gdrive.mjs"),
+        &crate::runs::sidecar::resolve_mcp_script(&app, "gmail.mjs"),
+    )
+    .await;
     if !codex_mcp.is_null() {
         cmd.env("DEVDY_CODEX_MCP", codex_mcp.to_string());
     }
@@ -1906,6 +1950,26 @@ pub async fn resume_run(
         let (codex_mcp, _skipped) =
             crate::commands::mcp::resolve_project_mcp_servers(db.inner(), &project_id, "codex")
                 .await;
+        let codex_mcp = if crate::commands::mcp::builtin_devdy_enabled(db.inner()).await {
+            crate::commands::mcp::with_builtin_devdy(
+                codex_mcp,
+                &node_bin,
+                &crate::runs::sidecar::resolve_mcp_sidecar_script(&app),
+                &crate::runs::sidecar::resolve_db_path(&app),
+                &project_id,
+                &project_path,
+            )
+        } else {
+            codex_mcp
+        };
+        let codex_mcp = crate::commands::mcp::with_builtin_google(
+            db.inner(),
+            codex_mcp,
+            &node_bin,
+            &crate::runs::sidecar::resolve_mcp_script(&app, "gdrive.mjs"),
+            &crate::runs::sidecar::resolve_mcp_script(&app, "gmail.mjs"),
+        )
+        .await;
         if !codex_mcp.is_null() {
             cmd.env("DEVDY_CODEX_MCP", codex_mcp.to_string());
         }
@@ -1930,6 +1994,26 @@ pub async fn resume_run(
         let (mcp, _skipped) =
             crate::commands::mcp::resolve_project_mcp_servers(db.inner(), &project_id, "claude")
                 .await;
+        let mcp = if crate::commands::mcp::builtin_devdy_enabled(db.inner()).await {
+            crate::commands::mcp::with_builtin_devdy(
+                mcp,
+                &node_bin,
+                &crate::runs::sidecar::resolve_mcp_sidecar_script(&app),
+                &crate::runs::sidecar::resolve_db_path(&app),
+                &project_id,
+                &project_path,
+            )
+        } else {
+            mcp
+        };
+        let mcp = crate::commands::mcp::with_builtin_google(
+            db.inner(),
+            mcp,
+            &node_bin,
+            &crate::runs::sidecar::resolve_mcp_script(&app, "gdrive.mjs"),
+            &crate::runs::sidecar::resolve_mcp_script(&app, "gmail.mjs"),
+        )
+        .await;
         if !mcp.is_null() {
             cmd.env("DEVDY_MCP_SERVERS", mcp.to_string());
         }

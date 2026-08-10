@@ -7,7 +7,7 @@ import { open, save } from '@tauri-apps/plugin-dialog'
 import { Button, Card, Badge } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
-import { Plus, Upload, Download, Pencil, Trash2, Server, CalendarDays, Power, AlertTriangle } from 'lucide-vue-next'
+import { Plus, Upload, Download, Pencil, Trash2, Server, CalendarDays, Power, AlertTriangle, Sparkles, Settings2 } from 'lucide-vue-next'
 
 const router = useRouter()
 const store = useMcpServersStore()
@@ -17,6 +17,55 @@ const { toast } = useToast()
 const deletingId = ref<string | null>(null)
 const togglingId = ref<string | null>(null)
 const importing = ref(false)
+const addingName = ref<string | null>(null)
+
+// The built-in `devdy` MCP server is injected at run launch (not a row in the
+// list); it's toggled from Settings → MCP Server.
+const builtinEnabled = computed(() => appSettings.settings?.mcp_builtin_devdy_enabled !== 'false')
+
+// One-click catalog of commonly useful third-party MCP servers. Adding one
+// creates a disabled-secrets stub the user finishes in the editor (args/paths/
+// tokens). Names must be unique, so already-added entries are filtered out.
+interface CatalogEntry {
+  name: string
+  description: string
+  transport: McpServer['transport']
+  command?: string
+  args?: string[]
+  url?: string
+  env?: string[]
+}
+const CATALOG: CatalogEntry[] = [
+  { name: 'filesystem', description: 'Read/write files in an allow-listed directory.', transport: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '<ALLOWED_DIR>'] },
+  { name: 'sequential-thinking', description: 'Structured step-by-step reasoning scratchpad.', transport: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-sequential-thinking'] },
+  { name: 'memory', description: 'Persistent knowledge-graph memory across turns.', transport: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-memory'] },
+  { name: 'github', description: 'Query & manage GitHub repos, issues and PRs.', transport: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'], env: ['GITHUB_PERSONAL_ACCESS_TOKEN'] },
+  { name: 'context7', description: 'Up-to-date library docs to reduce hallucinated APIs.', transport: 'http', url: 'https://mcp.context7.com/mcp' },
+  { name: 'playwright', description: 'Drive a real browser for testing & scraping.', transport: 'stdio', command: 'npx', args: ['-y', '@playwright/mcp@latest'] },
+]
+const catalogAvailable = computed(() => CATALOG.filter(c => !store.items.some(s => s.name === c.name)))
+
+async function addFromCatalog(item: CatalogEntry) {
+  addingName.value = item.name
+  try {
+    await store.createServer({
+      name: item.name,
+      description: item.description,
+      transport: item.transport,
+      command: item.command ?? null,
+      args: item.args ?? [],
+      url: item.url ?? null,
+      env: (item.env ?? []).map(key => ({ key, value: '' })),
+      headers: [],
+      enabled: true,
+    })
+    toast.success(`Added "${item.name}" — open it to finish setup`)
+  } catch (e) {
+    toast.error(String(e))
+  } finally {
+    addingName.value = null
+  }
+}
 
 // The MCP list is global (not project-scoped). Codex supports stdio and
 // streamable HTTP; legacy SSE remains Claude-only.
@@ -139,7 +188,33 @@ function formatDate(iso: string) {
     </div>
 
     <!-- Content -->
-    <div class="flex-1 overflow-auto p-6">
+    <div class="flex-1 overflow-auto p-6 space-y-6">
+      <!-- Built-in devdy server (injected at run launch, not a list row) -->
+      <div
+        class="rounded-lg border p-4 flex items-start gap-3"
+        :class="builtinEnabled ? 'border-primary/30 bg-primary/5' : 'border-border/60 bg-muted/20 opacity-70'"
+      >
+        <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 border border-primary/15 text-primary">
+          <Server class="h-4.5 w-4.5" :stroke-width="1.75" />
+        </div>
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center gap-2 flex-wrap">
+            <p class="text-sm font-semibold font-mono leading-tight">devdy</p>
+            <Badge :tone="builtinEnabled ? 'success' : 'neutral'" size="xs" class="shrink-0">
+              {{ builtinEnabled ? 'Built-in · active' : 'Built-in · disabled' }}
+            </Badge>
+          </div>
+          <p class="text-xs text-muted-foreground mt-1 leading-relaxed">
+            Auto-injected into every run. Gives the AI your notes, cross-session recall, project
+            context (file tree &amp; git) and managed VPS — as <code>mcp__devdy__*</code> tools.
+          </p>
+        </div>
+        <Button variant="outline" size="sm" class="shrink-0" @click="router.push('/settings')">
+          <Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+          Settings
+        </Button>
+      </div>
+
       <!-- Loading skeleton -->
       <div v-if="store.loading" class="grid grid-cols-2 xl:grid-cols-3 gap-3">
         <div v-for="i in 5" :key="i" class="h-27 rounded-lg border border-border bg-card animate-pulse" />
@@ -246,6 +321,38 @@ function formatDate(iso: string) {
             </div>
           </div>
         </Card>
+      </div>
+
+      <!-- Recommended catalog (one-click add) -->
+      <div v-if="!store.loading && catalogAvailable.length" class="space-y-3">
+        <div class="flex items-center gap-2">
+          <Sparkles class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.75" />
+          <h2 class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Recommended servers</h2>
+        </div>
+        <div class="grid grid-cols-2 xl:grid-cols-3 gap-3">
+          <Card
+            v-for="item in catalogAvailable"
+            :key="item.name"
+            class="flex flex-col"
+            body-class="flex flex-col flex-1 p-4"
+          >
+            <div class="flex items-start justify-between gap-2 mb-1">
+              <p class="text-sm font-semibold font-mono leading-tight truncate">{{ item.name }}</p>
+              <Badge tone="primary" size="xs" class="shrink-0 uppercase tracking-wide">{{ item.transport }}</Badge>
+            </div>
+            <p class="text-xs text-muted-foreground line-clamp-2 leading-relaxed flex-1">{{ item.description }}</p>
+            <Button
+              variant="outline"
+              size="sm"
+              class="mt-3 self-start"
+              :disabled="addingName === item.name"
+              @click="addFromCatalog(item)"
+            >
+              <Plus class="h-3.5 w-3.5" :stroke-width="2" />
+              {{ addingName === item.name ? 'Adding…' : 'Add' }}
+            </Button>
+          </Card>
+        </div>
       </div>
     </div>
   </div>

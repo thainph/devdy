@@ -145,26 +145,28 @@ onBeforeUnmount(() => {
         @context-menu="openMenu"
       />
     </div>
-  </div>
 
-  <!-- Right-click context menu (teleported so it floats above everything) -->
-  <Teleport to="body">
-    <div
-      v-if="menu"
-      ref="menuEl"
-      class="fixed z-[100] min-w-[200px] py-1 rounded-md border border-border bg-popover shadow-lg text-xs"
-      :style="{ left: `${menu.x}px`, top: `${menu.y}px` }"
-      @contextmenu.prevent
-    >
-      <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="copyPath">
-        <Copy class="h-3.5 w-3.5" :stroke-width="2" /> Copy file path
-      </button>
-      <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="mentionFile">
-        <AtSign class="h-3.5 w-3.5" :stroke-width="2" /> Mention trong chatbox
-      </button>
-      <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="openInChrome">
-        <Chrome class="h-3.5 w-3.5" :stroke-width="2" /> Open with Chrome
-      </button>
-    </div>
-  </Teleport>
+    <!-- Right-click context menu (teleported so it floats above everything).
+         Kept INSIDE the single root element so `v-show` fallthrough works when
+         the host toggles this panel; a second root node would disable it. -->
+    <Teleport to="body">
+      <div
+        v-if="menu"
+        ref="menuEl"
+        class="fixed z-[100] min-w-[200px] py-1 rounded-md border border-border bg-popover shadow-lg text-xs"
+        :style="{ left: `${menu.x}px`, top: `${menu.y}px` }"
+        @contextmenu.prevent
+      >
+        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="copyPath">
+          <Copy class="h-3.5 w-3.5" :stroke-width="2" /> Copy file path
+        </button>
+        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="mentionFile">
+          <AtSign class="h-3.5 w-3.5" :stroke-width="2" /> Mention trong chatbox
+        </button>
+        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="openInChrome">
+          <Chrome class="h-3.5 w-3.5" :stroke-width="2" /> Open with Chrome
+        </button>
+      </div>
+    </Teleport>
+  </div>
 </template>

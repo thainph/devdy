@@ -93,13 +93,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 <template>
   <div
     v-if="tabsStore.tabs.length > 0"
-    class="flex items-stretch gap-1 px-2 h-[38px] shrink-0 border-b border-border/50 bg-sidebar overflow-x-auto"
+    class="flex items-stretch gap-1 px-2 h-[38px] shrink-0 border-b border-border/50 bg-sidebar overflow-x-auto overflow-y-hidden"
   >
     <button
       v-for="tab in tabsStore.tabs"
       :key="tab.projectId"
       type="button"
-      class="group relative flex items-center gap-2 pl-3 pr-2 my-[5px] rounded-md text-[13px] max-w-[200px] transition-colors cursor-pointer select-none"
+      class="group relative flex min-w-0 shrink items-center gap-2 pl-3 pr-2 my-[5px] rounded-md text-[13px] max-w-[200px] transition-colors cursor-pointer select-none"
       :class="tab.projectId === activeProjectId
         ? 'bg-accent text-foreground'
         : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'"

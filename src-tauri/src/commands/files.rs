@@ -138,6 +138,55 @@ fn read_within(project_path: &str, file_path: &str) -> Result<FileContent, Strin
     Ok(FileContent { path: rel, content, truncated })
 }
 
+/// Overwrite a project text file with new contents from the in-app editor.
+///
+/// Shares [`read_project_file`]'s path-confinement rules: `file_path` may be
+/// absolute or relative to the project root, but the resolved path must stay
+/// inside the project (or the allowed transcript / HOME roots). The file must
+/// already exist and be a regular file — the editor edits, it does not create.
+#[tauri::command]
+pub async fn write_project_file(
+    project_path: String,
+    file_path: String,
+    content: String,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || write_within(&project_path, &file_path, &content))
+        .await
+        .map_err(|e| format!("join error: {e}"))?
+}
+
+fn write_within(project_path: &str, file_path: &str, content: &str) -> Result<(), String> {
+    let root = Path::new(project_path)
+        .canonicalize()
+        .map_err(|e| format!("invalid project path: {e}"))?;
+
+    let requested = Path::new(file_path);
+    let joined: PathBuf = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        root.join(requested)
+    };
+
+    // The file must already exist — canonicalize resolves it and lets us reuse
+    // the same confinement check as reads (no creating files outside a project).
+    let canonical = joined
+        .canonicalize()
+        .map_err(|_| format!("File not found: {file_path}"))?;
+
+    if !canonical.starts_with(&root)
+        && !transcript_root_allows(&canonical)
+        && !home_allows(&canonical)
+    {
+        return Err("Refusing to write a file outside the project".to_string());
+    }
+    if canonical.is_dir() {
+        return Err(format!("{file_path} is a directory, not a file"));
+    }
+
+    std::fs::write(&canonical, content).map_err(|e| format!("write {file_path}: {e}"))?;
+    Ok(())
+}
+
 /// A single entry (one level) of a directory, for the RunView file-tree panel.
 #[derive(Debug, Serialize, Clone)]
 pub struct DirEntry {

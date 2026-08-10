@@ -389,14 +389,16 @@ function planContent(input: unknown): string {
   return asStr(asObj(input).plan)
 }
 
-// The two most recent messages (assistant replies or user turns) are what the
-// user is actively reading — and while running the last one is still streaming
-// — so they always render in full, never collapsed.
+// Only overly long user messages get collapsed; assistant replies always render
+// in full. The most recent user turn is what the user is actively working with,
+// so it stays expanded — older user turns collapse if they overflow.
 const expandedMessageIndices = computed(() => {
   const indices = new Set<number>()
-  for (let i = props.entries.length - 1; i >= 0 && indices.size < 2; i--) {
-    const k = props.entries[i].kind
-    if (k === 'text' || k === 'user') indices.add(i)
+  for (let i = props.entries.length - 1; i >= 0; i--) {
+    if (props.entries[i].kind === 'user') {
+      indices.add(i)
+      break
+    }
   }
   return indices
 })
@@ -525,11 +527,25 @@ const lastEntryIsResult = computed(() => {
   const last = props.entries[props.entries.length - 1]
   return last?.kind === 'result'
 })
+
+// A tool result attaches to its entry AFTER the tool call is first rendered
+// (same object, mutated in place). v-memo compares by reference, so we surface
+// it as an explicit memo dependency — this is the one in-place mutation an
+// otherwise-finalized entry undergoes.
+function toolResult(e: StreamEntry): unknown {
+  return e.kind === 'tool' ? e.result : undefined
+}
 </script>
 
 <template>
   <div class="space-y-3">
     <template v-for="(entry, i) in entries" :key="i">
+      <!-- v-memo: freeze a finalized entry so a streamed update to the LAST
+           entry (or a tool result attaching, a toggle, a copy flash) never
+           re-renders the whole history. Deps list every reactive value this
+           entry's markup reads: the entry itself, its late-attached result,
+           and the per-index toggle/flash/collapse state. -->
+      <div v-memo="[entry, toolResult(entry), expanded[i], expandedCompacts.has(i), copiedCmd[i], expandedMessageIndices.has(i)]">
       <!-- System init banner -->
       <div
         v-if="entry.kind === 'system'"
@@ -632,13 +648,8 @@ const lastEntryIsResult = computed(() => {
         <div v-if="entry.stdout" class="text-[11px] font-mono text-foreground/45">{{ entry.stdout }}</div>
       </div>
 
-      <!-- Assistant text -->
-      <CollapsibleMessage
-        v-else-if="entry.kind === 'text'"
-        :max-height="384"
-        fade="hsl(var(--background))"
-        :disabled="expandedMessageIndices.has(i)"
-      >
+      <!-- Assistant text — always rendered in full, never collapsed -->
+      <div v-else-if="entry.kind === 'text'">
         <div
           v-file-links
           v-mermaid
@@ -647,7 +658,7 @@ const lastEntryIsResult = computed(() => {
           class="markdown-output text-sm leading-relaxed text-foreground"
           @click="onProseClick"
         />
-      </CollapsibleMessage>
+      </div>
 
       <!-- Thinking -->
       <div
@@ -1105,6 +1116,7 @@ const lastEntryIsResult = computed(() => {
         <AlertTriangle class="h-3 w-3 mt-0.5 shrink-0" :stroke-width="1.75" />
         <span class="whitespace-pre-wrap">{{ entry.text }}</span>
       </div>
+      </div><!-- /v-memo per-entry wrapper -->
     </template>
 
     <!-- Running indicator -->

@@ -210,6 +210,11 @@ export const useRunsStore = defineStore('runs', () => {
     return invoke<FileContent>('read_project_file', { projectPath: project_path, filePath: file_path })
   }
 
+  // Overwrite a project text file with edited contents from the file viewer.
+  async function writeProjectFile(project_path: string, file_path: string, content: string): Promise<void> {
+    await invoke('write_project_file', { projectPath: project_path, filePath: file_path, content })
+  }
+
   // List one level of a directory (lazy tree loading for the file-tree panel).
   async function listDir(project_path: string, rel_dir: string): Promise<DirEntry[]> {
     return invoke<DirEntry[]>('list_dir', { projectPath: project_path, relDir: rel_dir })
@@ -292,7 +297,7 @@ export const useRunsStore = defineStore('runs', () => {
     startRun, rerunRun, refetchRun, cancelRun, resumeRun,
     getRunLog, getRunLogPath, readRunInput,
     respondPermission, sendUserMessage, endRunInput,
-    listProjectFiles, readProjectFile, listDir, createHandoffRun, createSessionRun,
+    listProjectFiles, readProjectFile, writeProjectFile, listDir, createHandoffRun, createSessionRun,
     reconcileClaudeSessions, reconcileCodexSessions,
     deleteRun, deleteAllRuns, renameRun, setRunPinned,
   }
