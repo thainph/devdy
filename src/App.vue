@@ -7,8 +7,9 @@ import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useUILayoutStore } from '@/stores/uiLayout'
-import { Puzzle, ScrollText, Server, HardDrive, FolderOpen, BarChart3, CalendarClock, ListTodo, StickyNote, Settings, Info } from 'lucide-vue-next'
+import { Puzzle, ScrollText, Server, HardDrive, FolderOpen, BarChart3, CalendarClock, CalendarDays, ListTodo, StickyNote, Settings, Info } from 'lucide-vue-next'
 import PermissionNotifier from '@/components/PermissionNotifier.vue'
+import CalendarReminder from '@/components/CalendarReminder.vue'
 import BudgetBadge from '@/components/BudgetBadge.vue'
 import WorkspaceTabs from '@/components/WorkspaceTabs.vue'
 import ActiveRunsDock from '@/components/ActiveRunsDock.vue'
@@ -96,6 +97,7 @@ const navItems = [
   { path: '/servers', label: 'Servers', icon: HardDrive },
   { path: '/stats', label: 'Stats', icon: BarChart3 },
   { path: '/work-digest', label: 'Digest', icon: CalendarClock },
+  { path: '/calendar', label: 'Calendar', icon: CalendarDays },
   { path: '/todos', label: 'Todos', icon: ListTodo },
   { path: '/notes', label: 'Notes', icon: StickyNote },
   { path: '/settings', label: 'Settings', icon: Settings },
@@ -252,6 +254,10 @@ onMounted(async () => {
     <!-- Headless: fires native OS notifications for runs awaiting input while the
          app is backgrounded; the in-app signal is the History attention icon. -->
     <PermissionNotifier />
+
+    <!-- Headless: fires native reminders for upcoming calendar events app-wide;
+         clicking opens the event's detail drawer on the Calendar screen. -->
+    <CalendarReminder />
 
     <!-- App-wide confirm dialog host (see useConfirm) -->
     <ConfirmModal />

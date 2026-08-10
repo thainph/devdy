@@ -22,6 +22,17 @@ struct NotificationClick {
 /// Name of the event the frontend listens on.
 pub const NOTIFICATION_CLICKED_EVENT: &str = "permission-notification-clicked";
 
+/// Emitted when the user clicks a calendar-reminder notification. Payload tells
+/// the frontend which event to open.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReminderClick {
+    event_id: String,
+}
+
+/// Name of the event the frontend listens on for calendar reminders.
+pub const CALENDAR_REMINDER_CLICKED_EVENT: &str = "calendar-reminder-clicked";
+
 #[cfg(target_os = "macos")]
 static SET_APP: std::sync::Once = std::sync::Once::new();
 
@@ -93,6 +104,61 @@ pub async fn show_permission_notification(
             }
             Err(err) => {
                 tracing::warn!("failed to show permission notification: {err}");
+            }
+        }
+    });
+
+    Ok(())
+}
+
+/// Show a native calendar-reminder notification for an upcoming event. Mirrors
+/// `show_permission_notification`: a background thread waits for the click and
+/// emits `CALENDAR_REMINDER_CLICKED_EVENT` with the event id so the frontend can
+/// open that event's detail drawer.
+#[tauri::command]
+pub async fn show_calendar_reminder(
+    app: AppHandle,
+    title: String,
+    body: String,
+    event_id: String,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    SET_APP.call_once(|| {
+        let ident = if tauri::is_dev() {
+            "com.apple.Terminal"
+        } else {
+            "vn.papay.devdy"
+        };
+        let _ = notify_rust::set_application(ident);
+    });
+
+    std::thread::spawn(move || {
+        let mut notification = notify_rust::Notification::new();
+        notification.summary(&title).body(&body);
+        #[cfg(target_os = "macos")]
+        {
+            notification.sound_name("default");
+            notification.action("open", "Open");
+        }
+
+        match notification.show() {
+            Ok(handle) => {
+                handle.wait_for_action(|action| {
+                    if action != "__closed" {
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.unminimize();
+                            let _ = win.show();
+                            let _ = win.set_focus();
+                        }
+                        let _ = app.emit(
+                            CALENDAR_REMINDER_CLICKED_EVENT,
+                            ReminderClick { event_id },
+                        );
+                    }
+                });
+            }
+            Err(err) => {
+                tracing::warn!("failed to show calendar reminder: {err}");
             }
         }
     });
