@@ -2,11 +2,13 @@
 import { computed, onMounted, ref } from 'vue'
 import type { CalEvent } from '@/stores/googleCalendar'
 import { startOfWeek, addDays, sameDay, minutesOfDay, parseEventTime } from '@/lib/calendar'
+import { lunarInfo } from '@/lib/lunar'
 
 const props = defineProps<{
   anchorDate: Date
   events: CalEvent[]
   colorFor: (accountId: string) => string
+  showLunar?: boolean
 }>()
 
 const emit = defineEmits<{ select: [ev: CalEvent] }>()
@@ -134,6 +136,15 @@ onMounted(() => {
                 ? 'flex h-4 w-4 items-center justify-center rounded-full bg-primary text-primary-foreground font-semibold'
                 : 'font-medium'"
             >{{ d.getDate() }}</span>
+          </div>
+          <div
+            v-if="showLunar"
+            class="text-center text-[10px] leading-none tabular-nums"
+            :class="lunarInfo(d).highlight
+              ? 'font-bold text-red-500 dark:text-red-400'
+              : 'font-normal text-muted-foreground/60'"
+          >
+            {{ lunarInfo(d).label }}
           </div>
           <!-- all-day events -->
           <div class="mt-1 flex flex-col gap-0.5 min-h-0">

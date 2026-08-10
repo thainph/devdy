@@ -2,14 +2,19 @@
 import { computed } from 'vue'
 import type { CalEvent } from '@/stores/googleCalendar'
 import { startOfMonth, startOfWeek, addDays, sameDay, parseEventTime } from '@/lib/calendar'
+import { lunarInfo } from '@/lib/lunar'
 
 const props = defineProps<{
   anchorDate: Date
   events: CalEvent[]
   colorFor: (accountId: string) => string
+  showLunar?: boolean
 }>()
 
-const emit = defineEmits<{ select: [ev: CalEvent] }>()
+const emit = defineEmits<{
+  select: [ev: CalEvent]
+  moreClick: [payload: { date: Date; events: CalEvent[] }]
+}>()
 
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 
@@ -41,6 +46,10 @@ function eventsFor(d: Date) {
   return eventsByDay.value.get(`${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`) ?? []
 }
 
+function allEventsFor(d: Date): CalEvent[] {
+  return eventsFor(d).map(x => x.ev)
+}
+
 function hhmm(d: Date) {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
@@ -67,17 +76,28 @@ function hhmm(d: Date) {
         class="border-b border-r border-border/40 p-1 overflow-hidden flex flex-col min-h-0"
         :class="d.getMonth() !== currentMonth ? 'bg-muted/20' : ''"
       >
-        <div class="flex items-center justify-between px-0.5">
+        <div class="flex items-baseline justify-between px-0.5">
+          <!-- Solar day: primary, bolder -->
           <span
-            class="text-[11px] leading-none"
+            class="text-[13px] font-semibold leading-none"
             :class="[
               d.getMonth() !== currentMonth ? 'text-muted-foreground/60' : 'text-foreground',
               sameDay(d, today)
-                ? 'flex h-4 w-4 items-center justify-center rounded-full bg-primary text-primary-foreground font-semibold'
+                ? 'flex h-5 w-5 items-center justify-center rounded-full bg-primary text-primary-foreground'
                 : '',
             ]"
           >
             {{ d.getDate() }}
+          </span>
+          <!-- Lunar day: smaller, lighter; mùng 1 & rằm in bold red -->
+          <span
+            v-if="showLunar"
+            class="text-[10px] leading-none tabular-nums"
+            :class="lunarInfo(d).highlight
+              ? 'font-bold text-red-500 dark:text-red-400'
+              : 'font-normal text-muted-foreground/60'"
+          >
+            {{ lunarInfo(d).label }}
           </span>
         </div>
 
@@ -98,12 +118,14 @@ function hhmm(d: Date) {
               <span v-if="!allDay" class="text-muted-foreground">{{ hhmm(start) }} </span>{{ ev.title }}
             </span>
           </button>
-          <div
+          <button
             v-if="eventsFor(d).length > 3"
-            class="px-1 text-[10px] text-muted-foreground"
+            type="button"
+            class="rounded px-1 py-0.5 text-left text-[10px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            @click="emit('moreClick', { date: d, events: allEventsFor(d) })"
           >
             +{{ eventsFor(d).length - 3 }} more
-          </div>
+          </button>
         </div>
       </div>
     </div>

@@ -171,6 +171,14 @@ export const useGoogleCalendarStore = defineStore('googleCalendar', () => {
     if (on) void translateVisible(targetLang)
   }
 
+  // ── Lunar calendar overlay ────────────────────────────────────────────────
+  const LS_LUNAR = 'devdy.calendar.lunarEnabled'
+  const lunarEnabled = ref<boolean>(localStorage.getItem(LS_LUNAR) === '1')
+  function setLunarEnabled(v: boolean) {
+    lunarEnabled.value = v
+    localStorage.setItem(LS_LUNAR, v ? '1' : '0')
+  }
+
   // ── Reminders (app-wide; see CalendarReminder.vue) ────────────────────────
   const LS_ENABLED = 'devdy.calendar.reminderEnabled'
   const LS_LEAD = 'devdy.calendar.reminderLeadMin'
@@ -374,6 +382,8 @@ export const useGoogleCalendarStore = defineStore('googleCalendar', () => {
     translated,
     translateVisible,
     setAutoTranslate,
+    lunarEnabled,
+    setLunarEnabled,
     reminderEnabled,
     reminderLeadMin,
     reminderEvents,
