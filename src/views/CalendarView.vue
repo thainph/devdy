@@ -5,14 +5,15 @@ import { onClickOutside } from '@vueuse/core'
 import {
   ChevronLeft, ChevronRight, Loader2, CalendarDays, AlertTriangle,
   ExternalLink, MapPin, Clock, CalendarRange, User, Timer,
-  Video, Paperclip, AlignLeft, Settings2, Check, Languages, Bell,
+  Video, Paperclip, AlignLeft, Settings2, Check, Languages, Bell, Moon,
 } from 'lucide-vue-next'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { invoke } from '@/lib/tauri'
-import { Button, Badge, Drawer, AppSelect } from '@/components/ui'
+import { Button, Badge, Drawer, AppSelect, Modal } from '@/components/ui'
 import { useGoogleCalendarStore, type CalEvent } from '@/stores/googleCalendar'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { parseEventTime, sameDay, addDays } from '@/lib/calendar'
+import { solarToLunar } from '@/lib/lunar'
 import CalendarWeekGrid from '@/components/calendar/CalendarWeekGrid.vue'
 import CalendarMonthGrid from '@/components/calendar/CalendarMonthGrid.vue'
 
@@ -78,6 +79,36 @@ function openEvent(ev: CalEvent) {
   detailOpen.value = true
 }
 
+// ── "All events for a day" modal (month view "+N more") ──
+const dayModalOpen = ref(false)
+const dayModalDate = ref<Date | null>(null)
+const dayModalEvents = ref<CalEvent[]>([])
+
+const dayModalTitle = computed(() =>
+  dayModalDate.value
+    ? dayModalDate.value.toLocaleDateString('en-US', {
+        weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+      })
+    : '',
+)
+
+function onMoreClick(p: { date: Date; events: CalEvent[] }) {
+  dayModalDate.value = p.date
+  dayModalEvents.value = p.events
+  dayModalOpen.value = true
+}
+
+function pickDayEvent(ev: CalEvent) {
+  dayModalOpen.value = false
+  openEvent(ev)
+}
+
+function eventTimeShort(ev: CalEvent): string {
+  const p = parseEventTime(ev)
+  if (p.allDay) return 'All day'
+  return `${String(p.start.getHours()).padStart(2, '0')}:${String(p.start.getMinutes()).padStart(2, '0')}`
+}
+
 // A reminder click asks us to open a specific event's detail drawer. `immediate`
 // covers the case where the click routed here and this view is mounting fresh.
 watch(
@@ -118,6 +149,13 @@ const timeLabel = computed(() => {
   const t = (x: Date) => `${String(x.getHours()).padStart(2, '0')}:${String(x.getMinutes()).padStart(2, '0')}`
   const sameDate = p.start.toDateString() === p.end.toDateString()
   return sameDate ? `${t(p.start)} – ${t(p.end)}` : `${t(p.start)} → ${p.end.toLocaleDateString('en-US', { day: 'numeric', month: 'short' })} ${t(p.end)}`
+})
+
+const lunarDateLabel = computed(() => {
+  const p = selectedParsed.value
+  if (!p || !store.lunarEnabled) return ''
+  const l = solarToLunar(p.start)
+  return `Lunar ${l.day}/${l.month}${l.leap ? ' (leap)' : ''}`
 })
 
 const durationLabel = computed(() => {
@@ -286,6 +324,34 @@ function openForAccount(url: string) {
               </div>
             </div>
 
+            <!-- Lunar calendar -->
+            <div class="mb-3">
+              <button
+                type="button"
+                role="switch"
+                :aria-checked="store.lunarEnabled"
+                class="flex w-full items-center gap-2 rounded-md px-1 py-1 text-left cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                @click="store.setLunarEnabled(!store.lunarEnabled)"
+              >
+                <Moon class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="1.75" />
+                <span class="min-w-0 flex-1">
+                  <span class="block text-sm text-foreground">Lunar calendar</span>
+                  <span class="block text-[11px] text-muted-foreground truncate">
+                    Show lunar dates in the grid
+                  </span>
+                </span>
+                <span
+                  class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors"
+                  :class="store.lunarEnabled ? 'bg-primary' : 'bg-muted'"
+                >
+                  <span
+                    class="inline-block h-4 w-4 rounded-full bg-white shadow transition-transform"
+                    :class="store.lunarEnabled ? 'translate-x-4' : 'translate-x-0.5'"
+                  />
+                </span>
+              </button>
+            </div>
+
             <!-- Navigation -->
             <div class="mb-3">
               <div class="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Navigation</div>
@@ -439,6 +505,7 @@ function openForAccount(url: string) {
         :anchor-date="store.anchorDate"
         :events="store.displayEvents"
         :color-for="store.colorFor"
+        :show-lunar="store.lunarEnabled"
         @select="openEvent"
       />
       <CalendarMonthGrid
@@ -446,7 +513,9 @@ function openForAccount(url: string) {
         :anchor-date="store.anchorDate"
         :events="store.displayEvents"
         :color-for="store.colorFor"
+        :show-lunar="store.lunarEnabled"
         @select="openEvent"
+        @more-click="onMoreClick"
       />
     </div>
 
@@ -498,6 +567,7 @@ function openForAccount(url: string) {
             <div class="min-w-0 flex-1">
               <div class="text-[11px] uppercase tracking-wide text-muted-foreground">Date</div>
               <div class="text-sm text-foreground">{{ dateLabel }}</div>
+              <div v-if="lunarDateLabel" class="text-xs text-muted-foreground">{{ lunarDateLabel }}</div>
             </div>
           </div>
 
@@ -612,5 +682,25 @@ function openForAccount(url: string) {
         </Button>
       </template>
     </Drawer>
+
+    <!-- All events for a day (month view "+N more") -->
+    <Modal :open="dayModalOpen" :title="dayModalTitle" size="sm" @close="dayModalOpen = false">
+      <div class="flex flex-col gap-1 p-1 max-h-[60vh] overflow-auto">
+        <button
+          v-for="ev in dayModalEvents"
+          :key="ev.id + ev.calendar_id"
+          type="button"
+          class="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left cursor-pointer hover:bg-accent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          @click="pickDayEvent(ev)"
+        >
+          <span
+            class="h-2.5 w-2.5 shrink-0 rounded-full"
+            :style="{ backgroundColor: store.colorFor(ev.account_id) }"
+          />
+          <span class="w-14 shrink-0 text-xs tabular-nums text-muted-foreground">{{ eventTimeShort(ev) }}</span>
+          <span class="min-w-0 flex-1 truncate text-sm text-foreground">{{ store.translated(ev.title) }}</span>
+        </button>
+      </div>
+    </Modal>
   </div>
 </template>
