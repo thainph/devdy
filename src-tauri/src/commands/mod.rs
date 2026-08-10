@@ -2,6 +2,7 @@ pub mod agents_block;
 pub mod aws_accounts;
 pub mod codex_sessions;
 pub mod files;
+pub mod gcalendar;
 pub mod github;
 pub mod github_accounts;
 pub mod gitlab_accounts;

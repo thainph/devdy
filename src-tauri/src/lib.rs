@@ -29,11 +29,12 @@ use commands::mcp::{
     list_mcp_servers, list_project_mcp_servers, set_project_mcp_servers, test_mcp_connection,
     update_mcp_server,
 };
+use commands::gcalendar::{list_google_calendar_events, list_google_calendars};
 use commands::google::{
     add_google_account, delete_google_account, google_client_status, google_forget_client,
     list_google_accounts, rename_google_account, set_default_google_account,
 };
-use commands::notifications::show_permission_notification;
+use commands::notifications::{show_calendar_reminder, show_permission_notification};
 use commands::projects::{
     add_project, add_repo, apply_skill, apply_skill_to_all_projects, detect_project_info,
     get_applied_skills, list_projects, list_repos, list_sync_conflicts, open_in_chrome,
@@ -235,6 +236,8 @@ pub fn run() {
             set_default_google_account,
             google_client_status,
             google_forget_client,
+            list_google_calendars,
+            list_google_calendar_events,
             list_vps_servers,
             create_vps_server,
             update_vps_server,
@@ -339,6 +342,7 @@ pub fn run() {
             delete_note,
             reorder_notes,
             show_permission_notification,
+            show_calendar_reminder,
             remote_set_config,
             remote_enable,
             remote_disable,

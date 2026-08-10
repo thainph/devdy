@@ -15,6 +15,7 @@ import StatsView from '../views/StatsView.vue'
 import TodosView from '../views/TodosView.vue'
 import NotesView from '../views/NotesView.vue'
 import WorkDigestView from '../views/WorkDigestView.vue'
+import CalendarView from '../views/CalendarView.vue'
 import AboutView from '../views/AboutView.vue'
 
 const router = createRouter({
@@ -41,6 +42,7 @@ const router = createRouter({
     { path: '/notes', name: 'notes', component: NotesView },
     { path: '/stats', name: 'stats', component: StatsView },
     { path: '/work-digest', name: 'work-digest', component: WorkDigestView },
+    { path: '/calendar', name: 'calendar', component: CalendarView },
     { path: '/settings', name: 'settings', component: SettingsView },
     { path: '/about', name: 'about', component: AboutView },
   ],
