@@ -5,7 +5,7 @@ import { invoke } from '@/lib/tauri'
 import {
   Cpu, Palette, FileText, ShieldAlert, Sparkles, Github, Gitlab, Cloud,
   CheckCircle2, AlertTriangle, Trash2, Plus, Pencil, Gauge, Radio,
-  RefreshCw, Loader2, Server,
+  RefreshCw, Loader2, Server, HardDrive,
 } from 'lucide-vue-next'
 import { Button, Input, Textarea, Card, AppSelect } from '@/components/ui'
 import RemoteControlSettings from '@/components/remote/RemoteControlSettings.vue'
@@ -146,11 +146,95 @@ const SECTIONS = [
   { id: 'engine', label: 'Engine Paths', icon: Cpu },
   { id: 'ai', label: 'AI & Models', icon: Sparkles },
   { id: 'mcp', label: 'MCP Server', icon: Server },
+  { id: 'google', label: 'Google Account', icon: HardDrive },
   { id: 'usage', label: 'Usage & Budget', icon: Gauge },
   { id: 'remote', label: 'Remote Control', icon: Radio },
   { id: 'prompts', label: 'Prompt Templates', icon: FileText },
 ] as const
 const activeSection = ref<(typeof SECTIONS)[number]['id']>('general')
+// --- Google accounts (Drive + Gmail via OAuth, multi-account) ---
+// The OAuth client (Client ID/Secret) is saved once and reused for every
+// account, so adding more accounts only needs a fresh consent — no re-entry.
+interface GoogleAccount { id: string; label: string; email: string; scope: string; is_default: boolean; created_at: string }
+const googleAccounts = ref<GoogleAccount[]>([])
+const googleHasClient = ref(false)
+const googleClientId = ref('')
+const googleClientSecret = ref('')
+const googleNewLabel = ref('')
+const googleAdding = ref(false)
+const googleError = ref<string | null>(null)
+// Reveal the credential form even when creds are already saved (to change them).
+const showGoogleClientForm = ref(false)
+const googleEditing = ref<string | null>(null)
+const googleEditLabel = ref('')
+
+async function loadGoogleStatus() {
+  try {
+    googleAccounts.value = await invoke<GoogleAccount[]>('list_google_accounts')
+    googleHasClient.value = (await invoke<{ has_client: boolean }>('google_client_status')).has_client
+  } catch { /* leave defaults */ }
+}
+async function addGoogleAccount() {
+  googleError.value = null
+  const label = googleNewLabel.value.trim()
+  if (!label) { googleError.value = 'Enter a label for the account (e.g. work, personal).'; return }
+  const needCreds = !googleHasClient.value || showGoogleClientForm.value
+  if (needCreds && (!googleClientId.value.trim() || !googleClientSecret.value.trim())) {
+    googleError.value = 'Enter both Client ID and Client Secret.'
+    return
+  }
+  googleAdding.value = true
+  try {
+    await invoke<GoogleAccount>('add_google_account', {
+      label,
+      ...(needCreds ? { clientId: googleClientId.value.trim(), clientSecret: googleClientSecret.value.trim() } : {}),
+    })
+    googleNewLabel.value = ''
+    googleClientSecret.value = ''
+    showGoogleClientForm.value = false
+    await loadGoogleStatus()
+    toast.success('Google account added')
+  } catch (e) {
+    googleError.value = String(e)
+  } finally {
+    googleAdding.value = false
+  }
+}
+async function removeGoogleAccount(acc: GoogleAccount) {
+  if (!(await confirm({ title: `Remove ${acc.label}?`, message: 'The AI will lose access to this account. Your saved OAuth credentials are kept so you can re-add it without re-entering them.' }))) return
+  try {
+    await invoke('delete_google_account', { id: acc.id })
+    await loadGoogleStatus()
+    toast.success('Account removed')
+  } catch (e) { googleError.value = String(e) }
+}
+async function saveGoogleRename(acc: GoogleAccount) {
+  const label = googleEditLabel.value.trim()
+  if (!label || label === acc.label) { googleEditing.value = null; return }
+  try {
+    await invoke('rename_google_account', { id: acc.id, label })
+    googleEditing.value = null
+    await loadGoogleStatus()
+  } catch (e) { googleError.value = String(e) }
+}
+async function makeGoogleDefault(acc: GoogleAccount) {
+  try {
+    await invoke('set_default_google_account', { id: acc.id })
+    await loadGoogleStatus()
+  } catch (e) { googleError.value = String(e) }
+}
+async function forgetGoogleClient() {
+  if (!(await confirm({ title: 'Forget saved credentials?', message: 'This removes the stored Client ID/Secret and ALL connected accounts. You will need to paste the credentials again next time.' }))) return
+  try {
+    await invoke('google_forget_client')
+    googleClientId.value = ''
+    googleClientSecret.value = ''
+    showGoogleClientForm.value = false
+    await loadGoogleStatus()
+    toast.success('Saved Google credentials removed')
+  } catch (e) { googleError.value = String(e) }
+}
+
 const ghCount = computed(() => ghStore.accounts.length)
 const glCount = computed(() => glStore.accounts.length)
 const awsCount = computed(() => awsStore.accounts.length)
@@ -487,6 +571,7 @@ onMounted(async () => {
     await ghStore.fetch()
     await glStore.fetch()
     await awsStore.fetch()
+    await loadGoogleStatus()
     budget.refresh()
     unlistenPlanUsage = await listen<{ provider?: string }>('plan_usage_updated', (e) => {
       // Claude plan usage feeds the budget guardrail verdict — keep the badge synced.
@@ -696,6 +781,136 @@ watch(() => settings.value.color_theme, (t) => {
               <span>📁 project_info / file_tree</span>
               <span>🔀 git_status / git_diff</span>
               <span>🖥️ vps_list / vps_run</span>
+            </div>
+          </div>
+        </Card>
+
+        <!-- Google Account section (Drive + Gmail) -->
+        <Card v-show="activeSection === 'google'" body-class="p-4 space-y-4">
+          <template #header>
+            <HardDrive class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
+            <span class="text-xs font-semibold">Google Account (Drive + Gmail)</span>
+          </template>
+
+          <p class="text-[11px] text-muted-foreground leading-relaxed">
+            Connect one or more Google accounts so the AI can work with your Drive files and Gmail. Tools
+            appear as <code class="font-mono bg-muted px-1 rounded">mcp__gdrive__*</code> and
+            <code class="font-mono bg-muted px-1 rounded">mcp__gmail__*</code>; with multiple accounts the
+            AI targets one via each tool's <code class="font-mono bg-muted px-1 rounded">account</code>
+            argument (the <strong class="text-foreground">default</strong> account when omitted). Write,
+            delete, share and send actions still go through the permission prompt. Refresh tokens are
+            stored in your OS Keychain (never written to disk). Takes effect on the next run.
+          </p>
+
+          <div class="p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-md text-[11px] leading-relaxed flex gap-2">
+            <ShieldAlert class="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" :stroke-width="1.75" />
+            <span class="text-muted-foreground">
+              Create your own OAuth <strong class="text-foreground">Desktop app</strong> credentials in Google
+              Cloud Console, enable the <strong class="text-foreground">Drive API</strong> and
+              <strong class="text-foreground">Gmail API</strong>, then paste the Client ID and Secret below.
+            </span>
+          </div>
+
+          <!-- Connected accounts list -->
+          <div v-if="googleAccounts.length" class="space-y-2">
+            <div
+              v-for="acc in googleAccounts"
+              :key="acc.id"
+              class="border border-border rounded-md p-3 space-y-2"
+            >
+              <template v-if="googleEditing !== acc.id">
+                <div class="flex items-center justify-between gap-2">
+                  <div class="min-w-0">
+                    <div class="text-sm font-medium truncate flex items-center gap-1.5">
+                      <CheckCircle2 class="h-3.5 w-3.5 text-emerald-500" :stroke-width="1.75" />
+                      {{ acc.label }}
+                      <span v-if="acc.is_default" class="text-[10px] font-medium text-indigo-400 border border-indigo-400/40 rounded px-1">default</span>
+                    </div>
+                    <div class="text-[11px] text-muted-foreground truncate">{{ acc.email || 'Drive + Gmail' }}</div>
+                  </div>
+                  <div class="flex items-center gap-1 shrink-0">
+                    <Button v-if="!acc.is_default" size="sm" variant="ghost" title="Set as default" @click="makeGoogleDefault(acc)">
+                      <CheckCircle2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+                    </Button>
+                    <Button size="sm" variant="ghost" title="Rename" @click="googleEditing = acc.id; googleEditLabel = acc.label">
+                      <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
+                    </Button>
+                    <Button size="sm" variant="ghost" title="Remove" @click="removeGoogleAccount(acc)">
+                      <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+                    </Button>
+                  </div>
+                </div>
+              </template>
+              <template v-else>
+                <div class="flex items-center gap-2">
+                  <Input v-model="googleEditLabel" size="sm" class="flex-1" @keyup.enter="saveGoogleRename(acc)" />
+                  <Button size="sm" @click="saveGoogleRename(acc)">Save</Button>
+                  <Button size="sm" variant="ghost" @click="googleEditing = null">Cancel</Button>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- Add account -->
+          <div class="border border-border/60 rounded-md p-3 space-y-2.5">
+            <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+              {{ googleAccounts.length ? 'Add another account' : 'Connect an account' }}
+            </div>
+
+            <div v-if="googleHasClient && !showGoogleClientForm" class="text-[11px] text-muted-foreground flex items-center gap-1.5">
+              <CheckCircle2 class="h-3.5 w-3.5 text-emerald-500" :stroke-width="1.75" />
+              OAuth credentials saved — no need to re-enter them.
+            </div>
+
+            <!-- Credential form (first time, or when changing creds) -->
+            <template v-if="!googleHasClient || showGoogleClientForm">
+              <div class="space-y-1.5">
+                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Client ID</label>
+                <Input v-model="googleClientId" size="sm" placeholder="xxxxx.apps.googleusercontent.com" />
+              </div>
+              <div class="space-y-1.5">
+                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Client Secret</label>
+                <Input v-model="googleClientSecret" type="password" size="sm" placeholder="GOCSPX-…" />
+              </div>
+            </template>
+
+            <div class="space-y-1.5">
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Account label</label>
+              <Input v-model="googleNewLabel" size="sm" placeholder="work" @keyup.enter="addGoogleAccount" />
+            </div>
+
+            <div v-if="googleError" class="text-[11px] text-red-500 flex items-start gap-1.5">
+              <AlertTriangle class="h-3.5 w-3.5 shrink-0 mt-0.5" :stroke-width="1.75" />
+              <span>{{ googleError }}</span>
+            </div>
+
+            <div class="flex items-center gap-2 flex-wrap">
+              <Button size="sm" :disabled="googleAdding" @click="addGoogleAccount">
+                <Loader2 v-if="googleAdding" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+                <Plus v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                {{ googleAdding ? 'Waiting for Google…' : 'Add account' }}
+              </Button>
+              <Button v-if="googleHasClient && !showGoogleClientForm" size="sm" variant="ghost" :disabled="googleAdding" @click="showGoogleClientForm = true">
+                <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" /> Change credentials
+              </Button>
+              <Button v-if="googleHasClient && showGoogleClientForm" size="sm" variant="ghost" :disabled="googleAdding" @click="showGoogleClientForm = false">
+                Cancel
+              </Button>
+              <Button v-if="googleHasClient" size="sm" variant="ghost" :disabled="googleAdding" @click="forgetGoogleClient">
+                <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" /> Forget saved
+              </Button>
+            </div>
+          </div>
+
+          <div class="rounded-md border border-border/60 bg-muted/30 p-3 space-y-2">
+            <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Available tools</div>
+            <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+              <span>📁 gdrive list / search / read / download</span>
+              <span>✏️ gdrive create / upload / update / rename / move</span>
+              <span>🗑️ gdrive delete (permanent) · share / permissions</span>
+              <span>📧 gmail list / search / read_message / read_thread</span>
+              <span>✉️ gmail send / create_draft / reply</span>
+              <span>🏷️ gmail modify_labels / mark / trash / delete</span>
             </div>
           </div>
         </Card>

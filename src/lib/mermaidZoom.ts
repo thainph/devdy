@@ -110,8 +110,8 @@ export function enableMermaidZoom(block: HTMLElement): void {
     const rect = target.getBoundingClientRect()
     zoomAt(block, target, getState(block).scale * factor, rect.width / 2, rect.height / 2)
   }
-  controls.appendChild(makeButton(ZOOM_IN_ICON, 'Zoom in', () => zoomByButton(BUTTON_STEP)))
-  controls.appendChild(makeButton(ZOOM_OUT_ICON, 'Zoom out', () => zoomByButton(1 / BUTTON_STEP)))
+  controls.appendChild(makeButton(ZOOM_IN_ICON, 'Zoom in (Shift + scroll)', () => zoomByButton(BUTTON_STEP)))
+  controls.appendChild(makeButton(ZOOM_OUT_ICON, 'Zoom out (Shift + scroll)', () => zoomByButton(1 / BUTTON_STEP)))
   controls.appendChild(
     makeButton(RESET_ICON, 'Reset zoom', () => {
       const s = getState(block)
@@ -123,15 +123,19 @@ export function enableMermaidZoom(block: HTMLElement): void {
   )
   block.appendChild(controls)
 
-  // --- wheel zoom ----------------------------------------------------------
+  // --- wheel zoom (hold Shift so plain scroll passes through) --------------
   target.addEventListener(
     'wheel',
     (e: WheelEvent) => {
+      // Only zoom while Shift is held; otherwise let the page/file scroll.
+      if (!e.shiftKey) return
       e.preventDefault()
       const rect = target.getBoundingClientRect()
       const px = e.clientX - rect.left
       const py = e.clientY - rect.top
-      const next = getState(block).scale * Math.pow(WHEEL_STEP, -e.deltaY)
+      // With Shift, some browsers map vertical wheel onto deltaX — use either.
+      const delta = e.deltaY || e.deltaX
+      const next = getState(block).scale * Math.pow(WHEEL_STEP, -delta)
       zoomAt(block, target, next, px, py)
     },
     { passive: false },

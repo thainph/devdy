@@ -1,0 +1,8 @@
+{
+  "name": "devdy-mcp-sidecar",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Built-in Devdy MCP server (stdio). Exposes quick notes + cross-session recall to the AI, reading Devdy's own SQLite store and run logs. Zero runtime dependencies (JSON-RPC hand-rolled, SQLite via node:sqlite).",
+  "main": "index.mjs"
+}

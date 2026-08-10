@@ -66,6 +66,13 @@ async function saveConfig() {
   try {
     await store.setConfig(url, authToken.value)
     authToken.value = '' // never keep the token around in the field
+    // A non-empty field sets/updates the master password; blank leaves it
+    // untouched (same "blank keeps current" convention as the auth token).
+    // Clearing is done explicitly via the Clear link.
+    if (masterPassword.value.trim()) {
+      await store.setMasterPassword(masterPassword.value)
+      masterPassword.value = ''
+    }
     toast.success('Relay settings saved')
   } catch (e) {
     toast.error(String(e))
@@ -91,13 +98,21 @@ async function toggleEnabled() {
   }
 }
 
-async function saveMasterPassword() {
+async function clearMasterPassword() {
+  if (savingMasterPw.value) return
+  const ok = await confirm({
+    title: 'Clear master password',
+    message:
+      'Remove the saved master password?\nYou will use the per-join OTP code again.',
+    confirmLabel: 'Clear',
+    variant: 'destructive',
+  })
+  if (!ok) return
   savingMasterPw.value = true
   try {
-    const had = masterPassword.value.trim().length > 0
-    await store.setMasterPassword(masterPassword.value)
+    await store.setMasterPassword('')
     masterPassword.value = ''
-    toast.success(had ? 'Master password saved' : 'Master password cleared')
+    toast.success('Master password cleared')
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -224,29 +239,34 @@ function resultTone(r: string): 'success' | 'error' | 'neutral' {
         <!-- Master password: an optional stable code that replaces the per-join
              OTP for a single owner (falls back to OTP when unset). -->
         <div class="space-y-1.5">
-          <label class="text-xs font-medium text-muted-foreground">
-            Master password
-            <span v-if="status?.has_master_password" class="text-emerald-500">(set)</span>
-          </label>
-          <div class="flex items-center gap-2">
-            <Input
-              v-model="masterPassword"
-              type="password"
-              :placeholder="status?.has_master_password
-                ? 'Enter a new password, or leave blank to clear'
-                : 'Set a password to skip the OTP each time'"
+          <label class="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+            <span>
+              Master password
+              <span v-if="status?.has_master_password" class="text-emerald-500">(set)</span>
+            </span>
+            <button
+              v-if="status?.has_master_password"
+              type="button"
               :disabled="savingMasterPw"
-              class="flex-1"
-              @keyup.enter="saveMasterPassword"
-            />
-            <Button variant="outline" :disabled="savingMasterPw" @click="saveMasterPassword">
-              {{ status?.has_master_password && !masterPassword ? 'Clear' : 'Save' }}
-            </Button>
-          </div>
+              class="ml-auto font-normal text-[11px] text-muted-foreground/80 hover:text-destructive transition-colors disabled:opacity-50"
+              @click="clearMasterPassword"
+            >
+              Clear
+            </button>
+          </label>
+          <Input
+            v-model="masterPassword"
+            type="password"
+            :placeholder="status?.has_master_password
+              ? 'Enter a new password to replace the current one'
+              : 'Set a password to skip the OTP each time'"
+            :disabled="savingConfig || savingMasterPw"
+            @keyup.enter="saveConfig"
+          />
           <p class="text-[11px] text-muted-foreground/70">
             Once set, enter this password on your phone instead of the OTP code.
             Stored in the OS keychain. More convenient but fixed — only use it if
-            you are the sole user.
+            you are the sole user. Saved together with the settings below.
           </p>
         </div>
 

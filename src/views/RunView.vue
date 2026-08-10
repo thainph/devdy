@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, nextTick, type ComponentPublicInstance } from 'vue'
+import { ref, shallowRef, computed, onMounted, onUnmounted, watch, nextTick, type ComponentPublicInstance } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectsStore, type Repo } from '@/stores/projects'
 import { useRunsStore, type RunRecord, type ProjectEntry } from '@/stores/runs'
@@ -27,7 +27,7 @@ import {
   ImagePlus, X, Paperclip,
   ShieldQuestion, MessageCircleQuestion,
   Pin, PinOff, Pencil, Check, Github, Gitlab,
-  ClipboardCopy, ScrollText, HardDrive, Cloud, Radio, Languages, FolderTree
+  ClipboardCopy, ScrollText, HardDrive, Cloud, Radio, Languages, FolderTree, Loader2
 } from 'lucide-vue-next'
 import AppSelect from '@/components/AppSelect.vue'
 import StreamLog from '@/components/StreamLog.vue'
@@ -343,12 +343,53 @@ const viewingLog = ref<string>('')
 // History (on-disk log) view state — only used when viewing a finished run that
 // has no in-memory live session. Kept separate from the live session so a
 // background run can keep streaming into its own buffer.
-const historyEntries = ref<StreamEntry[]>([])
+// shallowRef: a persisted log is immutable once parsed, so we never mutate an
+// entry in place. Skipping Vue's deep-reactive proxy over the whole (possibly
+// large) array makes parsing/assigning + the first render markedly cheaper.
+const historyEntries = shallowRef<StreamEntry[]>([])
 const historyHasStream = ref(false)
+// True while reading + parsing a persisted log from disk, so the viewer can show
+// a loading animation instead of a blank/"Loading…" flash. Skipped on a focus
+// refresh (we keep the current content on screen and swap it in silently).
+const historyLoading = ref(false)
 const historyToolIndex = new Map<string, number>()
 // Context-window state reconstructed from a persisted log (history view).
 const historyContextTokens = ref(0)
 const historyModel = ref<string | null>(null)
+
+// ── History windowing ───────────────────────────────────────────────────────
+// Long logs freeze the UI on open because EVERY entry mounts + renders markdown
+// synchronously. Opening a run jumps to the bottom, so we render only the last
+// `historyWindow` entries and let the user reveal older ones on demand. This
+// caps the first-render cost regardless of how long the conversation is.
+const HISTORY_WINDOW_INITIAL = 80
+const HISTORY_WINDOW_STEP = 120
+const historyWindow = ref(HISTORY_WINDOW_INITIAL)
+// The tail slice actually handed to StreamLog. `displayedEntries`, plain-text
+// export and the "files mentioned" list keep using the FULL array.
+const windowedHistoryEntries = computed(() => {
+  const all = historyEntries.value
+  return all.length > historyWindow.value ? all.slice(all.length - historyWindow.value) : all
+})
+const hiddenHistoryCount = computed(() =>
+  Math.max(0, historyEntries.value.length - windowedHistoryEntries.value.length),
+)
+
+// Reveal an older chunk, preserving the viewport: older entries prepend, so we
+// bump scrollTop by the height they added (measured across the next frame) so
+// the content the user was reading doesn't jump.
+async function showEarlierHistory() {
+  const el = historyEl.value
+  const beforeHeight = el?.scrollHeight ?? 0
+  const beforeTop = el?.scrollTop ?? 0
+  historyWindow.value += HISTORY_WINDOW_STEP
+  await nextTick()
+  requestAnimationFrame(() => {
+    const e = historyEl.value
+    if (!e) return
+    e.scrollTop = beforeTop + (e.scrollHeight - beforeHeight)
+  })
+}
 
 const inputContent = ref<string>('')
 const inputContentRunId = ref<string | null>(null)
@@ -699,32 +740,37 @@ function closeTranslate() {
 // Keep the live output pinned to the bottom as new entries/lines arrive for
 // the focused, running run — but only while the user is parked at the bottom
 // and not in the middle of selecting/clicking inside the output.
+// Whether we should currently keep the output pinned to the bottom: the run is
+// live, we're not in history view, the user is parked at the bottom, and isn't
+// mid-selection/click inside the output.
+function shouldPinToBottom() {
+  return (
+    currentStatus.value === 'running' &&
+    !isViewingHistory.value &&
+    stickToBottom.value &&
+    !pointerDownInOutput.value &&
+    !hasOutputSelection()
+  )
+}
+
+// Pin in a single requestAnimationFrame — this runs AFTER Vue patches the stream
+// and the browser has computed layout, so we read `scrollHeight` exactly once
+// per frame instead of forcing a reflow on every streamed event (the old nested
+// nextTicks + repeated scrollHeight reads were the layout-thrash source). The
+// guards are re-checked inside the frame: a pointer interaction may begin after
+// the watcher fires but before this callback runs.
+function keepPinnedToBottom() {
+  if (!shouldPinToBottom()) return
+  requestAnimationFrame(() => {
+    if (shouldPinToBottom() && outputEl.value) {
+      outputEl.value.scrollTop = outputEl.value.scrollHeight
+    }
+  })
+}
+
 watch(
   () => [liveEntries.value.length, liveOutputLines.value.length, currentStatus.value] as const,
-  () => {
-    if (
-      currentStatus.value === 'running' &&
-      !isViewingHistory.value &&
-      stickToBottom.value &&
-      !pointerDownInOutput.value &&
-      !hasOutputSelection()
-    ) {
-      // Re-check after Vue patches the stream. A pointer interaction may begin
-      // after this watcher runs but before the queued DOM update is applied.
-      nextTick(() => {
-        if (
-          currentStatus.value === 'running' &&
-          !isViewingHistory.value &&
-          stickToBottom.value &&
-          !pointerDownInOutput.value &&
-          !hasOutputSelection() &&
-          outputEl.value
-        ) {
-          outputEl.value.scrollTop = outputEl.value.scrollHeight
-        }
-      })
-    }
-  }
+  keepPinnedToBottom
 )
 
 // When switching to another run's live output, jump to its latest output.
@@ -792,7 +838,7 @@ onMounted(async () => {
     const latest = runsStore.runs[0]
     if (latest) await loadRunLog(latest.id)
   }
-  window.addEventListener('focus', refreshViewedRunOnFocus)
+  window.addEventListener('focus', onAppFocus)
   window.addEventListener('pointerup', onWindowPointerUp)
   window.addEventListener('mouseup', onSelectionMouseUp)
   setupPopoutBridge()
@@ -844,7 +890,7 @@ onMounted(async () => {
       // changing shouldn't force a reload of the open conversation.
       runsStore.fetchRuns(projectId.value)
       if (event.payload.run_id && event.payload.run_id === currentRunId.value) {
-        refreshViewedRunOnFocus()
+        refreshViewedRunOnFocus(true)
       }
     },
   )
@@ -857,12 +903,24 @@ onMounted(async () => {
 let sessionsChangedUnlisten: UnlistenFn | null = null
 let dragDropUnlisten: UnlistenFn | null = null
 
-async function refreshViewedRunOnFocus() {
+// `force` = the on-disk transcript actually changed (the sessions:changed file
+// watcher fired), so we must re-read even a run we hold live in memory. A plain
+// window refocus passes force=false: it must NOT blank + re-render the viewed
+// run (that was the visible "flash" on every refocus). loadRunLog then keeps a
+// live session on screen as-is, and for a history view re-reads but no-ops when
+// the content is byte-identical.
+async function refreshViewedRunOnFocus(force = false) {
   const id = currentRunId.value
   if (!id) return
   const ls = live.get(id)
   if (ls && ls.status === 'running') return
-  await loadRunLog(id, { preferDisk: true })
+  await loadRunLog(id, { preferDisk: true, force })
+}
+
+// Wrapper for the window 'focus' event: the DOM passes an Event as the first
+// arg, which must not be read as `force` (it's truthy).
+function onAppFocus() {
+  void refreshViewedRunOnFocus(false)
 }
 
 onUnmounted(() => {
@@ -873,7 +931,7 @@ onUnmounted(() => {
   if (isResizingQuestion.value) stopQuestionResize()
   outputRO?.disconnect()
   outputRO = null
-  window.removeEventListener('focus', refreshViewedRunOnFocus)
+  window.removeEventListener('focus', onAppFocus)
   window.removeEventListener('pointerup', onWindowPointerUp)
   window.removeEventListener('mouseup', onSelectionMouseUp)
   sessionsChangedUnlisten?.()
@@ -914,6 +972,7 @@ function clearHistoryView() {
   historyToolIndex.clear()
   historyContextTokens.value = 0
   historyModel.value = null
+  historyWindow.value = HISTORY_WINDOW_INITIAL
 }
 
 async function handleFetch(linkedIssueOverride?: number) {
@@ -2055,7 +2114,7 @@ async function handleClearAllRuns() {
   }
 }
 
-async function loadRunLog(runId: string, opts: { preferDisk?: boolean } = {}) {
+async function loadRunLog(runId: string, opts: { preferDisk?: boolean; force?: boolean } = {}) {
   currentRunId.value = runId
   // Reflect this run's metadata so the chat composer can decide eligibility.
   const meta = runsStore.runs.find(r => r.id === runId)
@@ -2069,10 +2128,12 @@ async function loadRunLog(runId: string, opts: { preferDisk?: boolean } = {}) {
   // If we still hold a live in-memory session for this run (it's running, or it
   // finished during this app session), show that live instead of the on-disk
   // log — and re-attach listeners if it's still streaming.
-  // `preferDisk` (a focus refresh) overrides this for finished sessions so we
-  // re-read the log, which may now include turns added outside Devdy.
+  // Only `force` (the transcript actually changed on disk — the sessions:changed
+  // watcher fired) overrides this for a finished session to re-read turns added
+  // outside Devdy. A plain window refocus (preferDisk without force) keeps the
+  // live view untouched so it doesn't blank + re-render (the "flash").
   const liveSession = live.get(runId)
-  if (liveSession && !(opts.preferDisk && liveSession.status !== 'running')) {
+  if (liveSession && !(opts.force && liveSession.status !== 'running')) {
     clearHistoryView()
     if (liveSession.status === 'running' && !live.isListening(runId)) {
       await live.startListening(runId, projectId.value)
@@ -2087,27 +2148,51 @@ async function loadRunLog(runId: string, opts: { preferDisk?: boolean } = {}) {
     return
   }
 
-  // Otherwise read the persisted log from disk (history view).
-  historyEntries.value = []
-  historyHasStream.value = false
-  historyToolIndex.clear()
-  historyContextTokens.value = 0
-  historyModel.value = null
+  // On a focus refresh we're re-reading a log the user is already viewing, so
+  // preserve their scroll position instead of yanking them to the bottom. Only
+  // re-pin to the bottom if they were already near it.
+  const isFocusRefresh = !!opts.preferDisk && viewingLogRunId.value === runId
+  const prevScrollTop = historyEl.value?.scrollTop ?? 0
+  const wasNearBottom = historyEl.value ? isNearBottom(historyEl.value) : true
+
+  // Fresh open: clear immediately and show the loading animation. Focus refresh:
+  // keep the current content on screen (no clear, no spinner) — we only touch
+  // reactive state below IF the log actually changed, so an unchanged refocus
+  // causes zero re-render (no flash).
+  if (!isFocusRefresh) {
+    historyEntries.value = []
+    historyHasStream.value = false
+    historyToolIndex.clear()
+    historyContextTokens.value = 0
+    historyModel.value = null
+    historyWindow.value = HISTORY_WINDOW_INITIAL
+    viewingLog.value = ''
+    historyLoading.value = true
+  }
   viewingLogRunId.value = runId
-  viewingLog.value = 'Loading…'
   try {
     const content = await runsStore.getRunLog(runId)
+    // Byte-identical to what's already displayed — leave all reactive state
+    // untouched so nothing re-renders (the common case on every refocus).
+    if (isFocusRefresh && content === viewingLog.value) return
     const parsed = parseStreamLog(content)
     if (parsed && parsed.entries.length > 0) {
+      historyToolIndex.clear()
       historyEntries.value = parsed.entries
       for (const [k, v] of parsed.toolIndex) historyToolIndex.set(k, v)
       historyHasStream.value = true
       historyContextTokens.value = parsed.contextTokens
       historyModel.value = parsed.model
       viewingLog.value = content
-      // Jump to the end so the latest AI result is visible right away.
       nextTick(() => {
-        if (historyEl.value) historyEl.value.scrollTop = historyEl.value.scrollHeight
+        if (!historyEl.value) return
+        if (isFocusRefresh && !wasNearBottom) {
+          // Keep the user where they were reading — don't jump on refocus.
+          historyEl.value.scrollTop = prevScrollTop
+        } else {
+          // Fresh load / switch run: jump to the end so the latest AI result is visible.
+          historyEl.value.scrollTop = historyEl.value.scrollHeight
+        }
       })
     } else {
       // No parseable log yet — likely the run hasn't actually produced output
@@ -2118,6 +2203,8 @@ async function loadRunLog(runId: string, opts: { preferDisk?: boolean } = {}) {
     }
   } catch (e) {
     viewingLog.value = String(e)
+  } finally {
+    historyLoading.value = false
   }
 }
 
@@ -2695,7 +2782,10 @@ function handleRefInput(val: string) {
                 </div>
               </template>
               <template v-else-if="inputContentLoading">
-                <p class="text-xs text-muted-foreground">Loading content…</p>
+                <div class="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 class="h-3.5 w-3.5 animate-spin text-primary" :stroke-width="2" />
+                  <span>Đang tải nội dung…</span>
+                </div>
               </template>
               <template v-else-if="inputContentError">
                 <div class="text-xs text-destructive">
@@ -2779,15 +2869,35 @@ function handleRefInput(val: string) {
               class="flex-1 min-h-0 overflow-auto p-4"
               @scroll="clearTranslateTrigger"
             >
-              <StreamLog
-                v-if="historyHasStream"
-                :entries="historyEntries"
-                :running="false"
-                :render-text="renderText"
-                :file-matcher="fileMatcher"
-                @open-file="openFileViewer"
-                @open-url="onOpenUrl"
-              />
+              <!-- Loading animation while the log is read + parsed from disk. -->
+              <div
+                v-if="historyLoading"
+                class="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground"
+              >
+                <Loader2 class="h-6 w-6 animate-spin text-primary" :stroke-width="2" />
+                <span class="text-xs">Đang tải log…</span>
+              </div>
+              <template v-else-if="historyHasStream">
+                <!-- Reveal older entries on demand — long logs render only their
+                     tail on open so the first paint stays fast. -->
+                <div v-if="hiddenHistoryCount > 0" class="mb-3 flex justify-center">
+                  <button
+                    type="button"
+                    class="rounded-full border border-border bg-muted/60 px-3 py-1 text-[11px] text-foreground/70 hover:bg-accent/60 transition-colors cursor-pointer"
+                    @click="showEarlierHistory"
+                  >
+                    Xem thêm {{ Math.min(hiddenHistoryCount, HISTORY_WINDOW_STEP) }} tin cũ hơn ({{ hiddenHistoryCount }} còn ẩn)
+                  </button>
+                </div>
+                <StreamLog
+                  :entries="windowedHistoryEntries"
+                  :running="false"
+                  :render-text="renderText"
+                  :file-matcher="fileMatcher"
+                  @open-file="openFileViewer"
+                  @open-url="onOpenUrl"
+                />
+              </template>
               <div
                 v-else
                 v-file-links

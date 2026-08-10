@@ -11,7 +11,9 @@ use commands::aws_accounts::{
     update_aws_account, validate_aws_account,
 };
 use commands::codex_sessions::reconcile_codex_sessions;
-use commands::files::{list_dir, list_project_files, read_file_base64, read_project_file};
+use commands::files::{
+    list_dir, list_project_files, read_file_base64, read_project_file, write_project_file,
+};
 use commands::github::{fetch_issue, fetch_pr, list_runs, refetch_run};
 use commands::github_accounts::{
     create_github_account, delete_github_account, list_github_accounts, set_project_github_account,
@@ -26,6 +28,10 @@ use commands::mcp::{
     create_mcp_server, delete_mcp_server, export_mcp_server, get_mcp_server, import_mcp_server,
     list_mcp_servers, list_project_mcp_servers, set_project_mcp_servers, test_mcp_connection,
     update_mcp_server,
+};
+use commands::google::{
+    add_google_account, delete_google_account, google_client_status, google_forget_client,
+    list_google_accounts, rename_google_account, set_default_google_account,
 };
 use commands::notifications::show_permission_notification;
 use commands::projects::{
@@ -57,6 +63,9 @@ use commands::stats::{
     refresh_plan_usage, reset_usage_stats,
 };
 use commands::storage::{clean_storage, get_storage_stats};
+use commands::notes::{
+    add_note, delete_note, list_notes, reorder_notes, set_note_project, update_note,
+};
 use commands::todos::{
     add_todo, clear_completed_todos, delete_todo, list_todos, reorder_todos, toggle_todo,
     update_todo,
@@ -123,7 +132,11 @@ pub fn run() {
             let broker_handle = tauri::async_runtime::block_on(start_broker(
                 db.clone(),
                 BrokerConfig {
-                    socket_label: "app".to_string(),
+                    // Tách socket theo build để bản dev và bản đã cài không
+                    // giành chung /tmp/devdy-broker/app.sock (start_broker xoá
+                    // socket cũ khi khởi động; nếu trùng label sẽ kill broker
+                    // của bản kia khi chạy song song).
+                    socket_label: if cfg!(debug_assertions) { "app-dev" } else { "app" }.to_string(),
                     resolver,
                 },
             ))
@@ -215,6 +228,13 @@ pub fn run() {
             test_mcp_connection,
             export_mcp_server,
             import_mcp_server,
+            list_google_accounts,
+            add_google_account,
+            delete_google_account,
+            rename_google_account,
+            set_default_google_account,
+            google_client_status,
+            google_forget_client,
             list_vps_servers,
             create_vps_server,
             update_vps_server,
@@ -281,6 +301,7 @@ pub fn run() {
             list_project_files,
             list_dir,
             read_project_file,
+            write_project_file,
             read_file_base64,
             create_handoff_run,
             create_session_run,
@@ -311,6 +332,12 @@ pub fn run() {
             delete_todo,
             clear_completed_todos,
             reorder_todos,
+            list_notes,
+            add_note,
+            update_note,
+            set_note_project,
+            delete_note,
+            reorder_notes,
             show_permission_notification,
             remote_set_config,
             remote_enable,

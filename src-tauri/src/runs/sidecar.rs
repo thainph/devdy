@@ -50,6 +50,63 @@ pub fn resolve_sidecar(
     resolve_sidecar_script(app, node_path, sidecar_override, "DEVDY_SIDECAR_PATH", "sidecar", "Claude")
 }
 
+/// Best-effort path to the built-in `devdy` MCP server script
+/// (`sidecar-mcp/index.mjs`). Mirrors `resolve_sidecar_script` resolution
+/// (`DEVDY_MCP_SIDECAR_PATH` env → bundled resource → dev fallback) but never
+/// errors: the caller skips injecting the built-in server when the file is
+/// absent, so a missing script degrades gracefully instead of failing a run.
+pub fn resolve_mcp_sidecar_script(app: &AppHandle) -> PathBuf {
+    if let Ok(p) = std::env::var("DEVDY_MCP_SIDECAR_PATH") {
+        return PathBuf::from(p);
+    }
+    let bundled = app
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|r| r.join("sidecar-mcp").join("index.mjs"))
+        .filter(|p| p.exists());
+    bundled.unwrap_or_else(|| {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("sidecar-mcp")
+            .join("index.mjs")
+    })
+}
+
+/// Best-effort path to a sibling built-in MCP server script inside the bundled
+/// `sidecar-mcp/` directory (e.g. `gdrive.mjs`, `gmail.mjs`). Same resolution as
+/// [`resolve_mcp_sidecar_script`] (`DEVDY_MCP_SIDECAR_DIR` env → bundled resource
+/// → dev fallback); never errors — callers skip injection when the file is
+/// absent.
+pub fn resolve_mcp_script(app: &AppHandle, filename: &str) -> PathBuf {
+    if let Ok(dir) = std::env::var("DEVDY_MCP_SIDECAR_DIR") {
+        return PathBuf::from(dir).join(filename);
+    }
+    let bundled = app
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|r| r.join("sidecar-mcp").join(filename))
+        .filter(|p| p.exists());
+    bundled.unwrap_or_else(|| {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("sidecar-mcp")
+            .join(filename)
+    })
+}
+
+/// Path to Devdy's SQLite store (`<app_data_dir>/data.db`), passed to the
+/// built-in MCP server so it can read notes/sessions. Falls back to a bare
+/// `data.db` if the app data dir can't be resolved (the MCP tools then error
+/// out cleanly rather than the run failing).
+pub fn resolve_db_path(app: &AppHandle) -> PathBuf {
+    app.path()
+        .app_data_dir()
+        .map(|d| d.join("data.db"))
+        .unwrap_or_else(|_| PathBuf::from("data.db"))
+}
+
 /// Resolve the Node binary and the Codex sidecar entry script
 /// (`sidecar-codex/index.mjs`). Mirrors `resolve_sidecar`.
 pub fn resolve_codex_sidecar(

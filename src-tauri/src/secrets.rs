@@ -42,6 +42,22 @@ struct SecretStore {
     /// consolidated item so the whole app costs at most ONE Keychain prompt.
     #[serde(default)]
     remote: RemoteSecrets,
+    /// Google OAuth client (Drive + Gmail): the user-pasted Desktop-app
+    /// client_id/client_secret. Persisted at the APP level and REUSED across
+    /// connect/disconnect cycles, so switching accounts never re-prompts for the
+    /// credentials — only a fresh consent is needed.
+    #[serde(default)]
+    google_client: Option<GoogleClientCreds>,
+    /// Connected Google accounts, keyed by account id → long-lived refresh_token.
+    /// Metadata (label/email/scope/default) lives in the `google_accounts` DB
+    /// table; only the secret token is here. Multiple accounts allowed.
+    #[serde(default)]
+    google_accounts: HashMap<String, String>,
+    /// LEGACY single-account field from the pre-multi-account design. Kept only
+    /// so an existing connection migrates transparently into `google_accounts`
+    /// on first read (see `take_legacy_google`). Never written anymore.
+    #[serde(default)]
+    google: Option<GoogleTokens>,
     /// Per-process guard: `"<provider>:<account_id>"` keys we already attempted to
     /// migrate from a legacy per-account item. A denied or missing legacy read is
     /// recorded here so it is NEVER retried within the same run — otherwise a
@@ -376,6 +392,129 @@ pub fn delete_mcp_secrets(server_id: &str) -> Result<()> {
     drop_legacy_mcp(server_id);
     Ok(())
 }
+
+// ---- Google OAuth credentials ----------------------------------------------
+//
+// Powers the built-in `gdrive` / `gmail` MCP servers. Two layers, both in the
+// consolidated Keychain item:
+//   • CLIENT (GoogleClientCreds): the user-pasted OAuth Desktop-app
+//     client_id/client_secret. Persisted at the APP level and REUSED across
+//     connect/disconnect — switching accounts never re-prompts for these.
+//   • ACCOUNT (GoogleTokens): the connected account's long-lived refresh_token
+//     + email + scope. Cleared on disconnect. Access tokens are NEVER stored —
+//     the MCP servers mint short-lived ones on demand from the refresh_token.
+
+/// The reusable OAuth Desktop-app client credentials (shared by all accounts).
+#[derive(Default, Serialize, Deserialize, Clone)]
+pub struct GoogleClientCreds {
+    pub client_id: String,
+    pub client_secret: String,
+}
+
+/// Decrypted Google OAuth payload for the connected account. Carries a COPY of
+/// the client id/secret so the MCP-server injection has everything it needs in
+/// one place.
+#[derive(Default, Serialize, Deserialize, Clone)]
+pub struct GoogleTokens {
+    pub client_id: String,
+    pub client_secret: String,
+    pub refresh_token: String,
+    /// Account email, resolved via the userinfo endpoint at connect time. Shown
+    /// in Settings; not a secret but kept alongside for convenience.
+    #[serde(default)]
+    pub email: String,
+    /// Space-delimited scopes actually granted by the consent screen.
+    #[serde(default)]
+    pub scope: String,
+}
+
+/// Persist (or update) the reusable OAuth client credentials.
+pub fn set_google_client(client_id: &str, client_secret: &str) -> Result<()> {
+    let mut guard = CACHE.lock().map_err(|_| anyhow!("secret cache poisoned"))?;
+    ensure_loaded(&mut guard);
+    let store = guard.as_mut().expect("store loaded");
+    store.google_client = Some(GoogleClientCreds {
+        client_id: client_id.to_string(),
+        client_secret: client_secret.to_string(),
+    });
+    persist(store)?;
+    Ok(())
+}
+
+/// Read the saved OAuth client credentials, or `None` if never entered.
+pub fn get_google_client() -> Option<GoogleClientCreds> {
+    let mut guard = CACHE.lock().ok()?;
+    ensure_loaded(&mut guard);
+    guard.as_ref().and_then(|s| s.google_client.clone())
+}
+
+/// Whether reusable OAuth client credentials are saved.
+pub fn has_google_client() -> bool {
+    if let Ok(guard) = CACHE.lock() {
+        if let Some(store) = guard.as_ref() {
+            return store.google_client.is_some();
+        }
+    }
+    store_exists()
+}
+
+/// Forget the saved OAuth client credentials AND every connected account's
+/// token (they can no longer be refreshed without the client).
+pub fn delete_google_client() -> Result<()> {
+    let mut guard = CACHE.lock().map_err(|_| anyhow!("secret cache poisoned"))?;
+    ensure_loaded(&mut guard);
+    let store = guard.as_mut().expect("store loaded");
+    store.google_client = None;
+    store.google = None;
+    store.google_accounts.clear();
+    persist(store)?;
+    Ok(())
+}
+
+/// Persist an account's refresh_token (keyed by account id).
+pub fn set_google_account_token(id: &str, refresh_token: &str) -> Result<()> {
+    let mut guard = CACHE.lock().map_err(|_| anyhow!("secret cache poisoned"))?;
+    ensure_loaded(&mut guard);
+    let store = guard.as_mut().expect("store loaded");
+    store
+        .google_accounts
+        .insert(id.to_string(), refresh_token.to_string());
+    persist(store)?;
+    Ok(())
+}
+
+/// Read one account's refresh_token, or `None` if absent.
+pub fn get_google_account_token(id: &str) -> Option<String> {
+    let mut guard = CACHE.lock().ok()?;
+    ensure_loaded(&mut guard);
+    guard
+        .as_ref()
+        .and_then(|s| s.google_accounts.get(id).cloned())
+}
+
+/// Remove one account's refresh_token (no-op if absent).
+pub fn delete_google_account_token(id: &str) -> Result<()> {
+    let mut guard = CACHE.lock().map_err(|_| anyhow!("secret cache poisoned"))?;
+    ensure_loaded(&mut guard);
+    let store = guard.as_mut().expect("store loaded");
+    store.google_accounts.remove(id);
+    persist(store)?;
+    Ok(())
+}
+
+/// Read + clear the LEGACY single-account tokens, for one-time migration into
+/// the multi-account map. Returns `None` when there's nothing to migrate.
+pub fn take_legacy_google() -> Option<GoogleTokens> {
+    let mut guard = CACHE.lock().ok()?;
+    ensure_loaded(&mut guard);
+    let store = guard.as_mut()?;
+    let legacy = store.google.take();
+    if legacy.is_some() {
+        let _ = persist(store);
+    }
+    legacy
+}
+
 
 // ---- VPS/server secrets ----------------------------------------------------
 //

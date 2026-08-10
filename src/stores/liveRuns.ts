@@ -236,16 +236,25 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
       ),
     )
 
-    fns.push(
-      await listen<unknown>(`run:event:${runId}`, (event) => {
-        s.hasStreamEvents = true
-        applyStreamEvent({ entries: s.entries, toolIndex }, event.payload)
-        for (const e of s.entries) {
-          if (e.kind === 'system' && e.sessionId) s.sessionId = e.sessionId
-          if (e.kind === 'system' && e.model) s.model = e.model
-        }
+    // ── Batched stream-event processing ─────────────────────────────────────
+    // Stream events arrive in rapid bursts (tool spam, or the flush released
+    // when a permission is allowed). Applying + re-rendering per event freezes
+    // the main thread. Buffer the raw payloads and drain them once per frame so
+    // the UI re-renders at most ~once/frame no matter how fast events land. A
+    // setTimeout fallback covers a hidden window (rAF is paused there) so a
+    // background run's state still advances.
+    let eventBuffer: unknown[] = []
+    let flushScheduled = false
+    function flushEvents() {
+      flushScheduled = false
+      if (!eventBuffer.length) return
+      const batch = eventBuffer
+      eventBuffer = []
+      s.hasStreamEvents = true
+      for (const payload of batch) {
+        applyStreamEvent({ entries: s.entries, toolIndex }, payload)
+        const p = payload as Record<string, unknown> | null
         // Capture slash commands advertised on system.init (Claude only).
-        const p = event.payload as Record<string, unknown> | null
         if (p && p.type === 'system' && p.subtype === 'init' && Array.isArray(p.slash_commands)) {
           s.slashCommands = (p.slash_commands as unknown[]).map((c) => String(c))
           const engine = runsStore.runs.find((r) => r.id === runId)?.engine
@@ -261,24 +270,44 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
         // exactly what Claude's own context indicator reports. The `result`
         // event's usage is a cumulative per-turn sum that over-counts, so it is
         // only a fallback for engines that never emit per-message usage.
-        if (isCompactBoundary(event.payload)) {
+        if (isCompactBoundary(payload)) {
           s.contextTokens = 0
           s.sawAssistantUsage = false
         } else {
-          const ctx = extractContextTokens(event.payload)
+          const ctx = extractContextTokens(payload)
           if (ctx !== null) {
             s.contextTokens = ctx
             s.sawAssistantUsage = true
           } else if (!s.sawAssistantUsage) {
-            const total = extractTurnTotalTokens(event.payload)
+            const total = extractTurnTotalTokens(payload)
             if (total !== null) s.contextTokens = total
           }
         }
+      }
+      // sessionId/model come from a system entry; scan once per flush, not per
+      // event (the earlier per-event O(n) scan grew costly on long sessions).
+      for (const e of s.entries) {
+        if (e.kind === 'system' && e.sessionId) s.sessionId = e.sessionId
+        if (e.kind === 'system' && e.model) s.model = e.model
+      }
+    }
+    const scheduleFlush = () => {
+      if (flushScheduled) return
+      flushScheduled = true
+      if (typeof document !== 'undefined' && document.hidden) setTimeout(flushEvents, 48)
+      else requestAnimationFrame(flushEvents)
+    }
+
+    fns.push(
+      await listen<unknown>(`run:event:${runId}`, (event) => {
+        eventBuffer.push(event.payload)
+        scheduleFlush()
       }),
     )
 
     fns.push(
       await listen<{ run_id: string; status: string }>(`run:done:${runId}`, (event) => {
+        flushEvents() // drain any events still buffered this frame before stopping
         s.status = event.payload.status
         s.permissionQueue = []
         const r = runsStore.runs.find((x) => x.id === runId)

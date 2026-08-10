@@ -4,16 +4,18 @@
 // "open externally" fallback). Used both inside the in-app modal (RunView) and
 // in the standalone pop-out window (FileViewerWindow). Hosts supply chrome-
 // specific buttons (full-screen, pop-out, close) via the #actions slot.
-import { ref, computed, watch, onMounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import {
-  FileCode2, AArrowDown, AArrowUp, ExternalLink, Copy, FileQuestion, FileWarning, FolderOpen, RotateCw, Code2, ClipboardCopy, Check,
+  FileCode2, AArrowDown, AArrowUp, ExternalLink, Copy, FileQuestion, FileWarning, FolderOpen, RotateCw, Code2, ClipboardCopy, Check, Languages, Pencil, Save, X,
 } from 'lucide-vue-next'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener'
 import type MarkdownIt from 'markdown-it'
 import { Button } from '@/components/ui'
+import TranslatePopover from '@/components/TranslatePopover.vue'
 import { useRunsStore } from '@/stores/runs'
 import { useProjectsStore } from '@/stores/projects'
+import { useAppSettingsStore } from '@/stores/appSettings'
 import { applyMermaidFence, vMermaid } from '@/lib/mermaid'
 import { vCopyCode } from '@/lib/copyCode'
 import { matchProjectFile, parseLineRef, decorateFileLinks } from '@/lib/fileLinks'
@@ -35,6 +37,7 @@ const emit = defineEmits<{
 
 const runsStore = useRunsStore()
 const projectsStore = useProjectsStore()
+const appSettings = useAppSettingsStore()
 
 // ── File-type classification ──────────────────────────────────────────────
 type FileKind = 'text' | 'image' | 'video' | 'audio' | 'pdf' | 'other'
@@ -75,10 +78,54 @@ const kind = ref<FileKind>('text')
 const assetUrl = ref('')
 const absPath = ref('')
 const bodyEl = ref<HTMLElement | null>(null)
+// Scroll container wrapping both preview and raw views — selection detection for
+// the "Dịch" translate trigger is scoped to this element.
+const viewerBodyEl = ref<HTMLElement | null>(null)
 
 const lines = computed(() => content.value.split('\n'))
 const isMarkdown = computed(() => /\.(md|markdown|mdx)$/i.test(curPath.value))
 const mode = ref<'code' | 'preview'>('code')
+
+// ── Inline editing (text / markdown only) ───────────────────────────────────
+// Only plain-text/markdown files that loaded fully (not truncated, no error)
+// may be edited in place. Media, binaries and oversized files stay read-only.
+const editing = ref(false)
+const editContent = ref('')
+const saving = ref(false)
+const saveError = ref<string | null>(null)
+const editable = computed(() =>
+  kind.value === 'text' && !truncated.value && !error.value && !loading.value,
+)
+const dirty = computed(() => editing.value && editContent.value !== content.value)
+
+function startEdit() {
+  if (!editable.value) return
+  editContent.value = content.value
+  saveError.value = null
+  editing.value = true
+  // Markdown edits happen against the raw source, not the rendered preview.
+  if (isMarkdown.value) mode.value = 'code'
+}
+
+function cancelEdit() {
+  editing.value = false
+  saveError.value = null
+}
+
+async function saveEdit() {
+  if (saving.value || !editable.value) return
+  saving.value = true
+  saveError.value = null
+  try {
+    await runsStore.writeProjectFile(props.projectPath, curPath.value, editContent.value)
+    content.value = editContent.value
+    editing.value = false
+  } catch (e) {
+    saveError.value = String(e)
+  } finally {
+    saving.value = false
+  }
+}
 
 // Adjustable font size (px) for text / markdown.
 const fontSize = ref(13)
@@ -91,19 +138,30 @@ function bumpFontSize(delta: number) {
 // ── Markdown rendering (local instance, mirrors RunView) ────────────────────
 const mdReady = ref(false)
 let _md: MarkdownIt | null = null
+let _sanitize: ((html: string) => string) | null = null
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 function renderText(md: string): string {
   if (!mdReady.value || !_md) return escapeHtml(md ?? '').replace(/\n/g, '<br/>')
-  return _md.render(md ?? '')
+  const html = _md.render(md ?? '')
+  // html:true lets raw HTML through (needed for inline <svg> diagrams in docs),
+  // so sanitize before v-html. DOMPurify's default config keeps SVG/MathML and
+  // data-* attributes (so the mermaid placeholder survives) while stripping
+  // <script>, event handlers and other XSS vectors — important because the app
+  // runs with csp:null.
+  return _sanitize ? _sanitize(html) : html
 }
 async function loadMarkdown() {
   if (_md) return
   try {
-    const MarkdownIt = (await import('markdown-it')).default
-    _md = new MarkdownIt({ html: false, linkify: true, typographer: true, breaks: true })
+    const [MarkdownIt, DOMPurify] = await Promise.all([
+      import('markdown-it').then(m => m.default),
+      import('dompurify').then(m => m.default),
+    ])
+    _md = new MarkdownIt({ html: true, linkify: true, typographer: true, breaks: true })
     applyMermaidFence(_md)
+    _sanitize = (html: string) => DOMPurify.sanitize(html, { USE_PROFILES: { html: true, svg: true, svgFilters: true } })
     mdReady.value = true
   } catch {
     /* leave _md null; renderText falls back to escaped text */
@@ -217,6 +275,8 @@ async function load() {
   truncated.value = false
   copied.value = false
   assetUrl.value = ''
+  editing.value = false
+  saveError.value = null
   const k = fileKind(path)
   kind.value = k
 
@@ -284,6 +344,8 @@ async function reload() {
   }
   reloading.value = true
   error.value = null
+  editing.value = false
+  saveError.value = null
   try {
     const res = await runsStore.readProjectFile(projPath, path)
     curPath.value = res.path
@@ -296,10 +358,59 @@ async function reload() {
   }
 }
 
+// ── Translate selection ─────────────────────────────────────────────────────
+// Drag-selecting text inside the file body (rendered markdown or raw source)
+// surfaces a floating "Dịch" button; clicking it opens a TranslatePopover that
+// calls the one-shot `translate_text` backend command. Mirrors RunView.
+const translateTrigger = ref<{ text: string; x: number; y: number } | null>(null)
+const activeTranslation = ref<{ text: string; x: number; y: number } | null>(null)
+const defaultTranslateLang = computed(() => appSettings.settings?.translate_target_lang || 'vi')
+
+function clearTranslateTrigger() {
+  translateTrigger.value = null
+}
+
+function onSelectionMouseUp() {
+  const sel = window.getSelection()
+  if (!sel || sel.isCollapsed) { translateTrigger.value = null; return }
+  const text = sel.toString().trim()
+  if (text.length < 2) { translateTrigger.value = null; return }
+  const container = viewerBodyEl.value
+  if (!container || (!container.contains(sel.anchorNode) && !container.contains(sel.focusNode))) {
+    translateTrigger.value = null
+    return
+  }
+  let rect: DOMRect | null = null
+  try { rect = sel.getRangeAt(0).getBoundingClientRect() } catch { rect = null }
+  if (!rect || (rect.width === 0 && rect.height === 0)) { translateTrigger.value = null; return }
+  translateTrigger.value = { text, x: rect.left, y: rect.bottom + 6 }
+}
+
+function openTranslate() {
+  const t = translateTrigger.value
+  if (!t) return
+  activeTranslation.value = { ...t }
+  translateTrigger.value = null
+}
+
+function closeTranslate() {
+  activeTranslation.value = null
+}
+
+// A new file replaces the body content — drop any stale translate UI.
+watch(() => [props.projectPath, props.path], () => {
+  clearTranslateTrigger()
+  closeTranslate()
+})
+
 onMounted(() => {
   loadMarkdown()
   loadProjectFiles()
   load()
+  window.addEventListener('mouseup', onSelectionMouseUp)
+})
+onUnmounted(() => {
+  window.removeEventListener('mouseup', onSelectionMouseUp)
 })
 watch(() => [props.projectPath, props.path, props.line], () => {
   loadProjectFiles()
@@ -317,7 +428,7 @@ defineExpose({ onRevealInFolder, onOpenInApp })
       <span class="text-xs font-mono text-foreground/90 truncate flex-1" :title="curPath">{{ curPath }}</span>
       <!-- Raw / rendered toggle, only meaningful for markdown files -->
       <div
-        v-if="isMarkdown && content"
+        v-if="isMarkdown && content && !editing"
         class="flex items-center rounded-md border border-border overflow-hidden shrink-0 text-[10px] font-medium"
       >
         <button
@@ -388,12 +499,40 @@ defineExpose({ onRevealInFolder, onOpenInApp })
         <Check v-if="copied" class="h-3.5 w-3.5 text-primary" :stroke-width="1.75" />
         <Copy v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
       </button>
+      <!-- Edit toggle (text / markdown files only) -->
+      <button
+        v-if="editable && !editing"
+        class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
+        title="Edit file"
+        @click="startEdit"
+      >
+        <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
+      </button>
+      <!-- Save / cancel controls while editing -->
+      <template v-if="editing">
+        <button
+          class="flex items-center gap-1 h-6 px-2 rounded-md text-[11px] font-medium bg-primary/15 text-primary hover:bg-primary/25 transition-colors cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-default"
+          title="Save changes"
+          :disabled="saving || !dirty"
+          @click="saveEdit"
+        >
+          <Save class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ saving ? 'Saving…' : 'Save' }}
+        </button>
+        <button
+          class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
+          title="Cancel editing"
+          @click="cancelEdit"
+        >
+          <X class="h-3.5 w-3.5" :stroke-width="1.75" />
+        </button>
+      </template>
       <!-- Host-supplied chrome controls (full-screen, pop-out, close) -->
       <slot name="actions" />
     </div>
 
     <!-- Body -->
-    <div class="flex-1 overflow-auto min-h-0">
+    <div ref="viewerBodyEl" class="flex-1 overflow-auto min-h-0" @scroll="clearTranslateTrigger">
       <div v-if="loading" class="p-4 text-xs text-muted-foreground">Loading…</div>
       <div v-else-if="error" class="p-6 flex flex-col items-center gap-3 text-center">
         <FileQuestion class="h-10 w-10 text-foreground/30" :stroke-width="1.5" />
@@ -462,6 +601,19 @@ defineExpose({ onRevealInFolder, onOpenInApp })
           </Button>
         </div>
       </div>
+      <!-- Inline editor (text / markdown), plain textarea against raw source -->
+      <div v-else-if="editing" class="flex flex-col h-full min-h-[70vh]">
+        <textarea
+          v-model="editContent"
+          spellcheck="false"
+          class="flex-1 w-full resize-none bg-card text-foreground/90 font-mono px-4 py-2 outline-none leading-relaxed min-h-[60vh]"
+          :style="{ fontSize: fontSize + 'px' }"
+        />
+        <p
+          v-if="saveError"
+          class="shrink-0 px-4 py-2 text-xs text-destructive border-t border-border bg-destructive/10 break-all"
+        >{{ saveError }}</p>
+      </div>
       <!-- Rendered markdown preview -->
       <div
         v-else-if="isMarkdown && mode === 'preview'"
@@ -504,5 +656,31 @@ defineExpose({ onRevealInFolder, onOpenInApp })
         </div>
       </div>
     </div>
+
+    <!-- Floating "Dịch" trigger for a text selection in the file body.
+         `mousedown.prevent` keeps the selection alive through the click. -->
+    <Teleport to="body">
+      <button
+        v-if="translateTrigger"
+        class="fixed z-[65] inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[11px] font-medium text-primary shadow-lg shadow-black/30 hover:bg-accent/60 transition-colors cursor-pointer"
+        :style="{ left: translateTrigger.x + 'px', top: translateTrigger.y + 'px' }"
+        title="Dịch đoạn đã chọn"
+        @mousedown.prevent
+        @click="openTranslate"
+      >
+        <Languages class="h-3 w-3" :stroke-width="1.75" />
+        Dịch
+      </button>
+    </Teleport>
+
+    <!-- Translation result popover -->
+    <TranslatePopover
+      v-if="activeTranslation"
+      :text="activeTranslation.text"
+      :x="activeTranslation.x"
+      :y="activeTranslation.y"
+      :initial-lang="defaultTranslateLang"
+      @close="closeTranslate"
+    />
   </div>
 </template>

@@ -960,3 +960,140 @@ pub async fn resolve_project_mcp_servers(
         (serde_json::Value::Object(map), skipped)
     }
 }
+
+/// Whether the built-in `devdy` MCP server should be injected. Reads the
+/// `mcp_builtin_devdy_enabled` setting; defaults to `true` when unset (only an
+/// explicit `"false"` disables it).
+pub async fn builtin_devdy_enabled(db: &Db) -> bool {
+    let v = sqlx::query_scalar::<_, String>(
+        "SELECT value FROM settings WHERE key = 'mcp_builtin_devdy_enabled'",
+    )
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+    !matches!(v.as_deref(), Some("false"))
+}
+
+/// Add the built-in `devdy` stdio MCP server (quick notes + cross-session
+/// recall) to an already-resolved MCP map. Injected into every run so the AI
+/// can read/write Devdy's own store, scoped to the current project via env.
+///
+/// `mcp` may be `Null` (no user servers) or an `Object`. Returns an `Object`
+/// that also carries `devdy` — unless the server script is missing (dev/bundle
+/// mismatch), in which case `mcp` is returned unchanged so the run still works.
+/// A user server literally named `devdy` takes precedence (not overwritten).
+pub fn with_builtin_devdy(
+    mcp: serde_json::Value,
+    node_bin: &str,
+    script: &std::path::Path,
+    db_path: &std::path::Path,
+    project_id: &str,
+    project_path: &str,
+) -> serde_json::Value {
+    if !script.exists() {
+        return mcp;
+    }
+    let mut map = match mcp {
+        serde_json::Value::Object(m) => m,
+        _ => serde_json::Map::new(),
+    };
+    map.entry("devdy".to_string()).or_insert_with(|| {
+        serde_json::json!({
+            "type": "stdio",
+            "command": node_bin,
+            "args": [script.to_string_lossy()],
+            "env": {
+                "DEVDY_DB_PATH": db_path.to_string_lossy(),
+                "DEVDY_PROJECT_ID": project_id,
+                "DEVDY_PROJECT_PATH": project_path,
+            }
+        })
+    });
+    serde_json::Value::Object(map)
+}
+
+/// Add the built-in `gdrive` + `gmail` stdio MCP servers to an already-resolved
+/// MCP map when at least one Google account is connected. Both run the same Node
+/// binary as the Claude/devdy sidecar and receive ALL connected accounts via env
+/// (`GOOGLE_ACCOUNTS` = JSON array of {label,email,refresh_token,default}); the
+/// servers mint their own short-lived access tokens per account, so a run can
+/// outlive the 1h access-token lifetime. The AI selects an account via each
+/// tool's optional `account` argument (default account when omitted).
+///
+/// No-ops (returns `mcp` unchanged) when no client creds or no accounts exist.
+/// Each server is only injected if its script exists and the map does not
+/// already carry a user server of the same name (user servers take precedence).
+pub async fn with_builtin_google(
+    db: &Db,
+    mcp: serde_json::Value,
+    node_bin: &str,
+    gdrive_script: &std::path::Path,
+    gmail_script: &std::path::Path,
+) -> serde_json::Value {
+    use sqlx::Row;
+    let client = match secrets::get_google_client() {
+        Some(c) => c,
+        None => return mcp,
+    };
+    let rows = match sqlx::query(
+        "SELECT id, label, email, is_default FROM google_accounts ORDER BY is_default DESC, label",
+    )
+    .fetch_all(db)
+    .await
+    {
+        Ok(r) if !r.is_empty() => r,
+        _ => return mcp,
+    };
+
+    let mut accounts = Vec::new();
+    for row in &rows {
+        let id: String = row.get("id");
+        let Some(refresh_token) = secrets::get_google_account_token(&id) else {
+            continue;
+        };
+        accounts.push(serde_json::json!({
+            "label": row.get::<String, _>("label"),
+            "email": row.try_get::<String, _>("email").unwrap_or_default(),
+            "refresh_token": refresh_token,
+            "default": row.get::<i64, _>("is_default") != 0,
+        }));
+    }
+    if accounts.is_empty() {
+        return mcp;
+    }
+
+    let env = serde_json::json!({
+        "GOOGLE_CLIENT_ID": client.client_id,
+        "GOOGLE_CLIENT_SECRET": client.client_secret,
+        "GOOGLE_ACCOUNTS": serde_json::Value::Array(accounts).to_string(),
+    });
+
+    let mut map = match mcp {
+        serde_json::Value::Object(m) => m,
+        _ => serde_json::Map::new(),
+    };
+    if gdrive_script.exists() {
+        let env = env.clone();
+        map.entry("gdrive".to_string()).or_insert_with(|| {
+            serde_json::json!({
+                "type": "stdio",
+                "command": node_bin,
+                "args": [gdrive_script.to_string_lossy()],
+                "env": env,
+            })
+        });
+    }
+    if gmail_script.exists() {
+        map.entry("gmail".to_string()).or_insert_with(|| {
+            serde_json::json!({
+                "type": "stdio",
+                "command": node_bin,
+                "args": [gmail_script.to_string_lossy()],
+                "env": env,
+            })
+        });
+    }
+
+    serde_json::Value::Object(map)
+}
