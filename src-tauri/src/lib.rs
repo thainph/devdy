@@ -29,7 +29,10 @@ use commands::mcp::{
     list_mcp_servers, list_project_mcp_servers, set_project_mcp_servers, test_mcp_connection,
     update_mcp_server,
 };
-use commands::gcalendar::{list_google_calendar_events, list_google_calendars};
+use commands::gcalendar::{
+    create_google_calendar_event, delete_google_calendar_event, list_google_calendar_events,
+    list_google_calendars, update_google_calendar_event,
+};
 use commands::google::{
     add_google_account, delete_google_account, google_client_status, google_forget_client,
     list_google_accounts, rename_google_account, set_default_google_account,
@@ -238,6 +241,9 @@ pub fn run() {
             google_forget_client,
             list_google_calendars,
             list_google_calendar_events,
+            create_google_calendar_event,
+            update_google_calendar_event,
+            delete_google_calendar_event,
             list_vps_servers,
             create_vps_server,
             update_vps_server,
