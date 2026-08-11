@@ -600,6 +600,128 @@ pub async fn list_google_calendar_events(
     Ok(EventsResult { events, errors })
 }
 
+// ---- Write commands (create / update / delete) -----------------------------
+
+const EVENTS_BASE: &str = "https://www.googleapis.com/calendar/v3/calendars";
+
+/// Create an event on `calendar_id`. Supports timed (dateTime+timeZone) and
+/// all-day (date, end exclusive) events plus the FULL payload (attendees,
+/// custom reminders, recurrence, Google Meet via `conferenceData`). Always sends
+/// `conferenceDataVersion=1` and `sendUpdates=all`. Returns the created event
+/// mapped to `CalEvent`.
+#[tauri::command]
+pub async fn create_google_calendar_event(
+    db: State<'_, Db>,
+    account_id: String,
+    calendar_id: String,
+    payload: EventPayload,
+) -> Result<CalEvent, String> {
+    let client = reqwest::Client::new();
+    let token = access_token_for(&client, &account_id).await?;
+    let url = format!(
+        "{EVENTS_BASE}/{}/events",
+        urlencoding_component(&calendar_id)
+    );
+
+    let resp = client
+        .post(&url)
+        .bearer_auth(&token)
+        .query(&[("conferenceDataVersion", "1"), ("sendUpdates", "all")])
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("Create event request failed: {e}"))?;
+
+    let ev = parse_event_response(resp, "Create").await?;
+    let label = account_label_for(db.inner(), &account_id).await;
+    map_event_entry(ev, &account_id, &label, &calendar_id, "", None)
+        .ok_or_else(|| "Created event has no usable start.".to_string())
+}
+
+/// Update an event with `PATCH` — only the fields present in `payload` are sent,
+/// so Google keeps every other field (AC-05). Same query flags as create.
+#[tauri::command]
+pub async fn update_google_calendar_event(
+    db: State<'_, Db>,
+    account_id: String,
+    calendar_id: String,
+    event_id: String,
+    payload: EventPayload,
+) -> Result<CalEvent, String> {
+    let client = reqwest::Client::new();
+    let token = access_token_for(&client, &account_id).await?;
+    let url = format!(
+        "{EVENTS_BASE}/{}/events/{}",
+        urlencoding_component(&calendar_id),
+        urlencoding_component(&event_id)
+    );
+
+    let resp = client
+        .patch(&url)
+        .bearer_auth(&token)
+        .query(&[("conferenceDataVersion", "1"), ("sendUpdates", "all")])
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("Update event request failed: {e}"))?;
+
+    let ev = parse_event_response(resp, "Update").await?;
+    let label = account_label_for(db.inner(), &account_id).await;
+    map_event_entry(ev, &account_id, &label, &calendar_id, "", None)
+        .ok_or_else(|| "Updated event has no usable start.".to_string())
+}
+
+/// Delete an event. Idempotent: both `204 No Content` (deleted) and `410 Gone`
+/// (already deleted) count as success. Uses `sendUpdates=all`.
+#[tauri::command]
+pub async fn delete_google_calendar_event(
+    db: State<'_, Db>,
+    account_id: String,
+    calendar_id: String,
+    event_id: String,
+) -> Result<(), String> {
+    let _ = &db; // kept for signature symmetry with create/update
+    let client = reqwest::Client::new();
+    let token = access_token_for(&client, &account_id).await?;
+    let url = format!(
+        "{EVENTS_BASE}/{}/events/{}",
+        urlencoding_component(&calendar_id),
+        urlencoding_component(&event_id)
+    );
+
+    let resp = client
+        .delete(&url)
+        .bearer_auth(&token)
+        .query(&[("sendUpdates", "all")])
+        .send()
+        .await
+        .map_err(|e| format!("Delete event request failed: {e}"))?;
+
+    let status = resp.status();
+    if status.is_success() || status == reqwest::StatusCode::GONE {
+        return Ok(());
+    }
+    let body = resp.text().await.unwrap_or_default();
+    Err(format!("Delete failed (HTTP {status}): {body}"))
+}
+
+/// Read a create/update response: on non-2xx, surface the HTTP status + body so
+/// the FE can react (e.g. map 403 → re-auth prompt). On success, parse the event
+/// resource into an `EventEntry`.
+async fn parse_event_response(
+    resp: reqwest::Response,
+    action: &str,
+) -> Result<EventEntry, String> {
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("{action} failed (HTTP {status}): {body}"));
+    }
+    resp.json::<EventEntry>()
+        .await
+        .map_err(|e| format!("Failed to parse {} response: {e}", action.to_lowercase()))
+}
+
 /// Normalize a Google event start/end into a string, returning `(value, all_day)`.
 fn normalize_dt(dt: Option<&EventDateTime>) -> (String, bool) {
     match dt {
