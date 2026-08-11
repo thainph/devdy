@@ -14,7 +14,15 @@ const props = defineProps<{
 const emit = defineEmits<{
   select: [ev: CalEvent]
   moreClick: [payload: { date: Date; events: CalEvent[] }]
+  createAt: [date: Date]
 }>()
+
+/** Clicking a cell's empty area → create an all-day-ish event at 9am that day. */
+function onCellClick(d: Date) {
+  const start = new Date(d)
+  start.setHours(9, 0, 0, 0)
+  emit('createAt', start)
+}
 
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 
@@ -73,8 +81,9 @@ function hhmm(d: Date) {
       <div
         v-for="(d, i) in days"
         :key="i"
-        class="border-b border-r border-border/40 p-1 overflow-hidden flex flex-col min-h-0"
+        class="border-b border-r border-border/40 p-1 overflow-hidden flex flex-col min-h-0 cursor-pointer"
         :class="d.getMonth() !== currentMonth ? 'bg-muted/20' : ''"
+        @click.self="onCellClick(d)"
       >
         <div class="flex items-baseline justify-between px-0.5">
           <!-- Solar day: primary, bolder -->
@@ -101,7 +110,7 @@ function hhmm(d: Date) {
           </span>
         </div>
 
-        <div class="mt-0.5 flex flex-col gap-0.5 overflow-hidden">
+        <div class="mt-0.5 flex flex-col gap-0.5 overflow-hidden flex-1" @click.self="onCellClick(d)">
           <button
             v-for="{ ev, start, allDay } in eventsFor(d).slice(0, 3)"
             :key="ev.id + ev.calendar_id"
