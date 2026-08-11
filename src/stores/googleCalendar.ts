@@ -20,6 +20,69 @@ export interface GoogleAccount {
   scope: string
   is_default: boolean
   created_at: string
+  /** Computed by backend from `scope`: true when calendar write access granted. */
+  calendar_writable: boolean
+}
+
+/** One calendar of a connected account (from `list_google_calendars`). */
+export interface CalendarMeta {
+  account_id: string
+  account_label: string
+  calendar_id: string
+  summary: string
+  bg_color: string | null
+  primary: boolean
+  /** Google accessRole: "owner" | "writer" | "reader" | "freeBusyReader" | null. */
+  access_role: string | null
+}
+
+// ── Write payload DTOs — mirror the Rust `EventPayload` (serde camelCase). ──
+export interface EventDateTimePayload {
+  /** Timed event: RFC3339 local wall-clock, paired with `timeZone`. */
+  dateTime?: string
+  /** All-day event: YYYY-MM-DD (end is exclusive per the Google API). */
+  date?: string
+  /** IANA tz, timed events only. */
+  timeZone?: string
+}
+export interface EventAttendee {
+  email: string
+}
+export interface EventReminderOverride {
+  method: 'email' | 'popup'
+  minutes: number
+}
+export interface EventReminders {
+  useDefault: boolean
+  overrides?: EventReminderOverride[]
+}
+export interface EventConferenceData {
+  createRequest: {
+    requestId: string
+    conferenceSolutionKey: { type: 'hangoutsMeet' }
+  }
+}
+export interface EventPayload {
+  summary?: string
+  description?: string
+  location?: string
+  start?: EventDateTimePayload
+  end?: EventDateTimePayload
+  attendees?: EventAttendee[]
+  reminders?: EventReminders
+  /** Each element is one RRULE line, e.g. "RRULE:FREQ=WEEKLY;BYDAY=MO". */
+  recurrence?: string[]
+  conferenceData?: EventConferenceData
+}
+
+/**
+ * Classify a backend write error string. The backend surfaces free-form
+ * messages like "... failed (HTTP 403): ..." / "... (HTTP 401): ..." /
+ * "Token refresh rejected (reconnect the account?): ...". A true result means
+ * the account likely needs to be reconnected (missing/expired write scope).
+ */
+export function isAuthError(msg: string): boolean {
+  return /HTTP 40[13]/.test(msg) || /reconnect the account/i.test(msg)
 }
 
 export interface CalEvent {
@@ -58,10 +121,16 @@ interface EventsResult {
   errors: AccountError[]
 }
 
+interface CalendarListResult {
+  calendars: CalendarMeta[]
+  errors: AccountError[]
+}
+
 export type ViewMode = 'week' | 'month'
 
 export const useGoogleCalendarStore = defineStore('googleCalendar', () => {
   const accounts = ref<GoogleAccount[]>([])
+  const calendars = ref<CalendarMeta[]>([])
   const events = ref<CalEvent[]>([])
   const errors = ref<AccountError[]>([])
   const visibleAccountIds = ref<Set<string>>(new Set())
@@ -81,6 +150,26 @@ export const useGoogleCalendarStore = defineStore('googleCalendar', () => {
   const accountsMissingScope = computed(() =>
     accounts.value.filter(a => !a.scope.includes('calendar')),
   )
+
+  /** Accounts that lack calendar WRITE scope (can read, but not create/edit). */
+  const accountsMissingWrite = computed(() =>
+    accounts.value.filter(a => !a.calendar_writable),
+  )
+
+  /**
+   * Calendars the user may write to (AC-12): the owning account has write scope
+   * AND the calendar's accessRole is "owner" or "writer".
+   */
+  const writableCalendars = computed<CalendarMeta[]>(() => {
+    const writableAccIds = new Set(
+      accounts.value.filter(a => a.calendar_writable).map(a => a.id),
+    )
+    return calendars.value.filter(
+      c =>
+        writableAccIds.has(c.account_id) &&
+        (c.access_role === 'owner' || c.access_role === 'writer'),
+    )
+  })
 
   const visibleEvents = computed(() =>
     events.value.filter(e => visibleAccountIds.value.has(e.account_id)),
@@ -266,6 +355,18 @@ export const useGoogleCalendarStore = defineStore('googleCalendar', () => {
     }
   }
 
+  /** Load every calendar of every account (needed for the writable picker). */
+  async function fetchCalendars() {
+    try {
+      const res = await invoke<CalendarListResult>('list_google_calendars', {
+        accountIds: null,
+      })
+      calendars.value = res.calendars
+    } catch (e) {
+      error.value = String(e)
+    }
+  }
+
   // Per-range cache so re-visiting a week/month is instant; adjacent ranges are
   // prefetched in the background so next/prev feel snappy. Plain Map (not
   // reactive) — reads always go through events.value.
@@ -332,6 +433,62 @@ export const useGoogleCalendarStore = defineStore('googleCalendar', () => {
     prefetchNeighbors()
   }
 
+  /**
+   * After a write, drop all cached ranges and re-fetch the visible range so the
+   * grid reflects the change. We clear the whole cache (cheap — a handful of
+   * entries) because a created/edited/recurring event can land in a neighbour
+   * range that was prefetched. `fetchEvents(true)` bypasses the TTL; the trailing
+   * `prefetchNeighbors()` inside it re-warms adjacent ranges freshly.
+   */
+  function invalidateAndRefetch() {
+    cache.clear()
+    return fetchEvents(true)
+  }
+
+  /**
+   * Create an event, then invalidate + re-fetch (AC-11). We do NOT insert the
+   * returned CalEvent directly: create/update omit calendar_summary/color, so
+   * re-fetching the range is the only way to get complete grid metadata.
+   */
+  async function createEvent(
+    accountId: string,
+    calendarId: string,
+    payload: EventPayload,
+  ): Promise<CalEvent> {
+    const ev = await invoke<CalEvent>('create_google_calendar_event', {
+      accountId,
+      calendarId,
+      payload,
+    })
+    await invalidateAndRefetch()
+    return ev
+  }
+
+  async function updateEvent(
+    accountId: string,
+    calendarId: string,
+    eventId: string,
+    payload: EventPayload,
+  ): Promise<CalEvent> {
+    const ev = await invoke<CalEvent>('update_google_calendar_event', {
+      accountId,
+      calendarId,
+      eventId,
+      payload,
+    })
+    await invalidateAndRefetch()
+    return ev
+  }
+
+  async function deleteEvent(
+    accountId: string,
+    calendarId: string,
+    eventId: string,
+  ): Promise<void> {
+    await invoke('delete_google_calendar_event', { accountId, calendarId, eventId })
+    await invalidateAndRefetch()
+  }
+
   function toggleAccount(id: string) {
     const next = new Set(visibleAccountIds.value)
     if (next.has(id)) next.delete(id)
@@ -365,6 +522,7 @@ export const useGoogleCalendarStore = defineStore('googleCalendar', () => {
 
   return {
     accounts,
+    calendars,
     events,
     errors,
     visibleAccountIds,
@@ -374,6 +532,8 @@ export const useGoogleCalendarStore = defineStore('googleCalendar', () => {
     error,
     colorFor,
     accountsMissingScope,
+    accountsMissingWrite,
+    writableCalendars,
     visibleEvents,
     displayEvents,
     autoTranslate,
@@ -396,7 +556,11 @@ export const useGoogleCalendarStore = defineStore('googleCalendar', () => {
     clearRequestedEvent,
     rangeBounds,
     fetchAccounts,
+    fetchCalendars,
     fetchEvents,
+    createEvent,
+    updateEvent,
+    deleteEvent,
     toggleAccount,
     setViewMode,
     today,
