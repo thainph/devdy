@@ -6,25 +6,100 @@ import {
   ChevronLeft, ChevronRight, Loader2, CalendarDays, AlertTriangle,
   ExternalLink, MapPin, Clock, CalendarRange, User, Timer,
   Video, Paperclip, AlignLeft, Settings2, Check, Languages, Bell, Moon,
+  Plus, Pencil, Trash2,
 } from 'lucide-vue-next'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { invoke } from '@/lib/tauri'
 import { Button, Badge, Drawer, AppSelect, Modal } from '@/components/ui'
 import { useGoogleCalendarStore, type CalEvent } from '@/stores/googleCalendar'
 import { useAppSettingsStore } from '@/stores/appSettings'
+import { useConfirm } from '@/composables/useConfirm'
+import { useToast } from '@/composables/useToast'
+import { isAuthError } from '@/stores/googleCalendar'
 import { parseEventTime, sameDay, addDays } from '@/lib/calendar'
 import { solarToLunar } from '@/lib/lunar'
 import CalendarWeekGrid from '@/components/calendar/CalendarWeekGrid.vue'
 import CalendarMonthGrid from '@/components/calendar/CalendarMonthGrid.vue'
+import EventEditorModal from '@/components/calendar/EventEditorModal.vue'
 
 const store = useGoogleCalendarStore()
 const appSettings = useAppSettingsStore()
 const router = useRouter()
+const { confirm } = useConfirm()
+const { toast } = useToast()
 
 onMounted(async () => {
   await store.fetchAccounts()
-  if (store.accounts.length) await store.fetchEvents()
+  if (store.accounts.length) {
+    await store.fetchEvents()
+    void store.fetchCalendars()
+  }
 })
+
+// ── Event editor (create / edit) ──
+const editorOpen = ref(false)
+const editorMode = ref<'create' | 'edit'>('create')
+const editorEvent = ref<CalEvent | null>(null)
+const editorDefaultStart = ref<Date | null>(null)
+
+const hasWritableCalendar = computed(() => store.writableCalendars.length > 0)
+
+const canEditSelected = computed(
+  () =>
+    !!selected.value &&
+    store.writableCalendars.some(
+      c =>
+        c.account_id === selected.value!.account_id &&
+        c.calendar_id === selected.value!.calendar_id,
+    ),
+)
+
+function openCreate(defaultStart?: Date) {
+  editorMode.value = 'create'
+  editorEvent.value = null
+  editorDefaultStart.value = defaultStart ?? null
+  editorOpen.value = true
+}
+
+/** Empty-cell click from a grid (AC-17) — only when a writable calendar exists. */
+function onGridCreate(start: Date) {
+  if (!hasWritableCalendar.value) return
+  openCreate(start)
+}
+
+function openEdit() {
+  if (!selected.value) return
+  editorMode.value = 'edit'
+  editorEvent.value = selected.value
+  editorDefaultStart.value = null
+  detailOpen.value = false
+  editorOpen.value = true
+}
+
+async function confirmDelete() {
+  const ev = selected.value
+  if (!ev) return
+  const ok = await confirm({
+    title: 'Xóa event',
+    message: `Xóa "${ev.title}"?`,
+    confirmLabel: 'Xóa',
+    cancelLabel: 'Hủy',
+    variant: 'destructive',
+  })
+  if (!ok) return
+  try {
+    await store.deleteEvent(ev.account_id, ev.calendar_id, ev.id)
+    toast.success('Đã xóa event.')
+    detailOpen.value = false
+  } catch (e) {
+    const msg = String(e)
+    toast.error(
+      isAuthError(msg)
+        ? 'Không đủ quyền. Hãy kết nối lại tài khoản trong Settings.'
+        : `Xóa thất bại: ${msg}`,
+    )
+  }
+}
 
 // App/target language for auto-translate (from Settings → Translate).
 const targetLang = computed(() => appSettings.settings?.translate_target_lang || 'vi')
@@ -289,6 +364,16 @@ function openForAccount(url: string) {
       <div class="flex items-center gap-2 shrink-0">
         <Loader2 v-if="store.loading" class="h-4 w-4 animate-spin text-muted-foreground" />
 
+        <!-- Create event -->
+        <Button
+          v-if="store.accounts.length && hasWritableCalendar"
+          variant="primary"
+          size="sm"
+          @click="openCreate()"
+        >
+          <Plus class="h-4 w-4" :stroke-width="1.75" /> Tạo event
+        </Button>
+
         <!-- Settings popover -->
         <div v-if="store.accounts.length" ref="settingsWrap" class="relative">
           <Button
@@ -469,23 +554,23 @@ function openForAccount(url: string) {
       </div>
     </div>
 
-    <!-- Warnings: accounts missing calendar scope / per-account fetch errors -->
+    <!-- Warnings: accounts missing calendar WRITE scope / per-account fetch errors -->
     <div
-      v-if="store.accountsMissingScope.length || store.errors.length"
+      v-if="store.accountsMissingWrite.length || store.errors.length"
       class="flex items-start gap-2 px-6 py-2 border-b border-border/60 bg-amber-500/10 text-xs text-amber-600 dark:text-amber-400 shrink-0"
     >
       <AlertTriangle class="h-4 w-4 shrink-0 mt-0.5" :stroke-width="1.75" />
       <div class="flex-1">
-        <template v-if="store.accountsMissingScope.length">
-          Accounts missing calendar permission:
-          <b>{{ store.accountsMissingScope.map(a => a.label).join(', ') }}</b>.
-          Go to Settings, remove and reconnect them to grant the <code>calendar.readonly</code> scope.
+        <template v-if="store.accountsMissingWrite.length">
+          Các tài khoản chưa cấp quyền ghi lịch:
+          <b>{{ store.accountsMissingWrite.map(a => a.label).join(', ') }}</b>.
+          Cần kết nối lại (xóa rồi thêm lại trong Settings) để tạo/sửa/xóa event.
         </template>
         <template v-for="err in store.errors" :key="err.account_id">
           <div>{{ err.account_label }}: {{ err.message }}</div>
         </template>
       </div>
-      <Button variant="outline" size="xs" @click="goSettings">Open Settings</Button>
+      <Button variant="outline" size="xs" @click="goSettings">Kết nối lại</Button>
     </div>
 
     <!-- Empty state -->
@@ -507,6 +592,7 @@ function openForAccount(url: string) {
         :color-for="store.colorFor"
         :show-lunar="store.lunarEnabled"
         @select="openEvent"
+        @create-at="onGridCreate"
       />
       <CalendarMonthGrid
         v-else
@@ -516,6 +602,7 @@ function openForAccount(url: string) {
         :show-lunar="store.lunarEnabled"
         @select="openEvent"
         @more-click="onMoreClick"
+        @create-at="onGridCreate"
       />
     </div>
 
@@ -670,16 +757,26 @@ function openForAccount(url: string) {
       </div>
 
       <template #footer>
-        <Button
-          v-if="selected?.html_link"
-          variant="primary"
-          size="sm"
-          class="w-full"
-          @click="openForAccount(selected.html_link)"
-        >
-          <ExternalLink class="h-4 w-4" :stroke-width="1.75" />
-          Open in Google Calendar
-        </Button>
+        <div class="flex w-full flex-col gap-2">
+          <div v-if="canEditSelected" class="flex gap-2">
+            <Button variant="outline" size="sm" class="flex-1" @click="openEdit">
+              <Pencil class="h-4 w-4" :stroke-width="1.75" /> Sửa
+            </Button>
+            <Button variant="destructive" size="sm" class="flex-1" @click="confirmDelete">
+              <Trash2 class="h-4 w-4" :stroke-width="1.75" /> Xóa
+            </Button>
+          </div>
+          <Button
+            v-if="selected?.html_link"
+            variant="primary"
+            size="sm"
+            class="w-full"
+            @click="openForAccount(selected.html_link)"
+          >
+            <ExternalLink class="h-4 w-4" :stroke-width="1.75" />
+            Open in Google Calendar
+          </Button>
+        </div>
       </template>
     </Drawer>
 
@@ -702,5 +799,14 @@ function openForAccount(url: string) {
         </button>
       </div>
     </Modal>
+
+    <!-- Event editor (create / edit) -->
+    <EventEditorModal
+      :open="editorOpen"
+      :mode="editorMode"
+      :event="editorEvent"
+      :default-start="editorDefaultStart"
+      @close="editorOpen = false"
+    />
   </div>
 </template>
