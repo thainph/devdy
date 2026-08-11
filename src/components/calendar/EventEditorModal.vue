@@ -337,11 +337,11 @@ const isEdit = computed(() => props.mode === 'edit')
 
 <template>
   <Modal :open="open" :title="modalTitle" size="lg" scroll-body @close="emit('close')">
-    <div class="flex flex-col gap-4 p-5">
+    <div class="flex flex-col gap-3 p-4">
       <!-- Title -->
       <div class="flex flex-col gap-1.5">
         <label class="text-xs font-medium text-muted-foreground">Tiêu đề</label>
-        <Input v-model="form.title" size="md" placeholder="Tên event" />
+        <Input v-model="form.title" size="sm" placeholder="Tên event" />
       </div>
 
       <!-- Account + calendar -->
@@ -351,7 +351,7 @@ const isEdit = computed(() => props.mode === 'edit')
           <AppSelect
             v-model="form.accountId"
             :options="writableAccountOptions"
-            size="md"
+            size="sm"
             placeholder="Chọn tài khoản"
             :disabled="isEdit"
           />
@@ -361,7 +361,7 @@ const isEdit = computed(() => props.mode === 'edit')
           <AppSelect
             v-model="form.calendarId"
             :options="calendarOptions"
-            size="md"
+            size="sm"
             placeholder="Chọn lịch"
             :disabled="isEdit"
           />
@@ -394,15 +394,15 @@ const isEdit = computed(() => props.mode === 'edit')
         <div class="flex flex-col gap-1.5">
           <label class="text-xs font-medium text-muted-foreground">Bắt đầu</label>
           <div class="flex gap-2">
-            <Input v-model="form.startDate" type="date" size="md" class="flex-1" />
-            <Input v-if="!form.allDay" v-model="form.startTime" type="time" size="md" class="w-28" />
+            <Input v-model="form.startDate" type="date" size="sm" class="flex-1" />
+            <Input v-if="!form.allDay" v-model="form.startTime" type="time" size="sm" class="w-28" />
           </div>
         </div>
         <div class="flex flex-col gap-1.5">
           <label class="text-xs font-medium text-muted-foreground">Kết thúc</label>
           <div class="flex gap-2">
-            <Input v-model="form.endDate" type="date" size="md" class="flex-1" />
-            <Input v-if="!form.allDay" v-model="form.endTime" type="time" size="md" class="w-28" />
+            <Input v-model="form.endDate" type="date" size="sm" class="flex-1" />
+            <Input v-if="!form.allDay" v-model="form.endTime" type="time" size="sm" class="w-28" />
           </div>
         </div>
       </div>
@@ -410,13 +410,13 @@ const isEdit = computed(() => props.mode === 'edit')
       <!-- Location -->
       <div class="flex flex-col gap-1.5">
         <label class="text-xs font-medium text-muted-foreground">Địa điểm</label>
-        <Input v-model="form.location" size="md" placeholder="Địa điểm (tùy chọn)" />
+        <Input v-model="form.location" size="sm" placeholder="Địa điểm (tùy chọn)" />
       </div>
 
       <!-- Description -->
       <div class="flex flex-col gap-1.5">
         <label class="text-xs font-medium text-muted-foreground">Mô tả</label>
-        <Textarea v-model="form.description" size="md" rows="3" placeholder="Mô tả (tùy chọn)" />
+        <Textarea v-model="form.description" size="sm" rows="3" placeholder="Mô tả (tùy chọn)" />
       </div>
 
       <!-- Attendees -->
@@ -441,14 +441,14 @@ const isEdit = computed(() => props.mode === 'edit')
         <div class="flex gap-2">
           <Input
             v-model="form.attendeeDraft"
-            size="md"
+            size="sm"
             type="email"
             placeholder="email@example.com"
             class="flex-1"
             @keydown.enter.prevent="addAttendee"
             @blur="addAttendee"
           />
-          <Button variant="outline" size="md" @click="addAttendee">
+          <Button variant="outline" size="sm" @click="addAttendee">
             <Plus class="h-4 w-4" :stroke-width="1.75" /> Thêm
           </Button>
         </div>
@@ -464,14 +464,14 @@ const isEdit = computed(() => props.mode === 'edit')
           <AppSelect
             :model-value="r.method"
             :options="REMINDER_METHODS"
-            size="md"
+            size="sm"
             class="w-36"
             @update:model-value="v => (r.method = v as 'popup' | 'email')"
           />
           <Input
             :model-value="String(r.minutes)"
             type="number"
-            size="md"
+            size="sm"
             class="w-24"
             @update:model-value="v => (r.minutes = Number(v))"
           />
@@ -496,13 +496,13 @@ const isEdit = computed(() => props.mode === 'edit')
         <AppSelect
           v-model="form.recurrencePreset"
           :options="RECURRENCE_OPTIONS"
-          size="md"
+          size="sm"
           class="w-full"
         />
         <Input
           v-if="form.recurrencePreset === 'custom'"
           v-model="form.customRRule"
-          size="md"
+          size="sm"
           placeholder="RRULE:FREQ=WEEKLY;BYDAY=MO,WE"
         />
       </div>
