@@ -27,6 +27,7 @@ use crate::secrets;
 /// label/trash — not permanent delete of the mailbox), plus email for display.
 const SCOPES: &str = "https://www.googleapis.com/auth/drive \
 https://www.googleapis.com/auth/gmail.modify \
+https://www.googleapis.com/auth/calendar.readonly \
 https://www.googleapis.com/auth/calendar.events \
 https://www.googleapis.com/auth/userinfo.email openid";
 
