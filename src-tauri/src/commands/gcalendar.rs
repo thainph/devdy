@@ -40,6 +40,9 @@ pub struct CalendarMeta {
     pub summary: String,
     pub bg_color: Option<String>,
     pub primary: bool,
+    /// Google `accessRole` for this calendar: "owner" | "writer" | "reader" |
+    /// "freeBusyReader". FE uses it to filter writable calendars.
+    pub access_role: Option<String>,
 }
 
 /// A single (flattened) calendar event across accounts/calendars.
@@ -120,6 +123,8 @@ struct CalendarListEntry {
     /// skip subscribed/hidden calendars when fetching events (speed).
     #[serde(default)]
     selected: bool,
+    #[serde(default, rename = "accessRole")]
+    access_role: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -306,6 +311,7 @@ pub async fn list_google_calendars(
                         summary: c.summary,
                         bg_color: c.background_color,
                         primary: c.primary,
+                        access_role: c.access_role,
                     });
                 }
             }
