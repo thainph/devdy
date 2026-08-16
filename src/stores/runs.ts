@@ -220,6 +220,27 @@ export const useRunsStore = defineStore('runs', () => {
     return invoke<DirEntry[]>('list_dir', { projectPath: project_path, relDir: rel_dir })
   }
 
+  // ── File-tree mutations (context-menu actions). Each returns the new relative
+  // path (except delete) so the caller can refresh/expand the affected subtree.
+  async function createDir(project_path: string, rel_dir: string, name: string): Promise<string> {
+    return invoke<string>('create_dir', { projectPath: project_path, relDir: rel_dir, name })
+  }
+  async function createFile(project_path: string, rel_dir: string, name: string): Promise<string> {
+    return invoke<string>('create_file', { projectPath: project_path, relDir: rel_dir, name })
+  }
+  async function renameEntry(project_path: string, rel_path: string, new_name: string): Promise<string> {
+    return invoke<string>('rename_entry', { projectPath: project_path, relPath: rel_path, newName: new_name })
+  }
+  async function deleteEntry(project_path: string, rel_path: string): Promise<void> {
+    await invoke('delete_entry', { projectPath: project_path, relPath: rel_path })
+  }
+  async function copyEntry(project_path: string, src_rel: string, dest_dir: string): Promise<string> {
+    return invoke<string>('copy_entry', { projectPath: project_path, srcRel: src_rel, destDir: dest_dir })
+  }
+  async function moveEntry(project_path: string, src_rel: string, dest_dir: string): Promise<string> {
+    return invoke<string>('move_entry', { projectPath: project_path, srcRel: src_rel, destDir: dest_dir })
+  }
+
   async function createSessionRun(project_id: string, engine_override?: string): Promise<RunRecord> {
     return invoke<RunRecord>('create_session_run', {
       projectId: project_id,
@@ -297,7 +318,9 @@ export const useRunsStore = defineStore('runs', () => {
     startRun, rerunRun, refetchRun, cancelRun, resumeRun,
     getRunLog, getRunLogPath, readRunInput,
     respondPermission, sendUserMessage, endRunInput,
-    listProjectFiles, readProjectFile, writeProjectFile, listDir, createHandoffRun, createSessionRun,
+    listProjectFiles, readProjectFile, writeProjectFile, listDir,
+    createDir, createFile, renameEntry, deleteEntry, copyEntry, moveEntry,
+    createHandoffRun, createSessionRun,
     reconcileClaudeSessions, reconcileCodexSessions,
     deleteRun, deleteAllRuns, renameRun, setRunPinned,
   }

@@ -290,6 +290,144 @@
     --sidebar: 290 24% 8%;
   }
 
+  /* Teal — classic balanced teal */
+  [data-theme='teal']:not(.dark) {
+    --background: 180 35% 98%;
+    --foreground: 185 45% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 185 45% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 185 45% 10%;
+    --primary: 178 70% 36%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 180 25% 92%;
+    --secondary-foreground: 185 45% 20%;
+    --muted: 180 25% 92%;
+    --muted-foreground: 183 14% 40%;
+    --accent: 180 30% 87%;
+    --accent-foreground: 185 45% 20%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 180 22% 84%;
+    --input: 180 22% 84%;
+    --ring: 178 70% 36%;
+    --sidebar: 180 30% 95%;
+  }
+  [data-theme='teal'].dark {
+    --background: 187 30% 9%;
+    --foreground: 180 25% 97%;
+    --card: 187 26% 12%;
+    --card-foreground: 180 25% 97%;
+    --popover: 187 26% 12%;
+    --popover-foreground: 180 25% 97%;
+    --primary: 174 75% 46%;
+    --primary-foreground: 185 60% 7%;
+    --secondary: 186 22% 18%;
+    --secondary-foreground: 180 25% 97%;
+    --muted: 186 22% 18%;
+    --muted-foreground: 180 16% 76%;
+    --accent: 186 22% 23%;
+    --accent-foreground: 180 25% 99%;
+    --destructive: 0 74% 62%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 186 20% 26%;
+    --input: 186 20% 26%;
+    --ring: 174 75% 46%;
+    --sidebar: 187 32% 7%;
+  }
+
+  /* Lagoon — deep teal leaning to cyan */
+  [data-theme='lagoon']:not(.dark) {
+    --background: 190 42% 98%;
+    --foreground: 194 48% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 194 48% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 194 48% 10%;
+    --primary: 186 80% 38%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 190 32% 92%;
+    --secondary-foreground: 194 48% 20%;
+    --muted: 190 32% 92%;
+    --muted-foreground: 192 16% 40%;
+    --accent: 190 36% 87%;
+    --accent-foreground: 194 48% 20%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 190 26% 84%;
+    --input: 190 26% 84%;
+    --ring: 186 80% 38%;
+    --sidebar: 190 36% 95%;
+  }
+  [data-theme='lagoon'].dark {
+    --background: 195 40% 8%;
+    --foreground: 190 30% 97%;
+    --card: 195 34% 11%;
+    --card-foreground: 190 30% 97%;
+    --popover: 195 34% 11%;
+    --popover-foreground: 190 30% 97%;
+    --primary: 184 85% 52%;
+    --primary-foreground: 195 60% 7%;
+    --secondary: 194 28% 17%;
+    --secondary-foreground: 190 30% 97%;
+    --muted: 194 28% 17%;
+    --muted-foreground: 190 18% 76%;
+    --accent: 194 28% 22%;
+    --accent-foreground: 190 30% 99%;
+    --destructive: 0 74% 62%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 194 24% 25%;
+    --input: 194 24% 25%;
+    --ring: 184 85% 52%;
+    --sidebar: 195 42% 6%;
+  }
+
+  /* Mint — fresh light teal / mint */
+  [data-theme='mint']:not(.dark) {
+    --background: 165 40% 98%;
+    --foreground: 170 42% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 170 42% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 170 42% 10%;
+    --primary: 168 65% 38%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 165 28% 91%;
+    --secondary-foreground: 170 42% 19%;
+    --muted: 165 28% 91%;
+    --muted-foreground: 168 14% 39%;
+    --accent: 165 32% 86%;
+    --accent-foreground: 170 42% 19%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 165 24% 83%;
+    --input: 165 24% 83%;
+    --ring: 168 65% 38%;
+    --sidebar: 165 32% 95%;
+  }
+  [data-theme='mint'].dark {
+    --background: 172 26% 9%;
+    --foreground: 165 24% 97%;
+    --card: 172 22% 12%;
+    --card-foreground: 165 24% 97%;
+    --popover: 172 22% 12%;
+    --popover-foreground: 165 24% 97%;
+    --primary: 162 70% 48%;
+    --primary-foreground: 170 60% 7%;
+    --secondary: 170 18% 18%;
+    --secondary-foreground: 165 24% 97%;
+    --muted: 170 18% 18%;
+    --muted-foreground: 165 15% 76%;
+    --accent: 170 18% 23%;
+    --accent-foreground: 165 24% 99%;
+    --destructive: 0 74% 62%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 170 16% 26%;
+    --input: 170 16% 26%;
+    --ring: 162 70% 48%;
+    --sidebar: 172 28% 7%;
+  }
+
   /* ===========================================================================
    * Mid-Autumn Festival (Tết Trung Thu) theme — festive seasonal palette.
    * ========================================================================= */

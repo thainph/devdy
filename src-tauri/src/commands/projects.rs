@@ -24,6 +24,12 @@ pub struct Project {
     /// project has no AWS account attached.
     #[serde(default)]
     pub aws_account_id: Option<String>,
+    /// GitHub Project V2 board URL for milestone/issue tracking (`None` = not linked).
+    #[serde(default)]
+    pub github_project_board_url: Option<String>,
+    /// JSON-encoded field mappings for the linked board (start/deadline/status field ids).
+    #[serde(default)]
+    pub github_project_field_mappings: Option<String>,
     /// Number of runs recorded against this project (usage frequency).
     #[serde(default)]
     pub run_count: i64,
@@ -510,6 +516,7 @@ pub async fn list_projects(db: State<'_, Db>) -> Result<Vec<Project>, String> {
     // Sort by usage frequency (number of runs), then recency, then name.
     let rows = sqlx::query(
         "SELECT p.id, p.name, p.path, p.created_at, p.github_account_id, p.gitlab_account_id, p.aws_account_id, \
+                p.github_project_board_url, p.github_project_field_mappings, \
                 COUNT(r.id) AS run_count, MAX(r.created_at) AS last_used_at \
          FROM projects p \
          LEFT JOIN runs r ON r.project_id = p.id \
@@ -532,6 +539,8 @@ pub async fn list_projects(db: State<'_, Db>) -> Result<Vec<Project>, String> {
             github_account_id: row.get("github_account_id"),
             gitlab_account_id: row.get("gitlab_account_id"),
             aws_account_id: row.get("aws_account_id"),
+            github_project_board_url: row.get("github_project_board_url"),
+            github_project_field_mappings: row.get("github_project_field_mappings"),
             run_count: row.get("run_count"),
             last_used_at: row.get("last_used_at"),
         })
@@ -594,6 +603,8 @@ pub async fn add_project(db: State<'_, Db>, payload: AddProjectPayload) -> Resul
         github_account_id: None,
         gitlab_account_id: None,
         aws_account_id: None,
+        github_project_board_url: None,
+        github_project_field_mappings: None,
         run_count: 0,
         last_used_at: None,
     })
@@ -614,10 +625,16 @@ pub async fn update_project(
     db: State<'_, Db>,
     id: String,
     name: String,
+    github_project_board_url: Option<String>,
+    github_project_field_mappings: Option<String>,
 ) -> Result<Project, String> {
     use sqlx::Row;
-    sqlx::query("UPDATE projects SET name = ? WHERE id = ?")
+    sqlx::query(
+        "UPDATE projects SET name = ?, github_project_board_url = ?, github_project_field_mappings = ? WHERE id = ?"
+    )
         .bind(&name)
+        .bind(&github_project_board_url)
+        .bind(&github_project_field_mappings)
         .bind(&id)
         .execute(db.inner())
         .await
@@ -625,6 +642,7 @@ pub async fn update_project(
 
     let row = sqlx::query(
         "SELECT p.id, p.name, p.path, p.created_at, p.github_account_id, p.gitlab_account_id, p.aws_account_id, \
+                p.github_project_board_url, p.github_project_field_mappings, \
                 COUNT(r.id) AS run_count, MAX(r.created_at) AS last_used_at \
          FROM projects p LEFT JOIN runs r ON r.project_id = p.id WHERE p.id = ? GROUP BY p.id"
     )
@@ -643,6 +661,8 @@ pub async fn update_project(
         github_account_id: row.get("github_account_id"),
         gitlab_account_id: row.get("gitlab_account_id"),
         aws_account_id: row.get("aws_account_id"),
+        github_project_board_url: row.get("github_project_board_url"),
+        github_project_field_mappings: row.get("github_project_field_mappings"),
         run_count: row.get("run_count"),
         last_used_at: row.get("last_used_at"),
     })

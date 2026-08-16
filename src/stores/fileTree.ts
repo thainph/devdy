@@ -16,11 +16,25 @@ interface ProjectTree {
   error: Record<string, string>
 }
 
+/** Parent directory (relative POSIX) of a relative path; `''` for a top-level entry. */
+function parentOf(relPath: string): string {
+  const i = relPath.lastIndexOf('/')
+  return i === -1 ? '' : relPath.slice(0, i)
+}
+/** Basename of a relative path. */
+function baseOf(relPath: string): string {
+  const i = relPath.lastIndexOf('/')
+  return i === -1 ? relPath : relPath.slice(i + 1)
+}
+
 export const useFileTreeStore = defineStore('fileTree', () => {
   const runs = useRunsStore()
 
   // Keyed by project.path so each open project keeps its own expanded state.
   const trees = reactive<Record<string, ProjectTree>>({})
+
+  // Path of the entry currently being renamed inline, per project (null = none).
+  const renaming = reactive<Record<string, string | null>>({})
 
   function treeFor(projectPath: string): ProjectTree {
     if (!trees[projectPath]) {
@@ -78,5 +92,75 @@ export const useFileTreeStore = defineStore('fileTree', () => {
     t.expanded = new Set([''])
   }
 
-  return { trees, treeFor, loadDir, toggle, refresh, collapseAll }
+  // Reload just one directory's direct children in place, preserving expansion
+  // state and every other cached subtree (unlike `refresh('')`, which resets the
+  // whole tree). Used after a mutation so the affected folder updates smoothly.
+  async function reloadDir(projectPath: string, relDir: string): Promise<void> {
+    const t = treeFor(projectPath)
+    delete t.error[relDir]
+    await loadDir(projectPath, relDir, true)
+  }
+
+  // ── Mutations (context-menu / toolbar / drag-and-drop) ─────────────────────
+  // Each calls the backend, then reloads (and expands) the affected folder so the
+  // change appears without a full-tree refresh. Errors propagate to the caller.
+  async function createDir(projectPath: string, relDir: string, name: string): Promise<string> {
+    const p = await runs.createDir(projectPath, relDir, name)
+    treeFor(projectPath).expanded.add(relDir)
+    await reloadDir(projectPath, relDir)
+    return p
+  }
+  async function createFile(projectPath: string, relDir: string, name: string): Promise<string> {
+    const p = await runs.createFile(projectPath, relDir, name)
+    treeFor(projectPath).expanded.add(relDir)
+    await reloadDir(projectPath, relDir)
+    return p
+  }
+  async function rename(projectPath: string, relPath: string, newName: string): Promise<string> {
+    const p = await runs.renameEntry(projectPath, relPath, newName)
+    await reloadDir(projectPath, parentOf(relPath))
+    return p
+  }
+  async function remove(projectPath: string, relPath: string): Promise<void> {
+    await runs.deleteEntry(projectPath, relPath)
+    await reloadDir(projectPath, parentOf(relPath))
+  }
+  async function copyInto(projectPath: string, srcRel: string, destDir: string): Promise<string> {
+    const p = await runs.copyEntry(projectPath, srcRel, destDir)
+    treeFor(projectPath).expanded.add(destDir)
+    await reloadDir(projectPath, destDir)
+    return p
+  }
+  async function moveInto(projectPath: string, srcRel: string, destDir: string): Promise<string> {
+    const srcParent = parentOf(srcRel)
+    if (destDir === srcParent) return srcRel // no-op
+    const p = await runs.moveEntry(projectPath, srcRel, destDir)
+    treeFor(projectPath).expanded.add(destDir)
+    await reloadDir(projectPath, srcParent)
+    await reloadDir(projectPath, destDir)
+    return p
+  }
+  async function duplicate(projectPath: string, relPath: string): Promise<string> {
+    return copyInto(projectPath, relPath, parentOf(relPath))
+  }
+
+  // ── Inline rename state ────────────────────────────────────────────────────
+  function beginRename(projectPath: string, relPath: string): void {
+    renaming[projectPath] = relPath
+  }
+  function cancelRename(projectPath: string): void {
+    renaming[projectPath] = null
+  }
+  async function commitRename(projectPath: string, relPath: string, newName: string): Promise<void> {
+    renaming[projectPath] = null
+    const trimmed = newName.trim()
+    if (!trimmed || trimmed === baseOf(relPath)) return
+    await rename(projectPath, relPath, trimmed)
+  }
+
+  return {
+    trees, renaming, treeFor, loadDir, toggle, refresh, reloadDir, collapseAll,
+    createDir, createFile, rename, remove, copyInto, moveInto, duplicate,
+    beginRename, cancelRename, commitRename,
+  }
 })

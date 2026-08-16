@@ -28,6 +28,7 @@ use crate::secrets;
 const SCOPES: &str = "https://www.googleapis.com/auth/drive \
 https://www.googleapis.com/auth/gmail.modify \
 https://www.googleapis.com/auth/calendar.readonly \
+https://www.googleapis.com/auth/calendar.events \
 https://www.googleapis.com/auth/userinfo.email openid";
 
 const AUTH_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -43,6 +44,18 @@ pub struct GoogleAccount {
     pub scope: String,
     pub is_default: bool,
     pub created_at: String,
+    /// Computed from `scope`: true when the granted scopes include calendar
+    /// write access (`calendar.events` or full `calendar`). Lets the FE gate
+    /// write actions without re-parsing the scope string.
+    pub calendar_writable: bool,
+}
+
+/// Whether the granted scope string includes calendar write access.
+fn scope_has_calendar_write(scope: &str) -> bool {
+    scope.split_whitespace().any(|s| {
+        s == "https://www.googleapis.com/auth/calendar.events"
+            || s == "https://www.googleapis.com/auth/calendar"
+    })
 }
 
 /// Whether reusable OAuth client credentials are saved (so adding an account
@@ -283,11 +296,13 @@ async fn run_oauth(
 }
 
 fn row_to_account(row: &sqlx::sqlite::SqliteRow) -> GoogleAccount {
+    let scope: String = row.try_get("scope").unwrap_or_default();
     GoogleAccount {
         id: row.get("id"),
         label: row.get("label"),
         email: row.try_get("email").unwrap_or_default(),
-        scope: row.try_get("scope").unwrap_or_default(),
+        calendar_writable: scope_has_calendar_write(&scope),
+        scope,
         is_default: row.get::<i64, _>("is_default") != 0,
         created_at: row.get("created_at"),
     }
@@ -422,6 +437,7 @@ pub async fn add_google_account(
         id,
         label,
         email: oauth.email,
+        calendar_writable: scope_has_calendar_write(&oauth.scope),
         scope: oauth.scope,
         is_default: is_default != 0,
         created_at: now,

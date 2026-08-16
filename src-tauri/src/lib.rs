@@ -12,9 +12,13 @@ use commands::aws_accounts::{
 };
 use commands::codex_sessions::reconcile_codex_sessions;
 use commands::files::{
-    list_dir, list_project_files, read_file_base64, read_project_file, write_project_file,
+    copy_entry, create_dir, create_file, delete_entry, list_dir, list_project_files, move_entry,
+    read_file_base64, read_project_file, rename_entry, write_project_file,
 };
-use commands::github::{fetch_issue, fetch_pr, list_runs, refetch_run};
+use commands::github::{
+    fetch_issue, fetch_pr, list_milestone_board, list_review_requested_prs, list_runs,
+    refetch_run, resolve_project_board,
+};
 use commands::github_accounts::{
     create_github_account, delete_github_account, list_github_accounts, set_project_github_account,
     update_github_account, validate_github_account,
@@ -29,7 +33,10 @@ use commands::mcp::{
     list_mcp_servers, list_project_mcp_servers, set_project_mcp_servers, test_mcp_connection,
     update_mcp_server,
 };
-use commands::gcalendar::{list_google_calendar_events, list_google_calendars};
+use commands::gcalendar::{
+    create_google_calendar_event, delete_google_calendar_event, list_google_calendar_events,
+    list_google_calendars, update_google_calendar_event,
+};
 use commands::google::{
     add_google_account, delete_google_account, google_client_status, google_forget_client,
     list_google_accounts, rename_google_account, set_default_google_account,
@@ -238,6 +245,9 @@ pub fn run() {
             google_forget_client,
             list_google_calendars,
             list_google_calendar_events,
+            create_google_calendar_event,
+            update_google_calendar_event,
+            delete_google_calendar_event,
             list_vps_servers,
             create_vps_server,
             update_vps_server,
@@ -286,6 +296,9 @@ pub fn run() {
             fetch_issue,
             fetch_pr,
             refetch_run,
+            list_review_requested_prs,
+            resolve_project_board,
+            list_milestone_board,
             list_runs,
             start_run,
             cancel_run,
@@ -306,6 +319,12 @@ pub fn run() {
             read_project_file,
             write_project_file,
             read_file_base64,
+            create_dir,
+            create_file,
+            rename_entry,
+            delete_entry,
+            copy_entry,
+            move_entry,
             create_handoff_run,
             create_session_run,
             get_usage_stats,
