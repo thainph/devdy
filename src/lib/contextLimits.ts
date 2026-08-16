@@ -24,6 +24,8 @@ export function resolveContextLimit(
   if (!m) return DEFAULT_LIMIT
   // 1M-context variants are tagged `[1m]` in the model id.
   if (m.includes('[1m]') || m.includes('1m]')) return 1_000_000
+  // Fable / Mythos ship a 1M context window by default (max == default).
+  if (m.includes('fable') || m.includes('mythos')) return 1_000_000
   // Claude family.
   if (m.includes('opus') || m.includes('sonnet') || m.includes('haiku') || m.includes('claude')) {
     return 200_000

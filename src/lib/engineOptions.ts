@@ -14,6 +14,7 @@ export const MODEL_OPTIONS: Record<string, SelectOption[]> = {
   claude: [
     { value: '', label: 'Default (from settings)' },
     // `[1m]` selects the 1M-context variant; the bare alias uses the 200K default.
+    { value: 'fable', label: 'Fable 5 (1M)' },
     { value: 'opus', label: 'Opus (200K)' },
     { value: 'opus[1m]', label: 'Opus (1M)' },
     { value: 'sonnet', label: 'Sonnet (200K)' },

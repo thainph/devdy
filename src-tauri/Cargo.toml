@@ -39,6 +39,8 @@ notify-rust = "4"
 zip = "2"
 walkdir = "2"
 ignore = "0.4"
+# Move files to the OS trash (recoverable delete) for the file-tree context menu.
+trash = "5"
 octocrab = { version = "0.44", default-features = false, features = ["default-client", "rustls", "rustls-ring", "rustls-webpki-tokio"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # Remote Control (C1): outbound WSS client to the relay + shared E2E crypto.

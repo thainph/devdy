@@ -13,9 +13,9 @@ const button = cva(
   {
     variants: {
       variant: {
-        primary: 'bg-primary text-primary-foreground hover:opacity-90',
-        outline: 'border border-border bg-secondary/60 text-foreground shadow-sm hover:bg-accent hover:text-accent-foreground',
-        ghost: 'text-muted-foreground hover:bg-accent hover:text-foreground',
+        primary: 'bg-primary text-primary-foreground shadow-sm hover:opacity-90 active:scale-[.97]',
+        outline: 'border border-border bg-secondary text-foreground shadow-sm hover:bg-accent hover:text-accent-foreground hover:border-primary/40 active:scale-[.97]',
+        ghost: 'text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[.97]',
         destructive: 'border border-destructive/50 text-destructive hover:bg-destructive/10',
         'destructive-ghost': 'text-muted-foreground/60 hover:text-destructive hover:bg-destructive/10',
         subtle: 'bg-muted text-muted-foreground border border-border/60',

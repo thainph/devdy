@@ -25,6 +25,9 @@ fn price_for(model: &str) -> ModelPrice {
     let m = model.to_ascii_lowercase();
 
     // ---- Anthropic Claude ----
+    if m.contains("fable") || m.contains("mythos") {
+        return ModelPrice { input: 10.0, output: 50.0, cache_write: 12.5, cache_read: 1.0 };
+    }
     if m.contains("opus") {
         return ModelPrice { input: 15.0, output: 75.0, cache_write: 18.75, cache_read: 1.5 };
     }

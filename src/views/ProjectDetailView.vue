@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { useProjectsStore, type AppliedSkill, type AppliedRule, type Repo } from '@/stores/projects'
 import { useSkillsStore } from '@/stores/skills'
 import { useRulesStore } from '@/stores/rules'
@@ -12,18 +12,17 @@ import { useGitlabAccountsStore } from '@/stores/gitlabAccounts'
 import { useAwsAccountsStore } from '@/stores/awsAccounts'
 import { useToolPermissionsStore } from '@/stores/toolPermissions'
 import { useLiveRunsStore } from '@/stores/liveRuns'
-import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import {
-  Play, AlertTriangle, Puzzle, ScrollText, Server, Github, Gitlab, Cloud,
+  AlertTriangle, Puzzle, ScrollText, Server, Github, Gitlab, Cloud,
   GitMerge, CheckCircle2, XCircle, Trash2, Plus, GitBranch, Settings,
-  Rocket, ShieldCheck, Loader2
+  Rocket, ShieldCheck, Loader2, KanbanSquare
 } from 'lucide-vue-next'
 import { Button, Input, Card, Badge, AppSelect } from '@/components/ui'
+import BackToRunButton from '@/components/BackToRunButton.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 
 const route = useRoute()
-const router = useRouter()
 const projectStore = useProjectsStore()
 const skillsStore = useSkillsStore()
 const rulesStore = useRulesStore()
@@ -35,30 +34,14 @@ const glStore = useGitlabAccountsStore()
 const awsStore = useAwsAccountsStore()
 const toolPerms = useToolPermissionsStore()
 const live = useLiveRunsStore()
-const tabsStore = useWorkspaceTabsStore()
 const { confirm } = useConfirm()
 
-// "Run AI" returns to the project's last-viewed run when one is remembered, so
-// leaving to settings and coming back resumes the same session instead of
-// dropping onto the bare project route (which loses the selected run — most
-// visible in focus mode, where the tab bar / history that would restore it are
-// hidden).
-function goToRun() {
-  const lastRunId = tabsStore.tabs.find((t) => t.projectId === projectId.value)?.lastRunId
-  if (lastRunId) {
-    router
-      .push({ name: 'project-run-detail', params: { projectId: projectId.value, runId: lastRunId } })
-      .catch(() => {})
-  } else {
-    router.push({ name: 'project-run', params: { projectId: projectId.value } }).catch(() => {})
-  }
-}
 const { toast } = useToast()
 
 const projectId = computed(() => route.params.projectId as string)
 const project = computed(() => projectStore.projects.find(p => p.id === projectId.value))
 
-const activeTab = ref<'overview' | 'skills' | 'rules' | 'mcp' | 'deploy' | 'github' | 'gitlab' | 'aws' | 'tools' | 'conflicts'>('overview')
+const activeTab = ref<'overview' | 'skills' | 'rules' | 'mcp' | 'deploy' | 'github' | 'board' | 'gitlab' | 'aws' | 'tools' | 'conflicts'>('overview')
 
 // ── Tool permissions (allow/deny always) for this project ──────────────────
 const allowTools = computed(() => toolPerms.getAllow(projectId.value))
@@ -95,6 +78,7 @@ const SECTIONS = [
   { id: 'mcp', label: 'MCP Servers', icon: Server },
   { id: 'deploy', label: 'Deploy', icon: Rocket },
   { id: 'github', label: 'GitHub', icon: Github },
+  { id: 'board', label: 'GitHub Project', icon: KanbanSquare },
   { id: 'gitlab', label: 'GitLab', icon: Gitlab },
   { id: 'aws', label: 'AWS', icon: Cloud },
   { id: 'tools', label: 'Tool Permissions', icon: ShieldCheck },
@@ -242,6 +226,119 @@ async function handleSelectAccount(accountId: string) {
     toast.success('GitHub account linked')
   } catch (e) {
     toast.error(String(e))
+  }
+}
+
+// --- GitHub Project V2 board config (start date / deadline / status mapping) ---
+interface BoardField { id: string; name: string; dataType: string }
+interface BoardInfo {
+  id: string; title: string; url: string; number: number
+  owner: string; ownerType: string; fields: BoardField[]
+}
+
+const boardUrl = ref('')
+const boardInfo = ref<BoardInfo | null>(null)
+const resolvingBoard = ref(false)
+const savingBoard = ref(false)
+const boardError = ref<string | null>(null)
+const mapStart = ref('')
+const mapDeadline = ref('')
+const mapStatus = ref('')
+
+const noneOpt = { value: '', label: '— None —' }
+const dateFieldOptions = computed(() => [
+  noneOpt,
+  ...(boardInfo.value?.fields ?? [])
+    .filter(f => f.dataType === 'DATE' || f.dataType === 'ITERATION')
+    .map(f => ({ value: f.id, label: `${f.name} (${f.dataType})` })),
+])
+const statusFieldOptions = computed(() => [
+  noneOpt,
+  ...(boardInfo.value?.fields ?? [])
+    .filter(f => f.dataType === 'SINGLE_SELECT')
+    .map(f => ({ value: f.id, label: f.name })),
+])
+
+// Load saved config into the form when the project changes.
+watch(project, (p) => {
+  if (!p) return
+  boardUrl.value = p.github_project_board_url ?? ''
+  boardInfo.value = null
+  boardError.value = null
+  mapStart.value = ''
+  mapDeadline.value = ''
+  mapStatus.value = ''
+  if (p.github_project_field_mappings) {
+    try {
+      const m = JSON.parse(p.github_project_field_mappings)
+      mapStart.value = m.startFieldId ?? ''
+      mapDeadline.value = m.deadlineFieldId ?? ''
+      mapStatus.value = m.statusFieldId ?? ''
+    } catch { /* ignore malformed */ }
+  }
+}, { immediate: true })
+
+async function resolveBoard() {
+  if (!boardUrl.value.trim()) return
+  resolvingBoard.value = true
+  boardError.value = null
+  try {
+    boardInfo.value = await projectStore.resolveProjectBoard(projectId.value, boardUrl.value.trim())
+  } catch (e) {
+    boardInfo.value = null
+    boardError.value = String(e)
+  } finally {
+    resolvingBoard.value = false
+  }
+}
+
+async function saveBoard() {
+  if (!project.value || !boardInfo.value) return
+  savingBoard.value = true
+  try {
+    const mappings = {
+      boardId: boardInfo.value.id,
+      ownerType: boardInfo.value.ownerType,
+      owner: boardInfo.value.owner,
+      number: boardInfo.value.number,
+      startFieldId: mapStart.value || null,
+      deadlineFieldId: mapDeadline.value || null,
+      statusFieldId: mapStatus.value || null,
+    }
+    await projectStore.updateProject({
+      id: projectId.value,
+      name: project.value.name,
+      github_project_board_url: boardUrl.value.trim(),
+      github_project_field_mappings: JSON.stringify(mappings),
+    })
+    toast.success('Board configuration saved')
+  } catch (e) {
+    toast.error(String(e))
+  } finally {
+    savingBoard.value = false
+  }
+}
+
+async function unlinkBoard() {
+  if (!project.value) return
+  savingBoard.value = true
+  try {
+    await projectStore.updateProject({
+      id: projectId.value,
+      name: project.value.name,
+      github_project_board_url: null,
+      github_project_field_mappings: null,
+    })
+    boardUrl.value = ''
+    boardInfo.value = null
+    mapStart.value = ''
+    mapDeadline.value = ''
+    mapStatus.value = ''
+    toast.success('Board unlinked')
+  } catch (e) {
+    toast.error(String(e))
+  } finally {
+    savingBoard.value = false
   }
 }
 
@@ -412,6 +509,8 @@ async function autoSaveProject() {
       await projectStore.updateProject({
         id: projectId.value,
         name: editName.value,
+        github_project_board_url: project.value.github_project_board_url,
+        github_project_field_mappings: project.value.github_project_field_mappings,
       })
       changed = true
     }
@@ -534,18 +633,14 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
     <!-- Header -->
     <div class="flex items-center justify-between gap-3 px-6 h-13 border-b border-border/60 shrink-0">
       <div class="flex items-center gap-2 min-w-0">
+        <BackToRunButton />
+        <span class="text-muted-foreground/40">/</span>
         <h1 class="text-sm font-semibold truncate">{{ project?.name ?? 'Project' }}</h1>
         <span
           v-if="project"
           class="text-[11px] text-muted-foreground font-mono truncate hidden md:inline"
           :title="project.path"
         >{{ project.path }}</span>
-      </div>
-      <div class="flex items-center gap-2 shrink-0">
-        <Button @click="goToRun">
-          <Play class="h-3.5 w-3.5" :stroke-width="2" />
-          Run AI
-        </Button>
       </div>
     </div>
 
@@ -1131,6 +1226,83 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
               <span v-if="linkedAccount.username">@{{ linkedAccount.username }}</span>
               <span v-if="linkedAccount.scopes.length"> · {{ linkedAccount.scopes.join(', ') }}</span>
             </div>
+          </Card>
+        </div>
+
+        <!-- GitHub Project (V2 board) tab -->
+        <div v-if="activeTab === 'board'" class="max-w-lg space-y-4">
+          <Card body-class="p-4 space-y-4">
+            <template #header>
+              <KanbanSquare class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
+              <span class="text-xs font-semibold">GitHub Project V2 Board</span>
+            </template>
+            <p class="text-[11px] text-muted-foreground leading-relaxed">
+              Link a GitHub Project (V2 board) to enrich each issue with Start date / Deadline / Status
+              in the milestone tracking view. Requires a GitHub account (GitHub tab) with the
+              <code class="text-primary">read:project</code> scope.
+            </p>
+
+            <div v-if="!linkedAccount" class="text-[11px] text-amber-500 bg-amber-500/10 border border-amber-500/20 rounded p-2.5">
+              Link a GitHub account in the <strong>GitHub</strong> tab first.
+            </div>
+
+            <template v-else>
+              <div class="space-y-1.5">
+                <label class="text-[11px] font-medium text-muted-foreground">Board URL</label>
+                <div class="flex gap-2">
+                  <Input
+                    v-model="boardUrl"
+                    size="sm"
+                    placeholder="https://github.com/orgs/<owner>/projects/<số>"
+                    class="flex-1"
+                    :disabled="resolvingBoard || savingBoard"
+                    @keyup.enter="resolveBoard"
+                  />
+                  <Button variant="outline" size="sm" :disabled="resolvingBoard || !boardUrl.trim()" @click="resolveBoard">
+                    <Loader2 v-if="resolvingBoard" class="h-3.5 w-3.5 animate-spin" />
+                    <span>{{ resolvingBoard ? 'Connecting…' : 'Connect' }}</span>
+                  </Button>
+                </div>
+              </div>
+
+              <div v-if="boardError" class="text-[11px] text-destructive bg-destructive/10 border border-destructive/20 rounded p-2.5">
+                {{ boardError }}
+              </div>
+
+              <div v-if="boardInfo" class="space-y-3">
+                <div class="text-[11px] text-muted-foreground">
+                  Board: <span class="text-foreground font-medium">{{ boardInfo.title }}</span>
+                  · {{ boardInfo.fields.length }} fields
+                </div>
+                <div class="space-y-1.5">
+                  <label class="text-[11px] font-medium text-muted-foreground">Start date → field</label>
+                  <AppSelect size="sm" v-model="mapStart" :options="dateFieldOptions" />
+                </div>
+                <div class="space-y-1.5">
+                  <label class="text-[11px] font-medium text-muted-foreground">Deadline → field</label>
+                  <AppSelect size="sm" v-model="mapDeadline" :options="dateFieldOptions" />
+                </div>
+                <div class="space-y-1.5">
+                  <label class="text-[11px] font-medium text-muted-foreground">Status → field</label>
+                  <AppSelect size="sm" v-model="mapStatus" :options="statusFieldOptions" />
+                </div>
+                <div class="flex gap-2 pt-1">
+                  <Button size="sm" :disabled="savingBoard" @click="saveBoard">
+                    <Loader2 v-if="savingBoard" class="h-3.5 w-3.5 animate-spin" />
+                    <span>Save configuration</span>
+                  </Button>
+                  <Button variant="ghost" size="sm" :disabled="savingBoard" @click="unlinkBoard">Unlink</Button>
+                </div>
+              </div>
+
+              <div v-else-if="project?.github_project_board_url" class="text-[11px] text-muted-foreground">
+                Saved board: <span class="text-foreground">{{ project.github_project_board_url }}</span>.
+                Click "Connect" to edit the field mapping.
+                <div class="pt-2">
+                  <Button variant="ghost" size="sm" :disabled="savingBoard" @click="unlinkBoard">Unlink</Button>
+                </div>
+              </div>
+            </template>
           </Card>
         </div>
 

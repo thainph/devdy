@@ -2,15 +2,24 @@
 // VSCode-style file explorer panel for a project. Loads the root level on mount
 // (and whenever the project changes), then lazy-loads deeper levels as folders
 // are expanded. Clicking a file bubbles `open-file` so the host (RunView) can
-// show it in the shared <FileViewer>. Right-clicking an entry opens a context
-// menu (copy path, mention in composer, open in Chrome).
+// show it in the shared <FileViewer>. Right-clicking an entry (or empty space)
+// opens a context menu with the full set of file operations: new file/folder,
+// rename, delete (to trash), cut/copy/paste, duplicate, path copy, reveal in
+// Finder, open in VSCode/Chrome, and mention in the composer.
 import { computed, ref, watch, onBeforeUnmount } from 'vue'
-import { RotateCw, ListCollapse, Copy, AtSign, Chrome } from 'lucide-vue-next'
+import {
+  RotateCw, ListCollapse, FilePlus, FolderPlus, Copy, Link, Scissors,
+  ClipboardPaste, CopyPlus, Pencil, Trash2, FolderOpen, Code, Chrome, AtSign,
+} from 'lucide-vue-next'
 import FileTreeNode from '@/components/FileTreeNode.vue'
 import { useFileTreeStore } from '@/stores/fileTree'
 import { useToast } from '@/composables/useToast'
+import { useConfirm } from '@/composables/useConfirm'
+import { usePrompt } from '@/composables/usePrompt'
 import { invoke } from '@/lib/tauri'
 import type { DirEntry } from '@/stores/runs'
+
+const DND_MIME = 'application/x-devdy-path'
 
 const props = defineProps<{
   projectPath: string
@@ -24,6 +33,8 @@ const emit = defineEmits<{
 
 const store = useFileTreeStore()
 const { toast } = useToast()
+const { confirm } = useConfirm()
+const { prompt } = usePrompt()
 const tree = computed(() => store.treeFor(props.projectPath))
 const rootEntries = computed(() => tree.value.children[''] ?? [])
 const rootLoading = computed(() => tree.value.loading.has(''))
@@ -35,50 +46,187 @@ watch(
   { immediate: true },
 )
 
-// ── Context menu ────────────────────────────────────────────────────────────
-const menu = ref<{ entry: DirEntry; x: number; y: number } | null>(null)
-const menuEl = ref<HTMLElement | null>(null)
+// Internal cut/copy clipboard (in-app only; survives across menu opens).
+const clipboard = ref<{ path: string; name: string; mode: 'copy' | 'cut' } | null>(null)
 
-// Absolute path for the currently targeted entry (backend commands + clipboard
-// use the real on-disk path, matching the FileViewer's "copy path" behavior).
+function parentDir(relPath: string): string {
+  const i = relPath.lastIndexOf('/')
+  return i === -1 ? '' : relPath.slice(0, i)
+}
+
+// Absolute path for a relative entry (backend open commands + clipboard use the
+// real on-disk path, matching the FileViewer's "copy path" behavior).
 function absOf(relPath: string): string {
   const root = props.projectPath.replace(/\/+$/, '')
-  return `${root}/${relPath}`
+  return relPath ? `${root}/${relPath}` : root
 }
 
-function openMenu(payload: { entry: DirEntry; x: number; y: number }) {
+// ── Context menu ────────────────────────────────────────────────────────────
+const menu = ref<{ entry: DirEntry | null; x: number; y: number } | null>(null)
+const menuEl = ref<HTMLElement | null>(null)
+const menuEntry = computed(() => menu.value?.entry ?? null)
+
+function openMenu(payload: { entry: DirEntry | null; x: number; y: number }) {
   // Clamp so the menu never overflows the right / bottom edges.
-  const w = 220, h = 120
+  const w = 240, h = 440
   const x = Math.min(payload.x, window.innerWidth - w)
-  const y = Math.min(payload.y, window.innerHeight - h)
+  const y = Math.max(8, Math.min(payload.y, window.innerHeight - h))
   menu.value = { entry: payload.entry, x, y }
 }
-
+function openRootMenu(e: MouseEvent) {
+  openMenu({ entry: null, x: e.clientX, y: e.clientY })
+}
 function closeMenu() { menu.value = null }
 
-async function copyPath() {
-  const entry = menu.value?.entry
-  closeMenu()
-  if (!entry) return
+// Directory a create/paste targets: the folder itself, a file's parent, or root.
+function containerDir(): string {
+  const e = menu.value?.entry
+  if (!e) return ''
+  return e.is_dir ? e.path : parentDir(e.path)
+}
+
+// ── Create ──────────────────────────────────────────────────────────────────
+async function promptCreate(kind: 'file' | 'folder', dir: string) {
+  const isFile = kind === 'file'
+  const name = await prompt({
+    title: isFile ? 'New File' : 'New Folder',
+    label: isFile ? 'File name' : 'Folder name',
+    placeholder: isFile ? 'e.g. index.ts' : 'e.g. components',
+    confirmLabel: 'Create',
+  })
+  if (!name) return
   try {
-    await navigator.clipboard.writeText(absOf(entry.path))
-    toast.success('Đã copy đường dẫn')
-  } catch { toast.error('Không copy được đường dẫn') }
+    if (isFile) {
+      const p = await store.createFile(props.projectPath, dir, name)
+      emit('open-file', p)
+      toast.success('File created')
+    } else {
+      await store.createDir(props.projectPath, dir, name)
+      toast.success('Folder created')
+    }
+  } catch (e) { toast.error(String(e)) }
+}
+function newFile() { const dir = containerDir(); closeMenu(); promptCreate('file', dir) }
+function newFolder() { const dir = containerDir(); closeMenu(); promptCreate('folder', dir) }
+
+// ── Rename (inline) / Delete (to trash) ─────────────────────────────────────
+function renameEntry() {
+  const e = menu.value?.entry
+  closeMenu()
+  if (e) store.beginRename(props.projectPath, e.path)
+}
+
+async function deleteEntry() {
+  const e = menu.value?.entry
+  closeMenu()
+  if (!e) return
+  const ok = await confirm({
+    title: e.is_dir ? 'Delete Folder' : 'Delete File',
+    message: `Move "${e.name}" to Trash?`,
+    confirmLabel: 'Delete',
+    variant: 'destructive',
+  })
+  if (!ok) return
+  try {
+    await store.remove(props.projectPath, e.path)
+    toast.success('Moved to Trash')
+  } catch (err) { toast.error(String(err)) }
+}
+
+// ── Cut / Copy / Paste / Duplicate ──────────────────────────────────────────
+function copyToClipboard(mode: 'copy' | 'cut') {
+  const e = menu.value?.entry
+  closeMenu()
+  if (e) clipboard.value = { path: e.path, name: e.name, mode }
+}
+
+async function paste() {
+  const dir = containerDir()
+  const clip = clipboard.value
+  closeMenu()
+  if (!clip) return
+  try {
+    if (clip.mode === 'copy') {
+      await store.copyInto(props.projectPath, clip.path, dir)
+    } else {
+      await store.moveInto(props.projectPath, clip.path, dir)
+      clipboard.value = null
+    }
+    toast.success('Pasted')
+  } catch (e) { toast.error(String(e)) }
+}
+
+async function duplicate() {
+  const e = menu.value?.entry
+  closeMenu()
+  if (!e) return
+  try {
+    await store.duplicate(props.projectPath, e.path)
+    toast.success('Duplicated')
+  } catch (err) { toast.error(String(err)) }
+}
+
+// ── Path / open actions ─────────────────────────────────────────────────────
+async function copyPath() {
+  const e = menu.value?.entry
+  closeMenu()
+  if (!e) return
+  try {
+    await navigator.clipboard.writeText(absOf(e.path))
+    toast.success('Path copied')
+  } catch { toast.error('Failed to copy path') }
+}
+
+async function copyRelPath() {
+  const e = menu.value?.entry
+  closeMenu()
+  if (!e) return
+  try {
+    await navigator.clipboard.writeText(e.path)
+    toast.success('Relative path copied')
+  } catch { toast.error('Failed to copy path') }
+}
+
+async function revealInFinder() {
+  const e = menu.value?.entry
+  closeMenu()
+  if (!e) return
+  // Files: open the containing folder; folders: open the folder itself.
+  const target = e.is_dir ? absOf(e.path) : absOf(parentDir(e.path))
+  try { await invoke('open_in_folder', { path: target }) }
+  catch (err) { toast.error(String(err)) }
+}
+
+async function openInVscode() {
+  const e = menu.value?.entry
+  closeMenu()
+  if (!e) return
+  try {
+    if (e.is_dir) await invoke('open_in_vscode', { path: absOf(e.path), file: null })
+    else await invoke('open_in_vscode', { path: props.projectPath, file: absOf(e.path) })
+  } catch (err) { toast.error(String(err)) }
 }
 
 function mentionFile() {
-  const entry = menu.value?.entry
+  const e = menu.value?.entry
   closeMenu()
-  if (entry) emit('mention-file', `${entry.path}${entry.is_dir ? '/' : ''}`)
+  if (e) emit('mention-file', `${e.path}${e.is_dir ? '/' : ''}`)
 }
 
 async function openInChrome() {
-  const entry = menu.value?.entry
+  const e = menu.value?.entry
   closeMenu()
-  if (!entry) return
-  try {
-    await invoke('open_in_chrome', { path: absOf(entry.path) })
-  } catch (e) { toast.error(String(e)) }
+  if (!e) return
+  try { await invoke('open_in_chrome', { path: absOf(e.path) }) }
+  catch (err) { toast.error(String(err)) }
+}
+
+// ── Drop onto empty panel area → move to project root ───────────────────────
+async function onRootDrop(e: DragEvent) {
+  const src = e.dataTransfer?.getData(DND_MIME)
+  if (!src || parentDir(src) === '') return
+  try { await store.moveInto(props.projectPath, src, '') }
+  catch (err) { toast.error(String(err)) }
 }
 
 // Dismiss on outside interaction / escape. Ignore pointerdowns inside the menu
@@ -113,14 +261,28 @@ onBeforeUnmount(() => {
       <div class="flex items-center gap-0.5 shrink-0">
         <button
           class="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 cursor-pointer"
-          title="Thu gọn tất cả"
+          title="New File"
+          @click="promptCreate('file', '')"
+        >
+          <FilePlus class="h-3.5 w-3.5" :stroke-width="2" />
+        </button>
+        <button
+          class="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 cursor-pointer"
+          title="New Folder"
+          @click="promptCreate('folder', '')"
+        >
+          <FolderPlus class="h-3.5 w-3.5" :stroke-width="2" />
+        </button>
+        <button
+          class="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 cursor-pointer"
+          title="Collapse all"
           @click="store.collapseAll(projectPath)"
         >
           <ListCollapse class="h-3.5 w-3.5" :stroke-width="2" />
         </button>
         <button
           class="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 cursor-pointer"
-          title="Tải lại"
+          title="Reload"
           :class="rootLoading && 'opacity-50 pointer-events-none'"
           @click="store.refresh(projectPath)"
         >
@@ -130,10 +292,15 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- Body -->
-    <div class="flex-1 min-h-0 overflow-y-auto py-1">
+    <div
+      class="flex-1 min-h-0 overflow-y-auto py-1"
+      @contextmenu.self.prevent="openRootMenu"
+      @dragover.prevent
+      @drop="onRootDrop"
+    >
       <div v-if="rootError" class="px-3 py-2 text-xs text-destructive">{{ rootError }}</div>
-      <div v-else-if="rootLoading && rootEntries.length === 0" class="px-3 py-2 text-xs text-muted-foreground">Đang tải…</div>
-      <div v-else-if="rootEntries.length === 0" class="px-3 py-2 text-xs text-muted-foreground">Thư mục trống</div>
+      <div v-else-if="rootLoading && rootEntries.length === 0" class="px-3 py-2 text-xs text-muted-foreground">Loading…</div>
+      <div v-else-if="rootEntries.length === 0" class="px-3 py-6 text-xs text-muted-foreground" @contextmenu.prevent="openRootMenu">Empty folder</div>
       <FileTreeNode
         v-for="entry in rootEntries"
         :key="entry.path"
@@ -153,19 +320,68 @@ onBeforeUnmount(() => {
       <div
         v-if="menu"
         ref="menuEl"
-        class="fixed z-[100] min-w-[200px] py-1 rounded-md border border-border bg-popover shadow-lg text-xs"
+        class="fixed z-[100] min-w-[220px] py-1 rounded-md border border-border bg-popover shadow-lg text-xs"
         :style="{ left: `${menu.x}px`, top: `${menu.y}px` }"
         @contextmenu.prevent
       >
-        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="copyPath">
-          <Copy class="h-3.5 w-3.5" :stroke-width="2" /> Copy file path
+        <!-- Create -->
+        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="newFile">
+          <FilePlus class="h-3.5 w-3.5" :stroke-width="2" /> New File
         </button>
-        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="mentionFile">
-          <AtSign class="h-3.5 w-3.5" :stroke-width="2" /> Mention trong chatbox
+        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="newFolder">
+          <FolderPlus class="h-3.5 w-3.5" :stroke-width="2" /> New Folder
         </button>
-        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="openInChrome">
-          <Chrome class="h-3.5 w-3.5" :stroke-width="2" /> Open with Chrome
+
+        <!-- Clipboard -->
+        <div class="my-1 border-t border-border/60" />
+        <template v-if="menuEntry">
+          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="copyToClipboard('copy')">
+            <Copy class="h-3.5 w-3.5" :stroke-width="2" /> Copy
+          </button>
+          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="copyToClipboard('cut')">
+            <Scissors class="h-3.5 w-3.5" :stroke-width="2" /> Cut
+          </button>
+          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="duplicate">
+            <CopyPlus class="h-3.5 w-3.5" :stroke-width="2" /> Duplicate
+          </button>
+        </template>
+        <button v-if="clipboard" class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="paste">
+          <ClipboardPaste class="h-3.5 w-3.5" :stroke-width="2" /> Paste
         </button>
+
+        <!-- Edit -->
+        <template v-if="menuEntry">
+          <div class="my-1 border-t border-border/60" />
+          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="renameEntry">
+            <Pencil class="h-3.5 w-3.5" :stroke-width="2" /> Rename
+          </button>
+          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-destructive hover:bg-destructive/10 cursor-pointer" @click="deleteEntry">
+            <Trash2 class="h-3.5 w-3.5" :stroke-width="2" /> Delete
+          </button>
+        </template>
+
+        <!-- Path / open -->
+        <template v-if="menuEntry">
+          <div class="my-1 border-t border-border/60" />
+          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="copyPath">
+            <Copy class="h-3.5 w-3.5" :stroke-width="2" /> Copy Path
+          </button>
+          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="copyRelPath">
+            <Link class="h-3.5 w-3.5" :stroke-width="2" /> Copy Relative Path
+          </button>
+          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="revealInFinder">
+            <FolderOpen class="h-3.5 w-3.5" :stroke-width="2" /> Reveal in Finder
+          </button>
+          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="openInVscode">
+            <Code class="h-3.5 w-3.5" :stroke-width="2" /> Open in VSCode
+          </button>
+          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="openInChrome">
+            <Chrome class="h-3.5 w-3.5" :stroke-width="2" /> Open in Chrome
+          </button>
+          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="mentionFile">
+            <AtSign class="h-3.5 w-3.5" :stroke-width="2" /> Mention in Chat
+          </button>
+        </template>
       </div>
     </Teleport>
   </div>

@@ -7,7 +7,7 @@ import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useUILayoutStore } from '@/stores/uiLayout'
-import { Puzzle, ScrollText, Server, HardDrive, FolderOpen, BarChart3, CalendarClock, CalendarDays, ListTodo, StickyNote, Settings, Info } from 'lucide-vue-next'
+import { Puzzle, ScrollText, Server, HardDrive, FolderOpen, GitPullRequest, BarChart3, CalendarClock, CalendarDays, ListTodo, StickyNote, Settings, Info } from 'lucide-vue-next'
 import PermissionNotifier from '@/components/PermissionNotifier.vue'
 import CalendarReminder from '@/components/CalendarReminder.vue'
 import BudgetBadge from '@/components/BudgetBadge.vue'
@@ -17,7 +17,7 @@ import ActiveRemoteDock from '@/components/ActiveRemoteDock.vue'
 import FileViewerWindow from '@/views/FileViewerWindow.vue'
 import PermissionWindow from '@/views/PermissionWindow.vue'
 import ThemeDecorations from '@/components/ThemeDecorations.vue'
-import { ConfirmModal, ToastHost } from '@/components/ui'
+import { ConfirmModal, PromptModal, ToastHost } from '@/components/ui'
 import { getVersion } from '@tauri-apps/api/app'
 
 // Pop-out windows load the same SPA with a query flag; render a bare,
@@ -91,6 +91,7 @@ onMounted(async () => {
 
 const navItems = [
   { path: '/projects', label: 'Projects', icon: FolderOpen },
+  { path: '/pr-inbox', label: 'PR Reviews', icon: GitPullRequest },
   { path: '/skills', label: 'Skills', icon: Puzzle },
   { path: '/rules', label: 'Rules', icon: ScrollText },
   { path: '/mcp', label: 'MCP', icon: Server },
@@ -261,6 +262,9 @@ onMounted(async () => {
 
     <!-- App-wide confirm dialog host (see useConfirm) -->
     <ConfirmModal />
+
+    <!-- App-wide text-input dialog host (see usePrompt) -->
+    <PromptModal />
 
     <!-- App-wide toast host (see useToast) -->
     <ToastHost />

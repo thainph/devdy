@@ -8,7 +8,7 @@ import { useServersStore, type ProjectServer } from '@/stores/servers'
 import { useAwsAccountsStore } from '@/stores/awsAccounts'
 import { open } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@/lib/tauri'
-import { Plus, FolderOpen, GitBranch, Github, Gitlab, Trash2, X, SquareTerminal, Code2, Settings, HardDrive, Cloud } from 'lucide-vue-next'
+import { Plus, FolderOpen, GitBranch, Github, Gitlab, Trash2, X, SquareTerminal, Code2, Settings, HardDrive, Cloud, GanttChartSquare } from 'lucide-vue-next'
 import { Button, Input, Badge, Modal, Card } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
@@ -327,42 +327,53 @@ async function handleOpenInFolder(project: { path: string }) {
                 <span class="truncate">{{ awsAccount(project.aws_account_id)!.label }}</span>
               </Badge>
             </div>
-            <!-- Actions on hover -->
-            <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity" @click.stop>
+            <!-- Actions on hover: grouped into a segmented toolbar for a crisper, cohesive look -->
+            <div
+              class="flex items-center gap-0.5 rounded-lg border border-border/70 bg-card/80 p-0.5 shadow-sm opacity-0 translate-x-1 group-hover:opacity-100 group-hover:translate-x-0 transition-all duration-150"
+              @click.stop
+            >
               <button
-                class="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+                class="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer active:scale-95"
                 title="Open project in VS Code"
                 @click="handleOpenInVscode(project)"
               >
-                <Code2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+                <Code2 class="h-4 w-4" :stroke-width="2" />
               </button>
               <button
-                class="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+                class="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer active:scale-95"
                 title="Open project folder"
                 @click="handleOpenInFolder(project)"
               >
-                <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" />
+                <FolderOpen class="h-4 w-4" :stroke-width="2" />
               </button>
               <button
-                class="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+                class="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer active:scale-95"
                 title="Open project folder in terminal"
                 @click="handleOpenInTerminal(project)"
               >
-                <SquareTerminal class="h-3.5 w-3.5" :stroke-width="1.75" />
+                <SquareTerminal class="h-4 w-4" :stroke-width="2" />
+              </button>
+              <span class="mx-0.5 h-4 w-px bg-border/70" />
+              <button
+                class="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer active:scale-95"
+                title="Issues by milestone (Gantt)"
+                @click="router.push(`/projects/${project.id}/issues`)"
+              >
+                <GanttChartSquare class="h-4 w-4" :stroke-width="2" />
               </button>
               <button
-                class="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+                class="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer active:scale-95"
                 title="Project settings"
                 @click="router.push(`/projects/${project.id}/settings`)"
               >
-                <Settings class="h-3.5 w-3.5" :stroke-width="1.75" />
+                <Settings class="h-4 w-4" :stroke-width="2" />
               </button>
               <button
-                class="flex h-6 w-6 items-center justify-center rounded text-destructive/60 hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer"
+                class="flex h-7 w-7 items-center justify-center rounded-md text-destructive/70 hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer active:scale-95"
                 title="Remove project"
                 @click="handleRemove(project)"
               >
-                <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+                <Trash2 class="h-4 w-4" :stroke-width="2" />
               </button>
             </div>
           </div>

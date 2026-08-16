@@ -118,6 +118,7 @@ const TRANSLATE_STYLE_OPTIONS = [
 // Aliases (not pinned ids) keep these current as new model versions ship.
 const CLAUDE_MODEL_OPTIONS = [
   { value: '', label: 'Default (engine decides)' },
+  { value: 'fable', label: 'Fable 5 (1M)' },
   { value: 'opus', label: 'Opus (200K)' },
   { value: 'opus[1m]', label: 'Opus (1M)' },
   { value: 'sonnet', label: 'Sonnet (200K)' },
@@ -717,6 +718,9 @@ watch(() => settings.value.color_theme, (t) => {
                   { value: 'forest', label: 'Forest' },
                   { value: 'sunset', label: 'Sunset' },
                   { value: 'rose', label: 'Rose' },
+                  { value: 'teal', label: 'Teal' },
+                  { value: 'lagoon', label: 'Lagoon' },
+                  { value: 'mint', label: 'Mint' },
                   { value: 'midautumn', label: 'Mid-Autumn Night (Đêm Trung Thu) 🎑' },
                 ]"
               />

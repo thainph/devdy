@@ -18,6 +18,8 @@ interface ModelPrice {
 // USD per 1,000,000 tokens, matched by model-id prefix.
 function priceFor(model: string): ModelPrice {
   const m = model.toLowerCase()
+  if (m.includes('fable') || m.includes('mythos'))
+    return { input: 10.0, output: 50.0, cacheWrite: 12.5, cacheRead: 1.0 }
   if (m.includes('opus')) return { input: 15.0, output: 75.0, cacheWrite: 18.75, cacheRead: 1.5 }
   if (m.includes('haiku')) return { input: 0.8, output: 4.0, cacheWrite: 1.0, cacheRead: 0.08 }
   if (m.includes('sonnet')) return { input: 3.0, output: 15.0, cacheWrite: 3.75, cacheRead: 0.3 }

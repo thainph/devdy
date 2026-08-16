@@ -22,3 +22,14 @@ pub async fn client_for_project(db: &Db, project_id: &str) -> Result<Octocrab> {
     let client = Octocrab::builder().personal_token(pat).build()?;
     Ok(client)
 }
+
+/// Build an Octocrab client directly from a GitHub account's stored PAT. Unlike
+/// `client_for_project`, this is not tied to any project — used by the PR inbox
+/// which aggregates review requests across all configured accounts.
+pub fn client_for_account(account_id: &str) -> Result<Octocrab> {
+    let pat = secrets::get_account_pat(account_id).map_err(|_| {
+        anyhow!("No PAT stored for GitHub account. Re-enter it in Settings.")
+    })?;
+    let client = Octocrab::builder().personal_token(pat).build()?;
+    Ok(client)
+}
