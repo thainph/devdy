@@ -327,6 +327,278 @@ pub struct FileBase64 {
 /// keeps the base64 payload off the IPC channel from getting unbounded.
 const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 
+// ── File-tree mutations (context-menu actions) ───────────────────────────────
+//
+// New file / folder, rename, delete (to OS trash), copy, and move. Every command
+// re-derives the canonical project root and confines the resolved target inside
+// it, mirroring the read/write path-traversal guards above. Names are validated
+// as single path segments (no separators, no `.`/`..`, no control chars).
+
+/// Reject anything that isn't a safe single path segment. Returns the trimmed
+/// name on success.
+fn validate_name(name: &str) -> Result<String, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Name cannot be empty".to_string());
+    }
+    if trimmed == "." || trimmed == ".." {
+        return Err("Invalid name".to_string());
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return Err("Name cannot contain slashes".to_string());
+    }
+    if trimmed.chars().any(|c| c.is_control()) {
+        return Err("Name contains invalid characters".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Canonical project root, or an error string for the UI.
+fn canonical_root(project_path: &str) -> Result<PathBuf, String> {
+    Path::new(project_path)
+        .canonicalize()
+        .map_err(|e| format!("invalid project path: {e}"))
+}
+
+/// Relative POSIX path of `target` under `root` (empty string if it *is* root).
+fn rel_of(root: &Path, target: &Path) -> String {
+    target
+        .strip_prefix(root)
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default()
+}
+
+/// Resolve an EXISTING entry (`rel_path`) confined to the project root.
+fn resolve_existing(root: &Path, rel_path: &str) -> Result<PathBuf, String> {
+    if rel_path.is_empty() {
+        return Err("Cannot operate on the project root".to_string());
+    }
+    let canonical = root
+        .join(rel_path)
+        .canonicalize()
+        .map_err(|_| format!("Not found: {rel_path}"))?;
+    if !canonical.starts_with(root) {
+        return Err("Path is outside the project".to_string());
+    }
+    Ok(canonical)
+}
+
+/// Resolve a directory (`rel_dir`, `""` = root) that must already exist.
+fn resolve_dir(root: &Path, rel_dir: &str) -> Result<PathBuf, String> {
+    let dir = if rel_dir.is_empty() {
+        root.to_path_buf()
+    } else {
+        root.join(rel_dir)
+            .canonicalize()
+            .map_err(|_| format!("Directory not found: {rel_dir}"))?
+    };
+    if !dir.starts_with(root) {
+        return Err("Directory is outside the project".to_string());
+    }
+    if !dir.is_dir() {
+        return Err(format!("{rel_dir} is not a directory"));
+    }
+    Ok(dir)
+}
+
+/// A destination path in `dir` for `name` that doesn't clobber an existing entry.
+/// On collision, appends " copy", " copy 2", … before the extension (VSCode-style).
+fn unique_dest(dir: &Path, name: &str) -> PathBuf {
+    let candidate = dir.join(name);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let p = Path::new(name);
+    let stem = p
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| name.to_string());
+    let ext = p
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    for i in 1..=1000 {
+        let suffix = if i == 1 {
+            " copy".to_string()
+        } else {
+            format!(" copy {i}")
+        };
+        let cand = dir.join(format!("{stem}{suffix}{ext}"));
+        if !cand.exists() {
+            return cand;
+        }
+    }
+    dir.join(format!("{stem} copy{ext}"))
+}
+
+/// Recursively copy a file or directory tree.
+fn copy_recursive(src: &Path, dest: &Path) -> Result<(), String> {
+    if src.is_dir() {
+        std::fs::create_dir(dest).map_err(|e| format!("create directory: {e}"))?;
+        for entry in std::fs::read_dir(src).map_err(|e| format!("read directory: {e}"))? {
+            let entry = entry.map_err(|e| format!("read directory: {e}"))?;
+            copy_recursive(&entry.path(), &dest.join(entry.file_name()))?;
+        }
+    } else {
+        std::fs::copy(src, dest).map_err(|e| format!("copy file: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Create an empty directory `name` inside `rel_dir`. Returns the new rel path.
+#[tauri::command]
+pub async fn create_dir(
+    project_path: String,
+    rel_dir: String,
+    name: String,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let root = canonical_root(&project_path)?;
+        let name = validate_name(&name)?;
+        let parent = resolve_dir(&root, &rel_dir)?;
+        let target = parent.join(&name);
+        if target.exists() {
+            return Err(format!("\"{name}\" already exists"));
+        }
+        std::fs::create_dir(&target).map_err(|e| format!("create directory: {e}"))?;
+        Ok(rel_of(&root, &target))
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
+}
+
+/// Create an empty file `name` inside `rel_dir`. Returns the new rel path.
+#[tauri::command]
+pub async fn create_file(
+    project_path: String,
+    rel_dir: String,
+    name: String,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let root = canonical_root(&project_path)?;
+        let name = validate_name(&name)?;
+        let parent = resolve_dir(&root, &rel_dir)?;
+        let target = parent.join(&name);
+        // create_new fails if the file already exists — no clobber.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    format!("\"{name}\" already exists")
+                } else {
+                    format!("create file: {e}")
+                }
+            })?;
+        Ok(rel_of(&root, &target))
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
+}
+
+/// Rename an entry in place (same parent). Returns the new rel path.
+#[tauri::command]
+pub async fn rename_entry(
+    project_path: String,
+    rel_path: String,
+    new_name: String,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let root = canonical_root(&project_path)?;
+        let new_name = validate_name(&new_name)?;
+        let src = resolve_existing(&root, &rel_path)?;
+        let parent = src
+            .parent()
+            .ok_or_else(|| "Could not determine parent directory".to_string())?;
+        let dest = parent.join(&new_name);
+        if dest == src {
+            return Ok(rel_of(&root, &dest));
+        }
+        if dest.exists() {
+            return Err(format!("\"{new_name}\" already exists"));
+        }
+        std::fs::rename(&src, &dest).map_err(|e| format!("rename: {e}"))?;
+        Ok(rel_of(&root, &dest))
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
+}
+
+/// Move an entry to the OS trash (recoverable) rather than deleting permanently.
+#[tauri::command]
+pub async fn delete_entry(project_path: String, rel_path: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let root = canonical_root(&project_path)?;
+        let target = resolve_existing(&root, &rel_path)?;
+        if target == root {
+            return Err("Cannot delete the project root".to_string());
+        }
+        trash::delete(&target).map_err(|e| format!("Delete failed: {e}"))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
+}
+
+/// Copy an entry into `dest_dir` (auto-renames on collision). Returns new rel path.
+#[tauri::command]
+pub async fn copy_entry(
+    project_path: String,
+    src_rel: String,
+    dest_dir: String,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let root = canonical_root(&project_path)?;
+        let src = resolve_existing(&root, &src_rel)?;
+        let dir = resolve_dir(&root, &dest_dir)?;
+        if src.is_dir() && dir.starts_with(&src) {
+            return Err("Cannot copy a folder into itself".to_string());
+        }
+        let name = src
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .ok_or_else(|| "Invalid source name".to_string())?;
+        let dest = unique_dest(&dir, &name);
+        copy_recursive(&src, &dest)?;
+        Ok(rel_of(&root, &dest))
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
+}
+
+/// Move an entry into `dest_dir`. Returns the new rel path.
+#[tauri::command]
+pub async fn move_entry(
+    project_path: String,
+    src_rel: String,
+    dest_dir: String,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let root = canonical_root(&project_path)?;
+        let src = resolve_existing(&root, &src_rel)?;
+        let dir = resolve_dir(&root, &dest_dir)?;
+        if src.is_dir() && dir.starts_with(&src) {
+            return Err("Cannot move a folder into itself".to_string());
+        }
+        let name = src
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .ok_or_else(|| "Invalid source name".to_string())?;
+        let dest = dir.join(&name);
+        if dest == src {
+            return Ok(rel_of(&root, &src)); // already there
+        }
+        if dest.exists() {
+            return Err(format!("\"{name}\" already exists in the destination"));
+        }
+        std::fs::rename(&src, &dest).map_err(|e| format!("move: {e}"))?;
+        Ok(rel_of(&root, &dest))
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
+}
+
 /// Read an image at an arbitrary absolute path and return it as base64.
 ///
 /// The frontend `plugin-fs` scope is deliberately narrow (app dirs only), so

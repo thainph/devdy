@@ -265,6 +265,7 @@ pub fn engine_model_options() -> Vec<EngineOption> {
         label: "Claude".to_string(),
         default_model: None,
         models: [
+            ("fable", "Fable 5 (1M)"),
             ("opus", "Opus (200K)"),
             ("opus[1m]", "Opus (1M)"),
             ("sonnet", "Sonnet (200K)"),
