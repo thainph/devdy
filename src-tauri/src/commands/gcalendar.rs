@@ -40,6 +40,9 @@ pub struct CalendarMeta {
     pub summary: String,
     pub bg_color: Option<String>,
     pub primary: bool,
+    /// Google `accessRole` for this calendar: "owner" | "writer" | "reader" |
+    /// "freeBusyReader". FE uses it to filter writable calendars.
+    pub access_role: Option<String>,
 }
 
 /// A single (flattened) calendar event across accounts/calendars.
@@ -120,6 +123,8 @@ struct CalendarListEntry {
     /// skip subscribed/hidden calendars when fetching events (speed).
     #[serde(default)]
     selected: bool,
+    #[serde(default, rename = "accessRole")]
+    access_role: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -186,6 +191,81 @@ struct AttachmentEntry {
     mime_type: Option<String>,
     #[serde(default, rename = "iconLink")]
     icon_link: Option<String>,
+}
+
+// ---- Write payload DTOs (input from the frontend) --------------------------
+//
+// serde field names mirror the Google Calendar API v3 event resource so the
+// payload can be forwarded straight into the request body. Every field is
+// Option + `skip_serializing_if` so a PATCH (update) only sends the fields the
+// FE actually changed (AC-05).
+
+/// Create/update event payload.
+#[derive(Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct EventPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<EventDateTimePayload>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<EventDateTimePayload>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attendees: Option<Vec<Attendee>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reminders: Option<Reminders>,
+    /// Each element is one RRULE/EXRULE/RDATE line
+    /// (e.g. "RRULE:FREQ=WEEKLY;BYDAY=MO").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recurrence: Option<Vec<String>>,
+    /// When the FE wants a Google Meet, it sends `conferenceData.createRequest`.
+    /// Forwarded verbatim (backend stays decoupled from the Meet shape).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "conferenceData"
+    )]
+    pub conference_data: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct EventDateTimePayload {
+    /// Timed event: RFC3339, e.g. "2026-08-11T09:00:00+07:00".
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "dateTime")]
+    pub date_time: Option<String>,
+    /// All-day: "YYYY-MM-DD" (end is exclusive per the Google API).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
+    /// IANA tz, e.g. "Asia/Ho_Chi_Minh". Timed events only.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "timeZone")]
+    pub time_zone: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct Attendee {
+    pub email: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Reminders {
+    /// false when custom overrides are supplied; true to use calendar defaults.
+    pub use_default: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub overrides: Vec<ReminderOverride>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct ReminderOverride {
+    /// "email" | "popup".
+    pub method: String,
+    /// Minutes before the event.
+    pub minutes: i64,
 }
 
 // ---- Token minting (cached) ------------------------------------------------
@@ -306,6 +386,7 @@ pub async fn list_google_calendars(
                         summary: c.summary,
                         bg_color: c.background_color,
                         primary: c.primary,
+                        access_role: c.access_role,
                     });
                 }
             }
@@ -355,53 +436,90 @@ async fn fetch_calendar_events(
 
     let mut out = Vec::new();
     for ev in resp.items {
-        if ev.status.as_deref() == Some("cancelled") {
-            continue;
+        if let Some(mapped) = map_event_entry(
+            ev,
+            account_id,
+            account_label,
+            &cal.id,
+            &cal.summary,
+            cal.background_color.clone(),
+        ) {
+            out.push(mapped);
         }
-        let (start, all_day_s) = normalize_dt(ev.start.as_ref());
-        let (end, _) = normalize_dt(ev.end.as_ref());
-        if start.is_empty() {
-            continue; // events without a start are unusable in a grid
-        }
-        // Prefer the convenience hangoutLink; otherwise pull the first "video"
-        // entry point from conferenceData.
-        let meet_link = ev.hangout_link.clone().or_else(|| {
-            ev.conference_data.as_ref().and_then(|c| {
-                c.entry_points
-                    .iter()
-                    .find(|e| e.entry_point_type.as_deref() == Some("video"))
-                    .and_then(|e| e.uri.clone())
-            })
-        });
-        let attachments = ev
-            .attachments
-            .into_iter()
-            .map(|a| CalAttachment {
-                file_url: a.file_url,
-                title: a.title,
-                mime_type: a.mime_type,
-                icon_link: a.icon_link,
-            })
-            .collect();
-        out.push(CalEvent {
-            id: ev.id,
-            account_id: account_id.to_string(),
-            account_label: account_label.to_string(),
-            calendar_id: cal.id.clone(),
-            calendar_summary: cal.summary.clone(),
-            title: ev.summary.unwrap_or_else(|| "(no title)".to_string()),
-            start,
-            end,
-            all_day: all_day_s,
-            location: ev.location,
-            html_link: ev.html_link,
-            color: cal.background_color.clone(),
-            description: ev.description,
-            meet_link,
-            attachments,
-        });
     }
     Ok(out)
+}
+
+/// Map one Google event resource into a flattened `CalEvent`.
+///
+/// Shared by the read path (`fetch_calendar_events`) and the write path
+/// (create/update). Returns `None` for cancelled events or events without a
+/// usable start (unrenderable in a grid).
+fn map_event_entry(
+    ev: EventEntry,
+    account_id: &str,
+    account_label: &str,
+    calendar_id: &str,
+    calendar_summary: &str,
+    color: Option<String>,
+) -> Option<CalEvent> {
+    if ev.status.as_deref() == Some("cancelled") {
+        return None;
+    }
+    let (start, all_day_s) = normalize_dt(ev.start.as_ref());
+    let (end, _) = normalize_dt(ev.end.as_ref());
+    if start.is_empty() {
+        return None; // events without a start are unusable in a grid
+    }
+    // Prefer the convenience hangoutLink; otherwise pull the first "video"
+    // entry point from conferenceData.
+    let meet_link = ev.hangout_link.clone().or_else(|| {
+        ev.conference_data.as_ref().and_then(|c| {
+            c.entry_points
+                .iter()
+                .find(|e| e.entry_point_type.as_deref() == Some("video"))
+                .and_then(|e| e.uri.clone())
+        })
+    });
+    let attachments = ev
+        .attachments
+        .into_iter()
+        .map(|a| CalAttachment {
+            file_url: a.file_url,
+            title: a.title,
+            mime_type: a.mime_type,
+            icon_link: a.icon_link,
+        })
+        .collect();
+    Some(CalEvent {
+        id: ev.id,
+        account_id: account_id.to_string(),
+        account_label: account_label.to_string(),
+        calendar_id: calendar_id.to_string(),
+        calendar_summary: calendar_summary.to_string(),
+        title: ev.summary.unwrap_or_else(|| "(no title)".to_string()),
+        start,
+        end,
+        all_day: all_day_s,
+        location: ev.location,
+        html_link: ev.html_link,
+        color,
+        description: ev.description,
+        meet_link,
+        attachments,
+    })
+}
+
+/// Look up an account's display label (empty string if not found). Create/update
+/// need it to populate the returned `CalEvent`.
+async fn account_label_for(db: &Db, account_id: &str) -> String {
+    sqlx::query_scalar::<_, String>("SELECT label FROM google_accounts WHERE id = ?")
+        .bind(account_id)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default()
 }
 
 /// Fetch events in `[time_min, time_max)` (RFC3339) across the shown calendars of
@@ -480,6 +598,128 @@ pub async fn list_google_calendar_events(
     }
 
     Ok(EventsResult { events, errors })
+}
+
+// ---- Write commands (create / update / delete) -----------------------------
+
+const EVENTS_BASE: &str = "https://www.googleapis.com/calendar/v3/calendars";
+
+/// Create an event on `calendar_id`. Supports timed (dateTime+timeZone) and
+/// all-day (date, end exclusive) events plus the FULL payload (attendees,
+/// custom reminders, recurrence, Google Meet via `conferenceData`). Always sends
+/// `conferenceDataVersion=1` and `sendUpdates=all`. Returns the created event
+/// mapped to `CalEvent`.
+#[tauri::command]
+pub async fn create_google_calendar_event(
+    db: State<'_, Db>,
+    account_id: String,
+    calendar_id: String,
+    payload: EventPayload,
+) -> Result<CalEvent, String> {
+    let client = reqwest::Client::new();
+    let token = access_token_for(&client, &account_id).await?;
+    let url = format!(
+        "{EVENTS_BASE}/{}/events",
+        urlencoding_component(&calendar_id)
+    );
+
+    let resp = client
+        .post(&url)
+        .bearer_auth(&token)
+        .query(&[("conferenceDataVersion", "1"), ("sendUpdates", "all")])
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("Create event request failed: {e}"))?;
+
+    let ev = parse_event_response(resp, "Create").await?;
+    let label = account_label_for(db.inner(), &account_id).await;
+    map_event_entry(ev, &account_id, &label, &calendar_id, "", None)
+        .ok_or_else(|| "Created event has no usable start.".to_string())
+}
+
+/// Update an event with `PATCH` — only the fields present in `payload` are sent,
+/// so Google keeps every other field (AC-05). Same query flags as create.
+#[tauri::command]
+pub async fn update_google_calendar_event(
+    db: State<'_, Db>,
+    account_id: String,
+    calendar_id: String,
+    event_id: String,
+    payload: EventPayload,
+) -> Result<CalEvent, String> {
+    let client = reqwest::Client::new();
+    let token = access_token_for(&client, &account_id).await?;
+    let url = format!(
+        "{EVENTS_BASE}/{}/events/{}",
+        urlencoding_component(&calendar_id),
+        urlencoding_component(&event_id)
+    );
+
+    let resp = client
+        .patch(&url)
+        .bearer_auth(&token)
+        .query(&[("conferenceDataVersion", "1"), ("sendUpdates", "all")])
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("Update event request failed: {e}"))?;
+
+    let ev = parse_event_response(resp, "Update").await?;
+    let label = account_label_for(db.inner(), &account_id).await;
+    map_event_entry(ev, &account_id, &label, &calendar_id, "", None)
+        .ok_or_else(|| "Updated event has no usable start.".to_string())
+}
+
+/// Delete an event. Idempotent: both `204 No Content` (deleted) and `410 Gone`
+/// (already deleted) count as success. Uses `sendUpdates=all`.
+#[tauri::command]
+pub async fn delete_google_calendar_event(
+    db: State<'_, Db>,
+    account_id: String,
+    calendar_id: String,
+    event_id: String,
+) -> Result<(), String> {
+    let _ = &db; // kept for signature symmetry with create/update
+    let client = reqwest::Client::new();
+    let token = access_token_for(&client, &account_id).await?;
+    let url = format!(
+        "{EVENTS_BASE}/{}/events/{}",
+        urlencoding_component(&calendar_id),
+        urlencoding_component(&event_id)
+    );
+
+    let resp = client
+        .delete(&url)
+        .bearer_auth(&token)
+        .query(&[("sendUpdates", "all")])
+        .send()
+        .await
+        .map_err(|e| format!("Delete event request failed: {e}"))?;
+
+    let status = resp.status();
+    if status.is_success() || status == reqwest::StatusCode::GONE {
+        return Ok(());
+    }
+    let body = resp.text().await.unwrap_or_default();
+    Err(format!("Delete failed (HTTP {status}): {body}"))
+}
+
+/// Read a create/update response: on non-2xx, surface the HTTP status + body so
+/// the FE can react (e.g. map 403 → re-auth prompt). On success, parse the event
+/// resource into an `EventEntry`.
+async fn parse_event_response(
+    resp: reqwest::Response,
+    action: &str,
+) -> Result<EventEntry, String> {
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("{action} failed (HTTP {status}): {body}"));
+    }
+    resp.json::<EventEntry>()
+        .await
+        .map_err(|e| format!("Failed to parse {} response: {e}", action.to_lowercase()))
 }
 
 /// Normalize a Google event start/end into a string, returning `(value, all_day)`.

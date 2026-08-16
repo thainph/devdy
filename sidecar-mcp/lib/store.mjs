@@ -6,6 +6,8 @@
 
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
+import { mkdirSync, writeFileSync, readFileSync, rmSync, renameSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 let handle = null;
 
@@ -192,4 +194,227 @@ export function getServer(id) {
        FROM servers WHERE id = ?`,
     )
     .get(id);
+}
+
+// ---- Skills & Rules library -------------------------------------------------
+//
+// Source-of-truth mirrors Devdy's own screens (commands/skills.rs, rules.rs):
+//   • skills live in  <app_data>/skills/<name>/SKILL.md  (row in `skills`)
+//   • rules  live in  <app_data>/rules/<name>.md          (row in `rules`)
+// `<app_data>` is derived from DEVDY_DB_PATH (data.db sits at its root). These
+// tools manage the SOURCE only — they never touch per-project artifacts
+// (.claude/.codex/AGENTS.md). When a skill/rule is already applied to projects,
+// callers get a warning to re-apply via the Devdy app so the sync/hash tracking
+// stays correct.
+
+function appDataDir() {
+  const dbPath = process.env.DEVDY_DB_PATH;
+  if (!dbPath) throw new Error('DEVDY_DB_PATH is not set — cannot locate app data dir');
+  return dirname(dbPath);
+}
+const skillsDir = () => join(appDataDir(), 'skills');
+const rulesDir = () => join(appDataDir(), 'rules');
+
+function validateLibName(name, kind) {
+  const n = String(name || '').trim();
+  if (!n) throw new Error(`${kind} name is required`);
+  if (!/^[A-Za-z0-9_-]+$/.test(n)) {
+    throw new Error(`${kind} name must only contain letters, numbers, hyphens and underscores`);
+  }
+  return n;
+}
+function validateTarget(target) {
+  const t = String(target || '').trim();
+  if (!['claude', 'codex', 'both'].includes(t)) {
+    throw new Error('target must be one of: claude, codex, both');
+  }
+  return t;
+}
+
+/** Project names a skill/rule is currently applied to (for stale-artifact warnings). */
+function appliedProjects(kind, id) {
+  const sql =
+    kind === 'skill'
+      ? `SELECT p.name AS name FROM project_skills ps JOIN projects p ON p.id = ps.project_id
+         WHERE ps.skill_id = ? ORDER BY p.name`
+      : `SELECT p.name AS name FROM project_rules pr JOIN projects p ON p.id = pr.project_id
+         WHERE pr.rule_id = ? ORDER BY p.name`;
+  return db()
+    .prepare(sql)
+    .all(id)
+    .map((r) => r.name);
+}
+
+// ---- Skills ----------------------------------------------------------------
+
+export function listSkills() {
+  return db()
+    .prepare('SELECT id, name, description, target, source_path, updated_at FROM skills ORDER BY name')
+    .all();
+}
+
+export function readSkill(id) {
+  if (!id) throw new Error('skill id is required');
+  const row = db()
+    .prepare('SELECT id, name, description, target, source_path, updated_at FROM skills WHERE id = ?')
+    .get(id);
+  if (!row) return null;
+  let content = '';
+  try {
+    content = readFileSync(join(row.source_path, 'SKILL.md'), 'utf8');
+  } catch {
+    content = '';
+  }
+  return { ...row, content };
+}
+
+export function createSkill({ name, description = '', target = 'claude', content = '' } = {}) {
+  const n = validateLibName(name, 'skill');
+  const t = validateTarget(target);
+  const desc = String(description || '').trim();
+  if (!desc) throw new Error('description is required');
+  if (db().prepare('SELECT id FROM skills WHERE name = ?').get(n)) {
+    throw new Error(`skill '${n}' already exists`);
+  }
+  const dir = join(skillsDir(), n);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'SKILL.md'), String(content || ''));
+  const id = randomUUID();
+  const now = nowIso();
+  db()
+    .prepare('INSERT INTO skills (id, name, description, target, source_path, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(id, n, desc, t, dir, now);
+  return { id, name: n, description: desc, target: t, source_path: dir, updated_at: now };
+}
+
+export function updateSkill({ id, name, description, target, content } = {}) {
+  if (!id) throw new Error('skill id is required');
+  const row = db()
+    .prepare('SELECT id, name, description, target, source_path FROM skills WHERE id = ?')
+    .get(id);
+  if (!row) throw new Error(`skill not found: ${id}`);
+  const newName = name != null ? validateLibName(name, 'skill') : row.name;
+  const newTarget = target != null ? validateTarget(target) : row.target;
+  const newDesc = description != null ? String(description).trim() : row.description;
+  if (!newDesc) throw new Error('description cannot be empty');
+  if (newName !== row.name && db().prepare('SELECT id FROM skills WHERE name = ? AND id != ?').get(newName, id)) {
+    throw new Error(`skill '${newName}' already exists`);
+  }
+  let sourcePath = row.source_path;
+  if (newName !== row.name) {
+    sourcePath = join(skillsDir(), newName);
+    renameSync(row.source_path, sourcePath);
+  }
+  if (content != null) writeFileSync(join(sourcePath, 'SKILL.md'), String(content));
+  const now = nowIso();
+  db()
+    .prepare('UPDATE skills SET name = ?, description = ?, target = ?, source_path = ?, updated_at = ? WHERE id = ?')
+    .run(newName, newDesc, newTarget, sourcePath, now, id);
+  return {
+    skill: { id, name: newName, description: newDesc, target: newTarget, source_path: sourcePath, updated_at: now },
+    renamed: newName !== row.name,
+    applied: appliedProjects('skill', id),
+  };
+}
+
+export function deleteSkill(id) {
+  if (!id) throw new Error('skill id is required');
+  const row = db().prepare('SELECT name, source_path FROM skills WHERE id = ?').get(id);
+  if (!row) throw new Error(`skill not found: ${id}`);
+  const applied = appliedProjects('skill', id);
+  try {
+    rmSync(row.source_path, { recursive: true, force: true });
+  } catch {
+    /* best effort */
+  }
+  db().prepare('DELETE FROM project_skills WHERE skill_id = ?').run(id);
+  db().prepare('DELETE FROM skills WHERE id = ?').run(id);
+  return { name: row.name, applied };
+}
+
+// ---- Rules -----------------------------------------------------------------
+
+export function listRules() {
+  return db()
+    .prepare('SELECT id, name, description, target, source_path, updated_at FROM rules ORDER BY name')
+    .all();
+}
+
+export function readRule(id) {
+  if (!id) throw new Error('rule id is required');
+  const row = db()
+    .prepare('SELECT id, name, description, target, source_path, updated_at FROM rules WHERE id = ?')
+    .get(id);
+  if (!row) return null;
+  let content = '';
+  try {
+    content = readFileSync(row.source_path, 'utf8');
+  } catch {
+    content = '';
+  }
+  return { ...row, content };
+}
+
+export function createRule({ name, description = '', target = 'both', content = '' } = {}) {
+  const n = validateLibName(name, 'rule');
+  const t = validateTarget(target);
+  const desc = String(description || '').trim();
+  if (!desc) throw new Error('description is required');
+  if (db().prepare('SELECT id FROM rules WHERE name = ?').get(n)) {
+    throw new Error(`rule '${n}' already exists`);
+  }
+  mkdirSync(rulesDir(), { recursive: true });
+  const sourcePath = join(rulesDir(), `${n}.md`);
+  writeFileSync(sourcePath, String(content || ''));
+  const id = randomUUID();
+  const now = nowIso();
+  db()
+    .prepare('INSERT INTO rules (id, name, description, target, source_path, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(id, n, desc, t, sourcePath, now);
+  return { id, name: n, description: desc, target: t, source_path: sourcePath, updated_at: now };
+}
+
+export function updateRule({ id, name, description, target, content } = {}) {
+  if (!id) throw new Error('rule id is required');
+  const row = db()
+    .prepare('SELECT id, name, description, target, source_path FROM rules WHERE id = ?')
+    .get(id);
+  if (!row) throw new Error(`rule not found: ${id}`);
+  const newName = name != null ? validateLibName(name, 'rule') : row.name;
+  const newTarget = target != null ? validateTarget(target) : row.target;
+  const newDesc = description != null ? String(description).trim() : row.description;
+  if (!newDesc) throw new Error('description cannot be empty');
+  if (newName !== row.name && db().prepare('SELECT id FROM rules WHERE name = ? AND id != ?').get(newName, id)) {
+    throw new Error(`rule '${newName}' already exists`);
+  }
+  let sourcePath = row.source_path;
+  if (newName !== row.name) {
+    sourcePath = join(rulesDir(), `${newName}.md`);
+    renameSync(row.source_path, sourcePath);
+  }
+  if (content != null) writeFileSync(sourcePath, String(content));
+  const now = nowIso();
+  db()
+    .prepare('UPDATE rules SET name = ?, description = ?, target = ?, source_path = ?, updated_at = ? WHERE id = ?')
+    .run(newName, newDesc, newTarget, sourcePath, now, id);
+  return {
+    rule: { id, name: newName, description: newDesc, target: newTarget, source_path: sourcePath, updated_at: now },
+    renamed: newName !== row.name,
+    applied: appliedProjects('rule', id),
+  };
+}
+
+export function deleteRule(id) {
+  if (!id) throw new Error('rule id is required');
+  const row = db().prepare('SELECT name, source_path FROM rules WHERE id = ?').get(id);
+  if (!row) throw new Error(`rule not found: ${id}`);
+  const applied = appliedProjects('rule', id);
+  try {
+    rmSync(row.source_path, { force: true });
+  } catch {
+    /* best effort */
+  }
+  db().prepare('DELETE FROM project_rules WHERE rule_id = ?').run(id);
+  db().prepare('DELETE FROM rules WHERE id = ?').run(id);
+  return { name: row.name, applied };
 }

@@ -27,7 +27,7 @@ import {
   ImagePlus, X, Paperclip,
   ShieldQuestion, MessageCircleQuestion,
   Pin, PinOff, Pencil, Check, Github, Gitlab,
-  ClipboardCopy, ScrollText, HardDrive, Cloud, Radio, Languages, FolderTree, Loader2
+  ClipboardCopy, ScrollText, HardDrive, Cloud, Radio, Languages, FolderTree, Loader2, ListChecks
 } from 'lucide-vue-next'
 import AppSelect from '@/components/AppSelect.vue'
 import StreamLog from '@/components/StreamLog.vue'
@@ -38,7 +38,7 @@ import { mergeContextModel } from '@/lib/contextLimits'
 import PermissionPrompt from '@/components/PermissionPrompt.vue'
 import FileViewer from '@/components/FileViewer.vue'
 import FileTree from '@/components/FileTree.vue'
-import { Button, Input, StatusBadge, Badge, Modal } from '@/components/ui'
+import { Button, Input, StatusBadge, Badge, Modal, DropdownMenu, DropdownItem } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { vMermaid } from '@/lib/mermaid'
@@ -2317,9 +2317,9 @@ function handleRefInput(val: string) {
           @click="remoteModalOpen = true"
         >
           <Radio
-            class="h-3.5 w-3.5"
+            class="h-4 w-4"
             :class="remoteActive ? 'text-emerald-500' : remoteBoundElsewhere ? 'text-muted-foreground' : ''"
-            :stroke-width="1.75"
+            :stroke-width="2"
           />
           <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">Remote</span>
           <!-- Live pulse ONLY when a phone is actively driving THIS run. -->
@@ -2332,39 +2332,40 @@ function handleRefInput(val: string) {
             <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-background" />
           </span>
         </Button>
+        <!-- "Open in…" external tools grouped into one dropdown to declutter -->
+        <DropdownMenu align="right">
+          <template #trigger="{ open }">
+            <Button variant="outline" :disabled="!project" title="Open project in…">
+              <FolderOpen class="h-4 w-4" :stroke-width="2" />
+              <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">Open</span>
+              <ChevronDown class="h-3 w-3 opacity-60 transition-transform" :class="{ 'rotate-180': open }" :stroke-width="2" />
+            </Button>
+          </template>
+          <DropdownItem :disabled="!project" @click="handleOpenInVscode">
+            <Code2 class="h-3.5 w-3.5" :stroke-width="1.75" /> VS Code
+          </DropdownItem>
+          <DropdownItem :disabled="!project" @click="handleOpenInFolder">
+            <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" /> Folder
+          </DropdownItem>
+          <DropdownItem :disabled="!project" @click="handleOpenInTerminal">
+            <Terminal class="h-3.5 w-3.5" :stroke-width="1.75" /> Terminal
+          </DropdownItem>
+        </DropdownMenu>
         <Button
           variant="outline"
           :disabled="!project"
-          :title="currentRunId ? 'Open project in VS Code with the loaded issue/PR file' : 'Open project folder in VS Code'"
-          @click="handleOpenInVscode"
+          title="Issues by milestone"
+          @click="router.push(`/projects/${projectId}/issues`)"
         >
-          <Code2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">VS Code</span>
-        </Button>
-        <Button
-          variant="outline"
-          :disabled="!project"
-          title="Open project folder"
-          @click="handleOpenInFolder"
-        >
-          <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" />
-          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">Folder</span>
-        </Button>
-        <Button
-          variant="outline"
-          :disabled="!project"
-          title="Open project folder in terminal"
-          @click="handleOpenInTerminal"
-        >
-          <Terminal class="h-3.5 w-3.5" :stroke-width="1.75" />
-          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">Terminal</span>
+          <ListChecks class="h-4 w-4" :stroke-width="2" />
+          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">Issues</span>
         </Button>
         <Button
           variant="outline"
           title="Project settings (repos, PAT, skills)"
           @click="router.push(`/projects/${projectId}/settings`)"
         >
-          <Settings class="h-3.5 w-3.5" :stroke-width="1.75" />
+          <Settings class="h-4 w-4" :stroke-width="2" />
           <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">Settings</span>
         </Button>
         <Button
@@ -2372,7 +2373,7 @@ function handleRefInput(val: string) {
           :title="uiLayout.focusMode ? 'Thoát chế độ focus (hiện lại sidebar, history)' : 'Chế độ focus: chỉ hiện phiên AI hiện tại'"
           @click="uiLayout.toggleFocus()"
         >
-          <component :is="uiLayout.focusMode ? Minimize2 : Maximize2" class="h-3.5 w-3.5" :stroke-width="1.75" />
+          <component :is="uiLayout.focusMode ? Minimize2 : Maximize2" class="h-4 w-4" :stroke-width="2" />
           <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">Focus</span>
         </Button>
       </div>

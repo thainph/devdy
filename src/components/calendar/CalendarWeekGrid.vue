@@ -11,9 +11,22 @@ const props = defineProps<{
   showLunar?: boolean
 }>()
 
-const emit = defineEmits<{ select: [ev: CalEvent] }>()
+const emit = defineEmits<{
+  select: [ev: CalEvent]
+  createAt: [date: Date]
+}>()
 
 const HOUR_HEIGHT = 44 // px per hour
+
+/** Click an empty spot in a day column → create an event at that hour. */
+function onColumnClick(day: Date, e: MouseEvent) {
+  const col = e.currentTarget as HTMLElement
+  const y = e.clientY - col.getBoundingClientRect().top
+  const hour = Math.max(0, Math.min(23, Math.floor(y / HOUR_HEIGHT)))
+  const start = new Date(day)
+  start.setHours(hour, 0, 0, 0)
+  emit('createAt', start)
+}
 const HOURS = Array.from({ length: 24 }, (_, i) => i)
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 
@@ -184,7 +197,8 @@ onMounted(() => {
           <div
             v-for="(d, i) in weekDays"
             :key="i"
-            class="relative border-l border-border/40"
+            class="relative border-l border-border/40 cursor-pointer"
+            @click="onColumnClick(d, $event)"
           >
             <!-- hour lines -->
             <div
@@ -207,7 +221,7 @@ onMounted(() => {
                 backgroundColor: colorFor(b.ev.account_id),
               }"
               :title="b.ev.title"
-              @click="emit('select', b.ev)"
+              @click.stop="emit('select', b.ev)"
             >
               <div class="font-medium truncate">{{ b.ev.title }}</div>
               <div class="opacity-80 truncate">{{ hhmm(b.start) }}</div>
