@@ -1,0 +1,302 @@
+[
+  {
+    "asset": "body.webp",
+    "src": "519,93,747,308",
+    "out": "430x405",
+    "alpha": "real",
+    "reg": "canvas anchor=body",
+    "pivot": "0.500,0.887",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "asset": "head.webp",
+    "src": "3,95,252,274",
+    "out": "451x324",
+    "alpha": "real",
+    "reg": "canvas anchor=body",
+    "pivot": "0.500,0.552",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "asset": "ear-left.webp",
+    "src": "252,15,364,192",
+    "out": "154x243",
+    "alpha": "real",
+    "reg": "canvas anchor=body",
+    "pivot": "0.377,0.344",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "asset": "ear-right.webp",
+    "src": "403,16,518,191",
+    "out": "156x237",
+    "alpha": "real",
+    "reg": "canvas anchor=body",
+    "pivot": "0.616,0.335",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "asset": "tail-orange.webp",
+    "src": "742,14,934,287",
+    "out": "220x313",
+    "alpha": "real",
+    "reg": "canvas",
+    "pivot": "0.589,0.479",
+    "status": "PASS",
+    "notes": "single tail source; glow/energy modulated at runtime (no separate asset)"
+  },
+  {
+    "asset": "tail-blue.webp",
+    "src": "951,12,1128,290",
+    "out": "241x379",
+    "alpha": "real",
+    "reg": "canvas",
+    "pivot": "0.417,0.434",
+    "status": "PASS",
+    "notes": "single tail source; glow/energy modulated at runtime (no separate asset)"
+  },
+  {
+    "asset": "eyes/idle.webp",
+    "src": "14,359,74,413",
+    "out": "72x65 x2",
+    "alpha": "real",
+    "reg": "sockets 0.4096,0.5796@0.4306",
+    "pivot": "-",
+    "status": "PASS",
+    "notes": "single-eye glyph mirrored to both sockets; fixed scale/pos"
+  },
+  {
+    "asset": "eyes/blink.webp",
+    "src": "184,365,242,414",
+    "out": "72x61 x2",
+    "alpha": "real",
+    "reg": "sockets 0.4096,0.5796@0.4306",
+    "pivot": "-",
+    "status": "PASS",
+    "notes": "single-eye glyph mirrored to both sockets; fixed scale/pos"
+  },
+  {
+    "asset": "eyes/processing-01.webp",
+    "src": "522,359,580,414",
+    "out": "72x68 x2",
+    "alpha": "real",
+    "reg": "sockets 0.4096,0.5796@0.4306",
+    "pivot": "-",
+    "status": "PASS",
+    "notes": "single-eye glyph mirrored to both sockets; fixed scale/pos"
+  },
+  {
+    "asset": "eyes/processing-02.webp",
+    "src": "601,359,660,414",
+    "out": "72x67 x2",
+    "alpha": "real",
+    "reg": "sockets 0.4096,0.5796@0.4306",
+    "pivot": "-",
+    "status": "PASS",
+    "notes": "single-eye glyph mirrored to both sockets; fixed scale/pos"
+  },
+  {
+    "asset": "eyes/processing-03.webp",
+    "src": "688,359,748,414",
+    "out": "72x66 x2",
+    "alpha": "real",
+    "reg": "sockets 0.4096,0.5796@0.4306",
+    "pivot": "-",
+    "status": "PASS",
+    "notes": "single-eye glyph mirrored to both sockets; fixed scale/pos"
+  },
+  {
+    "asset": "eyes/happy.webp",
+    "src": "849,358,907,414",
+    "out": "72x70 x2",
+    "alpha": "real",
+    "reg": "sockets 0.4096,0.5796@0.4306",
+    "pivot": "-",
+    "status": "PASS",
+    "notes": "single-eye glyph mirrored to both sockets; fixed scale/pos"
+  },
+  {
+    "asset": "eyes/error.webp",
+    "src": "1007,356,1064,413",
+    "out": "72x72 x2",
+    "alpha": "real",
+    "reg": "sockets 0.4096,0.5796@0.4306",
+    "pivot": "-",
+    "status": "PASS",
+    "notes": "single-eye glyph mirrored to both sockets; fixed scale/pos"
+  },
+  {
+    "asset": "chest/idle.webp",
+    "src": "31,476,134,551",
+    "out": "154x112",
+    "alpha": "real",
+    "reg": "center 0.5,0.67",
+    "pivot": "-",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "asset": "chest/processing.webp",
+    "src": "176,476,279,551",
+    "out": "154x112",
+    "alpha": "real",
+    "reg": "center 0.5,0.67",
+    "pivot": "-",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "asset": "chest/syncing.webp",
+    "src": "321,476,424,551",
+    "out": "154x112",
+    "alpha": "real",
+    "reg": "center 0.5,0.67",
+    "pivot": "-",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "asset": "chest/success.webp",
+    "src": "464,476,567,551",
+    "out": "154x112",
+    "alpha": "real",
+    "reg": "center 0.5,0.67",
+    "pivot": "-",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "asset": "chest/error.webp",
+    "src": "605,476,709,551",
+    "out": "154x111",
+    "alpha": "real",
+    "reg": "center 0.5,0.67",
+    "pivot": "-",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "asset": "chest/permission.webp",
+    "src": "751,476,855,551",
+    "out": "154x111",
+    "alpha": "real",
+    "reg": "center 0.5,0.67",
+    "pivot": "-",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "asset": "effects/trail-orange.webp",
+    "src": "13,588,172,764",
+    "out": "159x176",
+    "alpha": "real",
+    "reg": "cropped+meta",
+    "pivot": "0.5,0.5",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "asset": "effects/trail-blue.webp",
+    "src": "502,596,645,763",
+    "out": "143x167",
+    "alpha": "real",
+    "reg": "cropped+meta",
+    "pivot": "0.5,0.5",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "asset": "effects/infinity.webp",
+    "src": "993,599,1240,724",
+    "out": "247x125",
+    "alpha": "real",
+    "reg": "cropped+meta",
+    "pivot": "0.5,0.5",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "asset": "effects/ground-glow.webp",
+    "src": "8,858,264,970",
+    "out": "256x112",
+    "alpha": "real",
+    "reg": "cropped+meta",
+    "pivot": "0.5,0.5",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "asset": "effects/swoosh.webp",
+    "src": "351,598,504,760",
+    "out": "153x162",
+    "alpha": "real",
+    "reg": "cropped+meta",
+    "pivot": "0.5,0.5",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "asset": "effects/particles.webp",
+    "src": "332,863,382,926",
+    "out": "50x63",
+    "alpha": "real",
+    "reg": "cropped+meta",
+    "pivot": "0.5,0.5",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "asset": "effects/spark.webp",
+    "src": "497,861,546,922",
+    "out": "49x61",
+    "alpha": "real",
+    "reg": "cropped+meta",
+    "pivot": "0.5,0.5",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "asset": "effects/pixel-squares.webp",
+    "src": "668,889,743,958",
+    "out": "75x69",
+    "alpha": "real",
+    "reg": "cropped+meta",
+    "pivot": "0.5,0.5",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "asset": "effects/scan-line.webp",
+    "src": "805,889,941,946",
+    "out": "136x57",
+    "alpha": "real",
+    "reg": "cropped+meta",
+    "pivot": "0.5,0.5",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "asset": "effects/orb.webp",
+    "src": "1107,851,1185,971",
+    "out": "78x120",
+    "alpha": "real",
+    "reg": "cropped+meta",
+    "pivot": "0.5,0.5",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "asset": "canonical-composite.webp",
+    "src": "1173,15,1509,392",
+    "out": "858x963",
+    "alpha": "real",
+    "reg": "centered",
+    "pivot": "-",
+    "status": "PASS",
+    "notes": "reference only, not an animated layer"
+  }
+]
