@@ -94,23 +94,18 @@ type CyberFoxPreviewState =
   | 'idle'
   | 'thinking'
   | 'loading'
-  | 'running'
   | 'success'
   | 'error'
   | 'permission'
-  | 'syncing'
-  | 'sleep'
 
+// Only the states the live mascot actually reaches (see CyberFoxFloating).
 const CYBER_FOX_STATES: { id: CyberFoxPreviewState; labelKey: string }[] = [
   { id: 'idle', labelKey: 'settings.mascot.states.idle' },
   { id: 'thinking', labelKey: 'settings.mascot.states.thinking' },
   { id: 'loading', labelKey: 'settings.mascot.states.loading' },
-  { id: 'running', labelKey: 'settings.mascot.states.running' },
   { id: 'success', labelKey: 'settings.mascot.states.success' },
   { id: 'error', labelKey: 'settings.mascot.states.error' },
   { id: 'permission', labelKey: 'settings.mascot.states.permission' },
-  { id: 'syncing', labelKey: 'settings.mascot.states.syncing' },
-  { id: 'sleep', labelKey: 'settings.mascot.states.sleep' },
 ]
 const cyberFoxPreviewState = ref<CyberFoxPreviewState>('idle')
 const MASCOT_POSITION_STORAGE_KEY = 'devdy.cyberFox.position.v1'

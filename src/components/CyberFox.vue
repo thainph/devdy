@@ -8,7 +8,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 type CyberFoxState =
-  | 'idle' | 'thinking' | 'loading' | 'running'
+  | 'idle' | 'thinking' | 'loading'
   | 'success' | 'error' | 'permission' | 'syncing' | 'sleep'
 
 const props = withDefaults(defineProps<{
@@ -16,11 +16,14 @@ const props = withDefaults(defineProps<{
   size?: 'sm' | 'md' | 'lg' | number
   label?: string
   reducedMotion?: boolean
+  /** Number of orbiting light streams (one per running run) — only shown while orchestrating. */
+  streams?: number
 }>(), {
   state: 'idle',
   size: 'md',
   label: '',
   reducedMotion: false,
+  streams: 1,
 })
 
 const SIZES = { sm: 96, md: 148, lg: 196 } as const
@@ -59,7 +62,7 @@ const originVars = {
 } as Record<string, string>
 
 // ---- state → sprite mapping -------------------------------------------
-const PROCESSING = new Set<CyberFoxState>(['loading', 'thinking', 'running', 'syncing'])
+const PROCESSING = new Set<CyberFoxState>(['loading', 'thinking', 'syncing'])
 const showProcessingEyes = computed(() => PROCESSING.has(props.state) && !props.reducedMotion)
 
 const eyeStatic = computed<string>(() => {
@@ -67,40 +70,17 @@ const eyeStatic = computed<string>(() => {
     case 'success': return 'happy'
     case 'error': return 'error'
     case 'sleep': return 'blink'
-    case 'loading': case 'thinking': case 'running': case 'syncing': return 'processing-02'
+    case 'loading': case 'thinking': case 'syncing': return 'processing-02'
     default: return 'idle'
   }
 })
-const chestState = computed<string>(() => {
-  switch (props.state) {
-    case 'thinking': case 'loading': case 'running': return 'processing'
-    case 'syncing': return 'syncing'
-    case 'success': return 'success'
-    case 'error': return 'error'
-    case 'permission': return 'permission'
-    default: return 'idle'
-  }
-})
+// Only image-backed chest states reach the <img>; thinking/loading/success/
+// error/permission are drawn with CSS (see .chest-fx variants).
+const chestState = computed<string>(() => 'idle')
 const showBlink = computed(() =>
   !showProcessingEyes.value && !['error', 'sleep', 'success'].includes(props.state))
 const showOrchestration = computed(() =>
-  ['loading', 'running', 'syncing'].includes(props.state))
-
-// orbiting trail: a string of glow dots chasing along the path (head bright/large → tail small/dim)
-const TRAIL = 9
-const TRAIL_STEP = 0.028
-function dotStyle(i: number, phase: number) {
-  const p = phase - (i - 1) * TRAIL_STEP
-  const frac = ((p % 1) + 1) % 1
-  const k = (i - 1) / (TRAIL - 1) // 0 = head, 1 = tail
-  const delay = `calc(var(--fox-orbit) * ${(-frac).toFixed(4)})`
-  return {
-    offsetPath: orbitPath.value,
-    animationDelay: `${delay}, ${delay}`,
-    '--s': (1 - k * 0.58).toFixed(3),
-    '--o': (1 - k * 0.72).toFixed(3),
-  }
-}
+  ['loading', 'syncing'].includes(props.state))
 
 // ---- size --------------------------------------------------------------
 const sizePx = computed(() =>
@@ -112,24 +92,66 @@ const sizeBucket = computed(() => {
 
 const rootStyle = computed(() => ({ '--dy-size': sizePx.value, ...originVars }))
 
-// diagonal tilted-ellipse orbit path (px in the root box, so it scales with size).
-// back → left shoulder → across body → right foot → back behind.
 const numericSize = computed(() =>
   typeof props.size === 'number' ? Math.max(64, props.size) : SIZES[props.size])
-const orbitPath = computed(() => {
+
+// ---- orbiting light streams -------------------------------------------
+// One stream per running run (capped), each a trail of glow dots chasing its
+// OWN tilted-ellipse orbit around the fox (head bright/large → tail small/dim).
+const TRAIL = 9
+const TRAIL_STEP = 0.028
+const MAX_STREAMS = 6
+// colour index cycles through the palette (.dot--c0..c5); first two match the tails
+const streamCount = computed(() =>
+  Math.max(1, Math.min(MAX_STREAMS, Math.round(props.streams || 1))))
+
+// A tilted ellipse encircling the fox, sampled into an SVG path. Starts at the
+// top (behind) so the depth toggle (dy-orbit-z) reads back → front → back.
+function ellipsePath(tiltDeg: number, rxF: number, ryF: number): string {
   const S = numericSize.value
-  const cx = 0.5 * S, cy = 0.52 * S, rx = 0.42 * S, ry = 0.18 * S
-  const tilt = -34 * Math.PI / 180, cos = Math.cos(tilt), sin = Math.sin(tilt)
+  const cx = 0.5 * S, cy = 0.52 * S, rx = rxF * S, ry = ryF * S
+  const tilt = (tiltDeg * Math.PI) / 180, cos = Math.cos(tilt), sin = Math.sin(tilt)
   let d = ''
   for (let i = 0; i <= 48; i++) {
-    const a = (i / 48) * Math.PI * 2
+    const a = -Math.PI / 2 + (i / 48) * Math.PI * 2
     const x = rx * Math.cos(a), y = ry * Math.sin(a)
     const xr = (x * cos - y * sin + cx).toFixed(1)
     const yr = (x * sin + y * cos + cy).toFixed(1)
     d += `${i === 0 ? 'M' : 'L'} ${xr},${yr} `
   }
   return `path('${d}Z')`
+}
+
+const orbits = computed(() => {
+  const n = streamCount.value
+  return Array.from({ length: n }, (_, i) => {
+    // spread tilts around the circle; jitter radii per stream so paths don't overlap
+    const tilt = -34 + (i * 180) / n
+    const rx = 0.4 + (i % 3) * 0.017
+    const ry = 0.16 + ((i + 1) % 3) * 0.022
+    return {
+      id: i,
+      path: ellipsePath(tilt, rx, ry),
+      color: i % 6,
+      phase: n > 1 ? i / n : 0, // stagger where each stream starts
+      dur: 3000 + i * 280, // slightly different speeds → organic, non-synced
+    }
+  })
 })
+
+function dotStyle(orbit: { path: string; phase: number; dur: number }, i: number) {
+  const p = orbit.phase - (i - 1) * TRAIL_STEP
+  const frac = ((p % 1) + 1) % 1
+  const k = (i - 1) / (TRAIL - 1) // 0 = head, 1 = tail
+  const delay = `${(-frac * orbit.dur).toFixed(0)}ms`
+  return {
+    offsetPath: orbit.path,
+    animationDuration: `${orbit.dur}ms, ${orbit.dur}ms`,
+    animationDelay: `${delay}, ${delay}`,
+    '--s': (1 - k * 0.58).toFixed(3),
+    '--o': (1 - k * 0.72).toFixed(3),
+  }
+}
 
 // ground ring sits at the feet, wide enough to embrace the fox
 const groundStyle = computed(() => {
@@ -173,8 +195,15 @@ onBeforeUnmount(() => {
     <!-- orbiting energy (pure CSS motion-path): two trails of glow dots chase diagonally,
          back → left shoulder → across body → right foot → back, crossing behind ↔ front -->
     <template v-if="showOrchestration">
-      <div v-for="i in TRAIL" :key="'o' + i" class="l--fx orbit-dot dot--o" :style="dotStyle(i, 0)"></div>
-      <div v-for="i in TRAIL" :key="'b' + i" class="l--fx orbit-dot dot--b" :style="dotStyle(i, 0.5)"></div>
+      <template v-for="orbit in orbits" :key="'orb' + orbit.id">
+        <div
+          v-for="i in TRAIL"
+          :key="'orb' + orbit.id + '-' + i"
+          class="l--fx orbit-dot"
+          :class="'dot--c' + orbit.color"
+          :style="dotStyle(orbit, i)"
+        ></div>
+      </template>
     </template>
 
     <!-- tails (base + delayed glow) -->
@@ -205,7 +234,27 @@ onBeforeUnmount(() => {
 
     <!-- chest terminal — wrapper breathes with the body so it stays glued to the chest -->
     <div class="l l--chest-wrap breathe">
-      <img class="chest-img" :src="A('chest/' + chestState + '.webp')" alt="" draggable="false" />
+      <!-- thinking: a "typing"/pondering ellipsis instead of the generic processing icon -->
+      <div v-if="state === 'thinking'" class="chest-fx chest-think" aria-hidden="true">
+        <span></span><span></span><span></span>
+      </div>
+      <!-- loading (and running): an indeterminate progress bar sweeping across -->
+      <div v-else-if="state === 'loading'" class="chest-fx chest-load" aria-hidden="true">
+        <span class="chest-load-bar"></span>
+      </div>
+      <!-- success: green check pops in -->
+      <div v-else-if="state === 'success'" class="chest-fx chest-ok" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7" /></svg>
+      </div>
+      <!-- error: red cross shakes in -->
+      <div v-else-if="state === 'error'" class="chest-fx chest-err" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg>
+      </div>
+      <!-- permission: amber question mark pulsing (waiting on the user) -->
+      <div v-else-if="state === 'permission'" class="chest-fx chest-ask" aria-hidden="true">
+        <span>?</span>
+      </div>
+      <img v-else class="chest-img" :src="A('chest/' + chestState + '.webp')" alt="" draggable="false" />
     </div>
 
     <span v-if="label" class="sr-only">{{ label }}</span>
@@ -260,6 +309,82 @@ onBeforeUnmount(() => {
 .l--chest-wrap { z-index: 80; }
 .chest-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; transform-origin: 50% 68%; animation: dy-chest var(--fox-chest) ease-in-out infinite; }
 
+/* CSS chest indicators — share one mini terminal-panel base placed over the
+   spot the baked chest icon occupies (~50%, 67%); each state fills it differently */
+.chest-fx {
+  position: absolute;
+  left: 49.9%;
+  top: 67.1%;
+  transform: translate(-50%, -50%);
+  width: 15%;
+  aspect-ratio: 1.42 / 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 22%;
+  background: radial-gradient(120% 120% at 50% 38%, #0b1836 0%, #050a1b 100%);
+  box-shadow: 0 0 6px rgba(90,160,255,0.35), inset 0 0 4px rgba(90,160,255,0.28);
+}
+
+/* thinking: 3-dot "pondering" ellipsis */
+.chest-think { gap: 8%; }
+.chest-think span {
+  width: 15%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(circle, #d3ecff 12%, #4aa3ff 70%);
+  box-shadow: 0 0 4px rgba(120,190,255,0.9);
+  animation: dy-think-dot 1.3s ease-in-out infinite;
+}
+.chest-think span:nth-child(2) { animation-delay: 0.16s; }
+.chest-think span:nth-child(3) { animation-delay: 0.32s; }
+
+/* loading: indeterminate bar sweeping across */
+.chest-load { overflow: hidden; }
+.chest-load-bar {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  transform: translateY(-50%);
+  width: 42%;
+  height: 16%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(120,190,255,0) 0%, #6bb6ff 50%, rgba(120,190,255,0) 100%);
+  box-shadow: 0 0 5px rgba(120,190,255,0.85);
+  animation: dy-load-bar 1.1s ease-in-out infinite;
+}
+
+/* success: green check pops in */
+.chest-ok { box-shadow: 0 0 6px rgba(70,220,150,0.42), inset 0 0 4px rgba(70,220,150,0.3); }
+.chest-ok svg {
+  width: 48%; height: 48%;
+  fill: none; stroke: #5be6a6; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round;
+  filter: drop-shadow(0 0 3px rgba(70,220,150,0.9));
+  animation: dy-chest-pop 0.5s cubic-bezier(0.22,1,0.36,1) both;
+}
+
+/* error: red cross shakes in */
+.chest-err { box-shadow: 0 0 6px rgba(255,90,90,0.42), inset 0 0 4px rgba(255,90,90,0.3); }
+.chest-err svg {
+  width: 46%; height: 46%;
+  fill: none; stroke: #ff6b6b; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round;
+  filter: drop-shadow(0 0 3px rgba(255,90,90,0.9));
+  animation: dy-chest-shake 0.5s ease-in-out both;
+}
+
+/* permission: amber question mark pulsing (waits on the user) */
+.chest-ask {
+  color: #ffb445;
+  font-size: calc(var(--dy-size) * 0.085);
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: 0 0 6px rgba(255,170,60,0.42), inset 0 0 4px rgba(255,170,60,0.3);
+}
+.chest-ask span {
+  text-shadow: 0 0 5px rgba(255,170,60,0.95);
+  animation: dy-ask-pulse 1.5s ease-in-out infinite;
+}
+
 /* tails */
 .l--tailO { transform-origin: var(--o-tailO); will-change: transform; }
 .l--tailB { transform-origin: var(--o-tailB); will-change: transform; }
@@ -287,6 +412,11 @@ onBeforeUnmount(() => {
 .eyes-seq { animation: dy-eye-seq var(--fox-eye) ease-in-out infinite; }
 .eyes-seq--2 { animation-delay: calc(var(--fox-eye) / -3); }
 .eyes-seq--3 { animation-delay: calc(var(--fox-eye) / -1.5); }
+
+/* loading: hard-switch the eyes through 01 → 02 → 03 continuously (no crossfade) */
+.cyber-fox[data-state='loading'] .eyes-seq { animation: dy-eye-cycle var(--fox-eye) steps(1, end) infinite; }
+.cyber-fox[data-state='loading'] .eyes-seq--2 { animation-delay: calc(var(--fox-eye) / -3); }
+.cyber-fox[data-state='loading'] .eyes-seq--3 { animation-delay: calc(var(--fox-eye) / -1.5); }
 .l--blink { animation: dy-blink 6s steps(1, end) infinite; opacity: 0; }
 
 /* orbiting energy — pure CSS motion path. Each streak is a tapered light shard
@@ -308,19 +438,18 @@ onBeforeUnmount(() => {
   will-change: offset-distance;
   animation: dy-orbit-move var(--fox-orbit) linear infinite, dy-orbit-z var(--fox-orbit) step-end infinite;
 }
-.dot--o { background: radial-gradient(circle, rgba(255,226,184,0.98) 6%, rgba(255,168,80,0.6) 38%, rgba(255,150,60,0) 72%); }
-.dot--b { background: radial-gradient(circle, rgba(206,238,255,0.98) 6%, rgba(112,190,255,0.6) 38%, rgba(96,178,255,0) 72%); }
+/* per-stream colour palette (one hue per running run) */
+.dot--c0 { background: radial-gradient(circle, rgba(255,226,184,0.98) 6%, rgba(255,168,80,0.6) 38%, rgba(255,150,60,0) 72%); }   /* amber */
+.dot--c1 { background: radial-gradient(circle, rgba(206,238,255,0.98) 6%, rgba(112,190,255,0.6) 38%, rgba(96,178,255,0) 72%); }   /* blue */
+.dot--c2 { background: radial-gradient(circle, rgba(198,255,236,0.98) 6%, rgba(80,230,180,0.6) 38%, rgba(60,220,160,0) 72%); }    /* teal */
+.dot--c3 { background: radial-gradient(circle, rgba(233,210,255,0.98) 6%, rgba(180,130,255,0.6) 38%, rgba(160,110,255,0) 72%); }  /* violet */
+.dot--c4 { background: radial-gradient(circle, rgba(255,214,236,0.98) 6%, rgba(255,120,190,0.6) 38%, rgba(255,100,175,0) 72%); }  /* pink */
+.dot--c5 { background: radial-gradient(circle, rgba(224,255,206,0.98) 6%, rgba(160,235,90,0.6) 38%, rgba(150,225,70,0) 72%); }    /* lime */
 
 /* --- state intensity tweaks --- */
-/* running — energetic: fast wide tail, perked ears, quick breathe */
-.cyber-fox[data-state='running'] { --fox-tail-o: 1500ms; --fox-tail-b: 1650ms; --tw: 1.4; }
-.cyber-fox[data-state='running'] .breathe { animation-duration: 1800ms; }
-.cyber-fox[data-state='running'] .l--earL { animation: dy-ear-perk-l 0.72s ease-in-out infinite; }
-.cyber-fox[data-state='running'] .l--earR { animation: dy-ear-perk-r 0.78s ease-in-out infinite; }
-
 /* thinking — curious: head tilt, ears perked, medium tail */
 .cyber-fox[data-state='thinking'] { --tw: 1.15; }
-.cyber-fox[data-state='thinking'] .head-move { animation: dy-head-tilt 2.6s ease-in-out infinite; }
+.cyber-fox[data-state='thinking'] .head-move { animation: dy-head-ponder 2.8s ease-in-out infinite; }
 .cyber-fox[data-state='thinking'] .l--earL { animation: dy-ear-perk-l 1.5s ease-in-out infinite; }
 .cyber-fox[data-state='thinking'] .l--earR { animation: dy-ear-perk-r 1.7s ease-in-out infinite; }
 
@@ -368,6 +497,11 @@ onBeforeUnmount(() => {
 @keyframes dy-ear-droop-l { 0%,100% { transform: rotate(6deg); } 50% { transform: rotate(9deg); } }
 @keyframes dy-ear-droop-r { 0%,100% { transform: rotate(-6deg); } 50% { transform: rotate(-9deg); } }
 @keyframes dy-head-tilt { 0%,100% { transform: rotate(-5deg) translate3d(0,0,0); } 50% { transform: rotate(-3deg) translate3d(0,-1%,0); } }
+/* pondering: head sways to BOTH sides with wider amplitude — "thinking it over" */
+@keyframes dy-head-ponder {
+  0%,100% { transform: rotate(-9deg) translate3d(-1.5%,0,0); }
+  50%     { transform: rotate(9deg) translate3d(1.5%,-1%,0); }
+}
 @keyframes dy-head-shake { 0%,100% { transform: rotate(0deg); } 18% { transform: rotate(-5deg); } 38% { transform: rotate(4.5deg); } 58% { transform: rotate(-3.5deg); } 78% { transform: rotate(2.5deg); } }
 @keyframes dy-head-nod { 0%,100% { transform: translate3d(0,0,0) rotate(0deg); } 30% { transform: translate3d(0,-4.5%,0) rotate(0.5deg); } 60% { transform: translate3d(0,1%,0) rotate(-0.5deg); } }
 @keyframes dy-head-droop { 0%,100% { transform: translate3d(0,1.5%,0) rotate(-2deg); } 50% { transform: translate3d(0,3%,0) rotate(-3deg); } }
@@ -379,12 +513,20 @@ onBeforeUnmount(() => {
   50% { opacity: 0.82; transform: translateX(-50%) scale(1.14); }
 }
 @keyframes dy-eye-seq { 0%,22% { opacity: 1; } 40%,88% { opacity: 0; } 100% { opacity: 1; } }
+/* each of the 3 layers is fully visible for exactly one third of the cycle */
+@keyframes dy-eye-cycle { 0% { opacity: 1; } 33.33% { opacity: 0; } 66.66% { opacity: 0; } 100% { opacity: 0; } }
 @keyframes dy-blink { 0%,95%,100% { opacity: 0; } 96.5%,98% { opacity: 0.9; } }
 @keyframes dy-orbit-move { from { offset-distance: 0%; } to { offset-distance: 100%; } }
 /* front (z90) only during the true front pass (point below body centre); back (z34,
    behind the body) the rest of the time — matches the tilted-ellipse geometry */
-@keyframes dy-orbit-z { 0% { z-index: 34; } 13% { z-index: 90; } 63% { z-index: 34; } }
+/* paths start at the top (behind); front pass is the middle half → wraps the fox */
+@keyframes dy-orbit-z { 0%,24.9% { z-index: 34; } 25%,74.9% { z-index: 90; } 75%,100% { z-index: 34; } }
 @keyframes dy-success { 0%,100% { transform: translate3d(0,0,0) scale(1); } 25% { transform: translate3d(0,-4%,0) scale(1.03); } 55% { transform: translate3d(0,0.5%,0) scale(0.995); } }
+@keyframes dy-think-dot { 0%,60%,100% { opacity: 0.35; transform: translateY(8%) scale(0.82); } 30% { opacity: 1; transform: translateY(-26%) scale(1.12); } }
+@keyframes dy-load-bar { 0% { left: -42%; } 100% { left: 100%; } }
+@keyframes dy-chest-pop { 0% { opacity: 0; transform: scale(0.5); } 60% { transform: scale(1.15); } 100% { opacity: 1; transform: scale(1); } }
+@keyframes dy-chest-shake { 0%,100% { transform: translateX(0) rotate(0deg); } 20% { transform: translateX(-12%) rotate(-4deg); } 40% { transform: translateX(10%) rotate(3deg); } 60% { transform: translateX(-7%) rotate(-2deg); } 80% { transform: translateX(4%) rotate(0deg); } }
+@keyframes dy-ask-pulse { 0%,100% { transform: scale(0.92); opacity: 0.8; } 50% { transform: scale(1.08); opacity: 1; } }
 
 /* --- size simplification --- */
 .cyber-fox[data-size='sm'] .l--fx,
@@ -396,7 +538,7 @@ onBeforeUnmount(() => {
 .cyber-fox--paused * { animation-play-state: paused !important; }
 
 /* --- reduced motion --- */
-.cyber-fox--reduced .l, .cyber-fox--reduced .chest-img, .cyber-fox--reduced .l--eyes, .cyber-fox--reduced .l--ground { animation: none !important; }
+.cyber-fox--reduced .l, .cyber-fox--reduced .chest-img, .cyber-fox--reduced .l--eyes, .cyber-fox--reduced .l--ground, .cyber-fox--reduced .chest-think span, .cyber-fox--reduced .chest-load-bar, .cyber-fox--reduced .chest-ok svg, .cyber-fox--reduced .chest-err svg, .cyber-fox--reduced .chest-ask span { animation: none !important; }
 .cyber-fox--reduced .l--fx, .cyber-fox--reduced .tail-glow, .cyber-fox--reduced .l--blink { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .cyber-fox .l, .cyber-fox .chest-img, .cyber-fox .l--eyes, .cyber-fox .l--ground { animation: none !important; }

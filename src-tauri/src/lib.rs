@@ -11,6 +11,9 @@ use commands::aws_accounts::{
     update_aws_account, validate_aws_account,
 };
 use commands::codex_sessions::reconcile_codex_sessions;
+use commands::file_tree_watcher::{
+    set_file_tree_watch, stop_file_tree_watch, FileTreeWatchers,
+};
 use commands::files::{
     copy_entry, create_dir, create_file, delete_entry, list_dir, list_project_files, move_entry,
     read_file_base64, read_project_file, rename_entry, write_project_file,
@@ -151,6 +154,7 @@ pub fn run() {
             .expect("Failed to start credential broker");
 
             app.manage(db);
+            app.manage(FileTreeWatchers::default());
             app.manage(WorkSummaryState::default());
             app.manage(TranslateState::default());
             app.manage(new_registry());
@@ -316,6 +320,8 @@ pub fn run() {
             set_run_pinned,
             list_project_files,
             list_dir,
+            set_file_tree_watch,
+            stop_file_tree_watch,
             read_project_file,
             write_project_file,
             read_file_base64,

@@ -2,18 +2,16 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import CyberFox from '@/components/CyberFox.vue'
 import { useAppSettingsStore } from '@/stores/appSettings'
-import { useLiveRunsStore } from '@/stores/liveRuns'
+import { useLiveRunsStore, type LiveSession } from '@/stores/liveRuns'
 
+// Only the phases the live mascot actually emits (see sessionPhase / transient).
 type CyberFoxState =
   | 'idle'
   | 'thinking'
   | 'loading'
-  | 'running'
   | 'success'
   | 'error'
   | 'permission'
-  | 'syncing'
-  | 'sleep'
 
 interface Position {
   x: number
@@ -159,16 +157,44 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
+// Attention priority: the fox reflects the most important phase across all
+// live sessions. Higher wins so a running tool outshines a quiet think, and a
+// pending permission outshines everything.
+const PHASE_PRIORITY: Record<CyberFoxState, number> = {
+  permission: 5,
+  loading: 4,
+  thinking: 3,
+  idle: 0,
+  // transient-only states never come from a session phase
+  success: 0,
+  error: 0,
+}
+
+/** Derive the current phase of a single session from its live stream. */
+function sessionPhase(session: LiveSession): CyberFoxState {
+  // A pending prompt — tool permission OR AskUserQuestion — needs the user.
+  if (session.permissionQueue.length > 0) return 'permission'
+  // No active run for this session → resting.
+  if (session.status !== 'running') return 'idle'
+  // Turn accepted but nothing streamed back yet — the model is thinking before output.
+  if (!session.hasStreamEvents) return 'thinking'
+  // Classify by the latest meaningful stream activity (skip logs/errors/results).
+  for (let i = session.entries.length - 1; i >= 0; i--) {
+    const e = session.entries[i]
+    if (e.kind === 'tool') return e.result ? 'thinking' : 'loading' // running a tool → loading
+    if (e.kind === 'text') return 'loading' // streaming text output
+    if (e.kind === 'thinking') return 'thinking' // reasoning, no text yet
+  }
+  return 'thinking'
+}
+
 const steadyState = computed<CyberFoxState>(() => {
-  let hasRunning = false
-  let hasPermission = false
+  let best: CyberFoxState = 'idle'
   live.sessions.forEach((session) => {
-    if (session.permissionQueue.length > 0) hasPermission = true
-    if (session.status === 'running') hasRunning = true
+    const phase = sessionPhase(session)
+    if (PHASE_PRIORITY[phase] > PHASE_PRIORITY[best]) best = phase
   })
-  if (hasPermission) return 'permission'
-  if (hasRunning) return 'running'
-  return 'idle'
+  return best
 })
 
 const doneSignal = computed(() => {
@@ -198,6 +224,13 @@ watch(
 const displayState = computed<CyberFoxState>(() => {
   if (steadyState.value === 'permission') return 'permission'
   return transientState.value ?? steadyState.value
+})
+
+// One orbiting light stream per run that is actively running.
+const runningCount = computed(() => {
+  let n = 0
+  live.sessions.forEach((s) => { if (s.status === 'running') n++ })
+  return Math.max(1, n)
 })
 
 watch([enabled, mascotSize], async ([isEnabled]) => {
@@ -247,7 +280,7 @@ onBeforeUnmount(() => {
     @keydown="onKeydown"
     @dragstart.prevent
   >
-    <CyberFox :state="displayState" :size="mascotSize" />
+    <CyberFox :state="displayState" :size="mascotSize" :streams="runningCount" />
   </div>
 </template>
 

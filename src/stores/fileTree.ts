@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { reactive } from 'vue'
+import { listen } from '@tauri-apps/api/event'
 import { useRunsStore, type DirEntry } from '@/stores/runs'
 
 // Per-project state for the VSCode-style file-tree panel. Directories are loaded
@@ -100,6 +101,17 @@ export const useFileTreeStore = defineStore('fileTree', () => {
     delete t.error[relDir]
     await loadDir(projectPath, relDir, true)
   }
+
+  // ── Live FS watch (backend `set/stop_file_tree_watch`) ─────────────────────
+  // The backend watches only the currently expanded+loaded dirs of an open tree
+  // and emits `file_tree:changed` on external changes. Registered once for the
+  // whole app: reload the touched dir only if we already have it cached (i.e. it
+  // is visible), so a change to a collapsed/unknown folder is cheaply ignored.
+  listen<{ project_path: string; dir: string }>('file_tree:changed', (e) => {
+    const { project_path, dir } = e.payload
+    const t = trees[project_path]
+    if (t && dir in t.children) void reloadDir(project_path, dir)
+  })
 
   // ── Mutations (context-menu / toolbar / drag-and-drop) ─────────────────────
   // Each calls the backend, then reloads (and expands) the affected folder so the
