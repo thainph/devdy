@@ -8,6 +8,7 @@
  * The single-run focus screen mirrors the desktop session view.
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useMarkdown } from '@/lib/markdown'
 import { mergeContextModel } from '@/lib/contextLimits'
 import LinkEntryView from './components/LinkEntryView.vue'
@@ -29,6 +30,7 @@ import {
   type SessionLinkPayload,
 } from './protocol'
 
+const { t } = useI18n()
 const { renderText, loadMarkdown } = useMarkdown()
 
 const store = createRunStore()
@@ -289,7 +291,7 @@ const shortFp = computed(() => (link.value ? link.value.host_fingerprint.slice(0
 
 // ── composer / permission wiring ────────────────────────────────────────────
 function warnNotSent(): void {
-  store.state.notice = 'Chưa gửi được — chưa kết nối tới host.'
+  store.state.notice = t('controller.app.notConnected')
 }
 
 function onSend(turn: ComposerTurn): void {
@@ -312,8 +314,10 @@ function onSend(turn: ComposerTurn): void {
     if (!accepted) {
       store.state.notice =
         reason === 'connection_lost' || reason === 'disconnected'
-          ? 'Chưa gửi được — mất kết nối trước khi host xác nhận.'
-          : `Host từ chối lệnh${reason ? `: ${reason}` : '.'}`
+          ? t('controller.app.connectionLost')
+          : reason
+            ? t('controller.app.hostRejectedReason', { reason })
+            : t('controller.app.hostRejected')
       return
     }
     turn.accept()

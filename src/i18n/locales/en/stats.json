@@ -1,0 +1,111 @@
+{
+  "title": "Usage Stats",
+  "backfill": "Backfill from logs",
+  "backfillTitle": "Rebuild usage records from existing run logs",
+  "reset": "Reset",
+  "resetTitle": "Delete all runs and reset counters to zero",
+  "range": {
+    "last7": "Last 7 days",
+    "last30": "Last 30 days",
+    "last90": "Last 90 days",
+    "all": "All time"
+  },
+  "engine": {
+    "all": "All engines"
+  },
+  "project": {
+    "all": "All projects"
+  },
+  "plan": {
+    "claudeTitle": "Plan usage (Claude subscription)",
+    "claudeDescPrefix": "Your account's",
+    "claudeDescSuffix": "usage and reset times, read live from Claude's",
+    "claudeDescEnd": "data during runs.",
+    "codexTitle": "Plan usage (Codex subscription)",
+    "codexDescPrefix": "Your Codex account's",
+    "codexDescSuffix": "rate-limit usage (the numbers behind",
+    "codexDescEnd": "), updated after each Codex run.",
+    "real": "real",
+    "label": "Plan:",
+    "empty": "No plan usage captured yet — run a Claude task and it will populate here. (Unavailable for API-key / non-subscription sessions.)",
+    "emptyCodex": "No Codex plan usage captured yet — run a Codex task and it will populate here.",
+    "windowFiveHour": "Current session (5h)",
+    "windowSevenDay": "This week (all models)",
+    "windowSevenDayOpus": "This week (Opus)",
+    "windowSevenDaySonnet": "This week (Sonnet)",
+    "windowCodexWeek": "This week",
+    "resetsSoon": "resets soon",
+    "resetsInDaysHours": "resets in {days}d {hours}h",
+    "resetsInDays": "resets in {days}d",
+    "resetsInHoursMinutes": "resets in {hours}h {minutes}m",
+    "resetsInHours": "resets in {hours}h",
+    "resetsInMinutes": "resets in {minutes}m"
+  },
+  "empty": {
+    "title": "No usage recorded for this filter.",
+    "hint": "Run an analysis, or click \"Backfill from logs\" to import past runs."
+  },
+  "summary": {
+    "totalTokens": "Total tokens",
+    "tokensBreakdown": "in {input} · out {output} · cache {cache}",
+    "estCost": "Est. cost",
+    "estCostTooltip": "API-equivalent conversion. Since the account uses a subscription, the real cost is a fixed subscription fee, not billed per token.",
+    "estimated": "{cost} estimated",
+    "runs": "Runs",
+    "turns": "Turns"
+  },
+  "charts": {
+    "dailyTitle": "Daily tokens & cost",
+    "tokens": "Tokens",
+    "cost": "Cost (USD)",
+    "byEngine": "By engine",
+    "byProject": "By project"
+  },
+  "table": {
+    "project": "Project",
+    "tokens": "Tokens",
+    "cost": "Cost",
+    "percent": "%",
+    "deletedProject": "(deleted)",
+    "byModel": "By model",
+    "model": "Model",
+    "runs": "Runs",
+    "unknownModel": "(unknown)"
+  },
+  "action": {
+    "backfilled": "Backfilled {inserted} record(s) from {scanned} run log(s).",
+    "backfillFailed": "Backfill failed: {error}",
+    "resetDone": "Reset done — deleted {runs} run(s), cleared {usage} usage record(s).",
+    "resetFailed": "Reset failed: {error}",
+    "storageReadFailed": "Failed to read storage: {error}",
+    "cleaned": "Cleaned {label} — removed {files} file(s), freed {bytes}.",
+    "cleanupFailed": "Cleanup failed: {error}"
+  },
+  "storage": {
+    "title": "Storage — session/run logs",
+    "totalSuffix": "· {bytes} total",
+    "rescan": "Rescan",
+    "scanning": "Scanning disk…",
+    "category": "Category",
+    "files": "Files",
+    "size": "Size",
+    "percent": "%",
+    "clean": "Clean",
+    "cleanRowTitle": "Delete the log files in this category",
+    "nothingToClean": "Nothing to clean",
+    "note": "Clean logs to free up disk space. Devdy logs are safe to delete — run history & token stats are kept, only transcript content is lost. Claude/Codex logs belong to the CLI, so deleting them removes the CLI-side history."
+  },
+  "cleanModal": {
+    "title": "Clean {label}",
+    "willDelete": "Will delete {files} file(s) (~{bytes}).",
+    "irreversible": "This cannot be undone.",
+    "cleanNow": "Clean now"
+  },
+  "resetModal": {
+    "title": "Reset usage statistics",
+    "line1": "This will delete all old runs (including log files) and reset every statistic to 0.",
+    "irreversible": "This cannot be undone.",
+    "typeToConfirm": "Type {word} to confirm:",
+    "resetEverything": "Reset everything"
+  }
+}

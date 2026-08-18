@@ -7,6 +7,7 @@
 // rename, delete (to trash), cut/copy/paste, duplicate, path copy, reveal in
 // Finder, open in VSCode/Chrome, and mention in the composer.
 import { computed, ref, watch, onBeforeUnmount } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   RotateCw, ListCollapse, FilePlus, FolderPlus, Copy, Link, Scissors,
   ClipboardPaste, CopyPlus, Pencil, Trash2, FolderOpen, Code, Chrome, AtSign,
@@ -31,6 +32,7 @@ const emit = defineEmits<{
   'mention-file': [path: string]
 }>()
 
+const { t } = useI18n()
 const store = useFileTreeStore()
 const { toast } = useToast()
 const { confirm } = useConfirm()
@@ -89,20 +91,20 @@ function containerDir(): string {
 async function promptCreate(kind: 'file' | 'folder', dir: string) {
   const isFile = kind === 'file'
   const name = await prompt({
-    title: isFile ? 'New File' : 'New Folder',
-    label: isFile ? 'File name' : 'Folder name',
-    placeholder: isFile ? 'e.g. index.ts' : 'e.g. components',
-    confirmLabel: 'Create',
+    title: isFile ? t('files.tree.newFile') : t('files.tree.newFolder'),
+    label: isFile ? t('files.tree.fileNameLabel') : t('files.tree.folderNameLabel'),
+    placeholder: isFile ? t('files.tree.fileNamePlaceholder') : t('files.tree.folderNamePlaceholder'),
+    confirmLabel: t('files.tree.create'),
   })
   if (!name) return
   try {
     if (isFile) {
       const p = await store.createFile(props.projectPath, dir, name)
       emit('open-file', p)
-      toast.success('File created')
+      toast.success(t('files.tree.toastFileCreated'))
     } else {
       await store.createDir(props.projectPath, dir, name)
-      toast.success('Folder created')
+      toast.success(t('files.tree.toastFolderCreated'))
     }
   } catch (e) { toast.error(String(e)) }
 }
@@ -121,15 +123,15 @@ async function deleteEntry() {
   closeMenu()
   if (!e) return
   const ok = await confirm({
-    title: e.is_dir ? 'Delete Folder' : 'Delete File',
-    message: `Move "${e.name}" to Trash?`,
-    confirmLabel: 'Delete',
+    title: e.is_dir ? t('files.tree.deleteFolder') : t('files.tree.deleteFile'),
+    message: t('files.tree.moveToTrash', { name: e.name }),
+    confirmLabel: t('common.delete'),
     variant: 'destructive',
   })
   if (!ok) return
   try {
     await store.remove(props.projectPath, e.path)
-    toast.success('Moved to Trash')
+    toast.success(t('files.tree.toastMovedToTrash'))
   } catch (err) { toast.error(String(err)) }
 }
 
@@ -152,7 +154,7 @@ async function paste() {
       await store.moveInto(props.projectPath, clip.path, dir)
       clipboard.value = null
     }
-    toast.success('Pasted')
+    toast.success(t('files.tree.toastPasted'))
   } catch (e) { toast.error(String(e)) }
 }
 
@@ -162,7 +164,7 @@ async function duplicate() {
   if (!e) return
   try {
     await store.duplicate(props.projectPath, e.path)
-    toast.success('Duplicated')
+    toast.success(t('files.tree.toastDuplicated'))
   } catch (err) { toast.error(String(err)) }
 }
 
@@ -173,8 +175,8 @@ async function copyPath() {
   if (!e) return
   try {
     await navigator.clipboard.writeText(absOf(e.path))
-    toast.success('Path copied')
-  } catch { toast.error('Failed to copy path') }
+    toast.success(t('files.tree.toastPathCopied'))
+  } catch { toast.error(t('files.tree.toastFailedCopyPath')) }
 }
 
 async function copyRelPath() {
@@ -183,8 +185,8 @@ async function copyRelPath() {
   if (!e) return
   try {
     await navigator.clipboard.writeText(e.path)
-    toast.success('Relative path copied')
-  } catch { toast.error('Failed to copy path') }
+    toast.success(t('files.tree.toastRelativePathCopied'))
+  } catch { toast.error(t('files.tree.toastFailedCopyPath')) }
 }
 
 async function revealInFinder() {
@@ -257,32 +259,32 @@ onBeforeUnmount(() => {
   <div class="flex flex-col h-full min-h-0">
     <!-- Header -->
     <div class="flex items-center justify-between gap-2 px-3 h-9 shrink-0 border-b border-border/60">
-      <span class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground truncate">Explorer</span>
+      <span class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground truncate">{{ t('files.tree.explorer') }}</span>
       <div class="flex items-center gap-0.5 shrink-0">
         <button
           class="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 cursor-pointer"
-          title="New File"
+          :title="t('files.tree.newFile')"
           @click="promptCreate('file', '')"
         >
           <FilePlus class="h-3.5 w-3.5" :stroke-width="2" />
         </button>
         <button
           class="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 cursor-pointer"
-          title="New Folder"
+          :title="t('files.tree.newFolder')"
           @click="promptCreate('folder', '')"
         >
           <FolderPlus class="h-3.5 w-3.5" :stroke-width="2" />
         </button>
         <button
           class="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 cursor-pointer"
-          title="Collapse all"
+          :title="t('files.tree.collapseAll')"
           @click="store.collapseAll(projectPath)"
         >
           <ListCollapse class="h-3.5 w-3.5" :stroke-width="2" />
         </button>
         <button
           class="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 cursor-pointer"
-          title="Reload"
+          :title="t('files.tree.reload')"
           :class="rootLoading && 'opacity-50 pointer-events-none'"
           @click="store.refresh(projectPath)"
         >
@@ -299,8 +301,8 @@ onBeforeUnmount(() => {
       @drop="onRootDrop"
     >
       <div v-if="rootError" class="px-3 py-2 text-xs text-destructive">{{ rootError }}</div>
-      <div v-else-if="rootLoading && rootEntries.length === 0" class="px-3 py-2 text-xs text-muted-foreground">Loading…</div>
-      <div v-else-if="rootEntries.length === 0" class="px-3 py-6 text-xs text-muted-foreground" @contextmenu.prevent="openRootMenu">Empty folder</div>
+      <div v-else-if="rootLoading && rootEntries.length === 0" class="px-3 py-2 text-xs text-muted-foreground">{{ t('common.loading') }}</div>
+      <div v-else-if="rootEntries.length === 0" class="px-3 py-6 text-xs text-muted-foreground" @contextmenu.prevent="openRootMenu">{{ t('files.tree.emptyFolder') }}</div>
       <FileTreeNode
         v-for="entry in rootEntries"
         :key="entry.path"
@@ -326,37 +328,37 @@ onBeforeUnmount(() => {
       >
         <!-- Create -->
         <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="newFile">
-          <FilePlus class="h-3.5 w-3.5" :stroke-width="2" /> New File
+          <FilePlus class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.newFile') }}
         </button>
         <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="newFolder">
-          <FolderPlus class="h-3.5 w-3.5" :stroke-width="2" /> New Folder
+          <FolderPlus class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.newFolder') }}
         </button>
 
         <!-- Clipboard -->
         <div class="my-1 border-t border-border/60" />
         <template v-if="menuEntry">
           <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="copyToClipboard('copy')">
-            <Copy class="h-3.5 w-3.5" :stroke-width="2" /> Copy
+            <Copy class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.copy') }}
           </button>
           <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="copyToClipboard('cut')">
-            <Scissors class="h-3.5 w-3.5" :stroke-width="2" /> Cut
+            <Scissors class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.cut') }}
           </button>
           <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="duplicate">
-            <CopyPlus class="h-3.5 w-3.5" :stroke-width="2" /> Duplicate
+            <CopyPlus class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.duplicate') }}
           </button>
         </template>
         <button v-if="clipboard" class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="paste">
-          <ClipboardPaste class="h-3.5 w-3.5" :stroke-width="2" /> Paste
+          <ClipboardPaste class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.paste') }}
         </button>
 
         <!-- Edit -->
         <template v-if="menuEntry">
           <div class="my-1 border-t border-border/60" />
           <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="renameEntry">
-            <Pencil class="h-3.5 w-3.5" :stroke-width="2" /> Rename
+            <Pencil class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.rename') }}
           </button>
           <button class="w-full flex items-center gap-2 px-3 py-1.5 text-destructive hover:bg-destructive/10 cursor-pointer" @click="deleteEntry">
-            <Trash2 class="h-3.5 w-3.5" :stroke-width="2" /> Delete
+            <Trash2 class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('common.delete') }}
           </button>
         </template>
 
@@ -364,22 +366,22 @@ onBeforeUnmount(() => {
         <template v-if="menuEntry">
           <div class="my-1 border-t border-border/60" />
           <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="copyPath">
-            <Copy class="h-3.5 w-3.5" :stroke-width="2" /> Copy Path
+            <Copy class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.copyPath') }}
           </button>
           <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="copyRelPath">
-            <Link class="h-3.5 w-3.5" :stroke-width="2" /> Copy Relative Path
+            <Link class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.copyRelativePath') }}
           </button>
           <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="revealInFinder">
-            <FolderOpen class="h-3.5 w-3.5" :stroke-width="2" /> Reveal in Finder
+            <FolderOpen class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.revealInFinder') }}
           </button>
           <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="openInVscode">
-            <Code class="h-3.5 w-3.5" :stroke-width="2" /> Open in VSCode
+            <Code class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.openInVscode') }}
           </button>
           <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="openInChrome">
-            <Chrome class="h-3.5 w-3.5" :stroke-width="2" /> Open in Chrome
+            <Chrome class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.openInChrome') }}
           </button>
           <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="mentionFile">
-            <AtSign class="h-3.5 w-3.5" :stroke-width="2" /> Mention in Chat
+            <AtSign class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.mentionInChat') }}
           </button>
         </template>
       </div>

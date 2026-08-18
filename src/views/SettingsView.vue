@@ -5,9 +5,12 @@ import { invoke } from '@/lib/tauri'
 import {
   Cpu, Palette, FileText, ShieldAlert, Sparkles, Github, Gitlab, Cloud,
   CheckCircle2, AlertTriangle, Trash2, Plus, Pencil, Gauge, Radio,
-  RefreshCw, Loader2, Server, HardDrive,
+  RefreshCw, Loader2, Server, HardDrive, Bot, RotateCcw,
 } from 'lucide-vue-next'
+import { useI18n } from 'vue-i18n'
+import { setLocale, SUPPORTED_LOCALES } from '@/i18n'
 import { Button, Input, Textarea, Card, AppSelect } from '@/components/ui'
+import CyberFox from '@/components/CyberFox.vue'
 import RemoteControlSettings from '@/components/remote/RemoteControlSettings.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
@@ -18,6 +21,7 @@ import { useAppSettingsStore } from '@/stores/appSettings'
 import { useBudgetStore } from '@/stores/budget'
 import { useModelCatalogStore } from '@/stores/modelCatalog'
 
+const { t } = useI18n()
 const appSettings = useAppSettingsStore()
 const budget = useBudgetStore()
 const modelCatalog = useModelCatalogStore()
@@ -38,6 +42,7 @@ interface AppSettings {
   codex_model: string
   extra_args: string
   theme: string
+  language: string
   color_theme: string
   animated_background: string
   analyze_issue_prompt: string
@@ -53,6 +58,8 @@ interface AppSettings {
   translate_target_lang: string
   translate_style: string
   mcp_builtin_devdy_enabled: string
+  cyber_fox_enabled: string
+  cyber_fox_size: string
 }
 
 const settings = ref<AppSettings>({
@@ -63,6 +70,7 @@ const settings = ref<AppSettings>({
   codex_model: '',
   extra_args: '',
   theme: 'system',
+  language: 'en',
   color_theme: 'default',
   animated_background: 'true',
   analyze_issue_prompt: '',
@@ -78,7 +86,46 @@ const settings = ref<AppSettings>({
   translate_target_lang: 'vi',
   translate_style: 'natural',
   mcp_builtin_devdy_enabled: 'true',
+  cyber_fox_enabled: 'true',
+  cyber_fox_size: 'md',
 })
+
+type CyberFoxPreviewState =
+  | 'idle'
+  | 'thinking'
+  | 'loading'
+  | 'running'
+  | 'success'
+  | 'error'
+  | 'permission'
+  | 'syncing'
+  | 'sleep'
+
+const CYBER_FOX_STATES: { id: CyberFoxPreviewState; labelKey: string }[] = [
+  { id: 'idle', labelKey: 'settings.mascot.states.idle' },
+  { id: 'thinking', labelKey: 'settings.mascot.states.thinking' },
+  { id: 'loading', labelKey: 'settings.mascot.states.loading' },
+  { id: 'running', labelKey: 'settings.mascot.states.running' },
+  { id: 'success', labelKey: 'settings.mascot.states.success' },
+  { id: 'error', labelKey: 'settings.mascot.states.error' },
+  { id: 'permission', labelKey: 'settings.mascot.states.permission' },
+  { id: 'syncing', labelKey: 'settings.mascot.states.syncing' },
+  { id: 'sleep', labelKey: 'settings.mascot.states.sleep' },
+]
+const cyberFoxPreviewState = ref<CyberFoxPreviewState>('idle')
+const MASCOT_POSITION_STORAGE_KEY = 'devdy.cyberFox.position.v1'
+const cyberFoxEnabledOptions = computed(() => [
+  { value: 'true', label: t('settings.general.on') },
+  { value: 'false', label: t('settings.general.off') },
+])
+const cyberFoxSizeOptions = computed(() => [
+  { value: 'sm', label: t('settings.mascot.sizeSmall') },
+  { value: 'md', label: t('settings.mascot.sizeMedium') },
+  { value: 'lg', label: t('settings.mascot.sizeLarge') },
+])
+const cyberFoxPreviewOptions = computed(() =>
+  CYBER_FOX_STATES.map((state) => ({ value: state.id, label: t(state.labelKey) })),
+)
 
 // Claude model choices = curated aliases + any newly-released models discovered
 // from the account (Codex has no discovery API, so it stays curated).
@@ -106,18 +153,18 @@ const TRANSLATE_TARGET_OPTIONS = [
   { value: 'zh', label: '中文 (Chinese)' },
   { value: 'ko', label: '한국어 (Korean)' },
 ]
-const TRANSLATE_STYLE_OPTIONS = [
-  { value: 'natural', label: 'Natural — thoát ý, tự nhiên' },
-  { value: 'literal', label: 'Literal — sát nghĩa' },
-  { value: 'technical', label: 'Technical — giữ thuật ngữ/code' },
-  { value: 'formal', label: 'Formal — trang trọng' },
-  { value: 'casual', label: 'Casual — thân mật' },
-]
+const TRANSLATE_STYLE_OPTIONS = computed(() => [
+  { value: 'natural', label: t('settings.ai.styleNatural') },
+  { value: 'literal', label: t('settings.ai.styleLiteral') },
+  { value: 'technical', label: t('settings.ai.styleTechnical') },
+  { value: 'formal', label: t('settings.ai.styleFormal') },
+  { value: 'casual', label: t('settings.ai.styleCasual') },
+])
 
 // `[1m]` selects the 1M-context variant; the bare alias uses the 200K default.
 // Aliases (not pinned ids) keep these current as new model versions ship.
 const CLAUDE_MODEL_OPTIONS = [
-  { value: '', label: 'Default (engine decides)' },
+  { value: '', label: t('settings.ai.modelDefault') },
   { value: 'fable', label: 'Fable 5 (1M)' },
   { value: 'opus', label: 'Opus (200K)' },
   { value: 'opus[1m]', label: 'Opus (1M)' },
@@ -126,7 +173,7 @@ const CLAUDE_MODEL_OPTIONS = [
   { value: 'haiku', label: 'Haiku' },
 ]
 const CODEX_MODEL_OPTIONS = [
-  { value: '', label: 'Default (engine decides)' },
+  { value: '', label: t('settings.ai.modelDefault') },
   { value: 'gpt-5.5', label: 'gpt-5.5' },
   { value: 'gpt-5.4', label: 'gpt-5.4' },
   { value: 'gpt-5.3-codex', label: 'gpt-5.3-codex' },
@@ -140,17 +187,18 @@ let lastSaved: AppSettings | null = null
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 
 const SECTIONS = [
-  { id: 'general', label: 'General', icon: Palette },
-  { id: 'github', label: 'GitHub Accounts', icon: Github },
-  { id: 'gitlab', label: 'GitLab Accounts', icon: Gitlab },
-  { id: 'aws', label: 'AWS Accounts', icon: Cloud },
-  { id: 'engine', label: 'Engine Paths', icon: Cpu },
-  { id: 'ai', label: 'AI & Models', icon: Sparkles },
-  { id: 'mcp', label: 'MCP Server', icon: Server },
-  { id: 'google', label: 'Google Account', icon: HardDrive },
-  { id: 'usage', label: 'Usage & Budget', icon: Gauge },
-  { id: 'remote', label: 'Remote Control', icon: Radio },
-  { id: 'prompts', label: 'Prompt Templates', icon: FileText },
+  { id: 'general', labelKey: 'settings.sections.general', icon: Palette },
+  { id: 'mascot', labelKey: 'settings.sections.mascot', icon: Bot },
+  { id: 'github', labelKey: 'settings.sections.github', icon: Github },
+  { id: 'gitlab', labelKey: 'settings.sections.gitlab', icon: Gitlab },
+  { id: 'aws', labelKey: 'settings.sections.aws', icon: Cloud },
+  { id: 'engine', labelKey: 'settings.sections.engine', icon: Cpu },
+  { id: 'ai', labelKey: 'settings.sections.ai', icon: Sparkles },
+  { id: 'mcp', labelKey: 'settings.sections.mcp', icon: Server },
+  { id: 'google', labelKey: 'settings.sections.google', icon: HardDrive },
+  { id: 'usage', labelKey: 'settings.sections.usage', icon: Gauge },
+  { id: 'remote', labelKey: 'settings.sections.remote', icon: Radio },
+  { id: 'prompts', labelKey: 'settings.sections.prompts', icon: FileText },
 ] as const
 const activeSection = ref<(typeof SECTIONS)[number]['id']>('general')
 // --- Google accounts (Drive + Gmail via OAuth, multi-account) ---
@@ -178,10 +226,10 @@ async function loadGoogleStatus() {
 async function addGoogleAccount() {
   googleError.value = null
   const label = googleNewLabel.value.trim()
-  if (!label) { googleError.value = 'Enter a label for the account (e.g. work, personal).'; return }
+  if (!label) { googleError.value = t('settings.google.enterLabel'); return }
   const needCreds = !googleHasClient.value || showGoogleClientForm.value
   if (needCreds && (!googleClientId.value.trim() || !googleClientSecret.value.trim())) {
-    googleError.value = 'Enter both Client ID and Client Secret.'
+    googleError.value = t('settings.google.enterBothCreds')
     return
   }
   googleAdding.value = true
@@ -194,7 +242,7 @@ async function addGoogleAccount() {
     googleClientSecret.value = ''
     showGoogleClientForm.value = false
     await loadGoogleStatus()
-    toast.success('Google account added')
+    toast.success(t('settings.google.accountAdded'))
   } catch (e) {
     googleError.value = String(e)
   } finally {
@@ -202,11 +250,11 @@ async function addGoogleAccount() {
   }
 }
 async function removeGoogleAccount(acc: GoogleAccount) {
-  if (!(await confirm({ title: `Remove ${acc.label}?`, message: 'The AI will lose access to this account. Your saved OAuth credentials are kept so you can re-add it without re-entering them.' }))) return
+  if (!(await confirm({ title: t('settings.google.removeTitle', { label: acc.label }), message: t('settings.google.removeMessage') }))) return
   try {
     await invoke('delete_google_account', { id: acc.id })
     await loadGoogleStatus()
-    toast.success('Account removed')
+    toast.success(t('settings.google.accountRemoved'))
   } catch (e) { googleError.value = String(e) }
 }
 async function saveGoogleRename(acc: GoogleAccount) {
@@ -225,14 +273,14 @@ async function makeGoogleDefault(acc: GoogleAccount) {
   } catch (e) { googleError.value = String(e) }
 }
 async function forgetGoogleClient() {
-  if (!(await confirm({ title: 'Forget saved credentials?', message: 'This removes the stored Client ID/Secret and ALL connected accounts. You will need to paste the credentials again next time.' }))) return
+  if (!(await confirm({ title: t('settings.google.forgetTitle'), message: t('settings.google.forgetMessage') }))) return
   try {
     await invoke('google_forget_client')
     googleClientId.value = ''
     googleClientSecret.value = ''
     showGoogleClientForm.value = false
     await loadGoogleStatus()
-    toast.success('Saved Google credentials removed')
+    toast.success(t('settings.google.credsRemoved'))
   } catch (e) { googleError.value = String(e) }
 }
 
@@ -262,7 +310,7 @@ async function handleAddAccount() {
     await ghStore.create(newLabel.value.trim(), newPat.value.trim())
     newLabel.value = ''
     newPat.value = ''
-    toast.success('Account added')
+    toast.success(t('settings.github.accountAdded'))
   } catch (e) {
     addError.value = String(e)
   } finally {
@@ -282,7 +330,7 @@ async function handleSaveEdit(id: string) {
   try {
     await ghStore.update(id, editLabel.value[id]?.trim() || '', editPat.value[id])
     editing.value = null
-    toast.success('Account updated')
+    toast.success(t('settings.github.accountUpdated'))
   } catch (e) {
     accountError.value[id] = String(e)
   } finally {
@@ -305,13 +353,13 @@ async function handleValidate(id: string) {
 
 async function handleDeleteAccount(id: string) {
   if (!(await confirm({
-    title: 'Delete GitHub account',
-    message: 'Delete this GitHub account? Projects linked to it will be unlinked.',
-    confirmLabel: 'Delete',
+    title: t('settings.github.deleteTitle'),
+    message: t('settings.github.deleteMessage'),
+    confirmLabel: t('common.delete'),
   }))) return
   try {
     await ghStore.remove(id)
-    toast.success('Account deleted')
+    toast.success(t('settings.github.accountDeleted'))
   } catch (e) {
     toast.error(String(e))
   }
@@ -349,7 +397,7 @@ async function handleAddGitlabAccount() {
     glNewPat.value = ''
     glNewHost.value = ''
     glNewEmail.value = ''
-    toast.success('Account added')
+    toast.success(t('settings.github.accountAdded'))
   } catch (e) {
     glAddError.value = String(e)
   } finally {
@@ -377,7 +425,7 @@ async function handleSaveGitlabEdit(id: string) {
       glEditEmail.value[id],
     )
     glEditing.value = null
-    toast.success('Account updated')
+    toast.success(t('settings.github.accountUpdated'))
   } catch (e) {
     glAccountError.value[id] = String(e)
   } finally {
@@ -400,13 +448,13 @@ async function handleValidateGitlab(id: string) {
 
 async function handleDeleteGitlabAccount(id: string) {
   if (!(await confirm({
-    title: 'Delete GitLab account',
-    message: 'Delete this GitLab account? Projects linked to it will be unlinked.',
-    confirmLabel: 'Delete',
+    title: t('settings.gitlab.deleteTitle'),
+    message: t('settings.gitlab.deleteMessage'),
+    confirmLabel: t('common.delete'),
   }))) return
   try {
     await glStore.remove(id)
-    toast.success('Account deleted')
+    toast.success(t('settings.github.accountDeleted'))
   } catch (e) {
     toast.error(String(e))
   }
@@ -414,10 +462,10 @@ async function handleDeleteGitlabAccount(id: string) {
 
 // --- AWS accounts (mirror of Git account management, with keys/profile auth) ---
 const awsStore = useAwsAccountsStore()
-const AWS_AUTH_OPTIONS: { value: AwsAuthMethod; label: string }[] = [
-  { value: 'keys', label: 'Access keys' },
-  { value: 'profile', label: 'Named profile / SSO' },
-]
+const AWS_AUTH_OPTIONS = computed<{ value: AwsAuthMethod; label: string }[]>(() => [
+  { value: 'keys', label: t('settings.aws.authKeys') },
+  { value: 'profile', label: t('settings.aws.authProfile') },
+])
 const awsNewLabel = ref('')
 const awsNewAuthMethod = ref<AwsAuthMethod>('keys')
 const awsNewRegion = ref('ap-northeast-1')
@@ -500,7 +548,7 @@ async function handleAddAwsAccount() {
     awsNewSessionToken.value = ''
     awsNewProfileName.value = ''
     awsNewTags.value = ''
-    toast.success('Account added')
+    toast.success(t('settings.github.accountAdded'))
   } catch (e) {
     awsAddError.value = String(e)
   } finally {
@@ -530,7 +578,7 @@ async function handleSaveAwsEdit(id: string) {
   try {
     await awsStore.update(id, awsPayloadForEdit(id))
     awsEditing.value = null
-    toast.success('Account updated')
+    toast.success(t('settings.github.accountUpdated'))
   } catch (e) {
     awsAccountError.value[id] = String(e)
   } finally {
@@ -553,13 +601,13 @@ async function handleValidateAws(id: string) {
 
 async function handleDeleteAwsAccount(id: string) {
   if (!(await confirm({
-    title: 'Delete AWS account',
-    message: 'Delete this AWS account? Projects linked to it will be unlinked.',
-    confirmLabel: 'Delete',
+    title: t('settings.aws.deleteTitle'),
+    message: t('settings.aws.deleteMessage'),
+    confirmLabel: t('common.delete'),
   }))) return
   try {
     await awsStore.remove(id)
-    toast.success('Account deleted')
+    toast.success(t('settings.github.accountDeleted'))
   } catch (e) {
     toast.error(String(e))
   }
@@ -608,6 +656,16 @@ function applyColorTheme(theme: string) {
   else document.documentElement.removeAttribute('data-theme')
 }
 
+function resetCyberFoxPosition() {
+  try {
+    localStorage.removeItem(MASCOT_POSITION_STORAGE_KEY)
+    window.dispatchEvent(new CustomEvent('devdy:cyber-fox-reset-position'))
+    toast.success(t('settings.mascot.positionReset'))
+  } catch (e) {
+    toast.error(String(e))
+  }
+}
+
 async function persistChanges() {
   if (!lastSaved) return
   const changed = Object.entries(settings.value).filter(
@@ -621,7 +679,7 @@ async function persistChanges() {
     lastSaved = { ...settings.value }
     // Keep the shared settings store (context meter + budget badge) in sync.
     appSettings.refresh().catch(() => {})
-    toast.success('Saved')
+    toast.success(t('settings.toast.saved'))
   } catch (e) {
     toast.error(String(e))
   }
@@ -635,11 +693,15 @@ watch(settings, () => {
 }, { deep: true })
 
 // Apply theme instantly (don't wait for the debounced save).
-watch(() => settings.value.theme, (t) => {
-  if (!loading.value) applyTheme(t)
+watch(() => settings.value.theme, (v) => {
+  if (!loading.value) applyTheme(v)
 })
-watch(() => settings.value.color_theme, (t) => {
-  if (!loading.value) applyColorTheme(t)
+watch(() => settings.value.color_theme, (v) => {
+  if (!loading.value) applyColorTheme(v)
+})
+// Apply language instantly (don't wait for the debounced save).
+watch(() => settings.value.language, (v) => {
+  if (!loading.value) setLocale(v)
 })
 </script>
 
@@ -647,7 +709,7 @@ watch(() => settings.value.color_theme, (t) => {
   <div class="flex flex-col h-full">
     <!-- Header -->
     <div class="flex items-center px-6 h-13 border-b border-border/60 shrink-0">
-      <h1 class="text-sm font-semibold">Settings</h1>
+      <h1 class="text-sm font-semibold">{{ t('settings.title') }}</h1>
     </div>
 
     <!-- Content -->
@@ -664,7 +726,7 @@ watch(() => settings.value.color_theme, (t) => {
           @click="activeSection = s.id"
         >
           <component :is="s.icon" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-          <span class="truncate">{{ s.label }}</span>
+          <span class="truncate">{{ t(s.labelKey) }}</span>
           <span
             v-if="s.id === 'github' && ghCount"
             class="ml-auto text-[10px] tabular-nums text-muted-foreground"
@@ -693,91 +755,169 @@ watch(() => settings.value.color_theme, (t) => {
         <Card v-show="activeSection === 'general'" body-class="p-4 space-y-4">
           <template #header>
             <Palette class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-            <span class="text-xs font-semibold">General</span>
+            <span class="text-xs font-semibold">{{ t('settings.sections.general') }}</span>
           </template>
             <div class="space-y-1.5">
-              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Theme</label>
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.language') }}</label>
+              <AppSelect
+                size="sm"
+                v-model="settings.language"
+                :options="SUPPORTED_LOCALES.map((l) => ({ value: l.value, label: l.label }))"
+              />
+            </div>
+            <div class="space-y-1.5">
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.general.theme') }}</label>
               <AppSelect
                 size="sm"
                 v-model="settings.theme"
                 :options="[
-                  { value: 'system', label: 'System' },
-                  { value: 'light', label: 'Light' },
-                  { value: 'dark', label: 'Dark' },
+                  { value: 'system', label: t('settings.general.themeSystem') },
+                  { value: 'light', label: t('settings.general.themeLight') },
+                  { value: 'dark', label: t('settings.general.themeDark') },
                 ]"
               />
             </div>
             <div class="space-y-1.5">
-              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Color Theme</label>
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.general.colorTheme') }}</label>
               <AppSelect
                 size="sm"
                 v-model="settings.color_theme"
                 :options="[
-                  { value: 'default', label: 'Default (Indigo)' },
-                  { value: 'ocean', label: 'Ocean' },
-                  { value: 'forest', label: 'Forest' },
-                  { value: 'sunset', label: 'Sunset' },
-                  { value: 'rose', label: 'Rose' },
-                  { value: 'teal', label: 'Teal' },
-                  { value: 'lagoon', label: 'Lagoon' },
-                  { value: 'mint', label: 'Mint' },
-                  { value: 'midautumn', label: 'Mid-Autumn Night (Đêm Trung Thu) 🎑' },
+                  { value: 'default', label: t('settings.general.colorDefault') },
+                  { value: 'ocean', label: t('settings.general.colorOcean') },
+                  { value: 'forest', label: t('settings.general.colorForest') },
+                  { value: 'sunset', label: t('settings.general.colorSunset') },
+                  { value: 'rose', label: t('settings.general.colorRose') },
+                  { value: 'teal', label: t('settings.general.colorTeal') },
+                  { value: 'lagoon', label: t('settings.general.colorLagoon') },
+                  { value: 'mint', label: t('settings.general.colorMint') },
+                  { value: 'midautumn', label: t('settings.general.colorMidautumn') },
                 ]"
               />
-              <p class="text-[11px] text-muted-foreground">Works with both light and dark mode.</p>
+              <p class="text-[11px] text-muted-foreground">{{ t('settings.general.colorThemeHint') }}</p>
             </div>
             <div class="space-y-1.5">
-              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Animated Background</label>
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.general.animatedBackground') }}</label>
               <AppSelect
                 size="sm"
                 v-model="settings.animated_background"
                 :options="[
-                  { value: 'true', label: 'On' },
-                  { value: 'false', label: 'Off' },
+                  { value: 'true', label: t('settings.general.on') },
+                  { value: 'false', label: t('settings.general.off') },
                 ]"
               />
-              <p class="text-[11px] text-muted-foreground">Adds a living scene (e.g. the Full Moon 🌕 night sky) for scenic themes. Automatically paused under reduced-motion.</p>
+              <p class="text-[11px] text-muted-foreground">{{ t('settings.general.animatedBackgroundHint') }}</p>
             </div>
             <div class="space-y-1.5">
-              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Terminal App</label>
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.general.terminalApp') }}</label>
               <AppSelect
                 size="sm"
                 v-model="settings.terminal_app"
                 :options="[
-                  { value: 'terminal', label: 'Terminal (macOS default)' },
-                  { value: 'iterm', label: 'iTerm' },
+                  { value: 'terminal', label: t('settings.general.terminalDefault') },
+                  { value: 'iterm', label: t('settings.general.terminalIterm') },
                 ]"
               />
             </div>
+        </Card>
+
+        <!-- DY Mascot section -->
+        <Card v-show="activeSection === 'mascot'" body-class="p-4 space-y-5">
+          <template #header>
+            <Bot class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
+            <span class="text-xs font-semibold">{{ t('settings.mascot.title') }}</span>
+          </template>
+
+          <div class="space-y-4">
+            <div class="space-y-1.5">
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                {{ t('settings.mascot.enabled') }}
+              </label>
+              <AppSelect size="sm" v-model="settings.cyber_fox_enabled" :options="cyberFoxEnabledOptions" />
+              <p class="text-[11px] text-muted-foreground leading-relaxed">
+                {{ t('settings.mascot.enabledHint') }}
+              </p>
+            </div>
+
+            <div class="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+              <div class="space-y-1.5">
+                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                  {{ t('settings.mascot.size') }}
+                </label>
+                <AppSelect size="sm" v-model="settings.cyber_fox_size" :options="cyberFoxSizeOptions" />
+              </div>
+              <Button variant="outline" size="sm" @click="resetCyberFoxPosition">
+                <RotateCcw class="h-3.5 w-3.5" :stroke-width="1.75" />
+                {{ t('settings.mascot.resetPosition') }}
+              </Button>
+            </div>
+          </div>
+
+          <div class="h-px bg-border" />
+
+          <div class="space-y-4">
+            <div class="space-y-1.5">
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                {{ t('settings.mascot.previewState') }}
+              </label>
+              <AppSelect size="sm" v-model="cyberFoxPreviewState" :options="cyberFoxPreviewOptions" />
+            </div>
+
+            <div class="rounded-md border border-border/70 bg-muted/20 p-4">
+              <div class="flex min-h-[220px] items-center justify-center">
+                <CyberFox
+                  :state="cyberFoxPreviewState"
+                  :size="196"
+                  :label="t('settings.mascot.previewLabel')"
+                />
+              </div>
+            </div>
+
+            <div class="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              <button
+                v-for="state in CYBER_FOX_STATES"
+                :key="state.id"
+                type="button"
+                class="group flex min-h-[116px] flex-col items-center justify-between rounded-md border border-border/70 bg-background/70 px-2.5 py-2 text-center transition-colors hover:border-primary/50 hover:bg-accent/50 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                :class="cyberFoxPreviewState === state.id ? 'border-primary/60 bg-accent text-foreground' : 'text-muted-foreground'"
+                :aria-pressed="cyberFoxPreviewState === state.id"
+                @click="cyberFoxPreviewState = state.id"
+              >
+                <CyberFox
+                  :state="state.id"
+                  :size="72"
+                  :reduced-motion="state.id !== cyberFoxPreviewState"
+                />
+                <span class="text-[11px] font-medium leading-tight">{{ t(state.labelKey) }}</span>
+              </button>
+            </div>
+          </div>
         </Card>
 
         <!-- MCP Server section -->
         <Card v-show="activeSection === 'mcp'" body-class="p-4 space-y-4">
           <template #header>
             <Server class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-            <span class="text-xs font-semibold">Built-in MCP Server</span>
+            <span class="text-xs font-semibold">{{ t('settings.mcp.title') }}</span>
           </template>
           <div class="space-y-1.5">
             <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-              Devdy MCP Server
+              {{ t('settings.mcp.devdyServer') }}
             </label>
             <AppSelect
               size="sm"
               v-model="settings.mcp_builtin_devdy_enabled"
               :options="[
-                { value: 'true', label: 'Enabled (recommended)' },
-                { value: 'false', label: 'Disabled' },
+                { value: 'true', label: t('settings.mcp.enabledRecommended') },
+                { value: 'false', label: t('settings.mcp.disabled') },
               ]"
             />
             <p class="text-[11px] text-muted-foreground">
-              Injects a built-in <code>devdy</code> MCP server into every run so the AI can use your
-              own data while chatting — quick notes, cross-session recall, project context (file tree
-              &amp; git) and managed VPS. Tools appear as <code>mcp__devdy__*</code>; write &amp; remote
-              actions still go through the permission prompt. Takes effect on the next run.
+              {{ t('settings.mcp.devdyHint') }}
             </p>
           </div>
           <div class="rounded-md border border-border/60 bg-muted/30 p-3 space-y-2">
-            <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Available tools</div>
+            <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.mcp.availableTools') }}</div>
             <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
               <span>📝 notes_list / read / create / update / append</span>
               <span>🧠 sessions_recent / search / read</span>
@@ -793,25 +933,17 @@ watch(() => settings.value.color_theme, (t) => {
         <Card v-show="activeSection === 'google'" body-class="p-4 space-y-4">
           <template #header>
             <HardDrive class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-            <span class="text-xs font-semibold">Google Account (Drive + Gmail)</span>
+            <span class="text-xs font-semibold">{{ t('settings.google.title') }}</span>
           </template>
 
           <p class="text-[11px] text-muted-foreground leading-relaxed">
-            Connect one or more Google accounts so the AI can work with your Drive files and Gmail. Tools
-            appear as <code class="font-mono bg-muted px-1 rounded">mcp__gdrive__*</code> and
-            <code class="font-mono bg-muted px-1 rounded">mcp__gmail__*</code>; with multiple accounts the
-            AI targets one via each tool's <code class="font-mono bg-muted px-1 rounded">account</code>
-            argument (the <strong class="text-foreground">default</strong> account when omitted). Write,
-            delete, share and send actions still go through the permission prompt. Refresh tokens are
-            stored in your OS Keychain (never written to disk). Takes effect on the next run.
+            {{ t('settings.google.intro') }}
           </p>
 
           <div class="p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-md text-[11px] leading-relaxed flex gap-2">
             <ShieldAlert class="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" :stroke-width="1.75" />
             <span class="text-muted-foreground">
-              Create your own OAuth <strong class="text-foreground">Desktop app</strong> credentials in Google
-              Cloud Console, enable the <strong class="text-foreground">Drive API</strong> and
-              <strong class="text-foreground">Gmail API</strong>, then paste the Client ID and Secret below.
+              {{ t('settings.google.credsWarning') }}
             </span>
           </div>
 
@@ -828,18 +960,18 @@ watch(() => settings.value.color_theme, (t) => {
                     <div class="text-sm font-medium truncate flex items-center gap-1.5">
                       <CheckCircle2 class="h-3.5 w-3.5 text-emerald-500" :stroke-width="1.75" />
                       {{ acc.label }}
-                      <span v-if="acc.is_default" class="text-[10px] font-medium text-indigo-400 border border-indigo-400/40 rounded px-1">default</span>
+                      <span v-if="acc.is_default" class="text-[10px] font-medium text-indigo-400 border border-indigo-400/40 rounded px-1">{{ t('settings.google.default') }}</span>
                     </div>
-                    <div class="text-[11px] text-muted-foreground truncate">{{ acc.email || 'Drive + Gmail' }}</div>
+                    <div class="text-[11px] text-muted-foreground truncate">{{ acc.email || t('settings.google.driveGmail') }}</div>
                   </div>
                   <div class="flex items-center gap-1 shrink-0">
-                    <Button v-if="!acc.is_default" size="sm" variant="ghost" title="Set as default" @click="makeGoogleDefault(acc)">
+                    <Button v-if="!acc.is_default" size="sm" variant="ghost" :title="t('settings.google.setAsDefault')" @click="makeGoogleDefault(acc)">
                       <CheckCircle2 class="h-3.5 w-3.5" :stroke-width="1.75" />
                     </Button>
-                    <Button size="sm" variant="ghost" title="Rename" @click="googleEditing = acc.id; googleEditLabel = acc.label">
+                    <Button size="sm" variant="ghost" :title="t('settings.google.rename')" @click="googleEditing = acc.id; googleEditLabel = acc.label">
                       <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
                     </Button>
-                    <Button size="sm" variant="ghost" title="Remove" @click="removeGoogleAccount(acc)">
+                    <Button size="sm" variant="ghost" :title="t('common.remove')" @click="removeGoogleAccount(acc)">
                       <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
                     </Button>
                   </div>
@@ -848,8 +980,8 @@ watch(() => settings.value.color_theme, (t) => {
               <template v-else>
                 <div class="flex items-center gap-2">
                   <Input v-model="googleEditLabel" size="sm" class="flex-1" @keyup.enter="saveGoogleRename(acc)" />
-                  <Button size="sm" @click="saveGoogleRename(acc)">Save</Button>
-                  <Button size="sm" variant="ghost" @click="googleEditing = null">Cancel</Button>
+                  <Button size="sm" @click="saveGoogleRename(acc)">{{ t('common.save') }}</Button>
+                  <Button size="sm" variant="ghost" @click="googleEditing = null">{{ t('common.cancel') }}</Button>
                 </div>
               </template>
             </div>
@@ -858,29 +990,29 @@ watch(() => settings.value.color_theme, (t) => {
           <!-- Add account -->
           <div class="border border-border/60 rounded-md p-3 space-y-2.5">
             <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-              {{ googleAccounts.length ? 'Add another account' : 'Connect an account' }}
+              {{ googleAccounts.length ? t('settings.google.addAnother') : t('settings.google.connectAccount') }}
             </div>
 
             <div v-if="googleHasClient && !showGoogleClientForm" class="text-[11px] text-muted-foreground flex items-center gap-1.5">
               <CheckCircle2 class="h-3.5 w-3.5 text-emerald-500" :stroke-width="1.75" />
-              OAuth credentials saved — no need to re-enter them.
+              {{ t('settings.google.credsSaved') }}
             </div>
 
             <!-- Credential form (first time, or when changing creds) -->
             <template v-if="!googleHasClient || showGoogleClientForm">
               <div class="space-y-1.5">
-                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Client ID</label>
+                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.google.clientId') }}</label>
                 <Input v-model="googleClientId" size="sm" placeholder="xxxxx.apps.googleusercontent.com" />
               </div>
               <div class="space-y-1.5">
-                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Client Secret</label>
+                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.google.clientSecret') }}</label>
                 <Input v-model="googleClientSecret" type="password" size="sm" placeholder="GOCSPX-…" />
               </div>
             </template>
 
             <div class="space-y-1.5">
-              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Account label</label>
-              <Input v-model="googleNewLabel" size="sm" placeholder="work" @keyup.enter="addGoogleAccount" />
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.google.accountLabel') }}</label>
+              <Input v-model="googleNewLabel" size="sm" :placeholder="t('settings.google.labelPlaceholder')" @keyup.enter="addGoogleAccount" />
             </div>
 
             <div v-if="googleError" class="text-[11px] text-red-500 flex items-start gap-1.5">
@@ -892,22 +1024,22 @@ watch(() => settings.value.color_theme, (t) => {
               <Button size="sm" :disabled="googleAdding" @click="addGoogleAccount">
                 <Loader2 v-if="googleAdding" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
                 <Plus v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-                {{ googleAdding ? 'Waiting for Google…' : 'Add account' }}
+                {{ googleAdding ? t('settings.google.waitingForGoogle') : t('settings.google.addAccount') }}
               </Button>
               <Button v-if="googleHasClient && !showGoogleClientForm" size="sm" variant="ghost" :disabled="googleAdding" @click="showGoogleClientForm = true">
-                <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" /> Change credentials
+                <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('settings.google.changeCredentials') }}
               </Button>
               <Button v-if="googleHasClient && showGoogleClientForm" size="sm" variant="ghost" :disabled="googleAdding" @click="showGoogleClientForm = false">
-                Cancel
+                {{ t('common.cancel') }}
               </Button>
               <Button v-if="googleHasClient" size="sm" variant="ghost" :disabled="googleAdding" @click="forgetGoogleClient">
-                <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" /> Forget saved
+                <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('settings.google.forgetSaved') }}
               </Button>
             </div>
           </div>
 
           <div class="rounded-md border border-border/60 bg-muted/30 p-3 space-y-2">
-            <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Available tools</div>
+            <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.google.availableTools') }}</div>
             <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
               <span>📁 gdrive list / search / read / download</span>
               <span>✏️ gdrive create / upload / update / rename / move</span>
@@ -923,23 +1055,16 @@ watch(() => settings.value.color_theme, (t) => {
         <Card v-show="activeSection === 'github'" body-class="p-4 space-y-4">
           <template #header>
             <Github class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-            <span class="text-xs font-semibold">GitHub Accounts</span>
+            <span class="text-xs font-semibold">{{ t('settings.github.title') }}</span>
           </template>
             <p class="text-[11px] text-muted-foreground leading-relaxed">
-              Add GitHub accounts once and link them to projects. PATs are stored securely in your OS
-              Keychain (never written to disk). Required scopes:
-              <code class="font-mono bg-muted px-1 rounded text-[11px]">repo</code> (private) or
-              <code class="font-mono bg-muted px-1 rounded text-[11px]">public_repo</code> (public).
+              {{ t('settings.github.intro') }}
             </p>
 
             <div class="p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-md text-[11px] leading-relaxed flex gap-2">
               <ShieldAlert class="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" :stroke-width="1.75" />
               <span class="text-muted-foreground">
-                Keep this machine logged <strong class="text-foreground">out</strong> of gh globally: do
-                <strong class="text-foreground">not</strong> run
-                <code class="font-mono bg-muted px-1 rounded">gh auth login</code> or set
-                <code class="font-mono bg-muted px-1 rounded">GH_TOKEN</code> system-wide. Devdy wires the
-                correct per-project credential at run time; a global login would let runs bypass that isolation.
+                {{ t('settings.github.isolationWarning') }}
               </span>
             </div>
 
@@ -957,7 +1082,7 @@ watch(() => settings.value.color_theme, (t) => {
                       <div class="text-sm font-medium truncate">{{ acc.label }}</div>
                       <div class="text-[11px] text-muted-foreground truncate">
                         <span v-if="acc.username">@{{ acc.username }}</span>
-                        <span v-else>not validated</span>
+                        <span v-else>{{ t('settings.github.notValidated') }}</span>
                         <span v-if="acc.scopes.length" class="ml-1">· {{ acc.scopes.join(', ') }}</span>
                       </div>
                     </div>
@@ -968,12 +1093,12 @@ watch(() => settings.value.color_theme, (t) => {
                         :disabled="busyAccount === acc.id"
                         @click="handleValidate(acc.id)"
                       >
-                        {{ busyAccount === acc.id ? '…' : 'Validate' }}
+                        {{ busyAccount === acc.id ? '…' : t('settings.github.validate') }}
                       </Button>
                       <Button
                         variant="ghost"
                         size="icon-sm"
-                        title="Edit"
+                        :title="t('common.edit')"
                         @click="startEdit(acc.id, acc.label)"
                       >
                         <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -981,7 +1106,7 @@ watch(() => settings.value.color_theme, (t) => {
                       <Button
                         variant="destructive-ghost"
                         size="icon-sm"
-                        title="Delete"
+                        :title="t('common.delete')"
                         @click="handleDeleteAccount(acc.id)"
                       >
                         <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -994,11 +1119,11 @@ watch(() => settings.value.color_theme, (t) => {
                   >
                     <div class="flex items-center gap-1.5 text-emerald-500 font-medium">
                       <CheckCircle2 class="h-3 w-3" :stroke-width="2" />
-                      Valid — {{ validations[acc.id].username }}
+                      {{ t('settings.github.valid', { username: validations[acc.id].username }) }}
                     </div>
                     <p v-if="!validations[acc.id].has_repo_scope" class="text-amber-500 mt-1 flex items-center gap-1">
                       <AlertTriangle class="h-3 w-3" :stroke-width="1.75" />
-                      Missing repo/public_repo scope
+                      {{ t('settings.github.missingRepoScope') }}
                     </p>
                   </div>
                 </template>
@@ -1008,13 +1133,13 @@ watch(() => settings.value.color_theme, (t) => {
                   <Input
                     v-model="editLabel[acc.id]"
                     size="sm"
-                    placeholder="Label"
+                    :placeholder="t('settings.aws.labelPlaceholder')"
                   />
                   <Input
                     v-model="editPat[acc.id]"
                     type="password"
                     size="sm"
-                    placeholder="New PAT (leave blank to keep current)"
+                    :placeholder="t('settings.github.patPlaceholder')"
                     class="font-mono"
                   />
                   <div class="flex items-center gap-2">
@@ -1022,13 +1147,13 @@ watch(() => settings.value.color_theme, (t) => {
                       :disabled="!editLabel[acc.id]?.trim() || busyAccount === acc.id"
                       @click="handleSaveEdit(acc.id)"
                     >
-                      {{ busyAccount === acc.id ? 'Saving…' : 'Save' }}
+                      {{ busyAccount === acc.id ? t('settings.github.saving') : t('common.save') }}
                     </Button>
                     <Button
                       variant="outline"
                       @click="editing = null"
                     >
-                      Cancel
+                      {{ t('common.cancel') }}
                     </Button>
                   </div>
                 </template>
@@ -1039,11 +1164,11 @@ watch(() => settings.value.color_theme, (t) => {
 
             <!-- Add account -->
             <div class="border-t border-border/60 pt-3 space-y-2">
-              <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Add account</div>
+              <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.github.addAccount') }}</div>
               <Input
                 v-model="newLabel"
                 size="sm"
-                placeholder="Label (e.g. Work, Personal)"
+                :placeholder="t('settings.github.labelPlaceholder')"
               />
               <div class="flex gap-2">
                 <Input
@@ -1059,7 +1184,7 @@ watch(() => settings.value.color_theme, (t) => {
                   @click="handleAddAccount"
                 >
                   <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-                  {{ adding ? 'Adding…' : 'Add' }}
+                  {{ adding ? t('settings.github.adding') : t('common.add') }}
                 </Button>
               </div>
               <p v-if="addError" class="text-[11px] text-destructive">{{ addError }}</p>
@@ -1070,26 +1195,16 @@ watch(() => settings.value.color_theme, (t) => {
         <Card v-show="activeSection === 'gitlab'" body-class="p-4 space-y-4">
           <template #header>
             <Gitlab class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-            <span class="text-xs font-semibold">GitLab Accounts</span>
+            <span class="text-xs font-semibold">{{ t('settings.gitlab.title') }}</span>
           </template>
             <p class="text-[11px] text-muted-foreground leading-relaxed">
-              Add GitLab accounts once and link them to projects. PATs are stored securely in your OS
-              Keychain (never written to disk). Set a custom host for self-hosted GitLab, and an optional
-              commit email. Required scope:
-              <code class="font-mono bg-muted px-1 rounded">api</code> (or
-              <code class="font-mono bg-muted px-1 rounded">read_api</code> +
-              <code class="font-mono bg-muted px-1 rounded">write_repository</code>) — a repository-only
-              token is rejected by the validation endpoint.
+              {{ t('settings.gitlab.intro') }}
             </p>
 
             <div class="p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-md text-[11px] leading-relaxed flex gap-2">
               <ShieldAlert class="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" :stroke-width="1.75" />
               <span class="text-muted-foreground">
-                Keep this machine logged <strong class="text-foreground">out</strong> of glab globally: do
-                <strong class="text-foreground">not</strong> run
-                <code class="font-mono bg-muted px-1 rounded">glab auth login</code> or set
-                <code class="font-mono bg-muted px-1 rounded">GITLAB_TOKEN</code> system-wide. Devdy wires the
-                correct per-project credential at run time; a global login would let runs bypass that isolation.
+                {{ t('settings.gitlab.isolationWarning') }}
               </span>
             </div>
 
@@ -1107,7 +1222,7 @@ watch(() => settings.value.color_theme, (t) => {
                       <div class="text-sm font-medium truncate">{{ acc.label }}</div>
                       <div class="text-[11px] text-muted-foreground truncate">
                         <span v-if="acc.username">@{{ acc.username }}</span>
-                        <span v-else>not validated</span>
+                        <span v-else>{{ t('settings.gitlab.notValidated') }}</span>
                         <span v-if="acc.host" class="ml-1">· {{ acc.host }}</span>
                         <span v-if="acc.email" class="ml-1">· {{ acc.email }}</span>
                       </div>
@@ -1119,12 +1234,12 @@ watch(() => settings.value.color_theme, (t) => {
                         :disabled="glBusyAccount === acc.id"
                         @click="handleValidateGitlab(acc.id)"
                       >
-                        {{ glBusyAccount === acc.id ? '…' : 'Validate' }}
+                        {{ glBusyAccount === acc.id ? '…' : t('settings.gitlab.validate') }}
                       </Button>
                       <Button
                         variant="ghost"
                         size="icon-sm"
-                        title="Edit"
+                        :title="t('common.edit')"
                         @click="startGitlabEdit(acc.id, acc.label, acc.host, acc.email)"
                       >
                         <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -1132,7 +1247,7 @@ watch(() => settings.value.color_theme, (t) => {
                       <Button
                         variant="destructive-ghost"
                         size="icon-sm"
-                        title="Delete"
+                        :title="t('common.delete')"
                         @click="handleDeleteGitlabAccount(acc.id)"
                       >
                         <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -1145,7 +1260,7 @@ watch(() => settings.value.color_theme, (t) => {
                   >
                     <div class="flex items-center gap-1.5 text-emerald-500 font-medium">
                       <CheckCircle2 class="h-3 w-3" :stroke-width="2" />
-                      Valid — {{ glValidations[acc.id].username }}
+                      {{ t('settings.gitlab.valid', { username: glValidations[acc.id].username }) }}
                     </div>
                     <p v-if="glValidations[acc.id].email" class="text-muted-foreground mt-1">
                       {{ glValidations[acc.id].email }}
@@ -1158,7 +1273,7 @@ watch(() => settings.value.color_theme, (t) => {
                   <Input
                     v-model="glEditLabel[acc.id]"
                     size="sm"
-                    placeholder="Label"
+                    :placeholder="t('settings.aws.labelPlaceholder')"
                   />
                   <Input
                     v-model="glEditHost[acc.id]"
@@ -1168,13 +1283,13 @@ watch(() => settings.value.color_theme, (t) => {
                   <Input
                     v-model="glEditEmail[acc.id]"
                     size="sm"
-                    placeholder="Commit email (optional)"
+                    :placeholder="t('settings.gitlab.commitEmailPlaceholder')"
                   />
                   <Input
                     v-model="glEditPat[acc.id]"
                     type="password"
                     size="sm"
-                    placeholder="New PAT (leave blank to keep current)"
+                    :placeholder="t('settings.gitlab.patPlaceholder')"
                     class="font-mono"
                   />
                   <div class="flex items-center gap-2">
@@ -1182,13 +1297,13 @@ watch(() => settings.value.color_theme, (t) => {
                       :disabled="!glEditLabel[acc.id]?.trim() || glBusyAccount === acc.id"
                       @click="handleSaveGitlabEdit(acc.id)"
                     >
-                      {{ glBusyAccount === acc.id ? 'Saving…' : 'Save' }}
+                      {{ glBusyAccount === acc.id ? t('settings.gitlab.saving') : t('common.save') }}
                     </Button>
                     <Button
                       variant="outline"
                       @click="glEditing = null"
                     >
-                      Cancel
+                      {{ t('common.cancel') }}
                     </Button>
                   </div>
                 </template>
@@ -1199,11 +1314,11 @@ watch(() => settings.value.color_theme, (t) => {
 
             <!-- Add account -->
             <div class="border-t border-border/60 pt-3 space-y-2">
-              <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Add account</div>
+              <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.gitlab.addAccount') }}</div>
               <Input
                 v-model="glNewLabel"
                 size="sm"
-                placeholder="Label (e.g. Work, Personal)"
+                :placeholder="t('settings.gitlab.labelPlaceholder')"
               />
               <Input
                 v-model="glNewHost"
@@ -1213,7 +1328,7 @@ watch(() => settings.value.color_theme, (t) => {
               <Input
                 v-model="glNewEmail"
                 size="sm"
-                placeholder="Commit email (optional)"
+                :placeholder="t('settings.gitlab.commitEmailPlaceholder')"
               />
               <div class="flex gap-2">
                 <Input
@@ -1229,7 +1344,7 @@ watch(() => settings.value.color_theme, (t) => {
                   @click="handleAddGitlabAccount"
                 >
                   <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-                  {{ glAdding ? 'Adding…' : 'Add' }}
+                  {{ glAdding ? t('settings.gitlab.adding') : t('common.add') }}
                 </Button>
               </div>
               <p v-if="glAddError" class="text-[11px] text-destructive">{{ glAddError }}</p>
@@ -1240,21 +1355,16 @@ watch(() => settings.value.color_theme, (t) => {
         <Card v-show="activeSection === 'aws'" body-class="p-4 space-y-4">
           <template #header>
             <Cloud class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-            <span class="text-xs font-semibold">AWS Accounts</span>
+            <span class="text-xs font-semibold">{{ t('settings.aws.title') }}</span>
           </template>
             <p class="text-[11px] text-muted-foreground leading-relaxed">
-              Add AWS accounts once and link one account to each project. Secret Access Keys and
-              Session Tokens are stored securely in your OS Keychain. Devdy wires the selected
-              project account to Claude and Codex runs through the broker.
+              {{ t('settings.aws.intro') }}
             </p>
 
             <div class="p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-md text-[11px] leading-relaxed flex gap-2">
               <ShieldAlert class="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" :stroke-width="1.75" />
               <span class="text-muted-foreground">
-                Avoid setting AWS credentials globally for agent work. Devdy gates
-                <code class="font-mono bg-muted px-1 rounded">aws</code> calls through its broker;
-                credential/config mutation such as
-                <code class="font-mono bg-muted px-1 rounded">aws configure</code> is blocked.
+                {{ t('settings.aws.isolationWarning') }}
               </span>
             </div>
 
@@ -1284,12 +1394,12 @@ watch(() => settings.value.color_theme, (t) => {
                         :disabled="awsBusyAccount === acc.id"
                         @click="handleValidateAws(acc.id)"
                       >
-                        {{ awsBusyAccount === acc.id ? '…' : 'Validate' }}
+                        {{ awsBusyAccount === acc.id ? '…' : t('settings.aws.validate') }}
                       </Button>
                       <Button
                         variant="ghost"
                         size="icon-sm"
-                        title="Edit"
+                        :title="t('common.edit')"
                         @click="startAwsEdit(acc)"
                       >
                         <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -1297,7 +1407,7 @@ watch(() => settings.value.color_theme, (t) => {
                       <Button
                         variant="destructive-ghost"
                         size="icon-sm"
-                        title="Delete"
+                        :title="t('common.delete')"
                         @click="handleDeleteAwsAccount(acc.id)"
                       >
                         <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -1310,35 +1420,35 @@ watch(() => settings.value.color_theme, (t) => {
                   >
                     <div class="flex items-center gap-1.5 text-emerald-500 font-medium">
                       <CheckCircle2 class="h-3 w-3" :stroke-width="2" />
-                      Valid — {{ awsValidations[acc.id].account_id }}
+                      {{ t('settings.aws.valid', { accountId: awsValidations[acc.id].account_id }) }}
                     </div>
                     <p class="text-muted-foreground mt-1 truncate">{{ awsValidations[acc.id].arn }}</p>
                   </div>
                 </template>
 
                 <template v-else>
-                  <Input v-model="awsEditLabel[acc.id]" size="sm" placeholder="Label" />
+                  <Input v-model="awsEditLabel[acc.id]" size="sm" :placeholder="t('settings.aws.labelPlaceholder')" />
                   <AppSelect
                     size="sm"
                     :model-value="awsEditAuthMethod[acc.id]"
                     :options="AWS_AUTH_OPTIONS"
                     @update:model-value="setAwsEditAuthMethod(acc.id, $event)"
                   />
-                  <Input v-model="awsEditRegion[acc.id]" size="sm" placeholder="ap-northeast-1" class="font-mono" />
+                  <Input v-model="awsEditRegion[acc.id]" size="sm" :placeholder="t('settings.aws.regionPlaceholder')" class="font-mono" />
                   <template v-if="awsEditAuthMethod[acc.id] === 'keys'">
-                    <Input v-model="awsEditAccessKeyId[acc.id]" size="sm" placeholder="Access Key ID" class="font-mono" />
+                    <Input v-model="awsEditAccessKeyId[acc.id]" size="sm" :placeholder="t('settings.aws.accessKeyIdPlaceholder')" class="font-mono" />
                     <Input
                       v-model="awsEditSecretAccessKey[acc.id]"
                       type="password"
                       size="sm"
-                      placeholder="New Secret Access Key (leave blank to keep current)"
+                      :placeholder="t('settings.aws.newSecretPlaceholder')"
                       class="font-mono"
                     />
                     <Input
                       v-model="awsEditSessionToken[acc.id]"
                       type="password"
                       size="sm"
-                      placeholder="Session Token (optional; set when replacing secret)"
+                      :placeholder="t('settings.aws.sessionTokenReplacePlaceholder')"
                       class="font-mono"
                     />
                   </template>
@@ -1346,18 +1456,18 @@ watch(() => settings.value.color_theme, (t) => {
                     v-else
                     v-model="awsEditProfileName[acc.id]"
                     size="sm"
-                    placeholder="AWS profile name"
+                    :placeholder="t('settings.aws.profileNamePlaceholder')"
                     class="font-mono"
                   />
-                  <Input v-model="awsEditTags[acc.id]" size="sm" placeholder="Tags (optional)" />
+                  <Input v-model="awsEditTags[acc.id]" size="sm" :placeholder="t('settings.aws.tagsPlaceholder')" />
                   <div class="flex items-center gap-2">
                     <Button
                       :disabled="!awsEditLabel[acc.id]?.trim() || awsBusyAccount === acc.id"
                       @click="handleSaveAwsEdit(acc.id)"
                     >
-                      {{ awsBusyAccount === acc.id ? 'Saving…' : 'Save' }}
+                      {{ awsBusyAccount === acc.id ? t('settings.aws.saving') : t('common.save') }}
                     </Button>
-                    <Button variant="outline" @click="awsEditing = null">Cancel</Button>
+                    <Button variant="outline" @click="awsEditing = null">{{ t('common.cancel') }}</Button>
                   </div>
                 </template>
 
@@ -1367,28 +1477,28 @@ watch(() => settings.value.color_theme, (t) => {
 
             <!-- Add account -->
             <div class="border-t border-border/60 pt-3 space-y-2">
-              <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Add account</div>
-              <Input v-model="awsNewLabel" size="sm" placeholder="Label (e.g. Work AWS, Production)" />
+              <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.aws.addAccount') }}</div>
+              <Input v-model="awsNewLabel" size="sm" :placeholder="t('settings.aws.addLabelPlaceholder')" />
               <AppSelect
                 size="sm"
                 v-model="awsNewAuthMethod"
                 :options="AWS_AUTH_OPTIONS"
               />
-              <Input v-model="awsNewRegion" size="sm" placeholder="ap-northeast-1" class="font-mono" />
+              <Input v-model="awsNewRegion" size="sm" :placeholder="t('settings.aws.regionPlaceholder')" class="font-mono" />
               <template v-if="awsNewAuthMethod === 'keys'">
-                <Input v-model="awsNewAccessKeyId" size="sm" placeholder="Access Key ID" class="font-mono" />
+                <Input v-model="awsNewAccessKeyId" size="sm" :placeholder="t('settings.aws.accessKeyIdPlaceholder')" class="font-mono" />
                 <Input
                   v-model="awsNewSecretAccessKey"
                   type="password"
                   size="sm"
-                  placeholder="Secret Access Key"
+                  :placeholder="t('settings.aws.secretPlaceholder')"
                   class="font-mono"
                 />
                 <Input
                   v-model="awsNewSessionToken"
                   type="password"
                   size="sm"
-                  placeholder="Session Token (optional)"
+                  :placeholder="t('settings.aws.sessionTokenPlaceholder')"
                   class="font-mono"
                   @keyup.enter="handleAddAwsAccount"
                 />
@@ -1397,18 +1507,18 @@ watch(() => settings.value.color_theme, (t) => {
                 v-else
                 v-model="awsNewProfileName"
                 size="sm"
-                placeholder="AWS profile name"
+                :placeholder="t('settings.aws.profileNamePlaceholder')"
                 class="font-mono"
                 @keyup.enter="handleAddAwsAccount"
               />
-              <Input v-model="awsNewTags" size="sm" placeholder="Tags (optional)" />
+              <Input v-model="awsNewTags" size="sm" :placeholder="t('settings.aws.tagsPlaceholder')" />
               <div class="flex justify-end">
                 <Button
                   :disabled="!canAddAwsAccount || awsAdding"
                   @click="handleAddAwsAccount"
                 >
                   <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-                  {{ awsAdding ? 'Adding…' : 'Add' }}
+                  {{ awsAdding ? t('settings.aws.adding') : t('common.add') }}
                 </Button>
               </div>
               <p v-if="awsAddError" class="text-[11px] text-destructive">{{ awsAddError }}</p>
@@ -1419,10 +1529,10 @@ watch(() => settings.value.color_theme, (t) => {
         <Card v-show="activeSection === 'engine'" body-class="p-4 space-y-4">
           <template #header>
             <Cpu class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-            <span class="text-xs font-semibold">Engine Paths</span>
+            <span class="text-xs font-semibold">{{ t('settings.engine.title') }}</span>
           </template>
             <div class="space-y-1.5">
-              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Claude binary path</label>
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.engine.claudePath') }}</label>
               <Input
                 v-model="settings.claude_path"
                 size="sm"
@@ -1431,7 +1541,7 @@ watch(() => settings.value.color_theme, (t) => {
               />
             </div>
             <div class="space-y-1.5">
-              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Codex binary path</label>
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.engine.codexPath') }}</label>
               <Input
                 v-model="settings.codex_path"
                 size="sm"
@@ -1441,8 +1551,8 @@ watch(() => settings.value.color_theme, (t) => {
             </div>
             <div class="space-y-1.5">
               <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-                Extra args
-                <span class="normal-case font-normal text-muted-foreground ml-1">(applied to all runs)</span>
+                {{ t('settings.engine.extraArgs') }}
+                <span class="normal-case font-normal text-muted-foreground ml-1">{{ t('settings.engine.extraArgsHint') }}</span>
               </label>
               <Input
                 v-model="settings.extra_args"
@@ -1457,17 +1567,17 @@ watch(() => settings.value.color_theme, (t) => {
         <Card v-show="activeSection === 'ai'" body-class="p-4 space-y-5">
           <template #header>
             <Sparkles class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-            <span class="text-xs font-semibold">AI & Models</span>
+            <span class="text-xs font-semibold">{{ t('settings.ai.title') }}</span>
           </template>
 
             <!-- Group 1: run defaults -->
             <div class="space-y-4">
               <div class="flex items-center gap-1.5 text-muted-foreground">
                 <Cpu class="h-3 w-3" :stroke-width="1.75" />
-                <span class="text-[11px] font-semibold uppercase tracking-wider">Run defaults</span>
+                <span class="text-[11px] font-semibold uppercase tracking-wider">{{ t('settings.ai.runDefaults') }}</span>
               </div>
               <div class="space-y-1.5">
-                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Default Engine</label>
+                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.ai.defaultEngine') }}</label>
                 <AppSelect
                   size="sm"
                   v-model="settings.default_engine"
@@ -1479,45 +1589,43 @@ watch(() => settings.value.color_theme, (t) => {
               </div>
               <div class="space-y-1.5">
                 <div class="flex items-center justify-between">
-                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Default Claude model</label>
+                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.ai.defaultClaudeModel') }}</label>
                   <button
                     class="inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer disabled:opacity-50"
                     :disabled="modelCatalog.loading"
-                    title="Tải lại danh sách model từ tài khoản Claude"
+                    :title="t('settings.ai.reloadModelsTitle')"
                     @click="modelCatalog.fetchClaude(true)"
                   >
                     <component :is="modelCatalog.loading ? Loader2 : RefreshCw" class="h-3 w-3" :class="{ 'animate-spin': modelCatalog.loading }" :stroke-width="1.75" />
-                    {{ modelCatalog.loading ? 'Đang tải…' : 'Làm mới' }}
+                    {{ modelCatalog.loading ? t('settings.ai.loading') : t('settings.ai.reload') }}
                   </button>
                 </div>
                 <AppSelect size="sm" v-model="settings.claude_model" :options="claudeModelOptions" />
-                <p v-if="modelCatalog.error" class="text-[11px] text-amber-500">Không tải được model động — dùng danh sách mặc định.</p>
-                <p v-else-if="modelCatalog.claudeDynamic.length" class="text-[11px] text-muted-foreground">Tự động cập nhật {{ modelCatalog.claudeDynamic.length }} model từ tài khoản.</p>
+                <p v-if="modelCatalog.error" class="text-[11px] text-amber-500">{{ t('settings.ai.modelsLoadError') }}</p>
+                <p v-else-if="modelCatalog.claudeDynamic.length" class="text-[11px] text-muted-foreground">{{ t('settings.ai.modelsAutoUpdated', { count: modelCatalog.claudeDynamic.length }) }}</p>
               </div>
               <div class="space-y-1.5">
-                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Default Codex model</label>
+                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.ai.defaultCodexModel') }}</label>
                 <AppSelect size="sm" v-model="settings.codex_model" :options="CODEX_MODEL_OPTIONS" />
-                <p class="text-[11px] text-muted-foreground">Codex không hỗ trợ liệt kê model động — danh sách này cố định.</p>
+                <p class="text-[11px] text-muted-foreground">{{ t('settings.ai.codexStaticHint') }}</p>
               </div>
               <div class="space-y-1.5">
                 <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
-                  <ShieldAlert class="h-3 w-3" :stroke-width="1.75" />Default permission mode
+                  <ShieldAlert class="h-3 w-3" :stroke-width="1.75" />{{ t('settings.ai.defaultPermissionMode') }}
                 </label>
                 <AppSelect
                   size="sm"
                   v-model="settings.default_permission_mode"
                   :options="[
-                    { value: 'default', label: 'Ask via UI (default)' },
-                    { value: 'acceptEdits', label: 'Auto-accept edits' },
-                    { value: 'plan', label: 'Plan only (read-only)' },
-                    { value: 'auto', label: 'Auto (classifier)' },
-                    { value: 'bypassPermissions', label: 'Bypass all permissions' },
+                    { value: 'default', label: t('settings.ai.permAskUi') },
+                    { value: 'acceptEdits', label: t('settings.ai.permAcceptEdits') },
+                    { value: 'plan', label: t('settings.ai.permPlan') },
+                    { value: 'auto', label: t('settings.ai.permAuto') },
+                    { value: 'bypassPermissions', label: t('settings.ai.permBypass') },
                   ]"
                 />
                 <p class="text-[11px] text-muted-foreground leading-relaxed">
-                  How tool calls are gated (Claude &amp; Codex). "Ask via UI" surfaces each request in a modal;
-                  "Bypass all" skips the modal — fast, but unsafe outside trusted directories. You can still
-                  override engine, model and permission mode per run on the Run screen.
+                  {{ t('settings.ai.permissionHint') }}
                 </p>
               </div>
             </div>
@@ -1528,13 +1636,13 @@ watch(() => settings.value.color_theme, (t) => {
             <div class="space-y-4">
               <div class="flex items-center gap-1.5 text-muted-foreground">
                 <Sparkles class="h-3 w-3" :stroke-width="1.75" />
-                <span class="text-[11px] font-semibold uppercase tracking-wider">Translation</span>
+                <span class="text-[11px] font-semibold uppercase tracking-wider">{{ t('settings.ai.translation') }}</span>
               </div>
               <p class="text-[11px] text-muted-foreground leading-relaxed">
-                Dùng cho tính năng dịch đoạn văn bản bôi đen trong màn Run AI.
+                {{ t('settings.ai.translationHint') }}
               </p>
               <div class="space-y-1.5">
-                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Translate engine</label>
+                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.ai.translateEngine') }}</label>
                 <AppSelect
                   size="sm"
                   v-model="settings.translate_engine"
@@ -1545,16 +1653,16 @@ watch(() => settings.value.color_theme, (t) => {
                 />
               </div>
               <div class="space-y-1.5">
-                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Translate model</label>
+                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.ai.translateModel') }}</label>
                 <AppSelect size="sm" v-model="settings.translate_model" :options="translateModelOptions" />
-                <p class="text-[11px] text-muted-foreground">"Default" → chọn model nhanh (Claude dùng Haiku) để dịch nhanh hơn.</p>
+                <p class="text-[11px] text-muted-foreground">{{ t('settings.ai.translateModelHint') }}</p>
               </div>
               <div class="space-y-1.5">
-                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Target language</label>
+                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.ai.targetLanguage') }}</label>
                 <AppSelect size="sm" v-model="settings.translate_target_lang" :options="TRANSLATE_TARGET_OPTIONS" />
               </div>
               <div class="space-y-1.5">
-                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Translation style</label>
+                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.ai.translationStyle') }}</label>
                 <AppSelect size="sm" v-model="settings.translate_style" :options="TRANSLATE_STYLE_OPTIONS" />
               </div>
             </div>
@@ -1564,30 +1672,29 @@ watch(() => settings.value.color_theme, (t) => {
         <Card v-show="activeSection === 'usage'" body-class="p-4 space-y-5">
           <template #header>
             <Gauge class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-            <span class="text-xs font-semibold">Usage &amp; Budget</span>
+            <span class="text-xs font-semibold">{{ t('settings.usage.title') }}</span>
           </template>
 
             <!-- Context window meter -->
             <div class="space-y-3">
               <div>
-                <h3 class="text-xs font-semibold">Context window meter</h3>
+                <h3 class="text-xs font-semibold">{{ t('settings.usage.contextMeter') }}</h3>
                 <p class="text-[11px] text-muted-foreground leading-relaxed mt-0.5">
-                  Shows how full the current run's context window is. The bar turns amber past the
-                  warn threshold and offers a one-click <code class="font-mono bg-muted px-1 rounded">/compact</code>.
+                  {{ t('settings.usage.contextMeterHint') }}
                 </p>
               </div>
               <div class="grid grid-cols-2 gap-3">
                 <div class="space-y-1.5">
-                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Warn at (%)</label>
+                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.usage.warnAt') }}</label>
                   <Input v-model="settings.context_warn_percent" type="number" min="1" max="100" placeholder="80" />
                 </div>
                 <div class="space-y-1.5">
-                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Limit override (tokens)</label>
-                  <Input v-model="settings.context_limit_override" type="number" min="0" placeholder="auto from model" />
+                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.usage.limitOverride') }}</label>
+                  <Input v-model="settings.context_limit_override" type="number" min="0" :placeholder="t('settings.usage.limitOverridePlaceholder')" />
                 </div>
               </div>
               <p class="text-[11px] text-muted-foreground leading-relaxed">
-                Leave the override empty to auto-resolve from the model (Claude 200k / 1M, Codex 272k).
+                {{ t('settings.usage.limitOverrideHint') }}
               </p>
             </div>
 
@@ -1596,24 +1703,19 @@ watch(() => settings.value.color_theme, (t) => {
             <!-- Usage budget: run-blocking guardrail -->
             <div class="space-y-3">
               <div>
-                <h3 class="text-xs font-semibold">Usage budget (blocks new runs)</h3>
+                <h3 class="text-xs font-semibold">{{ t('settings.usage.budgetTitle') }}</h3>
                 <p class="text-[11px] text-muted-foreground leading-relaxed mt-0.5">
-                  Checked before each run &amp; follow-up: Devdy <b>blocks a new run</b> (override per turn) when the
-                  run's engine reaches a limit below. Thresholds map to that engine's <b>real subscription plan</b>
-                  windows (from <code class="font-mono bg-muted px-1 rounded">/usage</code>) — a rolling <b>5h</b> window
-                  and a <b>weekly</b> window (resets per account). A run is blocked if <b>any</b> set window is reached.
-                  Codex usually exposes only the weekly window, so set <b>Weekly</b> to cover it. Leave a field empty to
-                  skip that window; with no plan data (e.g. API-key sessions) the guardrail is inactive.
+                  {{ t('settings.usage.budgetHint') }}
                 </p>
               </div>
               <div class="grid grid-cols-2 gap-3">
                 <div class="space-y-1.5">
-                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">5h window — block at (%)</label>
-                  <Input v-model="settings.budget_5h_percent" type="number" min="1" max="100" placeholder="empty = off" />
+                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.usage.block5h') }}</label>
+                  <Input v-model="settings.budget_5h_percent" type="number" min="1" max="100" :placeholder="t('settings.usage.emptyOff')" />
                 </div>
                 <div class="space-y-1.5">
-                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Weekly window — block at (%)</label>
-                  <Input v-model="settings.budget_week_percent" type="number" min="1" max="100" placeholder="empty = off" />
+                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.usage.blockWeekly') }}</label>
+                  <Input v-model="settings.budget_week_percent" type="number" min="1" max="100" :placeholder="t('settings.usage.emptyOff')" />
                 </div>
               </div>
             </div>
@@ -1623,22 +1725,22 @@ watch(() => settings.value.color_theme, (t) => {
         <Card v-show="activeSection === 'prompts'" body-class="p-4 space-y-4">
           <template #header>
             <FileText class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-            <span class="text-xs font-semibold">Prompt Templates</span>
+            <span class="text-xs font-semibold">{{ t('settings.prompts.title') }}</span>
           </template>
             <div class="space-y-1.5">
-              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Analyze Issue prompt</label>
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.prompts.analyzeIssue') }}</label>
               <Textarea
                 v-model="settings.analyze_issue_prompt"
                 rows="3"
-                placeholder="Analyze the following GitHub issue and create a detailed implementation plan…"
+                :placeholder="t('settings.prompts.analyzeIssuePlaceholder')"
               />
             </div>
             <div class="space-y-1.5">
-              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Review PR prompt</label>
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.prompts.reviewPr') }}</label>
               <Textarea
                 v-model="settings.review_pr_prompt"
                 rows="3"
-                placeholder="Review the following pull request and provide detailed feedback…"
+                :placeholder="t('settings.prompts.reviewPrPlaceholder')"
               />
             </div>
         </Card>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { X, FolderOpen } from 'lucide-vue-next'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
@@ -13,6 +14,7 @@ import { useProjectsStore } from '@/stores/projects'
  * status (any run streaming / awaiting permission) is read from liveRuns.
  */
 
+const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const tabsStore = useWorkspaceTabsStore()
@@ -24,7 +26,7 @@ const activeProjectId = computed(() =>
 )
 
 function projectName(projectId: string): string {
-  return projectsStore.projects.find((p) => p.id === projectId)?.name ?? 'Project'
+  return projectsStore.projects.find((p) => p.id === projectId)?.name ?? t('misc.tabs.project')
 }
 
 interface ProjectState {
@@ -136,7 +138,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
         class="flex h-4 w-4 items-center justify-center rounded shrink-0 opacity-0 group-hover:opacity-100 hover:bg-foreground/10 transition-opacity"
         :class="{ 'opacity-60': tab.projectId === activeProjectId }"
         role="button"
-        aria-label="Close tab"
+        :aria-label="t('misc.tabs.closeTab')"
         @click="closeTab(tab.projectId, $event)"
       >
         <X class="h-3 w-3" :stroke-width="2" />

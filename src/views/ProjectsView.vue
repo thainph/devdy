@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useProjectsStore, type DetectedProjectInfo, type DetectedRepo } from '@/stores/projects'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
@@ -13,6 +14,7 @@ import { Button, Input, Badge, Modal, Card } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 
+const { t } = useI18n()
 const router = useRouter()
 const store = useProjectsStore()
 const ghStore = useGithubAccountsStore()
@@ -26,12 +28,12 @@ const detecting = ref(false)
 
 function accountLabel(accountId: string | null): string | null {
   if (!accountId) return null
-  return ghStore.accounts.find(a => a.id === accountId)?.label ?? 'Unknown'
+  return ghStore.accounts.find(a => a.id === accountId)?.label ?? t('projects.unknownAccount')
 }
 
 function gitlabAccountLabel(accountId: string | null): string | null {
   if (!accountId) return null
-  return glStore.accounts.find(a => a.id === accountId)?.label ?? 'Unknown'
+  return glStore.accounts.find(a => a.id === accountId)?.label ?? t('projects.unknownAccount')
 }
 
 // The AWS account linked to a project (label + region shown on its chip).
@@ -108,7 +110,7 @@ async function handleAdd() {
   const selected = await open({
     directory: true,
     multiple: false,
-    title: 'Select Project Folder',
+    title: t('projects.selectFolderTitle'),
   })
   if (!selected) return
   detecting.value = true
@@ -166,7 +168,7 @@ async function confirmAdd() {
     })
     pending.value = null
     pendingRepos.value = []
-    toast.success('Project added')
+    toast.success(t('projects.toastAdded'))
     router.push(`/projects/${project.id}`)
   } catch (e) {
     toast.error(String(e))
@@ -177,13 +179,13 @@ async function confirmAdd() {
 
 async function handleRemove(project: { id: string; name: string }) {
   if (!(await confirm({
-    title: 'Remove project',
-    message: `Remove project "${project.name}"? (Files are NOT deleted)`,
-    confirmLabel: 'Remove',
+    title: t('projects.confirmRemoveTitle'),
+    message: t('projects.confirmRemoveMessage', { name: project.name }),
+    confirmLabel: t('common.remove'),
   }))) return
   try {
     await store.removeProject(project.id)
-    toast.success('Deleted')
+    toast.success(t('projects.toastDeleted'))
   } catch (e) {
     toast.error(String(e))
   }
@@ -220,7 +222,7 @@ async function handleOpenInFolder(project: { path: string }) {
     <!-- Header -->
     <div class="flex items-center justify-between px-6 h-13 border-b border-border/60 shrink-0">
       <div class="flex items-center gap-2">
-        <h1 class="text-sm font-semibold">Projects</h1>
+        <h1 class="text-sm font-semibold">{{ t('projects.title') }}</h1>
         <span
           v-if="!store.loading && store.projects.length > 0"
           class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-medium text-muted-foreground"
@@ -233,7 +235,7 @@ async function handleOpenInFolder(project: { path: string }) {
         @click="handleAdd"
       >
         <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-        {{ detecting ? 'Detecting…' : adding ? 'Adding…' : 'Add Project' }}
+        {{ detecting ? t('projects.detecting') : adding ? t('projects.adding') : t('projects.addProject') }}
       </Button>
     </div>
 
@@ -251,14 +253,14 @@ async function handleOpenInFolder(project: { path: string }) {
         <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-muted mb-4">
           <FolderOpen class="h-6 w-6 text-muted-foreground" :stroke-width="1.5" />
         </div>
-        <p class="text-sm font-medium">No projects yet</p>
-        <p class="text-xs text-muted-foreground mt-1 max-w-50">Add a local folder to start managing AI skills and running analyses</p>
+        <p class="text-sm font-medium">{{ t('projects.emptyTitle') }}</p>
+        <p class="text-xs text-muted-foreground mt-1 max-w-50">{{ t('projects.emptyHint') }}</p>
         <Button
           class="mt-4"
           @click="handleAdd"
         >
           <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-          Add Project
+          {{ t('projects.addProject') }}
         </Button>
       </div>
 
@@ -321,7 +323,7 @@ async function handleOpenInFolder(project: { path: string }) {
                 v-if="awsAccount(project.aws_account_id)"
                 tone="primary"
                 class="max-w-[9rem]"
-                :title="`AWS: ${awsAccount(project.aws_account_id)!.label} · region ${awsAccount(project.aws_account_id)!.region}`"
+                :title="t('projects.awsChipTitle', { label: awsAccount(project.aws_account_id)!.label, region: awsAccount(project.aws_account_id)!.region })"
               >
                 <Cloud class="h-2.5 w-2.5 shrink-0" :stroke-width="2" />
                 <span class="truncate">{{ awsAccount(project.aws_account_id)!.label }}</span>
@@ -334,21 +336,21 @@ async function handleOpenInFolder(project: { path: string }) {
             >
               <button
                 class="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer active:scale-95"
-                title="Open project in VS Code"
+                :title="t('projects.openInVscode')"
                 @click="handleOpenInVscode(project)"
               >
                 <Code2 class="h-4 w-4" :stroke-width="2" />
               </button>
               <button
                 class="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer active:scale-95"
-                title="Open project folder"
+                :title="t('projects.openFolder')"
                 @click="handleOpenInFolder(project)"
               >
                 <FolderOpen class="h-4 w-4" :stroke-width="2" />
               </button>
               <button
                 class="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer active:scale-95"
-                title="Open project folder in terminal"
+                :title="t('projects.openInTerminal')"
                 @click="handleOpenInTerminal(project)"
               >
                 <SquareTerminal class="h-4 w-4" :stroke-width="2" />
@@ -356,21 +358,21 @@ async function handleOpenInFolder(project: { path: string }) {
               <span class="mx-0.5 h-4 w-px bg-border/70" />
               <button
                 class="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer active:scale-95"
-                title="Issues by milestone (Gantt)"
-                @click="router.push(`/projects/${project.id}/issues`)"
+                :title="t('projects.gantt')"
+                @click="router.push({ name: 'gantt', query: { project: project.id } })"
               >
                 <GanttChartSquare class="h-4 w-4" :stroke-width="2" />
               </button>
               <button
                 class="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer active:scale-95"
-                title="Project settings"
+                :title="t('projects.projectSettings')"
                 @click="router.push(`/projects/${project.id}/settings`)"
               >
                 <Settings class="h-4 w-4" :stroke-width="2" />
               </button>
               <button
                 class="flex h-7 w-7 items-center justify-center rounded-md text-destructive/70 hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer active:scale-95"
-                title="Remove project"
+                :title="t('projects.removeProject')"
                 @click="handleRemove(project)"
               >
                 <Trash2 class="h-4 w-4" :stroke-width="2" />
@@ -382,12 +384,12 @@ async function handleOpenInFolder(project: { path: string }) {
     </div>
 
     <!-- Add project modal -->
-    <Modal :open="!!pending" size="md" scroll-body title="Add Project" @close="cancelAdd">
+    <Modal :open="!!pending" size="md" scroll-body :title="t('projects.addProject')" @close="cancelAdd">
       <template v-if="pending">
           <div class="px-5 py-5 flex flex-col gap-4">
             <!-- Path (read-only) -->
             <div>
-              <label class="block text-xs text-muted-foreground mb-1.5">Path</label>
+              <label class="block text-xs text-muted-foreground mb-1.5">{{ t('projects.path') }}</label>
               <div class="flex items-center gap-2 px-3 py-2 bg-muted/50 border border-border/60 rounded-md">
                 <FolderOpen class="h-3.5 w-3.5 text-muted-foreground shrink-0" :stroke-width="1.5" />
                 <span class="text-xs font-mono text-muted-foreground truncate">{{ pending.path }}</span>
@@ -396,10 +398,10 @@ async function handleOpenInFolder(project: { path: string }) {
 
             <!-- Name -->
             <div>
-              <label class="block text-xs text-muted-foreground mb-1.5">Project name</label>
+              <label class="block text-xs text-muted-foreground mb-1.5">{{ t('projects.projectName') }}</label>
               <Input
                 v-model="pendingName"
-                placeholder="My Project"
+                :placeholder="t('projects.projectNamePlaceholder')"
               />
             </div>
 
@@ -408,9 +410,9 @@ async function handleOpenInFolder(project: { path: string }) {
               <div class="flex items-center justify-between mb-2">
                 <label class="flex items-center gap-1.5 text-xs text-muted-foreground">
                   <GitBranch class="h-3 w-3" :stroke-width="1.5" />
-                  Repositories
+                  {{ t('projects.repositories') }}
                   <span v-if="pending.repos.length > 0" class="text-[10px] text-emerald-500 font-medium">
-                    {{ pending.repos.length }} auto-detected
+                    {{ t('projects.autoDetected', { count: pending.repos.length }) }}
                   </span>
                 </label>
                 <button
@@ -418,7 +420,7 @@ async function handleOpenInFolder(project: { path: string }) {
                   @click="addRepoRow"
                 >
                   <Plus class="h-3 w-3" :stroke-width="2" />
-                  Add
+                  {{ t('common.add') }}
                 </button>
               </div>
 
@@ -438,7 +440,7 @@ async function handleOpenInFolder(project: { path: string }) {
                     <Input
                       v-model="repo.name"
                       class="flex-1"
-                      placeholder="Repo name"
+                      :placeholder="t('projects.repoNamePlaceholder')"
                     />
                     <button
                       class="flex h-6 w-6 items-center justify-center rounded text-destructive/40 hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer shrink-0"
@@ -451,18 +453,18 @@ async function handleOpenInFolder(project: { path: string }) {
                   <div class="flex gap-1.5 items-center">
                     <Input
                       v-model="repo.github_owner"
-                      placeholder="owner"
+                      :placeholder="t('projects.ownerPlaceholder')"
                     />
                     <span class="text-muted-foreground text-xs shrink-0">/</span>
                     <Input
                       v-model="repo.github_repo"
-                      placeholder="repo"
+                      :placeholder="t('projects.repoPlaceholder')"
                     />
                   </div>
                 </div>
 
                 <div v-if="pendingRepos.length === 0" class="text-[11px] text-muted-foreground text-center py-2">
-                  No repositories — click Add to add one manually
+                  {{ t('projects.noReposHint') }}
                 </div>
               </div>
             </div>
@@ -472,14 +474,14 @@ async function handleOpenInFolder(project: { path: string }) {
 
       <template #footer>
         <Button variant="ghost" @click="cancelAdd">
-          Cancel
+          {{ t('common.cancel') }}
         </Button>
         <Button
           :disabled="adding || !pendingName.trim()"
           @click="confirmAdd"
         >
           <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-          {{ adding ? 'Adding…' : 'Add Project' }}
+          {{ adding ? t('projects.adding') : t('projects.addProject') }}
         </Button>
       </template>
     </Modal>

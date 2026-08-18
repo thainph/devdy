@@ -3,6 +3,7 @@
 // (phone / other PC) — it MUST NOT import any `@tauri-apps/*` API.
 import { createApp } from 'vue'
 import '@/assets/main.css'
+import { i18n } from '@/i18n'
 import App from './App.vue'
 
 // Framework-independent error surface (requirement: never fail silently). If
@@ -31,6 +32,7 @@ window.addEventListener('unhandledrejection', (e) => {
 })
 
 const app = createApp(App)
+app.use(i18n)
 app.config.errorHandler = (err) => {
   const msg = err instanceof Error ? err.message : String(err)
   showFatal(`Lỗi ứng dụng: ${msg}`)

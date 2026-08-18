@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { onClickOutside } from '@vueuse/core'
 import {
@@ -24,7 +25,12 @@ import EventEditorModal from '@/components/calendar/EventEditorModal.vue'
 
 const store = useGoogleCalendarStore()
 const appSettings = useAppSettingsStore()
+const { t, locale } = useI18n()
 const router = useRouter()
+
+// Map the app locale to a JS BCP-47 tag so Intl date formatting (weekday /
+// month names) localizes together with the rest of the UI copy.
+const jsLocale = computed(() => (locale.value === 'vi' ? 'vi-VN' : 'en-US'))
 const { confirm } = useConfirm()
 const { toast } = useToast()
 
@@ -80,23 +86,23 @@ async function confirmDelete() {
   const ev = selected.value
   if (!ev) return
   const ok = await confirm({
-    title: 'Xóa event',
-    message: `Xóa "${ev.title}"?`,
-    confirmLabel: 'Xóa',
-    cancelLabel: 'Hủy',
+    title: t('calendar.view.deleteTitle'),
+    message: t('calendar.view.deleteMessage', { name: ev.title }),
+    confirmLabel: t('common.delete'),
+    cancelLabel: t('common.cancel'),
     variant: 'destructive',
   })
   if (!ok) return
   try {
     await store.deleteEvent(ev.account_id, ev.calendar_id, ev.id)
-    toast.success('Đã xóa event.')
+    toast.success(t('calendar.view.deleteSuccess'))
     detailOpen.value = false
   } catch (e) {
     const msg = String(e)
     toast.error(
       isAuthError(msg)
-        ? 'Không đủ quyền. Hãy kết nối lại tài khoản trong Settings.'
-        : `Xóa thất bại: ${msg}`,
+        ? t('calendar.view.deleteAuthError')
+        : t('calendar.view.deleteFailed', { msg }),
     )
   }
 }
@@ -113,13 +119,13 @@ function toggleAutoTranslate() {
   store.setAutoTranslate(!store.autoTranslate, targetLang.value)
 }
 
-const LEAD_OPTIONS = [
-  { value: '5', label: '5 min' },
-  { value: '10', label: '10 min' },
-  { value: '15', label: '15 min' },
-  { value: '30', label: '30 min' },
-  { value: '60', label: '1 hour' },
-]
+const LEAD_OPTIONS = computed(() => [
+  { value: '5', label: t('calendar.view.leadMin', { n: 5 }) },
+  { value: '10', label: t('calendar.view.leadMin', { n: 10 }) },
+  { value: '15', label: t('calendar.view.leadMin', { n: 15 }) },
+  { value: '30', label: t('calendar.view.leadMin', { n: 30 }) },
+  { value: '60', label: t('calendar.view.leadHour') },
+])
 
 // Re-translate when the event set changes (fetch / navigation) while on.
 watch(
@@ -131,11 +137,11 @@ watch(
 const rangeLabel = computed(() => {
   const { start } = store.rangeBounds
   if (store.viewMode === 'month') {
-    return store.anchorDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+    return store.anchorDate.toLocaleDateString(jsLocale.value, { month: 'long', year: 'numeric' })
   }
   const end = new Date(start)
   end.setDate(end.getDate() + 6)
-  const fmt = (d: Date) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  const fmt = (d: Date) => d.toLocaleDateString(jsLocale.value, { month: 'short', day: 'numeric' })
   return `${fmt(start)} – ${fmt(end)}, ${end.getFullYear()}`
 })
 
@@ -161,7 +167,7 @@ const dayModalEvents = ref<CalEvent[]>([])
 
 const dayModalTitle = computed(() =>
   dayModalDate.value
-    ? dayModalDate.value.toLocaleDateString('en-US', {
+    ? dayModalDate.value.toLocaleDateString(jsLocale.value, {
         weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
       })
     : '',
@@ -180,7 +186,7 @@ function pickDayEvent(ev: CalEvent) {
 
 function eventTimeShort(ev: CalEvent): string {
   const p = parseEventTime(ev)
-  if (p.allDay) return 'All day'
+  if (p.allDay) return t('calendar.view.allDay')
   return `${String(p.start.getHours()).padStart(2, '0')}:${String(p.start.getMinutes()).padStart(2, '0')}`
 }
 
@@ -203,16 +209,16 @@ const selectedParsed = computed(() =>
 
 function relativeDay(d: Date): string {
   const now = new Date()
-  if (sameDay(d, now)) return 'Today'
-  if (sameDay(d, addDays(now, 1))) return 'Tomorrow'
-  if (sameDay(d, addDays(now, -1))) return 'Yesterday'
-  return d.toLocaleDateString('en-US', { weekday: 'long' })
+  if (sameDay(d, now)) return t('calendar.view.reltoday')
+  if (sameDay(d, addDays(now, 1))) return t('calendar.view.tomorrow')
+  if (sameDay(d, addDays(now, -1))) return t('calendar.view.yesterday')
+  return d.toLocaleDateString(jsLocale.value, { weekday: 'long' })
 }
 
 const dateLabel = computed(() => {
   const p = selectedParsed.value
   if (!p) return ''
-  const d = (x: Date) => x.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })
+  const d = (x: Date) => x.toLocaleDateString(jsLocale.value, { day: 'numeric', month: 'short', year: 'numeric' })
   if (p.allDay && p.end > p.start) return `${d(p.start)} → ${d(p.end)}`
   return `${relativeDay(p.start)}, ${d(p.start)}`
 })
@@ -220,17 +226,17 @@ const dateLabel = computed(() => {
 const timeLabel = computed(() => {
   const p = selectedParsed.value
   if (!p) return ''
-  if (p.allDay) return 'All day'
-  const t = (x: Date) => `${String(x.getHours()).padStart(2, '0')}:${String(x.getMinutes()).padStart(2, '0')}`
+  if (p.allDay) return t('calendar.view.allDay')
+  const fmtT = (x: Date) => `${String(x.getHours()).padStart(2, '0')}:${String(x.getMinutes()).padStart(2, '0')}`
   const sameDate = p.start.toDateString() === p.end.toDateString()
-  return sameDate ? `${t(p.start)} – ${t(p.end)}` : `${t(p.start)} → ${p.end.toLocaleDateString('en-US', { day: 'numeric', month: 'short' })} ${t(p.end)}`
+  return sameDate ? `${fmtT(p.start)} – ${fmtT(p.end)}` : `${fmtT(p.start)} → ${p.end.toLocaleDateString(jsLocale.value, { day: 'numeric', month: 'short' })} ${fmtT(p.end)}`
 })
 
 const lunarDateLabel = computed(() => {
   const p = selectedParsed.value
   if (!p || !store.lunarEnabled) return ''
   const l = solarToLunar(p.start)
-  return `Lunar ${l.day}/${l.month}${l.leap ? ' (leap)' : ''}`
+  return t('calendar.view.lunarPrefix', { day: l.day, month: l.month }) + (l.leap ? t('calendar.view.lunarLeap') : '')
 })
 
 const durationLabel = computed(() => {
@@ -240,7 +246,7 @@ const durationLabel = computed(() => {
   if (mins <= 0) return ''
   const h = Math.floor(mins / 60)
   const m = mins % 60
-  return [h ? `${h} hr` : '', m ? `${m} min` : ''].filter(Boolean).join(' ')
+  return [h ? t('calendar.view.hr', { n: h }) : '', m ? t('calendar.view.min', { n: m }) : ''].filter(Boolean).join(' ')
 })
 
 const mapsLink = computed(() =>
@@ -303,7 +309,7 @@ const descSegments = computed<{ text: string; href?: string }[]>(() => {
 })
 
 function attachmentName(a: { title: string | null; file_url: string | null }): string {
-  return a.title || a.file_url || 'Attachment'
+  return a.title || a.file_url || t('calendar.view.attachmentFallback')
 }
 
 function goSettings() {
@@ -349,7 +355,7 @@ function openForAccount(url: string) {
     <!-- Header: title + current range (left), settings popover (right) -->
     <div class="flex items-center justify-between px-6 h-13 border-b border-border/60 shrink-0 gap-3">
       <div class="flex items-center gap-2 min-w-0">
-        <h1 class="text-sm font-semibold shrink-0">Calendar</h1>
+        <h1 class="text-sm font-semibold shrink-0">{{ t('calendar.title') }}</h1>
         <span
           v-if="store.accounts.length"
           class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-medium text-muted-foreground shrink-0"
@@ -371,7 +377,7 @@ function openForAccount(url: string) {
           size="sm"
           @click="openCreate()"
         >
-          <Plus class="h-4 w-4" :stroke-width="1.75" /> Tạo event
+          <Plus class="h-4 w-4" :stroke-width="1.75" /> {{ t('calendar.createEvent') }}
         </Button>
 
         <!-- Settings popover -->
@@ -379,8 +385,8 @@ function openForAccount(url: string) {
           <Button
             variant="ghost"
             size="icon-sm"
-            aria-label="Display options"
-            title="Display options"
+            :aria-label="t('calendar.view.displayOptions')"
+            :title="t('calendar.view.displayOptions')"
             :class="settingsOpen ? 'bg-accent text-foreground' : ''"
             @click="settingsOpen = !settingsOpen"
           >
@@ -393,10 +399,10 @@ function openForAccount(url: string) {
           >
             <!-- View mode -->
             <div class="mb-3">
-              <div class="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">View</div>
-              <div class="flex items-center rounded-lg border border-border/60 p-0.5 bg-muted/30" role="group" aria-label="View mode">
+              <div class="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{{ t('calendar.view.viewLabel') }}</div>
+              <div class="flex items-center rounded-lg border border-border/60 p-0.5 bg-muted/30" role="group" :aria-label="t('calendar.view.viewMode')">
                 <button
-                  v-for="opt in [{ v: 'week', l: 'Week' }, { v: 'month', l: 'Month' }]"
+                  v-for="opt in [{ v: 'week', l: t('calendar.view.week') }, { v: 'month', l: t('calendar.view.month') }]"
                   :key="opt.v"
                   type="button"
                   class="flex-1 px-3 py-1 text-xs font-medium rounded-md cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -420,9 +426,9 @@ function openForAccount(url: string) {
               >
                 <Moon class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="1.75" />
                 <span class="min-w-0 flex-1">
-                  <span class="block text-sm text-foreground">Lunar calendar</span>
+                  <span class="block text-sm text-foreground">{{ t('calendar.view.lunarCalendar') }}</span>
                   <span class="block text-[11px] text-muted-foreground truncate">
-                    Show lunar dates in the grid
+                    {{ t('calendar.view.lunarHint') }}
                   </span>
                 </span>
                 <span
@@ -439,13 +445,13 @@ function openForAccount(url: string) {
 
             <!-- Navigation -->
             <div class="mb-3">
-              <div class="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Navigation</div>
+              <div class="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{{ t('calendar.view.navigation') }}</div>
               <div class="flex items-center gap-1">
-                <Button variant="outline" size="icon-sm" aria-label="Previous" title="Previous" @click="store.step(-1)">
+                <Button variant="outline" size="icon-sm" :aria-label="t('calendar.view.previous')" :title="t('calendar.view.previous')" @click="store.step(-1)">
                   <ChevronLeft class="h-4 w-4" :stroke-width="1.75" />
                 </Button>
-                <Button variant="outline" size="sm" class="flex-1" @click="store.today()">Today</Button>
-                <Button variant="outline" size="icon-sm" aria-label="Next" title="Next" @click="store.step(1)">
+                <Button variant="outline" size="sm" class="flex-1" @click="store.today()">{{ t('calendar.view.today') }}</Button>
+                <Button variant="outline" size="icon-sm" :aria-label="t('calendar.view.next')" :title="t('calendar.view.next')" @click="store.step(1)">
                   <ChevronRight class="h-4 w-4" :stroke-width="1.75" />
                 </Button>
               </div>
@@ -453,7 +459,7 @@ function openForAccount(url: string) {
 
             <!-- Account show/hide -->
             <div>
-              <div class="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Accounts</div>
+              <div class="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{{ t('calendar.view.accounts') }}</div>
               <div class="flex flex-col gap-0.5 max-h-52 overflow-auto">
                 <button
                   v-for="a in store.accounts"
@@ -493,9 +499,9 @@ function openForAccount(url: string) {
               >
                 <Languages class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="1.75" />
                 <span class="min-w-0 flex-1">
-                  <span class="block text-sm text-foreground">Auto-translate</span>
+                  <span class="block text-sm text-foreground">{{ t('calendar.view.autoTranslate') }}</span>
                   <span class="block text-[11px] text-muted-foreground truncate">
-                    Translate events to {{ targetLangName }}
+                    {{ t('calendar.view.autoTranslateHint', { lang: targetLangName }) }}
                   </span>
                 </span>
                 <Loader2 v-if="store.translating" class="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
@@ -523,9 +529,9 @@ function openForAccount(url: string) {
               >
                 <Bell class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="1.75" />
                 <span class="min-w-0 flex-1">
-                  <span class="block text-sm text-foreground">Event reminders</span>
+                  <span class="block text-sm text-foreground">{{ t('calendar.view.eventReminders') }}</span>
                   <span class="block text-[11px] text-muted-foreground truncate">
-                    Notify before an event starts
+                    {{ t('calendar.view.eventRemindersHint') }}
                   </span>
                 </span>
                 <span
@@ -539,7 +545,7 @@ function openForAccount(url: string) {
                 </span>
               </button>
               <div v-if="store.reminderEnabled" class="mt-2 flex items-center gap-2 px-1">
-                <span class="text-[11px] text-muted-foreground">Remind before</span>
+                <span class="text-[11px] text-muted-foreground">{{ t('calendar.view.remindBefore') }}</span>
                 <AppSelect
                   :model-value="String(store.reminderLeadMin)"
                   :options="LEAD_OPTIONS"
@@ -562,15 +568,15 @@ function openForAccount(url: string) {
       <AlertTriangle class="h-4 w-4 shrink-0 mt-0.5" :stroke-width="1.75" />
       <div class="flex-1">
         <template v-if="store.accountsMissingWrite.length">
-          Các tài khoản chưa cấp quyền ghi lịch:
+          {{ t('calendar.missingWriteWarning') }}
           <b>{{ store.accountsMissingWrite.map(a => a.label).join(', ') }}</b>.
-          Cần kết nối lại (xóa rồi thêm lại trong Settings) để tạo/sửa/xóa event.
+          {{ t('calendar.missingWriteHint') }}
         </template>
         <template v-for="err in store.errors" :key="err.account_id">
           <div>{{ err.account_label }}: {{ err.message }}</div>
         </template>
       </div>
-      <Button variant="outline" size="xs" @click="goSettings">Kết nối lại</Button>
+      <Button variant="outline" size="xs" @click="goSettings">{{ t('calendar.reconnect') }}</Button>
     </div>
 
     <!-- Empty state -->
@@ -579,8 +585,8 @@ function openForAccount(url: string) {
       class="flex-1 flex flex-col items-center justify-center gap-3 text-muted-foreground"
     >
       <CalendarDays class="h-10 w-10 opacity-40" :stroke-width="1.5" />
-      <p class="text-sm">No Google account connected yet.</p>
-      <Button variant="outline" size="sm" @click="goSettings">Connect in Settings</Button>
+      <p class="text-sm">{{ t('calendar.noAccount') }}</p>
+      <Button variant="outline" size="sm" @click="goSettings">{{ t('calendar.connectInSettings') }}</Button>
     </div>
 
     <!-- Grid -->
@@ -614,7 +620,7 @@ function openForAccount(url: string) {
             class="h-2.5 w-2.5 shrink-0 rounded-full"
             :style="{ backgroundColor: selected ? store.colorFor(selected.account_id) : undefined }"
           />
-          <h3 class="text-sm font-semibold truncate">Event details</h3>
+          <h3 class="text-sm font-semibold truncate">{{ t('calendar.view.eventDetails') }}</h3>
         </div>
       </template>
 
@@ -629,7 +635,7 @@ function openForAccount(url: string) {
             <h2 class="text-lg font-semibold leading-snug break-words">{{ store.translated(selected.title) }}</h2>
             <div class="mt-2 flex flex-wrap items-center gap-1.5">
               <Badge :tone="selectedParsed.allDay ? 'info' : 'primary'" size="sm">
-                {{ selectedParsed.allDay ? 'All day' : 'Timed' }}
+                {{ selectedParsed.allDay ? t('calendar.view.allDay') : t('calendar.view.timed') }}
               </Badge>
               <Badge tone="neutral" size="sm">{{ relativeDay(selectedParsed.start) }}</Badge>
             </div>
@@ -640,7 +646,7 @@ function openForAccount(url: string) {
         <div v-if="selected.meet_link" class="px-3 pt-3">
           <Button variant="primary" size="sm" class="w-full" @click="openForAccount(selected.meet_link)">
             <Video class="h-4 w-4" :stroke-width="1.75" />
-            Join Google Meet
+            {{ t('calendar.view.joinMeet') }}
           </Button>
         </div>
 
@@ -652,7 +658,7 @@ function openForAccount(url: string) {
               <CalendarRange class="h-4 w-4" :stroke-width="1.75" />
             </div>
             <div class="min-w-0 flex-1">
-              <div class="text-[11px] uppercase tracking-wide text-muted-foreground">Date</div>
+              <div class="text-[11px] uppercase tracking-wide text-muted-foreground">{{ t('calendar.view.date') }}</div>
               <div class="text-sm text-foreground">{{ dateLabel }}</div>
               <div v-if="lunarDateLabel" class="text-xs text-muted-foreground">{{ lunarDateLabel }}</div>
             </div>
@@ -664,7 +670,7 @@ function openForAccount(url: string) {
               <Clock class="h-4 w-4" :stroke-width="1.75" />
             </div>
             <div class="min-w-0 flex-1">
-              <div class="text-[11px] uppercase tracking-wide text-muted-foreground">Time</div>
+              <div class="text-[11px] uppercase tracking-wide text-muted-foreground">{{ t('calendar.view.time') }}</div>
               <div class="text-sm text-foreground flex items-center gap-2 flex-wrap">
                 <span>{{ timeLabel }}</span>
                 <span v-if="durationLabel" class="inline-flex items-center gap-1 text-xs text-muted-foreground">
@@ -685,7 +691,7 @@ function openForAccount(url: string) {
               <MapPin class="h-4 w-4" :stroke-width="1.75" />
             </div>
             <div class="min-w-0 flex-1">
-              <div class="text-[11px] uppercase tracking-wide text-muted-foreground">Location</div>
+              <div class="text-[11px] uppercase tracking-wide text-muted-foreground">{{ t('calendar.view.location') }}</div>
               <div class="text-sm text-primary group-hover:underline break-words">{{ store.translated(selected.location) }}</div>
             </div>
           </a>
@@ -696,7 +702,7 @@ function openForAccount(url: string) {
               <User class="h-4 w-4" :stroke-width="1.75" />
             </div>
             <div class="min-w-0 flex-1">
-              <div class="text-[11px] uppercase tracking-wide text-muted-foreground">Account</div>
+              <div class="text-[11px] uppercase tracking-wide text-muted-foreground">{{ t('calendar.view.account') }}</div>
               <div class="mt-0.5 flex flex-wrap items-center gap-1.5">
                 <span class="inline-flex items-center gap-1.5 text-sm text-foreground">
                   <span class="h-2 w-2 rounded-full" :style="{ backgroundColor: store.colorFor(selected.account_id) }" />
@@ -712,7 +718,7 @@ function openForAccount(url: string) {
         <div v-if="descSegments.length" class="px-5 py-4 border-t border-border/60">
           <div class="mb-2 flex items-center gap-2 text-[11px] uppercase tracking-wide text-muted-foreground">
             <AlignLeft class="h-3.5 w-3.5" :stroke-width="1.75" />
-            Description
+            {{ t('calendar.view.description') }}
           </div>
           <div class="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground/90">
             <template v-for="(seg, i) in descSegments" :key="i">
@@ -731,7 +737,7 @@ function openForAccount(url: string) {
         <div v-if="selected.attachments.length" class="px-5 py-4 border-t border-border/60">
           <div class="mb-2 flex items-center gap-2 text-[11px] uppercase tracking-wide text-muted-foreground">
             <Paperclip class="h-3.5 w-3.5" :stroke-width="1.75" />
-            Attachments ({{ selected.attachments.length }})
+            {{ t('calendar.view.attachments', { n: selected.attachments.length }) }}
           </div>
           <div class="flex flex-col gap-1">
             <button
@@ -760,10 +766,10 @@ function openForAccount(url: string) {
         <div class="flex w-full flex-col gap-2">
           <div v-if="canEditSelected" class="flex gap-2">
             <Button variant="outline" size="sm" class="flex-1" @click="openEdit">
-              <Pencil class="h-4 w-4" :stroke-width="1.75" /> Sửa
+              <Pencil class="h-4 w-4" :stroke-width="1.75" /> {{ t('common.edit') }}
             </Button>
             <Button variant="destructive" size="sm" class="flex-1" @click="confirmDelete">
-              <Trash2 class="h-4 w-4" :stroke-width="1.75" /> Xóa
+              <Trash2 class="h-4 w-4" :stroke-width="1.75" /> {{ t('common.delete') }}
             </Button>
           </div>
           <Button
@@ -774,7 +780,7 @@ function openForAccount(url: string) {
             @click="openForAccount(selected.html_link)"
           >
             <ExternalLink class="h-4 w-4" :stroke-width="1.75" />
-            Open in Google Calendar
+            {{ t('calendar.view.openInGoogleCalendar') }}
           </Button>
         </div>
       </template>

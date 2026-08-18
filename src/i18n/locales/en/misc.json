@@ -1,0 +1,97 @@
+{
+  "diff": {
+    "unchangedLines": "⋯ {count} unchanged lines"
+  },
+  "budget": {
+    "thisWeek": "this week",
+    "last5h": "last 5h",
+    "rolling5h": "rolling 5h window",
+    "resetsSoon": "resets soon",
+    "resetsInDaysHours": "resets in {days}d {hours}h",
+    "resetsInDays": "resets in {days}d",
+    "resetsInHoursMins": "resets in {hours}h {minutes}m",
+    "resetsInHours": "resets in {hours}h",
+    "resetsInMins": "resets in {minutes}m",
+    "soon": "soon",
+    "agoMins": "{minutes}m ago",
+    "agoHoursMins": "{hours}h {minutes}m ago",
+    "agoHours": "{hours}h ago",
+    "agoDays": "{days}d ago",
+    "checking": "checking…",
+    "refreshFailed": "refresh failed",
+    "noPlanUsage": "no plan usage",
+    "refreshingUsage": "Refreshing usage",
+    "usageStatus": "Usage status",
+    "planLimitReached": "Plan limit reached",
+    "planWindowReset": "Plan window reset",
+    "percentOfPlan": "{percent}% of plan limit",
+    "cached": "Cached: {base}",
+    "noPlanUsageYet": "No plan usage yet",
+    "updatesCodex": "updates during Codex runs",
+    "updatesClaude": "updates during Claude runs",
+    "fetchingCodex": "Fetching Codex /status",
+    "fetchingClaude": "Fetching Claude /usage",
+    "refreshFailedReason": "refresh failed: {error}",
+    "noPlanCaptured": "No plan usage captured yet",
+    "refreshing": "refreshing…",
+    "runOnceToRefresh": "run once to refresh the new window",
+    "lastCaptured": "last captured {ago}",
+    "asOf": "as of {ago}",
+    "planUsageTitle": "{label} subscription plan usage · {period}",
+    "usageStatusTitle": "{label} usage status",
+    "refreshUsage": "Refresh {label} plan usage",
+    "refreshUsageTitle": "Refresh {label} plan usage now"
+  },
+  "tabs": {
+    "project": "Project",
+    "closeTab": "Close tab"
+  },
+  "translate": {
+    "heading": "Translation",
+    "close": "Close",
+    "translating": "Translating…",
+    "retry": "Retry",
+    "copied": "Copied",
+    "copy": "Copy"
+  },
+  "mentionedFiles": {
+    "read": "read",
+    "edit": "edit",
+    "write": "create",
+    "countTitle": "{count} files mentioned in this session",
+    "filesInSession": "Files in session ({count})"
+  },
+  "context": {
+    "compactTitle": "Compact the conversation to free up context (sends /compact)",
+    "fiveHourTitle": "claude.ai subscription 5-hour usage window"
+  },
+  "activeRuns": {
+    "heading": "Active runs",
+    "review": "Review",
+    "stopped": "Stopped",
+    "failed": "Failed",
+    "done": "Done",
+    "run": "Run",
+    "project": "Project"
+  },
+  "activeRemote": {
+    "heading": "Active remote",
+    "live": "Live",
+    "pairing": "Pairing",
+    "run": "Run",
+    "project": "Project"
+  },
+  "ide": {
+    "openFile": "Open {path}",
+    "selected": "Selected",
+    "opened": "Opened"
+  },
+  "backToRun": {
+    "title": "Back to AI run",
+    "label": "Run AI"
+  },
+  "modal": {
+    "close": "Close",
+    "closeEsc": "Close (Esc)"
+  }
+}

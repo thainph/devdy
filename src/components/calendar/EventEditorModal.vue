@@ -6,6 +6,7 @@
 // are not carried by CalEvent so they start empty and a PATCH only sends what
 // the user changes.
 import { computed, reactive, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Plus, X, Video, CalendarClock } from 'lucide-vue-next'
 import { Modal, Button, Input, Textarea, Badge, AppSelect } from '@/components/ui'
 import {
@@ -35,6 +36,7 @@ const emit = defineEmits<{
 
 const store = useGoogleCalendarStore()
 const { toast } = useToast()
+const { t } = useI18n()
 
 interface FormState {
   title: string
@@ -169,7 +171,7 @@ function addAttendee() {
   const email = form.attendeeDraft.trim()
   if (!email) return
   if (!EMAIL_RE.test(email)) {
-    toast.error('Email không hợp lệ.')
+    toast.error(t('calendar.editor.invalidEmail'))
     return
   }
   if (!form.attendees.includes(email)) form.attendees.push(email)
@@ -181,10 +183,10 @@ function removeAttendee(email: string) {
 }
 
 // ── Reminders ─────────────────────────────────────────────────────────────
-const REMINDER_METHODS = [
-  { value: 'popup', label: 'Thông báo' },
-  { value: 'email', label: 'Email' },
-]
+const REMINDER_METHODS = computed(() => [
+  { value: 'popup', label: t('calendar.editor.reminderPopup') },
+  { value: 'email', label: t('calendar.editor.reminderEmail') },
+])
 
 function addReminder() {
   form.reminders.push({ method: 'popup', minutes: 10 })
@@ -195,40 +197,40 @@ function removeReminder(i: number) {
 }
 
 // ── Recurrence ────────────────────────────────────────────────────────────
-const RECURRENCE_OPTIONS = [
-  { value: 'none', label: 'Không lặp' },
-  { value: 'daily', label: 'Hằng ngày' },
-  { value: 'weekly', label: 'Hằng tuần' },
-  { value: 'monthly', label: 'Hằng tháng' },
-  { value: 'custom', label: 'Tùy chỉnh (RRULE)' },
-]
+const RECURRENCE_OPTIONS = computed(() => [
+  { value: 'none', label: t('calendar.editor.recNone') },
+  { value: 'daily', label: t('calendar.editor.recDaily') },
+  { value: 'weekly', label: t('calendar.editor.recWeekly') },
+  { value: 'monthly', label: t('calendar.editor.recMonthly') },
+  { value: 'custom', label: t('calendar.editor.recCustom') },
+])
 
 // ── Validation (AC-15) ────────────────────────────────────────────────────
 const validationErrors = computed<string[]>(() => {
   const errs: string[] = []
-  if (!form.calendarId) errs.push('Chọn lịch để lưu event.')
+  if (!form.calendarId) errs.push(t('calendar.editor.errChooseCalendar'))
 
   if (form.allDay) {
     if (form.endDate < form.startDate) {
-      errs.push('Ngày kết thúc phải bằng hoặc sau ngày bắt đầu.')
+      errs.push(t('calendar.editor.errEndBeforeStartDate'))
     }
   } else {
     const start = new Date(`${form.startDate}T${form.startTime}:00`)
     const end = new Date(`${form.endDate}T${form.endTime}:00`)
     if (!(end.getTime() > start.getTime())) {
-      errs.push('Thời gian kết thúc phải sau thời gian bắt đầu.')
+      errs.push(t('calendar.editor.errEndBeforeStartTime'))
     }
   }
 
   for (const email of form.attendees) {
     if (!EMAIL_RE.test(email)) {
-      errs.push(`Email không hợp lệ: ${email}`)
+      errs.push(t('calendar.editor.errInvalidEmail', { email }))
       break
     }
   }
 
   if (form.recurrencePreset === 'custom' && !/^RRULE:/i.test(form.customRRule.trim())) {
-    errs.push("RRULE phải bắt đầu bằng 'RRULE:'.")
+    errs.push(t('calendar.editor.errRRule'))
   }
 
   return errs
@@ -316,22 +318,22 @@ async function submit() {
             props.event!.id,
             payload,
           )
-    toast.success(props.mode === 'create' ? 'Đã tạo event.' : 'Đã cập nhật event.')
+    toast.success(props.mode === 'create' ? t('calendar.editor.createSuccess') : t('calendar.editor.updateSuccess'))
     emit('saved', ev)
     emit('close')
   } catch (e) {
     const msg = String(e)
     toast.error(
       isAuthError(msg)
-        ? 'Không đủ quyền ghi lịch. Hãy kết nối lại tài khoản trong Settings.'
-        : `Lưu thất bại: ${msg}`,
+        ? t('calendar.editor.saveAuthError')
+        : t('calendar.editor.saveFailed', { msg }),
     )
   } finally {
     submitting.value = false
   }
 }
 
-const modalTitle = computed(() => (props.mode === 'create' ? 'Tạo event' : 'Sửa event'))
+const modalTitle = computed(() => (props.mode === 'create' ? t('calendar.editor.createTitle') : t('calendar.editor.editTitle')))
 const isEdit = computed(() => props.mode === 'edit')
 </script>
 
@@ -340,29 +342,29 @@ const isEdit = computed(() => props.mode === 'edit')
     <div class="flex flex-col gap-3 p-4">
       <!-- Title -->
       <div class="flex flex-col gap-1.5">
-        <label class="text-xs font-medium text-muted-foreground">Tiêu đề</label>
-        <Input v-model="form.title" size="sm" placeholder="Tên event" />
+        <label class="text-xs font-medium text-muted-foreground">{{ t('calendar.editor.titleLabel') }}</label>
+        <Input v-model="form.title" size="sm" :placeholder="t('calendar.editor.titlePlaceholder')" />
       </div>
 
       <!-- Account + calendar -->
       <div class="grid grid-cols-2 gap-3">
         <div class="flex flex-col gap-1.5 min-w-0">
-          <label class="text-xs font-medium text-muted-foreground">Tài khoản</label>
+          <label class="text-xs font-medium text-muted-foreground">{{ t('calendar.editor.accountLabel') }}</label>
           <AppSelect
             v-model="form.accountId"
             :options="writableAccountOptions"
             size="sm"
-            placeholder="Chọn tài khoản"
+            :placeholder="t('calendar.editor.accountPlaceholder')"
             :disabled="isEdit"
           />
         </div>
         <div class="flex flex-col gap-1.5 min-w-0">
-          <label class="text-xs font-medium text-muted-foreground">Lịch</label>
+          <label class="text-xs font-medium text-muted-foreground">{{ t('calendar.editor.calendarLabel') }}</label>
           <AppSelect
             v-model="form.calendarId"
             :options="calendarOptions"
             size="sm"
-            placeholder="Chọn lịch"
+            :placeholder="t('calendar.editor.calendarPlaceholder')"
             :disabled="isEdit"
           />
         </div>
@@ -377,7 +379,7 @@ const isEdit = computed(() => props.mode === 'edit')
         @click="form.allDay = !form.allDay"
       >
         <CalendarClock class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="1.75" />
-        <span class="min-w-0 flex-1 text-sm text-foreground">Cả ngày</span>
+        <span class="min-w-0 flex-1 text-sm text-foreground">{{ t('calendar.editor.allDay') }}</span>
         <span
           class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors"
           :class="form.allDay ? 'bg-primary' : 'bg-muted'"
@@ -392,14 +394,14 @@ const isEdit = computed(() => props.mode === 'edit')
       <!-- Start / end -->
       <div class="grid grid-cols-2 gap-3">
         <div class="flex flex-col gap-1.5">
-          <label class="text-xs font-medium text-muted-foreground">Bắt đầu</label>
+          <label class="text-xs font-medium text-muted-foreground">{{ t('calendar.editor.start') }}</label>
           <div class="flex gap-2">
             <Input v-model="form.startDate" type="date" size="sm" class="flex-1" />
             <Input v-if="!form.allDay" v-model="form.startTime" type="time" size="sm" class="w-28" />
           </div>
         </div>
         <div class="flex flex-col gap-1.5">
-          <label class="text-xs font-medium text-muted-foreground">Kết thúc</label>
+          <label class="text-xs font-medium text-muted-foreground">{{ t('calendar.editor.end') }}</label>
           <div class="flex gap-2">
             <Input v-model="form.endDate" type="date" size="sm" class="flex-1" />
             <Input v-if="!form.allDay" v-model="form.endTime" type="time" size="sm" class="w-28" />
@@ -409,21 +411,21 @@ const isEdit = computed(() => props.mode === 'edit')
 
       <!-- Location -->
       <div class="flex flex-col gap-1.5">
-        <label class="text-xs font-medium text-muted-foreground">Địa điểm</label>
-        <Input v-model="form.location" size="sm" placeholder="Địa điểm (tùy chọn)" />
+        <label class="text-xs font-medium text-muted-foreground">{{ t('calendar.editor.locationLabel') }}</label>
+        <Input v-model="form.location" size="sm" :placeholder="t('calendar.editor.locationPlaceholder')" />
       </div>
 
       <!-- Description -->
       <div class="flex flex-col gap-1.5">
-        <label class="text-xs font-medium text-muted-foreground">Mô tả</label>
-        <Textarea v-model="form.description" size="sm" rows="3" placeholder="Mô tả (tùy chọn)" />
+        <label class="text-xs font-medium text-muted-foreground">{{ t('calendar.editor.descriptionLabel') }}</label>
+        <Textarea v-model="form.description" size="sm" rows="3" :placeholder="t('calendar.editor.descriptionPlaceholder')" />
       </div>
 
       <!-- Attendees -->
       <div class="flex flex-col gap-1.5">
-        <label class="text-xs font-medium text-muted-foreground">Người tham dự</label>
+        <label class="text-xs font-medium text-muted-foreground">{{ t('calendar.editor.attendees') }}</label>
         <p v-if="isEdit" class="text-[11px] text-muted-foreground">
-          Để trống nếu không muốn thay đổi danh sách hiện có.
+          {{ t('calendar.editor.attendeesEditHint') }}
         </p>
         <div v-if="form.attendees.length" class="flex flex-wrap gap-1.5">
           <Badge v-for="email in form.attendees" :key="email" tone="neutral" size="sm">
@@ -431,7 +433,7 @@ const isEdit = computed(() => props.mode === 'edit')
             <button
               type="button"
               class="ml-0.5 cursor-pointer hover:text-red-300"
-              aria-label="Xóa"
+              :aria-label="t('common.delete')"
               @click="removeAttendee(email)"
             >
               <X class="h-3 w-3" :stroke-width="2" />
@@ -449,16 +451,16 @@ const isEdit = computed(() => props.mode === 'edit')
             @blur="addAttendee"
           />
           <Button variant="outline" size="sm" @click="addAttendee">
-            <Plus class="h-4 w-4" :stroke-width="1.75" /> Thêm
+            <Plus class="h-4 w-4" :stroke-width="1.75" /> {{ t('calendar.editor.addAttendee') }}
           </Button>
         </div>
       </div>
 
       <!-- Reminders -->
       <div class="flex flex-col gap-1.5">
-        <label class="text-xs font-medium text-muted-foreground">Nhắc nhở</label>
+        <label class="text-xs font-medium text-muted-foreground">{{ t('calendar.editor.reminders') }}</label>
         <p v-if="isEdit" class="text-[11px] text-muted-foreground">
-          Để trống nếu không muốn thay đổi nhắc nhở hiện có.
+          {{ t('calendar.editor.remindersEditHint') }}
         </p>
         <div v-for="(r, i) in form.reminders" :key="i" class="flex items-center gap-2">
           <AppSelect
@@ -475,23 +477,23 @@ const isEdit = computed(() => props.mode === 'edit')
             class="w-24"
             @update:model-value="v => (r.minutes = Number(v))"
           />
-          <span class="text-xs text-muted-foreground">phút trước</span>
-          <Button variant="destructive-ghost" size="icon-sm" aria-label="Xóa" @click="removeReminder(i)">
+          <span class="text-xs text-muted-foreground">{{ t('calendar.editor.minutesBefore') }}</span>
+          <Button variant="destructive-ghost" size="icon-sm" :aria-label="t('common.delete')" @click="removeReminder(i)">
             <X class="h-4 w-4" :stroke-width="1.75" />
           </Button>
         </div>
         <div>
           <Button variant="outline" size="sm" @click="addReminder">
-            <Plus class="h-4 w-4" :stroke-width="1.75" /> Thêm nhắc nhở
+            <Plus class="h-4 w-4" :stroke-width="1.75" /> {{ t('calendar.editor.addReminder') }}
           </Button>
         </div>
       </div>
 
       <!-- Recurrence -->
       <div class="flex flex-col gap-1.5">
-        <label class="text-xs font-medium text-muted-foreground">Lặp lại</label>
+        <label class="text-xs font-medium text-muted-foreground">{{ t('calendar.editor.recurrence') }}</label>
         <p v-if="isEdit" class="text-[11px] text-muted-foreground">
-          Để "Không lặp" nếu không muốn thay đổi lặp lại hiện có.
+          {{ t('calendar.editor.recurrenceEditHint') }}
         </p>
         <AppSelect
           v-model="form.recurrencePreset"
@@ -516,7 +518,7 @@ const isEdit = computed(() => props.mode === 'edit')
         @click="form.addMeet = !form.addMeet"
       >
         <Video class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="1.75" />
-        <span class="min-w-0 flex-1 text-sm text-foreground">Thêm Google Meet</span>
+        <span class="min-w-0 flex-1 text-sm text-foreground">{{ t('calendar.editor.addMeet') }}</span>
         <span
           class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors"
           :class="form.addMeet ? 'bg-primary' : 'bg-muted'"
@@ -531,9 +533,9 @@ const isEdit = computed(() => props.mode === 'edit')
 
     <template #footer>
       <span v-if="firstError" class="mr-auto text-xs text-red-500 dark:text-red-400">{{ firstError }}</span>
-      <Button variant="outline" size="sm" :disabled="submitting" @click="emit('close')">Hủy</Button>
+      <Button variant="outline" size="sm" :disabled="submitting" @click="emit('close')">{{ t('common.cancel') }}</Button>
       <Button variant="primary" size="sm" :disabled="!canSubmit" @click="submit">
-        {{ mode === 'create' ? 'Tạo' : 'Lưu' }}
+        {{ mode === 'create' ? t('calendar.editor.create') : t('calendar.editor.save') }}
       </Button>
     </template>
   </Modal>

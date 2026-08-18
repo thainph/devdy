@@ -5,9 +5,12 @@
 // The trigger button that opens this popover lives in RunView; this component
 // owns the request lifecycle, the language quick-toggle, copy, and dismissal.
 import { ref, onMounted, onUnmounted, computed, nextTick, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Languages, Copy, Check, X, Loader2, RefreshCw } from 'lucide-vue-next'
 import { invoke } from '@/lib/tauri'
 import { useMarkdown } from '@/lib/markdown'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   text: string
@@ -118,7 +121,7 @@ watch(() => props.text, () => runTranslate())
       <!-- Header -->
       <div class="flex items-center gap-2 px-3 py-2 border-b border-border bg-muted/40">
         <Languages class="h-3.5 w-3.5 text-primary/80 shrink-0" :stroke-width="1.75" />
-        <span class="text-[11px] font-semibold text-foreground/80">Bản dịch</span>
+        <span class="text-[11px] font-semibold text-foreground/80">{{ t('misc.translate.heading') }}</span>
         <div class="ml-auto flex items-center gap-0.5">
           <button
             v-for="opt in LANG_OPTIONS"
@@ -132,7 +135,7 @@ watch(() => props.text, () => runTranslate())
         </div>
         <button
           class="ml-1 shrink-0 text-foreground/40 hover:text-foreground/80 transition-colors cursor-pointer"
-          title="Đóng"
+          :title="t('misc.translate.close')"
           @click="emit('close')"
         >
           <X class="h-3.5 w-3.5" :stroke-width="2" />
@@ -143,7 +146,7 @@ watch(() => props.text, () => runTranslate())
       <div class="px-3 py-2.5 max-h-[50vh] overflow-auto">
         <div v-if="phase === 'loading'" class="flex items-center gap-2 text-xs text-foreground/50 py-2">
           <Loader2 class="h-3.5 w-3.5 animate-spin" :stroke-width="2" />
-          Đang dịch…
+          {{ t('misc.translate.translating') }}
         </div>
         <div v-else-if="phase === 'error'" class="text-xs text-red-500 dark:text-red-400 space-y-2">
           <p class="whitespace-pre-wrap break-words">{{ errorMsg }}</p>
@@ -151,7 +154,7 @@ watch(() => props.text, () => runTranslate())
             class="inline-flex items-center gap-1 text-[11px] text-primary hover:underline cursor-pointer"
             @click="runTranslate"
           >
-            <RefreshCw class="h-3 w-3" :stroke-width="2" />Thử lại
+            <RefreshCw class="h-3 w-3" :stroke-width="2" />{{ t('misc.translate.retry') }}
           </button>
         </div>
         <div
@@ -168,7 +171,7 @@ watch(() => props.text, () => runTranslate())
           @click="copyResult"
         >
           <component :is="copied ? Check : Copy" class="h-3 w-3" :stroke-width="1.75" />
-          {{ copied ? 'Đã copy' : 'Copy' }}
+          {{ copied ? t('misc.translate.copied') : t('misc.translate.copy') }}
         </button>
       </div>
     </div>

@@ -1,0 +1,49 @@
+{
+  "title": "Todos",
+  "newTask": "New task",
+  "createTask": "Create task",
+  "clearCompleted": "Clear completed",
+  "dragToReorder": "Drag to reorder",
+  "markDone": "Mark as done",
+  "markNotDone": "Mark as not done",
+  "clickToOpen": "Click to open",
+  "detailTitle": "Task detail",
+  "empty": {
+    "title": "No tasks yet",
+    "hint": "Create your first task to track what needs doing. Drag to reorder by priority."
+  },
+  "form": {
+    "taskLabel": "Task",
+    "taskPlaceholder": "What needs doing? (Markdown & checklists supported)",
+    "hint": "Markdown supported · {save} to save · {esc} to cancel"
+  },
+  "confirm": {
+    "deleteTitle": "Delete task",
+    "deleteMessage": "Remove this task?",
+    "clearTitle": "Clear completed",
+    "clearMessageOne": "Remove {count} completed task?",
+    "clearMessageMany": "Remove {count} completed tasks?"
+  },
+  "quick": {
+    "windowTitle": "Quick Create — Devdy",
+    "heading": "Quick Create",
+    "pinned": "Pinned",
+    "pin": "Pin",
+    "pinnedTitle": "Always on top — click to unpin",
+    "pinTitle": "Keep always on top",
+    "tabTodo": "Todo",
+    "tabNote": "Note",
+    "todoPlaceholder": "What needs to be done… (Markdown supported)",
+    "notePlaceholder": "Note… (Markdown supported)",
+    "noteTitlePlaceholder": "Title",
+    "noProject": "No project",
+    "addTodo": "Add todo",
+    "saveNote": "Save note",
+    "todoAdded": "Todo added",
+    "noteSaved": "Note saved",
+    "fabAriaLabel": "Quick create (Todo / Note)",
+    "fabTitle": "Quick create — ⌘/Ctrl + K",
+    "actionNote": "Note",
+    "actionTodo": "Todo"
+  }
+}

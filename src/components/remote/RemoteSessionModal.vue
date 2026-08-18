@@ -13,6 +13,7 @@
 // Secrets: the controller link carries `link_secret` in the URL HASH so it
 // never hits relay/server logs. The OTP is shown out-of-band on this screen.
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { Modal, Button } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
@@ -30,6 +31,7 @@ const props = defineProps<{
 const emit = defineEmits<{ close: [] }>()
 
 const store = useRemoteControlStore()
+const { t } = useI18n()
 const { toast } = useToast()
 
 type Phase =
@@ -107,7 +109,7 @@ async function copyLinkOrFields() {
     if (copyTimer) clearTimeout(copyTimer)
     copyTimer = setTimeout(() => (copied.value = false), 2000)
   } catch {
-    toast.error('Không thể copy vào clipboard')
+    toast.error(t('remote.session.copyFailed'))
   }
 }
 
@@ -129,7 +131,7 @@ const rawFields = computed(() => {
 async function createLink() {
   if (!props.runId) {
     phase.value = 'error'
-    errorMsg.value = 'Không có run nào đang mở.'
+    errorMsg.value = t('remote.session.noRunOpen')
     return
   }
   phase.value = 'creating'
@@ -153,7 +155,7 @@ async function createLink() {
 async function openFlow() {
   if (!props.runId) {
     phase.value = 'error'
-    errorMsg.value = 'Không có run nào đang mở.'
+    errorMsg.value = t('remote.session.noRunOpen')
     return
   }
   try {
@@ -268,17 +270,17 @@ watch(() => props.runId, () => {
 </script>
 
 <template>
-  <Modal :open="open" title="Điều khiển từ điện thoại" size="sm" @close="onClose">
+  <Modal :open="open" :title="t('remote.session.title')" size="sm" @close="onClose">
     <template #header>
       <Radio class="h-4 w-4 text-primary shrink-0" :stroke-width="1.75" />
-      <h3 class="text-sm font-semibold flex-1">Điều khiển run này từ điện thoại</h3>
+      <h3 class="text-sm font-semibold flex-1">{{ t('remote.session.heading') }}</h3>
     </template>
 
     <div class="p-6">
       <!-- creating -->
       <div v-if="phase === 'creating'" class="flex flex-col items-center gap-3 py-8">
         <Loader2 class="h-6 w-6 animate-spin text-primary" :stroke-width="2" />
-        <p class="text-sm text-muted-foreground">Đang tạo link…</p>
+        <p class="text-sm text-muted-foreground">{{ t('remote.session.creating') }}</p>
       </div>
 
       <!-- waiting-for-scan -->
@@ -287,35 +289,37 @@ watch(() => props.runId, () => {
           v-if="linkUrl"
           :text="linkUrl"
           :ttl-seconds="120"
-          copy-label="Copy link"
-          caption="Quét bằng điện thoại hoặc copy link để mở controller."
+          :copy-label="t('remote.session.copyLink')"
+          :caption="t('remote.session.scanCaption')"
           @expired="createLink"
         />
         <div v-else class="space-y-2">
           <p class="text-xs text-amber-500">
-            Không xác định được địa chỉ controller từ relay URL. Copy các trường
-            dưới đây và dán vào controller thủ công.
+            {{ t('remote.session.cannotDeriveController') }}
           </p>
           <pre class="rounded-md bg-muted/40 p-2 text-[11px] font-mono whitespace-pre-wrap break-all">{{ rawFields }}</pre>
           <Button variant="outline" size="sm" @click="copyLinkOrFields">
             <Check v-if="copied" class="h-3.5 w-3.5 text-emerald-500" :stroke-width="2" />
             <Copy v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ copied ? 'Copied!' : 'Copy các trường' }}
+            {{ copied ? t('remote.session.copied') : t('remote.session.copyFields') }}
           </Button>
         </div>
 
         <p class="text-center text-xs text-muted-foreground">
-          Nhập <span class="font-medium text-foreground/80">master password</span>
-          trên điện thoại để kết nối. (Đặt mật khẩu ở Settings → Remote Control.)
+          <i18n-t keypath="remote.session.enterMasterOnPhone" tag="span">
+            <template #masterPassword>
+              <span class="font-medium text-foreground/80">{{ t('remote.session.masterPassword') }}</span>
+            </template>
+          </i18n-t>
         </p>
       </div>
 
       <!-- controller-joined: a controller is authenticating (no OTP shown) -->
       <div v-else-if="phase === 'controller-joined'" class="flex flex-col items-center gap-3 py-6">
         <Loader2 class="h-6 w-6 animate-spin text-primary" :stroke-width="2" />
-        <p class="text-sm text-muted-foreground">Điện thoại đang kết nối…</p>
+        <p class="text-sm text-muted-foreground">{{ t('remote.session.connecting') }}</p>
         <p class="text-center text-xs text-muted-foreground">
-          Nhập master password trên điện thoại để hoàn tất.
+          {{ t('remote.session.enterMasterToFinish') }}
         </p>
       </div>
 
@@ -326,26 +330,26 @@ watch(() => props.runId, () => {
           <span class="relative inline-flex h-3 w-3 rounded-full bg-emerald-500" />
         </span>
         <ShieldCheck class="h-8 w-8 text-emerald-500" :stroke-width="1.75" />
-        <p class="text-sm font-medium text-emerald-500">Đang kết nối — điều khiển trực tiếp</p>
+        <p class="text-sm font-medium text-emerald-500">{{ t('remote.session.connectedLive') }}</p>
         <p class="text-center text-xs text-muted-foreground">
-          Điện thoại đang điều khiển run này. Đóng modal này không ngắt kết nối.
+          {{ t('remote.session.phoneControlling') }}
         </p>
         <p v-if="idleRemainingLabel" class="text-center text-[11px] text-muted-foreground">
-          Phiên hết hạn nếu không thao tác trong ~{{ idleRemainingLabel }}
+          {{ t('remote.session.idleExpiry', { time: idleRemainingLabel }) }}
         </p>
-        <Button variant="destructive" @click="stopControl">Dừng điều khiển</Button>
+        <Button variant="destructive" @click="stopControl">{{ t('remote.session.stopControl') }}</Button>
       </div>
 
       <!-- auth-failed -->
       <div v-else-if="phase === 'auth-failed'" class="flex flex-col items-center gap-4 py-6">
         <ShieldAlert class="h-8 w-8 text-destructive" :stroke-width="1.75" />
-        <p class="text-sm font-medium text-destructive">Xác thực thất bại</p>
+        <p class="text-sm font-medium text-destructive">{{ t('remote.session.authFailed') }}</p>
         <div class="text-center text-xs text-muted-foreground space-y-0.5">
           <p v-if="authReason">{{ authReason }}</p>
-          <p v-if="attemptsLeft != null">Còn {{ attemptsLeft }} lần thử</p>
+          <p v-if="attemptsLeft != null">{{ t('remote.session.attemptsLeft', { count: attemptsLeft }) }}</p>
         </div>
         <Button variant="outline" @click="createLink">
-          <RotateCcw class="h-3.5 w-3.5" :stroke-width="1.75" /> Tạo link mới
+          <RotateCcw class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('remote.session.createNewLink') }}
         </Button>
       </div>
 
@@ -353,17 +357,17 @@ watch(() => props.runId, () => {
       <div v-else class="flex flex-col items-center gap-4 py-6">
         <ShieldAlert class="h-8 w-8 text-amber-500" :stroke-width="1.75" />
         <p class="text-sm font-medium text-foreground">
-          {{ phase === 'expired' ? 'Phiên đã hết hạn' : 'Đã xảy ra lỗi' }}
+          {{ phase === 'expired' ? t('remote.session.expired') : t('remote.session.errorOccurred') }}
         </p>
         <p v-if="errorMsg" class="text-center text-xs text-destructive">{{ errorMsg }}</p>
         <Button variant="outline" @click="createLink">
-          <RotateCcw class="h-3.5 w-3.5" :stroke-width="1.75" /> Tạo link mới
+          <RotateCcw class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('remote.session.createNewLink') }}
         </Button>
       </div>
     </div>
 
     <template #footer>
-      <Button variant="outline" @click="onClose">Đóng</Button>
+      <Button variant="outline" @click="onClose">{{ t('common.close') }}</Button>
     </template>
   </Modal>
 </template>

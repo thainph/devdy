@@ -1,0 +1,111 @@
+{
+  "title": "Thống kê sử dụng",
+  "backfill": "Nạp lại từ log",
+  "backfillTitle": "Dựng lại bản ghi sử dụng từ log run hiện có",
+  "reset": "Đặt lại",
+  "resetTitle": "Xóa toàn bộ run và đưa mọi số liệu về 0",
+  "range": {
+    "last7": "7 ngày qua",
+    "last30": "30 ngày qua",
+    "last90": "90 ngày qua",
+    "all": "Toàn thời gian"
+  },
+  "engine": {
+    "all": "Tất cả engine"
+  },
+  "project": {
+    "all": "Tất cả dự án"
+  },
+  "plan": {
+    "claudeTitle": "Sử dụng gói (thuê bao Claude)",
+    "claudeDescPrefix": "Mức sử dụng",
+    "claudeDescSuffix": "và thời điểm reset của tài khoản, đọc trực tiếp từ dữ liệu",
+    "claudeDescEnd": "của Claude trong lúc chạy.",
+    "codexTitle": "Sử dụng gói (thuê bao Codex)",
+    "codexDescPrefix": "Mức sử dụng rate-limit",
+    "codexDescSuffix": "của tài khoản Codex (con số phía sau",
+    "codexDescEnd": "), cập nhật sau mỗi lần chạy Codex.",
+    "real": "thực tế",
+    "label": "Gói:",
+    "empty": "Chưa ghi nhận mức sử dụng gói — chạy một tác vụ Claude thì dữ liệu sẽ hiện ở đây. (Không có với phiên dùng API key / không phải thuê bao.)",
+    "emptyCodex": "Chưa ghi nhận mức sử dụng gói Codex — chạy một tác vụ Codex thì dữ liệu sẽ hiện ở đây.",
+    "windowFiveHour": "Phiên hiện tại (5h)",
+    "windowSevenDay": "Tuần này (tất cả model)",
+    "windowSevenDayOpus": "Tuần này (Opus)",
+    "windowSevenDaySonnet": "Tuần này (Sonnet)",
+    "windowCodexWeek": "Tuần này",
+    "resetsSoon": "sắp reset",
+    "resetsInDaysHours": "reset sau {days}d {hours}h",
+    "resetsInDays": "reset sau {days}d",
+    "resetsInHoursMinutes": "reset sau {hours}h {minutes}m",
+    "resetsInHours": "reset sau {hours}h",
+    "resetsInMinutes": "reset sau {minutes}m"
+  },
+  "empty": {
+    "title": "Không có dữ liệu sử dụng cho bộ lọc này.",
+    "hint": "Chạy một phân tích, hoặc bấm \"Nạp lại từ log\" để nhập các run cũ."
+  },
+  "summary": {
+    "totalTokens": "Tổng token",
+    "tokensBreakdown": "vào {input} · ra {output} · cache {cache}",
+    "estCost": "Chi phí ước tính",
+    "estCostTooltip": "Quy đổi tương đương API. Tài khoản dùng subscription nên chi phí thực tế là phí thuê bao cố định, không tính theo token.",
+    "estimated": "ước tính {cost}",
+    "runs": "Lần chạy",
+    "turns": "Lượt"
+  },
+  "charts": {
+    "dailyTitle": "Token & chi phí theo ngày",
+    "tokens": "Token",
+    "cost": "Chi phí (USD)",
+    "byEngine": "Theo engine",
+    "byProject": "Theo dự án"
+  },
+  "table": {
+    "project": "Dự án",
+    "tokens": "Token",
+    "cost": "Chi phí",
+    "percent": "%",
+    "deletedProject": "(đã xóa)",
+    "byModel": "Theo model",
+    "model": "Model",
+    "runs": "Lần chạy",
+    "unknownModel": "(không rõ)"
+  },
+  "action": {
+    "backfilled": "Đã nạp {inserted} bản ghi từ {scanned} log run.",
+    "backfillFailed": "Nạp lại thất bại: {error}",
+    "resetDone": "Đặt lại xong — đã xóa {runs} run, xóa {usage} bản ghi sử dụng.",
+    "resetFailed": "Đặt lại thất bại: {error}",
+    "storageReadFailed": "Không đọc được dung lượng: {error}",
+    "cleaned": "Đã dọn {label} — xóa {files} file, giải phóng {bytes}.",
+    "cleanupFailed": "Dọn dẹp thất bại: {error}"
+  },
+  "storage": {
+    "title": "Dung lượng — log session/run",
+    "totalSuffix": "· tổng {bytes}",
+    "rescan": "Quét lại",
+    "scanning": "Đang quét ổ đĩa…",
+    "category": "Nhóm",
+    "files": "File",
+    "size": "Kích thước",
+    "percent": "%",
+    "clean": "Dọn",
+    "cleanRowTitle": "Xóa các file log trong nhóm này",
+    "nothingToClean": "Không có gì để dọn",
+    "note": "Dọn log để giải phóng dung lượng. Log của Devdy xóa an toàn — lịch sử run & token vẫn giữ, chỉ mất nội dung transcript. Log Claude/Codex là của CLI nên xóa sẽ mất lịch sử phía CLI."
+  },
+  "cleanModal": {
+    "title": "Dọn {label}",
+    "willDelete": "Sẽ xóa {files} file (~{bytes}).",
+    "irreversible": "Không thể hoàn tác.",
+    "cleanNow": "Dọn ngay"
+  },
+  "resetModal": {
+    "title": "Đặt lại thống kê sử dụng",
+    "line1": "Thao tác này sẽ xóa toàn bộ run cũ (kèm file log) và đưa mọi số liệu thống kê về 0.",
+    "irreversible": "Không thể hoàn tác.",
+    "typeToConfirm": "Gõ {word} để xác nhận:",
+    "resetEverything": "Đặt lại toàn bộ"
+  }
+}

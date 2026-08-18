@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { useProjectsStore, type AppliedSkill, type AppliedRule, type Repo } from '@/stores/projects'
 import { useSkillsStore } from '@/stores/skills'
@@ -15,13 +16,16 @@ import { useLiveRunsStore } from '@/stores/liveRuns'
 import {
   AlertTriangle, Puzzle, ScrollText, Server, Github, Gitlab, Cloud,
   GitMerge, CheckCircle2, XCircle, Trash2, Plus, GitBranch, Settings,
-  Rocket, ShieldCheck, Loader2, KanbanSquare
+  Rocket, ShieldCheck, Loader2, KanbanSquare, ExternalLink
 } from 'lucide-vue-next'
 import { Button, Input, Card, Badge, AppSelect } from '@/components/ui'
 import BackToRunButton from '@/components/BackToRunButton.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
+import { parseRepoUrl, repoWebUrl } from '@/lib/repoUrl'
+import { openUrl } from '@tauri-apps/plugin-opener'
 
+const { t } = useI18n()
 const route = useRoute()
 const projectStore = useProjectsStore()
 const skillsStore = useSkillsStore()
@@ -51,37 +55,37 @@ const hasToolPerms = computed(() => allowTools.value.length > 0 || denyTools.val
 function revokeTool(tool: string) {
   toolPerms.reset(projectId.value, tool)
   live.syncToolPermissions(projectId.value)
-  toast.success(`Đã thu hồi quyền cho ${tool}`)
+  toast.success(t('projectDetail.toastToolRevoked', { tool }))
 }
 
 function flipTool(tool: string, to: 'allow' | 'deny') {
   if (to === 'allow') toolPerms.allow(projectId.value, tool)
   else toolPerms.deny(projectId.value, tool)
   live.syncToolPermissions(projectId.value)
-  toast.success(`${tool} → ${to === 'allow' ? 'allow' : 'deny'} always`)
+  toast.success(t('projectDetail.toastToolFlipped', { tool, to }))
 }
 
 async function resetAllToolPerms() {
   if (!(await confirm({
-    title: 'Reset tool permissions',
-    message: 'Xoá toàn bộ quyết định "allow/deny always" đã lưu cho project này?',
-    confirmLabel: 'Reset all',
+    title: t('projectDetail.resetToolPermsTitle'),
+    message: t('projectDetail.resetToolPermsMessage'),
+    confirmLabel: t('projectDetail.resetAll'),
   }))) return
-  for (const t of [...allowTools.value, ...denyTools.value]) toolPerms.reset(projectId.value, t)
+  for (const tool of [...allowTools.value, ...denyTools.value]) toolPerms.reset(projectId.value, tool)
   live.syncToolPermissions(projectId.value)
-  toast.success('Đã reset tool permissions')
+  toast.success(t('projectDetail.toastToolPermsReset'))
 }
 const SECTIONS = [
-  { id: 'overview', label: 'Overview', icon: Settings },
-  { id: 'skills', label: 'Skills', icon: Puzzle },
-  { id: 'rules', label: 'Rules', icon: ScrollText },
-  { id: 'mcp', label: 'MCP Servers', icon: Server },
-  { id: 'deploy', label: 'Deploy', icon: Rocket },
-  { id: 'github', label: 'GitHub', icon: Github },
-  { id: 'board', label: 'GitHub Project', icon: KanbanSquare },
-  { id: 'gitlab', label: 'GitLab', icon: Gitlab },
-  { id: 'aws', label: 'AWS', icon: Cloud },
-  { id: 'tools', label: 'Tool Permissions', icon: ShieldCheck },
+  { id: 'overview', icon: Settings },
+  { id: 'skills', icon: Puzzle },
+  { id: 'rules', icon: ScrollText },
+  { id: 'mcp', icon: Server },
+  { id: 'deploy', icon: Rocket },
+  { id: 'github', icon: Github },
+  { id: 'board', icon: KanbanSquare },
+  { id: 'gitlab', icon: Gitlab },
+  { id: 'aws', icon: Cloud },
+  { id: 'tools', icon: ShieldCheck },
 ] as const
 const projectConflicts = computed(() => projectStore.conflicts.filter(c => c.project_id === projectId.value))
 const projectRuleConflicts = computed(() => projectStore.ruleConflicts.filter(c => c.project_id === projectId.value))
@@ -89,7 +93,11 @@ const totalConflicts = computed(() => projectConflicts.value.length + projectRul
 const appliedSkills = ref<AppliedSkill[]>([])
 const loadingSkills = ref(false)
 
-const targetLabel: Record<string, string> = { claude: 'Claude', codex: 'Codex', both: 'Both' }
+const targetLabel = computed<Record<string, string>>(() => ({
+  claude: 'Claude',
+  codex: 'Codex',
+  both: t('projectDetail.targetBoth'),
+}))
 const appliedRules = ref<AppliedRule[]>([])
 const loadingRules = ref(false)
 const togglingRuleId = ref<string | null>(null)
@@ -133,7 +141,7 @@ async function handleToggleMcpServer(server: ProjectMcpServer) {
   try {
     const ids = mcpServers.value.filter(s => s.enabled_for_project).map(s => s.id)
     await mcpStore.setForProject(projectId.value, ids)
-    toast.success('Saved')
+    toast.success(t('projectDetail.toastSaved'))
   } catch (e) {
     server.enabled_for_project = !next
     toast.error(String(e))
@@ -176,7 +184,7 @@ async function handleToggleDeployServer(server: VpsServer) {
       await serversStore.mapToProject(projectId.value, server.id, '')
     }
     await loadProjectServers()
-    toast.success('Saved')
+    toast.success(t('projectDetail.toastSaved'))
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -202,7 +210,7 @@ async function handleToggleRule(rule: { id: string; applied: boolean }) {
       await projectStore.applyRule(projectId.value, rule.id)
     }
     await loadAppliedRules()
-    toast.success('Saved')
+    toast.success(t('projectDetail.toastSaved'))
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -223,7 +231,7 @@ const accountOptions = computed(() => [
 async function handleSelectAccount(accountId: string) {
   try {
     await projectStore.setProjectAccount(projectId.value, accountId || null)
-    toast.success('GitHub account linked')
+    toast.success(t('projectDetail.toastAccountLinked'))
   } catch (e) {
     toast.error(String(e))
   }
@@ -311,7 +319,7 @@ async function saveBoard() {
       github_project_board_url: boardUrl.value.trim(),
       github_project_field_mappings: JSON.stringify(mappings),
     })
-    toast.success('Board configuration saved')
+    toast.success(t('projectDetail.toastBoardSaved'))
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -334,7 +342,7 @@ async function unlinkBoard() {
     mapStart.value = ''
     mapDeadline.value = ''
     mapStatus.value = ''
-    toast.success('Board unlinked')
+    toast.success(t('projectDetail.toastBoardUnlinked'))
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -358,7 +366,7 @@ const gitlabAccountOptions = computed(() => [
 async function handleSelectGitlabAccount(accountId: string) {
   try {
     await projectStore.setProjectGitlabAccount(projectId.value, accountId || null)
-    toast.success('GitLab account linked')
+    toast.success(t('projectDetail.toastGitlabLinked'))
   } catch (e) {
     toast.error(String(e))
   }
@@ -380,7 +388,7 @@ const awsAccountOptions = computed(() => [
 async function handleSelectAwsAccount(accountId: string) {
   try {
     await projectStore.setProjectAwsAccount(projectId.value, accountId || null)
-    toast.success('AWS account linked')
+    toast.success(t('projectDetail.toastAwsLinked'))
   } catch (e) {
     toast.error(String(e))
   }
@@ -394,22 +402,8 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null
 
 const repos = ref<Repo[]>([])
 const reposLoading = ref(false)
-const editingRepo = ref<{
-  [id: string]: {
-    name: string
-    provider: 'github' | 'gitlab'
-    github_owner: string
-    github_repo: string
-    gitlab_project_path: string
-    gitlab_project_id: string
-  }
-}>({})
 
-const providerOptions: { value: 'github' | 'gitlab'; label: string }[] = [
-  { value: 'github', label: 'GitHub' },
-  { value: 'gitlab', label: 'GitLab' },
-]
-
+const newRepoUrl = ref('')
 const newRepoName = ref('')
 const newRepoProvider = ref<'github' | 'gitlab'>('github')
 const newRepoOwner = ref('')
@@ -417,6 +411,59 @@ const newRepoRepo = ref('')
 const newRepoGitlabPath = ref('')
 const newRepoGitlabId = ref('')
 const addingRepo = ref(false)
+
+// Live-parse the pasted URL and populate the underlying repo fields. Invalid or
+// invalid input clears the derived fields so the preview and Add button always
+// reflect exactly what's in the box.
+watch(newRepoUrl, (url) => {
+  const parsed = parseRepoUrl(url)
+  newRepoProvider.value = parsed?.provider ?? 'github'
+  newRepoName.value = parsed?.name ?? ''
+  newRepoOwner.value = parsed?.github_owner ?? ''
+  newRepoRepo.value = parsed?.github_repo ?? ''
+  newRepoGitlabPath.value = parsed?.gitlab_project_path ?? ''
+  newRepoGitlabId.value = ''
+})
+
+// Enough provider-specific coordinates to identify a repo.
+const repoFieldsValid = computed(() => {
+  if (!newRepoName.value.trim()) return false
+  return newRepoProvider.value === 'gitlab'
+    ? !!newRepoGitlabPath.value.trim()
+    : !!(newRepoOwner.value.trim() && newRepoRepo.value.trim())
+})
+
+// Identity key for a repo, used to detect duplicates (case-insensitive).
+function repoKey(r: {
+  provider?: 'github' | 'gitlab' | null
+  github_owner?: string | null
+  github_repo?: string | null
+  gitlab_project_path?: string | null
+}): string {
+  const provider = r.provider ?? 'github'
+  const coords = provider === 'gitlab'
+    ? (r.gitlab_project_path ?? '').trim()
+    : `${(r.github_owner ?? '').trim()}/${(r.github_repo ?? '').trim()}`
+  return `${provider}:${coords}`.toLowerCase()
+}
+
+// The repo being entered already exists in this project.
+const isDuplicateRepo = computed(() => {
+  if (!repoFieldsValid.value) return false
+  const key = repoKey({
+    provider: newRepoProvider.value,
+    github_owner: newRepoOwner.value,
+    github_repo: newRepoRepo.value,
+    gitlab_project_path: newRepoGitlabPath.value,
+  })
+  return repos.value.some(r => repoKey(r) === key)
+})
+
+// Ready to add: valid coordinates and not a duplicate.
+const canAddRepo = computed(() => repoFieldsValid.value && !isDuplicateRepo.value)
+
+// URL typed but not yet a valid repo link — used to show a gentle hint.
+const repoUrlInvalid = computed(() => !!newRepoUrl.value.trim() && !repoFieldsValid.value)
 
 const togglingSkillId = ref<string | null>(null)
 // Unified list of every skill with its per-project applied state (see ruleItems).
@@ -467,17 +514,6 @@ async function loadRepos() {
   reposLoading.value = true
   try {
     repos.value = await projectStore.listRepos(projectId.value)
-    editingRepo.value = {}
-    for (const r of repos.value) {
-      editingRepo.value[r.id] = {
-        name: r.name,
-        provider: r.provider ?? 'github',
-        github_owner: r.github_owner ?? '',
-        github_repo: r.github_repo ?? '',
-        gitlab_project_path: r.gitlab_project_path ?? '',
-        gitlab_project_id: r.gitlab_project_id != null ? String(r.gitlab_project_id) : '',
-      }
-    }
   } finally {
     reposLoading.value = false
   }
@@ -514,40 +550,7 @@ async function autoSaveProject() {
       })
       changed = true
     }
-    for (const r of repos.value) {
-      const edit = editingRepo.value[r.id]
-      if (!edit || !edit.name.trim()) continue
-      const editProvider = edit.provider ?? 'github'
-      const editGitlabId = edit.gitlab_project_id.trim()
-        ? Number(edit.gitlab_project_id.trim())
-        : null
-      if (
-        edit.name === r.name &&
-        editProvider === (r.provider ?? 'github') &&
-        (edit.github_owner || '') === (r.github_owner ?? '') &&
-        (edit.github_repo || '') === (r.github_repo ?? '') &&
-        (edit.gitlab_project_path || '') === (r.gitlab_project_path ?? '') &&
-        editGitlabId === (r.gitlab_project_id ?? null)
-      ) continue
-      await projectStore.updateRepo({
-        id: r.id,
-        name: edit.name,
-        github_owner: edit.github_owner || null,
-        github_repo: edit.github_repo || null,
-        provider: editProvider,
-        gitlab_project_path: edit.gitlab_project_path || null,
-        gitlab_project_id: editGitlabId,
-      })
-      // Sync the local source row so the next pass sees no diff.
-      r.name = edit.name
-      r.provider = editProvider
-      r.github_owner = edit.github_owner || null
-      r.github_repo = edit.github_repo || null
-      r.gitlab_project_path = edit.gitlab_project_path || null
-      r.gitlab_project_id = editGitlabId
-      changed = true
-    }
-    if (changed) toast.success('Saved')
+    if (changed) toast.success(t('projectDetail.toastSaved'))
   } catch (e) {
     toast.error(String(e))
   }
@@ -560,25 +563,33 @@ function scheduleSave() {
 }
 
 watch(editName, scheduleSave)
-watch(editingRepo, scheduleSave, { deep: true })
 
 async function handleRemoveRepo(id: string) {
   if (!(await confirm({
-    title: 'Remove repository',
-    message: 'Remove this repository from the project?',
-    confirmLabel: 'Remove',
+    title: t('projectDetail.confirmRemoveRepoTitle'),
+    message: t('projectDetail.confirmRemoveRepoMessage'),
+    confirmLabel: t('common.remove'),
   }))) return
   try {
     await projectStore.removeRepo(id)
     await loadRepos()
-    toast.success('Repo removed')
+    toast.success(t('projectDetail.toastRepoRemoved'))
   } catch (e) {
     toast.error(String(e))
   }
 }
 
+function handleOpenRepo(repo: Repo) {
+  const url = repoWebUrl(repo)
+  if (!url) return
+  openUrl(url).catch(() => { /* opener unavailable */ })
+}
+
 async function handleAddRepo() {
-  if (!newRepoName.value.trim()) return
+  if (!canAddRepo.value) {
+    if (isDuplicateRepo.value) toast.error(t('projectDetail.toastRepoExists'))
+    return
+  }
   addingRepo.value = true
   try {
     const isGitlab = newRepoProvider.value === 'gitlab'
@@ -594,6 +605,7 @@ async function handleAddRepo() {
         ? Number(newRepoGitlabId.value.trim())
         : null,
     })
+    newRepoUrl.value = ''
     newRepoName.value = ''
     newRepoProvider.value = 'github'
     newRepoOwner.value = ''
@@ -601,7 +613,7 @@ async function handleAddRepo() {
     newRepoGitlabPath.value = ''
     newRepoGitlabId.value = ''
     await loadRepos()
-    toast.success('Repo added')
+    toast.success(t('projectDetail.toastRepoAdded'))
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -618,7 +630,7 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
       await projectStore.applySkill(projectId.value, skill.id)
     }
     await loadAppliedSkills()
-    toast.success('Saved')
+    toast.success(t('projectDetail.toastSaved'))
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -635,7 +647,7 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
       <div class="flex items-center gap-2 min-w-0">
         <BackToRunButton />
         <span class="text-muted-foreground/40">/</span>
-        <h1 class="text-sm font-semibold truncate">{{ project?.name ?? 'Project' }}</h1>
+        <h1 class="text-sm font-semibold truncate">{{ project?.name ?? t('projectDetail.projectFallback') }}</h1>
         <span
           v-if="project"
           class="text-[11px] text-muted-foreground font-mono truncate hidden md:inline"
@@ -645,7 +657,7 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
     </div>
 
     <div v-if="!project" class="flex-1 flex items-center justify-center text-muted-foreground text-sm">
-      Project not found
+      {{ t('projectDetail.projectNotFound') }}
     </div>
 
     <div v-else class="flex-1 flex min-h-0">
@@ -661,7 +673,7 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
           @click="activeTab = s.id"
         >
           <component :is="s.icon" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-          <span class="truncate">{{ s.label }}</span>
+          <span class="truncate">{{ t('projectDetail.sections.' + s.id) }}</span>
         </button>
         <button
           v-if="totalConflicts > 0"
@@ -672,7 +684,7 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
           @click="activeTab = 'conflicts'"
         >
           <GitMerge class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-          <span class="truncate">Conflicts</span>
+          <span class="truncate">{{ t('projectDetail.conflictsNav') }}</span>
           <span class="ml-auto text-[10px] tabular-nums">{{ totalConflicts }}</span>
         </button>
       </nav>
@@ -687,9 +699,9 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
           <div class="flex items-center gap-2.5">
             <AlertTriangle class="h-4 w-4 text-amber-500 shrink-0" :stroke-width="1.75" />
             <div>
-              <p class="text-xs font-medium text-amber-600 dark:text-amber-400">Sync conflicts detected</p>
+              <p class="text-xs font-medium text-amber-600 dark:text-amber-400">{{ t('projectDetail.conflictBannerTitle') }}</p>
               <p class="text-[10px] text-amber-500/80 mt-0.5">
-                {{ totalConflicts }} item(s) have local modifications that conflict with central updates
+                {{ t('projectDetail.conflictBannerBody', { count: totalConflicts }) }}
               </p>
             </div>
           </div>
@@ -697,7 +709,7 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
             class="text-xs font-medium text-amber-600 dark:text-amber-400 hover:underline cursor-pointer shrink-0"
             @click="activeTab = 'conflicts'"
           >
-            Resolve
+            {{ t('projectDetail.resolve') }}
           </button>
         </div>
 
@@ -709,14 +721,14 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
           <Card body-class="p-4 space-y-4">
             <template #header>
               <Settings class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-              <span class="text-xs font-semibold">General</span>
+              <span class="text-xs font-semibold">{{ t('projectDetail.general') }}</span>
             </template>
             <div class="space-y-1.5">
-              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Project Name</label>
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('projectDetail.projectNameLabel') }}</label>
               <Input v-model="editName" size="sm" />
             </div>
             <div class="space-y-1.5">
-              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Path</label>
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('projectDetail.pathLabel') }}</label>
               <p class="text-[11px] text-muted-foreground font-mono break-all">{{ project.path }}</p>
             </div>
           </Card>
@@ -725,141 +737,106 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
           <Card body-class="p-4 space-y-4">
             <template #header>
               <GitBranch class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-              <span class="text-xs font-semibold">Repositories</span>
+              <span class="text-xs font-semibold">{{ t('projectDetail.repositories') }}</span>
               <span
                 v-if="repos.length"
                 class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1 text-[10px] font-medium text-muted-foreground leading-none"
               >{{ repos.length }}</span>
             </template>
 
-            <div v-if="reposLoading" class="space-y-2">
-              <div v-for="i in 2" :key="i" class="h-20 rounded-md bg-muted animate-pulse" />
-            </div>
-
-            <template v-else>
-              <!-- Existing repos -->
-              <div
-                v-for="repo in repos"
-                :key="repo.id"
-                class="border border-border rounded-md p-3 space-y-2"
-              >
-                <div class="flex items-center gap-2">
+            <!-- Add new repo — paste a URL, no manual fields -->
+            <div class="space-y-2">
+              <div class="flex gap-2">
+                <div class="relative flex-1">
+                  <GitBranch class="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" :stroke-width="1.5" />
                   <Input
-                    v-model="editingRepo[repo.id].name"
+                    v-model="newRepoUrl"
                     type="text"
                     size="sm"
-                    class="flex-1"
-                    placeholder="Repo name"
-                  />
-                  <Button
-                    variant="destructive-ghost"
-                    size="icon-sm"
-                    class="shrink-0"
-                    @click="handleRemoveRepo(repo.id)"
-                  >
-                    <Trash2 class="h-3 w-3" :stroke-width="1.75" />
-                  </Button>
-                </div>
-                <div class="text-[11px] text-muted-foreground font-mono truncate px-0.5">{{ repo.path }}</div>
-                <AppSelect
-                  size="sm"
-                  :model-value="editingRepo[repo.id].provider"
-                  :options="providerOptions"
-                  @update:model-value="editingRepo[repo.id].provider = $event as 'github' | 'gitlab'"
-                />
-                <!-- GitHub: owner / repo -->
-                <div
-                  v-if="editingRepo[repo.id].provider === 'github'"
-                  class="flex gap-1.5 items-center"
-                >
-                  <Input
-                    v-model="editingRepo[repo.id].github_owner"
-                    type="text"
-                    size="sm"
-                    placeholder="owner"
-                  />
-                  <span class="text-muted-foreground text-xs shrink-0">/</span>
-                  <Input
-                    v-model="editingRepo[repo.id].github_repo"
-                    type="text"
-                    size="sm"
-                    placeholder="repo"
-                  />
-                </div>
-                <!-- GitLab: project path + optional numeric project ID -->
-                <div v-else class="space-y-1.5">
-                  <Input
-                    v-model="editingRepo[repo.id].gitlab_project_path"
-                    type="text"
-                    size="sm"
-                    placeholder="namespace/project"
-                  />
-                  <Input
-                    v-model="editingRepo[repo.id].gitlab_project_id"
-                    type="text"
-                    inputmode="numeric"
-                    size="sm"
-                    placeholder="Project ID (optional)"
-                  />
-                </div>
-              </div>
-
-              <!-- Add new repo -->
-              <div class="border-t border-border/60 pt-3 space-y-2">
-                <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Add repository</div>
-                <Input
-                  v-model="newRepoName"
-                  type="text"
-                  size="sm"
-                  placeholder="Repo name"
-                />
-                <AppSelect
-                  size="sm"
-                  :model-value="newRepoProvider"
-                  :options="providerOptions"
-                  @update:model-value="newRepoProvider = $event as 'github' | 'gitlab'"
-                />
-                <!-- GitHub: owner / repo -->
-                <div v-if="newRepoProvider === 'github'" class="flex gap-1.5 items-center">
-                  <Input
-                    v-model="newRepoOwner"
-                    type="text"
-                    size="sm"
-                    placeholder="owner"
-                  />
-                  <span class="text-muted-foreground text-xs shrink-0">/</span>
-                  <Input
-                    v-model="newRepoRepo"
-                    type="text"
-                    size="sm"
-                    placeholder="repo"
-                  />
-                </div>
-                <!-- GitLab: project path + optional numeric project ID -->
-                <div v-else class="space-y-1.5">
-                  <Input
-                    v-model="newRepoGitlabPath"
-                    type="text"
-                    size="sm"
-                    placeholder="namespace/project"
-                  />
-                  <Input
-                    v-model="newRepoGitlabId"
-                    type="text"
-                    inputmode="numeric"
-                    size="sm"
-                    placeholder="Project ID (optional)"
+                    class="pl-8"
+                    :placeholder="t('projectDetail.repoUrlPlaceholder')"
+                    @keydown.enter="canAddRepo && handleAddRepo()"
                   />
                 </div>
                 <Button
-                  :disabled="addingRepo || !newRepoName.trim()"
+                  size="sm"
+                  :disabled="addingRepo || !canAddRepo"
                   @click="handleAddRepo"
                 >
                   <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-                  {{ addingRepo ? 'Adding…' : 'Add' }}
+                  {{ addingRepo ? t('projectDetail.adding') : t('common.add') }}
                 </Button>
               </div>
-            </template>
+
+              <!-- Parsed preview: what will be added -->
+              <div
+                v-if="repoFieldsValid"
+                class="flex items-center gap-1.5 flex-wrap text-[11px] px-0.5"
+              >
+                <Badge :tone="newRepoProvider === 'gitlab' ? 'warning' : 'info'" size="xs">
+                  <component :is="newRepoProvider === 'gitlab' ? Gitlab : Github" class="h-2.5 w-2.5" :stroke-width="2" />
+                  {{ newRepoProvider === 'gitlab' ? 'GitLab' : 'GitHub' }}
+                </Badge>
+                <span class="font-mono text-muted-foreground truncate">
+                  {{ newRepoProvider === 'gitlab' ? newRepoGitlabPath : `${newRepoOwner}/${newRepoRepo}` }}
+                </span>
+                <span v-if="isDuplicateRepo" class="flex items-center gap-1 text-amber-500 font-medium">
+                  <AlertTriangle class="h-2.5 w-2.5" :stroke-width="2" />
+                  {{ t('projectDetail.alreadyAdded') }}
+                </span>
+              </div>
+
+              <!-- Invalid URL hint -->
+              <p v-else-if="repoUrlInvalid" class="text-[11px] text-muted-foreground px-0.5">
+                {{ t('projectDetail.repoUrlHint') }}
+              </p>
+            </div>
+
+            <!-- Existing repos (read-only list; remove to change) -->
+            <div v-if="reposLoading" class="space-y-2 border-t border-border/60 pt-3">
+              <div v-for="i in 2" :key="i" class="h-12 rounded-md bg-muted animate-pulse" />
+            </div>
+
+            <div v-else-if="repos.length" class="border-t border-border/60 pt-3 space-y-1.5">
+              <div
+                v-for="repo in repos"
+                :key="repo.id"
+                class="flex items-center gap-2 border border-border rounded-md px-3 py-2"
+              >
+                <component
+                  :is="(repo.provider ?? 'github') === 'gitlab' ? Gitlab : Github"
+                  class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                  :stroke-width="1.75"
+                />
+                <div class="min-w-0 flex-1">
+                  <button
+                    v-if="repoWebUrl(repo)"
+                    type="button"
+                    class="group/repo flex items-center gap-1 max-w-full text-xs font-medium truncate text-left hover:text-primary transition-colors cursor-pointer"
+                    :title="t('projectDetail.openRepo', { url: repoWebUrl(repo) })"
+                    @click="handleOpenRepo(repo)"
+                  >
+                    <span class="truncate group-hover/repo:underline">{{ repo.name }}</span>
+                    <ExternalLink class="h-3 w-3 shrink-0 opacity-0 group-hover/repo:opacity-100 transition-opacity" :stroke-width="2" />
+                  </button>
+                  <p v-else class="text-xs font-medium truncate">{{ repo.name }}</p>
+                  <p class="text-[11px] text-muted-foreground font-mono truncate">
+                    {{ (repo.provider ?? 'github') === 'gitlab'
+                      ? (repo.gitlab_project_path || '—')
+                      : ((repo.github_owner && repo.github_repo) ? `${repo.github_owner}/${repo.github_repo}` : '—') }}
+                  </p>
+                </div>
+                <Button
+                  variant="destructive-ghost"
+                  size="icon-sm"
+                  class="shrink-0"
+                  :title="t('projectDetail.removeRepo')"
+                  @click="handleRemoveRepo(repo.id)"
+                >
+                  <Trash2 class="h-3 w-3" :stroke-width="1.75" />
+                </Button>
+              </div>
+            </div>
           </Card>
 
         </div>
@@ -869,12 +846,12 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
           <Card>
             <template #header>
               <Puzzle class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-              <span class="text-xs font-semibold">Skills</span>
+              <span class="text-xs font-semibold">{{ t('projectDetail.skills') }}</span>
               <span
                 v-if="appliedSkills.length > 0"
                 class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1 text-[10px] font-medium text-muted-foreground leading-none"
               >{{ appliedSkills.length }}</span>
-              <RouterLink to="/skills" class="ml-auto text-[11px] text-primary hover:underline">Manage</RouterLink>
+              <RouterLink to="/skills" class="ml-auto text-[11px] text-primary hover:underline">{{ t('projectDetail.manage') }}</RouterLink>
             </template>
 
             <!-- Loading -->
@@ -893,9 +870,9 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
               v-else-if="skillItems.length === 0"
               class="px-4 py-6 text-center text-xs text-muted-foreground"
             >
-              No skills defined yet.
-              <RouterLink to="/skills" class="text-primary hover:underline">Create one</RouterLink>
-              to enable it here.
+              {{ t('projectDetail.noSkillsPrefix') }}
+              <RouterLink to="/skills" class="text-primary hover:underline">{{ t('projectDetail.createOne') }}</RouterLink>
+              {{ t('projectDetail.toEnableHere') }}
             </div>
 
             <!-- Skill list with on/off toggles -->
@@ -947,12 +924,12 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
           <Card>
             <template #header>
               <ScrollText class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-              <span class="text-xs font-semibold">Rules</span>
+              <span class="text-xs font-semibold">{{ t('projectDetail.rules') }}</span>
               <span
                 v-if="appliedRules.length > 0"
                 class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1 text-[10px] font-medium text-muted-foreground leading-none"
               >{{ appliedRules.length }}</span>
-              <RouterLink to="/rules" class="ml-auto text-[11px] text-primary hover:underline">Manage</RouterLink>
+              <RouterLink to="/rules" class="ml-auto text-[11px] text-primary hover:underline">{{ t('projectDetail.manage') }}</RouterLink>
             </template>
 
             <!-- Loading -->
@@ -971,9 +948,9 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
               v-else-if="ruleItems.length === 0"
               class="px-4 py-6 text-center text-xs text-muted-foreground"
             >
-              No rules defined yet.
-              <RouterLink to="/rules" class="text-primary hover:underline">Create one</RouterLink>
-              to enable it here.
+              {{ t('projectDetail.noRulesPrefix') }}
+              <RouterLink to="/rules" class="text-primary hover:underline">{{ t('projectDetail.createOne') }}</RouterLink>
+              {{ t('projectDetail.toEnableHere') }}
             </div>
 
             <!-- Rule list with on/off toggles -->
@@ -1001,7 +978,7 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
                   :disabled="togglingRuleId !== null"
                   class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
                   :class="rule.applied ? 'bg-primary' : 'bg-muted'"
-                  :title="rule.applied ? 'Disable for this project' : 'Enable for this project'"
+                  :title="rule.applied ? t('projectDetail.disableForProject') : t('projectDetail.enableForProject')"
                   @click="handleToggleRule(rule)"
                 >
                   <span
@@ -1025,12 +1002,12 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
           <Card>
             <template #header>
               <Server class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-              <span class="text-xs font-semibold">MCP Servers</span>
+              <span class="text-xs font-semibold">{{ t('projectDetail.mcpServers') }}</span>
               <span
                 v-if="mcpServers.filter(s => s.enabled_for_project).length > 0"
                 class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1 text-[10px] font-medium text-muted-foreground leading-none"
               >{{ mcpServers.filter(s => s.enabled_for_project).length }}</span>
-              <RouterLink to="/mcp" class="ml-auto text-[11px] text-primary hover:underline">Manage</RouterLink>
+              <RouterLink to="/mcp" class="ml-auto text-[11px] text-primary hover:underline">{{ t('projectDetail.manage') }}</RouterLink>
             </template>
 
             <!-- Codex warning banner -->
@@ -1040,7 +1017,7 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
             >
               <AlertTriangle class="h-3.5 w-3.5 text-amber-500 mt-0.5 shrink-0" :stroke-width="1.75" />
               <p class="text-[11px] text-amber-600 dark:text-amber-400 leading-relaxed">
-                The default engine is Codex. Enabled SSE servers will be skipped; stdio and HTTP servers are available to Codex runs.
+                {{ t('projectDetail.codexWarning') }}
               </p>
             </div>
 
@@ -1060,9 +1037,9 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
               v-else-if="mcpServers.length === 0"
               class="px-4 py-6 text-center text-xs text-muted-foreground"
             >
-              No MCP servers defined yet.
-              <RouterLink to="/mcp" class="text-primary hover:underline">Create one</RouterLink>
-              to enable it here.
+              {{ t('projectDetail.noMcpPrefix') }}
+              <RouterLink to="/mcp" class="text-primary hover:underline">{{ t('projectDetail.createOne') }}</RouterLink>
+              {{ t('projectDetail.toEnableHere') }}
             </div>
 
             <!-- Server list with on/off toggles -->
@@ -1076,14 +1053,14 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
                   <div class="flex items-center gap-1.5 flex-wrap">
                     <p class="text-xs font-medium font-mono truncate">{{ server.name }}</p>
                     <Badge tone="neutral" size="xs" class="shrink-0 uppercase tracking-wide">{{ server.transport }}</Badge>
-                    <Badge v-if="!server.enabled" tone="neutral" size="xs" class="shrink-0">disabled</Badge>
+                    <Badge v-if="!server.enabled" tone="neutral" size="xs" class="shrink-0">{{ t('projectDetail.disabled') }}</Badge>
                     <Badge
                       v-if="server.transport === 'sse' && defaultIsCodex"
                       tone="warning"
                       size="xs"
                       class="shrink-0"
-                      title="Codex can't use SSE servers; this will be skipped on Codex runs."
-                    >Claude only</Badge>
+                      :title="t('projectDetail.claudeOnlyTitle')"
+                    >{{ t('projectDetail.claudeOnly') }}</Badge>
                   </div>
                   <p v-if="server.description" class="text-[10px] text-muted-foreground truncate mt-0.5">{{ server.description }}</p>
                 </div>
@@ -1094,7 +1071,7 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
                   :disabled="savingMcp"
                   class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
                   :class="server.enabled_for_project ? 'bg-primary' : 'bg-muted'"
-                  :title="server.enabled_for_project ? 'Disable for this project' : 'Enable for this project'"
+                  :title="server.enabled_for_project ? t('projectDetail.disableForProject') : t('projectDetail.enableForProject')"
                   @click="handleToggleMcpServer(server)"
                 >
                   <span
@@ -1118,12 +1095,12 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
           <Card>
             <template #header>
               <Rocket class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-              <span class="text-xs font-semibold">Deploy Targets</span>
+              <span class="text-xs font-semibold">{{ t('projectDetail.deployTargets') }}</span>
               <span
                 v-if="projectServers.length > 0"
                 class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1 text-[10px] font-medium text-muted-foreground leading-none"
               >{{ projectServers.length }}</span>
-              <RouterLink to="/servers" class="ml-auto text-[11px] text-primary hover:underline">Manage</RouterLink>
+              <RouterLink to="/servers" class="ml-auto text-[11px] text-primary hover:underline">{{ t('projectDetail.manage') }}</RouterLink>
             </template>
 
             <!-- Loading -->
@@ -1142,9 +1119,9 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
               v-else-if="serversStore.items.length === 0"
               class="px-4 py-6 text-center text-xs text-muted-foreground"
             >
-              No VPS defined yet.
-              <RouterLink to="/servers" class="text-primary hover:underline">Add one</RouterLink>
-              to enable deployments.
+              {{ t('projectDetail.noVpsPrefix') }}
+              <RouterLink to="/servers" class="text-primary hover:underline">{{ t('projectDetail.addOne') }}</RouterLink>
+              {{ t('projectDetail.toEnableDeployments') }}
             </div>
 
             <!-- VPS list with on/off toggles -->
@@ -1162,8 +1139,8 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
                       tone="primary"
                       size="xs"
                       class="shrink-0 uppercase tracking-wide"
-                    >enabled</Badge>
-                    <Badge v-if="server.has_passphrase" tone="neutral" size="xs" class="shrink-0">passphrase</Badge>
+                    >{{ t('projectDetail.enabled') }}</Badge>
+                    <Badge v-if="server.has_passphrase" tone="neutral" size="xs" class="shrink-0">{{ t('projectDetail.passphrase') }}</Badge>
                   </div>
                   <p class="text-[10px] text-muted-foreground font-mono truncate mt-0.5">
                     {{ server.username }}@{{ server.host }}:{{ server.port }}
@@ -1176,7 +1153,7 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
                   :disabled="togglingServerId !== null"
                   class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
                   :class="enabledServerIds.has(server.id) ? 'bg-primary' : 'bg-muted'"
-                  :title="enabledServerIds.has(server.id) ? 'Disable for this project' : 'Enable for this project'"
+                  :title="enabledServerIds.has(server.id) ? t('projectDetail.disableForProject') : t('projectDetail.enableForProject')"
                   @click="handleToggleDeployServer(server)"
                 >
                   <span
@@ -1200,25 +1177,24 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
           <Card body-class="p-4 space-y-4">
             <template #header>
               <Github class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-              <span class="text-xs font-semibold">Linked GitHub Account</span>
+              <span class="text-xs font-semibold">{{ t('projectDetail.linkedGithubAccount') }}</span>
             </template>
             <p class="text-[11px] text-muted-foreground leading-relaxed">
-              Choose which GitHub account is used to fetch issues and pull requests for this project.
-              Manage accounts in
-              <RouterLink to="/settings" class="text-primary hover:underline">Settings</RouterLink>.
+              {{ t('projectDetail.githubAccountHint') }}
+              <RouterLink to="/settings" class="text-primary hover:underline">{{ t('projectDetail.settings') }}</RouterLink>.
             </p>
 
             <div v-if="ghStore.accounts.length === 0" class="text-[11px] text-muted-foreground">
-              No GitHub accounts yet.
-              <RouterLink to="/settings" class="text-primary hover:underline">Add one in Settings</RouterLink>
-              to link it here.
+              {{ t('projectDetail.noGithubAccounts') }}
+              <RouterLink to="/settings" class="text-primary hover:underline">{{ t('projectDetail.addInSettings') }}</RouterLink>
+              {{ t('projectDetail.toLinkHere') }}
             </div>
             <AppSelect
               size="sm"
               v-else
               :model-value="linkedAccountId ?? ''"
               :options="accountOptions"
-              placeholder="Select an account…"
+              :placeholder="t('projectDetail.selectAccountPlaceholder')"
               @update:model-value="handleSelectAccount"
             />
 
@@ -1234,33 +1210,32 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
           <Card body-class="p-4 space-y-4">
             <template #header>
               <KanbanSquare class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-              <span class="text-xs font-semibold">GitHub Project V2 Board</span>
+              <span class="text-xs font-semibold">{{ t('projectDetail.githubProjectBoard') }}</span>
             </template>
             <p class="text-[11px] text-muted-foreground leading-relaxed">
-              Link a GitHub Project (V2 board) to enrich each issue with Start date / Deadline / Status
-              in the milestone tracking view. Requires a GitHub account (GitHub tab) with the
-              <code class="text-primary">read:project</code> scope.
+              {{ t('projectDetail.boardIntroPrefix') }}
+              <code class="text-primary">read:project</code>{{ t('projectDetail.boardIntroScope') }}
             </p>
 
             <div v-if="!linkedAccount" class="text-[11px] text-amber-500 bg-amber-500/10 border border-amber-500/20 rounded p-2.5">
-              Link a GitHub account in the <strong>GitHub</strong> tab first.
+              {{ t('projectDetail.linkGithubFirst', { tab: t('projectDetail.githubTab') }) }}
             </div>
 
             <template v-else>
               <div class="space-y-1.5">
-                <label class="text-[11px] font-medium text-muted-foreground">Board URL</label>
+                <label class="text-[11px] font-medium text-muted-foreground">{{ t('projectDetail.boardUrl') }}</label>
                 <div class="flex gap-2">
                   <Input
                     v-model="boardUrl"
                     size="sm"
-                    placeholder="https://github.com/orgs/<owner>/projects/<số>"
+                    placeholder="https://github.com/orgs/<owner>/projects/<n>"
                     class="flex-1"
                     :disabled="resolvingBoard || savingBoard"
                     @keyup.enter="resolveBoard"
                   />
                   <Button variant="outline" size="sm" :disabled="resolvingBoard || !boardUrl.trim()" @click="resolveBoard">
                     <Loader2 v-if="resolvingBoard" class="h-3.5 w-3.5 animate-spin" />
-                    <span>{{ resolvingBoard ? 'Connecting…' : 'Connect' }}</span>
+                    <span>{{ resolvingBoard ? t('projectDetail.connecting') : t('projectDetail.connect') }}</span>
                   </Button>
                 </div>
               </div>
@@ -1271,35 +1246,35 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
 
               <div v-if="boardInfo" class="space-y-3">
                 <div class="text-[11px] text-muted-foreground">
-                  Board: <span class="text-foreground font-medium">{{ boardInfo.title }}</span>
-                  · {{ boardInfo.fields.length }} fields
+                  {{ t('projectDetail.boardLabel') }} <span class="text-foreground font-medium">{{ boardInfo.title }}</span>
+                  · {{ t('projectDetail.fieldsCount', { count: boardInfo.fields.length }) }}
                 </div>
                 <div class="space-y-1.5">
-                  <label class="text-[11px] font-medium text-muted-foreground">Start date → field</label>
+                  <label class="text-[11px] font-medium text-muted-foreground">{{ t('projectDetail.startDateField') }}</label>
                   <AppSelect size="sm" v-model="mapStart" :options="dateFieldOptions" />
                 </div>
                 <div class="space-y-1.5">
-                  <label class="text-[11px] font-medium text-muted-foreground">Deadline → field</label>
+                  <label class="text-[11px] font-medium text-muted-foreground">{{ t('projectDetail.deadlineField') }}</label>
                   <AppSelect size="sm" v-model="mapDeadline" :options="dateFieldOptions" />
                 </div>
                 <div class="space-y-1.5">
-                  <label class="text-[11px] font-medium text-muted-foreground">Status → field</label>
+                  <label class="text-[11px] font-medium text-muted-foreground">{{ t('projectDetail.statusField') }}</label>
                   <AppSelect size="sm" v-model="mapStatus" :options="statusFieldOptions" />
                 </div>
                 <div class="flex gap-2 pt-1">
                   <Button size="sm" :disabled="savingBoard" @click="saveBoard">
                     <Loader2 v-if="savingBoard" class="h-3.5 w-3.5 animate-spin" />
-                    <span>Save configuration</span>
+                    <span>{{ t('projectDetail.saveConfiguration') }}</span>
                   </Button>
-                  <Button variant="ghost" size="sm" :disabled="savingBoard" @click="unlinkBoard">Unlink</Button>
+                  <Button variant="ghost" size="sm" :disabled="savingBoard" @click="unlinkBoard">{{ t('projectDetail.unlink') }}</Button>
                 </div>
               </div>
 
               <div v-else-if="project?.github_project_board_url" class="text-[11px] text-muted-foreground">
-                Saved board: <span class="text-foreground">{{ project.github_project_board_url }}</span>.
-                Click "Connect" to edit the field mapping.
+                {{ t('projectDetail.savedBoardPrefix') }} <span class="text-foreground">{{ project.github_project_board_url }}</span>.
+                {{ t('projectDetail.savedBoardSuffix') }}
                 <div class="pt-2">
-                  <Button variant="ghost" size="sm" :disabled="savingBoard" @click="unlinkBoard">Unlink</Button>
+                  <Button variant="ghost" size="sm" :disabled="savingBoard" @click="unlinkBoard">{{ t('projectDetail.unlink') }}</Button>
                 </div>
               </div>
             </template>
@@ -1311,25 +1286,24 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
           <Card body-class="p-4 space-y-4">
             <template #header>
               <Gitlab class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-              <span class="text-xs font-semibold">Linked GitLab Account</span>
+              <span class="text-xs font-semibold">{{ t('projectDetail.linkedGitlabAccount') }}</span>
             </template>
             <p class="text-[11px] text-muted-foreground leading-relaxed">
-              Choose which GitLab account is used to fetch issues and merge requests for this project.
-              Manage accounts in
-              <RouterLink to="/settings" class="text-primary hover:underline">Settings</RouterLink>.
+              {{ t('projectDetail.gitlabAccountHint') }}
+              <RouterLink to="/settings" class="text-primary hover:underline">{{ t('projectDetail.settings') }}</RouterLink>.
             </p>
 
             <div v-if="glStore.accounts.length === 0" class="text-[11px] text-muted-foreground">
-              No GitLab accounts yet.
-              <RouterLink to="/settings" class="text-primary hover:underline">Add one in Settings</RouterLink>
-              to link it here.
+              {{ t('projectDetail.noGitlabAccounts') }}
+              <RouterLink to="/settings" class="text-primary hover:underline">{{ t('projectDetail.addInSettings') }}</RouterLink>
+              {{ t('projectDetail.toLinkHere') }}
             </div>
             <AppSelect
               size="sm"
               v-else
               :model-value="linkedGitlabAccountId ?? ''"
               :options="gitlabAccountOptions"
-              placeholder="Select an account…"
+              :placeholder="t('projectDetail.selectAccountPlaceholder')"
               @update:model-value="handleSelectGitlabAccount"
             />
 
@@ -1345,25 +1319,24 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
           <Card body-class="p-4 space-y-4">
             <template #header>
               <Cloud class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-              <span class="text-xs font-semibold">Linked AWS Account</span>
+              <span class="text-xs font-semibold">{{ t('projectDetail.linkedAwsAccount') }}</span>
             </template>
             <p class="text-[11px] text-muted-foreground leading-relaxed">
-              Choose which AWS account is wired into Claude and Codex runs for this project.
-              Manage accounts in
-              <RouterLink to="/settings" class="text-primary hover:underline">Settings</RouterLink>.
+              {{ t('projectDetail.awsAccountHint') }}
+              <RouterLink to="/settings" class="text-primary hover:underline">{{ t('projectDetail.settings') }}</RouterLink>.
             </p>
 
             <div v-if="awsStore.accounts.length === 0" class="text-[11px] text-muted-foreground">
-              No AWS accounts yet.
-              <RouterLink to="/settings" class="text-primary hover:underline">Add one in Settings</RouterLink>
-              to link it here.
+              {{ t('projectDetail.noAwsAccounts') }}
+              <RouterLink to="/settings" class="text-primary hover:underline">{{ t('projectDetail.addInSettings') }}</RouterLink>
+              {{ t('projectDetail.toLinkHere') }}
             </div>
             <AppSelect
               size="sm"
               v-else
               :model-value="linkedAwsAccountId ?? ''"
               :options="awsAccountOptions"
-              placeholder="Select an account…"
+              :placeholder="t('projectDetail.selectAccountPlaceholder')"
               @update:model-value="handleSelectAwsAccount"
             />
 
@@ -1381,25 +1354,25 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
           <Card body-class="divide-y divide-border/50">
             <template #header>
               <ShieldCheck class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-              <span class="text-xs font-semibold">Tool Permissions</span>
+              <span class="text-xs font-semibold">{{ t('projectDetail.toolPermissions') }}</span>
               <Button
                 v-if="hasToolPerms"
                 variant="destructive-ghost"
                 size="xs"
                 class="ml-auto"
                 @click="resetAllToolPerms"
-              >Reset all</Button>
+              >{{ t('projectDetail.resetAll') }}</Button>
             </template>
 
             <p class="px-4 py-3 text-[11px] text-muted-foreground leading-relaxed">
-              Các quyết định "allow always" / "deny always" đã lưu cho project này. Thu hồi để tool được hỏi lại bình thường. Áp dụng ngay cho cả run đang mở.
+              {{ t('projectDetail.toolPermsIntro') }}
             </p>
 
             <!-- Allow always -->
             <div class="px-4 py-3">
               <div class="flex items-center gap-2 mb-2">
                 <CheckCircle2 class="h-3.5 w-3.5 text-emerald-500" :stroke-width="1.75" />
-                <span class="text-[11px] font-semibold">Allow always</span>
+                <span class="text-[11px] font-semibold">{{ t('projectDetail.allowAlways') }}</span>
                 <span class="text-[10px] text-muted-foreground tabular-nums">{{ allowTools.length }}</span>
               </div>
               <div v-if="allowTools.length" class="space-y-1.5">
@@ -1409,21 +1382,21 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
                   class="flex items-center gap-2 rounded-md border border-border px-3 py-2"
                 >
                   <p class="flex-1 min-w-0 text-xs font-mono truncate" :title="tool">{{ tool }}</p>
-                  <Badge tone="success" size="xs" class="shrink-0">allow</Badge>
-                  <Button variant="ghost" size="xs" class="shrink-0" title="Chuyển sang deny always" @click="flipTool(tool, 'deny')">→ deny</Button>
-                  <Button variant="destructive-ghost" size="icon-sm" class="shrink-0" title="Thu hồi" @click="revokeTool(tool)">
+                  <Badge tone="success" size="xs" class="shrink-0">{{ t('projectDetail.allow') }}</Badge>
+                  <Button variant="ghost" size="xs" class="shrink-0" :title="t('projectDetail.flipToDeny')" @click="flipTool(tool, 'deny')">→ {{ t('projectDetail.deny') }}</Button>
+                  <Button variant="destructive-ghost" size="icon-sm" class="shrink-0" :title="t('projectDetail.revoke')" @click="revokeTool(tool)">
                     <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
                   </Button>
                 </div>
               </div>
-              <p v-else class="text-[11px] text-muted-foreground">Chưa có tool nào.</p>
+              <p v-else class="text-[11px] text-muted-foreground">{{ t('projectDetail.noTools') }}</p>
             </div>
 
             <!-- Deny always -->
             <div class="px-4 py-3">
               <div class="flex items-center gap-2 mb-2">
                 <XCircle class="h-3.5 w-3.5 text-red-500" :stroke-width="1.75" />
-                <span class="text-[11px] font-semibold">Deny always</span>
+                <span class="text-[11px] font-semibold">{{ t('projectDetail.denyAlways') }}</span>
                 <span class="text-[10px] text-muted-foreground tabular-nums">{{ denyTools.length }}</span>
               </div>
               <div v-if="denyTools.length" class="space-y-1.5">
@@ -1433,14 +1406,14 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
                   class="flex items-center gap-2 rounded-md border border-border px-3 py-2"
                 >
                   <p class="flex-1 min-w-0 text-xs font-mono truncate" :title="tool">{{ tool }}</p>
-                  <Badge tone="error" size="xs" class="shrink-0">deny</Badge>
-                  <Button variant="ghost" size="xs" class="shrink-0" title="Chuyển sang allow always" @click="flipTool(tool, 'allow')">→ allow</Button>
-                  <Button variant="destructive-ghost" size="icon-sm" class="shrink-0" title="Thu hồi" @click="revokeTool(tool)">
+                  <Badge tone="error" size="xs" class="shrink-0">{{ t('projectDetail.deny') }}</Badge>
+                  <Button variant="ghost" size="xs" class="shrink-0" :title="t('projectDetail.flipToAllow')" @click="flipTool(tool, 'allow')">→ {{ t('projectDetail.allow') }}</Button>
+                  <Button variant="destructive-ghost" size="icon-sm" class="shrink-0" :title="t('projectDetail.revoke')" @click="revokeTool(tool)">
                     <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
                   </Button>
                 </div>
               </div>
-              <p v-else class="text-[11px] text-muted-foreground">Chưa có tool nào.</p>
+              <p v-else class="text-[11px] text-muted-foreground">{{ t('projectDetail.noTools') }}</p>
             </div>
           </Card>
         </div>
@@ -1460,11 +1433,11 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
                 <div class="flex items-center gap-1.5">
                   <p class="text-sm font-mono font-medium">{{ conflict.skill_name }}</p>
                   <Badge tone="neutral" size="xs" class="uppercase tracking-wide">
-                    Skill · {{ conflict.engine === 'codex' ? '.codex/skills' : '.claude/skills' }}
+                    {{ t('projectDetail.conflictSkillBadge', { path: conflict.engine === 'codex' ? '.codex/skills' : '.claude/skills' }) }}
                   </Badge>
                 </div>
                 <p class="text-xs text-muted-foreground mt-0.5">
-                  Local changes detected · {{ new Date(conflict.detected_at).toLocaleDateString() }}
+                  {{ t('projectDetail.localChangesDetected', { date: new Date(conflict.detected_at).toLocaleDateString() }) }}
                 </p>
               </div>
             </div>
@@ -1473,14 +1446,14 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
                 class="flex-1"
                 @click="projectStore.resolveConflict(conflict.id, true); projectStore.fetchConflicts()"
               >
-                Overwrite with central
+                {{ t('projectDetail.overwriteWithCentral') }}
               </Button>
               <Button
                 variant="outline"
                 class="flex-1"
                 @click="projectStore.resolveConflict(conflict.id, false); projectStore.fetchConflicts()"
               >
-                Keep local
+                {{ t('projectDetail.keepLocal') }}
               </Button>
             </div>
           </Card>
@@ -1498,11 +1471,11 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
                 <div class="flex items-center gap-1.5">
                   <p class="text-sm font-mono font-medium">{{ conflict.rule_name }}</p>
                   <Badge tone="neutral" size="xs" class="uppercase tracking-wide">
-                    Rule · {{ conflict.engine === 'claude' ? '.claude/rules' : 'AGENTS.md' }}
+                    {{ t('projectDetail.conflictRuleBadge', { path: conflict.engine === 'claude' ? '.claude/rules' : 'AGENTS.md' }) }}
                   </Badge>
                 </div>
                 <p class="text-xs text-muted-foreground mt-0.5">
-                  Local changes detected · {{ new Date(conflict.detected_at).toLocaleDateString() }}
+                  {{ t('projectDetail.localChangesDetected', { date: new Date(conflict.detected_at).toLocaleDateString() }) }}
                 </p>
               </div>
             </div>
@@ -1511,14 +1484,14 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
                 class="flex-1"
                 @click="projectStore.resolveRuleConflict(conflict.id, true)"
               >
-                Overwrite with central
+                {{ t('projectDetail.overwriteWithCentral') }}
               </Button>
               <Button
                 variant="outline"
                 class="flex-1"
                 @click="projectStore.resolveRuleConflict(conflict.id, false)"
               >
-                Keep local
+                {{ t('projectDetail.keepLocal') }}
               </Button>
             </div>
           </Card>

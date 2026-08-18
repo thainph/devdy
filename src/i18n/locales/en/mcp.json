@@ -1,0 +1,85 @@
+{
+  "list": {
+    "title": "MCP Servers",
+    "import": "Import",
+    "importing": "Importing…",
+    "newServer": "New Server",
+    "builtin": {
+      "active": "Built-in · active",
+      "disabled": "Built-in · disabled",
+      "description": "Auto-injected into every run. Gives the AI your notes, cross-session recall, project context (file tree & git) and managed VPS — as {tools} tools.",
+      "settings": "Settings"
+    },
+    "empty": {
+      "title": "No MCP servers yet",
+      "hint": "Define an MCP server once, then enable it per project"
+    },
+    "claudeOnly": "Claude only",
+    "claudeOnlyTitle": "SSE transport is only supported by Claude. Codex runs will skip this server.",
+    "disable": "Disable",
+    "enable": "Enable",
+    "exportTitle": "Export JSON (includes secrets)",
+    "recommended": "Recommended servers",
+    "adding": "Adding…",
+    "confirmDelete": {
+      "title": "Delete MCP server",
+      "message": "Delete MCP server \"{name}\"? This also removes its stored secrets. This cannot be undone."
+    },
+    "toast": {
+      "added": "Added \"{name}\" — open it to finish setup",
+      "imported": "Imported",
+      "exported": "Exported",
+      "deleted": "Deleted",
+      "disabled": "Disabled",
+      "enabled": "Enabled"
+    }
+  },
+  "editor": {
+    "backTitle": "Back to MCP Servers",
+    "newTitle": "New MCP Server",
+    "editing": "— editing",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "saving": "Saving…",
+    "general": "General",
+    "name": "Name",
+    "namePlaceholder": "my-mcp-server",
+    "description": "Description",
+    "descriptionPlaceholder": "What this server provides",
+    "transport": "Transport",
+    "sseWarning": "SSE is Claude-only; Codex runs support stdio and streamable HTTP.",
+    "process": "Process",
+    "command": "Command",
+    "commandPlaceholder": "npx",
+    "args": "Args (one per line)",
+    "environment": "Environment",
+    "noEnv": "No environment variables",
+    "keyPlaceholder": "KEY",
+    "valuePlaceholder": "value",
+    "unchangedPlaceholder": "•••••• (unchanged)",
+    "stored": "stored",
+    "storedTitle": "A value is stored; leave blank to keep it",
+    "endpoint": "Endpoint",
+    "url": "URL",
+    "urlPlaceholder": "https://example.com/mcp",
+    "headers": "Headers",
+    "noHeaders": "No headers",
+    "authorizationPlaceholder": "Authorization",
+    "connection": "Connection",
+    "testConnection": "Test connection",
+    "testing": "Testing…",
+    "saveFirst": "Save first to enable testing",
+    "validation": {
+      "nameRequired": "Name is required",
+      "nameFormat": "Name may only contain letters, numbers, hyphens, and underscores",
+      "commandRequired": "stdio transport requires a command",
+      "urlRequired": "{transport} transport requires a url",
+      "keyEmpty": "Secret key cannot be empty",
+      "duplicateKey": "Duplicate key \"{key}\""
+    },
+    "saveFirstThenTest": "Save the server first, then test its connection.",
+    "toast": {
+      "saved": "Saved"
+    }
+  }
+}

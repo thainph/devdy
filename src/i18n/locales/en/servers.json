@@ -1,0 +1,73 @@
+{
+  "list": {
+    "title": "Servers",
+    "newServer": "New Server",
+    "empty": {
+      "title": "No servers yet",
+      "hint": "Add a VPS once, then test its connection and reuse it across projects"
+    },
+    "status": {
+      "online": "Online",
+      "offline": "Offline",
+      "notChecked": "Not checked"
+    },
+    "testTitle": "Test connection",
+    "confirmDelete": {
+      "title": "Delete server",
+      "message": "Delete server \"{label}\"? This also removes its stored passphrase. This cannot be undone."
+    },
+    "toast": {
+      "deleted": "Deleted"
+    }
+  },
+  "editor": {
+    "backTitle": "Back to Servers",
+    "newTitle": "New Server",
+    "editing": "— editing",
+    "saving": "Saving…",
+    "general": "General",
+    "label": "Label",
+    "labelPlaceholder": "Production SG",
+    "host": "Host",
+    "hostPlaceholder": "1.2.3.4 or vps.example.com",
+    "port": "Port",
+    "username": "Username",
+    "usernamePlaceholder": "root",
+    "tags": "Tags",
+    "tagsPlaceholder": "prod, sg (comma-separated)",
+    "authentication": "Authentication",
+    "authMethod": "Auth method",
+    "authOptionAgent": "agent (ssh-agent)",
+    "authOptionKey": "key (private key file)",
+    "agentHint": "Uses the running ssh-agent; no key path needed.",
+    "privateKeyFile": "Private key file",
+    "selectedKeyFile": "Selected key file",
+    "storedKeyFile": "Stored key file",
+    "noPrivateKey": "No private key selected",
+    "change": "Change",
+    "choose": "Choose",
+    "clearSelectedKey": "Clear selected key",
+    "keyCopiedHint": "The selected key is copied into Devdy app data on save.",
+    "passphrase": "Passphrase",
+    "passphraseUnchanged": "•••••• (unchanged)",
+    "passphraseOptional": "optional",
+    "passphraseHint": "Stored in the OS keychain only. Leave blank to keep the existing value.",
+    "connection": "Connection",
+    "testConnection": "Test connection",
+    "testing": "Testing…",
+    "saveFirst": "Save first to enable testing",
+    "selectKeyDialog": "Select SSH Private Key",
+    "validation": {
+      "labelRequired": "Label is required",
+      "hostRequired": "Host is required",
+      "usernameRequired": "Username is required",
+      "portRange": "Port must be between 1 and 65535",
+      "keyRequired": "Auth method 'key' requires a private key file"
+    },
+    "serverNotFound": "Server not found",
+    "saveFirstThenTest": "Save the server first, then test its connection.",
+    "toast": {
+      "saved": "Saved"
+    }
+  }
+}

@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { resolveContextLimit, formatTokensShort } from '@/lib/contextLimits'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import type { RateLimitWindows } from '@/stores/liveRuns'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   /** Tokens currently occupying the context window (0 = nothing yet). */
@@ -68,7 +71,7 @@ const fiveHourText = computed(() => {
     <button
       v-if="isWarn"
       class="shrink-0 inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono cursor-pointer transition-colors text-amber-600 dark:text-amber-400 hover:bg-amber-500/10"
-      title="Compact the conversation to free up context (sends /compact)"
+      :title="t('misc.context.compactTitle')"
       @click="emit('compact')"
     >
       /compact
@@ -76,7 +79,7 @@ const fiveHourText = computed(() => {
     <span
       v-if="fiveHourText"
       class="shrink-0 font-mono text-muted-foreground/70"
-      title="claude.ai subscription 5-hour usage window"
+      :title="t('misc.context.fiveHourTitle')"
     >· {{ fiveHourText }}</span>
   </div>
 </template>

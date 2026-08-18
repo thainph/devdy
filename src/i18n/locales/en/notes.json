@@ -1,0 +1,36 @@
+{
+  "title": "Notes",
+  "newNote": "New note",
+  "createNote": "Create note",
+  "noProject": "No project",
+  "allProjects": "All projects",
+  "untitled": "Untitled note",
+  "searchPlaceholder": "Search by title / content…",
+  "clearSearch": "Clear search",
+  "dragToReorder": "Drag to reorder",
+  "empty": {
+    "title": "No notes yet",
+    "hint": "Create your first note to jot things down quickly. Attach it to a project to filter later."
+  },
+  "noResults": {
+    "title": "No notes found",
+    "clearFilters": "Clear filters"
+  },
+  "form": {
+    "titleLabel": "Title",
+    "titlePlaceholder": "Note title…",
+    "contentLabel": "Content",
+    "contentPlaceholder": "Content (Markdown)…",
+    "projectLabel": "Project",
+    "hint": "Markdown supported · {save} to save · {esc} to cancel"
+  },
+  "detail": {
+    "fallbackTitle": "Note",
+    "titlePlaceholder": "Title…",
+    "empty": "This note is empty."
+  },
+  "confirm": {
+    "deleteTitle": "Delete note",
+    "deleteMessage": "Remove this note?"
+  }
+}

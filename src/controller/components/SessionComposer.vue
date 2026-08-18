@@ -11,10 +11,13 @@
  * are inserted as backticked paths (mirroring the desktop's literal-path style).
  */
 import { computed, nextTick, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   Cpu, FileText, ImagePlus, Maximize2, Minimize2, Paperclip, Play, Send, Sparkles, Square, X,
 } from 'lucide-vue-next'
 import { Button, AppSelect } from '@/components/ui'
+
+const { t } = useI18n()
 import { modelOptionsFor, PERMISSION_MODE_OPTIONS, type SelectOption } from '@/lib/engineOptions'
 import type { CmdAttachment, SlashCommand } from '../protocol'
 
@@ -75,11 +78,11 @@ const imageInputEl = ref<HTMLInputElement | null>(null)
 const fileInputEl = ref<HTMLInputElement | null>(null)
 
 // ── engine/model options ──────────────────────────────────────────────────
-const engineOptions: SelectOption[] = [
-  { value: '', label: 'Default engine' },
+const engineOptions = computed<SelectOption[]>(() => [
+  { value: '', label: t('controller.composer.defaultEngine') },
   { value: 'claude', label: 'claude' },
   { value: 'codex', label: 'codex' },
-]
+])
 const modelOptions = computed(() => modelOptionsFor(props.engine || 'claude'))
 
 function onEngineChange(next: string): void {
@@ -115,7 +118,7 @@ function addImageFile(file: File | null): void {
   if (!file || !file.type.startsWith('image/')) return
   if (file.size > MAX_IMAGE_BYTES) {
     // eslint-disable-next-line no-alert
-    alert(`Ảnh quá lớn (tối đa ${MAX_IMAGE_BYTES / 1024 / 1024}MB).`)
+    alert(t('controller.composer.imageTooLarge', { size: MAX_IMAGE_BYTES / 1024 / 1024 }))
     return
   }
   const reader = new FileReader()
@@ -155,7 +158,7 @@ function addAttachedFile(file: File): void {
   }
   if (file.size > MAX_IMAGE_BYTES) {
     // eslint-disable-next-line no-alert
-    alert(`File quá lớn (tối đa ${MAX_IMAGE_BYTES / 1024 / 1024}MB).`)
+    alert(t('controller.composer.fileTooLarge', { size: MAX_IMAGE_BYTES / 1024 / 1024 }))
     return
   }
   const id = `file-${fileSeq++}`
@@ -360,10 +363,23 @@ const hasContent = computed(
   () => text.value.trim().length > 0 || pendingImages.value.length > 0 || pendingFiles.value.length > 0,
 )
 
+const sendKind = computed<'sending' | 'send' | 'resume' | 'run'>(() => {
+  if (props.sending) return 'sending'
+  if (props.running) return 'send'
+  return hasContent.value ? 'resume' : 'run'
+})
+
 const sendLabel = computed(() => {
-  if (props.sending) return 'Sending…'
-  if (props.running) return 'Send'
-  return hasContent.value ? 'Resume' : 'Run'
+  switch (sendKind.value) {
+    case 'sending':
+      return t('controller.composer.sending')
+    case 'send':
+      return t('controller.composer.send')
+    case 'resume':
+      return t('controller.composer.resume')
+    default:
+      return t('controller.composer.run')
+  }
 })
 
 const primaryDisabled = computed(() => {
@@ -375,8 +391,8 @@ const primaryDisabled = computed(() => {
 
 const placeholder = computed(() =>
   props.running
-    ? 'Send a follow-up — Enter to send, Shift+Enter for newline'
-    : 'Type a prompt — Enter to run (mention files with @)',
+    ? t('controller.composer.placeholderRunning')
+    : t('controller.composer.placeholderIdle'),
 )
 
 function collectMentions(): string[] {
@@ -521,7 +537,7 @@ function onKeydown(e: KeyboardEvent): void {
           <img :src="img.url" class="h-full w-full object-cover" alt="attachment" />
           <button
             class="absolute top-0.5 right-0.5 h-4 w-4 rounded-full bg-background/80 border border-border flex items-center justify-center text-foreground/70 hover:text-foreground hover:bg-background cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
-            title="Remove image"
+            :title="t('controller.composer.removeImage')"
             @click="removePendingImage(img.id)"
           >
             <X class="h-2.5 w-2.5" :stroke-width="2.5" />
@@ -541,7 +557,7 @@ function onKeydown(e: KeyboardEvent): void {
           <span class="truncate font-mono">{{ file.name }}</span>
           <button
             class="h-4 w-4 rounded-full flex items-center justify-center text-foreground/50 hover:text-foreground hover:bg-background cursor-pointer shrink-0"
-            title="Remove file"
+            :title="t('controller.composer.removeFile')"
             @click="removePendingFile(file.id)"
           >
             <X class="h-2.5 w-2.5" :stroke-width="2.5" />
@@ -593,7 +609,7 @@ function onKeydown(e: KeyboardEvent): void {
               :options="PERMISSION_MODE_OPTIONS"
               :disabled="running"
               class="flex-1 min-w-0 h-8"
-              title="Permission mode (UI only — the host asks for each tool call)"
+              :title="t('controller.composer.permTitle')"
               @update:model-value="emit('update:permissionMode', $event)"
             >
               <template #leading>
@@ -607,7 +623,7 @@ function onKeydown(e: KeyboardEvent): void {
               :options="modelOptions"
               :disabled="running"
               class="flex-1 min-w-0 h-8"
-              title="Model (empty = engine/settings default)"
+              :title="t('controller.composer.modelTitle')"
               @update:model-value="emit('update:model', $event)"
             >
               <template #leading>
@@ -621,7 +637,7 @@ function onKeydown(e: KeyboardEvent): void {
             <button
               class="inline-flex items-center justify-center h-8 w-8 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 shrink-0"
               :disabled="disabled || sending"
-              title="Attach image (or paste from clipboard)"
+              :title="t('controller.composer.attachImage')"
               @click="imageInputEl?.click()"
             >
               <ImagePlus class="h-4 w-4" :stroke-width="2" />
@@ -629,14 +645,14 @@ function onKeydown(e: KeyboardEvent): void {
             <button
               class="inline-flex items-center justify-center h-8 w-8 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 shrink-0"
               :disabled="disabled || sending"
-              title="Attach a file"
+              :title="t('controller.composer.attachFile')"
               @click="fileInputEl?.click()"
             >
               <Paperclip class="h-4 w-4" :stroke-width="2" />
             </button>
             <button
               class="inline-flex items-center justify-center h-8 w-8 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 shrink-0"
-              :title="composerExpanded ? 'Thu gọn ô soạn thảo' : 'Mở rộng ô soạn thảo'"
+              :title="composerExpanded ? t('controller.composer.collapseComposer') : t('controller.composer.expandComposer')"
               @click="toggleExpand"
             >
               <component :is="composerExpanded ? Minimize2 : Maximize2" class="h-4 w-4" :stroke-width="2" />
@@ -647,18 +663,18 @@ function onKeydown(e: KeyboardEvent): void {
                 v-if="running"
                 variant="destructive"
                 class="h-8 shrink-0"
-                title="Cancel the running turn"
+                :title="t('controller.composer.cancelTitle')"
                 @click="emit('cancel')"
               >
                 <Square class="h-3.5 w-3.5" :stroke-width="2" fill="currentColor" />
-                Cancel
+                {{ t('controller.composer.cancel') }}
               </Button>
               <button
                 class="inline-flex items-center justify-center gap-1.5 h-8 px-3.5 text-xs bg-primary text-primary-foreground rounded-md hover:opacity-90 transition-opacity cursor-pointer disabled:opacity-50 shrink-0"
                 :disabled="primaryDisabled"
                 @click="submit"
               >
-                <component :is="sendLabel === 'Run' ? Play : Send" class="h-3.5 w-3.5" :stroke-width="2" />
+                <component :is="sendKind === 'run' ? Play : Send" class="h-3.5 w-3.5" :stroke-width="2" />
                 {{ sendLabel }}
               </button>
             </div>

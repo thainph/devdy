@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useNotesStore } from '@/stores/notes'
 import { useProjectsStore } from '@/stores/projects'
 import { Button, Card, Drawer, Input, AppSelect } from '@/components/ui'
@@ -9,6 +10,7 @@ import { useMarkdown } from '@/lib/markdown'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { Plus, GripVertical, Trash2, StickyNote, Pencil, Search, X, FolderOpen } from 'lucide-vue-next'
 
+const { t } = useI18n()
 const store = useNotesStore()
 const projectsStore = useProjectsStore()
 const { confirm } = useConfirm()
@@ -34,14 +36,14 @@ function projectName(id: string | null): string | null {
 
 // Options for the add form / detail drawer: "no project" + every project.
 const projectSelectOptions = computed(() => [
-  { value: PROJECT_NONE, label: 'No project' },
+  { value: PROJECT_NONE, label: t('notes.noProject') },
   ...projectsStore.projects.map(p => ({ value: p.id, label: p.name })),
 ])
 
 // Options for the filter bar: all / none / every project.
 const projectFilterOptions = computed(() => [
-  { value: FILTER_ALL, label: 'All projects' },
-  { value: FILTER_NONE, label: 'No project' },
+  { value: FILTER_ALL, label: t('notes.allProjects') },
+  { value: FILTER_NONE, label: t('notes.noProject') },
   ...projectsStore.projects.map(p => ({ value: p.id, label: p.name })),
 ])
 
@@ -82,7 +84,7 @@ function clearFilters() {
 function displayTitle(note: { title: string; content: string }): string {
   if (note.title.trim()) return note.title.trim()
   const firstLine = note.content.split('\n').find(l => l.trim())
-  return firstLine?.trim() || 'Untitled note'
+  return firstLine?.trim() || t('notes.untitled')
 }
 
 // --- Create drawer ------------------------------------------------------------
@@ -207,9 +209,9 @@ function onDetailEditKeydown(e: KeyboardEvent) {
 async function deleteFromDetail() {
   if (!detailNote.value) return
   if (!(await confirm({
-    title: 'Delete note',
-    message: 'Remove this note?',
-    confirmLabel: 'Delete',
+    title: t('notes.confirm.deleteTitle'),
+    message: t('notes.confirm.deleteMessage'),
+    confirmLabel: t('common.delete'),
   }))) return
   const id = detailNote.value.id
   closeDetail()
@@ -269,7 +271,7 @@ onBeforeUnmount(() => {
     <!-- Page header -->
     <div class="flex items-center justify-between px-6 h-13 border-b border-border/60 shrink-0">
       <div class="flex items-center gap-2">
-        <h1 class="text-sm font-semibold">Notes</h1>
+        <h1 class="text-sm font-semibold">{{ t('notes.title') }}</h1>
         <span
           v-if="store.notes.length > 0"
           class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-medium text-muted-foreground"
@@ -279,7 +281,7 @@ onBeforeUnmount(() => {
       </div>
       <Button @click="openCreate">
         <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-        New note
+        {{ t('notes.newNote') }}
       </Button>
     </div>
 
@@ -292,14 +294,14 @@ onBeforeUnmount(() => {
             <Search class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.75" />
             <Input
               v-model="search"
-              placeholder="Search by title / content…"
+              :placeholder="t('notes.searchPlaceholder')"
               class="pl-8"
             />
             <button
               v-if="search"
               type="button"
               class="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer"
-              title="Clear search"
+              :title="t('notes.clearSearch')"
               @click="search = ''"
             >
               <X class="h-3.5 w-3.5" :stroke-width="2" />
@@ -328,11 +330,11 @@ onBeforeUnmount(() => {
           <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-muted mb-4">
             <StickyNote class="h-6 w-6 text-muted-foreground" :stroke-width="1.5" />
           </div>
-          <p class="text-sm font-medium">No notes yet</p>
-          <p class="text-xs text-muted-foreground mt-1 mb-4 max-w-56">Create your first note to jot things down quickly. Attach it to a project to filter later.</p>
+          <p class="text-sm font-medium">{{ t('notes.empty.title') }}</p>
+          <p class="text-xs text-muted-foreground mt-1 mb-4 max-w-56">{{ t('notes.empty.hint') }}</p>
           <Button size="md" @click="openCreate">
             <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-            Create note
+            {{ t('notes.createNote') }}
           </Button>
         </div>
 
@@ -341,13 +343,13 @@ onBeforeUnmount(() => {
           v-else-if="filteredNotes.length === 0"
           class="flex flex-col items-center justify-center text-center min-h-40"
         >
-          <p class="text-sm font-medium">No notes found</p>
+          <p class="text-sm font-medium">{{ t('notes.noResults.title') }}</p>
           <button
             type="button"
             class="text-xs text-primary hover:underline mt-1 cursor-pointer"
             @click="clearFilters"
           >
-            Clear filters
+            {{ t('notes.noResults.clearFilters') }}
           </button>
         </div>
 
@@ -370,7 +372,7 @@ onBeforeUnmount(() => {
               <span
                 v-if="!isFiltered"
                 class="mt-0.5 shrink-0 cursor-grab text-muted-foreground/30 transition-colors group-hover:text-muted-foreground active:cursor-grabbing touch-none"
-                title="Drag to reorder"
+                :title="t('notes.dragToReorder')"
                 @click.stop
                 @pointerdown="startDrag(index, $event)"
               >
@@ -399,30 +401,30 @@ onBeforeUnmount(() => {
     >
       <template #header>
         <Plus class="h-4 w-4 text-muted-foreground shrink-0" :stroke-width="1.75" />
-        <h3 class="text-sm font-semibold flex-1 truncate">New note</h3>
+        <h3 class="text-sm font-semibold flex-1 truncate">{{ t('notes.newNote') }}</h3>
       </template>
 
       <div class="p-5">
-        <label class="block text-[11px] font-medium text-muted-foreground mb-1">Title</label>
+        <label class="block text-[11px] font-medium text-muted-foreground mb-1">{{ t('notes.form.titleLabel') }}</label>
         <Input
           ref="createTitleRef"
           v-model="draftTitle"
-          placeholder="Note title…"
+          :placeholder="t('notes.form.titlePlaceholder')"
           class="mb-4 font-medium"
           @keydown="onCreateKeydown"
         />
 
-        <label class="block text-[11px] font-medium text-muted-foreground mb-1">Content</label>
+        <label class="block text-[11px] font-medium text-muted-foreground mb-1">{{ t('notes.form.contentLabel') }}</label>
         <textarea
           v-model="draftContent"
-          placeholder="Content (Markdown)…"
+          :placeholder="t('notes.form.contentPlaceholder')"
           class="w-full min-h-[45vh] resize-y rounded-md border border-border bg-background px-3 py-2 text-sm leading-relaxed font-mono focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           @keydown="onCreateKeydown"
         />
 
         <div class="mt-4">
-          <label class="block text-[11px] font-medium text-muted-foreground mb-1">Project</label>
-          <AppSelect v-model="draftProject" :options="projectSelectOptions" placeholder="No project">
+          <label class="block text-[11px] font-medium text-muted-foreground mb-1">{{ t('notes.form.projectLabel') }}</label>
+          <AppSelect v-model="draftProject" :options="projectSelectOptions" :placeholder="t('notes.noProject')">
             <template #leading>
               <FolderOpen class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.75" />
             </template>
@@ -430,16 +432,16 @@ onBeforeUnmount(() => {
         </div>
 
         <p class="mt-3 text-[11px] text-muted-foreground">
-          Markdown supported · <span class="font-medium">⌘/Ctrl+Enter</span> to save · <span class="font-medium">Esc</span> to cancel
+          {{ t('notes.form.hint', { save: '⌘/Ctrl+Enter', esc: 'Esc' }) }}
         </p>
       </div>
 
       <template #footer>
         <div class="flex flex-1 items-center justify-end gap-2">
-          <Button variant="ghost" size="sm" @click="closeCreate">Cancel</Button>
+          <Button variant="ghost" size="sm" @click="closeCreate">{{ t('common.cancel') }}</Button>
           <Button size="sm" :disabled="!draftTitle.trim() && !draftContent.trim()" @click="handleAdd">
             <Plus class="h-3.5 w-3.5" :stroke-width="1.75" />
-            Create note
+            {{ t('notes.createNote') }}
           </Button>
         </div>
       </template>
@@ -455,30 +457,30 @@ onBeforeUnmount(() => {
       <template #header>
         <StickyNote class="h-4 w-4 text-muted-foreground shrink-0" :stroke-width="1.75" />
         <h3 class="text-sm font-semibold flex-1 truncate">
-          {{ detailNote ? displayTitle(detailNote) : 'Note' }}
+          {{ detailNote ? displayTitle(detailNote) : t('notes.detail.fallbackTitle') }}
         </h3>
       </template>
 
       <div v-if="detailNote" class="p-5">
         <!-- Edit mode -->
         <template v-if="detailEditing">
-          <Input v-model="editTitle" placeholder="Title…" class="mb-2 font-medium" />
+          <Input v-model="editTitle" :placeholder="t('notes.detail.titlePlaceholder')" class="mb-2 font-medium" />
           <textarea
             v-model="editContent"
-            placeholder="Content (Markdown)…"
+            :placeholder="t('notes.form.contentPlaceholder')"
             class="w-full min-h-[45vh] resize-y rounded-md border border-border bg-background px-3 py-2 text-sm leading-relaxed font-mono focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             @keydown="onDetailEditKeydown"
           />
           <div class="mt-3">
-            <label class="block text-[11px] font-medium text-muted-foreground mb-1">Project</label>
-            <AppSelect v-model="editProject" :options="projectSelectOptions" placeholder="No project">
+            <label class="block text-[11px] font-medium text-muted-foreground mb-1">{{ t('notes.form.projectLabel') }}</label>
+            <AppSelect v-model="editProject" :options="projectSelectOptions" :placeholder="t('notes.noProject')">
               <template #leading>
                 <FolderOpen class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.75" />
               </template>
             </AppSelect>
           </div>
           <p class="mt-2 text-[11px] text-muted-foreground">
-            Markdown supported · <span class="font-medium">⌘/Ctrl+Enter</span> to save · <span class="font-medium">Esc</span> to cancel
+            {{ t('notes.form.hint', { save: '⌘/Ctrl+Enter', esc: 'Esc' }) }}
           </p>
         </template>
 
@@ -490,7 +492,7 @@ onBeforeUnmount(() => {
             @click="handleLinkClick"
             v-html="renderText(detailNote.content)"
           />
-          <p v-else class="text-sm text-muted-foreground italic">This note is empty.</p>
+          <p v-else class="text-sm text-muted-foreground italic">{{ t('notes.detail.empty') }}</p>
           <div v-if="projectName(detailNote.project_id)" class="mt-4 flex items-center gap-1.5 text-xs text-muted-foreground border-t border-border/60 pt-3">
             <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" />
             <span>{{ projectName(detailNote.project_id) }}</span>
@@ -501,19 +503,19 @@ onBeforeUnmount(() => {
       <template #footer>
         <template v-if="detailEditing">
           <div class="flex flex-1 items-center justify-end gap-2">
-            <Button variant="ghost" size="sm" @click="cancelDetailEdit">Cancel</Button>
-            <Button size="sm" :disabled="!editTitle.trim() && !editContent.trim()" @click="commitDetailEdit">Save</Button>
+            <Button variant="ghost" size="sm" @click="cancelDetailEdit">{{ t('common.cancel') }}</Button>
+            <Button size="sm" :disabled="!editTitle.trim() && !editContent.trim()" @click="commitDetailEdit">{{ t('common.save') }}</Button>
           </div>
         </template>
         <template v-else>
           <Button variant="destructive" size="sm" @click="deleteFromDetail">
             <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-            Delete
+            {{ t('common.delete') }}
           </Button>
           <div class="flex-1" />
           <Button size="sm" @click="startDetailEdit">
             <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
-            Edit
+            {{ t('common.edit') }}
           </Button>
         </template>
       </template>

@@ -8,6 +8,7 @@
 // resolve logic (shiftPermission + respond_permission), so there is exactly one
 // writer and no double-handling.
 import { onMounted, onBeforeUnmount, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { Pin, PinOff, Inbox } from 'lucide-vue-next'
@@ -16,6 +17,7 @@ import { Pin, PinOff, Inbox } from 'lucide-vue-next'
 // to announce its own close.
 import PermissionPrompt, { type PermissionRequest } from '@/components/PermissionPrompt.vue'
 import { useMarkdown } from '@/lib/markdown'
+const { t } = useI18n()
 
 const { renderText, loadMarkdown } = useMarkdown()
 
@@ -82,15 +84,15 @@ async function togglePin() {
     <!-- Slim titlebar: pin toggle so the user can drop always-on-top if it
          gets in the way while comparing against the chat on another monitor. -->
     <div class="flex items-center gap-2 px-3 h-9 border-b border-border/60 shrink-0">
-      <span class="text-xs font-medium text-foreground/70">Claude — Permission</span>
+      <span class="text-xs font-medium text-foreground/70">{{ t('permission.window.headerLabel') }}</span>
       <button
         type="button"
         class="ml-auto flex items-center gap-1 rounded px-1.5 py-1 text-[11px] text-foreground/60 hover:bg-accent/60 hover:text-foreground transition-colors cursor-pointer"
-        :title="pinned ? 'Đang ghim trên cùng — bấm để bỏ ghim' : 'Ghim luôn trên cùng'"
+        :title="pinned ? t('permission.window.pinnedTitle') : t('permission.window.pinTitle')"
         @click="togglePin"
       >
         <component :is="pinned ? Pin : PinOff" class="h-3.5 w-3.5" :stroke-width="1.75" />
-        {{ pinned ? 'Pinned' : 'Pin' }}
+        {{ pinned ? t('permission.window.pinned') : t('permission.window.pin') }}
       </button>
     </div>
 
@@ -108,8 +110,8 @@ async function togglePin() {
       <div v-else class="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
         <Inbox class="h-8 w-8 text-foreground/20" :stroke-width="1" />
         <p class="text-xs text-foreground/40">
-          Chưa có yêu cầu nào đang chờ.<br />
-          Câu hỏi / xin quyền của run đang xem sẽ hiện ở đây.
+          {{ t('permission.window.emptyTitle') }}<br />
+          {{ t('permission.window.emptyBody') }}
         </p>
       </div>
     </div>

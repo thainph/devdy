@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { useSkillsStore, type SkillTarget } from '@/stores/skills'
 import SkillEditor from '@/components/SkillEditor.vue'
@@ -10,6 +11,7 @@ import { applyMermaidFence, vMermaid } from '@/lib/mermaid'
 import { vCopyCode } from '@/lib/copyCode'
 import { ArrowLeft, FileCode2, Save, LayoutTemplate, AlertCircle, FolderOpen } from 'lucide-vue-next'
 
+const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const store = useSkillsStore()
@@ -73,7 +75,7 @@ function normalizeFrontmatter(raw: string): { content: string; changed: boolean;
   for (let i = 1; i < lines.length; i++) {
     if (lines[i].trim() === '---') { end = i; break }
   }
-  if (end === -1) return { content: raw, changed: false, error: 'Frontmatter is missing its closing `---`' }
+  if (end === -1) return { content: raw, changed: false, error: t('skills.editor.errFrontmatterMissingClose') }
 
   const keyRe = /^([A-Za-z0-9_-]+):[ \t]?(.*)$/
   const out: string[] = []
@@ -83,7 +85,7 @@ function normalizeFrontmatter(raw: string): { content: string; changed: boolean;
     const line = lines[i]
     if (line.trim() === '' || line.trimStart().startsWith('#')) { out.push(line); i++; continue }
     const km = line.match(keyRe)
-    if (!km) return { content: raw, changed: false, error: `Invalid frontmatter line (expected \`key: value\`): ${line.trim()}` }
+    if (!km) return { content: raw, changed: false, error: t('skills.editor.errInvalidLine', { line: line.trim() }) }
     const key = km[1]
     let value = km[2]
     // Block scalars (| or >) are already valid YAML — copy them and their indented body verbatim.
@@ -114,11 +116,11 @@ function normalizeFrontmatter(raw: string): { content: string; changed: boolean;
 function validateFrontmatter(raw: string): string | null {
   const norm = normalizeFrontmatter(raw)
   if (norm.error) return norm.error
-  const { name: n, description: d, target: t } = parseFrontmatter(norm.content)
-  if (!n) return 'Frontmatter missing required field: name'
-  if (!/^[a-zA-Z0-9_-]+$/.test(n)) return 'name must be a slug (letters, numbers, hyphens, underscores)'
-  if (!d) return 'Frontmatter missing required field: description'
-  if (t && !['claude', 'codex', 'both'].includes(t)) return 'target must be one of: claude, codex, both'
+  const { name: n, description: d, target: t2 } = parseFrontmatter(norm.content)
+  if (!n) return t('skills.editor.errMissingName')
+  if (!/^[a-zA-Z0-9_-]+$/.test(n)) return t('skills.editor.errNameSlug')
+  if (!d) return t('skills.editor.errMissingDescription')
+  if (t2 && !['claude', 'codex', 'both'].includes(t2)) return t('skills.editor.errTargetInvalid')
   return null
 }
 
@@ -190,15 +192,15 @@ async function handleSave() {
   if (err) { validationError.value = err; return }
 
   const fm = parseFrontmatter(content.value)
-  const t = (fm.target || 'both') as SkillTarget
+  const tgt = (fm.target || 'both') as SkillTarget
   saving.value = true
   try {
     if (isNew.value) {
-      await store.createSkill({ name: fm.name, description: fm.description, target: t, content: content.value })
+      await store.createSkill({ name: fm.name, description: fm.description, target: tgt, content: content.value })
     } else {
-      await store.updateSkill({ id: skillId.value!, name: fm.name, description: fm.description, target: t, content: content.value })
+      await store.updateSkill({ id: skillId.value!, name: fm.name, description: fm.description, target: tgt, content: content.value })
     }
-    toast.success('Saved')
+    toast.success(t('skills.editor.toastSaved'))
     router.push('/skills')
   } catch (e) {
     toast.error(String(e))
@@ -215,7 +217,7 @@ async function handleSave() {
       <Button
         variant="ghost"
         size="icon-sm"
-        title="Back to Skills"
+        :title="t('skills.editor.backToSkills')"
         @click="router.push('/skills')"
       >
         <ArrowLeft class="h-4 w-4" :stroke-width="1.75" />
@@ -225,22 +227,22 @@ async function handleSave() {
 
       <div class="flex items-center gap-1.5 text-sm">
         <FileCode2 class="h-4 w-4 text-muted-foreground" :stroke-width="1.5" />
-        <span class="font-medium">{{ isNew ? 'New Skill' : (name || '…') }}</span>
-        <span v-if="!isNew" class="text-muted-foreground font-normal">— editing</span>
+        <span class="font-medium">{{ isNew ? t('skills.editor.newSkill') : (name || '…') }}</span>
+        <span v-if="!isNew" class="text-muted-foreground font-normal">{{ t('skills.editor.editing') }}</span>
       </div>
 
       <div class="w-px h-4 bg-border/60 mx-1" />
 
       <div class="flex items-center gap-1.5">
-        <span class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Target</span>
+        <span class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('skills.editor.target') }}</span>
         <AppSelect
           :model-value="target"
           size="sm"
           class="w-28"
           :options="[
-            { value: 'both', label: 'Both' },
-            { value: 'claude', label: 'Claude' },
-            { value: 'codex', label: 'Codex' },
+            { value: 'both', label: t('skills.editor.targetBoth') },
+            { value: 'claude', label: t('skills.editor.targetClaude') },
+            { value: 'codex', label: t('skills.editor.targetCodex') },
           ]"
           @update:model-value="(v: string) => setTarget(v as SkillTarget)"
         />
@@ -251,20 +253,20 @@ async function handleSave() {
       <Button
         variant="outline"
         @click="editorRef?.insertTemplate()"
-        title="Insert frontmatter template"
+        :title="t('skills.editor.insertTemplate')"
       >
         <LayoutTemplate class="h-3.5 w-3.5" :stroke-width="1.75" />
-        Template
+        {{ t('skills.editor.template') }}
       </Button>
 
       <Button
         v-if="!isNew && sourcePath"
         variant="outline"
-        title="Open skill folder in Finder"
+        :title="t('skills.editor.openFolder')"
         @click="openSkillFolder"
       >
         <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" />
-        Open in Finder
+        {{ t('skills.editor.openInFinder') }}
       </Button>
 
       <!-- Validation error inline -->
@@ -279,16 +281,16 @@ async function handleSave() {
       <Button
         :disabled="saving || !!validationError"
         @click="handleSave"
-        title="Save (⌘S)"
+        :title="t('skills.editor.save')"
       >
         <Save class="h-3.5 w-3.5" :stroke-width="2" />
-        {{ saving ? 'Saving…' : 'Save' }}
+        {{ saving ? t('skills.editor.saving') : t('common.save') }}
       </Button>
     </div>
 
     <!-- Loading -->
     <div v-if="loading" class="flex-1 flex items-center justify-center text-muted-foreground text-sm">
-      Loading…
+      {{ t('common.loading') }}
     </div>
 
     <!-- Split view -->
@@ -296,7 +298,7 @@ async function handleSave() {
       <!-- Editor pane -->
       <div class="flex-1 border-r border-border/60 overflow-hidden flex flex-col">
         <div class="flex items-center gap-1.5 px-3 py-1.5 border-b border-border/40 bg-muted/30">
-          <span class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Markdown</span>
+          <span class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('skills.editor.markdown') }}</span>
         </div>
         <SkillEditor
           ref="editorRef"
@@ -311,7 +313,7 @@ async function handleSave() {
       <!-- Preview pane -->
       <div class="flex-1 overflow-auto flex flex-col">
         <div class="flex items-center gap-1.5 px-3 py-1.5 border-b border-border/40 bg-muted/30 shrink-0">
-          <span class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Preview</span>
+          <span class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('skills.editor.preview') }}</span>
         </div>
         <div class="flex-1 overflow-auto p-5">
           <div

@@ -50,6 +50,42 @@ const DAY = 86_400_000
 const NOT_STARTED = new Set(['', 'todo', 'to do', 'backlog', 'triage', 'no status', 'chưa bắt đầu'])
 const DONE = new Set(['done', 'closed', 'complete', 'completed', 'hoàn thành', 'shipped'])
 
+// Cross-window persistence. Each Tauri window is its own webview/JS context, so
+// the in-memory Map cache below is NOT shared — a freshly opened Gantt pop-out
+// starts empty. localStorage IS shared across same-origin windows, so we mirror
+// each fetched board there: a new window (or an app restart) can hydrate the
+// chart instantly from the last snapshot instead of blocking on a full GitHub
+// round-trip, then revalidate in the background when the snapshot is stale.
+const PERSIST_PREFIX = 'devdy:ganttBoard:'
+// Snapshots newer than this are served as-is with no network call at all.
+const REVALIDATE_MS = 5 * 60 * 1000
+
+interface PersistedBoard {
+  savedAt: number
+  board: MilestoneBoard
+}
+
+function readPersisted(projectId: string): PersistedBoard | null {
+  try {
+    const raw = localStorage.getItem(PERSIST_PREFIX + projectId)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as PersistedBoard
+    if (!parsed?.board?.milestones) return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function writePersisted(projectId: string, board: MilestoneBoard) {
+  try {
+    const payload: PersistedBoard = { savedAt: Date.now(), board }
+    localStorage.setItem(PERSIST_PREFIX + projectId, JSON.stringify(payload))
+  } catch {
+    // Quota exceeded / serialization issue — persistence is best-effort.
+  }
+}
+
 export const useProjectIssuesStore = defineStore('projectIssues', () => {
   const board = ref<MilestoneBoard | null>(null)
   const loading = ref(false)
@@ -60,18 +96,57 @@ export const useProjectIssuesStore = defineStore('projectIssues', () => {
   const staleDays = ref(14)
   const atRiskDays = ref(7)
 
-  async function refresh(projectId: string) {
-    loading.value = true
-    error.value = null
+  // Per-project cache so switching back to an already-loaded project is instant.
+  const cache = new Map<string, MilestoneBoard>()
+
+  async function refresh(projectId: string, opts: { force?: boolean } = {}) {
     currentProjectId.value = projectId
-    try {
-      board.value = await invoke<MilestoneBoard>('list_milestone_board', { projectId })
-      lastRefreshedAt.value = new Date().toISOString()
-    } catch (e) {
-      error.value = String(e)
-      board.value = null
-    } finally {
+    error.value = null
+
+    // Seed from the fastest source available: this session's in-memory cache
+    // first, then the cross-window localStorage snapshot. This is what lets a
+    // freshly opened Gantt window (or a cold app start) paint the chart at once
+    // using data the main window already fetched, instead of a blank skeleton.
+    const mem = cache.get(projectId)
+    const persisted = mem ? null : readPersisted(projectId)
+    const seed = mem ?? persisted?.board ?? null
+    board.value = seed
+    if (persisted && !mem) cache.set(projectId, persisted.board)
+    if (persisted?.savedAt) lastRefreshedAt.value = new Date(persisted.savedAt).toISOString()
+
+    // Serve cached data without any network round-trip when it's fresh enough:
+    // in-memory always counts as fresh (same session); a persisted snapshot only
+    // within REVALIDATE_MS. `force` (the Refresh button) always bypasses this.
+    const persistedFresh = !!persisted && Date.now() - persisted.savedAt < REVALIDATE_MS
+    if (seed && !opts.force && (!!mem || persistedFresh)) {
       loading.value = false
+      return
+    }
+
+    // Otherwise fetch. Only show the full skeleton when there's nothing to show;
+    // if seed data is already painted, revalidate silently in the background.
+    loading.value = !seed
+    try {
+      const result = await invoke<MilestoneBoard>('list_milestone_board', { projectId })
+      cache.set(projectId, result)
+      writePersisted(projectId, result)
+      // Only apply if this is still the active project (guards fast switching).
+      if (currentProjectId.value === projectId) {
+        board.value = result
+        lastRefreshedAt.value = new Date().toISOString()
+      }
+    } catch (e) {
+      if (currentProjectId.value === projectId) {
+        // Keep any seed data on screen; only surface the error when we have
+        // nothing else to show (a silent background revalidate shouldn't wipe
+        // a perfectly good cached chart just because the network hiccuped).
+        if (!seed) {
+          error.value = String(e)
+          board.value = null
+        }
+      }
+    } finally {
+      if (currentProjectId.value === projectId) loading.value = false
     }
   }
 

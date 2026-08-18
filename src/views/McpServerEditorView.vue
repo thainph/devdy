@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import {
   useMcpServersStore,
@@ -17,6 +18,7 @@ const route = useRoute()
 const router = useRouter()
 const store = useMcpServersStore()
 const { toast } = useToast()
+const { t } = useI18n()
 
 const isNew = computed(() => route.name === 'mcp-new')
 const serverId = computed(() => route.params.id as string | undefined)
@@ -53,6 +55,9 @@ const transportOptions = [
   { value: 'http', label: 'http (remote)' },
   { value: 'sse', label: 'sse (remote)' },
 ]
+
+// stdio (local process) / http (remote) / sse (remote) are technical protocol
+// tokens and stay verbatim.
 
 onMounted(async () => {
   if (!isNew.value && serverId.value) {
@@ -110,21 +115,21 @@ function toSecretEntries(rows: SecretRow[]): SecretEntry[] {
 }
 
 function validate(): string | null {
-  if (!name.value.trim()) return 'Name is required'
+  if (!name.value.trim()) return t('mcp.editor.validation.nameRequired')
   if (!/^[a-zA-Z0-9_-]+$/.test(name.value.trim())) {
-    return 'Name may only contain letters, numbers, hyphens, and underscores'
+    return t('mcp.editor.validation.nameFormat')
   }
   if (transport.value === 'stdio') {
-    if (!command.value.trim()) return 'stdio transport requires a command'
+    if (!command.value.trim()) return t('mcp.editor.validation.commandRequired')
   } else if (!url.value.trim()) {
-    return `${transport.value} transport requires a url`
+    return t('mcp.editor.validation.urlRequired', { transport: transport.value })
   }
   const rows = isRemote.value ? headerRows.value : envRows.value
   const seen = new Set<string>()
   for (const r of rows) {
     const k = r.key.trim()
-    if (!k) return 'Secret key cannot be empty'
-    if (seen.has(k)) return `Duplicate key "${k}"`
+    if (!k) return t('mcp.editor.validation.keyEmpty')
+    if (seen.has(k)) return t('mcp.editor.validation.duplicateKey', { key: k })
     seen.add(k)
   }
   return null
@@ -132,7 +137,7 @@ function validate(): string | null {
 
 async function handleTest() {
   if (isNew.value || !serverId.value) {
-    testResult.value = { ok: false, message: 'Save the server first, then test its connection.' }
+    testResult.value = { ok: false, message: t('mcp.editor.saveFirstThenTest') }
     return
   }
   testing.value = true
@@ -175,7 +180,7 @@ async function handleSave() {
     } else {
       await store.updateServer({ id: serverId.value!, ...base })
     }
-    toast.success('Saved')
+    toast.success(t('mcp.editor.toast.saved'))
     router.push('/mcp')
   } catch (e) {
     toast.error(String(e))
@@ -192,7 +197,7 @@ async function handleSave() {
       <Button
         variant="ghost"
         size="icon-sm"
-        title="Back to MCP Servers"
+        :title="t('mcp.editor.backTitle')"
         @click="router.push('/mcp')"
       >
         <ArrowLeft class="h-4 w-4" :stroke-width="1.75" />
@@ -202,8 +207,8 @@ async function handleSave() {
 
       <div class="flex items-center gap-1.5 text-sm">
         <Server class="h-4 w-4 text-muted-foreground" :stroke-width="1.5" />
-        <span class="font-medium">{{ isNew ? 'New MCP Server' : (name || '…') }}</span>
-        <span v-if="!isNew" class="text-muted-foreground font-normal">— editing</span>
+        <span class="font-medium">{{ isNew ? t('mcp.editor.newTitle') : (name || '…') }}</span>
+        <span v-if="!isNew" class="text-muted-foreground font-normal">{{ t('mcp.editor.editing') }}</span>
       </div>
 
       <div class="flex-1" />
@@ -223,7 +228,7 @@ async function handleSave() {
             :class="enabled ? 'translate-x-3.5' : 'translate-x-0.5'"
           />
         </span>
-        <span class="text-muted-foreground">{{ enabled ? 'Enabled' : 'Disabled' }}</span>
+        <span class="text-muted-foreground">{{ enabled ? t('mcp.editor.enabled') : t('mcp.editor.disabled') }}</span>
       </button>
 
       <!-- Validation error inline -->
@@ -235,15 +240,15 @@ async function handleSave() {
         <span class="max-w-48 truncate">{{ validationError }}</span>
       </div>
 
-      <Button :disabled="saving" @click="handleSave" title="Save">
+      <Button :disabled="saving" @click="handleSave" :title="t('common.save')">
         <Save class="h-3.5 w-3.5" :stroke-width="2" />
-        {{ saving ? 'Saving…' : 'Save' }}
+        {{ saving ? t('mcp.editor.saving') : t('common.save') }}
       </Button>
     </div>
 
     <!-- Loading -->
     <div v-if="loading" class="flex-1 flex items-center justify-center text-muted-foreground text-sm">
-      Loading…
+      {{ t('common.loading') }}
     </div>
 
     <!-- Form -->
@@ -253,18 +258,18 @@ async function handleSave() {
         <Card body-class="p-4 space-y-4">
           <template #header>
             <Server class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-            <span class="text-xs font-semibold">General</span>
+            <span class="text-xs font-semibold">{{ t('mcp.editor.general') }}</span>
           </template>
           <div class="space-y-1.5">
-            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Name</label>
-            <Input v-model="name" size="sm" placeholder="my-mcp-server" class="font-mono" />
+            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('mcp.editor.name') }}</label>
+            <Input v-model="name" size="sm" :placeholder="t('mcp.editor.namePlaceholder')" class="font-mono" />
           </div>
           <div class="space-y-1.5">
-            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Description</label>
-            <Input v-model="description" size="sm" placeholder="What this server provides" />
+            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('mcp.editor.description') }}</label>
+            <Input v-model="description" size="sm" :placeholder="t('mcp.editor.descriptionPlaceholder')" />
           </div>
           <div class="space-y-1.5">
-            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Transport</label>
+            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('mcp.editor.transport') }}</label>
             <AppSelect
               size="sm"
               :model-value="transport"
@@ -273,7 +278,7 @@ async function handleSave() {
             />
             <p v-if="isSse" class="text-[10px] text-amber-500 flex items-center gap-1">
               <AlertCircle class="h-3 w-3 shrink-0" :stroke-width="1.75" />
-              SSE is Claude-only; Codex runs support stdio and streamable HTTP.
+              {{ t('mcp.editor.sseWarning') }}
             </p>
           </div>
         </Card>
@@ -282,14 +287,14 @@ async function handleSave() {
         <Card v-if="transport === 'stdio'" body-class="p-4 space-y-4">
           <template #header>
             <Plug class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-            <span class="text-xs font-semibold">Process</span>
+            <span class="text-xs font-semibold">{{ t('mcp.editor.process') }}</span>
           </template>
           <div class="space-y-1.5">
-            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Command</label>
-            <Input v-model="command" size="sm" placeholder="npx" class="font-mono" />
+            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('mcp.editor.command') }}</label>
+            <Input v-model="command" size="sm" :placeholder="t('mcp.editor.commandPlaceholder')" class="font-mono" />
           </div>
           <div class="space-y-1.5">
-            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Args (one per line)</label>
+            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('mcp.editor.args') }}</label>
             <Textarea
               v-model="argsText"
               rows="3"
@@ -301,25 +306,25 @@ async function handleSave() {
           <!-- Env key/value rows -->
           <div class="space-y-2">
             <div class="flex items-center justify-between">
-              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Environment</label>
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('mcp.editor.environment') }}</label>
               <Button variant="outline" size="xs" @click="addEnvRow">
                 <Plus class="h-3 w-3" :stroke-width="2" />
-                Add
+                {{ t('common.add') }}
               </Button>
             </div>
-            <div v-if="envRows.length === 0" class="text-[11px] text-muted-foreground">No environment variables</div>
+            <div v-if="envRows.length === 0" class="text-[11px] text-muted-foreground">{{ t('mcp.editor.noEnv') }}</div>
             <div v-for="(row, i) in envRows" :key="i" class="flex items-center gap-1.5">
-              <Input v-model="row.key" size="sm" placeholder="KEY" class="flex-1 font-mono" />
+              <Input v-model="row.key" size="sm" :placeholder="t('mcp.editor.keyPlaceholder')" class="flex-1 font-mono" />
               <div class="flex-1 relative">
                 <Input
                   v-model="row.value"
                   size="sm"
                   type="password"
-                  :placeholder="row.existing ? '•••••• (unchanged)' : 'value'"
+                  :placeholder="row.existing ? t('mcp.editor.unchangedPlaceholder') : t('mcp.editor.valuePlaceholder')"
                   class="font-mono"
                 />
               </div>
-              <Badge v-if="row.existing" tone="neutral" size="xs" class="shrink-0" title="A value is stored; leave blank to keep it">stored</Badge>
+              <Badge v-if="row.existing" tone="neutral" size="xs" class="shrink-0" :title="t('mcp.editor.storedTitle')">{{ t('mcp.editor.stored') }}</Badge>
               <Button variant="destructive-ghost" size="icon-sm" class="shrink-0" @click="removeEnvRow(i)">
                 <Trash2 class="h-3 w-3" :stroke-width="1.75" />
               </Button>
@@ -331,35 +336,35 @@ async function handleSave() {
         <Card v-else body-class="p-4 space-y-4">
           <template #header>
             <Plug class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-            <span class="text-xs font-semibold">Endpoint</span>
+            <span class="text-xs font-semibold">{{ t('mcp.editor.endpoint') }}</span>
           </template>
           <div class="space-y-1.5">
-            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">URL</label>
-            <Input v-model="url" size="sm" placeholder="https://example.com/mcp" class="font-mono" />
+            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('mcp.editor.url') }}</label>
+            <Input v-model="url" size="sm" :placeholder="t('mcp.editor.urlPlaceholder')" class="font-mono" />
           </div>
 
           <!-- Header key/value rows -->
           <div class="space-y-2">
             <div class="flex items-center justify-between">
-              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Headers</label>
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('mcp.editor.headers') }}</label>
               <Button variant="outline" size="xs" @click="addHeaderRow">
                 <Plus class="h-3 w-3" :stroke-width="2" />
-                Add
+                {{ t('common.add') }}
               </Button>
             </div>
-            <div v-if="headerRows.length === 0" class="text-[11px] text-muted-foreground">No headers</div>
+            <div v-if="headerRows.length === 0" class="text-[11px] text-muted-foreground">{{ t('mcp.editor.noHeaders') }}</div>
             <div v-for="(row, i) in headerRows" :key="i" class="flex items-center gap-1.5">
-              <Input v-model="row.key" size="sm" placeholder="Authorization" class="flex-1 font-mono" />
+              <Input v-model="row.key" size="sm" :placeholder="t('mcp.editor.authorizationPlaceholder')" class="flex-1 font-mono" />
               <div class="flex-1 relative">
                 <Input
                   v-model="row.value"
                   size="sm"
                   type="password"
-                  :placeholder="row.existing ? '•••••• (unchanged)' : 'value'"
+                  :placeholder="row.existing ? t('mcp.editor.unchangedPlaceholder') : t('mcp.editor.valuePlaceholder')"
                   class="font-mono"
                 />
               </div>
-              <Badge v-if="row.existing" tone="neutral" size="xs" class="shrink-0" title="A value is stored; leave blank to keep it">stored</Badge>
+              <Badge v-if="row.existing" tone="neutral" size="xs" class="shrink-0" :title="t('mcp.editor.storedTitle')">{{ t('mcp.editor.stored') }}</Badge>
               <Button variant="destructive-ghost" size="icon-sm" class="shrink-0" @click="removeHeaderRow(i)">
                 <Trash2 class="h-3 w-3" :stroke-width="1.75" />
               </Button>
@@ -371,14 +376,14 @@ async function handleSave() {
         <Card body-class="p-4 space-y-3">
           <template #header>
             <Plug class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-            <span class="text-xs font-semibold">Connection</span>
+            <span class="text-xs font-semibold">{{ t('mcp.editor.connection') }}</span>
           </template>
           <div class="flex items-center gap-3">
             <Button variant="outline" :disabled="testing" @click="handleTest">
               <Plug class="h-3.5 w-3.5" :stroke-width="1.75" />
-              {{ testing ? 'Testing…' : 'Test connection' }}
+              {{ testing ? t('mcp.editor.testing') : t('mcp.editor.testConnection') }}
             </Button>
-            <span v-if="isNew" class="text-[11px] text-muted-foreground">Save first to enable testing</span>
+            <span v-if="isNew" class="text-[11px] text-muted-foreground">{{ t('mcp.editor.saveFirst') }}</span>
           </div>
           <div
             v-if="testResult"

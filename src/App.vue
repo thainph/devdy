@@ -7,7 +7,9 @@ import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useUILayoutStore } from '@/stores/uiLayout'
-import { Puzzle, ScrollText, Server, HardDrive, FolderOpen, GitPullRequest, BarChart3, CalendarClock, CalendarDays, ListTodo, StickyNote, Settings, Info } from 'lucide-vue-next'
+import { useI18n } from 'vue-i18n'
+import { setLocale } from '@/i18n'
+import { Puzzle, ScrollText, Server, HardDrive, FolderOpen, GitPullRequest, GanttChartSquare, BarChart3, CalendarClock, CalendarDays, ListTodo, StickyNote, Settings, Info } from 'lucide-vue-next'
 import PermissionNotifier from '@/components/PermissionNotifier.vue'
 import CalendarReminder from '@/components/CalendarReminder.vue'
 import BudgetBadge from '@/components/BudgetBadge.vue'
@@ -18,14 +20,20 @@ import FileViewerWindow from '@/views/FileViewerWindow.vue'
 import PermissionWindow from '@/views/PermissionWindow.vue'
 import ThemeDecorations from '@/components/ThemeDecorations.vue'
 import { ConfirmModal, PromptModal, ToastHost } from '@/components/ui'
+import QuickCreateButton from '@/components/QuickCreateButton.vue'
+import CyberFoxFloating from '@/components/CyberFoxFloating.vue'
+import QuickCreateWindow from '@/views/QuickCreateWindow.vue'
+import IssuesGanttView from '@/views/IssuesGanttView.vue'
 import { getVersion } from '@tauri-apps/api/app'
 
 // Pop-out windows load the same SPA with a query flag; render a bare,
 // chrome-less host (no sidebar / nav / background work) in those cases.
 const isFileWindow = new URLSearchParams(window.location.search).get('fileWindow') === '1'
 const isPermissionWindow = new URLSearchParams(window.location.search).get('permissionWindow') === '1'
-// Both pop-out kinds only need the theme applied; skip the main app's data work.
-const isPopoutWindow = isFileWindow || isPermissionWindow
+const isQuickCreateWindow = new URLSearchParams(window.location.search).get('quickCreateWindow') === '1'
+const isGanttWindow = new URLSearchParams(window.location.search).get('ganttWindow') === '1'
+// All pop-out kinds only need the theme applied; skip the main app's data work.
+const isPopoutWindow = isFileWindow || isPermissionWindow || isQuickCreateWindow || isGanttWindow
 
 const route = useRoute()
 const projectsStore = useProjectsStore()
@@ -33,6 +41,7 @@ const appSettings = useAppSettingsStore()
 const tabsStore = useWorkspaceTabsStore()
 const uiLayout = useUILayoutStore()
 const live = useLiveRunsStore()
+const { t } = useI18n()
 
 const isRunRoute = computed(
   () => route.name === 'project-run' || route.name === 'project-run-detail',
@@ -89,21 +98,22 @@ onMounted(async () => {
   }
 })
 
-const navItems = [
-  { path: '/projects', label: 'Projects', icon: FolderOpen },
-  { path: '/pr-inbox', label: 'PR Reviews', icon: GitPullRequest },
-  { path: '/skills', label: 'Skills', icon: Puzzle },
-  { path: '/rules', label: 'Rules', icon: ScrollText },
-  { path: '/mcp', label: 'MCP', icon: Server },
-  { path: '/servers', label: 'Servers', icon: HardDrive },
-  { path: '/stats', label: 'Stats', icon: BarChart3 },
-  { path: '/work-digest', label: 'Digest', icon: CalendarClock },
-  { path: '/calendar', label: 'Calendar', icon: CalendarDays },
-  { path: '/todos', label: 'Todos', icon: ListTodo },
-  { path: '/notes', label: 'Notes', icon: StickyNote },
-  { path: '/settings', label: 'Settings', icon: Settings },
-  { path: '/about', label: 'About', icon: Info },
-]
+const navItems = computed(() => [
+  { path: '/projects', label: t('nav.projects'), icon: FolderOpen },
+  { path: '/pr-inbox', label: t('nav.prInbox'), icon: GitPullRequest },
+  { path: '/gantt', label: t('nav.gantt'), icon: GanttChartSquare },
+  { path: '/skills', label: t('nav.skills'), icon: Puzzle },
+  { path: '/rules', label: t('nav.rules'), icon: ScrollText },
+  { path: '/mcp', label: t('nav.mcp'), icon: Server },
+  { path: '/servers', label: t('nav.servers'), icon: HardDrive },
+  { path: '/stats', label: t('nav.stats'), icon: BarChart3 },
+  { path: '/work-digest', label: t('nav.digest'), icon: CalendarClock },
+  { path: '/calendar', label: t('nav.calendar'), icon: CalendarDays },
+  { path: '/todos', label: t('nav.todos'), icon: ListTodo },
+  { path: '/notes', label: t('nav.notes'), icon: StickyNote },
+  { path: '/settings', label: t('nav.settings'), icon: Settings },
+  { path: '/about', label: t('nav.about'), icon: Info },
+])
 
 const isDark = ref(false)
 
@@ -140,6 +150,7 @@ onMounted(async () => {
       await appSettings.refresh()
       applyTheme(appSettings.settings?.theme ?? 'system')
       applyColorTheme(appSettings.settings?.color_theme ?? 'default')
+      setLocale(appSettings.settings?.language ?? 'en')
     } catch {
       applyTheme('system')
     }
@@ -172,6 +183,7 @@ onMounted(async () => {
     await appSettings.refresh()
     applyTheme(appSettings.settings?.theme ?? 'system')
     applyColorTheme(appSettings.settings?.color_theme ?? 'default')
+    setLocale(appSettings.settings?.language ?? 'en')
   } catch {
     applyTheme('system')
   }
@@ -184,6 +196,12 @@ onMounted(async () => {
 
   <!-- Pop-out permission prompt window: bare layout, mirrors the main window. -->
   <PermissionWindow v-else-if="isPermissionWindow" />
+
+  <!-- Pop-out quick-create window: bare Todo/Note form, writes to shared DB. -->
+  <QuickCreateWindow v-else-if="isQuickCreateWindow" />
+
+  <!-- Pop-out Gantt window: bare Gantt chart on its own OS window. -->
+  <IssuesGanttView v-else-if="isGanttWindow" />
 
   <div v-else class="flex h-screen bg-background text-foreground overflow-hidden">
     <!-- Animated decorative overlay for scenic themes (e.g. Full Moon 🌕).
@@ -198,7 +216,7 @@ onMounted(async () => {
         <img src="/logo.png" alt="Devdy" class="h-6 w-6 rounded shrink-0" />
         <div class="min-w-0">
           <p class="text-sm font-semibold leading-none tracking-tight">Devdy</p>
-          <p class="text-[10px] text-muted-foreground mt-0.5 leading-none">AI coding agent for developers</p>
+          <p class="text-[10px] text-muted-foreground mt-0.5 leading-none">{{ t('nav.tagline') }}</p>
         </div>
       </div>
 
@@ -268,5 +286,11 @@ onMounted(async () => {
 
     <!-- App-wide toast host (see useToast) -->
     <ToastHost />
+
+    <!-- DY mascot: app-wide draggable AI operator for the main window. -->
+    <CyberFoxFloating />
+
+    <!-- Floating quick-create button: opens the standalone Todo/Note window. -->
+    <QuickCreateButton />
   </div>
 </template>

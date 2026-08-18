@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { ZoomIn, ZoomOut, CalendarOff, User } from 'lucide-vue-next'
 import {
@@ -10,6 +11,7 @@ import {
 
 const props = defineProps<{ milestones: MilestoneGroup[] }>()
 const store = useProjectIssuesStore()
+const { t } = useI18n()
 
 const DAY = 86_400_000
 const LEFT_WIDTH = 320
@@ -24,6 +26,7 @@ interface Bar {
   issue: IssueRow
   start: number
   end: number
+  inferredStart: boolean
 }
 interface Lane {
   group: MilestoneGroup
@@ -32,20 +35,22 @@ interface Lane {
   minStart: number
 }
 
-// Issues that can be placed on the timeline (need both start + deadline),
-// sorted chronologically; lanes sorted by milestone due date then earliest start.
+// A bar needs a deadline (board Deadline field OR milestone due date). When the
+// Start date is missing we infer it from the issue's creation date so milestone-
+// based projects still render; such bars are flagged as inferred.
 const lanes = computed<Lane[]>(() => {
   const built = props.milestones
     .map((group) => {
       const bars: Bar[] = []
       for (const issue of group.issues) {
         const dl = store.effectiveDeadline(issue)
-        if (!issue.startDate || !dl) continue
-        const start = new Date(issue.startDate).getTime()
+        if (!dl) continue
+        const startRaw = issue.startDate ?? issue.createdAt
+        const start = new Date(startRaw).getTime()
         let end = new Date(dl).getTime()
         if (Number.isNaN(start) || Number.isNaN(end)) continue
         if (end < start) end = start
-        bars.push({ issue, start, end })
+        bars.push({ issue, start, end, inferredStart: !issue.startDate })
       }
       bars.sort((a, b) => a.start - b.start || a.end - b.end)
       const due = group.dueOn ? new Date(group.dueOn).getTime() : null
@@ -62,12 +67,12 @@ const lanes = computed<Lane[]>(() => {
   return built
 })
 
-// Issues missing start/deadline → cannot be placed.
+// Only issues with no deadline at all cannot be placed on the timeline.
 const unscheduled = computed<IssueRow[]>(() => {
   const out: IssueRow[] = []
   for (const group of props.milestones) {
     for (const issue of group.issues) {
-      if (!issue.startDate || !store.effectiveDeadline(issue)) out.push(issue)
+      if (!store.effectiveDeadline(issue)) out.push(issue)
     }
   }
   return out
@@ -138,16 +143,16 @@ function barClass(issue: IssueRow): string {
   }
 }
 
-const LEGEND: { label: string; class: string }[] = [
-  { label: 'Overdue', class: 'bg-red-500/85' },
-  { label: 'At risk', class: 'bg-amber-500/85' },
-  { label: 'Stalled', class: 'bg-yellow-600/75' },
-  { label: 'Not started', class: 'bg-indigo-400/45' },
-  { label: 'On track', class: 'bg-indigo-500/85' },
-]
+const LEGEND = computed<{ label: string; class: string }[]>(() => [
+  { label: t('gantt.chart.legendOverdue'), class: 'bg-red-500/85' },
+  { label: t('gantt.chart.legendAtRisk'), class: 'bg-amber-500/85' },
+  { label: t('gantt.chart.legendStalled'), class: 'bg-yellow-600/75' },
+  { label: t('gantt.chart.legendNotStarted'), class: 'bg-indigo-400/45' },
+  { label: t('gantt.chart.legendOnTrack'), class: 'bg-indigo-500/85' },
+])
 
 function statusText(issue: IssueRow): string {
-  return issue.status ?? 'No status'
+  return issue.status ?? t('gantt.chart.noStatus')
 }
 
 // Tint the status badge to match the GitHub Projects option colour.
@@ -206,11 +211,11 @@ function fmt(iso: string | null): string {
 </script>
 
 <template>
-  <div class="flex flex-col gap-3">
+  <div class="flex flex-col gap-3 h-full min-h-0">
     <!-- Toolbar + legend -->
-    <div class="flex items-center justify-between gap-4 flex-wrap">
+    <div class="flex items-center justify-between gap-4 flex-wrap shrink-0">
       <div class="flex items-center gap-3 flex-wrap text-[10px] text-muted-foreground">
-        <span>Colour = lateness:</span>
+        <span>{{ t('gantt.chart.colourLateness') }}</span>
         <span v-for="l in LEGEND" :key="l.label" class="flex items-center gap-1">
           <span class="h-2.5 w-2.5 rounded-sm" :class="l.class" />
           {{ l.label }}
@@ -219,13 +224,13 @@ function fmt(iso: string | null): string {
       <div class="flex items-center gap-1">
         <button
           class="flex h-6 w-6 items-center justify-center rounded border border-border/60 text-muted-foreground hover:text-foreground hover:border-border"
-          title="Zoom out" @click="zoom(-6)"
+          :title="t('gantt.chart.zoomOut')" @click="zoom(-6)"
         >
           <ZoomOut class="h-3.5 w-3.5" />
         </button>
         <button
           class="flex h-6 w-6 items-center justify-center rounded border border-border/60 text-muted-foreground hover:text-foreground hover:border-border"
-          title="Zoom in" @click="zoom(6)"
+          :title="t('gantt.chart.zoomIn')" @click="zoom(6)"
         >
           <ZoomIn class="h-3.5 w-3.5" />
         </button>
@@ -233,7 +238,7 @@ function fmt(iso: string | null): string {
     </div>
 
     <!-- Gantt -->
-    <div v-if="hasData" class="rounded-lg border border-border/60 overflow-auto bg-card/20">
+    <div v-if="hasData" class="flex-1 min-h-0 rounded-lg border border-border/60 overflow-auto bg-card/20">
       <div :style="{ width: `${LEFT_WIDTH + chartWidth}px` }">
         <!-- Header: date ticks -->
         <div class="flex sticky top-0 z-20 bg-card border-b border-border/60" :style="{ height: '28px' }">
@@ -241,7 +246,7 @@ function fmt(iso: string | null): string {
             class="sticky left-0 z-30 shrink-0 bg-card border-r border-border/60 flex items-center px-3 text-[10px] font-medium text-muted-foreground"
             :style="{ width: `${LEFT_WIDTH}px` }"
           >
-            Milestone / Issue · Status
+            {{ t('gantt.chart.columnHeader') }}
           </div>
           <div class="relative" :style="{ width: `${chartWidth}px` }">
             <div
@@ -265,7 +270,7 @@ function fmt(iso: string | null): string {
             >
               <span class="truncate">{{ lane.group.title }}</span>
               <span v-if="lane.group.dueOn" class="ml-auto shrink-0 text-[10px] font-normal text-muted-foreground">
-                due {{ fmt(lane.group.dueOn) }}
+                {{ t('gantt.chart.due', { date: fmt(lane.group.dueOn) }) }}
               </span>
             </div>
             <div class="relative" :style="{ width: `${chartWidth}px` }">
@@ -278,7 +283,7 @@ function fmt(iso: string | null): string {
                 v-if="milestoneDueX(lane.group) !== null"
                 class="absolute top-1/2 -translate-y-1/2 h-2.5 w-2.5 rotate-45 bg-primary/80 border border-primary z-10"
                 :style="{ left: `${milestoneDueX(lane.group)! - 5}px` }"
-                :title="`Milestone due: ${fmt(lane.group.dueOn)}`"
+                :title="t('gantt.chart.milestoneDue', { date: fmt(lane.group.dueOn) })"
               />
             </div>
           </div>
@@ -300,7 +305,7 @@ function fmt(iso: string | null): string {
               <span
                 v-if="assigneeText(b.issue)"
                 class="shrink-0 flex items-center gap-0.5 text-[9px] text-muted-foreground max-w-24 truncate"
-                :title="`Assignees: ${b.issue.assignees.join(', ')}`"
+                :title="t('gantt.chart.assignees', { names: b.issue.assignees.join(', ') })"
               >
                 <User class="h-2.5 w-2.5" />{{ assigneeText(b.issue) }}
               </span>
@@ -320,9 +325,9 @@ function fmt(iso: string | null): string {
               />
               <div
                 class="absolute top-1/2 -translate-y-1/2 h-4.5 rounded border cursor-pointer z-10 hover:brightness-110 flex items-center overflow-hidden"
-                :class="barClass(b.issue)"
+                :class="[barClass(b.issue), b.inferredStart ? 'border-dashed opacity-90' : '']"
                 :style="barStyle(b)"
-                :title="`${b.issue.repo}#${b.issue.number}\nStatus: ${statusText(b.issue)}${b.issue.assignees.length ? '\nAssignees: ' + b.issue.assignees.join(', ') : ''}\n${fmt(b.issue.startDate)} → ${fmt(store.effectiveDeadline(b.issue))}`"
+                :title="`${b.issue.repo}#${b.issue.number}\n${t('gantt.chart.barStatus', { status: statusText(b.issue) })}${b.issue.assignees.length ? '\n' + t('gantt.chart.assignees', { names: b.issue.assignees.join(', ') }) : ''}\n${b.inferredStart ? t('gantt.chart.startInferred') : ''}${fmt(b.inferredStart ? b.issue.createdAt : b.issue.startDate)} → ${fmt(store.effectiveDeadline(b.issue))}`"
                 @click="open(b.issue)"
               >
                 <span
@@ -339,14 +344,14 @@ function fmt(iso: string | null): string {
     </div>
 
     <div v-else class="rounded-lg border border-border/60 p-8 text-center text-[12px] text-muted-foreground">
-      No issue has both a Start date and Deadline to plot on the Gantt. Fill in the dates on the GitHub Project board.
+      {{ t('gantt.chart.noDeadline') }}
     </div>
 
     <!-- Unscheduled -->
-    <div v-if="unscheduled.length > 0" class="rounded-lg border border-border/60 bg-card/20 p-4 space-y-2">
+    <div v-if="unscheduled.length > 0" class="shrink-0 max-h-40 overflow-auto rounded-lg border border-border/60 bg-card/20 p-4 space-y-2">
       <div class="flex items-center gap-2 text-[11px] font-semibold text-muted-foreground">
         <CalendarOff class="h-3.5 w-3.5" />
-        Unscheduled ({{ unscheduled.length }}) — missing Start date or Deadline
+        {{ t('gantt.chart.unscheduled', { count: unscheduled.length }) }}
       </div>
       <div class="flex flex-col gap-1">
         <button

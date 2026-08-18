@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, shallowRef, computed, onMounted, onUnmounted, watch, nextTick, type ComponentPublicInstance } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectsStore, type Repo } from '@/stores/projects'
 import { useRunsStore, type RunRecord, type ProjectEntry } from '@/stores/runs'
@@ -38,7 +39,7 @@ import { mergeContextModel } from '@/lib/contextLimits'
 import PermissionPrompt from '@/components/PermissionPrompt.vue'
 import FileViewer from '@/components/FileViewer.vue'
 import FileTree from '@/components/FileTree.vue'
-import { Button, Input, StatusBadge, Badge, Modal, DropdownMenu, DropdownItem } from '@/components/ui'
+import { Button, Input, StatusBadge, Badge, Modal } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { vMermaid } from '@/lib/mermaid'
@@ -57,6 +58,7 @@ import { MODEL_OPTIONS, PERMISSION_MODE_OPTIONS } from '@/lib/engineOptions'
 import RemoteSessionModal from '@/components/remote/RemoteSessionModal.vue'
 import { useRemoteControlStore } from '@/stores/remoteControl'
 
+const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const projectStore = useProjectsStore()
@@ -262,20 +264,20 @@ const remoteRowMarker = computed<
   const st = remoteStatus.value
   if (!st?.bound_run_id) return null
   return st.session_authenticated
-    ? { runId: st.bound_run_id, tone: 'success', title: 'Điện thoại đang điều khiển session này' }
+    ? { runId: st.bound_run_id, tone: 'success', title: t('run.remoteRowDriving') }
     : {
         runId: st.bound_run_id,
         tone: 'warning',
-        title: 'Đã tạo link remote — đang chờ điện thoại kết nối',
+        title: t('run.remoteRowWaiting'),
       }
 })
 /** State-aware tooltip for the Remote button. */
 const remoteButtonTitle = computed(() => {
-  if (!currentRunId.value) return 'Chọn một run để điều khiển từ điện thoại'
-  if (remoteActive.value) return 'Điện thoại đang điều khiển run này — bấm để xem/dừng'
-  if (remoteBoundHere.value) return 'Đã tạo link cho run này — bấm để xem QR / trạng thái'
-  if (remoteBoundElsewhere.value) return 'Remote đang gắn ở session khác — bấm để chuyển sang run này'
-  return 'Điều khiển run này từ điện thoại'
+  if (!currentRunId.value) return t('run.remoteBtnSelectRun')
+  if (remoteActive.value) return t('run.remoteBtnActive')
+  if (remoteBoundHere.value) return t('run.remoteBtnBoundHere')
+  if (remoteBoundElsewhere.value) return t('run.remoteBtnBoundElsewhere')
+  return t('run.remoteBtnDefault')
 })
 const remoteUnlisteners: UnlistenFn[] = []
 
@@ -409,6 +411,15 @@ watch(
 // Live streaming state for the focused run is owned by the liveRuns store so it
 // survives navigation and lets multiple runs stream at once.
 const session = computed(() => currentRunId.value ? live.get(currentRunId.value) : undefined)
+// Viewing a run acknowledges its "run finished" notification in the Active runs
+// dock. Fires when the focused run changes and when it finishes while on screen.
+watch(
+  [currentRunId, () => session.value?.notifyDone],
+  () => {
+    if (currentRunId.value && session.value?.notifyDone) live.markSeen(currentRunId.value)
+  },
+  { immediate: true },
+)
 const liveEntries = computed(() => session.value?.entries ?? [])
 const liveOutputLines = computed(() => session.value?.outputLines ?? [])
 const liveHasStream = computed(() => session.value?.hasStreamEvents ?? false)
@@ -432,8 +443,8 @@ const currentSessionId = computed(() => session.value?.sessionId ?? currentRun.v
 
 // Sidebar/label text for a run: sessions show their title; issue/PR show "#N".
 function runLabel(run: RunRecord): string {
-  if (run.run_type === 'session') return run.title || 'Session'
-  return `${run.run_type === 'analyze_issue' ? 'Issue' : 'PR'} #${run.ref_number}`
+  if (run.run_type === 'session') return run.title || t('run.labelSession')
+  return `${run.run_type === 'analyze_issue' ? t('run.labelIssue') : t('run.labelPr')} #${run.ref_number}`
 }
 
 // A run awaiting a permission / question response (front of its live queue), or
@@ -977,8 +988,8 @@ function clearHistoryView() {
 
 async function handleFetch(linkedIssueOverride?: number) {
   const n = parseInt(refNumber.value.trim())
-  if (isNaN(n) || n <= 0) { fetchError.value = 'Enter a valid number'; return }
-  if (!selectedRepoId.value) { fetchError.value = 'Select a repository first'; return }
+  if (isNaN(n) || n <= 0) { fetchError.value = t('run.enterValidNumber'); return }
+  if (!selectedRepoId.value) { fetchError.value = t('run.selectRepoFirst'); return }
 
   fetchError.value = null
   fetching.value = true
@@ -999,7 +1010,7 @@ async function handleFetch(linkedIssueOverride?: number) {
     const msg = String(e)
     if (fetchType.value === 'pr' && msg.includes('NO_LINKED_ISSUE')) {
       needsLinkedIssue.value = true
-      fetchError.value = "PR body doesn't reference an issue (e.g. \"Fixes #123\"). Enter the linked issue number below."
+      fetchError.value = t('run.prNoLinkedIssue')
     } else {
       fetchError.value = msg
     }
@@ -1010,7 +1021,7 @@ async function handleFetch(linkedIssueOverride?: number) {
 
 async function handleSubmitLinkedIssue() {
   const n = parseInt(linkedIssueInput.value.trim())
-  if (isNaN(n) || n <= 0) { fetchError.value = 'Enter a valid issue number'; return }
+  if (isNaN(n) || n <= 0) { fetchError.value = t('run.enterValidIssueNumber'); return }
   await handleFetch(n)
 }
 
@@ -1021,9 +1032,6 @@ function setLocalRunStatus(runId: string, status: RunRecord['status'], engine?: 
     if (engine) run.engine = engine
   }
 }
-
-// A start/resume/follow-up would exceed the global budget.
-const BUDGET_CONFIRM_MSG = 'Đã vượt ngân sách (plan) cho chu kỳ hiện tại.\nVẫn tiếp tục?'
 
 // Preflight the run-blocking guardrail for `engine` BEFORE the UI echoes the
 // user's message or flips a run into "running". Returns the override flag to
@@ -1040,9 +1048,9 @@ async function preflightBudget(engine: string): Promise<boolean | null> {
   }
   if (!isOver) return false
   const proceed = await confirm({
-    title: 'Vượt ngân sách',
-    message: BUDGET_CONFIRM_MSG,
-    confirmLabel: 'Tiếp tục',
+    title: t('run.budgetExceededTitle'),
+    message: t('run.budgetConfirmMessage'),
+    confirmLabel: t('run.continue'),
     variant: 'primary',
   })
   return proceed ? true : null
@@ -1091,7 +1099,7 @@ async function createSessionWithEngine(engine?: string) {
     await loadRunLog(run.id)
     nextTick(() => composerEl.value?.focus())
   } catch (e) {
-    toast.error(`Không tạo được session: ${String(e)}`)
+    toast.error(t('run.createSessionFailed', { error: String(e) }))
   } finally {
     creatingSession.value = false
   }
@@ -1168,14 +1176,10 @@ async function doHandoff(targetEngine: string) {
     const { run, context_path } = await runsStore.createHandoffRun(sourceId, targetEngine, transcript)
     await runsStore.fetchRuns(projectId.value) // surface the new run in the sidebar
     syncLoadedRunEngine(targetEngine)
-    const seed =
-      `Tiếp tục công việc đang dở từ phiên trước (engine: ${sourceEngine}).\n\n` +
-      `Toàn bộ ngữ cảnh/hội thoại trước đó được lưu ở file:\n${context_path}\n\n` +
-      `Hãy đọc file đó trước để nắm tình hình, sau đó tiếp tục từ đúng chỗ đang dở. ` +
-      `Không lặp lại những việc đã hoàn thành.`
+    const seed = t('run.handoffSeed', { engine: sourceEngine, path: context_path })
     await launchFreshRun(run.id, targetEngine, seed, [], override)
   } catch (e) {
-    toast.error(`Không thể chuyển engine: ${String(e)}`)
+    toast.error(t('run.handoffFailed', { error: String(e) }))
   } finally {
     handingOff.value = false
     handoffTarget.value = null
@@ -1262,7 +1266,7 @@ function pushPendingImage(media_type: string, data: string) {
 function addImageFile(file: File | null) {
   if (!file || !file.type.startsWith('image/')) return
   if (file.size > MAX_IMAGE_BYTES) {
-    toast.error(`Ảnh quá lớn (tối đa ${MAX_IMAGE_BYTES / 1024 / 1024}MB).`)
+    toast.error(t('run.imageTooLarge', { size: MAX_IMAGE_BYTES / 1024 / 1024 }))
     return
   }
   const reader = new FileReader()
@@ -1324,7 +1328,7 @@ function takePendingFilePaths(): string[] {
 function composePrompt(text: string, paths: string[]): string {
   if (!paths.length) return text
   const list = paths.map((p) => `- \`${p}\``).join('\n')
-  const block = `Đính kèm file:\n${list}`
+  const block = `${t('run.attachFileLabel')}\n${list}`
   return text ? `${text}\n\n${block}` : block
 }
 
@@ -1371,29 +1375,29 @@ const chatEligible = computed(() => {
   return ['done', 'cancelled', 'failed'].includes(currentStatus.value)
 })
 
-const engineLabel = computed(() => loadedRunEngine.value || currentRun.value?.engine || effectiveEngine.value || 'the agent')
+const engineLabel = computed(() => loadedRunEngine.value || currentRun.value?.engine || effectiveEngine.value || t('run.engineFallback'))
 
 const chatPlaceholder = computed(() => {
   if (currentStatus.value === 'running') {
-    return `Send a follow-up to ${engineLabel.value} — Enter to send, Shift+Enter for newline`
+    return t('run.chatPlaceholderRunning', { engine: engineLabel.value })
   }
   if (currentStatus.value === 'fetched') {
     return currentIsSession.value
-      ? 'Mô tả việc bạn muốn làm — Enter để bắt đầu (mention file bằng @)'
-      : 'Type a custom prompt and Enter to run (leave empty + click Run to use default)'
+      ? t('run.chatPlaceholderFetchedSession')
+      : t('run.chatPlaceholderFetchedIssue')
   }
   if (currentSessionId.value) {
-    return `Continue session with ${engineLabel.value} — Enter sends and resumes the run`
+    return t('run.chatPlaceholderResume', { engine: engineLabel.value })
   }
-  return 'Chat unavailable for this run'
+  return t('run.chatPlaceholderUnavailable')
 })
 
 const chatSendLabel = computed(() => {
-  if (sendingFollowUp.value) return 'Sending…'
-  if (currentStatus.value === 'running') return 'Send'
-  if (currentStatus.value === 'fetched') return 'Run'
-  if (!chatEligible.value) return 'Run'
-  return 'Resume'
+  if (sendingFollowUp.value) return t('run.sendLabelSending')
+  if (currentStatus.value === 'running') return t('run.sendLabelSend')
+  if (currentStatus.value === 'fetched') return t('run.sendLabelRun')
+  if (!chatEligible.value) return t('run.sendLabelRun')
+  return t('run.sendLabelResume')
 })
 
 // Whether the composer footer should be shown at all — any loaded run, so the
@@ -1821,7 +1825,7 @@ async function handleSendFollowUp() {
     await runsStore.sendUserMessage(id, prompt, images, override)
     followUpInput.value = ''
   } catch (e) {
-    live.get(id)?.outputLines.push({ text: `Send failed: ${String(e)}`, isStderr: true })
+    live.get(id)?.outputLines.push({ text: t('run.sendFailed', { error: String(e) }), isStderr: true })
   } finally {
     sendingFollowUp.value = false
   }
@@ -1841,7 +1845,7 @@ async function handlePermissionDecision(decision: 'allow' | 'deny' | 'ask', reme
   try {
     await runsStore.respondPermission(req.run_id, req.request_id, decision)
   } catch (e) {
-    live.get(id)?.outputLines.push({ text: `Permission response failed: ${String(e)}`, isStderr: true })
+    live.get(id)?.outputLines.push({ text: t('run.permissionResponseFailed', { error: String(e) }), isStderr: true })
   }
   // Return focus to the composer so the user can keep chatting right away.
   nextTick(() => composerEl.value?.focus())
@@ -1923,7 +1927,7 @@ async function handlePermissionAnswer(answers: Record<string, string>) {
   try {
     await runsStore.respondPermission(req.run_id, req.request_id, 'allow', undefined, { answers })
   } catch (e) {
-    live.get(id)?.outputLines.push({ text: `Permission response failed: ${String(e)}`, isStderr: true })
+    live.get(id)?.outputLines.push({ text: t('run.permissionResponseFailed', { error: String(e) }), isStderr: true })
   }
   // Return focus to the composer so the user can keep chatting right away.
   nextTick(() => composerEl.value?.focus())
@@ -1990,9 +1994,9 @@ function startRename(run: RunRecord, e?: MouseEvent) {
 async function copyLogPath(run: RunRecord) {
   try {
     const path = await runsStore.getRunLogPath(run.id)
-    if (!path) { toast.info('No log file for this session yet'); return }
+    if (!path) { toast.info(t('run.noLogFileYet')); return }
     await navigator.clipboard.writeText(path)
-    toast.success('Log path copied')
+    toast.success(t('run.logPathCopied'))
   } catch (e) {
     toast.error(String(e))
   }
@@ -2004,7 +2008,7 @@ async function viewLogFile(run: RunRecord) {
   if (!p) return
   try {
     const path = await runsStore.getRunLogPath(run.id)
-    if (!path) { toast.info('No log file for this session yet'); return }
+    if (!path) { toast.info(t('run.noLogFileYet')); return }
     await openFileWindow(p.path, path)
   } catch (e) {
     toast.error(String(e))
@@ -2027,7 +2031,7 @@ async function commitRename(runId: string) {
   }
   try {
     await runsStore.renameRun(runId, title)
-    toast.success('Run renamed')
+    toast.success(t('run.runRenamed'))
   } catch (err) {
     toast.error(String(err))
   } finally {
@@ -2041,7 +2045,7 @@ async function handleTogglePin(run: RunRecord, e?: MouseEvent) {
   const willPin = !run.pinned
   try {
     await runsStore.setRunPinned(run.id, willPin)
-    toast.success(willPin ? 'Run pinned' : 'Run unpinned')
+    toast.success(willPin ? t('run.runPinned') : t('run.runUnpinned'))
   } catch (err) {
     toast.error(String(err))
   } finally {
@@ -2064,11 +2068,11 @@ function clearActiveRunState() {
 async function handleDeleteRun(runId: string, e?: MouseEvent) {
   e?.stopPropagation()
   const run = runsStore.runs.find(r => r.id === runId)
-  const label = run ? runLabel(run) : 'this run'
+  const label = run ? runLabel(run) : t('run.thisRun')
   if (!(await confirm({
-    title: 'Delete run',
-    message: `Delete fetched ${label}? Cached markdown and logs will be removed.`,
-    confirmLabel: 'Delete',
+    title: t('run.deleteRunTitle'),
+    message: t('run.deleteRunMessage', { label }),
+    confirmLabel: t('common.delete'),
   }))) return
   deletingRunId.value = runId
   try {
@@ -2084,7 +2088,7 @@ async function handleDeleteRun(runId: string, e?: MouseEvent) {
     if (activeRunId.value === runId) {
       router.replace(`/projects/${projectId.value}`)
     }
-    toast.success('Run deleted')
+    toast.success(t('run.runDeleted'))
   } catch (err) {
     toast.error(String(err))
   } finally {
@@ -2095,9 +2099,9 @@ async function handleDeleteRun(runId: string, e?: MouseEvent) {
 async function handleClearAllRuns() {
   if (runsStore.runs.length === 0) return
   if (!(await confirm({
-    title: 'Delete all runs',
-    message: `Delete all fetched runs for this project? Running runs will be skipped.`,
-    confirmLabel: 'Delete all',
+    title: t('run.deleteAllRunsTitle'),
+    message: t('run.deleteAllRunsMessage'),
+    confirmLabel: t('run.deleteAll'),
   }))) return
   clearingAll.value = true
   try {
@@ -2106,7 +2110,7 @@ async function handleClearAllRuns() {
     if (activeRunId.value) {
       router.replace(`/projects/${projectId.value}`)
     }
-    toast.success('All runs deleted')
+    toast.success(t('run.allRunsDeleted'))
   } catch (err) {
     toast.error(String(err))
   } finally {
@@ -2261,7 +2265,7 @@ function handleRefInput(val: string) {
     <!-- Header -->
     <div class="@container flex items-center justify-between gap-3 px-6 h-13 border-b border-border/60 shrink-0">
       <div class="flex items-center gap-2 min-w-0">
-        <h1 class="text-sm font-semibold truncate">{{ project?.name ?? 'Project' }}</h1>
+        <h1 class="text-sm font-semibold truncate">{{ project?.name ?? t('run.projectFallback') }}</h1>
         <Badge
           v-for="acc in activeAccounts"
           :key="acc.key"
@@ -2321,60 +2325,68 @@ function handleRefInput(val: string) {
             :class="remoteActive ? 'text-emerald-500' : remoteBoundElsewhere ? 'text-muted-foreground' : ''"
             :stroke-width="2"
           />
-          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">Remote</span>
+          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">{{ t('run.remote') }}</span>
           <!-- Live pulse ONLY when a phone is actively driving THIS run. -->
           <span
             v-if="remoteActive"
             class="absolute -right-0.5 -top-0.5 flex h-2.5 w-2.5"
-            aria-label="Đang kết nối"
+            :aria-label="t('run.remoteConnecting')"
           >
             <span class="absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-75 animate-ping" />
             <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-background" />
           </span>
         </Button>
-        <!-- "Open in…" external tools grouped into one dropdown to declutter -->
-        <DropdownMenu align="right">
-          <template #trigger="{ open }">
-            <Button variant="outline" :disabled="!project" title="Open project in…">
-              <FolderOpen class="h-4 w-4" :stroke-width="2" />
-              <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">Open</span>
-              <ChevronDown class="h-3 w-3 opacity-60 transition-transform" :class="{ 'rotate-180': open }" :stroke-width="2" />
-            </Button>
-          </template>
-          <DropdownItem :disabled="!project" @click="handleOpenInVscode">
-            <Code2 class="h-3.5 w-3.5" :stroke-width="1.75" /> VS Code
-          </DropdownItem>
-          <DropdownItem :disabled="!project" @click="handleOpenInFolder">
-            <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" /> Folder
-          </DropdownItem>
-          <DropdownItem :disabled="!project" @click="handleOpenInTerminal">
-            <Terminal class="h-3.5 w-3.5" :stroke-width="1.75" /> Terminal
-          </DropdownItem>
-        </DropdownMenu>
         <Button
           variant="outline"
           :disabled="!project"
-          title="Issues by milestone"
-          @click="router.push(`/projects/${projectId}/issues`)"
+          :title="t('projects.openInVscode')"
+          @click="handleOpenInVscode"
         >
-          <ListChecks class="h-4 w-4" :stroke-width="2" />
-          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">Issues</span>
+          <Code2 class="h-4 w-4" :stroke-width="2" />
+          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">VS Code</span>
         </Button>
         <Button
           variant="outline"
-          title="Project settings (repos, PAT, skills)"
+          :disabled="!project"
+          :title="t('projects.openFolder')"
+          @click="handleOpenInFolder"
+        >
+          <FolderOpen class="h-4 w-4" :stroke-width="2" />
+          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">{{ t('run.folder') }}</span>
+        </Button>
+        <Button
+          variant="outline"
+          :disabled="!project"
+          :title="t('projects.openInTerminal')"
+          @click="handleOpenInTerminal"
+        >
+          <Terminal class="h-4 w-4" :stroke-width="2" />
+          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">{{ t('run.terminal') }}</span>
+        </Button>
+        <Button
+          variant="outline"
+          :disabled="!project"
+          :title="t('run.issuesByMilestone')"
+          @click="router.push({ name: 'gantt', query: { project: projectId } })"
+        >
+          <ListChecks class="h-4 w-4" :stroke-width="2" />
+          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">{{ t('run.issues') }}</span>
+        </Button>
+        <Button
+          variant="outline"
+          :title="t('run.projectSettingsTitle')"
           @click="router.push(`/projects/${projectId}/settings`)"
         >
           <Settings class="h-4 w-4" :stroke-width="2" />
-          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">Settings</span>
+          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">{{ t('run.settings') }}</span>
         </Button>
         <Button
           variant="outline"
-          :title="uiLayout.focusMode ? 'Thoát chế độ focus (hiện lại sidebar, history)' : 'Chế độ focus: chỉ hiện phiên AI hiện tại'"
+          :title="uiLayout.focusMode ? t('run.exitFocusMode') : t('run.enterFocusMode')"
           @click="uiLayout.toggleFocus()"
         >
           <component :is="uiLayout.focusMode ? Minimize2 : Maximize2" class="h-4 w-4" :stroke-width="2" />
-          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">Focus</span>
+          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">{{ t('run.focus') }}</span>
         </Button>
       </div>
     </div>
@@ -2391,7 +2403,7 @@ function handleRefInput(val: string) {
             @click="leftTab = 'session'"
           >
             <MessageSquare class="h-3.5 w-3.5" :stroke-width="2" />
-            Session
+            {{ t('run.session') }}
           </button>
           <button
             class="flex-1 flex items-center justify-center gap-1.5 py-2 transition-colors cursor-pointer"
@@ -2399,7 +2411,7 @@ function handleRefInput(val: string) {
             @click="leftTab = 'files'"
           >
             <FolderTree class="h-3.5 w-3.5" :stroke-width="2" />
-            Files
+            {{ t('run.files') }}
           </button>
         </div>
 
@@ -2407,7 +2419,7 @@ function handleRefInput(val: string) {
         <div v-show="leftTab === 'session'" class="p-3 border-b border-border/60 space-y-2">
           <Button class="w-full" :disabled="creatingSession" @click="handleNewSession">
             <MessageSquare class="h-3.5 w-3.5" :stroke-width="2" />
-            {{ creatingSession ? 'Đang tạo…' : 'New session' }}
+            {{ creatingSession ? t('run.creating') : t('run.newSession') }}
           </Button>
 
           <!-- Fetch toggle -->
@@ -2419,7 +2431,7 @@ function handleRefInput(val: string) {
           >
             <span class="flex items-center gap-1.5">
               <GitPullRequest class="h-3.5 w-3.5" :stroke-width="1.75" />
-              Fetch Issue / PR
+              {{ t('run.fetchIssuePr') }}
             </span>
             <ChevronDown class="h-3.5 w-3.5 transition-transform" :class="{ 'rotate-180': fetchOpen }" :stroke-width="1.75" />
           </Button>
@@ -2432,12 +2444,12 @@ function handleRefInput(val: string) {
             <AppSelect
               v-model="selectedRepoId"
               :options="repos.map(r => ({ value: r.id, label: r.name }))"
-              placeholder="Select repo"
+              :placeholder="t('run.selectRepo')"
               size="sm"
             />
           </div>
           <div v-else-if="repos.length === 0" class="text-[10px] text-amber-500/80 leading-relaxed">
-            No repositories configured. Add one in project settings.
+            {{ t('run.noReposConfigured') }}
           </div>
 
           <!-- Type toggle -->
@@ -2450,7 +2462,7 @@ function handleRefInput(val: string) {
               @click="fetchType = 'issue'"
             >
               <Bug class="h-3 w-3" :stroke-width="1.75" />
-              Issue
+              {{ t('run.issue') }}
             </button>
             <button
               class="flex-1 flex items-center justify-center gap-1.5 py-1 text-xs rounded transition-colors cursor-pointer"
@@ -2460,7 +2472,7 @@ function handleRefInput(val: string) {
               @click="fetchType = 'pr'"
             >
               <GitPullRequest class="h-3 w-3" :stroke-width="1.75" />
-              PR
+              {{ t('run.labelPr') }}
             </button>
           </div>
 
@@ -2469,7 +2481,7 @@ function handleRefInput(val: string) {
             <Input
               :model-value="refNumber"
               @update:model-value="handleRefInput"
-              :placeholder="fetchType === 'issue' ? '#123 or GitHub URL' : 'PR #123 or URL'"
+              :placeholder="fetchType === 'issue' ? t('run.refPlaceholderIssue') : t('run.refPlaceholderPr')"
               @keyup.enter="handleFetch()"
             />
             <p v-if="fetchError" class="mt-1 text-[10px] text-destructive">{{ fetchError }}</p>
@@ -2482,14 +2494,14 @@ function handleRefInput(val: string) {
             :disabled="fetching || !refNumber"
             @click="handleFetch()"
           >
-            {{ fetching ? 'Fetching…' : `Fetch ${fetchType === 'issue' ? 'Issue' : 'PR'}` }}
+            {{ fetching ? t('run.fetching') : (fetchType === 'issue' ? t('run.fetchIssue') : t('run.fetchPr')) }}
           </Button>
 
           <!-- Linked issue prompt (shown when PR body has no Fixes/Closes/Resolves #N) -->
           <div v-if="needsLinkedIssue" class="space-y-2">
             <Input
               v-model="linkedIssueInput"
-              placeholder="Linked issue # (e.g. 42)"
+              :placeholder="t('run.linkedIssuePlaceholder')"
               @keyup.enter="handleSubmitLinkedIssue"
             />
             <Button
@@ -2498,7 +2510,7 @@ function handleRefInput(val: string) {
               :disabled="fetching || !linkedIssueInput"
               @click="handleSubmitLinkedIssue"
             >
-              {{ fetching ? 'Fetching…' : 'Fetch with linked issue' }}
+              {{ fetching ? t('run.fetching') : t('run.fetchWithLinkedIssue') }}
             </Button>
           </div>
           </div>
@@ -2507,21 +2519,21 @@ function handleRefInput(val: string) {
         <!-- Run history -->
         <div v-show="leftTab === 'session'" class="flex-1 overflow-auto">
           <div class="flex items-center justify-between px-4 py-2.5 border-b border-border/40">
-            <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">History</p>
+            <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">{{ t('run.history') }}</p>
             <button
               v-if="runsStore.runs.length > 0"
               class="flex items-center gap-1 text-[10px] text-muted-foreground/70 hover:text-destructive transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
               :disabled="clearingAll"
-              :title="clearingAll ? 'Clearing…' : 'Delete all fetched runs (running runs are skipped)'"
+              :title="clearingAll ? t('run.clearing') : t('run.clearAllRunsTitle')"
               @click="handleClearAllRuns"
             >
               <Trash2 class="h-3 w-3" :stroke-width="1.75" />
-              {{ clearingAll ? 'Clearing…' : 'Clear all' }}
+              {{ clearingAll ? t('run.clearing') : t('run.clearAll') }}
             </button>
           </div>
-          <div v-if="runsStore.loading" class="px-4 py-3 text-xs text-muted-foreground">Loading…</div>
+          <div v-if="runsStore.loading" class="px-4 py-3 text-xs text-muted-foreground">{{ t('common.loading') }}</div>
           <div v-else-if="runsStore.runs.length === 0" class="px-4 py-6 text-center text-xs text-muted-foreground">
-            No sessions yet
+            {{ t('run.noSessionsYet') }}
           </div>
           <div
             v-else
@@ -2550,7 +2562,7 @@ function handleRefInput(val: string) {
                   v-if="run.pinned"
                   class="h-3 w-3 shrink-0 text-primary"
                   :stroke-width="2"
-                  aria-label="Pinned"
+                  :aria-label="t('run.pinned')"
                 />
                 <span class="flex-1 min-w-0 truncate text-[13px] font-medium leading-tight">{{ runLabel(run) }}</span>
                 <!-- Remote-control marker: a phone is driving (green, pulsing) or
@@ -2575,8 +2587,8 @@ function handleRefInput(val: string) {
                   class="relative flex h-4 w-4 shrink-0 items-center justify-center text-primary"
                   :title="
                     pendingRequest(run.id)?.tool_name === 'AskUserQuestion'
-                      ? 'Waiting for your answer'
-                      : 'Waiting for your permission'
+                      ? t('run.waitingForAnswer')
+                      : t('run.waitingForPermission')
                   "
                 >
                   <span class="absolute inset-0 animate-ping rounded-full bg-primary/30" />
@@ -2609,8 +2621,8 @@ function handleRefInput(val: string) {
                 v-if="runGithubUrl(run)"
                 variant="ghost"
                 size="icon-sm"
-                :aria-label="'Open this ' + (run.run_type === 'analyze_issue' ? 'issue' : 'PR') + ' on GitHub'"
-                :title="'Open this ' + (run.run_type === 'analyze_issue' ? 'issue' : 'PR') + ' on GitHub'"
+                :aria-label="run.run_type === 'analyze_issue' ? t('run.openIssueOnGithub') : t('run.openPrOnGithub')"
+                :title="run.run_type === 'analyze_issue' ? t('run.openIssueOnGithub') : t('run.openPrOnGithub')"
                 @click.stop="openRunInBrowser(run)"
               >
                 <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -2620,8 +2632,8 @@ function handleRefInput(val: string) {
                 variant="ghost"
                 size="icon-sm"
                 :disabled="refetchingRunId === run.id"
-                :aria-label="'Re-fetch this ' + (run.run_type === 'analyze_issue' ? 'issue' : 'PR') + ' content from GitHub (keeps AI result)'"
-                :title="'Re-fetch this ' + (run.run_type === 'analyze_issue' ? 'issue' : 'PR') + ' content from GitHub (keeps AI result)'"
+                :aria-label="run.run_type === 'analyze_issue' ? t('run.refetchIssue') : t('run.refetchPr')"
+                :title="run.run_type === 'analyze_issue' ? t('run.refetchIssue') : t('run.refetchPr')"
                 @click.stop="handleRefetch(run.id)"
               >
                 <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': refetchingRunId === run.id }" :stroke-width="1.75" />
@@ -2629,8 +2641,8 @@ function handleRefInput(val: string) {
               <Button
                 variant="ghost"
                 size="icon-sm"
-                aria-label="Copy log file path"
-                title="Copy log file path"
+                :aria-label="t('run.copyLogPath')"
+                :title="t('run.copyLogPath')"
                 @click.stop="copyLogPath(run)"
               >
                 <ClipboardCopy class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -2638,8 +2650,8 @@ function handleRefInput(val: string) {
               <Button
                 variant="ghost"
                 size="icon-sm"
-                aria-label="View log file"
-                title="View log file"
+                :aria-label="t('run.viewLogFile')"
+                :title="t('run.viewLogFile')"
                 @click.stop="viewLogFile(run)"
               >
                 <ScrollText class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -2647,8 +2659,8 @@ function handleRefInput(val: string) {
               <Button
                 variant="ghost"
                 size="icon-sm"
-                aria-label="Rename"
-                title="Rename"
+                :aria-label="t('run.rename')"
+                :title="t('run.rename')"
                 @click.stop="startRename(run, $event)"
               >
                 <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -2657,8 +2669,8 @@ function handleRefInput(val: string) {
                 variant="ghost"
                 size="icon-sm"
                 :disabled="pinningRunId === run.id"
-                :aria-label="run.pinned ? 'Unpin from top' : 'Pin to top'"
-                :title="run.pinned ? 'Unpin from top' : 'Pin to top'"
+                :aria-label="run.pinned ? t('run.unpinFromTop') : t('run.pinToTop')"
+                :title="run.pinned ? t('run.unpinFromTop') : t('run.pinToTop')"
                 @click.stop="handleTogglePin(run, $event)"
               >
                 <component :is="run.pinned ? PinOff : Pin" class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -2667,8 +2679,8 @@ function handleRefInput(val: string) {
                 variant="destructive-ghost"
                 size="icon-sm"
                 :disabled="deletingRunId === run.id"
-                aria-label="Delete this run"
-                title="Delete this run"
+                :aria-label="t('run.deleteThisRun')"
+                :title="t('run.deleteThisRun')"
                 @click.stop="handleDeleteRun(run.id, $event)"
               >
                 <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -2687,15 +2699,15 @@ function handleRefInput(val: string) {
                 v-model="renameDraft"
                 type="text"
                 class="flex-1 min-w-0 bg-transparent text-[13px] font-medium leading-tight outline-none border-b border-primary/60 pb-0.5"
-                placeholder="Run name"
+                :placeholder="t('run.runNamePlaceholder')"
                 @keyup.enter="commitRename(run.id)"
                 @keyup.esc="cancelRename()"
                 @blur="commitRename(run.id)"
               />
-              <Button variant="ghost" size="icon-sm" aria-label="Save name" title="Save" @mousedown.prevent @click.stop="commitRename(run.id)">
+              <Button variant="ghost" size="icon-sm" :aria-label="t('run.saveName')" :title="t('common.save')" @mousedown.prevent @click.stop="commitRename(run.id)">
                 <Check class="h-3.5 w-3.5" :stroke-width="2" />
               </Button>
-              <Button variant="ghost" size="icon-sm" aria-label="Cancel rename" title="Cancel" @mousedown.prevent @click.stop="cancelRename()">
+              <Button variant="ghost" size="icon-sm" :aria-label="t('run.cancelRename')" :title="t('common.cancel')" @mousedown.prevent @click.stop="cancelRename()">
                 <X class="h-3.5 w-3.5" :stroke-width="2" />
               </Button>
             </div>
@@ -2721,24 +2733,24 @@ function handleRefInput(val: string) {
           v-if="!currentIsSession && !uiLayout.focusMode && !noSession"
           class="flex items-center gap-1 px-3 py-1.5 border-b border-border bg-card/40 shrink-0"
         >
-          <span class="text-[11px] font-mono text-foreground/55 mr-1">View</span>
+          <span class="text-[11px] font-mono text-foreground/55 mr-1">{{ t('run.view') }}</span>
           <button
             class="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] font-mono font-medium border transition-colors cursor-pointer"
             :class="contentVisible ? 'bg-primary/20 text-primary border-primary/40' : 'text-foreground/65 border-transparent hover:text-foreground hover:bg-accent'"
-            title="Toggle Content panel"
+            :title="t('run.toggleContentPanel')"
             @click="togglePanel('content')"
           >
             <FileText class="h-3 w-3" :stroke-width="1.75" />
-            Content
+            {{ t('run.content') }}
           </button>
           <button
             class="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] font-mono font-medium border transition-colors cursor-pointer"
             :class="resultVisible ? 'bg-primary/20 text-primary border-primary/40' : 'text-foreground/65 border-transparent hover:text-foreground hover:bg-accent'"
-            title="Toggle AI Result panel"
+            :title="t('run.toggleResultPanel')"
             @click="togglePanel('result')"
           >
             <MessageSquare class="h-3 w-3" :stroke-width="1.75" />
-            AI Result
+            {{ t('run.aiResult') }}
           </button>
         </div>
         <!-- No sessions yet: hide the Content / AI Result panels entirely and
@@ -2746,13 +2758,13 @@ function handleRefInput(val: string) {
         <div v-if="noSession" class="flex-1 flex items-center justify-center p-6">
           <div class="text-center max-w-xs">
             <MessageSquare class="h-10 w-10 text-foreground/20 mx-auto mb-4" :stroke-width="1" />
-            <p class="text-sm font-medium text-foreground/70 mb-1.5">No sessions yet</p>
+            <p class="text-sm font-medium text-foreground/70 mb-1.5">{{ t('run.noSessionsYet') }}</p>
             <p class="text-xs text-foreground/40 leading-relaxed mb-4">
-              Create a new session to start working with AI in this project.
+              {{ t('run.createNewSessionHint') }}
             </p>
             <Button :disabled="creatingSession" @click="handleNewSession">
               <MessageSquare class="h-3.5 w-3.5" :stroke-width="2" />
-              {{ creatingSession ? 'Creating…' : 'New session' }}
+              {{ creatingSession ? t('run.creating') : t('run.newSession') }}
             </Button>
           </div>
         </div>
@@ -2771,26 +2783,26 @@ function handleRefInput(val: string) {
           >
             <div class="flex items-center gap-2 px-3 py-2 bg-card border-b border-border shrink-0">
               <FileText class="h-3.5 w-3.5 text-foreground/40" :stroke-width="1.5" />
-              <span class="text-[11px] font-mono text-foreground/60">Content</span>
+              <span class="text-[11px] font-mono text-foreground/60">{{ t('run.content') }}</span>
             </div>
             <div class="flex-1 min-h-0 overflow-auto p-4">
               <template v-if="!currentRunId">
                 <div class="flex items-center justify-center h-full">
                   <div class="text-center">
                     <FileText class="h-8 w-8 text-foreground/20 mx-auto mb-3" :stroke-width="1" />
-                    <p class="text-xs text-foreground/30 font-mono">fetch an issue or PR to begin</p>
+                    <p class="text-xs text-foreground/30 font-mono">{{ t('run.fetchToBegin') }}</p>
                   </div>
                 </div>
               </template>
               <template v-else-if="inputContentLoading">
                 <div class="flex items-center gap-2 text-xs text-muted-foreground">
                   <Loader2 class="h-3.5 w-3.5 animate-spin text-primary" :stroke-width="2" />
-                  <span>Đang tải nội dung…</span>
+                  <span>{{ t('run.loadingContent') }}</span>
                 </div>
               </template>
               <template v-else-if="inputContentError">
                 <div class="text-xs text-destructive">
-                  <p class="font-medium mb-1">Could not load content</p>
+                  <p class="font-medium mb-1">{{ t('run.couldNotLoadContent') }}</p>
                   <p class="text-foreground/60">{{ inputContentError }}</p>
                 </div>
               </template>
@@ -2805,7 +2817,7 @@ function handleRefInput(val: string) {
                 />
               </template>
               <template v-else>
-                <p class="text-xs text-foreground/40">No content available for this run.</p>
+                <p class="text-xs text-foreground/40">{{ t('run.noContentAvailable') }}</p>
               </template>
             </div>
           </div>
@@ -2841,7 +2853,7 @@ function handleRefInput(val: string) {
               <div class="flex items-center gap-2 px-3 py-2">
                 <MessageSquare class="h-3.5 w-3.5 text-foreground/40 shrink-0" :stroke-width="1.5" />
                 <span class="text-xs font-medium text-foreground/90 truncate">
-                  {{ currentRun ? runLabel(currentRun) : 'No run selected' }}
+                  {{ currentRun ? runLabel(currentRun) : t('run.noRunSelected') }}
                 </span>
                 <div class="ml-auto flex items-center gap-2 shrink-0">
                   <MentionedFiles :entries="displayedEntries" @open-file="openFileViewer" />
@@ -2852,11 +2864,11 @@ function handleRefInput(val: string) {
                     v-if="poppedOut"
                     type="button"
                     class="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-indigo-500 hover:bg-accent/60 transition-colors cursor-pointer"
-                    title="Câu hỏi đang ở cửa sổ riêng — bấm để thu về drawer"
+                    :title="t('run.questionInOwnWindow')"
                     @click="redockPermission"
                   >
                     <AppWindow class="h-3.5 w-3.5" :stroke-width="1.75" />
-                    Thu về
+                    {{ t('run.dockBack') }}
                   </button>
                   <span v-if="currentStatus === 'running'" class="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
                 </div>
@@ -2876,7 +2888,7 @@ function handleRefInput(val: string) {
                 class="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground"
               >
                 <Loader2 class="h-6 w-6 animate-spin text-primary" :stroke-width="2" />
-                <span class="text-xs">Đang tải log…</span>
+                <span class="text-xs">{{ t('run.loadingLog') }}</span>
               </div>
               <template v-else-if="historyHasStream">
                 <!-- Reveal older entries on demand — long logs render only their
@@ -2887,7 +2899,7 @@ function handleRefInput(val: string) {
                     class="rounded-full border border-border bg-muted/60 px-3 py-1 text-[11px] text-foreground/70 hover:bg-accent/60 transition-colors cursor-pointer"
                     @click="showEarlierHistory"
                   >
-                    Xem thêm {{ Math.min(hiddenHistoryCount, HISTORY_WINDOW_STEP) }} tin cũ hơn ({{ hiddenHistoryCount }} còn ẩn)
+                    {{ t('run.showEarlier', { count: Math.min(hiddenHistoryCount, HISTORY_WINDOW_STEP), hidden: hiddenHistoryCount }) }}
                   </button>
                 </div>
                 <StreamLog
@@ -2945,13 +2957,13 @@ function handleRefInput(val: string) {
               <div class="text-center max-w-xs">
                 <Terminal class="h-8 w-8 text-foreground/20 mx-auto mb-3" :stroke-width="1" />
                 <template v-if="currentRunId && currentStatus === 'fetched'">
-                  <p class="text-xs font-medium text-amber-500/80 font-mono mb-1">chưa run</p>
+                  <p class="text-xs font-medium text-amber-500/80 font-mono mb-1">{{ t('run.notRun') }}</p>
                   <p class="text-[11px] text-foreground/40 leading-relaxed">
-                    click Run để dùng prompt mặc định, hoặc gõ prompt ở khung chat phía dưới
+                    {{ t('run.notRunHint') }}
                   </p>
                 </template>
                 <p v-else class="text-xs text-foreground/30 font-mono">
-                  fetch an issue or PR, then run
+                  {{ t('run.fetchIssueOrPrThenRun') }}
                 </p>
               </div>
             </div>
@@ -2961,11 +2973,11 @@ function handleRefInput(val: string) {
             <button
               v-if="hasLiveOutput && !isViewingHistory && !stickToBottom"
               class="absolute bottom-4 right-4 z-10 flex items-center gap-1 rounded-full border border-border bg-card/90 px-3 py-1.5 text-[11px] font-mono text-foreground/80 shadow-md backdrop-blur transition-colors hover:bg-card hover:text-foreground cursor-pointer"
-              title="Scroll to latest"
+              :title="t('run.scrollToLatest')"
               @click="stickToBottom = true; scrollOutputToBottom()"
             >
               <ChevronDown class="h-3.5 w-3.5" :stroke-width="2" />
-              Latest
+              {{ t('run.latest') }}
             </button>
             </div>
 
@@ -2995,7 +3007,7 @@ function handleRefInput(val: string) {
                 <button
                   type="button"
                   class="absolute top-2 right-2 z-10 flex items-center justify-center rounded p-1 text-foreground/50 hover:bg-accent/60 hover:text-foreground transition-colors cursor-pointer"
-                  title="Tách câu hỏi ra cửa sổ riêng (kéo sang màn hình khác)"
+                  :title="t('run.detachQuestion')"
                   @click="openPermissionPopout"
                 >
                   <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -3069,7 +3081,7 @@ function handleRefInput(val: string) {
                 <img :src="img.url" class="h-full w-full object-cover" alt="attachment" />
                 <button
                   class="absolute top-0.5 right-0.5 h-4 w-4 rounded-full bg-background/80 border border-border flex items-center justify-center text-foreground/70 hover:text-foreground hover:bg-background cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
-                  title="Remove image"
+                  :title="t('run.removeImage')"
                   @click="removePendingImage(img.id)"
                 >
                   <X class="h-2.5 w-2.5" :stroke-width="2.5" />
@@ -3089,7 +3101,7 @@ function handleRefInput(val: string) {
                 <span class="truncate font-mono">{{ file.name }}</span>
                 <button
                   class="h-4 w-4 rounded-full flex items-center justify-center text-foreground/50 hover:text-foreground hover:bg-background cursor-pointer shrink-0"
-                  title="Remove file"
+                  :title="t('run.removeFile')"
                   @click="removePendingFile(file.id)"
                 >
                   <X class="h-2.5 w-2.5" :stroke-width="2.5" />
@@ -3122,7 +3134,7 @@ function handleRefInput(val: string) {
                 class="absolute inset-0 z-10 flex items-center justify-center gap-2 rounded-lg border-2 border-dashed border-primary bg-primary/10 text-xs font-medium text-primary pointer-events-none"
               >
                 <Paperclip class="h-4 w-4" :stroke-width="2" />
-                Thả file để đính kèm vào hội thoại
+                {{ t('run.dropFileToAttach') }}
               </div>
               <textarea
                 ref="composerEl"
@@ -3144,7 +3156,7 @@ function handleRefInput(val: string) {
                 <button
                   class="inline-flex items-center justify-center h-8 w-8 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 shrink-0"
                   :disabled="sendingFollowUp"
-                  title="Attach image (or paste from clipboard)"
+                  :title="t('run.attachImage')"
                   @click="imageInputEl?.click()"
                 >
                   <ImagePlus class="h-4 w-4" :stroke-width="2" />
@@ -3152,14 +3164,14 @@ function handleRefInput(val: string) {
                 <button
                   class="inline-flex items-center justify-center h-8 w-8 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 shrink-0"
                   :disabled="sendingFollowUp"
-                  title="Attach a file by path (or drag &amp; drop into the composer)"
+                  :title="t('run.attachFileByPath')"
                   @click="onPickFiles"
                 >
                   <Paperclip class="h-4 w-4" :stroke-width="2" />
                 </button>
                 <button
                   class="inline-flex items-center justify-center h-8 w-8 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 shrink-0"
-                  :title="composerExpanded ? 'Thu gọn ô soạn thảo' : 'Mở rộng ô soạn thảo (dễ đọc/sửa văn bản dài)'"
+                  :title="composerExpanded ? t('run.collapseComposer') : t('run.expandComposer')"
                   @click="toggleComposerExpand"
                 >
                   <component :is="composerExpanded ? Minimize2 : Maximize2" class="h-4 w-4" :stroke-width="2" />
@@ -3170,7 +3182,7 @@ function handleRefInput(val: string) {
                   size="sm"
                   variant="ghost"
                   :options="[
-                    { value: '', label: 'Default engine' },
+                    { value: '', label: t('run.defaultEngine') },
                     { value: 'claude', label: 'claude' },
                     { value: 'codex', label: 'codex' },
                   ]"
@@ -3187,10 +3199,10 @@ function handleRefInput(val: string) {
                   :options="PERMISSION_MODE_OPTIONS"
                   :disabled="currentStatus === 'running'"
                   class="min-w-0 max-w-44 h-8 shrink"
-                  title="Permission mode for this run"
+                  :title="t('run.permissionModeTitle')"
                 >
                   <template #leading>
-                    <span class="text-[10px] font-mono text-muted-foreground shrink-0">perm</span>
+                    <span class="text-[10px] font-mono text-muted-foreground shrink-0">{{ t('run.perm') }}</span>
                   </template>
                 </AppSelect>
                 <AppSelect
@@ -3200,7 +3212,7 @@ function handleRefInput(val: string) {
                   :options="modelOptions"
                   :disabled="currentStatus === 'running'"
                   class="w-40 h-8 shrink-0"
-                  title="Model for this run (empty = engine/settings default)"
+                  :title="t('run.modelTitle')"
                 >
                   <template #leading>
                     <Sparkles class="h-3 w-3 text-muted-foreground shrink-0" :stroke-width="1.5" />
@@ -3212,25 +3224,25 @@ function handleRefInput(val: string) {
                     v-if="currentStatus === 'running'"
                     variant="destructive"
                     class="h-8 shrink-0"
-                    title="Cancel the running turn"
+                    :title="t('run.cancelRunningTurn')"
                     @click="handleCancel"
                   >
                     <Square class="h-3.5 w-3.5" :stroke-width="2" fill="currentColor" />
-                    Cancel
+                    {{ t('run.cancel') }}
                   </Button>
                   <button
                     class="inline-flex items-center justify-center gap-1.5 h-8 px-3.5 text-xs bg-primary text-primary-foreground rounded-md hover:opacity-90 transition-opacity cursor-pointer disabled:opacity-50 shrink-0"
                     :disabled="primaryDisabled"
                     @click="handlePrimaryAction"
                     :title="currentStatus === 'running'
-                      ? 'Send message (Enter)'
+                      ? t('run.sendMessageEnter')
                       : currentStatus === 'fetched'
-                        ? 'Start run (Enter — empty uses the default prompt)'
+                        ? t('run.startRunEnter')
                         : chatEligible
-                          ? 'Resume session and send (Enter)'
-                          : 'Re-run with the default prompt'"
+                          ? t('run.resumeAndSend')
+                          : t('run.rerunWithDefault')"
                   >
-                    <component :is="chatSendLabel === 'Run' ? Play : Send" class="h-3.5 w-3.5" :stroke-width="2" />
+                    <component :is="chatSendLabel === t('run.sendLabelRun') ? Play : Send" class="h-3.5 w-3.5" :stroke-width="2" />
                     {{ chatSendLabel }}
                   </button>
                 </div>
@@ -3261,7 +3273,7 @@ function handleRefInput(val: string) {
           <!-- Pop the file out into a standalone OS window for side-by-side viewing -->
           <button
             class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
-            title="Mở ra cửa sổ mới"
+            :title="t('run.openInNewWindow')"
             @click="popOutFileViewer"
           >
             <AppWindow class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -3269,7 +3281,7 @@ function handleRefInput(val: string) {
           <!-- Full-screen toggle -->
           <button
             class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
-            :title="fileViewerFullscreen ? 'Exit full screen' : 'Full screen'"
+            :title="fileViewerFullscreen ? t('run.exitFullScreen') : t('run.fullScreen')"
             @click="fileViewerFullscreen = !fileViewerFullscreen"
           >
             <component :is="fileViewerFullscreen ? Minimize2 : Maximize2" class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -3277,7 +3289,7 @@ function handleRefInput(val: string) {
           <!-- Close -->
           <button
             class="flex items-center justify-center h-6 w-6 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
-            title="Close (Esc)"
+            :title="t('run.closeEsc')"
             @click="closeFileViewer"
           >
             <X class="h-4 w-4" :stroke-width="1.75" />
@@ -3296,30 +3308,30 @@ function handleRefInput(val: string) {
       <template #header>
         <Cpu class="h-4 w-4 text-primary shrink-0" :stroke-width="2" />
         <h3 class="text-sm font-semibold flex-1">
-          Chuyển sang <span class="font-mono">{{ handoffTarget }}</span>
+          {{ t('run.switchTo') }} <span class="font-mono">{{ handoffTarget }}</span>
         </h3>
       </template>
 
       <div class="px-4 py-3 text-xs text-foreground/80 space-y-1.5">
         <p>
-          Bạn đang có một phiên làm việc với
-          <span class="font-mono">{{ loadedRunEngine || 'engine hiện tại' }}</span>.
-          Bạn muốn làm gì?
+          {{ t('run.handoffIntro') }}
+          <span class="font-mono">{{ loadedRunEngine || t('run.currentEngine') }}</span>.
+          {{ t('run.handoffQuestion') }}
         </p>
         <ul class="list-disc pl-4 text-foreground/60 space-y-0.5">
-          <li><b>Tiếp tục phiên hiện tại</b>: tạo phiên mới trên <span class="font-mono">{{ handoffTarget }}</span> và nạp lại toàn bộ ngữ cảnh đang có.</li>
-          <li><b>Bắt đầu phiên mới</b>: tạo session mới trên engine đã chọn, không mang ngữ cảnh cũ.</li>
+          <li>{{ t('run.handoffContinueBullet', { engine: handoffTarget }) }}</li>
+          <li>{{ t('run.handoffNewBullet') }}</li>
         </ul>
       </div>
 
       <template #footer>
         <Button variant="outline" :disabled="engineSwitchBusy" @click="startNewEngineSession(handoffTarget!)">
           <RotateCcw v-if="startingEngineSession" class="h-3.5 w-3.5 animate-spin" :stroke-width="2" />
-          {{ startingEngineSession ? 'Đang tạo…' : 'Bắt đầu phiên mới' }}
+          {{ startingEngineSession ? t('run.creating') : t('run.startNewSession') }}
         </Button>
         <Button :disabled="engineSwitchBusy" @click="doHandoff(handoffTarget!)">
           <RotateCcw v-if="handingOff" class="h-3.5 w-3.5 animate-spin" :stroke-width="2" />
-          {{ handingOff ? 'Đang nạp ngữ cảnh…' : 'Tiếp tục phiên hiện tại' }}
+          {{ handingOff ? t('run.loadingContext') : t('run.continueCurrentSession') }}
         </Button>
       </template>
     </Modal>
@@ -3339,12 +3351,12 @@ function handleRefInput(val: string) {
         v-if="translateTrigger"
         class="fixed z-[65] inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[11px] font-medium text-primary shadow-lg shadow-black/30 hover:bg-accent/60 transition-colors cursor-pointer"
         :style="{ left: translateTrigger.x + 'px', top: translateTrigger.y + 'px' }"
-        title="Dịch đoạn đã chọn"
+        :title="t('run.translateSelection')"
         @mousedown.prevent
         @click="openTranslate"
       >
         <Languages class="h-3 w-3" :stroke-width="1.75" />
-        Dịch
+        {{ t('run.translate') }}
       </button>
     </Teleport>
 

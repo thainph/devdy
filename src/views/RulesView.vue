@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useRulesStore, type Rule } from '@/stores/rules'
 import { useProjectsStore } from '@/stores/projects'
@@ -9,6 +10,7 @@ import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { Plus, Upload, Download, Pencil, Trash2, ScrollText, CalendarDays, FolderCheck } from 'lucide-vue-next'
 
+const { t } = useI18n()
 const router = useRouter()
 const store = useRulesStore()
 const projectsStore = useProjectsStore()
@@ -26,23 +28,23 @@ onMounted(() => {
 async function handleApplyToAll(rule: Rule) {
   const total = projectsStore.projects.length
   if (total === 0) {
-    toast.error('No projects yet. Add a project first.')
+    toast.error(t('rules.list.toastNoProjects'))
     return
   }
   if (!(await confirm({
-    title: 'Apply to all projects',
-    message: `Apply rule "${rule.name}" to all ${total} project${total === 1 ? '' : 's'}? Existing artifacts will be overwritten.`,
-    confirmLabel: 'Apply',
+    title: t('rules.list.confirmApplyTitle'),
+    message: t('rules.list.confirmApplyMessage', { name: rule.name, count: total, project: t(total === 1 ? 'rules.list.project' : 'rules.list.projects') }),
+    confirmLabel: t('rules.list.confirmApplyConfirm'),
     variant: 'primary',
   }))) return
   applyingId.value = rule.id
   try {
     const result = await store.applyRuleToAllProjects(rule.id)
     if (result.failures.length === 0) {
-      toast.success(`Applied "${rule.name}" to ${result.applied} project${result.applied === 1 ? '' : 's'}.`)
+      toast.success(t('rules.list.toastApplied', { name: rule.name, count: result.applied, project: t(result.applied === 1 ? 'rules.list.project' : 'rules.list.projects') }))
     } else {
       const details = result.failures.map(f => `• ${f.project_name}: ${f.error}`).join('\n')
-      toast.error(`Applied to ${result.applied} project${result.applied === 1 ? '' : 's'}.\n\nFailed for ${result.failures.length}:\n${details}`)
+      toast.error(t('rules.list.toastAppliedPartial', { applied: result.applied, project: t(result.applied === 1 ? 'rules.list.project' : 'rules.list.projects'), failed: result.failures.length, details }))
     }
   } catch (e) {
     toast.error(String(e))
@@ -51,18 +53,18 @@ async function handleApplyToAll(rule: Rule) {
   }
 }
 
-const targetLabel: Record<string, string> = { claude: 'Claude', codex: 'Codex', both: 'Both' }
+const targetLabel: Record<string, string> = { claude: t('rules.editor.targetClaude'), codex: t('rules.editor.targetCodex'), both: t('rules.editor.targetBoth') }
 
 async function handleDelete(rule: Rule) {
   if (!(await confirm({
-    title: 'Delete rule',
-    message: `Delete rule "${rule.name}"? It will also be removed from every project it's applied to.`,
-    confirmLabel: 'Delete',
+    title: t('rules.list.confirmDeleteTitle'),
+    message: t('rules.list.confirmDeleteMessage', { name: rule.name }),
+    confirmLabel: t('common.delete'),
   }))) return
   deletingId.value = rule.id
   try {
     await store.deleteRule(rule.id)
-    toast.success('Deleted')
+    toast.success(t('rules.list.toastDeleted'))
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -79,7 +81,7 @@ async function handleImport() {
   importing.value = true
   try {
     await store.importRule(selected as string)
-    toast.success('Imported')
+    toast.success(t('rules.list.toastImported'))
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -95,7 +97,7 @@ async function handleExport(rule: Rule) {
   if (!destPath) return
   try {
     await store.exportRule(rule.id, destPath)
-    toast.success('Exported')
+    toast.success(t('rules.list.toastExported'))
   } catch (e) {
     toast.error(String(e))
   }
@@ -111,7 +113,7 @@ function formatDate(iso: string) {
     <!-- Page header -->
     <div class="flex items-center justify-between px-6 h-13 border-b border-border/60 shrink-0">
       <div class="flex items-center gap-2">
-        <h1 class="text-sm font-semibold">Rules</h1>
+        <h1 class="text-sm font-semibold">{{ t('rules.list.title') }}</h1>
         <span
           v-if="!store.loading && store.rules.length > 0"
           class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-medium text-muted-foreground"
@@ -126,13 +128,13 @@ function formatDate(iso: string) {
           @click="handleImport"
         >
           <Upload class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ importing ? 'Importing…' : 'Import .md' }}
+          {{ importing ? t('rules.list.importing') : t('rules.list.importMd') }}
         </Button>
         <Button
           @click="router.push('/rules/new')"
         >
           <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-          New Rule
+          {{ t('rules.list.newRule') }}
         </Button>
       </div>
     </div>
@@ -154,14 +156,14 @@ function formatDate(iso: string) {
         <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-muted mb-4">
           <ScrollText class="h-6 w-6 text-muted-foreground" :stroke-width="1.5" />
         </div>
-        <p class="text-sm font-medium">No rules yet</p>
-        <p class="text-xs text-muted-foreground mt-1 max-w-56">Create a rule / convention for Claude (.claude/rules) or Codex (AGENTS.md)</p>
+        <p class="text-sm font-medium">{{ t('rules.list.emptyTitle') }}</p>
+        <p class="text-xs text-muted-foreground mt-1 max-w-56">{{ t('rules.list.emptyHint') }}</p>
         <Button
           class="mt-4"
           @click="router.push('/rules/new')"
         >
           <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-          New Rule
+          {{ t('rules.list.newRule') }}
         </Button>
       </div>
 
@@ -206,7 +208,7 @@ function formatDate(iso: string) {
               <Button
                 variant="ghost"
                 size="icon-sm"
-                title="Apply to all projects"
+                :title="t('rules.list.applyToAll')"
                 :disabled="applyingId === rule.id"
                 @click="handleApplyToAll(rule)"
               >
@@ -215,7 +217,7 @@ function formatDate(iso: string) {
               <Button
                 variant="ghost"
                 size="icon-sm"
-                title="Export .md"
+                :title="t('rules.list.exportMd')"
                 @click="handleExport(rule)"
               >
                 <Download class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -223,7 +225,7 @@ function formatDate(iso: string) {
               <Button
                 variant="ghost"
                 size="icon-sm"
-                title="Edit"
+                :title="t('common.edit')"
                 @click="router.push(`/rules/${rule.id}/edit`)"
               >
                 <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -231,7 +233,7 @@ function formatDate(iso: string) {
               <Button
                 variant="destructive-ghost"
                 size="icon-sm"
-                title="Delete"
+                :title="t('common.delete')"
                 :disabled="deletingId === rule.id"
                 @click="handleDelete(rule)"
               >

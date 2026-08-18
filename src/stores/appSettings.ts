@@ -16,6 +16,7 @@ export interface AppSettings {
   codex_model: string
   extra_args: string
   theme: string
+  language: string
   color_theme: string
   animated_background: string
   analyze_issue_prompt: string
@@ -31,6 +32,8 @@ export interface AppSettings {
   translate_target_lang: string
   translate_style: string
   mcp_builtin_devdy_enabled: string
+  cyber_fox_enabled: string
+  cyber_fox_size: string
 }
 
 export const useAppSettingsStore = defineStore('appSettings', () => {

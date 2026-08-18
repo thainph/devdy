@@ -1,0 +1,64 @@
+{
+  "app": {
+    "notConnected": "Chưa gửi được — chưa kết nối tới host.",
+    "connectionLost": "Chưa gửi được — mất kết nối trước khi host xác nhận.",
+    "hostRejected": "Host từ chối lệnh.",
+    "hostRejectedReason": "Host từ chối lệnh: {reason}"
+  },
+  "planBar": {
+    "noPlanData": "chưa có dữ liệu gói"
+  },
+  "composer": {
+    "defaultEngine": "Engine mặc định",
+    "imageTooLarge": "Ảnh quá lớn (tối đa {size}MB).",
+    "fileTooLarge": "File quá lớn (tối đa {size}MB).",
+    "sending": "Đang gửi…",
+    "send": "Gửi",
+    "resume": "Tiếp tục",
+    "run": "Chạy",
+    "placeholderRunning": "Gửi tin nhắn tiếp theo — Enter để gửi, Shift+Enter để xuống dòng",
+    "placeholderIdle": "Nhập prompt — Enter để chạy (nhắc file bằng @)",
+    "removeImage": "Xóa ảnh",
+    "removeFile": "Xóa file",
+    "permTitle": "Chế độ quyền (chỉ UI — host sẽ hỏi cho từng lệnh gọi công cụ)",
+    "modelTitle": "Model (để trống = mặc định theo engine/cài đặt)",
+    "attachImage": "Đính kèm ảnh (hoặc dán từ clipboard)",
+    "attachFile": "Đính kèm file",
+    "collapseComposer": "Thu gọn ô soạn thảo",
+    "expandComposer": "Mở rộng ô soạn thảo",
+    "cancel": "Hủy",
+    "cancelTitle": "Hủy lượt đang chạy"
+  },
+  "session": {
+    "joining": "Đang tham gia…",
+    "securing": "Đang bảo mật…",
+    "connected": "Đã kết nối",
+    "connectedWaiting": "Đã kết nối — đang chờ dữ liệu…",
+    "reconnecting": "Đang kết nối lại…",
+    "error": "Lỗi",
+    "disconnected": "Đã ngắt kết nối",
+    "idle": "Chờ",
+    "verifiedFingerprint": "Fingerprint host đã xác minh: {fp}",
+    "decodeErrorsTitle": "Một số frame không thể giải mã/phân tích",
+    "disconnect": "Ngắt kết nối"
+  },
+  "otp": {
+    "title": "Nhập mật khẩu hoặc mã",
+    "subtitle": "Nhập mật khẩu master từ xa của bạn, hoặc mã một lần hiển thị trên host Devdy, để hoàn tất kết nối.",
+    "host": "host {fp}…",
+    "placeholder": "Mật khẩu hoặc mã",
+    "connecting": "Đang kết nối…",
+    "connect": "Kết nối"
+  },
+  "link": {
+    "title": "Devdy Remote",
+    "subtitle": "Mở remote link từ Devdy (quét QR hoặc dán bên dưới) để điều khiển phiên này một cách an toàn.",
+    "connectingFromScan": "Đang kết nối từ link đã quét…",
+    "controllerLink": "Controller link",
+    "linkPlaceholder": "Dán controller link (https://…/controller.html#…) vào đây",
+    "continue": "Tiếp tục",
+    "couldNotRead": "Không đọc được link.",
+    "pasteFirst": "Dán controller link trước đã.",
+    "e2eNote": "Kết nối được mã hóa đầu-cuối. Bạn sẽ nhập mã một lần hiển thị trên host để hoàn tất kết nối. Relay không bao giờ thấy dữ liệu của bạn, và fingerprint host được xác minh."
+  }
+}

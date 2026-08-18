@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useTodosStore } from '@/stores/todos'
 import { Button, Card, Drawer } from '@/components/ui'
 import MarkdownPreview from '@/components/MarkdownPreview.vue'
@@ -8,6 +9,7 @@ import { useMarkdown } from '@/lib/markdown'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { Plus, GripVertical, Trash2, ListTodo, Check, Pencil } from 'lucide-vue-next'
 
+const { t } = useI18n()
 const store = useTodosStore()
 const { confirm } = useConfirm()
 const { renderText, loadMarkdown } = useMarkdown()
@@ -128,9 +130,9 @@ function onDetailEditKeydown(e: KeyboardEvent) {
 async function deleteFromDetail() {
   if (!detailTodo.value) return
   if (!(await confirm({
-    title: 'Delete task',
-    message: 'Remove this task?',
-    confirmLabel: 'Delete',
+    title: t('todos.confirm.deleteTitle'),
+    message: t('todos.confirm.deleteMessage'),
+    confirmLabel: t('common.delete'),
   }))) return
   const id = detailTodo.value.id
   closeDetail()
@@ -189,9 +191,11 @@ async function handleClearCompleted() {
   const count = store.todos.filter(t => t.done).length
   if (count === 0) return
   if (!(await confirm({
-    title: 'Clear completed',
-    message: `Remove ${count} completed task${count === 1 ? '' : 's'}?`,
-    confirmLabel: 'Clear',
+    title: t('todos.confirm.clearTitle'),
+    message: count === 1
+      ? t('todos.confirm.clearMessageOne', { count })
+      : t('todos.confirm.clearMessageMany', { count }),
+    confirmLabel: t('common.clear'),
   }))) return
   store.clearCompleted()
 }
@@ -202,7 +206,7 @@ async function handleClearCompleted() {
     <!-- Page header -->
     <div class="flex items-center justify-between px-6 h-13 border-b border-border/60 shrink-0">
       <div class="flex items-center gap-2">
-        <h1 class="text-sm font-semibold">Todos</h1>
+        <h1 class="text-sm font-semibold">{{ t('todos.title') }}</h1>
         <span
           v-if="store.todos.length > 0"
           class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-medium text-muted-foreground"
@@ -217,11 +221,11 @@ async function handleClearCompleted() {
           @click="handleClearCompleted"
         >
           <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-          Clear completed
+          {{ t('todos.clearCompleted') }}
         </Button>
         <Button @click="openCreate">
           <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-          New task
+          {{ t('todos.newTask') }}
         </Button>
       </div>
     </div>
@@ -247,11 +251,11 @@ async function handleClearCompleted() {
           <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-muted mb-4">
             <ListTodo class="h-6 w-6 text-muted-foreground" :stroke-width="1.5" />
           </div>
-          <p class="text-sm font-medium">No tasks yet</p>
-          <p class="text-xs text-muted-foreground mt-1 mb-4 max-w-56">Create your first task to track what needs doing. Drag to reorder by priority.</p>
+          <p class="text-sm font-medium">{{ t('todos.empty.title') }}</p>
+          <p class="text-xs text-muted-foreground mt-1 mb-4 max-w-56">{{ t('todos.empty.hint') }}</p>
           <Button size="md" @click="openCreate">
             <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-            Create task
+            {{ t('todos.createTask') }}
           </Button>
         </div>
 
@@ -270,7 +274,7 @@ async function handleClearCompleted() {
             <!-- Drag handle -->
             <span
               class="mt-0.5 shrink-0 cursor-grab text-muted-foreground/40 transition-colors group-hover:text-muted-foreground active:cursor-grabbing touch-none"
-              title="Drag to reorder"
+              :title="t('todos.dragToReorder')"
               @pointerdown="startDrag(index, $event)"
             >
               <GripVertical class="h-4 w-4" :stroke-width="1.75" />
@@ -283,7 +287,7 @@ async function handleClearCompleted() {
               :class="todo.done
                 ? 'bg-primary border-primary text-primary-foreground'
                 : 'border-border hover:border-primary/60'"
-              :title="todo.done ? 'Mark as not done' : 'Mark as done'"
+              :title="todo.done ? t('todos.markNotDone') : t('todos.markDone')"
               @click="store.toggle(todo.id)"
             >
               <Check v-if="todo.done" class="h-3 w-3" :stroke-width="3" />

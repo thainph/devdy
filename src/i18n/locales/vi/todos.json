@@ -1,0 +1,49 @@
+{
+  "title": "Việc cần làm",
+  "newTask": "Việc mới",
+  "createTask": "Tạo việc",
+  "clearCompleted": "Xóa việc đã xong",
+  "dragToReorder": "Kéo để sắp xếp lại",
+  "markDone": "Đánh dấu đã xong",
+  "markNotDone": "Đánh dấu chưa xong",
+  "clickToOpen": "Bấm để mở",
+  "detailTitle": "Chi tiết việc",
+  "empty": {
+    "title": "Chưa có việc nào",
+    "hint": "Tạo việc đầu tiên để theo dõi những gì cần làm. Kéo để sắp xếp theo mức ưu tiên."
+  },
+  "form": {
+    "taskLabel": "Việc",
+    "taskPlaceholder": "Cần làm gì? (Hỗ trợ Markdown & checklist)",
+    "hint": "Hỗ trợ Markdown · {save} để lưu · {esc} để hủy"
+  },
+  "confirm": {
+    "deleteTitle": "Xóa việc",
+    "deleteMessage": "Gỡ việc này?",
+    "clearTitle": "Xóa việc đã xong",
+    "clearMessageOne": "Gỡ {count} việc đã xong?",
+    "clearMessageMany": "Gỡ {count} việc đã xong?"
+  },
+  "quick": {
+    "windowTitle": "Tạo nhanh — Devdy",
+    "heading": "Tạo nhanh",
+    "pinned": "Đã ghim",
+    "pin": "Ghim",
+    "pinnedTitle": "Luôn nổi trên cùng — bấm để bỏ ghim",
+    "pinTitle": "Giữ luôn nổi trên cùng",
+    "tabTodo": "Việc",
+    "tabNote": "Ghi chú",
+    "todoPlaceholder": "Cần làm gì… (Hỗ trợ Markdown)",
+    "notePlaceholder": "Ghi chú… (Hỗ trợ Markdown)",
+    "noteTitlePlaceholder": "Tiêu đề",
+    "noProject": "Không có dự án",
+    "addTodo": "Thêm việc",
+    "saveNote": "Lưu ghi chú",
+    "todoAdded": "Đã thêm việc",
+    "noteSaved": "Đã lưu ghi chú",
+    "fabAriaLabel": "Tạo nhanh (Việc / Ghi chú)",
+    "fabTitle": "Tạo nhanh — ⌘/Ctrl + K",
+    "actionNote": "Ghi chú",
+    "actionTodo": "Việc"
+  }
+}

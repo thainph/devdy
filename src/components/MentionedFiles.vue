@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, onBeforeUnmount, type Component } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Files, FileText, FilePen, FilePlus2, ChevronDown } from 'lucide-vue-next'
 import type { StreamEntry } from '@/lib/streamEvents'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   entries: StreamEntry[]
@@ -43,11 +46,11 @@ interface MentionedFile {
   count: number
 }
 
-const ACTION_STYLE: Record<Action, { icon: Component; iconClass: string; label: string }> = {
-  read: { icon: FileText, iconClass: 'text-sky-500 dark:text-sky-300', label: 'đọc' },
-  edit: { icon: FilePen, iconClass: 'text-amber-500 dark:text-amber-300', label: 'sửa' },
-  write: { icon: FilePlus2, iconClass: 'text-rose-500 dark:text-rose-300', label: 'tạo' },
-}
+const ACTION_STYLE = computed<Record<Action, { icon: Component; iconClass: string; label: string }>>(() => ({
+  read: { icon: FileText, iconClass: 'text-sky-500 dark:text-sky-300', label: t('misc.mentionedFiles.read') },
+  edit: { icon: FilePen, iconClass: 'text-amber-500 dark:text-amber-300', label: t('misc.mentionedFiles.edit') },
+  write: { icon: FilePlus2, iconClass: 'text-rose-500 dark:text-rose-300', label: t('misc.mentionedFiles.write') },
+}))
 
 const files = computed<MentionedFile[]>(() => {
   const map = new Map<string, MentionedFile>()
@@ -107,7 +110,7 @@ onBeforeUnmount(() => {
     <button
       class="flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium transition-colors cursor-pointer"
       :class="open ? 'bg-primary/15 text-primary' : 'text-foreground/50 hover:text-foreground/80 hover:bg-card'"
-      :title="`${files.length} file được nhắc trong phiên này`"
+      :title="t('misc.mentionedFiles.countTitle', { count: files.length })"
       @click.stop="toggle"
     >
       <Files class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -120,7 +123,7 @@ onBeforeUnmount(() => {
       class="absolute right-0 top-full z-30 mt-1 w-80 max-w-[80vw] overflow-hidden rounded-md border border-border bg-popover shadow-lg"
     >
       <div class="px-3 py-2 border-b border-border">
-        <span class="text-[11px] font-medium text-foreground/60">Files trong phiên ({{ files.length }})</span>
+        <span class="text-[11px] font-medium text-foreground/60">{{ t('misc.mentionedFiles.filesInSession', { count: files.length }) }}</span>
       </div>
       <ul class="max-h-72 overflow-y-auto py-1">
         <li v-for="f in files" :key="f.path">

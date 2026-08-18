@@ -1,0 +1,85 @@
+{
+  "list": {
+    "title": "MCP Servers",
+    "import": "Nhập",
+    "importing": "Đang nhập…",
+    "newServer": "Server mới",
+    "builtin": {
+      "active": "Tích hợp sẵn · hoạt động",
+      "disabled": "Tích hợp sẵn · đã tắt",
+      "description": "Tự động chèn vào mọi run. Cung cấp cho AI ghi chú của bạn, khả năng nhớ xuyên phiên, ngữ cảnh dự án (cây thư mục & git) và VPS được quản lý — dưới dạng các tool {tools}.",
+      "settings": "Cài đặt"
+    },
+    "empty": {
+      "title": "Chưa có MCP server nào",
+      "hint": "Định nghĩa một MCP server một lần, sau đó bật cho từng dự án"
+    },
+    "claudeOnly": "Chỉ Claude",
+    "claudeOnlyTitle": "Transport SSE chỉ được Claude hỗ trợ. Các run Codex sẽ bỏ qua server này.",
+    "disable": "Tắt",
+    "enable": "Bật",
+    "exportTitle": "Xuất JSON (gồm cả secret)",
+    "recommended": "Server đề xuất",
+    "adding": "Đang thêm…",
+    "confirmDelete": {
+      "title": "Xóa MCP server",
+      "message": "Xóa MCP server \"{name}\"? Thao tác này cũng xóa các secret đã lưu. Không thể hoàn tác."
+    },
+    "toast": {
+      "added": "Đã thêm \"{name}\" — mở để hoàn tất thiết lập",
+      "imported": "Đã nhập",
+      "exported": "Đã xuất",
+      "deleted": "Đã xóa",
+      "disabled": "Đã tắt",
+      "enabled": "Đã bật"
+    }
+  },
+  "editor": {
+    "backTitle": "Quay lại MCP Servers",
+    "newTitle": "MCP Server mới",
+    "editing": "— đang chỉnh sửa",
+    "enabled": "Đã bật",
+    "disabled": "Đã tắt",
+    "saving": "Đang lưu…",
+    "general": "Chung",
+    "name": "Tên",
+    "namePlaceholder": "my-mcp-server",
+    "description": "Mô tả",
+    "descriptionPlaceholder": "Server này cung cấp gì",
+    "transport": "Transport",
+    "sseWarning": "SSE chỉ dành cho Claude; các run Codex hỗ trợ stdio và streamable HTTP.",
+    "process": "Tiến trình",
+    "command": "Lệnh",
+    "commandPlaceholder": "npx",
+    "args": "Args (mỗi dòng một tham số)",
+    "environment": "Biến môi trường",
+    "noEnv": "Không có biến môi trường",
+    "keyPlaceholder": "KEY",
+    "valuePlaceholder": "giá trị",
+    "unchangedPlaceholder": "•••••• (giữ nguyên)",
+    "stored": "đã lưu",
+    "storedTitle": "Đã lưu một giá trị; để trống để giữ nguyên",
+    "endpoint": "Endpoint",
+    "url": "URL",
+    "urlPlaceholder": "https://example.com/mcp",
+    "headers": "Headers",
+    "noHeaders": "Không có header",
+    "authorizationPlaceholder": "Authorization",
+    "connection": "Kết nối",
+    "testConnection": "Kiểm tra kết nối",
+    "testing": "Đang kiểm tra…",
+    "saveFirst": "Lưu trước để bật kiểm tra",
+    "validation": {
+      "nameRequired": "Tên là bắt buộc",
+      "nameFormat": "Tên chỉ được chứa chữ cái, số, dấu gạch ngang và gạch dưới",
+      "commandRequired": "Transport stdio cần một lệnh",
+      "urlRequired": "Transport {transport} cần một url",
+      "keyEmpty": "Khóa secret không được để trống",
+      "duplicateKey": "Khóa trùng \"{key}\""
+    },
+    "saveFirstThenTest": "Lưu server trước, sau đó kiểm tra kết nối.",
+    "toast": {
+      "saved": "Đã lưu"
+    }
+  }
+}

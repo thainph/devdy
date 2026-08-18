@@ -8,6 +8,7 @@
  * parent (`App.vue`) wires events to the {@link ControllerConnection}.
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   AlertTriangle, Loader2, ShieldCheck, Wifi, WifiOff, X,
 } from 'lucide-vue-next'
@@ -67,24 +68,26 @@ const emit = defineEmits<{
   requestFiles: []
 }>()
 
+const { t } = useI18n()
+
 const isActive = computed(() => props.status === 'connected')
 
 const statusLabel = computed(() => {
   switch (props.status) {
     case 'joining':
-      return 'Joining…'
+      return t('controller.session.joining')
     case 'handshaking':
-      return 'Securing…'
+      return t('controller.session.securing')
     case 'connected':
-      return props.live ? 'Connected' : 'Connected — waiting for data…'
+      return props.live ? t('controller.session.connected') : t('controller.session.connectedWaiting')
     case 'reconnecting':
-      return 'Reconnecting…'
+      return t('controller.session.reconnecting')
     case 'error':
-      return 'Error'
+      return t('controller.session.error')
     case 'disconnected':
-      return 'Disconnected'
+      return t('controller.session.disconnected')
     default:
-      return 'Idle'
+      return t('controller.session.idle')
   }
 })
 
@@ -173,7 +176,7 @@ onUnmounted(() => window.removeEventListener('pointerup', onWindowPointerUp))
       <span
         v-if="shortFp"
         class="inline-flex items-center gap-1 text-[10px] font-mono text-foreground/45"
-        :title="'Verified host fingerprint: ' + hostFingerprint"
+        :title="t('controller.session.verifiedFingerprint', { fp: hostFingerprint })"
       >
         <ShieldCheck class="h-3 w-3 text-emerald-500" :stroke-width="2" /> {{ shortFp }}…
       </span>
@@ -181,13 +184,13 @@ onUnmounted(() => window.removeEventListener('pointerup', onWindowPointerUp))
         <span
           v-if="decodeErrors > 0"
           class="inline-flex items-center gap-1 text-[10px] text-amber-500"
-          title="Some frames could not be decrypted/parsed"
+          :title="t('controller.session.decodeErrorsTitle')"
         >
           <AlertTriangle class="h-3 w-3" :stroke-width="2" /> {{ decodeErrors }}
         </span>
         <button
           class="inline-flex items-center justify-center h-7 w-7 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-          title="Disconnect"
+          :title="t('controller.session.disconnect')"
           @click="emit('disconnect')"
         >
           <X class="h-4 w-4" :stroke-width="2" />

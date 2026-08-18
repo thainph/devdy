@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { invoke } from '@/lib/tauri'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import {
@@ -42,26 +43,27 @@ ChartJS.register(
   CategoryScale, LinearScale,
 )
 
+const { t } = useI18n()
 const projectsStore = useProjectsStore()
 
 // ── filters ────────────────────────────────────────────────────────────────
-const RANGE_OPTIONS = [
-  { value: '7', label: 'Last 7 days' },
-  { value: '30', label: 'Last 30 days' },
-  { value: '90', label: 'Last 90 days' },
-  { value: 'all', label: 'All time' },
-]
+const RANGE_OPTIONS = computed(() => [
+  { value: '7', label: t('stats.range.last7') },
+  { value: '30', label: t('stats.range.last30') },
+  { value: '90', label: t('stats.range.last90') },
+  { value: 'all', label: t('stats.range.all') },
+])
 const range = ref('30')
 const engine = ref('') // '' = all
 const projectId = ref('') // '' = all
 
-const engineOptions = [
-  { value: '', label: 'All engines' },
+const engineOptions = computed(() => [
+  { value: '', label: t('stats.engine.all') },
   { value: 'claude', label: 'Claude' },
   { value: 'codex', label: 'Codex' },
-]
+])
 const projectOptions = computed(() => [
-  { value: '', label: 'All projects' },
+  { value: '', label: t('stats.project.all') },
   ...projectsStore.projects.map((p) => ({ value: p.id, label: p.name })),
 ])
 
@@ -158,7 +160,7 @@ const dailyChartData = computed((): any => {
     datasets: [
       {
         type: 'bar' as const,
-        label: 'Tokens',
+        label: t('stats.charts.tokens'),
         data: d.map((p) => p.tokens),
         backgroundColor: 'rgba(99,102,241,0.55)',
         borderColor: INDIGO,
@@ -169,7 +171,7 @@ const dailyChartData = computed((): any => {
       },
       {
         type: 'line' as const,
-        label: 'Cost (USD)',
+        label: t('stats.charts.cost'),
         data: d.map((p) => p.cost),
         borderColor: AMBER,
         backgroundColor: AMBER,
@@ -256,10 +258,10 @@ async function refreshPlanUsageCodex() {
 }
 
 const PLAN_WINDOWS: { key: 'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day_sonnet'; label: string }[] = [
-  { key: 'five_hour', label: 'Current session (5h)' },
-  { key: 'seven_day', label: 'This week (all models)' },
-  { key: 'seven_day_opus', label: 'This week (Opus)' },
-  { key: 'seven_day_sonnet', label: 'This week (Sonnet)' },
+  { key: 'five_hour', label: t('stats.plan.windowFiveHour') },
+  { key: 'seven_day', label: t('stats.plan.windowSevenDay') },
+  { key: 'seven_day_opus', label: t('stats.plan.windowSevenDayOpus') },
+  { key: 'seven_day_sonnet', label: t('stats.plan.windowSevenDaySonnet') },
 ]
 function planRowsFor(u: PlanUsageData | null, windows: typeof PLAN_WINDOWS) {
   if (!u || !u.rate_limits_available) return []
@@ -275,21 +277,21 @@ function planRowsFor(u: PlanUsageData | null, windows: typeof PLAN_WINDOWS) {
 const planRows = computed(() => planRowsFor(planUsage.value, PLAN_WINDOWS))
 // Codex only reports two windows: rolling 5h + weekly (no per-model split).
 const CODEX_PLAN_WINDOWS: typeof PLAN_WINDOWS = [
-  { key: 'five_hour', label: 'Current session (5h)' },
-  { key: 'seven_day', label: 'This week' },
+  { key: 'five_hour', label: t('stats.plan.windowFiveHour') },
+  { key: 'seven_day', label: t('stats.plan.windowCodexWeek') },
 ]
 const planRowsCodex = computed(() => planRowsFor(planUsageCodex.value, CODEX_PLAN_WINDOWS))
 function planResetText(iso: string | null): string {
   if (!iso) return ''
   const ms = new Date(iso).getTime() - now.value
-  if (ms <= 0) return 'resets soon'
+  if (ms <= 0) return t('stats.plan.resetsSoon')
   const totalMinutes = Math.max(1, Math.ceil(ms / 60_000))
   const days = Math.floor(totalMinutes / 1440)
   const hours = Math.floor((totalMinutes % 1440) / 60)
   const minutes = totalMinutes % 60
-  if (days > 0) return hours > 0 ? `resets in ${days}d ${hours}h` : `resets in ${days}d`
-  if (hours > 0) return minutes > 0 ? `resets in ${hours}h ${minutes}m` : `resets in ${hours}h`
-  return `resets in ${minutes}m`
+  if (days > 0) return hours > 0 ? t('stats.plan.resetsInDaysHours', { days, hours }) : t('stats.plan.resetsInDays', { days })
+  if (hours > 0) return minutes > 0 ? t('stats.plan.resetsInHoursMinutes', { hours, minutes }) : t('stats.plan.resetsInHours', { hours })
+  return t('stats.plan.resetsInMinutes', { minutes })
 }
 
 // ── actions: backfill + reset ──────────────────────────────────────────────────
@@ -301,10 +303,10 @@ async function doBackfill() {
   actionMsg.value = null
   try {
     const r = await backfillUsage()
-    actionMsg.value = `Backfilled ${r.inserted} record(s) from ${r.runs_scanned} run log(s).`
+    actionMsg.value = t('stats.action.backfilled', { inserted: r.inserted, scanned: r.runs_scanned })
     await load()
   } catch (e) {
-    actionMsg.value = `Backfill failed: ${e}`
+    actionMsg.value = t('stats.action.backfillFailed', { error: String(e) })
   } finally {
     backfilling.value = false
   }
@@ -324,11 +326,11 @@ async function doReset() {
   resetting.value = true
   try {
     const r = await resetUsageStats()
-    actionMsg.value = `Reset done — deleted ${r.runs_deleted} run(s), cleared ${r.usage_cleared} usage record(s).`
+    actionMsg.value = t('stats.action.resetDone', { runs: r.runs_deleted, usage: r.usage_cleared })
     showReset.value = false
     await load()
   } catch (e) {
-    actionMsg.value = `Reset failed: ${e}`
+    actionMsg.value = t('stats.action.resetFailed', { error: String(e) })
   } finally {
     resetting.value = false
   }
@@ -353,7 +355,7 @@ async function loadStorage() {
   try {
     storage.value = await getStorageStats()
   } catch (e) {
-    actionMsg.value = `Failed to read storage: ${e}`
+    actionMsg.value = t('stats.action.storageReadFailed', { error: String(e) })
   } finally {
     storageLoading.value = false
   }
@@ -365,11 +367,11 @@ async function doClean() {
   cleaningId.value = cat.id
   try {
     const r = await cleanStorage(cat.id)
-    actionMsg.value = `Cleaned ${cat.label} — removed ${fmtNum(r.deleted_files)} file(s), freed ${fmtBytes(r.freed_bytes)}.`
+    actionMsg.value = t('stats.action.cleaned', { label: cat.label, files: fmtNum(r.deleted_files), bytes: fmtBytes(r.freed_bytes) })
     cleanTarget.value = null
     await loadStorage()
   } catch (e) {
-    actionMsg.value = `Cleanup failed: ${e}`
+    actionMsg.value = t('stats.action.cleanupFailed', { error: String(e) })
   } finally {
     cleaningId.value = null
   }
@@ -380,25 +382,25 @@ async function doClean() {
   <div class="flex flex-col h-full">
     <!-- Header -->
     <div class="flex items-center justify-between px-6 h-13 border-b border-border/60 shrink-0">
-      <h1 class="text-sm font-semibold">Usage Stats</h1>
+      <h1 class="text-sm font-semibold">{{ t('stats.title') }}</h1>
       <div class="flex items-center gap-2">
         <Button
           variant="outline"
           :disabled="backfilling"
-          title="Rebuild usage records from existing run logs"
+          :title="t('stats.backfillTitle')"
           @click="doBackfill"
         >
           <Loader2 v-if="backfilling" class="h-3.5 w-3.5 animate-spin" />
           <RefreshCw v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-          Backfill from logs
+          {{ t('stats.backfill') }}
         </Button>
         <Button
           variant="destructive"
-          title="Delete all runs and reset counters to zero"
+          :title="t('stats.resetTitle')"
           @click="openReset"
         >
           <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-          Reset
+          {{ t('stats.reset') }}
         </Button>
       </div>
     </div>
@@ -411,7 +413,7 @@ async function doClean() {
         <AppSelect v-model="engine" :options="engineOptions" size="sm" class="w-40" />
         <AppSelect v-model="projectId" :options="projectOptions" size="sm" class="w-52" />
         <span v-if="loading" class="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <Loader2 class="h-3.5 w-3.5 animate-spin" /> Loading…
+          <Loader2 class="h-3.5 w-3.5 animate-spin" /> {{ t('common.loading') }}
         </span>
       </div>
 
@@ -424,11 +426,11 @@ async function doClean() {
         <Card class="border-border/60" body-class="p-4 space-y-3">
           <div>
             <h2 class="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-              <Gauge class="h-3.5 w-3.5" :stroke-width="1.75" /> Plan usage (Claude subscription)
+              <Gauge class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('stats.plan.claudeTitle') }}
             </h2>
             <p class="text-[11px] text-muted-foreground/70 leading-relaxed mt-1">
-              Your account's <b>real</b> usage and reset times, read live from Claude's
-              <code class="font-mono bg-muted px-1 rounded">/usage</code> data during runs.
+              {{ t('stats.plan.claudeDescPrefix') }} <b>{{ t('stats.plan.real') }}</b> {{ t('stats.plan.claudeDescSuffix') }}
+              <code class="font-mono bg-muted px-1 rounded">/usage</code> {{ t('stats.plan.claudeDescEnd') }}
             </p>
           </div>
           <div v-if="planRows.length" class="space-y-2">
@@ -449,12 +451,11 @@ async function doClean() {
               </div>
             </div>
             <p v-if="planUsage?.subscription_type" class="text-[11px] text-muted-foreground">
-              Plan: <b class="capitalize">{{ planUsage.subscription_type }}</b>
+              {{ t('stats.plan.label') }} <b class="capitalize">{{ planUsage.subscription_type }}</b>
             </p>
           </div>
           <p v-else class="text-[11px] text-muted-foreground italic">
-            No plan usage captured yet — run a Claude task and it will populate here.
-            (Unavailable for API-key / non-subscription sessions.)
+            {{ t('stats.plan.empty') }}
           </p>
         </Card>
 
@@ -462,11 +463,11 @@ async function doClean() {
         <Card class="border-border/60" body-class="p-4 space-y-3">
           <div>
             <h2 class="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-              <Gauge class="h-3.5 w-3.5" :stroke-width="1.75" /> Plan usage (Codex subscription)
+              <Gauge class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('stats.plan.codexTitle') }}
             </h2>
             <p class="text-[11px] text-muted-foreground/70 leading-relaxed mt-1">
-              Your Codex account's <b>real</b> rate-limit usage (the numbers behind
-              <code class="font-mono bg-muted px-1 rounded">/status</code>), updated after each Codex run.
+              {{ t('stats.plan.codexDescPrefix') }} <b>{{ t('stats.plan.real') }}</b> {{ t('stats.plan.codexDescSuffix') }}
+              <code class="font-mono bg-muted px-1 rounded">/status</code>{{ t('stats.plan.codexDescEnd') }}
             </p>
           </div>
           <div v-if="planRowsCodex.length" class="space-y-2">
@@ -487,11 +488,11 @@ async function doClean() {
               </div>
             </div>
             <p v-if="planUsageCodex?.subscription_type" class="text-[11px] text-muted-foreground">
-              Plan: <b class="capitalize">{{ planUsageCodex.subscription_type }}</b>
+              {{ t('stats.plan.label') }} <b class="capitalize">{{ planUsageCodex.subscription_type }}</b>
             </p>
           </div>
           <p v-else class="text-[11px] text-muted-foreground italic">
-            No Codex plan usage captured yet — run a Codex task and it will populate here.
+            {{ t('stats.plan.emptyCodex') }}
           </p>
         </Card>
       </div>
@@ -502,9 +503,9 @@ async function doClean() {
         class="flex flex-col items-center justify-center py-20 text-center"
       >
         <Coins class="h-8 w-8 text-muted-foreground/40 mb-3" :stroke-width="1.5" />
-        <p class="text-sm text-muted-foreground">No usage recorded for this filter.</p>
+        <p class="text-sm text-muted-foreground">{{ t('stats.empty.title') }}</p>
         <p class="text-xs text-muted-foreground/70 mt-1">
-          Run an analysis, or click "Backfill from logs" to import past runs.
+          {{ t('stats.empty.hint') }}
         </p>
       </div>
 
@@ -513,35 +514,34 @@ async function doClean() {
         <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <Card class="border-border/60" body-class="p-4">
             <div class="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
-              <Coins class="h-3.5 w-3.5" :stroke-width="1.75" /> Total tokens
+              <Coins class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('stats.summary.totalTokens') }}
             </div>
             <p class="text-xl font-semibold tabular-nums">{{ fmtNum(stats.summary.total_tokens) }}</p>
             <p class="text-[11px] text-muted-foreground/70 mt-1">
-              in {{ fmtCompact(stats.summary.total_input) }} · out {{ fmtCompact(stats.summary.total_output) }}
-              · cache {{ fmtCompact(stats.summary.total_cache) }}
+              {{ t('stats.summary.tokensBreakdown', { input: fmtCompact(stats.summary.total_input), output: fmtCompact(stats.summary.total_output), cache: fmtCompact(stats.summary.total_cache) }) }}
             </p>
           </Card>
           <Card class="border-border/60" body-class="p-4">
             <div class="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
-              <DollarSign class="h-3.5 w-3.5" :stroke-width="1.75" /> Est. cost
-              <span title="Quy đổi tương đương API. Tài khoản dùng subscription nên chi phí thực tế là phí thuê bao cố định, không tính theo token.">
+              <DollarSign class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('stats.summary.estCost') }}
+              <span :title="t('stats.summary.estCostTooltip')">
                 <Info class="h-3 w-3 text-muted-foreground/50" />
               </span>
             </div>
             <p class="text-xl font-semibold tabular-nums">{{ fmtCost(stats.summary.total_cost) }}</p>
             <p class="text-[11px] text-muted-foreground/70 mt-1">
-              {{ fmtCost(stats.summary.estimated_cost) }} estimated
+              {{ t('stats.summary.estimated', { cost: fmtCost(stats.summary.estimated_cost) }) }}
             </p>
           </Card>
           <Card class="border-border/60" body-class="p-4">
             <div class="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
-              <Play class="h-3.5 w-3.5" :stroke-width="1.75" /> Runs
+              <Play class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('stats.summary.runs') }}
             </div>
             <p class="text-xl font-semibold tabular-nums">{{ fmtNum(stats.summary.total_runs) }}</p>
           </Card>
           <Card class="border-border/60" body-class="p-4">
             <div class="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
-              <Repeat class="h-3.5 w-3.5" :stroke-width="1.75" /> Turns
+              <Repeat class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('stats.summary.turns') }}
             </div>
             <p class="text-xl font-semibold tabular-nums">{{ fmtNum(stats.summary.total_turns) }}</p>
           </Card>
@@ -549,7 +549,7 @@ async function doClean() {
 
         <!-- Daily chart -->
         <Card class="border-border/60" body-class="p-4">
-          <h2 class="text-xs font-medium text-muted-foreground mb-3">Daily tokens &amp; cost</h2>
+          <h2 class="text-xs font-medium text-muted-foreground mb-3">{{ t('stats.charts.dailyTitle') }}</h2>
           <div class="h-64">
             <Bar :data="dailyChartData" :options="dailyChartOptions" />
           </div>
@@ -558,7 +558,7 @@ async function doClean() {
         <!-- Engine + project breakdown -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <Card class="border-border/60" body-class="p-4">
-            <h2 class="text-xs font-medium text-muted-foreground mb-3">By engine</h2>
+            <h2 class="text-xs font-medium text-muted-foreground mb-3">{{ t('stats.charts.byEngine') }}</h2>
             <div class="h-52">
               <Doughnut :data="engineChartData" :options="doughnutOptions" />
             </div>
@@ -578,19 +578,19 @@ async function doClean() {
           </Card>
 
           <Card class="border-border/60" body-class="p-4">
-            <h2 class="text-xs font-medium text-muted-foreground mb-3">By project</h2>
+            <h2 class="text-xs font-medium text-muted-foreground mb-3">{{ t('stats.charts.byProject') }}</h2>
             <table class="w-full text-xs">
               <thead>
                 <tr class="text-muted-foreground/70 text-left">
-                  <th class="font-normal pb-2">Project</th>
-                  <th class="font-normal pb-2 text-right">Tokens</th>
-                  <th class="font-normal pb-2 text-right">Cost</th>
-                  <th class="font-normal pb-2 text-right">%</th>
+                  <th class="font-normal pb-2">{{ t('stats.table.project') }}</th>
+                  <th class="font-normal pb-2 text-right">{{ t('stats.table.tokens') }}</th>
+                  <th class="font-normal pb-2 text-right">{{ t('stats.table.cost') }}</th>
+                  <th class="font-normal pb-2 text-right">{{ t('stats.table.percent') }}</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-for="p in stats.by_project" :key="p.project_id ?? 'none'" class="border-t border-border/40">
-                  <td class="py-1.5 truncate max-w-[160px]">{{ p.project_name ?? '(deleted)' }}</td>
+                  <td class="py-1.5 truncate max-w-[160px]">{{ p.project_name ?? t('stats.table.deletedProject') }}</td>
                   <td class="py-1.5 text-right tabular-nums">{{ fmtNum(p.tokens) }}</td>
                   <td class="py-1.5 text-right tabular-nums text-muted-foreground">{{ fmtCost(p.cost) }}</td>
                   <td class="py-1.5 text-right tabular-nums text-muted-foreground">
@@ -604,19 +604,19 @@ async function doClean() {
 
         <!-- By model -->
         <Card class="border-border/60" body-class="p-4">
-          <h2 class="text-xs font-medium text-muted-foreground mb-3">By model</h2>
+          <h2 class="text-xs font-medium text-muted-foreground mb-3">{{ t('stats.table.byModel') }}</h2>
           <table class="w-full text-xs">
             <thead>
               <tr class="text-muted-foreground/70 text-left">
-                <th class="font-normal pb-2">Model</th>
-                <th class="font-normal pb-2 text-right">Tokens</th>
-                <th class="font-normal pb-2 text-right">Cost</th>
-                <th class="font-normal pb-2 text-right">Runs</th>
+                <th class="font-normal pb-2">{{ t('stats.table.model') }}</th>
+                <th class="font-normal pb-2 text-right">{{ t('stats.table.tokens') }}</th>
+                <th class="font-normal pb-2 text-right">{{ t('stats.table.cost') }}</th>
+                <th class="font-normal pb-2 text-right">{{ t('stats.table.runs') }}</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="m in stats.by_model" :key="m.model ?? 'unknown'" class="border-t border-border/40">
-                <td class="py-1.5 font-mono">{{ m.model ?? '(unknown)' }}</td>
+                <td class="py-1.5 font-mono">{{ m.model ?? t('stats.table.unknownModel') }}</td>
                 <td class="py-1.5 text-right tabular-nums">{{ fmtNum(m.tokens) }}</td>
                 <td class="py-1.5 text-right tabular-nums text-muted-foreground">{{ fmtCost(m.cost) }}</td>
                 <td class="py-1.5 text-right tabular-nums text-muted-foreground">{{ fmtNum(m.runs) }}</td>
@@ -630,29 +630,29 @@ async function doClean() {
       <Card class="border-border/60" body-class="p-4">
         <div class="flex items-center justify-between mb-3">
           <h2 class="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            <HardDrive class="h-3.5 w-3.5" :stroke-width="1.75" /> Storage — session/run logs
+            <HardDrive class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('stats.storage.title') }}
             <span v-if="storage" class="text-muted-foreground/60">
-              · {{ fmtBytes(storage.total_bytes) }} total
+              {{ t('stats.storage.totalSuffix', { bytes: fmtBytes(storage.total_bytes) }) }}
             </span>
           </h2>
           <Button variant="ghost" size="sm" :disabled="storageLoading" @click="loadStorage">
             <Loader2 v-if="storageLoading" class="h-3.5 w-3.5 animate-spin" />
             <RefreshCw v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-            Rescan
+            {{ t('stats.storage.rescan') }}
           </Button>
         </div>
 
         <div v-if="!storage && storageLoading" class="text-xs text-muted-foreground py-4">
-          Scanning disk…
+          {{ t('stats.storage.scanning') }}
         </div>
 
         <table v-else-if="storage" class="w-full text-xs">
           <thead>
             <tr class="text-muted-foreground/70 text-left">
-              <th class="font-normal pb-2">Category</th>
-              <th class="font-normal pb-2 text-right">Files</th>
-              <th class="font-normal pb-2 text-right">Size</th>
-              <th class="font-normal pb-2 text-right">%</th>
+              <th class="font-normal pb-2">{{ t('stats.storage.category') }}</th>
+              <th class="font-normal pb-2 text-right">{{ t('stats.storage.files') }}</th>
+              <th class="font-normal pb-2 text-right">{{ t('stats.storage.size') }}</th>
+              <th class="font-normal pb-2 text-right">{{ t('stats.storage.percent') }}</th>
               <th class="font-normal pb-2 text-right"></th>
             </tr>
           </thead>
@@ -680,20 +680,19 @@ async function doClean() {
                   variant="outline"
                   size="sm"
                   :disabled="!c.deletable || cleaningId === c.id"
-                  :title="c.deletable ? 'Delete the log files in this category' : 'Nothing to clean'"
+                  :title="c.deletable ? t('stats.storage.cleanRowTitle') : t('stats.storage.nothingToClean')"
                   @click="cleanTarget = c"
                 >
                   <Loader2 v-if="cleaningId === c.id" class="h-3.5 w-3.5 animate-spin" />
                   <Trash2 v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-                  Clean
+                  {{ t('stats.storage.clean') }}
                 </Button>
               </td>
             </tr>
           </tbody>
         </table>
         <p class="text-[11px] text-muted-foreground/70 mt-3">
-          Dọn log để giải phóng dung lượng. Log của Devdy xóa an toàn — lịch sử run &amp; token vẫn giữ,
-          chỉ mất nội dung transcript. Log Claude/Codex là của CLI nên xóa sẽ mất lịch sử phía CLI.
+          {{ t('stats.storage.note') }}
         </p>
       </Card>
     </div>
@@ -708,16 +707,15 @@ async function doClean() {
         <div class="flex items-center gap-2 mb-3" :class="cleanTarget.destructive ? 'text-amber-500' : 'text-foreground'">
           <AlertTriangle v-if="cleanTarget.destructive" class="h-5 w-5" />
           <Trash2 v-else class="h-5 w-5" />
-          <h2 class="text-sm font-semibold">Clean {{ cleanTarget.label }}</h2>
+          <h2 class="text-sm font-semibold">{{ t('stats.cleanModal.title', { label: cleanTarget.label }) }}</h2>
         </div>
         <p class="text-xs text-muted-foreground leading-relaxed mb-2">{{ cleanTarget.description }}</p>
         <p class="text-xs mb-4">
-          Sẽ xóa <strong class="text-foreground">{{ fmtNum(cleanTarget.file_count) }}</strong> file
-          (~<strong class="text-foreground">{{ fmtBytes(cleanTarget.size_bytes) }}</strong>).
-          <span v-if="cleanTarget.destructive" class="text-amber-500/90">Không thể hoàn tác.</span>
+          {{ t('stats.cleanModal.willDelete', { files: fmtNum(cleanTarget.file_count), bytes: fmtBytes(cleanTarget.size_bytes) }) }}
+          <span v-if="cleanTarget.destructive" class="text-amber-500/90">{{ t('stats.cleanModal.irreversible') }}</span>
         </p>
         <div class="flex justify-end gap-2">
-          <Button variant="outline" @click="cleanTarget = null">Cancel</Button>
+          <Button variant="outline" @click="cleanTarget = null">{{ t('common.cancel') }}</Button>
           <Button
             variant="destructive"
             :disabled="cleaningId !== null"
@@ -725,7 +723,7 @@ async function doClean() {
           >
             <Loader2 v-if="cleaningId !== null" class="h-3.5 w-3.5 animate-spin" />
             <Trash2 v-else class="h-3.5 w-3.5" />
-            Clean now
+            {{ t('stats.cleanModal.cleanNow') }}
           </Button>
         </div>
       </div>
@@ -740,14 +738,13 @@ async function doClean() {
       <div class="w-[420px] rounded-lg border border-border bg-card p-5 shadow-xl">
         <div class="flex items-center gap-2 text-red-500 mb-3">
           <AlertTriangle class="h-5 w-5" />
-          <h2 class="text-sm font-semibold">Reset usage statistics</h2>
+          <h2 class="text-sm font-semibold">{{ t('stats.resetModal.title') }}</h2>
         </div>
         <p class="text-xs text-muted-foreground leading-relaxed mb-1">
-          Thao tác này sẽ <strong class="text-foreground">xóa toàn bộ run cũ</strong> (kèm file log)
-          và <strong class="text-foreground">đưa mọi số liệu thống kê về 0</strong>.
+          {{ t('stats.resetModal.line1') }}
         </p>
-        <p class="text-xs text-red-500/90 mb-4">Không thể hoàn tác.</p>
-        <label class="block text-xs text-muted-foreground mb-1.5">Gõ <span class="font-mono text-foreground">RESET</span> để xác nhận:</label>
+        <p class="text-xs text-red-500/90 mb-4">{{ t('stats.resetModal.irreversible') }}</p>
+        <label class="block text-xs text-muted-foreground mb-1.5">{{ t('stats.resetModal.typeToConfirm', { word: 'RESET' }) }}</label>
         <Input
           v-model="resetConfirm"
           type="text"
@@ -761,7 +758,7 @@ async function doClean() {
             variant="outline"
             @click="showReset = false"
           >
-            Cancel
+            {{ t('common.cancel') }}
           </Button>
           <Button
             variant="destructive"
@@ -770,7 +767,7 @@ async function doClean() {
           >
             <Loader2 v-if="resetting" class="h-3.5 w-3.5 animate-spin" />
             <Trash2 v-else class="h-3.5 w-3.5" />
-            Reset everything
+            {{ t('stats.resetModal.resetEverything') }}
           </Button>
         </div>
       </div>

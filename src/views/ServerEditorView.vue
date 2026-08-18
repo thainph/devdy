@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import {
   useServersStore,
@@ -18,6 +19,7 @@ const route = useRoute()
 const router = useRouter()
 const store = useServersStore()
 const { toast } = useToast()
+const { t } = useI18n()
 
 const isNew = computed(() => route.name === 'server-new')
 const serverId = computed(() => route.params.id as string | undefined)
@@ -47,15 +49,15 @@ const selectedPrivateKeyName = computed(() => basename(privateKeySourcePath.valu
 const storedPrivateKeyName = computed(() => basename(privateKeyPath.value))
 const privateKeyName = computed(() => selectedPrivateKeyName.value || storedPrivateKeyName.value)
 const privateKeyStateLabel = computed(() => {
-  if (selectedPrivateKeyName.value) return 'Selected key file'
-  if (storedPrivateKeyName.value) return 'Stored key file'
-  return 'No private key selected'
+  if (selectedPrivateKeyName.value) return t('servers.editor.selectedKeyFile')
+  if (storedPrivateKeyName.value) return t('servers.editor.storedKeyFile')
+  return t('servers.editor.noPrivateKey')
 })
 
-const authOptions = [
-  { value: 'agent', label: 'agent (ssh-agent)' },
-  { value: 'key', label: 'key (private key file)' },
-]
+const authOptions = computed(() => [
+  { value: 'agent', label: t('servers.editor.authOptionAgent') },
+  { value: 'key', label: t('servers.editor.authOptionKey') },
+])
 
 function applyServer(s: VpsServer) {
   label.value = s.label
@@ -79,12 +81,12 @@ function basename(path: string): string {
 async function handleChoosePrivateKey() {
   const selected = await open({
     multiple: false,
-    title: 'Select SSH Private Key',
+    title: t('servers.editor.selectKeyDialog'),
   })
   const path = Array.isArray(selected) ? selected[0] : selected
   if (!path) return
   privateKeySourcePath.value = path
-  if (validationError.value === "Auth method 'key' requires a private key file") {
+  if (validationError.value === t('servers.editor.validation.keyRequired')) {
     validationError.value = null
   }
 }
@@ -99,7 +101,7 @@ onMounted(async () => {
     try {
       await store.fetchServers()
       const found = store.items.find(s => s.id === serverId.value)
-      if (!found) throw new Error('Server not found')
+      if (!found) throw new Error(t('servers.editor.serverNotFound'))
       applyServer(found)
     } catch (e) {
       toast.error(String(e))
@@ -111,20 +113,20 @@ onMounted(async () => {
 })
 
 function validate(): string | null {
-  if (!label.value.trim()) return 'Label is required'
-  if (!host.value.trim()) return 'Host is required'
-  if (!username.value.trim()) return 'Username is required'
+  if (!label.value.trim()) return t('servers.editor.validation.labelRequired')
+  if (!host.value.trim()) return t('servers.editor.validation.hostRequired')
+  if (!username.value.trim()) return t('servers.editor.validation.usernameRequired')
   const p = Number(port.value)
-  if (!Number.isInteger(p) || p < 1 || p > 65535) return 'Port must be between 1 and 65535'
+  if (!Number.isInteger(p) || p < 1 || p > 65535) return t('servers.editor.validation.portRange')
   if (isKey.value && !privateKeyPath.value.trim() && !privateKeySourcePath.value.trim()) {
-    return "Auth method 'key' requires a private key file"
+    return t('servers.editor.validation.keyRequired')
   }
   return null
 }
 
 async function handleTest() {
   if (isNew.value || !serverId.value) {
-    testResult.value = { ok: false, message: 'Save the server first, then test its connection.' }
+    testResult.value = { ok: false, message: t('servers.editor.saveFirstThenTest') }
     return
   }
   testing.value = true
@@ -168,7 +170,7 @@ async function handleSave() {
     } else {
       await store.updateServer({ id: serverId.value!, ...base })
     }
-    toast.success('Saved')
+    toast.success(t('servers.editor.toast.saved'))
     router.push('/servers')
   } catch (e) {
     toast.error(String(e))
@@ -185,7 +187,7 @@ async function handleSave() {
       <Button
         variant="ghost"
         size="icon-sm"
-        title="Back to Servers"
+        :title="t('servers.editor.backTitle')"
         @click="router.push('/servers')"
       >
         <ArrowLeft class="h-4 w-4" :stroke-width="1.75" />
@@ -195,8 +197,8 @@ async function handleSave() {
 
       <div class="flex items-center gap-1.5 text-sm">
         <HardDrive class="h-4 w-4 text-muted-foreground" :stroke-width="1.5" />
-        <span class="font-medium">{{ isNew ? 'New Server' : (label || '…') }}</span>
-        <span v-if="!isNew" class="text-muted-foreground font-normal">— editing</span>
+        <span class="font-medium">{{ isNew ? t('servers.editor.newTitle') : (label || '…') }}</span>
+        <span v-if="!isNew" class="text-muted-foreground font-normal">{{ t('servers.editor.editing') }}</span>
       </div>
 
       <div class="flex-1" />
@@ -210,15 +212,15 @@ async function handleSave() {
         <span class="max-w-48 truncate">{{ validationError }}</span>
       </div>
 
-      <Button :disabled="saving" title="Save" @click="handleSave">
+      <Button :disabled="saving" :title="t('common.save')" @click="handleSave">
         <Save class="h-3.5 w-3.5" :stroke-width="2" />
-        {{ saving ? 'Saving…' : 'Save' }}
+        {{ saving ? t('servers.editor.saving') : t('common.save') }}
       </Button>
     </div>
 
     <!-- Loading -->
     <div v-if="loading" class="flex-1 flex items-center justify-center text-muted-foreground text-sm">
-      Loading…
+      {{ t('common.loading') }}
     </div>
 
     <!-- Form -->
@@ -228,29 +230,29 @@ async function handleSave() {
         <Card body-class="p-4 space-y-4">
           <template #header>
             <HardDrive class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-            <span class="text-xs font-semibold">General</span>
+            <span class="text-xs font-semibold">{{ t('servers.editor.general') }}</span>
           </template>
           <div class="space-y-1.5">
-            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Label</label>
-            <Input v-model="label" size="sm" placeholder="Production SG" />
+            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('servers.editor.label') }}</label>
+            <Input v-model="label" size="sm" :placeholder="t('servers.editor.labelPlaceholder')" />
           </div>
           <div class="flex gap-3">
             <div class="space-y-1.5 flex-1">
-              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Host</label>
-              <Input v-model="host" size="sm" placeholder="1.2.3.4 or vps.example.com" class="font-mono" />
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('servers.editor.host') }}</label>
+              <Input v-model="host" size="sm" :placeholder="t('servers.editor.hostPlaceholder')" class="font-mono" />
             </div>
             <div class="space-y-1.5 w-24">
-              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Port</label>
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('servers.editor.port') }}</label>
               <Input v-model="port" size="sm" type="number" placeholder="22" class="font-mono" />
             </div>
           </div>
           <div class="space-y-1.5">
-            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Username</label>
-            <Input v-model="username" size="sm" placeholder="root" class="font-mono" />
+            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('servers.editor.username') }}</label>
+            <Input v-model="username" size="sm" :placeholder="t('servers.editor.usernamePlaceholder')" class="font-mono" />
           </div>
           <div class="space-y-1.5">
-            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Tags</label>
-            <Input v-model="tags" size="sm" placeholder="prod, sg (comma-separated)" />
+            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('servers.editor.tags') }}</label>
+            <Input v-model="tags" size="sm" :placeholder="t('servers.editor.tagsPlaceholder')" />
           </div>
         </Card>
 
@@ -258,10 +260,10 @@ async function handleSave() {
         <Card body-class="p-4 space-y-4">
           <template #header>
             <KeyRound class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-            <span class="text-xs font-semibold">Authentication</span>
+            <span class="text-xs font-semibold">{{ t('servers.editor.authentication') }}</span>
           </template>
           <div class="space-y-1.5">
-            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Auth method</label>
+            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('servers.editor.authMethod') }}</label>
             <AppSelect
               size="sm"
               :model-value="authMethod"
@@ -270,11 +272,11 @@ async function handleSave() {
             />
             <p v-if="!isKey" class="text-[10px] text-muted-foreground flex items-center gap-1">
               <AlertCircle class="h-3 w-3 shrink-0" :stroke-width="1.75" />
-              Uses the running ssh-agent; no key path needed.
+              {{ t('servers.editor.agentHint') }}
             </p>
           </div>
           <div v-if="isKey" class="space-y-1.5">
-            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Private key file</label>
+            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('servers.editor.privateKeyFile') }}</label>
             <div class="flex items-center gap-2">
               <div class="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md border border-border bg-muted/30 px-2.5 text-xs">
                 <KeyRound class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
@@ -292,33 +294,33 @@ async function handleSave() {
               </div>
               <Button variant="outline" size="sm" @click="handleChoosePrivateKey">
                 <Upload class="h-3.5 w-3.5" :stroke-width="1.75" />
-                {{ privateKeyName ? 'Change' : 'Choose' }}
+                {{ privateKeyName ? t('servers.editor.change') : t('servers.editor.choose') }}
               </Button>
               <Button
                 v-if="privateKeySourcePath"
                 variant="ghost"
                 size="icon-sm"
-                title="Clear selected key"
+                :title="t('servers.editor.clearSelectedKey')"
                 @click="clearSelectedPrivateKey"
               >
                 <X class="h-3.5 w-3.5" :stroke-width="1.75" />
               </Button>
             </div>
             <p class="text-[10px] text-muted-foreground">
-              The selected key is copied into Devdy app data on save.
+              {{ t('servers.editor.keyCopiedHint') }}
             </p>
           </div>
           <div v-if="isKey" class="space-y-1.5">
-            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Passphrase</label>
+            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('servers.editor.passphrase') }}</label>
             <Input
               v-model="passphrase"
               size="sm"
               type="password"
-              :placeholder="hasStoredPassphrase ? '•••••• (unchanged)' : 'optional'"
+              :placeholder="hasStoredPassphrase ? t('servers.editor.passphraseUnchanged') : t('servers.editor.passphraseOptional')"
               class="font-mono"
             />
             <p class="text-[10px] text-muted-foreground">
-              Stored in the OS keychain only. Leave blank to keep the existing value.
+              {{ t('servers.editor.passphraseHint') }}
             </p>
           </div>
         </Card>
@@ -327,14 +329,14 @@ async function handleSave() {
         <Card body-class="p-4 space-y-3">
           <template #header>
             <Plug class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-            <span class="text-xs font-semibold">Connection</span>
+            <span class="text-xs font-semibold">{{ t('servers.editor.connection') }}</span>
           </template>
           <div class="flex items-center gap-3">
             <Button variant="outline" :disabled="testing" @click="handleTest">
               <Plug class="h-3.5 w-3.5" :stroke-width="1.75" />
-              {{ testing ? 'Testing…' : 'Test connection' }}
+              {{ testing ? t('servers.editor.testing') : t('servers.editor.testConnection') }}
             </Button>
-            <span v-if="isNew" class="text-[11px] text-muted-foreground">Save first to enable testing</span>
+            <span v-if="isNew" class="text-[11px] text-muted-foreground">{{ t('servers.editor.saveFirst') }}</span>
           </div>
           <div
             v-if="testResult"
