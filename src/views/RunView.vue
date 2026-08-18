@@ -2719,6 +2719,7 @@ function handleRefInput(val: string) {
           v-show="leftTab === 'files'"
           v-if="project?.path"
           :project-path="project.path"
+          :active="leftTab === 'files'"
           :active-path="fileViewerOpen ? fileViewerPath : null"
           @open-file="openFileViewer"
           @mention-file="mentionFileInComposer"

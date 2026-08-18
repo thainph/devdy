@@ -352,6 +352,22 @@ function mcpDisplayName(params, fallback) {
   return pickString(params, ['displayName', 'toolDisplayName', 'toolTitle', 'title', 'toolName', 'name']) || fallback
 }
 
+function mcpToolKeyPart(value, fallback) {
+  const clean = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 80)
+  return clean || fallback
+}
+
+function mcpPermissionToolName(params, server) {
+  const tool = pickString(params, ['toolName', 'name'])
+  if (!tool) return 'MCP'
+  return `mcp__${mcpToolKeyPart(server, 'server')}__${mcpToolKeyPart(tool, 'request')}`
+}
+
 function mcpServerDisplayName(params, server) {
   return pickString(params, ['serverDisplayName', 'serverTitle']) || server
 }
@@ -439,9 +455,10 @@ function emitMcpElicitation(rpcReqId, params) {
     input: mcpTranscriptInput(params, server),
   })
   emitPermission(rpcReqId, {
-    tool_name: 'MCP',
+    tool_name: mcpPermissionToolName(params, server),
     tool_input: {
       serverName: server,
+      toolName: pickString(params, ['toolName', 'name']) || undefined,
       mode: params?.mode,
       message: params?.message,
       url: params?.url,

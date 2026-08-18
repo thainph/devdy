@@ -55,12 +55,9 @@
       "idle": "Idle",
       "thinking": "Thinking",
       "loading": "Loading",
-      "running": "Running",
       "success": "Success",
       "error": "Error",
-      "permission": "Permission",
-      "syncing": "Syncing",
-      "sleep": "Sleep"
+      "permission": "Permission"
     }
   },
   "mcp": {

@@ -25,6 +25,9 @@ const DND_MIME = 'application/x-devdy-path'
 const props = defineProps<{
   projectPath: string
   activePath?: string | null
+  /** Whether the Files panel is currently visible. The live FS watcher only runs
+   *  while true, so a hidden tree costs nothing. Defaults to on when omitted. */
+  active?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -47,6 +50,36 @@ watch(
   (p) => { if (p) store.loadDir(p, '') },
   { immediate: true },
 )
+
+// ── Live FS watch lifecycle ─────────────────────────────────────────────────
+// Watch only the dirs currently shown: root plus every expanded folder whose
+// children are loaded (a collapsed/unloaded folder has nothing visible to keep
+// fresh). Non-reactive `node_modules` etc. stay unwatched unless the user opens
+// them. The set feeds the backend, which watches each dir non-recursively.
+const watchedDirs = computed(() => {
+  const t = tree.value
+  const dirs = new Set<string>([''])
+  for (const d of t.expanded) if (t.children[d]) dirs.add(d)
+  return [...dirs].sort()
+})
+
+// Sync the backend watcher to (active tab, project, visible dirs). Tracks the
+// project currently being watched so a project switch or hide tears the old one
+// down before starting the new — otherwise a stale watcher would linger.
+let watchedProject: string | null = null
+async function syncWatch() {
+  const p = props.projectPath
+  const on = props.active !== false
+  if (watchedProject && (watchedProject !== p || !on)) {
+    const prev = watchedProject
+    watchedProject = null
+    await invoke('stop_file_tree_watch', { projectPath: prev }).catch(() => {})
+  }
+  if (!on || !p) return
+  watchedProject = p
+  await invoke('set_file_tree_watch', { projectPath: p, relDirs: watchedDirs.value }).catch(() => {})
+}
+watch([() => props.active, () => props.projectPath, watchedDirs], syncWatch, { immediate: true })
 
 // Internal cut/copy clipboard (in-app only; survives across menu opens).
 const clipboard = ref<{ path: string; name: string; mode: 'copy' | 'cut' } | null>(null)
@@ -252,6 +285,7 @@ watch(menu, (m) => {
 onBeforeUnmount(() => {
   window.removeEventListener('pointerdown', onGlobalPointer, true)
   window.removeEventListener('keydown', onKeydown, true)
+  if (watchedProject) invoke('stop_file_tree_watch', { projectPath: watchedProject }).catch(() => {})
 })
 </script>
 

@@ -55,12 +55,9 @@
       "idle": "Nghỉ",
       "thinking": "Suy nghĩ",
       "loading": "Đang xử lý",
-      "running": "Đang chạy",
       "success": "Thành công",
       "error": "Lỗi",
-      "permission": "Chờ quyền",
-      "syncing": "Đồng bộ",
-      "sleep": "Ngủ"
+      "permission": "Chờ quyền"
     }
   },
   "mcp": {

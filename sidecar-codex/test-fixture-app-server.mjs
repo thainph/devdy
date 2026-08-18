@@ -3,6 +3,7 @@
 import { writeFileSync } from 'node:fs'
 
 const marker = process.env.DEVDY_DENY_TEST_MARKER
+const mcpMode = process.env.DEVDY_MCP_PERMISSION_KEY_TEST === '1'
 let buffer = ''
 
 function send(message) {
@@ -31,6 +32,20 @@ process.stdin.on('data', (chunk) => {
       send({ jsonrpc: '2.0', id: message.id, result: {} })
     } else if (message.method === 'turn/start') {
       send({ jsonrpc: '2.0', id: message.id, result: { turn: { id: 'fixture-turn' } } })
+      if (mcpMode) {
+        send({
+          jsonrpc: '2.0',
+          id: 92,
+          method: 'mcpServer/elicitation/request',
+          params: {
+            serverName: 'Google Drive',
+            toolName: 'list_files',
+            mode: 'permission',
+            message: 'Allow listing Drive files?',
+          },
+        })
+        continue
+      }
       send({
         jsonrpc: '2.0',
         id: 91,
@@ -55,6 +70,12 @@ process.stdin.on('data', (chunk) => {
           },
         },
       })
+      send({
+        jsonrpc: '2.0',
+        method: 'turn/completed',
+        params: { turn: { id: 'fixture-turn', status: 'completed' } },
+      })
+    } else if (message.id === 92 && message.result) {
       send({
         jsonrpc: '2.0',
         method: 'turn/completed',

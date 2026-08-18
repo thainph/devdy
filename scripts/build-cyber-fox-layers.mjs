@@ -89,13 +89,24 @@ const LAYOUT = {
   'ear-left':  { wf: 0.15, cx: 0.3879, cy: 0.2251, rot: 11.0 },
   'ear-right': { wf: 0.152, cx: 0.606, cy: 0.2216, rot: -13.0 },
   // tails swapped sides per review: orange on the right, blue on the left
-  'tail-orange': { wf: 0.215, cx: 0.7625, cy: 0.6079, rot: 34.0 },
-  'tail-blue':   { wf: 0.235, cx: 0.2314, cy: 0.6011, rot: -26.0 },
+  'tail-orange': { wf: 0.215, cx: 0.7664, cy: 0.6616, rot: 34.0 },
+  'tail-blue':   { wf: 0.235, cx: 0.2211, cy: 0.6106, rot: -26.0 },
 }
 const EYE_W = 0.070              // width of each eye on the canvas
 const EYE = { left: { cx: 0.4096, cy: 0.4306 }, right: { cx: 0.5796, cy: 0.4306 } }
 const EYE_ROT = 0.0
-const CHEST_PLACE = { wf: 0.15, cx: 0.5, cy: 0.67, rot: 0.0 }
+const CHEST_PLACE = { wf: 0.15, cx: 0.4993, cy: 0.6713, rot: 0.0 }
+
+// Explicit pivot overrides (rotate origins) from the debug editor. When present
+// these replace the auto-computed pivots for the animation transform-origins.
+const PIVOT = {
+  body:          { x: 0.5, y: 0.8867 },
+  head:          { x: 0.4955, y: 0.5516 },
+  'ear-left':    { x: 0.4063, y: 0.3099 },
+  'ear-right':   { x: 0.5968, y: 0.3045 },
+  'tail-orange': { x: 0.4187, y: 0.6476 },
+  'tail-blue':   { x: 0.5006, y: 0.6787 },
+}
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -191,8 +202,17 @@ function saveWebp(relPath, png) {
 // ---------------------------------------------------------------------------
 // build
 // ---------------------------------------------------------------------------
-fs.rmSync(OUT, { recursive: true, force: true })
+// Clean ONLY this (front) rig's own outputs — preserve the sibling run-side/
+// directory produced by build-cyber-fox-run.mjs (it lives under the same OUT).
 fs.mkdirSync(OUT, { recursive: true })
+for (const f of ['body.webp', 'head.webp', 'ear-left.webp', 'ear-right.webp',
+  'tail-orange.webp', 'tail-blue.webp', 'canonical-composite.webp',
+  'manifest.json', 'quality-report.json']) {
+  fs.rmSync(path.join(OUT, f), { force: true })
+}
+for (const d of ['eyes', 'chest', 'effects']) {
+  fs.rmSync(path.join(OUT, d), { recursive: true, force: true })
+}
 
 const manifest = {
   version: 1,
@@ -322,6 +342,16 @@ manifest.placement = {
   eyeLeft: { ...EYE.left, wf: EYE_W, rot: EYE_ROT },
   eyeRight: { ...EYE.right, wf: EYE_W, rot: EYE_ROT },
   chest: withRot(CHEST_PLACE),
+}
+
+// explicit pivot overrides (rotate origins) from the debug editor
+for (const [name, p] of Object.entries(PIVOT)) {
+  if (name.startsWith('tail')) {
+    const key = name.endsWith('orange') ? 'tailOrange' : 'tailBlue'
+    if (manifest.tails[key]) manifest.tails[key].pivot = { x: p.x, y: p.y }
+  } else if (manifest.layers[toKey(name)]) {
+    manifest.layers[toKey(name)].pivot = { x: p.x, y: p.y }
+  }
 }
 
 fs.writeFileSync(path.join(OUT, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n')
