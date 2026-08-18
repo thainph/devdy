@@ -1,0 +1,36 @@
+{
+  "title": "Ghi chú",
+  "newNote": "Ghi chú mới",
+  "createNote": "Tạo ghi chú",
+  "noProject": "Không có dự án",
+  "allProjects": "Tất cả dự án",
+  "untitled": "Ghi chú chưa đặt tên",
+  "searchPlaceholder": "Tìm theo tiêu đề / nội dung…",
+  "clearSearch": "Xóa tìm kiếm",
+  "dragToReorder": "Kéo để sắp xếp lại",
+  "empty": {
+    "title": "Chưa có ghi chú nào",
+    "hint": "Tạo ghi chú đầu tiên để ghi nhanh ý tưởng. Gắn vào một dự án để lọc sau này."
+  },
+  "noResults": {
+    "title": "Không tìm thấy ghi chú",
+    "clearFilters": "Xóa bộ lọc"
+  },
+  "form": {
+    "titleLabel": "Tiêu đề",
+    "titlePlaceholder": "Tiêu đề ghi chú…",
+    "contentLabel": "Nội dung",
+    "contentPlaceholder": "Nội dung (Markdown)…",
+    "projectLabel": "Dự án",
+    "hint": "Hỗ trợ Markdown · {save} để lưu · {esc} để hủy"
+  },
+  "detail": {
+    "fallbackTitle": "Ghi chú",
+    "titlePlaceholder": "Tiêu đề…",
+    "empty": "Ghi chú này trống."
+  },
+  "confirm": {
+    "deleteTitle": "Xóa ghi chú",
+    "deleteMessage": "Gỡ ghi chú này?"
+  }
+}

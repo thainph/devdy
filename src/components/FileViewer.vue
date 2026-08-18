@@ -5,6 +5,7 @@
 // in the standalone pop-out window (FileViewerWindow). Hosts supply chrome-
 // specific buttons (full-screen, pop-out, close) via the #actions slot.
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   FileCode2, AArrowDown, AArrowUp, ExternalLink, Copy, FileQuestion, FileWarning, FolderOpen, RotateCw, Code2, ClipboardCopy, Check, Languages, Pencil, Save, X,
 } from 'lucide-vue-next'
@@ -35,6 +36,7 @@ const emit = defineEmits<{
   'open-url': [url: string]
 }>()
 
+const { t } = useI18n()
 const runsStore = useRunsStore()
 const projectsStore = useProjectsStore()
 const appSettings = useAppSettingsStore()
@@ -435,18 +437,18 @@ defineExpose({ onRevealInFolder, onOpenInApp })
           class="px-2 py-1 transition-colors cursor-pointer"
           :class="mode === 'preview' ? 'bg-primary/15 text-primary' : 'text-foreground/50 hover:text-foreground'"
           @click="mode = 'preview'"
-        >Preview</button>
+        >{{ t('files.viewer.preview') }}</button>
         <button
           class="px-2 py-1 border-l border-border transition-colors cursor-pointer"
           :class="mode === 'code' ? 'bg-primary/15 text-primary' : 'text-foreground/50 hover:text-foreground'"
           @click="mode = 'code'"
-        >Raw</button>
+        >{{ t('files.viewer.raw') }}</button>
       </div>
       <!-- Font size controls -->
       <div v-if="content" class="flex items-center rounded-md border border-border overflow-hidden shrink-0">
         <button
           class="flex items-center justify-center h-6 w-6 text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
-          title="Smaller font"
+          :title="t('files.viewer.smallerFont')"
           :disabled="fontSize <= FONT_MIN"
           @click="bumpFontSize(-1)"
         >
@@ -455,7 +457,7 @@ defineExpose({ onRevealInFolder, onOpenInApp })
         <span class="px-1.5 text-[10px] tabular-nums text-foreground/50 border-x border-border select-none">{{ fontSize }}</span>
         <button
           class="flex items-center justify-center h-6 w-6 text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
-          title="Larger font"
+          :title="t('files.viewer.largerFont')"
           :disabled="fontSize >= FONT_MAX"
           @click="bumpFontSize(1)"
         >
@@ -465,7 +467,7 @@ defineExpose({ onRevealInFolder, onOpenInApp })
       <!-- Copy the open file's path to the clipboard -->
       <button
         class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
-        :title="pathCopied ? 'Path copied!' : 'Copy file path'"
+        :title="pathCopied ? t('files.viewer.pathCopied') : t('files.viewer.copyFilePath')"
         @click="copyPath"
       >
         <Check v-if="pathCopied" class="h-3.5 w-3.5 text-primary" :stroke-width="1.75" />
@@ -475,7 +477,7 @@ defineExpose({ onRevealInFolder, onOpenInApp })
       <button
         v-if="kind !== 'text'"
         class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
-        title="Open in default app"
+        :title="t('files.viewer.openInDefaultApp')"
         @click="onOpenInApp"
       >
         <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -484,7 +486,7 @@ defineExpose({ onRevealInFolder, onOpenInApp })
       <button
         v-if="kind === 'text'"
         class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-default"
-        title="Reload from disk"
+        :title="t('files.viewer.reloadFromDisk')"
         :disabled="reloading"
         @click="reload"
       >
@@ -493,7 +495,7 @@ defineExpose({ onRevealInFolder, onOpenInApp })
       <button
         v-if="content"
         class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
-        :title="copied ? 'Copied!' : 'Copy content'"
+        :title="copied ? t('files.viewer.copied') : t('files.viewer.copyContent')"
         @click="copyContent"
       >
         <Check v-if="copied" class="h-3.5 w-3.5 text-primary" :stroke-width="1.75" />
@@ -503,7 +505,7 @@ defineExpose({ onRevealInFolder, onOpenInApp })
       <button
         v-if="editable && !editing"
         class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
-        title="Edit file"
+        :title="t('files.viewer.editFile')"
         @click="startEdit"
       >
         <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -512,16 +514,16 @@ defineExpose({ onRevealInFolder, onOpenInApp })
       <template v-if="editing">
         <button
           class="flex items-center gap-1 h-6 px-2 rounded-md text-[11px] font-medium bg-primary/15 text-primary hover:bg-primary/25 transition-colors cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-default"
-          title="Save changes"
+          :title="t('files.viewer.saveChanges')"
           :disabled="saving || !dirty"
           @click="saveEdit"
         >
           <Save class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ saving ? 'Saving…' : 'Save' }}
+          {{ saving ? t('files.viewer.saving') : t('common.save') }}
         </button>
         <button
           class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
-          title="Cancel editing"
+          :title="t('files.viewer.cancelEditing')"
           @click="cancelEdit"
         >
           <X class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -533,19 +535,19 @@ defineExpose({ onRevealInFolder, onOpenInApp })
 
     <!-- Body -->
     <div ref="viewerBodyEl" class="flex-1 overflow-auto min-h-0" @scroll="clearTranslateTrigger">
-      <div v-if="loading" class="p-4 text-xs text-muted-foreground">Loading…</div>
+      <div v-if="loading" class="p-4 text-xs text-muted-foreground">{{ t('common.loading') }}</div>
       <div v-else-if="error" class="p-6 flex flex-col items-center gap-3 text-center">
         <FileQuestion class="h-10 w-10 text-foreground/30" :stroke-width="1.5" />
         <div>
-          <p class="text-sm font-medium text-destructive mb-1">Could not open file</p>
+          <p class="text-sm font-medium text-destructive mb-1">{{ t('files.viewer.couldNotOpen') }}</p>
           <p class="text-xs text-foreground/50 font-mono break-all max-w-md">{{ error }}</p>
         </div>
         <div class="flex gap-2">
           <Button size="sm" @click="onOpenInApp">
-            <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" /> Open in default app
+            <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('files.viewer.openInDefaultApp') }}
           </Button>
           <Button size="sm" variant="outline" @click="onRevealInFolder">
-            <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" /> Reveal in folder
+            <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('files.viewer.revealInFolder') }}
           </Button>
         </div>
       </div>
@@ -566,21 +568,21 @@ defineExpose({ onRevealInFolder, onOpenInApp })
         v-else-if="kind === 'pdf'"
         :src="assetUrl"
         class="w-full h-full min-h-[400px] bg-white"
-        title="PDF preview"
+        :title="t('files.viewer.pdfPreview')"
       />
       <!-- Non-previewable (office docs, archives, binaries) -->
       <div v-else-if="kind === 'other'" class="p-10 flex flex-col items-center gap-3 text-center">
         <FileQuestion class="h-12 w-12 text-foreground/30" :stroke-width="1.5" />
         <div>
-          <p class="text-sm font-medium text-foreground/80 mb-1">Preview not available</p>
-          <p class="text-xs text-foreground/50">This file type can't be shown here. Open it in its native app instead.</p>
+          <p class="text-sm font-medium text-foreground/80 mb-1">{{ t('files.viewer.previewNotAvailable') }}</p>
+          <p class="text-xs text-foreground/50">{{ t('files.viewer.previewNotAvailableHint') }}</p>
         </div>
         <div class="flex gap-2">
           <Button size="sm" @click="onOpenInApp">
-            <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" /> Open in default app
+            <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('files.viewer.openInDefaultApp') }}
           </Button>
           <Button size="sm" variant="outline" @click="onRevealInFolder">
-            <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" /> Reveal in folder
+            <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('files.viewer.revealInFolder') }}
           </Button>
         </div>
       </div>
@@ -589,15 +591,15 @@ defineExpose({ onRevealInFolder, onOpenInApp })
       <div v-else-if="truncated" class="p-10 flex flex-col items-center gap-3 text-center">
         <FileWarning class="h-12 w-12 text-amber-500/70" :stroke-width="1.5" />
         <div>
-          <p class="text-sm font-medium text-foreground/80 mb-1">File too large to preview</p>
-          <p class="text-xs text-foreground/50 max-w-md">This file is larger than 2&nbsp;MB. Open it in an external editor to view the full contents.</p>
+          <p class="text-sm font-medium text-foreground/80 mb-1">{{ t('files.viewer.tooLarge') }}</p>
+          <p class="text-xs text-foreground/50 max-w-md">{{ t('files.viewer.tooLargeHint') }}</p>
         </div>
         <div class="flex gap-2">
           <Button size="sm" @click="onOpenInVscode">
-            <Code2 class="h-3.5 w-3.5" :stroke-width="1.75" /> Open in VS Code
+            <Code2 class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('files.viewer.openInVscode') }}
           </Button>
           <Button size="sm" variant="outline" @click="onRevealInFolder">
-            <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" /> Reveal in folder
+            <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('files.viewer.revealInFolder') }}
           </Button>
         </div>
       </div>
@@ -664,12 +666,12 @@ defineExpose({ onRevealInFolder, onOpenInApp })
         v-if="translateTrigger"
         class="fixed z-[65] inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[11px] font-medium text-primary shadow-lg shadow-black/30 hover:bg-accent/60 transition-colors cursor-pointer"
         :style="{ left: translateTrigger.x + 'px', top: translateTrigger.y + 'px' }"
-        title="Dịch đoạn đã chọn"
+        :title="t('files.viewer.translateSelection')"
         @mousedown.prevent
         @click="openTranslate"
       >
         <Languages class="h-3 w-3" :stroke-width="1.75" />
-        Dịch
+        {{ t('files.viewer.translate') }}
       </button>
     </Teleport>
 

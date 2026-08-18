@@ -52,6 +52,13 @@ export interface LiveSession {
   rateLimit: RateLimitWindows | null
   /** Set when a turn just tipped the global budget over — the next turn is blocked. */
   budgetBlocked: boolean
+  /**
+   * True once the run has finished (run:done) but the user hasn't opened it
+   * since. Drives the "run finished" notification in the Active runs dock; it
+   * is cleared by `markSeen` when the user views the run. The finished status
+   * itself lives in `status` (done / failed / cancelled).
+   */
+  notifyDone: boolean
 }
 
 /** A single rate-limit window: percent used (0-100) and ISO reset time. */
@@ -134,6 +141,7 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
         slashCommands: [] as string[],
         rateLimit: null as RateLimitWindows | null,
         budgetBlocked: false,
+        notifyDone: false,
       }) as LiveSession
       // Seed the per-run allow/deny lists with the standing choices the user
       // made for this project in earlier runs, so they apply again here.
@@ -310,6 +318,10 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
         flushEvents() // drain any events still buffered this frame before stopping
         s.status = event.payload.status
         s.permissionQueue = []
+        // Flag a "run finished" notification for the Active runs dock. It stays
+        // until the user opens this run (markSeen). If the run is already on
+        // screen, RunView acknowledges it immediately so nothing shows.
+        s.notifyDone = true
         const r = runsStore.runs.find((x) => x.id === runId)
         if (r) r.status = event.payload.status as typeof r.status
         // Only refresh the shared run list when it actually belongs to this
@@ -436,6 +448,12 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
     sessions.get(runId)?.permissionQueue.shift()
   }
 
+  /** Clear the "run finished" notification once the user has viewed the run. */
+  function markSeen(runId: string) {
+    const s = sessions.get(runId)
+    if (s && s.notifyDone) s.notifyDone = false
+  }
+
   /** Drop a run's session entirely (stop listeners + free memory). */
   function discard(runId: string) {
     stopListening(runId)
@@ -466,6 +484,7 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
     rememberDeniedTool,
     syncToolPermissions,
     shiftPermission,
+    markSeen,
     discard,
     runningIds,
     cachedSlashCommands,

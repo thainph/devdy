@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { CalEvent } from '@/stores/googleCalendar'
 import { startOfMonth, startOfWeek, addDays, sameDay, parseEventTime } from '@/lib/calendar'
 import { lunarInfo } from '@/lib/lunar'
@@ -17,6 +18,8 @@ const emit = defineEmits<{
   createAt: [date: Date]
 }>()
 
+const { t } = useI18n()
+
 /** Clicking a cell's empty area → create an all-day-ish event at 9am that day. */
 function onCellClick(d: Date) {
   const start = new Date(d)
@@ -24,7 +27,8 @@ function onCellClick(d: Date) {
   emit('createAt', start)
 }
 
-const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+const WEEKDAY_KEYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
+const WEEKDAYS = computed(() => WEEKDAY_KEYS.map(k => t(`calendar.month.${k}`)))
 
 // 6 rows × 7 days, Monday-based, covering the anchor month plus padding days.
 const days = computed(() => {
@@ -133,7 +137,7 @@ function hhmm(d: Date) {
             class="rounded px-1 py-0.5 text-left text-[10px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             @click="emit('moreClick', { date: d, events: allEventsFor(d) })"
           >
-            +{{ eventsFor(d).length - 3 }} more
+            {{ t('calendar.month.more', { n: eventsFor(d).length - 3 }) }}
           </button>
         </div>
       </div>

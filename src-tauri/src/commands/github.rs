@@ -1290,6 +1290,135 @@ async fn fetch_board_item_map(
     map
 }
 
+/// Raw per-repo fetch result (issues not yet enriched with board fields).
+struct RepoFetch {
+    owner: String,
+    name: String,
+    issues: Vec<IssueRow>,
+    /// (milestone title, open count, closed count, due date)
+    milestones: Vec<(String, u64, u64, Option<String>)>,
+    truncated: bool,
+}
+
+/// Fetch open issues + milestone summaries for a single repo (paginated).
+/// Enrichment (start/deadline/status) is applied later once the board map is ready.
+async fn fetch_repo_board(
+    client: &octocrab::Octocrab,
+    owner: &str,
+    name: &str,
+) -> Result<RepoFetch, String> {
+    let mut issues: Vec<IssueRow> = Vec::new();
+    let mut milestones: Vec<(String, u64, u64, Option<String>)> = Vec::new();
+    let mut truncated = false;
+    let mut cursor: Option<String> = None;
+    let mut first_page = true;
+
+    for page in 0..10 {
+        let query = "query($owner:String!,$repo:String!,$cursor:String,$withMs:Boolean!){ repository(owner:$owner,name:$repo){ milestones(first:50, states:[OPEN,CLOSED]) @include(if:$withMs){ nodes{ title dueOn open:issues(states:OPEN){ totalCount } closed:issues(states:CLOSED){ totalCount } } } issues(first:100, after:$cursor, states:OPEN, orderBy:{field:UPDATED_AT,direction:DESC}){ pageInfo{ hasNextPage endCursor } nodes{ number title url createdAt updatedAt comments{ totalCount } milestone{ title dueOn } assignees(first:5){ nodes{ login } } labels(first:10){ nodes{ name color } } } } } }";
+        let payload = serde_json::json!({
+            "query": query,
+            "variables": { "owner": owner, "repo": name, "cursor": cursor, "withMs": first_page }
+        });
+        let resp: serde_json::Value = client
+            .graphql(&payload)
+            .await
+            .map_err(|e| format!("Failed to load issues for {owner}/{name}: {e}"))?;
+        if let Some(errors) = resp.get("errors").and_then(|e| e.as_array()) {
+            if !errors.is_empty() {
+                let msg = errors[0].get("message").and_then(|m| m.as_str()).unwrap_or("GraphQL error");
+                return Err(format!("GraphQL error for {owner}/{name}: {msg}"));
+            }
+        }
+        let repository = match resp.pointer("/data/repository") {
+            Some(r) if !r.is_null() => r,
+            _ => break,
+        };
+
+        if first_page {
+            if let Some(ms_nodes) = repository.pointer("/milestones/nodes").and_then(|n| n.as_array()) {
+                for ms in ms_nodes {
+                    let title = ms.get("title").and_then(|t| t.as_str()).unwrap_or("").to_string();
+                    if title.is_empty() {
+                        continue;
+                    }
+                    let open = ms.pointer("/open/totalCount").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let closed = ms.pointer("/closed/totalCount").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let due = ms.get("dueOn").and_then(|d| d.as_str()).map(|s| s.to_string());
+                    milestones.push((title, open, closed, due));
+                }
+            }
+        }
+
+        if let Some(nodes) = repository.pointer("/issues/nodes").and_then(|n| n.as_array()) {
+            for issue in nodes {
+                let number = issue.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+                let assignees = issue
+                    .pointer("/assignees/nodes")
+                    .and_then(|n| n.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.get("login").and_then(|l| l.as_str()).map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let labels = issue
+                    .pointer("/labels/nodes")
+                    .and_then(|n| n.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| {
+                                Some(LabelRow {
+                                    name: x.get("name")?.as_str()?.to_string(),
+                                    color: x.get("color").and_then(|c| c.as_str()).unwrap_or("").to_string(),
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                issues.push(IssueRow {
+                    repo: name.to_string(),
+                    number,
+                    title: issue.get("title").and_then(|t| t.as_str()).unwrap_or("").to_string(),
+                    html_url: issue.get("url").and_then(|u| u.as_str()).unwrap_or("").to_string(),
+                    created_at: issue.get("createdAt").and_then(|t| t.as_str()).unwrap_or("").to_string(),
+                    updated_at: issue.get("updatedAt").and_then(|t| t.as_str()).unwrap_or("").to_string(),
+                    comments: issue.pointer("/comments/totalCount").and_then(|v| v.as_u64()).unwrap_or(0),
+                    assignees,
+                    labels,
+                    milestone_title: issue.pointer("/milestone/title").and_then(|t| t.as_str()).map(|s| s.to_string()),
+                    milestone_due_on: issue.pointer("/milestone/dueOn").and_then(|d| d.as_str()).map(|s| s.to_string()),
+                    start_date: None,
+                    deadline: None,
+                    status: None,
+                    status_color: None,
+                });
+            }
+        }
+
+        let has_next = repository
+            .pointer("/issues/pageInfo/hasNextPage")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !has_next {
+            break;
+        }
+        if page == 9 {
+            truncated = true;
+            break;
+        }
+        cursor = repository
+            .pointer("/issues/pageInfo/endCursor")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        first_page = false;
+        if cursor.is_none() {
+            break;
+        }
+    }
+
+    Ok(RepoFetch { owner: owner.to_string(), name: name.to_string(), issues, milestones, truncated })
+}
+
 /// Aggregate open issues across all GitHub repos of a project, grouped by
 /// milestone and enriched with the linked board's Start/Deadline/Status fields.
 #[tauri::command]
@@ -1327,30 +1456,9 @@ pub async fn list_milestone_board(
         .await
         .map_err(|e| e.to_string())?;
 
-    // 3) Board enrichment map (owner/repo#number -> fields), with status colours.
-    let board_map = if let Some(m) = &mappings {
-        let status_colors = match (&m.board_id, &m.status_field_id) {
-            (Some(bid), Some(sfid)) => fetch_status_colors(&client, bid, sfid).await,
-            _ => std::collections::HashMap::new(),
-        };
-        fetch_board_item_map(&client, m, &status_colors).await
-    } else {
-        std::collections::HashMap::new()
-    };
-
-    let mut truncated = false;
+    // 3) Collect GitHub repos (GitLab not supported here).
+    let mut repos: Vec<(String, String)> = Vec::new();
     let mut skipped_non_github = false;
-
-    // milestone title (lowercased) -> aggregated summary
-    struct MsAcc {
-        title: String,
-        open: u64,
-        closed: u64,
-        due: Option<String>,
-    }
-    let mut ms_summary: std::collections::HashMap<String, MsAcc> = std::collections::HashMap::new();
-    let mut all_issues: Vec<IssueRow> = Vec::new();
-
     for repo in &repo_rows {
         let provider: Option<String> = repo.get("provider");
         let provider = provider.filter(|p| !p.is_empty()).unwrap_or_else(|| "github".to_string());
@@ -1364,139 +1472,73 @@ pub async fn list_milestone_board(
         if owner.is_empty() || name.is_empty() {
             continue;
         }
+        repos.push((owner, name));
+    }
 
-        let mut cursor: Option<String> = None;
-        let mut first_page = true;
-        for page in 0..10 {
-            let query = "query($owner:String!,$repo:String!,$cursor:String,$withMs:Boolean!){ repository(owner:$owner,name:$repo){ milestones(first:50, states:[OPEN,CLOSED]) @include(if:$withMs){ nodes{ title dueOn open:issues(states:OPEN){ totalCount } closed:issues(states:CLOSED){ totalCount } } } issues(first:100, after:$cursor, states:OPEN, orderBy:{field:UPDATED_AT,direction:DESC}){ pageInfo{ hasNextPage endCursor } nodes{ number title url createdAt updatedAt comments{ totalCount } milestone{ title dueOn } assignees(first:5){ nodes{ login } } labels(first:10){ nodes{ name color } } } } } }";
-            let payload = serde_json::json!({
-                "query": query,
-                "variables": { "owner": owner, "repo": name, "cursor": cursor, "withMs": first_page }
+    // 4) Fetch the board enrichment map and every repo concurrently.
+    let board_fut = async {
+        if let Some(m) = &mappings {
+            let status_colors = match (&m.board_id, &m.status_field_id) {
+                (Some(bid), Some(sfid)) => fetch_status_colors(&client, bid, sfid).await,
+                _ => std::collections::HashMap::new(),
+            };
+            fetch_board_item_map(&client, m, &status_colors).await
+        } else {
+            std::collections::HashMap::new()
+        }
+    };
+    let repos_fut =
+        futures_util::future::join_all(repos.iter().map(|(o, n)| fetch_repo_board(&client, o, n)));
+    let (board_map, repo_results) = tokio::join!(board_fut, repos_fut);
+
+    // 5) Assemble: aggregate milestone summaries + enrich issues from the board.
+    let mut truncated = false;
+    struct MsAcc {
+        title: String,
+        open: u64,
+        closed: u64,
+        due: Option<String>,
+    }
+    let mut ms_summary: std::collections::HashMap<String, MsAcc> = std::collections::HashMap::new();
+    let mut all_issues: Vec<IssueRow> = Vec::new();
+
+    for res in repo_results {
+        let fetch = res?; // propagate the first repo error, as before
+        if fetch.truncated {
+            truncated = true;
+        }
+        for (title, open, closed, due) in fetch.milestones {
+            let key = title.to_lowercase();
+            let entry = ms_summary.entry(key).or_insert(MsAcc {
+                title: title.clone(),
+                open: 0,
+                closed: 0,
+                due: None,
             });
-            let resp: serde_json::Value = match client.graphql(&payload).await {
-                Ok(v) => v,
-                Err(e) => return Err(format!("Failed to load issues for {owner}/{name}: {e}")),
+            entry.open += open;
+            entry.closed += closed;
+            // Keep the earliest due date when the same milestone spans repos.
+            entry.due = match (entry.due.take(), due) {
+                (Some(a), Some(b)) => Some(if a <= b { a } else { b }),
+                (Some(a), None) => Some(a),
+                (None, b) => b,
             };
-            if let Some(errors) = resp.get("errors").and_then(|e| e.as_array()) {
-                if !errors.is_empty() {
-                    let msg = errors[0].get("message").and_then(|m| m.as_str()).unwrap_or("GraphQL error");
-                    return Err(format!("GraphQL error for {owner}/{name}: {msg}"));
-                }
+        }
+        let owner_l = fetch.owner.to_lowercase();
+        let name_l = fetch.name.to_lowercase();
+        for mut issue in fetch.issues {
+            let key = format!("{}/{}#{}", owner_l, name_l, issue.number);
+            if let Some(bf) = board_map.get(&key) {
+                issue.start_date = bf.start.clone();
+                issue.deadline = bf.deadline.clone();
+                issue.status = bf.status.clone();
+                issue.status_color = bf.status_color.clone();
             }
-            let repository = match resp.pointer("/data/repository") {
-                Some(r) if !r.is_null() => r,
-                _ => break,
-            };
-
-            if first_page {
-                if let Some(ms_nodes) = repository.pointer("/milestones/nodes").and_then(|n| n.as_array()) {
-                    for ms in ms_nodes {
-                        let title = ms.get("title").and_then(|t| t.as_str()).unwrap_or("").to_string();
-                        if title.is_empty() {
-                            continue;
-                        }
-                        let open = ms.pointer("/open/totalCount").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let closed = ms.pointer("/closed/totalCount").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let due = ms.get("dueOn").and_then(|d| d.as_str()).map(|s| s.to_string());
-                        let key = title.to_lowercase();
-                        let entry = ms_summary.entry(key).or_insert(MsAcc {
-                            title: title.clone(),
-                            open: 0,
-                            closed: 0,
-                            due: None,
-                        });
-                        entry.open += open;
-                        entry.closed += closed;
-                        // Keep the earliest due date when the same milestone spans repos.
-                        entry.due = match (entry.due.take(), due) {
-                            (Some(a), Some(b)) => Some(if a <= b { a } else { b }),
-                            (Some(a), None) => Some(a),
-                            (None, b) => b,
-                        };
-                    }
-                }
-            }
-
-            let issue_nodes = repository.pointer("/issues/nodes").and_then(|n| n.as_array());
-            if let Some(nodes) = issue_nodes {
-                for issue in nodes {
-                    let number = issue.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
-                    let key = format!("{}/{}#{}", owner.to_lowercase(), name.to_lowercase(), number);
-                    let bf = board_map.get(&key).cloned().unwrap_or_default();
-                    let milestone_due = issue
-                        .pointer("/milestone/dueOn")
-                        .and_then(|d| d.as_str())
-                        .map(|s| s.to_string());
-                    let assignees = issue
-                        .pointer("/assignees/nodes")
-                        .and_then(|n| n.as_array())
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|x| x.get("login").and_then(|l| l.as_str()).map(|s| s.to_string()))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    let labels = issue
-                        .pointer("/labels/nodes")
-                        .and_then(|n| n.as_array())
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|x| {
-                                    Some(LabelRow {
-                                        name: x.get("name")?.as_str()?.to_string(),
-                                        color: x.get("color").and_then(|c| c.as_str()).unwrap_or("").to_string(),
-                                    })
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    all_issues.push(IssueRow {
-                        repo: name.clone(),
-                        number,
-                        title: issue.get("title").and_then(|t| t.as_str()).unwrap_or("").to_string(),
-                        html_url: issue.get("url").and_then(|u| u.as_str()).unwrap_or("").to_string(),
-                        created_at: issue.get("createdAt").and_then(|t| t.as_str()).unwrap_or("").to_string(),
-                        updated_at: issue.get("updatedAt").and_then(|t| t.as_str()).unwrap_or("").to_string(),
-                        comments: issue.pointer("/comments/totalCount").and_then(|v| v.as_u64()).unwrap_or(0),
-                        assignees,
-                        labels,
-                        milestone_title: issue
-                            .pointer("/milestone/title")
-                            .and_then(|t| t.as_str())
-                            .map(|s| s.to_string()),
-                        milestone_due_on: milestone_due,
-                        start_date: bf.start,
-                        deadline: bf.deadline,
-                        status: bf.status,
-                        status_color: bf.status_color,
-                    });
-                }
-            }
-
-            let has_next = repository
-                .pointer("/issues/pageInfo/hasNextPage")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            if !has_next {
-                break;
-            }
-            if page == 9 {
-                // Hit the 1000-issue cap while more remained.
-                truncated = true;
-                break;
-            }
-            cursor = repository
-                .pointer("/issues/pageInfo/endCursor")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            first_page = false;
-            if cursor.is_none() {
-                break;
-            }
+            all_issues.push(issue);
         }
     }
 
-    // 4) Group issues by milestone title.
+    // 6) Group issues by milestone title.
     const NO_MS: &str = "__no_milestone__";
     let mut order: Vec<String> = Vec::new();
     let mut groups: std::collections::HashMap<String, MilestoneGroup> = std::collections::HashMap::new();

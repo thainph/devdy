@@ -16,8 +16,11 @@
  * it stays visually consistent with the main app.
  */
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { ShieldAlert, FileEdit, HelpCircle, Check, X } from 'lucide-vue-next'
 import { Button } from '@/components/ui'
+
+const { t } = useI18n()
 import DiffView from '@/components/DiffView.vue'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
 import type { QuestionAnswers, RemoteDecision } from '../protocol'
@@ -180,7 +183,7 @@ const inputPreview = computed(() => {
     class="flex h-full min-h-0 flex-col border-t-2 bg-card"
     :class="isQuestions ? 'border-t-indigo-500/70' : 'border-t-amber-400/70'"
     role="dialog"
-    :aria-label="isQuestions ? 'Question' : 'Permission request'"
+    :aria-label="isQuestions ? t('permission.controller.questionAria') : t('permission.controller.requestAria')"
   >
     <div class="flex items-start gap-2.5 px-4 py-3 border-b border-border shrink-0">
       <component
@@ -191,13 +194,12 @@ const inputPreview = computed(() => {
       />
       <div class="flex-1 min-w-0">
         <h2 class="text-sm font-medium text-foreground">
-          {{ isQuestions ? 'Claude has a question' : 'Permission request' }}
+          {{ isQuestions ? t('permission.controller.questionTitle') : t('permission.controller.requestTitle') }}
         </h2>
         <p class="text-xs text-foreground/60 mt-0.5">
-          <template v-if="isQuestions">Pick an answer below, then submit.</template>
+          <template v-if="isQuestions">{{ t('permission.controller.questionHint') }}</template>
           <template v-else>
-            Allow this tool call to run once, or deny it. Remembering a choice can only be done at
-            the host machine.
+            {{ t('permission.controller.requestHint') }}
           </template>
         </p>
       </div>
@@ -213,7 +215,7 @@ const inputPreview = computed(() => {
             >{{ q.header }}</span
           >
           <span class="text-[10px] uppercase tracking-wider text-foreground/40">
-            {{ q.multiSelect ? 'Select all that apply' : 'Select one' }}
+            {{ q.multiSelect ? t('permission.selectAll') : t('permission.selectOne') }}
           </span>
         </div>
         <p class="text-sm font-medium text-foreground">{{ q.question }}</p>
@@ -253,7 +255,7 @@ const inputPreview = computed(() => {
           <input
             v-model="other[qi]"
             type="text"
-            placeholder="Other (type your own answer)…"
+            :placeholder="t('permission.otherPlaceholder')"
             class="w-full rounded-md border border-border bg-foreground/5 px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:border-indigo-500 focus:outline-none"
           />
         </div>
@@ -263,7 +265,7 @@ const inputPreview = computed(() => {
     <!-- Generic tool permission. -->
     <div v-else class="flex-1 min-h-0 px-4 py-4 space-y-3 overflow-auto">
       <div class="flex items-center gap-2 flex-wrap">
-        <span class="text-[10px] uppercase tracking-wider text-foreground/40">Tool</span>
+        <span class="text-[10px] uppercase tracking-wider text-foreground/40">{{ t('permission.tool') }}</span>
         <span class="font-mono text-sm text-indigo-600 dark:text-indigo-300">{{ request.tool_name }}</span>
         <span v-if="filePath" class="font-mono text-xs text-foreground/50 truncate">{{ filePath }}</span>
       </div>
@@ -279,12 +281,12 @@ const inputPreview = computed(() => {
         v-else-if="commandPreview"
         class="rounded-md bg-foreground/5 border border-border px-3 py-2"
       >
-        <div class="text-[10px] uppercase tracking-wider text-foreground/40 mb-1">Command / target</div>
+        <div class="text-[10px] uppercase tracking-wider text-foreground/40 mb-1">{{ t('permission.commandTarget') }}</div>
         <pre class="text-xs font-mono text-foreground whitespace-pre-wrap break-words">{{ commandPreview }}</pre>
       </div>
 
       <details class="rounded-md bg-foreground/5 border border-border">
-        <summary class="px-3 py-2 text-xs text-foreground/60 cursor-pointer select-none">Full input</summary>
+        <summary class="px-3 py-2 text-xs text-foreground/60 cursor-pointer select-none">{{ t('permission.fullInput') }}</summary>
         <pre class="px-3 pb-2 text-[11px] font-mono text-foreground/70 whitespace-pre-wrap break-words max-h-80 overflow-auto">{{ inputPreview }}</pre>
       </details>
     </div>
@@ -294,18 +296,18 @@ const inputPreview = computed(() => {
     <div class="px-4 py-3 border-t border-border shrink-0 flex flex-col gap-2 sm:flex-row sm:justify-end">
       <template v-if="isQuestions">
         <Button variant="destructive" class="w-full sm:w-auto" @click="emit('decide', 'deny_once')">
-          <X class="h-3.5 w-3.5" :stroke-width="2" /> Cancel
+          <X class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.controller.cancel') }}
         </Button>
         <Button variant="primary" :disabled="!canSubmit" class="w-full sm:w-auto" @click="submitAnswers">
-          <Check class="h-3.5 w-3.5" :stroke-width="2" /> Submit
+          <Check class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.submit') }}
         </Button>
       </template>
       <template v-else>
         <Button variant="destructive" class="w-full sm:w-auto" @click="emit('decide', 'deny_once')">
-          <X class="h-3.5 w-3.5" :stroke-width="2" /> Deny once
+          <X class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.controller.denyOnce') }}
         </Button>
         <Button variant="primary" class="w-full sm:w-auto" @click="emit('decide', 'allow_once')">
-          <Check class="h-3.5 w-3.5" :stroke-width="2" /> Allow once
+          <Check class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.controller.allowOnce') }}
         </Button>
       </template>
     </div>

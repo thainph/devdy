@@ -1,0 +1,85 @@
+{
+  "settings": {
+    "title": "Remote Control",
+    "connected": "Đã kết nối",
+    "waiting": "Đang chờ",
+    "off": "Tắt",
+    "intro": "Điều khiển host này từ thiết bị từ xa thông qua relay tự vận hành của bạn. Relay chỉ nhìn thấy lưu lượng đã mã hóa đầu cuối.",
+    "enable": "Bật Remote Control",
+    "state": {
+      "connected": "Đã kết nối tới thiết bị điều khiển.",
+      "running": "Đang chạy — chờ thiết bị kết nối.",
+      "needsRelay": "Lưu Relay URL trước khi bật.",
+      "off": "Đang tắt. Bật lên để cho phép điều khiển từ xa."
+    },
+    "relayUrl": "Relay URL",
+    "relayUrlPlaceholder": "wss://relay.example.com/ws",
+    "authToken": "Auth token",
+    "saved": "(đã lưu)",
+    "authTokenPlaceholder": "Để trống để giữ token hiện tại",
+    "authTokenHint": "Lưu trong keychain của hệ điều hành, không bao giờ lưu dạng thô trên đĩa.",
+    "masterPassword": "Mật khẩu chính",
+    "set": "(đã đặt)",
+    "masterPasswordReplace": "Nhập mật khẩu mới để thay thế mật khẩu hiện tại",
+    "masterPasswordSet": "Đặt mật khẩu để bỏ qua OTP mỗi lần",
+    "masterPasswordHint": "Sau khi đặt, nhập mật khẩu này trên điện thoại thay vì mã OTP. Lưu trong keychain của hệ điều hành. Tiện hơn nhưng cố định — chỉ dùng nếu bạn là người dùng duy nhất. Được lưu cùng với các cài đặt bên dưới.",
+    "saveSettings": "Lưu cài đặt",
+    "hostLabel": "host: {id}",
+    "perRunHint": "Phiên điều khiển từ xa giờ được tạo theo từng run: mở một run và nhấn nút {remote} trên thanh công cụ để tạo link. Nhập {masterPassword} (nếu đã đặt) hoặc mã OTP trên điện thoại để kết nối.",
+    "remote": "Remote",
+    "masterPasswordInline": "mật khẩu chính",
+    "auditLog": "Nhật ký kiểm toán",
+    "clearLog": "Xóa nhật ký",
+    "table": {
+      "time": "Thời gian",
+      "action": "Hành động",
+      "result": "Kết quả",
+      "run": "Run"
+    },
+    "noActivity": "Chưa ghi nhận hoạt động từ xa nào.",
+    "confirmClearMaster": {
+      "title": "Xóa mật khẩu chính",
+      "message": "Xóa mật khẩu chính đã lưu?\nBạn sẽ dùng lại mã OTP cho mỗi lần tham gia.",
+      "confirmLabel": "Xóa"
+    },
+    "confirmClearAudit": {
+      "title": "Xóa nhật ký kiểm toán",
+      "message": "Xóa vĩnh viễn tất cả bản ghi kiểm toán remote-control?\nKhông thể hoàn tác.",
+      "confirmLabel": "Xóa nhật ký"
+    },
+    "toast": {
+      "relayRequired": "Relay URL là bắt buộc",
+      "settingsSaved": "Đã lưu cài đặt relay",
+      "disabled": "Đã tắt Remote Control",
+      "enabled": "Đã bật Remote Control",
+      "masterCleared": "Đã xóa mật khẩu chính",
+      "auditCleared": "Đã xóa {count} bản ghi kiểm toán",
+      "auditAlreadyEmpty": "Nhật ký kiểm toán đã trống"
+    }
+  },
+  "session": {
+    "title": "Điều khiển từ điện thoại",
+    "heading": "Điều khiển run này từ điện thoại",
+    "creating": "Đang tạo link…",
+    "scanCaption": "Quét bằng điện thoại hoặc copy link để mở controller.",
+    "copyLink": "Copy link",
+    "cannotDeriveController": "Không xác định được địa chỉ controller từ relay URL. Copy các trường dưới đây và dán vào controller thủ công.",
+    "copied": "Đã copy!",
+    "copyFields": "Copy các trường",
+    "enterMasterOnPhone": "Nhập {masterPassword} trên điện thoại để kết nối. (Đặt mật khẩu ở Settings → Remote Control.)",
+    "masterPassword": "mật khẩu chính",
+    "connecting": "Điện thoại đang kết nối…",
+    "enterMasterToFinish": "Nhập mật khẩu chính trên điện thoại để hoàn tất.",
+    "connectedLive": "Đang kết nối — điều khiển trực tiếp",
+    "phoneControlling": "Điện thoại đang điều khiển run này. Đóng modal này không ngắt kết nối.",
+    "idleExpiry": "Phiên hết hạn nếu không thao tác trong ~{time}",
+    "stopControl": "Dừng điều khiển",
+    "authFailed": "Xác thực thất bại",
+    "attemptsLeft": "Còn {count} lần thử",
+    "createNewLink": "Tạo link mới",
+    "expired": "Phiên đã hết hạn",
+    "errorOccurred": "Đã xảy ra lỗi",
+    "noRunOpen": "Không có run nào đang mở.",
+    "copyFailed": "Không thể copy vào clipboard"
+  }
+}

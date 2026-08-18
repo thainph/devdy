@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useMcpServersStore, type McpServer } from '@/stores/mcpServers'
 import { useAppSettingsStore } from '@/stores/appSettings'
@@ -14,6 +15,7 @@ const store = useMcpServersStore()
 const appSettings = useAppSettingsStore()
 const { confirm } = useConfirm()
 const { toast } = useToast()
+const { t } = useI18n()
 const deletingId = ref<string | null>(null)
 const togglingId = ref<string | null>(null)
 const importing = ref(false)
@@ -59,7 +61,7 @@ async function addFromCatalog(item: CatalogEntry) {
       headers: [],
       enabled: true,
     })
-    toast.success(`Added "${item.name}" — open it to finish setup`)
+    toast.success(t('mcp.list.toast.added', { name: item.name }))
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -89,7 +91,7 @@ async function handleImport() {
   importing.value = true
   try {
     await store.importServer(selected as string)
-    toast.success('Imported')
+    toast.success(t('mcp.list.toast.imported'))
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -105,7 +107,7 @@ async function handleExport(server: McpServer) {
   if (!destPath) return
   try {
     await store.exportServer(server.id, destPath)
-    toast.success('Exported')
+    toast.success(t('mcp.list.toast.exported'))
   } catch (e) {
     toast.error(String(e))
   }

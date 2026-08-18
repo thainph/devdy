@@ -9,8 +9,11 @@
  * button — the number refreshes whenever the Host re-pushes.
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { AlertTriangle } from 'lucide-vue-next'
 import type { PlanBudget } from '../protocol'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   claude: PlanBudget | null
@@ -119,7 +122,7 @@ const TEXT: Record<Row['tone'], string> = {
         <span class="w-11 shrink-0 text-right font-mono tabular-nums opacity-60">{{ r.reset }}</span>
       </template>
 
-      <span v-else class="flex-1 truncate font-mono opacity-50">chưa có dữ liệu gói</span>
+      <span v-else class="flex-1 truncate font-mono opacity-50">{{ t('controller.planBar.noPlanData') }}</span>
     </div>
   </div>
 </template>

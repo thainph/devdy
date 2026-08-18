@@ -1,0 +1,16 @@
+{
+  "title": "PR Reviews",
+  "emptyTitle": "Không có PR nào chờ review",
+  "emptyBody": "Gom mọi PR bạn được request review trên tất cả GitHub account đã cấu hình. Cấu hình account trong Settings.",
+  "reviewing": "AI đang review {repo}#{number}",
+  "reviewingShort": "Đang review…",
+  "viewReview": "Xem review",
+  "opening": "Đang mở…",
+  "aiReview": "AI Review",
+  "notInDevdy": "Chưa có trong devdy",
+  "addToDevdy": "Thêm vào devdy",
+  "justNow": "vừa xong",
+  "minsAgo": "{mins} phút trước",
+  "hoursAgo": "{hours} giờ trước",
+  "daysAgo": "{days} ngày trước"
+}

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { CalEvent } from '@/stores/googleCalendar'
 import { startOfWeek, addDays, sameDay, minutesOfDay, parseEventTime } from '@/lib/calendar'
 import { lunarInfo } from '@/lib/lunar'
@@ -16,6 +17,8 @@ const emit = defineEmits<{
   createAt: [date: Date]
 }>()
 
+const { t } = useI18n()
+
 const HOUR_HEIGHT = 44 // px per hour
 
 /** Click an empty spot in a day column → create an event at that hour. */
@@ -28,7 +31,8 @@ function onColumnClick(day: Date, e: MouseEvent) {
   emit('createAt', start)
 }
 const HOURS = Array.from({ length: 24 }, (_, i) => i)
-const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+const WEEKDAY_KEYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
+const WEEKDAYS = computed(() => WEEKDAY_KEYS.map(k => t(`calendar.week.${k}`)))
 
 const weekDays = computed(() => {
   const start = startOfWeek(props.anchorDate)

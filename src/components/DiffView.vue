@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { computeDiff } from '@/lib/diff'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   before: string
@@ -27,7 +30,7 @@ const result = computed(() => computeDiff(props.before, props.after, { context: 
       <!-- Fold marker for collapsed unchanged runs -->
       <template v-if="row.type === 'fold'">
         <span class="w-full px-3 py-0.5 text-center text-[10px] text-foreground/35 select-none">
-          ⋯ {{ row.count }} dòng không đổi
+          {{ t('misc.diff.unchangedLines', { count: row.count }) }}
         </span>
       </template>
       <template v-else>

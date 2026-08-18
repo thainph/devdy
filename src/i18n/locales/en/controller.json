@@ -1,0 +1,64 @@
+{
+  "app": {
+    "notConnected": "Could not send — not connected to the host.",
+    "connectionLost": "Could not send — connection lost before the host confirmed.",
+    "hostRejected": "Host rejected the command.",
+    "hostRejectedReason": "Host rejected the command: {reason}"
+  },
+  "planBar": {
+    "noPlanData": "no plan data"
+  },
+  "composer": {
+    "defaultEngine": "Default engine",
+    "imageTooLarge": "Image is too large (max {size}MB).",
+    "fileTooLarge": "File is too large (max {size}MB).",
+    "sending": "Sending…",
+    "send": "Send",
+    "resume": "Resume",
+    "run": "Run",
+    "placeholderRunning": "Send a follow-up — Enter to send, Shift+Enter for newline",
+    "placeholderIdle": "Type a prompt — Enter to run (mention files with @)",
+    "removeImage": "Remove image",
+    "removeFile": "Remove file",
+    "permTitle": "Permission mode (UI only — the host asks for each tool call)",
+    "modelTitle": "Model (empty = engine/settings default)",
+    "attachImage": "Attach image (or paste from clipboard)",
+    "attachFile": "Attach a file",
+    "collapseComposer": "Collapse the composer",
+    "expandComposer": "Expand the composer",
+    "cancel": "Cancel",
+    "cancelTitle": "Cancel the running turn"
+  },
+  "session": {
+    "joining": "Joining…",
+    "securing": "Securing…",
+    "connected": "Connected",
+    "connectedWaiting": "Connected — waiting for data…",
+    "reconnecting": "Reconnecting…",
+    "error": "Error",
+    "disconnected": "Disconnected",
+    "idle": "Idle",
+    "verifiedFingerprint": "Verified host fingerprint: {fp}",
+    "decodeErrorsTitle": "Some frames could not be decrypted/parsed",
+    "disconnect": "Disconnect"
+  },
+  "otp": {
+    "title": "Enter password or code",
+    "subtitle": "Type your remote master password, or the one-time code shown on your Devdy host, to finish connecting.",
+    "host": "host {fp}…",
+    "placeholder": "Password or code",
+    "connecting": "Connecting…",
+    "connect": "Connect"
+  },
+  "link": {
+    "title": "Devdy Remote",
+    "subtitle": "Open the remote link from Devdy (scan the QR or paste it below) to control this session securely.",
+    "connectingFromScan": "Connecting from the scanned link…",
+    "controllerLink": "Controller link",
+    "linkPlaceholder": "Paste the controller link (https://…/controller.html#…) here",
+    "continue": "Continue",
+    "couldNotRead": "Could not read the link.",
+    "pasteFirst": "Paste the controller link first.",
+    "e2eNote": "The connection is end-to-end encrypted. You will enter a one-time code shown on the host to finish connecting. The relay never sees your data, and the host fingerprint is verified."
+  }
+}

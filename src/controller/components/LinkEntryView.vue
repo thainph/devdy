@@ -6,9 +6,12 @@
  * leaves the manual paste box for the user.
  */
 import { onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Link2, ShieldCheck } from 'lucide-vue-next'
 import { Button, Textarea } from '@/components/ui'
 import { parseSessionLink, SessionLinkParseError, type SessionLinkPayload } from '../protocol'
+
+const { t } = useI18n()
 
 const emit = defineEmits<{ link: [payload: SessionLinkPayload] }>()
 
@@ -21,13 +24,13 @@ function tryLink(raw: string): void {
   try {
     emit('link', parseSessionLink(raw))
   } catch (e) {
-    error.value = e instanceof SessionLinkParseError ? e.message : 'Could not read the link.'
+    error.value = e instanceof SessionLinkParseError ? e.message : t('controller.link.couldNotRead')
   }
 }
 
 function submitManual(): void {
   if (!manual.value.trim()) {
-    error.value = 'Paste the controller link first.'
+    error.value = t('controller.link.pasteFirst')
     return
   }
   tryLink(manual.value)
@@ -56,38 +59,36 @@ onMounted(() => {
         <div class="inline-flex h-12 w-12 items-center justify-center rounded-xl bg-primary/15 text-primary">
           <ShieldCheck class="h-6 w-6" :stroke-width="1.75" />
         </div>
-        <h1 class="text-lg font-semibold">Devdy Remote</h1>
+        <h1 class="text-lg font-semibold">{{ t('controller.link.title') }}</h1>
         <p class="text-sm text-foreground/60">
-          Open the remote link from Devdy (scan the QR or paste it below) to control this session
-          securely.
+          {{ t('controller.link.subtitle') }}
         </p>
       </div>
 
       <div v-if="autoFromUrl" class="text-center text-sm text-foreground/60">
-        Connecting from the scanned link…
+        {{ t('controller.link.connectingFromScan') }}
       </div>
 
       <div class="space-y-3">
         <label class="block text-xs font-medium uppercase tracking-wider text-foreground/50">
-          Controller link
+          {{ t('controller.link.controllerLink') }}
         </label>
         <Textarea
           v-model="manual"
           :rows="4"
-          placeholder="Paste the controller link (https://…/controller.html#…) here"
+          :placeholder="t('controller.link.linkPlaceholder')"
           class="font-mono text-xs"
           @keydown.meta.enter="submitManual"
           @keydown.ctrl.enter="submitManual"
         />
         <Button variant="primary" class="w-full" @click="submitManual">
-          <Link2 class="h-4 w-4" :stroke-width="2" /> Continue
+          <Link2 class="h-4 w-4" :stroke-width="2" /> {{ t('controller.link.continue') }}
         </Button>
         <p v-if="error" class="text-sm text-destructive text-center">{{ error }}</p>
       </div>
 
       <p class="text-[11px] leading-relaxed text-foreground/40 text-center">
-        The connection is end-to-end encrypted. You will enter a one-time code shown on the host to
-        finish connecting. The relay never sees your data, and the host fingerprint is verified.
+        {{ t('controller.link.e2eNote') }}
       </p>
     </div>
   </div>

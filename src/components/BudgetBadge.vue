@@ -1,18 +1,20 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { AlertTriangle, RefreshCw } from 'lucide-vue-next'
 import { useBudgetStore } from '@/stores/budget'
 import { useAppSettingsStore } from '@/stores/appSettings'
 
+const { t } = useI18n()
 const budget = useBudgetStore()
 const app = useAppSettingsStore()
 const now = ref(Date.now())
 
-const PERIOD_LABEL: Record<string, string> = {
-  week: 'this week',
-  '5h': 'last 5h',
-}
+const PERIOD_LABEL = computed<Record<string, string>>(() => ({
+  week: t('misc.budget.thisWeek'),
+  '5h': t('misc.budget.last5h'),
+}))
 
 /** A single provider's verdict flattened for the row renderer. */
 interface ProviderView {
@@ -81,28 +83,28 @@ const codexView = computed<ProviderView>(() => ({
 const views = computed<ProviderView[]>(() => [claudeView.value, codexView.value])
 
 function resetText(v: ProviderView): string {
-  if (!v.reset) return v.period === '5h' && !v.hasPlan ? 'rolling 5h window' : ''
+  if (!v.reset) return v.period === '5h' && !v.hasPlan ? t('misc.budget.rolling5h') : ''
   const ms = new Date(v.reset).getTime() - now.value
-  if (ms <= 0) return 'resets soon'
+  if (ms <= 0) return t('misc.budget.resetsSoon')
   const totalMinutes = Math.max(1, Math.ceil(ms / 60_000))
   const days = Math.floor(totalMinutes / 1440)
   const hours = Math.floor((totalMinutes % 1440) / 60)
   const minutes = totalMinutes % 60
-  if (days > 0) return hours > 0 ? `resets in ${days}d ${hours}h` : `resets in ${days}d`
-  if (hours > 0) return minutes > 0 ? `resets in ${hours}h ${minutes}m` : `resets in ${hours}h`
-  return `resets in ${minutes}m`
+  if (days > 0) return hours > 0 ? t('misc.budget.resetsInDaysHours', { days, hours }) : t('misc.budget.resetsInDays', { days })
+  if (hours > 0) return minutes > 0 ? t('misc.budget.resetsInHoursMins', { hours, minutes }) : t('misc.budget.resetsInHours', { hours })
+  return t('misc.budget.resetsInMins', { minutes })
 }
 
 function elapsedText(iso: string | null): string {
   if (!iso) return ''
   const ms = Math.max(0, now.value - new Date(iso).getTime())
   const totalMinutes = Math.max(1, Math.floor(ms / 60_000))
-  if (totalMinutes < 60) return `${totalMinutes}m ago`
+  if (totalMinutes < 60) return t('misc.budget.agoMins', { minutes: totalMinutes })
   const hours = Math.floor(totalMinutes / 60)
   const minutes = totalMinutes % 60
-  if (hours < 24) return minutes > 0 ? `${hours}h ${minutes}m ago` : `${hours}h ago`
+  if (hours < 24) return minutes > 0 ? t('misc.budget.agoHoursMins', { hours, minutes }) : t('misc.budget.agoHours', { hours })
   const days = Math.floor(hours / 24)
-  return `${days}d ago`
+  return t('misc.budget.agoDays', { days })
 }
 
 function tone(v: ProviderView): 'over' | 'warning' | 'stale' | 'ok' | 'neutral' {
@@ -152,7 +154,7 @@ function barWidth(v: ProviderView): string {
 function resetShort(v: ProviderView): string {
   if (!v.reset) return ''
   const ms = new Date(v.reset).getTime() - now.value
-  if (ms <= 0) return 'soon'
+  if (ms <= 0) return t('misc.budget.soon')
   const totalMinutes = Math.max(1, Math.ceil(ms / 60_000))
   const days = Math.floor(totalMinutes / 1440)
   const hours = Math.floor((totalMinutes % 1440) / 60)
@@ -164,9 +166,9 @@ function resetShort(v: ProviderView): string {
 
 /** Short text shown in place of the meter when there's no usage % yet. */
 function compactStatus(v: ProviderView): string {
-  if (v.refreshing) return 'checking…'
-  if (v.refreshError && !v.refreshUnavailable) return 'refresh failed'
-  return 'no plan usage'
+  if (v.refreshing) return t('misc.budget.checking')
+  if (v.refreshError && !v.refreshUnavailable) return t('misc.budget.refreshFailed')
+  return t('misc.budget.noPlanUsage')
 }
 
 /** Full context for the hover tooltip, since the dense row hides most of it. */
@@ -175,45 +177,45 @@ function tooltip(v: ProviderView): string {
 }
 
 function heading(v: ProviderView): string {
-  if (!v.hasStatus) return v.refreshing ? 'Refreshing usage' : 'Usage status'
+  if (!v.hasStatus) return v.refreshing ? t('misc.budget.refreshingUsage') : t('misc.budget.usageStatus')
   if (v.hasPlan) {
-    if (v.isOver) return 'Plan limit reached'
-    if (v.rolledOver) return 'Plan window reset'
-    const base = `${v.percent}% of plan limit`
-    return v.isStale && !v.refreshing ? `Cached: ${base}` : base
+    if (v.isOver) return t('misc.budget.planLimitReached')
+    if (v.rolledOver) return t('misc.budget.planWindowReset')
+    const base = t('misc.budget.percentOfPlan', { percent: v.percent })
+    return v.isStale && !v.refreshing ? t('misc.budget.cached', { base }) : base
   }
-  return 'No plan usage yet'
+  return t('misc.budget.noPlanUsageYet')
 }
 
 function detail(v: ProviderView): string {
-  const updatesHint = v.key === 'codex' ? 'updates during Codex runs' : 'updates during Claude runs'
-  const fetchingHint = v.key === 'codex' ? 'Fetching Codex /status' : 'Fetching Claude /usage'
+  const updatesHint = v.key === 'codex' ? t('misc.budget.updatesCodex') : t('misc.budget.updatesClaude')
+  const fetchingHint = v.key === 'codex' ? t('misc.budget.fetchingCodex') : t('misc.budget.fetchingClaude')
   const noData = v.refreshError && !v.refreshUnavailable
-    ? `refresh failed: ${v.refreshError}`
-    : 'No plan usage captured yet'
+    ? t('misc.budget.refreshFailedReason', { error: v.refreshError })
+    : t('misc.budget.noPlanCaptured')
   if (!v.hasStatus) return v.refreshing ? fetchingHint : noData
   if (v.hasPlan) {
-    const parts = [PERIOD_LABEL[v.period] ?? v.period]
+    const parts = [PERIOD_LABEL.value[v.period] ?? v.period]
     const rt = resetText(v)
     if (rt) parts.push(rt)
     if (v.refreshing) {
-      parts.push('refreshing…')
+      parts.push(t('misc.budget.refreshing'))
     } else if (v.rolledOver) {
-      parts.push('run once to refresh the new window')
+      parts.push(t('misc.budget.runOnceToRefresh'))
     } else {
       const captured = elapsedText(v.capturedAt)
-      if (captured) parts.push(v.isStale ? `last captured ${captured}` : `as of ${captured}`)
+      if (captured) parts.push(v.isStale ? t('misc.budget.lastCaptured', { ago: captured }) : t('misc.budget.asOf', { ago: captured }))
       if (v.isStale) parts.push(updatesHint)
     }
-    if (v.refreshError && !v.refreshUnavailable) parts.push(`refresh failed: ${v.refreshError}`)
+    if (v.refreshError && !v.refreshUnavailable) parts.push(t('misc.budget.refreshFailedReason', { error: v.refreshError }))
     return parts.join(' · ')
   }
   return v.refreshing ? fetchingHint : noData
 }
 
 function titleFor(v: ProviderView): string {
-  if (v.hasPlan) return `${v.label} subscription plan usage · ${PERIOD_LABEL[v.period] ?? v.period}`
-  return `${v.label} usage status`
+  if (v.hasPlan) return t('misc.budget.planUsageTitle', { label: v.label, period: PERIOD_LABEL.value[v.period] ?? v.period })
+  return t('misc.budget.usageStatusTitle', { label: v.label })
 }
 
 let timer: ReturnType<typeof setInterval> | null = null
@@ -306,8 +308,8 @@ onUnmounted(() => {
           class="absolute inset-0 flex items-center justify-end rounded transition-opacity focus-visible:opacity-100 focus-visible:outline-none"
           :class="v.refreshing ? 'opacity-100' : 'cursor-pointer opacity-0 group-hover:opacity-100'"
           :disabled="v.refreshing"
-          :aria-label="`Refresh ${v.label} plan usage`"
-          :title="`Refresh ${v.label} plan usage now`"
+          :aria-label="t('misc.budget.refreshUsage', { label: v.label })"
+          :title="t('misc.budget.refreshUsageTitle', { label: v.label })"
           @click="v.onRefresh"
         >
           <RefreshCw class="h-3 w-3" :class="{ 'animate-spin': v.refreshing }" :stroke-width="2" />

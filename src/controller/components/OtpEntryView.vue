@@ -7,8 +7,11 @@
  * room after 5 bad codes.
  */
 import { computed, nextTick, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { KeyRound, ShieldCheck, Loader2 } from 'lucide-vue-next'
 import { Button } from '@/components/ui'
+
+const { t } = useI18n()
 
 const props = withDefaults(
   defineProps<{
@@ -60,10 +63,9 @@ watch(
         <div class="inline-flex h-12 w-12 items-center justify-center rounded-xl bg-primary/15 text-primary">
           <KeyRound class="h-6 w-6" :stroke-width="1.75" />
         </div>
-        <h1 class="text-lg font-semibold">Enter password or code</h1>
+        <h1 class="text-lg font-semibold">{{ t('controller.otp.title') }}</h1>
         <p class="text-sm text-foreground/60">
-          Type your remote master password, or the one-time code shown on your
-          Devdy host, to finish connecting.
+          {{ t('controller.otp.subtitle') }}
         </p>
       </div>
 
@@ -72,7 +74,7 @@ watch(
         class="flex items-center justify-center gap-1.5 text-[11px] font-mono text-foreground/45"
       >
         <ShieldCheck class="h-3.5 w-3.5 text-emerald-500" :stroke-width="2" />
-        host {{ shortFingerprint }}…
+        {{ t('controller.otp.host', { fp: shortFingerprint }) }}
       </div>
 
       <div class="space-y-3">
@@ -81,7 +83,7 @@ watch(
           :value="code"
           type="password"
           autocomplete="one-time-code"
-          placeholder="Password or code"
+          :placeholder="t('controller.otp.placeholder')"
           :disabled="connecting"
           class="w-full rounded-lg border border-border bg-background px-4 py-3 text-center text-xl font-mono tracking-[0.15em] focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
           @input="onInput"
@@ -89,7 +91,7 @@ watch(
         />
         <Button variant="primary" class="w-full" :disabled="!canSubmit" @click="submit">
           <Loader2 v-if="connecting" class="h-4 w-4 animate-spin" :stroke-width="2" />
-          {{ connecting ? 'Connecting…' : 'Connect' }}
+          {{ connecting ? t('controller.otp.connecting') : t('controller.otp.connect') }}
         </Button>
         <p v-if="error" class="text-sm text-destructive text-center">{{ error }}</p>
       </div>

@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { usePrInboxStore, prKey, type PrInboxItem } from '@/stores/prInbox'
 import { useRunsStore } from '@/stores/runs'
 import { useLiveRunsStore } from '@/stores/liveRuns'
-import { Button, Card, Badge, StatusBadge } from '@/components/ui'
+import { Button, Card, Badge, StatusBadge, Skeleton } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import { GitPullRequest, RefreshCw, Sparkles, FolderPlus, ExternalLink, User, Eye } from 'lucide-vue-next'
 
+const { t } = useI18n()
 const router = useRouter()
 const store = usePrInboxStore()
 const runsStore = useRunsStore()
@@ -55,7 +57,7 @@ async function handleReview(item: PrInboxItem) {
     // Link immediately so a second click resumes instead of duplicating. The run
     // streams in the background (liveRuns / ActiveRunsDock) — stay on this screen.
     store.linkRun(key, run.id, 'running')
-    toast.success(`AI đang review ${item.repo}#${item.number}`)
+    toast.success(t('prInbox.reviewing', { repo: item.repo, number: item.number }))
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -67,12 +69,12 @@ function relativeTime(iso: string): string {
   const then = new Date(iso).getTime()
   const diff = Date.now() - then
   const mins = Math.round(diff / 60000)
-  if (mins < 1) return 'vừa xong'
-  if (mins < 60) return `${mins} phút trước`
+  if (mins < 1) return t('prInbox.justNow')
+  if (mins < 60) return t('prInbox.minsAgo', { mins })
   const hours = Math.round(mins / 60)
-  if (hours < 24) return `${hours} giờ trước`
+  if (hours < 24) return t('prInbox.hoursAgo', { hours })
   const days = Math.round(hours / 24)
-  if (days < 30) return `${days} ngày trước`
+  if (days < 30) return t('prInbox.daysAgo', { days })
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 </script>
@@ -82,7 +84,7 @@ function relativeTime(iso: string): string {
     <!-- Page header -->
     <div class="flex items-center justify-between px-6 h-13 border-b border-border/60 shrink-0">
       <div class="flex items-center gap-2">
-        <h1 class="text-sm font-semibold">PR Reviews</h1>
+        <h1 class="text-sm font-semibold">{{ t('prInbox.title') }}</h1>
         <span
           v-if="!store.loading && store.items.length > 0"
           class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-medium text-muted-foreground"
@@ -93,16 +95,32 @@ function relativeTime(iso: string): string {
       <div class="flex items-center gap-2">
         <Button variant="ghost" :disabled="store.loading" @click="store.refresh()">
           <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': store.loading }" :stroke-width="2" />
-          Refresh
+          {{ t('common.refresh') }}
         </Button>
       </div>
     </div>
 
     <!-- Content -->
     <div class="flex-1 overflow-auto p-6">
-      <!-- Loading skeleton -->
+      <!-- Loading skeleton — mirrors the PR card layout so the wait reads as
+           "content incoming". Rows cascade in with a small stagger. -->
       <div v-if="store.loading && store.items.length === 0" class="flex flex-col gap-3">
-        <div v-for="i in 5" :key="i" class="h-20 rounded-lg border border-border bg-card animate-pulse" />
+        <div
+          v-for="(w, i) in [72, 54, 80, 60, 66]" :key="i"
+          class="animate-fade-rise flex items-center gap-4 rounded-lg border border-border/60 bg-card p-4"
+          :style="{ animationDelay: `${i * 70}ms` }"
+        >
+          <Skeleton class="h-9 w-9 shrink-0 rounded-lg" />
+          <div class="min-w-0 flex-1 space-y-2.5">
+            <Skeleton class="h-3.5 rounded" :style="{ width: `${w}%` }" />
+            <div class="flex items-center gap-2">
+              <Skeleton class="h-2.5 w-28 rounded" />
+              <Skeleton class="h-2.5 w-16 rounded" />
+              <Skeleton class="h-2.5 w-20 rounded" />
+            </div>
+          </div>
+          <Skeleton class="h-7 w-24 shrink-0 rounded-md" />
+        </div>
       </div>
 
       <!-- Error -->
@@ -115,22 +133,23 @@ function relativeTime(iso: string): string {
         <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-muted mb-4">
           <GitPullRequest class="h-6 w-6 text-muted-foreground" :stroke-width="1.5" />
         </div>
-        <p class="text-sm font-medium">Không có PR nào chờ review</p>
+        <p class="text-sm font-medium">{{ t('prInbox.emptyTitle') }}</p>
         <p class="text-xs text-muted-foreground mt-1 max-w-64">
-          Gom mọi PR bạn được request review trên tất cả GitHub account đã cấu hình. Cấu hình account trong Settings.
+          {{ t('prInbox.emptyBody') }}
         </p>
         <Button class="mt-4" variant="ghost" @click="store.refresh()">
           <RefreshCw class="h-3.5 w-3.5" :stroke-width="2" />
-          Refresh
+          {{ t('common.refresh') }}
         </Button>
       </div>
 
       <!-- PR list -->
       <div v-else class="flex flex-col gap-3">
         <Card
-          v-for="item in store.items"
+          v-for="(item, i) in store.items"
           :key="`${item.account_id}:${prKey(item)}`"
-          class="group relative flex flex-row items-center gap-4 transition-all duration-150 hover:border-primary/40 hover:shadow-[0_1px_3px_0_rgb(0_0_0/0.08)]"
+          class="group relative flex flex-row items-center gap-4 animate-fade-rise transition-all duration-150 hover:border-primary/40 hover:shadow-[0_1px_3px_0_rgb(0_0_0/0.08)]"
+          :style="{ animationDelay: `${Math.min(i, 12) * 40}ms` }"
           body-class="flex flex-row items-center gap-4 flex-1 p-4"
         >
           <!-- Icon -->
@@ -173,7 +192,7 @@ function relativeTime(iso: string): string {
                 <Button variant="outline" @click="openRun(item)">
                   <RefreshCw v-if="isRunning(item)" class="h-3.5 w-3.5 animate-spin" :stroke-width="2" />
                   <Eye v-else class="h-3.5 w-3.5" :stroke-width="2" />
-                  {{ isRunning(item) ? 'Đang review…' : 'Xem review' }}
+                  {{ isRunning(item) ? t('prInbox.reviewingShort') : t('prInbox.viewReview') }}
                 </Button>
               </template>
               <!-- No session yet → start one -->
@@ -183,14 +202,14 @@ function relativeTime(iso: string): string {
                 @click="handleReview(item)"
               >
                 <Sparkles class="h-3.5 w-3.5" :stroke-width="2" />
-                {{ store.reviewingKeys.has(prKey(item)) ? 'Đang mở…' : 'AI Review' }}
+                {{ store.reviewingKeys.has(prKey(item)) ? t('prInbox.opening') : t('prInbox.aiReview') }}
               </Button>
             </template>
             <template v-else>
-              <Badge tone="neutral" size="xs" class="shrink-0">Chưa có trong devdy</Badge>
+              <Badge tone="neutral" size="xs" class="shrink-0">{{ t('prInbox.notInDevdy') }}</Badge>
               <Button variant="ghost" @click="router.push('/projects')">
                 <FolderPlus class="h-3.5 w-3.5" :stroke-width="2" />
-                Thêm vào devdy
+                {{ t('prInbox.addToDevdy') }}
               </Button>
             </template>
           </div>

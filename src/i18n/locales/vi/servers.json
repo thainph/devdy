@@ -1,0 +1,73 @@
+{
+  "list": {
+    "title": "Servers",
+    "newServer": "Server mới",
+    "empty": {
+      "title": "Chưa có server nào",
+      "hint": "Thêm một VPS một lần, sau đó kiểm tra kết nối và tái sử dụng cho nhiều dự án"
+    },
+    "status": {
+      "online": "Trực tuyến",
+      "offline": "Ngoại tuyến",
+      "notChecked": "Chưa kiểm tra"
+    },
+    "testTitle": "Kiểm tra kết nối",
+    "confirmDelete": {
+      "title": "Xóa server",
+      "message": "Xóa server \"{label}\"? Thao tác này cũng xóa passphrase đã lưu. Không thể hoàn tác."
+    },
+    "toast": {
+      "deleted": "Đã xóa"
+    }
+  },
+  "editor": {
+    "backTitle": "Quay lại Servers",
+    "newTitle": "Server mới",
+    "editing": "— đang chỉnh sửa",
+    "saving": "Đang lưu…",
+    "general": "Chung",
+    "label": "Nhãn",
+    "labelPlaceholder": "Production SG",
+    "host": "Host",
+    "hostPlaceholder": "1.2.3.4 hoặc vps.example.com",
+    "port": "Port",
+    "username": "Tên đăng nhập",
+    "usernamePlaceholder": "root",
+    "tags": "Thẻ",
+    "tagsPlaceholder": "prod, sg (phân tách bằng dấu phẩy)",
+    "authentication": "Xác thực",
+    "authMethod": "Phương thức xác thực",
+    "authOptionAgent": "agent (ssh-agent)",
+    "authOptionKey": "key (private key file)",
+    "agentHint": "Dùng ssh-agent đang chạy; không cần đường dẫn khóa.",
+    "privateKeyFile": "File khóa riêng",
+    "selectedKeyFile": "File khóa đã chọn",
+    "storedKeyFile": "File khóa đã lưu",
+    "noPrivateKey": "Chưa chọn khóa riêng",
+    "change": "Đổi",
+    "choose": "Chọn",
+    "clearSelectedKey": "Xóa khóa đã chọn",
+    "keyCopiedHint": "Khóa đã chọn sẽ được sao chép vào dữ liệu ứng dụng Devdy khi lưu.",
+    "passphrase": "Passphrase",
+    "passphraseUnchanged": "•••••• (giữ nguyên)",
+    "passphraseOptional": "tùy chọn",
+    "passphraseHint": "Chỉ lưu trong keychain của hệ điều hành. Để trống để giữ giá trị hiện tại.",
+    "connection": "Kết nối",
+    "testConnection": "Kiểm tra kết nối",
+    "testing": "Đang kiểm tra…",
+    "saveFirst": "Lưu trước để bật kiểm tra",
+    "selectKeyDialog": "Chọn khóa riêng SSH",
+    "validation": {
+      "labelRequired": "Nhãn là bắt buộc",
+      "hostRequired": "Host là bắt buộc",
+      "usernameRequired": "Tên đăng nhập là bắt buộc",
+      "portRange": "Port phải nằm trong khoảng từ 1 đến 65535",
+      "keyRequired": "Phương thức xác thực 'key' cần một file khóa riêng"
+    },
+    "serverNotFound": "Không tìm thấy server",
+    "saveFirstThenTest": "Lưu server trước, sau đó kiểm tra kết nối.",
+    "toast": {
+      "saved": "Đã lưu"
+    }
+  }
+}

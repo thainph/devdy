@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useSkillsStore, type Skill } from '@/stores/skills'
 import { useProjectsStore } from '@/stores/projects'
@@ -9,6 +10,7 @@ import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { Plus, Upload, Download, Pencil, Trash2, Puzzle, CalendarDays, FolderCheck } from 'lucide-vue-next'
 
+const { t } = useI18n()
 const router = useRouter()
 const store = useSkillsStore()
 const projectsStore = useProjectsStore()
@@ -17,7 +19,7 @@ const { toast } = useToast()
 const deletingId = ref<string | null>(null)
 const applyingId = ref<string | null>(null)
 const importingZip = ref(false)
-const targetLabel: Record<string, string> = { claude: 'Claude', codex: 'Codex', both: 'Both' }
+const targetLabel: Record<string, string> = { claude: t('skills.editor.targetClaude'), codex: t('skills.editor.targetCodex'), both: t('skills.editor.targetBoth') }
 
 onMounted(() => {
   store.fetchSkills()
@@ -27,23 +29,23 @@ onMounted(() => {
 async function handleApplyToAll(skill: Skill) {
   const total = projectsStore.projects.length
   if (total === 0) {
-    toast.error('No projects yet. Add a project first.')
+    toast.error(t('skills.list.toastNoProjects'))
     return
   }
   if (!(await confirm({
-    title: 'Apply to all projects',
-    message: `Apply skill "${skill.name}" to all ${total} project${total === 1 ? '' : 's'}? Existing artifacts will be overwritten.`,
-    confirmLabel: 'Apply',
+    title: t('skills.list.confirmApplyTitle'),
+    message: t('skills.list.confirmApplyMessage', { name: skill.name, count: total, project: t(total === 1 ? 'skills.list.project' : 'skills.list.projects') }),
+    confirmLabel: t('skills.list.confirmApplyConfirm'),
     variant: 'primary',
   }))) return
   applyingId.value = skill.id
   try {
     const result = await store.applySkillToAllProjects(skill.id)
     if (result.failures.length === 0) {
-      toast.success(`Applied "${skill.name}" to ${result.applied} project${result.applied === 1 ? '' : 's'}.`)
+      toast.success(t('skills.list.toastApplied', { name: skill.name, count: result.applied, project: t(result.applied === 1 ? 'skills.list.project' : 'skills.list.projects') }))
     } else {
       const details = result.failures.map(f => `• ${f.project_name}: ${f.error}`).join('\n')
-      toast.error(`Applied to ${result.applied} project${result.applied === 1 ? '' : 's'}.\n\nFailed for ${result.failures.length}:\n${details}`)
+      toast.error(t('skills.list.toastAppliedPartial', { applied: result.applied, project: t(result.applied === 1 ? 'skills.list.project' : 'skills.list.projects'), failed: result.failures.length, details }))
     }
   } catch (e) {
     toast.error(String(e))
@@ -54,14 +56,14 @@ async function handleApplyToAll(skill: Skill) {
 
 async function handleDelete(skill: Skill) {
   if (!(await confirm({
-    title: 'Delete skill',
-    message: `Delete skill "${skill.name}"? This cannot be undone.`,
-    confirmLabel: 'Delete',
+    title: t('skills.list.confirmDeleteTitle'),
+    message: t('skills.list.confirmDeleteMessage', { name: skill.name }),
+    confirmLabel: t('common.delete'),
   }))) return
   deletingId.value = skill.id
   try {
     await store.deleteSkill(skill.id)
-    toast.success('Deleted')
+    toast.success(t('skills.list.toastDeleted'))
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -78,7 +80,7 @@ async function handleImport() {
   importingZip.value = true
   try {
     await store.importSkillZip(selected)
-    toast.success('Imported')
+    toast.success(t('skills.list.toastImported'))
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -94,7 +96,7 @@ async function handleExport(skill: Skill) {
   if (!destPath) return
   try {
     await store.exportSkillZip(skill.id, destPath)
-    toast.success('Exported')
+    toast.success(t('skills.list.toastExported'))
   } catch (e) {
     toast.error(String(e))
   }
@@ -110,7 +112,7 @@ function formatDate(iso: string) {
     <!-- Page header -->
     <div class="flex items-center justify-between px-6 h-13 border-b border-border/60 shrink-0">
       <div class="flex items-center gap-2">
-        <h1 class="text-sm font-semibold">Skills</h1>
+        <h1 class="text-sm font-semibold">{{ t('skills.list.title') }}</h1>
         <span
           v-if="!store.loading && store.skills.length > 0"
           class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-medium text-muted-foreground"
@@ -125,13 +127,13 @@ function formatDate(iso: string) {
           @click="handleImport"
         >
           <Upload class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ importingZip ? 'Importing…' : 'Import' }}
+          {{ importingZip ? t('skills.list.importing') : t('skills.list.import') }}
         </Button>
         <Button
           @click="router.push('/skills/new')"
         >
           <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-          New Skill
+          {{ t('skills.list.newSkill') }}
         </Button>
       </div>
     </div>
@@ -153,14 +155,14 @@ function formatDate(iso: string) {
         <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-muted mb-4">
           <Puzzle class="h-6 w-6 text-muted-foreground" :stroke-width="1.5" />
         </div>
-        <p class="text-sm font-medium">No skills yet</p>
-        <p class="text-xs text-muted-foreground mt-1 max-w-50">Create your first skill or import a ZIP archive</p>
+        <p class="text-sm font-medium">{{ t('skills.list.emptyTitle') }}</p>
+        <p class="text-xs text-muted-foreground mt-1 max-w-50">{{ t('skills.list.emptyHint') }}</p>
         <Button
           class="mt-4"
           @click="router.push('/skills/new')"
         >
           <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-          New Skill
+          {{ t('skills.list.newSkill') }}
         </Button>
       </div>
 
@@ -204,7 +206,7 @@ function formatDate(iso: string) {
             <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity" @click.stop>
               <button
                 class="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-default"
-                title="Apply to all projects"
+                :title="t('skills.list.applyToAll')"
                 :disabled="applyingId === skill.id"
                 @click="handleApplyToAll(skill)"
               >
@@ -212,21 +214,21 @@ function formatDate(iso: string) {
               </button>
               <button
                 class="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-                title="Export ZIP"
+                :title="t('skills.list.exportZip')"
                 @click="handleExport(skill)"
               >
                 <Download class="h-3.5 w-3.5" :stroke-width="1.75" />
               </button>
               <button
                 class="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-                title="Edit"
+                :title="t('common.edit')"
                 @click="router.push(`/skills/${skill.id}/edit`)"
               >
                 <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
               </button>
               <button
                 class="flex h-6 w-6 items-center justify-center rounded text-destructive/60 hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer disabled:opacity-40"
-                title="Delete"
+                :title="t('common.delete')"
                 :disabled="deletingId === skill.id"
                 @click="handleDelete(skill)"
               >

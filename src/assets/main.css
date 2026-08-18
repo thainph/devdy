@@ -562,6 +562,49 @@
 }
 
 /* ---------------------------------------------------------------------------
+ * Loading skeletons + entrance animation.
+ *
+ * `.skeleton` is a soft muted block with a gradient sweep travelling across it
+ * (feels livelier than a plain opacity pulse). `.animate-fade-rise` is used for
+ * content entering after data resolves — pair with an inline animation-delay to
+ * stagger list items so they cascade in instead of popping all at once.
+ * ------------------------------------------------------------------------- */
+@keyframes skeleton-sweep {
+  100% { transform: translateX(100%); }
+}
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: hsl(var(--muted) / 0.55);
+}
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    hsl(var(--foreground) / 0.07),
+    transparent
+  );
+  animation: skeleton-sweep 1.5s ease-in-out infinite;
+}
+
+@keyframes fade-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+.animate-fade-rise {
+  animation: fade-rise 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton::after { animation: none; }
+  .animate-fade-rise { animation: none; }
+}
+
+/* ---------------------------------------------------------------------------
  * Rendered AI / markdown output.
  *
  * Kept GLOBAL (not component-scoped) on purpose: the streaming AI result is

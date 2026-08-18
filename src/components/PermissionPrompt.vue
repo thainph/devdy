@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { ShieldAlert, Check, X, FileEdit, HelpCircle, ChevronLeft, ChevronRight, ClipboardList } from 'lucide-vue-next'
 import { Button } from '@/components/ui'
+
+const { t } = useI18n()
 
 export interface PermissionRequest {
   run_id: string
@@ -251,8 +254,8 @@ function submitAnswers() {
 }
 
 const headerTitle = computed(() => {
-  if (isPlan.value) return `Claude finished planning`
-  return props.request.title || (isQuestions.value ? `Claude has a question` : `Claude requests permission`)
+  if (isPlan.value) return t('permission.headerPlanFinished')
+  return props.request.title || (isQuestions.value ? t('permission.headerQuestion') : t('permission.headerRequest'))
 })
 
 const commandPreview = computed(() => {
@@ -380,13 +383,13 @@ function onKeydown(e: KeyboardEvent) {
         <div class="flex-1 min-w-0">
           <h2 class="text-sm font-medium text-foreground" :class="isQuestions ? 'leading-tight' : ''">{{ headerTitle }}</h2>
           <p v-if="isPlan" class="text-xs text-foreground/60 mt-0.5">
-            Review the plan below, then approve to start — or keep planning to refine it.
+            {{ t('permission.planReviewHint') }}
           </p>
           <p v-else-if="!isQuestions && request.description" class="text-xs text-foreground/60 mt-0.5">
             {{ request.description }}
           </p>
           <p v-else-if="!isQuestions" class="text-xs text-foreground/60 mt-0.5">
-            Allow this tool call to proceed? You can block it or allow it for this run.
+            {{ t('permission.allowHint') }}
           </p>
         </div>
       </div>
@@ -401,7 +404,7 @@ function onKeydown(e: KeyboardEvent) {
               class="text-[10px] uppercase tracking-wider rounded bg-indigo-500/15 text-indigo-600 dark:text-indigo-300 px-1.5 py-0.5"
             >{{ currentQuestion.header }}</span>
             <span class="text-[10px] uppercase tracking-wider text-foreground/40">
-              {{ currentQuestion.multiSelect ? 'Select all that apply' : 'Select one' }}
+              {{ currentQuestion.multiSelect ? t('permission.selectAll') : t('permission.selectOne') }}
             </span>
           </div>
           <p class="text-sm font-medium text-foreground">{{ currentQuestion.question }}</p>
@@ -450,7 +453,7 @@ function onKeydown(e: KeyboardEvent) {
             v-model="other[step]"
             type="text"
             :data-flat="otherIndex"
-            placeholder="Other (type your own answer)…"
+            :placeholder="t('permission.otherPlaceholder')"
             class="w-full rounded-md border border-border bg-foreground/5 px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:border-indigo-500 focus:outline-none"
             :class="isOtherFocused() ? 'ring-2 ring-indigo-400/60 ring-offset-1 ring-offset-card' : ''"
             @focus="focusedIndex = otherIndex"
@@ -469,12 +472,12 @@ function onKeydown(e: KeyboardEvent) {
         <pre
           v-else
           class="text-xs font-mono text-foreground/80 whitespace-pre-wrap break-words"
-        >{{ planText || 'Claude has no plan details to show.' }}</pre>
+        >{{ planText || t('permission.noPlanDetails') }}</pre>
       </div>
 
       <div v-else class="flex-1 min-h-0 px-5 py-4 space-y-3 overflow-auto">
         <div class="flex items-center gap-2 flex-wrap">
-          <span class="text-[10px] uppercase tracking-wider text-foreground/40">Tool</span>
+          <span class="text-[10px] uppercase tracking-wider text-foreground/40">{{ t('permission.tool') }}</span>
           <span class="font-mono text-sm text-indigo-600 dark:text-indigo-300">{{ request.display_name || request.tool_name }}</span>
           <span v-if="filePath" class="font-mono text-xs text-foreground/50 truncate">{{ filePath }}</span>
         </div>
@@ -514,12 +517,12 @@ function onKeydown(e: KeyboardEvent) {
           v-else-if="commandPreview"
           class="rounded-md bg-foreground/5 border border-border px-3 py-2"
         >
-          <div class="text-[10px] uppercase tracking-wider text-foreground/40 mb-1">Command / target</div>
+          <div class="text-[10px] uppercase tracking-wider text-foreground/40 mb-1">{{ t('permission.commandTarget') }}</div>
           <pre class="text-xs font-mono text-foreground whitespace-pre-wrap break-words">{{ commandPreview }}</pre>
         </div>
 
         <details class="rounded-md bg-foreground/5 border border-border">
-          <summary class="px-3 py-2 text-xs text-foreground/60 cursor-pointer select-none">Full input</summary>
+          <summary class="px-3 py-2 text-xs text-foreground/60 cursor-pointer select-none">{{ t('permission.fullInput') }}</summary>
           <pre class="px-3 pb-2 text-[11px] font-mono text-foreground/70 whitespace-pre-wrap break-words max-h-80 overflow-auto">{{ inputPreview }}</pre>
         </details>
       </div>
@@ -527,9 +530,9 @@ function onKeydown(e: KeyboardEvent) {
       <div class="@container/footer px-5 py-3 border-t border-border shrink-0">
         <div class="flex flex-col gap-2 @[26rem]/footer:flex-row @[26rem]/footer:items-center">
           <span class="hidden min-w-0 truncate text-[10px] text-foreground/40 @[26rem]/footer:mr-auto @[26rem]/footer:block">
-            <template v-if="isQuestions">↑↓ Select · ←→ Nav · ↵ Next · Esc Cancel</template>
-            <template v-else-if="isPlan">↵ Approve · Esc Keep planning</template>
-            <template v-else>↵ Allow · ⇧↵ Always · Esc Deny</template>
+            <template v-if="isQuestions">{{ t('permission.hintQuestions') }}</template>
+            <template v-else-if="isPlan">{{ t('permission.hintPlan') }}</template>
+            <template v-else>{{ t('permission.hintPermission') }}</template>
           </span>
           <!-- Action buttons: never wrap; stack full-width only in a narrow panel. -->
           <div class="flex flex-col gap-2 @[26rem]/footer:flex-row @[26rem]/footer:items-center @[26rem]/footer:shrink-0">
@@ -545,10 +548,10 @@ function onKeydown(e: KeyboardEvent) {
                 class="w-full @[26rem]/footer:w-auto"
                 @click="goPrev"
               >
-                <ChevronLeft class="h-3.5 w-3.5" :stroke-width="2" /> Back
+                <ChevronLeft class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('common.back') }}
               </Button>
               <Button variant="destructive" class="w-full @[26rem]/footer:w-auto" @click="emit('decide', 'deny', false)">
-                <X class="h-3.5 w-3.5" :stroke-width="2" /> Cancel
+                <X class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.controller.cancel') }}
               </Button>
               <Button
                 v-if="!isLastStep"
@@ -557,10 +560,10 @@ function onKeydown(e: KeyboardEvent) {
                 class="w-full @[26rem]/footer:w-auto"
                 @click="goNext"
               >
-                Next <ChevronRight class="h-3.5 w-3.5" :stroke-width="2" />
+                {{ t('permission.next') }} <ChevronRight class="h-3.5 w-3.5" :stroke-width="2" />
               </Button>
               <Button v-else variant="primary" :disabled="!canSubmit" class="w-full @[26rem]/footer:w-auto" @click="submitAnswers">
-                <Check class="h-3.5 w-3.5" :stroke-width="2" /> Submit
+                <Check class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.submit') }}
               </Button>
             </template>
             <template v-else-if="isPlan">
@@ -569,14 +572,14 @@ function onKeydown(e: KeyboardEvent) {
                 class="w-full @[26rem]/footer:w-auto"
                 @click="emit('decide', 'deny', false)"
               >
-                <X class="h-3.5 w-3.5" :stroke-width="2" /> Keep planning
+                <X class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.keepPlanning') }}
               </Button>
               <Button
                 variant="primary"
                 class="w-full @[26rem]/footer:w-auto"
                 @click="emit('decide', 'allow', false)"
               >
-                <Check class="h-3.5 w-3.5" :stroke-width="2" /> Approve
+                <Check class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.approve') }}
               </Button>
             </template>
             <template v-else>
@@ -585,32 +588,32 @@ function onKeydown(e: KeyboardEvent) {
                 class="w-full @[26rem]/footer:w-auto"
                 @click="emit('decide', 'deny', false)"
               >
-                <X class="h-3.5 w-3.5" :stroke-width="2" /> Deny
+                <X class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.deny') }}
               </Button>
               <Button
                 v-if="canRemember"
                 variant="outline"
                 class="w-full @[26rem]/footer:w-auto"
                 @click="emit('decide', 'deny', true)"
-                title="Deny now and auto-deny this tool for this project"
+                :title="t('permission.denyAlwaysTitle')"
               >
-                <X class="h-3.5 w-3.5" :stroke-width="2" /> Deny always
+                <X class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.denyAlways') }}
               </Button>
               <Button
                 v-if="canRemember"
                 variant="primary"
                 class="w-full @[26rem]/footer:w-auto"
                 @click="emit('decide', 'allow', true)"
-                title="Allow now and auto-allow this tool for this project"
+                :title="t('permission.allowAlwaysTitle')"
               >
-                <Check class="h-3.5 w-3.5" :stroke-width="2" /> Always
+                <Check class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.always') }}
               </Button>
               <Button
                 variant="primary"
                 class="w-full @[26rem]/footer:w-auto"
                 @click="emit('decide', 'allow', false)"
               >
-                <Check class="h-3.5 w-3.5" :stroke-width="2" /> Allow
+                <Check class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.allow') }}
               </Button>
             </template>
           </div>

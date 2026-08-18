@@ -1,0 +1,97 @@
+{
+  "diff": {
+    "unchangedLines": "⋯ {count} dòng không đổi"
+  },
+  "budget": {
+    "thisWeek": "tuần này",
+    "last5h": "5h qua",
+    "rolling5h": "cửa sổ 5h trượt",
+    "resetsSoon": "sắp reset",
+    "resetsInDaysHours": "reset sau {days}n {hours}g",
+    "resetsInDays": "reset sau {days}n",
+    "resetsInHoursMins": "reset sau {hours}g {minutes}p",
+    "resetsInHours": "reset sau {hours}g",
+    "resetsInMins": "reset sau {minutes}p",
+    "soon": "sắp",
+    "agoMins": "{minutes}p trước",
+    "agoHoursMins": "{hours}g {minutes}p trước",
+    "agoHours": "{hours}g trước",
+    "agoDays": "{days}n trước",
+    "checking": "đang kiểm tra…",
+    "refreshFailed": "refresh thất bại",
+    "noPlanUsage": "chưa có mức dùng plan",
+    "refreshingUsage": "Đang làm mới mức dùng",
+    "usageStatus": "Trạng thái mức dùng",
+    "planLimitReached": "Đã đạt giới hạn plan",
+    "planWindowReset": "Cửa sổ plan đã reset",
+    "percentOfPlan": "{percent}% giới hạn plan",
+    "cached": "Đã cache: {base}",
+    "noPlanUsageYet": "Chưa có mức dùng plan",
+    "updatesCodex": "cập nhật khi chạy Codex",
+    "updatesClaude": "cập nhật khi chạy Claude",
+    "fetchingCodex": "Đang lấy Codex /status",
+    "fetchingClaude": "Đang lấy Claude /usage",
+    "refreshFailedReason": "refresh thất bại: {error}",
+    "noPlanCaptured": "Chưa ghi nhận mức dùng plan nào",
+    "refreshing": "đang làm mới…",
+    "runOnceToRefresh": "chạy một lần để làm mới cửa sổ mới",
+    "lastCaptured": "ghi nhận lần cuối {ago}",
+    "asOf": "tính đến {ago}",
+    "planUsageTitle": "Mức dùng plan đăng ký {label} · {period}",
+    "usageStatusTitle": "Trạng thái mức dùng {label}",
+    "refreshUsage": "Làm mới mức dùng plan {label}",
+    "refreshUsageTitle": "Làm mới mức dùng plan {label} ngay"
+  },
+  "tabs": {
+    "project": "Dự án",
+    "closeTab": "Đóng tab"
+  },
+  "translate": {
+    "heading": "Bản dịch",
+    "close": "Đóng",
+    "translating": "Đang dịch…",
+    "retry": "Thử lại",
+    "copied": "Đã copy",
+    "copy": "Copy"
+  },
+  "mentionedFiles": {
+    "read": "đọc",
+    "edit": "sửa",
+    "write": "tạo",
+    "countTitle": "{count} file được nhắc trong phiên này",
+    "filesInSession": "Files trong phiên ({count})"
+  },
+  "context": {
+    "compactTitle": "Nén hội thoại để giải phóng context (gửi /compact)",
+    "fiveHourTitle": "Cửa sổ mức dùng 5 giờ của gói đăng ký claude.ai"
+  },
+  "activeRuns": {
+    "heading": "Run đang hoạt động",
+    "review": "Duyệt",
+    "stopped": "Đã dừng",
+    "failed": "Thất bại",
+    "done": "Xong",
+    "run": "Run",
+    "project": "Dự án"
+  },
+  "activeRemote": {
+    "heading": "Remote đang hoạt động",
+    "live": "Trực tiếp",
+    "pairing": "Đang ghép nối",
+    "run": "Run",
+    "project": "Dự án"
+  },
+  "ide": {
+    "openFile": "Mở {path}",
+    "selected": "Đã chọn",
+    "opened": "Đã mở"
+  },
+  "backToRun": {
+    "title": "Về lại AI run",
+    "label": "Run AI"
+  },
+  "modal": {
+    "close": "Đóng",
+    "closeEsc": "Đóng (Esc)"
+  }
+}

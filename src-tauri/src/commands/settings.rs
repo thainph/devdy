@@ -14,6 +14,8 @@ pub struct AppSettings {
     pub codex_model: String,
     pub extra_args: String,
     pub theme: String,
+    /// UI language: "en" (default) | "vi".
+    pub language: String,
     /// Named color palette: "default" | "ocean" | "forest" | "sunset" | "rose"
     /// | "midautumn".
     pub color_theme: String,
@@ -46,6 +48,10 @@ pub struct AppSettings {
     /// Inject the built-in `devdy` MCP server (notes + session recall + project
     /// context + VPS) into every run. "true" (default) | "false".
     pub mcp_builtin_devdy_enabled: String,
+    /// Show the floating DY Cyber Fox mascot. "true" (default) | "false".
+    pub cyber_fox_enabled: String,
+    /// Floating mascot size: "sm" | "md" (default) | "lg".
+    pub cyber_fox_size: String,
 }
 
 #[tauri::command]
@@ -63,6 +69,7 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
         codex_model: "".to_string(),
         extra_args: "".to_string(),
         theme: "system".to_string(),
+        language: "en".to_string(),
         color_theme: "default".to_string(),
         animated_background: "true".to_string(),
         analyze_issue_prompt: "Please analyze the GitHub issue described in the file and create a detailed implementation plan.".to_string(),
@@ -78,6 +85,8 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
         translate_target_lang: "vi".to_string(),
         translate_style: "natural".to_string(),
         mcp_builtin_devdy_enabled: "true".to_string(),
+        cyber_fox_enabled: "true".to_string(),
+        cyber_fox_size: "md".to_string(),
     };
 
     for row in rows {
@@ -91,6 +100,7 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
             "codex_model" => settings.codex_model = value,
             "extra_args" => settings.extra_args = value,
             "theme" => settings.theme = value,
+            "language" => settings.language = value,
             "color_theme" => settings.color_theme = value,
             "animated_background" => settings.animated_background = value,
             "analyze_issue_prompt" => settings.analyze_issue_prompt = value,
@@ -106,6 +116,8 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
             "translate_target_lang" => settings.translate_target_lang = value,
             "translate_style" => settings.translate_style = value,
             "mcp_builtin_devdy_enabled" => settings.mcp_builtin_devdy_enabled = value,
+            "cyber_fox_enabled" => settings.cyber_fox_enabled = value,
+            "cyber_fox_size" => settings.cyber_fox_size = value,
             _ => {}
         }
     }

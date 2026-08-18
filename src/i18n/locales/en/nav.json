@@ -1,0 +1,18 @@
+{
+  "projects": "Projects",
+  "runs": "Runs",
+  "prInbox": "PR Reviews",
+  "gantt": "Gantt",
+  "skills": "Skills",
+  "rules": "Rules",
+  "mcp": "MCP",
+  "servers": "Servers",
+  "stats": "Stats",
+  "digest": "Digest",
+  "calendar": "Calendar",
+  "todos": "Todos",
+  "notes": "Notes",
+  "settings": "Settings",
+  "about": "About",
+  "tagline": "AI coding agent for developers"
+}

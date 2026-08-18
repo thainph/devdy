@@ -9,8 +9,8 @@ import ServersView from '../views/ServersView.vue'
 import ServerEditorView from '../views/ServerEditorView.vue'
 import ProjectsView from '../views/ProjectsView.vue'
 import PrInboxView from '../views/PrInboxView.vue'
+import IssuesGanttView from '../views/IssuesGanttView.vue'
 import ProjectDetailView from '../views/ProjectDetailView.vue'
-import ProjectIssuesView from '../views/ProjectIssuesView.vue'
 import RunView from '../views/RunView.vue'
 import SettingsView from '../views/SettingsView.vue'
 import StatsView from '../views/StatsView.vue'
@@ -38,10 +38,10 @@ const router = createRouter({
     { path: '/servers/:id/edit', name: 'server-edit', component: ServerEditorView },
     { path: '/projects', name: 'projects', component: ProjectsView },
     { path: '/pr-inbox', name: 'pr-inbox', component: PrInboxView },
+    { path: '/gantt', name: 'gantt', component: IssuesGanttView },
     { path: '/projects/:projectId', name: 'project-run', component: RunView },
     { path: '/projects/:projectId/run/:runId', name: 'project-run-detail', component: RunView },
     { path: '/projects/:projectId/settings', name: 'project-settings', component: ProjectDetailView },
-    { path: '/projects/:projectId/issues', name: 'project-issues', component: ProjectIssuesView },
     { path: '/todos', name: 'todos', component: TodosView },
     { path: '/notes', name: 'notes', component: NotesView },
     { path: '/stats', name: 'stats', component: StatsView },
@@ -49,6 +49,13 @@ const router = createRouter({
     { path: '/calendar', name: 'calendar', component: CalendarView },
     { path: '/settings', name: 'settings', component: SettingsView },
     { path: '/about', name: 'about', component: AboutView },
+    ...(import.meta.env.DEV
+      ? [{
+          path: '/dev/cyber-fox',
+          name: 'dev-cyber-fox',
+          component: () => import('../views/dev/CyberFoxDebugView.vue'),
+        }]
+      : []),
   ],
 })
 

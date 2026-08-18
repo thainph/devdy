@@ -1,0 +1,85 @@
+{
+  "settings": {
+    "title": "Remote Control",
+    "connected": "Connected",
+    "waiting": "Waiting",
+    "off": "Off",
+    "intro": "Control this host from a remote device through your self-hosted relay. The relay only ever sees end-to-end encrypted traffic.",
+    "enable": "Enable Remote Control",
+    "state": {
+      "connected": "Connected to a controller device.",
+      "running": "Running — waiting for a device to connect.",
+      "needsRelay": "Save a Relay URL before enabling.",
+      "off": "Off. Turn on to allow remote control."
+    },
+    "relayUrl": "Relay URL",
+    "relayUrlPlaceholder": "wss://relay.example.com/ws",
+    "authToken": "Auth token",
+    "saved": "(saved)",
+    "authTokenPlaceholder": "Leave blank to keep the current token",
+    "authTokenHint": "Stored in the OS keychain, never on disk in cleartext.",
+    "masterPassword": "Master password",
+    "set": "(set)",
+    "masterPasswordReplace": "Enter a new password to replace the current one",
+    "masterPasswordSet": "Set a password to skip the OTP each time",
+    "masterPasswordHint": "Once set, enter this password on your phone instead of the OTP code. Stored in the OS keychain. More convenient but fixed — only use it if you are the sole user. Saved together with the settings below.",
+    "saveSettings": "Save settings",
+    "hostLabel": "host: {id}",
+    "perRunHint": "Remote sessions are now created per run: open a run and click the {remote} button in the toolbar to generate a link. Enter your {masterPassword} (if set) or the OTP code on your phone to connect.",
+    "remote": "Remote",
+    "masterPasswordInline": "master password",
+    "auditLog": "Audit log",
+    "clearLog": "Clear log",
+    "table": {
+      "time": "Time",
+      "action": "Action",
+      "result": "Result",
+      "run": "Run"
+    },
+    "noActivity": "No remote activity recorded yet.",
+    "confirmClearMaster": {
+      "title": "Clear master password",
+      "message": "Remove the saved master password?\nYou will use the per-join OTP code again.",
+      "confirmLabel": "Clear"
+    },
+    "confirmClearAudit": {
+      "title": "Clear audit log",
+      "message": "Permanently delete all remote-control audit entries?\nThis cannot be undone.",
+      "confirmLabel": "Clear log"
+    },
+    "toast": {
+      "relayRequired": "Relay URL is required",
+      "settingsSaved": "Relay settings saved",
+      "disabled": "Remote Control disabled",
+      "enabled": "Remote Control enabled",
+      "masterCleared": "Master password cleared",
+      "auditCleared": "Cleared {count} audit entries",
+      "auditAlreadyEmpty": "Audit log is already empty"
+    }
+  },
+  "session": {
+    "title": "Control from phone",
+    "heading": "Control this run from your phone",
+    "creating": "Creating link…",
+    "scanCaption": "Scan with your phone or copy the link to open the controller.",
+    "copyLink": "Copy link",
+    "cannotDeriveController": "Could not determine the controller address from the relay URL. Copy the fields below and paste them into the controller manually.",
+    "copied": "Copied!",
+    "copyFields": "Copy fields",
+    "enterMasterOnPhone": "Enter the {masterPassword} on your phone to connect. (Set a password in Settings → Remote Control.)",
+    "masterPassword": "master password",
+    "connecting": "Phone is connecting…",
+    "enterMasterToFinish": "Enter the master password on your phone to finish.",
+    "connectedLive": "Connected — live control",
+    "phoneControlling": "Your phone is controlling this run. Closing this modal will not disconnect.",
+    "idleExpiry": "Session expires if idle for ~{time}",
+    "stopControl": "Stop control",
+    "authFailed": "Authentication failed",
+    "attemptsLeft": "{count} attempts left",
+    "createNewLink": "Create new link",
+    "expired": "Session expired",
+    "errorOccurred": "An error occurred",
+    "noRunOpen": "No run is currently open.",
+    "copyFailed": "Could not copy to clipboard"
+  }
+}

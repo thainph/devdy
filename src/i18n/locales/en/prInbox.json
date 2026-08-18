@@ -1,0 +1,16 @@
+{
+  "title": "PR Reviews",
+  "emptyTitle": "No PRs waiting for review",
+  "emptyBody": "Collect every PR you've been requested to review across all configured GitHub accounts. Configure accounts in Settings.",
+  "reviewing": "AI is reviewing {repo}#{number}",
+  "reviewingShort": "Reviewing…",
+  "viewReview": "View review",
+  "opening": "Opening…",
+  "aiReview": "AI Review",
+  "notInDevdy": "Not in devdy yet",
+  "addToDevdy": "Add to devdy",
+  "justNow": "just now",
+  "minsAgo": "{mins} min ago",
+  "hoursAgo": "{hours} hr ago",
+  "daysAgo": "{days} days ago"
+}

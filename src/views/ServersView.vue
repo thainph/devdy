@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useServersStore, type VpsServer } from '@/stores/servers'
 import { Button, Card, Badge } from '@/components/ui'
@@ -11,6 +12,7 @@ const router = useRouter()
 const store = useServersStore()
 const { confirm } = useConfirm()
 const { toast } = useToast()
+const { t } = useI18n()
 const deletingId = ref<string | null>(null)
 const testingId = ref<string | null>(null)
 
@@ -25,9 +27,9 @@ function dotColor(status: VpsServer['status']): string {
 }
 
 function statusLabel(status: VpsServer['status']): string {
-  if (status === 'online') return 'Online'
-  if (status === 'offline') return 'Offline'
-  return 'Not checked'
+  if (status === 'online') return t('servers.list.status.online')
+  if (status === 'offline') return t('servers.list.status.offline')
+  return t('servers.list.status.notChecked')
 }
 
 function tagList(tags: string | null): string[] {
@@ -43,14 +45,14 @@ onMounted(() => {
 
 async function handleDelete(server: VpsServer) {
   if (!(await confirm({
-    title: 'Delete server',
-    message: `Delete server "${server.label}"? This also removes its stored passphrase. This cannot be undone.`,
-    confirmLabel: 'Delete',
+    title: t('servers.list.confirmDelete.title'),
+    message: t('servers.list.confirmDelete.message', { label: server.label }),
+    confirmLabel: t('common.delete'),
   }))) return
   deletingId.value = server.id
   try {
     await store.deleteServer(server.id)
-    toast.success('Deleted')
+    toast.success(t('servers.list.toast.deleted'))
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -79,7 +81,7 @@ function formatDate(iso: string) {
     <!-- Page header -->
     <div class="flex items-center justify-between px-6 h-13 border-b border-border/60 shrink-0">
       <div class="flex items-center gap-2">
-        <h1 class="text-sm font-semibold">Servers</h1>
+        <h1 class="text-sm font-semibold">{{ t('servers.list.title') }}</h1>
         <span
           v-if="!store.loading && store.items.length > 0"
           class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-medium text-muted-foreground"
@@ -90,7 +92,7 @@ function formatDate(iso: string) {
       <div class="flex items-center gap-2">
         <Button @click="router.push('/servers/new')">
           <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-          New Server
+          {{ t('servers.list.newServer') }}
         </Button>
       </div>
     </div>
@@ -112,11 +114,11 @@ function formatDate(iso: string) {
         <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-muted mb-4">
           <HardDrive class="h-6 w-6 text-muted-foreground" :stroke-width="1.5" />
         </div>
-        <p class="text-sm font-medium">No servers yet</p>
-        <p class="text-xs text-muted-foreground mt-1 max-w-50">Add a VPS once, then test its connection and reuse it across projects</p>
+        <p class="text-sm font-medium">{{ t('servers.list.empty.title') }}</p>
+        <p class="text-xs text-muted-foreground mt-1 max-w-50">{{ t('servers.list.empty.hint') }}</p>
         <Button class="mt-4" @click="router.push('/servers/new')">
           <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-          New Server
+          {{ t('servers.list.newServer') }}
         </Button>
       </div>
 
@@ -181,7 +183,7 @@ function formatDate(iso: string) {
             <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity" @click.stop>
               <button
                 class="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-40"
-                title="Test connection"
+                :title="t('servers.list.testTitle')"
                 :disabled="testingId === server.id"
                 @click="handleTest(server)"
               >
@@ -189,14 +191,14 @@ function formatDate(iso: string) {
               </button>
               <button
                 class="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-                title="Edit"
+                :title="t('common.edit')"
                 @click="router.push(`/servers/${server.id}/edit`)"
               >
                 <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
               </button>
               <button
                 class="flex h-6 w-6 items-center justify-center rounded text-destructive/60 hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer disabled:opacity-40"
-                title="Delete"
+                :title="t('common.delete')"
                 :disabled="deletingId === server.id"
                 @click="handleDelete(server)"
               >

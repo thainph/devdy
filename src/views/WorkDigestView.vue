@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import {
   CalendarClock, Clock, Activity, DollarSign, ListChecks, Loader2, FolderOpen,
   Sparkles,
@@ -19,15 +20,16 @@ import {
 
 const router = useRouter()
 const projectsStore = useProjectsStore()
+const { t } = useI18n()
 
 // ── date range presets ──────────────────────────────────────────────────────
-const PRESET_OPTIONS = [
-  { value: 'today', label: 'Today' },
-  { value: 'yesterday', label: 'Yesterday' },
-  { value: '7d', label: 'Last 7 days' },
-  { value: 'month', label: 'This month' },
-  { value: 'custom', label: 'Custom' },
-]
+const PRESET_OPTIONS = computed(() => [
+  { value: 'today', label: t('workDigest.preset.today') },
+  { value: 'yesterday', label: t('workDigest.preset.yesterday') },
+  { value: '7d', label: t('workDigest.preset.last7d') },
+  { value: 'month', label: t('workDigest.preset.thisMonth') },
+  { value: 'custom', label: t('workDigest.preset.custom') },
+])
 const preset = ref('today')
 
 // Local-time YYYY-MM-DD (NOT toISOString, which shifts to UTC).
@@ -70,7 +72,7 @@ const effectiveRange = computed(() => presetToRange(preset.value))
 const rangeError = computed(() => {
   const { from, to } = effectiveRange.value
   if (from && to && from > to) {
-    return 'Start date must be on or before the end date.'
+    return t('workDigest.rangeError')
   }
   return null
 })
@@ -201,12 +203,13 @@ function fmtTime(iso: string | null): string {
 }
 
 const TYPE_LABEL: Record<string, string> = {
-  session: 'Session',
-  analyze_issue: 'Issue',
-  review_pr: 'PR',
+  session: 'workDigest.typeSession',
+  analyze_issue: 'workDigest.typeIssue',
+  review_pr: 'workDigest.typePr',
 }
-function typeLabel(t: string): string {
-  return TYPE_LABEL[t] ?? t
+function typeLabel(type: string): string {
+  const key = TYPE_LABEL[type]
+  return key ? t(key) : type
 }
 
 const hasData = computed(() => (digest.value?.summary.total_items ?? 0) > 0)
@@ -223,16 +226,16 @@ function openItem(item: WorkItem) {
   <div class="flex flex-col h-full">
     <!-- Header -->
     <div class="flex items-center justify-between px-6 h-13 border-b border-border/60 shrink-0">
-      <h1 class="text-sm font-semibold">Work Digest</h1>
+      <h1 class="text-sm font-semibold">{{ t('workDigest.title') }}</h1>
       <div class="flex items-center gap-3">
         <span v-if="loading" class="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <Loader2 class="h-3.5 w-3.5 animate-spin" /> Loading…
+          <Loader2 class="h-3.5 w-3.5 animate-spin" /> {{ t('workDigest.loading') }}
         </span>
         <template v-if="summarizing">
           <span class="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <Loader2 class="h-3.5 w-3.5 animate-spin" /> Summarizing…
+            <Loader2 class="h-3.5 w-3.5 animate-spin" /> {{ t('workDigest.summarizing') }}
           </span>
-          <Button variant="ghost" size="sm" @click="stopSummary">Stop</Button>
+          <Button variant="ghost" size="sm" @click="stopSummary">{{ t('workDigest.stop') }}</Button>
         </template>
         <Button
           v-else
@@ -242,7 +245,7 @@ function openItem(item: WorkItem) {
           @click="generateSummary"
         >
           <Sparkles class="h-3.5 w-3.5" />
-          Generate summary
+          {{ t('workDigest.generateSummary') }}
         </Button>
       </div>
     </div>
@@ -265,15 +268,15 @@ function openItem(item: WorkItem) {
       <Card class="border-border/60" body-class="p-4">
         <div class="flex items-center justify-between mb-3">
           <h2 class="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" /> Projects
+            <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('workDigest.projects') }}
           </h2>
           <div class="flex items-center gap-2">
-            <Button variant="ghost" size="sm" @click="selectAll">Select all</Button>
-            <Button variant="ghost" size="sm" @click="selectNone">Clear</Button>
+            <Button variant="ghost" size="sm" @click="selectAll">{{ t('workDigest.selectAll') }}</Button>
+            <Button variant="ghost" size="sm" @click="selectNone">{{ t('common.clear') }}</Button>
           </div>
         </div>
         <div v-if="projectsStore.projects.length === 0" class="text-xs text-muted-foreground">
-          No projects yet.
+          {{ t('workDigest.noProjects') }}
         </div>
         <div v-else class="flex flex-wrap gap-2">
           <label
@@ -302,7 +305,7 @@ function openItem(item: WorkItem) {
       >
         <FolderOpen class="h-8 w-8 text-muted-foreground/40 mb-3" :stroke-width="1.5" />
         <p class="text-sm text-muted-foreground">
-          No work to show — select at least one project.
+          {{ t('workDigest.emptyNoProject') }}
         </p>
       </div>
 
@@ -312,7 +315,7 @@ function openItem(item: WorkItem) {
         class="flex flex-col items-center justify-center py-16 text-center"
       >
         <CalendarClock class="h-8 w-8 text-muted-foreground/40 mb-3" :stroke-width="1.5" />
-        <p class="text-sm text-muted-foreground">No work recorded in this time range.</p>
+        <p class="text-sm text-muted-foreground">{{ t('workDigest.emptyNoWork') }}</p>
       </div>
 
       <template v-if="hasData && digest && !rangeError && !noProjectSelected">
@@ -323,7 +326,7 @@ function openItem(item: WorkItem) {
           body-class="p-4"
         >
           <div class="flex items-center gap-1.5 text-xs font-medium text-muted-foreground mb-3">
-            <Sparkles class="h-3.5 w-3.5" :stroke-width="1.75" /> AI summary
+            <Sparkles class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('workDigest.aiSummary') }}
           </div>
           <StreamLog
             :entries="summaryEntries"
@@ -334,7 +337,7 @@ function openItem(item: WorkItem) {
             v-if="summarizing && summaryEntries.length === 0"
             class="flex items-center gap-1.5 text-xs text-muted-foreground mt-2"
           >
-            <Loader2 class="h-3.5 w-3.5 animate-spin" /> Starting…
+            <Loader2 class="h-3.5 w-3.5 animate-spin" /> {{ t('workDigest.starting') }}
           </div>
         </Card>
 
@@ -342,25 +345,25 @@ function openItem(item: WorkItem) {
         <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <Card class="border-border/60" body-class="p-4">
             <div class="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
-              <ListChecks class="h-3.5 w-3.5" :stroke-width="1.75" /> Work items
+              <ListChecks class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('workDigest.workItems') }}
             </div>
             <p class="text-xl font-semibold tabular-nums">{{ fmtNum(digest.summary.total_items) }}</p>
           </Card>
           <Card class="border-border/60" body-class="p-4">
             <div class="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
-              <Clock class="h-3.5 w-3.5" :stroke-width="1.75" /> Total duration
+              <Clock class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('workDigest.totalDuration') }}
             </div>
             <p class="text-xl font-semibold tabular-nums">{{ fmtDuration(digest.summary.total_wall_secs) }}</p>
           </Card>
           <Card class="border-border/60" body-class="p-4">
             <div class="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
-              <Activity class="h-3.5 w-3.5" :stroke-width="1.75" /> Active time
+              <Activity class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('workDigest.activeTime') }}
             </div>
             <p class="text-xl font-semibold tabular-nums">{{ fmtDuration(digest.summary.total_active_secs) }}</p>
           </Card>
           <Card class="border-border/60" body-class="p-4">
             <div class="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
-              <DollarSign class="h-3.5 w-3.5" :stroke-width="1.75" /> Total cost
+              <DollarSign class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('workDigest.totalCost') }}
             </div>
             <p class="text-xl font-semibold tabular-nums">{{ fmtCost(digest.summary.total_cost) }}</p>
           </Card>
@@ -375,12 +378,12 @@ function openItem(item: WorkItem) {
         >
           <template #header>
             <div class="flex items-center justify-between w-full">
-              <h2 class="text-xs font-semibold">{{ g.project_name ?? '(deleted)' }}</h2>
+              <h2 class="text-xs font-semibold">{{ g.project_name ?? t('workDigest.deletedProject') }}</h2>
               <div class="flex items-center gap-1.5">
-                <Badge tone="neutral">{{ g.item_count }} items</Badge>
+                <Badge tone="neutral">{{ t('workDigest.items', { n: g.item_count }) }}</Badge>
                 <Badge tone="primary">{{ fmtDuration(g.wall_secs) }}</Badge>
-                <Badge tone="info">{{ fmtDuration(g.active_secs) }} active</Badge>
-                <Badge tone="neutral">{{ fmtNum(g.tokens) }} tokens</Badge>
+                <Badge tone="info">{{ t('workDigest.activeSuffix', { duration: fmtDuration(g.active_secs) }) }}</Badge>
+                <Badge tone="neutral">{{ t('workDigest.tokensSuffix', { n: fmtNum(g.tokens) }) }}</Badge>
                 <Badge tone="neutral">{{ fmtCost(g.cost) }}</Badge>
               </div>
             </div>
@@ -389,15 +392,15 @@ function openItem(item: WorkItem) {
           <table class="w-full text-xs">
             <thead>
               <tr class="text-muted-foreground/70 text-left">
-                <th class="font-normal px-4 py-2">Work</th>
-                <th class="font-normal px-2 py-2">Type</th>
-                <th class="font-normal px-2 py-2">Engine</th>
-                <th class="font-normal px-2 py-2">Status</th>
-                <th class="font-normal px-2 py-2">Started</th>
-                <th class="font-normal px-2 py-2 text-right">Duration</th>
-                <th class="font-normal px-2 py-2 text-right">Active</th>
-                <th class="font-normal px-2 py-2 text-right">Tokens</th>
-                <th class="font-normal px-4 py-2 text-right">Cost</th>
+                <th class="font-normal px-4 py-2">{{ t('workDigest.colWork') }}</th>
+                <th class="font-normal px-2 py-2">{{ t('workDigest.colType') }}</th>
+                <th class="font-normal px-2 py-2">{{ t('workDigest.colEngine') }}</th>
+                <th class="font-normal px-2 py-2">{{ t('workDigest.colStatus') }}</th>
+                <th class="font-normal px-2 py-2">{{ t('workDigest.colStarted') }}</th>
+                <th class="font-normal px-2 py-2 text-right">{{ t('workDigest.colDuration') }}</th>
+                <th class="font-normal px-2 py-2 text-right">{{ t('workDigest.colActive') }}</th>
+                <th class="font-normal px-2 py-2 text-right">{{ t('workDigest.colTokens') }}</th>
+                <th class="font-normal px-4 py-2 text-right">{{ t('workDigest.colCost') }}</th>
               </tr>
             </thead>
             <tbody>
