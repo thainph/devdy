@@ -1097,7 +1097,7 @@ async function createSessionWithEngine(engine?: string) {
     const run = await runsStore.createSessionRun(projectId.value, engine)
     await runsStore.fetchRuns(projectId.value)
     await loadRunLog(run.id)
-    nextTick(() => composerEl.value?.focus())
+    focusComposer()
   } catch (e) {
     toast.error(t('run.createSessionFailed', { error: String(e) }))
   } finally {
@@ -1463,6 +1463,22 @@ function toggleComposerExpand() {
   nextTick(() => {
     autoResizeComposer()
     composerEl.value?.focus()
+  })
+}
+
+// Reliably move focus into the composer. A single `nextTick` is not enough when
+// the composer is mounting for the first time (e.g. right after a new session is
+// created, `currentRunId` also drives a concurrent `router.replace`): the
+// textarea may not be in the DOM yet, or focus gets stolen as the route settles.
+// Retry across a few animation frames until it takes.
+function focusComposer(attempts = 8) {
+  nextTick(() => {
+    const el = composerEl.value
+    if (el) {
+      el.focus({ preventScroll: true })
+      if (document.activeElement === el) return
+    }
+    if (attempts > 0) requestAnimationFrame(() => focusComposer(attempts - 1))
   })
 }
 
