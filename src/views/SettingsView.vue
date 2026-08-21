@@ -881,7 +881,7 @@ watch(() => settings.value.language, (v) => {
           <div v-for="i in 3" :key="i" class="h-28 bg-card rounded-lg border border-border animate-pulse" />
         </div>
 
-        <div v-else class="max-w-lg">
+        <div v-else :class="activeSection === 'mascot' ? 'max-w-4xl' : 'max-w-lg'">
 
         <!-- General section -->
         <Card v-show="activeSection === 'general'" body-class="p-4 space-y-4">
@@ -960,7 +960,10 @@ watch(() => settings.value.language, (v) => {
             <span class="text-xs font-semibold">{{ t('settings.mascot.title') }}</span>
           </template>
 
-          <div class="space-y-4">
+          <div class="grid gap-5 lg:grid-cols-[minmax(0,1fr)_300px] lg:items-start">
+            <!-- LEFT: controls + state / level selectors -->
+            <div class="space-y-4 min-w-0">
+          <div class="grid gap-x-4 gap-y-3 sm:grid-cols-2">
             <div class="space-y-1.5">
               <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
                 {{ t('settings.mascot.enabled') }}
@@ -1001,7 +1004,7 @@ watch(() => settings.value.language, (v) => {
               </p>
             </div>
 
-            <div class="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+            <div class="sm:col-span-2 grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
               <div class="space-y-1.5">
                 <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
                   {{ t('settings.mascot.size') }}
@@ -1028,48 +1031,19 @@ watch(() => settings.value.language, (v) => {
               </p>
             </div>
 
-            <div class="rounded-md border border-border/70 bg-muted/20 p-4">
-              <div class="flex min-h-[260px] items-end justify-center pt-20">
-                <div class="relative">
-                  <MascotBubble :message="previewBubble" />
-                  <CyberFox
-                    :state="cyberFoxPreviewState"
-                    :size="196"
-                    :label="t('settings.mascot.previewLabel')"
-                    :evolution-realm="selectedPetRealmId"
-                    :evolution-tier="selectedPetTier"
-                    :lite="settings.cyber_fox_lite === 'true'"
-                  />
-                  <div
-                    class="absolute left-1/2 top-full mt-1 flex -translate-x-1/2 items-center gap-1.5 whitespace-nowrap rounded-md border px-2.5 py-1 text-[11px] font-medium shadow-sm"
-                    :class="selectedPetRealm.accentClass"
-                  >
-                    <span>{{ t(selectedPetRealm.labelKey) }}</span>
-                    <span class="opacity-70">·</span>
-                    <span>{{ t('settings.mascot.levels.tierShort', { tier: selectedPetTier }) }}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div class="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            <div class="grid grid-cols-3 gap-2 sm:grid-cols-4">
               <button
                 v-for="state in CYBER_FOX_STATES"
                 :key="state.id"
                 type="button"
-                class="group flex min-h-[116px] flex-col items-center justify-between rounded-md border border-border/70 bg-background/70 px-2.5 py-2 text-center transition-colors hover:border-primary/50 hover:bg-accent/50 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                :class="cyberFoxPreviewState === state.id ? 'border-primary/60 bg-accent text-foreground' : 'text-muted-foreground'"
+                class="rounded-md border px-2.5 py-2 text-[11px] font-medium leading-tight transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                :class="cyberFoxPreviewState === state.id
+                  ? 'border-primary/60 bg-accent text-foreground'
+                  : 'border-border/70 bg-background/70 text-muted-foreground hover:border-primary/50 hover:bg-accent/50 hover:text-foreground'"
                 :aria-pressed="cyberFoxPreviewState === state.id"
                 @click="selectPreviewState(state.id)"
               >
-                <CyberFox
-                  :state="state.id"
-                  :size="72"
-                  :reduced-motion="state.id !== cyberFoxPreviewState"
-                  :evolution-realm="selectedPetRealmId"
-                  :evolution-tier="selectedPetTier"
-                />
-                <span class="text-[11px] font-medium leading-tight">{{ t(state.labelKey) }}</span>
+                {{ t(state.labelKey) }}
               </button>
             </div>
 
@@ -1130,7 +1104,7 @@ watch(() => settings.value.language, (v) => {
                 </button>
               </div>
 
-              <div class="grid gap-2 sm:grid-cols-2">
+              <div class="grid gap-2 grid-cols-2 sm:grid-cols-3">
                 <button
                   v-for="(realm, index) in PET_REALMS"
                   :key="realm.id"
@@ -1166,6 +1140,36 @@ watch(() => settings.value.language, (v) => {
                 <p class="mt-1 text-[11px] leading-relaxed text-foreground/80">
                   {{ t(`settings.mascot.levels.changes.tier${selectedPetTier}`) }}
                 </p>
+              </div>
+              </div>
+            </div>
+            </div>
+            <!-- /left column -->
+
+            <!-- RIGHT: live preview (its own sticky column) -->
+            <div class="lg:sticky lg:top-4">
+              <div class="rounded-md border border-border/70 bg-muted/20 p-4">
+                <div class="flex min-h-[260px] items-end justify-center pt-20">
+                  <div class="relative">
+                    <MascotBubble :message="previewBubble" />
+                    <CyberFox
+                      :state="cyberFoxPreviewState"
+                      :size="196"
+                      :label="t('settings.mascot.previewLabel')"
+                      :evolution-realm="selectedPetRealmId"
+                      :evolution-tier="selectedPetTier"
+                      :lite="settings.cyber_fox_lite === 'true'"
+                    />
+                    <div
+                      class="absolute left-1/2 top-full mt-1 flex -translate-x-1/2 items-center gap-1.5 whitespace-nowrap rounded-md border px-2.5 py-1 text-[11px] font-medium shadow-sm"
+                      :class="selectedPetRealm.accentClass"
+                    >
+                      <span>{{ t(selectedPetRealm.labelKey) }}</span>
+                      <span class="opacity-70">·</span>
+                      <span>{{ t('settings.mascot.levels.tierShort', { tier: selectedPetTier }) }}</span>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
