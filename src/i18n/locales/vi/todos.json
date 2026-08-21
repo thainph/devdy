@@ -3,6 +3,11 @@
   "newTask": "Việc mới",
   "createTask": "Tạo việc",
   "clearCompleted": "Xóa việc đã xong",
+  "select": "Chọn",
+  "selectAll": "Chọn tất cả",
+  "deselectAll": "Bỏ chọn tất cả",
+  "selectedCount": "Đã chọn {count}",
+  "deleteSelected": "Xóa mục đã chọn",
   "dragToReorder": "Kéo để sắp xếp lại",
   "markDone": "Đánh dấu đã xong",
   "markNotDone": "Đánh dấu chưa xong",
@@ -22,7 +27,10 @@
     "deleteMessage": "Gỡ việc này?",
     "clearTitle": "Xóa việc đã xong",
     "clearMessageOne": "Gỡ {count} việc đã xong?",
-    "clearMessageMany": "Gỡ {count} việc đã xong?"
+    "clearMessageMany": "Gỡ {count} việc đã xong?",
+    "bulkDeleteTitle": "Xóa việc",
+    "bulkDeleteMessageOne": "Gỡ {count} việc đã chọn?",
+    "bulkDeleteMessageMany": "Gỡ {count} việc đã chọn?"
   },
   "quick": {
     "windowTitle": "Tạo nhanh — Devdy",
@@ -44,6 +52,8 @@
     "fabAriaLabel": "Tạo nhanh (Việc / Ghi chú)",
     "fabTitle": "Tạo nhanh — ⌘/Ctrl + K",
     "actionNote": "Ghi chú",
-    "actionTodo": "Việc"
+    "actionTodo": "Việc",
+    "newTodo": "Việc mới",
+    "newNote": "Ghi chú mới"
   }
 }

@@ -8,7 +8,7 @@ import MarkdownPreview from '@/components/MarkdownPreview.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useMarkdown } from '@/lib/markdown'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { Plus, GripVertical, Trash2, StickyNote, Pencil, Search, X, FolderOpen } from 'lucide-vue-next'
+import { Plus, GripVertical, Trash2, StickyNote, ListChecks, Check, Pencil, Search, X, FolderOpen } from 'lucide-vue-next'
 
 const { t } = useI18n()
 const store = useNotesStore()
@@ -218,6 +218,64 @@ async function deleteFromDetail() {
   store.remove(id)
 }
 
+// --- Bulk selection -----------------------------------------------------------
+// A dedicated "select mode" turns each card into a multi-select checkbox so
+// several notes can be deleted at once. Selection operates on the currently
+// visible (filtered) list, and select-all follows the same set.
+const selectMode = ref(false)
+const selectedIds = ref<Set<string>>(new Set())
+
+const selectedCount = computed(() => selectedIds.value.size)
+const allSelected = computed(
+  () => filteredNotes.value.length > 0
+    && filteredNotes.value.every(n => selectedIds.value.has(n.id)),
+)
+
+function enterSelectMode() {
+  selectMode.value = true
+  selectedIds.value = new Set()
+}
+
+function exitSelectMode() {
+  selectMode.value = false
+  selectedIds.value = new Set()
+}
+
+function toggleSelect(id: string) {
+  const next = new Set(selectedIds.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  selectedIds.value = next
+}
+
+function toggleSelectAll() {
+  selectedIds.value = allSelected.value
+    ? new Set()
+    : new Set(filteredNotes.value.map(n => n.id))
+}
+
+async function handleDeleteSelected() {
+  const count = selectedIds.value.size
+  if (count === 0) return
+  if (!(await confirm({
+    title: t('notes.confirm.bulkDeleteTitle'),
+    message: count === 1
+      ? t('notes.confirm.bulkDeleteMessageOne', { count })
+      : t('notes.confirm.bulkDeleteMessageMany', { count }),
+    confirmLabel: t('common.delete'),
+  }))) return
+  await store.removeMany([...selectedIds.value])
+  exitSelectMode()
+}
+
+function onCardClickOrSelect(id: string, e: MouseEvent) {
+  if (selectMode.value) {
+    toggleSelect(id)
+    return
+  }
+  onCardClick(id, e)
+}
+
 // --- Drag & drop reorder (pointer-based) --------------------------------------
 // Same approach as TodosView: Tauri's webview swallows HTML5 DnD (reserved for
 // OS file drops), so reorder uses raw pointer events. Only the grip starts it.
@@ -279,10 +337,41 @@ onBeforeUnmount(() => {
           {{ store.notes.length }}
         </span>
       </div>
-      <Button @click="openCreate">
-        <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-        {{ t('notes.newNote') }}
-      </Button>
+      <div class="flex items-center gap-2">
+        <template v-if="selectMode">
+          <span class="text-xs text-muted-foreground tabular-nums">
+            {{ t('notes.selectedCount', { count: selectedCount }) }}
+          </span>
+          <Button variant="outline" @click="toggleSelectAll">
+            {{ allSelected ? t('notes.deselectAll') : t('notes.selectAll') }}
+          </Button>
+          <Button
+            variant="destructive"
+            :disabled="selectedCount === 0"
+            @click="handleDeleteSelected"
+          >
+            <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ t('notes.deleteSelected') }}
+          </Button>
+          <Button variant="ghost" @click="exitSelectMode">
+            {{ t('common.cancel') }}
+          </Button>
+        </template>
+        <template v-else>
+          <Button
+            v-if="store.notes.length > 0"
+            variant="outline"
+            @click="enterSelectMode"
+          >
+            <ListChecks class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ t('notes.select') }}
+          </Button>
+          <Button @click="openCreate">
+            <Plus class="h-3.5 w-3.5" :stroke-width="2" />
+            {{ t('notes.newNote') }}
+          </Button>
+        </template>
+      </div>
     </div>
 
     <!-- Content -->
@@ -364,13 +453,27 @@ onBeforeUnmount(() => {
             :class="[
               dragOverIndex === index && dragIndex !== index ? 'ring-1 ring-primary/40' : '',
               dragIndex === index ? 'opacity-40' : '',
+              selectMode && selectedIds.has(note.id) ? 'ring-1 ring-primary/60 border-primary/40' : '',
             ]"
-            @click="onCardClick(note.id, $event)"
+            @click="onCardClickOrSelect(note.id, $event)"
           >
             <div class="flex items-start gap-1.5 p-3">
-              <!-- Drag handle (only when not filtering) -->
+              <!-- Selection checkbox (select mode) -->
+              <button
+                v-if="selectMode"
+                type="button"
+                class="mt-0.5 flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded border transition-colors cursor-pointer"
+                :class="selectedIds.has(note.id)
+                  ? 'bg-primary border-primary text-primary-foreground'
+                  : 'border-border hover:border-primary/60'"
+                @click.stop="toggleSelect(note.id)"
+              >
+                <Check v-if="selectedIds.has(note.id)" class="h-3 w-3" :stroke-width="3" />
+              </button>
+
+              <!-- Drag handle (only when not filtering and not selecting) -->
               <span
-                v-if="!isFiltered"
+                v-else-if="!isFiltered"
                 class="mt-0.5 shrink-0 cursor-grab text-muted-foreground/30 transition-colors group-hover:text-muted-foreground active:cursor-grabbing touch-none"
                 :title="t('notes.dragToReorder')"
                 @click.stop
@@ -397,6 +500,7 @@ onBeforeUnmount(() => {
       :open="createOpen"
       side="right"
       size="lg"
+      :dismiss-on-overlay="false"
       @close="closeCreate"
     >
       <template #header>
@@ -452,6 +556,7 @@ onBeforeUnmount(() => {
       :open="!!detailNote"
       side="right"
       size="lg"
+      :dismiss-on-overlay="!detailEditing"
       @close="closeDetail"
     >
       <template #header>

@@ -25,6 +25,8 @@ export interface IssueRow {
   deadline: string | null
   status: string | null
   statusColor: string | null
+  state: string | null
+  closedAt: string | null
 }
 
 export interface MilestoneGroup {
@@ -99,6 +101,46 @@ export const useProjectIssuesStore = defineStore('projectIssues', () => {
   // Per-project cache so switching back to an already-loaded project is instant.
   const cache = new Map<string, MilestoneBoard>()
 
+  // On-demand per-milestone fetch of ALL issues (open + closed). Keyed by
+  // `${projectId}::${milestoneTitleLower}`. The main board only carries open
+  // issues; a milestone is loaded here only when the user expands it.
+  const milestoneClosed = ref<Record<string, IssueRow[]>>({})
+  const milestoneClosedLoading = ref<Set<string>>(new Set())
+  const milestoneClosedError = ref<Record<string, string>>({})
+
+  function closedKey(projectId: string, title: string): string {
+    return `${projectId}::${title.toLowerCase()}`
+  }
+  function closedIssuesFor(projectId: string, title: string): IssueRow[] | null {
+    return milestoneClosed.value[closedKey(projectId, title)] ?? null
+  }
+  function isLoadingClosed(projectId: string, title: string): boolean {
+    return milestoneClosedLoading.value.has(closedKey(projectId, title))
+  }
+
+  async function loadMilestoneIssues(projectId: string, title: string) {
+    const key = closedKey(projectId, title)
+    if (milestoneClosedLoading.value.has(key)) return
+    const startLoad = new Set(milestoneClosedLoading.value)
+    startLoad.add(key)
+    milestoneClosedLoading.value = startLoad
+    try {
+      const issues = await invoke<IssueRow[]>('list_milestone_issues', {
+        projectId,
+        milestoneTitle: title,
+      })
+      milestoneClosed.value = { ...milestoneClosed.value, [key]: issues }
+      const { [key]: _removed, ...rest } = milestoneClosedError.value
+      milestoneClosedError.value = rest
+    } catch (e) {
+      milestoneClosedError.value = { ...milestoneClosedError.value, [key]: String(e) }
+    } finally {
+      const endLoad = new Set(milestoneClosedLoading.value)
+      endLoad.delete(key)
+      milestoneClosedLoading.value = endLoad
+    }
+  }
+
   async function refresh(projectId: string, opts: { force?: boolean } = {}) {
     currentProjectId.value = projectId
     error.value = null
@@ -123,9 +165,11 @@ export const useProjectIssuesStore = defineStore('projectIssues', () => {
       return
     }
 
-    // Otherwise fetch. Only show the full skeleton when there's nothing to show;
-    // if seed data is already painted, revalidate silently in the background.
-    loading.value = !seed
+    // Otherwise fetch. Show the full skeleton when there's nothing to show; a
+    // background revalidate with seed data on screen stays silent. But an explicit
+    // `force` (the Refresh button) always flips `loading` so the button gets a
+    // spinner/disabled state — otherwise a manual refresh gives no feedback.
+    loading.value = !seed || !!opts.force
     try {
       const result = await invoke<MilestoneBoard>('list_milestone_board', { projectId })
       cache.set(projectId, result)
@@ -156,6 +200,7 @@ export const useProjectIssuesStore = defineStore('projectIssues', () => {
   }
 
   function isDone(issue: IssueRow): boolean {
+    if (issue.state === 'CLOSED') return true
     return DONE.has((issue.status ?? '').toLowerCase())
   }
 
@@ -197,5 +242,7 @@ export const useProjectIssuesStore = defineStore('projectIssues', () => {
     board, loading, error, lastRefreshedAt, currentProjectId,
     staleDays, atRiskDays,
     refresh, effectiveDeadline, isDone, issueStatus, summary,
+    milestoneClosed, milestoneClosedLoading, milestoneClosedError,
+    loadMilestoneIssues, closedIssuesFor, isLoadingClosed,
   }
 })

@@ -34,6 +34,7 @@ export interface AppSettings {
   mcp_builtin_devdy_enabled: string
   cyber_fox_enabled: string
   cyber_fox_size: string
+  cyber_fox_mode: string
 }
 
 export const useAppSettingsStore = defineStore('appSettings', () => {

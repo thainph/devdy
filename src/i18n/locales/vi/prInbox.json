@@ -9,6 +9,8 @@
   "aiReview": "AI Review",
   "notInDevdy": "Chưa có trong devdy",
   "addToDevdy": "Thêm vào devdy",
+  "partialFailTitle": "{count} account tải review request thất bại",
+  "partialFailBody": "một số PR có thể bị thiếu. Thử refresh lại.",
   "justNow": "vừa xong",
   "minsAgo": "{mins} phút trước",
   "hoursAgo": "{hours} giờ trước",

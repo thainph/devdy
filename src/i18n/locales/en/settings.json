@@ -44,6 +44,10 @@
     "enabled": "Show mascot",
     "enabledHint": "Enabled by default. When off, the floating mascot is hidden app-wide.",
     "size": "Size",
+    "mode": "Position",
+    "modeInApp": "Inside app",
+    "modeDesktop": "Desktop pet",
+    "modeHint": "Inside app keeps the fox within the Devdy window. Desktop pet floats it in a frameless, always-on-top window over your desktop.",
     "sizeSmall": "Small",
     "sizeMedium": "Medium",
     "sizeLarge": "Large",
@@ -58,7 +62,11 @@
       "success": "Success",
       "error": "Error",
       "permission": "Permission"
-    }
+    },
+    "testBubble": "Test speech bubble",
+    "testBubbleHint": "Fire a sample bubble of each kind to preview its look and auto-hide behaviour on the current mascot.",
+    "testBubbleInfo": "Info",
+    "testBubbleSample": "Heads up — this is a sample notification."
   },
   "mcp": {
     "title": "Built-in MCP Server",

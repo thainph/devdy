@@ -1,0 +1,9 @@
+{
+  "bubble": {
+    "busy": "Đang xử lý…",
+    "permission": "Đang chờ bạn cấp quyền",
+    "success": "Đã xong!",
+    "error": "Có lỗi xảy ra",
+    "dismiss": "Đóng"
+  }
+}

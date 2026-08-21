@@ -18,6 +18,7 @@ import { useGithubAccountsStore, type PatValidation } from '@/stores/githubAccou
 import { useGitlabAccountsStore, type GitlabPatValidation } from '@/stores/gitlabAccounts'
 import { useAwsAccountsStore, type AwsAccountPayload, type AwsAuthMethod, type AwsValidation } from '@/stores/awsAccounts'
 import { useAppSettingsStore } from '@/stores/appSettings'
+import { useMascotBubble, type MascotBubbleVariant } from '@/composables/useMascotBubble'
 import { useBudgetStore } from '@/stores/budget'
 import { useModelCatalogStore } from '@/stores/modelCatalog'
 
@@ -60,6 +61,7 @@ interface AppSettings {
   mcp_builtin_devdy_enabled: string
   cyber_fox_enabled: string
   cyber_fox_size: string
+  cyber_fox_mode: string
 }
 
 const settings = ref<AppSettings>({
@@ -88,6 +90,7 @@ const settings = ref<AppSettings>({
   mcp_builtin_devdy_enabled: 'true',
   cyber_fox_enabled: 'true',
   cyber_fox_size: 'md',
+  cyber_fox_mode: 'in-app',
 })
 
 type CyberFoxPreviewState =
@@ -118,6 +121,24 @@ const cyberFoxSizeOptions = computed(() => [
   { value: 'md', label: t('settings.mascot.sizeMedium') },
   { value: 'lg', label: t('settings.mascot.sizeLarge') },
 ])
+const cyberFoxModeOptions = computed(() => [
+  { value: 'in-app', label: t('settings.mascot.modeInApp') },
+  { value: 'desktop', label: t('settings.mascot.modeDesktop') },
+])
+
+// Manual speech-bubble tester: fires a sample bubble of each kind so the styling
+// / behaviour can be verified without waiting for a real run or toast.
+const { push: pushBubble } = useMascotBubble()
+const bubbleSamples = computed<{ variant: MascotBubbleVariant; label: string; text: string }[]>(() => [
+  { variant: 'thinking', label: t('settings.mascot.states.thinking'), text: t('mascot.bubble.busy') },
+  { variant: 'permission', label: t('settings.mascot.states.permission'), text: t('mascot.bubble.permission') },
+  { variant: 'success', label: t('settings.mascot.states.success'), text: t('mascot.bubble.success') },
+  { variant: 'error', label: t('settings.mascot.states.error'), text: t('mascot.bubble.error') },
+  { variant: 'info', label: t('settings.mascot.testBubbleInfo'), text: t('settings.mascot.testBubbleSample') },
+])
+function fireTestBubble(variant: MascotBubbleVariant, text: string) {
+  pushBubble(text, variant)
+}
 const cyberFoxPreviewOptions = computed(() =>
   CYBER_FOX_STATES.map((state) => ({ value: state.id, label: t(state.labelKey) })),
 )
@@ -834,6 +855,16 @@ watch(() => settings.value.language, (v) => {
               </p>
             </div>
 
+            <div class="space-y-1.5">
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                {{ t('settings.mascot.mode') }}
+              </label>
+              <AppSelect size="sm" v-model="settings.cyber_fox_mode" :options="cyberFoxModeOptions" />
+              <p class="text-[11px] text-muted-foreground leading-relaxed">
+                {{ t('settings.mascot.modeHint') }}
+              </p>
+            </div>
+
             <div class="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
               <div class="space-y-1.5">
                 <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
@@ -885,6 +916,29 @@ watch(() => settings.value.language, (v) => {
                 />
                 <span class="text-[11px] font-medium leading-tight">{{ t(state.labelKey) }}</span>
               </button>
+            </div>
+          </div>
+
+          <div class="h-px bg-border" />
+
+          <!-- Speech bubble tester -->
+          <div class="space-y-2">
+            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+              {{ t('settings.mascot.testBubble') }}
+            </label>
+            <p class="text-[11px] text-muted-foreground leading-relaxed">
+              {{ t('settings.mascot.testBubbleHint') }}
+            </p>
+            <div class="flex flex-wrap gap-2 pt-1">
+              <Button
+                v-for="s in bubbleSamples"
+                :key="s.variant"
+                variant="outline"
+                size="sm"
+                @click="fireTestBubble(s.variant, s.text)"
+              >
+                {{ s.label }}
+              </Button>
             </div>
           </div>
         </Card>

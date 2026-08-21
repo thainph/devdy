@@ -19,8 +19,8 @@ use commands::files::{
     read_file_base64, read_project_file, rename_entry, write_project_file,
 };
 use commands::github::{
-    fetch_issue, fetch_pr, list_milestone_board, list_review_requested_prs, list_runs,
-    refetch_run, resolve_project_board,
+    fetch_issue, fetch_pr, list_milestone_board, list_milestone_issues,
+    list_review_requested_prs, list_runs, refetch_run, resolve_project_board,
 };
 use commands::github_accounts::{
     create_github_account, delete_github_account, list_github_accounts, set_project_github_account,
@@ -75,11 +75,11 @@ use commands::stats::{
 };
 use commands::storage::{clean_storage, get_storage_stats};
 use commands::notes::{
-    add_note, delete_note, list_notes, reorder_notes, set_note_project, update_note,
+    add_note, delete_note, delete_notes, list_notes, reorder_notes, set_note_project, update_note,
 };
 use commands::todos::{
-    add_todo, clear_completed_todos, delete_todo, list_todos, reorder_todos, toggle_todo,
-    update_todo,
+    add_todo, clear_completed_todos, delete_todo, delete_todos, list_todos, reorder_todos,
+    toggle_todo, update_todo,
 };
 use commands::vps_servers::{
     create_vps_server, delete_vps_server, list_project_servers, list_vps_servers,
@@ -303,6 +303,7 @@ pub fn run() {
             list_review_requested_prs,
             resolve_project_board,
             list_milestone_board,
+            list_milestone_issues,
             list_runs,
             start_run,
             cancel_run,
@@ -358,6 +359,7 @@ pub fn run() {
             toggle_todo,
             update_todo,
             delete_todo,
+            delete_todos,
             clear_completed_todos,
             reorder_todos,
             list_notes,
@@ -365,6 +367,7 @@ pub fn run() {
             update_note,
             set_note_project,
             delete_note,
+            delete_notes,
             reorder_notes,
             show_permission_notification,
             show_calendar_reminder,

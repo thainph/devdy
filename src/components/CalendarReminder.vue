@@ -7,6 +7,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useGoogleCalendarStore, type CalEvent } from '@/stores/googleCalendar'
 import { parseEventTime } from '@/lib/calendar'
+import { useMascotBubble } from '@/composables/useMascotBubble'
 
 /**
  * Headless, app-wide calendar reminder scheduler. Renders nothing. It keeps a
@@ -19,6 +20,7 @@ import { parseEventTime } from '@/lib/calendar'
 
 const store = useGoogleCalendarStore()
 const router = useRouter()
+const { push: pushBubble } = useMascotBubble()
 
 const FETCH_INTERVAL_MS = 15 * 60 * 1000 // re-pull the reminder window every 15 min
 const SAFETY_MARGIN_MS = 5 * 60 * 1000 // extra buffer so a late/failed fetch can't miss a reminder
@@ -86,6 +88,9 @@ function fireDue() {
       body,
       eventId: ev.id,
     }).catch(() => { /* ignore — best-effort */ })
+
+    // Also surface it in the DY mascot's speech bubble.
+    pushBubble(`${ev.title || 'Event'} · ${body}`, 'info', 8000)
   }
 }
 

@@ -348,7 +348,8 @@ async fn build_pr_markdown(
     repo: &str,
     pr_number: u64,
     linked_issue: Option<u64>,
-) -> Result<(String, u64), String> {
+    allow_missing_issue: bool,
+) -> Result<(String, Option<u64>), String> {
     // Fetch PR
     let pr = client
         .pulls(owner, repo)
@@ -356,11 +357,14 @@ async fn build_pr_markdown(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Resolve linked issue: explicit param > GitHub "Development" linkage (GraphQL)
+    // Resolve linked issue: explicit param > GitHub "Development" linkage (GraphQL).
+    // When no issue can be resolved, block with NO_LINKED_ISSUE unless the caller
+    // explicitly allows reviewing a PR without a linked issue.
     let linked_issue_number = match linked_issue {
-        Some(n) => n,
+        Some(n) => Some(n),
         None => match detect_linked_issue(client, owner, repo, pr_number).await {
-            Some(n) => n,
+            Some(n) => Some(n),
+            None if allow_missing_issue => None,
             None => return Err("NO_LINKED_ISSUE".to_string()),
         },
     };
@@ -369,7 +373,7 @@ async fn build_pr_markdown(
     let mut md = format!(
         "---\npr: {}\nlinked_issue: {}\ntitle: {}\nauthor: {}\nbase: {}\nhead: {}\ncreated: {}\n---\n\n# {}\n\n{}\n\n",
         pr_number,
-        linked_issue_number,
+        linked_issue_number.map(|n| n.to_string()).unwrap_or_else(|| "none".to_string()),
         pr.title.as_deref().unwrap_or(""),
         pr.user.as_ref().map(|u| u.login.as_str()).unwrap_or("unknown"),
         pr.base.ref_field,
@@ -526,6 +530,7 @@ pub async fn fetch_pr(
     repo_id: String,
     pr_number: u64,
     linked_issue: Option<u64>,
+    allow_missing_issue: Option<bool>,
 ) -> Result<RunRecord, String> {
     use sqlx::Row;
 
@@ -539,11 +544,15 @@ pub async fn fetch_pr(
     let repo = load_repo_identity(db.inner(), &repo_id).await?;
     let repo_slug = repo.slug();
 
+    let allow_missing_issue = allow_missing_issue.unwrap_or(false);
+
     // Branch by provider (FR-005/BR-001).
     let (md, linked_issue_number) = match repo.provider.as_str() {
         "gitlab" => {
             let client = gitlab_client_for(db.inner(), &project_id, &repo).await?;
-            client.build_mr_markdown(pr_number, linked_issue).await?
+            client
+                .build_mr_markdown(pr_number, linked_issue, allow_missing_issue)
+                .await?
         }
         _ => {
             let owner = repo
@@ -557,7 +566,7 @@ pub async fn fetch_pr(
             let client = github::client_for_project(db.inner(), &project_id)
                 .await
                 .map_err(|e| e.to_string())?;
-            build_pr_markdown(&client, &owner, &gh_repo, pr_number, linked_issue).await?
+            build_pr_markdown(&client, &owner, &gh_repo, pr_number, linked_issue, allow_missing_issue).await?
         }
     };
 
@@ -567,11 +576,15 @@ pub async fn fetch_pr(
         "gitlab" => format!("mr-{}.md", pr_number),
         _ => format!("pr-{}.md", pr_number),
     };
+    let issue_folder = match linked_issue_number {
+        Some(n) => format!("issue-{}", n),
+        None => "no-issue".to_string(),
+    };
     let task_dir = Path::new(&project_path)
         .join(".devdy")
         .join("tasks")
         .join(&repo_slug)
-        .join(format!("issue-{}", linked_issue_number));
+        .join(issue_folder);
     fs::create_dir_all(&task_dir).map_err(|e| e.to_string())?;
     let file_path = task_dir.join(file_name);
     fs::write(&file_path, &md).map_err(|e| e.to_string())?;
@@ -655,7 +668,7 @@ pub async fn refetch_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord,
                     // refresh never re-derives closes_issues or hits NO_LINKED_ISSUE.
                     let existing = fs::read_to_string(&input_path_val).unwrap_or_default();
                     let linked = parse_frontmatter_u64(&existing, "linked_issue");
-                    client.build_mr_markdown(ref_num, linked).await?.0
+                    client.build_mr_markdown(ref_num, linked, true).await?.0
                 }
                 other => return Err(format!("Cannot re-fetch a run of type '{}'", other)),
             }
@@ -677,7 +690,7 @@ pub async fn refetch_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord,
                 "review_pr" => {
                     let existing = fs::read_to_string(&input_path_val).unwrap_or_default();
                     let linked = parse_frontmatter_u64(&existing, "linked_issue");
-                    build_pr_markdown(&client, &owner, &gh_repo, ref_num, linked).await?.0
+                    build_pr_markdown(&client, &owner, &gh_repo, ref_num, linked, true).await?.0
                 }
                 other => return Err(format!("Cannot re-fetch a run of type '{}'", other)),
             }
@@ -773,6 +786,25 @@ pub struct PrInboxItem {
     pub existing_run_status: Option<String>,
 }
 
+/// An account whose review-request fetch failed (after retries) while building
+/// the PR inbox. Surfaced to the UI so a missing PR reads as "fetch failed, try
+/// again" instead of "no PRs" — the old silent `continue` hid these entirely.
+#[derive(Debug, Serialize, Clone)]
+pub struct PrInboxAccountError {
+    pub account_id: String,
+    pub account_label: String,
+    pub message: String,
+}
+
+/// Result of aggregating review requests across all accounts: the PRs found,
+/// plus any accounts whose fetch failed so the UI can warn instead of silently
+/// dropping their PRs.
+#[derive(Debug, Serialize, Clone)]
+pub struct PrInboxResult {
+    pub items: Vec<PrInboxItem>,
+    pub errors: Vec<PrInboxAccountError>,
+}
+
 /// Parse `owner`/`repo` from a GitHub API `repository_url`
 /// (`https://api.github.com/repos/{owner}/{repo}`).
 fn parse_owner_repo(repository_url: &str) -> Option<(String, String)> {
@@ -791,7 +823,7 @@ fn parse_owner_repo(repository_url: &str) -> Option<(String, String)> {
 /// across all validated GitHub accounts and mapped to devdy projects when the
 /// repo is already tracked. Read-only; a failing account is skipped, not fatal.
 #[tauri::command]
-pub async fn list_review_requested_prs(db: State<'_, Db>) -> Result<Vec<PrInboxItem>, String> {
+pub async fn list_review_requested_prs(db: State<'_, Db>) -> Result<PrInboxResult, String> {
     use sqlx::Row;
 
     // Accounts that have been validated (username present). A PAT is required to
@@ -806,6 +838,9 @@ pub async fn list_review_requested_prs(db: State<'_, Db>) -> Result<Vec<PrInboxI
     // Dedup a PR that multiple accounts are asked to review onto its first hit.
     let mut seen: std::collections::HashSet<(String, String, u64)> = std::collections::HashSet::new();
     let mut items: Vec<PrInboxItem> = Vec::new();
+    // Accounts whose fetch failed after retries — surfaced to the UI so a
+    // transiently-missing PR reads as "try again" instead of "no PRs".
+    let mut errors: Vec<PrInboxAccountError> = Vec::new();
 
     for account in &account_rows {
         let account_id: String = account.get("id");
@@ -815,7 +850,14 @@ pub async fn list_review_requested_prs(db: State<'_, Db>) -> Result<Vec<PrInboxI
         }
         let client = match github::client_for_account(&account_id) {
             Ok(c) => c,
-            Err(_) => continue,
+            Err(e) => {
+                errors.push(PrInboxAccountError {
+                    account_id: account_id.clone(),
+                    account_label: account_label.clone(),
+                    message: e.to_string(),
+                });
+                continue;
+            }
         };
 
         // `@me` resolves to the token's own user, so each account contributes its
@@ -826,15 +868,48 @@ pub async fn list_review_requested_prs(db: State<'_, Db>) -> Result<Vec<PrInboxI
         // requests. See GitHub search docs: user-review-requested = "directly
         // been asked to review".
         let query = "is:open is:pr user-review-requested:@me archived:false";
-        let first_page = match client
-            .search()
-            .issues_and_pull_requests(query)
-            .per_page(100u8)
-            .send()
-            .await
-        {
-            Ok(p) => p,
-            Err(_) => continue, // rate limit / bad PAT: skip this account, keep the rest
+        // Retry transient failures (rate limit / network blips) with a short
+        // backoff before giving up on the account. Without this a single flaky
+        // response silently drops ALL of the account's PRs until the next manual
+        // refresh — the root cause of PRs intermittently vanishing from the inbox.
+        let mut last_err: Option<String> = None;
+        let mut first_page = None;
+        for attempt in 0u32..3 {
+            match client
+                .search()
+                .issues_and_pull_requests(query)
+                .per_page(100u8)
+                .send()
+                .await
+            {
+                Ok(p) => {
+                    first_page = Some(p);
+                    break;
+                }
+                Err(e) => {
+                    last_err = Some(e.to_string());
+                    // 300ms, 600ms backoff between the 3 attempts.
+                    if attempt < 2 {
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            300 * (attempt as u64 + 1),
+                        ))
+                        .await;
+                    }
+                }
+            }
+        }
+        let first_page = match first_page {
+            Some(p) => p,
+            None => {
+                // Give up on this account but keep the others; record why so the
+                // UI can warn instead of silently dropping this account's PRs.
+                errors.push(PrInboxAccountError {
+                    account_id: account_id.clone(),
+                    account_label: account_label.clone(),
+                    message: last_err.unwrap_or_else(|| "GitHub search failed".to_string()),
+                });
+                continue;
+            }
         };
         let issues = client.all_pages(first_page).await.unwrap_or_default();
 
@@ -919,7 +994,7 @@ pub async fn list_review_requested_prs(db: State<'_, Db>) -> Result<Vec<PrInboxI
 
     // Most recently updated first.
     items.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    Ok(items)
+    Ok(PrInboxResult { items, errors })
 }
 
 // ---------------------------------------------------------------------------
@@ -975,6 +1050,10 @@ pub struct IssueRow {
     /// GitHub Projects single-select option colour (enum: GRAY/BLUE/GREEN/...),
     /// used to tint the status badge like the GitHub board. None if unknown.
     pub status_color: Option<String>,
+    /// Issue state as reported by GitHub: "OPEN" or "CLOSED".
+    pub state: Option<String>,
+    /// Timestamp the issue was closed (ISO 8601). None while open.
+    pub closed_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -1290,6 +1369,54 @@ async fn fetch_board_item_map(
     map
 }
 
+/// Parse a single GraphQL issue node into an `IssueRow`. Board enrichment
+/// (start/deadline/status) is applied later; those fields start as `None`.
+fn parse_issue_node(issue: &serde_json::Value, repo_name: &str) -> IssueRow {
+    let number = issue.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+    let assignees = issue
+        .pointer("/assignees/nodes")
+        .and_then(|n| n.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.get("login").and_then(|l| l.as_str()).map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let labels = issue
+        .pointer("/labels/nodes")
+        .and_then(|n| n.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| {
+                    Some(LabelRow {
+                        name: x.get("name")?.as_str()?.to_string(),
+                        color: x.get("color").and_then(|c| c.as_str()).unwrap_or("").to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    IssueRow {
+        repo: repo_name.to_string(),
+        number,
+        title: issue.get("title").and_then(|t| t.as_str()).unwrap_or("").to_string(),
+        html_url: issue.get("url").and_then(|u| u.as_str()).unwrap_or("").to_string(),
+        created_at: issue.get("createdAt").and_then(|t| t.as_str()).unwrap_or("").to_string(),
+        updated_at: issue.get("updatedAt").and_then(|t| t.as_str()).unwrap_or("").to_string(),
+        comments: issue.pointer("/comments/totalCount").and_then(|v| v.as_u64()).unwrap_or(0),
+        assignees,
+        labels,
+        milestone_title: issue.pointer("/milestone/title").and_then(|t| t.as_str()).map(|s| s.to_string()),
+        milestone_due_on: issue.pointer("/milestone/dueOn").and_then(|d| d.as_str()).map(|s| s.to_string()),
+        start_date: None,
+        deadline: None,
+        status: None,
+        status_color: None,
+        state: issue.get("state").and_then(|s| s.as_str()).map(|s| s.to_string()),
+        closed_at: issue.get("closedAt").and_then(|s| s.as_str()).map(|s| s.to_string()),
+    }
+}
+
 /// Raw per-repo fetch result (issues not yet enriched with board fields).
 struct RepoFetch {
     owner: String,
@@ -1314,7 +1441,7 @@ async fn fetch_repo_board(
     let mut first_page = true;
 
     for page in 0..10 {
-        let query = "query($owner:String!,$repo:String!,$cursor:String,$withMs:Boolean!){ repository(owner:$owner,name:$repo){ milestones(first:50, states:[OPEN,CLOSED]) @include(if:$withMs){ nodes{ title dueOn open:issues(states:OPEN){ totalCount } closed:issues(states:CLOSED){ totalCount } } } issues(first:100, after:$cursor, states:OPEN, orderBy:{field:UPDATED_AT,direction:DESC}){ pageInfo{ hasNextPage endCursor } nodes{ number title url createdAt updatedAt comments{ totalCount } milestone{ title dueOn } assignees(first:5){ nodes{ login } } labels(first:10){ nodes{ name color } } } } } }";
+        let query = "query($owner:String!,$repo:String!,$cursor:String,$withMs:Boolean!){ repository(owner:$owner,name:$repo){ milestones(first:50, states:[OPEN,CLOSED]) @include(if:$withMs){ nodes{ title dueOn open:issues(states:OPEN){ totalCount } closed:issues(states:CLOSED){ totalCount } } } issues(first:100, after:$cursor, states:OPEN, orderBy:{field:UPDATED_AT,direction:DESC}){ pageInfo{ hasNextPage endCursor } nodes{ number title url state createdAt updatedAt closedAt comments{ totalCount } milestone{ title dueOn } assignees(first:5){ nodes{ login } } labels(first:10){ nodes{ name color } } } } } }";
         let payload = serde_json::json!({
             "query": query,
             "variables": { "owner": owner, "repo": name, "cursor": cursor, "withMs": first_page }
@@ -1351,47 +1478,7 @@ async fn fetch_repo_board(
 
         if let Some(nodes) = repository.pointer("/issues/nodes").and_then(|n| n.as_array()) {
             for issue in nodes {
-                let number = issue.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
-                let assignees = issue
-                    .pointer("/assignees/nodes")
-                    .and_then(|n| n.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|x| x.get("login").and_then(|l| l.as_str()).map(|s| s.to_string()))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let labels = issue
-                    .pointer("/labels/nodes")
-                    .and_then(|n| n.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|x| {
-                                Some(LabelRow {
-                                    name: x.get("name")?.as_str()?.to_string(),
-                                    color: x.get("color").and_then(|c| c.as_str()).unwrap_or("").to_string(),
-                                })
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                issues.push(IssueRow {
-                    repo: name.to_string(),
-                    number,
-                    title: issue.get("title").and_then(|t| t.as_str()).unwrap_or("").to_string(),
-                    html_url: issue.get("url").and_then(|u| u.as_str()).unwrap_or("").to_string(),
-                    created_at: issue.get("createdAt").and_then(|t| t.as_str()).unwrap_or("").to_string(),
-                    updated_at: issue.get("updatedAt").and_then(|t| t.as_str()).unwrap_or("").to_string(),
-                    comments: issue.pointer("/comments/totalCount").and_then(|v| v.as_u64()).unwrap_or(0),
-                    assignees,
-                    labels,
-                    milestone_title: issue.pointer("/milestone/title").and_then(|t| t.as_str()).map(|s| s.to_string()),
-                    milestone_due_on: issue.pointer("/milestone/dueOn").and_then(|d| d.as_str()).map(|s| s.to_string()),
-                    start_date: None,
-                    deadline: None,
-                    status: None,
-                    status_color: None,
-                });
+                issues.push(parse_issue_node(issue, name));
             }
         }
 
@@ -1590,4 +1677,198 @@ pub async fn list_milestone_board(
         truncated,
         skipped_non_github,
     })
+}
+
+/// Fetch EVERY issue (open + closed) of a single milestone (matched by title)
+/// within one repo, paginated. Milestones are per-repo and keyed by number, so
+/// we first resolve the title to this repo's milestone number, then page through
+/// that milestone's issues. Returns an empty vec when the repo has no milestone
+/// with the given title.
+async fn fetch_repo_milestone_issues(
+    client: &octocrab::Octocrab,
+    owner: &str,
+    name: &str,
+    milestone_title: &str,
+) -> Result<Vec<IssueRow>, String> {
+    // 1) Resolve the milestone title -> number for this repo.
+    let resolve_q = "query($owner:String!,$repo:String!,$cursor:String){ repository(owner:$owner,name:$repo){ milestones(first:100, after:$cursor, states:[OPEN,CLOSED]){ pageInfo{ hasNextPage endCursor } nodes{ number title } } } }";
+    let target = milestone_title.to_lowercase();
+    let mut number: Option<i64> = None;
+    let mut cursor: Option<String> = None;
+    'resolve: for _ in 0..5 {
+        let payload = serde_json::json!({
+            "query": resolve_q,
+            "variables": { "owner": owner, "repo": name, "cursor": cursor }
+        });
+        let resp: serde_json::Value = client
+            .graphql(&payload)
+            .await
+            .map_err(|e| format!("Failed to resolve milestone for {owner}/{name}: {e}"))?;
+        if let Some(errors) = resp.get("errors").and_then(|e| e.as_array()) {
+            if !errors.is_empty() {
+                let msg = errors[0].get("message").and_then(|m| m.as_str()).unwrap_or("GraphQL error");
+                return Err(format!("GraphQL error for {owner}/{name}: {msg}"));
+            }
+        }
+        let repository = match resp.pointer("/data/repository") {
+            Some(r) if !r.is_null() => r,
+            _ => return Ok(Vec::new()),
+        };
+        if let Some(nodes) = repository.pointer("/milestones/nodes").and_then(|n| n.as_array()) {
+            for ms in nodes {
+                let title = ms.get("title").and_then(|t| t.as_str()).unwrap_or("");
+                if title.to_lowercase() == target {
+                    number = ms.get("number").and_then(|n| n.as_i64());
+                    break 'resolve;
+                }
+            }
+        }
+        let has_next = repository
+            .pointer("/milestones/pageInfo/hasNextPage")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !has_next {
+            break;
+        }
+        cursor = repository
+            .pointer("/milestones/pageInfo/endCursor")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        if cursor.is_none() {
+            break;
+        }
+    }
+    let Some(number) = number else { return Ok(Vec::new()) };
+
+    // 2) Page through the milestone's issues (open + closed).
+    let issues_q = "query($owner:String!,$repo:String!,$num:Int!,$cursor:String){ repository(owner:$owner,name:$repo){ milestone(number:$num){ issues(first:100, after:$cursor, states:[OPEN,CLOSED], orderBy:{field:UPDATED_AT,direction:DESC}){ pageInfo{ hasNextPage endCursor } nodes{ number title url state createdAt updatedAt closedAt comments{ totalCount } milestone{ title dueOn } assignees(first:5){ nodes{ login } } labels(first:10){ nodes{ name color } } } } } } }";
+    let mut out: Vec<IssueRow> = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..30 {
+        let payload = serde_json::json!({
+            "query": issues_q,
+            "variables": { "owner": owner, "repo": name, "num": number, "cursor": cursor }
+        });
+        let resp: serde_json::Value = client
+            .graphql(&payload)
+            .await
+            .map_err(|e| format!("Failed to load milestone issues for {owner}/{name}: {e}"))?;
+        if let Some(errors) = resp.get("errors").and_then(|e| e.as_array()) {
+            if !errors.is_empty() {
+                let msg = errors[0].get("message").and_then(|m| m.as_str()).unwrap_or("GraphQL error");
+                return Err(format!("GraphQL error for {owner}/{name}: {msg}"));
+            }
+        }
+        let conn = match resp.pointer("/data/repository/milestone/issues") {
+            Some(c) if !c.is_null() => c,
+            _ => break,
+        };
+        if let Some(nodes) = conn.pointer("/nodes").and_then(|n| n.as_array()) {
+            for issue in nodes {
+                out.push(parse_issue_node(issue, name));
+            }
+        }
+        let has_next = conn.pointer("/pageInfo/hasNextPage").and_then(|v| v.as_bool()).unwrap_or(false);
+        if !has_next {
+            break;
+        }
+        cursor = conn.pointer("/pageInfo/endCursor").and_then(|v| v.as_str()).map(|s| s.to_string());
+        if cursor.is_none() {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// Load every issue (open + closed) of a single milestone across all GitHub
+/// repos of a project, enriched with the linked board's Start/Deadline/Status
+/// fields. Loaded on demand (per milestone) so the main Gantt board stays light.
+#[tauri::command]
+pub async fn list_milestone_issues(
+    db: State<'_, Db>,
+    project_id: String,
+    milestone_title: String,
+) -> Result<Vec<IssueRow>, String> {
+    use sqlx::Row;
+
+    // 1) Load repos for the project.
+    let repo_rows = sqlx::query(
+        "SELECT name, github_owner, github_repo, provider FROM repos WHERE project_id = ?",
+    )
+    .bind(&project_id)
+    .fetch_all(db.inner())
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // 2) Load board config (if any).
+    let proj = sqlx::query(
+        "SELECT github_project_field_mappings FROM projects WHERE id = ?",
+    )
+    .bind(&project_id)
+    .fetch_one(db.inner())
+    .await
+    .map_err(|e| e.to_string())?;
+    let mappings_json: Option<String> = proj.get("github_project_field_mappings");
+    let mappings = mappings_json.as_deref().map(parse_board_mappings);
+
+    let client = github::client_for_project(db.inner(), &project_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // 3) Collect GitHub repos (GitLab not supported here).
+    let mut repos: Vec<(String, String)> = Vec::new();
+    for repo in &repo_rows {
+        let provider: Option<String> = repo.get("provider");
+        let provider = provider.filter(|p| !p.is_empty()).unwrap_or_else(|| "github".to_string());
+        if provider != "github" {
+            continue;
+        }
+        let owner: Option<String> = repo.get("github_owner");
+        let name: Option<String> = repo.get("github_repo");
+        let (Some(owner), Some(name)) = (owner, name) else { continue };
+        if owner.is_empty() || name.is_empty() {
+            continue;
+        }
+        repos.push((owner, name));
+    }
+
+    // 4) Fetch the board enrichment map and each repo's milestone issues concurrently.
+    let board_fut = async {
+        if let Some(m) = &mappings {
+            let status_colors = match (&m.board_id, &m.status_field_id) {
+                (Some(bid), Some(sfid)) => fetch_status_colors(&client, bid, sfid).await,
+                _ => std::collections::HashMap::new(),
+            };
+            fetch_board_item_map(&client, m, &status_colors).await
+        } else {
+            std::collections::HashMap::new()
+        }
+    };
+    let repos_fut = futures_util::future::join_all(
+        repos
+            .iter()
+            .map(|(o, n)| fetch_repo_milestone_issues(&client, o, n, &milestone_title)),
+    );
+    let (board_map, repo_results) = tokio::join!(board_fut, repos_fut);
+
+    // 5) Aggregate + enrich. join_all preserves order, so zip back with repos to
+    //    recover each result's owner for the board-map key.
+    let mut all_issues: Vec<IssueRow> = Vec::new();
+    for ((owner, name), res) in repos.iter().zip(repo_results) {
+        let issues = res?;
+        let owner_l = owner.to_lowercase();
+        let name_l = name.to_lowercase();
+        for mut issue in issues {
+            let key = format!("{}/{}#{}", owner_l, name_l, issue.number);
+            if let Some(bf) = board_map.get(&key) {
+                issue.start_date = bf.start.clone();
+                issue.deadline = bf.deadline.clone();
+                issue.status = bf.status.clone();
+                issue.status_color = bf.status_color.clone();
+            }
+            all_issues.push(issue);
+        }
+    }
+
+    Ok(all_issues)
 }

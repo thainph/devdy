@@ -102,6 +102,20 @@ export const useNotesStore = defineStore('notes', () => {
     }
   }
 
+  /** Bulk-delete notes by id (optimistic), refetching to resync on error. */
+  async function removeMany(ids: string[]) {
+    if (ids.length === 0) return
+    const target = new Set(ids)
+    const snapshot = notes.value.slice()
+    notes.value = notes.value.filter(n => !target.has(n.id)) // optimistic
+    try {
+      await invoke('delete_notes', { ids })
+    } catch (e) {
+      error.value = String(e)
+      notes.value = snapshot
+    }
+  }
+
   /** Move the note at `from` to `to` (drag-and-drop reorder), then persist. */
   async function reorder(from: number, to: number) {
     if (from === to) return
@@ -118,5 +132,5 @@ export const useNotesStore = defineStore('notes', () => {
     }
   }
 
-  return { notes, loading, error, fetchNotes, add, update, setProject, remove, reorder }
+  return { notes, loading, error, fetchNotes, add, update, setProject, remove, removeMany, reorder }
 })

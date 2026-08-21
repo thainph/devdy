@@ -3,6 +3,11 @@
   "newTask": "New task",
   "createTask": "Create task",
   "clearCompleted": "Clear completed",
+  "select": "Select",
+  "selectAll": "Select all",
+  "deselectAll": "Deselect all",
+  "selectedCount": "{count} selected",
+  "deleteSelected": "Delete selected",
   "dragToReorder": "Drag to reorder",
   "markDone": "Mark as done",
   "markNotDone": "Mark as not done",
@@ -22,7 +27,10 @@
     "deleteMessage": "Remove this task?",
     "clearTitle": "Clear completed",
     "clearMessageOne": "Remove {count} completed task?",
-    "clearMessageMany": "Remove {count} completed tasks?"
+    "clearMessageMany": "Remove {count} completed tasks?",
+    "bulkDeleteTitle": "Delete tasks",
+    "bulkDeleteMessageOne": "Remove {count} selected task?",
+    "bulkDeleteMessageMany": "Remove {count} selected tasks?"
   },
   "quick": {
     "windowTitle": "Quick Create — Devdy",
@@ -44,6 +52,8 @@
     "fabAriaLabel": "Quick create (Todo / Note)",
     "fabTitle": "Quick create — ⌘/Ctrl + K",
     "actionNote": "Note",
-    "actionTodo": "Todo"
+    "actionTodo": "Todo",
+    "newTodo": "New Todo",
+    "newNote": "New Note"
   }
 }

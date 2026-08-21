@@ -88,9 +88,32 @@ watch(selectedProjectId, (id) => {
   if (id) {
     localStorage.setItem(LAST_KEY, id)
     selectedRepos.value = new Set()
+    selectedAssignees.value = new Set()
+    expandedMilestones.value = new Set()
     store.refresh(id)
   }
 })
+
+// ── Closed-issue expansion (per milestone, loaded on demand) ─────────────────
+// Set of milestone titles (lowercased) currently showing their closed issues.
+const expandedMilestones = ref<Set<string>>(new Set())
+const loadingMilestones = computed(
+  () => new Set([...expandedMilestones.value].filter((k) => store.isLoadingClosed(selectedProjectId.value, k))),
+)
+async function toggleClosed(title: string) {
+  const key = title.toLowerCase()
+  const next = new Set(expandedMilestones.value)
+  if (next.has(key)) {
+    next.delete(key)
+    expandedMilestones.value = next
+    return
+  }
+  next.add(key)
+  expandedMilestones.value = next
+  if (!store.closedIssuesFor(selectedProjectId.value, title)) {
+    await store.loadMilestoneIssues(selectedProjectId.value, title)
+  }
+}
 
 // ── Repo filter ────────────────────────────────────────────────────────────
 const allRepos = computed(() => {
@@ -108,6 +131,53 @@ function repoActive(repo: string) {
   return selectedRepos.value.size === 0 || selectedRepos.value.has(repo)
 }
 
+// ── Assignee filter + grouping ───────────────────────────────────────────────
+type GroupMode = 'milestone' | 'assignee'
+type SortMode = 'start' | 'assignee'
+const UNASSIGNED = '__unassigned__'
+const groupMode = ref<GroupMode>('milestone')
+const sortMode = ref<SortMode>('start')
+const selectedAssignees = ref<Set<string>>(new Set())
+
+// The issue set currently in scope: board open issues, swapped to the full
+// open+closed set for any milestone the user has expanded.
+const scopedGroups = computed(() => {
+  const src = store.board?.milestones ?? []
+  const pid = selectedProjectId.value
+  return src.map((g) => {
+    const expanded = expandedMilestones.value.has(g.title.toLowerCase())
+    const closed = expanded ? store.closedIssuesFor(pid, g.title) : null
+    return { group: g, issues: closed ?? g.issues }
+  })
+})
+
+const allAssignees = computed(() => {
+  const set = new Set<string>()
+  for (const { issues } of scopedGroups.value) for (const i of issues) for (const a of i.assignees) set.add(a)
+  return [...set].sort()
+})
+// Whether any scoped issue has no assignee (drives the "Unassigned" chip).
+const hasUnassigned = computed(() =>
+  scopedGroups.value.some(({ issues }) => issues.some((i) => i.assignees.length === 0)),
+)
+function toggleAssignee(a: string) {
+  const next = new Set(selectedAssignees.value)
+  if (next.has(a)) next.delete(a)
+  else next.add(a)
+  selectedAssignees.value = next
+}
+function assigneePasses(issue: { assignees: string[] }): boolean {
+  if (selectedAssignees.value.size === 0) return true
+  if (issue.assignees.length === 0) return selectedAssignees.value.has(UNASSIGNED)
+  return issue.assignees.some((a) => selectedAssignees.value.has(a))
+}
+function setGroupMode(mode: GroupMode) {
+  groupMode.value = mode
+}
+function setSortMode(mode: SortMode) {
+  sortMode.value = mode
+}
+
 // ── Milestone sorting (overdue → at-risk → on-track → none) ───────────────────
 type MsStatus = 'overdue' | 'at-risk' | 'ontrack' | 'none'
 function msStatus(g: MilestoneGroup): MsStatus {
@@ -119,11 +189,41 @@ function msStatus(g: MilestoneGroup): MsStatus {
 }
 const MS_WEIGHT: Record<MsStatus, number> = { overdue: 0, 'at-risk': 1, ontrack: 2, none: 3 }
 
+// Group scoped issues by their assignee login. An issue with multiple assignees
+// shows in each of their lanes; unassigned issues fall into one bucket.
+function groupByAssignee(groups: MilestoneGroup[]): MilestoneGroup[] {
+  const unassignedLabel = t('gantt.unassigned')
+  const byKey = new Map<string, MilestoneGroup>()
+  for (const g of groups) {
+    for (const issue of g.issues) {
+      const keys = issue.assignees.length ? issue.assignees : [unassignedLabel]
+      for (const key of keys) {
+        let lane = byKey.get(key)
+        if (!lane) {
+          lane = { title: key, dueOn: null, repos: [], openCount: 0, closedCount: 0, issues: [] }
+          byKey.set(key, lane)
+        }
+        lane.issues.push(issue)
+        if (!lane.repos.includes(issue.repo)) lane.repos.push(issue.repo)
+        lane.openCount = lane.issues.length
+      }
+    }
+  }
+  return [...byKey.values()].sort((a, b) => {
+    const au = a.title === unassignedLabel ? 1 : 0
+    const bu = b.title === unassignedLabel ? 1 : 0
+    return au - bu || a.title.localeCompare(b.title)
+  })
+}
+
 const filteredMilestones = computed<MilestoneGroup[]>(() => {
-  const src = store.board?.milestones ?? []
-  const filtered = src
-    .map((g) => ({ ...g, issues: g.issues.filter((i) => repoActive(i.repo)) }))
+  const filtered = scopedGroups.value
+    .map(({ group, issues }) => ({
+      ...group,
+      issues: issues.filter((i) => repoActive(i.repo) && assigneePasses(i)),
+    }))
     .filter((g) => g.issues.length > 0)
+  if (groupMode.value === 'assignee') return groupByAssignee(filtered)
   return filtered.sort((a, b) => MS_WEIGHT[msStatus(a)] - MS_WEIGHT[msStatus(b)])
 })
 
@@ -312,6 +412,73 @@ function relativeTime(iso: string | null): string {
             {{ repo }}
           </button>
         </div>
+
+        <!-- Group mode + assignee filter -->
+        <div class="flex items-center gap-x-4 gap-y-2 flex-wrap">
+          <div class="flex items-center gap-1.5">
+            <span class="text-[11px] text-muted-foreground mr-0.5">{{ t('gantt.groupBy') }}</span>
+            <div class="inline-flex rounded-md border border-border/60 p-0.5">
+              <button
+                class="rounded px-2 py-0.5 text-[11px] transition-colors"
+                :class="groupMode === 'milestone' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'"
+                @click="setGroupMode('milestone')"
+              >
+                {{ t('gantt.groupMilestone') }}
+              </button>
+              <button
+                class="rounded px-2 py-0.5 text-[11px] transition-colors"
+                :class="groupMode === 'assignee' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'"
+                @click="setGroupMode('assignee')"
+              >
+                {{ t('gantt.groupAssignee') }}
+              </button>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-1.5">
+            <span class="text-[11px] text-muted-foreground mr-0.5">{{ t('gantt.sortBy') }}</span>
+            <div class="inline-flex rounded-md border border-border/60 p-0.5">
+              <button
+                class="rounded px-2 py-0.5 text-[11px] transition-colors"
+                :class="sortMode === 'start' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'"
+                @click="setSortMode('start')"
+              >
+                {{ t('gantt.sortStart') }}
+              </button>
+              <button
+                class="rounded px-2 py-0.5 text-[11px] transition-colors"
+                :class="sortMode === 'assignee' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'"
+                @click="setSortMode('assignee')"
+              >
+                {{ t('gantt.groupAssignee') }}
+              </button>
+            </div>
+          </div>
+
+          <div v-if="allAssignees.length > 0 || hasUnassigned" class="flex items-center gap-1.5 flex-wrap">
+            <span class="text-[11px] text-muted-foreground mr-1">{{ t('gantt.assigneesLabel') }}</span>
+            <button
+              v-for="a in allAssignees" :key="a"
+              class="rounded-full border px-2.5 py-0.5 text-[11px] transition-colors"
+              :class="selectedAssignees.has(a)
+                ? 'border-primary/40 bg-primary/10 text-primary'
+                : 'border-border/60 text-muted-foreground hover:text-foreground'"
+              @click="toggleAssignee(a)"
+            >
+              {{ a }}
+            </button>
+            <button
+              v-if="hasUnassigned"
+              class="rounded-full border px-2.5 py-0.5 text-[11px] transition-colors"
+              :class="selectedAssignees.has(UNASSIGNED)
+                ? 'border-primary/40 bg-primary/10 text-primary'
+                : 'border-border/60 text-muted-foreground hover:text-foreground'"
+              @click="toggleAssignee(UNASSIGNED)"
+            >
+              {{ t('gantt.unassigned') }}
+            </button>
+          </div>
+        </div>
         </div>
         <!-- end fixed region -->
 
@@ -327,7 +494,16 @@ function relativeTime(iso: string | null): string {
         </div>
 
         <!-- Gantt -->
-        <GanttChart v-else :milestones="filteredMilestones" class="flex-1 min-h-0 animate-fade-rise" />
+        <GanttChart
+          v-else
+          :milestones="filteredMilestones"
+          :group-mode="groupMode"
+          :sort-by="sortMode"
+          :expanded="expandedMilestones"
+          :loading="loadingMilestones"
+          class="flex-1 min-h-0 animate-fade-rise"
+          @toggle-closed="toggleClosed"
+        />
 
         <div class="shrink-0 text-[10px] text-muted-foreground/60 text-right pt-2">
           {{ t('gantt.updated', { time: relativeTime(store.lastRefreshedAt) }) }}
