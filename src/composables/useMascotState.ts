@@ -60,7 +60,7 @@ export function useMascotState() {
   const appSettings = useAppSettingsStore()
   const live = useLiveRunsStore()
 
-  const enabled = computed(() => appSettings.settings?.cyber_fox_enabled !== 'false')
+  const enabled = computed(() => appSettings.settings?.cyber_fox_enabled === 'true')
   const soundEnabled = computed(() => appSettings.settings?.cyber_fox_sound !== 'false')
   // Lite / performance mode: opt-in effect trimming for weaker machines.
   const liteMode = computed(() => appSettings.settings?.cyber_fox_lite === 'true')
