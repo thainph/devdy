@@ -49,7 +49,7 @@ use commands::projects::{
     add_project, add_repo, apply_skill, apply_skill_to_all_projects, detect_project_info,
     get_applied_skills, list_projects, list_repos, list_sync_conflicts, open_in_chrome,
     open_in_folder, open_in_terminal, open_in_vscode, remove_project, remove_repo,
-    remove_skill_from_project,
+    remove_skill_from_project, reorder_projects,
     resolve_sync_conflict, update_project, update_repo,
 };
 use commands::rules::{
@@ -265,6 +265,7 @@ pub fn run() {
             add_project,
             remove_project,
             update_project,
+            reorder_projects,
             list_github_accounts,
             create_github_account,
             update_github_account,

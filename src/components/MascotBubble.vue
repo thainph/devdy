@@ -4,11 +4,10 @@
 // while hovered, and can be dismissed with the × button. Positioned relative to
 // the nearest positioned ancestor (the fox container), so both the in-app and
 // desktop-pet surfaces just drop it inside the fox wrapper.
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Info, CheckCircle2, AlertCircle, Loader2, ShieldAlert, X } from 'lucide-vue-next'
-import type { Component } from 'vue'
-import type { MascotBubbleMessage, MascotBubbleVariant } from '@/composables/useMascotBubble'
+import { X } from 'lucide-vue-next'
+import type { MascotBubbleMessage } from '@/composables/useMascotBubble'
 
 const props = defineProps<{ message: MascotBubbleMessage | null }>()
 
@@ -16,26 +15,40 @@ const { t } = useI18n()
 
 const visible = ref(false)
 const shown = ref<MascotBubbleMessage | null>(null)
+// Text revealed so far by the typewriter effect + whether it's still typing.
+const typed = ref('')
+const isTyping = ref(false)
 let hideTimer: ReturnType<typeof setTimeout> | null = null
+let typeTimer: ReturnType<typeof setTimeout> | null = null
 let hovered = false
 
-const ICONS: Record<MascotBubbleVariant, Component> = {
-  info: Info,
-  success: CheckCircle2,
-  error: AlertCircle,
-  thinking: Loader2,
-  permission: ShieldAlert,
+// Typewriter tuning: ~26ms/char, but the whole line never takes longer than
+// TYPE_MAX so long messages still finish promptly.
+const TYPE_SPEED = 26
+const TYPE_MAX = 2200
+
+function prefersReducedMotion(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  )
 }
 
-const icon = computed<Component>(() => ICONS[shown.value?.variant ?? 'info'])
-const variantClass = computed(() => `mascot-bubble-box--${shown.value?.variant ?? 'info'}`)
-const spinning = computed(() => shown.value?.variant === 'thinking')
 
 function clearTimer() {
   if (hideTimer) {
     clearTimeout(hideTimer)
     hideTimer = null
   }
+}
+
+function stopTyping() {
+  if (typeTimer) {
+    clearTimeout(typeTimer)
+    typeTimer = null
+  }
+  isTyping.value = false
 }
 
 function armTimer(duration: number) {
@@ -45,7 +58,36 @@ function armTimer(duration: number) {
 
 function hide() {
   clearTimer()
+  stopTyping()
   visible.value = false
+}
+
+// Reveal the message one character at a time so the fox looks like it's talking.
+// The auto-hide timer only arms once typing finishes, so text is never cut off.
+function startTyping(msg: MascotBubbleMessage) {
+  stopTyping()
+  const full = msg.text ?? ''
+  if (prefersReducedMotion() || full.length <= 1) {
+    typed.value = full
+    if (!hovered) armTimer(msg.duration)
+    return
+  }
+  typed.value = ''
+  isTyping.value = true
+  const per = Math.max(8, Math.min(TYPE_SPEED, Math.floor(TYPE_MAX / full.length)))
+  let i = 0
+  const step = () => {
+    i += 1
+    typed.value = full.slice(0, i)
+    if (i < full.length) {
+      typeTimer = setTimeout(step, per)
+    } else {
+      typeTimer = null
+      isTyping.value = false
+      if (!hovered) armTimer(msg.duration)
+    }
+  }
+  typeTimer = setTimeout(step, per)
 }
 
 function onEnter() {
@@ -55,8 +97,9 @@ function onEnter() {
 
 function onLeave() {
   hovered = false
-  // Give a brief grace period, then hide.
-  armTimer(1200)
+  // Give a brief grace period, then hide — but not while still typing (the
+  // typewriter arms its own hide timer once it's done).
+  if (!isTyping.value) armTimer(1200)
 }
 
 watch(
@@ -65,11 +108,14 @@ watch(
     if (!id || !props.message) return
     shown.value = props.message
     visible.value = true
-    if (!hovered) armTimer(props.message.duration)
+    startTyping(props.message)
   },
 )
 
-onBeforeUnmount(clearTimer)
+onBeforeUnmount(() => {
+  clearTimer()
+  stopTyping()
+})
 </script>
 
 <template>
@@ -88,16 +134,13 @@ onBeforeUnmount(clearTimer)
       @mouseenter="onEnter"
       @mouseleave="onLeave"
     >
-      <div class="mascot-bubble-box" :class="variantClass" role="status">
-        <span class="mascot-bubble-chip">
-          <component
-            :is="icon"
-            class="mascot-bubble-icon"
-            :class="{ 'mascot-bubble-icon--spin': spinning }"
-            :stroke-width="2"
-          />
-        </span>
-        <span class="mascot-bubble-text">{{ shown.text }}</span>
+      <div class="mascot-bubble-box" role="status">
+        <span class="mascot-bubble-text"
+          >{{ typed }}<span
+            v-if="isTyping"
+            class="mascot-bubble-caret"
+            aria-hidden="true"
+          /></span>
         <button
           type="button"
           class="mascot-bubble-close"
@@ -107,11 +150,6 @@ onBeforeUnmount(clearTimer)
         >
           <X class="h-3 w-3" :stroke-width="2.25" />
         </button>
-        <!-- Trailing dots that bridge the bubble down to the fox's head. -->
-        <span class="mascot-bubble-connector" aria-hidden="true">
-          <span class="mascot-bubble-dot mascot-bubble-dot--1" />
-          <span class="mascot-bubble-dot mascot-bubble-dot--2" />
-        </span>
       </div>
     </div>
   </Transition>
@@ -120,7 +158,7 @@ onBeforeUnmount(clearTimer)
 <style scoped>
 .mascot-bubble-wrap {
   position: absolute;
-  bottom: calc(100% + 18px);
+  bottom: calc(100% + 20px);
   left: 50%;
   transform: translateX(-50%);
   z-index: 5;
@@ -128,50 +166,48 @@ onBeforeUnmount(clearTimer)
   /* Cap to the fox column but never overflow a narrow desktop-pet window. */
   width: max-content;
   max-width: min(300px, 84vw);
-  /* Two stacked drop-shadows wrap the whole silhouette (box + tail) for depth. */
+  /* One soft drop-shadow wraps the whole silhouette (box + tail) as a unit. */
   filter:
-    drop-shadow(0 2px 4px rgb(0 0 0 / 0.28))
-    drop-shadow(0 16px 30px rgb(0 0 0 / 0.42));
+    drop-shadow(0 3px 6px rgb(0 0 0 / 0.30))
+    drop-shadow(0 14px 26px rgb(0 0 0 / 0.38));
 }
 
 .mascot-bubble-box {
-  /* Per-variant accent colour (HSL triplet) consumed by the chip + glow. */
+  /* Single fixed accent colour for every state (glow + hairline + caret). */
   --bub: var(--primary);
   position: relative;
   display: flex;
   align-items: flex-start;
   gap: 9px;
-  padding: 10px 12px 11px 10px;
-  border-radius: 18px;
-  /* Soft, low-contrast rim instead of a hard 1px line. */
-  border: 1px solid hsl(var(--border) / 0.28);
-  /* Stronger top→bottom gradient reads as a lit, convex surface. */
+  padding: 11px 14px 12px 15px;
+  /* Big, even rounding = friendly chat-bubble pill. */
+  border-radius: 20px;
+  /* Soft, low-contrast rim. */
+  border: 1px solid hsl(var(--border) / 0.35);
+  /* Near-opaque surface so it reads as a solid bubble, with a gentle
+     top→bottom sheen for a little volume. */
   background:
     linear-gradient(
-      177deg,
-      hsl(var(--popover) / 0.98) 0%,
-      hsl(var(--popover) / 0.9) 55%,
-      hsl(var(--popover) / 0.82) 100%
+      180deg,
+      hsl(var(--popover) / 0.99) 0%,
+      hsl(var(--popover) / 0.97) 100%
     );
-  -webkit-backdrop-filter: blur(14px) saturate(1.35);
-  backdrop-filter: blur(14px) saturate(1.35);
+  -webkit-backdrop-filter: blur(12px) saturate(1.3);
+  backdrop-filter: blur(12px) saturate(1.3);
   color: hsl(var(--foreground));
   font-size: 12.5px;
   line-height: 1.42;
-  /* Bevel: bright inner top edge + soft inner bottom shade = rounded volume;
-     plus a faint coloured aura so it glows rather than sits flat. */
+  /* Bright inner top edge for a subtle bevel + a faint coloured aura. */
   box-shadow:
-    inset 0 1px 0 hsl(0 0% 100% / 0.14),
-    inset 0 6px 14px -10px hsl(0 0% 100% / 0.16),
-    inset 0 -14px 20px -14px hsl(240 55% 2% / 0.55),
-    0 0 24px -6px hsl(var(--bub) / 0.4);
+    inset 0 1px 0 hsl(0 0% 100% / 0.12),
+    0 0 22px -8px hsl(var(--bub) / 0.35);
 }
 
 /* Thin luminous hairline along the top edge — the "cyber" cue. */
 .mascot-bubble-box::before {
   content: "";
   position: absolute;
-  inset: 0 12px auto 12px;
+  inset: 0 14px auto 14px;
   top: 0;
   height: 1px;
   border-radius: 999px;
@@ -183,35 +219,24 @@ onBeforeUnmount(clearTimer)
   );
 }
 
-.mascot-bubble-box--success { --bub: 142 70% 45%; }
-.mascot-bubble-box--error { --bub: 0 72% 58%; }
-.mascot-bubble-box--permission { --bub: 38 92% 55%; }
-.mascot-bubble-box--thinking { --bub: var(--primary); }
-.mascot-bubble-box--info { --bub: var(--primary); }
-
-/* Glowing icon chip. */
-.mascot-bubble-chip {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  flex-shrink: 0;
-  margin-top: 1px;
-  border-radius: 8px;
-  background: linear-gradient(180deg, hsl(var(--bub) / 0.22), hsl(var(--bub) / 0.12));
-  box-shadow:
-    inset 0 1px 0 hsl(0 0% 100% / 0.18),
-    inset 0 0 0 1px hsl(var(--bub) / 0.3),
-    0 0 12px -4px hsl(var(--bub) / 0.5);
-}
-.mascot-bubble-icon {
-  width: 14px;
-  height: 14px;
-  color: hsl(var(--bub));
-}
-.mascot-bubble-icon--spin {
-  animation: mascot-bubble-spin 1s linear infinite;
+/* Chat-bubble tail: a rotated square growing out of the bottom edge, pointing
+   down at the fox. It shares the body's fill and carries the rim only on its two
+   outer (down-facing) edges, so it reads as one continuous silhouette. It sits
+   on top of the box's bottom border, hiding the seam. Offset slightly left of
+   centre for a natural, hand-drawn feel. */
+.mascot-bubble-box::after {
+  content: "";
+  position: absolute;
+  left: 42%;
+  bottom: -7px;
+  width: 16px;
+  height: 16px;
+  transform: translateX(-50%) rotate(45deg);
+  background: hsl(var(--popover) / 0.98);
+  border-right: 1px solid hsl(var(--border) / 0.35);
+  border-bottom: 1px solid hsl(var(--border) / 0.35);
+  /* Round the outer tip so the tail curves instead of ending in a sharp point. */
+  border-bottom-right-radius: 5px;
 }
 
 .mascot-bubble-text {
@@ -229,6 +254,23 @@ onBeforeUnmount(clearTimer)
   -webkit-line-clamp: 4;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+/* Blinking caret shown while the typewriter is revealing the text. */
+.mascot-bubble-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 1px;
+  vertical-align: -0.15em;
+  border-radius: 1px;
+  background: hsl(var(--bub));
+  animation: mascot-bubble-caret 900ms steps(2, start) infinite;
+}
+
+@keyframes mascot-bubble-caret {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
 }
 
 .mascot-bubble-close {
@@ -249,46 +291,10 @@ onBeforeUnmount(clearTimer)
   color: hsl(var(--foreground));
 }
 
-/* Connector: two shrinking glass beads that trail from the bubble down toward
-   the fox's head, so the pairing reads as one organic "the fox is speaking"
-   unit instead of a bubble with a detached pointer. */
-.mascot-bubble-connector {
-  position: absolute;
-  top: calc(100% - 2px);
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 3px;
-  padding-top: 3px;
-}
-.mascot-bubble-dot {
-  border-radius: 999px;
-  background: linear-gradient(180deg, hsl(var(--popover) / 0.97), hsl(var(--popover) / 0.84));
-  border: 1px solid hsl(var(--border) / 0.25);
-  box-shadow:
-    inset 0 1px 0 hsl(0 0% 100% / 0.16),
-    0 0 10px -4px hsl(var(--bub) / 0.55);
-}
-.mascot-bubble-dot--1 {
-  width: 9px;
-  height: 9px;
-}
-.mascot-bubble-dot--2 {
-  width: 5.5px;
-  height: 5.5px;
-}
-
-@keyframes mascot-bubble-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .mascot-bubble-icon--spin {
+  .mascot-bubble-caret {
     animation: none;
+    opacity: 0;
   }
 }
 </style>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useProjectsStore, type DetectedProjectInfo, type DetectedRepo } from '@/stores/projects'
@@ -9,7 +9,7 @@ import { useServersStore, type ProjectServer } from '@/stores/servers'
 import { useAwsAccountsStore } from '@/stores/awsAccounts'
 import { open } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@/lib/tauri'
-import { Plus, FolderOpen, GitBranch, Github, Gitlab, Trash2, X, SquareTerminal, Code2, Settings, HardDrive, Cloud, GanttChartSquare } from 'lucide-vue-next'
+import { Plus, FolderOpen, GitBranch, Github, Gitlab, Trash2, X, SquareTerminal, Code2, Settings, HardDrive, Cloud, GanttChartSquare, GripVertical } from 'lucide-vue-next'
 import { Button, Input, Badge, Modal, Card } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
@@ -86,6 +86,55 @@ const projectChips = computed(() => {
     }
   }
   return map
+})
+
+// --- Drag & drop reorder (pointer-based) --------------------------------------
+// Tauri's webview reserves native HTML5 drag-and-drop for OS file drops, which
+// swallows dragstart/dragover — so reordering uses raw pointer events instead.
+// Only the grip handle starts a drag; elementFromPoint locates the card under
+// the cursor via its `data-project-index` attribute.
+const dragIndex = ref<number | null>(null)
+const dragOverIndex = ref<number | null>(null)
+
+function indexFromPoint(x: number, y: number): number | null {
+  const el = document.elementFromPoint(x, y)?.closest('[data-project-index]') as HTMLElement | null
+  if (!el) return null
+  const idx = Number(el.dataset.projectIndex)
+  return Number.isNaN(idx) ? null : idx
+}
+
+function onDragMove(e: PointerEvent) {
+  if (dragIndex.value === null) return
+  const over = indexFromPoint(e.clientX, e.clientY)
+  if (over !== null) dragOverIndex.value = over
+}
+
+function endDrag() {
+  window.removeEventListener('pointermove', onDragMove)
+  window.removeEventListener('pointerup', endDrag)
+  document.body.style.userSelect = ''
+  const from = dragIndex.value
+  const to = dragOverIndex.value
+  dragIndex.value = null
+  dragOverIndex.value = null
+  if (from !== null && to !== null && from !== to) {
+    store.reorder(from, to)
+  }
+}
+
+function startDrag(index: number, e: PointerEvent) {
+  e.preventDefault()
+  e.stopPropagation()
+  dragIndex.value = index
+  dragOverIndex.value = index
+  document.body.style.userSelect = 'none'
+  window.addEventListener('pointermove', onDragMove)
+  window.addEventListener('pointerup', endDrag)
+}
+
+onBeforeUnmount(() => {
+  window.removeEventListener('pointermove', onDragMove)
+  window.removeEventListener('pointerup', endDrag)
 })
 
 interface PendingRepo extends DetectedRepo {
@@ -266,14 +315,29 @@ async function handleOpenInFolder(project: { path: string }) {
 
       <div v-else class="grid grid-cols-1 sm:grid-cols-2 2xl:grid-cols-3 gap-3">
         <Card
-          v-for="project in store.projects"
+          v-for="(project, index) in store.projects"
           :key="project.id"
+          :data-project-index="index"
           class="group relative flex flex-col transition-all duration-150 cursor-pointer hover:border-primary/40 hover:shadow-[0_1px_3px_0_rgb(0_0_0/0.08)] hover:-translate-y-0.5"
+          :class="[
+            dragIndex === index ? 'opacity-50' : '',
+            dragOverIndex === index && dragIndex !== null && dragIndex !== index ? 'ring-2 ring-primary/60 ring-offset-1 ring-offset-background' : '',
+          ]"
           body-class="flex flex-col flex-1 p-4"
           @click="router.push(`/projects/${project.id}`)"
         >
           <!-- hover accent line -->
           <span class="absolute inset-x-0 top-0 h-0.5 origin-left scale-x-0 bg-linear-to-r from-primary to-primary/30 transition-transform duration-200 group-hover:scale-x-100" />
+
+          <!-- Drag handle: appears on hover, starts a pointer-based reorder -->
+          <button
+            class="absolute top-1.5 right-1.5 z-10 flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground/50 opacity-0 hover:text-foreground hover:bg-accent group-hover:opacity-100 transition-all cursor-grab active:cursor-grabbing touch-none"
+            :title="t('projects.dragToReorder')"
+            @click.stop
+            @pointerdown="startDrag(index, $event)"
+          >
+            <GripVertical class="h-4 w-4" :stroke-width="2" />
+          </button>
 
           <!-- Icon + name/path -->
           <div class="flex items-start gap-3 mb-3">

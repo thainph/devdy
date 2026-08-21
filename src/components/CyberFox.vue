@@ -5,7 +5,8 @@
  * Assets: fox-assets/generated/layers-2_5d (co-registered 1024² layers + manifest).
  * Public API unchanged: state / size / label / reducedMotion.
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { mascotSpeaking } from '@/composables/useMascotSpeaking'
 
 type CyberFoxState =
   | 'idle' | 'thinking' | 'loading'
@@ -24,6 +25,32 @@ const props = withDefaults(defineProps<{
   label: '',
   reducedMotion: false,
   streams: 1,
+})
+
+// Follow the shared speaking signal for THIS window. The sound player sets it in
+// the main window; the desktop-pet window sets it from a forwarded event
+// (MascotWindow → setSpeaking), so this component never needs a prop.
+const isSpeaking = computed(() => mascotSpeaking.value)
+
+// --- talking mouth flap -------------------------------------------------
+// While speaking, only the head IMAGE is swapped for a co-registered sprite that
+// cycles through mouth shapes; the rig's ears + eyes stay overlaid on top (so
+// the eyes still follow the fox state via the normal eye system). Frames 0..3
+// are the open-eye set whose baked eyes sit exactly under the rig eyes, closed →
+// small → open → wide. The head stays fixed; only the mouth moves.
+const TALK_SEQ = [0, 1, 2, 3, 2, 1]
+const talkStep = ref(0)
+// Only swap to the talking sprite when we can actually animate it.
+const showTalk = computed(() => isSpeaking.value && !props.reducedMotion)
+const talkFrame = computed(() => A_TALK[TALK_SEQ[talkStep.value % TALK_SEQ.length]] || A_TALK[0])
+let talkTimer: ReturnType<typeof setInterval> | null = null
+function stopTalk() {
+  if (talkTimer) { clearInterval(talkTimer); talkTimer = null }
+  talkStep.value = 0
+}
+watch(showTalk, (on) => {
+  stopTalk()
+  if (on) talkTimer = setInterval(() => { talkStep.value += 1 }, 110)
 })
 
 const SIZES = { sm: 96, md: 148, lg: 196 } as const
@@ -51,6 +78,8 @@ const A_EARR = A('ear-right.webp')
 const A_TAILO = A('tail-orange.webp')
 const A_TAILB = A('tail-blue.webp')
 const A_GROUND = A('effects/ground-glow.webp')
+// Talking-head mouth-flap frames (full head sprite: ears + eyes + mouth baked).
+const A_TALK = Array.from({ length: 12 }, (_, i) => A(`talk/${String(i).padStart(2, '0')}.webp`))
 
 const originVars = {
   '--o-head': origin(manifest?.layers?.head?.pivot),
@@ -174,6 +203,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   io?.disconnect()
   document.removeEventListener('visibilitychange', onVisibility)
+  stopTalk()
 })
 </script>
 
@@ -181,7 +211,7 @@ onBeforeUnmount(() => {
   <div
     ref="rootRef"
     class="cyber-fox"
-    :class="{ 'cyber-fox--reduced': reducedMotion, 'cyber-fox--paused': paused }"
+    :class="{ 'cyber-fox--reduced': reducedMotion, 'cyber-fox--paused': paused, 'cyber-fox--speaking': isSpeaking }"
     :data-state="state"
     :data-size="sizeBucket"
     :style="rootStyle"
@@ -214,9 +244,13 @@ onBeforeUnmount(() => {
 
     <!-- body / head / ears -->
     <img class="l l--body breathe" :src="A_BODY" alt="" draggable="false" />
-    <!-- head group: head + ears + eyes share the head motion; ears/eyes add their own on top -->
+    <!-- head group: head + ears + eyes share the head motion. While a voice clip
+         plays, ONLY the head image is swapped for a mouth-flap sprite; the rig's
+         glowing cyber eyes and pointy ears stay overlaid on top, so the fox keeps
+         its identity and the eyes still follow the fox state. -->
     <div class="l l--head-group head-move">
-      <img class="l l--head" :src="A_HEAD" alt="" draggable="false" />
+      <img v-if="!showTalk" class="l l--head" :src="A_HEAD" alt="" draggable="false" />
+      <img v-else class="l l--head l--talk" :src="talkFrame" alt="" draggable="false" />
       <img class="l l--earL" :src="A_EARL" alt="" draggable="false" />
       <img class="l l--earR" :src="A_EARR" alt="" draggable="false" />
       <div class="l l--eyes-wrap">
@@ -397,7 +431,9 @@ onBeforeUnmount(() => {
 /* ground — anchored at the feet */
 .l--ground {
   position: absolute;
-  left: 50%;
+  /* Nudged left of dead-centre to compensate for the glow artwork being ~3%
+     brighter on its right half, which otherwise reads as leaning right. */
+  left: 47%;
   bottom: 3%;
   z-index: 0;
   height: auto;

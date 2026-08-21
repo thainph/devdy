@@ -11,19 +11,23 @@ import CyberFoxFloating from '@/components/CyberFoxFloating.vue'
 import { useMascotState } from '@/composables/useMascotState'
 import { useMascotBubble } from '@/composables/useMascotBubble'
 import { useMascotBubbleFeed } from '@/composables/useMascotBubbleFeed'
+import { useMascotSound } from '@/composables/useMascotSound'
+import { mascotSpeaking } from '@/composables/useMascotSpeaking'
 import {
   MASCOT_READY_EVENT,
   closeMascotWindow,
   emitMascotBubble,
+  emitMascotSpeaking,
   emitMascotState,
   openMascotWindow,
 } from '@/lib/mascotWindow'
 
-const { enabled, mode, mascotSize, displayState, runningCount } = useMascotState()
+const { enabled, soundEnabled, mode, mascotSize, displayState, runningCount } = useMascotState()
 
 // Feed app-wide signals (run phase + toasts) into the shared speech bubble.
 useMascotBubbleFeed(displayState)
 const { state: bubble } = useMascotBubble()
+const sound = useMascotSound()
 
 let unlistenReady: UnlistenFn | null = null
 
@@ -61,15 +65,24 @@ watch([displayState, runningCount], () => {
   if (enabled.value && mode.value === 'desktop') emitMascotState(currentPayload())
 })
 
-// Forward speech-bubble messages to the pet window while in desktop mode.
+// Forward speech-bubble messages to the pet window while in desktop mode, and
+// play the fox's "voice" for the bubble's variant. The sound fires from the
+// main window in BOTH modes (this window is always alive and owns the settings),
+// so the desktop pet stays a dumb visual renderer.
 watch(
   () => bubble.current?.id,
   () => {
-    if (bubble.current && enabled.value && mode.value === 'desktop') {
-      emitMascotBubble({ ...bubble.current })
-    }
+    if (!bubble.current || !enabled.value) return
+    if (soundEnabled.value) sound.play(bubble.current.variant, bubble.current.voiceClip)
+    if (mode.value === 'desktop') emitMascotBubble({ ...bubble.current })
   },
 )
+
+// Forward the "talking" flag to the pet window: audio plays here (main window),
+// but the fox that should flap its mouth lives in the pet window.
+watch(mascotSpeaking, (v) => {
+  if (enabled.value && mode.value === 'desktop') emitMascotSpeaking(v)
+})
 
 // Resize the pet window when the size preference changes.
 watch(mascotSize, async () => {

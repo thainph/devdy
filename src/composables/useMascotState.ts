@@ -61,6 +61,7 @@ export function useMascotState() {
   const live = useLiveRunsStore()
 
   const enabled = computed(() => appSettings.settings?.cyber_fox_enabled !== 'false')
+  const soundEnabled = computed(() => appSettings.settings?.cyber_fox_sound !== 'false')
   const mode = computed<CyberFoxMode>(() =>
     appSettings.settings?.cyber_fox_mode === 'desktop' ? 'desktop' : 'in-app',
   )
@@ -125,5 +126,5 @@ export function useMascotState() {
     if (transientTimer) clearTimeout(transientTimer)
   })
 
-  return { enabled, mode, mascotSize, displayState, runningCount }
+  return { enabled, soundEnabled, mode, mascotSize, displayState, runningCount }
 }

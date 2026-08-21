@@ -16,6 +16,7 @@ export interface Project {
   github_project_field_mappings: string | null
   run_count: number
   last_used_at: string | null
+  position: number
 }
 
 export interface BoardField {
@@ -123,6 +124,22 @@ export const useProjectsStore = defineStore('projects', () => {
       error.value = String(e)
     } finally {
       loading.value = false
+    }
+  }
+
+  /** Move the project at `from` to `to` (drag-and-drop reorder), then persist. */
+  async function reorder(from: number, to: number) {
+    if (from === to) return
+    if (from < 0 || from >= projects.value.length) return
+    if (to < 0 || to >= projects.value.length) return
+    const snapshot = projects.value.slice()
+    const [moved] = projects.value.splice(from, 1)
+    projects.value.splice(to, 0, moved)
+    try {
+      await invoke('reorder_projects', { ids: projects.value.map(p => p.id) })
+    } catch (e) {
+      error.value = String(e)
+      projects.value = snapshot
     }
   }
 
@@ -286,7 +303,7 @@ export const useProjectsStore = defineStore('projects', () => {
 
   return {
     projects, loading, error, conflicts, ruleConflicts,
-    fetchProjects, detectProjectInfo, addProject, removeProject, updateProject,
+    fetchProjects, reorder, detectProjectInfo, addProject, removeProject, updateProject,
     resolveProjectBoard, listRepos, addRepo, updateRepo, removeRepo,
     getAppliedSkills, applySkill, removeSkillFromProject,
     setProjectAccount, setProjectGitlabAccount, setProjectAwsAccount, fetchConflicts, resolveConflict,

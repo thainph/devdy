@@ -11,6 +11,7 @@ import { useI18n } from 'vue-i18n'
 import { setLocale, SUPPORTED_LOCALES } from '@/i18n'
 import { Button, Input, Textarea, Card, AppSelect } from '@/components/ui'
 import CyberFox from '@/components/CyberFox.vue'
+import MascotBubble from '@/components/MascotBubble.vue'
 import RemoteControlSettings from '@/components/remote/RemoteControlSettings.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
@@ -18,7 +19,9 @@ import { useGithubAccountsStore, type PatValidation } from '@/stores/githubAccou
 import { useGitlabAccountsStore, type GitlabPatValidation } from '@/stores/gitlabAccounts'
 import { useAwsAccountsStore, type AwsAccountPayload, type AwsAuthMethod, type AwsValidation } from '@/stores/awsAccounts'
 import { useAppSettingsStore } from '@/stores/appSettings'
-import { useMascotBubble, type MascotBubbleVariant } from '@/composables/useMascotBubble'
+import { type MascotBubbleVariant, type MascotBubbleMessage } from '@/composables/useMascotBubble'
+import { pickMascotVoice, useMascotSound } from '@/composables/useMascotSound'
+import { useMascotSpeaking } from '@/composables/useMascotSpeaking'
 import { useBudgetStore } from '@/stores/budget'
 import { useModelCatalogStore } from '@/stores/modelCatalog'
 
@@ -62,6 +65,7 @@ interface AppSettings {
   cyber_fox_enabled: string
   cyber_fox_size: string
   cyber_fox_mode: string
+  cyber_fox_sound: string
 }
 
 const settings = ref<AppSettings>({
@@ -91,6 +95,7 @@ const settings = ref<AppSettings>({
   cyber_fox_enabled: 'true',
   cyber_fox_size: 'md',
   cyber_fox_mode: 'in-app',
+  cyber_fox_sound: 'true',
 })
 
 type CyberFoxPreviewState =
@@ -116,6 +121,10 @@ const cyberFoxEnabledOptions = computed(() => [
   { value: 'true', label: t('settings.general.on') },
   { value: 'false', label: t('settings.general.off') },
 ])
+const cyberFoxSoundOptions = computed(() => [
+  { value: 'true', label: t('settings.general.on') },
+  { value: 'false', label: t('settings.general.off') },
+])
 const cyberFoxSizeOptions = computed(() => [
   { value: 'sm', label: t('settings.mascot.sizeSmall') },
   { value: 'md', label: t('settings.mascot.sizeMedium') },
@@ -126,22 +135,44 @@ const cyberFoxModeOptions = computed(() => [
   { value: 'desktop', label: t('settings.mascot.modeDesktop') },
 ])
 
-// Manual speech-bubble tester: fires a sample bubble of each kind so the styling
-// / behaviour can be verified without waiting for a real run or toast.
-const { push: pushBubble } = useMascotBubble()
-const bubbleSamples = computed<{ variant: MascotBubbleVariant; label: string; text: string }[]>(() => [
-  { variant: 'thinking', label: t('settings.mascot.states.thinking'), text: t('mascot.bubble.busy') },
-  { variant: 'permission', label: t('settings.mascot.states.permission'), text: t('mascot.bubble.permission') },
-  { variant: 'success', label: t('settings.mascot.states.success'), text: t('mascot.bubble.success') },
-  { variant: 'error', label: t('settings.mascot.states.error'), text: t('mascot.bubble.error') },
-  { variant: 'info', label: t('settings.mascot.testBubbleInfo'), text: t('settings.mascot.testBubbleSample') },
-])
-function fireTestBubble(variant: MascotBubbleVariant, text: string) {
-  pushBubble(text, variant)
+// Which speech-bubble variant each preview state should speak in.
+const PREVIEW_STATE_VARIANT: Record<CyberFoxPreviewState, MascotBubbleVariant> = {
+  idle: 'info',
+  thinking: 'thinking',
+  loading: 'thinking',
+  success: 'success',
+  error: 'error',
+  permission: 'permission',
 }
-const cyberFoxPreviewOptions = computed(() =>
-  CYBER_FOX_STATES.map((state) => ({ value: state.id, label: t(state.labelKey) })),
-)
+
+// Unified preview: selecting a state swaps the animation AND speaks its line +
+// plays the matching clip, all inside the preview card. The bubble is kept in a
+// LOCAL slot (not the global mascot channel) so testing never disturbs the live
+// fox floating elsewhere in the app.
+const previewBubble = ref<MascotBubbleMessage | null>(null)
+const { play: playMascotSound } = useMascotSound()
+const { beginSpeaking } = useMascotSpeaking()
+let previewBubbleSeq = 0
+
+function selectPreviewState(state: CyberFoxPreviewState) {
+  cyberFoxPreviewState.value = state
+  const variant = PREVIEW_STATE_VARIANT[state]
+  // Prefer a recorded take so the bubble text matches the spoken voice clip.
+  const line = pickMascotVoice(variant)
+  previewBubble.value = {
+    id: ++previewBubbleSeq,
+    text: line?.text ?? t('settings.mascot.testBubbleSample'),
+    variant,
+    duration: 4000,
+    voiceClip: line?.clip,
+  }
+  // Always demo the mouth flap so the preview reliably shows the effect on every
+  // click — even when sound is muted, or when a previous clip is still playing
+  // (playMascotSound drops overlapping requests). If sound is on and audio
+  // actually starts, its "playing" event re-arms the flag to the real clip length.
+  beginSpeaking(1600)
+  if (settings.value.cyber_fox_sound === 'true') playMascotSound(variant, line?.clip)
+}
 
 // Claude model choices = curated aliases + any newly-released models discovered
 // from the account (Codex has no discovery API, so it stays curated).
@@ -865,6 +896,16 @@ watch(() => settings.value.language, (v) => {
               </p>
             </div>
 
+            <div class="space-y-1.5">
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                {{ t('settings.mascot.sound') }}
+              </label>
+              <AppSelect size="sm" v-model="settings.cyber_fox_sound" :options="cyberFoxSoundOptions" />
+              <p class="text-[11px] text-muted-foreground leading-relaxed">
+                {{ t('settings.mascot.soundHint') }}
+              </p>
+            </div>
+
             <div class="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
               <div class="space-y-1.5">
                 <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
@@ -881,21 +922,27 @@ watch(() => settings.value.language, (v) => {
 
           <div class="h-px bg-border" />
 
+          <!-- Unified preview: animation + sound + speech bubble in one place -->
           <div class="space-y-4">
-            <div class="space-y-1.5">
+            <div class="space-y-1">
               <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
                 {{ t('settings.mascot.previewState') }}
               </label>
-              <AppSelect size="sm" v-model="cyberFoxPreviewState" :options="cyberFoxPreviewOptions" />
+              <p class="text-[11px] text-muted-foreground leading-relaxed">
+                {{ t('settings.mascot.previewHint') }}
+              </p>
             </div>
 
             <div class="rounded-md border border-border/70 bg-muted/20 p-4">
-              <div class="flex min-h-[220px] items-center justify-center">
-                <CyberFox
-                  :state="cyberFoxPreviewState"
-                  :size="196"
-                  :label="t('settings.mascot.previewLabel')"
-                />
+              <div class="flex min-h-[260px] items-end justify-center pt-20">
+                <div class="relative">
+                  <MascotBubble :message="previewBubble" />
+                  <CyberFox
+                    :state="cyberFoxPreviewState"
+                    :size="196"
+                    :label="t('settings.mascot.previewLabel')"
+                  />
+                </div>
               </div>
             </div>
 
@@ -907,7 +954,7 @@ watch(() => settings.value.language, (v) => {
                 class="group flex min-h-[116px] flex-col items-center justify-between rounded-md border border-border/70 bg-background/70 px-2.5 py-2 text-center transition-colors hover:border-primary/50 hover:bg-accent/50 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 :class="cyberFoxPreviewState === state.id ? 'border-primary/60 bg-accent text-foreground' : 'text-muted-foreground'"
                 :aria-pressed="cyberFoxPreviewState === state.id"
-                @click="cyberFoxPreviewState = state.id"
+                @click="selectPreviewState(state.id)"
               >
                 <CyberFox
                   :state="state.id"
@@ -916,29 +963,6 @@ watch(() => settings.value.language, (v) => {
                 />
                 <span class="text-[11px] font-medium leading-tight">{{ t(state.labelKey) }}</span>
               </button>
-            </div>
-          </div>
-
-          <div class="h-px bg-border" />
-
-          <!-- Speech bubble tester -->
-          <div class="space-y-2">
-            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-              {{ t('settings.mascot.testBubble') }}
-            </label>
-            <p class="text-[11px] text-muted-foreground leading-relaxed">
-              {{ t('settings.mascot.testBubbleHint') }}
-            </p>
-            <div class="flex flex-wrap gap-2 pt-1">
-              <Button
-                v-for="s in bubbleSamples"
-                :key="s.variant"
-                variant="outline"
-                size="sm"
-                @click="fireTestBubble(s.variant, s.text)"
-              >
-                {{ s.label }}
-              </Button>
             </div>
           </div>
         </Card>

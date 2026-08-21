@@ -8,6 +8,8 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useProjectsStore } from '@/stores/projects'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
+import { useAppSettingsStore } from '@/stores/appSettings'
+import { useMascotState } from '@/composables/useMascotState'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
 
 /**
@@ -30,6 +32,10 @@ const router = useRouter()
 const live = useLiveRunsStore()
 const projectsStore = useProjectsStore()
 const tabsStore = useWorkspaceTabsStore()
+const appSettings = useAppSettingsStore()
+// When the Cyber Fox mascot is on, it already surfaces pending permissions in
+// its speech bubble, so we suppress the duplicate native OS notification.
+const { enabled: mascotEnabled } = useMascotState()
 
 // The run currently open in RunView — its request is already shown there.
 const activeRunId = computed(() =>
@@ -78,6 +84,8 @@ let unlistenClick: UnlistenFn | null = null
 const notified = new Set<string>()
 
 onMounted(async () => {
+  // Make sure the mascot-enabled flag is populated before we start gating.
+  appSettings.ensureLoaded().catch(() => {})
   try {
     permissionGranted = await isPermissionGranted()
     if (!permissionGranted) {
@@ -128,6 +136,8 @@ watch(
     }
 
     if (!permissionGranted) return
+    // Mascot on → the speech bubble covers it; skip the native notification.
+    if (mascotEnabled.value) return
     for (const t of list) {
       const id = t.request.request_id
       if (notified.has(id)) continue
