@@ -32,7 +32,7 @@ function coarsePhaseOf(state: CyberFoxState): Coarse {
 }
 
 export function useMascotBubbleFeed(displayState: Ref<CyberFoxState>) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const { state: toastState } = useToast()
   const { push } = useMascotBubble()
 
@@ -43,7 +43,7 @@ export function useMascotBubbleFeed(displayState: Ref<CyberFoxState>) {
   // words) so the bubble text mirrors what the fox actually says; fall back to
   // the generic i18n string when no clip is installed for that variant.
   function sayPhase(variant: MascotBubbleVariant, fallbackKey: string) {
-    const line = pickMascotVoice(variant)
+    const line = pickMascotVoice(variant, String(locale.value))
     push(line?.text ?? t(fallbackKey), variant, undefined, line?.clip)
   }
 

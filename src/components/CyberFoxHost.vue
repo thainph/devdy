@@ -14,6 +14,7 @@ import { useMascotBubble } from '@/composables/useMascotBubble'
 import { useMascotBubbleFeed } from '@/composables/useMascotBubbleFeed'
 import { triggerMascotLevelUp } from '@/composables/useMascotLevelUp'
 import { useMascotSound } from '@/composables/useMascotSound'
+import { useMascotSpeech, speechSupported } from '@/composables/useMascotSpeech'
 import { mascotSpeaking } from '@/composables/useMascotSpeaking'
 import { useMascotLevelStore } from '@/stores/mascotLevel'
 import type { MascotRealmId } from '@/lib/mascotLevel'
@@ -26,13 +27,17 @@ import {
   openMascotWindow,
 } from '@/lib/mascotWindow'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const {
   enabled,
   soundEnabled,
   liteMode,
   mode,
   mascotSize,
+  voiceNameVi,
+  voiceNameEn,
+  voiceRate,
+  voicePitch,
   displayState,
   runningCount,
   mascotLevel,
@@ -45,6 +50,7 @@ const {
 useMascotBubbleFeed(displayState)
 const { state: bubble, push } = useMascotBubble()
 const sound = useMascotSound()
+const speech = useMascotSpeech()
 const levelStore = useMascotLevelStore()
 
 // realm id → i18n label key (matches the Settings realm list).
@@ -141,7 +147,20 @@ watch(
   () => bubble.current?.id,
   () => {
     if (!bubble.current || !enabled.value) return
-    if (soundEnabled.value) sound.play(bubble.current.variant, bubble.current.voiceClip)
+    // Give the fox a voice for this bubble. Both languages speak the bubble text
+    // via the browser's text-to-speech (per-language voice + shared rate/pitch).
+    // If Web Speech isn't available we fall back to the recorded mp3 clips.
+    if (soundEnabled.value) {
+      if (speechSupported()) {
+        speech.speak(bubble.current.text, String(locale.value), {
+          voiceName: locale.value === 'vi' ? voiceNameVi.value : voiceNameEn.value,
+          rate: voiceRate.value,
+          pitch: voicePitch.value,
+        })
+      } else {
+        sound.play(bubble.current.variant, bubble.current.voiceClip)
+      }
+    }
     if (mode.value === 'desktop') emitMascotBubble({ ...bubble.current })
   },
 )

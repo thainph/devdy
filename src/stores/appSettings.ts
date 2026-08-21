@@ -37,6 +37,10 @@ export interface AppSettings {
   cyber_fox_mode: string
   cyber_fox_sound: string
   cyber_fox_lite: string
+  cyber_fox_voice_vi: string
+  cyber_fox_voice_en: string
+  cyber_fox_voice_rate: string
+  cyber_fox_voice_pitch: string
 }
 
 export const useAppSettingsStore = defineStore('appSettings', () => {
