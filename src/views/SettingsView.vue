@@ -116,6 +116,85 @@ const CYBER_FOX_STATES: { id: CyberFoxPreviewState; labelKey: string }[] = [
   { id: 'permission', labelKey: 'settings.mascot.states.permission' },
 ]
 const cyberFoxPreviewState = ref<CyberFoxPreviewState>('idle')
+
+const PET_REALMS = [
+  {
+    id: 'luyen_khi',
+    labelKey: 'settings.mascot.levels.realms.luyenKhi',
+    accentClass: 'border-sky-500/50 bg-sky-500/10 text-sky-700 dark:text-sky-200',
+    barClass: 'bg-sky-500',
+  },
+  {
+    id: 'truc_co',
+    labelKey: 'settings.mascot.levels.realms.trucCo',
+    accentClass: 'border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200',
+    barClass: 'bg-emerald-500',
+  },
+  {
+    id: 'kim_dan',
+    labelKey: 'settings.mascot.levels.realms.kimDan',
+    accentClass: 'border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-200',
+    barClass: 'bg-amber-500',
+  },
+  {
+    id: 'nguyen_anh',
+    labelKey: 'settings.mascot.levels.realms.nguyenAnh',
+    accentClass: 'border-violet-500/50 bg-violet-500/10 text-violet-700 dark:text-violet-200',
+    barClass: 'bg-violet-500',
+  },
+  {
+    id: 'hoa_than',
+    labelKey: 'settings.mascot.levels.realms.hoaThan',
+    accentClass: 'border-rose-500/50 bg-rose-500/10 text-rose-700 dark:text-rose-200',
+    barClass: 'bg-rose-500',
+  },
+  {
+    id: 'anh_bien',
+    labelKey: 'settings.mascot.levels.realms.anhBien',
+    accentClass: 'border-cyan-500/50 bg-cyan-500/10 text-cyan-700 dark:text-cyan-200',
+    barClass: 'bg-cyan-500',
+  },
+  {
+    id: 'van_dinh',
+    labelKey: 'settings.mascot.levels.realms.vanDinh',
+    accentClass: 'border-fuchsia-500/50 bg-fuchsia-500/10 text-fuchsia-700 dark:text-fuchsia-200',
+    barClass: 'bg-fuchsia-500',
+  },
+] as const
+type PetRealm = (typeof PET_REALMS)[number]
+type PetRealmId = PetRealm['id']
+const PET_TIERS = [1, 2, 3, 4, 5] as const
+type PetTier = (typeof PET_TIERS)[number]
+const PET_TIER_COUNT = PET_TIERS.length
+const selectedPetRealmId = ref<PetRealmId>('luyen_khi')
+const selectedPetTier = ref<PetTier>(1)
+const selectedPetRealm = computed<PetRealm>(() =>
+  PET_REALMS.find((realm) => realm.id === selectedPetRealmId.value) ?? PET_REALMS[0],
+)
+const selectedPetRealmIndex = computed(() =>
+  Math.max(0, PET_REALMS.findIndex((realm) => realm.id === selectedPetRealmId.value)),
+)
+const selectedPetLevel = computed(() =>
+  selectedPetRealmIndex.value * PET_TIER_COUNT + selectedPetTier.value,
+)
+const selectedPetProgress = computed(() =>
+  Math.round((selectedPetTier.value / PET_TIER_COUNT) * 100),
+)
+
+function selectPetRealm(realm: PetRealm) {
+  selectedPetRealmId.value = realm.id
+}
+
+function selectPetTier(tier: PetTier) {
+  selectedPetTier.value = tier
+}
+
+function petRealmRange(index: number) {
+  const from = index * PET_TIER_COUNT + 1
+  const to = from + PET_TIER_COUNT - 1
+  return t('settings.mascot.levels.levelRange', { from, to })
+}
+
 const MASCOT_POSITION_STORAGE_KEY = 'devdy.cyberFox.position.v1'
 const cyberFoxEnabledOptions = computed(() => [
   { value: 'true', label: t('settings.general.on') },
@@ -941,7 +1020,17 @@ watch(() => settings.value.language, (v) => {
                     :state="cyberFoxPreviewState"
                     :size="196"
                     :label="t('settings.mascot.previewLabel')"
+                    :evolution-realm="selectedPetRealmId"
+                    :evolution-tier="selectedPetTier"
                   />
+                  <div
+                    class="absolute left-1/2 top-full mt-1 flex -translate-x-1/2 items-center gap-1.5 whitespace-nowrap rounded-md border px-2.5 py-1 text-[11px] font-medium shadow-sm"
+                    :class="selectedPetRealm.accentClass"
+                  >
+                    <span>{{ t(selectedPetRealm.labelKey) }}</span>
+                    <span class="opacity-70">·</span>
+                    <span>{{ t('settings.mascot.levels.tierShort', { tier: selectedPetTier }) }}</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -960,9 +1049,107 @@ watch(() => settings.value.language, (v) => {
                   :state="state.id"
                   :size="72"
                   :reduced-motion="state.id !== cyberFoxPreviewState"
+                  :evolution-realm="selectedPetRealmId"
+                  :evolution-tier="selectedPetTier"
                 />
                 <span class="text-[11px] font-medium leading-tight">{{ t(state.labelKey) }}</span>
               </button>
+            </div>
+
+            <div class="rounded-md border border-border/70 bg-background/70 p-3 space-y-3">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                    {{ t('settings.mascot.levels.previewTitle') }}
+                  </div>
+                  <div class="mt-1 flex flex-wrap items-center gap-2">
+                    <span class="text-sm font-semibold text-foreground">
+                      {{ t('settings.mascot.levels.levelTitle', {
+                        realm: t(selectedPetRealm.labelKey),
+                        tier: selectedPetTier,
+                      }) }}
+                    </span>
+                    <span class="rounded border border-border/70 bg-muted/50 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                      {{ t('settings.mascot.levels.levelNumber', { level: selectedPetLevel }) }}
+                    </span>
+                  </div>
+                </div>
+                <div class="shrink-0 rounded-md border px-2 py-1 text-[10px] font-medium" :class="selectedPetRealm.accentClass">
+                  {{ selectedPetProgress }}%
+                </div>
+              </div>
+
+              <p class="text-[11px] leading-relaxed text-muted-foreground">
+                {{ t('settings.mascot.levels.previewHint') }}
+              </p>
+
+              <div class="space-y-1.5">
+                <div class="flex items-center justify-between gap-2 text-[10px] font-medium text-muted-foreground">
+                  <span>{{ t('settings.mascot.levels.tierProgress') }}</span>
+                  <span>{{ t('settings.mascot.levels.breakthrough') }}</span>
+                </div>
+                <div class="h-1.5 overflow-hidden rounded-full bg-muted">
+                  <div
+                    class="h-full rounded-full transition-all"
+                    :class="selectedPetRealm.barClass"
+                    :style="{ width: `${selectedPetProgress}%` }"
+                  />
+                </div>
+              </div>
+
+              <div class="grid grid-cols-5 gap-1.5">
+                <button
+                  v-for="tier in PET_TIERS"
+                  :key="tier"
+                  type="button"
+                  class="min-h-9 rounded-md border px-1 text-[11px] font-medium transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  :class="selectedPetTier === tier
+                    ? selectedPetRealm.accentClass
+                    : 'border-border/70 bg-muted/30 text-muted-foreground hover:border-primary/40 hover:bg-accent/40 hover:text-foreground'"
+                  :aria-pressed="selectedPetTier === tier"
+                  @click="selectPetTier(tier)"
+                >
+                  {{ t('settings.mascot.levels.tierShort', { tier }) }}
+                </button>
+              </div>
+
+              <div class="grid gap-2 sm:grid-cols-2">
+                <button
+                  v-for="(realm, index) in PET_REALMS"
+                  :key="realm.id"
+                  type="button"
+                  class="rounded-md border p-2 text-left transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  :class="selectedPetRealmId === realm.id
+                    ? realm.accentClass
+                    : 'border-border/70 bg-muted/20 text-muted-foreground hover:border-primary/40 hover:bg-accent/40 hover:text-foreground'"
+                  :aria-pressed="selectedPetRealmId === realm.id"
+                  @click="selectPetRealm(realm)"
+                >
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="text-xs font-medium truncate">{{ t(realm.labelKey) }}</span>
+                    <span class="text-[10px] tabular-nums opacity-70">{{ petRealmRange(index) }}</span>
+                  </div>
+                  <div class="mt-2 grid grid-cols-5 gap-1">
+                    <span
+                      v-for="tier in PET_TIERS"
+                      :key="tier"
+                      class="h-1 rounded-full"
+                      :class="selectedPetRealmId === realm.id && tier <= selectedPetTier
+                        ? realm.barClass
+                        : 'bg-muted-foreground/20'"
+                    />
+                  </div>
+                </button>
+              </div>
+
+              <div class="rounded-md border border-border/60 bg-muted/25 p-2.5">
+                <div class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                  {{ t('settings.mascot.levels.visualChange') }}
+                </div>
+                <p class="mt-1 text-[11px] leading-relaxed text-foreground/80">
+                  {{ t(`settings.mascot.levels.changes.tier${selectedPetTier}`) }}
+                </p>
+              </div>
             </div>
           </div>
         </Card>

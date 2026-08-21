@@ -66,7 +66,34 @@
       "error": "Error",
       "permission": "Permission"
     },
-    "testBubbleSample": "Heads up — this is a sample notification."
+    "testBubbleSample": "Heads up — this is a sample notification.",
+    "levels": {
+      "previewTitle": "Mascot realm",
+      "previewHint": "Pick a realm and tier to preview how the level will appear in the mascot preview.",
+      "levelTitle": "{realm} tier {tier}",
+      "levelNumber": "Level {level}",
+      "levelRange": "Lv {from}-{to}",
+      "tierShort": "T{tier}",
+      "tierProgress": "Tier progress",
+      "breakthrough": "Breakthrough after tier 5",
+      "visualChange": "Suggested change",
+      "realms": {
+        "luyenKhi": "Luyện Khí",
+        "trucCo": "Trúc Cơ",
+        "kimDan": "Kim Đan",
+        "nguyenAnh": "Nguyên Anh",
+        "hoaThan": "Hóa Thần",
+        "anhBien": "Anh Biến",
+        "vanDinh": "Vấn Đỉnh"
+      },
+      "changes": {
+        "tier1": "Freshly entered realm: the aura shifts lightly while breathing and eyes feel steadier.",
+        "tier2": "Energy becomes clearer: brighter eyes and a stronger ground ring.",
+        "tier3": "Spiritual energy gathers: small spark beats appear while AI is thinking or running tools.",
+        "tier4": "Near completion: tails and energy streams become stronger during loading.",
+        "tier5": "Realm complete: the badge becomes more prominent and is ready for the next breakthrough effect."
+      }
+    }
   },
   "mcp": {
     "title": "Built-in MCP Server",
