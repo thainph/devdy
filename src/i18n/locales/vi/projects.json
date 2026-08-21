@@ -12,6 +12,7 @@
   "gantt": "Issue theo milestone (Gantt)",
   "projectSettings": "Cài đặt dự án",
   "removeProject": "Gỡ dự án",
+  "dragToReorder": "Kéo để sắp xếp",
   "selectFolderTitle": "Chọn thư mục dự án",
   "toastAdded": "Đã thêm dự án",
   "toastDeleted": "Đã xóa",

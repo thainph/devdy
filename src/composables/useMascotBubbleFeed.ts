@@ -7,6 +7,7 @@ import { computed, watch, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '@/composables/useToast'
 import { useMascotBubble, type MascotBubbleVariant } from '@/composables/useMascotBubble'
+import { pickMascotVoice } from '@/composables/useMascotSound'
 import type { CyberFoxState } from '@/composables/useMascotState'
 
 // Collapse the fine-grained phase into the few states worth "saying". thinking
@@ -37,20 +38,29 @@ export function useMascotBubbleFeed(displayState: Ref<CyberFoxState>) {
 
   // --- live-run phase → status chatter ---------------------------------
   const coarse = computed(() => coarsePhaseOf(displayState.value))
+
+  // Say a canned phase line, preferring a recorded voice take (clip + matching
+  // words) so the bubble text mirrors what the fox actually says; fall back to
+  // the generic i18n string when no clip is installed for that variant.
+  function sayPhase(variant: MascotBubbleVariant, fallbackKey: string) {
+    const line = pickMascotVoice(variant)
+    push(line?.text ?? t(fallbackKey), variant, undefined, line?.clip)
+  }
+
   watch(coarse, (phase, prev) => {
     if (phase === prev) return
     switch (phase) {
       case 'busy':
-        push(t('mascot.bubble.busy'), 'thinking')
+        sayPhase('thinking', 'mascot.bubble.busy')
         break
       case 'permission':
-        push(t('mascot.bubble.permission'), 'permission')
+        sayPhase('permission', 'mascot.bubble.permission')
         break
       case 'success':
-        push(t('mascot.bubble.success'), 'success')
+        sayPhase('success', 'mascot.bubble.success')
         break
       case 'error':
-        push(t('mascot.bubble.error'), 'error')
+        sayPhase('error', 'mascot.bubble.error')
         break
       // idle → say nothing (let the last bubble auto-hide)
     }

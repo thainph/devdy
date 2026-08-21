@@ -17,6 +17,7 @@ export const MASCOT_WINDOW_LABEL = 'mascot'
 export const MASCOT_STATE_EVENT = 'mascot:state'
 export const MASCOT_READY_EVENT = 'mascot:ready'
 export const MASCOT_BUBBLE_EVENT = 'mascot:bubble'
+export const MASCOT_SPEAKING_EVENT = 'mascot:speaking'
 export const MASCOT_QUICK_CREATE_EVENT = 'mascot:quick-create'
 
 export interface MascotStatePayload {
@@ -91,6 +92,15 @@ export async function emitMascotState(payload: MascotStatePayload): Promise<void
 export async function emitMascotBubble(payload: MascotBubbleMessage): Promise<void> {
   try {
     await emit(MASCOT_BUBBLE_EVENT, payload)
+  } catch {
+    /* main window not in a Tauri shell (dev in browser) */
+  }
+}
+
+/** Push the "is talking" flag to the desktop-pet window (audio plays in main). */
+export async function emitMascotSpeaking(speaking: boolean): Promise<void> {
+  try {
+    await emit(MASCOT_SPEAKING_EVENT, speaking)
   } catch {
     /* main window not in a Tauri shell (dev in browser) */
   }

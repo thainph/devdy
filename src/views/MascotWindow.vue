@@ -20,10 +20,12 @@ import {
   MASCOT_STATE_EVENT,
   MASCOT_READY_EVENT,
   MASCOT_BUBBLE_EVENT,
+  MASCOT_SPEAKING_EVENT,
   type MascotStatePayload,
 } from '@/lib/mascotWindow'
 import type { CyberFoxSize, CyberFoxState } from '@/composables/useMascotState'
 import type { MascotBubbleMessage } from '@/composables/useMascotBubble'
+import { setSpeaking } from '@/composables/useMascotSpeaking'
 
 const POSITION_KEY = 'devdy.mascotWindow.position.v1'
 const EDGE_MARGIN = 24
@@ -177,6 +179,7 @@ async function restorePosition() {
 
 let unlistenState: UnlistenFn | null = null
 let unlistenBubble: UnlistenFn | null = null
+let unlistenSpeaking: UnlistenFn | null = null
 
 function applyPayload(p: Partial<MascotStatePayload>) {
   if (p.state) state.value = p.state
@@ -194,6 +197,9 @@ onMounted(async () => {
   unlistenBubble = await listen<MascotBubbleMessage>(MASCOT_BUBBLE_EVENT, (e) => {
     if (e.payload) bubbleMsg.value = e.payload
   })
+  unlistenSpeaking = await listen<boolean>(MASCOT_SPEAKING_EVENT, (e) => {
+    setSpeaking(Boolean(e.payload))
+  })
 
   await restorePosition()
   try {
@@ -209,6 +215,7 @@ onBeforeUnmount(() => {
   document.documentElement.classList.remove('mascot-window')
   unlistenState?.()
   unlistenBubble?.()
+  unlistenSpeaking?.()
 })
 </script>
 

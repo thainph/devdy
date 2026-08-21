@@ -13,6 +13,8 @@ export interface MascotBubbleMessage {
   variant: MascotBubbleVariant
   /** Auto-hide delay in ms (the display component owns the timer). */
   duration: number
+  /** Optional voice-clip stem to play in sync with this text (see useMascotSound). */
+  voiceClip?: string
 }
 
 // Sensible default lifetimes per kind: errors/permission linger, chatter is brief.
@@ -32,6 +34,7 @@ function push(
   text: string,
   variant: MascotBubbleVariant = 'info',
   duration?: number,
+  voiceClip?: string,
 ): number {
   const id = ++seq
   state.current = {
@@ -39,6 +42,7 @@ function push(
     text,
     variant,
     duration: duration ?? DEFAULT_DURATION[variant],
+    voiceClip,
   }
   return id
 }

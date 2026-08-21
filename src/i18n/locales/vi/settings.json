@@ -48,12 +48,15 @@
     "modeInApp": "Trong ứng dụng",
     "modeDesktop": "Trên màn hình nền",
     "modeHint": "Trong ứng dụng: linh thú nằm trong cửa sổ Devdy. Trên màn hình nền: nổi ở một cửa sổ không viền, luôn trên cùng, ngoài desktop.",
+    "sound": "Âm thanh",
+    "soundHint": "Phát tiếng \"voice\" ngắn của linh thú khi bong bóng thoại xuất hiện. Thả file âm thanh vào src/assets/mascot-sounds/ (mỗi trạng thái một file).",
     "sizeSmall": "Nhỏ",
     "sizeMedium": "Vừa",
     "sizeLarge": "Lớn",
     "resetPosition": "Đặt lại vị trí",
     "positionReset": "Đã đặt lại vị trí linh thú",
-    "previewState": "Trạng thái preview",
+    "previewState": "Xem trước",
+    "previewHint": "Chọn một trạng thái để xem đồng thời hoạt ảnh, âm thanh và bong bóng thoại.",
     "previewLabel": "Preview linh thú DY",
     "states": {
       "idle": "Nghỉ",
@@ -63,9 +66,6 @@
       "error": "Lỗi",
       "permission": "Chờ quyền"
     },
-    "testBubble": "Thử bong bóng chat",
-    "testBubbleHint": "Bắn thử từng loại bong bóng để xem giao diện và cách tự ẩn trên linh thú hiện tại.",
-    "testBubbleInfo": "Thông báo",
     "testBubbleSample": "Ví dụ — đây là một thông báo mẫu."
   },
   "mcp": {

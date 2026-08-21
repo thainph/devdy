@@ -48,12 +48,15 @@
     "modeInApp": "Inside app",
     "modeDesktop": "Desktop pet",
     "modeHint": "Inside app keeps the fox within the Devdy window. Desktop pet floats it in a frameless, always-on-top window over your desktop.",
+    "sound": "Sound",
+    "soundHint": "Play a short fox \"voice\" when a speech bubble appears. Add clips to src/assets/mascot-sounds/ (one per state).",
     "sizeSmall": "Small",
     "sizeMedium": "Medium",
     "sizeLarge": "Large",
     "resetPosition": "Reset position",
     "positionReset": "Mascot position reset",
-    "previewState": "Preview state",
+    "previewState": "Preview",
+    "previewHint": "Pick a state to preview its animation, sound and speech bubble together.",
     "previewLabel": "DY mascot preview",
     "states": {
       "idle": "Idle",
@@ -63,9 +66,6 @@
       "error": "Error",
       "permission": "Permission"
     },
-    "testBubble": "Test speech bubble",
-    "testBubbleHint": "Fire a sample bubble of each kind to preview its look and auto-hide behaviour on the current mascot.",
-    "testBubbleInfo": "Info",
     "testBubbleSample": "Heads up — this is a sample notification."
   },
   "mcp": {

@@ -36,6 +36,9 @@ pub struct Project {
     /// Timestamp of the most recent run, if any (recency).
     #[serde(default)]
     pub last_used_at: Option<String>,
+    /// Manual display order (ascending). Drag-and-drop reorder rewrites this.
+    #[serde(default)]
+    pub position: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -513,15 +516,16 @@ pub async fn detect_project_info(path: String) -> Result<DetectedProjectInfo, St
 #[tauri::command]
 pub async fn list_projects(db: State<'_, Db>) -> Result<Vec<Project>, String> {
     use sqlx::Row;
-    // Sort by usage frequency (number of runs), then recency, then name.
+    // Manual order first (drag-and-drop), then usage frequency / recency / name
+    // as a stable tiebreaker for any projects sharing a position.
     let rows = sqlx::query(
         "SELECT p.id, p.name, p.path, p.created_at, p.github_account_id, p.gitlab_account_id, p.aws_account_id, \
-                p.github_project_board_url, p.github_project_field_mappings, \
+                p.github_project_board_url, p.github_project_field_mappings, p.position, \
                 COUNT(r.id) AS run_count, MAX(r.created_at) AS last_used_at \
          FROM projects p \
          LEFT JOIN runs r ON r.project_id = p.id \
          GROUP BY p.id \
-         ORDER BY run_count DESC, last_used_at DESC, p.name COLLATE NOCASE ASC"
+         ORDER BY p.position ASC, run_count DESC, last_used_at DESC, p.name COLLATE NOCASE ASC"
     )
     .fetch_all(db.inner())
     .await
@@ -543,6 +547,7 @@ pub async fn list_projects(db: State<'_, Db>) -> Result<Vec<Project>, String> {
             github_project_field_mappings: row.get("github_project_field_mappings"),
             run_count: row.get("run_count"),
             last_used_at: row.get("last_used_at"),
+            position: row.get("position"),
         })
         .collect();
 
@@ -565,11 +570,20 @@ pub async fn add_project(db: State<'_, Db>, payload: AddProjectPayload) -> Resul
     let id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
 
-    sqlx::query("INSERT INTO projects (id, name, path, created_at) VALUES (?, ?, ?, ?)")
+    // Append new projects to the end of the manual order.
+    use sqlx::Row;
+    let position: i64 = sqlx::query("SELECT COALESCE(MAX(position), -1) + 1 AS next FROM projects")
+        .fetch_one(db.inner())
+        .await
+        .map_err(|e| e.to_string())?
+        .get("next");
+
+    sqlx::query("INSERT INTO projects (id, name, path, created_at, position) VALUES (?, ?, ?, ?, ?)")
         .bind(&id)
         .bind(&name)
         .bind(&payload.path)
         .bind(&now)
+        .bind(position)
         .execute(db.inner())
         .await
         .map_err(|e| e.to_string())?;
@@ -607,6 +621,7 @@ pub async fn add_project(db: State<'_, Db>, payload: AddProjectPayload) -> Resul
         github_project_field_mappings: None,
         run_count: 0,
         last_used_at: None,
+        position,
     })
 }
 
@@ -642,7 +657,7 @@ pub async fn update_project(
 
     let row = sqlx::query(
         "SELECT p.id, p.name, p.path, p.created_at, p.github_account_id, p.gitlab_account_id, p.aws_account_id, \
-                p.github_project_board_url, p.github_project_field_mappings, \
+                p.github_project_board_url, p.github_project_field_mappings, p.position, \
                 COUNT(r.id) AS run_count, MAX(r.created_at) AS last_used_at \
          FROM projects p LEFT JOIN runs r ON r.project_id = p.id WHERE p.id = ? GROUP BY p.id"
     )
@@ -665,7 +680,26 @@ pub async fn update_project(
         github_project_field_mappings: row.get("github_project_field_mappings"),
         run_count: row.get("run_count"),
         last_used_at: row.get("last_used_at"),
+        position: row.get("position"),
     })
+}
+
+/// Persist a new project order. The frontend sends the full list of ids
+/// top-to-bottom; each row's position becomes its index, so ordering is stable
+/// regardless of prior values. Done in one transaction to avoid partial writes.
+#[tauri::command]
+pub async fn reorder_projects(db: State<'_, Db>, ids: Vec<String>) -> Result<(), String> {
+    let mut tx = db.inner().begin().await.map_err(|e| e.to_string())?;
+    for (index, id) in ids.iter().enumerate() {
+        sqlx::query("UPDATE projects SET position = ? WHERE id = ?")
+            .bind(index as i64)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Map a `repos` row into a `Repo`, tolerating older rows that predate the

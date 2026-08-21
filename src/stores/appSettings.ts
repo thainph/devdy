@@ -35,6 +35,7 @@ export interface AppSettings {
   cyber_fox_enabled: string
   cyber_fox_size: string
   cyber_fox_mode: string
+  cyber_fox_sound: string
 }
 
 export const useAppSettingsStore = defineStore('appSettings', () => {

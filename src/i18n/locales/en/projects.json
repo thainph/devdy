@@ -12,6 +12,7 @@
   "gantt": "Issues by milestone (Gantt)",
   "projectSettings": "Project settings",
   "removeProject": "Remove project",
+  "dragToReorder": "Drag to reorder",
   "selectFolderTitle": "Select Project Folder",
   "toastAdded": "Project added",
   "toastDeleted": "Deleted",
