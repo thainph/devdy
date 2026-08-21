@@ -80,13 +80,13 @@
       "breakthrough": "Breakthrough after tier 5",
       "visualChange": "Suggested change",
       "realms": {
-        "luyenKhi": "Luyện Khí",
-        "trucCo": "Trúc Cơ",
-        "kimDan": "Kim Đan",
-        "nguyenAnh": "Nguyên Anh",
-        "hoaThan": "Hóa Thần",
-        "anhBien": "Anh Biến",
-        "vanDinh": "Vấn Đỉnh"
+        "luyenKhi": "Qi Refining",
+        "trucCo": "Foundation Establishment",
+        "kimDan": "Golden Core",
+        "nguyenAnh": "Nascent Soul",
+        "hoaThan": "Deity Transformation",
+        "anhBien": "Soul Metamorphosis",
+        "vanDinh": "Peak Ascension"
       },
       "changes": {
         "tier1": "Freshly entered realm: the aura shifts lightly while breathing and eyes feel steadier.",
