@@ -23,7 +23,12 @@
     "openInVscode": "Open in VS Code",
     "pdfPreview": "PDF preview",
     "translateSelection": "Translate selection",
-    "translate": "Translate"
+    "translate": "Translate",
+    "searchInFile": "Search in file",
+    "searchPlaceholder": "Find in file…",
+    "previousMatch": "Previous match",
+    "nextMatch": "Next match",
+    "closeSearch": "Close search"
   },
   "tree": {
     "explorer": "Explorer",

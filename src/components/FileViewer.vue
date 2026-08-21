@@ -7,7 +7,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  FileCode2, AArrowDown, AArrowUp, ExternalLink, Copy, FileQuestion, FileWarning, FolderOpen, RotateCw, Code2, ClipboardCopy, Check, Languages, Pencil, Save, X,
+  FileCode2, AArrowDown, AArrowUp, ExternalLink, Copy, FileQuestion, FileWarning, FolderOpen, RotateCw, Code2, ClipboardCopy, Check, Languages, Pencil, Save, X, Search, ChevronUp, ChevronDown,
 } from 'lucide-vue-next'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener'
@@ -405,14 +405,158 @@ watch(() => [props.projectPath, props.path], () => {
   closeTranslate()
 })
 
+// ── In-page search (Cmd/Ctrl+F) ─────────────────────────────────────────────
+// Full-document find across the rendered body (markdown preview or raw source).
+// Uses the CSS Custom Highlight API so matches are painted without mutating the
+// DOM — this coexists with v-html re-renders and the shiki token spans. Falls
+// back to a no-op highlight (still counts/scrolls) where the API is missing.
+const HL_SUPPORTED = typeof CSS !== 'undefined' && 'highlights' in CSS
+const searchOpen = ref(false)
+const searchQuery = ref('')
+const searchInputEl = ref<HTMLInputElement | null>(null)
+const matchCount = ref(0)
+const currentMatch = ref(0) // 1-based; 0 when there are no matches
+const MAX_MATCHES = 5000
+let searchRanges: Range[] = []
+
+// Collect visible text nodes inside the body, skipping the line-number gutter
+// (marked `.search-skip`) so its digits don't pollute results.
+function collectTextNodes(root: HTMLElement): Text[] {
+  const nodes: Text[] = []
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if (!node.nodeValue || !node.nodeValue.trim()) return NodeFilter.FILTER_REJECT
+      const parent = (node.parentElement as HTMLElement | null)
+      if (parent?.closest('.search-skip')) return NodeFilter.FILTER_REJECT
+      return NodeFilter.FILTER_ACCEPT
+    },
+  })
+  let n = walker.nextNode()
+  while (n) { nodes.push(n as Text); n = walker.nextNode() }
+  return nodes
+}
+
+function clearHighlights() {
+  if (!HL_SUPPORTED) return
+  CSS.highlights.delete('file-search')
+  CSS.highlights.delete('file-search-current')
+}
+
+function paintHighlights() {
+  if (!HL_SUPPORTED) return
+  clearHighlights()
+  if (!searchRanges.length) return
+  CSS.highlights.set('file-search', new Highlight(...searchRanges))
+  const cur = searchRanges[currentMatch.value - 1]
+  if (cur) {
+    const curHl = new Highlight(cur)
+    curHl.priority = 1
+    CSS.highlights.set('file-search-current', curHl)
+  }
+}
+
+function runSearch() {
+  searchRanges = []
+  const q = searchQuery.value
+  const root = viewerBodyEl.value
+  if (!q || !root) {
+    matchCount.value = 0
+    currentMatch.value = 0
+    clearHighlights()
+    return
+  }
+  const needle = q.toLowerCase()
+  const nodes = collectTextNodes(root)
+  for (const node of nodes) {
+    const hay = (node.nodeValue ?? '').toLowerCase()
+    let from = 0
+    let idx = hay.indexOf(needle, from)
+    while (idx !== -1) {
+      const range = document.createRange()
+      range.setStart(node, idx)
+      range.setEnd(node, idx + needle.length)
+      searchRanges.push(range)
+      if (searchRanges.length >= MAX_MATCHES) break
+      from = idx + needle.length
+      idx = hay.indexOf(needle, from)
+    }
+    if (searchRanges.length >= MAX_MATCHES) break
+  }
+  matchCount.value = searchRanges.length
+  currentMatch.value = searchRanges.length ? 1 : 0
+  paintHighlights()
+  scrollToMatch()
+}
+
+function scrollToMatch() {
+  const range = searchRanges[currentMatch.value - 1]
+  if (!range) return
+  const el = (range.startContainer.parentElement as HTMLElement | null)
+  el?.scrollIntoView({ block: 'center', inline: 'nearest' })
+}
+
+function gotoMatch(delta: number) {
+  if (!matchCount.value) return
+  currentMatch.value = ((currentMatch.value - 1 + delta + matchCount.value) % matchCount.value) + 1
+  paintHighlights()
+  scrollToMatch()
+}
+
+function openSearch() {
+  searchOpen.value = true
+  nextTick(() => {
+    searchInputEl.value?.focus()
+    searchInputEl.value?.select()
+    if (searchQuery.value) runSearch()
+  })
+}
+
+function closeSearch() {
+  searchOpen.value = false
+  clearHighlights()
+}
+
+// Debounced re-search as the user types.
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+watch(searchQuery, () => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => nextTick(runSearch), 120)
+})
+
+// Content or view mode changed while search is open — recompute against the new
+// DOM (old Range objects point at detached nodes).
+watch([content, mode, editing], () => {
+  if (!searchOpen.value) return
+  nextTick(runSearch)
+})
+
+function onSearchKeydown(e: KeyboardEvent) {
+  if ((e.metaKey || e.ctrlKey) && (e.key === 'f' || e.key === 'F')) {
+    e.preventDefault()
+    openSearch()
+  } else if (e.key === 'Escape' && searchOpen.value) {
+    e.preventDefault()
+    closeSearch()
+  }
+}
+
+// A new file replaces the body — reset search state.
+watch(() => [props.projectPath, props.path], () => {
+  searchQuery.value = ''
+  closeSearch()
+})
+
 onMounted(() => {
   loadMarkdown()
   loadProjectFiles()
   load()
   window.addEventListener('mouseup', onSelectionMouseUp)
+  window.addEventListener('keydown', onSearchKeydown)
 })
 onUnmounted(() => {
   window.removeEventListener('mouseup', onSelectionMouseUp)
+  window.removeEventListener('keydown', onSearchKeydown)
+  clearHighlights()
 })
 watch(() => [props.projectPath, props.path, props.line], () => {
   loadProjectFiles()
@@ -423,7 +567,7 @@ defineExpose({ onRevealInFolder, onOpenInApp })
 </script>
 
 <template>
-  <div class="flex flex-col h-full min-h-0 bg-card">
+  <div class="relative flex flex-col h-full min-h-0 bg-card">
     <!-- Toolbar -->
     <div class="sticky top-0 z-10 flex items-center gap-2 border-b border-border bg-card px-4 py-3 shrink-0">
       <FileCode2 class="h-4 w-4 text-primary shrink-0" :stroke-width="1.75" />
@@ -464,6 +608,16 @@ defineExpose({ onRevealInFolder, onOpenInApp })
           <AArrowUp class="h-3.5 w-3.5" :stroke-width="1.75" />
         </button>
       </div>
+      <!-- Toggle the in-page search bar -->
+      <button
+        v-if="content"
+        class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
+        :class="{ 'bg-primary/15 text-primary': searchOpen }"
+        :title="t('files.viewer.searchInFile')"
+        @click="searchOpen ? closeSearch() : openSearch()"
+      >
+        <Search class="h-3.5 w-3.5" :stroke-width="1.75" />
+      </button>
       <!-- Copy the open file's path to the clipboard -->
       <button
         class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
@@ -531,6 +685,50 @@ defineExpose({ onRevealInFolder, onOpenInApp })
       </template>
       <!-- Host-supplied chrome controls (full-screen, pop-out, close) -->
       <slot name="actions" />
+    </div>
+
+    <!-- Floating in-page search bar -->
+    <div
+      v-if="searchOpen"
+      class="absolute top-14 right-4 z-20 flex items-center gap-1 rounded-md border border-border bg-card px-1.5 py-1 shadow-lg shadow-black/30"
+    >
+      <Search class="h-3.5 w-3.5 text-foreground/40 shrink-0" :stroke-width="1.75" />
+      <input
+        ref="searchInputEl"
+        v-model="searchQuery"
+        type="text"
+        :placeholder="t('files.viewer.searchPlaceholder')"
+        class="w-44 bg-transparent text-xs text-foreground placeholder:text-foreground/40 outline-none"
+        @keydown.enter.exact.prevent="gotoMatch(1)"
+        @keydown.shift.enter.prevent="gotoMatch(-1)"
+        @keydown.esc.prevent="closeSearch"
+      />
+      <span class="text-[10px] tabular-nums text-foreground/50 select-none shrink-0 min-w-[3rem] text-right">
+        {{ searchQuery ? `${currentMatch}/${matchCount}` : '' }}
+      </span>
+      <button
+        class="flex items-center justify-center h-5 w-5 rounded text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0 disabled:opacity-30 disabled:cursor-default"
+        :title="t('files.viewer.previousMatch')"
+        :disabled="!matchCount"
+        @click="gotoMatch(-1)"
+      >
+        <ChevronUp class="h-3.5 w-3.5" :stroke-width="1.75" />
+      </button>
+      <button
+        class="flex items-center justify-center h-5 w-5 rounded text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0 disabled:opacity-30 disabled:cursor-default"
+        :title="t('files.viewer.nextMatch')"
+        :disabled="!matchCount"
+        @click="gotoMatch(1)"
+      >
+        <ChevronDown class="h-3.5 w-3.5" :stroke-width="1.75" />
+      </button>
+      <button
+        class="flex items-center justify-center h-5 w-5 rounded text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
+        :title="t('files.viewer.closeSearch')"
+        @click="closeSearch"
+      >
+        <X class="h-3.5 w-3.5" :stroke-width="1.75" />
+      </button>
     </div>
 
     <!-- Body -->
@@ -642,7 +840,7 @@ defineExpose({ onRevealInFolder, onOpenInApp })
           :class="{ 'bg-primary/15': idx + 1 === curLine }"
         >
           <span
-            class="sticky left-0 select-none text-right tabular-nums shrink-0 w-12 pr-3 pl-2 border-r border-border bg-card"
+            class="search-skip sticky left-0 select-none text-right tabular-nums shrink-0 w-12 pr-3 pl-2 border-r border-border bg-card"
             :class="idx + 1 === curLine ? 'text-primary' : 'text-foreground/30'"
           >{{ idx + 1 }}</span>
           <span class="px-3 whitespace-pre flex-1">
@@ -686,3 +884,17 @@ defineExpose({ onRevealInFolder, onOpenInApp })
     />
   </div>
 </template>
+
+<!-- Custom Highlight API styling must be global: ::highlight() pseudo-elements
+     are keyed off the document-wide CSS.highlights registry, so a scoped style
+     (with its data-attribute) would never match. -->
+<style>
+::highlight(file-search) {
+  background-color: rgba(250, 204, 21, 0.35);
+  color: inherit;
+}
+::highlight(file-search-current) {
+  background-color: rgba(249, 115, 22, 0.75);
+  color: #fff;
+}
+</style>

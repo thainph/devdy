@@ -23,7 +23,12 @@
     "openInVscode": "Mở bằng VS Code",
     "pdfPreview": "Xem trước PDF",
     "translateSelection": "Dịch đoạn đã chọn",
-    "translate": "Dịch"
+    "translate": "Dịch",
+    "searchInFile": "Tìm trong tệp",
+    "searchPlaceholder": "Tìm trong tệp…",
+    "previousMatch": "Kết quả trước",
+    "nextMatch": "Kết quả tiếp theo",
+    "closeSearch": "Đóng tìm kiếm"
   },
   "tree": {
     "explorer": "Explorer",
