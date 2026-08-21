@@ -93,7 +93,7 @@ const settings = ref<AppSettings>({
   translate_target_lang: 'vi',
   translate_style: 'natural',
   mcp_builtin_devdy_enabled: 'true',
-  cyber_fox_enabled: 'true',
+  cyber_fox_enabled: 'false',
   cyber_fox_size: 'md',
   cyber_fox_mode: 'in-app',
   cyber_fox_sound: 'true',
