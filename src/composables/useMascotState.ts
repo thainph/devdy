@@ -82,6 +82,17 @@ export function useMascotState() {
     if (v === 'false') return false
     return autoLiteMachine
   })
+  // TTS voice preferences (per-language name + shared rate + pitch) from settings.
+  const voiceNameVi = computed(() => appSettings.settings?.cyber_fox_voice_vi ?? '')
+  const voiceNameEn = computed(() => appSettings.settings?.cyber_fox_voice_en ?? '')
+  const voiceRate = computed(() => {
+    const r = parseFloat(appSettings.settings?.cyber_fox_voice_rate ?? '')
+    return Number.isFinite(r) ? r : 1
+  })
+  const voicePitch = computed(() => {
+    const p = parseFloat(appSettings.settings?.cyber_fox_voice_pitch ?? '')
+    return Number.isFinite(p) ? p : 1.15
+  })
   const mode = computed<CyberFoxMode>(() =>
     appSettings.settings?.cyber_fox_mode === 'desktop' ? 'desktop' : 'in-app',
   )
@@ -162,6 +173,10 @@ export function useMascotState() {
     liteMode,
     mode,
     mascotSize,
+    voiceNameVi,
+    voiceNameEn,
+    voiceRate,
+    voicePitch,
     displayState,
     runningCount,
     mascotLevel,

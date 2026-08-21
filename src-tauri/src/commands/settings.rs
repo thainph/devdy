@@ -62,6 +62,16 @@ pub struct AppSettings {
     /// (glow tails, orbit blur/blend, ground-dot density) for weaker machines.
     /// "false" (default, full effects) | "true".
     pub cyber_fox_lite: String,
+    /// Preferred Vietnamese TTS voice NAME for the mascot (as reported by the
+    /// browser Web Speech API). "" (default) = auto-pick the first vi voice.
+    pub cyber_fox_voice_vi: String,
+    /// Preferred English TTS voice NAME for the mascot. "" (default) = auto-pick
+    /// the first en voice.
+    pub cyber_fox_voice_en: String,
+    /// Mascot TTS speaking rate. "1" (default); range ~0.5–2.0.
+    pub cyber_fox_voice_rate: String,
+    /// Mascot TTS voice pitch. "1.15" (default); range ~0–2.0.
+    pub cyber_fox_voice_pitch: String,
 }
 
 #[tauri::command]
@@ -100,6 +110,10 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
         cyber_fox_mode: "in-app".to_string(),
         cyber_fox_sound: "true".to_string(),
         cyber_fox_lite: "false".to_string(),
+        cyber_fox_voice_vi: "".to_string(),
+        cyber_fox_voice_en: "".to_string(),
+        cyber_fox_voice_rate: "1".to_string(),
+        cyber_fox_voice_pitch: "1.15".to_string(),
     };
 
     for row in rows {
@@ -134,6 +148,10 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
             "cyber_fox_mode" => settings.cyber_fox_mode = value,
             "cyber_fox_sound" => settings.cyber_fox_sound = value,
             "cyber_fox_lite" => settings.cyber_fox_lite = value,
+            "cyber_fox_voice_vi" => settings.cyber_fox_voice_vi = value,
+            "cyber_fox_voice_en" => settings.cyber_fox_voice_en = value,
+            "cyber_fox_voice_rate" => settings.cyber_fox_voice_rate = value,
+            "cyber_fox_voice_pitch" => settings.cyber_fox_voice_pitch = value,
             _ => {}
         }
     }

@@ -56,19 +56,24 @@ function randomOf<T>(list: T[]): T {
 }
 
 /**
- * Pick a voice line (clip + matching text) for a variant, choosing at random
- * among the takes whose audio file actually exists on disk. Returns null when
- * the variant has no mapped-and-present line — callers then fall back to the
- * generic bubble text and a variant-random sound.
+ * Pick a voice line (text + optional clip) for a variant in the given locale.
+ * A line is eligible when it has no clip (spoken via TTS) OR its audio file
+ * exists on disk. Falls back to the locale's "default" group, then to English,
+ * so the bubble always has words. Returns null only when nothing is installed.
  */
-export function pickMascotVoice(variant: MascotBubbleVariant): MascotVoiceLine | null {
-  const present = (l: MascotVoiceLine) => Boolean(stemUrl[l.clip.toLowerCase()])
-  const own = (MASCOT_VOICE_LINES[variant] ?? []).filter(present)
-  if (own.length) return randomOf(own)
-  // Fall back to the shared "default" take so the bubble still shows matching words.
-  const fallback = (MASCOT_VOICE_LINES.default ?? []).filter(present)
-  if (fallback.length) return randomOf(fallback)
-  return null
+export function pickMascotVoice(
+  variant: MascotBubbleVariant,
+  locale = 'en',
+): MascotVoiceLine | null {
+  const present = (l: MascotVoiceLine) => !l.clip || Boolean(stemUrl[l.clip.toLowerCase()])
+  const pickFrom = (lines: (typeof MASCOT_VOICE_LINES)[string] | undefined) => {
+    if (!lines) return null
+    const own = (lines[variant] ?? []).filter(present)
+    if (own.length) return randomOf(own)
+    const fallback = (lines.default ?? []).filter(present)
+    return fallback.length ? randomOf(fallback) : null
+  }
+  return pickFrom(MASCOT_VOICE_LINES[locale]) ?? pickFrom(MASCOT_VOICE_LINES.en)
 }
 
 // One reusable <audio> element per URL (rewound on each play).

@@ -23,11 +23,12 @@ import { useAppSettingsStore } from '@/stores/appSettings'
 import { useMascotLevelStore } from '@/stores/mascotLevel'
 import { type MascotBubbleVariant, type MascotBubbleMessage } from '@/composables/useMascotBubble'
 import { pickMascotVoice, useMascotSound } from '@/composables/useMascotSound'
+import { useMascotSpeech, useVoiceList, speechSupported } from '@/composables/useMascotSpeech'
 import { useMascotSpeaking } from '@/composables/useMascotSpeaking'
 import { useBudgetStore } from '@/stores/budget'
 import { useModelCatalogStore } from '@/stores/modelCatalog'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const appSettings = useAppSettingsStore()
 const budget = useBudgetStore()
 const modelCatalog = useModelCatalogStore()
@@ -69,6 +70,10 @@ interface AppSettings {
   cyber_fox_mode: string
   cyber_fox_sound: string
   cyber_fox_lite: string
+  cyber_fox_voice_vi: string
+  cyber_fox_voice_en: string
+  cyber_fox_voice_rate: string
+  cyber_fox_voice_pitch: string
 }
 
 const settings = ref<AppSettings>({
@@ -100,6 +105,10 @@ const settings = ref<AppSettings>({
   cyber_fox_mode: 'in-app',
   cyber_fox_sound: 'true',
   cyber_fox_lite: 'auto',
+  cyber_fox_voice_vi: '',
+  cyber_fox_voice_en: '',
+  cyber_fox_voice_rate: '1',
+  cyber_fox_voice_pitch: '1.15',
 })
 
 type CyberFoxPreviewState =
@@ -263,6 +272,17 @@ const cyberFoxModeOptions = computed(() => [
   { value: 'in-app', label: t('settings.mascot.modeInApp') },
   { value: 'desktop', label: t('settings.mascot.modeDesktop') },
 ])
+// Installed TTS voices → dropdown options ("" = auto-pick first for the language).
+const viVoices = useVoiceList('vi')
+const enVoices = useVoiceList('en')
+const cyberFoxVoiceOptions = computed(() => [
+  { value: '', label: t('settings.mascot.voiceAuto') },
+  ...viVoices.value.map((v) => ({ value: v.name, label: `${v.name} (${v.lang})` })),
+])
+const cyberFoxVoiceEnOptions = computed(() => [
+  { value: '', label: t('settings.mascot.voiceAuto') },
+  ...enVoices.value.map((v) => ({ value: v.name, label: `${v.name} (${v.lang})` })),
+])
 
 // Which speech-bubble variant each preview state should speak in.
 const PREVIEW_STATE_VARIANT: Record<CyberFoxPreviewState, MascotBubbleVariant> = {
@@ -280,27 +300,43 @@ const PREVIEW_STATE_VARIANT: Record<CyberFoxPreviewState, MascotBubbleVariant> =
 // fox floating elsewhere in the app.
 const previewBubble = ref<MascotBubbleMessage | null>(null)
 const { play: playMascotSound } = useMascotSound()
+const { speak: speakMascot } = useMascotSpeech()
 const { beginSpeaking } = useMascotSpeaking()
 let previewBubbleSeq = 0
 
 function selectPreviewState(state: CyberFoxPreviewState) {
   cyberFoxPreviewState.value = state
   const variant = PREVIEW_STATE_VARIANT[state]
-  // Prefer a recorded take so the bubble text matches the spoken voice clip.
-  const line = pickMascotVoice(variant)
+  // Pick the line for the current language so the bubble text matches the voice.
+  const lang = String(locale.value)
+  const line = pickMascotVoice(variant, lang)
+  const text = line?.text ?? t('settings.mascot.testBubbleSample')
   previewBubble.value = {
     id: ++previewBubbleSeq,
-    text: line?.text ?? t('settings.mascot.testBubbleSample'),
+    text,
     variant,
     duration: 4000,
     voiceClip: line?.clip,
   }
   // Always demo the mouth flap so the preview reliably shows the effect on every
-  // click — even when sound is muted, or when a previous clip is still playing
-  // (playMascotSound drops overlapping requests). If sound is on and audio
-  // actually starts, its "playing" event re-arms the flag to the real clip length.
+  // click — even when sound is muted, or when a previous voice is still playing
+  // (both players drop overlapping requests). If sound is on and audio actually
+  // starts, its own events re-arm the flag to the real clip/utterance length.
   beginSpeaking(1600)
-  if (settings.value.cyber_fox_sound === 'true') playMascotSound(variant, line?.clip)
+  if (settings.value.cyber_fox_sound === 'true') {
+    // Both languages speak via browser TTS; fall back to the mp3 clip only when
+    // Web Speech isn't available (and only English ships recorded clips).
+    if (speechSupported()) {
+      speakMascot(text, lang, {
+        voiceName:
+          lang === 'vi' ? settings.value.cyber_fox_voice_vi : settings.value.cyber_fox_voice_en,
+        rate: parseFloat(settings.value.cyber_fox_voice_rate) || 1,
+        pitch: parseFloat(settings.value.cyber_fox_voice_pitch) || 1.15,
+      })
+    } else if (lang !== 'vi') {
+      playMascotSound(variant, line?.clip)
+    }
+  }
 }
 
 // Claude model choices = curated aliases + any newly-released models discovered
@@ -1005,9 +1041,11 @@ watch(() => settings.value.language, (v) => {
           </template>
 
           <div class="grid gap-5 lg:grid-cols-[minmax(0,1fr)_300px] lg:items-start">
-            <!-- LEFT: controls + state / level selectors -->
-            <div class="space-y-4 min-w-0">
-          <div class="grid gap-x-4 gap-y-3 sm:grid-cols-2">
+            <!-- LEFT column. Visual order via `order-*`: the realm/level preview
+                 sits at the TOP (next to the live fox on the right), the config
+                 controls drop below the divider. -->
+            <div class="flex flex-col gap-4 min-w-0">
+          <div class="order-3 grid gap-x-4 gap-y-3 sm:grid-cols-2">
             <div class="space-y-1.5">
               <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
                 {{ t('settings.mascot.enabled') }}
@@ -1060,39 +1098,86 @@ watch(() => settings.value.language, (v) => {
                 {{ t('settings.mascot.resetPosition') }}
               </Button>
             </div>
+
+            <!-- TTS voices — the fox speaks the bubble text with the system voice
+                 matching the app language (English or Vietnamese). -->
+            <div class="space-y-1.5">
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                {{ t('settings.mascot.voiceEn') }}
+              </label>
+              <AppSelect size="sm" v-model="settings.cyber_fox_voice_en" :options="cyberFoxVoiceEnOptions" />
+            </div>
+
+            <div class="space-y-1.5">
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                {{ t('settings.mascot.voice') }}
+              </label>
+              <AppSelect size="sm" v-model="settings.cyber_fox_voice_vi" :options="cyberFoxVoiceOptions" />
+            </div>
+
+            <p class="sm:col-span-2 -mt-1 text-[11px] text-muted-foreground leading-relaxed">
+              {{ t('settings.mascot.voiceHint') }}
+            </p>
+
+            <div class="space-y-1.5">
+              <label class="flex items-center justify-between text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                <span>{{ t('settings.mascot.voiceRate') }}</span>
+                <span class="tabular-nums normal-case">{{ Number(settings.cyber_fox_voice_rate).toFixed(2) }}×</span>
+              </label>
+              <Input
+                type="range"
+                min="0.5"
+                max="1.8"
+                step="0.05"
+                v-model="settings.cyber_fox_voice_rate"
+              />
+            </div>
+
+            <div class="space-y-1.5">
+              <label class="flex items-center justify-between text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                <span>{{ t('settings.mascot.voicePitch') }}</span>
+                <span class="tabular-nums normal-case">{{ Number(settings.cyber_fox_voice_pitch).toFixed(2) }}</span>
+              </label>
+              <Input
+                type="range"
+                min="0.5"
+                max="1.8"
+                step="0.05"
+                v-model="settings.cyber_fox_voice_pitch"
+              />
+            </div>
           </div>
 
-          <div class="h-px bg-border" />
+          <div class="order-2 h-px bg-border" />
 
-          <!-- Unified preview: animation + sound + speech bubble in one place -->
-          <div class="space-y-4">
-            <div class="space-y-1">
+          <!-- Unified preview: realm/level explorer + state buttons. Ordered
+               first so the "cultivation realm" info leads the panel. Inner
+               `order-*`: earned level → realm explorer → animation states. -->
+          <div class="order-1 flex flex-col gap-3">
+            <!-- Animation-state buttons (drive the live fox pose on the right). -->
+            <div class="order-3 space-y-1.5">
               <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
                 {{ t('settings.mascot.previewState') }}
               </label>
-              <p class="text-[11px] text-muted-foreground leading-relaxed">
-                {{ t('settings.mascot.previewHint') }}
-              </p>
-            </div>
-
-            <div class="grid grid-cols-3 gap-2 sm:grid-cols-4">
-              <button
-                v-for="state in CYBER_FOX_STATES"
-                :key="state.id"
-                type="button"
-                class="rounded-md border px-2.5 py-2 text-[11px] font-medium leading-tight transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                :class="cyberFoxPreviewState === state.id
-                  ? 'border-primary/60 bg-accent text-foreground'
-                  : 'border-border/70 bg-background/70 text-muted-foreground hover:border-primary/50 hover:bg-accent/50 hover:text-foreground'"
-                :aria-pressed="cyberFoxPreviewState === state.id"
-                @click="selectPreviewState(state.id)"
-              >
-                {{ t(state.labelKey) }}
-              </button>
+              <div class="grid grid-cols-3 gap-2 sm:grid-cols-6">
+                <button
+                  v-for="state in CYBER_FOX_STATES"
+                  :key="state.id"
+                  type="button"
+                  class="rounded-md border px-2.5 py-2 text-[11px] font-medium leading-tight transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  :class="cyberFoxPreviewState === state.id
+                    ? 'border-primary/60 bg-accent text-foreground'
+                    : 'border-border/70 bg-background/70 text-muted-foreground hover:border-primary/50 hover:bg-accent/50 hover:text-foreground'"
+                  :aria-pressed="cyberFoxPreviewState === state.id"
+                  @click="selectPreviewState(state.id)"
+                >
+                  {{ t(state.labelKey) }}
+                </button>
+              </div>
             </div>
 
             <!-- Current earned level — auto-derived from cumulative token usage. -->
-            <div class="rounded-md border p-3" :class="earnedRealm.accentClass">
+            <div class="order-1 rounded-md border p-3" :class="earnedRealm.accentClass">
               <div class="flex items-center justify-between gap-2">
                 <span class="text-[11px] font-semibold uppercase tracking-wider">
                   {{ t('settings.mascot.levels.current') }}
@@ -1133,7 +1218,7 @@ watch(() => settings.value.language, (v) => {
               </p>
             </div>
 
-            <div class="rounded-md border border-border/70 bg-background/70 p-3 space-y-3">
+            <div class="order-2 rounded-md border border-border/70 bg-background/70 p-3 space-y-3">
               <div class="flex items-start justify-between gap-3">
                 <div class="min-w-0">
                   <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
