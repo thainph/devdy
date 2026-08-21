@@ -3,7 +3,8 @@
  * DY — Cyber Fox 2.5D mascot.
  * Layered, browser-native animation (transform/opacity only, no JS rAF loop).
  * Assets: fox-assets/generated/layers-2_5d (co-registered 1024² layers + manifest).
- * Public API unchanged: state / size / label / reducedMotion.
+ * Public API stays additive: state / size / label / reducedMotion, with optional
+ * evolution props for previewing realm/tier visual changes.
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { mascotSpeaking } from '@/composables/useMascotSpeaking'
@@ -11,12 +12,22 @@ import { mascotSpeaking } from '@/composables/useMascotSpeaking'
 type CyberFoxState =
   | 'idle' | 'thinking' | 'loading'
   | 'success' | 'error' | 'permission' | 'syncing' | 'sleep'
+type CyberFoxEvolutionRealm =
+  | 'luyen_khi'
+  | 'truc_co'
+  | 'kim_dan'
+  | 'nguyen_anh'
+  | 'hoa_than'
+  | 'anh_bien'
+  | 'van_dinh'
 
 const props = withDefaults(defineProps<{
   state?: CyberFoxState
   size?: 'sm' | 'md' | 'lg' | number
   label?: string
   reducedMotion?: boolean
+  evolutionRealm?: CyberFoxEvolutionRealm | ''
+  evolutionTier?: number
   /** Number of orbiting light streams (one per running run) — only shown while orchestrating. */
   streams?: number
 }>(), {
@@ -24,6 +35,8 @@ const props = withDefaults(defineProps<{
   size: 'md',
   label: '',
   reducedMotion: false,
+  evolutionRealm: '',
+  evolutionTier: 1,
   streams: 1,
 })
 
@@ -77,7 +90,6 @@ const A_EARL = A('ear-left.webp')
 const A_EARR = A('ear-right.webp')
 const A_TAILO = A('tail-orange.webp')
 const A_TAILB = A('tail-blue.webp')
-const A_GROUND = A('effects/ground-glow.webp')
 // Talking-head mouth-flap frames (full head sprite: ears + eyes + mouth baked).
 const A_TALK = Array.from({ length: 12 }, (_, i) => A(`talk/${String(i).padStart(2, '0')}.webp`))
 
@@ -118,6 +130,11 @@ const sizeBucket = computed(() => {
   if (typeof props.size !== 'number') return props.size
   return props.size < 120 ? 'sm' : props.size < 176 ? 'md' : 'lg'
 })
+const evolutionRealm = computed(() => props.evolutionRealm || '')
+const hasEvolution = computed(() => Boolean(evolutionRealm.value))
+const evolutionTier = computed(() =>
+  Math.max(1, Math.min(5, Math.round(props.evolutionTier || 1))),
+)
 
 const rootStyle = computed(() => ({ '--dy-size': sizePx.value, ...originVars }))
 
@@ -130,6 +147,8 @@ const numericSize = computed(() =>
 const TRAIL = 9
 const TRAIL_STEP = 0.028
 const MAX_STREAMS = 6
+const GROUND_RINGS = [1, 2, 3, 4, 5] as const
+const GROUND_RING_DOTS = Array.from({ length: 72 }, (_, i) => i)
 // colour index cycles through the palette (.dot--c0..c5); first two match the tails
 const streamCount = computed(() =>
   Math.max(1, Math.min(MAX_STREAMS, Math.round(props.streams || 1))))
@@ -182,11 +201,14 @@ function dotStyle(orbit: { path: string; phase: number; dur: number }, i: number
   }
 }
 
-// ground ring sits at the feet, wide enough to embrace the fox
-const groundStyle = computed(() => {
-  const gW = manifest?.effects?.groundGlow?.width ?? 256
-  return { width: `${(gW / 1024 * 100 * 1.5).toFixed(2)}%` }
-})
+function groundDotStyle(dot: number) {
+  const angle = (dot / GROUND_RING_DOTS.length) * 360
+  return {
+    '--dot-angle': `${angle.toFixed(2)}deg`,
+    '--dot-angle-end': `${(angle + 360).toFixed(2)}deg`,
+    '--dot-delay': `${(-dot * 34).toFixed(0)}ms`,
+  } as Record<string, string>
+}
 
 // ---- visibility: pause when off-screen or window hidden ---------------
 const rootRef = ref<HTMLElement | null>(null)
@@ -211,16 +233,53 @@ onBeforeUnmount(() => {
   <div
     ref="rootRef"
     class="cyber-fox"
-    :class="{ 'cyber-fox--reduced': reducedMotion, 'cyber-fox--paused': paused, 'cyber-fox--speaking': isSpeaking }"
+    :class="{
+      'cyber-fox--reduced': reducedMotion,
+      'cyber-fox--paused': paused,
+      'cyber-fox--speaking': isSpeaking,
+      'cyber-fox--evolved': hasEvolution,
+    }"
     :data-state="state"
     :data-size="sizeBucket"
+    :data-evolution="evolutionRealm || undefined"
+    :data-tier="hasEvolution ? evolutionTier : undefined"
     :style="rootStyle"
     :aria-label="label || undefined"
     :aria-hidden="label ? undefined : 'true'"
     role="img"
   >
-    <!-- ground (positioned at the feet, not full-canvas) -->
-    <img class="l--ground" :src="A_GROUND" :style="groundStyle" alt="" draggable="false" />
+    <!-- CSS ground ring: level-aware, drawn below every fox image layer. -->
+    <div class="ground-ring" aria-hidden="true">
+      <span class="ground-ring__base"></span>
+      <span class="ground-ring__pulse"></span>
+      <template v-if="hasEvolution">
+        <span
+          v-for="ring in GROUND_RINGS"
+          :key="'ground-ring-' + ring"
+          class="ground-ring__tier"
+          :class="[
+            `ground-ring__tier--${ring}`,
+            { 'ground-ring__tier--active': evolutionTier >= ring },
+          ]"
+        >
+          <i
+            v-for="dot in GROUND_RING_DOTS"
+            :key="'ground-ring-' + ring + '-dot-' + dot"
+            class="ground-ring__dot"
+            :style="groundDotStyle(dot)"
+          ></i>
+        </span>
+      </template>
+    </div>
+    <div v-if="hasEvolution" class="realm-mantle" aria-hidden="true"></div>
+    <div v-if="hasEvolution" class="realm-aura" aria-hidden="true">
+      <span v-if="evolutionTier >= 1" class="realm-band realm-band--1"></span>
+      <span v-if="evolutionTier >= 2" class="realm-band realm-band--2"></span>
+      <span v-if="evolutionTier >= 3" class="realm-band realm-band--3"></span>
+      <span v-if="evolutionTier >= 4" class="realm-band realm-band--4"></span>
+      <span v-if="evolutionTier >= 5" class="realm-band realm-band--5"></span>
+    </div>
+    <div v-if="hasEvolution" class="realm-mark" aria-hidden="true"><span></span></div>
 
     <!-- orbiting energy (pure CSS motion-path): two trails of glow dots chase diagonally,
          back → left shoulder → across body → right foot → back, crossing behind ↔ front -->
@@ -305,6 +364,12 @@ onBeforeUnmount(() => {
   --fox-chest: 1200ms;
   --fox-eye: 1200ms;
   --fox-orbit: 3200ms;
+  --e-rgb: 96 178 255;
+  --e-alt-rgb: 255 168 80;
+  --e-filter: none;
+  --e-power: 0.35;
+  --e-ring-scale: 0.92;
+  --e-core-size: 4.6%;
   position: relative;
   width: var(--dy-size);
   height: var(--dy-size);
@@ -312,6 +377,163 @@ onBeforeUnmount(() => {
   isolation: isolate;
   pointer-events: none;
   user-select: none;
+}
+
+.cyber-fox[data-evolution='luyen_khi'] {
+  --e-rgb: 56 189 248;
+  --e-alt-rgb: 147 197 253;
+  --e-filter: hue-rotate(0deg) saturate(1.08);
+}
+.cyber-fox[data-evolution='truc_co'] {
+  --e-rgb: 16 185 129;
+  --e-alt-rgb: 110 231 183;
+  --e-filter: hue-rotate(58deg) saturate(1.25) brightness(1.04);
+}
+.cyber-fox[data-evolution='kim_dan'] {
+  --e-rgb: 245 158 11;
+  --e-alt-rgb: 252 211 77;
+  --e-filter: sepia(0.25) saturate(1.45) hue-rotate(340deg) brightness(1.08);
+}
+.cyber-fox[data-evolution='nguyen_anh'] {
+  --e-rgb: 139 92 246;
+  --e-alt-rgb: 196 181 253;
+  --e-filter: hue-rotate(175deg) saturate(1.35) brightness(1.06);
+}
+.cyber-fox[data-evolution='hoa_than'] {
+  --e-rgb: 244 63 94;
+  --e-alt-rgb: 251 113 133;
+  --e-filter: hue-rotate(310deg) saturate(1.4) brightness(1.08);
+}
+.cyber-fox[data-evolution='anh_bien'] {
+  --e-rgb: 6 182 212;
+  --e-alt-rgb: 103 232 249;
+  --e-filter: hue-rotate(105deg) saturate(1.35) brightness(1.06);
+}
+.cyber-fox[data-evolution='van_dinh'] {
+  --e-rgb: 217 70 239;
+  --e-alt-rgb: 250 232 255;
+  --e-filter: hue-rotate(230deg) saturate(1.45) brightness(1.1);
+}
+.cyber-fox[data-tier='1'] { --e-power: 0.36; --e-ring-scale: 0.9; --e-core-size: 4.4%; }
+.cyber-fox[data-tier='2'] { --e-power: 0.48; --e-ring-scale: 0.96; --e-core-size: 5%; }
+.cyber-fox[data-tier='3'] { --e-power: 0.62; --e-ring-scale: 1.02; --e-core-size: 5.6%; }
+.cyber-fox[data-tier='4'] { --e-power: 0.78; --e-ring-scale: 1.08; --e-core-size: 6.2%; }
+.cyber-fox[data-tier='5'] { --e-power: 0.96; --e-ring-scale: 1.15; --e-core-size: 7%; }
+
+.cyber-fox--evolved .realm-mark {
+  position: absolute;
+  left: 50%;
+  top: 7%;
+  z-index: 96;
+  width: calc(8% + var(--e-power) * 5%);
+  aspect-ratio: 1;
+  border: 1px solid rgba(var(--e-rgb), calc(0.38 + var(--e-power) * 0.24));
+  border-radius: 28%;
+  background: rgba(var(--e-rgb), calc(0.06 + var(--e-power) * 0.08));
+  box-shadow:
+    0 0 calc(var(--dy-size) * 0.035) rgba(var(--e-rgb), calc(0.18 + var(--e-power) * 0.28)),
+    inset 0 0 calc(var(--dy-size) * 0.02) rgba(var(--e-alt-rgb), 0.22);
+  transform: translateX(-50%) rotate(45deg);
+  animation: dy-realm-mark 2600ms ease-in-out infinite;
+  pointer-events: none;
+}
+
+.cyber-fox--evolved .realm-mark span {
+  position: absolute;
+  inset: 31%;
+  border-radius: 999px;
+  background: rgb(var(--e-alt-rgb));
+  box-shadow: 0 0 calc(var(--dy-size) * 0.025) rgba(var(--e-alt-rgb), 0.72);
+}
+
+.cyber-fox--evolved .realm-mantle {
+  position: absolute;
+  left: 17%;
+  right: 17%;
+  top: 21%;
+  bottom: 11%;
+  z-index: 38;
+  border: 2px solid rgba(var(--e-rgb), calc(0.24 + var(--e-power) * 0.32));
+  border-radius: 45% 45% 36% 36%;
+  box-shadow:
+    0 0 calc(var(--dy-size) * 0.06) rgba(var(--e-rgb), calc(0.18 + var(--e-power) * 0.22)),
+    inset 0 0 calc(var(--dy-size) * 0.03) rgba(var(--e-alt-rgb), 0.2);
+  opacity: calc(0.55 + var(--e-power) * 0.28);
+  animation: dy-realm-mantle 2400ms ease-in-out infinite;
+  pointer-events: none;
+}
+
+.cyber-fox--evolved .realm-aura {
+  position: absolute;
+  inset: 0;
+  z-index: 94;
+  pointer-events: none;
+}
+
+.cyber-fox--evolved .realm-band {
+  position: absolute;
+  left: 10%;
+  right: 10%;
+  height: 10%;
+  border: 2px solid rgba(var(--e-rgb), calc(0.34 + var(--e-power) * 0.28));
+  border-left-color: rgba(var(--e-alt-rgb), 0.12);
+  border-right-color: rgba(var(--e-alt-rgb), 0.12);
+  border-radius: 999px;
+  box-shadow:
+    0 0 calc(var(--dy-size) * 0.025) rgba(var(--e-rgb), calc(0.2 + var(--e-power) * 0.24)),
+    inset 0 0 calc(var(--dy-size) * 0.015) rgba(var(--e-alt-rgb), 0.18);
+  transform: rotateX(68deg);
+  opacity: calc(0.45 + var(--e-power) * 0.38);
+  animation: dy-realm-band 2600ms ease-in-out infinite;
+}
+.realm-band--1 { bottom: 12%; }
+.realm-band--2 { bottom: 24%; left: 13%; right: 13%; animation-delay: -240ms; }
+.realm-band--3 { bottom: 36%; left: 16%; right: 16%; animation-delay: -480ms; }
+.realm-band--4 { bottom: 48%; left: 20%; right: 20%; animation-delay: -720ms; }
+.realm-band--5 { bottom: 60%; left: 25%; right: 25%; animation-delay: -960ms; }
+
+.cyber-fox--evolved .l--body,
+.cyber-fox--evolved .l--head,
+.cyber-fox--evolved .l--earL,
+.cyber-fox--evolved .l--earR,
+.cyber-fox--evolved .tail-base {
+  filter:
+    var(--e-filter)
+    saturate(calc(1 + var(--e-power) * 0.18))
+    drop-shadow(0 0 calc(var(--dy-size) * 0.018) rgba(var(--e-rgb), calc(0.12 + var(--e-power) * 0.18)));
+}
+
+.cyber-fox--evolved .l--eyes {
+  filter: drop-shadow(0 0 calc(var(--dy-size) * 0.025) rgba(var(--e-alt-rgb), calc(0.42 + var(--e-power) * 0.38)));
+}
+
+.cyber-fox--evolved .tail-glow {
+  filter:
+    saturate(calc(1.1 + var(--e-power) * 0.22))
+    drop-shadow(0 0 calc(var(--dy-size) * 0.05) rgba(var(--e-rgb), calc(0.24 + var(--e-power) * 0.36)));
+}
+
+.cyber-fox--evolved .tail-glow {
+  opacity: calc(0.12 + var(--e-power) * 0.18);
+}
+
+.cyber-fox--evolved .l--chest-wrap::after {
+  content: '';
+  position: absolute;
+  left: 49.9%;
+  top: 67.1%;
+  width: var(--e-core-size);
+  aspect-ratio: 1;
+  z-index: 90;
+  border: 1px solid rgba(var(--e-alt-rgb), calc(0.36 + var(--e-power) * 0.24));
+  border-radius: 999px;
+  background: rgba(var(--e-rgb), calc(0.14 + var(--e-power) * 0.14));
+  box-shadow:
+    0 0 calc(var(--dy-size) * 0.032) rgba(var(--e-rgb), calc(0.3 + var(--e-power) * 0.36)),
+    inset 0 0 calc(var(--dy-size) * 0.012) rgba(var(--e-alt-rgb), 0.4);
+  transform: translate(-50%, -50%);
+  animation: dy-evolution-core 1600ms ease-in-out infinite;
+  pointer-events: none;
 }
 
 .l {
@@ -428,20 +650,166 @@ onBeforeUnmount(() => {
 .l--tailO.tail-glow { animation: dy-tail-o var(--fox-tail-o) ease-in-out infinite, dy-glow var(--fox-tail-o) ease-in-out infinite; animation-delay: -140ms, -140ms; }
 .l--tailB.tail-glow { animation: dy-tail-b var(--fox-tail-b) ease-in-out infinite, dy-glow var(--fox-tail-b) ease-in-out infinite; animation-delay: -160ms, -160ms; }
 
-/* ground — anchored at the feet */
-.l--ground {
+.ground-ring {
   position: absolute;
-  /* Nudged left of dead-centre to compensate for the glow artwork being ~3%
-     brighter on its right half, which otherwise reads as leaning right. */
-  left: 47%;
-  bottom: 3%;
-  z-index: 0;
+  inset: 0;
+  z-index: -10;
+  pointer-events: none;
+}
+
+.ground-ring span {
+  display: block;
+  position: absolute;
+  left: 50%;
+  top: 64%;
   height: auto;
-  transform: translateX(-50%) scaleX(1);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
   transform-origin: 50% 50%;
-  mix-blend-mode: screen;
-  object-fit: contain;
-  animation: dy-ground var(--fox-loop) ease-in-out infinite;
+  mix-blend-mode: normal;
+}
+
+.ground-ring__base {
+  z-index: 0;
+  width: 68%;
+  background:
+    radial-gradient(circle at center, rgba(112,190,255,0.13) 0 2%, transparent 3%),
+    radial-gradient(circle at center, rgba(78,150,255,0.12) 0 38%, rgba(78,150,255,0.03) 56%, transparent 72%);
+  box-shadow:
+    0 0 calc(var(--dy-size) * 0.045) rgba(96,178,255,0.3),
+    inset 0 0 calc(var(--dy-size) * 0.03) rgba(112,190,255,0.14);
+}
+
+.cyber-fox--evolved .ground-ring__base {
+  background:
+    radial-gradient(circle at center, rgb(var(--e-alt-rgb) / 0.28) 0 2%, transparent 4%),
+    radial-gradient(circle at center, rgb(var(--e-rgb) / 0.22) 0 38%, rgb(var(--e-rgb) / 0.06) 58%, transparent 74%);
+  box-shadow:
+    0 0 calc(var(--dy-size) * 0.07) rgb(var(--e-rgb) / 0.38),
+    inset 0 0 calc(var(--dy-size) * 0.04) rgb(var(--e-alt-rgb) / 0.24);
+}
+
+.ground-ring__pulse {
+  z-index: 1;
+  width: 78%;
+  border: 1px solid rgba(112,190,255,0.2);
+  background: radial-gradient(circle at center, transparent 62%, rgba(112,190,255,0.08) 64%, transparent 68%);
+  box-shadow: 0 0 calc(var(--dy-size) * 0.058) rgba(112,190,255,0.26);
+  animation: dy-ground-pulse var(--fox-loop) ease-in-out infinite;
+}
+
+.cyber-fox--evolved .ground-ring__pulse {
+  border-color: rgb(var(--e-rgb) / 0.42);
+  background: radial-gradient(circle at center, transparent 58%, rgb(var(--e-rgb) / 0.18) 62%, transparent 70%);
+  box-shadow: 0 0 calc(var(--dy-size) * 0.08) rgb(var(--e-rgb) / 0.46);
+}
+
+.ground-ring__tier {
+  --ring-size: calc(var(--dy-size) * 0.28);
+  --ring-radius: calc(var(--dy-size) * 0.14);
+  --dot-size: calc(var(--dy-size) * 0.022);
+  --dot-half: calc(var(--dy-size) * -0.011);
+  --dot-tail: calc(var(--dy-size) * 0.062);
+  --dot-tail-half: calc(var(--dy-size) * -0.031);
+  --ring-speed: 7200ms;
+  z-index: 2;
+  width: var(--ring-size);
+  opacity: 0.55;
+}
+
+.ground-ring__tier--1 {
+  --ring-size: calc(var(--dy-size) * 0.28);
+  --ring-radius: calc(var(--dy-size) * 0.14);
+  --dot-size: calc(var(--dy-size) * 0.021);
+  --dot-half: calc(var(--dy-size) * -0.0105);
+  --dot-tail: calc(var(--dy-size) * 0.058);
+  --dot-tail-half: calc(var(--dy-size) * -0.029);
+  --ring-speed: 5600ms;
+}
+.ground-ring__tier--2 {
+  --ring-size: calc(var(--dy-size) * 0.4);
+  --ring-radius: calc(var(--dy-size) * 0.2);
+  --dot-size: calc(var(--dy-size) * 0.023);
+  --dot-half: calc(var(--dy-size) * -0.0115);
+  --dot-tail: calc(var(--dy-size) * 0.066);
+  --dot-tail-half: calc(var(--dy-size) * -0.033);
+  --ring-speed: 6600ms;
+  animation-delay: -120ms;
+}
+.ground-ring__tier--3 {
+  --ring-size: calc(var(--dy-size) * 0.52);
+  --ring-radius: calc(var(--dy-size) * 0.26);
+  --dot-size: calc(var(--dy-size) * 0.025);
+  --dot-half: calc(var(--dy-size) * -0.0125);
+  --dot-tail: calc(var(--dy-size) * 0.074);
+  --dot-tail-half: calc(var(--dy-size) * -0.037);
+  --ring-speed: 7600ms;
+  animation-delay: -240ms;
+}
+.ground-ring__tier--4 {
+  --ring-size: calc(var(--dy-size) * 0.64);
+  --ring-radius: calc(var(--dy-size) * 0.32);
+  --dot-size: calc(var(--dy-size) * 0.027);
+  --dot-half: calc(var(--dy-size) * -0.0135);
+  --dot-tail: calc(var(--dy-size) * 0.082);
+  --dot-tail-half: calc(var(--dy-size) * -0.041);
+  --ring-speed: 8600ms;
+  animation-delay: -360ms;
+}
+.ground-ring__tier--5 {
+  --ring-size: calc(var(--dy-size) * 0.76);
+  --ring-radius: calc(var(--dy-size) * 0.38);
+  --dot-size: calc(var(--dy-size) * 0.03);
+  --dot-half: calc(var(--dy-size) * -0.015);
+  --dot-tail: calc(var(--dy-size) * 0.092);
+  --dot-tail-half: calc(var(--dy-size) * -0.046);
+  --ring-speed: 9600ms;
+  animation-delay: -480ms;
+}
+
+.ground-ring__tier--active {
+  z-index: 3;
+  opacity: calc(0.8 + var(--e-power) * 0.18);
+  animation: dy-ground-tier 2200ms ease-in-out infinite;
+}
+
+.ground-ring__dot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: var(--dot-tail);
+  height: var(--dot-size);
+  margin-left: var(--dot-tail-half);
+  margin-top: var(--dot-half);
+  border-radius: 999px;
+  background:
+    linear-gradient(90deg, rgba(148, 163, 184, 0) 0%, rgba(148, 163, 184, 0.2) 38%, rgba(148, 163, 184, 0.55) 100%);
+  box-shadow: 0 0 calc(var(--dy-size) * 0.014) rgba(148, 163, 184, 0.2);
+  filter: blur(0.15px);
+  opacity: 0.5;
+  transform: rotate(var(--dot-angle)) translateX(var(--ring-radius)) rotate(90deg);
+  transform-origin: 50% 50%;
+}
+
+.ground-ring__tier--active .ground-ring__dot {
+  background:
+    linear-gradient(90deg, rgb(var(--e-rgb) / 0) 0%, rgb(var(--e-rgb) / 0.5) 34%, rgb(var(--e-alt-rgb) / 0.95) 74%, rgb(255 255 255 / 0.98) 100%);
+  background-color: rgb(var(--e-rgb) / 0.9);
+  box-shadow:
+    0 0 calc(var(--dy-size) * 0.02) rgb(var(--e-rgb) / 0.76),
+    0 0 calc(var(--dy-size) * 0.05) rgb(var(--e-alt-rgb) / 0.42);
+  filter: blur(0.1px);
+  opacity: calc(0.86 + var(--e-power) * 0.14);
+  animation:
+    dy-ground-dot-orbit var(--ring-speed) linear infinite,
+    dy-ground-dot-pulse 1300ms ease-in-out infinite;
+  animation-delay: 0ms, var(--dot-delay);
+}
+
+.ground-ring__tier--2.ground-ring__tier--active .ground-ring__dot,
+.ground-ring__tier--4.ground-ring__tier--active .ground-ring__dot {
+  animation-direction: reverse, normal;
 }
 
 /* eyes processing crossfade cycle */
@@ -543,10 +911,26 @@ onBeforeUnmount(() => {
 @keyframes dy-head-droop { 0%,100% { transform: translate3d(0,1.5%,0) rotate(-2deg); } 50% { transform: translate3d(0,3%,0) rotate(-3deg); } }
 @keyframes dy-glow { 0%,100% { opacity: 0.28; } 45% { opacity: 0.85; } 70% { opacity: 0.5; } }
 @keyframes dy-chest { 0%,100% { transform: scale(1); } 50% { transform: scale(1.035); } }
-/* ground ring: gently stretches outward to embrace the fox's feet */
-@keyframes dy-ground {
-  0%, 100% { opacity: 0.5; transform: translateX(-50%) scale(0.9); }
-  50% { opacity: 0.82; transform: translateX(-50%) scale(1.14); }
+/* CSS ground ring: five concentric rings map directly to tier 1..5. */
+@keyframes dy-ground-pulse {
+  0%,100% { opacity: 0.34; transform: translate(-50%, -50%) scale(0.96); }
+  50% { opacity: 0.76; transform: translate(-50%, -50%) scale(1.05); }
+}
+@keyframes dy-ground-tier {
+  0%,100% {
+    transform: translate(-50%, -50%) scale(0.985);
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.035);
+  }
+}
+@keyframes dy-ground-dot-orbit {
+  from { transform: rotate(var(--dot-angle)) translateX(var(--ring-radius)) rotate(90deg); }
+  to { transform: rotate(var(--dot-angle-end)) translateX(var(--ring-radius)) rotate(90deg); }
+}
+@keyframes dy-ground-dot-pulse {
+  0%,100% { opacity: calc(0.56 + var(--e-power) * 0.18); }
+  50% { opacity: calc(0.88 + var(--e-power) * 0.12); }
 }
 @keyframes dy-eye-seq { 0%,22% { opacity: 1; } 40%,88% { opacity: 0; } 100% { opacity: 1; } }
 /* each of the 3 layers is fully visible for exactly one third of the cycle */
@@ -563,6 +947,22 @@ onBeforeUnmount(() => {
 @keyframes dy-chest-pop { 0% { opacity: 0; transform: scale(0.5); } 60% { transform: scale(1.15); } 100% { opacity: 1; transform: scale(1); } }
 @keyframes dy-chest-shake { 0%,100% { transform: translateX(0) rotate(0deg); } 20% { transform: translateX(-12%) rotate(-4deg); } 40% { transform: translateX(10%) rotate(3deg); } 60% { transform: translateX(-7%) rotate(-2deg); } 80% { transform: translateX(4%) rotate(0deg); } }
 @keyframes dy-ask-pulse { 0%,100% { transform: scale(0.92); opacity: 0.8; } 50% { transform: scale(1.08); opacity: 1; } }
+@keyframes dy-realm-mark {
+  0%,100% { opacity: 0.76; transform: translateX(-50%) translateY(0) rotate(45deg) scale(1); }
+  50% { opacity: 1; transform: translateX(-50%) translateY(-8%) rotate(45deg) scale(1.08); }
+}
+@keyframes dy-evolution-core {
+  0%,100% { opacity: 0.72; transform: translate(-50%, -50%) scale(0.92); }
+  50% { opacity: 1; transform: translate(-50%, -50%) scale(1.16); }
+}
+@keyframes dy-realm-mantle {
+  0%,100% { transform: scale(0.98); }
+  50% { transform: scale(1.04); }
+}
+@keyframes dy-realm-band {
+  0%,100% { transform: rotateX(68deg) scaleX(0.96); }
+  50% { transform: rotateX(68deg) scaleX(1.06); }
+}
 
 /* --- size simplification --- */
 .cyber-fox[data-size='sm'] .l--fx,
@@ -574,10 +974,10 @@ onBeforeUnmount(() => {
 .cyber-fox--paused * { animation-play-state: paused !important; }
 
 /* --- reduced motion --- */
-.cyber-fox--reduced .l, .cyber-fox--reduced .chest-img, .cyber-fox--reduced .l--eyes, .cyber-fox--reduced .l--ground, .cyber-fox--reduced .chest-think span, .cyber-fox--reduced .chest-load-bar, .cyber-fox--reduced .chest-ok svg, .cyber-fox--reduced .chest-err svg, .cyber-fox--reduced .chest-ask span { animation: none !important; }
+.cyber-fox--reduced .l, .cyber-fox--reduced .chest-img, .cyber-fox--reduced .l--eyes, .cyber-fox--reduced .ground-ring span, .cyber-fox--reduced .ground-ring__dot, .cyber-fox--reduced .chest-think span, .cyber-fox--reduced .chest-load-bar, .cyber-fox--reduced .chest-ok svg, .cyber-fox--reduced .chest-err svg, .cyber-fox--reduced .chest-ask span { animation: none !important; }
 .cyber-fox--reduced .l--fx, .cyber-fox--reduced .tail-glow, .cyber-fox--reduced .l--blink { display: none; }
 @media (prefers-reduced-motion: reduce) {
-  .cyber-fox .l, .cyber-fox .chest-img, .cyber-fox .l--eyes, .cyber-fox .l--ground { animation: none !important; }
+  .cyber-fox .l, .cyber-fox .chest-img, .cyber-fox .l--eyes, .cyber-fox .ground-ring span, .cyber-fox .ground-ring__dot { animation: none !important; }
   .cyber-fox .l--fx, .cyber-fox .tail-glow, .cyber-fox .l--blink { display: none; }
 }
 

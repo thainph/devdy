@@ -66,7 +66,34 @@
       "error": "Lỗi",
       "permission": "Chờ quyền"
     },
-    "testBubbleSample": "Ví dụ — đây là một thông báo mẫu."
+    "testBubbleSample": "Ví dụ — đây là một thông báo mẫu.",
+    "levels": {
+      "previewTitle": "Cảnh giới linh thú",
+      "previewHint": "Chọn cảnh giới và tầng để xem trước cách hiển thị level trong mascot preview.",
+      "levelTitle": "{realm} tầng {tier}",
+      "levelNumber": "Level {level}",
+      "levelRange": "Lv {from}-{to}",
+      "tierShort": "T{tier}",
+      "tierProgress": "Tiến độ tầng",
+      "breakthrough": "Đột phá sau tầng 5",
+      "visualChange": "Thay đổi gợi ý",
+      "realms": {
+        "luyenKhi": "Luyện Khí",
+        "trucCo": "Trúc Cơ",
+        "kimDan": "Kim Đan",
+        "nguyenAnh": "Nguyên Anh",
+        "hoaThan": "Hóa Thần",
+        "anhBien": "Anh Biến",
+        "vanDinh": "Vấn Đỉnh"
+      },
+      "changes": {
+        "tier1": "Vừa bước vào cảnh giới mới: aura đổi màu nhẹ, nhịp thở và ánh mắt ổn định hơn.",
+        "tier2": "Năng lượng bắt đầu rõ hơn: mắt sáng hơn và vòng sáng dưới chân dày hơn.",
+        "tier3": "Linh khí tụ lại: thêm nhịp spark nhỏ khi AI đang suy nghĩ hoặc chạy tool.",
+        "tier4": "Sắp viên mãn: đuôi và dòng năng lượng quanh thân mạnh hơn trong trạng thái loading.",
+        "tier5": "Viên mãn cảnh giới: badge nổi bật hơn và sẵn sàng hiệu ứng đột phá sang cảnh giới kế tiếp."
+      }
+    }
   },
   "mcp": {
     "title": "MCP Server tích hợp sẵn",
