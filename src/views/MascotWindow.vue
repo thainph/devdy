@@ -12,7 +12,8 @@ import { ListTodo, StickyNote } from 'lucide-vue-next'
 import { listen, emit, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow, currentMonitor } from '@tauri-apps/api/window'
 import { LogicalPosition } from '@tauri-apps/api/dpi'
-import CyberFox from '@/components/CyberFox.vue'
+import CyberFox from '@/components/CyberFoxCanvas.vue'
+import MascotStars from '@/components/MascotStars.vue'
 import MascotContextMenu, { type MascotMenuItem } from '@/components/MascotContextMenu.vue'
 import MascotBubble from '@/components/MascotBubble.vue'
 import { openQuickCreateWindow, type QuickCreateTab } from '@/lib/quickCreateWindow'
@@ -25,6 +26,7 @@ import {
 } from '@/lib/mascotWindow'
 import type { CyberFoxSize, CyberFoxState } from '@/composables/useMascotState'
 import type { MascotBubbleMessage } from '@/composables/useMascotBubble'
+import type { MascotRealmId } from '@/lib/mascotLevel'
 import { setSpeaking } from '@/composables/useMascotSpeaking'
 
 const POSITION_KEY = 'devdy.mascotWindow.position.v1'
@@ -36,6 +38,10 @@ const state = ref<CyberFoxState>('idle')
 const size = ref<CyberFoxSize>('md')
 const streams = ref(1)
 const lite = ref(false)
+const evolutionRealm = ref<MascotRealmId | ''>('')
+const evolutionTier = ref(1)
+const stars = ref(0)
+const levelUpAt = ref(0)
 const bubbleMsg = ref<MascotBubbleMessage | null>(null)
 
 const menuOpen = ref(false)
@@ -187,6 +193,10 @@ function applyPayload(p: Partial<MascotStatePayload>) {
   if (p.size) size.value = p.size
   if (typeof p.streams === 'number') streams.value = Math.max(1, p.streams)
   if (typeof p.lite === 'boolean') lite.value = p.lite
+  if (typeof p.evolutionRealm === 'string') evolutionRealm.value = p.evolutionRealm as MascotRealmId | ''
+  if (typeof p.evolutionTier === 'number') evolutionTier.value = p.evolutionTier
+  if (typeof p.stars === 'number') stars.value = Math.max(0, p.stars)
+  if (typeof p.levelUpAt === 'number' && p.levelUpAt > levelUpAt.value) levelUpAt.value = p.levelUpAt
 }
 
 onMounted(async () => {
@@ -236,7 +246,18 @@ onBeforeUnmount(() => {
       @dragstart.prevent
     >
       <MascotBubble :message="bubbleMsg" />
-      <CyberFox :state="state" :size="size" :streams="streams" :lite="lite" />
+      <div class="fox-stack">
+        <CyberFox
+          :state="state"
+          :size="size"
+          :streams="streams"
+          :lite="lite"
+          :evolution-realm="evolutionRealm"
+          :evolution-tier="evolutionTier"
+          :level-up-at="levelUpAt"
+        />
+        <MascotStars class="fox-stars" :count="stars" />
+      </div>
     </div>
 
     <!-- Right-click quick-create menu (Todo / Note). -->
@@ -252,6 +273,18 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.fox-stack {
+  position: relative;
+  display: inline-flex;
+}
+.fox-stars {
+  position: absolute;
+  top: -2px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+}
+
 .mascot-root {
   position: fixed;
   inset: 0;

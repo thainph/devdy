@@ -2,12 +2,14 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ListTodo, StickyNote } from 'lucide-vue-next'
-import CyberFox from '@/components/CyberFox.vue'
+import CyberFox from '@/components/CyberFoxCanvas.vue'
+import MascotStars from '@/components/MascotStars.vue'
 import MascotContextMenu, { type MascotMenuItem } from '@/components/MascotContextMenu.vue'
 import MascotBubble from '@/components/MascotBubble.vue'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useMascotState } from '@/composables/useMascotState'
 import { useMascotBubble } from '@/composables/useMascotBubble'
+import { useMascotLevelUp } from '@/composables/useMascotLevelUp'
 import { openQuickCreateWindow, type QuickCreateTab } from '@/lib/quickCreateWindow'
 
 interface Position {
@@ -25,9 +27,27 @@ const DEFAULT_BOTTOM = 20
 const { t } = useI18n()
 const appSettings = useAppSettingsStore()
 // Shared mascot brain: enabled flag, size preference, current phase + streams.
-const { enabled, liteMode, mascotSize, displayState, runningCount } = useMascotState()
+const {
+  enabled,
+  liteMode,
+  mascotSize,
+  displayState,
+  runningCount,
+  evolutionRealm,
+  evolutionTier,
+  mascotLevel,
+  mascotStars,
+} = useMascotState()
+
+// Hover tooltip: "DY · Level N" (+ ⭐×n once the fox has reincarnated).
+const foxTitle = computed(() => {
+  const base = `DY · ${t('settings.mascot.levels.levelNumber', { level: mascotLevel.value.level })}`
+  return mascotStars.value > 0 ? `${base} · ⭐×${mascotStars.value}` : base
+})
 // Speech bubble channel (fed app-wide by CyberFoxHost / CalendarReminder).
 const { state: bubble } = useMascotBubble()
+// Breakthrough VFX timestamp (bumped by CyberFoxHost on real level-ups).
+const { levelUpAt } = useMascotLevelUp()
 const rootRef = ref<HTMLElement | null>(null)
 const ready = ref(false)
 const dragging = ref(false)
@@ -216,7 +236,7 @@ onBeforeUnmount(() => {
     role="img"
     aria-label="DY Cyber Fox"
     aria-roledescription="draggable mascot"
-    title="DY"
+    :title="foxTitle"
     @pointerdown="startDrag"
     @pointermove="onDrag"
     @pointerup="endDrag"
@@ -226,7 +246,18 @@ onBeforeUnmount(() => {
     @dragstart.prevent
   >
     <MascotBubble :message="bubble.current" />
-    <CyberFox :state="displayState" :size="mascotSize" :streams="runningCount" :lite="liteMode" />
+    <div class="fox-stack">
+      <CyberFox
+        :state="displayState"
+        :size="mascotSize"
+        :streams="runningCount"
+        :lite="liteMode"
+        :evolution-realm="evolutionRealm"
+        :evolution-tier="evolutionTier"
+        :level-up-at="levelUpAt"
+      />
+      <MascotStars class="fox-stars" :count="mascotStars" />
+    </div>
   </div>
 
   <!-- Right-click quick-create menu (Todo / Note). -->
@@ -241,6 +272,18 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.fox-stack {
+  position: relative;
+  display: inline-flex;
+}
+.fox-stars {
+  position: absolute;
+  top: -2px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+}
+
 .cyber-fox-floating {
   position: fixed;
   top: 0;

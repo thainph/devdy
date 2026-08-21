@@ -25,6 +25,11 @@ export interface MascotStatePayload {
   size: CyberFoxSize
   streams: number
   lite?: boolean
+  evolutionRealm?: string
+  evolutionTier?: number
+  /** Ascension stars ⭐ — completed 35-level cycles. */
+  stars?: number
+  levelUpAt?: number
 }
 
 // Vertical room reserved ABOVE the fox for the speech bubble (logical px).
@@ -51,7 +56,9 @@ export async function openMascotWindow(size: CyberFoxSize = 'md'): Promise<Webvi
   }
 
   const win = new WebviewWindow(MASCOT_WINDOW_LABEL, {
-    url: 'index.html?mascotWindow=1',
+    // Slim standalone entry (mascot.html → src/mascot/main.ts) instead of booting
+    // the full SPA (index.html?mascotWindow=1) inside a second webview.
+    url: 'mascot.html',
     title: 'DY',
     width,
     height,

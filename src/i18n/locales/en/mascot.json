@@ -4,6 +4,8 @@
     "permission": "Waiting for your approval",
     "success": "All done!",
     "error": "Something went wrong",
-    "dismiss": "Dismiss"
+    "dismiss": "Dismiss",
+    "levelUp": "Breakthrough! Now {realm} · Tier {tier}",
+    "rebirth": "Reincarnation! A new cycle begins {stars}"
   }
 }

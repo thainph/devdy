@@ -23,6 +23,7 @@ export default defineConfig(async () => ({
       input: {
         main: fileURLToPath(new URL('./index.html', import.meta.url)),
         controller: fileURLToPath(new URL('./controller.html', import.meta.url)),
+        mascot: fileURLToPath(new URL('./mascot.html', import.meta.url)),
       },
     },
   },

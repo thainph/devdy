@@ -5,14 +5,18 @@
 //               the live mascot state to it over Tauri events.
 // The live-runs store lives here (main window), so this component is the single
 // source of truth in both modes; the desktop-pet window is a dumb renderer.
-import { onBeforeUnmount, onMounted, watch } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import CyberFoxFloating from '@/components/CyberFoxFloating.vue'
 import { useMascotState } from '@/composables/useMascotState'
 import { useMascotBubble } from '@/composables/useMascotBubble'
 import { useMascotBubbleFeed } from '@/composables/useMascotBubbleFeed'
+import { triggerMascotLevelUp } from '@/composables/useMascotLevelUp'
 import { useMascotSound } from '@/composables/useMascotSound'
 import { mascotSpeaking } from '@/composables/useMascotSpeaking'
+import { useMascotLevelStore } from '@/stores/mascotLevel'
+import type { MascotRealmId } from '@/lib/mascotLevel'
 import {
   MASCOT_READY_EVENT,
   closeMascotWindow,
@@ -22,14 +26,41 @@ import {
   openMascotWindow,
 } from '@/lib/mascotWindow'
 
-const { enabled, soundEnabled, liteMode, mode, mascotSize, displayState, runningCount } = useMascotState()
+const { t } = useI18n()
+const {
+  enabled,
+  soundEnabled,
+  liteMode,
+  mode,
+  mascotSize,
+  displayState,
+  runningCount,
+  mascotLevel,
+  evolutionRealm,
+  evolutionTier,
+  mascotStars,
+} = useMascotState()
 
 // Feed app-wide signals (run phase + toasts) into the shared speech bubble.
 useMascotBubbleFeed(displayState)
-const { state: bubble } = useMascotBubble()
+const { state: bubble, push } = useMascotBubble()
 const sound = useMascotSound()
+const levelStore = useMascotLevelStore()
+
+// realm id → i18n label key (matches the Settings realm list).
+const REALM_LABEL_KEY: Record<MascotRealmId, string> = {
+  luyen_khi: 'settings.mascot.levels.realms.luyenKhi',
+  truc_co: 'settings.mascot.levels.realms.trucCo',
+  kim_dan: 'settings.mascot.levels.realms.kimDan',
+  nguyen_anh: 'settings.mascot.levels.realms.nguyenAnh',
+  hoa_than: 'settings.mascot.levels.realms.hoaThan',
+  anh_bien: 'settings.mascot.levels.realms.anhBien',
+  van_dinh: 'settings.mascot.levels.realms.vanDinh',
+}
 
 let unlistenReady: UnlistenFn | null = null
+
+let lastLevelUpAt = 0
 
 function currentPayload() {
   return {
@@ -37,8 +68,40 @@ function currentPayload() {
     size: mascotSize.value,
     streams: runningCount.value,
     lite: liteMode.value,
+    evolutionRealm: evolutionRealm.value,
+    evolutionTier: evolutionTier.value,
+    stars: mascotStars.value,
+    levelUpAt: lastLevelUpAt,
   }
 }
+
+// Announce a breakthrough ONLY for genuine in-session level-ups — never for the
+// initial cumulative-usage read on startup (which jumps 0 → earned level).
+let levelUpArmed = false
+let lastNotifiedLevel = 1
+watch(
+  () => mascotLevel.value.level,
+  (lvl) => {
+    if (!levelUpArmed) return
+    if (lvl > lastNotifiedLevel) {
+      const info = mascotLevel.value
+      // A fresh reincarnation (new star) lands on the very first level of a cycle.
+      const reincarnated = info.ascension > 0 && info.realmIndex === 0 && info.tier === 1
+      const message = reincarnated
+        ? t('mascot.bubble.rebirth', { stars: '⭐'.repeat(info.stars), count: info.stars })
+        : t('mascot.bubble.levelUp', {
+            realm: t(REALM_LABEL_KEY[info.realmId]),
+            tier: info.tier,
+          }) + (info.stars > 0 ? ` ${'⭐'.repeat(info.stars)}` : '')
+      push(message, 'success')
+      // Fire the rising-rings VFX: in-app via the shared signal, desktop pet via event.
+      triggerMascotLevelUp()
+      lastLevelUpAt = Date.now()
+      if (enabled.value && mode.value === 'desktop') emitMascotState(currentPayload())
+    }
+    lastNotifiedLevel = lvl
+  },
+)
 
 async function ensureDesktopWindow() {
   if (!enabled.value || mode.value !== 'desktop') return
@@ -66,7 +129,7 @@ watch(
 )
 
 // Keep the pet in sync with live state (only matters while in desktop mode).
-watch([displayState, runningCount, liteMode], () => {
+watch([displayState, runningCount, liteMode, evolutionRealm, evolutionTier], () => {
   if (enabled.value && mode.value === 'desktop') emitMascotState(currentPayload())
 })
 
@@ -95,6 +158,13 @@ watch(mascotSize, async () => {
 })
 
 onMounted(async () => {
+  // Establish the earned-level baseline first so the startup 0 → earned jump
+  // doesn't fire a false "breakthrough", then arm live level-up announcements.
+  await levelStore.ensureLoaded()
+  await nextTick()
+  lastNotifiedLevel = mascotLevel.value.level
+  levelUpArmed = true
+
   // When the pet window (re)mounts it announces readiness; replay current state.
   try {
     unlistenReady = await listen(MASCOT_READY_EVENT, () => {
