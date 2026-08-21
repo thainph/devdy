@@ -66,6 +66,7 @@ interface AppSettings {
   cyber_fox_size: string
   cyber_fox_mode: string
   cyber_fox_sound: string
+  cyber_fox_lite: string
 }
 
 const settings = ref<AppSettings>({
@@ -96,6 +97,7 @@ const settings = ref<AppSettings>({
   cyber_fox_size: 'md',
   cyber_fox_mode: 'in-app',
   cyber_fox_sound: 'true',
+  cyber_fox_lite: 'false',
 })
 
 type CyberFoxPreviewState =
@@ -203,6 +205,10 @@ const cyberFoxEnabledOptions = computed(() => [
 const cyberFoxSoundOptions = computed(() => [
   { value: 'true', label: t('settings.general.on') },
   { value: 'false', label: t('settings.general.off') },
+])
+const cyberFoxLiteOptions = computed(() => [
+  { value: 'false', label: t('settings.general.off') },
+  { value: 'true', label: t('settings.general.on') },
 ])
 const cyberFoxSizeOptions = computed(() => [
   { value: 'sm', label: t('settings.mascot.sizeSmall') },
@@ -985,6 +991,16 @@ watch(() => settings.value.language, (v) => {
               </p>
             </div>
 
+            <div class="space-y-1.5">
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                {{ t('settings.mascot.lite') }}
+              </label>
+              <AppSelect size="sm" v-model="settings.cyber_fox_lite" :options="cyberFoxLiteOptions" />
+              <p class="text-[11px] text-muted-foreground leading-relaxed">
+                {{ t('settings.mascot.liteHint') }}
+              </p>
+            </div>
+
             <div class="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
               <div class="space-y-1.5">
                 <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
@@ -1022,6 +1038,7 @@ watch(() => settings.value.language, (v) => {
                     :label="t('settings.mascot.previewLabel')"
                     :evolution-realm="selectedPetRealmId"
                     :evolution-tier="selectedPetTier"
+                    :lite="settings.cyber_fox_lite === 'true'"
                   />
                   <div
                     class="absolute left-1/2 top-full mt-1 flex -translate-x-1/2 items-center gap-1.5 whitespace-nowrap rounded-md border px-2.5 py-1 text-[11px] font-medium shadow-sm"

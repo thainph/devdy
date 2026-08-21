@@ -50,6 +50,8 @@
     "modeHint": "Trong ứng dụng: linh thú nằm trong cửa sổ Devdy. Trên màn hình nền: nổi ở một cửa sổ không viền, luôn trên cùng, ngoài desktop.",
     "sound": "Âm thanh",
     "soundHint": "Phát tiếng \"voice\" ngắn của linh thú khi bong bóng thoại xuất hiện. Thả file âm thanh vào src/assets/mascot-sounds/ (mỗi trạng thái một file).",
+    "lite": "Chế độ nhẹ",
+    "liteHint": "Giảm các hiệu ứng nặng nhất (đuôi phát sáng, mờ orbit, mật độ chấm mặt đất) cho máy yếu. Vẫn giữ mọi chuyển động; hiệu ứng chỉ đơn giản hơn một chút.",
     "sizeSmall": "Nhỏ",
     "sizeMedium": "Vừa",
     "sizeLarge": "Lớn",

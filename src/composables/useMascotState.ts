@@ -62,6 +62,8 @@ export function useMascotState() {
 
   const enabled = computed(() => appSettings.settings?.cyber_fox_enabled !== 'false')
   const soundEnabled = computed(() => appSettings.settings?.cyber_fox_sound !== 'false')
+  // Lite / performance mode: opt-in effect trimming for weaker machines.
+  const liteMode = computed(() => appSettings.settings?.cyber_fox_lite === 'true')
   const mode = computed<CyberFoxMode>(() =>
     appSettings.settings?.cyber_fox_mode === 'desktop' ? 'desktop' : 'in-app',
   )
@@ -126,5 +128,5 @@ export function useMascotState() {
     if (transientTimer) clearTimeout(transientTimer)
   })
 
-  return { enabled, soundEnabled, mode, mascotSize, displayState, runningCount }
+  return { enabled, soundEnabled, liteMode, mode, mascotSize, displayState, runningCount }
 }

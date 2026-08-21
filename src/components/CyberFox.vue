@@ -30,6 +30,8 @@ const props = withDefaults(defineProps<{
   evolutionTier?: number
   /** Number of orbiting light streams (one per running run) — only shown while orchestrating. */
   streams?: number
+  /** Lite / performance mode: trims the heaviest effects for weaker machines. */
+  lite?: boolean
 }>(), {
   state: 'idle',
   size: 'md',
@@ -38,6 +40,7 @@ const props = withDefaults(defineProps<{
   evolutionRealm: '',
   evolutionTier: 1,
   streams: 1,
+  lite: false,
 })
 
 // Follow the shared speaking signal for THIS window. The sound player sets it in
@@ -144,14 +147,17 @@ const numericSize = computed(() =>
 // ---- orbiting light streams -------------------------------------------
 // One stream per running run (capped), each a trail of glow dots chasing its
 // OWN tilted-ellipse orbit around the fox (head bright/large → tail small/dim).
-const TRAIL = 9
 const TRAIL_STEP = 0.028
-const MAX_STREAMS = 6
 const GROUND_RINGS = [1, 2, 3, 4, 5] as const
-const GROUND_RING_DOTS = Array.from({ length: 72 }, (_, i) => i)
+// Lite mode thins out the per-element counts of the heaviest effects: shorter
+// orbit trails, fewer concurrent streams, and a sparser ground-dot ring.
+const TRAIL = computed(() => (props.lite ? 6 : 9))
+const MAX_STREAMS = computed(() => (props.lite ? 3 : 6))
+const GROUND_RING_DOTS = computed(() =>
+  Array.from({ length: props.lite ? 48 : 72 }, (_, i) => i))
 // colour index cycles through the palette (.dot--c0..c5); first two match the tails
 const streamCount = computed(() =>
-  Math.max(1, Math.min(MAX_STREAMS, Math.round(props.streams || 1))))
+  Math.max(1, Math.min(MAX_STREAMS.value, Math.round(props.streams || 1))))
 
 // A tilted ellipse encircling the fox, sampled into an SVG path. Starts at the
 // top (behind) so the depth toggle (dy-orbit-z) reads back → front → back.
@@ -190,7 +196,7 @@ const orbits = computed(() => {
 function dotStyle(orbit: { path: string; phase: number; dur: number }, i: number) {
   const p = orbit.phase - (i - 1) * TRAIL_STEP
   const frac = ((p % 1) + 1) % 1
-  const k = (i - 1) / (TRAIL - 1) // 0 = head, 1 = tail
+  const k = (i - 1) / (TRAIL.value - 1) // 0 = head, 1 = tail
   const delay = `${(-frac * orbit.dur).toFixed(0)}ms`
   return {
     offsetPath: orbit.path,
@@ -202,11 +208,13 @@ function dotStyle(orbit: { path: string; phase: number; dur: number }, i: number
 }
 
 function groundDotStyle(dot: number) {
-  const angle = (dot / GROUND_RING_DOTS.length) * 360
+  // Only the static angle is needed now: the whole ring is rotated by a single
+  // wrapper element (.ground-ring__spin) instead of each dot orbiting on its own,
+  // which is visually identical (all dots share one speed) but ~72× fewer
+  // animated/composited elements per ring.
+  const angle = (dot / GROUND_RING_DOTS.value.length) * 360
   return {
     '--dot-angle': `${angle.toFixed(2)}deg`,
-    '--dot-angle-end': `${(angle + 360).toFixed(2)}deg`,
-    '--dot-delay': `${(-dot * 34).toFixed(0)}ms`,
   } as Record<string, string>
 }
 
@@ -238,6 +246,7 @@ onBeforeUnmount(() => {
       'cyber-fox--paused': paused,
       'cyber-fox--speaking': isSpeaking,
       'cyber-fox--evolved': hasEvolution,
+      'cyber-fox--lite': lite,
     }"
     :data-state="state"
     :data-size="sizeBucket"
@@ -262,12 +271,14 @@ onBeforeUnmount(() => {
             { 'ground-ring__tier--active': evolutionTier >= ring },
           ]"
         >
-          <i
-            v-for="dot in GROUND_RING_DOTS"
-            :key="'ground-ring-' + ring + '-dot-' + dot"
-            class="ground-ring__dot"
-            :style="groundDotStyle(dot)"
-          ></i>
+          <div class="ground-ring__spin">
+            <i
+              v-for="dot in GROUND_RING_DOTS"
+              :key="'ground-ring-' + ring + '-dot-' + dot"
+              class="ground-ring__dot"
+              :style="groundDotStyle(dot)"
+            ></i>
+          </div>
         </span>
       </template>
     </div>
@@ -279,7 +290,6 @@ onBeforeUnmount(() => {
       <span v-if="evolutionTier >= 4" class="realm-band realm-band--4"></span>
       <span v-if="evolutionTier >= 5" class="realm-band realm-band--5"></span>
     </div>
-    <div v-if="hasEvolution" class="realm-mark" aria-hidden="true"><span></span></div>
 
     <!-- orbiting energy (pure CSS motion-path): two trails of glow dots chase diagonally,
          back → left shoulder → across body → right foot → back, crossing behind ↔ front -->
@@ -420,32 +430,6 @@ onBeforeUnmount(() => {
 .cyber-fox[data-tier='4'] { --e-power: 0.78; --e-ring-scale: 1.08; --e-core-size: 6.2%; }
 .cyber-fox[data-tier='5'] { --e-power: 0.96; --e-ring-scale: 1.15; --e-core-size: 7%; }
 
-.cyber-fox--evolved .realm-mark {
-  position: absolute;
-  left: 50%;
-  top: 7%;
-  z-index: 96;
-  width: calc(8% + var(--e-power) * 5%);
-  aspect-ratio: 1;
-  border: 1px solid rgba(var(--e-rgb), calc(0.38 + var(--e-power) * 0.24));
-  border-radius: 28%;
-  background: rgba(var(--e-rgb), calc(0.06 + var(--e-power) * 0.08));
-  box-shadow:
-    0 0 calc(var(--dy-size) * 0.035) rgba(var(--e-rgb), calc(0.18 + var(--e-power) * 0.28)),
-    inset 0 0 calc(var(--dy-size) * 0.02) rgba(var(--e-alt-rgb), 0.22);
-  transform: translateX(-50%) rotate(45deg);
-  animation: dy-realm-mark 2600ms ease-in-out infinite;
-  pointer-events: none;
-}
-
-.cyber-fox--evolved .realm-mark span {
-  position: absolute;
-  inset: 31%;
-  border-radius: 999px;
-  background: rgb(var(--e-alt-rgb));
-  box-shadow: 0 0 calc(var(--dy-size) * 0.025) rgba(var(--e-alt-rgb), 0.72);
-}
-
 .cyber-fox--evolved .realm-mantle {
   position: absolute;
   left: 17%;
@@ -542,11 +526,12 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   object-fit: contain;
-  backface-visibility: hidden;
-  transform: translateZ(0);
   pointer-events: none;
   user-select: none;
 }
+/* Only the continuously-animating layers get their own compositor layer; the
+   static layers (head, eyes, chest) rasterise into the contained root instead
+   of each holding a permanent GPU texture. */
 
 /* z-order */
 .l--tailB { z-index: 20; }
@@ -646,7 +631,10 @@ onBeforeUnmount(() => {
 .l--tailB { transform-origin: var(--o-tailB); will-change: transform; }
 .l--tailO.tail-base { animation: dy-tail-o var(--fox-tail-o) ease-in-out infinite; }
 .l--tailB.tail-base { animation: dy-tail-b var(--fox-tail-b) ease-in-out infinite; }
-.tail-glow { mix-blend-mode: screen; opacity: 0; }
+/* The glow tails sit BEHIND the body (z20/22) over a dark/transparent backdrop,
+   where screen(colour, ~black) ≈ colour — so we drop mix-blend-mode entirely and
+   avoid WebKit's expensive non-normal-blend compositing path each frame. */
+.tail-glow { opacity: 0; }
 .l--tailO.tail-glow { animation: dy-tail-o var(--fox-tail-o) ease-in-out infinite, dy-glow var(--fox-tail-o) ease-in-out infinite; animation-delay: -140ms, -140ms; }
 .l--tailB.tail-glow { animation: dy-tail-b var(--fox-tail-b) ease-in-out infinite, dy-glow var(--fox-tail-b) ease-in-out infinite; animation-delay: -160ms, -160ms; }
 
@@ -774,6 +762,26 @@ onBeforeUnmount(() => {
   animation: dy-ground-tier 2200ms ease-in-out infinite;
 }
 
+/* Dot wrapper: ONE element per ring carries the rotation (+ a whole-ring opacity
+   breathe). The dots inside no longer animate, so they rasterise into this single
+   layer instead of each becoming its own composited/animated layer. */
+.ground-ring__spin {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 50%;
+}
+
+.ground-ring__tier--active .ground-ring__spin {
+  animation:
+    dy-ground-ring-spin var(--ring-speed) linear infinite,
+    dy-ground-dot-pulse 1300ms ease-in-out infinite;
+}
+
+.ground-ring__tier--2.ground-ring__tier--active .ground-ring__spin,
+.ground-ring__tier--4.ground-ring__tier--active .ground-ring__spin {
+  animation-direction: reverse, normal;
+}
+
 .ground-ring__dot {
   position: absolute;
   left: 50%;
@@ -786,7 +794,6 @@ onBeforeUnmount(() => {
   background:
     linear-gradient(90deg, rgba(148, 163, 184, 0) 0%, rgba(148, 163, 184, 0.2) 38%, rgba(148, 163, 184, 0.55) 100%);
   box-shadow: 0 0 calc(var(--dy-size) * 0.014) rgba(148, 163, 184, 0.2);
-  filter: blur(0.15px);
   opacity: 0.5;
   transform: rotate(var(--dot-angle)) translateX(var(--ring-radius)) rotate(90deg);
   transform-origin: 50% 50%;
@@ -799,17 +806,7 @@ onBeforeUnmount(() => {
   box-shadow:
     0 0 calc(var(--dy-size) * 0.02) rgb(var(--e-rgb) / 0.76),
     0 0 calc(var(--dy-size) * 0.05) rgb(var(--e-alt-rgb) / 0.42);
-  filter: blur(0.1px);
   opacity: calc(0.86 + var(--e-power) * 0.14);
-  animation:
-    dy-ground-dot-orbit var(--ring-speed) linear infinite,
-    dy-ground-dot-pulse 1300ms ease-in-out infinite;
-  animation-delay: 0ms, var(--dot-delay);
-}
-
-.ground-ring__tier--2.ground-ring__tier--active .ground-ring__dot,
-.ground-ring__tier--4.ground-ring__tier--active .ground-ring__dot {
-  animation-direction: reverse, normal;
 }
 
 /* eyes processing crossfade cycle */
@@ -924,9 +921,9 @@ onBeforeUnmount(() => {
     transform: translate(-50%, -50%) scale(1.035);
   }
 }
-@keyframes dy-ground-dot-orbit {
-  from { transform: rotate(var(--dot-angle)) translateX(var(--ring-radius)) rotate(90deg); }
-  to { transform: rotate(var(--dot-angle-end)) translateX(var(--ring-radius)) rotate(90deg); }
+@keyframes dy-ground-ring-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 @keyframes dy-ground-dot-pulse {
   0%,100% { opacity: calc(0.56 + var(--e-power) * 0.18); }
@@ -947,10 +944,6 @@ onBeforeUnmount(() => {
 @keyframes dy-chest-pop { 0% { opacity: 0; transform: scale(0.5); } 60% { transform: scale(1.15); } 100% { opacity: 1; transform: scale(1); } }
 @keyframes dy-chest-shake { 0%,100% { transform: translateX(0) rotate(0deg); } 20% { transform: translateX(-12%) rotate(-4deg); } 40% { transform: translateX(10%) rotate(3deg); } 60% { transform: translateX(-7%) rotate(-2deg); } 80% { transform: translateX(4%) rotate(0deg); } }
 @keyframes dy-ask-pulse { 0%,100% { transform: scale(0.92); opacity: 0.8; } 50% { transform: scale(1.08); opacity: 1; } }
-@keyframes dy-realm-mark {
-  0%,100% { opacity: 0.76; transform: translateX(-50%) translateY(0) rotate(45deg) scale(1); }
-  50% { opacity: 1; transform: translateX(-50%) translateY(-8%) rotate(45deg) scale(1.08); }
-}
 @keyframes dy-evolution-core {
   0%,100% { opacity: 0.72; transform: translate(-50%, -50%) scale(0.92); }
   50% { opacity: 1; transform: translate(-50%, -50%) scale(1.16); }
@@ -970,14 +963,22 @@ onBeforeUnmount(() => {
 .cyber-fox[data-size='sm'] .l--earL,
 .cyber-fox[data-size='sm'] .l--earR { animation: none; }
 
+/* --- lite / performance mode ---
+   Keeps the fox and all its motion, but drops the GPU-heaviest embellishments:
+   the duplicate glow tails, and the orbit dots' per-element blur + screen blend
+   (element counts are already thinned in script: shorter trails, fewer streams,
+   sparser ground ring). Everything else stays identical. */
+.cyber-fox--lite .tail-glow { display: none; }
+.cyber-fox--lite .orbit-dot { filter: none; mix-blend-mode: normal; }
+
 /* --- visibility pause --- */
 .cyber-fox--paused * { animation-play-state: paused !important; }
 
 /* --- reduced motion --- */
-.cyber-fox--reduced .l, .cyber-fox--reduced .chest-img, .cyber-fox--reduced .l--eyes, .cyber-fox--reduced .ground-ring span, .cyber-fox--reduced .ground-ring__dot, .cyber-fox--reduced .chest-think span, .cyber-fox--reduced .chest-load-bar, .cyber-fox--reduced .chest-ok svg, .cyber-fox--reduced .chest-err svg, .cyber-fox--reduced .chest-ask span { animation: none !important; }
+.cyber-fox--reduced .l, .cyber-fox--reduced .chest-img, .cyber-fox--reduced .l--eyes, .cyber-fox--reduced .ground-ring span, .cyber-fox--reduced .ground-ring__spin, .cyber-fox--reduced .ground-ring__dot, .cyber-fox--reduced .chest-think span, .cyber-fox--reduced .chest-load-bar, .cyber-fox--reduced .chest-ok svg, .cyber-fox--reduced .chest-err svg, .cyber-fox--reduced .chest-ask span { animation: none !important; }
 .cyber-fox--reduced .l--fx, .cyber-fox--reduced .tail-glow, .cyber-fox--reduced .l--blink { display: none; }
 @media (prefers-reduced-motion: reduce) {
-  .cyber-fox .l, .cyber-fox .chest-img, .cyber-fox .l--eyes, .cyber-fox .ground-ring span, .cyber-fox .ground-ring__dot { animation: none !important; }
+  .cyber-fox .l, .cyber-fox .chest-img, .cyber-fox .l--eyes, .cyber-fox .ground-ring span, .cyber-fox .ground-ring__spin, .cyber-fox .ground-ring__dot { animation: none !important; }
   .cyber-fox .l--fx, .cyber-fox .tail-glow, .cyber-fox .l--blink { display: none; }
 }
 

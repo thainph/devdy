@@ -58,6 +58,10 @@ pub struct AppSettings {
     /// Play a short Cyber Fox "voice" sound when a speech bubble appears.
     /// "true" (default) | "false".
     pub cyber_fox_sound: String,
+    /// Lite / performance mode for the mascot: trims the heaviest effects
+    /// (glow tails, orbit blur/blend, ground-dot density) for weaker machines.
+    /// "false" (default, full effects) | "true".
+    pub cyber_fox_lite: String,
 }
 
 #[tauri::command]
@@ -95,6 +99,7 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
         cyber_fox_size: "md".to_string(),
         cyber_fox_mode: "in-app".to_string(),
         cyber_fox_sound: "true".to_string(),
+        cyber_fox_lite: "false".to_string(),
     };
 
     for row in rows {
@@ -128,6 +133,7 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
             "cyber_fox_size" => settings.cyber_fox_size = value,
             "cyber_fox_mode" => settings.cyber_fox_mode = value,
             "cyber_fox_sound" => settings.cyber_fox_sound = value,
+            "cyber_fox_lite" => settings.cyber_fox_lite = value,
             _ => {}
         }
     }

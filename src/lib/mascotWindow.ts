@@ -24,6 +24,7 @@ export interface MascotStatePayload {
   state: CyberFoxState
   size: CyberFoxSize
   streams: number
+  lite?: boolean
 }
 
 // Vertical room reserved ABOVE the fox for the speech bubble (logical px).

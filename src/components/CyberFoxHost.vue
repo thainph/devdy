@@ -22,7 +22,7 @@ import {
   openMascotWindow,
 } from '@/lib/mascotWindow'
 
-const { enabled, soundEnabled, mode, mascotSize, displayState, runningCount } = useMascotState()
+const { enabled, soundEnabled, liteMode, mode, mascotSize, displayState, runningCount } = useMascotState()
 
 // Feed app-wide signals (run phase + toasts) into the shared speech bubble.
 useMascotBubbleFeed(displayState)
@@ -32,7 +32,12 @@ const sound = useMascotSound()
 let unlistenReady: UnlistenFn | null = null
 
 function currentPayload() {
-  return { state: displayState.value, size: mascotSize.value, streams: runningCount.value }
+  return {
+    state: displayState.value,
+    size: mascotSize.value,
+    streams: runningCount.value,
+    lite: liteMode.value,
+  }
 }
 
 async function ensureDesktopWindow() {
@@ -61,7 +66,7 @@ watch(
 )
 
 // Keep the pet in sync with live state (only matters while in desktop mode).
-watch([displayState, runningCount], () => {
+watch([displayState, runningCount, liteMode], () => {
   if (enabled.value && mode.value === 'desktop') emitMascotState(currentPayload())
 })
 

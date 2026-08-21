@@ -25,7 +25,7 @@ const DEFAULT_BOTTOM = 20
 const { t } = useI18n()
 const appSettings = useAppSettingsStore()
 // Shared mascot brain: enabled flag, size preference, current phase + streams.
-const { enabled, mascotSize, displayState, runningCount } = useMascotState()
+const { enabled, liteMode, mascotSize, displayState, runningCount } = useMascotState()
 // Speech bubble channel (fed app-wide by CyberFoxHost / CalendarReminder).
 const { state: bubble } = useMascotBubble()
 const rootRef = ref<HTMLElement | null>(null)
@@ -226,7 +226,7 @@ onBeforeUnmount(() => {
     @dragstart.prevent
   >
     <MascotBubble :message="bubble.current" />
-    <CyberFox :state="displayState" :size="mascotSize" :streams="runningCount" />
+    <CyberFox :state="displayState" :size="mascotSize" :streams="runningCount" :lite="liteMode" />
   </div>
 
   <!-- Right-click quick-create menu (Todo / Note). -->

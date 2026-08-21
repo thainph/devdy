@@ -35,6 +35,7 @@ const { t } = useI18n()
 const state = ref<CyberFoxState>('idle')
 const size = ref<CyberFoxSize>('md')
 const streams = ref(1)
+const lite = ref(false)
 const bubbleMsg = ref<MascotBubbleMessage | null>(null)
 
 const menuOpen = ref(false)
@@ -185,6 +186,7 @@ function applyPayload(p: Partial<MascotStatePayload>) {
   if (p.state) state.value = p.state
   if (p.size) size.value = p.size
   if (typeof p.streams === 'number') streams.value = Math.max(1, p.streams)
+  if (typeof p.lite === 'boolean') lite.value = p.lite
 }
 
 onMounted(async () => {
@@ -234,7 +236,7 @@ onBeforeUnmount(() => {
       @dragstart.prevent
     >
       <MascotBubble :message="bubbleMsg" />
-      <CyberFox :state="state" :size="size" :streams="streams" />
+      <CyberFox :state="state" :size="size" :streams="streams" :lite="lite" />
     </div>
 
     <!-- Right-click quick-create menu (Todo / Note). -->
