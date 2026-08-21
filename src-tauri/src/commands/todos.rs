@@ -109,6 +109,25 @@ pub async fn delete_todo(db: State<'_, Db>, id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Bulk-delete todos by id in a single transaction, so a failure mid-way rolls
+/// back the whole batch instead of leaving a partial deletion.
+#[tauri::command]
+pub async fn delete_todos(db: State<'_, Db>, ids: Vec<String>) -> Result<(), String> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let mut tx = db.inner().begin().await.map_err(|e| e.to_string())?;
+    for id in &ids {
+        sqlx::query("DELETE FROM todos WHERE id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn clear_completed_todos(db: State<'_, Db>) -> Result<(), String> {
     sqlx::query("DELETE FROM todos WHERE done = 1")

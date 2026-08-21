@@ -7,7 +7,7 @@ import MarkdownPreview from '@/components/MarkdownPreview.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useMarkdown } from '@/lib/markdown'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { Plus, GripVertical, Trash2, ListTodo, Check, Pencil } from 'lucide-vue-next'
+import { Plus, GripVertical, Trash2, ListTodo, ListChecks, Check, Pencil } from 'lucide-vue-next'
 
 const { t } = useI18n()
 const store = useTodosStore()
@@ -187,6 +187,55 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointerup', endDrag)
 })
 
+// --- Bulk selection -----------------------------------------------------------
+// A dedicated "select mode" turns each row into a multi-select checkbox so
+// several tasks can be deleted in one go. Toggled off after a successful delete
+// or when cancelled.
+const selectMode = ref(false)
+const selectedIds = ref<Set<string>>(new Set())
+
+const selectedCount = computed(() => selectedIds.value.size)
+const allSelected = computed(
+  () => store.todos.length > 0 && selectedIds.value.size === store.todos.length,
+)
+
+function enterSelectMode() {
+  selectMode.value = true
+  selectedIds.value = new Set()
+}
+
+function exitSelectMode() {
+  selectMode.value = false
+  selectedIds.value = new Set()
+}
+
+function toggleSelect(id: string) {
+  const next = new Set(selectedIds.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  selectedIds.value = next
+}
+
+function toggleSelectAll() {
+  selectedIds.value = allSelected.value
+    ? new Set()
+    : new Set(store.todos.map(t => t.id))
+}
+
+async function handleDeleteSelected() {
+  const count = selectedIds.value.size
+  if (count === 0) return
+  if (!(await confirm({
+    title: t('todos.confirm.bulkDeleteTitle'),
+    message: count === 1
+      ? t('todos.confirm.bulkDeleteMessageOne', { count })
+      : t('todos.confirm.bulkDeleteMessageMany', { count }),
+    confirmLabel: t('common.delete'),
+  }))) return
+  await store.removeMany([...selectedIds.value])
+  exitSelectMode()
+}
+
 async function handleClearCompleted() {
   const count = store.todos.filter(t => t.done).length
   if (count === 0) return
@@ -215,18 +264,47 @@ async function handleClearCompleted() {
         </span>
       </div>
       <div class="flex items-center gap-2">
-        <Button
-          v-if="hasCompleted"
-          variant="outline"
-          @click="handleClearCompleted"
-        >
-          <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ t('todos.clearCompleted') }}
-        </Button>
-        <Button @click="openCreate">
-          <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-          {{ t('todos.newTask') }}
-        </Button>
+        <template v-if="selectMode">
+          <span class="text-xs text-muted-foreground tabular-nums">
+            {{ t('todos.selectedCount', { count: selectedCount }) }}
+          </span>
+          <Button variant="outline" @click="toggleSelectAll">
+            {{ allSelected ? t('todos.deselectAll') : t('todos.selectAll') }}
+          </Button>
+          <Button
+            variant="destructive"
+            :disabled="selectedCount === 0"
+            @click="handleDeleteSelected"
+          >
+            <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ t('todos.deleteSelected') }}
+          </Button>
+          <Button variant="ghost" @click="exitSelectMode">
+            {{ t('common.cancel') }}
+          </Button>
+        </template>
+        <template v-else>
+          <Button
+            v-if="store.todos.length > 0"
+            variant="outline"
+            @click="enterSelectMode"
+          >
+            <ListChecks class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ t('todos.select') }}
+          </Button>
+          <Button
+            v-if="hasCompleted"
+            variant="outline"
+            @click="handleClearCompleted"
+          >
+            <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ t('todos.clearCompleted') }}
+          </Button>
+          <Button @click="openCreate">
+            <Plus class="h-3.5 w-3.5" :stroke-width="2" />
+            {{ t('todos.newTask') }}
+          </Button>
+        </template>
       </div>
     </div>
 
@@ -269,10 +347,25 @@ async function handleClearCompleted() {
             :class="[
               dragOverIndex === index && dragIndex !== index ? 'bg-primary/5' : '',
               dragIndex === index ? 'opacity-40' : '',
+              selectMode && selectedIds.has(todo.id) ? 'bg-primary/5' : '',
             ]"
           >
-            <!-- Drag handle -->
+            <!-- Selection checkbox (select mode) -->
+            <button
+              v-if="selectMode"
+              type="button"
+              class="mt-0.5 flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded border transition-colors cursor-pointer"
+              :class="selectedIds.has(todo.id)
+                ? 'bg-primary border-primary text-primary-foreground'
+                : 'border-border hover:border-primary/60'"
+              @click="toggleSelect(todo.id)"
+            >
+              <Check v-if="selectedIds.has(todo.id)" class="h-3 w-3" :stroke-width="3" />
+            </button>
+
+            <!-- Drag handle (normal mode) -->
             <span
+              v-else
               class="mt-0.5 shrink-0 cursor-grab text-muted-foreground/40 transition-colors group-hover:text-muted-foreground active:cursor-grabbing touch-none"
               :title="t('todos.dragToReorder')"
               @pointerdown="startDrag(index, $event)"
@@ -280,8 +373,9 @@ async function handleClearCompleted() {
               <GripVertical class="h-4 w-4" :stroke-width="1.75" />
             </span>
 
-            <!-- Checkbox -->
+            <!-- Done checkbox (normal mode) -->
             <button
+              v-if="!selectMode"
               type="button"
               class="mt-0.5 flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded border transition-colors cursor-pointer"
               :class="todo.done
@@ -293,12 +387,12 @@ async function handleClearCompleted() {
               <Check v-if="todo.done" class="h-3 w-3" :stroke-width="3" />
             </button>
 
-            <!-- Content (click to open detail) -->
+            <!-- Content (click to open detail, or toggle selection in select mode) -->
             <div
               class="flex-1 min-w-0 cursor-pointer"
               :class="todo.done ? 'opacity-55 line-through decoration-muted-foreground/60' : ''"
-              title="Click to open"
-              @click="onContentClick(todo.id, $event)"
+              :title="selectMode ? '' : t('todos.clickToOpen')"
+              @click="selectMode ? toggleSelect(todo.id) : onContentClick(todo.id, $event)"
             >
               <MarkdownPreview :html="renderText(todo.text)" />
             </div>
@@ -312,6 +406,7 @@ async function handleClearCompleted() {
       :open="createOpen"
       side="right"
       size="lg"
+      :dismiss-on-overlay="false"
       @close="closeCreate"
     >
       <template #header>
@@ -349,6 +444,7 @@ async function handleClearCompleted() {
       :open="!!detailTodo"
       side="right"
       size="lg"
+      :dismiss-on-overlay="!detailEditing"
       @close="closeDetail"
     >
       <template #header>

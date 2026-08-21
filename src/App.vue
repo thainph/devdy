@@ -20,8 +20,8 @@ import FileViewerWindow from '@/views/FileViewerWindow.vue'
 import PermissionWindow from '@/views/PermissionWindow.vue'
 import ThemeDecorations from '@/components/ThemeDecorations.vue'
 import { ConfirmModal, PromptModal, ToastHost } from '@/components/ui'
-import QuickCreateButton from '@/components/QuickCreateButton.vue'
-import CyberFoxFloating from '@/components/CyberFoxFloating.vue'
+import CyberFoxHost from '@/components/CyberFoxHost.vue'
+import MascotWindow from '@/views/MascotWindow.vue'
 import QuickCreateWindow from '@/views/QuickCreateWindow.vue'
 import IssuesGanttView from '@/views/IssuesGanttView.vue'
 import { getVersion } from '@tauri-apps/api/app'
@@ -32,8 +32,10 @@ const isFileWindow = new URLSearchParams(window.location.search).get('fileWindow
 const isPermissionWindow = new URLSearchParams(window.location.search).get('permissionWindow') === '1'
 const isQuickCreateWindow = new URLSearchParams(window.location.search).get('quickCreateWindow') === '1'
 const isGanttWindow = new URLSearchParams(window.location.search).get('ganttWindow') === '1'
+const isMascotWindow = new URLSearchParams(window.location.search).get('mascotWindow') === '1'
 // All pop-out kinds only need the theme applied; skip the main app's data work.
-const isPopoutWindow = isFileWindow || isPermissionWindow || isQuickCreateWindow || isGanttWindow
+const isPopoutWindow =
+  isFileWindow || isPermissionWindow || isQuickCreateWindow || isGanttWindow || isMascotWindow
 
 const route = useRoute()
 const projectsStore = useProjectsStore()
@@ -82,15 +84,38 @@ watch(
 // store (see onMounted). Torn down on unmount to avoid a dangling subscription.
 let unlistenActivated: UnlistenFn | null = null
 
+// True when the event target is a text-entry surface where Backspace/navigation
+// keys are legitimately used to edit text.
+function isEditableTarget(el: EventTarget | null): boolean {
+  const node = el as HTMLElement | null
+  if (!node || typeof node.closest !== 'function') return false
+  if (node.isContentEditable) return true
+  return !!node.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]')
+}
+
+// Swallow navigation keys (mainly Backspace) when focus is NOT in a text field.
+// Vietnamese IMEs (Telex/VNI) compose diacritics by injecting Backspace at the
+// OS level; if the composer hasn't been focused yet, those Backspaces reach the
+// webview and trigger history "back" navigation — the app appears to jump to a
+// different screen while the user is just typing. Blocking them here is the
+// backstop; RunView still focuses the composer on session open.
+function onGlobalNavKeyGuard(e: KeyboardEvent) {
+  if (e.key === 'Backspace' && !isEditableTarget(e.target)) {
+    e.preventDefault()
+  }
+}
+
 onBeforeUnmount(() => {
   unlistenActivated?.()
   unlistenActivated = null
+  window.removeEventListener('keydown', onGlobalNavKeyGuard, true)
 })
 
 // App version shown in the sidebar footer; read from Tauri so it always matches
 // the packaged build (tauri.conf.json) instead of a hardcoded string.
 const appVersion = ref('')
 onMounted(async () => {
+  window.addEventListener('keydown', onGlobalNavKeyGuard, true)
   try {
     appVersion.value = await getVersion()
   } catch {
@@ -203,6 +228,9 @@ onMounted(async () => {
   <!-- Pop-out Gantt window: bare Gantt chart on its own OS window. -->
   <IssuesGanttView v-else-if="isGanttWindow" />
 
+  <!-- Desktop-pet window: transparent, frameless host that floats only the fox. -->
+  <MascotWindow v-else-if="isMascotWindow" />
+
   <div v-else class="flex h-screen bg-background text-foreground overflow-hidden">
     <!-- Animated decorative overlay for scenic themes (e.g. Full Moon 🌕).
          Sits ABOVE the UI as a non-interactive, screen-blended light layer so it
@@ -287,10 +315,7 @@ onMounted(async () => {
     <!-- App-wide toast host (see useToast) -->
     <ToastHost />
 
-    <!-- DY mascot: app-wide draggable AI operator for the main window. -->
-    <CyberFoxFloating />
-
-    <!-- Floating quick-create button: opens the standalone Todo/Note window. -->
-    <QuickCreateButton />
+    <!-- DY mascot: app-wide operator. Host picks in-app floating vs desktop pet. -->
+    <CyberFoxHost />
   </div>
 </template>

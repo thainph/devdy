@@ -8,7 +8,7 @@ import { useRunsStore } from '@/stores/runs'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { Button, Card, Badge, StatusBadge, Skeleton } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
-import { GitPullRequest, RefreshCw, Sparkles, FolderPlus, ExternalLink, User, Eye } from 'lucide-vue-next'
+import { GitPullRequest, RefreshCw, Sparkles, FolderPlus, ExternalLink, User, Eye, AlertTriangle } from 'lucide-vue-next'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -52,7 +52,9 @@ async function handleReview(item: PrInboxItem) {
   if (store.reviewingKeys.has(key)) return
   store.setReviewing(key, true)
   try {
-    const run = await runsStore.fetchPr(item.project_id, item.repo_id, item.number)
+    // Allow reviewing a PR even when no linked issue can be resolved — the PR
+    // inbox should run the review regardless of issue linkage.
+    const run = await runsStore.fetchPr(item.project_id, item.repo_id, item.number, undefined, true)
     await runsStore.startRun(run.id)
     // Link immediately so a second click resumes instead of duplicating. The run
     // streams in the background (liveRuns / ActiveRunsDock) — stay on this screen.
@@ -102,6 +104,26 @@ function relativeTime(iso: string): string {
 
     <!-- Content -->
     <div class="flex-1 overflow-auto p-6">
+      <!-- Partial-failure warning: some accounts failed to load (rate limit,
+           network, bad PAT). Shown above the list so a missing PR reads as
+           "some accounts failed, try refresh" rather than "no PRs". -->
+      <div
+        v-if="store.warnings.length > 0"
+        class="mb-4 flex items-start gap-2.5 rounded-lg border border-amber-500/25 bg-amber-500/10 p-3 text-xs text-amber-600 dark:text-amber-400"
+      >
+        <AlertTriangle class="h-4 w-4 shrink-0 mt-px" :stroke-width="2" />
+        <div class="min-w-0 flex-1">
+          <p class="font-medium">{{ t('prInbox.partialFailTitle', { count: store.warnings.length }) }}</p>
+          <p class="mt-0.5 text-amber-600/80 dark:text-amber-400/80">
+            {{ store.warnings.map(w => w.account_label).join(', ') }} — {{ t('prInbox.partialFailBody') }}
+          </p>
+        </div>
+        <Button variant="ghost" size="xs" :disabled="store.loading" @click="store.refresh()">
+          <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': store.loading }" :stroke-width="2" />
+          {{ t('common.refresh') }}
+        </Button>
+      </div>
+
       <!-- Loading skeleton — mirrors the PR card layout so the wait reads as
            "content incoming". Rows cascade in with a small stagger. -->
       <div v-if="store.loading && store.items.length === 0" class="flex flex-col gap-3">

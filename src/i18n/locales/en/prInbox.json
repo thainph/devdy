@@ -9,6 +9,8 @@
   "aiReview": "AI Review",
   "notInDevdy": "Not in devdy yet",
   "addToDevdy": "Add to devdy",
+  "partialFailTitle": "{count} account failed to load review requests",
+  "partialFailBody": "some PRs may be missing. Try refreshing.",
   "justNow": "just now",
   "minsAgo": "{mins} min ago",
   "hoursAgo": "{hours} hr ago",

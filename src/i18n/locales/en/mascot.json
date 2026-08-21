@@ -1,0 +1,9 @@
+{
+  "bubble": {
+    "busy": "Working on it…",
+    "permission": "Waiting for your approval",
+    "success": "All done!",
+    "error": "Something went wrong",
+    "dismiss": "Dismiss"
+  }
+}

@@ -13,10 +13,13 @@ const props = withDefaults(defineProps<{
   size?: 'sm' | 'md' | 'lg' | 'xl'
   /** When false, hides the X and disables Esc / overlay-click dismissal. */
   closable?: boolean
+  /** When false, clicking the dimmed overlay won't close the drawer (X / Esc still work). */
+  dismissOnOverlay?: boolean
 }>(), {
   side: 'right',
   size: 'md',
   closable: true,
+  dismissOnOverlay: true,
 })
 
 const emit = defineEmits<{ close: []; 'update:open': [value: boolean] }>()
@@ -35,6 +38,11 @@ function close() {
   if (!props.closable) return
   emit('close')
   emit('update:open', false)
+}
+
+function onOverlayClick() {
+  if (!props.dismissOnOverlay) return
+  close()
 }
 
 function onKey(e: KeyboardEvent) {
@@ -58,7 +66,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
         v-if="open"
         class="fixed inset-0 z-40 flex bg-black/60"
         :class="[side === 'left' ? 'justify-start side-left' : 'justify-end side-right']"
-        @click.self="close"
+        @click.self="onOverlayClick"
       >
         <div :class="panelClass">
           <!-- Header -->

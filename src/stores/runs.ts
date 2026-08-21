@@ -93,12 +93,14 @@ export const useRunsStore = defineStore('runs', () => {
     repo_id: string,
     pr_number: number,
     linked_issue?: number,
+    allow_missing_issue?: boolean,
   ): Promise<RunRecord> {
     return invoke<RunRecord>('fetch_pr', {
       projectId: project_id,
       repoId: repo_id,
       prNumber: pr_number,
       linkedIssue: linked_issue ?? null,
+      allowMissingIssue: allow_missing_issue ?? false,
     })
   }
 

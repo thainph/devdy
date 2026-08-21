@@ -21,6 +21,21 @@ export interface PrInboxItem {
   existing_run_status: string | null
 }
 
+/** An account whose review-request fetch failed — mirrors the Rust
+ * `PrInboxAccountError`. Surfaced as a warning so a transiently-missing PR
+ * reads as "try again" instead of "no PRs". */
+export interface PrInboxAccountError {
+  account_id: string
+  account_label: string
+  message: string
+}
+
+/** Aggregated inbox result — mirrors the Rust `PrInboxResult`. */
+export interface PrInboxResult {
+  items: PrInboxItem[]
+  errors: PrInboxAccountError[]
+}
+
 /** Stable key for a PR across accounts (owner/repo#number). */
 export function prKey(item: Pick<PrInboxItem, 'owner' | 'repo' | 'number'>): string {
   return `${item.owner}/${item.repo}#${item.number}`
@@ -30,6 +45,10 @@ export const usePrInboxStore = defineStore('prInbox', () => {
   const items = ref<PrInboxItem[]>([])
   const loading = ref(false)
   const error = ref<string | null>(null)
+  // Per-account fetch failures (partial success): the inbox still shows the PRs
+  // it did load, but warns that some accounts failed so a missing PR doesn't
+  // read as "no PRs".
+  const warnings = ref<PrInboxAccountError[]>([])
   const lastRefreshedAt = ref<string | null>(null)
   // Keys of PRs currently being turned into a review run (button disabled state).
   const reviewingKeys = ref<Set<string>>(new Set())
@@ -38,7 +57,9 @@ export const usePrInboxStore = defineStore('prInbox', () => {
     loading.value = true
     error.value = null
     try {
-      items.value = await invoke<PrInboxItem[]>('list_review_requested_prs')
+      const result = await invoke<PrInboxResult>('list_review_requested_prs')
+      items.value = result.items
+      warnings.value = result.errors
       lastRefreshedAt.value = new Date().toISOString()
     } catch (e) {
       error.value = String(e)
@@ -64,5 +85,5 @@ export const usePrInboxStore = defineStore('prInbox', () => {
     }
   }
 
-  return { items, loading, error, lastRefreshedAt, reviewingKeys, refresh, setReviewing, linkRun }
+  return { items, loading, error, warnings, lastRefreshedAt, reviewingKeys, refresh, setReviewing, linkRun }
 })

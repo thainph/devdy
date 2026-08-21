@@ -7,6 +7,11 @@
   "untitled": "Ghi chú chưa đặt tên",
   "searchPlaceholder": "Tìm theo tiêu đề / nội dung…",
   "clearSearch": "Xóa tìm kiếm",
+  "select": "Chọn",
+  "selectAll": "Chọn tất cả",
+  "deselectAll": "Bỏ chọn tất cả",
+  "selectedCount": "Đã chọn {count}",
+  "deleteSelected": "Xóa mục đã chọn",
   "dragToReorder": "Kéo để sắp xếp lại",
   "empty": {
     "title": "Chưa có ghi chú nào",
@@ -31,6 +36,9 @@
   },
   "confirm": {
     "deleteTitle": "Xóa ghi chú",
-    "deleteMessage": "Gỡ ghi chú này?"
+    "deleteMessage": "Gỡ ghi chú này?",
+    "bulkDeleteTitle": "Xóa ghi chú",
+    "bulkDeleteMessageOne": "Gỡ {count} ghi chú đã chọn?",
+    "bulkDeleteMessageMany": "Gỡ {count} ghi chú đã chọn?"
   }
 }

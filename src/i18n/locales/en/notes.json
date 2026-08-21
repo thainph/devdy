@@ -7,6 +7,11 @@
   "untitled": "Untitled note",
   "searchPlaceholder": "Search by title / content…",
   "clearSearch": "Clear search",
+  "select": "Select",
+  "selectAll": "Select all",
+  "deselectAll": "Deselect all",
+  "selectedCount": "{count} selected",
+  "deleteSelected": "Delete selected",
   "dragToReorder": "Drag to reorder",
   "empty": {
     "title": "No notes yet",
@@ -31,6 +36,9 @@
   },
   "confirm": {
     "deleteTitle": "Delete note",
-    "deleteMessage": "Remove this note?"
+    "deleteMessage": "Remove this note?",
+    "bulkDeleteTitle": "Delete notes",
+    "bulkDeleteMessageOne": "Remove {count} selected note?",
+    "bulkDeleteMessageMany": "Remove {count} selected notes?"
   }
 }

@@ -162,6 +162,25 @@ pub async fn delete_note(db: State<'_, Db>, id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Bulk-delete notes by id in a single transaction, so a failure mid-way rolls
+/// back the whole batch instead of leaving a partial deletion.
+#[tauri::command]
+pub async fn delete_notes(db: State<'_, Db>, ids: Vec<String>) -> Result<(), String> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let mut tx = db.inner().begin().await.map_err(|e| e.to_string())?;
+    for id in &ids {
+        sqlx::query("DELETE FROM notes WHERE id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Persist a new order. The frontend sends the full list of ids top-to-bottom;
 /// each row's position becomes its index, so the ordering is stable regardless
 /// of prior position values. Done in one transaction to avoid partial reorders.

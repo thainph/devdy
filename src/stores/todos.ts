@@ -87,6 +87,20 @@ export const useTodosStore = defineStore('todos', () => {
     }
   }
 
+  /** Bulk-delete todos by id (optimistic), refetching to resync on error. */
+  async function removeMany(ids: string[]) {
+    if (ids.length === 0) return
+    const target = new Set(ids)
+    const snapshot = todos.value.slice()
+    todos.value = todos.value.filter(t => !target.has(t.id)) // optimistic
+    try {
+      await invoke('delete_todos', { ids })
+    } catch (e) {
+      error.value = String(e)
+      todos.value = snapshot
+    }
+  }
+
   async function clearCompleted() {
     const snapshot = todos.value.slice()
     todos.value = todos.value.filter(t => !t.done) // optimistic
@@ -114,5 +128,5 @@ export const useTodosStore = defineStore('todos', () => {
     }
   }
 
-  return { todos, loading, error, fetchTodos, add, toggle, update, remove, clearCompleted, reorder }
+  return { todos, loading, error, fetchTodos, add, toggle, update, remove, removeMany, clearCompleted, reorder }
 })

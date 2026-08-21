@@ -2,16 +2,35 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { ZoomIn, ZoomOut, CalendarOff, User } from 'lucide-vue-next'
+import { ZoomIn, ZoomOut, CalendarOff, User, Eye, EyeOff, Loader2 } from 'lucide-vue-next'
 import {
   useProjectIssuesStore,
   type MilestoneGroup,
   type IssueRow,
 } from '@/stores/projectIssues'
 
-const props = defineProps<{ milestones: MilestoneGroup[] }>()
+const props = defineProps<{
+  milestones: MilestoneGroup[]
+  /** Lane grouping: by milestone (default) or by assignee. */
+  groupMode?: 'milestone' | 'assignee'
+  /** Ordering of issues within each lane. */
+  sortBy?: 'start' | 'assignee'
+  /** Milestone titles (lowercased) currently showing their closed issues. */
+  expanded?: Set<string>
+  /** Milestone titles (lowercased) whose closed issues are being fetched. */
+  loading?: Set<string>
+}>()
+const emit = defineEmits<{ (e: 'toggle-closed', title: string): void }>()
 const store = useProjectIssuesStore()
 const { t } = useI18n()
+
+const NO_MILESTONE = 'No milestone'
+function isExpanded(title: string): boolean {
+  return props.expanded?.has(title.toLowerCase()) ?? false
+}
+function isLoadingClosed(title: string): boolean {
+  return props.loading?.has(title.toLowerCase()) ?? false
+}
 
 const DAY = 86_400_000
 const LEFT_WIDTH = 320
@@ -35,15 +54,23 @@ interface Lane {
   minStart: number
 }
 
-// A bar needs a deadline (board Deadline field OR milestone due date). When the
-// Start date is missing we infer it from the issue's creation date so milestone-
-// based projects still render; such bars are flagged as inferred.
+// The timeline end of an issue: a closed issue ends when it was closed (even if
+// it never had a deadline); an open issue needs a deadline (board Deadline field
+// OR milestone due date).
+function barEnd(issue: IssueRow): string | null {
+  if (issue.state === 'CLOSED' && issue.closedAt) return issue.closedAt
+  return store.effectiveDeadline(issue)
+}
+
+// A bar needs an end (see barEnd). When the Start date is missing we infer it
+// from the issue's creation date so milestone-based projects still render; such
+// bars are flagged as inferred.
 const lanes = computed<Lane[]>(() => {
   const built = props.milestones
     .map((group) => {
       const bars: Bar[] = []
       for (const issue of group.issues) {
-        const dl = store.effectiveDeadline(issue)
+        const dl = barEnd(issue)
         if (!dl) continue
         const startRaw = issue.startDate ?? issue.createdAt
         const start = new Date(startRaw).getTime()
@@ -52,7 +79,16 @@ const lanes = computed<Lane[]>(() => {
         if (end < start) end = start
         bars.push({ issue, start, end, inferredStart: !issue.startDate })
       }
-      bars.sort((a, b) => a.start - b.start || a.end - b.end)
+      // Unassigned sorts last (￿) when ordering by assignee.
+      const assigneeKey = (b: Bar) => (b.issue.assignees[0]?.toLowerCase() ?? '￿')
+      bars.sort((a, b) => {
+        if (props.sortBy === 'assignee') {
+          const ka = assigneeKey(a)
+          const kb = assigneeKey(b)
+          if (ka !== kb) return ka < kb ? -1 : 1
+        }
+        return a.start - b.start || a.end - b.end
+      })
       const due = group.dueOn ? new Date(group.dueOn).getTime() : null
       const minStart = bars.length ? bars[0].start : Infinity
       return { group, bars, due: Number.isNaN(due as number) ? null : due, minStart }
@@ -72,7 +108,7 @@ const unscheduled = computed<IssueRow[]>(() => {
   const out: IssueRow[] = []
   for (const group of props.milestones) {
     for (const issue of group.issues) {
-      if (!store.effectiveDeadline(issue)) out.push(issue)
+      if (!barEnd(issue)) out.push(issue)
     }
   }
   return out
@@ -133,7 +169,9 @@ function barStyle(b: Bar) {
 }
 
 // Colour encodes lateness (see legend), independent of the board Status text.
+// Closed issues read as "done" regardless of their former lateness.
 function barClass(issue: IssueRow): string {
+  if (issue.state === 'CLOSED') return 'bg-emerald-600/70 border-emerald-500'
   switch (store.issueStatus(issue)) {
     case 'overdue': return 'bg-red-500/85 border-red-400'
     case 'at-risk': return 'bg-amber-500/85 border-amber-400'
@@ -149,6 +187,7 @@ const LEGEND = computed<{ label: string; class: string }[]>(() => [
   { label: t('gantt.chart.legendStalled'), class: 'bg-yellow-600/75' },
   { label: t('gantt.chart.legendNotStarted'), class: 'bg-indigo-400/45' },
   { label: t('gantt.chart.legendOnTrack'), class: 'bg-indigo-500/85' },
+  { label: t('gantt.chart.legendClosed'), class: 'bg-emerald-600/70' },
 ])
 
 function statusText(issue: IssueRow): string {
@@ -246,7 +285,7 @@ function fmt(iso: string | null): string {
             class="sticky left-0 z-30 shrink-0 bg-card border-r border-border/60 flex items-center px-3 text-[10px] font-medium text-muted-foreground"
             :style="{ width: `${LEFT_WIDTH}px` }"
           >
-            {{ t('gantt.chart.columnHeader') }}
+            {{ groupMode === 'assignee' ? t('gantt.chart.columnHeaderAssignee') : t('gantt.chart.columnHeader') }}
           </div>
           <div class="relative" :style="{ width: `${chartWidth}px` }">
             <div
@@ -272,6 +311,17 @@ function fmt(iso: string | null): string {
               <span v-if="lane.group.dueOn" class="ml-auto shrink-0 text-[10px] font-normal text-muted-foreground">
                 {{ t('gantt.chart.due', { date: fmt(lane.group.dueOn) }) }}
               </span>
+              <button
+                v-if="groupMode !== 'assignee' && lane.group.title !== NO_MILESTONE"
+                class="shrink-0 flex items-center gap-1 rounded border border-border/60 px-1.5 py-0.5 text-[9px] font-normal text-muted-foreground hover:text-foreground hover:border-border transition-colors"
+                :class="{ 'ml-auto': !lane.group.dueOn }"
+                :title="isExpanded(lane.group.title) ? t('gantt.chart.hideClosed') : t('gantt.chart.showClosed')"
+                @click="emit('toggle-closed', lane.group.title)"
+              >
+                <Loader2 v-if="isLoadingClosed(lane.group.title)" class="h-2.5 w-2.5 animate-spin" />
+                <component :is="isExpanded(lane.group.title) ? EyeOff : Eye" v-else class="h-2.5 w-2.5" />
+                {{ isExpanded(lane.group.title) ? t('gantt.chart.hideClosed') : t('gantt.chart.showClosed') }}
+              </button>
             </div>
             <div class="relative" :style="{ width: `${chartWidth}px` }">
               <div

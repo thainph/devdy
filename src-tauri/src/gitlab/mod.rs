@@ -314,15 +314,20 @@ impl GitlabClient {
         &self,
         mr_iid: u64,
         linked_issue: Option<u64>,
-    ) -> Result<u64, String> {
+        allow_missing_issue: bool,
+    ) -> Result<Option<u64>, String> {
         if let Some(n) = linked_issue {
-            return Ok(n);
+            return Ok(Some(n));
         }
         let closes = self
             .get_json_paged(&self.url(&format!("merge_requests/{}/closes_issues", mr_iid)))
             .await
             .unwrap_or_default();
-        lowest_closed_issue_iid(&closes).ok_or_else(|| "NO_LINKED_ISSUE".to_string())
+        match lowest_closed_issue_iid(&closes) {
+            Some(n) => Ok(Some(n)),
+            None if allow_missing_issue => Ok(None),
+            None => Err("NO_LINKED_ISSUE".to_string()),
+        }
     }
 
     /// Fetch an MR (metadata, changes, notes, approvals) and render task
@@ -331,12 +336,15 @@ impl GitlabClient {
         &self,
         mr_iid: u64,
         linked_issue: Option<u64>,
-    ) -> Result<(String, u64), String> {
+        allow_missing_issue: bool,
+    ) -> Result<(String, Option<u64>), String> {
         let mr = self
             .get_json(&self.url(&format!("merge_requests/{}", mr_iid)))
             .await?;
 
-        let linked = self.resolve_linked_issue(mr_iid, linked_issue).await?;
+        let linked = self
+            .resolve_linked_issue(mr_iid, linked_issue, allow_missing_issue)
+            .await?;
 
         let title = mr.get("title").and_then(Value::as_str).unwrap_or("");
         let author = author_name(&mr);
@@ -353,7 +361,9 @@ impl GitlabClient {
 
         let mut md = format!(
             "---\npr: {}\nlinked_issue: {}\ntitle: {}\nauthor: {}\nbase: {}\nhead: {}\ncreated: {}\n---\n\n# {}\n\n{}\n\n",
-            mr_iid, linked, title, author, target, source, created, title, body,
+            mr_iid,
+            linked.map(|n| n.to_string()).unwrap_or_else(|| "none".to_string()),
+            title, author, target, source, created, title, body,
         );
 
         // Files changed + diffs (from /changes).

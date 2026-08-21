@@ -52,6 +52,9 @@ pub struct AppSettings {
     pub cyber_fox_enabled: String,
     /// Floating mascot size: "sm" | "md" (default) | "lg".
     pub cyber_fox_size: String,
+    /// Where the mascot floats: "in-app" (default, inside the app window) |
+    /// "desktop" (a frameless always-on-top pet window over the desktop).
+    pub cyber_fox_mode: String,
 }
 
 #[tauri::command]
@@ -87,6 +90,7 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
         mcp_builtin_devdy_enabled: "true".to_string(),
         cyber_fox_enabled: "true".to_string(),
         cyber_fox_size: "md".to_string(),
+        cyber_fox_mode: "in-app".to_string(),
     };
 
     for row in rows {
@@ -118,6 +122,7 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
             "mcp_builtin_devdy_enabled" => settings.mcp_builtin_devdy_enabled = value,
             "cyber_fox_enabled" => settings.cyber_fox_enabled = value,
             "cyber_fox_size" => settings.cyber_fox_size = value,
+            "cyber_fox_mode" => settings.cyber_fox_mode = value,
             _ => {}
         }
     }
