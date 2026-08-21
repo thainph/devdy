@@ -1149,7 +1149,7 @@ watch(() => settings.value.language, (v) => {
             <!-- RIGHT: live preview (its own sticky column) -->
             <div class="lg:sticky lg:top-4">
               <div class="rounded-md border border-border/70 bg-muted/20 p-4">
-                <div class="flex min-h-[260px] items-end justify-center pt-20">
+                <div class="flex min-h-[260px] flex-col items-center justify-end gap-3 pt-20">
                   <div class="relative">
                     <MascotBubble :message="previewBubble" />
                     <CyberFox
@@ -1160,14 +1160,14 @@ watch(() => settings.value.language, (v) => {
                       :evolution-tier="selectedPetTier"
                       :lite="settings.cyber_fox_lite === 'true'"
                     />
-                    <div
-                      class="absolute left-1/2 top-full mt-1 flex -translate-x-1/2 items-center gap-1.5 whitespace-nowrap rounded-md border px-2.5 py-1 text-[11px] font-medium shadow-sm"
-                      :class="selectedPetRealm.accentClass"
-                    >
-                      <span>{{ t(selectedPetRealm.labelKey) }}</span>
-                      <span class="opacity-70">·</span>
-                      <span>{{ t('settings.mascot.levels.tierShort', { tier: selectedPetTier }) }}</span>
-                    </div>
+                  </div>
+                  <div
+                    class="flex items-center gap-1.5 whitespace-nowrap rounded-md border px-2.5 py-1 text-[11px] font-medium shadow-sm"
+                    :class="selectedPetRealm.accentClass"
+                  >
+                    <span>{{ t(selectedPetRealm.labelKey) }}</span>
+                    <span class="opacity-70">·</span>
+                    <span>{{ t('settings.mascot.levels.tierShort', { tier: selectedPetTier }) }}</span>
                   </div>
                 </div>
               </div>
