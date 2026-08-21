@@ -10,7 +10,8 @@ import {
 import { useI18n } from 'vue-i18n'
 import { setLocale, SUPPORTED_LOCALES } from '@/i18n'
 import { Button, Input, Textarea, Card, AppSelect } from '@/components/ui'
-import CyberFox from '@/components/CyberFox.vue'
+import CyberFox from '@/components/CyberFoxCanvas.vue'
+import MascotStars from '@/components/MascotStars.vue'
 import MascotBubble from '@/components/MascotBubble.vue'
 import RemoteControlSettings from '@/components/remote/RemoteControlSettings.vue'
 import { useConfirm } from '@/composables/useConfirm'
@@ -19,6 +20,7 @@ import { useGithubAccountsStore, type PatValidation } from '@/stores/githubAccou
 import { useGitlabAccountsStore, type GitlabPatValidation } from '@/stores/gitlabAccounts'
 import { useAwsAccountsStore, type AwsAccountPayload, type AwsAuthMethod, type AwsValidation } from '@/stores/awsAccounts'
 import { useAppSettingsStore } from '@/stores/appSettings'
+import { useMascotLevelStore } from '@/stores/mascotLevel'
 import { type MascotBubbleVariant, type MascotBubbleMessage } from '@/composables/useMascotBubble'
 import { pickMascotVoice, useMascotSound } from '@/composables/useMascotSound'
 import { useMascotSpeaking } from '@/composables/useMascotSpeaking'
@@ -97,7 +99,7 @@ const settings = ref<AppSettings>({
   cyber_fox_size: 'md',
   cyber_fox_mode: 'in-app',
   cyber_fox_sound: 'true',
-  cyber_fox_lite: 'false',
+  cyber_fox_lite: 'auto',
 })
 
 type CyberFoxPreviewState =
@@ -118,6 +120,24 @@ const CYBER_FOX_STATES: { id: CyberFoxPreviewState; labelKey: string }[] = [
   { id: 'permission', labelKey: 'settings.mascot.states.permission' },
 ]
 const cyberFoxPreviewState = ref<CyberFoxPreviewState>('idle')
+// Breakthrough VFX demo trigger for the preview (bump = replay the pillar) +
+// a matching speech bubble so the preview mirrors a real level-up.
+const previewLevelUpAt = ref(0)
+function demoLevelUp() {
+  previewLevelUpAt.value = Date.now()
+  const text = t('mascot.bubble.levelUp', {
+    realm: t(selectedPetRealm.value.labelKey),
+    tier: selectedPetTier.value,
+  })
+  previewBubble.value = {
+    id: ++previewBubbleSeq,
+    text,
+    variant: 'success',
+    duration: 4000,
+  }
+  beginSpeaking(1600)
+  if (settings.value.cyber_fox_sound === 'true') playMascotSound('success')
+}
 
 const PET_REALMS = [
   {
@@ -197,6 +217,29 @@ function petRealmRange(index: number) {
   return t('settings.mascot.levels.levelRange', { from, to })
 }
 
+// Earned mascot level — auto-derived from cumulative token usage (read-only).
+const mascotLevelStore = useMascotLevelStore()
+mascotLevelStore.ensureLoaded()
+const earned = computed(() => mascotLevelStore.info)
+const earnedRealm = computed<PetRealm>(
+  () => PET_REALMS.find((r) => r.id === earned.value.realmId) ?? PET_REALMS[0],
+)
+function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
+  return String(Math.round(n))
+}
+// Default the explorer selection to the fox's real realm/tier once usage loads.
+watch(
+  () => mascotLevelStore.loaded,
+  (ok) => {
+    if (!ok) return
+    selectedPetRealmId.value = earned.value.realmId
+    selectedPetTier.value = earned.value.tier as PetTier
+  },
+  { immediate: true },
+)
+
 const MASCOT_POSITION_STORAGE_KEY = 'devdy.cyberFox.position.v1'
 const cyberFoxEnabledOptions = computed(() => [
   { value: 'true', label: t('settings.general.on') },
@@ -207,6 +250,7 @@ const cyberFoxSoundOptions = computed(() => [
   { value: 'false', label: t('settings.general.off') },
 ])
 const cyberFoxLiteOptions = computed(() => [
+  { value: 'auto', label: t('settings.mascot.liteAuto') },
   { value: 'false', label: t('settings.general.off') },
   { value: 'true', label: t('settings.general.on') },
 ])
@@ -1047,6 +1091,48 @@ watch(() => settings.value.language, (v) => {
               </button>
             </div>
 
+            <!-- Current earned level — auto-derived from cumulative token usage. -->
+            <div class="rounded-md border p-3" :class="earnedRealm.accentClass">
+              <div class="flex items-center justify-between gap-2">
+                <span class="text-[11px] font-semibold uppercase tracking-wider">
+                  {{ t('settings.mascot.levels.current') }}
+                </span>
+                <span class="flex items-center gap-1.5 text-[10px] font-medium tabular-nums opacity-80">
+                  <MascotStars
+                    v-if="earned.stars > 0"
+                    :count="earned.stars"
+                    :size="11"
+                    :label="t('settings.mascot.levels.stars', { count: earned.stars })"
+                  />
+                  {{ t('settings.mascot.levels.levelNumber', { level: earned.level }) }}
+                </span>
+              </div>
+              <div class="mt-1 text-sm font-semibold">
+                {{ t('settings.mascot.levels.levelTitle', {
+                  realm: t(earnedRealm.labelKey),
+                  tier: earned.tier,
+                }) }}
+              </div>
+              <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-background/40">
+                <div
+                  class="h-full rounded-full transition-all"
+                  :class="earnedRealm.barClass"
+                  :style="{ width: `${earned.progress}%` }"
+                />
+              </div>
+              <div class="mt-1 flex items-center justify-between gap-2 text-[10px] opacity-80">
+                <span>{{ t('settings.mascot.levels.tokensUsed', { tokens: formatTokenCount(earned.totalTokens) }) }}</span>
+                <span>
+                  {{ earned.isMax
+                    ? t('settings.mascot.levels.maxed')
+                    : t('settings.mascot.levels.toNext', { percent: earned.progress }) }}
+                </span>
+              </div>
+              <p class="mt-2 text-[10px] leading-relaxed opacity-70">
+                {{ t('settings.mascot.levels.currentHint') }}
+              </p>
+            </div>
+
             <div class="rounded-md border border-border/70 bg-background/70 p-3 space-y-3">
               <div class="flex items-start justify-between gap-3">
                 <div class="min-w-0">
@@ -1149,16 +1235,17 @@ watch(() => settings.value.language, (v) => {
             <!-- RIGHT: live preview (its own sticky column) -->
             <div class="lg:sticky lg:top-4">
               <div class="rounded-md border border-border/70 bg-muted/20 p-4">
-                <div class="flex min-h-[260px] flex-col items-center justify-end gap-3 pt-20">
+                <div class="flex min-h-[340px] flex-col items-center justify-end gap-3 pt-20">
                   <div class="relative">
                     <MascotBubble :message="previewBubble" />
                     <CyberFox
                       :state="cyberFoxPreviewState"
-                      :size="196"
+                      :size="280"
                       :label="t('settings.mascot.previewLabel')"
                       :evolution-realm="selectedPetRealmId"
                       :evolution-tier="selectedPetTier"
                       :lite="settings.cyber_fox_lite === 'true'"
+                      :level-up-at="previewLevelUpAt"
                     />
                   </div>
                   <div
@@ -1169,6 +1256,9 @@ watch(() => settings.value.language, (v) => {
                     <span class="opacity-70">·</span>
                     <span>{{ t('settings.mascot.levels.tierShort', { tier: selectedPetTier }) }}</span>
                   </div>
+                  <Button variant="outline" size="sm" @click="demoLevelUp">
+                    {{ t('settings.mascot.previewBreakthrough') }}
+                  </Button>
                 </div>
               </div>
             </div>

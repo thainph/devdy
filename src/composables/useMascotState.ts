@@ -7,6 +7,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useLiveRunsStore, type LiveSession } from '@/stores/liveRuns'
+import { useMascotLevelStore } from '@/stores/mascotLevel'
 
 export type CyberFoxState =
   | 'idle'
@@ -56,14 +57,31 @@ function sessionPhase(session: LiveSession): CyberFoxState {
  * `runningCount` come from the live-runs store (with a short success/error
  * flash after a run finishes).
  */
+// Detected once per session: is this a weak machine? Few logical cores or low
+// reported RAM → auto-enable lite mode unless the user set it explicitly.
+const autoLiteMachine = (() => {
+  const cores = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 8 : 8
+  const mem = typeof navigator !== 'undefined' ? (navigator as { deviceMemory?: number }).deviceMemory : undefined
+  return cores <= 4 || (typeof mem === 'number' && mem <= 4)
+})()
+
 export function useMascotState() {
   const appSettings = useAppSettingsStore()
   const live = useLiveRunsStore()
+  const levelStore = useMascotLevelStore()
+  // Kick off the first cumulative-usage read so the fox shows its earned realm.
+  levelStore.ensureLoaded()
 
   const enabled = computed(() => appSettings.settings?.cyber_fox_enabled === 'true')
   const soundEnabled = computed(() => appSettings.settings?.cyber_fox_sound !== 'false')
-  // Lite / performance mode: opt-in effect trimming for weaker machines.
-  const liteMode = computed(() => appSettings.settings?.cyber_fox_lite === 'true')
+  // Lite / performance mode. 'true'/'false' are explicit user choices; anything
+  // else ('auto' or unset) falls back to the auto weak-machine detection above.
+  const liteMode = computed(() => {
+    const v = appSettings.settings?.cyber_fox_lite
+    if (v === 'true') return true
+    if (v === 'false') return false
+    return autoLiteMachine
+  })
   const mode = computed<CyberFoxMode>(() =>
     appSettings.settings?.cyber_fox_mode === 'desktop' ? 'desktop' : 'in-app',
   )
@@ -106,6 +124,9 @@ export function useMascotState() {
         transientState.value = null
         transientTimer = null
       }, 1400)
+      // A run just finished → its token usage is now in the ledger; re-read the
+      // cumulative total so the fox can break through to a new realm/tier.
+      levelStore.refresh()
     },
     { immediate: true },
   )
@@ -124,9 +145,28 @@ export function useMascotState() {
     return Math.max(1, n)
   })
 
+  // Earned evolution — realm + tier derived from cumulative token usage.
+  const mascotLevel = computed(() => levelStore.info)
+  const evolutionRealm = computed(() => levelStore.info.realmId)
+  const evolutionTier = computed(() => levelStore.info.tier)
+  // Ascension stars ⭐ — one per completed 35-level cycle (0 on the first cycle).
+  const mascotStars = computed(() => levelStore.info.stars)
+
   onBeforeUnmount(() => {
     if (transientTimer) clearTimeout(transientTimer)
   })
 
-  return { enabled, soundEnabled, liteMode, mode, mascotSize, displayState, runningCount }
+  return {
+    enabled,
+    soundEnabled,
+    liteMode,
+    mode,
+    mascotSize,
+    displayState,
+    runningCount,
+    mascotLevel,
+    evolutionRealm,
+    evolutionTier,
+    mascotStars,
+  }
 }
