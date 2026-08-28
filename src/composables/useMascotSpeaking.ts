@@ -1,5 +1,5 @@
 // Shared reactive "is the mascot speaking right now?" signal. Set by the mascot
-// sound player (useMascotSound) around actual audio playback, and read by
+// TTS player (useMascotSpeech) around each utterance, and read by
 // CyberFox to drive the talking mouth/jaw animation. Module-scoped so every
 // caller in the SAME window shares one source of truth (the desktop-pet window
 // is a separate process — CyberFoxHost forwards this flag to it over an event).

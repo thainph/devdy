@@ -33,13 +33,27 @@ export interface MascotStatePayload {
 }
 
 // Vertical room reserved ABOVE the fox for the speech bubble (logical px).
-const BUBBLE_ZONE = 110
+const BUBBLE_ZONE = 96
 
-/** Window footprint (logical px): a square fox area plus a bubble zone on top. */
+/**
+ * Window footprint (logical px). Kept SNUG around the actual fox sprite (which is
+ * 96 / 148 / 196 px, see CyberFoxCanvas SIZES) plus a small glow margin and the
+ * speech-bubble zone on top. A tight window matters on macOS: the old oversized
+ * frame carried ~150px of invisible margin above the fox, so macOS (which won't
+ * let a window drag above the menu bar) blocked the fox at mid-screen and the
+ * empty margin overlapped the menu bar where the transparent canvas goes blank.
+ */
 export function mascotWindowSize(size: CyberFoxSize): { width: number; height: number } {
-  const edge = size === 'sm' ? 240 : size === 'lg' ? 380 : 300
-  return { width: edge, height: edge + BUBBLE_ZONE }
+  const fox = size === 'sm' ? 96 : size === 'lg' ? 196 : 148
+  const box = fox + 44 // room for the ground-ring glow / drop shadows
+  return { width: box, height: box + BUBBLE_ZONE }
 }
+
+// In-flight creation guard: several watchers (enabled/mode, size, ready-replay)
+// can call openMascotWindow near-simultaneously on startup. Without this, each
+// passes the getByLabel() null check before any has finished creating, spawning
+// duplicate windows (the extra one gets stranded in the screen centre).
+let creating: Promise<WebviewWindow> | null = null
 
 /** Open (or focus) the desktop-pet window and match its size to the preference. */
 export async function openMascotWindow(size: CyberFoxSize = 'md'): Promise<WebviewWindow> {
@@ -54,7 +68,18 @@ export async function openMascotWindow(size: CyberFoxSize = 'md'): Promise<Webvi
     }
     return existing
   }
+  // A creation kicked off by another caller is already running — reuse it.
+  if (creating) return creating
 
+  creating = Promise.resolve(createMascotWindow(width, height))
+  try {
+    return await creating
+  } finally {
+    creating = null
+  }
+}
+
+function createMascotWindow(width: number, height: number): WebviewWindow {
   const win = new WebviewWindow(MASCOT_WINDOW_LABEL, {
     // Slim standalone entry (mascot.html → src/mascot/main.ts) instead of booting
     // the full SPA (index.html?mascotWindow=1) inside a second webview.
@@ -69,6 +94,11 @@ export async function openMascotWindow(size: CyberFoxSize = 'md'): Promise<Webvi
     skipTaskbar: true,
     shadow: false,
     focus: false,
+    // Start hidden: Tauri would otherwise place a positionless window in the
+    // CENTRE of the screen, so the fox flashes there for a frame before
+    // MascotWindow.onMounted moves it to its saved/bottom-right spot. The pet
+    // stays invisible until that reposition is done, then calls show().
+    visible: false,
   })
   win.once('tauri://error', (e) => {
     console.error('[mascotWindow] failed to open window', e)

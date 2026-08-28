@@ -10,7 +10,7 @@ import {
   Plus, Pencil, Trash2,
 } from 'lucide-vue-next'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { invoke } from '@/lib/tauri'
+import { translateText } from '@/lib/translate'
 import { Button, Badge, Drawer, AppSelect, Modal } from '@/components/ui'
 import { useGoogleCalendarStore, type CalEvent } from '@/stores/googleCalendar'
 import { useAppSettingsStore } from '@/stores/appSettings'
@@ -283,7 +283,7 @@ watch(
     const base = stripHtml(selected.value.description)
     if (!base) return
     try {
-      translatedDesc.value = await invoke<string>('translate_text', { text: base, targetLang: targetLang.value })
+      translatedDesc.value = await translateText(base, targetLang.value)
     } catch {
       translatedDesc.value = null
     }

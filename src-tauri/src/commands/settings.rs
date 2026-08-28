@@ -58,6 +58,13 @@ pub struct AppSettings {
     /// Play a short Cyber Fox "voice" sound when a speech bubble appears.
     /// "true" (default) | "false".
     pub cyber_fox_sound: String,
+    /// Let the mascot use a one-shot AI call to write important speech bubbles.
+    /// "true" | "false" (default).
+    pub mascot_speech_enabled: String,
+    /// Engine used by mascot AI speech ("" = follow default_engine).
+    pub mascot_speech_engine: String,
+    /// Model used by mascot AI speech ("" = fast default, e.g. haiku for Claude).
+    pub mascot_speech_model: String,
     /// Lite / performance mode for the mascot: trims the heaviest effects
     /// (glow tails, orbit blur/blend, ground-dot density) for weaker machines.
     /// "false" (default, full effects) | "true".
@@ -109,6 +116,9 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
         cyber_fox_size: "md".to_string(),
         cyber_fox_mode: "in-app".to_string(),
         cyber_fox_sound: "true".to_string(),
+        mascot_speech_enabled: "false".to_string(),
+        mascot_speech_engine: "".to_string(),
+        mascot_speech_model: "".to_string(),
         cyber_fox_lite: "false".to_string(),
         cyber_fox_voice_vi: "".to_string(),
         cyber_fox_voice_en: "".to_string(),
@@ -147,6 +157,9 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
             "cyber_fox_size" => settings.cyber_fox_size = value,
             "cyber_fox_mode" => settings.cyber_fox_mode = value,
             "cyber_fox_sound" => settings.cyber_fox_sound = value,
+            "mascot_speech_enabled" => settings.mascot_speech_enabled = value,
+            "mascot_speech_engine" => settings.mascot_speech_engine = value,
+            "mascot_speech_model" => settings.mascot_speech_model = value,
             "cyber_fox_lite" => settings.cyber_fox_lite = value,
             "cyber_fox_voice_vi" => settings.cyber_fox_voice_vi = value,
             "cyber_fox_voice_en" => settings.cyber_fox_voice_en = value,

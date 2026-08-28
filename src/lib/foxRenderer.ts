@@ -44,6 +44,13 @@ export interface FoxProps {
   evolutionRealm: FoxRealm
   evolutionTier: number
   speaking: boolean
+  /**
+   * Desktop-pet mode: reallocate the canvas backing on every frame. macOS drops
+   * the backing store of a transparent, always-on-top window's canvas when the
+   * window moves (the fox goes blank, esp. in the upper screen / across monitors,
+   * while the DOM stars remain). A fresh backing per frame is immune to that.
+   */
+  persistent: boolean
 }
 
 const SIZES = { sm: 96, md: 148, lg: 196 } as const
@@ -248,10 +255,17 @@ export class FoxRenderer {
     evolutionRealm: '',
     evolutionTier: 1,
     speaking: false,
+    persistent: false,
   }
 
   constructor(private canvas: HTMLCanvasElement) {
-    const ctx = canvas.getContext('2d', { alpha: true })
+    // `willReadFrequently` forces a CPU-backed 2D context instead of a GPU
+    // IOSurface. On macOS a transparent, always-on-top window's GPU canvas is tied
+    // to one display's scanout, so moving it to another region/monitor leaves the
+    // canvas blank (the fox vanishes; DOM stars remain). A CPU backing composites
+    // correctly everywhere — the real fix for the "blank in the upper half /
+    // second monitor" bug.
+    const ctx = canvas.getContext('2d', { alpha: true, willReadFrequently: true })
     if (!ctx) throw new Error('2D canvas context unavailable')
     this.ctx = ctx
     // Feature-detect ctx.filter (used only for the evolution tint/glow).
@@ -336,6 +350,32 @@ export class FoxRenderer {
     this.draw(performance.now())
   }
 
+  /**
+   * Recompute size/DPR then force a fresh backing + redraw. Use after a resize or
+   * a monitor/DPR change.
+   */
+  refresh() {
+    this.resize()
+    this.redraw()
+  }
+
+  /**
+   * Force-reallocate the canvas backing store, then repaint in the SAME tick.
+   *
+   * macOS drops the backing store of a transparent, always-on-top window's canvas
+   * when the window is moved (the fox vanishes while the DOM stars remain, esp. in
+   * the upper part of the screen / across monitors). A plain redraw is not enough:
+   * drawing into the dropped backing shows nothing. Reassigning `canvas.width`
+   * (even to the same value) allocates a NEW backing and clears it; drawing right
+   * after — synchronously — means the browser only ever composites the final
+   * painted frame, so there is no visible flicker.
+   */
+  redraw() {
+    // eslint-disable-next-line no-self-assign
+    this.canvas.width = this.canvas.width
+    this.drawOnce()
+  }
+
   // Time helper: progress 0..1 through a `dur` ms loop, with optional delay ms.
   private cycle(now: number, dur: number, delay = 0): number {
     return wrap01((now - this.startAt - delay) / dur)
@@ -346,6 +386,10 @@ export class FoxRenderer {
   // -------------------------------------------------------------------------
   private draw(now: number) {
     if (!this.sprites) return
+    // Re-sharpen the backing store if the device pixel ratio changed — e.g. the
+    // desktop-pet window was dragged onto a monitor with a different DPR.
+    const dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1))
+    if (dpr !== this.dpr) this.resize()
     const ctx = this.ctx
     const S = this.cssSize
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0)

@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
+import { invoke } from '@tauri-apps/api/core'
 import { useMcpServersStore, type McpServer } from '@/stores/mcpServers'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { open, save } from '@tauri-apps/plugin-dialog'
@@ -24,6 +25,70 @@ const addingName = ref<string | null>(null)
 // The built-in `devdy` MCP server is injected at run launch (not a row in the
 // list); it's toggled from Settings → MCP Server.
 const builtinEnabled = computed(() => appSettings.settings?.mcp_builtin_devdy_enabled !== 'false')
+
+// Google-backed built-ins (gdrive/gmail) are injected at run launch only when an
+// OAuth client is configured AND at least one account is connected (mirrors the
+// backend `with_builtin_google` gate). Fetch that status so the cards below can
+// reflect it accurately instead of pretending only `devdy` exists.
+const googleAccountCount = ref(0)
+const googleHasClient = ref(false)
+async function loadGoogleStatus() {
+  try {
+    const accounts = await invoke<unknown[]>('list_google_accounts')
+    googleAccountCount.value = Array.isArray(accounts) ? accounts.length : 0
+    googleHasClient.value = (await invoke<{ has_client: boolean }>('google_client_status')).has_client
+  } catch {
+    googleAccountCount.value = 0
+    googleHasClient.value = false
+  }
+}
+
+// The 3 native Devdy MCP servers, each with its real runtime status so the
+// screen shows the truth (active / disabled / needs setup) rather than a single
+// hardcoded devdy card.
+type NativeStatus = { tone: 'success' | 'neutral' | 'warning'; label: string }
+interface NativeServer {
+  name: string
+  tools: string
+  description: string
+  status: NativeStatus
+  section: string
+}
+const nativeServers = computed<NativeServer[]>(() => {
+  const google: NativeStatus = !googleHasClient.value
+    ? { tone: 'warning', label: 'Built-in · needs OAuth client' }
+    : googleAccountCount.value === 0
+      ? { tone: 'warning', label: 'Built-in · no account' }
+      : { tone: 'success', label: 'Built-in · active' }
+  return [
+    {
+      name: 'devdy',
+      tools: 'mcp__devdy__*',
+      description:
+        'Auto-injected into every run. Gives the AI your notes, cross-session recall, project context (file tree & git) and managed VPS.',
+      status: builtinEnabled.value
+        ? { tone: 'success', label: 'Built-in · active' }
+        : { tone: 'neutral', label: 'Built-in · disabled' },
+      section: 'mcp',
+    },
+    {
+      name: 'gdrive',
+      tools: 'mcp__gdrive__*',
+      description:
+        'Google Drive: list, search, read, upload, update, share and delete files. Injected when a Google account is connected.',
+      status: google,
+      section: 'google',
+    },
+    {
+      name: 'gmail',
+      tools: 'mcp__gmail__*',
+      description:
+        'Gmail: list, search, read, send, reply, draft and manage labels. Injected when a Google account is connected.',
+      status: google,
+      section: 'google',
+    },
+  ]
+})
 
 // One-click catalog of commonly useful third-party MCP servers. Adding one
 // creates a disabled-secrets stub the user finishes in the editor (args/paths/
@@ -76,6 +141,7 @@ const defaultIsCodex = computed(() => appSettings.settings?.default_engine === '
 onMounted(() => {
   store.fetchServers()
   appSettings.ensureLoaded()
+  loadGoogleStatus()
 })
 
 function isSse(server: McpServer): boolean {
@@ -191,30 +257,37 @@ function formatDate(iso: string) {
 
     <!-- Content -->
     <div class="flex-1 overflow-auto p-6 space-y-6">
-      <!-- Built-in devdy server (injected at run launch, not a list row) -->
-      <div
-        class="rounded-lg border p-4 flex items-start gap-3"
-        :class="builtinEnabled ? 'border-primary/30 bg-primary/5' : 'border-border/60 bg-muted/20 opacity-70'"
-      >
-        <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 border border-primary/15 text-primary">
-          <Server class="h-4.5 w-4.5" :stroke-width="1.75" />
+      <!-- Built-in native servers (injected at run launch, not list rows) -->
+      <div class="space-y-2">
+        <div class="flex items-center gap-2">
+          <Sparkles class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.75" />
+          <h2 class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Built-in servers</h2>
         </div>
-        <div class="min-w-0 flex-1">
-          <div class="flex items-center gap-2 flex-wrap">
-            <p class="text-sm font-semibold font-mono leading-tight">devdy</p>
-            <Badge :tone="builtinEnabled ? 'success' : 'neutral'" size="xs" class="shrink-0">
-              {{ builtinEnabled ? 'Built-in · active' : 'Built-in · disabled' }}
-            </Badge>
+        <div
+          v-for="native in nativeServers"
+          :key="native.name"
+          class="rounded-lg border p-4 flex items-start gap-3"
+          :class="native.status.tone === 'success' ? 'border-primary/30 bg-primary/5' : 'border-border/60 bg-muted/20 opacity-70'"
+        >
+          <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 border border-primary/15 text-primary">
+            <Server class="h-4.5 w-4.5" :stroke-width="1.75" />
           </div>
-          <p class="text-xs text-muted-foreground mt-1 leading-relaxed">
-            Auto-injected into every run. Gives the AI your notes, cross-session recall, project
-            context (file tree &amp; git) and managed VPS — as <code>mcp__devdy__*</code> tools.
-          </p>
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-2 flex-wrap">
+              <p class="text-sm font-semibold font-mono leading-tight">{{ native.name }}</p>
+              <Badge :tone="native.status.tone" size="xs" class="shrink-0">
+                {{ native.status.label }}
+              </Badge>
+            </div>
+            <p class="text-xs text-muted-foreground mt-1 leading-relaxed">
+              {{ native.description }} Exposed as <code>{{ native.tools }}</code> tools.
+            </p>
+          </div>
+          <Button variant="outline" size="sm" class="shrink-0" @click="router.push({ path: '/settings', query: { section: native.section } })">
+            <Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+            Settings
+          </Button>
         </div>
-        <Button variant="outline" size="sm" class="shrink-0" @click="router.push('/settings')">
-          <Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-          Settings
-        </Button>
       </div>
 
       <!-- Loading skeleton -->

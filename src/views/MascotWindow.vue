@@ -10,8 +10,8 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ListTodo, StickyNote } from 'lucide-vue-next'
 import { listen, emit, type UnlistenFn } from '@tauri-apps/api/event'
-import { getCurrentWindow, currentMonitor } from '@tauri-apps/api/window'
-import { LogicalPosition } from '@tauri-apps/api/dpi'
+import { getCurrentWindow, currentMonitor, availableMonitors } from '@tauri-apps/api/window'
+import { LogicalPosition, PhysicalPosition } from '@tauri-apps/api/dpi'
 import CyberFox from '@/components/CyberFoxCanvas.vue'
 import MascotStars from '@/components/MascotStars.vue'
 import MascotContextMenu, { type MascotMenuItem } from '@/components/MascotContextMenu.vue'
@@ -46,7 +46,6 @@ const bubbleMsg = ref<MascotBubbleMessage | null>(null)
 
 const menuOpen = ref(false)
 const menuPos = ref({ x: 0, y: 0 })
-let dragging = false
 
 const menuItems = computed<MascotMenuItem[]>(() => [
   { key: 'todo', label: t('todos.quick.newTodo'), icon: ListTodo },
@@ -54,7 +53,6 @@ const menuItems = computed<MascotMenuItem[]>(() => [
 ])
 
 function openContextMenu(e: MouseEvent) {
-  if (dragging) return
   menuPos.value = { x: e.clientX, y: e.clientY }
   menuOpen.value = true
 }
@@ -62,51 +60,62 @@ function pickQuickCreate(key: string) {
   openQuickCreateWindow(key as QuickCreateTab)
 }
 
-// Drag the whole OS window by hand. We anchor to SCREEN coordinates (screenX/Y),
-// which stay stable even as the window itself moves under the cursor, and drive
-// the window with setPosition. This is more reliable than window.startDragging()
-// for a transparent, always-on-top window on macOS.
-let dragPointerId: number | null = null
-let dragStartScreen: { x: number; y: number } | null = null
-let dragStartWin: { x: number; y: number } | null = null
-
+// Drag = OS-native window move via startDragging(). The compositor moves the
+// whole window surface, so it's perfectly smooth and NEVER drops the canvas
+// backing — no flicker, unlike driving setPosition on every pointermove. During
+// an OS drag we don't get pointerup, so the position is persisted by a debounced
+// onMoved listener (see onMounted), which also rescues the window on-screen.
 async function startDrag(e: PointerEvent) {
   if (e.button !== 0) return
   menuOpen.value = false
+  try {
+    await getCurrentWindow().startDragging()
+  } catch {
+    /* not in a Tauri shell */
+  }
+}
+
+// Called (debounced) once the window stops moving: keep it on the desktop, save,
+// and guarantee the fox is repainted. A real `resize` event makes CyberFoxCanvas
+// reallocate the canvas backing (restores it even if macOS dropped it during the
+// move); the window is stationary by now so the single reframe isn't visible.
+async function afterMove() {
+  await rescueOntoDesktop()
+  savePosition()
+  window.dispatchEvent(new Event('resize'))
+}
+
+// Keep the window within the UNION of all monitors (so dragging onto a second
+// screen is allowed, but it can never be lost entirely off the desktop). Done in
+// physical coordinates to stay correct across monitors with different DPRs.
+async function rescueOntoDesktop() {
   const win = getCurrentWindow()
   try {
-    const factor = await win.scaleFactor()
-    const logical = (await win.outerPosition()).toLogical(factor)
-    dragStartWin = { x: logical.x, y: logical.y }
+    const monitors = await availableMonitors()
+    if (!monitors.length) return
+    const pos = await win.outerPosition() // physical
+    const size = await win.outerSize() // physical
+    let minX = Infinity
+    let minY = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
+    for (const m of monitors) {
+      minX = Math.min(minX, m.position.x)
+      minY = Math.min(minY, m.position.y)
+      maxX = Math.max(maxX, m.position.x + m.size.width)
+      maxY = Math.max(maxY, m.position.y + m.size.height)
+    }
+    const margin = 24
+    const clampMaxX = maxX - size.width - margin
+    const clampMaxY = maxY - size.height - margin
+    const x = Math.min(Math.max(pos.x, minX + margin), Math.max(minX + margin, clampMaxX))
+    const y = Math.min(Math.max(pos.y, minY + margin), Math.max(minY + margin, clampMaxY))
+    if (Math.round(x) !== Math.round(pos.x) || Math.round(y) !== Math.round(pos.y)) {
+      await win.setPosition(new PhysicalPosition(Math.round(x), Math.round(y)))
+    }
   } catch {
-    return // not in a Tauri shell
+    /* best-effort */
   }
-  dragStartScreen = { x: e.screenX, y: e.screenY }
-  dragPointerId = e.pointerId
-  dragging = true
-  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
-}
-
-function onDrag(e: PointerEvent) {
-  if (!dragging || dragPointerId !== e.pointerId || !dragStartScreen || !dragStartWin) return
-  e.preventDefault()
-  const nx = Math.round(dragStartWin.x + (e.screenX - dragStartScreen.x))
-  const ny = Math.round(dragStartWin.y + (e.screenY - dragStartScreen.y))
-  getCurrentWindow().setPosition(new LogicalPosition(nx, ny)).catch(() => {})
-}
-
-function endDrag(e: PointerEvent) {
-  if (dragPointerId !== e.pointerId) return
-  dragging = false
-  dragPointerId = null
-  dragStartScreen = null
-  dragStartWin = null
-  try {
-    ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
-  } catch {
-    /* pointer already released */
-  }
-  savePosition()
 }
 
 async function savePosition() {
@@ -184,9 +193,38 @@ async function restorePosition() {
   }
 }
 
+// Keep the window fully on its current monitor after a size change (the size
+// preference can grow the window past the screen edge). Clamps the CURRENT
+// position rather than restoring the saved one.
+async function clampIntoView() {
+  const win = getCurrentWindow()
+  try {
+    const monitor = await currentMonitor()
+    if (!monitor) return
+    const factor = await win.scaleFactor()
+    const wSize = (await win.outerSize()).toLogical(factor)
+    const pos = (await win.outerPosition()).toLogical(factor)
+    const mPos = monitor.position.toLogical(factor)
+    const mSize = monitor.size.toLogical(factor)
+    const maxX = mPos.x + mSize.width - wSize.width - EDGE_MARGIN
+    const maxY = mPos.y + mSize.height - wSize.height - EDGE_MARGIN
+    const x = Math.min(Math.max(pos.x, mPos.x + EDGE_MARGIN), Math.max(mPos.x + EDGE_MARGIN, maxX))
+    const y = Math.min(Math.max(pos.y, mPos.y + EDGE_MARGIN), Math.max(mPos.y + EDGE_MARGIN, maxY))
+    if (Math.round(x) !== Math.round(pos.x) || Math.round(y) !== Math.round(pos.y)) {
+      await win.setPosition(new LogicalPosition(Math.round(x), Math.round(y)))
+      savePosition()
+    }
+  } catch {
+    /* best-effort */
+  }
+}
+
 let unlistenState: UnlistenFn | null = null
 let unlistenBubble: UnlistenFn | null = null
 let unlistenSpeaking: UnlistenFn | null = null
+let unlistenResized: UnlistenFn | null = null
+let unlistenMoved: UnlistenFn | null = null
+let moveSaveTimer: ReturnType<typeof setTimeout> | null = null
 
 function applyPayload(p: Partial<MascotStatePayload>) {
   if (p.state) state.value = p.state
@@ -213,6 +251,33 @@ onMounted(async () => {
     setSpeaking(Boolean(e.payload))
   })
 
+  // Re-clamp into view whenever the window is resized (e.g. the size preference
+  // changed from the main window), so a bigger fox never spills off-screen.
+  try {
+    unlistenResized = await getCurrentWindow().onResized(() => {
+      void clampIntoView()
+    })
+  } catch {
+    /* not in a Tauri shell */
+  }
+
+  // OS-native drag gives us no pointerup, so persist the position (and rescue the
+  // window on-screen) a moment after movement settles.
+  try {
+    unlistenMoved = await getCurrentWindow().onMoved(() => {
+      // Repaint the fox on every move tick so its canvas never goes blank mid-drag
+      // (macOS drops the backing of a transparent window's canvas as it moves).
+      window.dispatchEvent(new Event('devdy:mascot-redraw'))
+      if (moveSaveTimer) clearTimeout(moveSaveTimer)
+      moveSaveTimer = setTimeout(() => {
+        moveSaveTimer = null
+        void afterMove()
+      }, 250)
+    })
+  } catch {
+    /* not in a Tauri shell */
+  }
+
   await restorePosition()
   try {
     await getCurrentWindow().show()
@@ -225,9 +290,12 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   document.documentElement.classList.remove('mascot-window')
+  if (moveSaveTimer) clearTimeout(moveSaveTimer)
   unlistenState?.()
   unlistenBubble?.()
   unlistenSpeaking?.()
+  unlistenResized?.()
+  unlistenMoved?.()
 })
 </script>
 
@@ -239,13 +307,10 @@ onBeforeUnmount(() => {
       aria-label="DY Cyber Fox"
       title="DY — drag to move, right-click for menu"
       @pointerdown="startDrag"
-      @pointermove="onDrag"
-      @pointerup="endDrag"
-      @pointercancel="endDrag"
       @contextmenu.prevent="openContextMenu"
       @dragstart.prevent
     >
-      <MascotBubble :message="bubbleMsg" />
+      <MascotBubble :message="bubbleMsg" placement="bottom" />
       <div class="fox-stack">
         <CyberFox
           :state="state"
@@ -255,6 +320,7 @@ onBeforeUnmount(() => {
           :evolution-realm="evolutionRealm"
           :evolution-tier="evolutionTier"
           :level-up-at="levelUpAt"
+          :persistent="true"
         />
         <MascotStars class="fox-stars" :count="stars" />
       </div>
@@ -290,11 +356,12 @@ onBeforeUnmount(() => {
   inset: 0;
   display: flex;
   align-items: center;
-  /* Anchor the fox to the bottom so the reserved zone above it holds the
-     speech bubble without clipping. */
-  justify-content: flex-end;
+  /* Anchor the fox to the TOP so it can be dragged to the very top of the screen
+     (just under the menu bar). The reserved zone below it holds the speech bubble
+     — which now renders below the fox (MascotBubble placement="bottom"). */
+  justify-content: flex-start;
   flex-direction: column;
-  padding-bottom: 16px;
+  padding-top: 10px;
   background: transparent;
   overflow: visible;
 }

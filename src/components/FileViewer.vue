@@ -14,6 +14,7 @@ import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener'
 import type MarkdownIt from 'markdown-it'
 import { Button } from '@/components/ui'
 import TranslatePopover from '@/components/TranslatePopover.vue'
+import { invoke } from '@/lib/tauri'
 import { useRunsStore } from '@/stores/runs'
 import { useProjectsStore } from '@/stores/projects'
 import { useAppSettingsStore } from '@/stores/appSettings'
@@ -386,6 +387,8 @@ function onSelectionMouseUp() {
   try { rect = sel.getRangeAt(0).getBoundingClientRect() } catch { rect = null }
   if (!rect || (rect.width === 0 && rect.height === 0)) { translateTrigger.value = null; return }
   translateTrigger.value = { text, x: rect.left, y: rect.bottom + 6 }
+  // Warm the translation sidecar while the user reaches for the button.
+  void invoke('prewarm_translate').catch(() => {})
 }
 
 function openTranslate() {

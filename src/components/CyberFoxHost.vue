@@ -13,8 +13,7 @@ import { useMascotState } from '@/composables/useMascotState'
 import { useMascotBubble } from '@/composables/useMascotBubble'
 import { useMascotBubbleFeed } from '@/composables/useMascotBubbleFeed'
 import { triggerMascotLevelUp } from '@/composables/useMascotLevelUp'
-import { useMascotSound } from '@/composables/useMascotSound'
-import { useMascotSpeech, speechSupported } from '@/composables/useMascotSpeech'
+import { useMascotSpeech } from '@/composables/useMascotSpeech'
 import { mascotSpeaking } from '@/composables/useMascotSpeaking'
 import { useMascotLevelStore } from '@/stores/mascotLevel'
 import type { MascotRealmId } from '@/lib/mascotLevel'
@@ -39,6 +38,7 @@ const {
   voiceRate,
   voicePitch,
   displayState,
+  activeSession,
   runningCount,
   mascotLevel,
   evolutionRealm,
@@ -47,9 +47,9 @@ const {
 } = useMascotState()
 
 // Feed app-wide signals (run phase + toasts) into the shared speech bubble.
-useMascotBubbleFeed(displayState)
+// Pass `enabled` so a disabled mascot generates NO speech (no backend LLM call).
+useMascotBubbleFeed(displayState, activeSession, enabled)
 const { state: bubble, push } = useMascotBubble()
-const sound = useMascotSound()
 const speech = useMascotSpeech()
 const levelStore = useMascotLevelStore()
 
@@ -123,11 +123,15 @@ async function ensureDesktopWindow() {
 // Open/close the desktop-pet window as the mode / enabled flag changes.
 watch(
   [enabled, mode],
-  async ([isEnabled, m], prev) => {
-    const wasDesktop = prev?.[0] && prev?.[1] === 'desktop'
+  async ([isEnabled, m]) => {
     if (isEnabled && m === 'desktop') {
       await ensureDesktopWindow()
-    } else if (wasDesktop) {
+    } else {
+      // Disabled OR in-app mode → guarantee no desktop-pet window survives.
+      // Unconditional (not gated on the previous mode) so a stray window from a
+      // prior session, an app restart (prev === undefined on the immediate run),
+      // or an open/close race is always cleaned up. Closing a window that isn't
+      // there is a no-op.
       await closeMascotWindow()
     }
   },
@@ -149,21 +153,25 @@ watch(
     if (!bubble.current || !enabled.value) return
     // Give the fox a voice for this bubble. Both languages speak the bubble text
     // via the browser's text-to-speech (per-language voice + shared rate/pitch).
-    // If Web Speech isn't available we fall back to the recorded mp3 clips.
+    // If Web Speech isn't available the fox simply stays silent (no audio clips).
     if (soundEnabled.value) {
-      if (speechSupported()) {
-        speech.speak(bubble.current.text, String(locale.value), {
-          voiceName: locale.value === 'vi' ? voiceNameVi.value : voiceNameEn.value,
-          rate: voiceRate.value,
-          pitch: voicePitch.value,
-        })
-      } else {
-        sound.play(bubble.current.variant, bubble.current.voiceClip)
-      }
+      speech.speak(bubble.current.text, String(locale.value), {
+        voiceName: locale.value === 'vi' ? voiceNameVi.value : voiceNameEn.value,
+        rate: voiceRate.value,
+        pitch: voicePitch.value,
+      })
     }
     if (mode.value === 'desktop') emitMascotBubble({ ...bubble.current })
   },
 )
+
+// Turning the mascot OFF mid-sentence should silence it at once — stop the
+// browser TTS (it would otherwise finish the utterance).
+watch(enabled, (isEnabled) => {
+  if (!isEnabled) {
+    speech.stop()
+  }
+})
 
 // Forward the "talking" flag to the pet window: audio plays here (main window),
 // but the fox that should flap its mouth lives in the pet window.

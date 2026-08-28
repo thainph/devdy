@@ -9,7 +9,12 @@ import { useI18n } from 'vue-i18n'
 import { X } from 'lucide-vue-next'
 import type { MascotBubbleMessage } from '@/composables/useMascotBubble'
 
-const props = defineProps<{ message: MascotBubbleMessage | null }>()
+const props = defineProps<{
+  message: MascotBubbleMessage | null
+  /** Where the bubble sits relative to the fox. 'bottom' lets the desktop pet be
+   *  dragged to the very top of the screen (the fox goes above, bubble below). */
+  placement?: 'top' | 'bottom'
+}>()
 
 const { t } = useI18n()
 
@@ -130,6 +135,7 @@ onBeforeUnmount(() => {
     <div
       v-if="visible && shown"
       class="mascot-bubble-wrap"
+      :class="{ 'is-bottom': placement === 'bottom' }"
       @pointerdown.stop
       @mouseenter="onEnter"
       @mouseleave="onLeave"
@@ -170,6 +176,28 @@ onBeforeUnmount(() => {
   filter:
     drop-shadow(0 3px 6px rgb(0 0 0 / 0.30))
     drop-shadow(0 14px 26px rgb(0 0 0 / 0.38));
+}
+
+/* Bubble placed BELOW the fox (desktop pet near the top of the screen). */
+.mascot-bubble-wrap.is-bottom {
+  bottom: auto;
+  top: calc(100% + 20px);
+}
+/* Flip the tail to point UP at the fox above. */
+.mascot-bubble-wrap.is-bottom .mascot-bubble-box::after {
+  bottom: auto;
+  top: -7px;
+  border-right: none;
+  border-bottom: none;
+  border-left: 1px solid hsl(var(--border) / 0.35);
+  border-top: 1px solid hsl(var(--border) / 0.35);
+  border-bottom-right-radius: 0;
+  border-top-left-radius: 5px;
+}
+/* Move the luminous hairline to the bottom edge (nearest the tail). */
+.mascot-bubble-wrap.is-bottom .mascot-bubble-box::before {
+  top: auto;
+  bottom: 0;
 }
 
 .mascot-bubble-box {

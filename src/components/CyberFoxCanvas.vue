@@ -24,6 +24,8 @@ const props = withDefaults(
     lite?: boolean
     /** Timestamp bump to fire the breakthrough (level-up) ring VFX. */
     levelUpAt?: number
+    /** Keep the rAF loop running even when hidden/off-screen (desktop pet). */
+    persistent?: boolean
   }>(),
   {
     state: 'idle',
@@ -35,6 +37,7 @@ const props = withDefaults(
     streams: 1,
     lite: false,
     levelUpAt: 0,
+    persistent: false,
   },
 )
 
@@ -59,19 +62,37 @@ function pushProps() {
     evolutionRealm: props.evolutionRealm,
     evolutionTier: props.evolutionTier,
     speaking: mascotSpeaking.value,
+    persistent: props.persistent,
   })
 }
 
 function updateRunning() {
   if (!renderer) return
   // Pause the loop when the tab/window is hidden or the fox is scrolled off-screen.
-  if (visible && onScreen && !props.reducedMotion) renderer.start()
+  // The desktop pet passes `persistent` so it keeps animating regardless — macOS
+  // can leave its canvas blank if the loop pauses while the window is moved.
+  if ((props.persistent || (visible && onScreen)) && !props.reducedMotion) renderer.start()
   else renderer.stop()
 }
 
 function onVisibility() {
   visible = !document.hidden
   updateRunning()
+}
+
+// The window moved/resized or regained focus. On macOS the canvas backing store
+// can be dropped when its window is dragged to another monitor — the fox turns
+// blank while the DOM stars stay. Force a resize + redraw to bring it back.
+function onWindowChange() {
+  if (!renderer) return
+  renderer.refresh()
+  updateRunning()
+}
+
+// Fired by MascotWindow on every window-move tick during an OS drag: repaint the
+// fox (no resize → no flicker) so it never goes blank while being dragged.
+function onExternalRedraw() {
+  renderer?.redraw()
 }
 
 watch(
@@ -120,6 +141,9 @@ onMounted(async () => {
     io.observe(rootRef.value)
   }
   document.addEventListener('visibilitychange', onVisibility)
+  window.addEventListener('resize', onWindowChange)
+  window.addEventListener('focus', onWindowChange)
+  window.addEventListener('devdy:mascot-redraw', onExternalRedraw)
   visible = !document.hidden
   updateRunning()
 })
@@ -127,6 +151,9 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   io?.disconnect()
   document.removeEventListener('visibilitychange', onVisibility)
+  window.removeEventListener('resize', onWindowChange)
+  window.removeEventListener('focus', onWindowChange)
+  window.removeEventListener('devdy:mascot-redraw', onExternalRedraw)
   renderer?.destroy()
   renderer = null
 })
@@ -155,6 +182,11 @@ onBeforeUnmount(() => {
 }
 .cyber-fox-canvas__c {
   display: block;
+  /* NOTE: deliberately NOT promoted to its own GPU layer (no translateZ/
+     will-change). On macOS a forced compositing layer for a canvas inside a
+     transparent window fails to composite in some screen regions (the fox goes
+     blank in the upper half while the DOM stars remain). Left inline, the
+     CPU-backed canvas (see willReadFrequently) composites like the DOM does. */
 }
 .sr-only {
   position: absolute;
