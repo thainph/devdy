@@ -429,6 +429,87 @@ const tools = {
     },
   },
 
+  // ---- Skill reference files -----------------------------------------------
+  // Read/write the extra files inside a skill folder (references/, scripts/,
+  // assets/, templates…) beyond SKILL.md. Paths are confined to the skill
+  // folder. Source-only, same re-apply caveat as skills_update.
+
+  skills_list_files: {
+    description:
+      'List every file inside a skill folder (SKILL.md plus references/, scripts/, assets/, etc.). Returns relative paths and byte sizes. Use skills_read_file / skills_write_file to work with a specific file.',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'string' } },
+      required: ['id'],
+    },
+    handler: (a) => {
+      const r = store.listSkillFiles(a.id);
+      if (!r.files.length) return `Skill '${r.skill.name}' has no files.`;
+      const body = r.files.map((f) => `- ${f.path} (${f.size} bytes)`).join('\n');
+      return `# ${r.skill.name} — files\n- source: ${r.skill.source_path}\n\n${body}`;
+    },
+  },
+
+  skills_read_file: {
+    description:
+      'Read one reference file inside a skill folder by its relative path (e.g. "references/github.md"). For SKILL.md prefer skills_read.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        path: { type: 'string', description: 'path relative to the skill folder, e.g. references/checklist.md' },
+      },
+      required: ['id', 'path'],
+    },
+    handler: (a) => {
+      const f = store.readSkillFile(a);
+      return `# ${f.skill}/${f.path}\n\n---\n\n${f.content || '(empty file)'}`;
+    },
+  },
+
+  skills_write_file: {
+    description:
+      'Create or overwrite a reference file inside a skill folder (e.g. "references/api.md"). Parent directories are created automatically. `content` replaces the whole file. Confined to the skill folder — relative paths only. Source-only: if the skill is already applied to projects, re-apply via the Devdy app to propagate.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        path: { type: 'string', description: 'path relative to the skill folder, e.g. references/api.md' },
+        content: { type: 'string', description: 'full file contents' },
+      },
+      required: ['id', 'path', 'content'],
+    },
+    handler: (a) => {
+      const r = store.writeSkillFile(a);
+      let msg = `${r.created ? 'Created' : 'Updated'} ${r.skill}/${r.path}.`;
+      if (r.applied.length) {
+        msg += `\n⚠ Applied to ${r.applied.length} project(s): ${r.applied.join(', ')}. Re-apply via the Devdy app to sync the change.`;
+      }
+      return msg;
+    },
+  },
+
+  skills_delete_file: {
+    description:
+      'Delete a reference file (or subfolder) inside a skill folder by relative path. SKILL.md cannot be deleted. Source-only, same re-apply caveat as skills_write_file.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        path: { type: 'string', description: 'path relative to the skill folder' },
+      },
+      required: ['id', 'path'],
+    },
+    handler: (a) => {
+      const r = store.deleteSkillFile(a);
+      let msg = `Deleted ${r.skill}/${r.path}.`;
+      if (r.applied.length) {
+        msg += `\n⚠ Applied to ${r.applied.length} project(s): ${r.applied.join(', ')}. Re-apply via the Devdy app to sync the change.`;
+      }
+      return msg;
+    },
+  },
+
   // ---- Rules library -------------------------------------------------------
   // Manage Devdy's reusable rule/convention definitions (the Rules screen).
   // Source-only, same caveat as skills.

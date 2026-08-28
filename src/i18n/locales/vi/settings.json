@@ -50,6 +50,8 @@
     "modeHint": "Trong ứng dụng: linh thú nằm trong cửa sổ Devdy. Trên màn hình nền: nổi ở một cửa sổ không viền, luôn trên cùng, ngoài desktop.",
     "sound": "Âm thanh",
     "soundHint": "Cho linh thú đọc to nội dung bong bóng bằng text-to-speech của hệ điều hành khi có điều muốn nói.",
+    "agentSpeech": "Lời thoại agent",
+    "agentSpeechHint": "Khi bật, các mốc quan trọng có thể chờ một lượt AI nhẹ để linh thú bình luận theo kết quả thật của session. Mặc định tắt.",
     "voice": "Giọng tiếng Việt",
     "voiceEn": "Giọng tiếng Anh",
     "voiceAuto": "Tự động (giọng đầu tiên)",

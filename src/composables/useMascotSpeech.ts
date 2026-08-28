@@ -1,9 +1,7 @@
-// Browser text-to-speech for the DY Cyber Fox. Used for languages that ship no
-// recorded voice clips (currently Vietnamese): instead of playing an mp3, the
-// fox "speaks" the bubble text through the Web Speech API in the matching
-// language. It mirrors useMascotSound's contract — it drives the same
-// begin/endSpeaking mouth-flap signal and never talks over itself — so callers
-// can swap between recorded audio and TTS transparently.
+// Browser text-to-speech for the DY Cyber Fox. Every language speaks the bubble
+// text through the Web Speech API in the matching language (there are no recorded
+// audio clips). It drives the shared begin/endSpeaking mouth-flap signal and
+// never talks over itself.
 import { onBeforeUnmount, ref, type Ref } from 'vue'
 import { beginSpeaking, endSpeaking } from '@/composables/useMascotSpeaking'
 

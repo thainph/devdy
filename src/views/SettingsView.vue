@@ -8,6 +8,7 @@ import {
   RefreshCw, Loader2, Server, HardDrive, Bot, RotateCcw,
 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
+import { useRoute } from 'vue-router'
 import { setLocale, SUPPORTED_LOCALES } from '@/i18n'
 import { Button, Input, Textarea, Card, AppSelect } from '@/components/ui'
 import CyberFox from '@/components/CyberFoxCanvas.vue'
@@ -22,7 +23,7 @@ import { useAwsAccountsStore, type AwsAccountPayload, type AwsAuthMethod, type A
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useMascotLevelStore } from '@/stores/mascotLevel'
 import { type MascotBubbleVariant, type MascotBubbleMessage } from '@/composables/useMascotBubble'
-import { pickMascotVoice, useMascotSound } from '@/composables/useMascotSound'
+import { pickMascotVoice } from '@/composables/mascotVoiceLines'
 import { useMascotSpeech, useVoiceList, speechSupported } from '@/composables/useMascotSpeech'
 import { useMascotSpeaking } from '@/composables/useMascotSpeaking'
 import { useBudgetStore } from '@/stores/budget'
@@ -69,6 +70,9 @@ interface AppSettings {
   cyber_fox_size: string
   cyber_fox_mode: string
   cyber_fox_sound: string
+  mascot_speech_enabled: string
+  mascot_speech_engine: string
+  mascot_speech_model: string
   cyber_fox_lite: string
   cyber_fox_voice_vi: string
   cyber_fox_voice_en: string
@@ -104,6 +108,9 @@ const settings = ref<AppSettings>({
   cyber_fox_size: 'md',
   cyber_fox_mode: 'in-app',
   cyber_fox_sound: 'true',
+  mascot_speech_enabled: 'false',
+  mascot_speech_engine: '',
+  mascot_speech_model: '',
   cyber_fox_lite: 'auto',
   cyber_fox_voice_vi: '',
   cyber_fox_voice_en: '',
@@ -145,7 +152,16 @@ function demoLevelUp() {
     duration: 4000,
   }
   beginSpeaking(1600)
-  if (settings.value.cyber_fox_sound === 'true') playMascotSound('success')
+  if (settings.value.cyber_fox_sound === 'true' && speechSupported()) {
+    speakMascot(text, String(locale.value), {
+      voiceName:
+        locale.value === 'vi'
+          ? settings.value.cyber_fox_voice_vi
+          : settings.value.cyber_fox_voice_en,
+      rate: parseFloat(settings.value.cyber_fox_voice_rate) || 1,
+      pitch: parseFloat(settings.value.cyber_fox_voice_pitch) || 1.15,
+    })
+  }
 }
 
 const PET_REALMS = [
@@ -299,7 +315,6 @@ const PREVIEW_STATE_VARIANT: Record<CyberFoxPreviewState, MascotBubbleVariant> =
 // LOCAL slot (not the global mascot channel) so testing never disturbs the live
 // fox floating elsewhere in the app.
 const previewBubble = ref<MascotBubbleMessage | null>(null)
-const { play: playMascotSound } = useMascotSound()
 const { speak: speakMascot } = useMascotSpeech()
 const { beginSpeaking } = useMascotSpeaking()
 let previewBubbleSeq = 0
@@ -316,26 +331,21 @@ function selectPreviewState(state: CyberFoxPreviewState) {
     text,
     variant,
     duration: 4000,
-    voiceClip: line?.clip,
   }
   // Always demo the mouth flap so the preview reliably shows the effect on every
   // click — even when sound is muted, or when a previous voice is still playing
   // (both players drop overlapping requests). If sound is on and audio actually
   // starts, its own events re-arm the flag to the real clip/utterance length.
   beginSpeaking(1600)
-  if (settings.value.cyber_fox_sound === 'true') {
-    // Both languages speak via browser TTS; fall back to the mp3 clip only when
-    // Web Speech isn't available (and only English ships recorded clips).
-    if (speechSupported()) {
-      speakMascot(text, lang, {
-        voiceName:
-          lang === 'vi' ? settings.value.cyber_fox_voice_vi : settings.value.cyber_fox_voice_en,
-        rate: parseFloat(settings.value.cyber_fox_voice_rate) || 1,
-        pitch: parseFloat(settings.value.cyber_fox_voice_pitch) || 1.15,
-      })
-    } else if (lang !== 'vi') {
-      playMascotSound(variant, line?.clip)
-    }
+  if (settings.value.cyber_fox_sound === 'true' && speechSupported()) {
+    // Both languages speak via browser TTS; if Web Speech isn't available the
+    // preview just shows the mouth flap above without any voice.
+    speakMascot(text, lang, {
+      voiceName:
+        lang === 'vi' ? settings.value.cyber_fox_voice_vi : settings.value.cyber_fox_voice_en,
+      rate: parseFloat(settings.value.cyber_fox_voice_rate) || 1,
+      pitch: parseFloat(settings.value.cyber_fox_voice_pitch) || 1.15,
+    })
   }
 }
 
@@ -413,6 +423,18 @@ const SECTIONS = [
   { id: 'prompts', labelKey: 'settings.sections.prompts', icon: FileText },
 ] as const
 const activeSection = ref<(typeof SECTIONS)[number]['id']>('general')
+
+// Allow deep-linking to a specific section via `/settings?section=mcp` (used by
+// the "Settings" buttons on the MCP Servers screen's built-in cards).
+const route = useRoute()
+function applySectionFromRoute() {
+  const target = route.query.section
+  if (typeof target === 'string' && SECTIONS.some(s => s.id === target)) {
+    activeSection.value = target as (typeof SECTIONS)[number]['id']
+  }
+}
+applySectionFromRoute()
+watch(() => route.query.section, applySectionFromRoute)
 // --- Google accounts (Drive + Gmail via OAuth, multi-account) ---
 // The OAuth client (Client ID/Secret) is saved once and reused for every
 // account, so adding more accounts only needs a fresh consent — no re-entry.
@@ -1078,6 +1100,16 @@ watch(() => settings.value.language, (v) => {
 
             <div class="space-y-1.5">
               <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                {{ t('settings.mascot.agentSpeech') }}
+              </label>
+              <AppSelect size="sm" v-model="settings.mascot_speech_enabled" :options="cyberFoxSoundOptions" />
+              <p class="text-[11px] text-muted-foreground leading-relaxed">
+                {{ t('settings.mascot.agentSpeechHint') }}
+              </p>
+            </div>
+
+            <div class="space-y-1.5">
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
                 {{ t('settings.mascot.lite') }}
               </label>
               <AppSelect size="sm" v-model="settings.cyber_fox_lite" :options="cyberFoxLiteOptions" />
@@ -1381,6 +1413,8 @@ watch(() => settings.value.language, (v) => {
               <span>📁 project_info / file_tree</span>
               <span>🔀 git_status / git_diff</span>
               <span>🖥️ vps_list / vps_run</span>
+              <span>🧩 skills_list / read / create / update / delete</span>
+              <span>📏 rules_list / read / create / update / delete</span>
             </div>
           </div>
         </Card>

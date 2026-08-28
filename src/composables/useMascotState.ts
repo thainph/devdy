@@ -44,7 +44,13 @@ function sessionPhase(session: LiveSession): CyberFoxState {
   // Classify by the latest meaningful stream activity (skip logs/errors/results).
   for (let i = session.entries.length - 1; i >= 0; i--) {
     const e = session.entries[i]
-    if (e.kind === 'tool') return e.result ? 'thinking' : 'loading' // running a tool → loading
+    // A tool entry means the fox is actively working — whether the tool is still
+    // running (no result yet) or its result just landed in place. We deliberately
+    // do NOT flip to 'thinking' when a result attaches: the tool_result is folded
+    // back onto the SAME entry (streamEvents), so a multi-tool turn would otherwise
+    // flicker loading→thinking→loading between every tool call. Genuine reasoning
+    // is surfaced by dedicated 'thinking' entries below.
+    if (e.kind === 'tool') return 'loading'
     if (e.kind === 'text') return 'loading' // streaming text output
     if (e.kind === 'thinking') return 'thinking' // reasoning, no text yet
   }
@@ -101,18 +107,34 @@ export function useMascotState() {
     return size === 'sm' || size === 'lg' ? size : 'md'
   })
 
-  const steadyState = computed<CyberFoxState>(() => {
+  const steadyFocus = computed<{ state: CyberFoxState; session: LiveSession | null }>(() => {
     let best: CyberFoxState = 'idle'
+    let bestSession: LiveSession | null = null
     live.sessions.forEach((session) => {
       const phase = sessionPhase(session)
-      if (PHASE_PRIORITY[phase] > PHASE_PRIORITY[best]) best = phase
+      if (PHASE_PRIORITY[phase] > PHASE_PRIORITY[best]) {
+        best = phase
+        bestSession = session
+      }
     })
-    return best
+    return { state: best, session: bestSession }
   })
+  const steadyState = computed<CyberFoxState>(() => steadyFocus.value.state)
 
   // Transient success/error flash shown for a moment once a run finishes.
+  // Bounded so long-lived sessions with many runs don't leak memory: we only
+  // need to remember recent signals to avoid re-flashing the same completion.
+  const MAX_SHOWN_SIGNALS = 200
   const shownDoneSignals = new Set<string>()
+  const rememberSignal = (id: string) => {
+    shownDoneSignals.add(id)
+    if (shownDoneSignals.size > MAX_SHOWN_SIGNALS) {
+      const oldest = shownDoneSignals.values().next().value
+      if (oldest !== undefined) shownDoneSignals.delete(oldest)
+    }
+  }
   const transientState = ref<CyberFoxState | null>(null)
+  const transientRunId = ref<string | null>(null)
   let transientTimer: ReturnType<typeof setTimeout> | null = null
 
   const doneSignal = computed(() => {
@@ -127,12 +149,15 @@ export function useMascotState() {
     doneSignal,
     (signal) => {
       if (!signal || shownDoneSignals.has(signal)) return
-      shownDoneSignals.add(signal)
-      const status = signal.slice(signal.lastIndexOf(':') + 1)
+      rememberSignal(signal)
+      const sep = signal.lastIndexOf(':')
+      const status = signal.slice(sep + 1)
+      transientRunId.value = signal.slice(0, sep)
       transientState.value = status === 'failed' || status === 'cancelled' ? 'error' : 'success'
       if (transientTimer) clearTimeout(transientTimer)
       transientTimer = setTimeout(() => {
         transientState.value = null
+        transientRunId.value = null
         transientTimer = null
       }, 1400)
       // A run just finished → its token usage is now in the ledger; re-read the
@@ -145,6 +170,13 @@ export function useMascotState() {
   const displayState = computed<CyberFoxState>(() => {
     if (steadyState.value === 'permission') return 'permission'
     return transientState.value ?? steadyState.value
+  })
+
+  const activeSession = computed<LiveSession | null>(() => {
+    if (transientState.value && transientRunId.value) {
+      return live.sessions.get(transientRunId.value) ?? null
+    }
+    return steadyFocus.value.session
   })
 
   // One orbiting light stream per run that is actively running.
@@ -178,6 +210,7 @@ export function useMascotState() {
     voiceRate,
     voicePitch,
     displayState,
+    activeSession,
     runningCount,
     mascotLevel,
     evolutionRealm,

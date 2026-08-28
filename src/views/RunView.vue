@@ -735,6 +735,9 @@ function onSelectionMouseUp() {
   try { rect = sel.getRangeAt(0).getBoundingClientRect() } catch { rect = null }
   if (!rect || (rect.width === 0 && rect.height === 0)) { translateTrigger.value = null; return }
   translateTrigger.value = { text, x: rect.left, y: rect.bottom + 6 }
+  // Warm the translation sidecar now, while the user reaches for the button, so
+  // the first translation isn't paying Node/SDK cold-start.
+  void invoke('prewarm_translate').catch(() => {})
 }
 
 function openTranslate() {

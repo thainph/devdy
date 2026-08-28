@@ -36,6 +36,9 @@ export interface AppSettings {
   cyber_fox_size: string
   cyber_fox_mode: string
   cyber_fox_sound: string
+  mascot_speech_enabled: string
+  mascot_speech_engine: string
+  mascot_speech_model: string
   cyber_fox_lite: string
   cyber_fox_voice_vi: string
   cyber_fox_voice_en: string

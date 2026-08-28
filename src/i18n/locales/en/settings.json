@@ -50,6 +50,8 @@
     "modeHint": "Inside app keeps the fox within the Devdy window. Desktop pet floats it in a frameless, always-on-top window over your desktop.",
     "sound": "Sound",
     "soundHint": "Let the fox speak the bubble text aloud with your system's text-to-speech when it has something to say.",
+    "agentSpeech": "Agent speech",
+    "agentSpeechHint": "When enabled, important moments can wait for a lightweight AI call so the mascot comments on the actual session result. Off by default.",
     "voice": "Vietnamese voice",
     "voiceEn": "English voice",
     "voiceAuto": "Auto (first available)",

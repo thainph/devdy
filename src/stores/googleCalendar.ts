@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@/lib/tauri'
+import { translateText } from '@/lib/translate'
 import { ref, computed } from 'vue'
 import { startOfWeek, addDays, startOfMonth, endOfMonth, colorForIndex } from '@/lib/calendar'
 
@@ -227,15 +228,15 @@ export const useGoogleCalendarStore = defineStore('googleCalendar', () => {
     translating.value = true
     try {
       const next = { ...translations.value }
-      // Sequential: the backend supersedes in-flight translations, so parallel
-      // calls would cancel each other.
+      // Sequential: turns are pipelined FIFO on the shared warm sidecar; keeping
+      // this loop sequential keeps the numbered output easy to map back.
       for (const chunk of chunks) {
         const numbered = chunk
           .map((t, i) => `${i + 1}. ${t.replace(/\s+/g, ' ').trim()}`)
           .join('\n')
         let out: string
         try {
-          out = await invoke<string>('translate_text', { text: numbered, targetLang })
+          out = await translateText(numbered, targetLang)
         } catch {
           continue
         }

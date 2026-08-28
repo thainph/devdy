@@ -31,6 +31,7 @@ use commands::gitlab_accounts::{
     update_gitlab_account, validate_gitlab_account,
 };
 use commands::health::health_check;
+use commands::mascot_speak::{cancel_mascot_speak, mascot_speak, MascotSpeakState};
 use commands::mcp::{
     create_mcp_server, delete_mcp_server, export_mcp_server, get_mcp_server, import_mcp_server,
     list_mcp_servers, list_project_mcp_servers, set_project_mcp_servers, test_mcp_connection,
@@ -87,7 +88,7 @@ use commands::vps_servers::{
 };
 use commands::work_digest::get_work_digest;
 use commands::models::list_claude_models;
-use commands::translate::{cancel_translate, translate_text, TranslateState};
+use commands::translate::{cancel_translate, prewarm_translate, translate_text, TranslateState};
 use commands::work_summary::{cancel_work_summary, summarize_work_digest, WorkSummaryState};
 use remote::commands::{
     remote_clear_audit, remote_create_session_link, remote_disable, remote_enable,
@@ -157,6 +158,7 @@ pub fn run() {
             app.manage(FileTreeWatchers::default());
             app.manage(WorkSummaryState::default());
             app.manage(TranslateState::default());
+            app.manage(MascotSpeakState::default());
             app.manage(new_registry());
             app.manage(approvals);
             app.manage(broker_runs);
@@ -341,6 +343,9 @@ pub fn run() {
             cancel_work_summary,
             translate_text,
             cancel_translate,
+            prewarm_translate,
+            mascot_speak,
+            cancel_mascot_speak,
             list_claude_models,
             backfill_usage,
             reset_usage_stats,
@@ -387,10 +392,11 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
-            // On exit, kill every still-running sidecar (and its CLI child) so
-            // no orphaned `claude` / `codex` process lingers burning API tokens.
-            if let tauri::RunEvent::ExitRequested { .. } = event {
-                use tauri::Manager;
+            use tauri::Manager;
+
+            // Kill every still-running sidecar (and its CLI child) so no orphaned
+            // `claude` / `codex` process lingers in the background burning API tokens.
+            let kill_all_sidecars = |app_handle: &tauri::AppHandle| {
                 let registry = app_handle.state::<RunRegistry>().inner().clone();
                 tauri::async_runtime::block_on(async move {
                     let mut reg = registry.lock().await;
@@ -402,6 +408,32 @@ pub fn run() {
                     }
                     reg.clear();
                 });
+            };
+
+            match event {
+                // Closing the MAIN window quits the whole app. On macOS this would
+                // otherwise leave the process alive because the frameless,
+                // always-on-top mascot pet (and any quick-create / gantt / file
+                // pop-outs) keep running — so the hidden sidecars never get killed.
+                // Close every auxiliary window, stop all sidecars, then exit.
+                tauri::RunEvent::WindowEvent {
+                    label,
+                    event: tauri::WindowEvent::CloseRequested { .. },
+                    ..
+                } if label == "main" => {
+                    for (lbl, win) in app_handle.webview_windows() {
+                        if lbl != "main" {
+                            let _ = win.close();
+                        }
+                    }
+                    kill_all_sidecars(app_handle);
+                    app_handle.exit(0);
+                }
+                // Quit via Cmd+Q / app menu: same sidecar cleanup.
+                tauri::RunEvent::ExitRequested { .. } => {
+                    kill_all_sidecars(app_handle);
+                }
+                _ => {}
             }
         });
 }

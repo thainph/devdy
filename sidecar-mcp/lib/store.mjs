@@ -6,8 +6,8 @@
 
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, writeFileSync, readFileSync, rmSync, renameSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { mkdirSync, writeFileSync, readFileSync, rmSync, renameSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { dirname, join, resolve, relative, sep } from 'node:path';
 
 let handle = null;
 
@@ -330,6 +330,101 @@ export function deleteSkill(id) {
   db().prepare('DELETE FROM project_skills WHERE skill_id = ?').run(id);
   db().prepare('DELETE FROM skills WHERE id = ?').run(id);
   return { name: row.name, applied };
+}
+
+// ---- Skill reference files -------------------------------------------------
+//
+// A skill folder (<app_data>/skills/<name>/) may hold more than SKILL.md:
+// references/, scripts/, assets/, templates… These helpers let MCP list/read/
+// write/delete those files. Every path is resolved and confined to the skill
+// folder — traversal outside it (../, absolute paths) is rejected. Same
+// source-only caveat as skills_update: applied projects must re-apply to sync.
+
+function skillRow(id) {
+  if (!id) throw new Error('skill id is required');
+  const row = db().prepare('SELECT id, name, source_path FROM skills WHERE id = ?').get(id);
+  if (!row) throw new Error(`skill not found: ${id}`);
+  return row;
+}
+
+/** Resolve a relative reference path safely inside the skill folder. */
+function resolveSkillFile(sourcePath, relPath) {
+  const rel = String(relPath || '').trim();
+  if (!rel) throw new Error('file path is required');
+  if (rel.startsWith('/') || /^[A-Za-z]:[\\/]/.test(rel)) {
+    throw new Error('file path must be relative to the skill folder');
+  }
+  const base = resolve(sourcePath);
+  const target = resolve(base, rel);
+  if (target !== base && !target.startsWith(base + sep)) {
+    throw new Error('file path escapes the skill folder');
+  }
+  return { base, target };
+}
+
+export function listSkillFiles(id) {
+  const row = skillRow(id);
+  const base = resolve(row.source_path);
+  const files = [];
+  const walk = (dir) => {
+    let entries = [];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile()) {
+        let size = 0;
+        try {
+          size = statSync(full).size;
+        } catch {
+          /* ignore */
+        }
+        files.push({ path: relative(base, full), size });
+      }
+    }
+  };
+  walk(base);
+  files.sort((a, b) => a.path.localeCompare(b.path));
+  return { skill: { id: row.id, name: row.name, source_path: row.source_path }, files };
+}
+
+export function readSkillFile({ id, path: relPath } = {}) {
+  const row = skillRow(id);
+  const { target } = resolveSkillFile(row.source_path, relPath);
+  if (!existsSync(target) || !statSync(target).isFile()) {
+    throw new Error(`file not found in skill '${row.name}': ${relPath}`);
+  }
+  return { skill: row.name, path: relPath, content: readFileSync(target, 'utf8') };
+}
+
+export function writeSkillFile({ id, path: relPath, content = '' } = {}) {
+  const row = skillRow(id);
+  const { target } = resolveSkillFile(row.source_path, relPath);
+  if (existsSync(target) && statSync(target).isDirectory()) {
+    throw new Error(`path is a directory, not a file: ${relPath}`);
+  }
+  const created = !existsSync(target);
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, String(content));
+  db().prepare('UPDATE skills SET updated_at = ? WHERE id = ?').run(nowIso(), id);
+  return { skill: row.name, path: relPath, created, applied: appliedProjects('skill', id) };
+}
+
+export function deleteSkillFile({ id, path: relPath } = {}) {
+  const row = skillRow(id);
+  const { base, target } = resolveSkillFile(row.source_path, relPath);
+  if (target === base) throw new Error('cannot delete the skill root folder');
+  if (target === join(base, 'SKILL.md')) {
+    throw new Error('cannot delete SKILL.md — a skill must keep its definition (use skills_update to edit it)');
+  }
+  if (!existsSync(target)) throw new Error(`file not found in skill '${row.name}': ${relPath}`);
+  rmSync(target, { recursive: true, force: true });
+  db().prepare('UPDATE skills SET updated_at = ? WHERE id = ?').run(nowIso(), id);
+  return { skill: row.name, path: relPath, applied: appliedProjects('skill', id) };
 }
 
 // ---- Rules -----------------------------------------------------------------

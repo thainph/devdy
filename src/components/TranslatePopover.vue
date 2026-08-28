@@ -7,6 +7,7 @@
 import { ref, onMounted, onUnmounted, computed, nextTick, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Languages, Copy, Check, X, Loader2, RefreshCw } from 'lucide-vue-next'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from '@/lib/tauri'
 import { useMarkdown } from '@/lib/markdown'
 
@@ -33,10 +34,14 @@ const { renderText, loadMarkdown } = useMarkdown()
 
 const rootEl = ref<HTMLElement | null>(null)
 const lang = ref(props.initialLang || 'vi')
-const phase = ref<'loading' | 'done' | 'error'>('loading')
+const phase = ref<'loading' | 'streaming' | 'done' | 'error'>('loading')
 const result = ref('')
 const errorMsg = ref('')
 const copied = ref(false)
+
+// The turn id of the in-flight translation; streamed events tagged with a
+// different id belong to a superseded turn and are ignored.
+let currentTurn = -1
 
 // Keep the card inside the viewport: clamp to the right/bottom edges.
 const POPOVER_WIDTH = 380
@@ -48,21 +53,42 @@ const style = computed(() => {
 
 const renderedHtml = computed(() => (result.value ? renderText(result.value) : ''))
 
+// Streamed translation events (shared channel; filtered by turn id).
+const unlisteners: UnlistenFn[] = []
+
 async function runTranslate() {
   phase.value = 'loading'
   errorMsg.value = ''
   result.value = ''
+  currentTurn = -1
   try {
-    const out = await invoke<string>('translate_text', {
+    const turn = await invoke<number>('translate_text', {
       text: props.text,
       targetLang: lang.value,
     })
-    result.value = out
-    phase.value = 'done'
+    currentTurn = turn
   } catch (e) {
     errorMsg.value = String(e)
     phase.value = 'error'
   }
+}
+
+function onChunk(turn: number, delta: string) {
+  if (turn !== currentTurn) return
+  result.value += delta
+  if (phase.value === 'loading') phase.value = 'streaming'
+}
+
+function onDone(turn: number, text: string) {
+  if (turn !== currentTurn) return
+  result.value = text
+  phase.value = 'done'
+}
+
+function onError(turn: number, error: string) {
+  if (turn !== currentTurn) return
+  errorMsg.value = error
+  phase.value = 'error'
 }
 
 function setLang(next: string) {
@@ -90,8 +116,20 @@ function onDocMouseDown(e: MouseEvent) {
   if (rootEl.value && !rootEl.value.contains(e.target as Node)) emit('close')
 }
 
-onMounted(() => {
+onMounted(async () => {
   loadMarkdown()
+  // Subscribe before kicking off the turn so no early chunk is missed.
+  unlisteners.push(
+    await listen<{ turn: number; delta: string }>('translate:chunk', (e) =>
+      onChunk(e.payload.turn, e.payload.delta),
+    ),
+    await listen<{ turn: number; text: string }>('translate:done', (e) =>
+      onDone(e.payload.turn, e.payload.text),
+    ),
+    await listen<{ turn: number; error: string }>('translate:error', (e) =>
+      onError(e.payload.turn, e.payload.error),
+    ),
+  )
   runTranslate()
   nextTick(() => {
     document.addEventListener('keydown', onKeydown, true)
@@ -103,7 +141,8 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener('keydown', onKeydown, true)
   document.removeEventListener('mousedown', onDocMouseDown, true)
-  // Best-effort: kill any still-running sidecar for this popover.
+  for (const un of unlisteners) un()
+  // Stop the in-flight turn but keep the warm sidecar hot for the next selection.
   void invoke('cancel_translate').catch(() => {})
 })
 
