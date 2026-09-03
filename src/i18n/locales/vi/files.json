@@ -8,6 +8,10 @@
     "copyFilePath": "Sao chép đường dẫn tệp",
     "openInDefaultApp": "Mở bằng ứng dụng mặc định",
     "reloadFromDisk": "Tải lại từ ổ đĩa",
+    "moreActions": "Thao tác khác",
+    "zoomIn": "Phóng to",
+    "zoomOut": "Thu nhỏ",
+    "resetZoom": "Đặt lại thu phóng",
     "copied": "Đã sao chép!",
     "copyContent": "Sao chép nội dung",
     "editFile": "Sửa tệp",
@@ -49,6 +53,8 @@
     "openInVscode": "Mở bằng VSCode",
     "openInChrome": "Mở bằng Chrome",
     "mentionInChat": "Nhắc trong chat",
+    "compareWith": "So sánh với…",
+    "compareWithPending": "So sánh với \"{name}\"",
     "fileNameLabel": "Tên tệp",
     "folderNameLabel": "Tên thư mục",
     "fileNamePlaceholder": "vd. index.ts",
@@ -65,5 +71,16 @@
     "toastPathCopied": "Đã sao chép đường dẫn",
     "toastRelativePathCopied": "Đã sao chép đường dẫn tương đối",
     "toastFailedCopyPath": "Sao chép đường dẫn thất bại"
+  },
+  "compare": {
+    "title": "So sánh ảnh",
+    "compareButton": "So sánh với ảnh khác",
+    "pendingBanner": "Đang so sánh \"{name}\" — chọn ảnh thứ hai",
+    "chooseFromList": "Chọn từ danh sách",
+    "pickSecond": "Chọn ảnh thứ hai",
+    "searchPlaceholder": "Tìm ảnh…",
+    "noImages": "Không tìm thấy ảnh",
+    "swap": "Đổi bên",
+    "hint": "Ctrl/Cmd + cuộn để zoom · kéo để di chuyển · double-click để bật/tắt zoom — hai bên đồng bộ"
   }
 }

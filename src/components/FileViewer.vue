@@ -7,17 +7,18 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  FileCode2, AArrowDown, AArrowUp, ExternalLink, Copy, FileQuestion, FileWarning, FolderOpen, RotateCw, Code2, ClipboardCopy, Check, Languages, Pencil, Save, X, Search, ChevronUp, ChevronDown,
+  FileCode2, AArrowDown, AArrowUp, ExternalLink, Copy, FileQuestion, FileWarning, FolderOpen, RotateCw, Code2, ClipboardCopy, Check, Languages, Pencil, Save, X, Search, ChevronUp, ChevronDown, ZoomIn, ZoomOut, MoreHorizontal, Columns2,
 } from 'lucide-vue-next'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener'
 import type MarkdownIt from 'markdown-it'
-import { Button } from '@/components/ui'
+import { Button, DropdownMenu, DropdownItem } from '@/components/ui'
 import TranslatePopover from '@/components/TranslatePopover.vue'
 import { invoke } from '@/lib/tauri'
 import { useRunsStore } from '@/stores/runs'
 import { useProjectsStore } from '@/stores/projects'
 import { useAppSettingsStore } from '@/stores/appSettings'
+import { useImageCompareStore } from '@/stores/imageCompare'
 import { applyMermaidFence, vMermaid } from '@/lib/mermaid'
 import { vCopyCode } from '@/lib/copyCode'
 import { matchProjectFile, parseLineRef, decorateFileLinks } from '@/lib/fileLinks'
@@ -26,8 +27,12 @@ const props = withDefaults(defineProps<{
   projectPath: string
   path: string
   line?: number | null
+  /** Enables the "Compare" button on images (only where a compare host exists,
+   *  i.e. the main window — not the bare pop-out viewer). */
+  canCompare?: boolean
 }>(), {
   line: null,
+  canCompare: false,
 })
 
 const emit = defineEmits<{
@@ -41,6 +46,13 @@ const { t } = useI18n()
 const runsStore = useRunsStore()
 const projectsStore = useProjectsStore()
 const appSettings = useAppSettingsStore()
+const imageCompare = useImageCompareStore()
+
+// Start a side-by-side comparison from this image; the compare host then prompts
+// for the second image (via picker or a right-click in the file tree).
+function startCompare() {
+  imageCompare.selectFirst(props.projectPath, curPath.value)
+}
 
 // ── File-type classification ──────────────────────────────────────────────
 type FileKind = 'text' | 'image' | 'video' | 'audio' | 'pdf' | 'other'
@@ -81,6 +93,76 @@ const kind = ref<FileKind>('text')
 const assetUrl = ref('')
 const absPath = ref('')
 const bodyEl = ref<HTMLElement | null>(null)
+
+// ── Image zoom / pan ─────────────────────────────────────────────────────────
+// The image preview supports zooming (buttons or Ctrl/Cmd + wheel) and dragging
+// to pan when zoomed in. State resets whenever a new file loads.
+const ZOOM_MIN = 0.1
+const ZOOM_MAX = 8
+const zoom = ref(1)
+const panX = ref(0)
+const panY = ref(0)
+const panning = ref(false)
+let panStartX = 0
+let panStartY = 0
+let panOriginX = 0
+let panOriginY = 0
+
+const imageTransform = computed(() => ({
+  transform: `translate(${panX.value}px, ${panY.value}px) scale(${zoom.value})`,
+  cursor: zoom.value > 1 ? (panning.value ? 'grabbing' : 'grab') : 'default',
+}))
+
+function resetZoom() {
+  zoom.value = 1
+  panX.value = 0
+  panY.value = 0
+}
+
+function clampZoom(v: number): number {
+  return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, v))
+}
+
+function setZoom(next: number) {
+  const z = clampZoom(next)
+  if (z === zoom.value) return
+  // Recenter pan when zooming back to fit so the image doesn't drift off-screen.
+  if (z <= 1) { panX.value = 0; panY.value = 0 }
+  zoom.value = z
+}
+
+function zoomIn() { setZoom(zoom.value * 1.25) }
+function zoomOut() { setZoom(zoom.value / 1.25) }
+
+function onImageWheel(e: WheelEvent) {
+  if (!(e.ctrlKey || e.metaKey)) return
+  e.preventDefault()
+  setZoom(zoom.value * (e.deltaY < 0 ? 1.1 : 1 / 1.1))
+}
+
+function onPanStart(e: PointerEvent) {
+  if (zoom.value <= 1 || e.button !== 0) return
+  e.preventDefault()
+  panning.value = true
+  panStartX = e.clientX
+  panStartY = e.clientY
+  panOriginX = panX.value
+  panOriginY = panY.value
+  ;(e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId)
+}
+
+function onPanMove(e: PointerEvent) {
+  if (!panning.value) return
+  panX.value = panOriginX + (e.clientX - panStartX)
+  panY.value = panOriginY + (e.clientY - panStartY)
+}
+
+function onPanEnd(e: PointerEvent) {
+  if (!panning.value) return
+  panning.value = false
+  ;(e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId)
+}
+
 // Scroll container wrapping both preview and raw views — selection detection for
 // the "Dịch" translate trigger is scoped to this element.
 const viewerBodyEl = ref<HTMLElement | null>(null)
@@ -262,6 +344,13 @@ function scrollToLine() {
   el?.scrollIntoView({ block: 'center' })
 }
 
+// The asset:// protocol serves media by path, so the WebView caches it by URL
+// and would re-show a stale image after the file changes on disk. Append a
+// cache-busting query param so every (re)load forces a fresh fetch.
+function mediaUrl(abs: string): string {
+  return `${convertFileSrc(abs)}?v=${Date.now()}`
+}
+
 async function load() {
   const projPath = props.projectPath
   const path = props.path
@@ -278,13 +367,14 @@ async function load() {
   truncated.value = false
   copied.value = false
   assetUrl.value = ''
+  resetZoom()
   editing.value = false
   saveError.value = null
   const k = fileKind(path)
   kind.value = k
 
   if (k !== 'text') {
-    if (k !== 'other') assetUrl.value = convertFileSrc(abs)
+    if (k !== 'other') assetUrl.value = mediaUrl(abs)
     loading.value = false
     return
   }
@@ -342,7 +432,7 @@ async function reload() {
   if (!projPath || !path || reloading.value) return
   if (kind.value !== 'text') {
     // Re-resolve the asset URL so updated media re-fetches from disk.
-    if (kind.value !== 'other') assetUrl.value = convertFileSrc(absPath.value)
+    if (kind.value !== 'other') assetUrl.value = mediaUrl(absPath.value)
     return
   }
   reloading.value = true
@@ -611,6 +701,40 @@ defineExpose({ onRevealInFolder, onOpenInApp })
           <AArrowUp class="h-3.5 w-3.5" :stroke-width="1.75" />
         </button>
       </div>
+      <!-- Zoom controls (images) — mirrors the font-size group for consistency -->
+      <div v-if="kind === 'image'" class="flex items-center rounded-md border border-border overflow-hidden shrink-0">
+        <button
+          class="flex items-center justify-center h-6 w-6 text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
+          :title="t('files.viewer.zoomOut')"
+          :disabled="zoom <= ZOOM_MIN"
+          @click="zoomOut"
+        >
+          <ZoomOut class="h-3.5 w-3.5" :stroke-width="1.75" />
+        </button>
+        <button
+          class="px-1.5 h-6 text-[10px] tabular-nums text-foreground/60 hover:text-foreground border-x border-border select-none cursor-pointer min-w-[3rem]"
+          :title="t('files.viewer.resetZoom')"
+          @click="resetZoom"
+        >{{ Math.round(zoom * 100) }}%</button>
+        <button
+          class="flex items-center justify-center h-6 w-6 text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
+          :title="t('files.viewer.zoomIn')"
+          :disabled="zoom >= ZOOM_MAX"
+          @click="zoomIn"
+        >
+          <ZoomIn class="h-3.5 w-3.5" :stroke-width="1.75" />
+        </button>
+      </div>
+      <!-- Compare this image with another, side by side -->
+      <button
+        v-if="kind === 'image' && canCompare"
+        class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
+        :class="{ 'bg-primary/15 text-primary': imageCompare.pendingFirst === curPath }"
+        :title="t('files.compare.compareButton')"
+        @click="startCompare"
+      >
+        <Columns2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+      </button>
       <!-- Toggle the in-page search bar -->
       <button
         v-if="content"
@@ -621,24 +745,6 @@ defineExpose({ onRevealInFolder, onOpenInApp })
       >
         <Search class="h-3.5 w-3.5" :stroke-width="1.75" />
       </button>
-      <!-- Copy the open file's path to the clipboard -->
-      <button
-        class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
-        :title="pathCopied ? t('files.viewer.pathCopied') : t('files.viewer.copyFilePath')"
-        @click="copyPath"
-      >
-        <Check v-if="pathCopied" class="h-3.5 w-3.5 text-primary" :stroke-width="1.75" />
-        <ClipboardCopy v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-      </button>
-      <!-- Open in the OS default app — most useful for media / office files -->
-      <button
-        v-if="kind !== 'text'"
-        class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
-        :title="t('files.viewer.openInDefaultApp')"
-        @click="onOpenInApp"
-      >
-        <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
-      </button>
       <!-- Reload the file's latest content from disk -->
       <button
         v-if="kind === 'text'"
@@ -648,15 +754,6 @@ defineExpose({ onRevealInFolder, onOpenInApp })
         @click="reload"
       >
         <RotateCw class="h-3.5 w-3.5" :class="{ 'animate-spin': reloading }" :stroke-width="1.75" />
-      </button>
-      <button
-        v-if="content"
-        class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
-        :title="copied ? t('files.viewer.copied') : t('files.viewer.copyContent')"
-        @click="copyContent"
-      >
-        <Check v-if="copied" class="h-3.5 w-3.5 text-primary" :stroke-width="1.75" />
-        <Copy v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
       </button>
       <!-- Edit toggle (text / markdown files only) -->
       <button
@@ -686,6 +783,38 @@ defineExpose({ onRevealInFolder, onOpenInApp })
           <X class="h-3.5 w-3.5" :stroke-width="1.75" />
         </button>
       </template>
+      <!-- Overflow menu: secondary file actions, labelled with text to avoid
+           the ambiguity of look-alike copy / open icons -->
+      <div class="h-4 w-px bg-border shrink-0" aria-hidden="true" />
+      <DropdownMenu align="right">
+        <template #trigger>
+          <button
+            class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
+            :title="t('files.viewer.moreActions')"
+          >
+            <MoreHorizontal class="h-4 w-4" :stroke-width="1.75" />
+          </button>
+        </template>
+        <DropdownItem v-if="content" @click="copyContent">
+          <Check v-if="copied" class="h-3.5 w-3.5 text-primary shrink-0" :stroke-width="1.75" />
+          <Copy v-else class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+          {{ copied ? t('files.viewer.copied') : t('files.viewer.copyContent') }}
+        </DropdownItem>
+        <DropdownItem @click="copyPath">
+          <Check v-if="pathCopied" class="h-3.5 w-3.5 text-primary shrink-0" :stroke-width="1.75" />
+          <ClipboardCopy v-else class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+          {{ pathCopied ? t('files.viewer.pathCopied') : t('files.viewer.copyFilePath') }}
+        </DropdownItem>
+        <div class="my-1 h-px bg-border" aria-hidden="true" />
+        <DropdownItem @click="onOpenInApp">
+          <ExternalLink class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+          {{ t('files.viewer.openInDefaultApp') }}
+        </DropdownItem>
+        <DropdownItem @click="onRevealInFolder">
+          <FolderOpen class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+          {{ t('files.viewer.revealInFolder') }}
+        </DropdownItem>
+      </DropdownMenu>
       <!-- Host-supplied chrome controls (full-screen, pop-out, close) -->
       <slot name="actions" />
     </div>
@@ -753,8 +882,24 @@ defineExpose({ onRevealInFolder, onOpenInApp })
         </div>
       </div>
       <!-- Image -->
-      <div v-else-if="kind === 'image'" class="flex items-center justify-center p-4 bg-foreground/5 min-h-[200px]">
-        <img :src="assetUrl" :alt="curPath" class="max-w-full max-h-full object-contain" />
+      <div
+        v-else-if="kind === 'image'"
+        class="relative flex items-center justify-center p-4 bg-foreground/5 min-h-[200px] max-h-[85vh] overflow-hidden select-none"
+        @wheel="onImageWheel"
+      >
+        <img
+          :src="assetUrl"
+          :alt="curPath"
+          class="max-w-full max-h-full object-contain will-change-transform"
+          :class="{ 'transition-transform duration-75': !panning }"
+          :style="imageTransform"
+          draggable="false"
+          @pointerdown="onPanStart"
+          @pointermove="onPanMove"
+          @pointerup="onPanEnd"
+          @pointercancel="onPanEnd"
+          @dblclick="zoom > 1 ? resetZoom() : zoomIn()"
+        />
       </div>
       <!-- Video -->
       <div v-else-if="kind === 'video'" class="flex items-center justify-center bg-black">
