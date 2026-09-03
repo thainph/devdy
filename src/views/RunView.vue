@@ -3286,6 +3286,7 @@ function handleRefInput(val: string) {
         :project-path="project?.path || ''"
         :path="fileViewerPath"
         :line="fileViewerLine"
+        can-compare
         @open-file="openFileViewer"
         @open-url="onOpenUrl"
       >

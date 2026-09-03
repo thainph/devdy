@@ -20,6 +20,7 @@ import FileViewerWindow from '@/views/FileViewerWindow.vue'
 import PermissionWindow from '@/views/PermissionWindow.vue'
 import ThemeDecorations from '@/components/ThemeDecorations.vue'
 import { ConfirmModal, PromptModal, ToastHost } from '@/components/ui'
+import ImageCompareHost from '@/components/ImageCompareHost.vue'
 import CyberFoxHost from '@/components/CyberFoxHost.vue'
 import MascotWindow from '@/views/MascotWindow.vue'
 import QuickCreateWindow from '@/views/QuickCreateWindow.vue'
@@ -314,6 +315,9 @@ onMounted(async () => {
 
     <!-- App-wide toast host (see useToast) -->
     <ToastHost />
+
+    <!-- App-wide side-by-side image comparison (banner + picker + compare view) -->
+    <ImageCompareHost />
 
     <!-- DY mascot: app-wide operator. Host picks in-app floating vs desktop pet. -->
     <CyberFoxHost />
