@@ -132,7 +132,7 @@ pub async fn forward_loop(
                 if is_done {
                     // Refresh subscription usage badges after every turn (the
                     // sidecar has captured the turn's /usage by now). Best-effort.
-                    send_plan_usage(&db, &session, &room_id, &out, &seq).await;
+                    send_plan_usage(&db, &session, &room_id, &out, &seq, &bound_run_id).await;
                     // Refresh the (scoped) run list once when the bound run finishes.
                     if !done_once {
                         done_once = true;
@@ -325,12 +325,34 @@ pub async fn send_plan_usage(
     room_id: &str,
     out: &mpsc::UnboundedSender<Envelope>,
     seq: &SeqCounter,
+    bound_run_id: &str,
 ) {
-    let claude = crate::commands::stats::budget_status(db, "plan_usage").await;
+    // The controller mirrors ONE account: the one the bound run is actually
+    // using (its snapshotted account, else the current default). Show that
+    // account's usage + label so the controller knows which account it reflects.
+    let account_id = match crate::commands::claude_accounts::run_account_id(db, bound_run_id).await {
+        Some(id) => Some(id),
+        None => crate::commands::claude_accounts::default_account_id(db).await,
+    };
+    let claude_key =
+        crate::commands::stats::claude_plan_usage_key(account_id.as_deref());
+    let claude = crate::commands::stats::budget_status(db, &claude_key).await;
     let codex = crate::commands::stats::budget_status(db, "plan_usage_codex").await;
+    let claude_account = match account_id.as_deref() {
+        Some(id) => sqlx::query_scalar::<_, String>(
+            "SELECT label FROM claude_accounts WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten(),
+        None => None,
+    };
     let payload = StreamPayload::PlanUsage {
         claude: serde_json::to_value(&claude).ok(),
         codex: serde_json::to_value(&codex).ok(),
+        claude_account,
     };
     if let Some(env) = seal_stream(session, room_id, &payload, seq.next()) {
         let _ = out.send(env);

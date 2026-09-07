@@ -32,10 +32,18 @@ pub fn start(db: Pool<Sqlite>, app: AppHandle) {
         return;
     };
     let home = PathBuf::from(home);
-    let roots = [
+    let mut roots = vec![
         home.join(".claude").join("projects"),
         home.join(".codex").join("sessions"),
     ];
+    // Also watch every managed Claude account's transcript store, so external
+    // CLI/VS Code sessions run under a multi-account profile mirror in live too
+    // (AC-011). Accounts added later are still picked up by the on-open reconcile.
+    for cfg in
+        tauri::async_runtime::block_on(crate::commands::claude_accounts::account_config_dirs(&db))
+    {
+        roots.push(PathBuf::from(cfg).join("projects"));
+    }
     if roots.iter().all(|r| !r.is_dir()) {
         return;
     }

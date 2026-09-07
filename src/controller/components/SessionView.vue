@@ -53,6 +53,8 @@ const props = defineProps<{
   /** Subscription plan-usage badges (mirror of the desktop BudgetBadge). */
   claudeBudget: PlanBudget | null
   codexBudget: PlanBudget | null
+  /** Label of the Claude account the bound run is using (null = global/legacy). */
+  claudeAccount: string | null
 }>()
 
 const emit = defineEmits<{
@@ -200,7 +202,7 @@ onUnmounted(() => window.removeEventListener('pointerup', onWindowPointerUp))
 
     <!-- Subscription usage (Claude + Codex), mirror of the desktop BudgetBadge.
          Kept above the run title so plan utilization is the first thing seen. -->
-    <SessionPlanUsageBar :claude="claudeBudget" :codex="codexBudget" />
+    <SessionPlanUsageBar :claude="claudeBudget" :codex="codexBudget" :claude-account="claudeAccount" />
 
     <!-- Run title -->
     <div class="shrink-0 px-3 py-1.5 border-b border-border/60">

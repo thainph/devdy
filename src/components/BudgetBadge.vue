@@ -5,10 +5,12 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { AlertTriangle, RefreshCw } from 'lucide-vue-next'
 import { useBudgetStore } from '@/stores/budget'
 import { useAppSettingsStore } from '@/stores/appSettings'
+import { useClaudeAccountsStore, type ClaudeAccount } from '@/stores/claudeAccounts'
 
 const { t } = useI18n()
 const budget = useBudgetStore()
 const app = useAppSettingsStore()
+const claudeAccounts = useClaudeAccountsStore()
 const now = ref(Date.now())
 
 const PERIOD_LABEL = computed<Record<string, string>>(() => ({
@@ -18,7 +20,10 @@ const PERIOD_LABEL = computed<Record<string, string>>(() => ({
 
 /** A single provider's verdict flattened for the row renderer. */
 interface ProviderView {
-  key: 'claude' | 'codex'
+  /** Unique row id (e.g. `claude:<accountId>` or `codex`). */
+  key: string
+  /** Provider family, drives copy/hints (a Claude account vs Codex). */
+  kind: 'claude' | 'codex'
   label: string
   source: 'plan' | 'disabled'
   hasPlan: boolean
@@ -40,6 +45,7 @@ interface ProviderView {
 
 const claudeView = computed<ProviderView>(() => ({
   key: 'claude',
+  kind: 'claude',
   label: 'Claude',
   source: budget.source,
   hasPlan: budget.hasPlan,
@@ -61,6 +67,7 @@ const claudeView = computed<ProviderView>(() => ({
 
 const codexView = computed<ProviderView>(() => ({
   key: 'codex',
+  kind: 'codex',
   label: 'Codex',
   source: budget.codexSource,
   hasPlan: budget.codexHasPlan,
@@ -80,7 +87,42 @@ const codexView = computed<ProviderView>(() => ({
   onRefresh: () => budget.refreshCodexPlanUsage({ reason: 'manual', force: true }),
 }))
 
-const views = computed<ProviderView[]>(() => [claudeView.value, codexView.value])
+/** Build a badge row from one managed Claude account's own usage snapshot. */
+function claudeAccountView(acc: ClaudeAccount): ProviderView {
+  const b = claudeAccounts.budgets[acc.id]
+  const source = b?.source ?? 'disabled'
+  const refreshError = claudeAccounts.usageErrors[acc.id] ?? null
+  return {
+    key: `claude:${acc.id}`,
+    kind: 'claude',
+    label: acc.label,
+    source,
+    hasPlan: source === 'plan',
+    enabled: source !== 'disabled',
+    period: b?.period ?? 'week',
+    percent: b?.percent ?? 0,
+    isWarning: b?.is_warning ?? false,
+    isOver: b?.is_over ?? false,
+    reset: b?.reset ?? null,
+    capturedAt: b?.captured_at ?? null,
+    isStale: b?.is_stale ?? false,
+    rolledOver: b?.rolled_over ?? false,
+    hasStatus: b != null,
+    refreshing: claudeAccounts.refreshingUsage[acc.id] ?? false,
+    refreshError,
+    refreshUnavailable: refreshError?.includes('without a fresh usage snapshot') ?? false,
+    onRefresh: () => claudeAccounts.refreshUsage(acc.id),
+  }
+}
+
+// One Claude row per managed account; fall back to the single global Claude row
+// when no accounts are configured (legacy `plan_usage` snapshot). Codex last.
+const views = computed<ProviderView[]>(() => {
+  const claudeRows = claudeAccounts.accounts.length > 0
+    ? claudeAccounts.accounts.map(claudeAccountView)
+    : [claudeView.value]
+  return [...claudeRows, codexView.value]
+})
 
 function resetText(v: ProviderView): string {
   if (!v.reset) return v.period === '5h' && !v.hasPlan ? t('misc.budget.rolling5h') : ''
@@ -188,8 +230,8 @@ function heading(v: ProviderView): string {
 }
 
 function detail(v: ProviderView): string {
-  const updatesHint = v.key === 'codex' ? t('misc.budget.updatesCodex') : t('misc.budget.updatesClaude')
-  const fetchingHint = v.key === 'codex' ? t('misc.budget.fetchingCodex') : t('misc.budget.fetchingClaude')
+  const updatesHint = v.kind === 'codex' ? t('misc.budget.updatesCodex') : t('misc.budget.updatesClaude')
+  const fetchingHint = v.kind === 'codex' ? t('misc.budget.fetchingCodex') : t('misc.budget.fetchingClaude')
   const noData = v.refreshError && !v.refreshUnavailable
     ? t('misc.budget.refreshFailedReason', { error: v.refreshError })
     : t('misc.budget.noPlanCaptured')
@@ -226,7 +268,10 @@ let unlistenBudgetStatus: UnlistenFn | null = null
 onMounted(async () => {
   await app.ensureLoaded()
   now.value = Date.now()
-  await Promise.all([budget.refresh(), budget.refreshCodex()])
+  // Load managed Claude accounts + each account's cached usage snapshot so the
+  // badge can render one row per account. Live per-account probes happen on
+  // demand via each row's refresh button (no auto fan-out on startup).
+  await Promise.all([budget.refresh(), budget.refreshCodex(), claudeAccounts.fetch()])
   // The only automatic probes: one per provider on startup. Afterwards the % is
   // kept fresh by the piggybacked capture on every run (Claude /usage, Codex
   // rate-limits) or by the manual refresh button — no background polling.
@@ -237,21 +282,35 @@ onMounted(async () => {
   timer = setInterval(() => {
     budget.refresh()
     budget.refreshCodex()
+    // Re-read each managed account's snapshot (local DB reads only) so per-run
+    // captures and window rollovers surface without a manual refresh.
+    void refreshAccountBudgets()
   }, 60_000)
   clockTimer = setInterval(() => { now.value = Date.now() }, 30_000)
   // Immediately when a sidecar / watcher persists a fresh snapshot during a run.
   unlistenPlanUsage = await listen<{ provider?: string }>('plan_usage_updated', (e) => {
     if (e.payload?.provider === 'codex') {
       if (!budget.refreshingCodexPlan) budget.refreshCodex()
-    } else if (!budget.refreshingPlan) {
-      budget.refresh()
+    } else {
+      if (!budget.refreshingPlan) budget.refresh()
+      void refreshAccountBudgets()
     }
   })
   unlistenBudgetStatus = await listen('budget_status_updated', () => {
     budget.refresh()
     budget.refreshCodex()
+    void refreshAccountBudgets()
   })
 })
+
+/** Re-read every managed account's cached usage snapshot (skips rows mid-probe). */
+async function refreshAccountBudgets() {
+  await Promise.all(
+    claudeAccounts.accounts
+      .filter(a => !claudeAccounts.refreshingUsage[a.id])
+      .map(a => claudeAccounts.fetchBudget(a.id)),
+  )
+}
 
 onUnmounted(() => {
   if (timer) clearInterval(timer)
@@ -280,8 +339,8 @@ onUnmounted(() => {
         :stroke-width="2.5"
       />
 
-      <!-- provider label -->
-      <span class="shrink-0 font-medium opacity-70">{{ v.label }}</span>
+      <!-- provider label (account name for Claude rows) -->
+      <span class="max-w-[80px] shrink-0 truncate font-medium opacity-70">{{ v.label }}</span>
 
       <!-- meter: percent + bar when a real usage % exists -->
       <template v-if="hasMeter(v)">

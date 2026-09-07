@@ -11,12 +11,13 @@ import { useAppSettingsStore } from '@/stores/appSettings'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import { useGitlabAccountsStore } from '@/stores/gitlabAccounts'
 import { useAwsAccountsStore } from '@/stores/awsAccounts'
+import { useClaudeAccountsStore } from '@/stores/claudeAccounts'
 import { useToolPermissionsStore } from '@/stores/toolPermissions'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import {
   AlertTriangle, Puzzle, ScrollText, Server, Github, Gitlab, Cloud,
   GitMerge, CheckCircle2, XCircle, Trash2, Plus, GitBranch, Settings,
-  Rocket, ShieldCheck, Loader2, KanbanSquare, ExternalLink
+  Rocket, ShieldCheck, Loader2, KanbanSquare, ExternalLink, UserCircle
 } from 'lucide-vue-next'
 import { Button, Input, Card, Badge, AppSelect } from '@/components/ui'
 import BackToRunButton from '@/components/BackToRunButton.vue'
@@ -36,6 +37,7 @@ const appSettings = useAppSettingsStore()
 const ghStore = useGithubAccountsStore()
 const glStore = useGitlabAccountsStore()
 const awsStore = useAwsAccountsStore()
+const claudeStore = useClaudeAccountsStore()
 const toolPerms = useToolPermissionsStore()
 const live = useLiveRunsStore()
 const { confirm } = useConfirm()
@@ -45,7 +47,7 @@ const { toast } = useToast()
 const projectId = computed(() => route.params.projectId as string)
 const project = computed(() => projectStore.projects.find(p => p.id === projectId.value))
 
-const activeTab = ref<'overview' | 'skills' | 'rules' | 'mcp' | 'deploy' | 'github' | 'board' | 'gitlab' | 'aws' | 'tools' | 'conflicts'>('overview')
+const activeTab = ref<'overview' | 'skills' | 'rules' | 'mcp' | 'deploy' | 'github' | 'board' | 'gitlab' | 'aws' | 'claude' | 'tools' | 'conflicts'>('overview')
 
 // ── Tool permissions (allow/deny always) for this project ──────────────────
 const allowTools = computed(() => toolPerms.getAllow(projectId.value))
@@ -85,6 +87,7 @@ const SECTIONS = [
   { id: 'board', icon: KanbanSquare },
   { id: 'gitlab', icon: Gitlab },
   { id: 'aws', icon: Cloud },
+  { id: 'claude', icon: UserCircle },
   { id: 'tools', icon: ShieldCheck },
 ] as const
 const projectConflicts = computed(() => projectStore.conflicts.filter(c => c.project_id === projectId.value))
@@ -394,6 +397,33 @@ async function handleSelectAwsAccount(accountId: string) {
   }
 }
 
+// --- Claude account linking (one account per project; falls back to default) ---
+const linkedClaudeAccountId = computed(() => project.value?.claude_account_id ?? null)
+const linkedClaudeAccount = computed(
+  () => claudeStore.accounts.find(a => a.id === linkedClaudeAccountId.value) ?? null,
+)
+const defaultClaudeAccount = computed(
+  () => claudeStore.accounts.find(a => a.is_default) ?? null,
+)
+const claudeAccountOptions = computed(() => [
+  {
+    value: '',
+    label: defaultClaudeAccount.value
+      ? t('projectDetail.claudeDefaultOption', { label: defaultClaudeAccount.value.label })
+      : 'None',
+  },
+  ...claudeStore.accounts.map(a => ({ value: a.id, label: a.label })),
+])
+
+async function handleSelectClaudeAccount(accountId: string) {
+  try {
+    await projectStore.setProjectClaudeAccount(projectId.value, accountId || null)
+    toast.success(t('projectDetail.toastClaudeLinked'))
+  } catch (e) {
+    toast.error(String(e))
+  }
+}
+
 const editName = ref('')
 // Guards auto-save so initial population of the edit fields (from `project`
 // and `loadRepos`) doesn't trigger a write.
@@ -497,6 +527,9 @@ onMounted(async () => {
   }
   if (awsStore.accounts.length === 0) {
     await awsStore.fetch()
+  }
+  if (claudeStore.accounts.length === 0) {
+    await claudeStore.fetch()
   }
   await appSettings.ensureLoaded()
   await loadAppliedSkills()
@@ -1345,6 +1378,39 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
               <span> · {{ linkedAwsAccount.region }}</span>
               <span v-if="linkedAwsAccount.account_id"> · {{ linkedAwsAccount.account_id }}</span>
               <span v-if="linkedAwsAccount.profile_name"> · {{ linkedAwsAccount.profile_name }}</span>
+            </div>
+          </Card>
+        </div>
+
+        <!-- Claude account tab -->
+        <div v-if="activeTab === 'claude'" class="max-w-lg space-y-4">
+          <Card body-class="p-4 space-y-4">
+            <template #header>
+              <UserCircle class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
+              <span class="text-xs font-semibold">{{ t('projectDetail.linkedClaudeAccount') }}</span>
+            </template>
+            <p class="text-[11px] text-muted-foreground leading-relaxed">
+              {{ t('projectDetail.claudeAccountHint') }}
+              <RouterLink to="/settings?section=claude" class="text-primary hover:underline">{{ t('projectDetail.settings') }}</RouterLink>.
+            </p>
+
+            <div v-if="claudeStore.accounts.length === 0" class="text-[11px] text-muted-foreground">
+              {{ t('projectDetail.noClaudeAccounts') }}
+              <RouterLink to="/settings?section=claude" class="text-primary hover:underline">{{ t('projectDetail.addInSettings') }}</RouterLink>
+              {{ t('projectDetail.toLinkHere') }}
+            </div>
+            <AppSelect
+              size="sm"
+              v-else
+              :model-value="linkedClaudeAccountId ?? ''"
+              :options="claudeAccountOptions"
+              :placeholder="t('projectDetail.selectAccountPlaceholder')"
+              @update:model-value="handleSelectClaudeAccount"
+            />
+
+            <div v-if="linkedClaudeAccount" class="text-[11px] text-muted-foreground">
+              {{ t('settings.claude.status.' + linkedClaudeAccount.status) }}
+              <span v-if="linkedClaudeAccount.email"> · {{ linkedClaudeAccount.email }}</span>
             </div>
           </Card>
         </div>

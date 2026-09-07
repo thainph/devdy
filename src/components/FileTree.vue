@@ -10,10 +10,11 @@ import { computed, ref, watch, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   RotateCw, ListCollapse, FilePlus, FolderPlus, Copy, Link, Scissors,
-  ClipboardPaste, CopyPlus, Pencil, Trash2, FolderOpen, Code, Chrome, AtSign,
+  ClipboardPaste, CopyPlus, Pencil, Trash2, FolderOpen, Code, Chrome, AtSign, Columns2,
 } from 'lucide-vue-next'
 import FileTreeNode from '@/components/FileTreeNode.vue'
 import { useFileTreeStore } from '@/stores/fileTree'
+import { useImageCompareStore, isImagePath } from '@/stores/imageCompare'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { usePrompt } from '@/composables/usePrompt'
@@ -37,6 +38,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const store = useFileTreeStore()
+const imageCompare = useImageCompareStore()
 const { toast } = useToast()
 const { confirm } = useConfirm()
 const { prompt } = usePrompt()
@@ -100,6 +102,30 @@ function absOf(relPath: string): string {
 const menu = ref<{ entry: DirEntry | null; x: number; y: number } | null>(null)
 const menuEl = ref<HTMLElement | null>(null)
 const menuEntry = computed(() => menu.value?.entry ?? null)
+// Image-only compare actions in the context menu.
+const menuIsImage = computed(() => {
+  const e = menu.value?.entry
+  return !!e && !e.is_dir && isImagePath(e.path)
+})
+// A pending first image exists and the right-clicked one is a different image —
+// offer to complete the pair immediately.
+const canCompleteCompare = computed(
+  () =>
+    menuIsImage.value &&
+    imageCompare.hasPending &&
+    imageCompare.pendingFirst !== menuEntry.value?.path,
+)
+
+function compareWith() {
+  const e = menu.value?.entry
+  closeMenu()
+  if (e) imageCompare.selectFirst(props.projectPath, e.path)
+}
+function compareComplete() {
+  const e = menu.value?.entry
+  closeMenu()
+  if (e) imageCompare.selectSecond(e.path)
+}
 
 function openMenu(payload: { entry: DirEntry | null; x: number; y: number }) {
   // Clamp so the menu never overflows the right / bottom edges.
@@ -416,6 +442,22 @@ onBeforeUnmount(() => {
           </button>
           <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="mentionFile">
             <AtSign class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.mentionInChat') }}
+          </button>
+        </template>
+
+        <!-- Compare images (image entries only) -->
+        <template v-if="menuIsImage">
+          <div class="my-1 border-t border-border/60" />
+          <button
+            v-if="canCompleteCompare"
+            class="w-full flex items-center gap-2 px-3 py-1.5 text-primary hover:bg-accent cursor-pointer"
+            @click="compareComplete"
+          >
+            <Columns2 class="h-3.5 w-3.5" :stroke-width="2" />
+            {{ t('files.tree.compareWithPending', { name: imageCompare.pendingName }) }}
+          </button>
+          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="compareWith">
+            <Columns2 class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.compareWith') }}
           </button>
         </template>
       </div>

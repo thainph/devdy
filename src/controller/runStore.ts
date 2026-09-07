@@ -162,6 +162,8 @@ export interface RunStoreState {
   /** Subscription plan-usage badges, mirrored from the desktop `BudgetBadge`. */
   claudeBudget: PlanBudget | null
   codexBudget: PlanBudget | null
+  /** Label of the Claude account the bound run is using (null = global/legacy). */
+  claudeAccount: string | null
 }
 
 /**
@@ -183,6 +185,7 @@ export function createRunStore() {
     runMeta: { engine: '', model: '', permissionMode: '' },
     claudeBudget: null,
     codexBudget: null,
+    claudeAccount: null,
   })
 
   function ensureRun(runId: string): RunView {
@@ -267,6 +270,7 @@ export function createRunStore() {
         // or `source==='disabled'` when no plan snapshot exists yet.
         state.claudeBudget = payload.claude ?? null
         state.codexBudget = payload.codex ?? null
+        state.claudeAccount = payload.claude_account ?? null
         break
       case 'run_list':
         // Legacy: unused in the single-run controller (kept so the Host push,

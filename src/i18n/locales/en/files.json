@@ -8,6 +8,10 @@
     "copyFilePath": "Copy file path",
     "openInDefaultApp": "Open in default app",
     "reloadFromDisk": "Reload from disk",
+    "moreActions": "More actions",
+    "zoomIn": "Zoom in",
+    "zoomOut": "Zoom out",
+    "resetZoom": "Reset zoom",
     "copied": "Copied!",
     "copyContent": "Copy content",
     "editFile": "Edit file",
@@ -49,6 +53,8 @@
     "openInVscode": "Open in VSCode",
     "openInChrome": "Open in Chrome",
     "mentionInChat": "Mention in Chat",
+    "compareWith": "Compare with…",
+    "compareWithPending": "Compare with \"{name}\"",
     "fileNameLabel": "File name",
     "folderNameLabel": "Folder name",
     "fileNamePlaceholder": "e.g. index.ts",
@@ -65,5 +71,16 @@
     "toastPathCopied": "Path copied",
     "toastRelativePathCopied": "Relative path copied",
     "toastFailedCopyPath": "Failed to copy path"
+  },
+  "compare": {
+    "title": "Image comparison",
+    "compareButton": "Compare with another image",
+    "pendingBanner": "Comparing \"{name}\" — pick the second image",
+    "chooseFromList": "Choose from list",
+    "pickSecond": "Pick the second image",
+    "searchPlaceholder": "Search images…",
+    "noImages": "No images found",
+    "swap": "Swap sides",
+    "hint": "Ctrl/Cmd + scroll to zoom · drag to pan · double-click to toggle zoom — both sides stay in sync"
   }
 }

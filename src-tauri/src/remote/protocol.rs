@@ -247,6 +247,11 @@ pub enum StreamPayload {
         claude: Option<serde_json::Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         codex: Option<serde_json::Value>,
+        /// Label of the Claude account the bound run is using (so the controller
+        /// shows WHICH account the utilization belongs to). None for a global/
+        /// legacy run with no managed account.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        claude_account: Option<String>,
     },
     /// The bound run's live engine/model/permission-mode selection. Pushed on
     /// pairing (initial snapshot) and whenever either surface changes one, so the
