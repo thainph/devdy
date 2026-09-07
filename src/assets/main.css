@@ -858,6 +858,19 @@
   white-space: pre;
 }
 
+/* Non-scrolling wrapper injected around each <pre> so the copy button anchors
+   to it instead of the horizontally-scrolling <pre> (see src/lib/copyCode.ts).
+   Inherits the <pre>'s bottom margin so layout is unchanged. */
+.code-copy-wrap {
+  position: relative;
+}
+.markdown-output .code-copy-wrap > pre {
+  margin: 0;
+}
+.markdown-output .code-copy-wrap {
+  margin: 0 0 0.8rem;
+}
+
 /* Copy button injected into fenced code blocks and mermaid diagrams (see
    src/lib/copyCode.ts). Global (not under .markdown-output) so it also works in
    the rule/skill editor previews, which don't use that class. Hidden until the
