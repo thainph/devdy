@@ -44,8 +44,15 @@ let panStartY = 0
 let panOriginX = 0
 let panOriginY = 0
 
+// Zoom via real layout size (width/height), NOT transform: scale(). CSS scale()
+// only stretches the bitmap the browser rasterized at the original fit size, so
+// zooming in blurs — and it never re-rasterizes SVGs. Growing the actual box
+// makes the browser redraw SVGs crisply and resample rasters from the source.
+// Pan stays on translate (cheap, no re-render, no blur).
 const imageStyle = computed(() => ({
-  transform: `translate(${panX.value}px, ${panY.value}px) scale(${zoom.value})`,
+  width: `${zoom.value * 100}%`,
+  height: `${zoom.value * 100}%`,
+  transform: `translate(${panX.value}px, ${panY.value}px)`,
   cursor: zoom.value > 1 ? (panning.value ? 'grabbing' : 'grab') : 'default',
 }))
 
@@ -155,7 +162,7 @@ function onDblClick() {
         <img
           :src="leftUrl"
           :alt="left"
-          class="max-w-full max-h-full object-contain will-change-transform"
+          class="object-contain will-change-transform"
           :class="{ 'transition-transform duration-75': !panning }"
           :style="imageStyle"
           draggable="false"
@@ -173,7 +180,7 @@ function onDblClick() {
         <img
           :src="rightUrl"
           :alt="right"
-          class="max-w-full max-h-full object-contain will-change-transform"
+          class="object-contain will-change-transform"
           :class="{ 'transition-transform duration-75': !panning }"
           :style="imageStyle"
           draggable="false"

@@ -54,11 +54,20 @@ function decorateCopy(el: HTMLElement): void {
     if (pre.closest('.mermaid-diagram')) return
     if (pre.dataset.copyDecorated) return
     pre.dataset.copyDecorated = '1'
-    if (!pre.style.position) pre.style.position = 'relative'
     const code = pre.querySelector('code')
     const text = (code ?? pre).textContent ?? ''
     if (!text.trim()) return
-    pre.appendChild(makeCopyButton(text))
+    // Anchor the button to a non-scrolling wrapper, NOT the <pre> itself: the
+    // <pre> is the horizontal scroll container, so an absolutely-positioned
+    // button inside it would drift with the content when scrolled sideways.
+    let wrapper = pre.parentElement
+    if (!wrapper || !wrapper.classList.contains('code-copy-wrap')) {
+      wrapper = document.createElement('div')
+      wrapper.className = 'code-copy-wrap'
+      pre.parentNode?.insertBefore(wrapper, pre)
+      wrapper.appendChild(pre)
+    }
+    wrapper.appendChild(makeCopyButton(text))
   })
 
   // Mermaid diagrams — copy the original source from the data attribute.
