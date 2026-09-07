@@ -9,7 +9,9 @@
 //! `codex` CLI has no `model list` subcommand, so Codex stays on a curated list.
 
 use crate::db::Db;
-use crate::runs::sidecar::{augment_command_path, detach_process_group, resolve_sidecar};
+use crate::runs::sidecar::{
+    apply_claude_config_dir, augment_command_path, detach_process_group, resolve_sidecar,
+};
 use serde::Serialize;
 use serde_json::Value;
 use sqlx::Row;
@@ -58,6 +60,10 @@ pub async fn list_claude_models(
     if claude_path != "claude" && !claude_path.trim().is_empty() {
         cmd.env("DEVDY_CLAUDE_PATH", &claude_path);
     }
+    // Discover models against the default Claude account's profile (if any).
+    let claude_account =
+        crate::commands::claude_accounts::default_runtime_account(db.inner()).await?;
+    apply_claude_config_dir(&mut cmd, claude_account.as_ref().map(|a| a.config_dir.as_str()));
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());

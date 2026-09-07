@@ -125,11 +125,17 @@ pub async fn get_storage_stats(db: State<'_, Db>) -> Result<StorageStats, String
         devdy_files += c;
     }
 
-    // Claude/Codex CLI session transcripts.
-    let (claude_bytes, claude_files) = match home() {
+    // Claude/Codex CLI session transcripts. Claude includes the global
+    // `~/.claude` store plus every managed multi-account config dir (AC-012).
+    let (mut claude_bytes, mut claude_files) = match home() {
         Some(h) => scan(&h.join(".claude").join("projects"), &is_jsonl),
         None => (0, 0),
     };
+    for dir in crate::commands::claude_accounts::account_config_dirs(db.inner()).await {
+        let (b, c) = scan(&Path::new(&dir).join("projects"), &is_jsonl);
+        claude_bytes += b;
+        claude_files += c;
+    }
     let (codex_bytes, codex_files) = match home() {
         Some(h) => scan(&h.join(".codex").join("sessions"), &is_jsonl),
         None => (0, 0),
@@ -200,6 +206,11 @@ pub async fn clean_storage(db: State<'_, Db>, category: String) -> Result<CleanR
         CAT_CLAUDE => {
             if let Some(h) = home() {
                 let (b, c) = purge(&h.join(".claude").join("projects"), &is_jsonl);
+                freed += b;
+                deleted += c;
+            }
+            for dir in crate::commands::claude_accounts::account_config_dirs(db.inner()).await {
+                let (b, c) = purge(&Path::new(&dir).join("projects"), &is_jsonl);
                 freed += b;
                 deleted += c;
             }

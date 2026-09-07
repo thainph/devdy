@@ -687,7 +687,7 @@ async fn handle_list_engine_models(ctx: &HandlerCtx) {
 /// Send the Controller the subscription plan-usage badges (Claude + Codex).
 async fn handle_list_plan_usage(ctx: &HandlerCtx) {
     let action = "list_plan_usage";
-    send_plan_usage(&ctx.db, &ctx.session, &ctx.room_id, &ctx.out, &ctx.seq).await;
+    send_plan_usage(&ctx.db, &ctx.session, &ctx.room_id, &ctx.out, &ctx.seq, &ctx.bound_run_id).await;
     accept(ctx, action, None, None).await;
 }
 

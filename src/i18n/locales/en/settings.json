@@ -7,6 +7,7 @@
     "github": "GitHub Accounts",
     "gitlab": "GitLab Accounts",
     "aws": "AWS Accounts",
+    "claude": "Claude Accounts",
     "engine": "Engine Paths",
     "ai": "AI & Models",
     "mcp": "MCP Server",
@@ -209,6 +210,35 @@
     "adding": "Adding…",
     "deleteTitle": "Delete AWS account",
     "deleteMessage": "Delete this AWS account? Projects linked to it will be unlinked."
+  },
+  "claude": {
+    "title": "Claude Accounts",
+    "intro": "Manage multiple Claude Code subscription logins. Each account is isolated in its own profile (CLAUDE_CONFIG_DIR), so you can run in parallel with different accounts and link a specific account per project.",
+    "securityNote": "Devdy never stores your Claude password or OAuth token — Claude Code owns the credential. Adding or removing an account here never touches your global ~/.claude login.",
+    "login": "Login",
+    "validate": "Check",
+    "setDefault": "Set as default",
+    "default": "Default",
+    "labelPlaceholder": "Account label (e.g. Work, Personal)",
+    "addAccount": "Add account",
+    "addHint": "Create a profile slot, then a terminal opens to log in with the Claude CLI for that profile.",
+    "accountAdded": "Claude account created",
+    "loginOpened": "Opened a terminal to log in — finish the Claude login there, then click Check.",
+    "validReady": "Account is logged in and ready",
+    "validNeedsLogin": "Not logged in yet — click Login to authenticate",
+    "deleteTitle": "Delete Claude account",
+    "deleteMessage": "This removes the account from Devdy and unlinks it from any projects. Your global ~/.claude login is not affected.",
+    "status": {
+      "unknown": "Unknown",
+      "ready": "Ready",
+      "needs_login": "Needs login",
+      "error": "Error"
+    },
+    "usagePercent": "{percent}% of {period}",
+    "period": {
+      "5h": "5h limit",
+      "week": "weekly limit"
+    }
   },
   "engine": {
     "title": "Engine Paths",

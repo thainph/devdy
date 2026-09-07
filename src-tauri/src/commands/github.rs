@@ -21,6 +21,7 @@ pub struct RunRecord {
     pub input_path: Option<String>,
     pub output_path: Option<String>,
     pub session_id: Option<String>,
+    pub claude_account_id: Option<String>,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub created_at: String,
@@ -308,6 +309,7 @@ pub async fn fetch_issue(
         input_path: Some(file_path_str.clone()),
         output_path: Some(file_path_str),
         session_id: None,
+        claude_account_id: None,
         started_at: None,
         finished_at: None,
         created_at: now,
@@ -620,6 +622,7 @@ pub async fn fetch_pr(
         input_path: Some(file_path_str.clone()),
         output_path: Some(file_path_str),
         session_id: None,
+        claude_account_id: None,
         started_at: None,
         finished_at: None,
         created_at: now,
@@ -637,7 +640,7 @@ pub async fn refetch_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord,
     use sqlx::Row;
 
     let row = sqlx::query(
-        "SELECT id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, session_id, started_at, finished_at, created_at, title, pinned FROM runs WHERE id = ?",
+        "SELECT id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, session_id, claude_account_id, started_at, finished_at, created_at, title, pinned FROM runs WHERE id = ?",
     )
     .bind(&run_id)
     .fetch_one(db.inner())
@@ -710,6 +713,7 @@ pub async fn refetch_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord,
         input_path,
         output_path: row.get("output_path"),
         session_id: row.get("session_id"),
+        claude_account_id: row.get("claude_account_id"),
         started_at: row.get("started_at"),
         finished_at: row.get("finished_at"),
         created_at: row.get("created_at"),
@@ -734,7 +738,7 @@ pub async fn list_runs(
 ) -> Result<Vec<RunRecord>, String> {
     use sqlx::Row;
     let rows = sqlx::query(
-        "SELECT id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, session_id, started_at, finished_at, created_at, title, pinned
+        "SELECT id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, session_id, claude_account_id, started_at, finished_at, created_at, title, pinned
          FROM runs WHERE project_id = ? ORDER BY pinned DESC, created_at DESC LIMIT 50"
     )
     .bind(&project_id)
@@ -753,6 +757,7 @@ pub async fn list_runs(
         input_path: row.get("input_path"),
         output_path: row.get("output_path"),
         session_id: row.get("session_id"),
+        claude_account_id: row.get("claude_account_id"),
         started_at: row.get("started_at"),
         finished_at: row.get("finished_at"),
         created_at: row.get("created_at"),

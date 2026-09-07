@@ -7,6 +7,7 @@
     "github": "Tài khoản GitHub",
     "gitlab": "Tài khoản GitLab",
     "aws": "Tài khoản AWS",
+    "claude": "Tài khoản Claude",
     "engine": "Đường dẫn Engine",
     "ai": "AI & Model",
     "mcp": "MCP Server",
@@ -209,6 +210,35 @@
     "adding": "Đang thêm…",
     "deleteTitle": "Xóa tài khoản AWS",
     "deleteMessage": "Xóa tài khoản AWS này? Các dự án liên kết với nó sẽ bị hủy liên kết."
+  },
+  "claude": {
+    "title": "Tài khoản Claude",
+    "intro": "Quản lý nhiều tài khoản Claude Code subscription. Mỗi tài khoản được tách riêng bằng profile (CLAUDE_CONFIG_DIR), nên bạn có thể chạy song song nhiều tài khoản và gán tài khoản cụ thể cho từng project.",
+    "securityNote": "Devdy không lưu mật khẩu hay OAuth token Claude — Claude Code tự quản lý thông tin đăng nhập. Thêm hoặc xóa tài khoản ở đây không ảnh hưởng tới login ~/.claude toàn cục.",
+    "login": "Đăng nhập",
+    "validate": "Kiểm tra",
+    "setDefault": "Đặt làm mặc định",
+    "default": "Mặc định",
+    "labelPlaceholder": "Nhãn tài khoản (ví dụ: Work, Personal)",
+    "addAccount": "Thêm tài khoản",
+    "addHint": "Tạo một slot profile, sau đó terminal sẽ mở để đăng nhập bằng Claude CLI cho profile đó.",
+    "accountAdded": "Đã tạo tài khoản Claude",
+    "loginOpened": "Đã mở terminal để đăng nhập — hoàn tất login Claude ở đó rồi bấm Kiểm tra.",
+    "validReady": "Tài khoản đã đăng nhập và sẵn sàng",
+    "validNeedsLogin": "Chưa đăng nhập — bấm Đăng nhập để xác thực",
+    "deleteTitle": "Xóa tài khoản Claude",
+    "deleteMessage": "Thao tác này gỡ tài khoản khỏi Devdy và bỏ liên kết khỏi mọi project. Login ~/.claude toàn cục không bị ảnh hưởng.",
+    "status": {
+      "unknown": "Chưa rõ",
+      "ready": "Sẵn sàng",
+      "needs_login": "Cần đăng nhập",
+      "error": "Lỗi"
+    },
+    "usagePercent": "{percent}% của {period}",
+    "period": {
+      "5h": "giới hạn 5h",
+      "week": "giới hạn tuần"
+    }
   },
   "engine": {
     "title": "Đường dẫn Engine",

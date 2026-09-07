@@ -1,5 +1,6 @@
 pub mod agents_block;
 pub mod aws_accounts;
+pub mod claude_accounts;
 pub mod codex_sessions;
 pub mod file_tree_watcher;
 pub mod files;

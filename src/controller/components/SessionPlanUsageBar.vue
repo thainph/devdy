@@ -18,6 +18,8 @@ const { t } = useI18n()
 const props = defineProps<{
   claude: PlanBudget | null
   codex: PlanBudget | null
+  /** Label of the Claude account the bound run is using (null = global/legacy). */
+  claudeAccount?: string | null
 }>()
 
 const now = ref(Date.now())
@@ -31,6 +33,8 @@ onUnmounted(() => { if (clock) clearInterval(clock) })
 interface Row {
   key: 'claude' | 'codex'
   label: string
+  /** Full label for the hover tooltip (e.g. "Claude — <account>"). */
+  title: string
   hasPlan: boolean
   percent: number
   tone: 'over' | 'warning' | 'ok'
@@ -57,11 +61,12 @@ function resetShort(iso: string | null | undefined): string {
   return `${minutes}m`
 }
 
-function rowFor(key: 'claude' | 'codex', label: string, b: PlanBudget | null): Row {
+function rowFor(key: 'claude' | 'codex', label: string, title: string, b: PlanBudget | null): Row {
   const hasPlan = !!b && b.source === 'plan'
   return {
     key,
     label,
+    title,
     hasPlan,
     percent: b ? Math.min(100, Math.max(0, Math.round(b.percent))) : 0,
     tone: b ? toneOf(b) : 'ok',
@@ -69,10 +74,17 @@ function rowFor(key: 'claude' | 'codex', label: string, b: PlanBudget | null): R
   }
 }
 
-const rows = computed<Row[]>(() => [
-  rowFor('claude', 'Claude', props.claude),
-  rowFor('codex', 'Codex', props.codex),
-])
+const rows = computed<Row[]>(() => {
+  // Show WHICH Claude account this usage belongs to (the account the bound run
+  // is using); fall back to the generic "Claude" for a global/legacy run.
+  const acct = props.claudeAccount?.trim()
+  const claudeLabel = acct ? acct : 'Claude'
+  const claudeTitle = acct ? `Claude — ${acct}` : 'Claude'
+  return [
+    rowFor('claude', claudeLabel, claudeTitle, props.claude),
+    rowFor('codex', 'Codex', 'Codex', props.codex),
+  ]
+})
 
 // Show the bar only once at least one provider reports real plan usage.
 const show = computed(() => rows.value.some((r) => r.hasPlan))
@@ -99,7 +111,7 @@ const TEXT: Record<Row['tone'], string> = {
       :key="r.key"
       class="flex items-center gap-2 text-[10px] leading-none"
     >
-      <span class="w-11 shrink-0 font-medium opacity-70">{{ r.label }}</span>
+      <span class="w-16 shrink-0 truncate font-medium opacity-70" :title="r.title">{{ r.label }}</span>
 
       <template v-if="r.hasPlan">
         <AlertTriangle

@@ -12,6 +12,7 @@ import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import { useGitlabAccountsStore } from '@/stores/gitlabAccounts'
 import { useServersStore, type ProjectServer } from '@/stores/servers'
 import { useAwsAccountsStore } from '@/stores/awsAccounts'
+import { useClaudeAccountsStore } from '@/stores/claudeAccounts'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useModelCatalogStore } from '@/stores/modelCatalog'
 import { useUILayoutStore } from '@/stores/uiLayout'
@@ -27,7 +28,7 @@ import {
   ChevronDown, Maximize2, Minimize2, AppWindow,
   ImagePlus, X, Paperclip,
   ShieldQuestion, MessageCircleQuestion,
-  Pin, PinOff, Pencil, Check, Github, Gitlab,
+  Pin, PinOff, Pencil, Check, Github, Gitlab, UserCircle,
   ClipboardCopy, ScrollText, HardDrive, Cloud, Radio, Languages, FolderTree, Loader2, ListChecks
 } from 'lucide-vue-next'
 import AppSelect from '@/components/AppSelect.vue'
@@ -72,6 +73,7 @@ const ghStore = useGithubAccountsStore()
 const glStore = useGitlabAccountsStore()
 const serversStore = useServersStore()
 const awsStore = useAwsAccountsStore()
+const claudeStore = useClaudeAccountsStore()
 const appSettings = useAppSettingsStore()
 const modelCatalog = useModelCatalogStore()
 const uiLayout = useUILayoutStore()
@@ -198,6 +200,25 @@ function syncLoadedRunEngine(engine: string) {
 }
 // Effective engine for the next start/handoff (selector value, else default).
 const effectiveEngine = computed(() => resolveEngineChoice(engineOverride.value))
+const runSettingsOpen = ref(false)
+const runSettingsRoot = ref<HTMLElement | null>(null)
+const engineBadgeLabel = computed(() => effectiveEngine.value === 'codex' ? 'Codex' : 'Claude')
+const engineBadgeIcon = computed(() => effectiveEngine.value === 'codex' ? Terminal : Cpu)
+const runSettingsTitle = computed(() => t('run.runSettingsTitle', { engine: engineBadgeLabel.value }))
+function toggleRunSettingsMenu() {
+  runSettingsOpen.value = !runSettingsOpen.value
+}
+function closeRunSettingsMenu() {
+  runSettingsOpen.value = false
+}
+function onRunSettingsPointerDown(e: MouseEvent) {
+  if (!runSettingsOpen.value) return
+  const target = e.target
+  if (!(target instanceof Element)) return
+  if (runSettingsRoot.value?.contains(target)) return
+  if (target.closest('[data-app-select-dropdown]')) return
+  closeRunSettingsMenu()
+}
 // Model choices depend on the engine. Empty value = let the engine/setting decide.
 // Option tables live in @/lib/engineOptions (shared with the remote controller);
 // for Claude we augment them with models discovered from the account.
@@ -791,6 +812,7 @@ watch(
 watch(currentRunId, (id) => {
   stickToBottom.value = true
   scrollOutputToBottom()
+  closeRunSettingsMenu()
   clearTranslateTrigger()
   closeTranslate()
   // Keep the URL in sync with the selected run. Selecting a run from the History
@@ -823,6 +845,7 @@ watch(projectId, () => {
 onMounted(async () => {
   loadMarkdown()
   nextTick(autoResizeComposer)
+  document.addEventListener('mousedown', onRunSettingsPointerDown)
   // Discover the account's Claude models so the composer's model picker includes
   // any newly-released ones (cached across views).
   modelCatalog.fetchClaude().catch(() => {})
@@ -832,6 +855,7 @@ onMounted(async () => {
   // GĐ6 (AC3): ensure account metadata is available for the header badge.
   if (ghStore.accounts.length === 0) ghStore.fetch().catch(() => {})
   if (glStore.accounts.length === 0) glStore.fetch().catch(() => {})
+  if (claudeStore.accounts.length === 0) claudeStore.fetch().catch(() => {})
   // Header chips: which VPS servers + AWS account this project is wired to.
   if (awsStore.accounts.length === 0) awsStore.fetch().catch(() => {})
   loadProjectServers()
@@ -946,6 +970,7 @@ onUnmounted(() => {
   outputRO?.disconnect()
   outputRO = null
   window.removeEventListener('focus', onAppFocus)
+  document.removeEventListener('mousedown', onRunSettingsPointerDown)
   window.removeEventListener('pointerup', onWindowPointerUp)
   window.removeEventListener('mouseup', onSelectionMouseUp)
   sessionsChangedUnlisten?.()
@@ -1044,7 +1069,11 @@ function setLocalRunStatus(runId: string, status: RunRecord['status'], engine?: 
 async function preflightBudget(engine: string): Promise<boolean | null> {
   let isOver = false
   try {
-    const status = await invoke<{ is_over: boolean }>('get_run_budget', { engine })
+    const status = await invoke<{ is_over: boolean }>('get_run_budget', {
+      engine,
+      runId: currentRunId.value,
+      projectId: projectId.value,
+    })
     isOver = status.is_over
   } catch {
     return false // can't determine the verdict → don't block the user
@@ -1154,6 +1183,7 @@ function onEngineChange(next: string) {
     currentStatus.value !== 'fetched' &&
     sourceText.value.trim().length > 0
   if (hasConversation && nextEngine !== currentEngine) {
+    closeRunSettingsMenu()
     handoffTarget.value = nextEngine
     return
   }
@@ -1202,6 +1232,65 @@ async function startNewEngineSession(targetEngine: string) {
 
 const followUpInput = ref('')
 const sendingFollowUp = ref(false)
+const savingClaudeAccount = ref(false)
+
+const defaultClaudeAccount = computed(() =>
+  claudeStore.accounts.find((acc) => acc.is_default) ?? null,
+)
+const effectiveProjectClaudeAccountId = computed(() =>
+  project.value?.claude_account_id || defaultClaudeAccount.value?.id || '',
+)
+const selectedClaudeAccountId = computed(() => {
+  const run = currentRun.value
+  if (!run) return ''
+  if (run.claude_account_id) return run.claude_account_id
+  // Existing sessions with no run-level account are legacy/global ~/.claude.
+  // Not-yet-started runs still inherit project/default at start time.
+  return run.session_id ? '' : effectiveProjectClaudeAccountId.value
+})
+const claudeAccountOptions = computed(() => {
+  const opts = claudeStore.accounts.map((acc) => ({
+    value: acc.id,
+    label: `${acc.label}${acc.is_default ? ` (${t('settings.claude.default')})` : ''}${acc.email ? ` · ${acc.email}` : ''}`,
+  }))
+  const currentId = currentRun.value?.claude_account_id
+  if (currentId && !opts.some((opt) => opt.value === currentId)) {
+    opts.unshift({ value: currentId, label: t('run.missingClaudeAccount') })
+  }
+  if (currentRun.value?.session_id) {
+    opts.unshift({ value: '', label: t('run.globalClaudeAccount') })
+  }
+  return opts
+})
+const showClaudeAccountSelect = computed(() =>
+  !!currentRun.value
+  && effectiveEngine.value === 'claude'
+  && (claudeStore.accounts.length > 0 || !!currentRun.value.claude_account_id),
+)
+const claudeAccountSelectDisabled = computed(() =>
+  currentStatus.value === 'running' || sendingFollowUp.value || savingClaudeAccount.value,
+)
+const claudeAccountSelectTitle = computed(() =>
+  currentStatus.value === 'running'
+    ? t('run.claudeAccountRunningTitle')
+    : t('run.claudeAccountTitle'),
+)
+
+async function handleClaudeAccountChange(value: string) {
+  const run = currentRun.value
+  if (!run || currentStatus.value === 'running' || savingClaudeAccount.value) return
+  const next = value.trim() || null
+  if ((run.claude_account_id ?? null) === next) return
+  savingClaudeAccount.value = true
+  try {
+    await runsStore.setRunClaudeAccount(run.id, next)
+    toast.success(t('run.claudeAccountUpdated'))
+  } catch (e) {
+    toast.error(t('run.claudeAccountUpdateFailed', { error: String(e) }))
+  } finally {
+    savingClaudeAccount.value = false
+  }
+}
 
 // ── Pasted / attached images in the composer ──────────────────────────────
 interface PendingImage extends ImageAttachment {
@@ -3171,8 +3260,8 @@ function handleRefInput(val: string) {
                 @blur="mentionOpen = false; slashOpen = false"
               />
 
-              <!-- Footer toolbar: engine / permission / model controls -->
-              <div class="flex items-center gap-1.5 px-1.5 pb-1.5">
+              <!-- Footer toolbar: attachments/actions plus compact run settings menu -->
+              <div class="flex flex-wrap items-center gap-1.5 px-1.5 pb-1.5">
                 <button
                   class="inline-flex items-center justify-center h-8 w-8 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 shrink-0"
                   :disabled="sendingFollowUp"
@@ -3196,48 +3285,122 @@ function handleRefInput(val: string) {
                 >
                   <component :is="composerExpanded ? Minimize2 : Maximize2" class="h-4 w-4" :stroke-width="2" />
                 </button>
-                <AppSelect
-                  :model-value="engineOverride"
-                  @update:model-value="onEngineChange"
-                  size="sm"
-                  variant="ghost"
-                  :options="[
-                    { value: '', label: t('run.defaultEngine') },
-                    { value: 'claude', label: 'claude' },
-                    { value: 'codex', label: 'codex' },
-                  ]"
-                  class="w-32 h-8 shrink-0"
+                <div
+                  ref="runSettingsRoot"
+                  class="relative inline-flex shrink-0"
+                  @keydown.esc.stop="closeRunSettingsMenu"
                 >
-                  <template #leading>
-                    <Cpu class="h-3 w-3 text-muted-foreground shrink-0" :stroke-width="1.5" />
-                  </template>
-                </AppSelect>
-                <AppSelect
-                  v-model="permissionMode"
-                  size="sm"
-                  variant="ghost"
-                  :options="PERMISSION_MODE_OPTIONS"
-                  :disabled="currentStatus === 'running'"
-                  class="min-w-0 max-w-44 h-8 shrink"
-                  :title="t('run.permissionModeTitle')"
-                >
-                  <template #leading>
-                    <span class="text-[10px] font-mono text-muted-foreground shrink-0">{{ t('run.perm') }}</span>
-                  </template>
-                </AppSelect>
-                <AppSelect
-                  v-model="modelOverride"
-                  size="sm"
-                  variant="ghost"
-                  :options="modelOptions"
-                  :disabled="currentStatus === 'running'"
-                  class="w-40 h-8 shrink-0"
-                  :title="t('run.modelTitle')"
-                >
-                  <template #leading>
-                    <Sparkles class="h-3 w-3 text-muted-foreground shrink-0" :stroke-width="1.5" />
-                  </template>
-                </AppSelect>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    class="h-8 gap-1.5 px-2.5 text-foreground/70"
+                    :title="runSettingsTitle"
+                    :aria-label="runSettingsTitle"
+                    aria-haspopup="dialog"
+                    :aria-expanded="runSettingsOpen"
+                    @click.stop="toggleRunSettingsMenu"
+                  >
+                    <component :is="engineBadgeIcon" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+                    <span class="text-xs font-medium">{{ engineBadgeLabel }}</span>
+                    <ChevronDown
+                      class="h-3 w-3 shrink-0 text-muted-foreground transition-transform duration-200"
+                      :class="{ 'rotate-180': runSettingsOpen }"
+                      :stroke-width="2"
+                    />
+                  </Button>
+                  <transition
+                    enter-active-class="transition duration-150 ease-out"
+                    enter-from-class="opacity-0 translate-y-1"
+                    leave-active-class="transition duration-100 ease-in"
+                    leave-to-class="opacity-0 translate-y-1"
+                  >
+                    <div
+                      v-if="runSettingsOpen"
+                      role="dialog"
+                      class="absolute bottom-full left-1/2 z-30 mb-2 w-72 max-w-[calc(100vw-2rem)] -translate-x-1/2 rounded-md border border-border bg-popover p-3 shadow-lg shadow-black/20"
+                      :aria-label="t('run.runSettingsMenu')"
+                    >
+                      <div class="space-y-3">
+                        <div class="space-y-1.5">
+                          <div class="flex items-center gap-1.5 text-[10px] font-medium uppercase text-muted-foreground">
+                            <Cpu class="h-3 w-3 shrink-0" :stroke-width="1.5" />
+                            <span>{{ t('run.engineSetting') }}</span>
+                          </div>
+                          <AppSelect
+                            :model-value="engineOverride"
+                            @update:model-value="onEngineChange"
+                            size="sm"
+                            :options="[
+                              { value: '', label: t('run.defaultEngine') },
+                              { value: 'claude', label: 'claude' },
+                              { value: 'codex', label: 'codex' },
+                            ]"
+                            class="h-8 w-full"
+                          >
+                            <template #leading>
+                              <Cpu class="h-3 w-3 text-muted-foreground shrink-0" :stroke-width="1.5" />
+                            </template>
+                          </AppSelect>
+                        </div>
+                        <div v-if="showClaudeAccountSelect" class="space-y-1.5">
+                          <div class="flex items-center gap-1.5 text-[10px] font-medium uppercase text-muted-foreground">
+                            <UserCircle class="h-3 w-3 shrink-0" :stroke-width="1.5" />
+                            <span>{{ t('run.claudeAccountSetting') }}</span>
+                          </div>
+                          <AppSelect
+                            :model-value="selectedClaudeAccountId"
+                            @update:model-value="handleClaudeAccountChange"
+                            size="sm"
+                            :options="claudeAccountOptions"
+                            :disabled="claudeAccountSelectDisabled"
+                            class="h-8 w-full"
+                            :title="claudeAccountSelectTitle"
+                          >
+                            <template #leading>
+                              <UserCircle class="h-3 w-3 text-muted-foreground shrink-0" :stroke-width="1.5" />
+                            </template>
+                          </AppSelect>
+                        </div>
+                        <div class="space-y-1.5">
+                          <div class="flex items-center gap-1.5 text-[10px] font-medium uppercase text-muted-foreground">
+                            <ShieldQuestion class="h-3 w-3 shrink-0" :stroke-width="1.5" />
+                            <span>{{ t('run.permissionSetting') }}</span>
+                          </div>
+                          <AppSelect
+                            v-model="permissionMode"
+                            size="sm"
+                            :options="PERMISSION_MODE_OPTIONS"
+                            :disabled="currentStatus === 'running'"
+                            class="h-8 w-full"
+                            :title="t('run.permissionModeTitle')"
+                          >
+                            <template #leading>
+                              <span class="text-[10px] font-mono text-muted-foreground shrink-0">{{ t('run.perm') }}</span>
+                            </template>
+                          </AppSelect>
+                        </div>
+                        <div class="space-y-1.5">
+                          <div class="flex items-center gap-1.5 text-[10px] font-medium uppercase text-muted-foreground">
+                            <Sparkles class="h-3 w-3 shrink-0" :stroke-width="1.5" />
+                            <span>{{ t('run.modelSetting') }}</span>
+                          </div>
+                          <AppSelect
+                            v-model="modelOverride"
+                            size="sm"
+                            :options="modelOptions"
+                            :disabled="currentStatus === 'running'"
+                            class="h-8 w-full"
+                            :title="t('run.modelTitle')"
+                          >
+                            <template #leading>
+                              <Sparkles class="h-3 w-3 text-muted-foreground shrink-0" :stroke-width="1.5" />
+                            </template>
+                          </AppSelect>
+                        </div>
+                      </div>
+                    </div>
+                  </transition>
+                </div>
 
                 <div class="ml-auto flex items-center gap-1.5 shrink-0">
                   <Button

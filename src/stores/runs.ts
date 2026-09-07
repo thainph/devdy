@@ -14,6 +14,7 @@ export interface RunRecord {
   input_path: string | null
   output_path: string | null
   session_id: string | null
+  claude_account_id: string | null
   started_at: string | null
   finished_at: string | null
   created_at: string
@@ -314,6 +315,15 @@ export const useRunsStore = defineStore('runs', () => {
     }
   }
 
+  async function setRunClaudeAccount(run_id: string, account_id: string | null): Promise<void> {
+    await invoke('set_run_claude_account', { runId: run_id, accountId: account_id })
+    const next = account_id?.trim() || null
+    const run = runs.value.find(r => r.id === run_id)
+    if (run) run.claude_account_id = next
+    const cached = runMeta.get(run_id)
+    if (cached) cached.claude_account_id = next
+  }
+
   return {
     runs, loading, loadedProjectId, runMeta,
     fetchRuns, fetchIssue, fetchPr,
@@ -324,6 +334,6 @@ export const useRunsStore = defineStore('runs', () => {
     createDir, createFile, renameEntry, deleteEntry, copyEntry, moveEntry,
     createHandoffRun, createSessionRun,
     reconcileClaudeSessions, reconcileCodexSessions,
-    deleteRun, deleteAllRuns, renameRun, setRunPinned,
+    deleteRun, deleteAllRuns, renameRun, setRunClaudeAccount, setRunPinned,
   }
 })

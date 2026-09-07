@@ -2,8 +2,8 @@ use crate::commands::github::RunRecord;
 use crate::db::Db;
 use crate::runs::broker::BrokerHandle;
 use crate::runs::sidecar::{
-    augment_command_path, detach_process_group, drain_sidecar, kill_process_group,
-    resolve_codex_sidecar, resolve_sidecar, sdk_permission_mode,
+    apply_claude_config_dir, augment_command_path, detach_process_group, drain_sidecar,
+    kill_process_group, resolve_codex_sidecar, resolve_sidecar, sdk_permission_mode,
 };
 use crate::runs::ssh_access::{self, SshAccessGuard};
 use crate::runs::{BrokerRunCtx, BrokerRunGuard, BrokerRuns, RunHandles, RunRegistry};
@@ -75,8 +75,8 @@ fn log_user_content(text: &str, images: &[ImageAttachment]) -> serde_json::Value
     serde_json::Value::Array(blocks)
 }
 
-async fn claude_usage_capture_mode(db: &Db) -> &'static str {
-    match crate::commands::stats::budget_status_for(db, "claude").await {
+async fn claude_usage_capture_mode(db: &Db, claude_account_id: Option<&str>) -> &'static str {
+    match crate::commands::stats::budget_status_for(db, "claude", claude_account_id).await {
         Ok(status) if status.source == "plan" && (status.is_warning || status.is_over) => "warning",
         _ => "normal",
     }
@@ -112,7 +112,7 @@ pub(crate) async fn start_run_inner(
 
     // Load run + project info
     let run_row = sqlx::query(
-        "SELECT r.id, r.project_id, r.type, r.ref_number, r.input_path, r.output_path, r.engine, r.status,
+        "SELECT r.id, r.project_id, r.type, r.ref_number, r.input_path, r.output_path, r.engine, r.status, r.claude_account_id,
                 p.path as project_path
          FROM runs r
          JOIN projects p ON p.id = r.project_id
@@ -129,6 +129,7 @@ pub(crate) async fn start_run_inner(
     let output_path: Option<String> = run_row.get("output_path");
     let status: String = run_row.get("status");
     let project_path: String = run_row.get("project_path");
+    let existing_claude_account_id: Option<String> = run_row.get("claude_account_id");
 
     let is_session = run_type == "session";
 
@@ -209,10 +210,37 @@ pub(crate) async fn start_run_inner(
         .or_else(|| existing_engine.filter(|s| !s.trim().is_empty()))
         .unwrap_or(default_engine);
 
+    // Resolve the Claude account. A run-level selection wins, else project-linked
+    // → default → global. Snapshot the resolved id on the run so resume uses the
+    // same profile unless the user explicitly changes the run account later.
+    let claude_account = if engine == "claude" {
+        crate::commands::claude_accounts::resolve_runtime_account(
+            db,
+            Some(&project_id),
+            existing_claude_account_id.as_deref(),
+        )
+        .await?
+    } else {
+        None
+    };
+    if let Some(acct) = &claude_account {
+        let _ = sqlx::query("UPDATE runs SET claude_account_id = ? WHERE id = ?")
+            .bind(&acct.id)
+            .bind(&payload.run_id)
+            .execute(db)
+            .await;
+    }
+
     // Global budget guardrail: refuse to start a new run when over budget
-    // (real plan utilization for this engine, or the self-imposed token
-    // fallback), unless the user explicitly overrode it.
-    crate::commands::stats::enforce_budget(db, &engine, payload.override_budget).await?;
+    // (real plan utilization for this engine's resolved account, or the
+    // self-imposed token fallback), unless the user explicitly overrode it.
+    crate::commands::stats::enforce_budget(
+        db,
+        &engine,
+        claude_account.as_ref().map(|a| a.id.as_str()),
+        payload.override_budget,
+    )
+    .await?;
 
     let permission_mode = payload
         .permission_mode_override
@@ -324,12 +352,15 @@ pub(crate) async fn start_run_inner(
         }
         cmd.env(
             "DEVDY_USAGE_CAPTURE_MODE",
-            claude_usage_capture_mode(db).await,
+            claude_usage_capture_mode(db, claude_account.as_ref().map(|a| a.id.as_str())).await,
         );
         cmd.env("DEVDY_USAGE_POLL_MS", "60000");
         if let Some(m) = &model {
             cmd.env("DEVDY_MODEL", m);
         }
+        // Isolate this run to its resolved Claude account profile (clears inherited
+        // auth env overrides). No-op when no managed account applies (legacy global).
+        apply_claude_config_dir(&mut cmd, claude_account.as_ref().map(|a| a.config_dir.as_str()));
         cmd.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
@@ -944,14 +975,23 @@ pub(crate) async fn send_user_message_inner(
     registry: &RunRegistry,
     payload: SendUserMessagePayload,
 ) -> Result<(), String> {
+    use sqlx::Row;
     // A follow-up turn consumes tokens like any other, so gate it too — against
-    // the guardrail for this run's engine.
-    let engine: String = sqlx::query_scalar("SELECT engine FROM runs WHERE id = ?")
+    // the guardrail for this run's engine and its assigned Claude account.
+    let run_meta = sqlx::query("SELECT engine, claude_account_id FROM runs WHERE id = ?")
         .bind(&payload.run_id)
         .fetch_one(db)
         .await
         .map_err(|e| e.to_string())?;
-    crate::commands::stats::enforce_budget(db, &engine, payload.override_budget).await?;
+    let engine: String = run_meta.get("engine");
+    let claude_account_id: Option<String> = run_meta.get("claude_account_id");
+    crate::commands::stats::enforce_budget(
+        db,
+        &engine,
+        claude_account_id.as_deref(),
+        payload.override_budget,
+    )
+    .await?;
 
     let text = payload.content.trim();
     // A turn must carry text or at least one image.
@@ -1255,6 +1295,7 @@ struct ClonableRun {
     /// Resolved, existing input markdown path (issue/PR details).
     resolved_input: String,
     engine: String,
+    claude_account_id: Option<String>,
 }
 
 /// Source-run fields needed for cross-engine handoff. Unlike rerun, a handoff
@@ -1277,7 +1318,7 @@ async fn load_clonable_run(db: &sqlx::SqlitePool, run_id: &str) -> Result<Clonab
     use sqlx::Row;
 
     let row = sqlx::query(
-        "SELECT r.project_id, r.repo_id, r.type, r.ref_number, r.input_path, r.output_path, r.engine, r.status,
+        "SELECT r.project_id, r.repo_id, r.type, r.ref_number, r.input_path, r.output_path, r.engine, r.status, r.claude_account_id,
                 p.path as project_path
          FROM runs r
          JOIN projects p ON p.id = r.project_id
@@ -1296,6 +1337,7 @@ async fn load_clonable_run(db: &sqlx::SqlitePool, run_id: &str) -> Result<Clonab
     let stored_output: Option<String> = row.get("output_path");
     let status: String = row.get("status");
     let engine: String = row.get("engine");
+    let claude_account_id: Option<String> = row.get("claude_account_id");
     let project_path: String = row.get("project_path");
 
     // Resolve input file: prefer stored input_path, else output_path (only valid
@@ -1339,6 +1381,7 @@ async fn load_clonable_run(db: &sqlx::SqlitePool, run_id: &str) -> Result<Clonab
         ref_number,
         resolved_input,
         engine,
+        claude_account_id,
     })
 }
 
@@ -1436,8 +1479,8 @@ pub async fn rerun_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord, S
     let now = chrono::Utc::now().to_rfc3339();
 
     sqlx::query(
-        "INSERT INTO runs (id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, created_at)
-         VALUES (?, ?, ?, ?, ?, 'fetched', ?, ?, ?, ?)",
+        "INSERT INTO runs (id, project_id, repo_id, type, ref_number, status, engine, claude_account_id, input_path, output_path, created_at)
+         VALUES (?, ?, ?, ?, ?, 'fetched', ?, ?, ?, ?, ?)",
     )
     .bind(&new_id)
     .bind(&src.project_id)
@@ -1445,6 +1488,7 @@ pub async fn rerun_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord, S
     .bind(&src.run_type)
     .bind(src.ref_number)
     .bind(&src.engine)
+    .bind(&src.claude_account_id)
     .bind(&src.resolved_input)
     .bind(&src.resolved_input)
     .bind(&now)
@@ -1463,6 +1507,7 @@ pub async fn rerun_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord, S
         input_path: Some(src.resolved_input.clone()),
         output_path: Some(src.resolved_input),
         session_id: None,
+        claude_account_id: src.claude_account_id,
         started_at: None,
         finished_at: None,
         created_at: now,
@@ -1542,6 +1587,7 @@ pub async fn create_handoff_run(
             input_path: src.input_path.clone(),
             output_path: src.input_path,
             session_id: None,
+            claude_account_id: None,
             started_at: None,
             finished_at: None,
             created_at: now,
@@ -1592,6 +1638,7 @@ pub async fn create_session_run(
         input_path: None,
         output_path: None,
         session_id: None,
+        claude_account_id: None,
         started_at: None,
         finished_at: None,
         created_at: now,
@@ -1741,6 +1788,175 @@ pub async fn rename_run(db: State<'_, Db>, run_id: String, title: String) -> Res
     Ok(())
 }
 
+fn global_claude_transcript_path(project_path: &str, session_id: &str) -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(
+        PathBuf::from(home)
+            .join(".claude")
+            .join("projects")
+            .join(crate::commands::sessions::encode_project_dir(project_path))
+            .join(format!("{session_id}.jsonl")),
+    )
+}
+
+fn claude_transcript_path_for_account(
+    config_dir: Option<&str>,
+    project_path: &str,
+    session_id: &str,
+) -> Option<PathBuf> {
+    match config_dir.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(dir) => Some(
+            Path::new(dir)
+                .join("projects")
+                .join(crate::commands::sessions::encode_project_dir(project_path))
+                .join(format!("{session_id}.jsonl")),
+        ),
+        None => global_claude_transcript_path(project_path, session_id),
+    }
+}
+
+async fn find_existing_claude_transcript(
+    db: &Db,
+    project_path: &str,
+    session_id: &str,
+    transcript_path: Option<&str>,
+) -> Option<PathBuf> {
+    if let Some(path) = transcript_path.map(PathBuf::from).filter(|p| p.is_file()) {
+        return Some(path);
+    }
+
+    for dir in crate::commands::sessions::claude_sessions_dirs(db, project_path).await {
+        let candidate = dir.join(format!("{session_id}.jsonl"));
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Ensure a resumed Claude session is present in the target account profile.
+/// Claude Code stores transcript history under the active `CLAUDE_CONFIG_DIR`;
+/// copying the known transcript lets a finished run continue under another
+/// account instead of failing because the new profile has never seen that
+/// session id.
+async fn mirror_claude_transcript_for_account(
+    db: &Db,
+    project_path: &str,
+    session_id: &str,
+    transcript_path: Option<&str>,
+    target_config_dir: Option<&str>,
+) -> Result<Option<PathBuf>, String> {
+    let Some(dest) =
+        claude_transcript_path_for_account(target_config_dir, project_path, session_id)
+    else {
+        return Ok(None);
+    };
+    if dest.is_file() {
+        return Ok(Some(dest));
+    }
+
+    let Some(src) =
+        find_existing_claude_transcript(db, project_path, session_id, transcript_path).await
+    else {
+        return Ok(None);
+    };
+    if src == dest {
+        return Ok(Some(dest));
+    }
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::copy(&src, &dest).map_err(|e| {
+        format!(
+            "Failed to copy Claude transcript from {} to {}: {e}",
+            src.display(),
+            dest.display()
+        )
+    })?;
+    Ok(Some(dest))
+}
+
+/// Change the Claude account assigned to a run/session. Applies to the next
+/// start/resume; an already-running sidecar keeps the environment it spawned
+/// with, so running runs are refused.
+#[tauri::command]
+pub async fn set_run_claude_account(
+    db: State<'_, Db>,
+    run_id: String,
+    account_id: Option<String>,
+) -> Result<(), String> {
+    use sqlx::Row;
+
+    let account_id = account_id.and_then(|v| {
+        let v = v.trim().to_string();
+        (!v.is_empty()).then_some(v)
+    });
+
+    let row = sqlx::query(
+        "SELECT r.engine, r.status, r.session_id, r.transcript_path, p.path as project_path
+         FROM runs r JOIN projects p ON p.id = r.project_id
+         WHERE r.id = ?",
+    )
+    .bind(&run_id)
+    .fetch_one(db.inner())
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let engine: String = row.get("engine");
+    if engine != "claude" {
+        return Err("Only Claude runs can use Claude accounts".to_string());
+    }
+
+    let status: String = row.get("status");
+    if status == "running" {
+        return Err("Cannot change Claude account while the run is running".to_string());
+    }
+
+    let account = match account_id.as_deref() {
+        Some(id) => {
+            crate::commands::claude_accounts::resolve_runtime_account(db.inner(), None, Some(id))
+                .await?
+        }
+        None => None,
+    };
+
+    let session_id: Option<String> = row.get("session_id");
+    let transcript_path: Option<String> = row.get("transcript_path");
+    let project_path: String = row.get("project_path");
+    let mirrored = if let Some(sid) = session_id.as_deref() {
+        mirror_claude_transcript_for_account(
+            db.inner(),
+            &project_path,
+            sid,
+            transcript_path.as_deref(),
+            account.as_ref().map(|a| a.config_dir.as_str()),
+        )
+        .await?
+    } else {
+        None
+    };
+
+    if let Some(path) = mirrored {
+        sqlx::query(
+            "UPDATE runs SET claude_account_id = ?, transcript_path = ?, transcript_synced_size = NULL WHERE id = ?",
+        )
+        .bind(account_id)
+        .bind(path.to_string_lossy().as_ref())
+        .bind(&run_id)
+        .execute(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+    } else {
+        sqlx::query("UPDATE runs SET claude_account_id = ? WHERE id = ?")
+            .bind(account_id)
+            .bind(&run_id)
+            .execute(db.inner())
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// Pin or unpin a run so it sorts to the top of the History list.
 #[tauri::command]
 pub async fn set_run_pinned(db: State<'_, Db>, run_id: String, pinned: bool) -> Result<(), String> {
@@ -1814,7 +2030,7 @@ pub async fn resume_run(
     use sqlx::Row;
 
     let row = sqlx::query(
-        "SELECT r.engine, r.status, r.session_id, r.project_id, p.path as project_path
+        "SELECT r.engine, r.status, r.session_id, r.project_id, r.claude_account_id, p.path as project_path
          FROM runs r JOIN projects p ON p.id = r.project_id
          WHERE r.id = ?",
     )
@@ -1827,12 +2043,19 @@ pub async fn resume_run(
     let status: String = row.get("status");
     let session_id: Option<String> = row.get("session_id");
     let project_id: String = row.get("project_id");
+    let claude_account_id: Option<String> = row.get("claude_account_id");
     let project_path: String = row.get("project_path");
 
     // Same budget guardrail as start_run — resuming a finished run starts a new
-    // turn and consumes tokens, so it must be gated too (per this run's engine).
-    crate::commands::stats::enforce_budget(db.inner(), &engine, override_budget.unwrap_or(false))
-        .await?;
+    // turn and consumes tokens, so it must be gated too. Checked against the
+    // run's assigned Claude account, not the current default.
+    crate::commands::stats::enforce_budget(
+        db.inner(),
+        &engine,
+        claude_account_id.as_deref(),
+        override_budget.unwrap_or(false),
+    )
+    .await?;
 
     if engine != "claude" && engine != "codex" {
         return Err("Only Claude and Codex runs can be resumed".to_string());
@@ -1913,6 +2136,26 @@ pub async fn resume_run(
     .await
     .map_err(|e| e.to_string())?;
 
+    // Resume uses the account currently assigned to the run. A legacy/global run
+    // without an assigned account (`claude_account_id = NULL`) keeps the global
+    // `~/.claude` profile instead of silently switching to the current default.
+    // Errors if the assigned account was deleted.
+    let claude_account = if engine == "claude" {
+        match claude_account_id.as_deref().map(str::trim) {
+            Some(id) if !id.is_empty() => {
+                crate::commands::claude_accounts::resolve_runtime_account(
+                    db.inner(),
+                    None,
+                    Some(id),
+                )
+                .await?
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+
     let (node_bin, sidecar_script) = if engine == "codex" {
         resolve_codex_sidecar(&app, &node_path, &codex_sidecar_path)?
     } else {
@@ -1983,7 +2226,7 @@ pub async fn resume_run(
         }
         cmd.env(
             "DEVDY_USAGE_CAPTURE_MODE",
-            claude_usage_capture_mode(db.inner()).await,
+            claude_usage_capture_mode(db.inner(), claude_account.as_ref().map(|a| a.id.as_str())).await,
         );
         cmd.env("DEVDY_USAGE_POLL_MS", "60000");
         if let Some(m) = &model {
@@ -2017,6 +2260,9 @@ pub async fn resume_run(
         if !mcp.is_null() {
             cmd.env("DEVDY_MCP_SERVERS", mcp.to_string());
         }
+        // Reuse the original run's Claude account profile (clears inherited auth
+        // env overrides). No-op for legacy runs → keeps the global profile.
+        apply_claude_config_dir(&mut cmd, claude_account.as_ref().map(|a| a.config_dir.as_str()));
     }
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
