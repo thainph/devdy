@@ -10,6 +10,11 @@ use commands::aws_accounts::{
     create_aws_account, delete_aws_account, list_aws_accounts, set_project_aws_account,
     update_aws_account, validate_aws_account,
 };
+use commands::claude_accounts::{
+    create_claude_account, delete_claude_account, list_claude_accounts,
+    open_claude_account_login, rename_claude_account, set_default_claude_account,
+    set_project_claude_account, validate_claude_account,
+};
 use commands::codex_sessions::reconcile_codex_sessions;
 use commands::file_tree_watcher::{
     set_file_tree_watch, stop_file_tree_watch, FileTreeWatchers,
@@ -61,7 +66,7 @@ use commands::rules::{
 use commands::runs::{
     cancel_run, create_handoff_run, create_session_run, delete_all_runs, delete_run, end_run_input,
     get_run_log, get_run_log_path, read_run_input, rename_run, rerun_run, respond_permission,
-    resume_run, send_user_message, set_run_pinned, start_run,
+    resume_run, send_user_message, set_run_claude_account, set_run_pinned, start_run,
 };
 use commands::sessions::reconcile_claude_sessions;
 use commands::settings::{get_settings, update_setting};
@@ -70,9 +75,9 @@ use commands::skills::{
     open_skill_folder, update_skill,
 };
 use commands::stats::{
-    backfill_usage, get_budget_status, get_codex_budget_status, get_plan_usage,
-    get_plan_usage_codex, get_run_budget, get_usage_stats, refresh_codex_plan_usage,
-    refresh_plan_usage, reset_usage_stats,
+    backfill_usage, get_budget_status, get_claude_account_budget, get_codex_budget_status,
+    get_plan_usage, get_plan_usage_codex, get_run_budget, get_usage_stats,
+    refresh_codex_plan_usage, refresh_plan_usage, reset_usage_stats,
 };
 use commands::storage::{clean_storage, get_storage_stats};
 use commands::notes::{
@@ -249,6 +254,14 @@ pub fn run() {
             set_default_google_account,
             google_client_status,
             google_forget_client,
+            list_claude_accounts,
+            create_claude_account,
+            rename_claude_account,
+            delete_claude_account,
+            set_default_claude_account,
+            open_claude_account_login,
+            validate_claude_account,
+            set_project_claude_account,
             list_google_calendars,
             list_google_calendar_events,
             create_google_calendar_event,
@@ -321,6 +334,7 @@ pub fn run() {
             delete_run,
             delete_all_runs,
             rename_run,
+            set_run_claude_account,
             set_run_pinned,
             list_project_files,
             list_dir,
@@ -351,6 +365,7 @@ pub fn run() {
             reset_usage_stats,
             get_budget_status,
             get_codex_budget_status,
+            get_claude_account_budget,
             get_run_budget,
             get_plan_usage,
             get_plan_usage_codex,

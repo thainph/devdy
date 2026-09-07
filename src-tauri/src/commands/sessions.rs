@@ -41,6 +41,27 @@ pub(crate) fn claude_sessions_dir(project_path: &str) -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
+/// All existing transcript dirs for a project's cwd: the global `~/.claude`
+/// store plus every managed multi-account config dir (AC-011). External Claude
+/// sessions may live under any account profile, so mirroring must scan them all.
+pub(crate) async fn claude_sessions_dirs(
+    db: &sqlx::SqlitePool,
+    project_path: &str,
+) -> Vec<PathBuf> {
+    let encoded = encode_project_dir(project_path);
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = claude_sessions_dir(project_path) {
+        dirs.push(dir);
+    }
+    for cfg in crate::commands::claude_accounts::account_config_dirs(db).await {
+        let dir = Path::new(&cfg).join("projects").join(&encoded);
+        if dir.is_dir() {
+            dirs.push(dir);
+        }
+    }
+    dirs
+}
+
 /// Accumulated token usage parsed out of a transcript's assistant turns.
 #[derive(Default)]
 pub(crate) struct UsageTotals {
@@ -490,13 +511,20 @@ pub(crate) async fn upsert_claude_session(
     session_id: &str,
     defer_when_busy: bool,
 ) -> Result<SyncOutcome, String> {
-    let Some(dir) = claude_sessions_dir(project_path) else {
-        return Ok(SyncOutcome::Skipped);
+    let file = {
+        let mut found: Option<PathBuf> = None;
+        for dir in claude_sessions_dirs(db, project_path).await {
+            let candidate = dir.join(format!("{}.jsonl", session_id));
+            if candidate.is_file() {
+                found = Some(candidate);
+                break;
+            }
+        }
+        match found {
+            Some(f) => f,
+            None => return Ok(SyncOutcome::Skipped),
+        }
     };
-    let file = dir.join(format!("{}.jsonl", session_id));
-    if !file.is_file() {
-        return Ok(SyncOutcome::Skipped);
-    }
     upsert_session_run_core(
         db,
         project_id,
@@ -530,31 +558,44 @@ pub async fn reconcile_claude_sessions(
     let project_name: String = row.get("name");
     let project_path: String = row.get("path");
 
-    let Some(dir) = claude_sessions_dir(&project_path) else {
+    let dirs = claude_sessions_dirs(db.inner(), &project_path).await;
+    if dirs.is_empty() {
         return Ok(0);
-    };
+    }
 
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut changed = 0i64;
-    for entry in fs::read_dir(&dir).map_err(|e| e.to_string())? {
-        let path = entry.map_err(|e| e.to_string())?.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-            continue;
-        }
-        let Some(session_id) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
+    for dir in &dirs {
+        let entries = match fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => continue,
         };
-        match upsert_claude_session(
-            db.inner(),
-            &project_id,
-            &project_name,
-            &project_path,
-            session_id,
-            true,
-        )
-        .await
-        {
-            Ok(SyncOutcome::Imported(_)) | Ok(SyncOutcome::Updated(_)) => changed += 1,
-            _ => {}
+        for entry in entries {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let Some(session_id) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            // A session id is unique across profiles; import from whichever dir
+            // surfaces it first and skip duplicates in later roots.
+            if !seen.insert(session_id.to_string()) {
+                continue;
+            }
+            match upsert_claude_session(
+                db.inner(),
+                &project_id,
+                &project_name,
+                &project_path,
+                session_id,
+                true,
+            )
+            .await
+            {
+                Ok(SyncOutcome::Imported(_)) | Ok(SyncOutcome::Updated(_)) => changed += 1,
+                _ => {}
+            }
         }
     }
     Ok(changed)

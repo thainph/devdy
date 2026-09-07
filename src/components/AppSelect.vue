@@ -220,6 +220,7 @@ watch(isOpen, (val) => {
       <ul
         v-if="isOpen"
         ref="listRef"
+        data-app-select-dropdown
         role="listbox"
         class="z-50 min-w-32 overflow-auto rounded-md border border-border bg-popover py-1 shadow-md focus:outline-none"
         :style="dropdownStyle"

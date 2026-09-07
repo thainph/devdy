@@ -8,7 +8,7 @@
 use crate::commands::runs::delete_run_inner;
 use crate::db::Db;
 use crate::runs::sidecar::{
-    augment_command_path, detach_process_group, insert_usage_from_result,
+    apply_claude_config_dir, augment_command_path, detach_process_group, insert_usage_from_result,
     persist_plan_init_rate_limits, persist_plan_usage, persist_plan_rate_limit_event,
     resolve_codex_sidecar, resolve_sidecar,
 };
@@ -462,7 +462,8 @@ pub async fn get_plan_usage(db: State<'_, Db>) -> Result<Option<PlanUsage>, Stri
 }
 
 async fn load_plan_usage(db: &Db) -> Result<Option<PlanUsage>, String> {
-    load_plan_usage_key(db, "plan_usage").await
+    let key = default_claude_plan_usage_key(db).await;
+    load_plan_usage_key(db, &key).await
 }
 
 async fn load_plan_usage_key(db: &Db, key: &str) -> Result<Option<PlanUsage>, String> {
@@ -488,6 +489,7 @@ pub async fn get_plan_usage_codex(db: State<'_, Db>) -> Result<Option<PlanUsage>
 pub async fn refresh_plan_usage(
     app: AppHandle,
     db: State<'_, Db>,
+    account_id: Option<String>,
 ) -> Result<Option<PlanUsage>, String> {
     let rows = sqlx::query("SELECT key, value FROM settings")
         .fetch_all(db.inner())
@@ -525,6 +527,15 @@ pub async fn refresh_plan_usage(
     if claude_path != "claude" && !claude_path.trim().is_empty() {
         cmd.env("DEVDY_CLAUDE_PATH", &claude_path);
     }
+    // Probe /usage for a specific Claude account when `account_id` is given
+    // (per-account badge refresh), else the default account's profile (if any).
+    let claude_account = crate::commands::claude_accounts::resolve_runtime_account(
+        db.inner(),
+        None,
+        account_id.as_deref(),
+    )
+    .await?;
+    apply_claude_config_dir(&mut cmd, claude_account.as_ref().map(|a| a.config_dir.as_str()));
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -549,6 +560,9 @@ pub async fn refresh_plan_usage(
     stdin.flush().await.map_err(|e| format!("flush usage probe: {}", e))?;
 
     let db_pool = db.inner().clone();
+    // The idle probe runs on the resolved account (requested or default), so its
+    // snapshot lands under that account's key (or the global key when none).
+    let plan_usage_key = claude_plan_usage_key(claude_account.as_ref().map(|a| a.id.as_str()));
     let read_usage = async {
         while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
             let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
@@ -563,7 +577,7 @@ pub async fn refresh_plan_usage(
                             .unwrap_or(false)
                             && usage.get("rate_limits").and_then(|v| v.as_object()).is_some()
                         {
-                            if persist_plan_usage(&db_pool, usage).await {
+                            if persist_plan_usage(&db_pool, &plan_usage_key, usage).await {
                                 let _ = app.emit("plan_usage_updated", serde_json::json!({ "source": "probe" }));
                                 return Ok(true);
                             }
@@ -571,13 +585,13 @@ pub async fn refresh_plan_usage(
                     }
                 }
                 Some("system") => {
-                    if persist_plan_init_rate_limits(&db_pool, &value).await {
+                    if persist_plan_init_rate_limits(&db_pool, &plan_usage_key, &value).await {
                         let _ = app.emit("plan_usage_updated", serde_json::json!({ "source": "probe" }));
                         return Ok(true);
                     }
                 }
                 Some("rate_limit_event") => {
-                    if persist_plan_rate_limit_event(&db_pool, &value).await {
+                    if persist_plan_rate_limit_event(&db_pool, &plan_usage_key, &value).await {
                         let _ = app.emit("plan_usage_updated", serde_json::json!({ "source": "probe" }));
                         return Ok(true);
                     }
@@ -797,6 +811,25 @@ fn plan_window_by_key(key: &str, snapshot: &serde_json::Value, stale_secs: i64) 
 /// "getting close" heuristic.
 const PLAN_DISPLAY_WARN_PERCENT: i64 = 80;
 
+/// Settings KV key holding a Claude account's plan-usage snapshot. `None` (no
+/// managed account) maps to the legacy global `plan_usage` key, so installs
+/// without multi-account behave exactly as before; a specific account gets its
+/// own `plan_usage:<id>` key so accounts never overwrite each other.
+pub fn claude_plan_usage_key(account_id: Option<&str>) -> String {
+    match account_id.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(id) => format!("plan_usage:{id}"),
+        None => "plan_usage".to_string(),
+    }
+}
+
+/// Resolve which Claude plan-usage key the read-only badge/settings surfaces
+/// should show: the current default account's key, or the global key when no
+/// managed accounts exist.
+async fn default_claude_plan_usage_key(db: &Db) -> String {
+    let id = crate::commands::claude_accounts::default_account_id(db).await;
+    claude_plan_usage_key(id.as_deref())
+}
+
 /// Read the latest plan snapshot JSON (`key`) and `plan_stale_secs` from the
 /// settings KV — everything the badge needs, without touching the guardrail's
 /// block-threshold / token-limit settings.
@@ -894,7 +927,13 @@ const GUARDRAIL_WARN_RATIO: f64 = 0.9;
 /// engine has no plan data (e.g. API-key sessions) the guardrail is inactive.
 /// Used by `enforce_budget` (run blocking), the Claude usage-capture mode, and
 /// the composer lock.
-pub async fn budget_status_for(db: &Db, engine: &str) -> Result<BudgetStatus, String> {
+pub async fn budget_status_for(
+    db: &Db,
+    engine: &str,
+    claude_account_id: Option<&str>,
+) -> Result<BudgetStatus, String> {
+    // Which Claude snapshot key applies to this run's resolved account.
+    let claude_key = claude_plan_usage_key(claude_account_id);
     let rows = sqlx::query("SELECT key, value FROM settings")
         .fetch_all(db)
         .await
@@ -911,8 +950,8 @@ pub async fn budget_status_for(db: &Db, engine: &str) -> Result<BudgetStatus, St
             "budget_5h_percent" => block_5h = value.trim().parse::<i64>().unwrap_or(0).clamp(0, 100),
             "budget_week_percent" => block_week = value.trim().parse::<i64>().unwrap_or(0).clamp(0, 100),
             "plan_stale_secs" => stale_secs = value.trim().parse::<i64>().unwrap_or(120).clamp(10, 3600),
-            "plan_usage" => plan_claude = Some(value),
             "plan_usage_codex" => plan_codex = Some(value),
+            s if s == claude_key => plan_claude = Some(value),
             _ => {}
         }
     }
@@ -996,10 +1035,12 @@ pub async fn budget_status(db: &Db, key: &str) -> BudgetStatus {
 
 #[tauri::command]
 pub async fn get_budget_status(db: State<'_, Db>) -> Result<BudgetStatus, String> {
-    // Badge = the account's REAL Claude plan usage (most-constraining window),
-    // independent of the Usage budget setting. That setting only gates
-    // run-blocking via `enforce_budget`.
-    let (plan_json, stale_secs) = read_plan_snapshot(db.inner(), "plan_usage").await?;
+    // Badge = the DEFAULT Claude account's REAL plan usage (most-constraining
+    // window), independent of the Usage budget setting. That setting only gates
+    // run-blocking via `enforce_budget`. Multi-account: each account keeps its
+    // own snapshot; the badge follows whichever account is currently default.
+    let key = default_claude_plan_usage_key(db.inner()).await;
+    let (plan_json, stale_secs) = read_plan_snapshot(db.inner(), &key).await?;
     Ok(plan_display_status(plan_json.as_deref(), stale_secs))
 }
 
@@ -1011,23 +1052,96 @@ pub async fn get_codex_budget_status(db: State<'_, Db>) -> Result<BudgetStatus, 
     Ok(plan_display_status(plan_json.as_deref(), stale_secs))
 }
 
+/// Plan-usage badge for one specific Claude account, read from its own snapshot
+/// key. `disabled` shape when that account has captured no usage yet (no run has
+/// executed under it since it was added). Used by the Settings account list to
+/// show each account's utilization separately.
+#[tauri::command]
+pub async fn get_claude_account_budget(
+    db: State<'_, Db>,
+    account_id: String,
+) -> Result<BudgetStatus, String> {
+    let key = claude_plan_usage_key(Some(&account_id));
+    let (plan_json, stale_secs) = read_plan_snapshot(db.inner(), &key).await?;
+    Ok(plan_display_status(plan_json.as_deref(), stale_secs))
+}
+
 /// Preflight the run-blocking guardrail for `engine` WITHOUT side effects, so
 /// the UI can confirm a budget override BEFORE it optimistically echoes the
 /// user's message. Same verdict `enforce_budget` acts on.
 #[tauri::command]
-pub async fn get_run_budget(db: State<'_, Db>, engine: String) -> Result<BudgetStatus, String> {
-    budget_status_for(db.inner(), &engine).await
+pub async fn get_run_budget(
+    db: State<'_, Db>,
+    engine: String,
+    run_id: Option<String>,
+    project_id: Option<String>,
+) -> Result<BudgetStatus, String> {
+    // Resolve the same Claude account the run will actually use: an existing
+    // run's explicit selection wins. A resumable Claude run with no selection is
+    // legacy/global `~/.claude`; a not-yet-started run still falls through to the
+    // project's linked account/default. Codex ignores the account.
+    let account_id = resolve_claude_account_for_budget(
+        db.inner(),
+        run_id.as_deref(),
+        project_id.as_deref(),
+    )
+    .await;
+    budget_status_for(db.inner(), &engine, account_id.as_deref()).await
+}
+
+/// Resolve which Claude account a budget check should read: a run's assigned
+/// account first; resumable legacy/global runs stay global; not-yet-started
+/// runs fall back to the project's linked account, then the default.
+async fn resolve_claude_account_for_budget(
+    db: &Db,
+    run_id: Option<&str>,
+    project_id: Option<&str>,
+) -> Option<String> {
+    use sqlx::Row;
+
+    if let Some(run_id) = run_id.filter(|s| !s.trim().is_empty()) {
+        if let Ok(Some(row)) = sqlx::query(
+            "SELECT engine, session_id, claude_account_id FROM runs WHERE id = ?",
+        )
+        .bind(run_id)
+        .fetch_optional(db)
+        .await
+        {
+            let account_id: Option<String> = row.get("claude_account_id");
+            if account_id.as_deref().is_some_and(|id| !id.trim().is_empty()) {
+                return account_id;
+            }
+            let engine: String = row.get("engine");
+            let session_id: Option<String> = row.get("session_id");
+            if engine == "claude"
+                && session_id.as_deref().is_some_and(|sid| !sid.trim().is_empty())
+            {
+                return None;
+            }
+        }
+    }
+    if let Some(project_id) = project_id.filter(|s| !s.trim().is_empty()) {
+        if let Some(id) = crate::commands::claude_accounts::project_account_id(db, project_id).await {
+            return Some(id);
+        }
+    }
+    crate::commands::claude_accounts::default_account_id(db).await
 }
 
 /// Guardrail used at every token-consuming entry point (start / resume /
 /// follow-up). Refuses when the budget is over, unless the user explicitly
 /// overrode it. The error is prefixed `BUDGET_EXCEEDED` so the UI can offer a
 /// one-click override.
-pub async fn enforce_budget(db: &Db, engine: &str, override_budget: bool) -> Result<(), String> {
+pub async fn enforce_budget(
+    db: &Db,
+    engine: &str,
+    claude_account_id: Option<&str>,
+    override_budget: bool,
+) -> Result<(), String> {
     if override_budget {
         return Ok(());
     }
-    let status = budget_status_for(db, engine).await?;
+    let status = budget_status_for(db, engine, claude_account_id).await?;
     if status.is_over {
         return Err(format!(
             "BUDGET_EXCEEDED: {} usage at {}% of the {} limit",
