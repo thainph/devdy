@@ -253,6 +253,7 @@ const usage = computed(() => runView.value?.usage ?? null)
 // Subscription plan-usage badges (Claude + Codex), pushed by the Host.
 const claudeBudget = computed(() => store.state.claudeBudget)
 const codexBudget = computed(() => store.state.codexBudget)
+const claudeAccount = computed(() => store.state.claudeAccount)
 
 // Clear the running flag when the run reports a terminal status.
 watch(
@@ -406,6 +407,7 @@ function onRequestFiles(): void {
     :usage="usage"
     :claude-budget="claudeBudget"
     :codex-budget="codexBudget"
+    :claude-account="claudeAccount"
     @send="onSend"
     @cancel="onCancel"
     @decide="onDecide"

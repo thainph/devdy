@@ -26,6 +26,28 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{ChildStderr, ChildStdout};
 use tokio::sync::Mutex as TokioMutex;
 
+const CLAUDE_AUTH_OVERRIDE_ENV: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_PROFILE",
+];
+
+/// Apply a Devdy-managed Claude profile to a spawned sidecar/CLI.
+///
+/// We only clear auth override env vars when a managed profile is selected, so
+/// legacy installs that intentionally launch Devdy with global env auth keep the
+/// old behavior until they opt into Claude accounts.
+pub fn apply_claude_config_dir(cmd: &mut tokio::process::Command, config_dir: Option<&str>) {
+    let Some(config_dir) = config_dir.map(str::trim).filter(|v| !v.is_empty()) else {
+        return;
+    };
+    for key in CLAUDE_AUTH_OVERRIDE_ENV {
+        cmd.env_remove(key);
+    }
+    cmd.env("CLAUDE_CONFIG_DIR", config_dir);
+}
+
 /// Map a Devdy permission mode onto a permission mode the Agent SDK accepts.
 /// Unknown/legacy modes (`auto`, `dontAsk`) fall back to `default`.
 pub fn sdk_permission_mode(mode: &str) -> &'static str {
@@ -323,10 +345,10 @@ pub async fn drain_sidecar(
     // Snapshot the run's project + engine once so usage rows are self-contained
     // (they survive deletion of the run/project). `engine` is already updated to
     // the effective engine before this task spawns.
-    let (project_id, project_name, engine) = {
+    let (project_id, project_name, engine, claude_account_id) = {
         use sqlx::Row;
         match sqlx::query(
-            "SELECT r.project_id, r.engine, p.name AS project_name
+            "SELECT r.project_id, r.engine, r.claude_account_id, p.name AS project_name
              FROM runs r JOIN projects p ON p.id = r.project_id
              WHERE r.id = ?",
         )
@@ -338,10 +360,16 @@ pub async fn drain_sidecar(
                 row.get::<String, _>("project_id"),
                 row.get::<String, _>("project_name"),
                 row.get::<String, _>("engine"),
+                row.get::<Option<String>, _>("claude_account_id"),
             ),
-            Err(_) => (String::new(), String::new(), String::new()),
+            Err(_) => (String::new(), String::new(), String::new(), None),
         }
     };
+
+    // Which per-account Claude snapshot key this run's live /usage writes to, so
+    // parallel runs on different accounts never overwrite each other's badge.
+    let plan_usage_key =
+        crate::commands::stats::claude_plan_usage_key(claude_account_id.as_deref());
 
     // Announce this run to the desktop webview so app-wide surfaces (the active-
     // runs dock, the permission notifier and its native OS notification) attach
@@ -482,7 +510,7 @@ pub async fn drain_sidecar(
                                             false
                                         }
                                     } else {
-                                        persist_plan_usage(&db_pool, usage).await
+                                        persist_plan_usage(&db_pool, &plan_usage_key, usage).await
                                     };
                                     if persisted {
                                         let _ = app.emit("plan_usage_updated", serde_json::json!({ "run_id": run_id }));
@@ -503,7 +531,7 @@ pub async fn drain_sidecar(
                                     if let Some(m) = v.get("model").and_then(|x| x.as_str()) {
                                         last_model = Some(m.to_string());
                                     }
-                                    if persist_plan_init_rate_limits(&db_pool, v).await {
+                                    if persist_plan_init_rate_limits(&db_pool, &plan_usage_key, v).await {
                                         let _ = app.emit(
                                             "plan_usage_updated",
                                             serde_json::json!({ "run_id": run_id }),
@@ -511,7 +539,7 @@ pub async fn drain_sidecar(
                                     }
                                 }
                                 if v.get("type").and_then(|x| x.as_str()) == Some("rate_limit_event")
-                                    && persist_plan_rate_limit_event(&db_pool, v).await
+                                    && persist_plan_rate_limit_event(&db_pool, &plan_usage_key, v).await
                                 {
                                     let _ = app.emit(
                                         "plan_usage_updated",
@@ -545,7 +573,7 @@ pub async fn drain_sidecar(
                                     // the UI to lock the composer so the next turn
                                     // (resume / follow-up) can't be started.
                                     if let Ok(status) =
-                                        crate::commands::stats::budget_status_for(&db_pool, &engine).await
+                                        crate::commands::stats::budget_status_for(&db_pool, &engine, claude_account_id.as_deref()).await
                                     {
                                         if status.is_over {
                                             let _ = app.emit(
@@ -692,7 +720,11 @@ async fn capture_session_id(
 /// `plan_usage`, as a normalized JSON blob stamped with the capture time. We
 /// store only the fields the UI needs so we're insulated from churn in the
 /// experimental SDK response shape.
-pub(crate) async fn persist_plan_usage(db_pool: &sqlx::SqlitePool, usage: &Value) -> bool {
+pub(crate) async fn persist_plan_usage(
+    db_pool: &sqlx::SqlitePool,
+    key: &str,
+    usage: &Value,
+) -> bool {
     if !usage
         .get("rate_limits_available")
         .and_then(|v| v.as_bool())
@@ -730,10 +762,11 @@ pub(crate) async fn persist_plan_usage(db_pool: &sqlx::SqlitePool, usage: &Value
         },
     });
     // Keep the live status captured from rate_limit_events (which have no %).
-    let prior = load_plan_usage_snapshot(db_pool).await;
+    let prior = load_plan_usage_snapshot(db_pool, key).await;
     merge_prior_window_status(&mut snapshot, &prior);
 
-    sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES ('plan_usage', ?)")
+    sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
+        .bind(key)
         .bind(snapshot.to_string())
         .execute(db_pool)
         .await
@@ -743,7 +776,11 @@ pub(crate) async fn persist_plan_usage(db_pool: &sqlx::SqlitePool, usage: &Value
 /// Persist `rate_limits` carried on Claude's `system.init`. This is the first
 /// and often most reliable signal available to an idle usage probe, before the
 /// experimental control `/usage` request has a chance to return.
-pub(crate) async fn persist_plan_init_rate_limits(db_pool: &sqlx::SqlitePool, event: &Value) -> bool {
+pub(crate) async fn persist_plan_init_rate_limits(
+    db_pool: &sqlx::SqlitePool,
+    key: &str,
+    event: &Value,
+) -> bool {
     if event.get("type").and_then(|v| v.as_str()) != Some("system")
         || event.get("subtype").and_then(|v| v.as_str()) != Some("init")
     {
@@ -776,10 +813,11 @@ pub(crate) async fn persist_plan_init_rate_limits(db_pool: &sqlx::SqlitePool, ev
             "seven_day_sonnet": window("seven_day_sonnet"),
         },
     });
-    let prior = load_plan_usage_snapshot(db_pool).await;
+    let prior = load_plan_usage_snapshot(db_pool, key).await;
     merge_prior_window_status(&mut snapshot, &prior);
 
-    sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES ('plan_usage', ?)")
+    sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
+        .bind(key)
         .bind(snapshot.to_string())
         .execute(db_pool)
         .await
@@ -790,7 +828,11 @@ pub(crate) async fn persist_plan_init_rate_limits(db_pool: &sqlx::SqlitePool, ev
 /// used by the global budget badge. These events can arrive before the
 /// experimental `/usage` helper returns, so they keep the warning at the newest
 /// known utilization while a turn is streaming.
-pub(crate) async fn persist_plan_rate_limit_event(db_pool: &sqlx::SqlitePool, event: &Value) -> bool {
+pub(crate) async fn persist_plan_rate_limit_event(
+    db_pool: &sqlx::SqlitePool,
+    key: &str,
+    event: &Value,
+) -> bool {
     let Some(info) = event.get("rate_limit_info").and_then(|v| v.as_object()) else {
         return false;
     };
@@ -816,7 +858,7 @@ pub(crate) async fn persist_plan_rate_limit_event(db_pool: &sqlx::SqlitePool, ev
         .map(plan_status_severity);
     let now = chrono::Utc::now().to_rfc3339();
 
-    let mut snapshot = load_plan_usage_snapshot(db_pool)
+    let mut snapshot = load_plan_usage_snapshot(db_pool, key)
         .await
         .unwrap_or_else(empty_plan_usage_snapshot);
 
@@ -839,7 +881,8 @@ pub(crate) async fn persist_plan_rate_limit_event(db_pool: &sqlx::SqlitePool, ev
         }
     }
 
-    sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES ('plan_usage', ?)")
+    sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
+        .bind(key)
         .bind(snapshot.to_string())
         .execute(db_pool)
         .await
@@ -860,10 +903,11 @@ fn empty_plan_usage_snapshot() -> Value {
     })
 }
 
-/// Read the current `plan_usage` snapshot from settings, if any.
-async fn load_plan_usage_snapshot(db_pool: &sqlx::SqlitePool) -> Option<Value> {
+/// Read the current plan-usage snapshot for `key` from settings, if any.
+async fn load_plan_usage_snapshot(db_pool: &sqlx::SqlitePool, key: &str) -> Option<Value> {
     let stored: Option<String> =
-        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'plan_usage'")
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+            .bind(key)
             .fetch_optional(db_pool)
             .await
             .ok()

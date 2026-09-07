@@ -292,6 +292,9 @@ export interface PlanUsageKind {
   kind: 'plan_usage'
   claude?: PlanBudget | null
   codex?: PlanBudget | null
+  /** Label of the Claude account the bound run is using (which account the
+   * utilization belongs to). Absent for a global/legacy run. */
+  claude_account?: string | null
 }
 
 /** Non-secret run metadata (mirror of Host `protocol.rs::RunInfo`). */

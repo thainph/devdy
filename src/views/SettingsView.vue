@@ -5,7 +5,8 @@ import { invoke } from '@/lib/tauri'
 import {
   Cpu, Palette, FileText, ShieldAlert, Sparkles, Github, Gitlab, Cloud,
   CheckCircle2, AlertTriangle, Trash2, Plus, Pencil, Gauge, Radio,
-  RefreshCw, Loader2, Server, HardDrive, Bot, RotateCcw,
+  RefreshCw, Loader2, Server, HardDrive, Bot, RotateCcw, UserCircle,
+  LogIn, Star,
 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
@@ -20,6 +21,7 @@ import { useToast } from '@/composables/useToast'
 import { useGithubAccountsStore, type PatValidation } from '@/stores/githubAccounts'
 import { useGitlabAccountsStore, type GitlabPatValidation } from '@/stores/gitlabAccounts'
 import { useAwsAccountsStore, type AwsAccountPayload, type AwsAuthMethod, type AwsValidation } from '@/stores/awsAccounts'
+import { useClaudeAccountsStore } from '@/stores/claudeAccounts'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useMascotLevelStore } from '@/stores/mascotLevel'
 import { type MascotBubbleVariant, type MascotBubbleMessage } from '@/composables/useMascotBubble'
@@ -414,6 +416,7 @@ const SECTIONS = [
   { id: 'github', labelKey: 'settings.sections.github', icon: Github },
   { id: 'gitlab', labelKey: 'settings.sections.gitlab', icon: Gitlab },
   { id: 'aws', labelKey: 'settings.sections.aws', icon: Cloud },
+  { id: 'claude', labelKey: 'settings.sections.claude', icon: UserCircle },
   { id: 'engine', labelKey: 'settings.sections.engine', icon: Cpu },
   { id: 'ai', labelKey: 'settings.sections.ai', icon: Sparkles },
   { id: 'mcp', labelKey: 'settings.sections.mcp', icon: Server },
@@ -847,6 +850,114 @@ async function handleDeleteAwsAccount(id: string) {
   }
 }
 
+// --- Claude accounts (multi-account via CLAUDE_CONFIG_DIR) ---
+const claudeStore = useClaudeAccountsStore()
+const claudeNewLabel = ref('')
+const claudeAdding = ref(false)
+const claudeAddError = ref<string | null>(null)
+const claudeEditing = ref<string | null>(null)
+const claudeEditLabel = ref<Record<string, string>>({})
+const claudeBusyAccount = ref<string | null>(null)
+const claudeAccountError = ref<Record<string, string>>({})
+
+function claudeStatusTone(status: string): string {
+  switch (status) {
+    case 'ready': return 'text-emerald-500'
+    case 'needs_login': return 'text-amber-500'
+    case 'error': return 'text-destructive'
+    default: return 'text-muted-foreground'
+  }
+}
+
+async function handleAddClaudeAccount() {
+  const label = claudeNewLabel.value.trim()
+  if (!label) return
+  claudeAdding.value = true
+  claudeAddError.value = null
+  try {
+    const acc = await claudeStore.create(label)
+    claudeNewLabel.value = ''
+    toast.success(t('settings.claude.accountAdded'))
+    // Immediately open the login terminal for the fresh profile.
+    await claudeStore.openLogin(acc.id, settings.value.terminal_app)
+    toast.info(t('settings.claude.loginOpened'))
+  } catch (e) {
+    claudeAddError.value = String(e)
+  } finally {
+    claudeAdding.value = false
+  }
+}
+
+function startClaudeEdit(acc: { id: string; label: string }) {
+  claudeEditing.value = acc.id
+  claudeEditLabel.value[acc.id] = acc.label
+}
+
+async function handleSaveClaudeEdit(id: string) {
+  claudeBusyAccount.value = id
+  claudeAccountError.value[id] = ''
+  try {
+    await claudeStore.rename(id, claudeEditLabel.value[id]?.trim() || '')
+    claudeEditing.value = null
+    toast.success(t('settings.github.accountUpdated'))
+  } catch (e) {
+    claudeAccountError.value[id] = String(e)
+  } finally {
+    claudeBusyAccount.value = null
+  }
+}
+
+async function handleClaudeLogin(id: string) {
+  claudeAccountError.value[id] = ''
+  try {
+    await claudeStore.openLogin(id, settings.value.terminal_app)
+    toast.info(t('settings.claude.loginOpened'))
+  } catch (e) {
+    claudeAccountError.value[id] = String(e)
+  }
+}
+
+async function handleValidateClaude(id: string) {
+  claudeBusyAccount.value = id
+  claudeAccountError.value[id] = ''
+  try {
+    const result = await claudeStore.validate(id)
+    if (result.logged_in) {
+      toast.success(t('settings.claude.validReady'))
+    } else {
+      toast.info(t('settings.claude.validNeedsLogin'))
+    }
+  } catch (e) {
+    claudeAccountError.value[id] = String(e)
+  } finally {
+    claudeBusyAccount.value = null
+  }
+}
+
+async function handleSetDefaultClaude(id: string) {
+  try {
+    await claudeStore.setDefault(id)
+    // The desktop badge follows the default account — refresh it now.
+    budget.refresh()
+  } catch (e) {
+    toast.error(String(e))
+  }
+}
+
+async function handleDeleteClaudeAccount(id: string) {
+  if (!(await confirm({
+    title: t('settings.claude.deleteTitle'),
+    message: t('settings.claude.deleteMessage'),
+    confirmLabel: t('common.delete'),
+  }))) return
+  try {
+    await claudeStore.remove(id)
+    toast.success(t('settings.github.accountDeleted'))
+  } catch (e) {
+    toast.error(String(e))
+  }
+}
+
 onMounted(async () => {
   try {
     settings.value = await invoke<AppSettings>('get_settings')
@@ -854,6 +965,7 @@ onMounted(async () => {
     await ghStore.fetch()
     await glStore.fetch()
     await awsStore.fetch()
+    await claudeStore.fetch()
     await loadGoogleStatus()
     budget.refresh()
     unlistenPlanUsage = await listen<{ provider?: string }>('plan_usage_updated', (e) => {
@@ -2012,6 +2124,153 @@ watch(() => settings.value.language, (v) => {
                 </Button>
               </div>
               <p v-if="awsAddError" class="text-[11px] text-destructive">{{ awsAddError }}</p>
+            </div>
+        </Card>
+
+        <!-- Claude Accounts section -->
+        <Card v-show="activeSection === 'claude'" body-class="p-4 space-y-4">
+          <template #header>
+            <UserCircle class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
+            <span class="text-xs font-semibold">{{ t('settings.claude.title') }}</span>
+          </template>
+            <p class="text-[11px] text-muted-foreground leading-relaxed">
+              {{ t('settings.claude.intro') }}
+            </p>
+
+            <div class="p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-md text-[11px] leading-relaxed flex gap-2">
+              <ShieldAlert class="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" :stroke-width="1.75" />
+              <span class="text-muted-foreground">
+                {{ t('settings.claude.securityNote') }}
+              </span>
+            </div>
+
+            <!-- Account list -->
+            <div v-if="claudeStore.accounts.length" class="space-y-2">
+              <div
+                v-for="acc in claudeStore.accounts"
+                :key="acc.id"
+                class="border border-border rounded-md p-3 space-y-2"
+              >
+                <template v-if="claudeEditing !== acc.id">
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="min-w-0">
+                      <div class="flex items-center gap-1.5">
+                        <span class="text-sm font-medium truncate">{{ acc.label }}</span>
+                        <span
+                          v-if="acc.is_default"
+                          class="inline-flex items-center gap-0.5 text-[10px] text-primary font-medium"
+                        >
+                          <Star class="h-2.5 w-2.5" :stroke-width="2" fill="currentColor" />
+                          {{ t('settings.claude.default') }}
+                        </span>
+                      </div>
+                      <div class="text-[11px] truncate" :class="claudeStatusTone(acc.status)">
+                        {{ t(`settings.claude.status.${acc.status}`) }}
+                        <span v-if="acc.email" class="text-muted-foreground"> · {{ acc.email }}</span>
+                        <span v-else-if="acc.auth_method" class="text-muted-foreground"> · {{ acc.auth_method }}</span>
+                        <span
+                          v-if="claudeStore.budgets[acc.id]?.source === 'plan'"
+                          class="text-muted-foreground"
+                          :class="{
+                            'text-amber-500': claudeStore.budgets[acc.id]?.is_warning,
+                            'text-destructive': claudeStore.budgets[acc.id]?.is_over,
+                          }"
+                        >
+                          · {{ t('settings.claude.usagePercent', {
+                            percent: claudeStore.budgets[acc.id].percent,
+                            period: t(`settings.claude.period.${claudeStore.budgets[acc.id].period}`),
+                          }) }}
+                        </span>
+                      </div>
+                    </div>
+                    <div class="flex items-center gap-1 shrink-0">
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        @click="handleClaudeLogin(acc.id)"
+                      >
+                        <LogIn class="h-3.5 w-3.5" :stroke-width="1.75" />
+                        {{ t('settings.claude.login') }}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        :disabled="claudeBusyAccount === acc.id"
+                        @click="handleValidateClaude(acc.id)"
+                      >
+                        {{ claudeBusyAccount === acc.id ? '…' : t('settings.claude.validate') }}
+                      </Button>
+                      <Button
+                        v-if="!acc.is_default"
+                        variant="ghost"
+                        size="icon-sm"
+                        :title="t('settings.claude.setDefault')"
+                        @click="handleSetDefaultClaude(acc.id)"
+                      >
+                        <Star class="h-3.5 w-3.5" :stroke-width="1.75" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        :title="t('common.edit')"
+                        @click="startClaudeEdit(acc)"
+                      >
+                        <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
+                      </Button>
+                      <Button
+                        variant="destructive-ghost"
+                        size="icon-sm"
+                        :title="t('common.delete')"
+                        @click="handleDeleteClaudeAccount(acc.id)"
+                      >
+                        <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+                      </Button>
+                    </div>
+                  </div>
+                </template>
+
+                <template v-else>
+                  <Input
+                    v-model="claudeEditLabel[acc.id]"
+                    size="sm"
+                    :placeholder="t('settings.claude.labelPlaceholder')"
+                    @keyup.enter="handleSaveClaudeEdit(acc.id)"
+                  />
+                  <div class="flex items-center gap-2">
+                    <Button
+                      :disabled="!claudeEditLabel[acc.id]?.trim() || claudeBusyAccount === acc.id"
+                      @click="handleSaveClaudeEdit(acc.id)"
+                    >
+                      {{ claudeBusyAccount === acc.id ? t('settings.aws.saving') : t('common.save') }}
+                    </Button>
+                    <Button variant="outline" @click="claudeEditing = null">{{ t('common.cancel') }}</Button>
+                  </div>
+                </template>
+
+                <p v-if="claudeAccountError[acc.id]" class="text-[11px] text-destructive">{{ claudeAccountError[acc.id] }}</p>
+              </div>
+            </div>
+
+            <!-- Add account -->
+            <div class="border-t border-border/60 pt-3 space-y-2">
+              <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.claude.addAccount') }}</div>
+              <p class="text-[11px] text-muted-foreground leading-relaxed">{{ t('settings.claude.addHint') }}</p>
+              <Input
+                v-model="claudeNewLabel"
+                size="sm"
+                :placeholder="t('settings.claude.labelPlaceholder')"
+                @keyup.enter="handleAddClaudeAccount"
+              />
+              <div class="flex justify-end">
+                <Button
+                  :disabled="!claudeNewLabel.trim() || claudeAdding"
+                  @click="handleAddClaudeAccount"
+                >
+                  <Plus class="h-3.5 w-3.5" :stroke-width="2" />
+                  {{ claudeAdding ? t('settings.aws.adding') : t('common.add') }}
+                </Button>
+              </div>
+              <p v-if="claudeAddError" class="text-[11px] text-destructive">{{ claudeAddError }}</p>
             </div>
         </Card>
 

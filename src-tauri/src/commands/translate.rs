@@ -33,8 +33,8 @@
 
 use crate::db::Db;
 use crate::runs::sidecar::{
-    augment_command_path, detach_process_group, kill_process_group, resolve_codex_sidecar,
-    resolve_sidecar,
+    apply_claude_config_dir, augment_command_path, detach_process_group, kill_process_group,
+    resolve_codex_sidecar, resolve_sidecar,
 };
 use serde_json::Value;
 use sqlx::Row;
@@ -136,6 +136,8 @@ struct TranslateSettings {
     model: String,
     style: String,
     default_target: String,
+    /// Config dir of the default Claude account (None = global profile).
+    claude_config_dir: Option<String>,
 }
 
 async fn load_settings(db: &Db) -> Result<TranslateSettings, String> {
@@ -153,6 +155,7 @@ async fn load_settings(db: &Db) -> Result<TranslateSettings, String> {
         model: String::new(),
         style: "natural".to_string(),
         default_target: "vi".to_string(),
+        claude_config_dir: None,
     };
     for row in &rows {
         let key: String = row.get("key");
@@ -170,17 +173,21 @@ async fn load_settings(db: &Db) -> Result<TranslateSettings, String> {
             _ => {}
         }
     }
+    s.claude_config_dir = crate::commands::claude_accounts::default_runtime_account(db)
+        .await?
+        .map(|a| a.config_dir);
     Ok(s)
 }
 
 /// Fingerprint of the settings that pin a warm session — a change respawns it.
 fn signature(s: &TranslateSettings) -> String {
     format!(
-        "{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}",
         s.engine.trim().to_lowercase(),
         s.model.trim(),
         s.claude_path.trim(),
-        s.codex_path.trim()
+        s.codex_path.trim(),
+        s.claude_config_dir.as_deref().unwrap_or("")
     )
 }
 
@@ -254,6 +261,9 @@ async fn spawn_warm(
         }
     } else if s.claude_path != "claude" && !s.claude_path.trim().is_empty() {
         cmd.env("DEVDY_CLAUDE_PATH", &s.claude_path);
+    }
+    if !is_codex {
+        apply_claude_config_dir(&mut cmd, s.claude_config_dir.as_deref());
     }
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
