@@ -354,12 +354,22 @@ function selectPreviewState(state: CyberFoxPreviewState) {
 // Claude model choices = curated aliases + any newly-released models discovered
 // from the account (Codex has no discovery API, so it stays curated).
 const claudeModelOptions = computed(() => modelCatalog.mergedClaudeOptions(CLAUDE_MODEL_OPTIONS))
+// Codex model choices = curated fallback, replaced by the CLI-refreshed cache
+// (`codex debug models`) once the user refreshes in Settings.
+const codexModelOptions = computed(() => modelCatalog.codexOptions(CODEX_MODEL_OPTIONS))
 
 // Translation model choices follow the chosen translation engine, reusing the
-// same option tables (with dynamic Claude models merged in) as the selectors.
+// same option tables (with cached models merged in) as the selectors.
 const translateModelOptions = computed(() =>
-  settings.value.translate_engine === 'codex' ? CODEX_MODEL_OPTIONS : claudeModelOptions.value,
+  settings.value.translate_engine === 'codex' ? codexModelOptions.value : claudeModelOptions.value,
 )
+
+/** Format a cache timestamp for the "last refreshed" hint. */
+function fmtRefreshed(iso: string | null | undefined): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  return isNaN(d.getTime()) ? '' : d.toLocaleString()
+}
 // Reset the translation model when switching to an engine that doesn't offer it.
 watch(
   () => settings.value.translate_engine,
@@ -973,8 +983,8 @@ onMounted(async () => {
       if (e.payload?.provider !== 'codex' && !budget.refreshingPlan) budget.refresh()
     })
     unlistenBudgetStatus = await listen('budget_status_updated', () => budget.refresh())
-    // Discover the account's Claude models (cached; augments the curated list).
-    modelCatalog.fetchClaude().catch(() => {})
+    // Hydrate the persisted model caches (no discovery — refresh is manual).
+    modelCatalog.ensureLoaded().catch(() => {})
   } finally {
     loading.value = false
   }
@@ -2341,22 +2351,35 @@ watch(() => settings.value.language, (v) => {
                   <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.ai.defaultClaudeModel') }}</label>
                   <button
                     class="inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer disabled:opacity-50"
-                    :disabled="modelCatalog.loading"
+                    :disabled="modelCatalog.claudeLoading"
                     :title="t('settings.ai.reloadModelsTitle')"
-                    @click="modelCatalog.fetchClaude(true)"
+                    @click="modelCatalog.refreshClaude()"
                   >
-                    <component :is="modelCatalog.loading ? Loader2 : RefreshCw" class="h-3 w-3" :class="{ 'animate-spin': modelCatalog.loading }" :stroke-width="1.75" />
-                    {{ modelCatalog.loading ? t('settings.ai.loading') : t('settings.ai.reload') }}
+                    <component :is="modelCatalog.claudeLoading ? Loader2 : RefreshCw" class="h-3 w-3" :class="{ 'animate-spin': modelCatalog.claudeLoading }" :stroke-width="1.75" />
+                    {{ modelCatalog.claudeLoading ? t('settings.ai.loading') : t('settings.ai.reload') }}
                   </button>
                 </div>
                 <AppSelect size="sm" v-model="settings.claude_model" :options="claudeModelOptions" />
-                <p v-if="modelCatalog.error" class="text-[11px] text-amber-500">{{ t('settings.ai.modelsLoadError') }}</p>
-                <p v-else-if="modelCatalog.claudeDynamic.length" class="text-[11px] text-muted-foreground">{{ t('settings.ai.modelsAutoUpdated', { count: modelCatalog.claudeDynamic.length }) }}</p>
+                <p v-if="modelCatalog.claudeError" class="text-[11px] text-amber-500">{{ t('settings.ai.modelsRefreshError') }}</p>
+                <p v-else-if="modelCatalog.claudeRefreshedAt" class="text-[11px] text-muted-foreground">{{ t('settings.ai.modelsCached', { count: modelCatalog.claudeModels.length, when: fmtRefreshed(modelCatalog.claudeRefreshedAt) }) }}</p>
               </div>
               <div class="space-y-1.5">
-                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.ai.defaultCodexModel') }}</label>
-                <AppSelect size="sm" v-model="settings.codex_model" :options="CODEX_MODEL_OPTIONS" />
-                <p class="text-[11px] text-muted-foreground">{{ t('settings.ai.codexStaticHint') }}</p>
+                <div class="flex items-center justify-between">
+                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.ai.defaultCodexModel') }}</label>
+                  <button
+                    class="inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer disabled:opacity-50"
+                    :disabled="modelCatalog.codexLoading"
+                    :title="t('settings.ai.reloadCodexModelsTitle')"
+                    @click="modelCatalog.refreshCodex()"
+                  >
+                    <component :is="modelCatalog.codexLoading ? Loader2 : RefreshCw" class="h-3 w-3" :class="{ 'animate-spin': modelCatalog.codexLoading }" :stroke-width="1.75" />
+                    {{ modelCatalog.codexLoading ? t('settings.ai.loading') : t('settings.ai.reload') }}
+                  </button>
+                </div>
+                <AppSelect size="sm" v-model="settings.codex_model" :options="codexModelOptions" />
+                <p v-if="modelCatalog.codexError" class="text-[11px] text-amber-500">{{ t('settings.ai.modelsRefreshError') }}</p>
+                <p v-else-if="modelCatalog.codexRefreshedAt" class="text-[11px] text-muted-foreground">{{ t('settings.ai.modelsCached', { count: modelCatalog.codexModels.length, when: fmtRefreshed(modelCatalog.codexRefreshedAt) }) }}</p>
+                <p v-else class="text-[11px] text-muted-foreground">{{ t('settings.ai.codexRefreshHint') }}</p>
               </div>
               <div class="space-y-1.5">
                 <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">

@@ -164,6 +164,59 @@ export function currentProject() {
     .get(id);
 }
 
+/** All Devdy projects (name, path, linked github + repo count). */
+export function listProjects() {
+  return db()
+    .prepare(
+      `SELECT p.id, p.name, p.path, p.github_owner, p.github_repo, p.default_engine,
+              (SELECT COUNT(*) FROM repos r WHERE r.project_id = p.id) AS repo_count
+       FROM projects p ORDER BY p.name`,
+    )
+    .all();
+}
+
+/**
+ * List repos across projects. A `project` filter (id or exact name) targets one
+ * project regardless of the current run. Otherwise scope="project" (default)
+ * returns the current project's repos and scope="all" returns every repo.
+ * Returns { project, rows } — `project` is the resolved project when a single
+ * one is in scope (filter or current), else null (e.g. scope="all").
+ */
+export function listRepos({ scope = 'project', project = null } = {}) {
+  const cols =
+    'r.id, r.project_id, r.name, r.path, r.github_owner, r.github_repo, p.name AS project_name';
+  const forProject = (proj) => ({
+    project: proj,
+    rows: proj
+      ? db()
+          .prepare(
+            `SELECT ${cols} FROM repos r JOIN projects p ON p.id = r.project_id
+             WHERE r.project_id = ? ORDER BY r.name`,
+          )
+          .all(proj.id)
+      : [],
+  });
+
+  if (project != null && String(project).trim()) {
+    const key = String(project).trim();
+    const proj = db().prepare('SELECT id, name FROM projects WHERE id = ? OR name = ? LIMIT 1').get(key, key);
+    return forProject(proj || null);
+  }
+
+  if (scope === 'all') {
+    return {
+      project: null,
+      rows: db()
+        .prepare(`SELECT ${cols} FROM repos r JOIN projects p ON p.id = r.project_id ORDER BY p.name, r.name`)
+        .all(),
+    };
+  }
+
+  const projectId = process.env.DEVDY_PROJECT_ID || null;
+  if (!projectId) return { project: null, rows: [] };
+  return forProject(db().prepare('SELECT id, name FROM projects WHERE id = ?').get(projectId));
+}
+
 // ---- VPS / managed servers --------------------------------------------------
 
 /**

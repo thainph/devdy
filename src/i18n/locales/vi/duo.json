@@ -1,0 +1,78 @@
+{
+  "title": "Song phiên (Duo Session)",
+  "subtitle": "Hai phiên AI trao đổi luân phiên với nhau theo vai trò bạn đặt, lặp tới khi đạt điều kiện dừng.",
+  "designer": "Bên A",
+  "reviewer": "Bên B",
+  "emptyDesigner": "Bên A chưa bắt đầu.",
+  "emptyReviewer": "Bên B sẽ phản hồi sau khi Bên A đưa ra lượt đầu tiên.",
+  "roundCounter": "vòng {n}/{max}",
+  "openSession": "Xem chi tiết",
+  "historyTitle": "Lịch sử Duo",
+  "noHistory": "Chưa có phiên Duo nào được lưu.",
+  "startFailed": "Không thể bắt đầu Duo: {error}",
+  "noRuns": "Dự án chưa có session nào. Hãy tạo session hoặc chuyển sang chế độ Tạo mới.",
+  "sameRun": "Hai session phải khác nhau.",
+  "existingHint": "Sẽ lấy output cuối cùng của Session A gửi sang Session B để tiếp tục trao đổi (không chạy lại A). Goal/vai trò bên dưới không bắt buộc ở chế độ này.",
+  "mode": {
+    "new": "Tạo mới",
+    "existing": "Dùng session có sẵn"
+  },
+  "runType": {
+    "session": "Phiên làm việc",
+    "issue": "Phân tích Issue",
+    "pr": "Review PR"
+  },
+  "field": {
+    "project": "Dự án",
+    "projectPlaceholder": "Chọn dự án…",
+    "history": "Lịch sử",
+    "historyPlaceholder": "Chọn phiên Duo đã lưu để tiếp tục…",
+    "designerRun": "Session Bên A",
+    "reviewerRun": "Session Bên B",
+    "runPlaceholder": "Chọn session…",
+    "permission": "Chế độ quyền",
+    "maxRounds": "Số vòng tối đa",
+    "consensusToken": "Từ khoá đồng thuận (tùy chọn)",
+    "designerEngine": "Engine Bên A",
+    "reviewerEngine": "Engine Bên B",
+    "model": "Model",
+    "sideA": "Bên A (đi trước)",
+    "sideB": "Bên B (phản hồi)",
+    "labelPlaceholder": "Tên vai trò (vd: Designer, Người chơi 1…)",
+    "instructionPlaceholder": "Mô tả vai trò/hành vi của bên này (có thể để trống)…",
+    "goal": "Yêu cầu / mục tiêu",
+    "goalPlaceholder": "Mô tả nội dung cuộc trao đổi (vd: thiết kế kiến trúc X, chơi oẳn tù tì…)",
+    "overrideBudget": "Bỏ qua giới hạn ngân sách"
+  },
+  "defaults": {
+    "designerLabel": "Designer",
+    "reviewerLabel": "Reviewer",
+    "designerInstruction": "Bạn là kiến trúc sư: đề xuất và chỉnh sửa thiết kế kiến trúc rõ ràng, có cấu trúc (thành phần, luồng dữ liệu, công nghệ, đánh đổi, rủi ro). Tiếp thu phản hồi và cải thiện qua từng lượt.",
+    "reviewerInstruction": "Bạn là reviewer khó tính, độc lập: chỉ ra lỗ hổng, rủi ro, giả định sai, phần thiếu và đề xuất cải thiện cụ thể, có ưu tiên."
+  },
+  "action": {
+    "start": "Bắt đầu",
+    "stop": "Dừng",
+    "continue": "Tiếp tục",
+    "reset": "Đặt lại",
+    "newDuo": "Phiên Duo mới",
+    "collapse": "Thu gọn",
+    "expand": "Cấu hình",
+    "deleteHistory": "Xóa khỏi lịch sử"
+  },
+  "phase": {
+    "idle": "Chưa chạy",
+    "starting": "Đang khởi tạo…",
+    "waitingDesigner": "Bên A đang xử lý…",
+    "waitingReviewer": "Bên B đang xử lý…",
+    "done": "Đã đồng thuận",
+    "stopped": "Đã dừng",
+    "error": "Lỗi"
+  },
+  "reason": {
+    "consensus": "Một bên đã phát tín hiệu đồng thuận — kết thúc.",
+    "maxRounds": "Đã đạt số vòng tối đa mà chưa đồng thuận.",
+    "manual": "Đã dừng thủ công.",
+    "error": "Đã xảy ra lỗi trong quá trình trao đổi."
+  }
+}

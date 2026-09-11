@@ -1,0 +1,78 @@
+{
+  "title": "Duo Session",
+  "subtitle": "Two AI sessions take turns talking to each other in the roles you define, looping until a stop condition.",
+  "designer": "Side A",
+  "reviewer": "Side B",
+  "emptyDesigner": "Side A hasn't started yet.",
+  "emptyReviewer": "Side B responds once Side A takes the first turn.",
+  "roundCounter": "round {n}/{max}",
+  "openSession": "View details",
+  "historyTitle": "Duo history",
+  "noHistory": "No saved Duo sessions yet.",
+  "startFailed": "Couldn't start Duo: {error}",
+  "noRuns": "This project has no sessions yet. Create sessions or switch to New mode.",
+  "sameRun": "The two sessions must be different.",
+  "existingHint": "Session A's last output is forwarded to Session B to continue (A isn't re-run). Goal/roles below are optional in this mode.",
+  "mode": {
+    "new": "Create new",
+    "existing": "Use existing sessions"
+  },
+  "runType": {
+    "session": "Session",
+    "issue": "Issue analysis",
+    "pr": "PR review"
+  },
+  "field": {
+    "project": "Project",
+    "projectPlaceholder": "Pick a project…",
+    "history": "History",
+    "historyPlaceholder": "Pick a saved Duo to continue…",
+    "designerRun": "Side A session",
+    "reviewerRun": "Side B session",
+    "runPlaceholder": "Pick a session…",
+    "permission": "Permission mode",
+    "maxRounds": "Max rounds",
+    "consensusToken": "Consensus token (optional)",
+    "designerEngine": "Side A engine",
+    "reviewerEngine": "Side B engine",
+    "model": "Model",
+    "sideA": "Side A (goes first)",
+    "sideB": "Side B (responds)",
+    "labelPlaceholder": "Role name (e.g. Designer, Player 1…)",
+    "instructionPlaceholder": "Describe this side's role/behaviour (optional)…",
+    "goal": "Goal / requirement",
+    "goalPlaceholder": "Describe the conversation (e.g. design architecture X, play rock-paper-scissors…)",
+    "overrideBudget": "Override budget limit"
+  },
+  "defaults": {
+    "designerLabel": "Designer",
+    "reviewerLabel": "Reviewer",
+    "designerInstruction": "You are the architect: propose and revise a clear, structured architecture design (components, data flow, tech, trade-offs, risks). Incorporate feedback and improve each round.",
+    "reviewerInstruction": "You are a strict, independent reviewer: point out gaps, risks, wrong assumptions, missing pieces, and give specific, prioritized improvements."
+  },
+  "action": {
+    "start": "Start",
+    "stop": "Stop",
+    "continue": "Continue",
+    "reset": "Reset",
+    "newDuo": "New Duo",
+    "collapse": "Collapse",
+    "expand": "Settings",
+    "deleteHistory": "Remove from history"
+  },
+  "phase": {
+    "idle": "Idle",
+    "starting": "Starting…",
+    "waitingDesigner": "Side A working…",
+    "waitingReviewer": "Side B working…",
+    "done": "Consensus reached",
+    "stopped": "Stopped",
+    "error": "Error"
+  },
+  "reason": {
+    "consensus": "A side signalled consensus — ended.",
+    "maxRounds": "Reached the max rounds without consensus.",
+    "manual": "Stopped manually.",
+    "error": "An error occurred during the exchange."
+  }
+}

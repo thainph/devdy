@@ -32,7 +32,9 @@
   "detail": {
     "fallbackTitle": "Ghi chú",
     "titlePlaceholder": "Tiêu đề…",
-    "empty": "Ghi chú này trống."
+    "empty": "Ghi chú này trống.",
+    "copyId": "Copy ID",
+    "copiedId": "Đã copy"
   },
   "confirm": {
     "deleteTitle": "Xóa ghi chú",

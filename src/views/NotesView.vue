@@ -8,7 +8,7 @@ import MarkdownPreview from '@/components/MarkdownPreview.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useMarkdown } from '@/lib/markdown'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { Plus, GripVertical, Trash2, StickyNote, ListChecks, Check, Pencil, Search, X, FolderOpen } from 'lucide-vue-next'
+import { Plus, GripVertical, Trash2, StickyNote, ListChecks, Check, Pencil, Search, X, FolderOpen, Copy } from 'lucide-vue-next'
 
 const { t } = useI18n()
 const store = useNotesStore()
@@ -194,6 +194,21 @@ function commitDetailEdit() {
 
 function cancelDetailEdit() {
   detailEditing.value = false
+}
+
+// Copy the note id to the clipboard, flipping the button to a checkmark briefly.
+const copiedId = ref(false)
+let copyTimer: ReturnType<typeof setTimeout> | null = null
+async function copyDetailId() {
+  if (!detailNote.value) return
+  try {
+    await navigator.clipboard.writeText(detailNote.value.id)
+    copiedId.value = true
+    if (copyTimer) clearTimeout(copyTimer)
+    copyTimer = setTimeout(() => { copiedId.value = false }, 1500)
+  } catch {
+    // Clipboard may be unavailable; fail silently.
+  }
 }
 
 function onDetailEditKeydown(e: KeyboardEvent) {
@@ -618,6 +633,10 @@ onBeforeUnmount(() => {
             {{ t('common.delete') }}
           </Button>
           <div class="flex-1" />
+          <Button variant="ghost" size="sm" :title="t('notes.detail.copyId')" @click="copyDetailId">
+            <component :is="copiedId ? Check : Copy" class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ copiedId ? t('notes.detail.copiedId') : t('notes.detail.copyId') }}
+          </Button>
           <Button size="sm" @click="startDetailEdit">
             <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
             {{ t('common.edit') }}
