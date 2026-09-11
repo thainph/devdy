@@ -260,6 +260,61 @@ const tools = {
     },
   },
 
+  projects_list: {
+    description:
+      'List every Devdy project (name, path, default engine and how many repos each has linked). Use this to discover project names/ids to pass to repos_list.',
+    inputSchema: { type: 'object', properties: {} },
+    handler: () => {
+      const rows = store.listProjects();
+      if (!rows.length) return 'No Devdy projects.';
+      return rows
+        .map((p) => {
+          const repo = p.github_owner && p.github_repo ? ` · ${p.github_owner}/${p.github_repo}` : '';
+          return `- [${p.id}] ${p.name} — ${p.path} · repos=${p.repo_count} · engine=${p.default_engine || 'inherit'}${repo}`;
+        })
+        .join('\n');
+    },
+  },
+
+  repos_list: {
+    description:
+      'List git repos linked to Devdy projects. Defaults to the current project; pass scope="all" for every repo across all projects, or project="<name-or-id>" to target a specific project regardless of the current run.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        scope: { type: 'string', enum: ['project', 'all'] },
+        project: { type: 'string', description: 'project id or exact name to target (overrides scope)' },
+      },
+    },
+    handler: (a) => {
+      const { project, rows } = store.listRepos({ scope: a.scope, project: a.project });
+      const fmt = (r) => {
+        const gh = r.github_owner && r.github_repo ? ` · ${r.github_owner}/${r.github_repo}` : '';
+        return `- [${r.id}] ${r.name} — ${r.path}${gh}`;
+      };
+      if (a.project != null && String(a.project).trim() && !project) {
+        return `No project matches "${a.project}".`;
+      }
+      if (!rows.length) {
+        if (project) return `Project "${project.name}" has no linked repos (0).`;
+        if (a.scope === 'all') return 'No repos in any project.';
+        return 'No current project, or it has no linked repos.';
+      }
+      if (project) {
+        return `# ${project.name} — ${rows.length} repo(s)\n${rows.map(fmt).join('\n')}`;
+      }
+      // scope=all: group by project
+      const byProject = new Map();
+      for (const r of rows) {
+        if (!byProject.has(r.project_name)) byProject.set(r.project_name, []);
+        byProject.get(r.project_name).push(r);
+      }
+      return [...byProject.entries()]
+        .map(([name, list]) => `# ${name} — ${list.length} repo(s)\n${list.map(fmt).join('\n')}`)
+        .join('\n\n');
+    },
+  },
+
   file_tree: {
     description:
       'Show a bounded file tree of the current project (skips node_modules/.git/build dirs). Narrow with subpath and maxDepth for large repos.',

@@ -32,7 +32,9 @@
   "detail": {
     "fallbackTitle": "Note",
     "titlePlaceholder": "Title…",
-    "empty": "This note is empty."
+    "empty": "This note is empty.",
+    "copyId": "Copy ID",
+    "copiedId": "Copied"
   },
   "confirm": {
     "deleteTitle": "Delete note",

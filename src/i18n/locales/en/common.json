@@ -12,5 +12,13 @@
   "refresh": "Refresh",
   "remove": "Remove",
   "active": "Active",
-  "back": "Back"
+  "back": "Back",
+  "status": {
+    "running": "Running",
+    "done": "Done",
+    "failed": "Failed",
+    "cancelled": "Cancelled",
+    "fetched": "Fetched",
+    "draft": "Draft"
+  }
 }

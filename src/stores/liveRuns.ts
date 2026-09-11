@@ -98,6 +98,11 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
   // Side tables that don't need to be reactive (and shouldn't be proxied).
   const toolIndexes = new Map<string, Map<string, number>>()
   const unlisteners = new Map<string, UnlistenFn[]>()
+  // Subscribers notified when a run emits `run:done`. Used by the Duo
+  // orchestrator to relay one session's completed reply into the other. Kept
+  // across turns on purpose — a persistent run fires this on EVERY finished
+  // turn, and the orchestrator re-arms listeners before its next turn.
+  const doneCallbacks = new Map<string, Set<(status: string) => void>>()
 
   // Slash commands advertised by each engine on `system.init`, cached (and
   // persisted) per engine so a brand-new session — which hasn't produced an
@@ -333,6 +338,12 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
         if (runsStore.loadedProjectId === projectId) {
           runsStore.fetchRuns(projectId).catch(() => {})
         }
+        // Notify Duo-orchestrator subscribers AFTER state is settled, so a
+        // callback that reads `entries` sees the fully-drained turn.
+        const cbs = doneCallbacks.get(runId)
+        if (cbs) for (const cb of cbs) {
+          try { cb(event.payload.status) } catch { /* subscriber error must not break teardown */ }
+        }
         stopListening(runId)
       }),
     )
@@ -448,6 +459,28 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
     sessions.get(runId)?.permissionQueue.shift()
   }
 
+  /**
+   * Subscribe to a run's `run:done` events. Returns an unsubscribe function.
+   * Fires on every completed turn of the run (persistent sessions finish a turn
+   * without discarding the subscription). Safe to register before the run's
+   * listeners are attached.
+   */
+  function onDone(runId: string, cb: (status: string) => void): () => void {
+    let set = doneCallbacks.get(runId)
+    if (!set) {
+      set = new Set()
+      doneCallbacks.set(runId, set)
+    }
+    set.add(cb)
+    return () => {
+      const s = doneCallbacks.get(runId)
+      if (s) {
+        s.delete(cb)
+        if (!s.size) doneCallbacks.delete(runId)
+      }
+    }
+  }
+
   /** Clear the "run finished" notification once the user has viewed the run. */
   function markSeen(runId: string) {
     const s = sessions.get(runId)
@@ -484,6 +517,7 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
     rememberDeniedTool,
     syncToolPermissions,
     shiftPermission,
+    onDone,
     markSeen,
     discard,
     runningIds,

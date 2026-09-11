@@ -6,6 +6,8 @@ import { controlSize } from './ui/controlStyles'
 interface Option {
   value: string
   label: string
+  /** Optional dimmed second line shown under the label in the dropdown. */
+  description?: string
 }
 
 const props = withDefaults(defineProps<{
@@ -92,7 +94,8 @@ function close() {
 }
 
 function toggle() {
-  isOpen.value ? close() : open()
+  if (isOpen.value) close()
+  else open()
 }
 
 function select(value: string) {
@@ -232,7 +235,7 @@ watch(isOpen, (val) => {
           :key="option.value"
           role="option"
           :aria-selected="option.value === modelValue"
-          class="relative flex items-center gap-2 cursor-pointer select-none transition-colors"
+          class="relative flex items-start gap-2 cursor-pointer select-none transition-colors"
           :class="[
             size === 'sm' ? controlSize.sm : controlSize.md,
             highlightedIndex === i
@@ -244,14 +247,19 @@ watch(isOpen, (val) => {
           @mousedown.prevent="select(option.value)"
         >
           <Check
-            class="shrink-0 text-primary"
+            class="shrink-0 text-primary mt-0.5"
             :class="[
               option.value === modelValue ? 'opacity-100' : 'opacity-0',
               size === 'sm' ? 'h-3 w-3' : 'h-3.5 w-3.5',
             ]"
             :stroke-width="2.5"
           />
-          <span class="truncate">{{ option.label }}</span>
+          <span class="flex min-w-0 flex-col">
+            <span class="truncate">{{ option.label }}</span>
+            <span v-if="option.description" class="truncate text-[11px] leading-tight text-muted-foreground">
+              {{ option.description }}
+            </span>
+          </span>
         </li>
       </ul>
     </Transition>

@@ -108,7 +108,7 @@ onBeforeUnmount(() => {
 <template>
   <div v-if="files.length" ref="rootEl" class="relative">
     <button
-      class="flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium transition-colors cursor-pointer"
+      class="flex items-center gap-1.5 rounded-md h-6 px-2 text-[11px] font-medium leading-none transition-colors cursor-pointer"
       :class="open ? 'bg-primary/15 text-primary' : 'text-foreground/50 hover:text-foreground/80 hover:bg-card'"
       :title="t('misc.mentionedFiles.countTitle', { count: files.length })"
       @click.stop="toggle"

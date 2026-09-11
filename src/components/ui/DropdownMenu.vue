@@ -1,16 +1,35 @@
 <script setup lang="ts">
 // Lightweight, on-brand dropdown. Provide the trigger via #trigger slot and
 // menu items (DropdownItem) in the default slot. Closes on outside click,
-// Escape, or after an item is clicked.
+// Escape, or after an item is clicked. Flips above the trigger automatically
+// when there isn't enough room below (e.g. rows near the bottom of a scroll
+// list). Emits `update:open` so callers can keep the trigger visible while open.
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 
 withDefaults(defineProps<{ align?: 'left' | 'right' }>(), { align: 'right' })
+const emit = defineEmits<{ (e: 'update:open', open: boolean): void }>()
 
 const open = ref(false)
+const flipUp = ref(false)
 const root = ref<HTMLElement | null>(null)
 
-function toggle() { open.value = !open.value }
-function close() { open.value = false }
+function setOpen(v: boolean) {
+  if (open.value === v) return
+  open.value = v
+  emit('update:open', v)
+}
+function toggle() {
+  const next = !open.value
+  // Decide direction before opening: flip up only when there's clearly more
+  // room above than below (keeps the menu on-screen inside scroll containers).
+  if (next && root.value) {
+    const rect = root.value.getBoundingClientRect()
+    const spaceBelow = window.innerHeight - rect.bottom
+    flipUp.value = spaceBelow < 260 && rect.top > spaceBelow
+  }
+  setOpen(next)
+}
+function close() { setOpen(false) }
 function onDoc(e: MouseEvent) {
   if (root.value && !root.value.contains(e.target as Node)) close()
 }
@@ -40,8 +59,8 @@ onBeforeUnmount(() => {
     >
       <div
         v-if="open"
-        class="absolute top-full mt-1.5 z-30 min-w-44 rounded-md border border-border bg-popover p-1 shadow-lg shadow-black/20"
-        :class="align === 'right' ? 'right-0' : 'left-0'"
+        class="absolute z-30 min-w-44 rounded-md border border-border bg-popover p-1 shadow-lg shadow-black/20"
+        :class="[align === 'right' ? 'right-0' : 'left-0', flipUp ? 'bottom-full mb-1.5' : 'top-full mt-1.5']"
         @click="close"
       >
         <slot />

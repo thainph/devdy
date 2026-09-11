@@ -29,7 +29,8 @@ import {
   ImagePlus, X, Paperclip,
   ShieldQuestion, MessageCircleQuestion,
   Pin, PinOff, Pencil, Check, Github, Gitlab, UserCircle,
-  ClipboardCopy, ScrollText, HardDrive, Cloud, Radio, Languages, FolderTree, Loader2, ListChecks
+  ClipboardCopy, ScrollText, HardDrive, Cloud, Radio, Languages, FolderTree, Loader2, ListChecks,
+  MoreHorizontal, Users
 } from 'lucide-vue-next'
 import AppSelect from '@/components/AppSelect.vue'
 import StreamLog from '@/components/StreamLog.vue'
@@ -40,7 +41,9 @@ import { mergeContextModel } from '@/lib/contextLimits'
 import PermissionPrompt from '@/components/PermissionPrompt.vue'
 import FileViewer from '@/components/FileViewer.vue'
 import FileTree from '@/components/FileTree.vue'
-import { Button, Input, StatusBadge, Badge, Modal } from '@/components/ui'
+import DuoHistoryList from '@/components/DuoHistoryList.vue'
+import DuoWorkspace from '@/components/DuoWorkspace.vue'
+import { Button, Input, StatusBadge, Badge, Modal, DropdownMenu, DropdownItem } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { vMermaid } from '@/lib/mermaid'
@@ -172,15 +175,30 @@ const awsChip = computed(() => {
 const activeRunId = computed(() => route.params.runId as string | undefined)
 
 const repos = ref<Repo[]>([])
-const selectedRepoId = ref('')
 
-const fetchType = ref<'issue' | 'pr'>('issue')
-const refNumber = ref('')
+// Fetch takes a URL and nothing else: the URL is the only input that states all
+// three things a fetch needs — which repo, issue vs PR, and the number. A bare
+// number is ambiguous on both the repo and the kind (GitHub shares one number
+// space between issues and PRs), so it is rejected rather than guessed at.
+const refInput = ref('')
+const detectedRef = ref<
+  { kind: 'issue' | 'pr'; number: number; repoId: string; repoName: string } | null
+>(null)
 const fetching = ref(false)
 // The fetch form is collapsed by default so the run History gets the space.
 const fetchOpen = ref(false)
 // Left rail view: session controls/history, or the project file tree.
-const leftTab = ref<'session' | 'files'>('session')
+const leftTab = ref<'session' | 'files' | 'duo'>('session')
+
+// Open one of a Duo's two sessions in the Session tab (from DuoWorkspace).
+async function openDuoSession(runId: string) {
+  leftTab.value = 'session'
+  // Make sure the project's run list is loaded so the row highlights, then open.
+  if (!runsStore.runs.some((r) => r.id === runId)) {
+    await runsStore.fetchRuns(projectId.value).catch(() => {})
+  }
+  await loadRunLog(runId)
+}
 const fetchError = ref<string | null>(null)
 const needsLinkedIssue = ref(false)
 const linkedIssueInput = ref('')
@@ -224,7 +242,9 @@ function onRunSettingsPointerDown(e: MouseEvent) {
 // for Claude we augment them with models discovered from the account.
 const modelOptions = computed(() => {
   const base = MODEL_OPTIONS[effectiveEngine.value] ?? MODEL_OPTIONS.claude
-  return effectiveEngine.value === 'claude' ? modelCatalog.mergedClaudeOptions(base) : base
+  if (effectiveEngine.value === 'claude') return modelCatalog.mergedClaudeOptions(base)
+  if (effectiveEngine.value === 'codex') return modelCatalog.codexOptions(base)
+  return base
 })
 // Reset the model when switching to an engine that doesn't offer the current pick.
 watch(effectiveEngine, () => {
@@ -249,7 +269,21 @@ watch(modelOverride, (v) => runPrefsStore.set(projectId.value, { model: v }))
 
 const outputEl = ref<HTMLDivElement | null>(null)
 const historyEl = ref<HTMLDivElement | null>(null)
+const sessionListEl = ref<HTMLDivElement | null>(null)
 const currentRunId = ref<string | null>(null)
+
+// Scroll the session-history list so the currently open session is visible.
+// Called whenever the active run changes (click, deep link, back/forward).
+function scrollActiveSessionIntoView() {
+  const id = currentRunId.value
+  if (!id) return
+  nextTick(() => {
+    const container = sessionListEl.value
+    if (!container) return
+    const el = container.querySelector<HTMLElement>(`[data-run-id="${CSS.escape(id)}"]`)
+    if (el) el.scrollIntoView({ block: 'nearest' })
+  })
+}
 // Remote-control modal: create a per-run link + OTP to drive this run from a phone.
 const remoteModalOpen = ref(false)
 // Remote state for the CURRENTLY viewed run, derived reactively from the global
@@ -519,29 +553,18 @@ const isResizingQuestion = ref(false)
 // full width and stops reflowing; this window mirrors its state to the pop-out.
 const poppedOut = ref(false)
 
-// Panel visibility: user can show Content only, AI Result only, or both.
-// Sessions have no issue/PR content, so Content is never shown for them.
-const showContent = ref(true)
-const showResult = ref(true)
-const contentVisible = computed(() => !uiLayout.focusMode && !currentIsSession.value && showContent.value)
-const resultVisible = computed(() => currentIsSession.value || showResult.value)
-const showResizeHandle = computed(() => contentVisible.value && resultVisible.value)
+// Panel visibility: the AI Result column is always on — issue/PR runs can pull
+// the fetched Content in as a left split column via the header toggle. Sessions
+// have no issue/PR content, so Content is never available for them.
+const showContent = ref(false)
+const canToggleContent = computed(() => !uiLayout.focusMode && !currentIsSession.value)
+const contentVisible = computed(() => canToggleContent.value && showContent.value)
+const showResizeHandle = computed(() => contentVisible.value)
 // No run is selected AND the project has none — hide the Content / AI Result
 // split entirely and show a single centered "No sessions yet" empty state.
 const noSession = computed(() => !currentRunId.value && runsStore.runs.length === 0)
 const contentWidth = computed(() => (showResizeHandle.value ? leftWidthPct.value + '%' : '100%'))
 const resultWidth = computed(() => (showResizeHandle.value ? 100 - leftWidthPct.value + '%' : '100%'))
-
-// Toggle a panel, but never let both end up hidden.
-function togglePanel(which: 'content' | 'result') {
-  if (which === 'content') {
-    if (showContent.value && !showResult.value) return
-    showContent.value = !showContent.value
-  } else {
-    if (showResult.value && !showContent.value) return
-    showResult.value = !showResult.value
-  }
-}
 
 function startResize(e: MouseEvent) {
   e.preventDefault()
@@ -812,6 +835,7 @@ watch(
 watch(currentRunId, (id) => {
   stickToBottom.value = true
   scrollOutputToBottom()
+  scrollActiveSessionIntoView()
   closeRunSettingsMenu()
   clearTranslateTrigger()
   closeTranslate()
@@ -846,9 +870,9 @@ onMounted(async () => {
   loadMarkdown()
   nextTick(autoResizeComposer)
   document.addEventListener('mousedown', onRunSettingsPointerDown)
-  // Discover the account's Claude models so the composer's model picker includes
-  // any newly-released ones (cached across views).
-  modelCatalog.fetchClaude().catch(() => {})
+  // Hydrate the persisted model caches so the composer's picker shows the last
+  // refreshed lists (no discovery here — refresh is manual in Settings).
+  modelCatalog.ensureLoaded().catch(() => {})
   if (projectStore.projects.length === 0) {
     await projectStore.fetchProjects()
   }
@@ -860,9 +884,6 @@ onMounted(async () => {
   if (awsStore.accounts.length === 0) awsStore.fetch().catch(() => {})
   loadProjectServers()
   repos.value = await projectStore.listRepos(projectId.value)
-  if (repos.value.length === 1) {
-    selectedRepoId.value = repos.value[0].id
-  }
   await runsStore.fetchRuns(projectId.value)
   // Preload the project file list so inline-code mentions resolve to links.
   ensureProjectFiles().catch(() => {})
@@ -1015,18 +1036,21 @@ function clearHistoryView() {
 }
 
 async function handleFetch(linkedIssueOverride?: number) {
-  const n = parseInt(refNumber.value.trim())
-  if (isNaN(n) || n <= 0) { fetchError.value = t('run.enterValidNumber'); return }
-  if (!selectedRepoId.value) { fetchError.value = t('run.selectRepoFirst'); return }
+  const target = detectedRef.value
+  if (!target) {
+    // fetchError may already name the unmapped repo — don't overwrite that.
+    if (!fetchError.value) fetchError.value = t('run.refMustBeUrl')
+    return
+  }
 
   fetchError.value = null
   fetching.value = true
   try {
     let run: RunRecord
-    if (fetchType.value === 'issue') {
-      run = await runsStore.fetchIssue(projectId.value, selectedRepoId.value, n)
+    if (target.kind === 'issue') {
+      run = await runsStore.fetchIssue(projectId.value, target.repoId, target.number)
     } else {
-      run = await runsStore.fetchPr(projectId.value, selectedRepoId.value, n, linkedIssueOverride)
+      run = await runsStore.fetchPr(projectId.value, target.repoId, target.number, linkedIssueOverride)
     }
     await runsStore.fetchRuns(projectId.value)
     currentRunId.value = run.id
@@ -1036,7 +1060,7 @@ async function handleFetch(linkedIssueOverride?: number) {
     await loadInputContent(run.id)
   } catch (e) {
     const msg = String(e)
-    if (fetchType.value === 'pr' && msg.includes('NO_LINKED_ISSUE')) {
+    if (target.kind === 'pr' && msg.includes('NO_LINKED_ISSUE')) {
       needsLinkedIssue.value = true
       fetchError.value = t('run.prNoLinkedIssue')
     } else {
@@ -2077,6 +2101,9 @@ const deletingRunId = ref<string | null>(null)
 const refetchingRunId = ref<string | null>(null)
 const clearingAll = ref(false)
 const pinningRunId = ref<string | null>(null)
+// Which History row currently has its actions (⋯) menu open. Kept so the
+// trigger stays visible even when the pointer leaves the row while open.
+const actionsMenuRunId = ref<string | null>(null)
 
 // Inline rename state for the History list.
 const renamingRunId = ref<string | null>(null)
@@ -2320,11 +2347,47 @@ async function loadRunLog(runId: string, opts: { preferDisk?: boolean; force?: b
   }
 }
 
-function parseIssueOrPrNumber(input: string): number | null {
-  const urlMatch = input.match(/\/(?:issues|pull)\/(\d+)/)
-  if (urlMatch) return parseInt(urlMatch[1])
-  const n = parseInt(input.trim())
-  return isNaN(n) ? null : n
+/** What a pasted URL resolved to. `slug` is the repo it points at — `owner/repo`
+ * for GitHub, the full project path for GitLab. */
+interface ParsedRef {
+  number: number
+  kind: 'issue' | 'pr'
+  slug: string
+}
+
+/** Parse an issue/PR/MR URL. Anything else — including a bare number — is null. */
+function parseIssueOrPrUrl(input: string): ParsedRef | null {
+  const val = input.trim()
+
+  // GitLab puts the ref under a `/-/` separator, and the project path may have
+  // any number of subgroup segments: host/group/sub/project/-/merge_requests/42
+  const gitlab = val.match(/^(?:https?:\/\/)?[^/\s]+\/(.+?)\/-\/(merge_requests|issues)\/(\d+)/i)
+  if (gitlab) {
+    return {
+      number: parseInt(gitlab[3]),
+      kind: gitlab[2].toLowerCase() === 'merge_requests' ? 'pr' : 'issue',
+      slug: gitlab[1],
+    }
+  }
+
+  // GitHub (and GHE — the host is ignored): host/owner/repo/pull/123
+  const github = val.match(/^(?:https?:\/\/)?[^/\s]+\/([^/\s]+\/[^/\s]+)\/(pull|issues)\/(\d+)/i)
+  if (github) {
+    return {
+      number: parseInt(github[3]),
+      kind: github[2].toLowerCase() === 'pull' ? 'pr' : 'issue',
+      slug: github[1],
+    }
+  }
+
+  return null
+}
+
+/** The repo slug as the pasted URL would spell it, for matching. */
+function repoSlug(r: Repo): string | null {
+  if (r.provider === 'gitlab') return r.gitlab_project_path
+  if (r.github_owner && r.github_repo) return `${r.github_owner}/${r.github_repo}`
+  return null
 }
 
 async function handleOpenInVscode() {
@@ -2360,11 +2423,33 @@ async function handleOpenInTerminal() {
 }
 
 function handleRefInput(val: string) {
-  const parsed = parseIssueOrPrNumber(val)
-  refNumber.value = parsed !== null ? String(parsed) : val
+  refInput.value = val
   needsLinkedIssue.value = false
   linkedIssueInput.value = ''
   fetchError.value = null
+  detectedRef.value = null
+  if (!val.trim()) return
+
+  // Stay quiet while a URL is still half-typed — `handleFetch` reports the
+  // "not a URL" case on submit. An unmapped repo, by contrast, comes from a
+  // fully parsed URL, so it is safe to flag live.
+  const parsed = parseIssueOrPrUrl(val)
+  if (!parsed) return
+  // The URL names its own repo — resolve it rather than trusting a selection,
+  // so #N is never pulled from a different repo than the one that was pasted.
+  const match = repos.value.find(
+    r => repoSlug(r)?.toLowerCase() === parsed.slug.toLowerCase(),
+  )
+  if (!match) {
+    fetchError.value = t('run.repoNotInProject', { slug: parsed.slug })
+    return
+  }
+  detectedRef.value = {
+    kind: parsed.kind,
+    number: parsed.number,
+    repoId: match.id,
+    repoName: match.name,
+  }
 }
 </script>
 
@@ -2521,6 +2606,14 @@ function handleRefInput(val: string) {
             <FolderTree class="h-3.5 w-3.5" :stroke-width="2" />
             {{ t('run.files') }}
           </button>
+          <button
+            class="flex-1 flex items-center justify-center gap-1.5 py-2 transition-colors cursor-pointer"
+            :class="leftTab === 'duo' ? 'text-foreground border-b-2 border-primary' : 'text-muted-foreground hover:text-foreground'"
+            @click="leftTab = 'duo'"
+          >
+            <Users class="h-3.5 w-3.5" :stroke-width="2" />
+            {{ t('run.duo') }}
+          </button>
         </div>
 
         <!-- Compact top toolbar: New session, then a collapsible Fetch -->
@@ -2547,62 +2640,50 @@ function handleRefInput(val: string) {
           <!-- Fetch form (collapsible) -->
           <div v-if="fetchOpen" class="space-y-3 pt-1">
 
-          <!-- Repo selector (only shown when project has multiple repos) -->
-          <div v-if="repos.length > 1">
-            <AppSelect
-              v-model="selectedRepoId"
-              :options="repos.map(r => ({ value: r.id, label: r.name }))"
-              :placeholder="t('run.selectRepo')"
-              size="sm"
-            />
-          </div>
-          <div v-else-if="repos.length === 0" class="text-[10px] text-amber-500/80 leading-relaxed">
+          <div v-if="repos.length === 0" class="text-[10px] text-amber-500/80 leading-relaxed">
             {{ t('run.noReposConfigured') }}
           </div>
 
-          <!-- Type toggle -->
-          <div class="flex gap-1 p-0.5 bg-muted rounded-md">
-            <button
-              class="flex-1 flex items-center justify-center gap-1.5 py-1 text-xs rounded transition-colors cursor-pointer"
-              :class="fetchType === 'issue'
-                ? 'bg-background text-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground'"
-              @click="fetchType = 'issue'"
-            >
-              <Bug class="h-3 w-3" :stroke-width="1.75" />
-              {{ t('run.issue') }}
-            </button>
-            <button
-              class="flex-1 flex items-center justify-center gap-1.5 py-1 text-xs rounded transition-colors cursor-pointer"
-              :class="fetchType === 'pr'
-                ? 'bg-background text-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground'"
-              @click="fetchType = 'pr'"
-            >
-              <GitPullRequest class="h-3 w-3" :stroke-width="1.75" />
-              {{ t('run.labelPr') }}
-            </button>
-          </div>
-
-          <!-- Number input -->
+          <!-- The URL is the whole form: it names the repo, the kind and the
+               number, so there is nothing left to pick by hand. -->
           <div>
             <Input
-              :model-value="refNumber"
+              :model-value="refInput"
               @update:model-value="handleRefInput"
-              :placeholder="fetchType === 'issue' ? t('run.refPlaceholderIssue') : t('run.refPlaceholderPr')"
+              :placeholder="t('run.refPlaceholder')"
               @keyup.enter="handleFetch()"
             />
             <p v-if="fetchError" class="mt-1 text-[10px] text-destructive">{{ fetchError }}</p>
+          </div>
+
+          <!-- Echo back what the URL was understood to mean. -->
+          <div
+            v-if="detectedRef"
+            class="flex items-center gap-1.5 px-2 py-1 text-[11px] rounded-md bg-muted text-muted-foreground"
+          >
+            <component
+              :is="detectedRef.kind === 'pr' ? GitPullRequest : Bug"
+              class="h-3 w-3 shrink-0"
+              :stroke-width="1.75"
+            />
+            <span class="truncate">
+              {{ detectedRef.kind === 'pr' ? t('run.labelPr') : t('run.issue') }}
+              #{{ detectedRef.number }} · {{ detectedRef.repoName }}
+            </span>
           </div>
 
           <Button
             v-if="!needsLinkedIssue"
             variant="outline"
             class="w-full"
-            :disabled="fetching || !refNumber"
+            :disabled="fetching || !detectedRef"
             @click="handleFetch()"
           >
-            {{ fetching ? t('run.fetching') : (fetchType === 'issue' ? t('run.fetchIssue') : t('run.fetchPr')) }}
+            {{ fetching
+              ? t('run.fetching')
+              : detectedRef?.kind === 'pr' ? t('run.fetchPr')
+              : detectedRef?.kind === 'issue' ? t('run.fetchIssue')
+              : t('run.fetchIssuePr') }}
           </Button>
 
           <!-- Linked issue prompt (shown when PR body has no Fixes/Closes/Resolves #N) -->
@@ -2625,7 +2706,7 @@ function handleRefInput(val: string) {
         </div>
 
         <!-- Run history -->
-        <div v-show="leftTab === 'session'" class="flex-1 overflow-auto">
+        <div v-show="leftTab === 'session'" ref="sessionListEl" class="flex-1 overflow-auto">
           <div class="flex items-center justify-between px-4 py-2.5 border-b border-border/40">
             <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">{{ t('run.history') }}</p>
             <button
@@ -2647,6 +2728,7 @@ function handleRefInput(val: string) {
             v-else
             v-for="run in runsStore.runs"
             :key="run.id"
+            :data-run-id="run.id"
             class="group relative border-b border-border/30 transition-colors hover:bg-accent/40 focus-within:bg-accent/40"
             :class="{ 'bg-accent/60': currentRunId === run.id }"
           >
@@ -2706,11 +2788,11 @@ function handleRefInput(val: string) {
                     :stroke-width="2"
                   />
                 </span>
-                <StatusBadge :status="run.status" size="xs" class="shrink-0" />
+                <StatusBadge :status="run.status" :run-type="run.run_type" size="xs" class="shrink-0" />
               </div>
-              <!-- Meta: date + engine. Fades out on hover so the actions can
-                   take over the same band instead of overlapping it. -->
-              <div class="flex items-center gap-2 mt-2 pl-6 pr-3 text-[10px] text-muted-foreground/70 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0">
+              <!-- Meta: date + engine. Always visible so hovering never hides
+                   the session info; actions sit to the right of this band. -->
+              <div class="flex items-center gap-2 mt-2 pl-6 pr-3 text-[10px] text-muted-foreground/70">
                 <span class="flex items-center gap-1 shrink-0">
                   <Clock class="h-2.5 w-2.5" :stroke-width="1.5" />
                   {{ new Date(run.created_at).toLocaleDateString() }}
@@ -2720,79 +2802,66 @@ function handleRefInput(val: string) {
                 </span>
               </div>
             </button>
-            <!-- Actions: bigger hit area, spaced, revealed on hover/focus -->
+            <!-- Actions: a single overflow (⋯) menu revealed on hover/focus, so
+                 the row's meta info stays fully visible. The trigger also stays
+                 put while its menu is open (actionsMenuRunId). Running sessions
+                 get a safe subset — delete/refetch are hidden while live. -->
             <div
-              v-if="run.status !== 'running'"
-              class="absolute right-2 bottom-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
+              class="absolute right-2 bottom-2 flex items-center opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto"
+              :class="{ '!opacity-100 !pointer-events-auto': actionsMenuRunId === run.id }"
             >
-              <Button
-                v-if="runGithubUrl(run)"
-                variant="ghost"
-                size="icon-sm"
-                :aria-label="run.run_type === 'analyze_issue' ? t('run.openIssueOnGithub') : t('run.openPrOnGithub')"
-                :title="run.run_type === 'analyze_issue' ? t('run.openIssueOnGithub') : t('run.openPrOnGithub')"
-                @click.stop="openRunInBrowser(run)"
+              <DropdownMenu
+                align="right"
+                @update:open="(o) => (actionsMenuRunId = o ? run.id : null)"
               >
-                <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
-              </Button>
-              <Button
-                v-if="run.run_type !== 'session'"
-                variant="ghost"
-                size="icon-sm"
-                :disabled="refetchingRunId === run.id"
-                :aria-label="run.run_type === 'analyze_issue' ? t('run.refetchIssue') : t('run.refetchPr')"
-                :title="run.run_type === 'analyze_issue' ? t('run.refetchIssue') : t('run.refetchPr')"
-                @click.stop="handleRefetch(run.id)"
-              >
-                <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': refetchingRunId === run.id }" :stroke-width="1.75" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                :aria-label="t('run.copyLogPath')"
-                :title="t('run.copyLogPath')"
-                @click.stop="copyLogPath(run)"
-              >
-                <ClipboardCopy class="h-3.5 w-3.5" :stroke-width="1.75" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                :aria-label="t('run.viewLogFile')"
-                :title="t('run.viewLogFile')"
-                @click.stop="viewLogFile(run)"
-              >
-                <ScrollText class="h-3.5 w-3.5" :stroke-width="1.75" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                :aria-label="t('run.rename')"
-                :title="t('run.rename')"
-                @click.stop="startRename(run, $event)"
-              >
-                <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                :disabled="pinningRunId === run.id"
-                :aria-label="run.pinned ? t('run.unpinFromTop') : t('run.pinToTop')"
-                :title="run.pinned ? t('run.unpinFromTop') : t('run.pinToTop')"
-                @click.stop="handleTogglePin(run, $event)"
-              >
-                <component :is="run.pinned ? PinOff : Pin" class="h-3.5 w-3.5" :stroke-width="1.75" />
-              </Button>
-              <Button
-                variant="destructive-ghost"
-                size="icon-sm"
-                :disabled="deletingRunId === run.id"
-                :aria-label="t('run.deleteThisRun')"
-                :title="t('run.deleteThisRun')"
-                @click.stop="handleDeleteRun(run.id, $event)"
-              >
-                <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-              </Button>
+                <template #trigger>
+                  <button
+                    type="button"
+                    class="flex items-center justify-center h-6 w-6 rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+                    :aria-label="t('run.moreActions')"
+                    :title="t('run.moreActions')"
+                  >
+                    <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
+                  </button>
+                </template>
+
+                <DropdownItem v-if="runGithubUrl(run)" @click="openRunInBrowser(run)">
+                  <ExternalLink class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+                  {{ run.run_type === 'analyze_issue' ? t('run.openIssueOnGithub') : t('run.openPrOnGithub') }}
+                </DropdownItem>
+                <DropdownItem
+                  v-if="run.run_type !== 'session' && run.status !== 'running'"
+                  :disabled="refetchingRunId === run.id"
+                  @click="handleRefetch(run.id)"
+                >
+                  <RefreshCw class="h-3.5 w-3.5 shrink-0" :class="{ 'animate-spin': refetchingRunId === run.id }" :stroke-width="1.75" />
+                  {{ run.run_type === 'analyze_issue' ? t('run.refetchIssue') : t('run.refetchPr') }}
+                </DropdownItem>
+                <DropdownItem @click="copyLogPath(run)">
+                  <ClipboardCopy class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+                  {{ t('run.copyLogPath') }}
+                </DropdownItem>
+                <DropdownItem @click="viewLogFile(run)">
+                  <ScrollText class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+                  {{ t('run.viewLogFile') }}
+                </DropdownItem>
+                <div class="my-1 h-px bg-border" aria-hidden="true" />
+                <DropdownItem @click="startRename(run, $event)">
+                  <Pencil class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+                  {{ t('run.rename') }}
+                </DropdownItem>
+                <DropdownItem :disabled="pinningRunId === run.id" @click="handleTogglePin(run, $event)">
+                  <component :is="run.pinned ? PinOff : Pin" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+                  {{ run.pinned ? t('run.unpinFromTop') : t('run.pinToTop') }}
+                </DropdownItem>
+                <template v-if="run.status !== 'running'">
+                  <div class="my-1 h-px bg-border" aria-hidden="true" />
+                  <DropdownItem :disabled="deletingRunId === run.id" @click="handleDeleteRun(run.id, $event)">
+                    <Trash2 class="h-3.5 w-3.5 shrink-0 text-destructive" :stroke-width="1.75" />
+                    <span class="text-destructive">{{ t('run.deleteThisRun') }}</span>
+                  </DropdownItem>
+                </template>
+              </DropdownMenu>
             </div>
 
             <!-- Inline rename: overlays the row title while editing. -->
@@ -2832,36 +2901,20 @@ function handleRefInput(val: string) {
           @open-file="openFileViewer"
           @mention-file="mentionFileInComposer"
         />
+
+        <!-- Duo tab: saved Duo-session switcher, scoped to this project. -->
+        <div v-show="leftTab === 'duo'" class="flex-1 overflow-hidden">
+          <DuoHistoryList :project-id="projectId" />
+        </div>
       </div>
 
+      <!-- Duo workspace takes over the main area when its tab is active. Mounted
+           only on demand (v-if) so opening a project doesn't auto-restore a duo. -->
+      <DuoWorkspace v-if="leftTab === 'duo'" :project-id="projectId" class="flex-1 min-w-0"
+        @open-session="openDuoSession" />
+
       <!-- Terminal panel (split-pane: Content | AI Result) -->
-      <div class="flex-1 flex flex-col overflow-hidden bg-background">
-        <!-- View toggles: show Content, AI Result, or both. Hidden for
-             standalone sessions (they have no issue/PR Content). -->
-        <div
-          v-if="!currentIsSession && !uiLayout.focusMode && !noSession"
-          class="flex items-center gap-1 px-3 py-1.5 border-b border-border bg-card/40 shrink-0"
-        >
-          <span class="text-[11px] font-mono text-foreground/55 mr-1">{{ t('run.view') }}</span>
-          <button
-            class="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] font-mono font-medium border transition-colors cursor-pointer"
-            :class="contentVisible ? 'bg-primary/20 text-primary border-primary/40' : 'text-foreground/65 border-transparent hover:text-foreground hover:bg-accent'"
-            :title="t('run.toggleContentPanel')"
-            @click="togglePanel('content')"
-          >
-            <FileText class="h-3 w-3" :stroke-width="1.75" />
-            {{ t('run.content') }}
-          </button>
-          <button
-            class="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] font-mono font-medium border transition-colors cursor-pointer"
-            :class="resultVisible ? 'bg-primary/20 text-primary border-primary/40' : 'text-foreground/65 border-transparent hover:text-foreground hover:bg-accent'"
-            :title="t('run.toggleResultPanel')"
-            @click="togglePanel('result')"
-          >
-            <MessageSquare class="h-3 w-3" :stroke-width="1.75" />
-            {{ t('run.aiResult') }}
-          </button>
-        </div>
+      <div v-show="leftTab !== 'duo'" class="flex-1 flex flex-col overflow-hidden bg-background">
         <!-- No sessions yet: hide the Content / AI Result panels entirely and
              show a single centered empty state. -->
         <div v-if="noSession" class="flex-1 flex items-center justify-center p-6">
@@ -2890,7 +2943,9 @@ function handleRefInput(val: string) {
             class="flex flex-col overflow-hidden bg-background min-w-0 min-h-0"
             :style="{ width: contentWidth }"
           >
-            <div class="flex items-center gap-2 px-3 py-2 bg-card border-b border-border shrink-0">
+            <!-- h-8: same row height as the rail tab bar and the AI Result
+                 header, so all three border lines meet up. -->
+            <div class="flex items-center gap-2 px-3 h-8 bg-card border-b border-border shrink-0">
               <FileText class="h-3.5 w-3.5 text-foreground/40" :stroke-width="1.5" />
               <span class="text-[11px] font-mono text-foreground/60">{{ t('run.content') }}</span>
             </div>
@@ -2946,9 +3001,8 @@ function handleRefInput(val: string) {
             />
           </div>
 
-          <!-- AI Result column (full width for sessions or when Content is hidden) -->
+          <!-- AI Result column (always shown; full width when Content is hidden) -->
           <div
-            v-if="resultVisible"
             ref="resultSplitEl"
             class="relative flex overflow-hidden bg-background min-w-0 min-h-0"
             :style="{ width: resultWidth }"
@@ -2958,13 +3012,29 @@ function handleRefInput(val: string) {
                  intermediate frame where the column is stuck at a fixed width). -->
             <div class="relative flex-1 flex flex-col overflow-hidden min-w-0 min-h-0">
             <div class="bg-card border-b border-border shrink-0">
-              <!-- Title row: shows the current run / session title -->
-              <div class="flex items-center gap-2 px-3 py-2">
+              <!-- Title row: shows the current run / session title. Fixed h-8
+                   (= rail tab bar height) so the header never grows when the
+                   mentioned-files / re-dock controls appear. -->
+              <div class="flex items-center gap-2 px-3 h-8">
                 <MessageSquare class="h-3.5 w-3.5 text-foreground/40 shrink-0" :stroke-width="1.5" />
                 <span class="text-xs font-medium text-foreground/90 truncate">
                   {{ currentRun ? runLabel(currentRun) : t('run.noRunSelected') }}
                 </span>
-                <div class="ml-auto flex items-center gap-2 shrink-0">
+                <div class="ml-auto flex items-center gap-1.5 shrink-0">
+                  <!-- Issue / PR runs only: opens the fetched Content as a left
+                       split column. Sessions have no Content to show. -->
+                  <button
+                    v-if="canToggleContent"
+                    type="button"
+                    class="flex items-center gap-1 rounded h-6 px-1.5 text-[11px] font-medium transition-colors cursor-pointer"
+                    :class="contentVisible ? 'bg-primary/15 text-primary' : 'text-foreground/50 hover:text-foreground/80 hover:bg-accent/60'"
+                    :title="t('run.toggleContentPanel')"
+                    :aria-pressed="contentVisible"
+                    @click="showContent = !showContent"
+                  >
+                    <FileText class="h-3.5 w-3.5" :stroke-width="1.75" />
+                    {{ t('run.content') }}
+                  </button>
                   <MentionedFiles :entries="displayedEntries" @open-file="openFileViewer" />
                   <!-- When popped out the drawer is hidden, so surface the
                        re-dock control here (the pop-out control lives in the
@@ -2972,7 +3042,7 @@ function handleRefInput(val: string) {
                   <button
                     v-if="poppedOut"
                     type="button"
-                    class="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-indigo-500 hover:bg-accent/60 transition-colors cursor-pointer"
+                    class="flex items-center gap-1 rounded h-6 px-1.5 text-[11px] text-indigo-500 hover:bg-accent/60 transition-colors cursor-pointer"
                     :title="t('run.questionInOwnWindow')"
                     @click="redockPermission"
                   >

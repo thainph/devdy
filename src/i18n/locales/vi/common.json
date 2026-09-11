@@ -12,5 +12,13 @@
   "refresh": "Làm mới",
   "remove": "Gỡ bỏ",
   "active": "Đang hoạt động",
-  "back": "Quay lại"
+  "back": "Quay lại",
+  "status": {
+    "running": "Đang chạy",
+    "done": "Xong",
+    "failed": "Lỗi",
+    "cancelled": "Đã hủy",
+    "fetched": "Đã tải",
+    "draft": "Nháp"
+  }
 }

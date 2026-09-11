@@ -363,10 +363,10 @@ const hasContent = computed(
   () => text.value.trim().length > 0 || pendingImages.value.length > 0 || pendingFiles.value.length > 0,
 )
 
-const sendKind = computed<'sending' | 'send' | 'resume' | 'run'>(() => {
+const sendKind = computed<'sending' | 'send' | 'run'>(() => {
   if (props.sending) return 'sending'
   if (props.running) return 'send'
-  return hasContent.value ? 'resume' : 'run'
+  return 'run'
 })
 
 const sendLabel = computed(() => {
@@ -375,8 +375,6 @@ const sendLabel = computed(() => {
       return t('controller.composer.sending')
     case 'send':
       return t('controller.composer.send')
-    case 'resume':
-      return t('controller.composer.resume')
     default:
       return t('controller.composer.run')
   }
@@ -670,6 +668,7 @@ function onKeydown(e: KeyboardEvent): void {
                 {{ t('controller.composer.cancel') }}
               </Button>
               <button
+                v-if="!running"
                 class="inline-flex items-center justify-center gap-1.5 h-8 px-3.5 text-xs bg-primary text-primary-foreground rounded-md hover:opacity-90 transition-opacity cursor-pointer disabled:opacity-50 shrink-0"
                 :disabled="primaryDisabled"
                 @click="submit"
