@@ -171,8 +171,11 @@ Vue (liveRuns store) ──invoke──▶ Rust commands ──spawn──▶ No
 OS Keychain                    # GitHub/GitLab PATs + MCP env/header secret values (never in the DB)
 
 <project>/.devdy/
-├── runs/{run_id}.log          # NDJSON stream-json transcript
-└── tasks/issue-{n}/, pr-{n}/  # Fetched GitHub issue / PR markdown
+├── runs/{run_id}.log                       # NDJSON stream-json transcript
+└── tasks/{repo_slug}/                      # Fetched issue / PR markdown
+    ├── issue-{n}/issue.md
+    ├── pr-{n}/pr.md                        # GitHub
+    └── mr-{n}/mr.md                        # GitLab
 
 ~/.claude/projects/.../*.jsonl # Shared with Claude CLI / VS Code
 ~/.codex/sessions/.../*.jsonl  # Shared with Codex CLI

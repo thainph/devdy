@@ -123,8 +123,9 @@ Scenario: Chưa link account GitLab
   5. `GET .../merge_requests/:iid/notes` — comment + inline diff notes; lọc bot/system (BR-003);
      render `## Comments` và `## Inline Review Comments`.
   6. `GET .../merge_requests/:iid/approvals` — render `## Reviews` liệt kê người đã approve (BR-010).
-  7. Ghi `.devdy/tasks/<repo_slug>/issue-<linked_issue>/mr-<mr_iid>.md`; tạo run type `review_pr`,
-     `ref_number = mr_iid`.
+  7. Ghi `.devdy/tasks/<repo_slug>/mr-<mr_iid>/mr.md` (BR-011); nếu có linked issue thì
+     materialize luôn `issue-<linked>/issue.md` (chỉ khi chưa tồn tại) và trỏ `linked_issue_file`
+     tới nó. Tạo run type `review_pr`, `ref_number = mr_iid`.
 - **Postcondition:** Có run `review_pr`; file markdown chứa metadata + diff + comment + approvals.
 - **Rule liên quan:** BR-003, BR-004, BR-005, BR-006, BR-010; DATA-001, DATA-002; INT-002.
 - **Nguồn:** SRC-001; đối chiếu `github.rs::fetch_pr` + `build_pr_markdown`.
@@ -134,8 +135,9 @@ Scenario: Fetch MR có linked issue
   Given repo GitLab đã link account có PAT hợp lệ
   And MR IID = 10 có closes_issues = [7]
   When người dùng fetch MR 10 không truyền linked_issue
-  Then file ".devdy/tasks/<repo_slug>/issue-7/mr-10.md" được tạo
-  And frontmatter chứa pr: 10, linked_issue: 7, base (target branch), head (source branch)
+  Then file ".devdy/tasks/<repo_slug>/mr-10/mr.md" được tạo
+  And file ".devdy/tasks/<repo_slug>/issue-7/issue.md" tồn tại
+  And frontmatter chứa pr: 10, linked_issue: 7, linked_issue_file: ../issue-7/issue.md, base (target branch), head (source branch), head_sha
   And phần Files Changed và Diffs được render từ MR changes
   And phần Reviews liệt kê người đã approve (nếu có)
   And một run type "review_pr", ref_number = 10 được tạo
@@ -149,7 +151,14 @@ Scenario: MR không có linked issue và không truyền tham số
 Scenario: MR truyền linked_issue thủ công
   Given MR IID = 11 không có closes_issues
   When người dùng fetch MR 11 với linked_issue = 7
-  Then file ".devdy/tasks/<repo_slug>/issue-7/mr-11.md" được tạo bình thường
+  Then file ".devdy/tasks/<repo_slug>/mr-11/mr.md" được tạo bình thường
+  And frontmatter chứa linked_issue: 7
+
+Scenario: Fetch lại cùng một MR không sinh bản sao
+  Given MR IID = 10 đã fetch một lần với linked_issue tự dò ra = 7
+  When người dùng fetch lại MR 10 với linked_issue = 9 (nhập tay)
+  Then vẫn chỉ có một file ".devdy/tasks/<repo_slug>/mr-10/mr.md", bị ghi đè
+  And không có thư mục "issue-7/mr-10.md" hay "issue-9/mr-10.md" nào được tạo
 ```
 
 ### FR-004 — Refetch run GitLab (làm mới nội dung)
@@ -198,7 +207,7 @@ Scenario: Cùng một command phục vụ 2 provider
 - **Trigger:** Bất kỳ lần fetch issue/MR (FR-002, FR-003).
 - **Hành vi:** File task được ghi dưới thư mục con định danh theo repo:
   - Issue: `<project>/.devdy/tasks/<repo_slug>/issue-<iid>/issue.md`
-  - MR: `<project>/.devdy/tasks/<repo_slug>/issue-<linked>/mr-<n>.md`
+  - MR: `<project>/.devdy/tasks/<repo_slug>/mr-<n>/mr.md`
 - **Postcondition:** Hai repo khác nhau (kể cả khác provider) trùng số issue/MR không ghi đè lên nhau.
 - **Rule liên quan:** BR-008, BR-009.
 - **Nguồn:** SRC-006.
@@ -219,12 +228,13 @@ Scenario: Hai repo cùng project trùng số issue không đè nhau
 | BR-001 | Provider xác định bởi `repos.provider`; mặc định `github` cho dữ liệu cũ. Không auto-detect từ git remote. |
 | BR-002 | Host GitLab lấy từ `gitlab_accounts.host` của account đã link (chuẩn hóa bỏ `/` cuối); trống → `https://gitlab.com`. API base = `{host}/api/v4`. (Đồng bộ `gitlab_accounts.rs::normalize_host`.) |
 | BR-003 | Loại khỏi markdown: (a) GitLab **system notes** (`system == true`); (b) user là bot — tái dùng danh sách bot & quy tắc `[bot]`/tên phổ biến trong `github.rs::is_bot_user`. |
-| BR-004 | Định dạng markdown GitLab **giống hệt** GitHub để tương thích UI/parse: issue dùng key `issue/title/author/created/labels`; MR dùng key `pr/linked_issue/title/author/base/head/created`; các section `## Files Changed`, `## Diffs`, `## Comments`, `## Reviews`, `## Inline Review Comments`. |
+| BR-004 | Định dạng markdown GitLab **giống hệt** GitHub để tương thích UI/parse: issue dùng key `issue/title/author/created/labels/fetched_at`; MR dùng key `pr/linked_issue/linked_issue_file/title/author/base/head/head_sha/created/fetched_at`; các section `## Files Changed`, `## Diffs`, `## Comments`, `## Reviews`, `## Inline Review Comments`. |
 | BR-005 | Mapping lỗi API: 401 → thông báo kiểm tra token/scope/host (tái dùng message trong `gitlab_accounts.rs`); 404 → "Không tìm thấy issue/MR"; lỗi mạng → message ngắn gọn, không lộ PAT. |
 | BR-006 | MR **bắt buộc** có linked issue: ưu tiên tham số truyền vào, kế đến `closes_issues` (lấy IID nhỏ nhất); không có → lỗi `NO_LINKED_ISSUE`. |
 | BR-007 | Refetch chỉ áp dụng cho run type `analyze_issue`/`review_pr`; type khác → lỗi "Cannot re-fetch". Provider suy ra từ repo của run. |
 | BR-008 | `repo_slug` = `<provider>-<owner_hoặc_namespace>-<repo>-<repo_id[:6]>`. Chuẩn hóa: lowercase; thay mọi ký tự không phải `[a-z0-9]` (gồm `/` của namespace lồng, `.`, khoảng trắng) thành `-`; gộp nhiều `-` liên tiếp thành một. Hậu tố `repo_id` 6 ký tự đầu để chống trùng slug tuyệt đối. |
-| BR-009 | **Không migrate** file/đường dẫn cũ. Run cũ đọc theo `input_path`/`output_path` đã lưu trong DB → vẫn hoạt động. Nhánh fallback dựng path trong `runs.rs:943-956, 1014-1027` **giữ nguyên scheme cũ** (`issue-<n>/issue.md`) vì chỉ dùng cho run legacy có `input_path = NULL`; fetch mới luôn set `input_path`. |
+| BR-009 | Run cũ đọc theo `input_path`/`output_path` đã lưu trong DB → vẫn hoạt động ở layout cũ. Nhánh fallback dựng path trong `runs.rs:943-956, 1014-1027` **giữ nguyên scheme cũ** (`issue-<n>/issue.md`) vì chỉ dùng cho run legacy có `input_path = NULL`; fetch mới luôn set `input_path`. Migration sang layout mới là **lười**, xem BR-011. |
+| BR-011 | Đường dẫn file task chỉ dẫn xuất từ `(repo, loại, số)` — bất biến. `linked_issue` là metadata trong frontmatter (`linked_issue`, `linked_issue_file` trỏ tương đối tới `../issue-<n>/issue.md`), **không** quyết định thư mục. Lý do: layout cũ lồng MR dưới `issue-<linked>/` khiến cùng một MR rơi vào thư mục khác nhau tùy link được auto-detect, nhập tay, hay vắng (`no-issue/`) → refetch sinh bản sao thay vì ghi đè. `refetch_run` tự di chuyển file về path chuẩn và cập nhật mọi run trỏ tới path cũ. |
 | BR-010 | Render `## Reviews` từ GitLab MR **approvals** (`.../approvals`), liệt kê người đã approve. Ánh xạ về cùng section `## Reviews` mà UI GitHub đang dùng (BR-004). |
 
 ## 5. Yêu cầu dữ liệu
@@ -232,7 +242,7 @@ Scenario: Hai repo cùng project trùng số issue không đè nhau
 | ID | Yêu cầu |
 |---|---|
 | DATA-001 | Bảng `repos` thêm: `provider TEXT NOT NULL DEFAULT 'github'`; `gitlab_project_path TEXT` (`namespace/project`); `gitlab_project_id INTEGER` (numeric id để gọi API). Giữ nguyên `github_owner/github_repo`. Migration mới (vd 0017), backfill `provider='github'` cho bản ghi cũ. |
-| DATA-002 | File output: issue → `.devdy/tasks/<repo_slug>/issue-<iid>/issue.md`; MR → `.devdy/tasks/<repo_slug>/issue-<linked>/mr-<n>.md`. `input_path`/`output_path` trong `runs` lưu đường dẫn đầy đủ mới. |
+| DATA-002 | File output: issue → `.devdy/tasks/<repo_slug>/issue-<iid>/issue.md`; MR → `.devdy/tasks/<repo_slug>/mr-<n>/mr.md`. Đường dẫn là hàm thuần của `(repo, loại, số)` — **không** phụ thuộc `linked_issue` (xem BR-011). `input_path`/`output_path` trong `runs` lưu đường dẫn đầy đủ mới. |
 | DATA-003 | `runs.ref_number` lưu **IID** (không phải id toàn cục). `runs.repo_id` phải trỏ về repo GitLab để refetch suy được provider. |
 
 ## 6. Tích hợp (GitLab REST API v4)

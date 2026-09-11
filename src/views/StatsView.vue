@@ -680,7 +680,9 @@ async function doClean() {
                   variant="outline"
                   size="sm"
                   :disabled="!c.deletable || cleaningId === c.id"
-                  :title="c.deletable ? t('stats.storage.cleanRowTitle') : t('stats.storage.nothingToClean')"
+                  :title="c.deletable
+                    ? t('stats.storage.cleanRowTitle')
+                    : (c.file_count > 0 ? c.description : t('stats.storage.nothingToClean'))"
                   @click="cleanTarget = c"
                 >
                   <Loader2 v-if="cleaningId === c.id" class="h-3.5 w-3.5 animate-spin" />
