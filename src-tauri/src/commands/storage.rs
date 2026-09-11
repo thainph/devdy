@@ -8,6 +8,10 @@
 //! Devdy run logs live at `<project>/.devdy/runs/<run_id>.log`; cleaning them
 //! removes the files only — the `runs` rows and the `run_usage` ledger are kept,
 //! so run history (and token stats) survive, just without the raw transcript.
+//! Fetched issue/PR markdown (`<project>/.devdy/tasks/**`) is reported in two
+//! rows: the whole tree for visibility (it is the bulkiest part, and each file
+//! is deleted with the run that owns it), and the orphaned subset — files no run
+//! points at — which is the only part safe to sweep from here.
 //! Claude/Codex categories cover the CLI's own session stores
 //! (`~/.claude/projects/**/*.jsonl`, `~/.codex/sessions/**/*.jsonl`); deleting
 //! those is destructive to the CLI's history, which is why they are flagged.
@@ -21,6 +25,8 @@ use walkdir::WalkDir;
 
 /// Stable identifiers shared with the frontend cleanup action.
 const CAT_DEVDY: &str = "devdy_logs";
+const CAT_DEVDY_TASKS: &str = "devdy_tasks";
+const CAT_DEVDY_TASK_ORPHANS: &str = "devdy_task_orphans";
 const CAT_CLAUDE: &str = "claude_sessions";
 const CAT_CODEX: &str = "codex_sessions";
 
@@ -69,6 +75,30 @@ fn is_log(p: &Path) -> bool {
     p.extension().map(|e| e == "log").unwrap_or(false)
 }
 
+/// True for the task markdown Devdy itself writes under `.devdy/tasks`:
+/// `issue.md` / `pr.md` / `mr.md` in the canonical layout, plus the legacy
+/// `pr-<n>.md` / `mr-<n>.md` names still on disk for runs never re-fetched.
+///
+/// Deliberately narrow: skills write their own files into the same tree (e.g.
+/// `civilink-write-pr` writes `pr-draft.md` beside `issue.md`). Those are user
+/// content, are referenced by no run, and must never be swept up as orphans.
+fn is_devdy_task_file(p: &Path) -> bool {
+    let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    if matches!(name, "issue.md" | "pr.md" | "mr.md") {
+        return true;
+    }
+    let Some(stem) = name.strip_suffix(".md") else {
+        return false;
+    };
+    let Some(number) = stem.strip_prefix("pr-").or_else(|| stem.strip_prefix("mr-")) else {
+        return false;
+    };
+    // `pr-123.md` yes, `pr-draft.md` no.
+    !number.is_empty() && number.chars().all(|c| c.is_ascii_digit())
+}
+
 /// Walk `root`, summing size and count of regular files matching `pred`.
 /// Missing roots contribute nothing. Symlinks are not followed.
 fn scan<P: Fn(&Path) -> bool>(root: &Path, pred: &P) -> (u64, u64) {
@@ -102,16 +132,41 @@ fn purge<P: Fn(&Path) -> bool>(root: &Path, pred: &P) -> (u64, u64) {
     (bytes, count)
 }
 
-/// Every project's `.devdy/runs` directory (the only place Devdy writes logs).
-async fn devdy_runs_dirs(db: &Db) -> Vec<PathBuf> {
+/// Every project's `.devdy/<sub>` directory.
+async fn devdy_dirs(db: &Db, sub: &str) -> Vec<PathBuf> {
     let rows = match sqlx::query("SELECT path FROM projects").fetch_all(db).await {
         Ok(r) => r,
         Err(_) => return Vec::new(),
     };
     rows.into_iter()
         .filter_map(|row| row.try_get::<String, _>("path").ok())
-        .map(|p| Path::new(&p).join(".devdy").join("runs"))
+        .map(|p| Path::new(&p).join(".devdy").join(sub))
         .collect()
+}
+
+/// Every path referenced by a run as its input or output. A task file in this
+/// set still backs a run in History, so it is never an orphan.
+///
+/// Matched as stored strings: both sides are built by joining onto the same
+/// `projects.path` value, and `delete_run_inner` already refcounts task files
+/// this way.
+async fn referenced_run_paths(db: &Db) -> std::collections::HashSet<String> {
+    let rows = sqlx::query(
+        "SELECT input_path, output_path FROM runs WHERE input_path IS NOT NULL OR output_path IS NOT NULL",
+    )
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
+
+    let mut set = std::collections::HashSet::new();
+    for row in rows {
+        for col in ["input_path", "output_path"] {
+            if let Ok(Some(p)) = row.try_get::<Option<String>, _>(col) {
+                set.insert(p);
+            }
+        }
+    }
+    set
 }
 
 #[tauri::command]
@@ -119,10 +174,26 @@ pub async fn get_storage_stats(db: State<'_, Db>) -> Result<StorageStats, String
     // Devdy run logs — sum *.log across every project's .devdy/runs.
     let mut devdy_bytes = 0u64;
     let mut devdy_files = 0u64;
-    for dir in devdy_runs_dirs(db.inner()).await {
+    for dir in devdy_dirs(db.inner(), "runs").await {
         let (b, c) = scan(&dir, &is_log);
         devdy_bytes += b;
         devdy_files += c;
+    }
+
+    // Fetched issue/PR markdown. Split into "still backs a run" (shown for
+    // visibility, removed with its run) and "orphaned" (safe to sweep).
+    let referenced = referenced_run_paths(db.inner()).await;
+    let (mut task_bytes, mut task_files) = (0u64, 0u64);
+    let (mut orphan_bytes, mut orphan_files) = (0u64, 0u64);
+    for dir in devdy_dirs(db.inner(), "tasks").await {
+        let (b, c) = scan(&dir, &is_devdy_task_file);
+        task_bytes += b;
+        task_files += c;
+        let (ob, oc) = scan(&dir, &|p: &Path| {
+            is_devdy_task_file(p) && !referenced.contains(p.to_string_lossy().as_ref())
+        });
+        orphan_bytes += ob;
+        orphan_files += oc;
     }
 
     // Claude/Codex CLI session transcripts. Claude includes the global
@@ -156,6 +227,35 @@ pub async fn get_storage_stats(db: State<'_, Db>) -> Result<StorageStats, String
             destructive: false,
         },
         StorageCategory {
+            id: CAT_DEVDY_TASKS.into(),
+            label: "Fetched issue / PR files".into(),
+            description: "Issue and PR markdown fetched into every project \
+                          (.devdy/tasks/**), including full diffs — usually the \
+                          bulkiest part. Each file backs a run in History and is \
+                          deleted with it, so there is nothing to clean here; use \
+                          the orphaned row below, or delete the runs themselves."
+                .into(),
+            path: "<project>/.devdy/tasks".into(),
+            size_bytes: task_bytes,
+            file_count: task_files,
+            deletable: false,
+            destructive: false,
+        },
+        StorageCategory {
+            id: CAT_DEVDY_TASK_ORPHANS.into(),
+            label: "Orphaned issue / PR files".into(),
+            description: "Fetched issue/PR markdown left behind with no run \
+                          pointing at it — e.g. after a repo was removed and \
+                          re-added, or from the pre-canonical folder layout. \
+                          Files written by skills (pr-draft.md) are never touched."
+                .into(),
+            path: "<project>/.devdy/tasks".into(),
+            size_bytes: orphan_bytes,
+            file_count: orphan_files,
+            deletable: orphan_files > 0,
+            destructive: false,
+        },
+        StorageCategory {
             id: CAT_CLAUDE.into(),
             label: "Claude CLI sessions".into(),
             description: "Claude Code session transcripts (~/.claude/projects/**/*.jsonl). \
@@ -181,8 +281,18 @@ pub async fn get_storage_stats(db: State<'_, Db>) -> Result<StorageStats, String
         },
     ];
 
-    let total_bytes = categories.iter().map(|c| c.size_bytes).sum();
-    let total_files = categories.iter().map(|c| c.file_count).sum();
+    // The orphan row is a subset of the tasks row — count it once in the totals
+    // (and in the per-row percentages the UI derives from them).
+    let total_bytes = categories
+        .iter()
+        .filter(|c| c.id != CAT_DEVDY_TASK_ORPHANS)
+        .map(|c| c.size_bytes)
+        .sum();
+    let total_files = categories
+        .iter()
+        .filter(|c| c.id != CAT_DEVDY_TASK_ORPHANS)
+        .map(|c| c.file_count)
+        .sum();
 
     Ok(StorageStats {
         categories,
@@ -197,11 +307,27 @@ pub async fn clean_storage(db: State<'_, Db>, category: String) -> Result<CleanR
 
     match category.as_str() {
         CAT_DEVDY => {
-            for dir in devdy_runs_dirs(db.inner()).await {
+            for dir in devdy_dirs(db.inner(), "runs").await {
                 let (b, c) = purge(&dir, &is_log);
                 freed += b;
                 deleted += c;
             }
+        }
+        CAT_DEVDY_TASK_ORPHANS => {
+            // Re-read the referenced set here rather than trusting the snapshot
+            // the stats call saw: a run fetched in between must not lose its input.
+            let referenced = referenced_run_paths(db.inner()).await;
+            for dir in devdy_dirs(db.inner(), "tasks").await {
+                let (b, c) = purge(&dir, &|p: &Path| {
+                    is_devdy_task_file(p) && !referenced.contains(p.to_string_lossy().as_ref())
+                });
+                freed += b;
+                deleted += c;
+            }
+        }
+        // Visibility-only: these files are deleted with the run that owns them.
+        CAT_DEVDY_TASKS => {
+            return Err("fetched task files are removed with their run".to_string())
         }
         CAT_CLAUDE => {
             if let Some(h) = home() {
@@ -230,4 +356,38 @@ pub async fn clean_storage(db: State<'_, Db>, category: String) -> Result<CleanR
         deleted_files: deleted,
         freed_bytes: freed,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn p(name: &str) -> PathBuf {
+        PathBuf::from("/proj/.devdy/tasks/github-acme-web-abc123").join(name)
+    }
+
+    #[test]
+    fn canonical_task_files_are_recognized() {
+        assert!(is_devdy_task_file(&p("issue-7/issue.md")));
+        assert!(is_devdy_task_file(&p("pr-10/pr.md")));
+        assert!(is_devdy_task_file(&p("mr-10/mr.md")));
+    }
+
+    #[test]
+    fn legacy_task_files_are_recognized() {
+        // Runs never re-fetched still sit in the old nested layout.
+        assert!(is_devdy_task_file(&p("issue-7/pr-10.md")));
+        assert!(is_devdy_task_file(&p("no-issue/mr-11.md")));
+    }
+
+    #[test]
+    fn skill_written_files_are_never_task_files() {
+        // The whole point of the narrow predicate: a skill's draft lives in the
+        // same folder, is referenced by no run, and must not be swept as orphan.
+        assert!(!is_devdy_task_file(&p("issue-7/pr-draft.md")));
+        assert!(!is_devdy_task_file(&p("issue-7/notes.md")));
+        assert!(!is_devdy_task_file(&p("issue-7/pr-.md")));
+        assert!(!is_devdy_task_file(&p("issue-7/pr-v2.md")));
+        assert!(!is_devdy_task_file(&p("issue-7/issue.txt")));
+    }
 }

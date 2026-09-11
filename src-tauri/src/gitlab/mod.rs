@@ -230,6 +230,58 @@ pub fn repo_slug(provider: &str, owner: &str, repo: &str, repo_id: &str) -> Stri
     sanitize_slug(&raw)
 }
 
+/// Where a repo's fetched task files live, and how they are named:
+///
+/// ```text
+/// <project>/.devdy/tasks/<repo_slug>/issue-<n>/issue.md
+/// <project>/.devdy/tasks/<repo_slug>/pr-<n>/pr.md      (GitHub)
+/// <project>/.devdy/tasks/<repo_slug>/mr-<n>/mr.md      (GitLab)
+/// ```
+///
+/// The path is a pure function of the immutable identity `(repo, kind, number)`
+/// and deliberately NOT of the linked issue. An earlier layout nested a PR under
+/// `issue-<linked>/`, which meant the same PR landed in a different folder
+/// depending on whether the link was auto-detected, typed in by hand, or absent
+/// (`no-issue/`) — so a re-fetch could fork a second copy instead of overwriting
+/// the first. Keying on identity alone makes re-fetch idempotent by construction.
+#[derive(Clone, Copy)]
+pub struct TaskLocation<'a> {
+    /// Absolute path of the project checkout.
+    pub project_path: &'a str,
+    /// `repo_slug` of the repo these tasks belong to.
+    pub repo_slug: &'a str,
+    /// `"github"` or `"gitlab"` — only decides `pr-` vs `mr-` naming.
+    pub provider: &'a str,
+}
+
+impl TaskLocation<'_> {
+    /// Canonical file for one issue/PR/MR.
+    pub fn file(&self, run_type: &str, number: u64) -> std::path::PathBuf {
+        let (dir, file) = if run_type == "analyze_issue" {
+            (format!("issue-{}", number), "issue.md")
+        } else if self.provider == "gitlab" {
+            (format!("mr-{}", number), "mr.md")
+        } else {
+            (format!("pr-{}", number), "pr.md")
+        };
+        std::path::Path::new(self.project_path)
+            .join(".devdy")
+            .join("tasks")
+            .join(self.repo_slug)
+            .join(dir)
+            .join(file)
+    }
+
+    /// Relative path from a PR/MR task file to its linked issue's task file,
+    /// used as the `linked_issue_file` frontmatter value. Returns `None` unless
+    /// the issue file actually exists, so the reference never dangles.
+    pub fn linked_issue_reference(&self, issue_number: u64) -> Option<String> {
+        self.file("analyze_issue", issue_number)
+            .exists()
+            .then(|| format!("../issue-{}/issue.md", issue_number))
+    }
+}
+
 fn sanitize_slug(raw: &str) -> String {
     let lowered = raw.to_ascii_lowercase();
     let mut out = String::with_capacity(lowered.len());
@@ -287,8 +339,15 @@ impl GitlabClient {
         let body = issue.get("description").and_then(Value::as_str).unwrap_or("");
 
         let mut md = format!(
-            "---\nissue: {}\ntitle: {}\nauthor: {}\ncreated: {}\nlabels: {}\n---\n\n# {}\n\n{}\n\n",
-            issue_iid, title, author, created, labels, title, body,
+            "---\nissue: {}\ntitle: {}\nauthor: {}\ncreated: {}\nlabels: {}\nfetched_at: {}\n---\n\n# {}\n\n{}\n\n",
+            issue_iid,
+            title,
+            author,
+            created,
+            labels,
+            chrono::Utc::now().to_rfc3339(),
+            title,
+            body,
         );
 
         let notes = self
@@ -337,7 +396,8 @@ impl GitlabClient {
         mr_iid: u64,
         linked_issue: Option<u64>,
         allow_missing_issue: bool,
-    ) -> Result<(String, Option<u64>), String> {
+        loc: TaskLocation<'_>,
+    ) -> Result<String, String> {
         let mr = self
             .get_json(&self.url(&format!("merge_requests/{}", mr_iid)))
             .await?;
@@ -345,6 +405,33 @@ impl GitlabClient {
         let linked = self
             .resolve_linked_issue(mr_iid, linked_issue, allow_missing_issue)
             .await?;
+
+        // Grouping by issue now lives in the frontmatter instead of the folder
+        // layout, so materialize the linked issue's own task file (once) and
+        // reference it. Fail-soft: if the issue can't be fetched the reference
+        // is simply omitted.
+        let linked_file = match linked {
+            Some(n) => {
+                let path = loc.file("analyze_issue", n);
+                if !path.exists() {
+                    if let Ok(issue_md) = self.build_issue_markdown(n).await {
+                        if let Some(parent) = path.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        let _ = std::fs::write(&path, issue_md);
+                    }
+                }
+                loc.linked_issue_reference(n)
+            }
+            None => None,
+        };
+
+        let head_sha = mr
+            .get("diff_refs")
+            .and_then(|r| r.get("head_sha"))
+            .or_else(|| mr.get("sha"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
 
         let title = mr.get("title").and_then(Value::as_str).unwrap_or("");
         let author = author_name(&mr);
@@ -360,10 +447,19 @@ impl GitlabClient {
         let body = mr.get("description").and_then(Value::as_str).unwrap_or("");
 
         let mut md = format!(
-            "---\npr: {}\nlinked_issue: {}\ntitle: {}\nauthor: {}\nbase: {}\nhead: {}\ncreated: {}\n---\n\n# {}\n\n{}\n\n",
+            "---\npr: {}\nlinked_issue: {}\nlinked_issue_file: {}\ntitle: {}\nauthor: {}\nbase: {}\nhead: {}\nhead_sha: {}\ncreated: {}\nfetched_at: {}\n---\n\n# {}\n\n{}\n\n",
             mr_iid,
             linked.map(|n| n.to_string()).unwrap_or_else(|| "none".to_string()),
-            title, author, target, source, created, title, body,
+            linked_file.as_deref().unwrap_or("none"),
+            title,
+            author,
+            target,
+            source,
+            head_sha,
+            created,
+            chrono::Utc::now().to_rfc3339(),
+            title,
+            body,
         );
 
         // Files changed + diffs (from /changes).
@@ -486,7 +582,7 @@ impl GitlabClient {
             }
         }
 
-        Ok((md, linked))
+        Ok(md)
     }
 }
 
@@ -515,6 +611,82 @@ mod tests {
     fn repo_slug_id_suffix_is_six_chars() {
         let slug = repo_slug("gitlab", "ns", "proj", "0123456789abcdef");
         assert!(slug.ends_with("-012345"));
+    }
+
+    fn loc(provider: &'static str) -> TaskLocation<'static> {
+        TaskLocation { project_path: "/p", repo_slug: "slug", provider }
+    }
+
+    #[test]
+    fn task_paths_are_named_per_provider_and_kind() {
+        assert_eq!(
+            loc("github").file("analyze_issue", 5),
+            std::path::PathBuf::from("/p/.devdy/tasks/slug/issue-5/issue.md")
+        );
+        assert_eq!(
+            loc("github").file("review_pr", 5),
+            std::path::PathBuf::from("/p/.devdy/tasks/slug/pr-5/pr.md")
+        );
+        assert_eq!(
+            loc("gitlab").file("review_pr", 5),
+            std::path::PathBuf::from("/p/.devdy/tasks/slug/mr-5/mr.md")
+        );
+    }
+
+    #[test]
+    fn issue_and_pr_of_the_same_number_do_not_collide() {
+        // GitHub shares one number space between issues and PRs, so #5 can be
+        // both — the two must never resolve to the same file.
+        assert_ne!(
+            loc("github").file("analyze_issue", 5),
+            loc("github").file("review_pr", 5)
+        );
+    }
+
+    #[test]
+    fn pr_path_ignores_the_linked_issue() {
+        // The whole point of the canonical layout: nothing outside
+        // (repo, kind, number) can move a PR's file, so a re-fetch that resolves
+        // a different linked issue still overwrites the same path.
+        let first = loc("github").file("review_pr", 10);
+        let second = loc("github").file("review_pr", 10);
+        assert_eq!(first, second);
+        assert!(!first.to_string_lossy().contains("issue-"));
+        assert!(!first.to_string_lossy().contains("no-issue"));
+    }
+
+    #[test]
+    fn linked_issue_reference_is_none_when_file_missing() {
+        // A dangling `linked_issue_file` would send the agent at a path that
+        // isn't there, so the reference is omitted instead.
+        assert_eq!(loc("github").linked_issue_reference(7), None);
+    }
+
+    #[test]
+    fn linked_issue_reference_resolves_relative_to_the_pr_file() {
+        let dir = std::env::temp_dir().join(format!("devdy-loc-{}", std::process::id()));
+        let l = TaskLocation {
+            project_path: dir.to_str().unwrap(),
+            repo_slug: "slug",
+            provider: "github",
+        };
+        let issue = l.file("analyze_issue", 7);
+        std::fs::create_dir_all(issue.parent().unwrap()).unwrap();
+        std::fs::write(&issue, "x").unwrap();
+
+        let reference = l.linked_issue_reference(7).expect("issue file exists");
+        assert_eq!(reference, "../issue-7/issue.md");
+
+        // The reference must resolve from the PR file's own directory. That dir
+        // exists by the time anything reads the reference (the caller creates it
+        // to write `pr.md`), and `..` only traverses through real directories.
+        let pr_file = l.file("review_pr", 10);
+        let pr_dir = pr_file.parent().unwrap();
+        std::fs::create_dir_all(pr_dir).unwrap();
+        let resolved = pr_dir.join(&reference);
+        assert!(resolved.exists(), "{:?} should exist", resolved);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

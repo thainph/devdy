@@ -121,11 +121,16 @@ fn evaluate_gh_like(argv: &[String], is_glab: bool) -> PolicyDecision {
     }
 
     // ---- 2. READ ALLOWLIST ----
+    // `pr diff` / `mr diff` are pure reads (they only print the patch) and are
+    // the main thing an in-session agent needs when the user pastes a PR link,
+    // so they belong here rather than falling through to the default Ask.
+    // `pr view --comments` needs no extra entry: flags don't affect the match.
     let is_read = if is_glab {
         matches!(
             (group, action),
             ("mr", Some("list"))
                 | ("mr", Some("view"))
+                | ("mr", Some("diff"))
                 | ("issue", Some("list"))
                 | ("issue", Some("view"))
                 | ("repo", Some("view"))
@@ -139,6 +144,7 @@ fn evaluate_gh_like(argv: &[String], is_glab: bool) -> PolicyDecision {
             (group, action),
             ("pr", Some("list"))
                 | ("pr", Some("view"))
+                | ("pr", Some("diff"))
                 | ("pr", Some("status"))
                 | ("pr", Some("checks"))
                 | ("issue", Some("list"))
@@ -355,6 +361,7 @@ mod tests {
     fn allow_gh_read_variants() {
         for a in [
             &["pr", "view"][..],
+            &["pr", "diff"][..],
             &["pr", "status"][..],
             &["pr", "checks"][..],
             &["issue", "list"][..],
@@ -375,6 +382,23 @@ mod tests {
     fn allow_glab_mr_list() {
         assert_eq!(
             evaluate_policy("glab", &argv(&["mr", "list"])),
+            PolicyDecision::Allow
+        );
+    }
+
+    #[test]
+    fn allow_diff_and_view_with_flags() {
+        // Reading a PR/MR from a pasted link must not pop a modal.
+        assert_eq!(
+            evaluate_policy("gh", &argv(&["pr", "diff", "42"])),
+            PolicyDecision::Allow
+        );
+        assert_eq!(
+            evaluate_policy("glab", &argv(&["mr", "diff", "42"])),
+            PolicyDecision::Allow
+        );
+        assert_eq!(
+            evaluate_policy("gh", &argv(&["pr", "view", "42", "--comments"])),
             PolicyDecision::Allow
         );
     }

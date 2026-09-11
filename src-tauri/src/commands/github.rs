@@ -199,12 +199,13 @@ async fn build_issue_markdown(
 
     // Build markdown content
     let mut md = format!(
-        "---\nissue: {}\ntitle: {}\nauthor: {}\ncreated: {}\nlabels: {}\n---\n\n# {}\n\n{}\n\n",
+        "---\nissue: {}\ntitle: {}\nauthor: {}\ncreated: {}\nlabels: {}\nfetched_at: {}\n---\n\n# {}\n\n{}\n\n",
         issue_number,
         issue.title.as_str(),
         issue.user.login.as_str(),
         issue.created_at.to_string(),
         issue.labels.iter().map(|l| l.name.clone()).collect::<Vec<_>>().join(", "),
+        chrono::Utc::now().to_rfc3339(),
         issue.title.as_str(),
         issue.body.as_deref().unwrap_or(""),
     );
@@ -266,14 +267,15 @@ pub async fn fetch_issue(
         }
     };
 
-    // Write file: .devdy/tasks/<repo_slug>/issue-<n>/issue.md
-    let task_dir = Path::new(&project_path)
-        .join(".devdy")
-        .join("tasks")
-        .join(&repo_slug)
-        .join(format!("issue-{}", issue_number));
-    fs::create_dir_all(&task_dir).map_err(|e| e.to_string())?;
-    let file_path = task_dir.join("issue.md");
+    let file_path = gitlab::TaskLocation {
+        project_path: &project_path,
+        repo_slug: &repo_slug,
+        provider: &repo.provider,
+    }
+    .file("analyze_issue", issue_number);
+    if let Some(parent) = file_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
     fs::write(&file_path, &md).map_err(|e| e.to_string())?;
 
     // Use the global default engine (per-project engine has been removed).
@@ -342,8 +344,9 @@ async fn detect_linked_issue(
 }
 
 /// Fetch a PR (metadata, diffs, comments, reviews, inline comments) from GitHub
-/// and render the task markdown. Returns the markdown plus the resolved linked
-/// issue number. Shared by `fetch_pr` (new run) and `refetch_run` (overwrite).
+/// and render the task markdown. Also materializes the linked issue's own task
+/// file so the `linked_issue_file` reference resolves. Shared by `fetch_pr`
+/// (new run) and `refetch_run` (overwrite).
 async fn build_pr_markdown(
     client: &octocrab::Octocrab,
     owner: &str,
@@ -351,7 +354,8 @@ async fn build_pr_markdown(
     pr_number: u64,
     linked_issue: Option<u64>,
     allow_missing_issue: bool,
-) -> Result<(String, Option<u64>), String> {
+    loc: gitlab::TaskLocation<'_>,
+) -> Result<String, String> {
     // Fetch PR
     let pr = client
         .pulls(owner, repo)
@@ -371,16 +375,39 @@ async fn build_pr_markdown(
         },
     };
 
+    // Grouping by issue now lives in the frontmatter instead of the folder
+    // layout, so materialize the linked issue's own task file (once) and
+    // reference it. Fail-soft: if the issue can't be fetched the reference is
+    // simply omitted rather than left dangling.
+    let linked_file = match linked_issue_number {
+        Some(n) => {
+            let path = loc.file("analyze_issue", n);
+            if !path.exists() {
+                if let Ok(issue_md) = build_issue_markdown(client, owner, repo, n).await {
+                    if let Some(parent) = path.parent() {
+                        let _ = fs::create_dir_all(parent);
+                    }
+                    let _ = fs::write(&path, issue_md);
+                }
+            }
+            loc.linked_issue_reference(n)
+        }
+        None => None,
+    };
+
     // Build markdown
     let mut md = format!(
-        "---\npr: {}\nlinked_issue: {}\ntitle: {}\nauthor: {}\nbase: {}\nhead: {}\ncreated: {}\n---\n\n# {}\n\n{}\n\n",
+        "---\npr: {}\nlinked_issue: {}\nlinked_issue_file: {}\ntitle: {}\nauthor: {}\nbase: {}\nhead: {}\nhead_sha: {}\ncreated: {}\nfetched_at: {}\n---\n\n# {}\n\n{}\n\n",
         pr_number,
         linked_issue_number.map(|n| n.to_string()).unwrap_or_else(|| "none".to_string()),
+        linked_file.as_deref().unwrap_or("none"),
         pr.title.as_deref().unwrap_or(""),
         pr.user.as_ref().map(|u| u.login.as_str()).unwrap_or("unknown"),
         pr.base.ref_field,
         pr.head.ref_field,
+        pr.head.sha,
         pr.created_at.map(|d| d.to_string()).unwrap_or_default(),
+        chrono::Utc::now().to_rfc3339(),
         pr.title.as_deref().unwrap_or(""),
         pr.body.as_deref().unwrap_or(""),
     );
@@ -522,7 +549,7 @@ async fn build_pr_markdown(
         }
     }
 
-    Ok((md, linked_issue_number))
+    Ok(md)
 }
 
 #[tauri::command]
@@ -548,12 +575,18 @@ pub async fn fetch_pr(
 
     let allow_missing_issue = allow_missing_issue.unwrap_or(false);
 
+    let loc = gitlab::TaskLocation {
+        project_path: &project_path,
+        repo_slug: &repo_slug,
+        provider: &repo.provider,
+    };
+
     // Branch by provider (FR-005/BR-001).
-    let (md, linked_issue_number) = match repo.provider.as_str() {
+    let md = match repo.provider.as_str() {
         "gitlab" => {
             let client = gitlab_client_for(db.inner(), &project_id, &repo).await?;
             client
-                .build_mr_markdown(pr_number, linked_issue, allow_missing_issue)
+                .build_mr_markdown(pr_number, linked_issue, allow_missing_issue, loc)
                 .await?
         }
         _ => {
@@ -568,27 +601,23 @@ pub async fn fetch_pr(
             let client = github::client_for_project(db.inner(), &project_id)
                 .await
                 .map_err(|e| e.to_string())?;
-            build_pr_markdown(&client, &owner, &gh_repo, pr_number, linked_issue, allow_missing_issue).await?
+            build_pr_markdown(
+                &client,
+                &owner,
+                &gh_repo,
+                pr_number,
+                linked_issue,
+                allow_missing_issue,
+                loc,
+            )
+            .await?
         }
     };
 
-    // Write file: .devdy/tasks/<repo_slug>/issue-<linked>/<file>.md
-    // GitHub keeps its historical `pr-<n>.md` name; GitLab uses `mr-<n>.md`.
-    let file_name = match repo.provider.as_str() {
-        "gitlab" => format!("mr-{}.md", pr_number),
-        _ => format!("pr-{}.md", pr_number),
-    };
-    let issue_folder = match linked_issue_number {
-        Some(n) => format!("issue-{}", n),
-        None => "no-issue".to_string(),
-    };
-    let task_dir = Path::new(&project_path)
-        .join(".devdy")
-        .join("tasks")
-        .join(&repo_slug)
-        .join(issue_folder);
-    fs::create_dir_all(&task_dir).map_err(|e| e.to_string())?;
-    let file_path = task_dir.join(file_name);
+    let file_path = loc.file("review_pr", pr_number);
+    if let Some(parent) = file_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
     fs::write(&file_path, &md).map_err(|e| e.to_string())?;
 
     let engine = crate::commands::settings::resolve_default_engine(db.inner()).await;
@@ -634,7 +663,8 @@ pub async fn fetch_pr(
 /// Re-fetch fresh PR/issue content from GitHub for an EXISTING run and overwrite
 /// its input markdown file in place. The run record, its AI output, and session
 /// are left untouched — so the user keeps the existing result and can continue
-/// working with the refreshed context. Returns the (unchanged) run record.
+/// working with the refreshed context. Returns the run record, whose
+/// `input_path` may have moved if the run still used the pre-canonical layout.
 #[tauri::command]
 pub async fn refetch_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord, String> {
     use sqlx::Row;
@@ -657,23 +687,66 @@ pub async fn refetch_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord,
     let ref_num = ref_number.ok_or("Run has no issue/PR number")? as u64;
     let input_path_val = input_path.clone().ok_or("Run has no input file to refresh")?;
 
+    if !matches!(run_type.as_str(), "analyze_issue" | "review_pr") {
+        return Err(format!("Cannot re-fetch a run of type '{}'", run_type));
+    }
+
+    let project_row = sqlx::query("SELECT path FROM projects WHERE id = ?")
+        .bind(&project_id)
+        .fetch_one(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+    let project_path: String = project_row.get("path");
+
     let repo = load_repo_identity(db.inner(), &repo_id_val).await?;
+    let repo_slug = repo.slug();
+
+    // Lazy migration off the old `issue-<linked>/pr-<n>.md` layout: move the file
+    // to its canonical identity-derived path and repoint every run that referenced
+    // it. Runs that are never re-fetched simply stay where they are.
+    let loc = gitlab::TaskLocation {
+        project_path: &project_path,
+        repo_slug: &repo_slug,
+        provider: &repo.provider,
+    };
+    let canonical = loc.file(&run_type, ref_num);
+    let canonical_str = canonical.to_string_lossy().to_string();
+    if Path::new(&input_path_val) != canonical.as_path() {
+        if let Some(parent) = canonical.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let _ = fs::rename(&input_path_val, &canonical);
+        let _ = sqlx::query("UPDATE runs SET input_path = ? WHERE input_path = ?")
+            .bind(&canonical_str)
+            .bind(&input_path_val)
+            .execute(db.inner())
+            .await;
+        // Only 'fetched' runs still point output_path at the markdown; once a run
+        // has executed it points at its log, which must not be rewritten.
+        let _ = sqlx::query("UPDATE runs SET output_path = ? WHERE output_path = ?")
+            .bind(&canonical_str)
+            .bind(&input_path_val)
+            .execute(db.inner())
+            .await;
+        // The old `issue-<n>/` folder may now be empty; drop it if so.
+        if let Some(parent) = Path::new(&input_path_val).parent() {
+            let _ = fs::remove_dir(parent);
+        }
+    }
+
+    // Reuse the linked issue from the existing frontmatter so the refresh never
+    // re-derives the linkage or hits NO_LINKED_ISSUE.
+    let existing = fs::read_to_string(&canonical).unwrap_or_default();
+    let linked = parse_frontmatter_u64(&existing, "linked_issue");
 
     // Provider derived from the run's repo (BR-007). Refetch overwrites the
-    // existing input_path in place; run record/output/session stay untouched.
+    // canonical file in place; run record/output/session stay untouched.
     let md = match repo.provider.as_str() {
         "gitlab" => {
             let client = gitlab_client_for(db.inner(), &project_id, &repo).await?;
             match run_type.as_str() {
                 "analyze_issue" => client.build_issue_markdown(ref_num).await?,
-                "review_pr" => {
-                    // Reuse the linked issue from the existing frontmatter so the
-                    // refresh never re-derives closes_issues or hits NO_LINKED_ISSUE.
-                    let existing = fs::read_to_string(&input_path_val).unwrap_or_default();
-                    let linked = parse_frontmatter_u64(&existing, "linked_issue");
-                    client.build_mr_markdown(ref_num, linked, true).await?.0
-                }
-                other => return Err(format!("Cannot re-fetch a run of type '{}'", other)),
+                _ => client.build_mr_markdown(ref_num, linked, true, loc).await?,
             }
         }
         _ => {
@@ -690,17 +763,22 @@ pub async fn refetch_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord,
                 .map_err(|e| e.to_string())?;
             match run_type.as_str() {
                 "analyze_issue" => build_issue_markdown(&client, &owner, &gh_repo, ref_num).await?,
-                "review_pr" => {
-                    let existing = fs::read_to_string(&input_path_val).unwrap_or_default();
-                    let linked = parse_frontmatter_u64(&existing, "linked_issue");
-                    build_pr_markdown(&client, &owner, &gh_repo, ref_num, linked, true).await?.0
+                _ => {
+                    build_pr_markdown(&client, &owner, &gh_repo, ref_num, linked, true, loc).await?
                 }
-                other => return Err(format!("Cannot re-fetch a run of type '{}'", other)),
             }
         }
     };
 
-    fs::write(&input_path_val, &md).map_err(|e| e.to_string())?;
+    fs::write(&canonical, &md).map_err(|e| e.to_string())?;
+
+    // `output_path` still points at the markdown only while the run is 'fetched';
+    // after a run it points at the log, which the migration above left alone.
+    let stored_output: Option<String> = row.get("output_path");
+    let output_path = match stored_output {
+        Some(p) if p == input_path_val => Some(canonical_str.clone()),
+        other => other,
+    };
 
     Ok(RunRecord {
         id: row.get("id"),
@@ -710,8 +788,8 @@ pub async fn refetch_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord,
         ref_number,
         status: row.get("status"),
         engine: row.get("engine"),
-        input_path,
-        output_path: row.get("output_path"),
+        input_path: Some(canonical_str),
+        output_path,
         session_id: row.get("session_id"),
         claude_account_id: row.get("claude_account_id"),
         started_at: row.get("started_at"),
