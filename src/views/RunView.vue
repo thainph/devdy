@@ -423,7 +423,7 @@ const HISTORY_WINDOW_INITIAL = 80
 const HISTORY_WINDOW_STEP = 120
 const historyWindow = ref(HISTORY_WINDOW_INITIAL)
 // The tail slice actually handed to StreamLog. `displayedEntries`, plain-text
-// export and the "files mentioned" list keep using the FULL array.
+// export and the "files changed" list keep using the FULL array.
 const windowedHistoryEntries = computed(() => {
   const all = historyEntries.value
   return all.length > historyWindow.value ? all.slice(all.length - historyWindow.value) : all
@@ -530,7 +530,7 @@ const { renderText, loadMarkdown } = useMarkdown()
 // This also surfaces a partial log recovered from disk for a run left as
 // 'running' by a previous app session that died mid-run.
 const isViewingHistory = computed(() => !!viewingLogRunId.value)
-// Entries currently shown in the AI Result column — drives the "files mentioned"
+// Entries currently shown in the AI Result column — drives the "files changed"
 // quick-access list so it matches whatever the user is looking at.
 const displayedEntries = computed(() => isViewingHistory.value ? historyEntries.value : liveEntries.value)
 const hasLiveOutput = computed(

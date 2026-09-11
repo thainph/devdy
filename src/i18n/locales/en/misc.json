@@ -55,11 +55,10 @@
     "copy": "Copy"
   },
   "mentionedFiles": {
-    "read": "read",
     "edit": "edit",
     "write": "create",
-    "countTitle": "{count} files mentioned in this session",
-    "filesInSession": "Files in session ({count})"
+    "countTitle": "{count} files changed in this session",
+    "filesInSession": "Files changed ({count})"
   },
   "context": {
     "compactTitle": "Compact the conversation to free up context (sends /compact)",

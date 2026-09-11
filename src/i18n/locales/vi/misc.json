@@ -55,11 +55,10 @@
     "copy": "Copy"
   },
   "mentionedFiles": {
-    "read": "đọc",
     "edit": "sửa",
     "write": "tạo",
-    "countTitle": "{count} file được nhắc trong phiên này",
-    "filesInSession": "Files trong phiên ({count})"
+    "countTitle": "{count} file bị thay đổi trong phiên này",
+    "filesInSession": "File đã thay đổi ({count})"
   },
   "context": {
     "compactTitle": "Nén hội thoại để giải phóng context (gửi /compact)",

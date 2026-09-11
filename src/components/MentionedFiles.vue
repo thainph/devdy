@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onBeforeUnmount, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Files, FileText, FilePen, FilePlus2, ChevronDown } from 'lucide-vue-next'
+import { Files, FilePen, FilePlus2, ChevronDown } from 'lucide-vue-next'
 import type { StreamEntry } from '@/lib/streamEvents'
 
 const { t } = useI18n()
@@ -14,28 +14,65 @@ const emit = defineEmits<{
   (e: 'open-file', path: string): void
 }>()
 
-// Tool input keys that denote a concrete file (not a search directory).
-const FILE_PATH_KEYS = ['file_path', 'notebook_path']
+type Action = 'write' | 'edit'
+// Higher = more significant; we display the strongest action seen for a file.
+const ACTION_RANK: Record<Action, number> = { edit: 0, write: 1 }
 
-function fileTarget(input: unknown): string | null {
-  if (!input || typeof input !== 'object') return null
-  const obj = input as Record<string, unknown>
-  for (const k of FILE_PATH_KEYS) {
-    const v = obj[k]
-    if (typeof v === 'string' && v.trim()) return v
-  }
+// Only tools that actually produce or change a file on disk. Read-only tools
+// (Read, Grep, Glob, NotebookRead…) are deliberately excluded: this list answers
+// "what did this session write", not "what did it look at".
+function writeActionOf(name: string): Action | null {
+  const n = (name || '').toLowerCase()
+  if (n === 'write') return 'write'
+  // Edit, MultiEdit, NotebookEdit, and the `Edit` alias Codex runs are mapped to.
+  if (n.includes('edit')) return 'edit'
   return null
 }
 
-type Action = 'write' | 'edit' | 'read'
-// Higher = more significant; we display the strongest action seen for a file.
-const ACTION_RANK: Record<Action, number> = { read: 0, edit: 1, write: 2 }
+// Input keys holding a concrete file path. `path` is safe to include because we
+// only ever inspect writing tools here — search tools (where `path` means a
+// directory) never reach this point.
+const FILE_PATH_KEYS = ['file_path', 'notebook_path', 'path']
 
-function actionOf(name: string): Action {
-  const n = (name || '').toLowerCase()
-  if (n === 'write') return 'write'
-  if (n.includes('edit')) return 'edit'
-  return 'read'
+function asObj(v: unknown): Record<string, unknown> {
+  return v && typeof v === 'object' ? (v as Record<string, unknown>) : {}
+}
+
+// `*** Add File: x`, `*** Update File: x`, `*** Delete File: x` — the envelope
+// Codex `apply_patch` calls carry instead of a structured path.
+const PATCH_FILE_RE = /^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm
+
+// Every file a single write tool_use touches. Claude tools carry one path;
+// Codex maps its `fileChange` item / `apply_patch` call onto the `Edit` tool but
+// keeps its own payload, which can name several files at once.
+function fileTargets(input: unknown): string[] {
+  const obj = asObj(input)
+  // A Set, not an array: one payload can name the same file twice (e.g. a `path`
+  // key alongside a `changes` entry) and that must not inflate the touch count.
+  const out = new Set<string>()
+  const push = (v: unknown) => {
+    if (typeof v === 'string' && v.trim()) out.add(v.trim())
+  }
+
+  for (const k of FILE_PATH_KEYS) push(obj[k])
+
+  // Codex `fileChange`: `changes` is either an array of `{ path, kind }` or an
+  // object keyed by path, depending on the app-server payload.
+  const changes = obj.changes
+  if (Array.isArray(changes)) {
+    for (const c of changes) push(typeof c === 'string' ? c : asObj(c).path)
+  } else if (changes && typeof changes === 'object') {
+    for (const k of Object.keys(changes)) push(k)
+  }
+
+  // Codex `apply_patch`: the patch text itself names the files.
+  for (const k of ['input', 'patch']) {
+    const raw = obj[k]
+    if (typeof raw !== 'string') continue
+    for (const m of raw.matchAll(PATCH_FILE_RE)) push(m[1])
+  }
+
+  return [...out]
 }
 
 interface MentionedFile {
@@ -47,7 +84,6 @@ interface MentionedFile {
 }
 
 const ACTION_STYLE = computed<Record<Action, { icon: Component; iconClass: string; label: string }>>(() => ({
-  read: { icon: FileText, iconClass: 'text-sky-500 dark:text-sky-300', label: t('misc.mentionedFiles.read') },
   edit: { icon: FilePen, iconClass: 'text-amber-500 dark:text-amber-300', label: t('misc.mentionedFiles.edit') },
   write: { icon: FilePlus2, iconClass: 'text-rose-500 dark:text-rose-300', label: t('misc.mentionedFiles.write') },
 }))
@@ -56,22 +92,26 @@ const files = computed<MentionedFile[]>(() => {
   const map = new Map<string, MentionedFile>()
   for (const e of props.entries) {
     if (e.kind !== 'tool') continue
-    const path = fileTarget(e.input)
-    if (!path) continue
-    const action = actionOf(e.name)
-    const existing = map.get(path)
-    if (existing) {
-      existing.count++
-      if (ACTION_RANK[action] > ACTION_RANK[existing.action]) existing.action = action
-    } else {
-      const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
-      map.set(path, {
-        path,
-        name: slash >= 0 ? path.slice(slash + 1) : path,
-        dir: slash >= 0 ? path.slice(0, slash) : '',
-        action,
-        count: 1,
-      })
+    const action = writeActionOf(e.name)
+    if (!action) continue
+    // A rejected or failed write never reached the disk. A still-running call
+    // has no result yet, so it stays listed (optimistic while streaming).
+    if (e.result?.is_error) continue
+    for (const path of fileTargets(e.input)) {
+      const existing = map.get(path)
+      if (existing) {
+        existing.count++
+        if (ACTION_RANK[action] > ACTION_RANK[existing.action]) existing.action = action
+      } else {
+        const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+        map.set(path, {
+          path,
+          name: slash >= 0 ? path.slice(slash + 1) : path,
+          dir: slash >= 0 ? path.slice(0, slash) : '',
+          action,
+          count: 1,
+        })
+      }
     }
   }
   // Keep first-seen order (insertion order of the Map preserves it).
