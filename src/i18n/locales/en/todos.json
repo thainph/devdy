@@ -13,6 +13,16 @@
   "markNotDone": "Mark as not done",
   "clickToOpen": "Click to open",
   "detailTitle": "Task detail",
+  "allProjects": "All projects",
+  "noProject": "No project",
+  "projectLabel": "Project",
+  "openLinkedRun": "Open session",
+  "openLinkedRunTitle": "Open the AI session this task was captured from",
+  "capturedFromRun": "Captured from an AI session",
+  "noResults": {
+    "title": "No tasks in this project",
+    "clearFilter": "Show all projects"
+  },
   "empty": {
     "title": "No tasks yet",
     "hint": "Create your first task to track what needs doing. Drag to reorder by priority."
@@ -45,6 +55,11 @@
     "notePlaceholder": "Note… (Markdown supported)",
     "noteTitlePlaceholder": "Title",
     "noProject": "No project",
+    "projectLabel": "Project",
+    "runLinked": "Linked to the current AI session — open it again from the list.",
+    "panelHint": "Markdown supported · ⌘/Ctrl+Enter to save · Esc to close",
+    "popOut": "Pop out",
+    "popOutTitle": "Move to a separate always-on-top window",
     "addTodo": "Add todo",
     "saveNote": "Save note",
     "todoAdded": "Todo added",

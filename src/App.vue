@@ -24,6 +24,8 @@ import ImageCompareHost from '@/components/ImageCompareHost.vue'
 import CyberFoxHost from '@/components/CyberFoxHost.vue'
 import MascotWindow from '@/views/MascotWindow.vue'
 import QuickCreateWindow from '@/views/QuickCreateWindow.vue'
+import QuickCapturePanel from '@/components/QuickCapturePanel.vue'
+import { useQuickCapture } from '@/composables/useQuickCapture'
 import IssuesGanttView from '@/views/IssuesGanttView.vue'
 import { getVersion } from '@tauri-apps/api/app'
 
@@ -45,6 +47,7 @@ const tabsStore = useWorkspaceTabsStore()
 const uiLayout = useUILayoutStore()
 const live = useLiveRunsStore()
 const { t } = useI18n()
+const { openCapture } = useQuickCapture()
 
 const isRunRoute = computed(
   () => route.name === 'project-run' || route.name === 'project-run-detail',
@@ -106,10 +109,36 @@ function onGlobalNavKeyGuard(e: KeyboardEvent) {
   }
 }
 
+// Quick capture (⌘/Ctrl+K → Todo, ⌘/Ctrl+Shift+N → Note) is bound HERE, at the
+// app root, rather than on the mascot: the mascot only mounts when it's enabled
+// and in in-app mode, which used to leave the shortcut silently dead for anyone
+// who had turned the fox off or moved it to the desktop-pet window.
+function onQuickCaptureKey(e: KeyboardEvent) {
+  if (!(e.metaKey || e.ctrlKey) || e.altKey) return
+  const key = e.key.toLowerCase()
+  if (key === 'k' && !e.shiftKey) {
+    e.preventDefault()
+    openCapture({ tab: 'todo', context: routeCaptureContext() })
+  } else if (key === 'n' && e.shiftKey) {
+    e.preventDefault()
+    openCapture({ tab: 'note', context: routeCaptureContext() })
+  }
+}
+
+// File the capture under whatever the user is looking at, so capturing from a
+// run needs no project picking at all.
+function routeCaptureContext() {
+  return {
+    projectId: typeof route.params.projectId === 'string' ? route.params.projectId : null,
+    runId: typeof route.params.runId === 'string' ? route.params.runId : null,
+  }
+}
+
 onBeforeUnmount(() => {
   unlistenActivated?.()
   unlistenActivated = null
   window.removeEventListener('keydown', onGlobalNavKeyGuard, true)
+  window.removeEventListener('keydown', onQuickCaptureKey)
 })
 
 // App version shown in the sidebar footer; read from Tauri so it always matches
@@ -182,6 +211,7 @@ onMounted(async () => {
     }
     return
   }
+  window.addEventListener('keydown', onQuickCaptureKey)
   // Attach per-run listeners for any run the backend reports as active — even
   // ones this window never opened (started/resumed from a remote Controller, or
   // still live after a restart). This is what lets a remotely-driven run's
@@ -321,5 +351,9 @@ onMounted(async () => {
 
     <!-- DY mascot: app-wide operator. Host picks in-app floating vs desktop pet. -->
     <CyberFoxHost />
+
+    <!-- App-wide quick capture (⌘K Todo / ⌘⇧N Note). An overlay, never a route
+         change, so a run in progress keeps its scroll and panel state. -->
+    <QuickCapturePanel />
   </div>
 </template>

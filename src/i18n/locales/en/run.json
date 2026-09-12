@@ -157,5 +157,11 @@
   "loadingContext": "Loading context…",
   "continueCurrentSession": "Continue the current session",
   "translateSelection": "Translate the selection",
-  "translate": "Translate"
+  "translate": "Translate",
+  "saveSelectionAsNote": "Note",
+  "saveSelectionAsNoteTitle": "Save the selection as a note on this session",
+  "saveSelectionAsTodo": "Todo",
+  "saveSelectionAsTodoTitle": "Save the selection as a task on this session",
+  "quickCapture": "Note",
+  "quickCaptureTitle": "Quick capture a note / todo without leaving this session — ⌘/Ctrl+K"
 }

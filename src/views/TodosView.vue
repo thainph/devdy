@@ -1,23 +1,98 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useTodosStore } from '@/stores/todos'
-import { Button, Card, Drawer } from '@/components/ui'
+import { useProjectsStore } from '@/stores/projects'
+import { Button, Card, Drawer, AppSelect } from '@/components/ui'
 import MarkdownPreview from '@/components/MarkdownPreview.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useMarkdown } from '@/lib/markdown'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { Plus, GripVertical, Trash2, ListTodo, ListChecks, Check, Pencil, Copy } from 'lucide-vue-next'
+import { Plus, GripVertical, Trash2, ListTodo, ListChecks, Check, Pencil, Copy, FolderOpen, MessageSquare } from 'lucide-vue-next'
 
 const { t } = useI18n()
+const router = useRouter()
 const store = useTodosStore()
+const projectsStore = useProjectsStore()
 const { confirm } = useConfirm()
 const { renderText, loadMarkdown } = useMarkdown()
 
-onMounted(() => {
+// The standalone quick-create window writes to the same DB from its own webview,
+// so this list only learns about those rows when it refetches.
+let quickCreateUnlisten: UnlistenFn | null = null
+
+onMounted(async () => {
   store.fetchTodos()
+  projectsStore.fetchProjects()
   loadMarkdown()
+  try {
+    quickCreateUnlisten = await listen<{ tab: string }>('quickcreate:added', (e) => {
+      if (e.payload?.tab === 'todo') store.fetchTodos()
+    })
+  } catch {
+    /* running outside the Tauri shell */
+  }
 })
+
+onBeforeUnmount(() => {
+  quickCreateUnlisten?.()
+  quickCreateUnlisten = null
+})
+
+// --- Project filter -----------------------------------------------------------
+// Sentinel values for the filter. Real project ids are UUIDs so they never
+// collide with these.
+const FILTER_ALL = ''
+const FILTER_NONE = '__none__'
+const PROJECT_NONE = '' // "no project" in the detail select
+
+const projectFilter = ref(FILTER_ALL)
+
+function projectName(id: string | null): string | null {
+  if (!id) return null
+  return projectsStore.projects.find(p => p.id === id)?.name ?? null
+}
+
+const projectFilterOptions = computed(() => [
+  { value: FILTER_ALL, label: t('todos.allProjects') },
+  { value: FILTER_NONE, label: t('todos.noProject') },
+  ...projectsStore.projects.map(p => ({ value: p.id, label: p.name })),
+])
+
+const projectSelectOptions = computed(() => [
+  { value: PROJECT_NONE, label: t('todos.noProject') },
+  ...projectsStore.projects.map(p => ({ value: p.id, label: p.name })),
+])
+
+const filteredTodos = computed(() =>
+  store.todos.filter(todo => {
+    if (projectFilter.value === FILTER_NONE) {
+      // A todo pointing at a deleted project counts as unfiled.
+      return !todo.project_id || !projectName(todo.project_id)
+    }
+    if (projectFilter.value !== FILTER_ALL) return todo.project_id === projectFilter.value
+    return true
+  }),
+)
+
+// Drag-reorder only makes sense against the full, unfiltered list — otherwise
+// visible indices don't map to store indices. Disable it while filtering.
+const isFiltered = computed(() => projectFilter.value !== FILTER_ALL)
+
+// --- Run backlink -------------------------------------------------------------
+// A todo captured from a session remembers it; jumping back is one click, and
+// the link is only offered while both the project and the run id are present.
+function openLinkedRun(todo: { project_id: string | null; run_id: string | null }) {
+  if (!todo.project_id || !todo.run_id) return
+  router
+    .push({
+      name: 'project-run-detail',
+      params: { projectId: todo.project_id, runId: todo.run_id },
+    })
+    .catch(() => {})
+}
 
 const remaining = computed(() => store.todos.filter(t => !t.done).length)
 const hasCompleted = computed(() => store.todos.some(t => t.done))
@@ -86,6 +161,7 @@ const detailId = ref<string | null>(null)
 const detailTodo = computed(() => store.todos.find(t => t.id === detailId.value) ?? null)
 const detailEditing = ref(false)
 const detailText = ref('')
+const detailProject = ref(PROJECT_NONE)
 
 function openDetail(id: string) {
   detailId.value = id
@@ -101,6 +177,7 @@ function closeDetail() {
 function startDetailEdit() {
   if (!detailTodo.value) return
   detailText.value = detailTodo.value.text
+  detailProject.value = detailTodo.value.project_id ?? PROJECT_NONE
   detailEditing.value = true
 }
 
@@ -109,6 +186,10 @@ function commitDetailEdit() {
   const trimmed = detailText.value.trim()
   if (!trimmed) return // empty save is a no-op; use Delete to remove
   store.update(detailId.value, trimmed)
+  const nextProject = detailProject.value || null
+  if ((detailTodo.value?.project_id ?? null) !== nextProject) {
+    store.setProject(detailId.value, nextProject)
+  }
   detailEditing.value = false
 }
 
@@ -279,6 +360,12 @@ async function handleClearCompleted() {
         </span>
       </div>
       <div class="flex items-center gap-2">
+        <AppSelect
+          v-if="!selectMode && store.todos.length > 0"
+          v-model="projectFilter"
+          :options="projectFilterOptions"
+          class="w-44"
+        />
         <template v-if="selectMode">
           <span class="text-xs text-muted-foreground tabular-nums">
             {{ t('todos.selectedCount', { count: selectedCount }) }}
@@ -352,10 +439,24 @@ async function handleClearCompleted() {
           </Button>
         </div>
 
+        <!-- No match for the active project filter -->
+        <div
+          v-else-if="filteredTodos.length === 0"
+          class="flex flex-col items-center justify-center text-center min-h-72"
+        >
+          <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-muted mb-4">
+            <ListTodo class="h-6 w-6 text-muted-foreground" :stroke-width="1.5" />
+          </div>
+          <p class="text-sm font-medium">{{ t('todos.noResults.title') }}</p>
+          <Button variant="outline" size="md" class="mt-4" @click="projectFilter = FILTER_ALL">
+            {{ t('todos.noResults.clearFilter') }}
+          </Button>
+        </div>
+
         <!-- List -->
         <Card v-else body-class="divide-y divide-border/50">
           <div
-            v-for="(todo, index) in store.todos"
+            v-for="(todo, index) in filteredTodos"
             :key="todo.id"
             :data-todo-index="index"
             class="group flex items-start gap-2.5 px-3 py-2.5 transition-colors"
@@ -378,9 +479,10 @@ async function handleClearCompleted() {
               <Check v-if="selectedIds.has(todo.id)" class="h-3 w-3" :stroke-width="3" />
             </button>
 
-            <!-- Drag handle (normal mode) -->
+            <!-- Drag handle (normal mode; reorder maps to store indices, so it's
+                 only offered on the unfiltered list) -->
             <span
-              v-else
+              v-else-if="!isFiltered"
               class="mt-0.5 shrink-0 cursor-grab text-muted-foreground/40 transition-colors group-hover:text-muted-foreground active:cursor-grabbing touch-none"
               :title="t('todos.dragToReorder')"
               @pointerdown="startDrag(index, $event)"
@@ -410,6 +512,23 @@ async function handleClearCompleted() {
               @click="selectMode ? toggleSelect(todo.id) : onContentClick(todo.id, $event)"
             >
               <MarkdownPreview :html="renderText(todo.text)" />
+              <!-- Capture context: where this was jotted down -->
+              <div
+                v-if="projectName(todo.project_id)"
+                class="mt-1.5 flex items-center gap-2 text-[11px] text-muted-foreground"
+              >
+                <span class="flex items-center gap-1 min-w-0">
+                  <FolderOpen class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+                  <span class="truncate">{{ projectName(todo.project_id) }}</span>
+                </span>
+                <span
+                  v-if="todo.run_id"
+                  class="flex items-center gap-1 shrink-0"
+                  :title="t('todos.capturedFromRun')"
+                >
+                  <MessageSquare class="h-3 w-3" :stroke-width="1.75" />
+                </span>
+              </div>
             </div>
           </div>
         </Card>
@@ -482,21 +601,47 @@ async function handleClearCompleted() {
         <template v-if="detailEditing">
           <textarea
             v-model="detailText"
-            class="w-full min-h-[55vh] resize-y rounded-md border border-border bg-background px-3 py-2 text-sm leading-relaxed font-mono focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            class="w-full min-h-[45vh] resize-y rounded-md border border-border bg-background px-3 py-2 text-sm leading-relaxed font-mono focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             @keydown="onDetailEditKeydown"
           />
-          <p class="mt-1.5 text-[11px] text-muted-foreground">
+          <div class="mt-3 space-y-1">
+            <label class="block text-[11px] font-medium text-muted-foreground">
+              {{ t('todos.projectLabel') }}
+            </label>
+            <AppSelect v-model="detailProject" :options="projectSelectOptions" />
+          </div>
+          <p class="mt-2 text-[11px] text-muted-foreground">
             Markdown supported · <span class="font-medium">⌘/Ctrl+Enter</span> to save · <span class="font-medium">Esc</span> to cancel
           </p>
         </template>
         <!-- View mode -->
-        <div
-          v-else
-          class="markdown-output text-sm"
-          :class="detailTodo.done ? 'opacity-60 line-through decoration-muted-foreground/60' : ''"
-          @click="handleLinkClick"
-          v-html="renderText(detailTodo.text)"
-        />
+        <template v-else>
+          <div
+            class="markdown-output text-sm"
+            :class="detailTodo.done ? 'opacity-60 line-through decoration-muted-foreground/60' : ''"
+            @click="handleLinkClick"
+            v-html="renderText(detailTodo.text)"
+          />
+          <div
+            v-if="projectName(detailTodo.project_id)"
+            class="mt-4 flex items-center gap-3 text-xs text-muted-foreground border-t border-border/60 pt-3"
+          >
+            <span class="flex items-center gap-1.5 min-w-0">
+              <FolderOpen class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+              <span class="truncate">{{ projectName(detailTodo.project_id) }}</span>
+            </span>
+            <button
+              v-if="detailTodo.run_id"
+              type="button"
+              class="flex items-center gap-1.5 rounded px-1.5 py-1 text-primary hover:bg-accent/60 transition-colors cursor-pointer"
+              :title="t('todos.openLinkedRunTitle')"
+              @click="openLinkedRun(detailTodo)"
+            >
+              <MessageSquare class="h-3.5 w-3.5" :stroke-width="1.75" />
+              {{ t('todos.openLinkedRun') }}
+            </button>
+          </div>
+        </template>
       </div>
 
       <template #footer>

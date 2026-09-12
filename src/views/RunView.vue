@@ -29,7 +29,7 @@ import {
   ImagePlus, X, Paperclip,
   ShieldQuestion, MessageCircleQuestion,
   Pin, PinOff, Pencil, Check, Github, Gitlab, UserCircle,
-  ClipboardCopy, ScrollText, HardDrive, Cloud, Radio, Languages, FolderTree, Loader2, ListChecks,
+  ClipboardCopy, ScrollText, HardDrive, Cloud, Radio, Languages, StickyNote, ListTodo, FolderTree, Loader2, ListChecks,
   MoreHorizontal, Users
 } from 'lucide-vue-next'
 import AppSelect from '@/components/AppSelect.vue'
@@ -46,6 +46,7 @@ import DuoWorkspace from '@/components/DuoWorkspace.vue'
 import { Button, Input, StatusBadge, Badge, Modal, DropdownMenu, DropdownItem } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
+import { useQuickCapture, type QuickCaptureTab } from '@/composables/useQuickCapture'
 import { vMermaid } from '@/lib/mermaid'
 import { vCopyCode } from '@/lib/copyCode'
 import { matchProjectFile, parseLineRef, decorateFileLinks } from '@/lib/fileLinks'
@@ -793,6 +794,41 @@ function openTranslate() {
 
 function closeTranslate() {
   activeTranslation.value = null
+}
+
+// ── Quick capture from a run ────────────────────────────────────────────────
+// Jotting a thought down mid-run must not cost the user this screen: capture
+// opens the app-wide slide-over (no route change, so the stream keeps its scroll
+// and every open panel survives) pre-filed under this project and run.
+const { openCapture } = useQuickCapture()
+
+function captureContext() {
+  return { projectId: projectId.value, runId: currentRunId.value }
+}
+
+function openQuickCapture(tab: QuickCaptureTab) {
+  openCapture({ tab, context: captureContext() })
+}
+
+/** Turn the current output selection into a pre-filled note. */
+function captureSelectionAsNote() {
+  const trigger = translateTrigger.value
+  if (!trigger) return
+  openCapture({
+    tab: 'note',
+    title: currentRun.value?.title ?? project.value?.name ?? '',
+    content: trigger.text,
+    context: captureContext(),
+  })
+  translateTrigger.value = null
+}
+
+/** Turn the current output selection into a pre-filled todo. */
+function captureSelectionAsTodo() {
+  const trigger = translateTrigger.value
+  if (!trigger) return
+  openCapture({ tab: 'todo', content: trigger.text, context: captureContext() })
+  translateTrigger.value = null
 }
 
 // Keep the live output pinned to the bottom as new entries/lines arrive for
@@ -2565,6 +2601,15 @@ function handleRefInput(val: string) {
           <ListChecks class="h-4 w-4" :stroke-width="2" />
           <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">{{ t('run.issues') }}</span>
         </Button>
+        <!-- Capture a thought without leaving the run (⌘K / ⌘⇧N do the same). -->
+        <Button
+          variant="outline"
+          :title="t('run.quickCaptureTitle')"
+          @click="openQuickCapture('note')"
+        >
+          <StickyNote class="h-4 w-4" :stroke-width="2" />
+          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">{{ t('run.quickCapture') }}</span>
+        </Button>
         <Button
           variant="outline"
           :title="t('run.projectSettingsTitle')"
@@ -3598,20 +3643,45 @@ function handleRefInput(val: string) {
       @close="remoteModalOpen = false; refreshRemoteActive()"
     />
 
-    <!-- Floating "Dịch" trigger for a text selection in the AI-result output.
+    <!-- Floating actions for a text selection in the AI-result output: translate
+         it, or keep it as a note filed under this run.
          `mousedown.prevent` keeps the selection alive through the click. -->
     <Teleport to="body">
-      <button
+      <div
         v-if="translateTrigger"
-        class="fixed z-[65] inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[11px] font-medium text-primary shadow-lg shadow-black/30 hover:bg-accent/60 transition-colors cursor-pointer"
+        class="fixed z-[65] flex items-center gap-px overflow-hidden rounded-md border border-border bg-card shadow-lg shadow-black/30"
         :style="{ left: translateTrigger.x + 'px', top: translateTrigger.y + 'px' }"
-        :title="t('run.translateSelection')"
-        @mousedown.prevent
-        @click="openTranslate"
       >
-        <Languages class="h-3 w-3" :stroke-width="1.75" />
-        {{ t('run.translate') }}
-      </button>
+        <button
+          class="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-primary hover:bg-accent/60 transition-colors cursor-pointer"
+          :title="t('run.translateSelection')"
+          @mousedown.prevent
+          @click="openTranslate"
+        >
+          <Languages class="h-3 w-3" :stroke-width="1.75" />
+          {{ t('run.translate') }}
+        </button>
+        <span class="h-4 w-px bg-border" />
+        <button
+          class="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-foreground/80 hover:bg-accent/60 transition-colors cursor-pointer"
+          :title="t('run.saveSelectionAsNoteTitle')"
+          @mousedown.prevent
+          @click="captureSelectionAsNote"
+        >
+          <StickyNote class="h-3 w-3" :stroke-width="1.75" />
+          {{ t('run.saveSelectionAsNote') }}
+        </button>
+        <span class="h-4 w-px bg-border" />
+        <button
+          class="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-foreground/80 hover:bg-accent/60 transition-colors cursor-pointer"
+          :title="t('run.saveSelectionAsTodoTitle')"
+          @mousedown.prevent
+          @click="captureSelectionAsTodo"
+        >
+          <ListTodo class="h-3 w-3" :stroke-width="1.75" />
+          {{ t('run.saveSelectionAsTodo') }}
+        </button>
+      </div>
     </Teleport>
 
     <!-- Translation result popover -->

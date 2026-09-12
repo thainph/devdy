@@ -6,6 +6,11 @@ use uuid::Uuid;
 
 /// A single quick-note todo. `position` orders the list (ascending: lower value
 /// sits higher / higher priority). Drag-and-drop reorder rewrites positions.
+///
+/// `project_id` / `run_id` are the capture context: set when the todo was jotted
+/// down from inside a project's run workspace, so the list can filter by project
+/// and link back to the conversation it came from. Both are nullable and
+/// unenforced — a globally captured todo has neither.
 #[derive(Debug, Serialize, Clone)]
 pub struct Todo {
     pub id: String,
@@ -13,6 +18,8 @@ pub struct Todo {
     pub done: bool,
     pub position: i64,
     pub created_at: String,
+    pub project_id: Option<String>,
+    pub run_id: Option<String>,
 }
 
 fn row_to_todo(row: &sqlx::sqlite::SqliteRow) -> Todo {
@@ -22,13 +29,15 @@ fn row_to_todo(row: &sqlx::sqlite::SqliteRow) -> Todo {
         done: row.get("done"),
         position: row.get("position"),
         created_at: row.get("created_at"),
+        project_id: row.get("project_id"),
+        run_id: row.get("run_id"),
     }
 }
 
 #[tauri::command]
 pub async fn list_todos(db: State<'_, Db>) -> Result<Vec<Todo>, String> {
     let rows = sqlx::query(
-        "SELECT id, text, done, position, created_at FROM todos \
+        "SELECT id, text, done, position, created_at, project_id, run_id FROM todos \
          ORDER BY position ASC, created_at DESC",
     )
     .fetch_all(db.inner())
@@ -38,7 +47,12 @@ pub async fn list_todos(db: State<'_, Db>) -> Result<Vec<Todo>, String> {
 }
 
 #[tauri::command]
-pub async fn add_todo(db: State<'_, Db>, text: String) -> Result<Todo, String> {
+pub async fn add_todo(
+    db: State<'_, Db>,
+    text: String,
+    project_id: Option<String>,
+    run_id: Option<String>,
+) -> Result<Todo, String> {
     let text = text.trim().to_string();
     if text.is_empty() {
         return Err("text is required".into());
@@ -55,12 +69,15 @@ pub async fn add_todo(db: State<'_, Db>, text: String) -> Result<Todo, String> {
     let position = min_pos.unwrap_or(0) - 1;
 
     sqlx::query(
-        "INSERT INTO todos (id, text, done, position, created_at) VALUES (?, ?, 0, ?, ?)",
+        "INSERT INTO todos (id, text, done, position, created_at, project_id, run_id) \
+         VALUES (?, ?, 0, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&text)
     .bind(position)
     .bind(&created_at)
+    .bind(&project_id)
+    .bind(&run_id)
     .execute(db.inner())
     .await
     .map_err(|e| e.to_string())?;
@@ -71,7 +88,34 @@ pub async fn add_todo(db: State<'_, Db>, text: String) -> Result<Todo, String> {
         done: false,
         position,
         created_at,
+        project_id,
+        run_id,
     })
+}
+
+/// Link or unlink a todo from a project. Pass `None` to clear the link; the run
+/// backlink is cleared with it, since a run only makes sense inside its project.
+#[tauri::command]
+pub async fn set_todo_project(
+    db: State<'_, Db>,
+    id: String,
+    project_id: Option<String>,
+) -> Result<(), String> {
+    if project_id.is_none() {
+        sqlx::query("UPDATE todos SET project_id = NULL, run_id = NULL WHERE id = ?")
+            .bind(&id)
+            .execute(db.inner())
+            .await
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    sqlx::query("UPDATE todos SET project_id = ? WHERE id = ?")
+        .bind(&project_id)
+        .bind(&id)
+        .execute(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]

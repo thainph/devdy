@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useNotesStore } from '@/stores/notes'
 import { useProjectsStore } from '@/stores/projects'
 import { Button, Card, Drawer, Input, AppSelect } from '@/components/ui'
@@ -8,9 +10,10 @@ import MarkdownPreview from '@/components/MarkdownPreview.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useMarkdown } from '@/lib/markdown'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { Plus, GripVertical, Trash2, StickyNote, ListChecks, Check, Pencil, Search, X, FolderOpen, Copy } from 'lucide-vue-next'
+import { Plus, GripVertical, Trash2, StickyNote, ListChecks, Check, Pencil, Search, X, FolderOpen, Copy, MessageSquare } from 'lucide-vue-next'
 
 const { t } = useI18n()
+const router = useRouter()
 const store = useNotesStore()
 const projectsStore = useProjectsStore()
 const { confirm } = useConfirm()
@@ -22,11 +25,40 @@ const FILTER_ALL = ''
 const FILTER_NONE = '__none__'
 const PROJECT_NONE = '' // "no project" in the add form / detail select
 
-onMounted(() => {
+// The standalone quick-create window writes to the same DB from its own webview,
+// so this list only learns about those rows when it refetches.
+let quickCreateUnlisten: UnlistenFn | null = null
+
+onMounted(async () => {
   store.fetchNotes()
   projectsStore.fetchProjects()
   loadMarkdown()
+  try {
+    quickCreateUnlisten = await listen<{ tab: string }>('quickcreate:added', (e) => {
+      if (e.payload?.tab === 'note') store.fetchNotes()
+    })
+  } catch {
+    /* running outside the Tauri shell */
+  }
 })
+
+onBeforeUnmount(() => {
+  quickCreateUnlisten?.()
+  quickCreateUnlisten = null
+})
+
+// --- Run backlink -------------------------------------------------------------
+// A note captured from a session remembers it; jumping back is one click, and
+// the link is only offered while both the project and the run id are present.
+function openLinkedRun(note: { project_id: string | null; run_id: string | null }) {
+  if (!note.project_id || !note.run_id) return
+  router
+    .push({
+      name: 'project-run-detail',
+      params: { projectId: note.project_id, runId: note.run_id },
+    })
+    .catch(() => {})
+}
 
 // --- Project helpers ----------------------------------------------------------
 function projectName(id: string | null): string | null {
@@ -499,9 +531,18 @@ onBeforeUnmount(() => {
               <div class="flex-1 min-w-0">
                 <p class="text-sm font-medium truncate mb-1">{{ displayTitle(note) }}</p>
                 <MarkdownPreview v-if="note.content" :html="renderText(note.content)" :max-height="88" />
-                <div v-if="projectName(note.project_id)" class="mt-2 flex items-center gap-1 text-[11px] text-muted-foreground">
-                  <FolderOpen class="h-3 w-3" :stroke-width="1.75" />
-                  <span class="truncate">{{ projectName(note.project_id) }}</span>
+                <div v-if="projectName(note.project_id)" class="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground">
+                  <span class="flex items-center gap-1 min-w-0">
+                    <FolderOpen class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+                    <span class="truncate">{{ projectName(note.project_id) }}</span>
+                  </span>
+                  <span
+                    v-if="note.run_id"
+                    class="flex items-center gap-1 shrink-0"
+                    :title="t('notes.capturedFromRun')"
+                  >
+                    <MessageSquare class="h-3 w-3" :stroke-width="1.75" />
+                  </span>
                 </div>
               </div>
             </div>
@@ -613,9 +654,24 @@ onBeforeUnmount(() => {
             v-html="renderText(detailNote.content)"
           />
           <p v-else class="text-sm text-muted-foreground italic">{{ t('notes.detail.empty') }}</p>
-          <div v-if="projectName(detailNote.project_id)" class="mt-4 flex items-center gap-1.5 text-xs text-muted-foreground border-t border-border/60 pt-3">
-            <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" />
-            <span>{{ projectName(detailNote.project_id) }}</span>
+          <div
+            v-if="projectName(detailNote.project_id)"
+            class="mt-4 flex items-center gap-3 text-xs text-muted-foreground border-t border-border/60 pt-3"
+          >
+            <span class="flex items-center gap-1.5 min-w-0">
+              <FolderOpen class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+              <span class="truncate">{{ projectName(detailNote.project_id) }}</span>
+            </span>
+            <button
+              v-if="detailNote.run_id"
+              type="button"
+              class="flex items-center gap-1.5 rounded px-1.5 py-1 text-primary hover:bg-accent/60 transition-colors cursor-pointer"
+              :title="t('notes.openLinkedRunTitle')"
+              @click="openLinkedRun(detailNote)"
+            >
+              <MessageSquare class="h-3.5 w-3.5" :stroke-width="1.75" />
+              {{ t('notes.openLinkedRun') }}
+            </button>
           </div>
         </template>
       </div>

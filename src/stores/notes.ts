@@ -16,6 +16,8 @@ export interface Note {
   title: string
   content: string
   project_id: string | null
+  /** Capture context: the AI run it came from, for the backlink. */
+  run_id: string | null
   position: number
   created_at: string
   updated_at: string
@@ -38,7 +40,12 @@ export const useNotesStore = defineStore('notes', () => {
     }
   }
 
-  async function add(title: string, content: string, projectId?: string | null) {
+  async function add(
+    title: string,
+    content: string,
+    projectId?: string | null,
+    runId?: string | null,
+  ) {
     const t = title.trim()
     const c = content.trim()
     if (!t && !c) return
@@ -47,6 +54,8 @@ export const useNotesStore = defineStore('notes', () => {
         title: t,
         content: c,
         projectId: projectId ?? null,
+        // A run backlink only means anything alongside its project.
+        runId: projectId ? runId ?? null : null,
       })
       notes.value.unshift(note)
       return note
@@ -80,13 +89,19 @@ export const useNotesStore = defineStore('notes', () => {
 
   async function setProject(id: string, projectId: string | null) {
     const n = notes.value.find(n => n.id === id)
-    const prev = n?.project_id ?? null
-    if (n) n.project_id = projectId // optimistic
+    const prev = n ? { projectId: n.project_id, runId: n.run_id } : null
+    if (n) {
+      n.project_id = projectId // optimistic
+      if (!projectId) n.run_id = null // a run backlink can't outlive its project link
+    }
     try {
       await invoke('set_note_project', { id, projectId })
     } catch (e) {
       error.value = String(e)
-      if (n) n.project_id = prev
+      if (n && prev) {
+        n.project_id = prev.projectId
+        n.run_id = prev.runId
+      }
     }
   }
 

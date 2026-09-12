@@ -157,5 +157,11 @@
   "loadingContext": "Đang nạp ngữ cảnh…",
   "continueCurrentSession": "Tiếp tục phiên hiện tại",
   "translateSelection": "Dịch đoạn đã chọn",
-  "translate": "Dịch"
+  "translate": "Dịch",
+  "saveSelectionAsNote": "Ghi chú",
+  "saveSelectionAsNoteTitle": "Lưu đoạn đã chọn thành ghi chú của phiên này",
+  "saveSelectionAsTodo": "Việc",
+  "saveSelectionAsTodoTitle": "Lưu đoạn đã chọn thành việc cần làm của phiên này",
+  "quickCapture": "Ghi chú",
+  "quickCaptureTitle": "Ghi chú / thêm việc nhanh mà không rời phiên đang chạy — ⌘/Ctrl+K"
 }

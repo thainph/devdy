@@ -6,7 +6,8 @@ use uuid::Uuid;
 
 /// A single quick note. `title` is a short label (may be empty — the UI falls
 /// back to the first line of `content`), `content` is markdown. `project_id`
-/// optionally links the note to a project. `position` orders the list
+/// optionally links the note to a project, and `run_id` to the AI run it was
+/// captured from (so the UI can offer a backlink). `position` orders the list
 /// (ascending: lower value sits higher / top). Drag-and-drop reorder rewrites
 /// positions.
 #[derive(Debug, Serialize, Clone)]
@@ -15,6 +16,7 @@ pub struct Note {
     pub title: String,
     pub content: String,
     pub project_id: Option<String>,
+    pub run_id: Option<String>,
     pub position: i64,
     pub created_at: String,
     pub updated_at: String,
@@ -26,6 +28,7 @@ fn row_to_note(row: &sqlx::sqlite::SqliteRow) -> Note {
         title: row.get("title"),
         content: row.get("content"),
         project_id: row.get("project_id"),
+        run_id: row.get("run_id"),
         position: row.get("position"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
@@ -41,7 +44,7 @@ pub async fn list_notes(
 ) -> Result<Vec<Note>, String> {
     let rows = if let Some(pid) = project_id {
         sqlx::query(
-            "SELECT id, title, content, project_id, position, created_at, updated_at \
+            "SELECT id, title, content, project_id, run_id, position, created_at, updated_at \
              FROM notes WHERE project_id = ? \
              ORDER BY position ASC, updated_at DESC",
         )
@@ -51,7 +54,7 @@ pub async fn list_notes(
         .map_err(|e| e.to_string())?
     } else {
         sqlx::query(
-            "SELECT id, title, content, project_id, position, created_at, updated_at \
+            "SELECT id, title, content, project_id, run_id, position, created_at, updated_at \
              FROM notes ORDER BY position ASC, updated_at DESC",
         )
         .fetch_all(db.inner())
@@ -67,6 +70,7 @@ pub async fn add_note(
     title: String,
     content: String,
     project_id: Option<String>,
+    run_id: Option<String>,
 ) -> Result<Note, String> {
     let title = title.trim().to_string();
     let content = content.trim().to_string();
@@ -85,13 +89,14 @@ pub async fn add_note(
     let position = min_pos.unwrap_or(0) - 1;
 
     sqlx::query(
-        "INSERT INTO notes (id, title, content, project_id, position, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO notes (id, title, content, project_id, run_id, position, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&title)
     .bind(&content)
     .bind(&project_id)
+    .bind(&run_id)
     .bind(position)
     .bind(&now)
     .bind(&now)
@@ -104,6 +109,7 @@ pub async fn add_note(
         title,
         content,
         project_id,
+        run_id,
         position,
         created_at: now.clone(),
         updated_at: now,
@@ -134,7 +140,8 @@ pub async fn update_note(
     Ok(())
 }
 
-/// Link or unlink a note from a project. Pass `None` to clear the link.
+/// Link or unlink a note from a project. Pass `None` to clear the link; the run
+/// backlink is cleared with it, since a run only makes sense inside its project.
 #[tauri::command]
 pub async fn set_note_project(
     db: State<'_, Db>,
@@ -142,6 +149,17 @@ pub async fn set_note_project(
     project_id: Option<String>,
 ) -> Result<(), String> {
     let now = chrono::Utc::now().to_rfc3339();
+    if project_id.is_none() {
+        sqlx::query(
+            "UPDATE notes SET project_id = NULL, run_id = NULL, updated_at = ? WHERE id = ?",
+        )
+        .bind(&now)
+        .bind(&id)
+        .execute(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
     sqlx::query("UPDATE notes SET project_id = ?, updated_at = ? WHERE id = ?")
         .bind(&project_id)
         .bind(&now)
