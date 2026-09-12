@@ -15,6 +15,10 @@ export interface Todo {
   done: boolean
   position: number
   created_at: string
+  /** Capture context: the project this was jotted down in, when any. */
+  project_id: string | null
+  /** Capture context: the AI run it came from, for the backlink. */
+  run_id: string | null
 }
 
 export const useTodosStore = defineStore('todos', () => {
@@ -34,15 +38,40 @@ export const useTodosStore = defineStore('todos', () => {
     }
   }
 
-  async function add(text: string) {
+  async function add(text: string, projectId?: string | null, runId?: string | null) {
     const trimmed = text.trim()
     if (!trimmed) return
     try {
-      const todo = await invoke<Todo>('add_todo', { text: trimmed })
+      const todo = await invoke<Todo>('add_todo', {
+        text: trimmed,
+        projectId: projectId ?? null,
+        // A run backlink only means anything alongside its project.
+        runId: projectId ? runId ?? null : null,
+      })
       todos.value.unshift(todo)
+      return todo
     } catch (e) {
       error.value = String(e)
       await fetchTodos()
+    }
+  }
+
+  /** Link or unlink a todo from a project (clearing it drops the run backlink). */
+  async function setProject(id: string, projectId: string | null) {
+    const todo = todos.value.find(t => t.id === id)
+    const prev = todo ? { projectId: todo.project_id, runId: todo.run_id } : null
+    if (todo) {
+      todo.project_id = projectId // optimistic
+      if (!projectId) todo.run_id = null
+    }
+    try {
+      await invoke('set_todo_project', { id, projectId })
+    } catch (e) {
+      error.value = String(e)
+      if (todo && prev) {
+        todo.project_id = prev.projectId
+        todo.run_id = prev.runId
+      }
     }
   }
 
@@ -128,5 +157,5 @@ export const useTodosStore = defineStore('todos', () => {
     }
   }
 
-  return { todos, loading, error, fetchTodos, add, toggle, update, remove, removeMany, clearCompleted, reorder }
+  return { todos, loading, error, fetchTodos, add, setProject, toggle, update, remove, removeMany, clearCompleted, reorder }
 })

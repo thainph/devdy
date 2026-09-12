@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRoute } from 'vue-router'
 import { ListTodo, StickyNote } from 'lucide-vue-next'
 import CyberFox from '@/components/CyberFoxCanvas.vue'
 import MascotStars from '@/components/MascotStars.vue'
@@ -10,7 +11,7 @@ import { useAppSettingsStore } from '@/stores/appSettings'
 import { useMascotState } from '@/composables/useMascotState'
 import { useMascotBubble } from '@/composables/useMascotBubble'
 import { useMascotLevelUp } from '@/composables/useMascotLevelUp'
-import { openQuickCreateWindow, type QuickCreateTab } from '@/lib/quickCreateWindow'
+import { useQuickCapture, type QuickCaptureTab } from '@/composables/useQuickCapture'
 
 interface Position {
   x: number
@@ -26,6 +27,8 @@ const DEFAULT_BOTTOM = 20
 
 const { t } = useI18n()
 const appSettings = useAppSettingsStore()
+const route = useRoute()
+const { openCapture } = useQuickCapture()
 // Shared mascot brain: enabled flag, size preference, current phase + streams.
 const {
   enabled,
@@ -53,8 +56,9 @@ const ready = ref(false)
 const dragging = ref(false)
 const position = ref<Position>({ x: 0, y: 0 })
 
-// Right-click context menu: quick-create Todo/Note. Each opens the standalone
-// always-on-top quick-create OS window.
+// Right-click context menu: quick-create Todo/Note. The in-app fox opens the
+// in-app capture panel (same window, nothing to reposition); the ⌘K shortcut is
+// bound app-wide in App.vue so it works with the fox turned off too.
 const menuOpen = ref(false)
 const menuPos = ref({ x: 0, y: 0 })
 
@@ -70,7 +74,14 @@ function openContextMenu(e: MouseEvent) {
 }
 
 function pickQuickCreate(key: string) {
-  openQuickCreateWindow(key as QuickCreateTab)
+  // File it under whatever the user is looking at (same rule as ⌘K in App.vue).
+  openCapture({
+    tab: key as QuickCaptureTab,
+    context: {
+      projectId: typeof route.params.projectId === 'string' ? route.params.projectId : null,
+      runId: typeof route.params.runId === 'string' ? route.params.runId : null,
+    },
+  })
 }
 
 let dragPointerId: number | null = null
@@ -188,14 +199,6 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
-// Global shortcut: Cmd/Ctrl+K opens the quick-create window (Todo tab).
-function onGlobalKey(e: KeyboardEvent) {
-  if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
-    e.preventDefault()
-    openQuickCreateWindow('todo')
-  }
-}
-
 watch([enabled, mascotSize], async ([isEnabled]) => {
   if (!ready.value || !isEnabled) return
   await nextTick()
@@ -215,13 +218,11 @@ onMounted(() => {
     window.addEventListener('resize', onResize)
     window.addEventListener(RESET_POSITION_EVENT, resetPosition)
   })
-  window.addEventListener('keydown', onGlobalKey)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onResize)
   window.removeEventListener(RESET_POSITION_EVENT, resetPosition)
-  window.removeEventListener('keydown', onGlobalKey)
 })
 </script>
 

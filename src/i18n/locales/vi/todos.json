@@ -13,6 +13,16 @@
   "markNotDone": "Đánh dấu chưa xong",
   "clickToOpen": "Bấm để mở",
   "detailTitle": "Chi tiết việc",
+  "allProjects": "Tất cả dự án",
+  "noProject": "Không có dự án",
+  "projectLabel": "Dự án",
+  "openLinkedRun": "Mở phiên AI",
+  "openLinkedRunTitle": "Mở phiên AI đã tạo ra việc này",
+  "capturedFromRun": "Ghi lại từ một phiên AI",
+  "noResults": {
+    "title": "Dự án này chưa có việc nào",
+    "clearFilter": "Xem tất cả dự án"
+  },
   "empty": {
     "title": "Chưa có việc nào",
     "hint": "Tạo việc đầu tiên để theo dõi những gì cần làm. Kéo để sắp xếp theo mức ưu tiên."
@@ -45,6 +55,11 @@
     "notePlaceholder": "Ghi chú… (Hỗ trợ Markdown)",
     "noteTitlePlaceholder": "Tiêu đề",
     "noProject": "Không có dự án",
+    "projectLabel": "Dự án",
+    "runLinked": "Đã gắn với phiên AI hiện tại — mở lại từ danh sách.",
+    "panelHint": "Hỗ trợ Markdown · ⌘/Ctrl+Enter để lưu · Esc để đóng",
+    "popOut": "Tách cửa sổ",
+    "popOutTitle": "Chuyển sang cửa sổ riêng luôn nổi trên cùng",
     "addTodo": "Thêm việc",
     "saveNote": "Lưu ghi chú",
     "todoAdded": "Đã thêm việc",

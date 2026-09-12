@@ -85,7 +85,7 @@ use commands::notes::{
 };
 use commands::todos::{
     add_todo, clear_completed_todos, delete_todo, delete_todos, list_todos, reorder_todos,
-    toggle_todo, update_todo,
+    set_todo_project, toggle_todo, update_todo,
 };
 use commands::vps_servers::{
     create_vps_server, delete_vps_server, list_project_servers, list_vps_servers,
@@ -388,6 +388,7 @@ pub fn run() {
             delete_todos,
             clear_completed_todos,
             reorder_todos,
+            set_todo_project,
             list_notes,
             add_note,
             update_note,
