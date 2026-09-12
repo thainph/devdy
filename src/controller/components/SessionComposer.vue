@@ -117,7 +117,6 @@ function pushPendingImage(mime: string, data: string): void {
 function addImageFile(file: File | null): void {
   if (!file || !file.type.startsWith('image/')) return
   if (file.size > MAX_IMAGE_BYTES) {
-    // eslint-disable-next-line no-alert
     alert(t('controller.composer.imageTooLarge', { size: MAX_IMAGE_BYTES / 1024 / 1024 }))
     return
   }
@@ -157,7 +156,6 @@ function addAttachedFile(file: File): void {
     return
   }
   if (file.size > MAX_IMAGE_BYTES) {
-    // eslint-disable-next-line no-alert
     alert(t('controller.composer.fileTooLarge', { size: MAX_IMAGE_BYTES / 1024 / 1024 }))
     return
   }
