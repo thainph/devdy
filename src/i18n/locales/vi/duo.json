@@ -3,8 +3,6 @@
   "subtitle": "Hai phiên AI trao đổi luân phiên với nhau theo vai trò bạn đặt, lặp tới khi đạt điều kiện dừng.",
   "designer": "Bên A",
   "reviewer": "Bên B",
-  "emptyDesigner": "Bên A chưa bắt đầu.",
-  "emptyReviewer": "Bên B sẽ phản hồi sau khi Bên A đưa ra lượt đầu tiên.",
   "roundCounter": "vòng {n}/{max}",
   "openSession": "Xem chi tiết",
   "historyTitle": "Lịch sử Duo",
@@ -56,7 +54,6 @@
     "continue": "Tiếp tục",
     "reset": "Đặt lại",
     "newDuo": "Phiên Duo mới",
-    "collapse": "Thu gọn",
     "expand": "Cấu hình",
     "deleteHistory": "Xóa khỏi lịch sử"
   },
@@ -67,12 +64,26 @@
     "waitingReviewer": "Bên B đang xử lý…",
     "done": "Đã đồng thuận",
     "stopped": "Đã dừng",
-    "error": "Lỗi"
+    "error": "Lỗi",
+    "awaitingInput": "Chờ bạn xác nhận"
   },
   "reason": {
     "consensus": "Một bên đã phát tín hiệu đồng thuận — kết thúc.",
     "maxRounds": "Đã đạt số vòng tối đa mà chưa đồng thuận.",
     "manual": "Đã dừng thủ công.",
     "error": "Đã xảy ra lỗi trong quá trình trao đổi."
+  },
+  "conversation": {
+    "topic": "Mục tiêu",
+    "empty": "Chưa có lượt nào. Cấu hình hai bên ở trên rồi bấm Bắt đầu.",
+    "round": "Vòng {n}",
+    "roundShort": "v{n}",
+    "detail": "Chi tiết",
+    "hideDetail": "Ẩn chi tiết",
+    "copyTurn": "Sao chép lượt này",
+    "copyTranscript": "Sao chép hội thoại",
+    "jumpLatest": "Mới nhất",
+    "filterAll": "Cả hai",
+    "morePending": "+{n} yêu cầu nữa"
   }
 }

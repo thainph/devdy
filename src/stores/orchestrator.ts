@@ -43,6 +43,9 @@ export interface DuoTurn {
   engine: string
   round: number
   text: string
+  /** ISO timestamp the turn finished. Optional — duos saved before this field
+   * existed still load, they just show no time. */
+  at?: string
 }
 
 /** How the two sessions are sourced. */
@@ -339,13 +342,32 @@ export const useOrchestratorStore = defineStore('orchestrator', () => {
     state.waiting = role
     state.phase = role === 'designer' ? 'waitingDesigner' : 'waitingReviewer'
     const started = role === 'designer' ? designerStarted : reviewerStarted
-    if (started) {
-      await relayTurn(runId, text)
-    } else {
-      await firstTurn(runId, engine, model, text)
-      if (role === 'designer') designerStarted = true
-      else reviewerStarted = true
+    try {
+      if (started) {
+        await relayTurn(runId, text)
+      } else {
+        await firstTurn(runId, engine, model, text)
+        if (role === 'designer') designerStarted = true
+        else reviewerStarted = true
+      }
+    } catch (e) {
+      // The turn is marked 'running' before the backend call (so the stream
+      // shows as live immediately). If that call failed no process was ever
+      // spawned, so no `run:done` will arrive to clear it — the Active runs
+      // dock would list this run as running forever. Clear it here.
+      clearPhantomRunning(runId, 'failed')
+      throw e
     }
+  }
+
+  /**
+   * Drop an optimistic 'running' status that no `run:done` will ever clear.
+   * The backend only emits that event when a sidecar process it spawned exits
+   * (see `runs/sidecar.rs`), so any path that marks a session running WITHOUT a
+   * live process behind it has to clean up after itself.
+   */
+  function clearPhantomRunning(runId: string, status: string) {
+    if (live.get(runId)?.status === 'running') live.setStatus(runId, status)
   }
 
   /**
@@ -371,7 +393,7 @@ export const useOrchestratorStore = defineStore('orchestrator', () => {
         const aLast = await loadLastReply(state.designerRunId!)
         if (aLast) {
           designerStarted = true
-          state.turns.push({ role: 'designer', engine: state.designerEngine, round: 1, text: aLast })
+          state.turns.push({ role: 'designer', engine: state.designerEngine, round: 1, text: aLast, at: nowIso() })
           await dispatch('reviewer', buildRelay(cfg, cfg.bLabel, cfg.aLabel, aLast))
           return
         }
@@ -412,9 +434,16 @@ export const useOrchestratorStore = defineStore('orchestrator', () => {
     state.stopReason = 'error'
     state.active = false
     state.resumable = true
-    // Best-effort: stop whichever session is mid-turn.
+    // Best-effort: stop whichever session is mid-turn. A run whose process has
+    // already exited isn't in the backend registry, so cancelling it emits no
+    // `run:done` — clear the status ourselves once the attempt settles.
     const runningId = state.waiting === 'designer' ? state.designerRunId : state.reviewerRunId
-    if (runningId) runs.cancelRun(runningId).catch(() => {})
+    if (runningId) {
+      runs
+        .cancelRun(runningId)
+        .catch(() => {})
+        .finally(() => clearPhantomRunning(runningId, 'cancelled'))
+    }
     state.waiting = null
     teardown()
     persist()
@@ -439,7 +468,7 @@ export const useOrchestratorStore = defineStore('orchestrator', () => {
         fail(`${state.designerLabel} không tạo ra nội dung nào ở lượt này. Hãy bấm Tiếp tục để thử lại.`)
         return
       }
-      state.turns.push({ role: 'designer', engine: state.designerEngine, round: state.round + 1, text: reply })
+      state.turns.push({ role: 'designer', engine: state.designerEngine, round: state.round + 1, text: reply, at: nowIso() })
       persist()
 
       // Either side may signal consensus and end the loop.
@@ -472,7 +501,7 @@ export const useOrchestratorStore = defineStore('orchestrator', () => {
         fail(`${state.reviewerLabel} không tạo ra nội dung nào ở lượt này. Hãy bấm Tiếp tục để thử lại.`)
         return
       }
-      state.turns.push({ role: 'reviewer', engine: state.reviewerEngine, round: state.round + 1, text: reply })
+      state.turns.push({ role: 'reviewer', engine: state.reviewerEngine, round: state.round + 1, text: reply, at: nowIso() })
       state.round += 1
       persist()
 
@@ -569,6 +598,7 @@ export const useOrchestratorStore = defineStore('orchestrator', () => {
     persist()
     if (runningId) {
       try { await runs.cancelRun(runningId) } catch { /* best effort */ }
+      clearPhantomRunning(runningId, 'cancelled')
     }
   }
 
@@ -611,7 +641,17 @@ export const useOrchestratorStore = defineStore('orchestrator', () => {
   async function hydrateStreamsFromDisk() {
     for (const runId of [state.designerRunId, state.reviewerRunId]) {
       if (!runId) continue
+      // `ensure` starts a NEW session as 'running' — its usual caller is about
+      // to send a turn. Here we only replay a finished transcript, so a fresh
+      // session must be corrected: nothing is streaming it (a live session
+      // would already exist if we were listening), and no `run:done` can ever
+      // arrive to clear it, which left the run stuck in the Active runs dock.
+      const fresh = !live.get(runId)
       const s = live.ensure(runId, state.projectId)
+      if (fresh) {
+        const known = runs.runMeta.get(runId)?.status
+        live.setStatus(runId, known && known !== 'running' ? known : 'done')
+      }
       if (s.entries.length) continue
       try {
         const log = await runs.getRunLog(runId)
@@ -655,6 +695,18 @@ export const useOrchestratorStore = defineStore('orchestrator', () => {
     saveHistory()
   }
 
+  /**
+   * Run ids whose output is currently ON SCREEN in the duo workspace.
+   * `PermissionNotifier` only knows about the run in the route, so without this
+   * it fires an OS notification for a duo question the user is already staring
+   * at. The workspace publishes its two runs while mounted and clears them on
+   * unmount.
+   */
+  const visibleRunIds = ref<string[]>([])
+  function setVisibleRunIds(ids: string[]) {
+    visibleRunIds.value = ids
+  }
+
   // Bumped when the user asks for a fresh draft ("New"). The workspace watches
   // this to reset its editable form — lets a separate history-list component
   // trigger a form reset without owning the form state.
@@ -673,6 +725,8 @@ export const useOrchestratorStore = defineStore('orchestrator', () => {
     state,
     history,
     draftNonce,
+    visibleRunIds,
+    setVisibleRunIds,
     start,
     stop,
     continue: continueDuo,

@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useLiveRunsStore } from '@/stores/liveRuns'
+import { useOrchestratorStore } from '@/stores/orchestrator'
 import { useProjectsStore } from '@/stores/projects'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useAppSettingsStore } from '@/stores/appSettings'
@@ -30,6 +31,7 @@ interface PendingRun {
 const route = useRoute()
 const router = useRouter()
 const live = useLiveRunsStore()
+const orch = useOrchestratorStore()
 const projectsStore = useProjectsStore()
 const tabsStore = useWorkspaceTabsStore()
 const appSettings = useAppSettingsStore()
@@ -44,10 +46,14 @@ const activeRunId = computed(() =>
 
 const pending = computed<PendingRun[]>(() => {
   const out: PendingRun[] = []
+  // The duo workspace shows two runs at once, neither of which is the route's
+  // run — without this the user gets notified about a question already on
+  // screen in front of them.
+  const onScreen = orch.visibleRunIds
   live.sessions.forEach((s) => {
     const req = s.permissionQueue[0]
     if (!req) return
-    if (s.runId === activeRunId.value) return
+    if (s.runId === activeRunId.value || onScreen.includes(s.runId)) return
     out.push({ runId: s.runId, projectId: s.projectId, request: req })
   })
   return out

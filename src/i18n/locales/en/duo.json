@@ -3,8 +3,6 @@
   "subtitle": "Two AI sessions take turns talking to each other in the roles you define, looping until a stop condition.",
   "designer": "Side A",
   "reviewer": "Side B",
-  "emptyDesigner": "Side A hasn't started yet.",
-  "emptyReviewer": "Side B responds once Side A takes the first turn.",
   "roundCounter": "round {n}/{max}",
   "openSession": "View details",
   "historyTitle": "Duo history",
@@ -56,7 +54,6 @@
     "continue": "Continue",
     "reset": "Reset",
     "newDuo": "New Duo",
-    "collapse": "Collapse",
     "expand": "Settings",
     "deleteHistory": "Remove from history"
   },
@@ -67,12 +64,26 @@
     "waitingReviewer": "Side B working…",
     "done": "Consensus reached",
     "stopped": "Stopped",
-    "error": "Error"
+    "error": "Error",
+    "awaitingInput": "Waiting for you"
   },
   "reason": {
     "consensus": "A side signalled consensus — ended.",
     "maxRounds": "Reached the max rounds without consensus.",
     "manual": "Stopped manually.",
     "error": "An error occurred during the exchange."
+  },
+  "conversation": {
+    "topic": "Goal",
+    "empty": "No turns yet. Configure the two sides above and press Start.",
+    "round": "Round {n}",
+    "roundShort": "r{n}",
+    "detail": "Details",
+    "hideDetail": "Hide details",
+    "copyTurn": "Copy this turn",
+    "copyTranscript": "Copy transcript",
+    "jumpLatest": "Latest",
+    "filterAll": "Both",
+    "morePending": "+{n} more"
   }
 }
