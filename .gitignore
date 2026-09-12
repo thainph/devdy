@@ -30,3 +30,9 @@ AGENTS.md
 CLAUDE.md
 .codegraph
 .playwright-mcp
+
+# Local SQLite scratch files. The database the app actually uses lives in the
+# OS app-data dir (see db_path in src-tauri/src/lib.rs), never in the repo.
+src-tauri/*.db
+src-tauri/*.db-shm
+src-tauri/*.db-wal
