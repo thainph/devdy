@@ -371,7 +371,6 @@ export class FoxRenderer {
    * painted frame, so there is no visible flicker.
    */
   redraw() {
-    // eslint-disable-next-line no-self-assign
     this.canvas.width = this.canvas.width
     this.drawOnce()
   }
