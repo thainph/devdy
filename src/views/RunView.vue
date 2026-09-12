@@ -41,8 +41,8 @@ import { mergeContextModel } from '@/lib/contextLimits'
 import PermissionPrompt from '@/components/PermissionPrompt.vue'
 import FileViewer from '@/components/FileViewer.vue'
 import FileTree from '@/components/FileTree.vue'
-import DuoHistoryList from '@/components/DuoHistoryList.vue'
-import DuoWorkspace from '@/components/DuoWorkspace.vue'
+import DuoHistoryList from '@/components/duo/DuoHistoryList.vue'
+import DuoWorkspace from '@/components/duo/DuoWorkspace.vue'
 import { Button, Input, StatusBadge, Badge, Modal, DropdownMenu, DropdownItem } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
@@ -2492,7 +2492,7 @@ function handleRefInput(val: string) {
 <template>
   <div class="flex flex-col h-full">
     <!-- Header -->
-    <div class="@container flex items-center justify-between gap-3 px-6 h-13 border-b border-border/60 shrink-0">
+    <div class="flex items-center justify-between gap-3 px-6 h-13 border-b border-border/60 shrink-0">
       <div class="flex items-center gap-2 min-w-0">
         <h1 class="text-sm font-semibold truncate">{{ project?.name ?? t('run.projectFallback') }}</h1>
         <Badge
@@ -2541,9 +2541,54 @@ function handleRefInput(val: string) {
           <span class="opacity-90 font-mono">{{ awsChip.region }}</span>
         </Badge>
       </div>
-      <div class="flex items-center gap-2 shrink-0">
+      <!-- Icon-only actions, split into three clusters: capture, open-elsewhere,
+           then the session/project controls. Labels live in the tooltips so the
+           header stays short no matter how narrow the pane gets. -->
+      <div class="flex items-center gap-1 shrink-0">
+        <!-- Capture a thought without leaving the run (⌘K / ⌘⇧N do the same). -->
         <Button
           variant="outline"
+          size="icon"
+          :title="t('run.quickCaptureTitle')"
+          @click="openQuickCapture('note')"
+        >
+          <StickyNote class="h-4 w-4" :stroke-width="2" />
+        </Button>
+
+        <div class="h-4 w-px bg-border shrink-0 mx-1" aria-hidden="true" />
+
+        <!-- VS Code / Finder / terminal are the same intent — open this project
+             somewhere else — so they collapse into one trigger. -->
+        <DropdownMenu align="right">
+          <template #trigger>
+            <Button
+              variant="outline"
+              size="icon"
+              :disabled="!project"
+              :title="t('run.openProjectIn')"
+            >
+              <ExternalLink class="h-4 w-4" :stroke-width="2" />
+            </Button>
+          </template>
+          <DropdownItem :disabled="!project" @click="handleOpenInVscode">
+            <Code2 class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+            VS Code
+          </DropdownItem>
+          <DropdownItem :disabled="!project" @click="handleOpenInFolder">
+            <FolderOpen class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+            {{ t('run.folder') }}
+          </DropdownItem>
+          <DropdownItem :disabled="!project" @click="handleOpenInTerminal">
+            <Terminal class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+            {{ t('run.terminal') }}
+          </DropdownItem>
+        </DropdownMenu>
+
+        <div class="h-4 w-px bg-border shrink-0 mx-1" aria-hidden="true" />
+
+        <Button
+          variant="outline"
+          size="icon"
           :disabled="!currentRunId"
           :title="remoteButtonTitle"
           class="relative"
@@ -2554,7 +2599,6 @@ function handleRefInput(val: string) {
             :class="remoteActive ? 'text-emerald-500' : remoteBoundElsewhere ? 'text-muted-foreground' : ''"
             :stroke-width="2"
           />
-          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">{{ t('run.remote') }}</span>
           <!-- Live pulse ONLY when a phone is actively driving THIS run. -->
           <span
             v-if="remoteActive"
@@ -2567,64 +2611,28 @@ function handleRefInput(val: string) {
         </Button>
         <Button
           variant="outline"
-          :disabled="!project"
-          :title="t('projects.openInVscode')"
-          @click="handleOpenInVscode"
-        >
-          <Code2 class="h-4 w-4" :stroke-width="2" />
-          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">VS Code</span>
-        </Button>
-        <Button
-          variant="outline"
-          :disabled="!project"
-          :title="t('projects.openFolder')"
-          @click="handleOpenInFolder"
-        >
-          <FolderOpen class="h-4 w-4" :stroke-width="2" />
-          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">{{ t('run.folder') }}</span>
-        </Button>
-        <Button
-          variant="outline"
-          :disabled="!project"
-          :title="t('projects.openInTerminal')"
-          @click="handleOpenInTerminal"
-        >
-          <Terminal class="h-4 w-4" :stroke-width="2" />
-          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">{{ t('run.terminal') }}</span>
-        </Button>
-        <Button
-          variant="outline"
+          size="icon"
           :disabled="!project"
           :title="t('run.issuesByMilestone')"
           @click="router.push({ name: 'gantt', query: { project: projectId } })"
         >
           <ListChecks class="h-4 w-4" :stroke-width="2" />
-          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">{{ t('run.issues') }}</span>
-        </Button>
-        <!-- Capture a thought without leaving the run (⌘K / ⌘⇧N do the same). -->
-        <Button
-          variant="outline"
-          :title="t('run.quickCaptureTitle')"
-          @click="openQuickCapture('note')"
-        >
-          <StickyNote class="h-4 w-4" :stroke-width="2" />
-          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">{{ t('run.quickCapture') }}</span>
         </Button>
         <Button
           variant="outline"
+          size="icon"
           :title="t('run.projectSettingsTitle')"
           @click="router.push(`/projects/${projectId}/settings`)"
         >
           <Settings class="h-4 w-4" :stroke-width="2" />
-          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">{{ t('run.settings') }}</span>
         </Button>
         <Button
           variant="outline"
+          size="icon"
           :title="uiLayout.focusMode ? t('run.exitFocusMode') : t('run.enterFocusMode')"
           @click="uiLayout.toggleFocus()"
         >
           <component :is="uiLayout.focusMode ? Minimize2 : Maximize2" class="h-4 w-4" :stroke-width="2" />
-          <span v-if="!uiLayout.focusMode" class="hidden @[820px]:inline">{{ t('run.focus') }}</span>
         </Button>
       </div>
     </div>
