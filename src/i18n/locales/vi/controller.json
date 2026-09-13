@@ -71,6 +71,15 @@
     "needsApproval": "Đang chờ bạn duyệt",
     "pendingElsewhere": "{count} run đang chờ bạn duyệt",
     "ungrouped": "Khác",
-    "untitled": "Run {id}"
+    "untitled": "Run {id}",
+    "projectsTitle": "Dự án",
+    "backToProjects": "Tất cả dự án",
+    "search": "Tìm run",
+    "searchPlaceholder": "Tìm run…",
+    "clearSearch": "Xoá tìm kiếm",
+    "noResults": "Không có run nào khớp.",
+    "noRuns": "Dự án này chưa có run nào.",
+    "runCount": "{count} run",
+    "needsApprovalSection": "Đang chờ bạn"
   }
 }

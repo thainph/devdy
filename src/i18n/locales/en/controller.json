@@ -71,6 +71,15 @@
     "needsApproval": "Needs your approval",
     "pendingElsewhere": "{count} run needs your approval | {count} runs need your approval",
     "ungrouped": "Other",
-    "untitled": "Run {id}"
+    "untitled": "Run {id}",
+    "projectsTitle": "Projects",
+    "backToProjects": "All projects",
+    "search": "Search runs",
+    "searchPlaceholder": "Search runs…",
+    "clearSearch": "Clear search",
+    "noResults": "No run matches that.",
+    "noRuns": "No runs in this project yet.",
+    "runCount": "{count} run | {count} runs",
+    "needsApprovalSection": "Waiting for you"
   }
 }

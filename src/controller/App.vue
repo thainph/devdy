@@ -252,8 +252,16 @@ const runView = computed(() => (runId.value ? store.state.runs[runId.value] ?? n
 const pending = computed(() => store.pendingFor(runId.value))
 const pendingElsewhere = computed(() => store.pendingElsewhere(runId.value))
 
+// Which project the run browser is showing. Lives here (not inside the browser)
+// so it survives opening a run and coming back — returning to the top-level
+// project list every time would make moving between two runs tedious.
+const browserProjectId = ref<string | null>(null)
+
 /** Open a run: tell the Host to stream it, then show it. */
 function openRun(id: string): void {
+  // Remember where this run lives so Back lands on its project, not the root.
+  const info = store.state.runList.find((r) => r.id === id)
+  if (info) browserProjectId.value = info.project_id
   store.setActiveRun(id)
   conn.value?.openRun(id)
 }
@@ -464,6 +472,8 @@ function onRequestFiles(): void {
     :runs="store.state.runList"
     :projects="store.state.projectList"
     :pending-run-ids="Object.keys(store.state.pendingByRun)"
+    :selected-project-id="browserProjectId"
+    @update:selected-project-id="browserProjectId = $event"
     @open="openRun"
     @refresh="refreshRuns"
     @disconnect="disconnect"
