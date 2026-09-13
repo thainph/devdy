@@ -312,6 +312,7 @@ const usage = computed(() => runView.value?.usage ?? null)
 const claudeBudget = computed(() => store.state.claudeBudget)
 const codexBudget = computed(() => store.state.codexBudget)
 const claudeAccount = computed(() => store.state.claudeAccount)
+const claudeAccounts = computed(() => store.state.claudeAccounts)
 
 // Clear the running flag when the run reports a terminal status.
 watch(
@@ -506,6 +507,7 @@ function onRequestFiles(): void {
     :claude-budget="claudeBudget"
     :codex-budget="codexBudget"
     :claude-account="claudeAccount"
+    :claude-accounts="claudeAccounts"
     @send="onSend"
     @cancel="onCancel"
     @decide="onDecide"

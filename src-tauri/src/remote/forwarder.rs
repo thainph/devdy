@@ -12,7 +12,8 @@ use crate::db::Db;
 use crate::remote::bus::{RemoteBus, RemoteRunEvent};
 use crate::remote::outbound::OutboundTx;
 use crate::remote::protocol::{
-    EngineOption, Envelope, FrameType, ModelOption, OutputLine, ProjectInfo, RunInfo,
+    ClaudeAccountUsage, EngineOption, Envelope, FrameType, ModelOption, OutputLine, ProjectInfo,
+    RunInfo,
     SlashCommandInfo,
     StreamPayload,
 };
@@ -534,32 +535,50 @@ pub async fn send_plan_usage(
     seq: &SeqCounter,
     bound_run_id: &str,
 ) {
-    // The controller mirrors ONE account: the one the bound run is actually
-    // using (its snapshotted account, else the current default). Show that
-    // account's usage + label so the controller knows which account it reflects.
+    // Which account this run actually executes with (its snapshotted account,
+    // else the current default). Used to mark the row that matters right now.
     let account_id = match crate::commands::claude_accounts::run_account_id(db, bound_run_id).await {
         Some(id) => Some(id),
         None => crate::commands::claude_accounts::default_account_id(db).await,
     };
-    let claude_key =
-        crate::commands::stats::claude_plan_usage_key(account_id.as_deref());
+    let claude_key = crate::commands::stats::claude_plan_usage_key(account_id.as_deref());
     let claude = crate::commands::stats::budget_status(db, &claude_key).await;
     let codex = crate::commands::stats::budget_status(db, "plan_usage_codex").await;
-    let claude_account = match account_id.as_deref() {
-        Some(id) => sqlx::query_scalar::<_, String>(
-            "SELECT label FROM claude_accounts WHERE id = ?",
-        )
-        .bind(id)
-        .fetch_optional(db)
-        .await
-        .ok()
-        .flatten(),
-        None => None,
-    };
+
+    // Desktop BudgetBadge parity: one row per managed account, not just the
+    // run's own. With several accounts in play the interesting question is
+    // usually "which account still has headroom", which a single row cannot
+    // answer. Ordered like the desktop list (default first, then by label).
+    let rows = sqlx::query(
+        "SELECT id, label FROM claude_accounts
+         ORDER BY is_default DESC, label COLLATE NOCASE ASC",
+    )
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
+    let mut claude_accounts = Vec::with_capacity(rows.len());
+    for r in &rows {
+        let id: String = r.get("id");
+        let key = crate::commands::stats::claude_plan_usage_key(Some(&id));
+        let budget = crate::commands::stats::budget_status(db, &key).await;
+        claude_accounts.push(ClaudeAccountUsage {
+            active: account_id.as_deref() == Some(id.as_str()),
+            label: r.get("label"),
+            id,
+            budget: serde_json::to_value(&budget).ok(),
+        });
+    }
+
+    let claude_account = claude_accounts
+        .iter()
+        .find(|a| a.active)
+        .map(|a| a.label.clone());
+
     let payload = StreamPayload::PlanUsage {
         claude: serde_json::to_value(&claude).ok(),
         codex: serde_json::to_value(&codex).ok(),
         claude_account,
+        claude_accounts,
     };
     if let Some(env) = seal_stream(session, room_id, &payload, seq.next()) {
         let _ = out.send(env);

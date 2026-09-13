@@ -6,7 +6,9 @@
     "hostRejectedReason": "Host từ chối lệnh: {reason}"
   },
   "planBar": {
-    "noPlanData": "chưa có dữ liệu gói"
+    "noPlanData": "chưa có dữ liệu gói",
+    "soon": "sắp",
+    "accountActive": "Claude — {label} (run này)"
   },
   "composer": {
     "defaultEngine": "Engine mặc định",

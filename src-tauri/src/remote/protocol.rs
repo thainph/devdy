@@ -254,15 +254,23 @@ pub enum StreamPayload {
     /// `BudgetBadge`. Each field is a serialized `stats::BudgetStatus` (or null
     /// when unavailable). Pushed on pairing and after each turn finishes.
     PlanUsage {
+        /// Usage for the ONE account the focused run uses. Kept for controllers
+        /// built before `claude_accounts` existed; newer ones prefer that list.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         claude: Option<serde_json::Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         codex: Option<serde_json::Value>,
-        /// Label of the Claude account the bound run is using (so the controller
-        /// shows WHICH account the utilization belongs to). None for a global/
-        /// legacy run with no managed account.
+        /// Label of the Claude account the focused run is using (so the
+        /// controller shows WHICH account the utilization belongs to). None for
+        /// a global/legacy run with no managed account.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         claude_account: Option<String>,
+        /// Every managed Claude account with its own usage — desktop
+        /// `BudgetBadge` parity, which renders one row per account. Empty when
+        /// no accounts are configured (the legacy single-snapshot setup), in
+        /// which case `claude` above is the whole story.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        claude_accounts: Vec<ClaudeAccountUsage>,
     },
     /// The bound run's live engine/model/permission-mode selection. Pushed on
     /// pairing (initial snapshot) and whenever either surface changes one, so the
@@ -276,6 +284,21 @@ pub enum StreamPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         permission_mode: Option<String>,
     },
+}
+
+/// One managed Claude account's plan utilization, mirroring a desktop
+/// `BudgetBadge` row.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaudeAccountUsage {
+    pub id: String,
+    /// Human label the Owner gave the account.
+    pub label: String,
+    /// Whether this is the account the focused run actually executes with, so
+    /// the controller can mark the row that matters right now.
+    pub active: bool,
+    /// Serialized `stats::BudgetStatus`, or null when no snapshot exists yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<serde_json::Value>,
 }
 
 /// One console line inside a [`StreamPayload::OutputBatch`].

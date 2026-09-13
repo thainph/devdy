@@ -24,6 +24,7 @@ import {
 import type { RateLimitWindows } from '@/stores/liveRuns'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
 import type {
+  ClaudeAccountUsage,
   EngineModelOption,
   PlanBudget,
   ProjectInfo,
@@ -168,8 +169,11 @@ export interface RunStoreState {
   /** Subscription plan-usage badges, mirrored from the desktop `BudgetBadge`. */
   claudeBudget: PlanBudget | null
   codexBudget: PlanBudget | null
-  /** Label of the Claude account the bound run is using (null = global/legacy). */
+  /** Label of the Claude account the focused run is using (null = global/legacy). */
   claudeAccount: string | null
+  /** Every managed Claude account with its own usage — desktop badge parity.
+   * Empty from an older Host, or when no accounts are configured. */
+  claudeAccounts: ClaudeAccountUsage[]
 }
 
 /**
@@ -192,6 +196,7 @@ export function createRunStore() {
     claudeBudget: null,
     codexBudget: null,
     claudeAccount: null,
+    claudeAccounts: [],
   })
 
   function ensureRun(runId: string): RunView {
@@ -284,6 +289,7 @@ export function createRunStore() {
         state.claudeBudget = payload.claude ?? null
         state.codexBudget = payload.codex ?? null
         state.claudeAccount = payload.claude_account ?? null
+        state.claudeAccounts = payload.claude_accounts ?? []
         break
       case 'run_list':
         state.runList = payload.runs
@@ -452,6 +458,7 @@ export function createRunStore() {
     state.engineModelOptions = []
     state.projectFiles = []
     state.runMeta = { engine: '', model: '', permissionMode: '' }
+    state.claudeAccounts = []
   }
 
   return {
