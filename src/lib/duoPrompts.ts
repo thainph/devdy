@@ -7,8 +7,16 @@
  * (responds), each with a caller-supplied role instruction and label. Nothing
  * here assumes a design/review use-case — that (or rock-paper-scissors, a
  * debate, etc.) comes entirely from the goal + role instructions the caller
- * passes in. An optional consensus token lets either side end the loop.
+ * passes in.
+ *
+ * The optional consensus token is ASYMMETRIC: only B (the responding/reviewing
+ * side) may emit it, and only once it has nothing left to raise. A is told
+ * explicitly that it cannot sign off on its own work, so a design turn can never
+ * end the loop by quoting the token.
  */
+
+/** Which side a prompt is addressed to: 'a' goes first, 'b' responds. */
+export type DuoSide = 'a' | 'b'
 
 export interface DuoPromptConfig {
   /** The shared task/topic that seeds the whole conversation. */
@@ -19,7 +27,7 @@ export interface DuoPromptConfig {
   /** Role behaviour for each side (free text; may be empty). */
   aInstruction: string
   bInstruction: string
-  /** Token a side emits when the objective is met (empty = no consensus stop). */
+  /** Token B emits when the objective is met (empty = no consensus stop). */
   consensusToken: string
 }
 
@@ -28,10 +36,26 @@ function joinSections(parts: string[]): string {
   return parts.map((p) => p.trim()).filter(Boolean).join('\n\n')
 }
 
-/** The consensus instruction, or '' when no token is configured. */
-function consensusNote(cfg: DuoPromptConfig): string {
+/**
+ * The consensus instruction for the side being addressed, or '' when no token is
+ * configured. Only B may end the loop; A gets a hard ban so it never signs off on
+ * its own work.
+ */
+function consensusNote(cfg: DuoPromptConfig, side: DuoSide): string {
   if (!cfg.consensusToken) return ''
-  return `Khi mục tiêu đã hoàn tất và bạn không còn gì cần bổ sung, hãy kết thúc lượt bằng đúng token: ${cfg.consensusToken}. Chỉ viết token khi thực sự hoàn tất; nếu chưa, TUYỆT ĐỐI không viết token.`
+  if (side === 'a') {
+    return [
+      `Bạn KHÔNG có quyền chốt cuộc trao đổi. Chỉ **${cfg.bLabel}** mới được phép kết luận đã đạt yêu cầu.`,
+      `TUYỆT ĐỐI không viết token ${cfg.consensusToken} trong bất kỳ lượt nào của bạn, kể cả khi bạn tin rằng mọi thứ đã xong hoặc chỉ muốn trích dẫn lại token.`,
+      `Nhiệm vụ của bạn là tiếp thu góp ý và chỉnh sửa cho tới khi **${cfg.bLabel}** tự xác nhận.`,
+    ].join(' ')
+  }
+  return [
+    `Bạn là bên DUY NHẤT được phép chốt cuộc trao đổi, bằng cách kết thúc lượt bằng đúng token: ${cfg.consensusToken}.`,
+    `Chỉ viết token khi nội dung **${cfg.aLabel}** vừa gửi đã thực sự ổn và bạn KHÔNG còn bất kỳ góp ý, yêu cầu chỉnh sửa, câu hỏi, điểm nghi ngờ hay việc cần làm thêm nào.`,
+    `Nếu trong lượt này bạn còn nêu bất kỳ góp ý/vấn đề nào — dù nhỏ hay chỉ là "nên cân nhắc" — thì TUYỆT ĐỐI không viết token: hãy gửi góp ý về cho **${cfg.aLabel}** chỉnh sửa rồi xem xét lại ở lượt sau.`,
+    'Không bao giờ vừa nêu góp ý vừa viết token trong cùng một lượt.',
+  ].join(' ')
 }
 
 /** A's very first message. */
@@ -41,7 +65,7 @@ export function buildOpening(cfg: DuoPromptConfig): string {
     cfg.aInstruction,
     `Mục tiêu / nội dung cuộc trao đổi:\n${cfg.goal}`,
     'Hãy đưa ra lượt đầu tiên của bạn.',
-    consensusNote(cfg),
+    consensusNote(cfg, 'a'),
   ])
 }
 
@@ -53,28 +77,27 @@ export function buildBOpening(cfg: DuoPromptConfig, aReply: string): string {
     `Mục tiêu / nội dung cuộc trao đổi:\n${cfg.goal}`,
     `**${cfg.aLabel}** vừa nói:\n\n${aReply}`,
     '→ Đây là lượt của bạn, hãy phản hồi.',
-    consensusNote(cfg),
+    consensusNote(cfg, 'b'),
   ])
 }
 
-/** A follow-up turn: relay `fromLabel`'s reply to the `toLabel` side. */
-export function buildRelay(
-  cfg: DuoPromptConfig,
-  toLabel: string,
-  fromLabel: string,
-  reply: string,
-): string {
+/** A follow-up turn: relay the other side's reply to the `to` side. */
+export function buildRelay(cfg: DuoPromptConfig, to: DuoSide, reply: string): string {
+  const toLabel = to === 'a' ? cfg.aLabel : cfg.bLabel
+  const fromLabel = to === 'a' ? cfg.bLabel : cfg.aLabel
   return joinSections([
     `**${fromLabel}** vừa nói:\n\n${reply}`,
     `→ Đây là lượt của bạn (**${toLabel}**), hãy phản hồi tiếp.`,
-    consensusNote(cfg),
+    consensusNote(cfg, to),
   ])
 }
 
 /**
  * Detect a consensus signal. Requires the token to appear standalone (on its own
- * line or at the very end), which is how the prompt instructs a side to emit it,
- * so merely quoting it mid-sentence doesn't trigger a false stop.
+ * line or at the very end), which is how the prompt instructs B to emit it, so
+ * merely quoting it mid-sentence doesn't trigger a false stop.
+ *
+ * Callers must only run this on B's replies — A is never allowed to end the loop.
  */
 export function hasConsensus(reply: string, token: string): boolean {
   if (!token) return false

@@ -394,7 +394,7 @@ export const useOrchestratorStore = defineStore('orchestrator', () => {
         if (aLast) {
           designerStarted = true
           state.turns.push({ role: 'designer', engine: state.designerEngine, round: 1, text: aLast, at: nowIso() })
-          await dispatch('reviewer', buildRelay(cfg, cfg.bLabel, cfg.aLabel, aLast))
+          await dispatch('reviewer', buildRelay(cfg, 'b', aLast))
           return
         }
         // Couldn't read A's output (empty/unreadable log) — fall back to running
@@ -409,11 +409,11 @@ export const useOrchestratorStore = defineStore('orchestrator', () => {
       // B's very first turn only needs an opening in "new" mode; in "existing"
       // mode B already has context, so a plain relay is enough.
       const prompt = reviewerStarted || state.mode === 'existing'
-        ? buildRelay(cfg, cfg.bLabel, cfg.aLabel, last.text)
+        ? buildRelay(cfg, 'b', last.text)
         : buildBOpening(cfg, last.text)
       await dispatch('reviewer', prompt)
     } else {
-      await dispatch('designer', buildRelay(cfg, cfg.aLabel, cfg.bLabel, last.text))
+      await dispatch('designer', buildRelay(cfg, 'a', last.text))
     }
   }
 
@@ -471,17 +471,15 @@ export const useOrchestratorStore = defineStore('orchestrator', () => {
       state.turns.push({ role: 'designer', engine: state.designerEngine, round: state.round + 1, text: reply, at: nowIso() })
       persist()
 
-      // Either side may signal consensus and end the loop.
-      if (hasConsensus(reply, state.consensusToken)) {
-        finish('done', 'consensus')
-        return
-      }
+      // NOTE: A's reply is never checked for consensus — only B (the reviewing
+      // side) may end the loop, so a designer turn that quotes/claims the token
+      // just gets relayed like any other turn.
 
       // Relay A's turn to B. B needs an opening only on its first turn in "new"
       // mode; in "existing" mode B already has context, so relay directly.
       const cfg = promptCfg()
       const prompt = reviewerStarted || state.mode === 'existing'
-        ? buildRelay(cfg, cfg.bLabel, cfg.aLabel, reply)
+        ? buildRelay(cfg, 'b', reply)
         : buildBOpening(cfg, reply)
       await dispatch('reviewer', prompt)
     } catch (e) {
@@ -505,6 +503,9 @@ export const useOrchestratorStore = defineStore('orchestrator', () => {
       state.round += 1
       persist()
 
+      // Only B may end the loop, and only on a turn that raises nothing new — the
+      // prompt forbids mixing feedback with the token, so a standalone token here
+      // means B has signed off.
       if (hasConsensus(reply, state.consensusToken)) {
         finish('done', 'consensus')
         return
@@ -516,7 +517,7 @@ export const useOrchestratorStore = defineStore('orchestrator', () => {
 
       // Relay B's turn back to A for another round.
       const cfg = promptCfg()
-      await dispatch('designer', buildRelay(cfg, cfg.aLabel, cfg.bLabel, reply))
+      await dispatch('designer', buildRelay(cfg, 'a', reply))
     } catch (e) {
       fail(`Lỗi khi chuyển về ${state.designerLabel}: ${String(e)}`)
     }

@@ -30,7 +30,7 @@
     "runPlaceholder": "Chọn session…",
     "permission": "Chế độ quyền",
     "maxRounds": "Số vòng tối đa",
-    "consensusToken": "Từ khoá đồng thuận (tùy chọn)",
+    "consensusToken": "Từ khoá đồng thuận (chỉ Bên B được chốt)",
     "designerEngine": "Engine Bên A",
     "reviewerEngine": "Engine Bên B",
     "model": "Model",
@@ -68,7 +68,7 @@
     "awaitingInput": "Chờ bạn xác nhận"
   },
   "reason": {
-    "consensus": "Một bên đã phát tín hiệu đồng thuận — kết thúc.",
+    "consensus": "Bên B đã xác nhận đạt yêu cầu — kết thúc.",
     "maxRounds": "Đã đạt số vòng tối đa mà chưa đồng thuận.",
     "manual": "Đã dừng thủ công.",
     "error": "Đã xảy ra lỗi trong quá trình trao đổi."
