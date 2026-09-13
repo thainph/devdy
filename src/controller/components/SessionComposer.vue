@@ -18,7 +18,12 @@ import {
 import { Button, AppSelect } from '@/components/ui'
 
 const { t } = useI18n()
-import { modelOptionsFor, PERMISSION_MODE_OPTIONS, type SelectOption } from '@/lib/engineOptions'
+import {
+  effectiveModelOptions,
+  PERMISSION_MODE_OPTIONS,
+  type FetchedModel,
+  type SelectOption,
+} from '@/lib/engineOptions'
 import type { CmdAttachment, SlashCommand } from '../protocol'
 
 /** One outbound turn assembled by the composer. */
@@ -36,6 +41,9 @@ const props = withDefaults(
     slashCommands?: SlashCommand[]
     /** Project file paths for `@`-mention autocomplete. */
     projectFiles?: string[]
+    /** Models the Host discovered from the account (merged into the curated
+     * model table, mirroring the desktop composer). */
+    discoveredModels?: { claude: FetchedModel[]; codex: FetchedModel[] }
     /** Engine selectors (empty = default). */
     engine?: string
     model?: string
@@ -50,6 +58,7 @@ const props = withDefaults(
   {
     slashCommands: () => [],
     projectFiles: () => [],
+    discoveredModels: () => ({ claude: [], codex: [] }),
     engine: '',
     model: '',
     permissionMode: '',
@@ -83,12 +92,20 @@ const engineOptions = computed<SelectOption[]>(() => [
   { value: 'claude', label: 'claude' },
   { value: 'codex', label: 'codex' },
 ])
-const modelOptions = computed(() => modelOptionsFor(props.engine || 'claude'))
+// Curated aliases PLUS whatever the Host discovered from the account — the same
+// merge the desktop composer does, so the two selectors never disagree.
+const modelOptions = computed(() =>
+  effectiveModelOptions(props.engine || 'claude', props.discoveredModels),
+)
 
 function onEngineChange(next: string): void {
   emit('update:engine', next)
   // Reset the model when it isn't valid for the new engine (desktop parity).
-  if (!modelOptionsFor(next || 'claude').some((o) => o.value === props.model)) {
+  if (
+    !effectiveModelOptions(next || 'claude', props.discoveredModels).some(
+      (o) => o.value === props.model,
+    )
+  ) {
     emit('update:model', '')
   }
 }

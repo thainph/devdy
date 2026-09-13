@@ -23,7 +23,7 @@ import type { UsageInfo } from '../runStore'
 import type { RateLimitWindows } from '@/stores/liveRuns'
 import type { ConnStatus } from '../connection'
 import type {
-  ClaudeAccountUsage, PlanBudget, QuestionAnswers, RemoteDecision, SlashCommand,
+  ClaudeAccountUsage, FetchedModel, PlanBudget, QuestionAnswers, RemoteDecision, SlashCommand,
 } from '../protocol'
 
 const props = defineProps<{
@@ -40,6 +40,8 @@ const props = defineProps<{
   renderText: (md: string) => string
   slashCommands: SlashCommand[]
   projectFiles: string[]
+  /** Models the Host discovered from the account (composer model selector). */
+  discoveredModels: { claude: FetchedModel[]; codex: FetchedModel[] }
   engine: string
   model: string
   permissionMode: string
@@ -292,6 +294,7 @@ onUnmounted(() => window.removeEventListener('pointerup', onWindowPointerUp))
       v-else
       :slash-commands="slashCommands"
       :project-files="projectFiles"
+      :discovered-models="discoveredModels"
       :engine="engine"
       :model="model"
       :permission-mode="permissionMode"

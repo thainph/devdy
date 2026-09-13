@@ -1,7 +1,11 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { invoke } from '@/lib/tauri'
-import type { SelectOption } from '@/lib/engineOptions'
+import {
+  codexOptions as mergeCodex,
+  mergedClaudeOptions as mergeClaude,
+  type SelectOption,
+} from '@/lib/engineOptions'
 
 /**
  * Persisted model catalog. Both Claude and Codex model lists are refreshed
@@ -123,37 +127,16 @@ export const useModelCatalogStore = defineStore('modelCatalog', () => {
     }
   }
 
-  /**
-   * Merge curated base options with cached Claude models that aren't already
-   * covered. A cached id is "already covered" when present verbatim, or when it
-   * belongs to a family an alias already represents (e.g. `opus` covers
-   * `claude-opus-4-5`). Only genuinely new families are appended.
-   */
+  /** Delegates to the shared pure merge in `@/lib/engineOptions`, which the
+   * remote controller uses too — the two surfaces must never disagree about
+   * which models are on offer. */
   function mergedClaudeOptions(base: SelectOption[]): SelectOption[] {
-    const knownValues = new Set(base.map((o) => o.value))
-    const aliasStems = base
-      .map((o) => o.value.replace(/\[.*\]$/, '').toLowerCase())
-      .filter(Boolean)
-    const extras = claudeModels.value
-      .filter((m) => {
-        if (knownValues.has(m.value)) return false
-        const id = m.value.toLowerCase()
-        return !aliasStems.some((stem) => id.includes(stem))
-      })
-      .map((m) => ({ value: m.value, label: m.label }))
-    return extras.length ? [...base, ...extras] : base
+    return mergeClaude(base, claudeModels.value)
   }
 
-  /**
-   * Codex options: when a cache exists it is authoritative (from the CLI), so we
-   * keep only the leading "Default" option and replace the curated models with
-   * the cached list. With no cache we return the curated fallback unchanged.
-   */
+  /** Delegates to the shared pure merge in `@/lib/engineOptions`. */
   function codexOptions(base: SelectOption[]): SelectOption[] {
-    const models = codexModels.value
-    if (!models.length) return base
-    const defaultOpt = base.find((o) => o.value === '') ?? { value: '', label: base[0]?.label ?? '' }
-    return [defaultOpt, ...models.map((m) => ({ value: m.value, label: m.label }))]
+    return mergeCodex(base, codexModels.value)
   }
 
   return {

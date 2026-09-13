@@ -496,6 +496,7 @@ function onRequestFiles(): void {
     :render-text="renderText"
     :slash-commands="store.state.slashCommands"
     :project-files="store.state.projectFiles"
+    :discovered-models="store.state.discoveredModels"
     :engine="engine"
     :model="model"
     :permission-mode="permissionMode"

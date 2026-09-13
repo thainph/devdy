@@ -486,6 +486,45 @@ pub async fn refresh_codex_models(
     Ok(entry)
 }
 
+/// Pick the cache entry a selector should use: the active account's, else the
+/// global `default` one, else whatever exists. Mirrors the frontend `pickEntry`
+/// so every surface resolves the same list.
+fn pick_entry<'a>(
+    map: &'a HashMap<String, ModelCacheEntry>,
+    active_key: &str,
+) -> Option<&'a ModelCacheEntry> {
+    map.get(active_key)
+        .or_else(|| map.get("default"))
+        .or_else(|| map.values().next())
+}
+
+/// The discovered model lists (Claude, Codex) for the currently active account,
+/// with no discovery triggered.
+///
+/// Exists so non-Tauri callers — the Remote Control forwarder — can ship the
+/// same discovered models the desktop composer shows. Empty vectors mean nothing
+/// has been discovered yet, and the caller should fall back to the curated table.
+pub async fn active_discovered_models(db: &Db) -> (Vec<ModelOption>, Vec<ModelOption>) {
+    let claude_map = parse_cache_map(read_setting(db, CLAUDE_CACHE_KEY).await.as_deref());
+    let codex_map = parse_cache_map(read_setting(db, CODEX_CACHE_KEY).await.as_deref());
+    let claude_key = read_setting(db, CLAUDE_ACTIVE_KEY)
+        .await
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "default".to_string());
+    let codex_key = read_setting(db, CODEX_ACTIVE_KEY)
+        .await
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "default".to_string());
+    (
+        pick_entry(&claude_map, &claude_key)
+            .map(|e| e.models.clone())
+            .unwrap_or_default(),
+        pick_entry(&codex_map, &codex_key)
+            .map(|e| e.models.clone())
+            .unwrap_or_default(),
+    )
+}
+
 /// Read the persisted model caches (no discovery). Screens call this on load so
 /// dropdowns show the last refreshed lists without spawning any process.
 #[tauri::command]

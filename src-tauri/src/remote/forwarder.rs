@@ -12,7 +12,8 @@ use crate::db::Db;
 use crate::remote::bus::{RemoteBus, RemoteRunEvent};
 use crate::remote::outbound::OutboundTx;
 use crate::remote::protocol::{
-    ClaudeAccountUsage, EngineOption, Envelope, FrameType, ModelOption, OutputLine, ProjectInfo,
+    ClaudeAccountUsage, DiscoveredModel, EngineOption, Envelope, FrameType, ModelOption,
+    OutputLine, ProjectInfo,
     RunInfo,
     SlashCommandInfo,
     StreamPayload,
@@ -509,14 +510,29 @@ pub fn engine_model_options() -> Vec<EngineOption> {
 }
 
 /// Seal + send the engine/model options to the Controller.
+///
+/// Ships the models DISCOVERED from the account alongside the legacy curated
+/// table. The controller merges them with its own curated table using the same
+/// rules the desktop composer uses, so a model refreshed on the desktop shows up
+/// remotely without a controller redeploy — the curated table alone would leave
+/// the two selectors offering different lists.
 pub async fn send_engine_model_options(
+    db: &Db,
     session: &Session,
     room_id: &str,
     out: &OutboundTx,
     seq: &SeqCounter,
 ) {
+    let (claude, codex) = crate::commands::models::active_discovered_models(db).await;
+    let to_wire = |m: crate::commands::models::ModelOption| DiscoveredModel {
+        value: m.value,
+        label: m.label,
+        description: m.description,
+    };
     let payload = StreamPayload::EngineModelOptions {
         engines: engine_model_options(),
+        claude_models: claude.into_iter().map(to_wire).collect(),
+        codex_models: codex.into_iter().map(to_wire).collect(),
     };
     if let Some(env) = seal_stream(session, room_id, &payload, seq.next()) {
         let _ = out.send(env);

@@ -12,6 +12,11 @@
  * in `./connection`.
  */
 
+import type { FetchedModel } from '@/lib/engineOptions'
+
+/** Re-exported so controller modules import wire types from one place. */
+export type { FetchedModel }
+
 // ---- Frame types (snake_case wire strings, identical to the Rust side) ----
 
 /**
@@ -269,7 +274,14 @@ export interface EngineModelOption {
 /** The engine/model options the Host offers (composer footer selectors). */
 export interface EngineModelOptionsKind {
   kind: 'engine_model_options'
+  /** LEGACY: the Host's copy of the curated alias table. We render our own
+   * bundled copy instead, so this is parsed but unused. */
   engines: EngineModelOption[]
+  /** Models the Host DISCOVERED from the account — the part we cannot know on
+   * our own. Merged with the bundled curated table exactly as the desktop
+   * composer merges them, so both selectors offer the same list. */
+  claude_models: FetchedModel[]
+  codex_models: FetchedModel[]
 }
 /** The project file list for the bound run (@mention autocomplete). */
 export interface ProjectFileListKind {
@@ -486,13 +498,22 @@ export function parseStreamPayload(json: unknown): StreamPayload | null {
       return Array.isArray(o.commands)
         ? { kind: 'slash_command_list', commands: (o.commands as unknown[]).filter(isSlashCommand) }
         : null
-    case 'engine_model_options':
-      return Array.isArray(o.engines)
-        ? {
-            kind: 'engine_model_options',
-            engines: (o.engines as unknown[]).filter(isEngineModelOption),
-          }
-        : null
+    case 'engine_model_options': {
+      if (!Array.isArray(o.engines)) return null
+      // Drop malformed entries rather than the whole list: one bad model must
+      // not cost the user every other model the Host discovered.
+      const models = (v: unknown): FetchedModel[] =>
+        (Array.isArray(v) ? v : [])
+          .filter((m): m is Record<string, unknown> => !!m && typeof m === 'object')
+          .filter((m) => typeof m.value === 'string' && typeof m.label === 'string')
+          .map((m) => ({ value: m.value as string, label: m.label as string }))
+      return {
+        kind: 'engine_model_options',
+        engines: (o.engines as unknown[]).filter(isEngineModelOption),
+        claude_models: models(o.claude_models),
+        codex_models: models(o.codex_models),
+      }
+    }
     case 'project_file_list':
       return typeof o.run_id === 'string' && Array.isArray(o.files)
         ? {

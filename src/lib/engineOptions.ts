@@ -44,3 +44,60 @@ export const PERMISSION_MODE_OPTIONS: SelectOption[] = [
 export function modelOptionsFor(engine: string): SelectOption[] {
   return MODEL_OPTIONS[engine] ?? MODEL_OPTIONS.claude
 }
+
+/** A model discovered from the account (Agent SDK `supportedModels()` for
+ * Claude, `codex debug models` for Codex) rather than from the curated table. */
+export interface FetchedModel {
+  value: string
+  label: string
+  description?: string
+}
+
+/**
+ * Merge curated base options with discovered Claude models that aren't already
+ * covered. A discovered id is "already covered" when present verbatim, or when
+ * it belongs to a family an alias already represents (e.g. `opus` covers
+ * `claude-opus-4-5`). Only genuinely new families are appended, so the curated
+ * aliases — and the `[1m]` context-limit math that depends on them — survive.
+ */
+export function mergedClaudeOptions(
+  base: SelectOption[],
+  fetched: FetchedModel[],
+): SelectOption[] {
+  const knownValues = new Set(base.map((o) => o.value))
+  const aliasStems = base
+    .map((o) => o.value.replace(/\[.*\]$/, '').toLowerCase())
+    .filter(Boolean)
+  const extras = fetched
+    .filter((m) => {
+      if (knownValues.has(m.value)) return false
+      const id = m.value.toLowerCase()
+      return !aliasStems.some((stem) => id.includes(stem))
+    })
+    .map((m) => ({ value: m.value, label: m.label }))
+  return extras.length ? [...base, ...extras] : base
+}
+
+/**
+ * Codex options: a discovered list is authoritative (it comes from the CLI), so
+ * keep only the leading "Default" option and replace the curated models with it.
+ * With nothing discovered, return the curated fallback unchanged.
+ */
+export function codexOptions(base: SelectOption[], fetched: FetchedModel[]): SelectOption[] {
+  if (!fetched.length) return base
+  const defaultOpt = base.find((o) => o.value === '') ?? { value: '', label: base[0]?.label ?? '' }
+  return [defaultOpt, ...fetched.map((m) => ({ value: m.value, label: m.label }))]
+}
+
+/** The effective model list for an engine: curated table + whatever the Host
+ * discovered for the account. This is what both the desktop composer and the
+ * remote controller must render, so they never disagree about what is on offer. */
+export function effectiveModelOptions(
+  engine: string,
+  discovered: { claude: FetchedModel[]; codex: FetchedModel[] },
+): SelectOption[] {
+  const base = modelOptionsFor(engine)
+  if (engine === 'codex') return codexOptions(base, discovered.codex)
+  // Claude is the fallback engine, so anything unknown gets its treatment too.
+  return mergedClaudeOptions(base, discovered.claude)
+}
