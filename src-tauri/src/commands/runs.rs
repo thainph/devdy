@@ -1229,61 +1229,496 @@ pub struct RunLogPath {
 /// can copy it to the clipboard or open it in the file viewer.
 #[tauri::command]
 pub async fn get_run_log_path(db: State<'_, Db>, run_id: String) -> Result<RunLogPath, String> {
+    let row = fetch_run_log_row(db.inner(), &run_id).await?;
+    Ok(RunLogPath {
+        path: resolve_log_source(&row, &run_id)
+            .map(|(_, p)| p.to_string_lossy().into_owned()),
+    })
+}
+
+// ── Log revision + paged reads ───────────────────────────────────────────────
+//
+// `get_run_log` returns the ENTIRE log as one JSON string. Real logs reach ~29MB
+// here, and the frontend re-requested one on every window focus — read, JSON
+// encode, IPC, JSON decode, full re-parse, every time. The two commands below
+// replace that: `get_run_log_revision` is a cheap fingerprint so an unchanged log
+// is never re-read, and `get_run_log_page` reads a bounded window of records
+// instead of the whole file.
+
+/// Which of the three candidate files is actually backing a run right now.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum LogSource {
+    /// `.devdy/runs/<id>.log`, written by the run's own drain task.
+    Conventional,
+    /// Shared Claude/Codex transcript — also written by the CLI / IDE extension.
+    Transcript,
+    /// The `output_path` recorded on the run row.
+    Output,
+}
+
+/// Cheap fingerprint of the file(s) backing a run's log.
+///
+/// Deliberately does NOT run the session upsert that `get_run_log` does: the
+/// point is to answer "did anything change?" without paying for a sync. Instead
+/// the SOURCE transcript is stat'd directly, so a session continued outside Devdy
+/// (Claude CLI, the IDE extension) still shows up as a changed fingerprint and
+/// the caller then goes through the full `get_run_log` path, upsert included.
+/// Stat'ing only the conventional log would have missed exactly that case.
+#[derive(Debug, Serialize)]
+pub struct RunLogRevision {
+    pub source: Option<LogSource>,
+    pub path: Option<String>,
+    pub size: u64,
+    /// Nanoseconds since the epoch. Seconds resolution is not enough — a
+    /// streaming run rewrites its log many times within one second.
+    pub mtime_ns: i64,
+    /// Set only for mirrored sessions: the upstream transcript's own stat, so a
+    /// change made outside Devdy invalidates the fingerprint too.
+    pub transcript_size: Option<u64>,
+    pub transcript_mtime_ns: Option<i64>,
+}
+
+/// `(size, mtime_ns)` for a file, or `None` when it doesn't exist.
+fn stat_file(path: &Path) -> Option<(u64, i64)> {
+    let md = fs::metadata(path).ok()?;
+    if !md.is_file() {
+        return None;
+    }
+    let mtime = md
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as i64)
+        .unwrap_or(0);
+    Some((md.len(), mtime))
+}
+
+/// Row fields every log-resolving command needs.
+struct RunLogRow {
+    output_path: Option<String>,
+    engine: Option<String>,
+    session_id: Option<String>,
+    transcript_path: Option<String>,
+    project_path: String,
+}
+
+async fn fetch_run_log_row(db: &Db, run_id: &str) -> Result<RunLogRow, String> {
     use sqlx::Row;
     let row = sqlx::query(
         "SELECT r.output_path, r.engine, r.session_id, r.transcript_path, p.path as project_path
          FROM runs r JOIN projects p ON p.id = r.project_id
          WHERE r.id = ?",
     )
-    .bind(&run_id)
-    .fetch_one(db.inner())
+    .bind(run_id)
+    .fetch_one(db)
     .await
     .map_err(|e| e.to_string())?;
+    Ok(RunLogRow {
+        output_path: row.get("output_path"),
+        engine: row.get("engine"),
+        session_id: row.get("session_id"),
+        transcript_path: row.get("transcript_path"),
+        project_path: row.get("project_path"),
+    })
+}
 
-    let output_path: Option<String> = row.get("output_path");
-    let engine: Option<String> = row.get("engine");
-    let session_id: Option<String> = row.get("session_id");
-    let transcript_path: Option<String> = row.get("transcript_path");
-    let project_path: String = row.get("project_path");
+/// The transcript this run mirrors, when it has one.
+fn resolve_transcript(row: &RunLogRow) -> Option<PathBuf> {
+    row.transcript_path
+        .as_ref()
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+        .or_else(
+            || match (row.engine.as_deref(), row.session_id.as_deref()) {
+                (Some("claude"), Some(sid)) => {
+                    crate::commands::sessions::claude_sessions_dir(&row.project_path)
+                        .map(|d| d.join(format!("{}.jsonl", sid)))
+                        .filter(|p| p.is_file())
+                }
+                (Some("codex"), Some(sid)) => {
+                    crate::commands::codex_sessions::codex_session_file(sid)
+                }
+                _ => None,
+            },
+        )
+}
 
-    // 1. Conventional log written by the run drain task.
-    let conv_path = Path::new(&project_path)
+/// Pick the file a read should come from, in the same priority order
+/// `get_run_log` uses. Unlike the old `get_run_log_path`, emptiness is checked
+/// with `metadata().len()` instead of reading the whole file in — that check
+/// alone used to pull ~29MB off disk just to decide which path to use.
+fn resolve_log_source(row: &RunLogRow, run_id: &str) -> Option<(LogSource, PathBuf)> {
+    let conv = Path::new(&row.project_path)
         .join(".devdy")
         .join("runs")
         .join(format!("{}.log", run_id));
-    if let Ok(content) = fs::read_to_string(&conv_path) {
-        if !content.trim().is_empty() {
-            return Ok(RunLogPath {
-                path: Some(conv_path.to_string_lossy().into_owned()),
-            });
+    if fs::metadata(&conv).map(|m| m.is_file() && m.len() > 0).unwrap_or(false) {
+        return Some((LogSource::Conventional, conv));
+    }
+    if let Some(t) = resolve_transcript(row) {
+        return Some((LogSource::Transcript, t));
+    }
+    row.output_path
+        .as_ref()
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+        .map(|p| (LogSource::Output, p))
+}
+
+fn build_revision(row: &RunLogRow, run_id: &str) -> RunLogRevision {
+    let resolved = resolve_log_source(row, run_id);
+    let (source, path, size, mtime_ns) = match &resolved {
+        Some((src, p)) => {
+            let (size, mtime) = stat_file(p).unwrap_or((0, 0));
+            (Some(*src), Some(p.to_string_lossy().into_owned()), size, mtime)
+        }
+        None => (None, None, 0, 0),
+    };
+    // Always stat the upstream transcript, even when the conventional log won
+    // the resolution: it is the file that can change behind our back.
+    let (transcript_size, transcript_mtime_ns) = match resolve_transcript(row) {
+        Some(t) => match stat_file(&t) {
+            Some((s, m)) => (Some(s), Some(m)),
+            None => (None, None),
+        },
+        None => (None, None),
+    };
+    RunLogRevision {
+        source,
+        path,
+        size,
+        mtime_ns,
+        transcript_size,
+        transcript_mtime_ns,
+    }
+}
+
+#[tauri::command]
+pub async fn get_run_log_revision(
+    db: State<'_, Db>,
+    run_id: String,
+) -> Result<RunLogRevision, String> {
+    let row = fetch_run_log_row(db.inner(), &run_id).await?;
+    Ok(build_revision(&row, &run_id))
+}
+
+/// One window of log records, newest-last.
+#[derive(Debug, Serialize)]
+pub struct RunLogPage {
+    /// Complete lines, oldest first. Never a partial record.
+    pub records: Vec<String>,
+    /// Byte offset the first returned record starts at. Pass it back as `before`
+    /// to fetch the window immediately older than this one.
+    pub cursor: u64,
+    /// True when there is older content before `cursor`.
+    pub has_more: bool,
+    /// The run's `system` init line, when the window doesn't already start at the
+    /// top of the file. The parser needs it for the model id (which drives the
+    /// context-window limit) — that line lives at the very start of the log and
+    /// would otherwise be invisible to a tail window.
+    pub preamble: Option<String>,
+    pub revision: RunLogRevision,
+}
+
+/// How far into the file to look for the `system` init line.
+const PREAMBLE_SCAN_BYTES: u64 = 256 * 1024;
+
+/// Find the run's `system` init record near the start of the file.
+fn read_preamble(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut f = fs::File::open(path).ok()?;
+    let mut buf = vec![0u8; PREAMBLE_SCAN_BYTES as usize];
+    let n = f.read(&mut buf).ok()?;
+    buf.truncate(n);
+    let text = String::from_utf8_lossy(&buf);
+    let mut first_json: Option<String> = None;
+    for line in text.lines() {
+        let line = line.trim_end_matches('\r');
+        if line.trim().is_empty() || line.starts_with("[stderr]") || line.starts_with("[log:") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        if ty == "system" {
+            return Some(line.to_string());
+        }
+        if first_json.is_none() {
+            first_json = Some(line.to_string());
+        }
+    }
+    // No system line in the scanned prefix — the first JSON record at least keeps
+    // the parser's "this really is a stream log" check satisfied.
+    first_json
+}
+
+/// Walk backwards from `before`, collecting whole records.
+///
+/// Returns `(records oldest-first, byte offset the first record starts at)`.
+///
+/// `max_bytes` is a soft cap, not a window size: a single record can legitimately
+/// exceed it (a user turn carrying a pasted image is raw base64 and routinely
+/// runs to megabytes), so the walk always yields at least one complete record
+/// before the cap can stop it. Reading a fixed number of trailing bytes would
+/// have sliced such a record in half.
+fn read_records_backwards(
+    path: &Path,
+    before: u64,
+    max_records: usize,
+    max_bytes: u64,
+) -> std::io::Result<(Vec<String>, u64)> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut f = fs::File::open(path)?;
+    let len = f.metadata()?.len();
+    let end = before.min(len);
+    if end == 0 || max_records == 0 {
+        return Ok((Vec::new(), 0));
+    }
+
+    const CHUNK: u64 = 64 * 1024;
+    let mut region_start = end;
+    let mut buf: Vec<u8> = Vec::new();
+
+    loop {
+        let next_start = region_start.saturating_sub(CHUNK);
+        let read_len = (region_start - next_start) as usize;
+        if read_len == 0 {
+            break;
+        }
+        let mut chunk = vec![0u8; read_len];
+        f.seek(SeekFrom::Start(next_start))?;
+        f.read_exact(&mut chunk)?;
+        chunk.extend_from_slice(&buf);
+        buf = chunk;
+        region_start = next_start;
+
+        if region_start == 0 {
+            break;
+        }
+
+        // How many WHOLE records the buffer currently holds. Every '\n'
+        // terminates one, but while the region starts mid-file the first of them
+        // closes a record whose head we never read — that one gets discarded, so
+        // it must not be counted. Bytes after the final '\n' are a whole record
+        // too (the file's last line, when it isn't newline-terminated).
+        let newlines = buf.iter().filter(|b| **b == b'\n').count();
+        let trailing = usize::from(buf.last().map(|b| *b != b'\n').unwrap_or(false));
+        let complete = newlines.saturating_sub(1) + trailing;
+
+        if complete >= max_records {
+            break;
+        }
+        // Soft byte cap — only allowed to stop the walk once at least one whole
+        // record is in hand. Without that condition a record longer than the cap
+        // would end the walk with nothing to return, and paging could never get
+        // past it.
+        if buf.len() as u64 >= max_bytes && complete >= 1 {
+            break;
         }
     }
 
-    // 2. Shared transcript store (mirrored Claude/Codex sessions). Prefer the
-    // cached path; only re-derive it from the session id when it's stale/missing.
-    let transcript = transcript_path
-        .map(PathBuf::from)
-        .filter(|p| p.is_file())
-        .or_else(|| match (engine.as_deref(), session_id.as_deref()) {
-            (Some("claude"), Some(sid)) => {
-                crate::commands::sessions::claude_sessions_dir(&project_path)
-                    .map(|d| d.join(format!("{}.jsonl", sid)))
-                    .filter(|p| p.is_file())
-            }
-            (Some("codex"), Some(sid)) => crate::commands::codex_sessions::codex_session_file(sid),
-            _ => None,
-        });
-    if let Some(p) = transcript {
-        return Ok(RunLogPath {
-            path: Some(p.to_string_lossy().into_owned()),
-        });
+    // Record starts within `buf`. When the region begins mid-file, byte 0 is the
+    // tail of a record whose head we never read — skip it.
+    let mut starts: Vec<usize> = Vec::new();
+    if region_start == 0 {
+        starts.push(0);
+    }
+    for (i, b) in buf.iter().enumerate() {
+        if *b == b'\n' {
+            starts.push(i + 1);
+        }
     }
 
-    // 3. Recorded output path, if it still points at a real file.
-    let output = output_path.map(PathBuf::from).filter(|p| p.is_file());
-    Ok(RunLogPath {
-        path: output.map(|p| p.to_string_lossy().into_owned()),
+    let mut segs: Vec<(usize, usize)> = Vec::new();
+    for (i, s) in starts.iter().enumerate() {
+        // Each record ends just before the next record's start (i.e. at its
+        // newline); the final one runs to the end of the region.
+        let e = starts.get(i + 1).map(|n| n - 1).unwrap_or(buf.len());
+        if e > *s {
+            segs.push((*s, e));
+        }
+    }
+    if segs.is_empty() {
+        return Ok((Vec::new(), region_start));
+    }
+    let take_from = segs.len().saturating_sub(max_records);
+    let kept = &segs[take_from..];
+    let cursor = region_start + kept[0].0 as u64;
+    let records = kept
+        .iter()
+        .map(|(s, e)| {
+            String::from_utf8_lossy(&buf[*s..*e])
+                .trim_end_matches('\r')
+                .to_string()
+        })
+        .collect();
+    Ok((records, cursor))
+}
+
+/// Read a bounded window of a run's log instead of the whole file.
+///
+/// `before = None` means "the newest records". To page backwards, pass the
+/// previous response's `cursor`.
+///
+/// Note this does NOT run the session upsert `get_run_log` does. Callers page
+/// through a log they already decided to read; the decision of whether upstream
+/// needs re-syncing belongs to the revision check.
+#[tauri::command]
+pub async fn get_run_log_page(
+    db: State<'_, Db>,
+    run_id: String,
+    before: Option<u64>,
+    limit: Option<usize>,
+) -> Result<RunLogPage, String> {
+    const DEFAULT_LIMIT: usize = 80;
+    const MAX_LIMIT: usize = 500;
+    const MAX_BYTES: u64 = 4 * 1024 * 1024;
+
+    let row = fetch_run_log_row(db.inner(), &run_id).await?;
+    let revision = build_revision(&row, &run_id);
+    let Some(path) = revision.path.as_ref().map(PathBuf::from) else {
+        return Ok(RunLogPage {
+            records: Vec::new(),
+            cursor: 0,
+            has_more: false,
+            preamble: None,
+            revision,
+        });
+    };
+
+    let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+    let before = before.unwrap_or(revision.size);
+    let (records, cursor) = read_records_backwards(&path, before, limit, MAX_BYTES)
+        .map_err(|e| format!("read log: {}", e))?;
+    let has_more = cursor > 0;
+    let preamble = if has_more { read_preamble(&path) } else { None };
+
+    Ok(RunLogPage {
+        records,
+        cursor,
+        has_more,
+        preamble,
+        revision,
     })
+}
+
+/// Records the "files changed" list needs, reduced to the fields it reads.
+#[derive(Debug, Serialize)]
+pub struct RunToolRecords {
+    pub records: Vec<String>,
+    pub revision: RunLogRevision,
+}
+
+/// `input` keys that can name a file. Mirrors `FILE_PATH_KEYS` plus the payload
+/// keys `fileTargets()` inspects in `src/components/MentionedFiles.vue`.
+const TOOL_INPUT_KEEP_KEYS: [&str; 6] =
+    ["file_path", "notebook_path", "path", "changes", "input", "patch"];
+
+/// Scan a whole log for the tool calls that touched files, WITHOUT sending the
+/// log to the frontend.
+///
+/// This backs the "files changed" button, which needs a count over the entire run
+/// — the run viewer now only loads a window, so deriving it from what's on screen
+/// would under-report. Rather than reimplementing the (engine-specific) path
+/// extraction in Rust and risking it drifting from the TypeScript, this returns
+/// the matching records in their original shape and lets the existing
+/// `writeActionOf` / `fileTargets` logic run on them unchanged.
+///
+/// Safe to do generically because the log is already normalised: Codex's
+/// `fileChange` / `apply_patch` items are rewritten into Claude-shaped
+/// `tool_use` blocks by the Codex sidecar before they are ever written
+/// (`sidecar-codex/index.mjs`), so both engines look identical here.
+///
+/// Each record is PRUNED to the fields the caller actually reads. That matters:
+/// a `Write` tool_use carries the entire file body in `input.content`, and a
+/// `tool_result` carries whole file reads — keeping those would rebuild the very
+/// payload this is meant to avoid. Only `is_error` is kept from results.
+#[tauri::command]
+pub async fn get_run_tool_records(
+    db: State<'_, Db>,
+    run_id: String,
+) -> Result<RunToolRecords, String> {
+    use serde_json::{json, Value};
+    use std::io::{BufRead, BufReader};
+
+    let row = fetch_run_log_row(db.inner(), &run_id).await?;
+    let revision = build_revision(&row, &run_id);
+    let Some(path) = revision.path.as_ref().map(PathBuf::from) else {
+        return Ok(RunToolRecords {
+            records: Vec::new(),
+            revision,
+        });
+    };
+
+    let file = fs::File::open(&path).map_err(|e| format!("open log: {}", e))?;
+    // Large enough that a multi-MB record (a pasted image) doesn't thrash, but
+    // the reader still streams — the file is never held in memory as a whole.
+    let reader = BufReader::with_capacity(256 * 1024, file);
+    let mut records: Vec<String> = Vec::new();
+
+    for line in reader.lines() {
+        let Ok(line) = line else { continue };
+        // Cheap substring reject before paying for a JSON parse. The vast
+        // majority of records are assistant text and never match.
+        if !line.contains("tool_use") && !line.contains("tool_result") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        let Some(content) = v
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_array())
+        else {
+            continue;
+        };
+
+        let mut kept: Vec<Value> = Vec::new();
+        for block in content {
+            let btype = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            match (ty, btype) {
+                ("assistant", "tool_use") => {
+                    let mut input = serde_json::Map::new();
+                    if let Some(obj) = block.get("input").and_then(|i| i.as_object()) {
+                        for k in TOOL_INPUT_KEEP_KEYS {
+                            if let Some(v) = obj.get(k) {
+                                input.insert(k.to_string(), v.clone());
+                            }
+                        }
+                    }
+                    kept.push(json!({
+                        "type": "tool_use",
+                        "id": block.get("id").cloned().unwrap_or(Value::Null),
+                        "name": block.get("name").cloned().unwrap_or(Value::Null),
+                        "input": Value::Object(input),
+                    }));
+                }
+                ("user", "tool_result") => {
+                    kept.push(json!({
+                        "type": "tool_result",
+                        "tool_use_id": block.get("tool_use_id").cloned().unwrap_or(Value::Null),
+                        "is_error": block.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false),
+                        // Deliberately empty: only `is_error` is read, and real
+                        // contents are whole file reads.
+                        "content": "",
+                    }));
+                }
+                _ => {}
+            }
+        }
+        if kept.is_empty() {
+            continue;
+        }
+        let reduced = json!({ "type": ty, "message": { "content": kept } });
+        records.push(reduced.to_string());
+    }
+
+    Ok(RunToolRecords { records, revision })
 }
 
 /// Source-run fields needed to clone a run into a new `fetched` record.
@@ -2339,4 +2774,290 @@ pub async fn resume_run(
     ));
 
     Ok(())
+}
+
+#[cfg(test)]
+mod log_page_tests {
+    use super::*;
+    use std::io::Write;
+
+    fn temp_log(name: &str, content: &str) -> PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "devdy_logpage_{}_{}_{}.log",
+            name,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut f = fs::File::create(&p).unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        p
+    }
+
+    /// Enough lines to force the backward walk across several 64KB chunks.
+    fn numbered(n: usize, pad: usize) -> String {
+        (0..n)
+            .map(|i| format!("{}{}\n", i, "x".repeat(pad)))
+            .collect()
+    }
+
+    #[test]
+    fn reads_the_newest_records_in_order() {
+        let p = temp_log("tail", "a\nb\nc\nd\ne\n");
+        let (recs, cursor) = read_records_backwards(&p, u64::MAX, 2, 1 << 20).unwrap();
+        assert_eq!(recs, vec!["d".to_string(), "e".to_string()]);
+        // "d" starts after "a\nb\nc\n" = 6 bytes.
+        assert_eq!(cursor, 6);
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn paging_backwards_by_cursor_covers_every_record_exactly_once() {
+        let p = temp_log("page", "a\nb\nc\nd\ne\n");
+        let mut seen: Vec<String> = Vec::new();
+        let mut before = u64::MAX;
+        loop {
+            let (recs, cursor) = read_records_backwards(&p, before, 2, 1 << 20).unwrap();
+            if recs.is_empty() {
+                break;
+            }
+            let mut next = recs;
+            next.extend(seen);
+            seen = next;
+            if cursor == 0 {
+                break;
+            }
+            before = cursor;
+        }
+        assert_eq!(seen, vec!["a", "b", "c", "d", "e"]);
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn never_returns_a_partial_record() {
+        // 5000 lines of ~200 bytes forces many chunk reads; every returned record
+        // must still be whole.
+        let content = numbered(5000, 200);
+        let p = temp_log("partial", &content);
+        let (recs, cursor) = read_records_backwards(&p, u64::MAX, 80, 1 << 20).unwrap();
+        assert_eq!(recs.len(), 80);
+        assert_eq!(recs[79], format!("4999{}", "x".repeat(200)));
+        assert_eq!(recs[0], format!("4920{}", "x".repeat(200)));
+        // The cursor must land exactly on a record boundary.
+        assert_eq!(content.as_bytes()[cursor as usize - 1], b'\n');
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn stops_at_start_of_file_without_dropping_the_first_record() {
+        let p = temp_log("head", "first\nsecond\n");
+        let (recs, cursor) = read_records_backwards(&p, u64::MAX, 80, 1 << 20).unwrap();
+        assert_eq!(recs, vec!["first".to_string(), "second".to_string()]);
+        assert_eq!(cursor, 0);
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn returns_a_newest_record_larger_than_the_byte_cap() {
+        // A pasted image arrives as one huge base64 record. When it IS the newest
+        // record the cap must not stop the walk early, or the caller would get an
+        // empty page and paging could never advance past it.
+        let big = "z".repeat(300_000);
+        let p = temp_log("big_tail", &format!("small\n{}\n", big));
+        let (recs, cursor) = read_records_backwards(&p, u64::MAX, 2, 64 * 1024).unwrap();
+        assert_eq!(recs.len(), 2);
+        assert_eq!(recs[0], "small");
+        assert_eq!(recs[1].len(), big.len());
+        assert_eq!(cursor, 0);
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn byte_cap_stops_early_rather_than_truncating_a_record() {
+        // With a whole record already in hand the cap wins, so the oversized
+        // record is left for the next page instead of being cut in half.
+        let big = "z".repeat(300_000);
+        let p = temp_log("big_mid", &format!("small\n{}\ntail\n", big));
+        let (recs, cursor) = read_records_backwards(&p, u64::MAX, 2, 64 * 1024).unwrap();
+        assert_eq!(recs, vec!["tail".to_string()]);
+        assert!(cursor > 0);
+
+        // …and the next page picks the big record up whole.
+        let (older, _) = read_records_backwards(&p, cursor, 2, 64 * 1024).unwrap();
+        assert_eq!(older.last().unwrap().len(), big.len());
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn handles_a_file_with_no_trailing_newline() {
+        let p = temp_log("nonl", "a\nb\nlast-unterminated");
+        let (recs, _) = read_records_backwards(&p, u64::MAX, 2, 1 << 20).unwrap();
+        assert_eq!(recs, vec!["b".to_string(), "last-unterminated".to_string()]);
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn empty_file_yields_nothing() {
+        let p = temp_log("empty", "");
+        let (recs, cursor) = read_records_backwards(&p, u64::MAX, 80, 1 << 20).unwrap();
+        assert!(recs.is_empty());
+        assert_eq!(cursor, 0);
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn preamble_finds_the_system_line_past_leading_noise() {
+        let p = temp_log(
+            "pre",
+            "[stderr] starting\n[log:info] warming up\n{\"type\":\"system\",\"model\":\"claude-x\"}\n{\"type\":\"assistant\"}\n",
+        );
+        let pre = read_preamble(&p).unwrap();
+        assert!(pre.contains("\"type\":\"system\""));
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn preamble_falls_back_to_the_first_json_record() {
+        let p = temp_log("pre2", "[stderr] noise\n{\"type\":\"assistant\"}\n");
+        assert_eq!(read_preamble(&p).unwrap(), "{\"type\":\"assistant\"}");
+        let _ = fs::remove_file(&p);
+    }
+}
+
+#[cfg(test)]
+mod tool_record_tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    /// The pruning half of `get_run_tool_records`, lifted out so it can be
+    /// exercised without a database. Mirrors the loop body exactly.
+    fn reduce(line: &str) -> Option<String> {
+        if !line.contains("tool_use") && !line.contains("tool_result") {
+            return None;
+        }
+        let v: Value = serde_json::from_str(line).ok()?;
+        let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        let content = v.get("message")?.get("content")?.as_array()?;
+        let mut kept: Vec<Value> = Vec::new();
+        for block in content {
+            let btype = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            match (ty, btype) {
+                ("assistant", "tool_use") => {
+                    let mut input = serde_json::Map::new();
+                    if let Some(obj) = block.get("input").and_then(|i| i.as_object()) {
+                        for k in TOOL_INPUT_KEEP_KEYS {
+                            if let Some(v) = obj.get(k) {
+                                input.insert(k.to_string(), v.clone());
+                            }
+                        }
+                    }
+                    kept.push(json!({
+                        "type": "tool_use",
+                        "id": block.get("id").cloned().unwrap_or(Value::Null),
+                        "name": block.get("name").cloned().unwrap_or(Value::Null),
+                        "input": Value::Object(input),
+                    }));
+                }
+                ("user", "tool_result") => {
+                    kept.push(json!({
+                        "type": "tool_result",
+                        "tool_use_id": block.get("tool_use_id").cloned().unwrap_or(Value::Null),
+                        "is_error": block.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false),
+                        "content": "",
+                    }));
+                }
+                _ => {}
+            }
+        }
+        if kept.is_empty() {
+            return None;
+        }
+        Some(json!({ "type": ty, "message": { "content": kept } }).to_string())
+    }
+
+    #[test]
+    fn drops_the_file_body_but_keeps_the_path() {
+        let body = "x".repeat(100_000);
+        let line = json!({
+            "type": "assistant",
+            "message": { "content": [{
+                "type": "tool_use", "id": "t1", "name": "Write",
+                "input": { "file_path": "/proj/a.ts", "content": body }
+            }]}
+        })
+        .to_string();
+        let out = reduce(&line).unwrap();
+        assert!(out.contains("/proj/a.ts"));
+        assert!(out.contains("\"name\":\"Write\""));
+        // The 100KB payload must not survive.
+        assert!(out.len() < 500, "reduced record still huge: {}", out.len());
+    }
+
+    #[test]
+    fn keeps_the_codex_patch_text_which_names_the_files() {
+        let line = json!({
+            "type": "assistant",
+            "message": { "content": [{
+                "type": "tool_use", "id": "t2", "name": "Edit",
+                "input": { "input": "*** Update File: src/main.rs\n-a\n+b\n" }
+            }]}
+        })
+        .to_string();
+        let out = reduce(&line).unwrap();
+        assert!(out.contains("*** Update File: src/main.rs"));
+    }
+
+    #[test]
+    fn keeps_codex_changes_payload() {
+        let line = json!({
+            "type": "assistant",
+            "message": { "content": [{
+                "type": "tool_use", "id": "t3", "name": "Edit",
+                "input": { "changes": [{ "path": "src/lib.rs", "kind": "update" }], "unified_diff": "noise" }
+            }]}
+        })
+        .to_string();
+        let out = reduce(&line).unwrap();
+        assert!(out.contains("src/lib.rs"));
+        assert!(!out.contains("noise"));
+    }
+
+    #[test]
+    fn tool_result_keeps_only_the_error_flag() {
+        let line = json!({
+            "type": "user",
+            "message": { "content": [{
+                "type": "tool_result", "tool_use_id": "t1",
+                "is_error": true, "content": "y".repeat(50_000)
+            }]}
+        })
+        .to_string();
+        let out = reduce(&line).unwrap();
+        assert!(out.contains("\"is_error\":true"));
+        assert!(out.contains("\"tool_use_id\":\"t1\""));
+        assert!(out.len() < 300);
+    }
+
+    #[test]
+    fn ignores_records_with_no_tool_blocks() {
+        let line = json!({
+            "type": "assistant",
+            "message": { "content": [{ "type": "text", "text": "just talking about tool_use" }]}
+        })
+        .to_string();
+        assert!(reduce(&line).is_none());
+    }
+
+    #[test]
+    fn ignores_plain_assistant_text() {
+        let line = json!({
+            "type": "assistant",
+            "message": { "content": [{ "type": "text", "text": "hello" }]}
+        })
+        .to_string();
+        assert!(reduce(&line).is_none());
+    }
 }

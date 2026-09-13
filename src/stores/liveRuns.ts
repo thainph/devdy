@@ -73,6 +73,34 @@ export interface RateLimitWindows {
 
 const SLASH_CACHE_KEY = 'devdy.slashCommands'
 
+/**
+ * Cap on `outputLines` (the raw stdout/stderr view). These are kept in ADDITION
+ * to `entries` — the same line is pushed to both — so an uncapped run holds the
+ * whole transcript twice in the heap. The raw view is a debugging aid where only
+ * the recent tail matters; the full text is always on disk in the run log.
+ */
+const MAX_OUTPUT_LINES = 2000
+/** Trim in chunks so a long run doesn't pay an array copy on every single line. */
+const OUTPUT_TRIM_SLACK = 500
+
+/**
+ * How many FINISHED sessions to keep in memory. Sessions were never evicted:
+ * `discard` is only called on explicit user actions, so every run opened during
+ * an app session stayed resident until the app closed. Running sessions are
+ * never counted or evicted — see `evictTerminalSessions` for the full guard list.
+ */
+const MAX_TERMINAL_SESSIONS = 5
+
+const TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled'])
+
+/** Append a raw output line, trimming the oldest once the cap is exceeded. */
+function pushOutputLine(s: LiveSession, text: string, isStderr: boolean) {
+  s.outputLines.push({ text, isStderr })
+  if (s.outputLines.length > MAX_OUTPUT_LINES + OUTPUT_TRIM_SLACK) {
+    s.outputLines.splice(0, s.outputLines.length - MAX_OUTPUT_LINES)
+  }
+}
+
 // Built-in slash commands each engine ships with, used to seed the palette on
 // the very first session (before any `system.init` has been observed and
 // cached). The live init list — which also includes project/user custom
@@ -122,8 +150,49 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
     return slashCommandCache[engine] || BUILTIN_SLASH_COMMANDS[engine] || []
   }
 
+  // Last time each session was created or looked at, for LRU eviction. Kept out
+  // of the session object so touching it never triggers a reactive re-render.
+  const lastTouched = new Map<string, number>()
+  function touch(runId: string) {
+    lastTouched.set(runId, Date.now())
+  }
+
+  /**
+   * Drop the least-recently-touched finished sessions once there are more than
+   * `MAX_TERMINAL_SESSIONS` of them.
+   *
+   * A session is only ever a candidate when ALL of these hold, because each one
+   * means something still depends on the in-memory state:
+   *  1. status is terminal — a running session is still accumulating output;
+   *  2. `permissionQueue` is empty — a pending prompt must survive even if the
+   *     status already went terminal (an abnormal combination, but dropping it
+   *     would strand a prompt the user can never answer);
+   *  3. `notifyDone` is false — the user hasn't acknowledged the finish yet, and
+   *     the Active runs dock still needs the row;
+   *  4. no `doneCallbacks` — the Duo orchestrator registers these and keeps them
+   *     across turns on purpose; evicting would break the relay between the two
+   *     agents mid-conversation.
+   */
+  function evictTerminalSessions() {
+    const candidates: { runId: string; touched: number }[] = []
+    sessions.forEach((s, id) => {
+      if (!TERMINAL_STATUSES.has(s.status)) return
+      if (s.permissionQueue.length) return
+      if (s.notifyDone) return
+      if (doneCallbacks.get(id)?.size) return
+      candidates.push({ runId: id, touched: lastTouched.get(id) ?? 0 })
+    })
+    if (candidates.length <= MAX_TERMINAL_SESSIONS) return
+    candidates.sort((a, b) => a.touched - b.touched)
+    for (const c of candidates.slice(0, candidates.length - MAX_TERMINAL_SESSIONS)) {
+      discard(c.runId)
+    }
+  }
+
   function get(runId: string): LiveSession | undefined {
-    return sessions.get(runId)
+    const s = sessions.get(runId)
+    if (s) touch(runId)
+    return s
   }
 
   function ensure(runId: string, projectId: string): LiveSession {
@@ -155,7 +224,10 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
       s.deniedTools = perms.getDeny(projectId)
       sessions.set(runId, s)
       toolIndexes.set(runId, new Map())
+      // A new session arriving is the natural moment to reclaim old ones.
+      evictTerminalSessions()
     }
+    touch(runId)
     return s
   }
 
@@ -240,7 +312,7 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
         `run:output:${runId}`,
         (event) => {
           const { line, is_stderr, level } = event.payload
-          s.outputLines.push({ text: line, isStderr: is_stderr })
+          pushOutputLine(s, line, is_stderr)
           if (s.hasStreamEvents) {
             if (level && level !== 'error') s.entries.push({ kind: 'log', level, text: line })
             else if (is_stderr) s.entries.push({ kind: 'error', text: line })
@@ -358,7 +430,7 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
           const pct = event.payload.percent
           const what = event.payload.source === 'plan' ? 'subscription plan' : 'token budget'
           const line = `⚠ Budget reached: ${pct}% of the ${what} limit. New turns are blocked (override per turn to continue).`
-          s.outputLines.push({ text: line, isStderr: true })
+          pushOutputLine(s, line, true)
           if (s.hasStreamEvents) s.entries.push({ kind: 'error', text: line })
         },
       ),
@@ -488,10 +560,25 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
     }
   }
 
+  /**
+   * Append a line to a run's raw output view, honouring the cap. Callers outside
+   * the store (RunView's failure paths) must use this rather than pushing to
+   * `outputLines` directly, so the cap has no back door.
+   */
+  function appendOutput(runId: string, text: string, isStderr = true) {
+    const s = sessions.get(runId)
+    if (s) pushOutputLine(s, text, isStderr)
+  }
+
   /** Clear the "run finished" notification once the user has viewed the run. */
   function markSeen(runId: string) {
     const s = sessions.get(runId)
     if (s && s.notifyDone) s.notifyDone = false
+    touch(runId)
+    // Acknowledging the finish clears guard (3), so this session may now be
+    // evictable — and seeing it also makes it the most recent, so this only
+    // reclaims OTHER sessions the user acknowledged earlier.
+    evictTerminalSessions()
   }
 
   /** Drop a run's session entirely (stop listeners + free memory). */
@@ -499,6 +586,7 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
     stopListening(runId)
     sessions.delete(runId)
     toolIndexes.delete(runId)
+    lastTouched.delete(runId)
   }
 
   /** Run ids that are currently streaming — for live status indicators. */
@@ -526,6 +614,7 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
     shiftPermission,
     onDone,
     markSeen,
+    appendOutput,
     discard,
     runningIds,
     cachedSlashCommands,

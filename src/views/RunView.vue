@@ -3,7 +3,13 @@ import { ref, shallowRef, computed, onMounted, onUnmounted, watch, nextTick, typ
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectsStore, type Repo } from '@/stores/projects'
-import { useRunsStore, type RunRecord, type ProjectEntry } from '@/stores/runs'
+import {
+  useRunsStore,
+  sameRunLogRevision,
+  type RunRecord,
+  type ProjectEntry,
+  type RunLogRevision,
+} from '@/stores/runs'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useChatDraftsStore } from '@/stores/chatDrafts'
@@ -55,7 +61,8 @@ import { openPermissionWindow, closePermissionWindow } from '@/lib/permissionWin
 import { useMarkdown } from '@/lib/markdown'
 import {
   entriesToPlainText,
-  parseStreamLog,
+  parseStreamLogWindow,
+  modelFromPreamble,
   type StreamEntry,
   type ImageAttachment,
 } from '@/lib/streamEvents'
@@ -410,38 +417,90 @@ const historyToolIndex = new Map<string, number>()
 const historyContextTokens = ref(0)
 const historyModel = ref<string | null>(null)
 
-// ── History windowing ───────────────────────────────────────────────────────
-// Long logs freeze the UI on open because EVERY entry mounts + renders markdown
-// synchronously. Opening a run jumps to the bottom, so we render only the last
-// `historyWindow` entries and let the user reveal older ones on demand. This
-// caps the first-render cost regardless of how long the conversation is.
-const HISTORY_WINDOW_INITIAL = 80
-const HISTORY_WINDOW_STEP = 120
-const historyWindow = ref(HISTORY_WINDOW_INITIAL)
-// The tail slice actually handed to StreamLog. `displayedEntries`, plain-text
-// export and the "files changed" list keep using the FULL array.
-const windowedHistoryEntries = computed(() => {
-  const all = historyEntries.value
-  return all.length > historyWindow.value ? all.slice(all.length - historyWindow.value) : all
-})
-const hiddenHistoryCount = computed(() =>
-  Math.max(0, historyEntries.value.length - windowedHistoryEntries.value.length),
-)
+// ── History paging ──────────────────────────────────────────────────────────
+// Opening a run used to read the WHOLE log (up to ~29MB) over IPC and parse all
+// of it, only to render the last 80 entries. Now the backend returns one window
+// of records at a time and `historyEntries` holds exactly what has been loaded —
+// it is no longer a full-log array with a slice on top.
+//
+// `historyCursor` is the byte offset the oldest loaded record starts at; feeding
+// it back as `before` fetches the window just older than it.
+const HISTORY_PAGE_INITIAL = 80
+const HISTORY_PAGE_STEP = 120
+const historyCursor = ref<number | null>(null)
+const historyHasMore = ref(false)
+const historyLoadingMore = ref(false)
+// Model id recovered from the page preamble (the `system.init` record at the top
+// of the log). A tail window cannot contain it, and without it the context-window
+// limit is unknown.
+const historyPreambleModel = ref<string | null>(null)
+// Fingerprint of the log currently on screen, so a refocus can skip the read
+// entirely when nothing changed.
+const historyRevision = ref<RunLogRevision | null>(null)
+// Tool entries covering the WHOLE persisted run (not just the loaded window),
+// used only to build the "files changed" list. shallowRef + a pruned payload
+// keeps this small: the backend strips file bodies and tool output before
+// sending, so this is orders of magnitude smaller than the log it came from.
+const historyToolEntries = shallowRef<StreamEntry[]>([])
 
-// Reveal an older chunk, preserving the viewport: older entries prepend, so we
-// bump scrollTop by the height they added (measured across the next frame) so
-// the content the user was reading doesn't jump.
+/**
+ * Populate `historyToolEntries` for a persisted run.
+ *
+ * Fire-and-forget on purpose: the run view paints from its own page load, and
+ * the "files changed" button simply appears once this resolves. Failing is
+ * non-fatal — the button stays hidden rather than blocking the view.
+ */
+async function loadHistoryToolEntries(runId: string) {
+  try {
+    const records = await runsStore.getRunToolRecords(runId)
+    if (viewingLogRunId.value !== runId) return
+    historyToolEntries.value = parseStreamLogWindow(records).entries
+  } catch {
+    historyToolEntries.value = []
+  }
+}
+
+// Load the window just older than what's on screen and prepend it, preserving
+// the viewport: older entries push everything down, so bump scrollTop by exactly
+// the height they added (measured across the next frame) and the content the
+// user was reading stays put.
 async function showEarlierHistory() {
+  const runId = viewingLogRunId.value
+  if (!runId || !historyHasMore.value || historyLoadingMore.value) return
+  if (historyCursor.value === null) return
+  historyLoadingMore.value = true
   const el = historyEl.value
   const beforeHeight = el?.scrollHeight ?? 0
   const beforeTop = el?.scrollTop ?? 0
-  historyWindow.value += HISTORY_WINDOW_STEP
-  await nextTick()
-  requestAnimationFrame(() => {
-    const e = historyEl.value
-    if (!e) return
-    e.scrollTop = beforeTop + (e.scrollHeight - beforeHeight)
-  })
+  try {
+    const page = await runsStore.getRunLogPage(runId, historyCursor.value, HISTORY_PAGE_STEP)
+    // The run may have been switched while this was in flight.
+    if (viewingLogRunId.value !== runId) return
+    const parsed = parseStreamLogWindow(page.records, { seedModel: historyPreambleModel.value })
+    historyCursor.value = page.cursor
+    historyHasMore.value = page.has_more
+    if (parsed.entries.length) {
+      // Tool indices are positional, so every existing one shifts right by the
+      // number of entries we just prepended.
+      const shift = parsed.entries.length
+      const rebuilt = new Map<string, number>()
+      for (const [k, v] of parsed.toolIndex) rebuilt.set(k, v)
+      for (const [k, v] of historyToolIndex) rebuilt.set(k, v + shift)
+      historyToolIndex.clear()
+      for (const [k, v] of rebuilt) historyToolIndex.set(k, v)
+      historyEntries.value = [...parsed.entries, ...historyEntries.value]
+    }
+    await nextTick()
+    requestAnimationFrame(() => {
+      const e = historyEl.value
+      if (!e) return
+      e.scrollTop = beforeTop + (e.scrollHeight - beforeHeight)
+    })
+  } catch {
+    /* leave what's already loaded on screen */
+  } finally {
+    historyLoadingMore.value = false
+  }
 }
 
 const inputContent = ref<string>('')
@@ -528,7 +587,16 @@ const { renderText, loadMarkdown } = useMarkdown()
 const isViewingHistory = computed(() => !!viewingLogRunId.value)
 // Entries currently shown in the AI Result column — drives the "files changed"
 // quick-access list so it matches whatever the user is looking at.
-const displayedEntries = computed(() => isViewingHistory.value ? historyEntries.value : liveEntries.value)
+// Entries the "files changed" list is derived from.
+//
+// It must reflect the WHOLE run, not the window currently on screen — otherwise
+// a long conversation silently under-reports what it changed. For a live session
+// the in-memory entries already are the whole run. For a persisted one they are
+// only a window, so the backend scans the log and returns the (pruned) tool
+// records instead; see `loadHistoryToolEntries`.
+const mentionedFileEntries = computed(() =>
+  isViewingHistory.value ? historyToolEntries.value : liveEntries.value,
+)
 const hasLiveOutput = computed(
   () => liveOutputLines.value.length > 0 || liveEntries.value.length > 0 || currentStatus.value === 'running'
 )
@@ -1063,7 +1131,11 @@ function clearHistoryView() {
   historyToolIndex.clear()
   historyContextTokens.value = 0
   historyModel.value = null
-  historyWindow.value = HISTORY_WINDOW_INITIAL
+  historyCursor.value = null
+  historyHasMore.value = false
+  historyPreambleModel.value = null
+  historyRevision.value = null
+  historyToolEntries.value = []
 }
 
 async function handleFetch(linkedIssueOverride?: number) {
@@ -1170,7 +1242,7 @@ async function handleStartRun() {
   } catch (e) {
     live.setStatus(id, 'failed')
     setLocalRunStatus(id, 'failed')
-    live.get(id)?.outputLines.push({ text: `Error: ${String(e)}`, isStderr: true })
+    live.appendOutput(id, `Error: ${String(e)}`)
   }
 }
 
@@ -1988,7 +2060,7 @@ async function handleSendFollowUp() {
     await runsStore.sendUserMessage(id, prompt, images, override)
     followUpInput.value = ''
   } catch (e) {
-    live.get(id)?.outputLines.push({ text: t('run.sendFailed', { error: String(e) }), isStderr: true })
+    live.appendOutput(id, t('run.sendFailed', { error: String(e) }))
   } finally {
     sendingFollowUp.value = false
   }
@@ -2008,7 +2080,7 @@ async function handlePermissionDecision(decision: 'allow' | 'deny' | 'ask', reme
   try {
     await runsStore.respondPermission(req.run_id, req.request_id, decision)
   } catch (e) {
-    live.get(id)?.outputLines.push({ text: t('run.permissionResponseFailed', { error: String(e) }), isStderr: true })
+    live.appendOutput(id, t('run.permissionResponseFailed', { error: String(e) }))
   }
   // Return focus to the composer so the user can keep chatting right away.
   nextTick(() => composerEl.value?.focus())
@@ -2090,7 +2162,7 @@ async function handlePermissionAnswer(answers: Record<string, string>) {
   try {
     await runsStore.respondPermission(req.run_id, req.request_id, 'allow', undefined, { answers })
   } catch (e) {
-    live.get(id)?.outputLines.push({ text: t('run.permissionResponseFailed', { error: String(e) }), isStderr: true })
+    live.appendOutput(id, t('run.permissionResponseFailed', { error: String(e) }))
   }
   // Return focus to the composer so the user can keep chatting right away.
   nextTick(() => composerEl.value?.focus())
@@ -2335,25 +2407,44 @@ async function loadRunLog(runId: string, opts: { preferDisk?: boolean; force?: b
     historyToolIndex.clear()
     historyContextTokens.value = 0
     historyModel.value = null
-    historyWindow.value = HISTORY_WINDOW_INITIAL
+    historyCursor.value = null
+    historyHasMore.value = false
+    historyPreambleModel.value = null
+    historyRevision.value = null
+    historyToolEntries.value = []
     viewingLog.value = ''
     historyLoading.value = true
   }
   viewingLogRunId.value = runId
   try {
-    const content = await runsStore.getRunLog(runId)
-    // Byte-identical to what's already displayed — leave all reactive state
-    // untouched so nothing re-renders (the common case on every refocus).
-    if (isFocusRefresh && content === viewingLog.value) return
-    const parsed = parseStreamLog(content)
-    if (parsed && parsed.entries.length > 0) {
+    // A refocus on an unchanged log must cost nothing. The fingerprint is a
+    // couple of stat() calls; before this, every alt-tab back into the app
+    // re-read the entire file, re-encoded it as JSON across IPC and re-parsed
+    // it, just to discover the bytes were identical.
+    if (isFocusRefresh && historyRevision.value) {
+      const rev = await runsStore.getRunLogRevision(runId)
+      if (sameRunLogRevision(rev, historyRevision.value)) return
+    }
+
+    const page = await runsStore.getRunLogPage(runId, undefined, HISTORY_PAGE_INITIAL)
+    // The user may have switched runs while this was in flight.
+    if (viewingLogRunId.value !== runId) return
+    const seedModel = modelFromPreamble(page.preamble)
+    const parsed = parseStreamLogWindow(page.records, { seedModel })
+    if (parsed.entries.length > 0) {
       historyToolIndex.clear()
       historyEntries.value = parsed.entries
       for (const [k, v] of parsed.toolIndex) historyToolIndex.set(k, v)
       historyHasStream.value = true
       historyContextTokens.value = parsed.contextTokens
       historyModel.value = parsed.model
-      viewingLog.value = content
+      historyCursor.value = page.cursor
+      historyHasMore.value = page.has_more
+      historyPreambleModel.value = seedModel
+      historyRevision.value = page.revision
+      viewingLog.value = ''
+      // Whole-run scan for the "files changed" list, off the critical path.
+      void loadHistoryToolEntries(runId)
       nextTick(() => {
         if (!historyEl.value) return
         if (isFocusRefresh && !wasNearBottom) {
@@ -2365,11 +2456,19 @@ async function loadRunLog(runId: string, opts: { preferDisk?: boolean; force?: b
         }
       })
     } else {
-      // No parseable log yet — likely the run hasn't actually produced output
-      // (file missing, empty, or DB output_path still points to the input
-      // markdown). Treat as "no AI result" instead of rendering raw markdown.
-      viewingLog.value = ''
-      viewingLogRunId.value = null
+      // Nothing parsed as stream records. Either the run produced no output, or
+      // this is a legacy/plain-markdown log — the only case that still needs the
+      // whole file, so it's fetched here rather than on the hot path.
+      const content = await runsStore.getRunLog(runId)
+      if (viewingLogRunId.value !== runId) return
+      if (content.trim()) {
+        historyHasStream.value = false
+        historyRevision.value = page.revision
+        viewingLog.value = content
+      } else {
+        viewingLog.value = ''
+        viewingLogRunId.value = null
+      }
     }
   } catch (e) {
     viewingLog.value = String(e)
@@ -3083,7 +3182,7 @@ function handleRefInput(val: string) {
                     <FileText class="h-3.5 w-3.5" :stroke-width="1.75" />
                     {{ t('run.content') }}
                   </button>
-                  <MentionedFiles :entries="displayedEntries" @open-file="openFileViewer" />
+                  <MentionedFiles :entries="mentionedFileEntries" @open-file="openFileViewer" />
                   <!-- When popped out the drawer is hidden, so surface the
                        re-dock control here (the pop-out control lives in the
                        drawer itself, see below). -->
@@ -3118,19 +3217,21 @@ function handleRefInput(val: string) {
                 <span class="text-xs">{{ t('run.loadingLog') }}</span>
               </div>
               <template v-else-if="historyHasStream">
-                <!-- Reveal older entries on demand — long logs render only their
-                     tail on open so the first paint stays fast. -->
-                <div v-if="hiddenHistoryCount > 0" class="mb-3 flex justify-center">
+                <!-- Fetch the next window of older records on demand. Opening a
+                     run only reads its tail, so the first paint stays fast no
+                     matter how long the conversation got. -->
+                <div v-if="historyHasMore" class="mb-3 flex justify-center">
                   <button
                     type="button"
-                    class="rounded-full border border-border bg-muted/60 px-3 py-1 text-[11px] text-foreground/70 hover:bg-accent/60 transition-colors cursor-pointer"
+                    class="rounded-full border border-border bg-muted/60 px-3 py-1 text-[11px] text-foreground/70 hover:bg-accent/60 transition-colors cursor-pointer disabled:opacity-50"
+                    :disabled="historyLoadingMore"
                     @click="showEarlierHistory"
                   >
-                    {{ t('run.showEarlier', { count: Math.min(hiddenHistoryCount, HISTORY_WINDOW_STEP), hidden: hiddenHistoryCount }) }}
+                    {{ historyLoadingMore ? t('common.loading') : t('run.showEarlier', { count: HISTORY_PAGE_STEP }) }}
                   </button>
                 </div>
                 <StreamLog
-                  :entries="windowedHistoryEntries"
+                  :entries="historyEntries"
                   :running="false"
                   :render-text="renderText"
                   :file-matcher="fileMatcher"
