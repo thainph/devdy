@@ -228,19 +228,31 @@ Giữ nguyên, không lặp lại chi tiết:
 
 ## 7. Bảng ưu tiên
 
-| Ưu tiên | Hạng mục | Công | Phụ thuộc |
-|---|---|---|---|
-| **P0** | F1 — writer task riêng + bounded backlog + fix newline marker + test resume/crash/final drain | 1–1.5d | — |
-| **P0** | F2a — `get_run_log_revision`, phủ cả transcript mirror | 4h | — |
-| **P1** | `content-visibility` + đo scroll/anchoring | 1h | — |
-| **P1** | F3 — cap `outputLines` + LRU terminal session (4 điều kiện giữ lại) | 4h | — |
-| **P1** | Markdown cache FIFO/LRU, bỏ cache entry đang stream | 1h | — |
-| **P2** | `KeepAlive` nhóm A | 2h | — |
-| **P2** | F2b — pagination theo record/cursor; tách `MentionedFiles`; bỏ raw log khỏi reactive | 1.5–2d | P0, F2a |
-| **P3** | Storage-management UX (§8) | 1–1.5d | — |
-| **P3** | `KeepAlive` nhóm B (5 view, chuyển lifecycle sang `onActivated`/`onDeactivated`) | 3h | P2 |
-| **P3** | **Spike** index DB (§9) — chỉ triển khai khi số đo chứng minh cần | spike 0.5d | P2 |
-| **P4** | Virtualize live entries | 3–5d | chỉ khi P1 không đạt mục tiêu |
+| Ưu tiên | Hạng mục | Công | Phụ thuộc | Trạng thái |
+|---|---|---|---|---|
+| **P0** | F1 — writer task riêng + bounded backlog + fix newline marker + test resume/crash/final drain | 1–1.5d | — | **chưa làm** |
+| **P0** | F2a — `get_run_log_revision`, phủ cả transcript mirror | 4h | — | ✅ đã làm |
+| **P1** | `content-visibility` + đo scroll/anchoring | 1h | — | ✅ code xong, **chưa đo** |
+| **P1** | F3 — cap `outputLines` + LRU terminal session (4 điều kiện giữ lại) | 4h | — | ✅ đã làm |
+| **P1** | Markdown cache FIFO/LRU, bỏ cache entry đang stream | 1h | — | ✅ đã làm |
+| **P2** | `KeepAlive` nhóm A | 2h | — | ✅ đã làm |
+| **P2** | F2b — pagination theo record/cursor; tách `MentionedFiles`; bỏ raw log khỏi reactive | 1.5–2d | P0, F2a | ✅ đã làm |
+| **P3** | Storage-management UX (§8) | 1–1.5d | — | chưa làm |
+| **P3** | `KeepAlive` nhóm B (5 view, chuyển lifecycle sang `onActivated`/`onDeactivated`) | 3h | P2 | chưa làm |
+| **P3** | **Spike** index DB (§9) — chỉ triển khai khi số đo chứng minh cần | spike 0.5d | P2 | chưa làm |
+| **P4** | Virtualize live entries | 3–5d | chỉ khi P1 không đạt mục tiêu | chưa làm |
+
+**F2a được kéo lên trước dù thuộc P0**: nó là điều kiện tiên quyết cứng của F2b (P2), không thể giao P2 mà bỏ nó.
+
+**F1 vẫn chưa làm.** Đây là hạng mục P0 nặng nhất còn lại — mỗi 500ms vẫn ghi lại toàn bộ file log trong lúc giữ mutex và chặn vòng đọc sidecar (§1).
+
+### 7.2 Cách F2b được triển khai (khác chi tiết so với §3)
+
+- `get_run_log_page(run_id, before, limit)` đọc ngược theo ranh giới record, trả `{records, cursor, has_more, preamble, revision}`. Có 10 unit test phủ: phân trang không trùng/sót, không trả record dở, record lớn hơn byte-cap, file không kết thúc bằng newline, file rỗng.
+- `preamble` giải quyết thứ một cửa sổ đuôi về mặt cấu trúc không thể thấy: `system.init` nằm ở đầu file và mang model id (quyết định context-window limit).
+- `parseStreamLogWindow` tách khỏi `parseStreamLog`: không kiểm tra head, không trả null, nhận `seedModel`.
+- **`MentionedFiles`**: giải bằng `get_run_tool_records` — Rust stream qua log, chỉ trả các record `tool_use`/`tool_result` đã **cắt bớt** (bỏ thân file trong `input.content`, bỏ nội dung `tool_result`, chỉ giữ `is_error`). JS chạy nguyên logic `writeActionOf`/`fileTargets` hiện có nên **không có rủi ro lệch logic**. An toàn vì `sidecar-codex/index.mjs:543` đã chuẩn hoá `fileChange` thành `tool_use` name `Edit` trước khi ghi log — hai engine giống hệt nhau ở tầng này.
+- `get_run_log_path` trước đây `read_to_string` cả file chỉ để kiểm tra rỗng (~29MB) → đổi sang `metadata().len()`.
 
 **P0 + P1 ≈ 2.5 ngày công.** Đây là phần tin là xử lý được phần lớn cảm giác khó chịu hiện tại.
 
