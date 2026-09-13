@@ -262,6 +262,10 @@ pub enum StreamPayload {
         /// non-empty: it REPLACES the curated Codex list.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         codex_models: Vec<DiscoveredModel>,
+        /// Managed Claude accounts the Controller may switch a run to, mirroring
+        /// the desktop run-settings menu. Empty when none are configured.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        claude_accounts: Vec<ClaudeAccountChoice>,
     },
     /// A bounded listing of files under the bound run's project path (for
     /// @mention completion in the controller composer).
@@ -299,7 +303,22 @@ pub enum StreamPayload {
         model: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         permission_mode: Option<String>,
+        /// Which managed Claude account the run executes with. `Some("")` means
+        /// the global `~/.claude` (a legacy run), `None` means "not reported" —
+        /// the two differ, so the Controller must not collapse them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        claude_account_id: Option<String>,
     },
+}
+
+/// One managed Claude account offered in the Controller's run-settings menu.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaudeAccountChoice {
+    pub id: String,
+    pub label: String,
+    pub is_default: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
 }
 
 /// A model discovered from the account rather than from the curated alias table.
@@ -467,6 +486,11 @@ pub struct CmdPayload {
     /// settings default. Also mirrored to the desktop composer via the meta store.
     #[serde(default)]
     pub permission_mode: Option<String>,
+    /// `set_run_meta`: switch the run's managed Claude account. Empty string
+    /// selects the global `~/.claude`. Absent leaves the account untouched —
+    /// which is why this is an Option and not a plain String.
+    #[serde(default)]
+    pub claude_account_id: Option<String>,
     /// A slash command name the Controller invoked (accepted+ignored in v1).
     #[serde(default)]
     #[allow(dead_code)]

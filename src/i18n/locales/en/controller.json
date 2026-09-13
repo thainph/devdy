@@ -29,7 +29,15 @@
     "collapseComposer": "Collapse the composer",
     "expandComposer": "Expand the composer",
     "cancel": "Cancel",
-    "cancelTitle": "Cancel the running turn"
+    "cancelTitle": "Cancel the running turn",
+    "runSettings": "Run settings",
+    "engineSetting": "Engine",
+    "claudeAccountSetting": "Claude account",
+    "permissionSetting": "Permission",
+    "modelSetting": "Model",
+    "globalClaudeAccount": "Global (~/.claude)",
+    "accountDefault": "default",
+    "settingsLockedRunning": "Settings are locked while the run is executing"
   },
   "session": {
     "joining": "Joining…",

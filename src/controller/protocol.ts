@@ -282,6 +282,16 @@ export interface EngineModelOptionsKind {
    * composer merges them, so both selectors offer the same list. */
   claude_models: FetchedModel[]
   codex_models: FetchedModel[]
+  /** Managed Claude accounts a run may be switched to (desktop parity). */
+  claude_accounts: ClaudeAccountChoice[]
+}
+
+/** One managed Claude account offered in the run-settings menu. */
+export interface ClaudeAccountChoice {
+  id: string
+  label: string
+  is_default: boolean
+  email?: string | null
 }
 /** The project file list for the bound run (@mention autocomplete). */
 export interface ProjectFileListKind {
@@ -297,6 +307,9 @@ export interface RunMetaKind {
   engine?: string | null
   model?: string | null
   permission_mode?: string | null
+  /** Which managed Claude account the run executes with. `''` is the global
+   * `~/.claude`; `null` means the Host did not report it (so leave ours alone). */
+  claude_account_id?: string | null
 }
 
 /** One provider's subscription plan-usage verdict (mirror of the desktop
@@ -507,11 +520,23 @@ export function parseStreamPayload(json: unknown): StreamPayload | null {
           .filter((m): m is Record<string, unknown> => !!m && typeof m === 'object')
           .filter((m) => typeof m.value === 'string' && typeof m.label === 'string')
           .map((m) => ({ value: m.value as string, label: m.label as string }))
+      const accounts: ClaudeAccountChoice[] = (
+        Array.isArray(o.claude_accounts) ? o.claude_accounts : []
+      )
+        .filter((a): a is Record<string, unknown> => !!a && typeof a === 'object')
+        .filter((a) => typeof a.id === 'string' && typeof a.label === 'string')
+        .map((a) => ({
+          id: a.id as string,
+          label: a.label as string,
+          is_default: a.is_default === true,
+          email: typeof a.email === 'string' ? a.email : null,
+        }))
       return {
         kind: 'engine_model_options',
         engines: (o.engines as unknown[]).filter(isEngineModelOption),
         claude_models: models(o.claude_models),
         codex_models: models(o.codex_models),
+        claude_accounts: accounts,
       }
     }
     case 'project_file_list':
@@ -530,6 +555,8 @@ export function parseStreamPayload(json: unknown): StreamPayload | null {
             engine: typeof o.engine === 'string' ? o.engine : null,
             model: typeof o.model === 'string' ? o.model : null,
             permission_mode: typeof o.permission_mode === 'string' ? o.permission_mode : null,
+            claude_account_id:
+              typeof o.claude_account_id === 'string' ? o.claude_account_id : null,
           }
         : null
     case 'run_list':
@@ -673,6 +700,9 @@ export interface CmdPayload {
   mentions?: string[]
   /** Inline image/file attachments (base64). */
   attachments?: CmdAttachment[]
+  /** `set_run_meta`: switch the run's managed Claude account. `''` selects the
+   * global `~/.claude`; omitted leaves it untouched. */
+  claude_account_id?: string
   /** Set on the first frame after a (re)join so the Host keys the OTP gate. */
   auth_mode?: AuthMode
   /**
@@ -782,12 +812,21 @@ export function listProjectFilesCmd(runId: string): CmdPayload {
  */
 export function setRunMetaCmd(
   runId: string,
-  sel: { engine?: string; model?: string; permissionMode?: string },
+  sel: {
+    engine?: string
+    model?: string
+    permissionMode?: string
+    /** Omit to leave the account alone; `''` selects the global `~/.claude`. */
+    claudeAccountId?: string
+  },
 ): CmdPayload {
   const cmd: CmdPayload = { kind: 'cmd', action: 'set_run_meta', run_id: runId }
   if (sel.engine) cmd.engine = sel.engine
   if (sel.model) cmd.model = sel.model
   if (sel.permissionMode) cmd.permission_mode = sel.permissionMode
+  // Compared against undefined, not truthiness: '' is a real choice (the global
+  // ~/.claude), so a falsy check would make "switch to global" unsendable.
+  if (sel.claudeAccountId !== undefined) cmd.claude_account_id = sel.claudeAccountId
   return cmd
 }
 

@@ -24,6 +24,7 @@ import {
 import type { RateLimitWindows } from '@/stores/liveRuns'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
 import type {
+  ClaudeAccountChoice,
   ClaudeAccountUsage,
   EngineModelOption,
   FetchedModel,
@@ -169,7 +170,9 @@ export interface RunStoreState {
   /** Project file paths for the bound run (`@`-mention autocomplete). */
   projectFiles: string[]
   /** The bound run's live selection, mirrored from the Host (engine/model/mode). */
-  runMeta: { engine: string; model: string; permissionMode: string }
+  runMeta: { engine: string; model: string; permissionMode: string; claudeAccountId: string }
+  /** Managed Claude accounts the run may be switched to (run-settings menu). */
+  claudeAccountChoices: ClaudeAccountChoice[]
   /** Subscription plan-usage badges, mirrored from the desktop `BudgetBadge`. */
   claudeBudget: PlanBudget | null
   codexBudget: PlanBudget | null
@@ -197,7 +200,8 @@ export function createRunStore() {
     engineModelOptions: [],
     discoveredModels: { claude: [], codex: [] },
     projectFiles: [],
-    runMeta: { engine: '', model: '', permissionMode: '' },
+    runMeta: { engine: '', model: '', permissionMode: '', claudeAccountId: '' },
+    claudeAccountChoices: [],
     claudeBudget: null,
     codexBudget: null,
     claudeAccount: null,
@@ -280,6 +284,7 @@ export function createRunStore() {
           claude: payload.claude_models ?? [],
           codex: payload.codex_models ?? [],
         }
+        state.claudeAccountChoices = payload.claude_accounts ?? []
         break
       case 'project_file_list':
         state.projectFiles = payload.files
@@ -291,6 +296,10 @@ export function createRunStore() {
         if (payload.engine != null) state.runMeta.engine = payload.engine
         if (payload.model != null) state.runMeta.model = payload.model
         if (payload.permission_mode != null) state.runMeta.permissionMode = payload.permission_mode
+        // '' is a real value here (the global ~/.claude), so only `null` — "not
+        // reported" — leaves the current selection alone.
+        if (payload.claude_account_id != null)
+          state.runMeta.claudeAccountId = payload.claude_account_id
         break
       case 'plan_usage':
         // Mirror the desktop BudgetBadge (Claude + Codex). A provider may be null
@@ -467,7 +476,8 @@ export function createRunStore() {
     state.engineModelOptions = []
     state.discoveredModels = { claude: [], codex: [] }
     state.projectFiles = []
-    state.runMeta = { engine: '', model: '', permissionMode: '' }
+    state.runMeta = { engine: '', model: '', permissionMode: '', claudeAccountId: '' }
+    state.claudeAccountChoices = []
     state.claudeAccounts = []
   }
 

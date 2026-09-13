@@ -1885,6 +1885,20 @@ pub async fn set_run_claude_account(
     run_id: String,
     account_id: Option<String>,
 ) -> Result<(), String> {
+    set_run_claude_account_inner(db.inner(), run_id, account_id).await
+}
+
+/// The body of [`set_run_claude_account`], callable without a Tauri `State`.
+///
+/// Split out so the Remote Control handler can reuse it: switching accounts is
+/// not a plain column write — it re-resolves the runtime account and mirrors the
+/// Claude transcript into that account's config dir — so the remote path must go
+/// through exactly this logic rather than reimplementing it.
+pub async fn set_run_claude_account_inner(
+    db: &Db,
+    run_id: String,
+    account_id: Option<String>,
+) -> Result<(), String> {
     use sqlx::Row;
 
     let account_id = account_id.and_then(|v| {
@@ -1898,7 +1912,7 @@ pub async fn set_run_claude_account(
          WHERE r.id = ?",
     )
     .bind(&run_id)
-    .fetch_one(db.inner())
+    .fetch_one(db)
     .await
     .map_err(|e| e.to_string())?;
 
@@ -1914,7 +1928,7 @@ pub async fn set_run_claude_account(
 
     let account = match account_id.as_deref() {
         Some(id) => {
-            crate::commands::claude_accounts::resolve_runtime_account(db.inner(), None, Some(id))
+            crate::commands::claude_accounts::resolve_runtime_account(db, None, Some(id))
                 .await?
         }
         None => None,
@@ -1925,7 +1939,7 @@ pub async fn set_run_claude_account(
     let project_path: String = row.get("project_path");
     let mirrored = if let Some(sid) = session_id.as_deref() {
         mirror_claude_transcript_for_account(
-            db.inner(),
+            db,
             &project_path,
             sid,
             transcript_path.as_deref(),
@@ -1943,14 +1957,14 @@ pub async fn set_run_claude_account(
         .bind(account_id)
         .bind(path.to_string_lossy().as_ref())
         .bind(&run_id)
-        .execute(db.inner())
+        .execute(db)
         .await
         .map_err(|e| e.to_string())?;
     } else {
         sqlx::query("UPDATE runs SET claude_account_id = ? WHERE id = ?")
             .bind(account_id)
             .bind(&run_id)
-            .execute(db.inner())
+            .execute(db)
             .await
             .map_err(|e| e.to_string())?;
     }

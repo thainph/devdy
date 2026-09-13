@@ -142,6 +142,14 @@ function onPermissionMode(v: string): void {
   permissionMode.value = v
   pushMeta()
 }
+/** Switching account is a Host-side operation with real work behind it
+ * (transcript mirroring), so we send it explicitly and let the Host's
+ * `run_meta` push decide what actually landed rather than echoing optimistically. */
+function onClaudeAccount(v: string): void {
+  const id = runId.value
+  if (!id) return
+  conn.value?.sendCommand(setRunMetaCmd(id, { claudeAccountId: v }))
+}
 
 // Whether the bound run is currently executing. We flip it optimistically on
 // send and clear it on a `done`.
@@ -497,6 +505,8 @@ function onRequestFiles(): void {
     :slash-commands="store.state.slashCommands"
     :project-files="store.state.projectFiles"
     :discovered-models="store.state.discoveredModels"
+    :claude-account-choices="store.state.claudeAccountChoices"
+    :claude-account-id="store.state.runMeta.claudeAccountId"
     :engine="engine"
     :model="model"
     :permission-mode="permissionMode"
@@ -519,6 +529,7 @@ function onRequestFiles(): void {
     @update:engine="onEngine"
     @update:model="onModel"
     @update:permission-mode="onPermissionMode"
+    @update:claude-account-id="onClaudeAccount"
     @request-files="onRequestFiles"
   />
 </template>
