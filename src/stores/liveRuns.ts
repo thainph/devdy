@@ -367,15 +367,22 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
     fns.push(
       await listen<PermissionRequest>(`run:permission_request:${runId}`, (event) => {
         const req = event.payload
-        // When this run is actively driven by an AUTHENTICATED remote controller,
-        // the human being asked is remote — the desktop must NOT auto-allow/deny
-        // from its local per-project lists. Doing so races and beats the remote
-        // user's Deny (a local auto-`allow` fired ~24ms before the relayed deny),
+        // When an AUTHENTICATED remote controller is WATCHING this run, the human
+        // being asked is remote — the desktop must NOT auto-allow/deny from its
+        // local per-project lists. Doing so races and beats the remote user's
+        // Deny (a local auto-`allow` fired ~24ms before the relayed deny),
         // silently running a tool the remote user rejected. Defer to the remote:
         // just enqueue; the controller answers and `run:permission_resolved`
         // clears it. (A human at the desktop can still answer manually.)
+        //
+        // Scoped to runs the controller has OPEN rather than to "a phone is
+        // paired at all". A paired phone receives prompts for every run, but
+        // suppressing standing auto-allow/deny across every run the moment a
+        // phone pairs would silently disable the user's own automation on runs
+        // nobody is watching.
         const rc = remoteControl.status
-        const remoteDriven = !!rc?.session_authenticated && rc?.bound_run_id === req.run_id
+        const remoteDriven =
+          !!rc?.session_authenticated && (rc?.subscribed_run_ids ?? []).includes(req.run_id)
         // AskUserQuestion must always reach the user — auto-deciding it would
         // submit empty answers. Other tools honor the project's standing
         // deny/allow choices (deny wins if both somehow apply).

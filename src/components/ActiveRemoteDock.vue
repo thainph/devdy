@@ -10,10 +10,12 @@ import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 
 /**
  * Sidebar dock for the active Remote Control session, mirroring ActiveRunsDock.
- * Remote is single-session by design, so this shows at most one row: the run a
- * phone is currently paired to. Clicking jumps to that run (where the Remote
- * button reopens the full session modal). Status is kept fresh by both the
- * remote:// lifecycle events and a light poll fallback.
+ *
+ * One device is paired at a time, so this is one row — but that device now drives
+ * every run, so the row answers "where is my phone right now?" rather than "which
+ * run is bound". It shows the run the controller is viewing (falling back to the
+ * pairing run while it is still connecting); clicking jumps there. Status is kept
+ * fresh by both the remote:// lifecycle events and a light poll fallback.
  */
 
 const route = useRoute()
@@ -28,15 +30,18 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 
 const status = computed(() => store.status)
 
-// A remote session is worth showing once the agent is running and a run has been
-// bound to it (link created → pairing → live control).
-const boundRunId = computed(() =>
-  status.value?.enabled && status.value?.running ? (status.value?.bound_run_id ?? null) : null,
-)
+// A remote session is worth showing once the agent is running and a link has been
+// created (pairing → live control). Once a phone is driving, the row tracks the
+// run it is VIEWING; before that, the run the link was minted for.
+const shownRunId = computed(() => {
+  const st = status.value
+  if (!st?.enabled || !st.running) return null
+  return st.focus_run_id ?? st.bound_run_id ?? null
+})
 const authenticated = computed(() => status.value?.session_authenticated ?? false)
 
 const projectId = computed(() =>
-  boundRunId.value ? (runsStore.runMeta.get(boundRunId.value)?.project_id ?? null) : null,
+  shownRunId.value ? (runsStore.runMeta.get(shownRunId.value)?.project_id ?? null) : null,
 )
 
 const activeRunId = computed(() =>
@@ -59,7 +64,7 @@ function projectName(pid: string | null): string {
 }
 
 function open() {
-  const runId = boundRunId.value
+  const runId = shownRunId.value
   const pid = projectId.value
   if (!runId || !pid) return
   tabsStore.open(pid, runId)
@@ -99,7 +104,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-if="boundRunId" class="px-2 pb-2 border-t border-border/50 pt-2">
+  <div v-if="shownRunId" class="px-2 pb-2 border-t border-border/50 pt-2">
     <div class="flex items-center gap-1.5 px-2 mb-1">
       <Radio class="h-3 w-3 text-muted-foreground" :stroke-width="2" />
       <span class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex-1">
@@ -110,10 +115,10 @@ onBeforeUnmount(() => {
     <button
       type="button"
       class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left transition-colors cursor-pointer select-none"
-      :class="boundRunId === activeRunId
+      :class="shownRunId === activeRunId
         ? 'bg-accent text-foreground'
         : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'"
-      :title="projectName(projectId) + ' — ' + runLabel(boundRunId)"
+      :title="projectName(projectId) + ' — ' + runLabel(shownRunId)"
       @click="open"
     >
       <span class="relative flex h-2 w-2 shrink-0">
@@ -127,7 +132,7 @@ onBeforeUnmount(() => {
         />
       </span>
       <span class="min-w-0 flex-1">
-        <span class="block truncate text-[13px] leading-tight">{{ runLabel(boundRunId) }}</span>
+        <span class="block truncate text-[13px] leading-tight">{{ runLabel(shownRunId) }}</span>
         <span class="block truncate text-[10px] text-muted-foreground/70 leading-tight">{{ projectName(projectId) }}</span>
       </span>
       <span

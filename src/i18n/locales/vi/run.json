@@ -1,10 +1,10 @@
 {
-  "remoteRowDriving": "Điện thoại đang điều khiển session này",
+  "remoteRowDriving": "Điện thoại đang xem run này",
   "remoteRowWaiting": "Đã tạo link remote — đang chờ điện thoại kết nối",
   "remoteBtnSelectRun": "Chọn một run để điều khiển từ điện thoại",
-  "remoteBtnActive": "Điện thoại đang điều khiển run này — bấm để xem/dừng",
+  "remoteBtnActive": "Điện thoại đang xem run này — bấm để xem trạng thái",
   "remoteBtnBoundHere": "Đã tạo link cho run này — bấm để xem QR / trạng thái",
-  "remoteBtnBoundElsewhere": "Remote đang gắn ở session khác — bấm để chuyển sang run này",
+  "remoteBtnPaired": "Đã ghép điện thoại, điều khiển được mọi run — bấm để xem trạng thái",
   "remoteBtnDefault": "Điều khiển run này từ điện thoại",
   "budgetConfirmMessage": "Đã vượt ngân sách (plan) cho chu kỳ hiện tại.\nVẫn tiếp tục?",
   "budgetExceededTitle": "Vượt ngân sách",
