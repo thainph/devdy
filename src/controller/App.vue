@@ -1,11 +1,14 @@
 <script setup lang="ts">
 /**
- * Devdy Remote Controller — root app (Phase 4). A standalone, Tauri-free web
- * client that controls ONE run over the relay. Flow:
- *   1. A valid stored token → auto-reattach (skip entry) → SessionView.
+ * Devdy Remote Controller — root app. A standalone, Tauri-free web client that
+ * drives the paired Host over the relay. Flow:
+ *   1. A valid stored token → auto-reattach (skip entry) → the run it was on.
  *   2. Otherwise: LinkEntryView → connect + wait for the Host OTP gate →
- *      OtpEntryView → on success (session_token) → SessionView.
- * The single-run focus screen mirrors the desktop session view.
+ *      OtpEntryView → on success (session_token) → the link's run.
+ *
+ * Once paired, the device can drive EVERY run on the Host (SRS BR-005 v1.1), so
+ * the session screen has a run browser behind it. The link's run is what we land
+ * on; from there the user moves freely.
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -14,6 +17,7 @@ import { mergeContextModel } from '@/lib/contextLimits'
 import LinkEntryView from './components/LinkEntryView.vue'
 import OtpEntryView from './components/OtpEntryView.vue'
 import SessionView from './components/SessionView.vue'
+import RunBrowserView from './components/RunBrowserView.vue'
 import type { ComposerTurn } from './components/SessionComposer.vue'
 import { ControllerConnection, type AuthState, type ConnStatus, type SecretSource } from './connection'
 import { createRunStore } from './runStore'
@@ -21,6 +25,8 @@ import * as tokenStore from './sessionTokenStore'
 import {
   cancelRunCmd,
   listProjectFilesCmd,
+  listProjectsCmd,
+  listRunsCmd,
   parseSessionLink,
   respondPermissionCmd,
   sendTurnCmd,
@@ -36,7 +42,8 @@ const { renderText, loadMarkdown } = useMarkdown()
 const store = createRunStore()
 const conn = shallowRef<ControllerConnection | null>(null)
 
-/** The app phase drives which screen shows. */
+/** The app phase drives which screen shows. `session` covers both the run
+ * browser and an open run — `store.state.activeRunId` decides between them. */
 type Phase = 'link' | 'otp' | 'session'
 const phase = ref<Phase>('link')
 
@@ -145,26 +152,26 @@ onMounted(() => {
   loadMarkdown()
   const token = tokenStore.load()
   const hashLink = parseHashLink()
-  // A URL link for a DIFFERENT session (different host fingerprint or run) is an
-  // explicit intent to connect THERE — it must override a stale stored token.
-  // Otherwise we'd auto-reattach to the OLD run and fail with a confusing
-  // "fingerprint mismatch / MITM" error, never reaching the session in the link.
-  if (
-    hashLink &&
-    token &&
-    (hashLink.host_fingerprint !== token.host_fingerprint || hashLink.run_id !== token.run_id)
-  ) {
+  // A URL link for a DIFFERENT HOST is an explicit intent to connect THERE — it
+  // must override a stale stored token, or we would auto-reattach to the old
+  // host and fail with a confusing "fingerprint mismatch / MITM" error.
+  //
+  // A link for the same host but a different RUN is NOT a different session any
+  // more: one paired device drives every run, so we keep the token and simply
+  // open the run the link names.
+  if (hashLink && token && hashLink.host_fingerprint !== token.host_fingerprint) {
     tokenStore.clear()
     onLink(hashLink)
     return
   }
-  // Token reconnect: a still-fresh token (for the same session) skips the OTP.
+  // Token reconnect: a still-fresh token (for the same host) skips the OTP. A
+  // link for that same host still decides WHICH run we land on.
   if (token) {
     link.value = {
       relay_url: token.relay_url,
       host_fingerprint: token.host_fingerprint,
       rendezvous_code: token.rendezvous_code,
-      run_id: token.run_id,
+      run_id: hashLink?.run_id ?? token.run_id,
       link_secret: token.link_secret,
     }
     tokenStore.touch()
@@ -237,9 +244,52 @@ function disconnect(): void {
   running.value = false
 }
 
-// ── bound run view ──────────────────────────────────────────────────────────
-const runId = computed(() => link.value?.run_id ?? null)
+// ── open run ────────────────────────────────────────────────────────────────
+// The run in view. Starts at the link's run (what the QR was minted for) and
+// moves as the user browses; null means the run browser is showing.
+const runId = computed(() => store.state.activeRunId)
 const runView = computed(() => (runId.value ? store.state.runs[runId.value] ?? null : null))
+const pending = computed(() => store.pendingFor(runId.value))
+const pendingElsewhere = computed(() => store.pendingElsewhere(runId.value))
+
+/** Open a run: tell the Host to stream it, then show it. */
+function openRun(id: string): void {
+  store.setActiveRun(id)
+  conn.value?.openRun(id)
+}
+
+/** Back to the browser: stop streaming the run we were reading (its prompts and
+ * status still arrive) and refresh the list so it is not stale. */
+function backToBrowser(): void {
+  const id = runId.value
+  store.clearActiveRun()
+  if (id) conn.value?.closeRun(id)
+  refreshRuns()
+}
+
+function refreshRuns(): void {
+  conn.value?.sendCommand(listRunsCmd())
+  conn.value?.sendCommand(listProjectsCmd())
+}
+
+// Land on the link's run when the session first authenticates — the Host has
+// already subscribed us to it, so this only decides what the UI shows.
+//
+// On a RE-authentication (reconnect) the Host resets its subscriptions to the
+// link's run, so a user who had navigated elsewhere must re-open that run or
+// their screen would silently stop streaming.
+watch(
+  () => auth.value,
+  (v) => {
+    if (v !== 'authenticated' || !link.value) return
+    const active = store.state.activeRunId
+    if (!active) {
+      store.setActiveRun(link.value.run_id)
+    } else if (active !== link.value.run_id) {
+      conn.value?.openRun(active)
+    }
+  },
+)
 const entries = computed(() => runView.value?.entries ?? [])
 // Usage / context metrics derived from the stream (desktop parity).
 const contextTokens = computed(() => runView.value?.contextTokens ?? 0)
@@ -289,6 +339,29 @@ const otpConnecting = computed(
     (status.value === 'handshaking' && !hostFp.value),
 )
 const shortFp = computed(() => (link.value ? link.value.host_fingerprint.slice(0, 12) : ''))
+
+// SessionView derives this itself; the browser takes it as a prop so both
+// screens show the same wording for the same connection state.
+const browserStatusLabel = computed(() => {
+  switch (status.value) {
+    case 'joining':
+      return t('controller.session.joining')
+    case 'handshaking':
+      return t('controller.session.securing')
+    case 'connected':
+      return live.value
+        ? t('controller.session.connected')
+        : t('controller.session.connectedWaiting')
+    case 'reconnecting':
+      return t('controller.session.reconnecting')
+    case 'error':
+      return t('controller.session.error')
+    case 'disconnected':
+      return t('controller.session.disconnected')
+    default:
+      return t('controller.session.idle')
+  }
+})
 
 // ── composer / permission wiring ────────────────────────────────────────────
 function warnNotSent(): void {
@@ -346,7 +419,7 @@ function onCancel(): void {
 }
 
 function onDecide(decision: RemoteDecision): void {
-  const req = store.state.pending
+  const req = pending.value
   if (!req) return
   if (!conn.value?.sendCommand(respondPermissionCmd(req.run_id, req.request_id, decision))) {
     warnNotSent()
@@ -356,7 +429,7 @@ function onDecide(decision: RemoteDecision): void {
 }
 
 function onAnswer(answers: QuestionAnswers): void {
-  const req = store.state.pending
+  const req = pending.value
   if (!req) return
   if (!conn.value?.sendCommand(respondPermissionCmd(req.run_id, req.request_id, 'allow_once', answers))) {
     warnNotSent()
@@ -382,6 +455,20 @@ function onRequestFiles(): void {
     @otp="onOtp"
   />
 
+  <RunBrowserView
+    v-else-if="!runId"
+    :status="status"
+    :live="live"
+    :host-fingerprint="hostFp"
+    :status-label="browserStatusLabel"
+    :runs="store.state.runList"
+    :projects="store.state.projectList"
+    :pending-run-ids="Object.keys(store.state.pendingByRun)"
+    @open="openRun"
+    @refresh="refreshRuns"
+    @disconnect="disconnect"
+  />
+
   <SessionView
     v-else
     :title="title"
@@ -393,7 +480,8 @@ function onRequestFiles(): void {
     :notice="store.state.notice"
     :entries="entries"
     :running="running"
-    :pending="store.state.pending"
+    :pending="pending"
+    :pending-elsewhere="pendingElsewhere"
     :render-text="renderText"
     :slash-commands="store.state.slashCommands"
     :project-files="store.state.projectFiles"
@@ -413,6 +501,7 @@ function onRequestFiles(): void {
     @decide="onDecide"
     @answer="onAnswer"
     @disconnect="disconnect"
+    @back="backToBrowser"
     @clear-notice="store.clearNotice()"
     @update:engine="onEngine"
     @update:model="onModel"

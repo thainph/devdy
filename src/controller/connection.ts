@@ -27,6 +27,10 @@ import {
   joinFrame,
   keepaliveFrame,
   requestHistoryCmd,
+  openRunCmd,
+  closeRunCmd,
+  listRunsCmd,
+  listProjectsCmd,
   CLIENT_FEATURES,
   listSlashCommandsCmd,
   listEngineModelsCmd,
@@ -254,9 +258,21 @@ export class ControllerConnection {
     )
   }
 
-  /** The run id this connection is bound to. */
-  get runId(): string {
+  /** The run this connection's link was minted for — the run it lands on, and
+   * the only run an older Host will let it touch. */
+  get initialRunId(): string {
     return this.link.run_id
+  }
+
+  /** Ask the Host to stream `runId` and push its history/meta/usage/files. */
+  openRun(runId: string): boolean {
+    return this.sendCommand(openRunCmd(runId))
+  }
+
+  /** Ask the Host to stop streaming `runId`'s transcript. Its permission
+   * requests and status changes keep arriving. */
+  closeRun(runId: string): boolean {
+    return this.sendCommand(closeRunCmd(runId))
   }
 
   /** Open the connection and start the join → handshake flow. */
@@ -771,6 +787,10 @@ export class ControllerConnection {
     this.sendCommand(listEngineModelsCmd())
     this.sendCommand(listProjectFilesCmd(this.link.run_id))
     this.sendCommand(listPlanUsageCmd())
+    // Run browser data. An older Host refuses `list_projects` for an unknown
+    // action and we simply render an ungrouped list.
+    this.sendCommand(listRunsCmd())
+    this.sendCommand(listProjectsCmd())
   }
 
   /** Re-pull the run log after the Host reported a gap in the live stream.

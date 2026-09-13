@@ -60,5 +60,17 @@
     "couldNotRead": "Could not read the link.",
     "pasteFirst": "Paste the controller link first.",
     "e2eNote": "The connection is end-to-end encrypted. You will enter a one-time code shown on the host to finish connecting. The relay never sees your data, and the host fingerprint is verified."
+  },
+  "browser": {
+    "title": "Runs",
+    "backToRuns": "All runs",
+    "openRun": "Open run",
+    "empty": "No runs yet.",
+    "loading": "Loading runs…",
+    "refresh": "Refresh",
+    "needsApproval": "Needs your approval",
+    "pendingElsewhere": "{count} run needs your approval | {count} runs need your approval",
+    "ungrouped": "Other",
+    "untitled": "Run {id}"
   }
 }

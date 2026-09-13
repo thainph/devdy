@@ -143,12 +143,18 @@ export interface RunStoreState {
   runs: Record<string, RunView>
   /** The run currently shown in the UI, or null (null → show the run browser). */
   activeRunId: string | null
-  /** All runs the Host reports (legacy; unused in the single-run controller). */
+  /** All runs the Host reports, newest activity first (the run browser). */
   runList: RunInfo[]
-  /** Projects (legacy; unused in the single-run controller). */
+  /** Projects the runs belong to (groups the browser). */
   projectList: ProjectInfo[]
-  /** The single pending permission request (FR-006), or null. */
-  pending: PermissionRequest | null
+  /**
+   * Pending permission requests keyed by run id (FR-006).
+   *
+   * Keyed rather than a single slot because the Host forwards prompts for EVERY
+   * run once multi-run is negotiated: a prompt from a run the user is not
+   * watching must queue up as a badge, not overwrite the one they are looking at.
+   */
+  pendingByRun: Record<string, PermissionRequest>
   /** Transient advisory from the Host (e.g. "already handled"). */
   notice: string | null
   /** Slash commands the Host advertises for the bound run (composer palette). */
@@ -177,7 +183,7 @@ export function createRunStore() {
     activeRunId: null,
     runList: [],
     projectList: [],
-    pending: null,
+    pendingByRun: {},
     notice: null,
     slashCommands: [],
     engineModelOptions: [],
@@ -235,7 +241,7 @@ export function createRunStore() {
         }
         break
       case 'permission_request':
-        state.pending = {
+        state.pendingByRun[payload.run_id] = {
           run_id: payload.run_id,
           request_id: payload.request_id,
           tool_name: payload.tool,
@@ -243,9 +249,9 @@ export function createRunStore() {
           cwd: payload.cwd ?? null,
         }
         ensureRun(payload.run_id).status = 'running'
-        // Jump to the run that needs input (desktop parity — a permission is
-        // the one event worth pulling the user's attention to).
-        state.activeRunId = payload.run_id
+        // Deliberately NOT stealing focus: with multi-run the Host forwards
+        // prompts from every run, and yanking the user out of what they are
+        // reading (or typing into) would be worse than a badge they can tap.
         break
       case 'done':
         ensureRun(payload.run_id).status = payload.status
@@ -280,8 +286,6 @@ export function createRunStore() {
         state.claudeAccount = payload.claude_account ?? null
         break
       case 'run_list':
-        // Legacy: unused in the single-run controller (kept so the Host push,
-        // if any, doesn't fall through to the decode-error counter upstream).
         state.runList = payload.runs
         for (const info of payload.runs) {
           ensureRun(info.id).status = info.status
@@ -299,19 +303,17 @@ export function createRunStore() {
         // A "notice" often means a permission was resolved elsewhere; clear the
         // stale prompt so the Controller isn't stuck on a handled request.
         if (/already handled/i.test(payload.text)) {
-          state.pending = null
+          if (payload.run_id) delete state.pendingByRun[payload.run_id]
+          else state.pendingByRun = {}
         }
         break
       case 'permission_resolved':
-        if (
-          state.pending?.run_id === payload.run_id &&
-          state.pending?.request_id === payload.request_id
-        ) {
+        if (state.pendingByRun[payload.run_id]?.request_id === payload.request_id) {
           // Accepted means the Host delivered the decision. "already_handled"
           // also resolves this exact stale prompt. A delivery failure stays
           // visible so the user can retry.
           if (payload.accepted || payload.reason === 'already_handled') {
-            state.pending = null
+            delete state.pendingByRun[payload.run_id]
           }
         }
         if (!payload.accepted && payload.reason === 'delivery_failed') {
@@ -419,8 +421,18 @@ export function createRunStore() {
     run.status = 'running'
   }
 
-  function clearPending(): void {
-    state.pending = null
+  function clearPending(runId: string): void {
+    delete state.pendingByRun[runId]
+  }
+
+  /** The prompt awaiting an answer for `runId`, if any. */
+  function pendingFor(runId: string | null): PermissionRequest | null {
+    return runId ? (state.pendingByRun[runId] ?? null) : null
+  }
+
+  /** Run ids waiting on an answer other than `exceptRunId` — the browser badge. */
+  function pendingElsewhere(exceptRunId: string | null): string[] {
+    return Object.keys(state.pendingByRun).filter((id) => id !== exceptRunId)
   }
 
   function clearNotice(): void {
@@ -434,7 +446,7 @@ export function createRunStore() {
     state.activeRunId = null
     state.runList = []
     state.projectList = []
-    state.pending = null
+    state.pendingByRun = {}
     state.notice = null
     state.slashCommands = []
     state.engineModelOptions = []
@@ -442,7 +454,18 @@ export function createRunStore() {
     state.runMeta = { engine: '', model: '', permissionMode: '' }
   }
 
-  return { state, apply, pushUser, setActiveRun, clearActiveRun, clearPending, clearNotice, reset }
+  return {
+    state,
+    apply,
+    pushUser,
+    setActiveRun,
+    clearActiveRun,
+    clearPending,
+    pendingFor,
+    pendingElsewhere,
+    clearNotice,
+    reset,
+  }
 }
 
 export type RunStore = ReturnType<typeof createRunStore>
