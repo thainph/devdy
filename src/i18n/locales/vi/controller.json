@@ -29,7 +29,15 @@
     "collapseComposer": "Thu gọn ô soạn thảo",
     "expandComposer": "Mở rộng ô soạn thảo",
     "cancel": "Hủy",
-    "cancelTitle": "Hủy lượt đang chạy"
+    "cancelTitle": "Hủy lượt đang chạy",
+    "runSettings": "Thiết lập run",
+    "engineSetting": "Engine",
+    "claudeAccountSetting": "Tài khoản Claude",
+    "permissionSetting": "Quyền",
+    "modelSetting": "Model",
+    "globalClaudeAccount": "Chung (~/.claude)",
+    "accountDefault": "mặc định",
+    "settingsLockedRunning": "Không đổi được thiết lập khi run đang chạy"
   },
   "session": {
     "joining": "Đang tham gia…",

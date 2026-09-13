@@ -640,6 +640,35 @@ async fn handle_set_run_meta(ctx: &HandlerCtx, cmd: &CmdPayload) {
         cmd.model.clone(),
         cmd.permission_mode.clone(),
     );
+
+    // Switching the managed Claude account is NOT a composer selection: it
+    // re-resolves the runtime account and mirrors the run's transcript into that
+    // account's config dir, so it goes through the same code the desktop uses
+    // and can legitimately fail (wrong engine, run already executing).
+    if let Some(account_id) = cmd.claude_account_id.clone() {
+        let next = (!account_id.trim().is_empty()).then_some(account_id);
+        if let Err(e) =
+            crate::commands::runs::set_run_claude_account_inner(&ctx.db, run_id.clone(), next).await
+        {
+            audit::audit(
+                &ctx.db,
+                None,
+                Some(&ctx.room_id),
+                Some(&run_id),
+                action,
+                audit::RESULT_REJECTED,
+                Some("claude_account_rejected"),
+            )
+            .await;
+            notice(ctx, Some(run_id.clone()), &e).await;
+            command_ack(ctx, cmd, false, Some("claude_account_rejected")).await;
+            return;
+        }
+        // Push the authoritative snapshot back so the controller's selector
+        // reflects what actually landed rather than its optimistic guess.
+        send_run_meta_for(ctx, &run_id).await;
+    }
+
     accept(ctx, action, Some(&run_id), None).await;
 }
 

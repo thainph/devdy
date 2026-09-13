@@ -10,10 +10,10 @@
  * base64 (no Tauri fs); `@`-mention paths come from the `projectFiles` prop and
  * are inserted as backticked paths (mirroring the desktop's literal-path style).
  */
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  Cpu, FileText, ImagePlus, Maximize2, Minimize2, Paperclip, Play, Send, Sparkles, Square, X,
+  ChevronDown, Cpu, FileText, ImagePlus, Maximize2, Minimize2, Paperclip, Play, Send, Square, X,
 } from 'lucide-vue-next'
 import { Button, AppSelect } from '@/components/ui'
 
@@ -24,6 +24,7 @@ import {
   type FetchedModel,
   type SelectOption,
 } from '@/lib/engineOptions'
+import type { ClaudeAccountChoice } from '../protocol'
 import type { CmdAttachment, SlashCommand } from '../protocol'
 
 /** One outbound turn assembled by the composer. */
@@ -44,6 +45,10 @@ const props = withDefaults(
     /** Models the Host discovered from the account (merged into the curated
      * model table, mirroring the desktop composer). */
     discoveredModels?: { claude: FetchedModel[]; codex: FetchedModel[] }
+    /** Managed Claude accounts a run may be switched to. */
+    claudeAccounts?: ClaudeAccountChoice[]
+    /** The account the run currently executes with; `''` = global `~/.claude`. */
+    claudeAccountId?: string
     /** Engine selectors (empty = default). */
     engine?: string
     model?: string
@@ -59,6 +64,8 @@ const props = withDefaults(
     slashCommands: () => [],
     projectFiles: () => [],
     discoveredModels: () => ({ claude: [], codex: [] }),
+    claudeAccounts: () => [],
+    claudeAccountId: '',
     engine: '',
     model: '',
     permissionMode: '',
@@ -74,6 +81,7 @@ const emit = defineEmits<{
   'update:engine': [value: string]
   'update:model': [value: string]
   'update:permissionMode': [value: string]
+  'update:claudeAccountId': [value: string]
   /** Ask the parent to (re)fetch the project file list (opened a mention). */
   requestFiles: []
 }>()
@@ -97,6 +105,58 @@ const engineOptions = computed<SelectOption[]>(() => [
 const modelOptions = computed(() =>
   effectiveModelOptions(props.engine || 'claude', props.discoveredModels),
 )
+
+// ── run-settings popover ──────────────────────────────────────────────────
+// One dropdown for engine / account / permission / model, mirroring the desktop
+// run-settings menu. Three inline selects competed for width on a phone.
+const settingsOpen = ref(false)
+const settingsRoot = ref<HTMLElement | null>(null)
+
+function onSettingsPointerDown(e: MouseEvent): void {
+  if (!settingsOpen.value) return
+  const target = e.target as HTMLElement | null
+  if (!target) return
+  if (settingsRoot.value?.contains(target)) return
+  // The select's dropdown teleports outside our root, so clicking an option
+  // would otherwise close the whole menu before the choice registers.
+  if (target.closest('[data-app-select-dropdown]')) return
+  settingsOpen.value = false
+}
+onMounted(() => document.addEventListener('mousedown', onSettingsPointerDown))
+onUnmounted(() => document.removeEventListener('mousedown', onSettingsPointerDown))
+
+/** Accounts are a Claude-only concept, and only worth showing when the Host
+ * actually manages some (or the run already points at one). */
+const showAccountSelect = computed(
+  () =>
+    (props.engine || 'claude') === 'claude' &&
+    (props.claudeAccounts.length > 0 || !!props.claudeAccountId),
+)
+
+const accountOptions = computed<SelectOption[]>(() => {
+  const opts: SelectOption[] = props.claudeAccounts.map((a) => ({
+    value: a.id,
+    label:
+      a.label +
+      (a.is_default ? ` (${t('controller.composer.accountDefault')})` : '') +
+      (a.email ? ` · ${a.email}` : ''),
+  }))
+  // An account the Host no longer lists (revoked/renamed) must still render, or
+  // the selector would silently show someone else's account as selected.
+  if (props.claudeAccountId && !opts.some((o) => o.value === props.claudeAccountId)) {
+    opts.unshift({ value: props.claudeAccountId, label: props.claudeAccountId })
+  }
+  opts.unshift({ value: '', label: t('controller.composer.globalClaudeAccount') })
+  return opts
+})
+
+/** Trigger-button label: the engine, or the account when one is chosen — that is
+ * the setting most likely to surprise you mid-conversation. */
+const settingsBadge = computed(() => {
+  const acct = props.claudeAccounts.find((a) => a.id === props.claudeAccountId)
+  if (acct) return acct.label
+  return props.engine || 'claude'
+})
 
 function onEngineChange(next: string): void {
   emit('update:engine', next)
@@ -601,50 +661,6 @@ function onKeydown(e: KeyboardEvent): void {
         <!-- Footer toolbar — two rows so nothing overflows on a phone: the
              selectors share the width (flex-1 + min-w-0), actions sit below. -->
         <div class="px-1.5 pb-1.5 space-y-1.5">
-          <!-- Selector row: each select shares the width and never overflows. -->
-          <div class="flex items-center gap-1.5">
-            <AppSelect
-              :model-value="engine"
-              size="sm"
-              variant="ghost"
-              :options="engineOptions"
-              class="flex-1 min-w-0 h-8"
-              @update:model-value="onEngineChange"
-            >
-              <template #leading>
-                <Cpu class="h-3 w-3 text-muted-foreground shrink-0" :stroke-width="1.5" />
-              </template>
-            </AppSelect>
-            <AppSelect
-              :model-value="permissionMode"
-              size="sm"
-              variant="ghost"
-              :options="PERMISSION_MODE_OPTIONS"
-              :disabled="running"
-              class="flex-1 min-w-0 h-8"
-              :title="t('controller.composer.permTitle')"
-              @update:model-value="emit('update:permissionMode', $event)"
-            >
-              <template #leading>
-                <span class="text-[10px] font-mono text-muted-foreground shrink-0">perm</span>
-              </template>
-            </AppSelect>
-            <AppSelect
-              :model-value="model"
-              size="sm"
-              variant="ghost"
-              :options="modelOptions"
-              :disabled="running"
-              class="flex-1 min-w-0 h-8"
-              :title="t('controller.composer.modelTitle')"
-              @update:model-value="emit('update:model', $event)"
-            >
-              <template #leading>
-                <Sparkles class="h-3 w-3 text-muted-foreground shrink-0" :stroke-width="1.5" />
-              </template>
-            </AppSelect>
-          </div>
-
           <!-- Action row: attachments/expand on the left, Send/Cancel on the right. -->
           <div class="flex items-center gap-1.5">
             <button
@@ -670,6 +686,93 @@ function onKeydown(e: KeyboardEvent): void {
             >
               <component :is="composerExpanded ? Minimize2 : Maximize2" class="h-4 w-4" :stroke-width="2" />
             </button>
+
+            <!-- One dropdown for every run setting, mirroring the desktop
+                 run-settings menu. Three separate selects fought for width on a
+                 phone and pushed the send button around. -->
+            <div ref="settingsRoot" class="relative shrink-0" @keydown.esc.stop="settingsOpen = false">
+              <button
+                class="inline-flex items-center gap-1 h-8 px-2 rounded-md text-foreground/70 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+                :title="t('controller.composer.runSettings')"
+                :aria-label="t('controller.composer.runSettings')"
+                aria-haspopup="dialog"
+                :aria-expanded="settingsOpen"
+                @click.stop="settingsOpen = !settingsOpen"
+              >
+                <Cpu class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+                <span class="text-[11px] font-medium max-w-20 truncate">{{ settingsBadge }}</span>
+                <ChevronDown
+                  class="h-3 w-3 shrink-0 text-muted-foreground transition-transform duration-200"
+                  :class="{ 'rotate-180': settingsOpen }"
+                  :stroke-width="2"
+                />
+              </button>
+              <div
+                v-if="settingsOpen"
+                role="dialog"
+                class="absolute bottom-full left-0 z-30 mb-2 w-64 max-w-[calc(100vw-2rem)] rounded-md border border-border bg-popover p-3 shadow-lg shadow-black/20 space-y-3"
+                :aria-label="t('controller.composer.runSettings')"
+              >
+                <div class="space-y-1.5">
+                  <p class="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                    {{ t('controller.composer.engineSetting') }}
+                  </p>
+                  <AppSelect
+                    :model-value="engine"
+                    size="sm"
+                    :options="engineOptions"
+                    class="h-8 w-full"
+                    @update:model-value="onEngineChange"
+                  />
+                </div>
+
+                <!-- Claude-only, and only when the Host actually manages accounts. -->
+                <div v-if="showAccountSelect" class="space-y-1.5">
+                  <p class="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                    {{ t('controller.composer.claudeAccountSetting') }}
+                  </p>
+                  <AppSelect
+                    :model-value="claudeAccountId"
+                    size="sm"
+                    :options="accountOptions"
+                    :disabled="running"
+                    :title="running ? t('controller.composer.settingsLockedRunning') : ''"
+                    class="h-8 w-full"
+                    @update:model-value="emit('update:claudeAccountId', $event)"
+                  />
+                </div>
+
+                <div class="space-y-1.5">
+                  <p class="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                    {{ t('controller.composer.permissionSetting') }}
+                  </p>
+                  <AppSelect
+                    :model-value="permissionMode"
+                    size="sm"
+                    :options="PERMISSION_MODE_OPTIONS"
+                    :disabled="running"
+                    class="h-8 w-full"
+                    :title="t('controller.composer.permTitle')"
+                    @update:model-value="emit('update:permissionMode', $event)"
+                  />
+                </div>
+
+                <div class="space-y-1.5">
+                  <p class="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                    {{ t('controller.composer.modelSetting') }}
+                  </p>
+                  <AppSelect
+                    :model-value="model"
+                    size="sm"
+                    :options="modelOptions"
+                    :disabled="running"
+                    class="h-8 w-full"
+                    :title="t('controller.composer.modelTitle')"
+                    @update:model-value="emit('update:model', $event)"
+                  />
+                </div>
+              </div>
+            </div>
 
             <div class="ml-auto flex items-center gap-1.5 shrink-0">
               <Button

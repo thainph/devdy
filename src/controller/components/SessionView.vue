@@ -23,7 +23,8 @@ import type { UsageInfo } from '../runStore'
 import type { RateLimitWindows } from '@/stores/liveRuns'
 import type { ConnStatus } from '../connection'
 import type {
-  ClaudeAccountUsage, FetchedModel, PlanBudget, QuestionAnswers, RemoteDecision, SlashCommand,
+  ClaudeAccountChoice, ClaudeAccountUsage, FetchedModel, PlanBudget, QuestionAnswers,
+  RemoteDecision, SlashCommand,
 } from '../protocol'
 
 const props = defineProps<{
@@ -42,6 +43,10 @@ const props = defineProps<{
   projectFiles: string[]
   /** Models the Host discovered from the account (composer model selector). */
   discoveredModels: { claude: FetchedModel[]; codex: FetchedModel[] }
+  /** Managed Claude accounts a run may be switched to. */
+  claudeAccountChoices: ClaudeAccountChoice[]
+  /** The account the run executes with; `''` = global `~/.claude`. */
+  claudeAccountId: string
   engine: string
   model: string
   permissionMode: string
@@ -77,6 +82,7 @@ const emit = defineEmits<{
   'update:engine': [value: string]
   'update:model': [value: string]
   'update:permissionMode': [value: string]
+  'update:claudeAccountId': [value: string]
   requestFiles: []
 }>()
 
@@ -295,6 +301,8 @@ onUnmounted(() => window.removeEventListener('pointerup', onWindowPointerUp))
       :slash-commands="slashCommands"
       :project-files="projectFiles"
       :discovered-models="discoveredModels"
+      :claude-accounts="claudeAccountChoices"
+      :claude-account-id="claudeAccountId"
       :engine="engine"
       :model="model"
       :permission-mode="permissionMode"
@@ -306,6 +314,7 @@ onUnmounted(() => window.removeEventListener('pointerup', onWindowPointerUp))
       @update:engine="emit('update:engine', $event)"
       @update:model="emit('update:model', $event)"
       @update:permission-mode="emit('update:permissionMode', $event)"
+      @update:claude-account-id="emit('update:claudeAccountId', $event)"
       @request-files="emit('requestFiles')"
     />
   </div>

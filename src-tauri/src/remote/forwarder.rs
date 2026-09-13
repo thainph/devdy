@@ -12,7 +12,8 @@ use crate::db::Db;
 use crate::remote::bus::{RemoteBus, RemoteRunEvent};
 use crate::remote::outbound::OutboundTx;
 use crate::remote::protocol::{
-    ClaudeAccountUsage, DiscoveredModel, EngineOption, Envelope, FrameType, ModelOption,
+    ClaudeAccountChoice, ClaudeAccountUsage, DiscoveredModel, EngineOption, Envelope, FrameType,
+    ModelOption,
     OutputLine, ProjectInfo,
     RunInfo,
     SlashCommandInfo,
@@ -96,6 +97,9 @@ fn to_payload(ev: RemoteRunEvent) -> StreamPayload {
             engine,
             model,
             permission_mode,
+            // The bus carries composer selections only; the account is run state
+            // and rides the DB-backed `send_run_meta` push instead.
+            claude_account_id: None,
         },
     }
 }
@@ -428,11 +432,25 @@ pub async fn send_run_meta(
             .flatten()
             .flatten();
     }
+    // Which managed account the run executes with. Read from the run row rather
+    // than the meta store: the account is run state the desktop writes directly,
+    // not a composer selection the store caches. NULL becomes "" — the global
+    // ~/.claude — which the Controller must be able to tell from "not reported".
+    let claude_account_id = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT claude_account_id FROM runs WHERE id = ?",
+    )
+    .bind(bound_run_id)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .map(|row| row.flatten().unwrap_or_default());
+
     let payload = StreamPayload::RunMeta {
         run_id: bound_run_id.to_string(),
         engine: meta.engine,
         model: meta.model,
         permission_mode: meta.permission_mode,
+        claude_account_id,
     };
     if let Some(env) = seal_stream(session, room_id, &payload, seq.next()) {
         let _ = out.send(env);
@@ -529,10 +547,30 @@ pub async fn send_engine_model_options(
         label: m.label,
         description: m.description,
     };
+    // The accounts a run may be switched to, mirroring the desktop run-settings
+    // menu. Same ordering as the desktop list (default first, then by label).
+    let rows = sqlx::query(
+        "SELECT id, label, is_default, email FROM claude_accounts
+         ORDER BY is_default DESC, label COLLATE NOCASE ASC",
+    )
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
+    let claude_accounts = rows
+        .iter()
+        .map(|r| ClaudeAccountChoice {
+            id: r.get("id"),
+            label: r.get("label"),
+            is_default: r.get::<i64, _>("is_default") != 0,
+            email: r.get("email"),
+        })
+        .collect();
+
     let payload = StreamPayload::EngineModelOptions {
         engines: engine_model_options(),
         claude_models: claude.into_iter().map(to_wire).collect(),
         codex_models: codex.into_iter().map(to_wire).collect(),
+        claude_accounts,
     };
     if let Some(env) = seal_stream(session, room_id, &payload, seq.next()) {
         let _ = out.send(env);
