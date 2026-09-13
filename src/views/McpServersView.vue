@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useActivatedRefresh } from '@/composables/useActivatedRefresh'
 import { useRouter } from 'vue-router'
 import { invoke } from '@tauri-apps/api/core'
 import { useMcpServersStore, type McpServer } from '@/stores/mcpServers'
@@ -10,6 +11,10 @@ import { Button, Card, Badge } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { Plus, Upload, Download, Pencil, Trash2, Server, CalendarDays, Power, AlertTriangle, Sparkles, Settings2 } from 'lucide-vue-next'
+
+// Named explicitly: <KeepAlive :include> in App.vue matches on component name,
+// and an inferred name is a build detail that minification can change.
+defineOptions({ name: 'McpServersView' })
 
 const router = useRouter()
 const store = useMcpServersStore()
@@ -141,6 +146,14 @@ const defaultIsCodex = computed(() => appSettings.settings?.default_engine === '
 onMounted(() => {
   store.fetchServers()
   appSettings.ensureLoaded()
+  loadGoogleStatus()
+})
+
+// Cached by <KeepAlive> (App.vue): onMounted fires once for the app's whole
+// lifetime, so re-show the screen with fresh data instead of whatever it read
+// the very first time.
+useActivatedRefresh(() => {
+  store.fetchServers()
   loadGoogleStatus()
 })
 
