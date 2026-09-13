@@ -5,6 +5,7 @@
 //!   - the outbound WSS client to the relay ([`agent`]),
 //!   - the per-session bound model + link/OTP/session-secret generation ([`session`]),
 //!   - the in-process event tap the run drain publishes to ([`bus`]),
+//!   - the prioritised outbound queue to the relay ([`outbound`]),
 //!   - sealing + forwarding run events and history replay ([`forwarder`]),
 //!   - the security-gated command handler ([`handler`]) built on the pure rules
 //!     in [`command`],
@@ -24,6 +25,7 @@ pub mod commands;
 pub mod forwarder;
 pub mod handler;
 pub mod meta;
+pub mod outbound;
 pub mod protocol;
 pub mod session;
 

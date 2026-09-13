@@ -11,7 +11,7 @@
 //! - AC-10 (BR-009): idempotency — a `request_id` is answered at most once.
 //! - AC-18 (BR-017): rate-limit 30 commands/minute per Controller.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 /// CMD_RATE_LIMIT — max commands a Controller may send per minute (BR-017).
@@ -98,16 +98,32 @@ impl RejectReason {
     }
 }
 
+/// How many distinct `request_id`s one connection remembers. Beyond this the
+/// OLDEST claim is forgotten so a long-lived session cannot grow without bound.
+///
+/// A forgotten id is only reachable by a Controller re-sending a response for a
+/// permission request that is already 512 requests old — by then the sidecar has
+/// long since timed the request out, so the re-send is refused downstream
+/// anyway. The cap trades an unreachable edge of AC-10 for a hard memory bound.
+pub const IDEMPOTENCY_CAPACITY: usize = 512;
+
 /// Idempotency guard for `respond_permission` (BR-009/AC-10).
 ///
 /// Records every `request_id` already answered so a duplicate (arriving from the
 /// same Controller, or racing an answer the Owner already gave at the Host) is
-/// dropped rather than re-applied. This is intentionally monotone (never
-/// forgets within a session): the number of distinct requests in one remote
-/// session is small and bounded by RESP_TIMEOUT churn.
-#[derive(Default)]
+/// dropped rather than re-applied. Bounded to [`IDEMPOTENCY_CAPACITY`] entries,
+/// evicting oldest-first.
 pub struct IdempotencyGuard {
     seen: HashSet<String>,
+    /// Claim order, oldest at the front — the eviction queue.
+    order: VecDeque<String>,
+    capacity: usize,
+}
+
+impl Default for IdempotencyGuard {
+    fn default() -> Self {
+        Self::with_capacity(IDEMPOTENCY_CAPACITY)
+    }
 }
 
 impl IdempotencyGuard {
@@ -115,10 +131,28 @@ impl IdempotencyGuard {
         Self::default()
     }
 
+    /// Construct with an explicit capacity (used by tests).
+    pub fn with_capacity(capacity: usize) -> Self {
+        IdempotencyGuard {
+            seen: HashSet::new(),
+            order: VecDeque::new(),
+            capacity: capacity.max(1),
+        }
+    }
+
     /// Try to claim `request_id`. Returns `true` on the FIRST call for that id
     /// (proceed), `false` on every later call (duplicate — drop, AC-10).
     pub fn claim(&mut self, request_id: &str) -> bool {
-        self.seen.insert(request_id.to_string())
+        if !self.seen.insert(request_id.to_string()) {
+            return false;
+        }
+        self.order.push_back(request_id.to_string());
+        while self.order.len() > self.capacity {
+            if let Some(oldest) = self.order.pop_front() {
+                self.seen.remove(&oldest);
+            }
+        }
+        true
     }
 
     /// Release a claim when delivery to the local permission resolver failed.
@@ -128,7 +162,9 @@ impl IdempotencyGuard {
     /// error into a permanent `duplicate_request` and make Deny/Allow impossible
     /// to retry.
     pub fn release(&mut self, request_id: &str) {
-        self.seen.remove(request_id);
+        if self.seen.remove(request_id) {
+            self.order.retain(|id| id != request_id);
+        }
     }
 
     /// Whether `request_id` has already been answered. Exercised by the unit
@@ -273,6 +309,45 @@ mod tests {
         g.release("p_retry");
         assert!(!g.is_seen("p_retry"));
         assert!(g.claim("p_retry"), "a failed delivery must remain retryable");
+    }
+
+    #[test]
+    fn idempotency_evicts_oldest_past_capacity() {
+        let mut g = IdempotencyGuard::with_capacity(3);
+        for id in ["a", "b", "c"] {
+            assert!(g.claim(id));
+        }
+        // "d" pushes "a" out of the window.
+        assert!(g.claim("d"));
+        assert!(!g.is_seen("a"), "oldest claim is evicted");
+        for id in ["b", "c", "d"] {
+            assert!(g.is_seen(id), "{id} must still be remembered");
+        }
+        // Within the window duplicates are still refused.
+        assert!(!g.claim("b"));
+    }
+
+    #[test]
+    fn idempotency_memory_is_bounded_under_churn() {
+        let mut g = IdempotencyGuard::with_capacity(8);
+        for i in 0..1_000 {
+            assert!(g.claim(&format!("p_{i}")), "every fresh id is claimable");
+        }
+        assert_eq!(g.seen.len(), 8);
+        assert_eq!(g.order.len(), 8);
+    }
+
+    #[test]
+    fn release_keeps_eviction_queue_in_sync() {
+        let mut g = IdempotencyGuard::with_capacity(2);
+        assert!(g.claim("a"));
+        g.release("a");
+        // Without pruning the queue, "a" would still occupy a slot and evict "b"
+        // as soon as "c" arrived.
+        assert!(g.claim("b"));
+        assert!(g.claim("c"));
+        assert!(g.is_seen("b"), "b must survive — a's slot was reclaimed");
+        assert!(g.is_seen("c"));
     }
 
     // ---- AC-18: rate-limit 30/min ----

@@ -23,6 +23,7 @@ use crate::remote::forwarder::{
     replay_history, run_log_path, send_engine_model_options, send_plan_usage,
     send_project_file_list, send_project_list, send_run_list, send_slash_command_list, SeqCounter,
 };
+use crate::remote::outbound::OutboundTx;
 use crate::remote::protocol::{CmdPayload, Envelope, FrameType, ImageAttachmentWire, StreamPayload};
 use crate::runs::{BrokerApprovals, RunRegistry};
 use remote_e2e::Session;
@@ -31,7 +32,6 @@ use std::sync::Arc;
 use std::time::Instant;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
-use tokio::sync::mpsc;
 use tokio::sync::Mutex as TokioMutex;
 
 /// Payload for the `run:permission_resolved:<run_id>` Tauri event (FIX-B). Lets
@@ -52,7 +52,7 @@ pub struct HandlerCtx {
     /// The single bound run this session may control (wrong-run gate).
     pub bound_run_id: String,
     /// Outbound channel to the relay (for notices / history replay).
-    pub out: mpsc::UnboundedSender<Envelope>,
+    pub out: OutboundTx,
     pub seq: Arc<SeqCounter>,
     /// Per-Controller state, shared across commands within a room.
     pub rate: Arc<TokioMutex<RateLimiter>>,

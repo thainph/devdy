@@ -167,6 +167,17 @@ pub enum StreamPayload {
         #[serde(default)]
         is_stderr: bool,
     },
+    /// Several consecutive output lines of one run, coalesced into a single
+    /// frame to cut per-line WebSocket + AEAD overhead on a mobile link.
+    ///
+    /// Only sent to a Controller that advertised [`FEATURE_OUTPUT_BATCH`] in its
+    /// first frame's `client_features`; older bundles keep receiving one
+    /// [`StreamPayload::Output`] per line. Lines are in emission order and must
+    /// be applied in order — a batch is exactly the `Output` frames it replaces.
+    OutputBatch {
+        run_id: String,
+        lines: Vec<OutputLine>,
+    },
     /// A tool permission request forwarded to the Controller (FR-006/BR-007).
     PermissionRequest {
         run_id: String,
@@ -266,6 +277,17 @@ pub enum StreamPayload {
         permission_mode: Option<String>,
     },
 }
+
+/// One console line inside a [`StreamPayload::OutputBatch`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutputLine {
+    pub line: String,
+    #[serde(default)]
+    pub is_stderr: bool,
+}
+
+/// Feature flag a Controller advertises to receive coalesced output batches.
+pub const FEATURE_OUTPUT_BATCH: &str = "output_batch";
 
 /// One slash command exposed to the Controller's composer palette.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -400,6 +422,11 @@ pub struct CmdPayload {
     #[serde(default)]
     #[allow(dead_code)]
     pub auth_mode: Option<String>,
+    /// Optional capability flags the Controller advertises on its FIRST (auth)
+    /// frame, e.g. [`FEATURE_OUTPUT_BATCH`]. Absent for older bundles, which is
+    /// why every negotiated feature must default to the old behaviour.
+    #[serde(default)]
+    pub client_features: Option<Vec<String>>,
 }
 
 /// The E2E handshake exchange (spec §3). Ephemeral public keys are NOT secret,

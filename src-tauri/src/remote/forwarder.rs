@@ -10,8 +10,10 @@
 
 use crate::db::Db;
 use crate::remote::bus::{RemoteBus, RemoteRunEvent};
+use crate::remote::outbound::OutboundTx;
 use crate::remote::protocol::{
-    EngineOption, Envelope, FrameType, ModelOption, ProjectInfo, RunInfo, SlashCommandInfo,
+    EngineOption, Envelope, FrameType, ModelOption, OutputLine, ProjectInfo, RunInfo,
+    SlashCommandInfo,
     StreamPayload,
 };
 use remote_e2e::Session;
@@ -19,7 +21,7 @@ use sqlx::Row;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use std::time::Duration;
 
 /// Cap on how many project files a `list_project_files` push returns.
 const PROJECT_FILES_MAX: usize = 500;
@@ -95,37 +97,130 @@ fn to_payload(ev: RemoteRunEvent) -> StreamPayload {
     }
 }
 
+/// How long output lines may sit in the coalescing buffer before being flushed.
+/// Short enough to stay imperceptible in a live transcript, long enough that a
+/// burst of log lines collapses into one frame instead of dozens.
+const OUTPUT_COALESCE_WINDOW: Duration = Duration::from_millis(50);
+/// Flush early once this many lines are buffered, so a firehose does not build a
+/// single oversized frame.
+const OUTPUT_COALESCE_MAX_LINES: usize = 256;
+
 /// Forward live run events to the Controller until the room closes.
 ///
 /// Runs until `out` is closed (room gone) or the bus lags catastrophically.
 /// A `broadcast` lag (forwarder briefly slow) is tolerated: we skip the missed
 /// window and keep going — the Controller can request history to backfill
-/// (FR-005/FR-012). ALL runs are forwarded; access is gated at device approval,
-/// not per run. When a run finishes, or the first event of a run not yet seen
-/// arrives, the run list is refreshed so the Controller's browser stays current.
+/// (FR-005/FR-012). Only the BOUND run's events are forwarded.
+///
+/// Output lines are coalesced into [`StreamPayload::OutputBatch`] frames when the
+/// Controller advertised [`FEATURE_OUTPUT_BATCH`] (`batch_output`). Ordering is
+/// preserved: the buffer is flushed before any other event of the same run is
+/// sealed, so a batch is exactly the `Output` frames it stands in for.
+///
+/// Live stream/output goes out via [`OutboundTx::send_lossy`] — under congestion
+/// it is dropped rather than queued forever, because the Controller can backfill
+/// with `request_history`. Everything else (permission requests, run status,
+/// meta, usage) uses the non-droppable path.
 pub async fn forward_loop(
     bus: RemoteBus,
     session: Arc<Session>,
     room_id: String,
-    out: mpsc::UnboundedSender<Envelope>,
+    out: OutboundTx,
     seq: Arc<SeqCounter>,
     db: Db,
     bound_run_id: String,
+    batch_output: bool,
 ) {
     let mut rx = bus.subscribe();
     let mut done_once = false;
+    // Buffered output lines for the bound run, in emission order.
+    let mut buffered: Vec<OutputLine> = Vec::new();
+    let mut flush_at: Option<tokio::time::Instant> = None;
+
     loop {
-        match rx.recv().await {
+        let event = tokio::select! {
+            r = rx.recv() => Some(r),
+            // Only armed while lines are buffered; otherwise this branch parks
+            // forever and the loop is a plain `rx.recv()`.
+            _ = async {
+                match flush_at {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => None,
+        };
+
+        let Some(received) = event else {
+            // Coalescing window elapsed.
+            if flush_buffered(&mut buffered, &bound_run_id, &session, &room_id, &out, &seq).is_err()
+            {
+                break;
+            }
+            flush_at = None;
+            continue;
+        };
+
+        match received {
             Ok(ev) => {
                 let run_id = ev.run_id().to_string();
                 // Single-session redesign: forward ONLY the bound run's events.
                 if run_id != bound_run_id {
                     continue;
                 }
+
+                // Accumulate output lines instead of sealing one frame per line.
+                if batch_output {
+                    if let RemoteRunEvent::Output {
+                        line, is_stderr, ..
+                    } = &ev
+                    {
+                        buffered.push(OutputLine {
+                            line: line.clone(),
+                            is_stderr: *is_stderr,
+                        });
+                        if buffered.len() >= OUTPUT_COALESCE_MAX_LINES {
+                            if flush_buffered(
+                                &mut buffered,
+                                &bound_run_id,
+                                &session,
+                                &room_id,
+                                &out,
+                                &seq,
+                            )
+                            .is_err()
+                            {
+                                break;
+                            }
+                            flush_at = None;
+                        } else if flush_at.is_none() {
+                            flush_at = Some(tokio::time::Instant::now() + OUTPUT_COALESCE_WINDOW);
+                        }
+                        continue;
+                    }
+                    // Any other event of this run must not overtake buffered
+                    // output — drain first so the transcript stays ordered.
+                    if flush_buffered(&mut buffered, &bound_run_id, &session, &room_id, &out, &seq)
+                        .is_err()
+                    {
+                        break;
+                    }
+                    flush_at = None;
+                }
+
                 let is_done = matches!(ev, RemoteRunEvent::Done { .. });
+                // Live transcript is backfillable; status/permission/meta is not.
+                let sheddable = matches!(
+                    ev,
+                    RemoteRunEvent::Event { .. } | RemoteRunEvent::Output { .. }
+                );
                 let payload = to_payload(ev);
                 if let Some(env) = seal_stream(&session, &room_id, &payload, seq.next()) {
-                    if out.send(env).is_err() {
+                    let sent = if sheddable {
+                        out.send_lossy(env)
+                    } else {
+                        out.send(env)
+                    };
+                    if sent.is_err() {
                         break; // room/writer gone
                     }
                 }
@@ -146,6 +241,33 @@ pub async fn forward_loop(
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         }
+    }
+
+    // Best-effort final drain so a clean shutdown does not swallow the tail.
+    let _ = flush_buffered(&mut buffered, &bound_run_id, &session, &room_id, &out, &seq);
+}
+
+/// Seal and send whatever output lines are buffered, leaving the buffer empty.
+/// `Err(())` means the room/writer is gone.
+fn flush_buffered(
+    buffered: &mut Vec<OutputLine>,
+    run_id: &str,
+    session: &Session,
+    room_id: &str,
+    out: &OutboundTx,
+    seq: &SeqCounter,
+) -> Result<(), ()> {
+    if buffered.is_empty() {
+        return Ok(());
+    }
+    let payload = StreamPayload::OutputBatch {
+        run_id: run_id.to_string(),
+        lines: std::mem::take(buffered),
+    };
+    match seal_stream(session, room_id, &payload, seq.next()) {
+        Some(env) => out.send_lossy(env),
+        // A payload that cannot be sealed is dropped, not fatal.
+        None => Ok(()),
     }
 }
 
@@ -185,7 +307,7 @@ pub async fn send_run_list(
     db: &Db,
     session: &Session,
     room_id: &str,
-    out: &mpsc::UnboundedSender<Envelope>,
+    out: &OutboundTx,
     seq: &SeqCounter,
     bound_run_id: &str,
 ) {
@@ -205,7 +327,7 @@ pub async fn send_run_meta(
     store: &crate::remote::RunMetaStore,
     session: &Session,
     room_id: &str,
-    out: &mpsc::UnboundedSender<Envelope>,
+    out: &OutboundTx,
     seq: &SeqCounter,
     bound_run_id: &str,
 ) {
@@ -247,7 +369,7 @@ pub fn slash_command_list() -> Vec<SlashCommandInfo> {
 pub async fn send_slash_command_list(
     session: &Session,
     room_id: &str,
-    out: &mpsc::UnboundedSender<Envelope>,
+    out: &OutboundTx,
     seq: &SeqCounter,
 ) {
     let payload = StreamPayload::SlashCommandList {
@@ -304,7 +426,7 @@ pub fn engine_model_options() -> Vec<EngineOption> {
 pub async fn send_engine_model_options(
     session: &Session,
     room_id: &str,
-    out: &mpsc::UnboundedSender<Envelope>,
+    out: &OutboundTx,
     seq: &SeqCounter,
 ) {
     let payload = StreamPayload::EngineModelOptions {
@@ -323,7 +445,7 @@ pub async fn send_plan_usage(
     db: &Db,
     session: &Session,
     room_id: &str,
-    out: &mpsc::UnboundedSender<Envelope>,
+    out: &OutboundTx,
     seq: &SeqCounter,
     bound_run_id: &str,
 ) {
@@ -366,7 +488,7 @@ pub async fn send_project_file_list(
     db: &Db,
     session: &Session,
     room_id: &str,
-    out: &mpsc::UnboundedSender<Envelope>,
+    out: &OutboundTx,
     seq: &SeqCounter,
     bound_run_id: &str,
 ) {
@@ -449,7 +571,7 @@ pub async fn send_project_list(
     db: &Db,
     session: &Session,
     room_id: &str,
-    out: &mpsc::UnboundedSender<Envelope>,
+    out: &OutboundTx,
     seq: &SeqCounter,
 ) {
     let projects = build_project_list(db).await;
@@ -476,7 +598,7 @@ pub async fn replay_history(
     room_id: &str,
     run_id: &str,
     log_path: &std::path::Path,
-    out: &mpsc::UnboundedSender<Envelope>,
+    out: &OutboundTx,
     seq: &SeqCounter,
 ) -> usize {
     let content = std::fs::read_to_string(log_path).unwrap_or_default();
@@ -562,7 +684,7 @@ mod tests {
         }
         drop(f);
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::remote::outbound::channel();
         let seq = SeqCounter::default();
         let rt = tokio::runtime::Runtime::new().unwrap();
         let sent = rt.block_on(replay_history(
@@ -594,7 +716,7 @@ mod tests {
     #[test]
     fn replay_missing_log_sends_empty_done() {
         let session = test_session();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::remote::outbound::channel();
         let seq = SeqCounter::default();
         let rt = tokio::runtime::Runtime::new().unwrap();
         let sent = rt.block_on(replay_history(
