@@ -6,7 +6,9 @@
     "hostRejectedReason": "Host rejected the command: {reason}"
   },
   "planBar": {
-    "noPlanData": "no plan data"
+    "noPlanData": "no plan data",
+    "soon": "soon",
+    "accountActive": "Claude — {label} (this run)"
   },
   "composer": {
     "defaultEngine": "Default engine",

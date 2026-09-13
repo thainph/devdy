@@ -22,7 +22,9 @@ import SessionPlanUsageBar from './SessionPlanUsageBar.vue'
 import type { UsageInfo } from '../runStore'
 import type { RateLimitWindows } from '@/stores/liveRuns'
 import type { ConnStatus } from '../connection'
-import type { PlanBudget, QuestionAnswers, RemoteDecision, SlashCommand } from '../protocol'
+import type {
+  ClaudeAccountUsage, PlanBudget, QuestionAnswers, RemoteDecision, SlashCommand,
+} from '../protocol'
 
 const props = defineProps<{
   title: string
@@ -55,6 +57,8 @@ const props = defineProps<{
   codexBudget: PlanBudget | null
   /** Label of the Claude account the bound run is using (null = global/legacy). */
   claudeAccount: string | null
+  /** Every managed Claude account with its own usage (desktop badge parity). */
+  claudeAccounts: ClaudeAccountUsage[]
   /** Other runs awaiting a permission decision. Surfaced as a tappable banner so
    * a prompt in a run the user is not watching is never silently queued. */
   pendingElsewhere: string[]
@@ -213,7 +217,12 @@ onUnmounted(() => window.removeEventListener('pointerup', onWindowPointerUp))
 
     <!-- Subscription usage (Claude + Codex), mirror of the desktop BudgetBadge.
          Kept above the run title so plan utilization is the first thing seen. -->
-    <SessionPlanUsageBar :claude="claudeBudget" :codex="codexBudget" :claude-account="claudeAccount" />
+    <SessionPlanUsageBar
+      :claude="claudeBudget"
+      :codex="codexBudget"
+      :claude-account="claudeAccount"
+      :claude-accounts="claudeAccounts"
+    />
 
     <!-- Run title -->
     <div class="shrink-0 px-3 py-1.5 border-b border-border/60">

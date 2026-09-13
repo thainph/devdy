@@ -302,15 +302,28 @@ export interface PlanBudget {
   status?: string | null
   rolled_over?: boolean
 }
+/** One managed Claude account's plan utilization — a desktop `BudgetBadge` row. */
+export interface ClaudeAccountUsage {
+  id: string
+  label: string
+  /** Whether the focused run actually executes with this account. */
+  active: boolean
+  budget?: PlanBudget | null
+}
 /** Subscription plan-usage badges (Claude + Codex), mirror of the desktop
  * `BudgetBadge`. Pushed on pairing and after each turn finishes. */
 export interface PlanUsageKind {
   kind: 'plan_usage'
+  /** Usage for the focused run's account only. Superseded by `claude_accounts`
+   * when the Host reports managed accounts; kept for older Hosts. */
   claude?: PlanBudget | null
   codex?: PlanBudget | null
-  /** Label of the Claude account the bound run is using (which account the
+  /** Label of the Claude account the focused run is using (which account the
    * utilization belongs to). Absent for a global/legacy run. */
   claude_account?: string | null
+  /** Every managed Claude account with its own usage. Empty from an older Host,
+   * or when no accounts are configured. */
+  claude_accounts?: ClaudeAccountUsage[]
 }
 
 /** Non-secret run metadata (mirror of Host `protocol.rs::RunInfo`). */
@@ -514,7 +527,24 @@ export function parseStreamPayload(json: unknown): StreamPayload | null {
         v && typeof v === 'object' && typeof (v as Record<string, unknown>).source === 'string'
           ? (v as PlanBudget)
           : null
-      return { kind: 'plan_usage', claude: asBudget(o.claude), codex: asBudget(o.codex) }
+      // Drop malformed account entries rather than the whole list, so one bad
+      // row cannot cost the user every other account's headroom.
+      const accounts = (Array.isArray(o.claude_accounts) ? o.claude_accounts : [])
+        .filter((a): a is Record<string, unknown> => !!a && typeof a === 'object')
+        .filter((a) => typeof a.id === 'string' && typeof a.label === 'string')
+        .map((a) => ({
+          id: a.id as string,
+          label: a.label as string,
+          active: a.active === true,
+          budget: asBudget(a.budget),
+        }))
+      return {
+        kind: 'plan_usage',
+        claude: asBudget(o.claude),
+        codex: asBudget(o.codex),
+        claude_account: typeof o.claude_account === 'string' ? o.claude_account : null,
+        claude_accounts: accounts,
+      }
     }
     default:
       return null
