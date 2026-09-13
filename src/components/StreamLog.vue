@@ -19,7 +19,8 @@ const { t } = useI18n()
 const props = defineProps<{
   entries: StreamEntry[]
   running?: boolean
-  renderText: (md: string) => string
+  /** `skipCache` bypasses the memo for text that is still growing — see below. */
+  renderText: (md: string, skipCache?: boolean) => string
   /** Resolve a raw inline-code token to a project file path, or null. */
   fileMatcher?: (raw: string) => string | null
 }>()
@@ -548,7 +549,16 @@ function toolResult(e: StreamEntry): unknown {
            re-renders the whole history. Deps list every reactive value this
            entry's markup reads: the entry itself, its late-attached result,
            and the per-index toggle/flash/collapse state. -->
-      <div v-memo="[entry, toolResult(entry), expanded[i], expandedCompacts.has(i), copiedCmd[i], expandedMessageIndices.has(i)]">
+      <!-- `stream-entry` opts the entry into `content-visibility: auto` so WebKit
+           skips layout+paint entirely while it is off-screen — scroll cost then
+           tracks what's visible, not how much has accumulated. Excluded for the
+           last entry while streaming: it's always in view (so there's nothing to
+           skip) and its height changes every chunk, which makes the size
+           placeholder thrash. -->
+      <div
+        :class="{ 'stream-entry': !(running && i === entries.length - 1) }"
+        v-memo="[entry, toolResult(entry), expanded[i], expandedCompacts.has(i), copiedCmd[i], expandedMessageIndices.has(i), running && i === entries.length - 1]"
+      >
       <!-- System init banner -->
       <div
         v-if="entry.kind === 'system'"
@@ -651,13 +661,17 @@ function toolResult(e: StreamEntry): unknown {
         <div v-if="entry.stdout" class="text-[11px] font-mono text-foreground/45">{{ entry.stdout }}</div>
       </div>
 
-      <!-- Assistant text — always rendered in full, never collapsed -->
+      <!-- Assistant text — always rendered in full, never collapsed.
+           renderText's 2nd arg skips the markdown memo while this entry is the
+           one being streamed: its text grows every chunk, so each render is a
+           new cache key that will never be read again and only serves to evict
+           the finalized entries that DO get re-read on scroll. -->
       <div v-else-if="entry.kind === 'text'">
         <div
           v-file-links
           v-mermaid
           v-copy-code
-          v-html="renderText(entry.text)"
+          v-html="renderText(entry.text, running && i === entries.length - 1)"
           class="markdown-output text-sm leading-relaxed text-foreground"
           @click="onProseClick"
         />

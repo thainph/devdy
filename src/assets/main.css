@@ -484,6 +484,17 @@
   * {
     border-color: hsl(var(--border));
   }
+  /* One entry in StreamLog. `content-visibility: auto` lets WebKit skip layout
+     and paint for entries scrolled out of view, so scrolling a long run costs
+     what's on screen rather than everything accumulated.
+     `contain-intrinsic-size` is NOT optional: without it an off-screen entry
+     measures as 0px tall, which corrupts scrollHeight and makes the scrollbar
+     jump. `auto` lets the browser remember each entry's real height once it has
+     been rendered; 200px is only the first-paint estimate. */
+  .stream-entry {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 200px;
+  }
   body {
     position: relative;
     background-color: hsl(var(--background));
