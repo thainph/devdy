@@ -17,7 +17,7 @@
     "resume": "Tiếp tục",
     "run": "Chạy",
     "placeholderRunning": "Gửi tin nhắn tiếp theo — Enter để gửi, Shift+Enter để xuống dòng",
-    "placeholderIdle": "Nhập prompt — Enter để chạy (nhắc file bằng @)",
+    "placeholderIdle": "Nhập prompt — Enter để chạy (nhắc file bằng {'@'})",
     "removeImage": "Xóa ảnh",
     "removeFile": "Xóa file",
     "permTitle": "Chế độ quyền (chỉ UI — host sẽ hỏi cho từng lệnh gọi công cụ)",

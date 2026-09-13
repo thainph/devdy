@@ -17,7 +17,7 @@
     "resume": "Resume",
     "run": "Run",
     "placeholderRunning": "Send a follow-up — Enter to send, Shift+Enter for newline",
-    "placeholderIdle": "Type a prompt — Enter to run (mention files with @)",
+    "placeholderIdle": "Type a prompt — Enter to run (mention files with {'@'})",
     "removeImage": "Remove image",
     "removeFile": "Remove file",
     "permTitle": "Permission mode (UI only — the host asks for each tool call)",
