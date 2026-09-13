@@ -83,7 +83,7 @@ const nativeServers = computed<NativeServer[]>(() => {
       name: 'gmail',
       tools: 'mcp__gmail__*',
       description:
-        'Gmail: list, search, read, send, reply, draft and manage labels. Injected when a Google account is connected.',
+        'Gmail: list, search, read, download attachments, send, reply, draft and manage labels. Injected when a Google account is connected.',
       status: google,
       section: 'google',
     },

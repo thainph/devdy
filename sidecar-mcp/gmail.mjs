@@ -5,10 +5,12 @@
 // Google account is connected in Devdy Settings. OAuth creds arrive via env and
 // are refreshed on demand (see lib/google.mjs). Zero runtime dependencies.
 //
-// Scope: gmail.modify (read / send / label / trash — NOT permanent mailbox
+// Scope: gmail.modify (read / attachments / send / label / trash — NOT permanent mailbox
 // wipe). `delete` needs the broader scope and will fail cleanly if not granted.
 // Destructive/outbound tools still hit Devdy's per-tool permission prompt.
 
+import { mkdir, writeFile } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 import { gapi, runServer } from './lib/google.mjs';
 
 const BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
@@ -57,6 +59,71 @@ function extractBody(payload) {
     if (nested) return nested;
   }
   return '';
+}
+
+/** Walk a payload tree and collect every attachment-ish part (real attachments
+ *  plus inline images such as signature logos, which carry a Content-ID). */
+function collectAttachments(payload, out = []) {
+  if (!payload) return out;
+  const body = payload.body || {};
+  if (payload.filename || body.attachmentId) {
+    const disposition = headerOf(payload, 'Content-Disposition');
+    out.push({
+      filename: payload.filename || `part-${payload.partId || out.length + 1}`,
+      mimeType: payload.mimeType || 'application/octet-stream',
+      size: Number(body.size) || 0,
+      attachmentId: body.attachmentId || '',
+      data: body.data || '',
+      inline: /inline/i.test(disposition),
+      contentId: headerOf(payload, 'Content-ID').replace(/^<|>$/g, ''),
+    });
+  }
+  for (const part of payload.parts || []) collectAttachments(part, out);
+  return out;
+}
+
+/** Fetch an attachment's bytes: small parts inline the data, big ones need a
+ *  second call against the attachments endpoint. */
+async function attachmentBuffer(messageId, att) {
+  if (att.data) return Buffer.from(att.data, 'base64url');
+  if (!att.attachmentId) throw new Error(`Attachment '${att.filename}' has no downloadable body.`);
+  const r = await gapi(`${BASE}/messages/${messageId}/attachments/${att.attachmentId}`);
+  return Buffer.from(r.data || '', 'base64url');
+}
+
+/** Strip any directory component / unsafe chars so a mail-supplied filename can
+ *  never escape the destination directory. */
+function safeName(name) {
+  return basename(String(name || '')).replace(/[/\\<>:"|?*\x00-\x1f]/g, '_') || 'attachment';
+}
+
+const fmtSize = (n) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)}MB` : n >= 1024 ? `${Math.round(n / 1024)}KB` : `${n}B`);
+
+const fmtAttachment = (a, i) =>
+  `- [${i + 1}] ${a.filename}  ${a.mimeType} · ${fmtSize(a.size)}${a.inline ? ' · inline' : ''}${a.contentId ? ` · cid:${a.contentId}` : ''}\n  attachment_id: ${a.attachmentId || '(inline body, no id)'}`;
+
+/** Load a message and its attachment list, applying the shared filters. */
+async function loadAttachments(a) {
+  const m = await gapi(`${BASE}/messages/${a.message_id}?format=full`);
+  let atts = collectAttachments(m.payload);
+  if (a.skip_inline) atts = atts.filter((x) => !x.inline);
+  if (a.mime_prefix) atts = atts.filter((x) => x.mimeType.startsWith(a.mime_prefix));
+  if (a.filename_contains) {
+    const needle = a.filename_contains.toLowerCase();
+    atts = atts.filter((x) => x.filename.toLowerCase().includes(needle));
+  }
+  return atts;
+}
+
+/** Pick a destination that does not clobber an existing file in the same run. */
+function uniquePath(dir, name, used) {
+  const dot = name.lastIndexOf('.');
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : '';
+  let candidate = name;
+  for (let i = 1; used.has(candidate); i += 1) candidate = `${stem}-${i}${ext}`;
+  used.add(candidate);
+  return join(dir, candidate);
 }
 
 async function fetchSummary(id) {
@@ -113,6 +180,7 @@ const tools = {
     handler: async (a) => {
       const m = await gapi(`${BASE}/messages/${a.message_id}?format=full`);
       const body = extractBody(m.payload);
+      const atts = collectAttachments(m.payload);
       return [
         `From: ${headerOf(m.payload, 'From')}`,
         `To: ${headerOf(m.payload, 'To')}`,
@@ -120,9 +188,96 @@ const tools = {
         `Subject: ${headerOf(m.payload, 'Subject')}`,
         `Labels: ${(m.labelIds || []).join(', ')}`,
         `Thread: ${m.threadId}`,
+        ...(atts.length
+          ? [`Attachments (${atts.length}): ${atts.map((x) => `${x.filename} (${fmtSize(x.size)})`).join(', ')} — use list_attachments / download_attachments to save them.`]
+          : []),
         '',
         body || '(no plain-text body)',
       ].join('\n');
+    },
+  },
+
+  list_attachments: {
+    description: 'List the attachments and inline images of a message: filename, mimeType, size and the attachment_id needed to download one.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        message_id: { type: 'string' },
+        skip_inline: { type: 'boolean', description: 'Hide inline images (signature logos and the like)' },
+        mime_prefix: { type: 'string', description: 'Only parts whose mimeType starts with this, e.g. "image/" or "application/pdf"' },
+      },
+      required: ['message_id'],
+    },
+    handler: async (a) => {
+      const atts = await loadAttachments(a);
+      return atts.length ? atts.map(fmtAttachment).join('\n') : 'No attachments.';
+    },
+  },
+
+  download_attachment: {
+    description: 'Download one attachment (image, PDF, any file) from a message to a local path. Identify it by attachment_id, or by filename, or omit both when the message has exactly one attachment.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        message_id: { type: 'string' },
+        dest_path: { type: 'string', description: 'Absolute local path to write' },
+        attachment_id: { type: 'string', description: 'From list_attachments; most precise' },
+        filename_contains: { type: 'string', description: 'Case-insensitive substring of the attachment filename' },
+      },
+      required: ['message_id', 'dest_path'],
+    },
+    handler: async (a) => {
+      const all = collectAttachments((await gapi(`${BASE}/messages/${a.message_id}?format=full`)).payload);
+      let matches = all;
+      if (a.attachment_id) {
+        matches = all.filter((x) => x.attachmentId === a.attachment_id);
+      } else if (a.filename_contains) {
+        const needle = a.filename_contains.toLowerCase();
+        matches = all.filter((x) => x.filename.toLowerCase().includes(needle));
+      }
+      if (!matches.length) {
+        return all.length
+          ? `No attachment matched. This message has:\n${all.map(fmtAttachment).join('\n')}`
+          : 'This message has no attachments.';
+      }
+      if (matches.length > 1) {
+        return `Ambiguous: ${matches.length} attachments matched. Pass attachment_id for one of:\n${matches.map(fmtAttachment).join('\n')}`;
+      }
+      const att = matches[0];
+      const buf = await attachmentBuffer(a.message_id, att);
+      await mkdir(dirname(a.dest_path), { recursive: true });
+      await writeFile(a.dest_path, buf);
+      return `Downloaded ${att.filename} (${att.mimeType}, ${buf.length} bytes) → ${a.dest_path}`;
+    },
+  },
+
+  download_attachments: {
+    description: 'Download every attachment of a message into a local directory, keeping the original filenames. Filter with mime_prefix (e.g. "image/") or filename_contains, and skip_inline to ignore signature logos.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        message_id: { type: 'string' },
+        dest_dir: { type: 'string', description: 'Absolute local directory; created if missing' },
+        mime_prefix: { type: 'string', description: 'Only parts whose mimeType starts with this, e.g. "image/"' },
+        filename_contains: { type: 'string' },
+        skip_inline: { type: 'boolean', description: 'Skip inline images (signature logos and the like)' },
+      },
+      required: ['message_id', 'dest_dir'],
+    },
+    handler: async (a) => {
+      const atts = await loadAttachments(a);
+      if (!atts.length) return 'No attachments matched — nothing downloaded.';
+      await mkdir(a.dest_dir, { recursive: true });
+      const used = new Set();
+      const lines = [];
+      for (const att of atts) {
+        const dest = uniquePath(a.dest_dir, safeName(att.filename), used);
+        // Sequential: a mail with many parts would otherwise burst the Gmail API.
+        const buf = await attachmentBuffer(a.message_id, att);
+        await writeFile(dest, buf);
+        lines.push(`- ${att.mimeType} · ${buf.length} bytes → ${dest}`);
+      }
+      return `Downloaded ${lines.length} attachment(s) to ${a.dest_dir}:\n${lines.join('\n')}`;
     },
   },
 

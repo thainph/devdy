@@ -1657,6 +1657,7 @@ watch(() => settings.value.language, (v) => {
               <span>✏️ gdrive create / upload / update / rename / move</span>
               <span>🗑️ gdrive delete (permanent) · share / permissions</span>
               <span>📧 gmail list / search / read_message / read_thread</span>
+              <span>📎 gmail list_attachments / download_attachment(s)</span>
               <span>✉️ gmail send / create_draft / reply</span>
               <span>🏷️ gmail modify_labels / mark / trash / delete</span>
             </div>
