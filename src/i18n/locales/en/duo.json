@@ -30,7 +30,7 @@
     "runPlaceholder": "Pick a session…",
     "permission": "Permission mode",
     "maxRounds": "Max rounds",
-    "consensusToken": "Consensus token (optional)",
+    "consensusToken": "Consensus token (only side B can sign off)",
     "designerEngine": "Side A engine",
     "reviewerEngine": "Side B engine",
     "model": "Model",
@@ -68,7 +68,7 @@
     "awaitingInput": "Waiting for you"
   },
   "reason": {
-    "consensus": "A side signalled consensus — ended.",
+    "consensus": "Side B signed off — ended.",
     "maxRounds": "Reached the max rounds without consensus.",
     "manual": "Stopped manually.",
     "error": "An error occurred during the exchange."
