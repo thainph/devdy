@@ -10,7 +10,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  AlertTriangle, Loader2, ShieldCheck, Wifi, WifiOff, X,
+  AlertTriangle, ChevronLeft, Loader2, ShieldCheck, Wifi, WifiOff, X,
 } from 'lucide-vue-next'
 import StreamLog from '@/components/StreamLog.vue'
 import type { StreamEntry } from '@/lib/streamEvents'
@@ -55,6 +55,9 @@ const props = defineProps<{
   codexBudget: PlanBudget | null
   /** Label of the Claude account the bound run is using (null = global/legacy). */
   claudeAccount: string | null
+  /** Other runs awaiting a permission decision. Surfaced as a tappable banner so
+   * a prompt in a run the user is not watching is never silently queued. */
+  pendingElsewhere: string[]
 }>()
 
 const emit = defineEmits<{
@@ -63,6 +66,7 @@ const emit = defineEmits<{
   decide: [decision: RemoteDecision]
   answer: [answers: QuestionAnswers]
   disconnect: []
+  back: []
   clearNotice: []
   'update:engine': [value: string]
   'update:model': [value: string]
@@ -162,6 +166,13 @@ onUnmounted(() => window.removeEventListener('pointerup', onWindowPointerUp))
   <div class="flex h-dvh min-h-0 flex-col bg-background text-foreground">
     <!-- Top bar -->
     <header class="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-border">
+      <button
+        class="inline-flex items-center justify-center h-7 w-7 -ml-1 shrink-0 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+        :title="t('controller.browser.backToRuns')"
+        @click="emit('back')"
+      >
+        <ChevronLeft class="h-4 w-4" :stroke-width="2" />
+      </button>
       <span
         class="inline-flex items-center gap-1.5 text-xs font-medium min-w-0"
         :class="isActive && live ? 'text-emerald-500' : status === 'error' ? 'text-destructive' : 'text-amber-500'"
@@ -208,6 +219,16 @@ onUnmounted(() => window.removeEventListener('pointerup', onWindowPointerUp))
     <div class="shrink-0 px-3 py-1.5 border-b border-border/60">
       <p class="text-xs font-medium truncate">{{ title }}</p>
     </div>
+
+    <!-- Another run is blocked waiting for a decision. One tap to go answer it. -->
+    <button
+      v-if="pendingElsewhere.length"
+      class="shrink-0 w-full px-3 py-1.5 text-xs flex items-center justify-center gap-2 bg-amber-500/15 text-amber-600 dark:text-amber-400 hover:bg-amber-500/25 transition-colors cursor-pointer"
+      @click="emit('back')"
+    >
+      <AlertTriangle class="h-3.5 w-3.5" :stroke-width="2" />
+      {{ t('controller.browser.pendingElsewhere', pendingElsewhere.length) }}
+    </button>
 
     <!-- Reconnect / error banner -->
     <div

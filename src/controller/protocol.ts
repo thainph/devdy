@@ -602,6 +602,8 @@ export interface CmdPayload {
     | 'list_engine_models'
     | 'list_project_files'
     | 'list_plan_usage'
+    | 'open_run'
+    | 'close_run'
   /** Per-send correlation id used for Host delivery acknowledgement. */
   command_id?: string
   run_id?: string
@@ -633,8 +635,15 @@ export interface CmdPayload {
 /** Advertise coalesced output batches ({@link OutputBatchKind}). */
 export const FEATURE_OUTPUT_BATCH = 'output_batch'
 
+/**
+ * Advertise that this bundle can browse and drive more than the run its link was
+ * minted for. Without it the Host stays pinned to that one run — which is what
+ * an older bundle, which renders exactly one run, needs.
+ */
+export const FEATURE_MULTI_RUN = 'multi_run'
+
 /** Everything this controller bundle understands, sent on the gate frame. */
-export const CLIENT_FEATURES: string[] = [FEATURE_OUTPUT_BATCH]
+export const CLIENT_FEATURES: string[] = [FEATURE_OUTPUT_BATCH, FEATURE_MULTI_RUN]
 
 /**
  * `respond_permission` — only `allow_once`/`deny_once` (BR-016). For
@@ -666,6 +675,33 @@ export function cancelRunCmd(runId: string): CmdPayload {
 /** `request_history` (FR-005). */
 export function requestHistoryCmd(runId: string): CmdPayload {
   return { kind: 'cmd', action: 'request_history', run_id: runId }
+}
+
+/** `list_runs` — refresh the run browser. */
+export function listRunsCmd(): CmdPayload {
+  return { kind: 'cmd', action: 'list_runs' }
+}
+
+/** `list_projects` — refresh the project groupings in the run browser. */
+export function listProjectsCmd(): CmdPayload {
+  return { kind: 'cmd', action: 'list_projects' }
+}
+
+/**
+ * `open_run` — start streaming a run's transcript and pull everything the
+ * composer needs for it (history, meta, usage, files) in one round trip.
+ */
+export function openRunCmd(runId: string): CmdPayload {
+  return { kind: 'cmd', action: 'open_run', run_id: runId }
+}
+
+/**
+ * `close_run` — stop streaming a run's transcript. Its permission requests and
+ * status changes still arrive, so closing never hides something needing an
+ * answer; it only saves bandwidth.
+ */
+export function closeRunCmd(runId: string): CmdPayload {
+  return { kind: 'cmd', action: 'close_run', run_id: runId }
 }
 
 /** `list_slash_commands` — refresh the composer's slash palette. */

@@ -60,5 +60,17 @@
     "couldNotRead": "Không đọc được link.",
     "pasteFirst": "Dán controller link trước đã.",
     "e2eNote": "Kết nối được mã hóa đầu-cuối. Bạn sẽ nhập mã một lần hiển thị trên host để hoàn tất kết nối. Relay không bao giờ thấy dữ liệu của bạn, và fingerprint host được xác minh."
+  },
+  "browser": {
+    "title": "Các run",
+    "backToRuns": "Tất cả run",
+    "openRun": "Mở run",
+    "empty": "Chưa có run nào.",
+    "loading": "Đang tải danh sách run…",
+    "refresh": "Tải lại",
+    "needsApproval": "Đang chờ bạn duyệt",
+    "pendingElsewhere": "{count} run đang chờ bạn duyệt",
+    "ungrouped": "Khác",
+    "untitled": "Run {id}"
   }
 }
