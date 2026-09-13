@@ -227,6 +227,13 @@ export function createRunStore() {
         ensureRun(payload.run_id).status = 'running'
         applyOutput(payload.run_id, payload.line, payload.is_stderr === true)
         break
+      case 'output_batch':
+        // A batch is exactly the `output` frames it replaces — apply in order.
+        ensureRun(payload.run_id).status = 'running'
+        for (const l of payload.lines) {
+          applyOutput(payload.run_id, l.line, l.is_stderr === true)
+        }
+        break
       case 'permission_request':
         state.pending = {
           run_id: payload.run_id,

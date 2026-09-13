@@ -27,6 +27,7 @@ import {
   joinFrame,
   keepaliveFrame,
   requestHistoryCmd,
+  CLIENT_FEATURES,
   listSlashCommandsCmd,
   listEngineModelsCmd,
   listProjectFilesCmd,
@@ -639,7 +640,12 @@ export class ControllerConnection {
     this.backoff = BACKOFF_BASE_MS
     if (this.state.auth.value !== 'authenticated') this.state.auth.value = 'pending'
     this.otpAttemptAt = Date.now()
-    this.sendSealedCommand({ ...requestHistoryCmd(this.link.run_id), auth_mode: this.authMode })
+    this.sendSealedCommand({
+      ...requestHistoryCmd(this.link.run_id),
+      auth_mode: this.authMode,
+      // The gate frame is the only place the Host reads capabilities from.
+      client_features: CLIENT_FEATURES,
+    })
     this.startVerdictTimer()
   }
 

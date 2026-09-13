@@ -161,6 +161,22 @@ export interface OutputKind {
   line: string
   is_stderr?: boolean
 }
+/** One console line inside an {@link OutputBatchKind}. */
+export interface OutputLine {
+  line: string
+  is_stderr?: boolean
+}
+/**
+ * Several consecutive output lines of one run, coalesced into a single frame to
+ * cut per-line WebSocket + AEAD overhead on a mobile link. The Host only sends
+ * these once we advertise {@link FEATURE_OUTPUT_BATCH}; lines arrive in emission
+ * order and must be applied in order.
+ */
+export interface OutputBatchKind {
+  kind: 'output_batch'
+  run_id: string
+  lines: OutputLine[]
+}
 /** A tool permission request forwarded to the Controller (FR-006/BR-007). */
 export interface PermissionRequestKind {
   kind: 'permission_request'
@@ -335,6 +351,7 @@ export interface ProjectListKind {
 export type StreamPayload =
   | StreamKind
   | OutputKind
+  | OutputBatchKind
   | PermissionRequestKind
   | DoneKind
   | HistoryKind
@@ -367,6 +384,16 @@ export function parseStreamPayload(json: unknown): StreamPayload | null {
       return typeof o.run_id === 'string' && typeof o.line === 'string'
         ? { kind: 'output', run_id: o.run_id, line: o.line, is_stderr: o.is_stderr === true }
         : null
+    case 'output_batch': {
+      if (typeof o.run_id !== 'string' || !Array.isArray(o.lines)) return null
+      // Drop malformed entries rather than the whole batch: one bad line must not
+      // cost the user the rest of the burst.
+      const lines = (o.lines as unknown[])
+        .filter((l): l is Record<string, unknown> => !!l && typeof l === 'object')
+        .filter((l) => typeof l.line === 'string')
+        .map((l) => ({ line: l.line as string, is_stderr: l.is_stderr === true }))
+      return { kind: 'output_batch', run_id: o.run_id, lines }
+    }
     case 'permission_request':
       return typeof o.run_id === 'string' &&
         typeof o.request_id === 'string' &&
@@ -595,7 +622,19 @@ export interface CmdPayload {
   attachments?: CmdAttachment[]
   /** Set on the first frame after a (re)join so the Host keys the OTP gate. */
   auth_mode?: AuthMode
+  /**
+   * Capability flags advertised on the FIRST (gate) frame. An older Host ignores
+   * the field and keeps its pre-negotiation behaviour, so every flag must be a
+   * pure opt-in — see {@link CLIENT_FEATURES}.
+   */
+  client_features?: string[]
 }
+
+/** Advertise coalesced output batches ({@link OutputBatchKind}). */
+export const FEATURE_OUTPUT_BATCH = 'output_batch'
+
+/** Everything this controller bundle understands, sent on the gate frame. */
+export const CLIENT_FEATURES: string[] = [FEATURE_OUTPUT_BATCH]
 
 /**
  * `respond_permission` — only `allow_once`/`deny_once` (BR-016). For

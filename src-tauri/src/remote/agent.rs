@@ -20,8 +20,9 @@ use crate::remote::bus::RemoteBus;
 use crate::remote::command::{IdempotencyGuard, RateLimiter};
 use crate::remote::forwarder::{forward_loop, SeqCounter};
 use crate::remote::handler::{handle, HandlerCtx};
+use crate::remote::outbound::OutboundTx;
 use crate::remote::protocol::{
-    CmdPayload, Envelope, FrameType, HandshakePayload, StreamPayload,
+    CmdPayload, Envelope, FrameType, HandshakePayload, StreamPayload, FEATURE_OUTPUT_BATCH,
 };
 use crate::remote::session::BoundSession;
 use crate::runs::{BrokerApprovals, RunRegistry};
@@ -31,7 +32,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
-use tokio::sync::{mpsc, Mutex as TokioMutex};
+use tokio::sync::Mutex as TokioMutex;
 use tokio_tungstenite::tungstenite::Message;
 
 /// Min/max reconnect backoff (BR-010): start at 1 s, cap at 30 s.
@@ -158,7 +159,9 @@ async fn connect_once(
 
     let (mut sink, mut stream) = ws.split();
 
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Envelope>();
+    // Depth-aware queue: live stream/output is shed when the Controller's link
+    // cannot keep up, so a slow phone never grows Host memory without bound.
+    let (out_tx, mut out_rx) = crate::remote::outbound::channel();
     let writer = tokio::spawn(async move {
         while let Some(env) = out_rx.recv().await {
             match serde_json::to_string(&env) {
@@ -266,7 +269,7 @@ async fn connect_once(
 }
 
 /// Send a `revoke{room_id}` for every queued revoke request.
-async fn drain_revokes(deps: &AgentDeps, out_tx: &mpsc::UnboundedSender<Envelope>) {
+async fn drain_revokes(deps: &AgentDeps, out_tx: &OutboundTx) {
     let mut queue = deps.revoke_queue.lock().await;
     for room_id in queue.drain(..) {
         let _ = out_tx.send(Envelope::revoke(room_id));
@@ -275,7 +278,7 @@ async fn drain_revokes(deps: &AgentDeps, out_tx: &mpsc::UnboundedSender<Envelope
 
 /// Announce the bound session's rendezvous to the relay as a persistent pair, so
 /// a controller can join (or rejoin, past PAIR_TTL) at any time until teardown.
-async fn announce_bound(deps: &AgentDeps, out_tx: &mpsc::UnboundedSender<Envelope>) {
+async fn announce_bound(deps: &AgentDeps, out_tx: &OutboundTx) {
     if let Some(b) = deps.bound.lock().await.as_ref() {
         let _ = out_tx.send(Envelope::create_pair_persistent(
             b.rendezvous_code.clone(),
@@ -317,7 +320,7 @@ async fn dispatch_inbound(
     env: Envelope,
     _config: &AgentConfig,
     deps: &AgentDeps,
-    out_tx: &mpsc::UnboundedSender<Envelope>,
+    out_tx: &OutboundTx,
     seq: &Arc<SeqCounter>,
     rate: &Arc<TokioMutex<RateLimiter>>,
     idem: &Arc<TokioMutex<IdempotencyGuard>>,
@@ -546,7 +549,7 @@ async fn complete_handshake(
     room_id: String,
     controller_pub_hex: String,
     deps: &AgentDeps,
-    out_tx: &mpsc::UnboundedSender<Envelope>,
+    out_tx: &OutboundTx,
     pending_room: &mut Option<String>,
 ) {
     let controller_pub = match crate::remote::pairing_unhex(&controller_pub_hex) {
@@ -586,7 +589,7 @@ async fn try_authenticate_first_frame(
     room_id: String,
     cipher: &str,
     deps: &AgentDeps,
-    out_tx: &mpsc::UnboundedSender<Envelope>,
+    out_tx: &OutboundTx,
     seq: &Arc<SeqCounter>,
     rate: &Arc<TokioMutex<RateLimiter>>,
     idem: &Arc<TokioMutex<IdempotencyGuard>>,
@@ -736,6 +739,20 @@ async fn try_authenticate_first_frame(
         .emit("remote://connection-authenticated", Authenticated { run_id: run_id.clone() });
     tracing::info!(event = "remote_room_authenticated", room_id = %room_id);
 
+    // The first frame doubles as the capability advertisement. Parse it once here
+    // so the forward loop starts in the right mode; it is dispatched as a normal
+    // command at the end of this function.
+    let first_cmd = serde_json::from_slice::<CmdPayload>(&plaintext).ok();
+    let batch_output = first_cmd
+        .as_ref()
+        .and_then(|c| c.client_features.as_ref())
+        .is_some_and(|f| f.iter().any(|x| x == FEATURE_OUTPUT_BATCH));
+    tracing::info!(
+        event = "remote_client_features",
+        room_id = %room_id,
+        output_batch = batch_output,
+    );
+
     // Start the run-scoped forward loop.
     let ft = tokio::spawn(forward_loop(
         deps.bus.clone(),
@@ -745,6 +762,7 @@ async fn try_authenticate_first_frame(
         seq.clone(),
         deps.db.clone(),
         run_id.clone(),
+        batch_output,
     ));
     if let Some(old) = forward_task.replace(ft) {
         old.abort();
@@ -787,9 +805,9 @@ async fn try_authenticate_first_frame(
     *room_ctx = Some(ctx.clone());
 
     // Dispatch the first (already-decrypted) frame as a normal command.
-    match serde_json::from_slice::<CmdPayload>(&plaintext) {
-        Ok(cmd) => handle(&ctx, cmd).await,
-        Err(_) => {
+    match first_cmd {
+        Some(cmd) => handle(&ctx, cmd).await,
+        None => {
             // The first frame may just be an empty auth ping; ignore parse errors.
             tracing::debug!(event = "remote_first_frame_not_cmd");
         }
