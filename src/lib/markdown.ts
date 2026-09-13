@@ -25,14 +25,31 @@ export function useMarkdown() {
   const _mdCache = new Map<string, string>()
   const MD_CACHE_MAX = 800
 
-  function renderText(md: string): string {
+  /**
+   * Render markdown, memoised by source text.
+   *
+   * `skipCache` is for the entry currently being streamed: its text grows by a
+   * chunk every frame, so every render produces a brand-new key. Caching those
+   * fills the map with strings that will never be read again and evicts the
+   * finalized entries that actually get re-read on scroll.
+   */
+  function renderText(md: string, skipCache = false): string {
     // Read mdReady so this is reactive to renderer load.
     if (!mdReady.value || !_md) return escapeHtml(md ?? '').replace(/\n/g, '<br/>')
     const key = md ?? ''
+    if (skipCache) return _md.render(key)
     const cached = _mdCache.get(key)
     if (cached !== undefined) return cached
     const html = _md.render(key)
-    if (_mdCache.size >= MD_CACHE_MAX) _mdCache.clear()
+    // Evict ONE oldest entry, not the whole map. Clearing wholesale meant the
+    // next render had to re-parse the entire conversation from scratch — the
+    // periodic freeze during long runs. Map preserves insertion order, so the
+    // first key is the oldest; FIFO is enough here because a stream is
+    // append-only and older entries are only re-read when scrolling back.
+    if (_mdCache.size >= MD_CACHE_MAX) {
+      const oldest = _mdCache.keys().next().value
+      if (oldest !== undefined) _mdCache.delete(oldest)
+    }
     _mdCache.set(key, html)
     return html
   }
