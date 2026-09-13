@@ -35,10 +35,22 @@ pub use meta::{apply_run_meta, RunMetaStore};
 use crate::db::Db;
 use crate::runs::{BrokerApprovals, RunRegistry};
 use session::BoundSession;
+use std::collections::HashSet;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tauri::AppHandle;
 use tokio::sync::Mutex as TokioMutex;
+
+/// Runs whose live transcript the Controller is currently streaming.
+///
+/// Shared between the command handler (which mutates it on `open_run` /
+/// `close_run`) and the forwarder (which reads it per event), so navigation
+/// takes effect on the very next event rather than at the next reconnect.
+pub type RunSubscriptions = Arc<TokioMutex<HashSet<String>>>;
+
+/// The run the Controller is currently looking at. Read by `remote_status` so
+/// the desktop can show where the phone is; `None` before authentication.
+pub type FocusRun = Arc<TokioMutex<Option<String>>>;
 
 /// Persisted-config settings keys (DATA-001). `relay_url` + `enabled` live in
 /// the `settings` KV; the `device_id` is generated once and also kept there.
@@ -66,6 +78,11 @@ pub struct RemoteState {
     /// Signalled when a new BoundSession is set so a running agent announces the
     /// persistent rendezvous to the relay without waiting for a reconnect.
     pub announce_signal: Arc<tokio::sync::Notify>,
+    /// Runs the Controller is streaming right now. Lives here (not in the agent
+    /// task) so `remote_status` can report it to the desktop UI.
+    pub subscriptions: RunSubscriptions,
+    /// The run the Controller is currently viewing.
+    pub focus_run_id: FocusRun,
     agent: Arc<TokioMutex<Option<AgentControl>>>,
 }
 
@@ -84,6 +101,8 @@ impl RemoteState {
             revoke_queue: Arc::new(TokioMutex::new(Vec::new())),
             revoke_signal: Arc::new(tokio::sync::Notify::new()),
             announce_signal: Arc::new(tokio::sync::Notify::new()),
+            subscriptions: Arc::new(TokioMutex::new(HashSet::new())),
+            focus_run_id: Arc::new(TokioMutex::new(None)),
             agent: Arc::new(TokioMutex::new(None)),
         }
     }
@@ -125,6 +144,8 @@ impl RemoteState {
             revoke_queue: self.revoke_queue.clone(),
             revoke_signal: self.revoke_signal.clone(),
             announce_signal: self.announce_signal.clone(),
+            subscriptions: self.subscriptions.clone(),
+            focus_run_id: self.focus_run_id.clone(),
         };
         let config = agent::AgentConfig {
             relay_url,

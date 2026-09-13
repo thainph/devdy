@@ -24,9 +24,15 @@ export interface RemoteStatus {
   /** Whether an owner master password is set (controller may use it vs the OTP). */
   has_master_password: boolean
   device_id: string | null
-  /** Run currently bound to the active remote session, if any. */
+  /** Run the session link was minted for. A multi-run controller can move
+   * beyond it — see `focus_run_id`. */
   bound_run_id: string | null
-  /** Whether a controller has completed the OTP handshake for the bound run. */
+  /** Run the controller is currently looking at; equals `bound_run_id` until it
+   * opens another run. */
+  focus_run_id: string | null
+  /** Every run the controller is currently streaming. */
+  subscribed_run_ids: string[]
+  /** Whether a controller has completed the OTP handshake. */
   session_authenticated: boolean
   /** Unix seconds at which the idle session token expires (sliding 3h). */
   session_idle_expires_at: number | null
@@ -146,8 +152,10 @@ export const useRemoteControlStore = defineStore('remoteControl', () => {
    * live), so the desktop can re-show the code without waiting for a controller
    * to (re)join. Returns null when no session is bound to this run.
    */
-  async function revealOtp(runId: string): Promise<OtpReveal | null> {
-    return await invoke<OtpReveal | null>('remote_reveal_otp', { runId })
+  /** The pairing code belongs to the session, not to a run — a paired device can
+   * drive any run — so this takes no run id. */
+  async function revealOtp(): Promise<OtpReveal | null> {
+    return await invoke<OtpReveal | null>('remote_reveal_otp')
   }
 
   /** Set (or clear, with an empty string) the owner master password, then refresh

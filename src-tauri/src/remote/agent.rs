@@ -22,7 +22,8 @@ use crate::remote::forwarder::{forward_loop, SeqCounter};
 use crate::remote::handler::{handle, HandlerCtx};
 use crate::remote::outbound::OutboundTx;
 use crate::remote::protocol::{
-    CmdPayload, Envelope, FrameType, HandshakePayload, StreamPayload, FEATURE_OUTPUT_BATCH,
+    CmdPayload, Envelope, FrameType, HandshakePayload, StreamPayload, FEATURE_MULTI_RUN,
+    FEATURE_OUTPUT_BATCH,
 };
 use crate::remote::session::BoundSession;
 use crate::runs::{BrokerApprovals, RunRegistry};
@@ -100,6 +101,10 @@ pub struct AgentDeps {
     /// Wakes the agent when a new BoundSession is set so it announces the
     /// persistent rendezvous on the live connection (not only on reconnect).
     pub announce_signal: Arc<tokio::sync::Notify>,
+    /// Runs the Controller is streaming (shared with the handler + forwarder).
+    pub subscriptions: crate::remote::RunSubscriptions,
+    /// The run the Controller is currently viewing.
+    pub focus_run_id: crate::remote::FocusRun,
 }
 
 /// Run the agent until `stop` fires. Reconnect loop with capped backoff.
@@ -743,17 +748,32 @@ async fn try_authenticate_first_frame(
     // so the forward loop starts in the right mode; it is dispatched as a normal
     // command at the end of this function.
     let first_cmd = serde_json::from_slice::<CmdPayload>(&plaintext).ok();
-    let batch_output = first_cmd
-        .as_ref()
-        .and_then(|c| c.client_features.as_ref())
-        .is_some_and(|f| f.iter().any(|x| x == FEATURE_OUTPUT_BATCH));
+    let has_feature = |name: &str| {
+        first_cmd
+            .as_ref()
+            .and_then(|c| c.client_features.as_ref())
+            .is_some_and(|f| f.iter().any(|x| x == name))
+    };
+    let batch_output = has_feature(FEATURE_OUTPUT_BATCH);
+    let multi_run = has_feature(FEATURE_MULTI_RUN);
     tracing::info!(
         event = "remote_client_features",
         room_id = %room_id,
         output_batch = batch_output,
+        multi_run = multi_run,
     );
 
-    // Start the run-scoped forward loop.
+    // Start this connection from a clean slate: the linked run is open, nothing
+    // else. A Controller that was browsing before a reconnect re-opens whatever
+    // it wants, so carrying stale subscriptions over would only stream runs
+    // nobody is looking at.
+    {
+        let mut subs = deps.subscriptions.lock().await;
+        subs.clear();
+        subs.insert(run_id.clone());
+    }
+    *deps.focus_run_id.lock().await = Some(run_id.clone());
+
     let ft = tokio::spawn(forward_loop(
         deps.bus.clone(),
         session.clone(),
@@ -761,16 +781,29 @@ async fn try_authenticate_first_frame(
         out_tx.clone(),
         seq.clone(),
         deps.db.clone(),
-        run_id.clone(),
-        batch_output,
+        crate::remote::forwarder::ForwardScope {
+            subscriptions: deps.subscriptions.clone(),
+            initial_run_id: run_id.clone(),
+            multi_run,
+            batch_output,
+        },
     ));
     if let Some(old) = forward_task.replace(ft) {
         old.abort();
     }
 
-    // Push initial scoped run list so the controller lands on the bound run.
-    crate::remote::forwarder::send_run_list(&deps.db, &session, &room_id, out_tx, &**seq, &run_id)
-        .await;
+    // Push the initial run list: every run for a run browser, just the linked
+    // one for a legacy Controller.
+    let list_filter = if multi_run { None } else { Some(run_id.as_str()) };
+    crate::remote::forwarder::send_run_list(
+        &deps.db,
+        &session,
+        &room_id,
+        out_tx,
+        &**seq,
+        list_filter,
+    )
+    .await;
 
     // Push the initial engine/model/permission-mode snapshot so the controller's
     // composer mirrors the desktop from the first frame (no blank/default drift).
@@ -795,7 +828,10 @@ async fn try_authenticate_first_frame(
         broker_approvals: deps.broker_approvals.clone(),
         session,
         room_id: room_id.clone(),
-        bound_run_id: run_id.clone(),
+        initial_run_id: run_id.clone(),
+        multi_run,
+        subscriptions: deps.subscriptions.clone(),
+        focus_run_id: deps.focus_run_id.clone(),
         out: out_tx.clone(),
         seq: seq.clone(),
         rate: rate.clone(),

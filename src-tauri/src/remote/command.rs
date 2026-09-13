@@ -22,7 +22,7 @@ pub const CMD_RATE_WINDOW: Duration = Duration::from_secs(60);
 /// The actions a Controller is allowed to invoke (FR-009). `list_runs` is a
 /// read-only browse of run metadata (added for full desktop parity — the trust
 /// boundary is device approval, not per-run share).
-pub const ALLOW_LIST: [&str; 12] = [
+pub const ALLOW_LIST: [&str; 14] = [
     "respond_permission",
     "start_run",
     "request_history",
@@ -35,6 +35,9 @@ pub const ALLOW_LIST: [&str; 12] = [
     "list_engine_models",
     "list_project_files",
     "list_plan_usage",
+    // Navigation between runs; refused unless the client advertised multi_run.
+    "open_run",
+    "close_run",
 ];
 
 /// Whether `action` is in the frozen allow-list (AC-12).
@@ -48,7 +51,7 @@ pub fn is_allowed_action(action: &str) -> bool {
 /// Browsing costs the Controller several of these per screen (open a run: list
 /// + history + meta + usage + files). Charging them to the 30/min command
 /// budget would make normal navigation trip the abuse limiter.
-pub const READ_ONLY_ACTIONS: [&str; 7] = [
+pub const READ_ONLY_ACTIONS: [&str; 9] = [
     "request_history",
     "list_runs",
     "list_projects",
@@ -56,6 +59,9 @@ pub const READ_ONLY_ACTIONS: [&str; 7] = [
     "list_engine_models",
     "list_project_files",
     "list_plan_usage",
+    // Navigation: changes only what this session streams, never run state.
+    "open_run",
+    "close_run",
 ];
 
 /// Whether `action` only reads state (and so uses the browse budget).
@@ -296,6 +302,8 @@ mod tests {
             "list_engine_models",
             "list_project_files",
             "list_plan_usage",
+            "open_run",
+            "close_run",
         ] {
             assert!(is_allowed_action(a), "{a} should be allowed");
         }

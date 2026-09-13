@@ -32,8 +32,14 @@ pub struct RemoteStatus {
     pub has_master_password: bool,
     /// The Host device id (generated once), when known.
     pub device_id: Option<String>,
-    /// The single bound run, when a remote session is active.
+    /// The run the session link was minted for, when a remote session is active.
+    /// A multi-run Controller can move beyond it — see `focus_run_id`.
     pub bound_run_id: Option<String>,
+    /// The run the Controller is currently looking at. Equals `bound_run_id`
+    /// until the Controller opens another run.
+    pub focus_run_id: Option<String>,
+    /// Every run the Controller is currently streaming.
+    pub subscribed_run_ids: Vec<String>,
     /// Whether the bound session has authenticated a controller.
     pub session_authenticated: bool,
     /// Sliding idle expiry (Unix secs) of the bound session, when known.
@@ -167,6 +173,8 @@ pub async fn remote_end_session(
         state.revoke_signal.notify_one();
     }
     let _ = crate::secrets::delete_remote_session();
+    state.subscriptions.lock().await.clear();
+    *state.focus_run_id.lock().await = None;
     state
         .connected
         .store(false, std::sync::atomic::Ordering::SeqCst);
@@ -195,23 +203,19 @@ pub struct OtpReveal {
     pub attempts_left: u8,
 }
 
-/// Reveal (minting if none is live) the pairing OTP for the bound run, so the
-/// Host UI can show it on demand instead of only when a controller joins. A live
-/// code is reused so it matches what a controller will actually need. Returns
-/// `None` when no session is bound to `run_id`.
+/// Reveal (minting if none is live) the pairing OTP for the current session, so
+/// the Host UI can show it on demand instead of only when a controller joins. A
+/// live code is reused so it matches what a controller will actually need.
+///
+/// The code belongs to the SESSION, not to a run — a paired device can drive any
+/// run — so this is not scoped by run id. Returns `None` when nothing is bound.
 #[tauri::command]
-pub async fn remote_reveal_otp(
-    state: State<'_, RemoteState>,
-    run_id: String,
-) -> Result<Option<OtpReveal>, String> {
+pub async fn remote_reveal_otp(state: State<'_, RemoteState>) -> Result<Option<OtpReveal>, String> {
     use std::time::{Instant, SystemTime, UNIX_EPOCH};
     let mut bound = state.bound.lock().await;
     let Some(b) = bound.as_mut() else {
         return Ok(None);
     };
-    if b.run_id != run_id {
-        return Ok(None);
-    }
     let now = Instant::now();
     b.ensure_otp(now);
     let now_unix = SystemTime::now()
@@ -283,6 +287,15 @@ pub async fn remote_status(
     };
     let session_idle_expires_at =
         crate::secrets::get_remote_session().map(|s| s.idle_expires_at);
+    // Only meaningful while a controller is actually attached; a stale focus
+    // from a closed session would make the desktop mark the wrong run as live.
+    let (focus_run_id, subscribed_run_ids) = if session_authenticated {
+        let mut subs: Vec<String> = state.subscriptions.lock().await.iter().cloned().collect();
+        subs.sort();
+        (state.focus_run_id.lock().await.clone(), subs)
+    } else {
+        (None, Vec::new())
+    };
     Ok(RemoteStatus {
         enabled,
         running: state.is_running().await,
@@ -292,6 +305,8 @@ pub async fn remote_status(
         has_master_password: crate::secrets::has_remote_master_password(),
         device_id,
         bound_run_id,
+        focus_run_id,
+        subscribed_run_ids,
         session_authenticated,
         session_idle_expires_at,
     })

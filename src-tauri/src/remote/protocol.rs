@@ -289,6 +289,17 @@ pub struct OutputLine {
 /// Feature flag a Controller advertises to receive coalesced output batches.
 pub const FEATURE_OUTPUT_BATCH: &str = "output_batch";
 
+/// Feature flag a Controller advertises to drive MORE than the run its link was
+/// minted for: it can list every run, `open_run`/`close_run` to move between
+/// them, and receives permission requests and status changes for ALL runs.
+///
+/// Gated because an older bundle renders exactly one run — handing it a prompt
+/// for a run it cannot display would strand the user. Without this flag the Host
+/// behaves exactly as it did before multi-run: one bound run, nothing else
+/// forwarded. The trust boundary is unchanged either way (device approval,
+/// SRS BR-005 v1.1) — this only controls what the client is able to render.
+pub const FEATURE_MULTI_RUN: &str = "multi_run";
+
 /// One slash command exposed to the Controller's composer palette.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SlashCommandInfo {
