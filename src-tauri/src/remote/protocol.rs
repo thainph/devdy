@@ -246,7 +246,23 @@ pub enum StreamPayload {
     /// Slash commands the Controller may offer in its composer palette.
     SlashCommandList { commands: Vec<SlashCommandInfo> },
     /// Engine + model options the Controller may offer in its selectors.
-    EngineModelOptions { engines: Vec<EngineOption> },
+    EngineModelOptions {
+        /// LEGACY: the curated alias table, duplicated host-side. No shipped
+        /// controller renders it — both surfaces read the curated table from
+        /// their own bundle — so it is kept only so an older client parsing this
+        /// frame still finds the field it expects.
+        engines: Vec<EngineOption>,
+        /// Models DISCOVERED from the account (Agent SDK `supportedModels()`),
+        /// which only the Host can know. The controller merges these with its
+        /// curated table exactly as the desktop composer does, so the two
+        /// selectors offer the same list.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        claude_models: Vec<DiscoveredModel>,
+        /// Models discovered from `codex debug models`. Authoritative when
+        /// non-empty: it REPLACES the curated Codex list.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        codex_models: Vec<DiscoveredModel>,
+    },
     /// A bounded listing of files under the bound run's project path (for
     /// @mention completion in the controller composer).
     ProjectFileList { run_id: String, files: Vec<String> },
@@ -284,6 +300,16 @@ pub enum StreamPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         permission_mode: Option<String>,
     },
+}
+
+/// A model discovered from the account rather than from the curated alias table.
+/// Mirrors `commands::models::ModelOption` and the controller's `FetchedModel`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoveredModel {
+    pub value: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// One managed Claude account's plan utilization, mirroring a desktop

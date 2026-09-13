@@ -26,6 +26,7 @@ import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
 import type {
   ClaudeAccountUsage,
   EngineModelOption,
+  FetchedModel,
   PlanBudget,
   ProjectInfo,
   RunInfo,
@@ -162,6 +163,9 @@ export interface RunStoreState {
   slashCommands: SlashCommand[]
   /** Engine/model options the Host offers (composer footer selectors). */
   engineModelOptions: EngineModelOption[]
+  /** Models the Host discovered from the account, merged into the composer's
+   * curated table exactly as the desktop composer merges them. */
+  discoveredModels: { claude: FetchedModel[]; codex: FetchedModel[] }
   /** Project file paths for the bound run (`@`-mention autocomplete). */
   projectFiles: string[]
   /** The bound run's live selection, mirrored from the Host (engine/model/mode). */
@@ -191,6 +195,7 @@ export function createRunStore() {
     notice: null,
     slashCommands: [],
     engineModelOptions: [],
+    discoveredModels: { claude: [], codex: [] },
     projectFiles: [],
     runMeta: { engine: '', model: '', permissionMode: '' },
     claudeBudget: null,
@@ -271,6 +276,10 @@ export function createRunStore() {
         break
       case 'engine_model_options':
         state.engineModelOptions = payload.engines
+        state.discoveredModels = {
+          claude: payload.claude_models ?? [],
+          codex: payload.codex_models ?? [],
+        }
         break
       case 'project_file_list':
         state.projectFiles = payload.files
@@ -456,6 +465,7 @@ export function createRunStore() {
     state.notice = null
     state.slashCommands = []
     state.engineModelOptions = []
+    state.discoveredModels = { claude: [], codex: [] }
     state.projectFiles = []
     state.runMeta = { engine: '', model: '', permissionMode: '' }
     state.claudeAccounts = []

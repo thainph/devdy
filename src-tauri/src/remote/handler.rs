@@ -824,7 +824,7 @@ async fn handle_list_slash_commands(ctx: &HandlerCtx) {
 /// Send the Controller the engine/model selector options.
 async fn handle_list_engine_models(ctx: &HandlerCtx) {
     let action = "list_engine_models";
-    send_engine_model_options(&ctx.session, &ctx.room_id, &ctx.out, &ctx.seq).await;
+    send_engine_model_options(&ctx.db, &ctx.session, &ctx.room_id, &ctx.out, &ctx.seq).await;
     accept(ctx, action, None, None).await;
 }
 
