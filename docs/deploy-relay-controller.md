@@ -186,5 +186,8 @@ ssh -p <SSH_PORT> <user>@<VPS_IP> '
 - Dọn backup cũ định kỳ để khỏi đầy đĩa: `ls -dt /var/www/relay.backup-*`,
   `ls -t /usr/local/bin/devdy-relay.backup-*`.
 - Env relay (mặc định): `RELAY_BIND=127.0.0.1:8787`, `PAIR_TTL_SECS=60`,
-  `RELAY_ROOM_IDLE_TIMEOUT_SECS=3600`. Chi tiết xem `relay/README.md`.
+  `RELAY_ROOM_IDLE_TIMEOUT_SECS=3600`, `RELAY_MAX_ROOMS=256`,
+  `RELAY_MAX_MESSAGE_BYTES=33554432` (32 MiB — phải lớn hơn một lượt có ảnh
+  đính kèm: ảnh 10 MiB qua base64 hai lần ≈ 18 MiB). Chi tiết xem
+  `relay/README.md`.
 ```

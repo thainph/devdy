@@ -50,6 +50,13 @@ pub struct Config {
     /// Grace window kept for an ACTIVE room after its Controller drops, during
     /// which the Controller may `resume` the same room (phone screen off/on).
     pub reconnect_window: Duration,
+    /// Hard ceiling on concurrent rooms. Persistent rendezvous rooms carry a
+    /// ~10-year expiry, so the sweeper alone cannot bound the registry; without
+    /// a cap a misbehaving (but authenticated) host could exhaust memory.
+    pub max_rooms: usize,
+    /// Largest WebSocket message accepted. tokio-tungstenite otherwise defaults
+    /// to 64 MiB, which is far above anything this protocol sends.
+    pub max_message_bytes: usize,
 }
 
 impl Config {
@@ -76,6 +83,14 @@ impl Config {
             Duration::from_secs(parse_u64("RELAY_ROOM_IDLE_TIMEOUT_SECS", 3600)?);
         let reconnect_window =
             Duration::from_secs(parse_u64("RELAY_RECONNECT_WINDOW_SECS", 3600)?);
+        let max_rooms = parse_u64("RELAY_MAX_ROOMS", 256)? as usize;
+        // Sized off the worst legitimate frame, not off the protocol's typical
+        // one. The controller composer accepts images up to 10 MiB raw; base64
+        // into the JSON payload (×4/3), then seal and base64 the ciphertext
+        // (×4/3 again) puts a single-image turn near 18 MiB, and a turn may
+        // carry more than one. 32 MiB keeps that comfortably inside the limit
+        // while still halving the tokio-tungstenite default.
+        let max_message_bytes = parse_u64("RELAY_MAX_MESSAGE_BYTES", 32 * 1024 * 1024)? as usize;
 
         Ok(Config {
             bind,
@@ -85,6 +100,8 @@ impl Config {
             rate_limit_window,
             room_idle_timeout,
             reconnect_window,
+            max_rooms,
+            max_message_bytes,
         })
     }
 }

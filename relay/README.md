@@ -68,6 +68,8 @@ one-time and expires after `PAIR_TTL`.
 | `RELAY_RATE_LIMIT_MAX` | no | `60` | Coarse anti-flood: frames per window. |
 | `RELAY_RATE_LIMIT_WINDOW_SECS` | no | `10` | Rate-limit window. |
 | `RELAY_ROOM_IDLE_TIMEOUT_SECS` | no | `3600` | Close an idle ACTIVE room. |
+| `RELAY_MAX_ROOMS` | no | `256` | Ceiling on concurrent rooms. Persistent rendezvous rooms carry a ~10-year expiry, so the sweeper alone cannot bound the registry. Re-arming an existing pair code supersedes rather than adds, so it is never refused by this cap. |
+| `RELAY_MAX_MESSAGE_BYTES` | no | `33554432` | Largest WebSocket message accepted (32 MiB). Must stay above the worst legitimate frame: a 10 MiB image base64'd into the payload and then again into the ciphertext lands near 18 MiB. |
 | `RUST_LOG` | no | `info` | Log level (metadata only; payloads never logged). |
 
 No secret is ever hardcoded or committed (SEC-001).

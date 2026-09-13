@@ -58,6 +58,13 @@ const OTP_VERDICT_WINDOW_MS = 8_000
  * (the Host's handshake_done may reach the relay just after our first cmd). */
 const GATE_MAX_RETRIES = 8
 const GATE_RETRY_MS = 250
+/** Prefix of the Host notice that reports dropped live events (the Host's bus
+ * ring overflowed before the forwarder drained it). Carries the skipped count
+ * after the colon; the count is diagnostic — any gap triggers the same replay. */
+const STREAM_GAP_PREFIX = 'stream_gap:'
+/** One replay covers every gap reported inside this window, so a congested Host
+ * reporting a burst of gaps still costs exactly one history request. */
+const GAP_BACKFILL_THROTTLE_MS = 3_000
 /** Heartbeat cadence. A browser can't send WS ping frames, so once a run stops
  * streaming this app-level beat keeps the socket warm (well under the ~60 s idle
  * cutoff of typical proxies) and refreshes the relay room's idle clock. */
@@ -170,6 +177,8 @@ export class ControllerConnection {
   /** Resend attempts for the first (gate) frame while the relay room races to
    * ACTIVE right after the handshake (host_handshake_done may lag our cmd). */
   private gateRetries = 0
+  /** ms timestamp of the last gap-triggered history replay; throttles bursts. */
+  private lastGapBackfillAt = 0
   /** ms timestamp of the last socket open (onOpen). Lets forceReconnect coalesce
    * a burst of wake events: a freshly-opened socket is trusted, not torn down. */
   private lastOpenAt = 0
@@ -728,6 +737,13 @@ export class ControllerConnection {
       }
       return
     }
+    // The Host lost live events before it could forward them, so our transcript
+    // has a hole. Backfill from the log rather than leaving a turn that looks
+    // complete but is not.
+    if (payload.kind === 'notice' && payload.text.startsWith(STREAM_GAP_PREFIX)) {
+      this.requestHistoryBackfill()
+      return
+    }
     this.onStream(payload)
   }
 
@@ -755,6 +771,17 @@ export class ControllerConnection {
     this.sendCommand(listEngineModelsCmd())
     this.sendCommand(listProjectFilesCmd(this.link.run_id))
     this.sendCommand(listPlanUsageCmd())
+  }
+
+  /** Re-pull the run log after the Host reported a gap in the live stream.
+   *
+   * Throttled: a congested Host can report several gaps in a row, and one
+   * replay already covers all of them. */
+  private requestHistoryBackfill(): void {
+    const now = Date.now()
+    if (now - this.lastGapBackfillAt < GAP_BACKFILL_THROTTLE_MS) return
+    this.lastGapBackfillAt = now
+    this.sendCommand(requestHistoryCmd(this.link.run_id))
   }
 
   /** OTP rejected / expired / exhausted (or an equivalent silent close). The UI

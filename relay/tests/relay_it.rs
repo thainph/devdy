@@ -32,6 +32,8 @@ async fn start_relay(pair_ttl: Duration) -> String {
         rate_limit_window: Duration::from_secs(1),
         room_idle_timeout: Duration::from_secs(3600),
         reconnect_window: Duration::from_secs(60),
+        max_rooms: 256,
+        max_message_bytes: 32 * 1024 * 1024,
     };
     let (handle, accept_loop) = devdy_relay::server::serve(config)
         .await

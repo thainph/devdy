@@ -237,6 +237,19 @@ pub async fn forward_loop(
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                 tracing::warn!(event = "remote_forward_lagged", skipped = n);
+                // Events were dropped from the bus ring before we read them, so
+                // the Controller's transcript now has a silent hole. Tell it, so
+                // it can backfill with request_history (FR-005/FR-012) instead of
+                // showing a plausible-looking but incomplete turn.
+                let payload = StreamPayload::Notice {
+                    run_id: Some(bound_run_id.clone()),
+                    text: format!("stream_gap:{n}"),
+                };
+                if let Some(env) = seal_stream(&session, &room_id, &payload, seq.next()) {
+                    if out.send(env).is_err() {
+                        break;
+                    }
+                }
                 continue;
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
