@@ -15,13 +15,14 @@ use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::Mutex;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::config::Config;
 use crate::protocol::{Envelope, ErrorCode, FrameType};
 use crate::ratelimit::RateLimiter;
-use crate::room::{ConnId, JoinOutcome, ResumeOutcome, RoomRegistry};
+use crate::room::{ConnId, JoinOutcome, Outbound, ResumeOutcome, RoomRegistry};
 
 /// Shared server state.
 pub struct Shared {
@@ -124,14 +125,23 @@ async fn handle_connection(
     stream: TcpStream,
     peer: SocketAddr,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let ws = tokio_tungstenite::accept_async(stream).await?;
+    // Cap the frame/message size the library will buffer for us. Without this
+    // tokio-tungstenite accepts up to its 64 MiB default per message, which any
+    // unauthenticated connection could use to make the relay allocate.
+    let ws_config = WebSocketConfig {
+        max_message_size: Some(shared.config.max_message_bytes),
+        max_frame_size: Some(shared.config.max_message_bytes),
+        ..Default::default()
+    };
+    let ws = tokio_tungstenite::accept_async_with_config(stream, Some(ws_config)).await?;
     let conn_id = shared.alloc_conn();
     tracing::info!(event = "conn_open", conn = conn_id, peer = %peer);
 
     let (mut ws_sink, mut ws_stream) = ws.split();
 
-    // Write task: drains the outbound channel to the socket.
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Envelope>();
+    // Write task: drains the outbound channel to the socket. Depth-capped, so a
+    // peer that stops reading is dropped rather than buffered indefinitely.
+    let (out_tx, mut out_rx) = crate::room::outbound_channel();
     let writer = tokio::spawn(async move {
         while let Some(env) = out_rx.recv().await {
             match serde_json::to_string(&env) {
@@ -224,7 +234,7 @@ async fn dispatch(
     shared: &Arc<Shared>,
     conn_id: ConnId,
     role: &mut Role,
-    out_tx: &mpsc::UnboundedSender<Envelope>,
+    out_tx: &Outbound,
     env: Envelope,
 ) -> bool {
     match env.t {
@@ -277,6 +287,14 @@ async fn dispatch(
             let hash = hash_code(pair_code);
             {
                 let mut rooms = shared.rooms.lock().await;
+                // Re-arming an existing rendezvous supersedes it rather than
+                // adding a room, so only a genuinely NEW code is capped.
+                if rooms.len() >= shared.config.max_rooms && !rooms.has_pending_code(hash) {
+                    drop(rooms);
+                    tracing::warn!(event = "room_cap_reached", conn = conn_id);
+                    let _ = out_tx.send(Envelope::error(ErrorCode::BadRequest, "room cap reached"));
+                    return false;
+                }
                 rooms.create_pending(room_id.clone(), hash, conn_id, out_tx.clone(), now, expires_at);
             }
             tracing::info!(event = "pair_created", conn = conn_id, room_id = %room_id);

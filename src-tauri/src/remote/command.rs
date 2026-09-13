@@ -42,6 +42,58 @@ pub fn is_allowed_action(action: &str) -> bool {
     ALLOW_LIST.contains(&action)
 }
 
+/// Actions that only READ Host state — they cannot start, stop, answer or
+/// reconfigure anything, so they are not what BR-017 exists to cap.
+///
+/// Browsing costs the Controller several of these per screen (open a run: list
+/// + history + meta + usage + files). Charging them to the 30/min command
+/// budget would make normal navigation trip the abuse limiter.
+pub const READ_ONLY_ACTIONS: [&str; 7] = [
+    "request_history",
+    "list_runs",
+    "list_projects",
+    "list_slash_commands",
+    "list_engine_models",
+    "list_project_files",
+    "list_plan_usage",
+];
+
+/// Whether `action` only reads state (and so uses the browse budget).
+pub fn is_read_only_action(action: &str) -> bool {
+    READ_ONLY_ACTIONS.contains(&action)
+}
+
+/// Cap for read-only browse traffic, per minute. Generous enough for fluid
+/// navigation, still bounded so a broken client cannot spin the Host.
+pub const READ_RATE_LIMIT: u32 = 120;
+
+/// The two per-Controller budgets, picked by action class.
+///
+/// Keeping them separate means a burst of browsing can never starve the budget
+/// that actually guards run execution (BR-017/AC-18).
+pub struct CommandRateLimiter {
+    mutating: RateLimiter,
+    read_only: RateLimiter,
+}
+
+impl CommandRateLimiter {
+    pub fn new(now: Instant) -> Self {
+        CommandRateLimiter {
+            mutating: RateLimiter::new(now),
+            read_only: RateLimiter::with_limits(READ_RATE_LIMIT, CMD_RATE_WINDOW, now),
+        }
+    }
+
+    /// Charge `action` to its bucket. `false` means over cap (block + audit).
+    pub fn allow(&mut self, action: &str, now: Instant) -> bool {
+        if is_read_only_action(action) {
+            self.read_only.allow(now)
+        } else {
+            self.mutating.allow(now)
+        }
+    }
+}
+
 /// Map a remote permission decision string onto the internal
 /// `respond_permission` decision (`allow`/`deny`), enforcing BR-016/SEC-011.
 ///
@@ -361,6 +413,51 @@ mod tests {
         // 31st command inside the same window is blocked.
         assert!(!rl.allow(t0), "over-cap command must be blocked");
         assert!(!rl.allow(t0), "still blocked");
+    }
+
+    // ---- Split budgets: browsing must not starve execution ----
+    #[test]
+    fn read_only_actions_are_classified_apart_from_mutating_ones() {
+        for a in READ_ONLY_ACTIONS {
+            assert!(is_read_only_action(a), "{a} is a read");
+            assert!(is_allowed_action(a), "{a} must still be allow-listed");
+        }
+        for a in [
+            "respond_permission",
+            "start_run",
+            "cancel_run",
+            "send_chat_message",
+            "set_run_meta",
+        ] {
+            assert!(!is_read_only_action(a), "{a} mutates run state");
+        }
+    }
+
+    #[test]
+    fn browsing_cannot_exhaust_the_command_budget() {
+        let t0 = Instant::now();
+        let mut rl = CommandRateLimiter::new(t0);
+        // Saturate the browse budget.
+        for _ in 0..READ_RATE_LIMIT {
+            assert!(rl.allow("list_runs", t0));
+        }
+        assert!(!rl.allow("list_runs", t0), "browse budget is capped");
+        // The command budget is untouched — this is the whole point.
+        for _ in 0..CMD_RATE_LIMIT {
+            assert!(rl.allow("start_run", t0), "commands still flow");
+        }
+        assert!(!rl.allow("start_run", t0), "BR-017 still enforced at 30/min");
+    }
+
+    #[test]
+    fn an_exhausted_command_budget_does_not_block_browsing() {
+        let t0 = Instant::now();
+        let mut rl = CommandRateLimiter::new(t0);
+        for _ in 0..CMD_RATE_LIMIT {
+            assert!(rl.allow("send_chat_message", t0));
+        }
+        assert!(!rl.allow("send_chat_message", t0));
+        assert!(rl.allow("request_history", t0), "reads use their own bucket");
     }
 
     #[test]

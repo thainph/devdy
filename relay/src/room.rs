@@ -22,6 +22,8 @@
 //! so a stale token can never be replayed.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::sync::mpsc;
@@ -31,8 +33,86 @@ use crate::protocol::Envelope;
 /// Unique id for a live WebSocket connection.
 pub type ConnId = u64;
 
+/// Frames that may sit queued for one connection before the relay gives up on
+/// it. A peer this far behind is not going to catch up; holding its backlog only
+/// costs the relay memory, and the protocol already recovers from a dropped
+/// connection (resume within RECONNECT_WINDOW, or rejoin).
+pub const OUTBOUND_MAX_QUEUE: usize = 4096;
+
 /// Sender half used to push envelopes to a connection's write task.
-pub type Outbound = mpsc::UnboundedSender<Envelope>;
+///
+/// The channel itself is unbounded — the relay routes from inside a lock and
+/// must never await on a send — so the depth is tracked explicitly and a peer
+/// that exceeds [`OUTBOUND_MAX_QUEUE`] is reported as failed, which the caller
+/// turns into a room close.
+#[derive(Debug, Clone)]
+pub struct Outbound {
+    tx: mpsc::UnboundedSender<Envelope>,
+    depth: Arc<AtomicUsize>,
+}
+
+/// Receiver half, owned by a connection's write task.
+pub struct OutboundRx {
+    rx: mpsc::UnboundedReceiver<Envelope>,
+    depth: Arc<AtomicUsize>,
+}
+
+/// Create a connected pair for one connection.
+pub fn outbound_channel() -> (Outbound, OutboundRx) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let depth = Arc::new(AtomicUsize::new(0));
+    (
+        Outbound {
+            tx,
+            depth: depth.clone(),
+        },
+        OutboundRx { rx, depth },
+    )
+}
+
+impl Outbound {
+    /// Queue a frame. `Err(())` when the write task is gone OR the peer is too
+    /// far behind to be worth keeping.
+    pub fn send(&self, env: Envelope) -> Result<(), ()> {
+        if self.depth.load(Ordering::Relaxed) >= OUTBOUND_MAX_QUEUE {
+            return Err(());
+        }
+        match self.tx.send(env) {
+            Ok(()) => {
+                self.depth.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(_) => Err(()),
+        }
+    }
+
+    /// Frames queued but not yet written. Exercised by the unit tests.
+    #[allow(dead_code)]
+    pub fn depth(&self) -> usize {
+        self.depth.load(Ordering::Relaxed)
+    }
+}
+
+impl OutboundRx {
+    /// Await the next frame, keeping the depth gauge in step.
+    pub async fn recv(&mut self) -> Option<Envelope> {
+        let env = self.rx.recv().await?;
+        self.depth.fetch_sub(1, Ordering::Relaxed);
+        Some(env)
+    }
+
+    /// Take an already-queued frame without awaiting. Exercised by the tests.
+    #[allow(dead_code)]
+    pub fn try_recv(&mut self) -> Result<Envelope, ()> {
+        match self.rx.try_recv() {
+            Ok(env) => {
+                self.depth.fetch_sub(1, Ordering::Relaxed);
+                Ok(env)
+            }
+            Err(_) => Err(()),
+        }
+    }
+}
 
 /// Lifecycle state of a room (SRS §6.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,6 +240,13 @@ impl RoomRegistry {
     ///
     /// Returns the generated `room_id`. The raw pair code is hashed by the
     /// caller; only the hash is kept (DATA-004: `pair_code(hash)`).
+    /// Whether a PENDING room already advertises this pair code hash. Lets the
+    /// caller tell "re-arm an existing rendezvous" (room count unchanged) from
+    /// "open a new one" (room count grows) when enforcing a cap.
+    pub fn has_pending_code(&self, pair_code_hash: u64) -> bool {
+        self.pending_by_code.contains_key(&pair_code_hash)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn create_pending(
         &mut self,
@@ -591,10 +678,11 @@ impl RoomRegistry {
 mod tests {
     use super::*;
     use std::time::Duration;
-    use tokio::sync::mpsc;
 
     fn sink() -> Outbound {
-        let (tx, _rx) = mpsc::unbounded_channel();
+        // The receiver is dropped, but an unbounded channel keeps accepting
+        // until the depth cap, which is what these routing tests need.
+        let (tx, _rx) = outbound_channel();
         tx
     }
 
@@ -801,6 +889,37 @@ mod tests {
             r.state = RoomState::PendingPair;
         }
         assert!(matches!(reg.join(3, 30, sink(), 1030, now), JoinOutcome::Full));
+    }
+
+    #[test]
+    fn outbound_refuses_a_peer_that_falls_too_far_behind() {
+        let (tx, mut rx) = outbound_channel();
+        for i in 0..OUTBOUND_MAX_QUEUE {
+            assert!(tx.send(Envelope::peer_left(format!("rm_{i}"))).is_ok());
+        }
+        assert_eq!(tx.depth(), OUTBOUND_MAX_QUEUE);
+        // Over the cap the relay stops buffering; the caller closes the room.
+        assert!(
+            tx.send(Envelope::peer_left("rm_over".to_string())).is_err(),
+            "a peer this far behind must not be buffered further"
+        );
+        // Draining frees capacity again.
+        assert!(rx.try_recv().is_ok());
+        assert!(tx.send(Envelope::peer_left("rm_ok".to_string())).is_ok());
+    }
+
+    #[test]
+    fn re_arming_an_existing_code_does_not_count_as_a_new_room() {
+        let mut reg = RoomRegistry::default();
+        let now = Instant::now();
+        pending(&mut reg, 7, 10, now, Duration::from_secs(60));
+        assert_eq!(reg.len(), 1);
+        assert!(reg.has_pending_code(7), "the armed code is visible");
+        assert!(!reg.has_pending_code(8), "an unknown code is not");
+        // The server uses has_pending_code to let a re-arm through a full
+        // registry; re-arming really does keep the count flat.
+        reg.create_pending("rm_10b".to_string(), 7, 10, sink(), now, now + Duration::from_secs(60));
+        assert_eq!(reg.len(), 1, "re-arm supersedes rather than adds");
     }
 
     #[test]

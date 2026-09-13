@@ -17,7 +17,7 @@ use crate::db::Db;
 use crate::remote::agent::{now_unix, IdleClock, IDLE_TTL_SECS};
 use crate::remote::audit;
 use crate::remote::command::{
-    is_allowed_action, map_remote_decision, IdempotencyGuard, RateLimiter, RejectReason,
+    is_allowed_action, map_remote_decision, CommandRateLimiter, IdempotencyGuard, RejectReason,
 };
 use crate::remote::forwarder::{
     replay_history, run_log_path, send_engine_model_options, send_plan_usage,
@@ -55,7 +55,7 @@ pub struct HandlerCtx {
     pub out: OutboundTx,
     pub seq: Arc<SeqCounter>,
     /// Per-Controller state, shared across commands within a room.
-    pub rate: Arc<TokioMutex<RateLimiter>>,
+    pub rate: Arc<TokioMutex<CommandRateLimiter>>,
     pub idem: Arc<TokioMutex<IdempotencyGuard>>,
     /// Sliding idle deadline (Unix secs). Bumped on each accepted command.
     pub idle: IdleClock,
@@ -179,10 +179,12 @@ pub async fn handle(ctx: &HandlerCtx, cmd: CmdPayload) {
         }
     }
 
-    // Gate 1: rate limit 30/min per Controller (BR-017/AC-18).
+    // Gate 1: rate limit per Controller (BR-017/AC-18). Mutating commands keep
+    // the 30/min cap; read-only browsing draws on its own budget so navigating
+    // the run list can never starve the budget that guards execution.
     {
         let mut rl = ctx.rate.lock().await;
-        if !rl.allow(Instant::now()) {
+        if !rl.allow(action, Instant::now()) {
             drop(rl);
             reject(ctx, action, run_id.as_deref(), RejectReason::RateLimited).await;
             return;

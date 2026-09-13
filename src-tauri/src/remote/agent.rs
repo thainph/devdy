@@ -17,7 +17,7 @@
 use crate::db::Db;
 use crate::remote::audit;
 use crate::remote::bus::RemoteBus;
-use crate::remote::command::{IdempotencyGuard, RateLimiter};
+use crate::remote::command::{CommandRateLimiter, IdempotencyGuard};
 use crate::remote::forwarder::{forward_loop, SeqCounter};
 use crate::remote::handler::{handle, HandlerCtx};
 use crate::remote::outbound::OutboundTx;
@@ -199,7 +199,7 @@ async fn connect_once(
     let mut armed_rooms: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     let seq = Arc::new(SeqCounter::default());
-    let rate = Arc::new(TokioMutex::new(RateLimiter::new(Instant::now())));
+    let rate = Arc::new(TokioMutex::new(CommandRateLimiter::new(Instant::now())));
     let idem = Arc::new(TokioMutex::new(IdempotencyGuard::new()));
     let idle: IdleClock = Arc::new(AtomicU64::new(0));
     // The active room + session, once authenticated.
@@ -322,7 +322,7 @@ async fn dispatch_inbound(
     deps: &AgentDeps,
     out_tx: &OutboundTx,
     seq: &Arc<SeqCounter>,
-    rate: &Arc<TokioMutex<RateLimiter>>,
+    rate: &Arc<TokioMutex<CommandRateLimiter>>,
     idem: &Arc<TokioMutex<IdempotencyGuard>>,
     idle: &IdleClock,
     room_ctx: &mut Option<Arc<HandlerCtx>>,
@@ -591,7 +591,7 @@ async fn try_authenticate_first_frame(
     deps: &AgentDeps,
     out_tx: &OutboundTx,
     seq: &Arc<SeqCounter>,
-    rate: &Arc<TokioMutex<RateLimiter>>,
+    rate: &Arc<TokioMutex<CommandRateLimiter>>,
     idem: &Arc<TokioMutex<IdempotencyGuard>>,
     idle: &IdleClock,
     room_ctx: &mut Option<Arc<HandlerCtx>>,

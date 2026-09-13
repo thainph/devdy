@@ -52,7 +52,11 @@ impl RunMetaStore {
         model: Option<String>,
         permission_mode: Option<String>,
     ) -> RunMeta {
-        let mut guard = self.inner.lock().expect("run meta store poisoned");
+        // A poisoned lock means some other thread panicked mid-merge. The map
+        // holds plain composer selections with no cross-entry invariant, so the
+        // worst case is one stale field — far better than taking the whole app
+        // down over a UI selector.
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let entry = guard.entry(run_id.to_string()).or_default();
         if let Some(v) = engine.filter(|s| !s.trim().is_empty()) {
             entry.engine = Some(v);
