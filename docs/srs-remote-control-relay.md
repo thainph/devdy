@@ -1,7 +1,7 @@
 # SRS — Điều khiển từ xa Devdy qua Cloud Relay tự viết (C1)
 
 - **Mã tài liệu:** SRS-RC-C1
-- **Phiên bản:** 1.1 (bổ sung §13 — Auto Reconnect & Durable Trusted Device)
+- **Phiên bản:** 1.2 (bổ sung §14 — Multi-run, phiên theo thiết bị)
 - **Ngôn ngữ:** Tiếng Việt
 - **Trạng thái:** Đã chốt, sẵn sàng estimate/triển khai
 
@@ -274,6 +274,7 @@ Scenario: Chạy run từ xa với permission mode bị khóa
 - **Actor:** Host.
 - **Mô tả:** Host duy trì danh sách lệnh hợp lệ từ Controller. Lệnh ngoài danh sách bị từ chối và ghi audit.
 - **Danh sách phiên bản 1.0 (đã chốt):** `respond_permission`, `start_run`, `request_history`, `cancel_run`, `send_chat_message`.
+- **Bổ sung v1.2 (§14):** `set_run_meta`, `list_runs`, `list_projects`, `list_slash_commands`, `list_engine_models`, `list_project_files`, `list_plan_usage`, `open_run`, `close_run` — tổng 14 action.
 - **Ghi chú:** Mục tiêu "y hệt ngồi trước máy thật" — Controller làm được mọi thao tác vận hành run, **ngoại trừ** hai chốt bảo mật: (1) không đổi được permission mode (luôn `default`), (2) không bấm được "Allow always". Hai thao tác này chỉ làm tại Host.
 - **Business rules:** BR-008, BR-015. **Security:** SEC-003. **Nguồn:** SRC-002, SRC-006.
 
@@ -495,7 +496,7 @@ RECONNECTING ──quá hạn──► DISCONNECTED (phải pairing lại nếu 
 | ID | Giả định | Ảnh hưởng nếu sai |
 |---|---|---|
 | AS-02 | `RESP_TIMEOUT` (chờ duyệt tool) kế thừa hành vi hiện tại của Devdy. | Ảnh hưởng logic giữ trạng thái khi mất mạng. |
-| AS-03 | Controller theo dõi 1 run tại một thời điểm, có thể chuyển run. | Ảnh hưởng khối lượng UI và băng thông. |
+| AS-03 | ~~Controller theo dõi 1 run tại một thời điểm, có thể chuyển run.~~ **ĐÃ TRIỂN KHAI (v1.2, §14):** Controller có run browser, mở/đóng nhiều run bằng `open_run`/`close_run`; nhận `permission_request` của **mọi** run. | — |
 | AS-04 | Owner (Host) và người dùng Controller là cùng một người. | Đã xác nhận: 1 người dùng. |
 
 ### 11.2 Quyết định đã chốt (khép Open Issues)
@@ -706,3 +707,82 @@ flowchart LR
 - **Race lúc Host khởi động:** điện thoại join trước khi Host arm rendezvous → `pair_invalid` coi là **transient**, cứ retry, không xoá bundle.
 - **Thiết bị bị revoke:** Host không re-arm → điện thoại retry tới khi bundle hết hạn (hiển thị "Waiting for the host…"); Owner có thể unpair để dọn.
 - **Phạm vi hiện tại:** hỗ trợ **một thiết bị bền** (thiết bị confirm gần nhất).
+
+---
+
+## 14. Multi-run (v1.2) — phiên theo thiết bị
+
+Bổ sung cho FR-004/FR-006/FR-009 và khép AS-03. Đây là hệ quả trực tiếp của
+**BR-005 v1.1**: ranh giới tin cậy là *device-approval*, nên một thiết bị đã pair
+phải thấy & điều khiển được **mọi** run — không chỉ run mà QR được mint.
+
+### 14.1 Đổi phạm vi: run → thiết bị
+
+| Trước | Sau |
+|---|---|
+| Session gắn cứng vào một `run_id` | Session gắn với **thiết bị**; link chỉ quyết định run **mở đầu tiên** |
+| Lệnh mang `run_id` khác → `wrong_run` | Chấp nhận mọi run **có thật** trên Host; run không tồn tại → `wrong_run` |
+| Mint link cho run khác = **hủy** session đang chạy | Không cần mint link mới; dùng `open_run` |
+| `list_runs` trả đúng 1 run | Trả tối đa `RUN_LIST_MAX` = 100 run, mới nhất trước |
+
+### 14.2 Chính sách forward hai bậc
+
+| Bậc | Payload | Phạm vi | Lý do |
+|---|---|---|---|
+| **Tín hiệu** | `permission_request`, `done`, `run_meta` | **Mọi** run | Lưu lượng thấp; đây chính là thứ chặn công việc trên Host — điện thoại phải duyệt được tool của run nó không xem |
+| **Transcript** | `stream`, `output` | Chỉ run đang mở (`open_run`) | Lưu lượng cao; tiết kiệm băng thông và pin |
+
+Transcript đi đường **có thể bỏ** (shed khi nghẽn) vì Controller backfill được
+bằng `request_history`; tín hiệu thì không bao giờ bị bỏ.
+
+### 14.3 Lệnh mới
+
+| Lệnh | Ý nghĩa |
+|---|---|
+| `open_run { run_id }` | Subscribe transcript + đẩy một lượt: history, `run_meta`, `plan_usage`, `project_files`. Đặt run này làm **focus**. |
+| `close_run { run_id }` | Ngưng transcript. Tín hiệu vẫn tới, nên đóng run **không** giấu mất thứ đang chờ duyệt. |
+
+Cả hai chỉ đổi **thứ session này stream**, không đổi trạng thái run → tính vào
+ngân sách rate-limit **chỉ đọc** (xem 14.5).
+
+### 14.4 Tương thích ngược — `client_features`
+
+Bundle Controller deploy tĩnh cạnh relay nên **lệch phiên bản là có thật**.
+Controller khai báo `client_features` trên frame gate (frame sealed đầu tiên);
+Host không thấy cờ nào thì giữ **nguyên** hành vi cũ.
+
+| Cờ | Bật gì |
+|---|---|
+| `output_batch` | Gộp nhiều dòng output thành một `output_batch` (cửa sổ 50ms / 256 dòng) |
+| `multi_run` | Run browser, `open_run`/`close_run`, run list đầy đủ, tín hiệu của mọi run |
+
+Thiếu `multi_run` → Host pin vào `initial_run_id` y như v1.1. Bắt buộc phải gate:
+bundle cũ chỉ render được một run, đẩy cho nó prompt của run nó không hiển thị
+được sẽ làm người dùng mắc kẹt.
+
+### 14.5 Rate limit tách ngân sách (mở rộng BR-017)
+
+Duyệt run tốn vài lệnh chỉ-đọc mỗi màn hình (mở một run = list + history + meta
++ usage + files). Tính chung vào 30/phút sẽ khiến thao tác bình thường chạm trần
+chống lạm dụng.
+
+| Nhóm | Trần | Action |
+|---|---|---|
+| Thay đổi trạng thái | 30/phút (BR-017 giữ nguyên) | `respond_permission`, `start_run`, `cancel_run`, `send_chat_message`, `set_run_meta` |
+| Chỉ đọc | 120/phút | `request_history`, `list_*`, `open_run`, `close_run` |
+
+### 14.6 Giữ nguyên
+
+- **MAX_CONTROLLER = 1** (BR-015): vẫn một Controller tại một thời điểm. Nhiều
+  thiết bị cùng lúc vẫn **ngoài scope**.
+- **BR-016 / SEC-011**: Controller chỉ `allow_once` / `deny_once`.
+- **FR-011**: mọi lệnh (nhận hay từ chối) vẫn ghi đúng một dòng audit.
+- **BR-009**: idempotent theo `request_id` (nay giới hạn 512 mục gần nhất).
+
+### 14.7 Tác động lên desktop
+
+- `RemoteStatus` thêm `focus_run_id` (run điện thoại đang xem) và
+  `subscribed_run_ids`; `bound_run_id` giữ nghĩa "run của link".
+- Desktop nhường quyền auto-allow/deny **chỉ với run Controller đang mở**, không
+  phải mọi run — nếu không, cắm điện thoại một lần sẽ vô hiệu hóa toàn bộ
+  automation của người dùng trên những run không ai xem.

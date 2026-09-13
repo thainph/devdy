@@ -23,7 +23,9 @@ Phạm vi gồm:
 
 | Hạng mục | Giá trị hiện tại |
 |---|---|
-| Session scope | Một link chỉ điều khiển một `run_id` |
+| Session scope | Theo **thiết bị**: một thiết bị đã pair điều khiển **mọi** run (BR-005 v1.1). Link chỉ quyết định run đầu tiên được mở |
+| Chuyển run | `open_run` / `close_run`; Controller có màn hình duyệt run (run browser) |
+| Forward theo 2 bậc | `permission_request` / `done` / `run_meta` → **mọi** run; `stream` / `output` → chỉ run đang mở |
 | OTP | 6 chữ số, TTL 120 giây |
 | Số lần nhập OTP tối đa | 5 lần |
 | Master password | Dùng thay OTP, chia sẻ cùng ngân sách 5 lần thử |
@@ -33,13 +35,15 @@ Phạm vi gồm:
 | Host reconnect backoff | 1 giây, tăng dần tới 30 giây |
 | Keepalive browser | 15 giây |
 | Zombie socket timeout | Khoảng 35 giây |
-| Host command rate limit | 30 command/phút/controller |
+| Host command rate limit | 30 command/phút cho lệnh **thay đổi trạng thái**; 120/phút cho lệnh **chỉ đọc** (`list_*`, `request_history`, `open_run`, `close_run`) |
 | Relay coarse rate limit | Mặc định 60 frame/10 giây |
 | Replay history | Tối đa 2.000 dòng |
 | Controller/room | Tối đa 1 |
 | Attachment | Tối đa 10 MB/file |
+| Relay max message | 32 MiB (`RELAY_MAX_MESSAGE_BYTES`); max room 256 (`RELAY_MAX_ROOMS`) |
 | Remote permission decision | Chỉ `allow_once`, `deny_once` |
-| Command allow-list | 12 action, xem nhóm SEC bên dưới |
+| Command allow-list | 14 action, xem nhóm SEC bên dưới |
+| Client feature flags | `output_batch` (gộp lô output), `multi_run` (duyệt & điều khiển nhiều run). Không khai báo → Host giữ nguyên hành vi một-run cũ |
 
 ### Điểm đặc tả cần chốt trước release
 
