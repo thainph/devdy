@@ -288,51 +288,46 @@ function scrollActiveSessionIntoView() {
 // Remote-control modal: create a per-run link + OTP to drive this run from a phone.
 const remoteModalOpen = ref(false)
 // Remote state for the CURRENTLY viewed run, derived reactively from the global
-// single-session status (only one run is ever bound at a time). Deriving with
-// computeds — instead of a ref refreshed imperatively — means switching sessions
-// re-evaluates against THIS run's id immediately, so the button/chip never stay
-// lit on a session that isn't the bound one (the reported confusion).
+// status. A paired phone drives EVERY run, so "is a phone attached" is a
+// property of the session while "is it looking at this run" is per run.
+// Deriving with computeds — instead of a ref refreshed imperatively — means
+// switching sessions re-evaluates against THIS run's id immediately.
 const remoteStatus = computed(() => remoteControlStore.status)
-/** A link exists for THIS run (bound), regardless of whether a phone attached. */
-const remoteBoundHere = computed(
-  () => !!currentRunId.value && remoteStatus.value?.bound_run_id === currentRunId.value,
+/** A phone has completed auth, so it can drive this (and any other) run. */
+const remotePaired = computed(() => !!remoteStatus.value?.session_authenticated)
+/** A pairing link exists but no phone has completed auth yet. */
+const remoteWaiting = computed(
+  () => !!remoteStatus.value?.bound_run_id && !remotePaired.value,
 )
-/** A phone has completed auth and is actively driving THIS run. */
+/** The paired phone is looking at THIS run right now. */
 const remoteActive = computed(
-  () => remoteBoundHere.value && !!remoteStatus.value?.session_authenticated,
-)
-/** The remote is bound to some OTHER run — clicking here would supersede it. */
-const remoteBoundElsewhere = computed(
-  () =>
-    !!remoteStatus.value?.bound_run_id &&
-    remoteStatus.value?.bound_run_id !== currentRunId.value,
+  () => remotePaired.value && remoteStatus.value?.focus_run_id === currentRunId.value,
 )
 /**
  * Remote-state marker for the History list, so the user can tell AT A GLANCE
- * which session a phone is driving without opening it. Only the single bound run
- * carries a marker (one run is ever bound at a time):
- *   success → a phone is authenticated and actively driving it;
- *   warning → a link exists but no phone has connected yet.
+ * where the phone is without opening anything:
+ *   success → the phone is looking at that run right now;
+ *   warning → a pairing link exists but no phone has connected yet.
  */
 const remoteRowMarker = computed<
   { runId: string; tone: 'success' | 'warning'; title: string } | null
 >(() => {
   const st = remoteStatus.value
-  if (!st?.bound_run_id) return null
-  return st.session_authenticated
-    ? { runId: st.bound_run_id, tone: 'success', title: t('run.remoteRowDriving') }
-    : {
-        runId: st.bound_run_id,
-        tone: 'warning',
-        title: t('run.remoteRowWaiting'),
-      }
+  if (!st) return null
+  if (st.session_authenticated && st.focus_run_id) {
+    return { runId: st.focus_run_id, tone: 'success', title: t('run.remoteRowDriving') }
+  }
+  if (st.bound_run_id) {
+    return { runId: st.bound_run_id, tone: 'warning', title: t('run.remoteRowWaiting') }
+  }
+  return null
 })
 /** State-aware tooltip for the Remote button. */
 const remoteButtonTitle = computed(() => {
   if (!currentRunId.value) return t('run.remoteBtnSelectRun')
   if (remoteActive.value) return t('run.remoteBtnActive')
-  if (remoteBoundHere.value) return t('run.remoteBtnBoundHere')
-  if (remoteBoundElsewhere.value) return t('run.remoteBtnBoundElsewhere')
+  if (remotePaired.value) return t('run.remoteBtnPaired')
+  if (remoteWaiting.value) return t('run.remoteBtnBoundHere')
   return t('run.remoteBtnDefault')
 })
 const remoteUnlisteners: UnlistenFn[] = []
@@ -2596,10 +2591,10 @@ function handleRefInput(val: string) {
         >
           <Radio
             class="h-4 w-4"
-            :class="remoteActive ? 'text-emerald-500' : remoteBoundElsewhere ? 'text-muted-foreground' : ''"
+            :class="remoteActive ? 'text-emerald-500' : remotePaired ? 'text-emerald-500/50' : ''"
             :stroke-width="2"
           />
-          <!-- Live pulse ONLY when a phone is actively driving THIS run. -->
+          <!-- Live pulse ONLY when the phone is looking at THIS run. -->
           <span
             v-if="remoteActive"
             class="absolute -right-0.5 -top-0.5 flex h-2.5 w-2.5"

@@ -149,9 +149,10 @@ async function createLink() {
   }
 }
 
-/** Decide the initial screen when the modal opens. If this run already has a
- * live (authenticated) remote session, show its status + a stop control instead
- * of superseding it with a brand-new link. Otherwise create a fresh link. */
+/** Decide the initial screen when the modal opens. If a phone is already paired,
+ * show its status + a stop control — it can drive THIS run too, so minting a new
+ * link (which supersedes the session) would be destructive. Otherwise create a
+ * fresh link, using this run as where the phone lands. */
 async function openFlow() {
   if (!props.runId) {
     phase.value = 'error'
@@ -160,7 +161,7 @@ async function openFlow() {
   }
   try {
     const s = await store.refreshStatus()
-    if (s.bound_run_id === props.runId && s.session_authenticated) {
+    if (s.session_authenticated) {
       sessionIdleExpiresAt.value = s.session_idle_expires_at
       phase.value = 'connected'
       return
@@ -180,8 +181,15 @@ async function stopControl() {
   emit('close')
 }
 
+/** Whether a lifecycle event concerns the session this modal is showing.
+ *
+ * There is one session at a time and it now spans every run, so any event is
+ * ours EXCEPT while this modal is still minting its own link: until then a
+ * stale event from the previous session would flip us out of the pairing flow.
+ */
 function matchesRun(payloadRunId: string): boolean {
-  return !!props.runId && payloadRunId === props.runId
+  if (!props.runId) return false
+  return phase.value !== 'creating' || payloadRunId === props.runId
 }
 
 async function subscribe() {
@@ -203,9 +211,12 @@ async function subscribe() {
       if (!matchesRun(e.payload.run_id)) return
       phase.value = 'connected'
       // Refresh so the connected view can show the idle expiry.
-      store.refreshStatus().then((s) => {
-        if (s.bound_run_id === props.runId) sessionIdleExpiresAt.value = s.session_idle_expires_at
-      }).catch(() => {})
+      store
+        .refreshStatus()
+        .then((s) => {
+          sessionIdleExpiresAt.value = s.session_idle_expires_at
+        })
+        .catch(() => {})
     }),
   )
   unlisteners.push(

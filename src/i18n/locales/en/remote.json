@@ -59,7 +59,7 @@
   },
   "session": {
     "title": "Control from phone",
-    "heading": "Control this run from your phone",
+    "heading": "Control your runs from your phone",
     "creating": "Creating link…",
     "scanCaption": "Scan with your phone or copy the link to open the controller.",
     "copyLink": "Copy link",
@@ -71,7 +71,7 @@
     "connecting": "Phone is connecting…",
     "enterMasterToFinish": "Enter the master password on your phone to finish.",
     "connectedLive": "Connected — live control",
-    "phoneControlling": "Your phone is controlling this run. Closing this modal will not disconnect.",
+    "phoneControlling": "Your phone is paired and can drive any run. Closing this modal will not disconnect.",
     "idleExpiry": "Session expires if idle for ~{time}",
     "stopControl": "Stop control",
     "authFailed": "Authentication failed",

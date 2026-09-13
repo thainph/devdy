@@ -1,10 +1,10 @@
 {
-  "remoteRowDriving": "A phone is driving this session",
+  "remoteRowDriving": "Your phone is viewing this run",
   "remoteRowWaiting": "Remote link created — waiting for a phone to connect",
   "remoteBtnSelectRun": "Select a run to control from your phone",
-  "remoteBtnActive": "A phone is driving this run — click to view/stop",
+  "remoteBtnActive": "Your phone is viewing this run — click for status",
   "remoteBtnBoundHere": "Link created for this run — click to view QR / status",
-  "remoteBtnBoundElsewhere": "Remote is attached to another session — click to switch to this run",
+  "remoteBtnPaired": "A phone is paired and can drive any run — click for status",
   "remoteBtnDefault": "Control this run from your phone",
   "budgetConfirmMessage": "The budget (plan) for the current cycle has been exceeded.\nContinue anyway?",
   "budgetExceededTitle": "Budget exceeded",

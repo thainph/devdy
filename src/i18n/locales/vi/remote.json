@@ -59,7 +59,7 @@
   },
   "session": {
     "title": "Điều khiển từ điện thoại",
-    "heading": "Điều khiển run này từ điện thoại",
+    "heading": "Điều khiển các run từ điện thoại",
     "creating": "Đang tạo link…",
     "scanCaption": "Quét bằng điện thoại hoặc copy link để mở controller.",
     "copyLink": "Copy link",
@@ -71,7 +71,7 @@
     "connecting": "Điện thoại đang kết nối…",
     "enterMasterToFinish": "Nhập mật khẩu chính trên điện thoại để hoàn tất.",
     "connectedLive": "Đang kết nối — điều khiển trực tiếp",
-    "phoneControlling": "Điện thoại đang điều khiển run này. Đóng modal này không ngắt kết nối.",
+    "phoneControlling": "Điện thoại đã ghép và điều khiển được mọi run. Đóng cửa sổ này không ngắt kết nối.",
     "idleExpiry": "Phiên hết hạn nếu không thao tác trong ~{time}",
     "stopControl": "Dừng điều khiển",
     "authFailed": "Xác thực thất bại",
