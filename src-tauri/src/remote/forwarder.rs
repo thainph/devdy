@@ -18,6 +18,7 @@ use crate::remote::protocol::{
 };
 use remote_e2e::Session;
 use sqlx::Row;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -105,16 +106,39 @@ const OUTPUT_COALESCE_WINDOW: Duration = Duration::from_millis(50);
 /// single oversized frame.
 const OUTPUT_COALESCE_MAX_LINES: usize = 256;
 
+/// What a running forward loop is allowed to forward.
+pub struct ForwardScope {
+    /// Runs whose live transcript is streamed; mutated by `open_run`/`close_run`.
+    pub subscriptions: crate::remote::RunSubscriptions,
+    /// The run the session link was minted for. Always present in
+    /// `subscriptions`, and — for a legacy Controller — the only run at all.
+    pub initial_run_id: String,
+    /// Whether the Controller can see runs beyond `initial_run_id`
+    /// ([`FEATURE_MULTI_RUN`]).
+    pub multi_run: bool,
+    /// Whether the Controller understands [`StreamPayload::OutputBatch`].
+    pub batch_output: bool,
+}
+
 /// Forward live run events to the Controller until the room closes.
 ///
-/// Runs until `out` is closed (room gone) or the bus lags catastrophically.
-/// A `broadcast` lag (forwarder briefly slow) is tolerated: we skip the missed
-/// window and keep going — the Controller can request history to backfill
-/// (FR-005/FR-012). Only the BOUND run's events are forwarded.
+/// Runs until `out` is closed (room gone) or the bus closes.
+///
+/// **Two tiers of forwarding.** Permission requests, run completion and meta
+/// changes are low-volume and worth seeing wherever the user is, so with
+/// `multi_run` they are forwarded for EVERY run — that is what lets the phone
+/// approve a tool in a run it is not currently watching. The high-volume live
+/// transcript (stream events, console output) is forwarded only for runs the
+/// Controller has actually opened. A legacy Controller gets neither: both tiers
+/// collapse to `initial_run_id`, exactly as before multi-run.
+///
+/// A `broadcast` lag is tolerated: we skip the missed window, tell the
+/// Controller so it can backfill with `request_history` (FR-005/FR-012), and
+/// keep going.
 ///
 /// Output lines are coalesced into [`StreamPayload::OutputBatch`] frames when the
-/// Controller advertised [`FEATURE_OUTPUT_BATCH`] (`batch_output`). Ordering is
-/// preserved: the buffer is flushed before any other event of the same run is
+/// Controller advertised [`FEATURE_OUTPUT_BATCH`]. Ordering is preserved
+/// per run: a run's buffer is flushed before any other event of THAT run is
 /// sealed, so a batch is exactly the `Output` frames it stands in for.
 ///
 /// Live stream/output goes out via [`OutboundTx::send_lossy`] — under congestion
@@ -128,13 +152,11 @@ pub async fn forward_loop(
     out: OutboundTx,
     seq: Arc<SeqCounter>,
     db: Db,
-    bound_run_id: String,
-    batch_output: bool,
+    scope: ForwardScope,
 ) {
     let mut rx = bus.subscribe();
-    let mut done_once = false;
-    // Buffered output lines for the bound run, in emission order.
-    let mut buffered: Vec<OutputLine> = Vec::new();
+    // Buffered output lines per run, each in emission order.
+    let mut buffered: HashMap<String, Vec<OutputLine>> = HashMap::new();
     let mut flush_at: Option<tokio::time::Instant> = None;
 
     loop {
@@ -151,9 +173,8 @@ pub async fn forward_loop(
         };
 
         let Some(received) = event else {
-            // Coalescing window elapsed.
-            if flush_buffered(&mut buffered, &bound_run_id, &session, &room_id, &out, &seq).is_err()
-            {
+            // Coalescing window elapsed — drain every run's buffer.
+            if flush_all(&mut buffered, &session, &room_id, &out, &seq).is_err() {
                 break;
             }
             flush_at = None;
@@ -163,59 +184,57 @@ pub async fn forward_loop(
         match received {
             Ok(ev) => {
                 let run_id = ev.run_id().to_string();
-                // Single-session redesign: forward ONLY the bound run's events.
-                if run_id != bound_run_id {
+                let streaming = scope.streams(&run_id).await;
+                let is_transcript = matches!(
+                    ev,
+                    RemoteRunEvent::Event { .. } | RemoteRunEvent::Output { .. }
+                );
+
+                // Tier 1: the live transcript, only for runs the user opened.
+                if is_transcript && !streaming {
+                    continue;
+                }
+                // Tier 2: signals. Always for a multi-run Controller, otherwise
+                // only for the one run it can render.
+                if !is_transcript && !scope.signals(&run_id) {
                     continue;
                 }
 
                 // Accumulate output lines instead of sealing one frame per line.
-                if batch_output {
+                if scope.batch_output {
                     if let RemoteRunEvent::Output {
                         line, is_stderr, ..
                     } = &ev
                     {
-                        buffered.push(OutputLine {
+                        let lines = buffered.entry(run_id.clone()).or_default();
+                        lines.push(OutputLine {
                             line: line.clone(),
                             is_stderr: *is_stderr,
                         });
-                        if buffered.len() >= OUTPUT_COALESCE_MAX_LINES {
-                            if flush_buffered(
-                                &mut buffered,
-                                &bound_run_id,
-                                &session,
-                                &room_id,
-                                &out,
-                                &seq,
-                            )
-                            .is_err()
+                        if lines.len() >= OUTPUT_COALESCE_MAX_LINES {
+                            if flush_run(&mut buffered, &run_id, &session, &room_id, &out, &seq)
+                                .is_err()
                             {
                                 break;
                             }
-                            flush_at = None;
                         } else if flush_at.is_none() {
                             flush_at = Some(tokio::time::Instant::now() + OUTPUT_COALESCE_WINDOW);
                         }
                         continue;
                     }
-                    // Any other event of this run must not overtake buffered
-                    // output — drain first so the transcript stays ordered.
-                    if flush_buffered(&mut buffered, &bound_run_id, &session, &room_id, &out, &seq)
-                        .is_err()
-                    {
+                    // Another event of THIS run must not overtake its buffered
+                    // output — drain that run first so its transcript stays
+                    // ordered. Other runs are independent timelines.
+                    if flush_run(&mut buffered, &run_id, &session, &room_id, &out, &seq).is_err() {
                         break;
                     }
-                    flush_at = None;
                 }
 
                 let is_done = matches!(ev, RemoteRunEvent::Done { .. });
                 // Live transcript is backfillable; status/permission/meta is not.
-                let sheddable = matches!(
-                    ev,
-                    RemoteRunEvent::Event { .. } | RemoteRunEvent::Output { .. }
-                );
                 let payload = to_payload(ev);
                 if let Some(env) = seal_stream(&session, &room_id, &payload, seq.next()) {
-                    let sent = if sheddable {
+                    let sent = if is_transcript {
                         out.send_lossy(env)
                     } else {
                         out.send(env)
@@ -225,14 +244,15 @@ pub async fn forward_loop(
                     }
                 }
                 if is_done {
-                    // Refresh subscription usage badges after every turn (the
-                    // sidecar has captured the turn's /usage by now). Best-effort.
-                    send_plan_usage(&db, &session, &room_id, &out, &seq, &bound_run_id).await;
-                    // Refresh the (scoped) run list once when the bound run finishes.
-                    if !done_once {
-                        done_once = true;
-                        send_run_list(&db, &session, &room_id, &out, &seq, &bound_run_id).await;
+                    // Refresh usage badges after a turn (the sidecar has captured
+                    // the turn's /usage by now) — only for a run being watched,
+                    // since the badges are rendered per open run.
+                    if streaming {
+                        send_plan_usage(&db, &session, &room_id, &out, &seq, &run_id).await;
                     }
+                    // A finished run changes the browse list; refresh it so the
+                    // Controller's run list does not show a stale status.
+                    send_run_list(&db, &session, &room_id, &out, &seq, scope.list_filter()).await;
                 }
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
@@ -242,7 +262,7 @@ pub async fn forward_loop(
                 // it can backfill with request_history (FR-005/FR-012) instead of
                 // showing a plausible-looking but incomplete turn.
                 let payload = StreamPayload::Notice {
-                    run_id: Some(bound_run_id.clone()),
+                    run_id: None,
                     text: format!("stream_gap:{n}"),
                 };
                 if let Some(env) = seal_stream(&session, &room_id, &payload, seq.next()) {
@@ -257,25 +277,49 @@ pub async fn forward_loop(
     }
 
     // Best-effort final drain so a clean shutdown does not swallow the tail.
-    let _ = flush_buffered(&mut buffered, &bound_run_id, &session, &room_id, &out, &seq);
+    let _ = flush_all(&mut buffered, &session, &room_id, &out, &seq);
 }
 
-/// Seal and send whatever output lines are buffered, leaving the buffer empty.
-/// `Err(())` means the room/writer is gone.
-fn flush_buffered(
-    buffered: &mut Vec<OutputLine>,
+impl ForwardScope {
+    /// Whether the Controller is watching `run_id`'s live transcript.
+    async fn streams(&self, run_id: &str) -> bool {
+        if !self.multi_run {
+            return run_id == self.initial_run_id;
+        }
+        self.subscriptions.lock().await.contains(run_id)
+    }
+
+    /// Whether permission requests / status / meta for `run_id` should be sent.
+    fn signals(&self, run_id: &str) -> bool {
+        self.multi_run || run_id == self.initial_run_id
+    }
+
+    /// `None` for a multi-run Controller (list every run), otherwise the single
+    /// run it is allowed to see.
+    fn list_filter(&self) -> Option<&str> {
+        if self.multi_run {
+            None
+        } else {
+            Some(&self.initial_run_id)
+        }
+    }
+}
+
+/// Seal and send one run's buffered output lines, leaving its buffer empty.
+fn flush_run(
+    buffered: &mut HashMap<String, Vec<OutputLine>>,
     run_id: &str,
     session: &Session,
     room_id: &str,
     out: &OutboundTx,
     seq: &SeqCounter,
 ) -> Result<(), ()> {
-    if buffered.is_empty() {
+    let Some(lines) = buffered.remove(run_id).filter(|l| !l.is_empty()) else {
         return Ok(());
-    }
+    };
     let payload = StreamPayload::OutputBatch {
         run_id: run_id.to_string(),
-        lines: std::mem::take(buffered),
+        lines,
     };
     match seal_stream(session, room_id, &payload, seq.next()) {
         Some(env) => out.send_lossy(env),
@@ -284,20 +328,48 @@ fn flush_buffered(
     }
 }
 
-/// Build the (scoped) run-list snapshot: just the single bound run in v1.
-/// Non-secret metadata only.
-pub async fn build_run_list(db: &Db, bound_run_id: &str) -> Vec<RunInfo> {
-    let rows = sqlx::query(
-        "SELECT r.id AS id, r.project_id AS project_id, p.name AS project_name,
+/// Drain every run's buffer. `Err(())` means the room/writer is gone.
+fn flush_all(
+    buffered: &mut HashMap<String, Vec<OutputLine>>,
+    session: &Session,
+    room_id: &str,
+    out: &OutboundTx,
+    seq: &SeqCounter,
+) -> Result<(), ()> {
+    let run_ids: Vec<String> = buffered.keys().cloned().collect();
+    for run_id in run_ids {
+        flush_run(buffered, &run_id, session, room_id, out, seq)?;
+    }
+    Ok(())
+}
+
+/// Cap on how many runs a browse list returns. Beyond this the Controller is
+/// scrolling history, which belongs to the desktop.
+pub const RUN_LIST_MAX: i64 = 100;
+
+/// Build a run-list snapshot, newest activity first. Non-secret metadata only.
+///
+/// `only_run_id` scopes the list to a single run — used for a legacy Controller
+/// that can only render the run its link was minted for. `None` lists every run
+/// the Host has (capped at [`RUN_LIST_MAX`]), which is what the run browser
+/// needs; the trust boundary is device approval, not per-run share
+/// (SRS BR-005 v1.1).
+pub async fn build_run_list(db: &Db, only_run_id: Option<&str>) -> Vec<RunInfo> {
+    const COLUMNS: &str = "SELECT r.id AS id, r.project_id AS project_id, p.name AS project_name,
                 r.title AS title, r.type AS run_type, r.ref_number AS ref_number,
                 r.status AS status, r.engine AS engine, r.created_at AS created_at,
                 COALESCE(r.finished_at, r.started_at, r.created_at) AS updated_at
-         FROM runs r JOIN projects p ON p.id = r.project_id
-         WHERE r.id = ?",
-    )
-    .bind(bound_run_id)
-    .fetch_all(db)
-    .await
+         FROM runs r JOIN projects p ON p.id = r.project_id";
+    let rows = match only_run_id {
+        Some(run_id) => sqlx::query(&format!("{COLUMNS} WHERE r.id = ?"))
+            .bind(run_id)
+            .fetch_all(db)
+            .await,
+        None => sqlx::query(&format!("{COLUMNS} ORDER BY updated_at DESC LIMIT ?"))
+            .bind(RUN_LIST_MAX)
+            .fetch_all(db)
+            .await,
+    }
     .unwrap_or_default();
     rows.into_iter()
         .map(|r| RunInfo {
@@ -322,9 +394,9 @@ pub async fn send_run_list(
     room_id: &str,
     out: &OutboundTx,
     seq: &SeqCounter,
-    bound_run_id: &str,
+    only_run_id: Option<&str>,
 ) {
-    let runs = build_run_list(db, bound_run_id).await;
+    let runs = build_run_list(db, only_run_id).await;
     let payload = StreamPayload::RunList { runs };
     if let Some(env) = seal_stream(session, room_id, &payload, seq.next()) {
         let _ = out.send(env);
@@ -666,6 +738,54 @@ mod tests {
         let b = Keypair::generate();
         // psk must be >= 16 bytes (BLAKE2b keyed key minimum).
         Session::new(b"unit-test-psk-0123456789", &a, &b.public).unwrap()
+    }
+
+    fn scope(multi_run: bool, subscribed: &[&str]) -> ForwardScope {
+        ForwardScope {
+            subscriptions: Arc::new(tokio::sync::Mutex::new(
+                subscribed.iter().map(|s| s.to_string()).collect(),
+            )),
+            initial_run_id: "r_linked".to_string(),
+            multi_run,
+            batch_output: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_scope_sees_only_the_linked_run() {
+        let s = scope(false, &["r_linked", "r_other"]);
+        assert!(s.streams("r_linked").await);
+        // Even a stale subscription cannot widen a legacy controller's view: it
+        // renders one run, so anything else would be invisible noise.
+        assert!(!s.streams("r_other").await);
+        assert!(s.signals("r_linked"));
+        assert!(!s.signals("r_other"));
+        assert_eq!(s.list_filter(), Some("r_linked"));
+    }
+
+    #[tokio::test]
+    async fn multi_run_scope_streams_only_open_runs_but_signals_all() {
+        let s = scope(true, &["r_linked"]);
+        assert!(s.streams("r_linked").await);
+        assert!(
+            !s.streams("r_other").await,
+            "an unopened run must not stream its transcript"
+        );
+        // ...yet its permission prompts and status changes still arrive — that is
+        // what lets the phone approve a tool in a run it is not watching.
+        assert!(s.signals("r_other"));
+        assert_eq!(s.list_filter(), None, "the run browser lists every run");
+    }
+
+    #[tokio::test]
+    async fn opening_a_run_takes_effect_without_restarting_the_loop() {
+        let s = scope(true, &["r_linked"]);
+        assert!(!s.streams("r_new").await);
+        // The handler mutates the same shared set the forwarder reads.
+        s.subscriptions.lock().await.insert("r_new".to_string());
+        assert!(s.streams("r_new").await);
+        s.subscriptions.lock().await.remove("r_new");
+        assert!(!s.streams("r_new").await);
     }
 
     /// Unique temp path in the OS temp dir (no external tempfile dep).

@@ -24,6 +24,7 @@ use crate::remote::forwarder::{
     send_project_file_list, send_project_list, send_run_list, send_slash_command_list, SeqCounter,
 };
 use crate::remote::outbound::OutboundTx;
+use crate::remote::{FocusRun, RunSubscriptions};
 use crate::remote::protocol::{CmdPayload, Envelope, FrameType, ImageAttachmentWire, StreamPayload};
 use crate::runs::{BrokerApprovals, RunRegistry};
 use remote_e2e::Session;
@@ -49,8 +50,17 @@ pub struct HandlerCtx {
     pub broker_approvals: BrokerApprovals,
     pub session: Arc<Session>,
     pub room_id: String,
-    /// The single bound run this session may control (wrong-run gate).
-    pub bound_run_id: String,
+    /// The run the session link was minted for. Always subscribed, and the only
+    /// run a legacy (non-`multi_run`) Controller may touch.
+    pub initial_run_id: String,
+    /// Whether the Controller can drive runs beyond `initial_run_id`
+    /// ([`FEATURE_MULTI_RUN`]).
+    pub multi_run: bool,
+    /// Runs whose live transcript is being streamed. Shared with the forwarder.
+    pub subscriptions: RunSubscriptions,
+    /// The run the Controller is currently viewing; surfaced to the desktop UI
+    /// so it can show WHERE the phone is.
+    pub focus_run_id: FocusRun,
     /// Outbound channel to the relay (for notices / history replay).
     pub out: OutboundTx,
     pub seq: Arc<SeqCounter>,
@@ -69,12 +79,70 @@ impl HandlerCtx {
         let deadline = now_unix() + IDLE_TTL_SECS;
         self.idle.store(deadline, Ordering::SeqCst);
         if let Some(mut cred) = crate::secrets::get_remote_session() {
-            if cred.run_id == self.bound_run_id {
+            // The credential is per SESSION, keyed by the link's run.
+            if cred.run_id == self.initial_run_id {
                 cred.idle_expires_at = deadline;
                 let _ = crate::secrets::set_remote_session(&cred);
             }
         }
     }
+
+    /// `None` for a multi-run Controller (list every run), otherwise the single
+    /// run a legacy Controller is allowed to see.
+    fn list_filter(&self) -> Option<&str> {
+        if self.multi_run {
+            None
+        } else {
+            Some(&self.initial_run_id)
+        }
+    }
+
+    /// The run a run-scoped read applies to: what the command named, else the
+    /// run the Controller is currently viewing, else the linked run.
+    async fn target_run(&self, cmd: &CmdPayload) -> String {
+        if let Some(rid) = cmd.run_id.clone().filter(|r| !r.trim().is_empty()) {
+            return rid;
+        }
+        if let Some(focus) = self.focus_run_id.lock().await.clone() {
+            return focus;
+        }
+        self.initial_run_id.clone()
+    }
+
+    /// Whether this session may act on `run_id` at all.
+    async fn may_touch(&self, run_id: &str) -> bool {
+        if self.multi_run {
+            // Device approval is the trust boundary (SRS BR-005 v1.1): any run
+            // the Host actually has is fair game.
+            return run_exists(&self.db, run_id).await;
+        }
+        run_id == self.initial_run_id
+    }
+}
+
+/// Locate a run's persisted log via its project path (INT-004). `None` when the
+/// run (or its project) is unknown.
+async fn resolve_run_log(db: &Db, run_id: &str) -> Option<std::path::PathBuf> {
+    let project_path: Option<String> = sqlx::query_scalar(
+        "SELECT p.path FROM runs r JOIN projects p ON p.id = r.project_id WHERE r.id = ?",
+    )
+    .bind(run_id)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+    Some(run_log_path(&project_path?, run_id))
+}
+
+/// Whether `run_id` names a real run on this Host.
+async fn run_exists(db: &Db, run_id: &str) -> bool {
+    sqlx::query("SELECT 1 FROM runs WHERE id = ? LIMIT 1")
+        .bind(run_id)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
 }
 
 /// Send a plaintext-kind notice (sealed) back to the Controller.
@@ -170,10 +238,12 @@ pub async fn handle(ctx: &HandlerCtx, cmd: CmdPayload) {
     let action = cmd.action.as_str();
     let run_id = cmd.run_id.clone();
 
-    // Gate 0: wrong-run. Any command carrying a run_id that is not the single
-    // bound run is refused (single-session scoping).
+    // Gate 0: run scope. A multi-run Controller may act on any run this Host
+    // actually has (device approval is the trust boundary, SRS BR-005 v1.1); a
+    // legacy one is still pinned to the run its link was minted for. Either way
+    // a run_id the Host does not know is refused rather than passed downstream.
     if let Some(rid) = run_id.as_deref() {
-        if rid != ctx.bound_run_id {
+        if !ctx.may_touch(rid).await {
             reject(ctx, action, run_id.as_deref(), RejectReason::WrongRun).await;
             return;
         }
@@ -211,8 +281,10 @@ pub async fn handle(ctx: &HandlerCtx, cmd: CmdPayload) {
         "list_projects" => handle_list_projects(ctx).await,
         "list_slash_commands" => handle_list_slash_commands(ctx).await,
         "list_engine_models" => handle_list_engine_models(ctx).await,
-        "list_plan_usage" => handle_list_plan_usage(ctx).await,
-        "list_project_files" => handle_list_project_files(ctx).await,
+        "list_plan_usage" => handle_list_plan_usage(ctx, &cmd).await,
+        "list_project_files" => handle_list_project_files(ctx, &cmd).await,
+        "open_run" => handle_open_run(ctx, &cmd).await,
+        "close_run" => handle_close_run(ctx, &cmd).await,
         // Unreachable: allow-list already gated. Defensive audit.
         _ => reject(ctx, action, run_id.as_deref(), RejectReason::NotAllowed).await,
     }
@@ -624,20 +696,10 @@ async fn handle_request_history(ctx: &HandlerCtx, cmd: &CmdPayload) {
         reject(ctx, action, None, RejectReason::Malformed).await;
         return;
     };
-    // Resolve the project path to locate the log file (INT-004).
-    let project_path: Option<String> = sqlx::query_scalar(
-        "SELECT p.path FROM runs r JOIN projects p ON p.id = r.project_id WHERE r.id = ?",
-    )
-    .bind(&run_id)
-    .fetch_optional(&ctx.db)
-    .await
-    .ok()
-    .flatten();
-    let Some(project_path) = project_path else {
+    let Some(path) = resolve_run_log(&ctx.db, &run_id).await else {
         reject(ctx, action, Some(&run_id), RejectReason::Malformed).await;
         return;
     };
-    let path = run_log_path(&project_path, &run_id);
     let sent = replay_history(
         &ctx.session,
         &ctx.room_id,
@@ -650,7 +712,8 @@ async fn handle_request_history(ctx: &HandlerCtx, cmd: &CmdPayload) {
     accept(ctx, action, Some(&run_id), Some(&format!("replayed={sent}"))).await;
 }
 
-/// Send the Controller the (scoped) run list — just the single bound run.
+/// Send the Controller the run list: every run for a multi-run Controller, the
+/// single linked run for a legacy one.
 async fn handle_list_runs(ctx: &HandlerCtx) {
     let action = "list_runs";
     send_run_list(
@@ -659,10 +722,89 @@ async fn handle_list_runs(ctx: &HandlerCtx) {
         &ctx.room_id,
         &ctx.out,
         &ctx.seq,
-        &ctx.bound_run_id,
+        ctx.list_filter(),
     )
     .await;
     accept(ctx, action, None, None).await;
+}
+
+/// Open a run: start streaming its transcript and push everything the composer
+/// needs for it (history, meta, usage, project files) in one round trip.
+///
+/// This is the navigation primitive the run browser is built on. It only changes
+/// what THIS session streams — never run state — which is why it draws on the
+/// read-only rate budget.
+async fn handle_open_run(ctx: &HandlerCtx, cmd: &CmdPayload) {
+    let action = "open_run";
+    let Some(run_id) = cmd.run_id.clone().filter(|r| !r.trim().is_empty()) else {
+        reject(ctx, action, None, RejectReason::Malformed).await;
+        return;
+    };
+    if !ctx.multi_run {
+        // A legacy Controller renders one run; letting it switch would strand it.
+        reject(ctx, action, Some(&run_id), RejectReason::NotAllowed).await;
+        return;
+    }
+    // Gate 0 already proved the run exists and is in scope.
+    ctx.subscriptions.lock().await.insert(run_id.clone());
+    *ctx.focus_run_id.lock().await = Some(run_id.clone());
+    accept(ctx, action, Some(&run_id), None).await;
+
+    // Replay first so the live stream that follows lands on top of real context.
+    if let Some(path) = resolve_run_log(&ctx.db, &run_id).await {
+        replay_history(&ctx.session, &ctx.room_id, &run_id, &path, &ctx.out, &ctx.seq).await;
+    }
+    send_run_meta_for(ctx, &run_id).await;
+    send_plan_usage(&ctx.db, &ctx.session, &ctx.room_id, &ctx.out, &ctx.seq, &run_id).await;
+    send_project_file_list(
+        &ctx.db,
+        &ctx.session,
+        &ctx.room_id,
+        &ctx.out,
+        &ctx.seq,
+        &run_id,
+    )
+    .await;
+}
+
+/// Close a run: stop streaming its transcript to save the phone's bandwidth.
+/// Permission requests and status changes still arrive (that is the point of the
+/// run browser), so closing a run never hides something that needs an answer.
+async fn handle_close_run(ctx: &HandlerCtx, cmd: &CmdPayload) {
+    let action = "close_run";
+    let Some(run_id) = cmd.run_id.clone().filter(|r| !r.trim().is_empty()) else {
+        reject(ctx, action, None, RejectReason::Malformed).await;
+        return;
+    };
+    if !ctx.multi_run {
+        reject(ctx, action, Some(&run_id), RejectReason::NotAllowed).await;
+        return;
+    }
+    ctx.subscriptions.lock().await.remove(&run_id);
+    {
+        let mut focus = ctx.focus_run_id.lock().await;
+        if focus.as_deref() == Some(run_id.as_str()) {
+            *focus = None;
+        }
+    }
+    accept(ctx, action, Some(&run_id), None).await;
+}
+
+/// Push the engine/model/permission-mode snapshot for one run.
+async fn send_run_meta_for(ctx: &HandlerCtx, run_id: &str) {
+    use tauri::Manager;
+    if let Some(store) = ctx.app.try_state::<crate::remote::RunMetaStore>() {
+        crate::remote::forwarder::send_run_meta(
+            &ctx.db,
+            &store,
+            &ctx.session,
+            &ctx.room_id,
+            &ctx.out,
+            &ctx.seq,
+            run_id,
+        )
+        .await;
+    }
 }
 
 /// Send the Controller the list of projects (kept for parity).
@@ -686,26 +828,30 @@ async fn handle_list_engine_models(ctx: &HandlerCtx) {
     accept(ctx, action, None, None).await;
 }
 
-/// Send the Controller the subscription plan-usage badges (Claude + Codex).
-async fn handle_list_plan_usage(ctx: &HandlerCtx) {
+/// Send the Controller the subscription plan-usage badges (Claude + Codex) for
+/// the run it names, or the one it is currently viewing.
+async fn handle_list_plan_usage(ctx: &HandlerCtx, cmd: &CmdPayload) {
     let action = "list_plan_usage";
-    send_plan_usage(&ctx.db, &ctx.session, &ctx.room_id, &ctx.out, &ctx.seq, &ctx.bound_run_id).await;
-    accept(ctx, action, None, None).await;
+    let run_id = ctx.target_run(cmd).await;
+    send_plan_usage(&ctx.db, &ctx.session, &ctx.room_id, &ctx.out, &ctx.seq, &run_id).await;
+    accept(ctx, action, Some(&run_id), None).await;
 }
 
-/// Send the Controller a bounded listing of the bound run's project files.
-async fn handle_list_project_files(ctx: &HandlerCtx) {
+/// Send the Controller a bounded listing of project files for the run it names,
+/// or the one it is currently viewing (for `@`-mention completion).
+async fn handle_list_project_files(ctx: &HandlerCtx, cmd: &CmdPayload) {
     let action = "list_project_files";
+    let run_id = ctx.target_run(cmd).await;
     send_project_file_list(
         &ctx.db,
         &ctx.session,
         &ctx.room_id,
         &ctx.out,
         &ctx.seq,
-        &ctx.bound_run_id,
+        &run_id,
     )
     .await;
-    accept(ctx, action, None, None).await;
+    accept(ctx, action, Some(&run_id), None).await;
 }
 
 /// Create a session run remotely (mirrors `create_session_run`), using the given
