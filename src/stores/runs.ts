@@ -3,6 +3,51 @@ import { invoke } from '@/lib/tauri'
 import { ref, reactive } from 'vue'
 import type { ImageAttachment } from '@/lib/streamEvents'
 
+/**
+ * Fingerprint of the file(s) backing a run's log, from `get_run_log_revision`.
+ *
+ * `transcript_*` matters for mirrored Claude/Codex sessions: those can be
+ * continued outside Devdy (the CLI, the IDE extension), and the conventional
+ * `.devdy/runs/<id>.log` would NOT change when that happens. Watching only the
+ * target file's own size/mtime would silently serve a stale log.
+ */
+export interface RunLogRevision {
+  source: 'conventional' | 'transcript' | 'output' | null
+  path: string | null
+  size: number
+  /** Nanoseconds. Second resolution is too coarse for a streaming run. */
+  mtime_ns: number
+  transcript_size: number | null
+  transcript_mtime_ns: number | null
+}
+
+export interface RunLogPage {
+  /** Complete records, oldest first — never a partial line. */
+  records: string[]
+  /** Byte offset the first record starts at; pass back as `before` to go older. */
+  cursor: number
+  has_more: boolean
+  /** The `system` init record, present when the window doesn't reach the file top. */
+  preamble: string | null
+  revision: RunLogRevision
+}
+
+/** True when two fingerprints describe the same bytes, so a re-read is pointless. */
+export function sameRunLogRevision(
+  a: RunLogRevision | null,
+  b: RunLogRevision | null,
+): boolean {
+  if (!a || !b) return false
+  return (
+    a.source === b.source &&
+    a.path === b.path &&
+    a.size === b.size &&
+    a.mtime_ns === b.mtime_ns &&
+    a.transcript_size === b.transcript_size &&
+    a.transcript_mtime_ns === b.transcript_mtime_ns
+  )
+}
+
 export interface RunRecord {
   id: string
   project_id: string
@@ -175,9 +220,45 @@ export const useRunsStore = defineStore('runs', () => {
     await invoke('cancel_run', { runId: run_id })
   }
 
+  /**
+   * Whole log as one string. Real logs reach ~29MB, so this is deliberately NOT
+   * the path the run viewer takes any more — use `getRunLogPage`. Kept for the
+   * few actions that genuinely need everything at once (plain-text export, the
+   * "files changed" scan), which load it on demand and drop it again.
+   */
   async function getRunLog(run_id: string): Promise<string> {
     const result = await invoke<{ content: string }>('get_run_log', { runId: run_id })
     return result.content
+  }
+
+  /**
+   * Cheap "did this log change?" fingerprint — no file read, no session upsert.
+   * Compare with `sameRunLogRevision` before paying for a real read.
+   */
+  async function getRunLogRevision(run_id: string): Promise<RunLogRevision> {
+    return invoke<RunLogRevision>('get_run_log_revision', { runId: run_id })
+  }
+
+  /**
+   * Every tool call in the run that touched a file, pruned to just the fields
+   * the "files changed" list reads. Scanned in Rust so the whole log never
+   * crosses IPC — see `get_run_tool_records`.
+   */
+  async function getRunToolRecords(run_id: string): Promise<string[]> {
+    const r = await invoke<{ records: string[] }>('get_run_tool_records', { runId: run_id })
+    return r.records
+  }
+
+  /**
+   * One window of log records, newest last. Omit `before` for the newest page;
+   * pass a previous response's `cursor` to walk backwards.
+   */
+  async function getRunLogPage(
+    run_id: string,
+    before?: number,
+    limit?: number,
+  ): Promise<RunLogPage> {
+    return invoke<RunLogPage>('get_run_log_page', { runId: run_id, before, limit })
   }
 
   // Absolute path of the log file backing a run/session (`.devdy/runs/<id>.log`
@@ -328,7 +409,7 @@ export const useRunsStore = defineStore('runs', () => {
     runs, loading, loadedProjectId, runMeta,
     fetchRuns, fetchIssue, fetchPr,
     startRun, rerunRun, refetchRun, cancelRun, resumeRun,
-    getRunLog, getRunLogPath, readRunInput,
+    getRunLog, getRunLogRevision, getRunLogPage, getRunLogPath, getRunToolRecords, readRunInput,
     respondPermission, sendUserMessage, endRunInput,
     listProjectFiles, readProjectFile, writeProjectFile, listDir,
     createDir, createFile, renameEntry, deleteEntry, copyEntry, moveEntry,

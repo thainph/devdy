@@ -459,6 +459,29 @@ export function parseStreamLog(raw: string): StreamState | null {
     return null
   }
 
+  return parseStreamLogWindow(lines)
+}
+
+/**
+ * Parse a set of log records into stream state.
+ *
+ * Unlike `parseStreamLog` this takes records that may be a WINDOW out of the
+ * middle/end of a log rather than the whole thing, so it does no "is this really
+ * a stream log?" head check and never returns null — the caller already knows.
+ *
+ * `seedModel` covers what a window structurally cannot see: the model id is
+ * announced once in the `system.init` record at the very top of the log, so a
+ * tail window has no way to recover it, and without it the context-window limit
+ * is unknown. The backend ships that record separately as the page `preamble`.
+ *
+ * A `tool_result` whose matching `tool_use` fell outside the window simply
+ * doesn't attach (`applyStreamEvent` ignores an unknown id) — correct here,
+ * since the tool call it belongs to isn't being rendered either.
+ */
+export function parseStreamLogWindow(
+  lines: string[],
+  opts?: { seedModel?: string | null },
+): StreamState {
   const state = createStreamState()
   // Reconstruct context-window occupancy the same way the live store does:
   // the LATEST per-message `assistant` usage (newest message = true current
@@ -504,7 +527,22 @@ export function parseStreamLog(raw: string): StreamState | null {
       break
     }
   }
+  if (!state.model && opts?.seedModel) state.model = opts.seedModel
   return state
+}
+
+/** Pull just the model id out of a page preamble record, without emitting an entry. */
+export function modelFromPreamble(preamble: string | null | undefined): string | null {
+  if (!preamble) return null
+  try {
+    const parsed = JSON.parse(preamble)
+    const state = createStreamState()
+    applyStreamEvent(state, parsed)
+    for (const e of state.entries) if (e.kind === 'system' && e.model) return e.model
+  } catch {
+    /* not JSON — nothing to recover */
+  }
+  return null
 }
 
 function ideContextLine(it: IdeContextItem): string {
