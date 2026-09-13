@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { useActivatedRefresh } from '@/composables/useActivatedRefresh'
 import {
   CalendarClock, Clock, Activity, DollarSign, ListChecks, Loader2, FolderOpen,
   Sparkles,
@@ -17,6 +18,10 @@ import {
   type WorkDigestFilter,
   type WorkItem,
 } from '@/stores/workDigest'
+
+// Named explicitly: <KeepAlive :include> in App.vue matches on component name,
+// and an inferred name is a build detail that minification can change.
+defineOptions({ name: 'WorkDigestView' })
 
 const router = useRouter()
 const projectsStore = useProjectsStore()
@@ -169,6 +174,12 @@ onMounted(async () => {
   selectAll()
   await load()
 })
+
+// Cached by <KeepAlive> (App.vue). Only `load()` belongs here — NOT `selectAll()`:
+// that is a first-run default, and re-applying it on every visit would silently
+// throw away the project filter the user picked last time (which <KeepAlive> is
+// now preserving for them).
+useActivatedRefresh(() => load())
 
 // ── formatting ──────────────────────────────────────────────────────────────
 function fmtDuration(secs: number | null): string {

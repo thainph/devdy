@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useActivatedRefresh } from '@/composables/useActivatedRefresh'
 import { useRouter } from 'vue-router'
 import { useSkillsStore, type Skill } from '@/stores/skills'
 import { useProjectsStore } from '@/stores/projects'
@@ -9,6 +10,10 @@ import { Button, Card, Badge } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { Plus, Upload, Download, Pencil, Trash2, Puzzle, CalendarDays, FolderCheck } from 'lucide-vue-next'
+
+// Named explicitly: <KeepAlive :include> in App.vue matches on component name,
+// and an inferred name is a build detail that minification can change.
+defineOptions({ name: 'SkillsView' })
 
 const { t } = useI18n()
 const router = useRouter()
@@ -22,6 +27,14 @@ const importingZip = ref(false)
 const targetLabel: Record<string, string> = { claude: t('skills.editor.targetClaude'), codex: t('skills.editor.targetCodex'), both: t('skills.editor.targetBoth') }
 
 onMounted(() => {
+  store.fetchSkills()
+  projectsStore.fetchProjects()
+})
+
+// Cached by <KeepAlive> (App.vue): onMounted fires once for the app's whole
+// lifetime, so re-show the screen with fresh data instead of whatever it read
+// the very first time.
+useActivatedRefresh(() => {
   store.fetchSkills()
   projectsStore.fetchProjects()
 })

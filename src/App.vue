@@ -72,6 +72,33 @@ const routeKey = computed(() =>
   isRunRoute.value ? `run-${route.params.projectId}` : String(route.name ?? route.path),
 )
 
+// Views kept alive across navigation, so returning to one is instant: no
+// teardown, no setup() re-run, no DOM rebuild, and scroll position + form state
+// survive. Each still refreshes its data on re-entry via `useActivatedRefresh`.
+//
+// Matched by COMPONENT NAME, which is why every view listed here declares
+// `defineOptions({ name })` rather than relying on the name Vue infers from the
+// filename.
+//
+// RunView is deliberately absent: its heavy stream state already lives in the
+// liveRuns store (so it survives navigation anyway) and `routeKey` exists
+// precisely to force it to remount when the project changes. Do not add it.
+//
+// Only views with no timers, no event listeners and no cleanup hooks are listed.
+// Anything with a lifecycle side effect needs its `onMounted`/`onUnmounted` work
+// moved to `onActivated`/`onDeactivated` first — under KeepAlive those hooks no
+// longer fire on navigation, so a timer would otherwise run forever in the
+// background.
+const CACHED_VIEWS = [
+  'SkillsView',
+  'RulesView',
+  'McpServersView',
+  'CalendarView',
+  'WorkDigestView',
+  'PrInboxView',
+  'ServersView',
+]
+
 // Pin every project the user opens as a workspace tab; remember the run being
 // viewed so re-selecting the tab returns to it.
 watch(
@@ -325,7 +352,17 @@ onMounted(async () => {
       <!-- Open-run tabs (only in the run workspace) -->
       <WorkspaceTabs v-if="isRunRoute && !uiLayout.focusMode" />
       <div class="flex-1 min-w-0 overflow-auto">
-        <RouterView :key="routeKey" />
+        <!-- `:key` stays on the inner <component>, NOT on <RouterView>: KeepAlive
+             caches entries by their vnode key, and a key on the RouterView would
+             tear the whole cache down on every navigation — the opposite of the
+             point. `routeKey` keeps its existing contract either way (see above):
+             run routes get `run-<projectId>` so RunView still remounts per
+             project, other routes get a stable per-view key. -->
+        <RouterView v-slot="{ Component }">
+          <KeepAlive :include="CACHED_VIEWS" :max="8">
+            <component :is="Component" :key="routeKey" />
+          </KeepAlive>
+        </RouterView>
       </div>
     </main>
 

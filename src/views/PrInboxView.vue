@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useActivatedRefresh } from '@/composables/useActivatedRefresh'
 import { useRouter } from 'vue-router'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { usePrInboxStore, prKey, type PrInboxItem } from '@/stores/prInbox'
@@ -10,6 +11,10 @@ import { Button, Card, Badge, StatusBadge, Skeleton } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import { GitPullRequest, RefreshCw, Sparkles, FolderPlus, ExternalLink, User, Eye, AlertTriangle } from 'lucide-vue-next'
 
+// Named explicitly: <KeepAlive :include> in App.vue matches on component name,
+// and an inferred name is a build detail that minification can change.
+defineOptions({ name: 'PrInboxView' })
+
 const { t } = useI18n()
 const router = useRouter()
 const store = usePrInboxStore()
@@ -18,6 +23,13 @@ const live = useLiveRunsStore()
 const { toast } = useToast()
 
 onMounted(() => {
+  if (store.items.length === 0) store.refresh()
+})
+
+// Cached by <KeepAlive> (App.vue): onMounted fires once for the app's whole
+// lifetime, so re-show the screen with fresh data instead of whatever it read
+// the very first time.
+useActivatedRefresh(() => {
   if (store.items.length === 0) store.refresh()
 })
 

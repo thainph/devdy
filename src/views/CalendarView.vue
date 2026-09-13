@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useActivatedRefresh } from '@/composables/useActivatedRefresh'
 import { useRouter } from 'vue-router'
 import { onClickOutside } from '@vueuse/core'
 import {
@@ -23,6 +24,10 @@ import CalendarWeekGrid from '@/components/calendar/CalendarWeekGrid.vue'
 import CalendarMonthGrid from '@/components/calendar/CalendarMonthGrid.vue'
 import EventEditorModal from '@/components/calendar/EventEditorModal.vue'
 
+// Named explicitly: <KeepAlive :include> in App.vue matches on component name,
+// and an inferred name is a build detail that minification can change.
+defineOptions({ name: 'CalendarView' })
+
 const store = useGoogleCalendarStore()
 const appSettings = useAppSettingsStore()
 const { t, locale } = useI18n()
@@ -40,6 +45,17 @@ onMounted(async () => {
     await store.fetchEvents()
     void store.fetchCalendars()
   }
+})
+
+// Cached by <KeepAlive> (App.vue). Events are the part that goes stale — they
+// change outside the app — so re-pull them on return. The visible month stays
+// where the user left it; only the data underneath is refreshed. Accounts and
+// calendar list are re-read too in case one was connected in Settings meanwhile.
+useActivatedRefresh(async () => {
+  await store.fetchAccounts()
+  if (!store.accounts.length) return
+  await store.fetchEvents()
+  void store.fetchCalendars()
 })
 
 // ── Event editor (create / edit) ──

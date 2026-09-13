@@ -1,12 +1,17 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useActivatedRefresh } from '@/composables/useActivatedRefresh'
 import { useRouter } from 'vue-router'
 import { useServersStore, type VpsServer } from '@/stores/servers'
 import { Button, Card, Badge } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { Plus, Pencil, Trash2, HardDrive, CalendarDays, Plug, KeyRound, UserCog } from 'lucide-vue-next'
+
+// Named explicitly: <KeepAlive :include> in App.vue matches on component name,
+// and an inferred name is a build detail that minification can change.
+defineOptions({ name: 'ServersView' })
 
 const router = useRouter()
 const store = useServersStore()
@@ -40,6 +45,13 @@ function tagList(tags: string | null): string[] {
 }
 
 onMounted(() => {
+  store.fetchServers()
+})
+
+// Cached by <KeepAlive> (App.vue): onMounted fires once for the app's whole
+// lifetime, so re-show the screen with fresh data instead of whatever it read
+// the very first time.
+useActivatedRefresh(() => {
   store.fetchServers()
 })
 
