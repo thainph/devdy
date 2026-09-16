@@ -3,9 +3,9 @@
 //
 // Injected automatically into every run under the server key `devdy`, so tools
 // are namespaced `mcp__devdy__<name>` on the AI side. Capabilities:
-//   • Quick notes  — read/write Devdy's markdown scratchpad (per-project or global)
+//   • Quick notes  — full CRUD over Devdy's markdown scratchpad (per-project or global)
 //   • Session recall — search & read past run transcripts across sessions
-//   • Todos / project context / VPS — quick tasks, git, managed servers
+//   • Todos / project context / VPS — full CRUD on quick tasks, git, managed servers
 //   • Skills & Rules library — CRUD the reusable skill/rule definitions (source-only)
 //
 // Scope: env `DEVDY_PROJECT_ID` / `DEVDY_PROJECT_PATH` pin the "current project";
@@ -23,6 +23,15 @@ const DEFAULT_PROTOCOL = '2025-06-18';
 
 const log = (...a) => process.stderr.write(`[devdy-mcp] ${a.join(' ')}\n`);
 const firstLine = (s = '') => String(s).split('\n').find((l) => l.trim()) || '';
+// A one-line excerpt centred on the first case-insensitive hit; falls back to the
+// head of the text when the match was in the title rather than the body.
+const snippetAround = (text = '', query = '', width = 120) => {
+  const body = String(text).replace(/\s+/g, ' ').trim();
+  const i = body.toLowerCase().indexOf(String(query || '').trim().toLowerCase());
+  const start = i < 0 ? 0 : Math.max(0, i - Math.floor(width / 3));
+  const end = start + width;
+  return `${start > 0 ? '…' : ''}${body.slice(start, end)}${end < body.length ? '…' : ''}`;
+};
 // `runs.title` is normally set (Devdy derives it from the first user message);
 // fall back to an engine/type label when it's empty.
 const titleOf = (run) => run.title || `${run.engine} ${run.type}`.trim();
@@ -119,6 +128,77 @@ const tools = {
     },
   },
 
+  notes_search: {
+    description:
+      'Search notes by substring across title and body. Defaults to the current project; pass scope="all" for every project.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string' },
+        scope: { type: 'string', enum: ['project', 'all'] },
+        limit: { type: 'integer', minimum: 1, maximum: 200 },
+      },
+      required: ['query'],
+    },
+    handler: (a) => {
+      const rows = store.searchNotes(a);
+      if (!rows.length) return `No notes match "${String(a.query).trim()}".`;
+      return rows
+        .map((n) => {
+          const title = n.title || firstLine(n.content) || '(untitled)';
+          return `- [${n.id}] ${title} — ${snippetAround(n.content, a.query)} (updated ${n.updated_at})`;
+        })
+        .join('\n');
+    },
+  },
+
+  notes_delete: {
+    description:
+      'Delete one or more notes by id (permanent). Pass a single id or a list; the batch is applied in one transaction.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        ids: { type: 'array', items: { type: 'string' }, description: 'Bulk delete' },
+      },
+    },
+    handler: (a) => {
+      const r = store.deleteNotes({ ids: a.ids ?? a.id });
+      return `Deleted ${r.deleted}/${r.requested} note(s).`;
+    },
+  },
+
+  notes_set_project: {
+    description:
+      'Link a note to the current project, or detach it with scope="global" (which also drops the run backlink).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        scope: { type: 'string', enum: ['project', 'global'] },
+      },
+      required: ['id'],
+    },
+    handler: (a) => {
+      const r = store.setNoteProject(a);
+      return `Note ${r.id} is now ${r.project_id ? `linked to project ${r.project_id}` : 'global (no project)'}.`;
+    },
+  },
+
+  notes_reorder: {
+    description:
+      'Reorder notes. The given ids move to the top in the given order; every other note keeps its relative order below. Pass the full list for an exact ordering.',
+    inputSchema: {
+      type: 'object',
+      properties: { ids: { type: 'array', items: { type: 'string' } } },
+      required: ['ids'],
+    },
+    handler: (a) => {
+      const r = store.reorderNotes(a);
+      return `Reordered ${r.ordered} note(s).`;
+    },
+  },
+
   sessions_recent: {
     description:
       'List recent Devdy runs/sessions (chat history). Defaults to the current project; scope="all" spans every project. Use the returned run ids with session_read.',
@@ -203,41 +283,123 @@ const tools = {
   // ---- Phase 2: Todos ------------------------------------------------------
 
   todos_list: {
-    description: 'List Devdy todos (a global quick task list). Set include_done=false to hide completed items.',
+    description:
+      'List Devdy todos (quick task list), top priority first. Set include_done=false to hide completed items, or scope="project" to only show the current project\'s todos.',
     inputSchema: {
       type: 'object',
-      properties: { include_done: { type: 'boolean' } },
+      properties: {
+        include_done: { type: 'boolean' },
+        scope: { type: 'string', enum: ['all', 'project'], description: 'all (default) or project' },
+      },
     },
     handler: (a) => {
-      const rows = store.listTodos({ includeDone: a.include_done !== false });
+      const rows = store.listTodos({ includeDone: a.include_done !== false, scope: a.scope });
       if (!rows.length) return 'No todos.';
-      return rows.map((t) => `- [${t.done ? 'x' : ' '}] ${t.text}  (${t.id})`).join('\n');
+      return rows
+        .map((t) => `- [${t.done ? 'x' : ' '}] ${t.text}${t.project_name ? ` · ${t.project_name}` : ''}  (${t.id})`)
+        .join('\n');
     },
   },
 
   todos_add: {
-    description: 'Add a todo to the global task list. Use to capture follow-up work that surfaces during a session.',
+    description:
+      'Add a todo. Links to the current project by default; pass scope="global" for a project-less task. Use this to capture follow-up work that surfaces during a session.',
     inputSchema: {
       type: 'object',
-      properties: { text: { type: 'string' } },
+      properties: {
+        text: { type: 'string' },
+        scope: { type: 'string', enum: ['project', 'global'] },
+      },
       required: ['text'],
     },
     handler: (a) => {
       const t = store.addTodo(a);
-      return `Added todo ${t.id}.`;
+      return `Added todo ${t.id}${t.project_id ? '' : ' (global)'}.`;
     },
   },
 
   todos_done: {
-    description: 'Mark a todo done (or undo with done=false).',
+    description: 'Mark a todo done (or undo with done=false). Omit done to flip the current state.',
     inputSchema: {
       type: 'object',
-      properties: { id: { type: 'string' }, done: { type: 'boolean' } },
+      properties: {
+        id: { type: 'string' },
+        done: { type: 'boolean', description: 'omit to toggle' },
+      },
       required: ['id'],
     },
     handler: (a) => {
-      const r = store.setTodoDone({ id: a.id, done: a.done !== false });
+      const r = a.done == null ? store.toggleTodo({ id: a.id }) : store.setTodoDone({ id: a.id, done: a.done });
       return `Todo ${r.id} marked ${r.done ? 'done' : 'not done'}.`;
+    },
+  },
+
+  todos_update: {
+    description: 'Rewrite a todo\'s text.',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'string' }, text: { type: 'string' } },
+      required: ['id', 'text'],
+    },
+    handler: (a) => {
+      const r = store.updateTodo(a);
+      return `Updated todo ${r.id}.`;
+    },
+  },
+
+  todos_delete: {
+    description:
+      'Delete one or more todos by id (permanent). Pass a single id or a list; the batch is applied in one transaction.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        ids: { type: 'array', items: { type: 'string' }, description: 'Bulk delete' },
+      },
+    },
+    handler: (a) => {
+      const r = store.deleteTodos({ ids: a.ids ?? a.id });
+      return `Deleted ${r.deleted}/${r.requested} todo(s).`;
+    },
+  },
+
+  todos_clear_done: {
+    description: 'Delete every completed todo in one go.',
+    inputSchema: { type: 'object', properties: {} },
+    handler: () => {
+      const r = store.clearDoneTodos();
+      return r.deleted ? `Cleared ${r.deleted} completed todo(s).` : 'No completed todos to clear.';
+    },
+  },
+
+  todos_set_project: {
+    description:
+      'Link a todo to the current project, or detach it with scope="global" (which also drops the run backlink).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        scope: { type: 'string', enum: ['project', 'global'] },
+      },
+      required: ['id'],
+    },
+    handler: (a) => {
+      const r = store.setTodoProject(a);
+      return `Todo ${r.id} is now ${r.project_id ? `linked to project ${r.project_id}` : 'global (no project)'}.`;
+    },
+  },
+
+  todos_reorder: {
+    description:
+      'Reorder todos (priority: top first). The given ids move to the top in the given order; every other todo keeps its relative order below. Pass the full list for an exact ordering.',
+    inputSchema: {
+      type: 'object',
+      properties: { ids: { type: 'array', items: { type: 'string' } } },
+      required: ['ids'],
+    },
+    handler: (a) => {
+      const r = store.reorderTodos(a);
+      return `Reordered ${r.ordered} todo(s).`;
     },
   },
 
