@@ -484,16 +484,22 @@
   * {
     border-color: hsl(var(--border));
   }
-  /* One entry in StreamLog. `content-visibility: auto` lets WebKit skip layout
-     and paint for entries scrolled out of view, so scrolling a long run costs
-     what's on screen rather than everything accumulated.
-     `contain-intrinsic-size` is NOT optional: without it an off-screen entry
-     measures as 0px tall, which corrupts scrollHeight and makes the scrollbar
-     jump. `auto` lets the browser remember each entry's real height once it has
-     been rendered; 200px is only the first-paint estimate. */
-  .stream-entry {
+  /* One entry in StreamLog, applied only while the run is LIVE (see StreamLog's
+     template): `content-visibility: auto` lets WebKit skip layout and paint for
+     entries scrolled out of view, so each streamed chunk reflows what's on
+     screen rather than everything accumulated. It is deliberately NOT used on a
+     finished run — scrolling past laid-out content is just a paint, while a
+     skipped entry must be laid out again in the frame it re-enters the viewport.
+     An entry only opts in once its real height has been MEASURED — StreamLog's
+     size observer writes `--stream-entry-h` and sets `data-measured`. A guessed
+     placeholder height is what made scrolling jump: an entry parked at an
+     estimated height resizes to its real one the moment it enters the viewport,
+     which shifts everything below it, and WebKit implements no scroll anchoring
+     to absorb that shift. Reserving the height the entry actually had keeps
+     scrollHeight stable, so the reading position never moves. */
+  .stream-entry[data-measured] {
     content-visibility: auto;
-    contain-intrinsic-size: auto 200px;
+    contain-intrinsic-size: auto var(--stream-entry-h);
   }
   body {
     position: relative;
@@ -850,7 +856,6 @@
   color: hsl(var(--muted-foreground));
   cursor: pointer;
   transition: color 0.15s ease, background 0.15s ease;
-  backdrop-filter: blur(2px);
 }
 .mermaid-zoom-btn:hover {
   color: hsl(var(--foreground));
@@ -904,7 +909,10 @@
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease;
-  backdrop-filter: blur(2px);
+  /* No backdrop-filter here on purpose: a long run holds dozens of code blocks,
+     each of which would become its own backdrop root that WebKit has to
+     re-composite while the list scrolls — for a blur nobody can see behind an
+     85%-opaque button. */
 }
 .code-copy-btn:hover {
   color: hsl(var(--foreground));
