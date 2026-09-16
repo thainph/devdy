@@ -6,6 +6,7 @@ mod remote;
 mod runs;
 mod secrets;
 
+use commands::app_menu::set_app_menu;
 use commands::aws_accounts::{
     create_aws_account, delete_aws_account, list_aws_accounts, set_project_aws_account,
     update_aws_account, validate_aws_account,
@@ -117,6 +118,9 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
+        // The menu itself is installed by the frontend (see `set_app_menu`), so
+        // its labels follow the app language; this only routes clicks back.
+        .on_menu_event(commands::app_menu::on_menu_event)
         .setup(|app| {
             use tauri::Manager;
             let app_data_dir = app
@@ -215,6 +219,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             health_check,
+            set_app_menu,
             get_settings,
             update_setting,
             list_skills,

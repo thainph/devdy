@@ -1,0 +1,18 @@
+{
+  "file": "Tệp",
+  "edit": "Sửa",
+  "view": "Hiển thị",
+  "go": "Điều hướng",
+  "window": "Cửa sổ",
+  "help": "Trợ giúp",
+  "newSession": "Phiên mới",
+  "newTodo": "Công việc mới",
+  "newNote": "Ghi chú mới",
+  "settings": "Cài đặt…",
+  "hideSidebar": "Ẩn thanh điều hướng",
+  "showSidebar": "Hiện thanh điều hướng",
+  "enterFocusMode": "Vào chế độ tập trung",
+  "exitFocusMode": "Thoát chế độ tập trung",
+  "reload": "Tải lại",
+  "about": "Giới thiệu Devdy"
+}
