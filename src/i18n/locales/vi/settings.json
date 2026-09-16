@@ -303,7 +303,13 @@
     "analyzeIssue": "Prompt Phân tích Issue",
     "analyzeIssuePlaceholder": "Phân tích GitHub issue sau và tạo kế hoạch triển khai chi tiết…",
     "reviewPr": "Prompt Review PR",
-    "reviewPrPlaceholder": "Review pull request sau và đưa ra phản hồi chi tiết…"
+    "reviewPrPlaceholder": "Review pull request sau và đưa ra phản hồi chi tiết…",
+    "library": "Prompt hay dùng",
+    "libraryHint": "Chọn lại từ dropdown trong khung chat để khỏi gõ lại.",
+    "libraryEmpty": "Chưa có prompt nào được lưu.",
+    "addPrompt": "Thêm prompt",
+    "titlePlaceholder": "Tên prompt {n}",
+    "bodyPlaceholder": "Nội dung prompt sẽ chèn vào khung chat…"
   },
   "toast": {
     "saved": "Đã lưu"

@@ -21,6 +21,8 @@ export interface AppSettings {
   animated_background: string
   analyze_issue_prompt: string
   review_pr_prompt: string
+  /** Reusable prompt library as a JSON array string; parse with `parseSavedPrompts`. */
+  saved_prompts: string
   default_permission_mode: string
   terminal_app: string
   context_warn_percent: string

@@ -60,7 +60,9 @@ const fiveHourText = computed(() => {
 </script>
 
 <template>
-  <div v-if="tokens > 0" class="flex items-center gap-2 px-1 pb-1.5 text-[10px]">
+  <!-- No padding of its own: it shares the composer's usage row with the account
+       usage chips, and that row owns the spacing (see RunView). -->
+  <div v-if="tokens > 0" class="flex shrink-0 items-center gap-2 text-[10px]">
     <span class="font-mono shrink-0" :class="textClass">
       {{ formatTokensShort(tokens) }} / {{ formatTokensShort(limit) }}
     </span>

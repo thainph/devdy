@@ -175,6 +175,15 @@ const TONE_ROW: Record<string, string> = {
   ok: 'border-border/60 bg-muted/30 text-foreground',
   neutral: 'border-border/60 bg-muted/30 text-muted-foreground',
 }
+// Leading dot for the quiet tones. Warning/over swap it for an alert icon, so
+// severity survives even where the tint is hard to spot (small chip, light bg).
+const TONE_DOT: Record<string, string> = {
+  over: 'bg-red-500',
+  warning: 'bg-amber-500',
+  stale: 'bg-muted-foreground/40',
+  ok: 'bg-emerald-500',
+  neutral: 'bg-muted-foreground/30',
+}
 const TONE_FILL: Record<string, string> = {
   over: 'bg-red-500',
   warning: 'bg-amber-500',
@@ -260,6 +269,9 @@ function titleFor(v: ProviderView): string {
   return t('misc.budget.usageStatusTitle', { label: v.label })
 }
 
+// Module-level, so it survives remounts for the whole app session (see below).
+let startupProbed = false
+
 let timer: ReturnType<typeof setInterval> | null = null
 let clockTimer: ReturnType<typeof setInterval> | null = null
 let unlistenPlanUsage: UnlistenFn | null = null
@@ -275,8 +287,16 @@ onMounted(async () => {
   // The only automatic probes: one per provider on startup. Afterwards the % is
   // kept fresh by the piggybacked capture on every run (Claude /usage, Codex
   // rate-limits) or by the manual refresh button — no background polling.
-  budget.refreshPlanUsage({ reason: 'startup', force: true })
-  budget.refreshCodexPlanUsage({ reason: 'startup', force: true })
+  //
+  // Guarded by a module-level flag because this badge now lives in RunView, not
+  // the sidebar: it mounts again on every project switch, and a forced probe
+  // shells out to the `claude` / `codex` CLI. Without the guard, hopping
+  // between projects would re-probe both providers every time.
+  if (!startupProbed) {
+    startupProbed = true
+    budget.refreshPlanUsage({ reason: 'startup', force: true })
+    budget.refreshCodexPlanUsage({ reason: 'startup', force: true })
+  }
   // Local IPC only (no engine call): recompute is_stale / rolled_over against
   // the clock, and pick up snapshots written by runs.
   timer = setInterval(() => {
@@ -324,28 +344,32 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="mx-2 mb-2 space-y-1">
+  <!-- Inline chips, sized to ride on the composer's usage row next to the
+       session context meter (see RunView). Horizontal, not stacked: that row
+       has width to spare and no height to spare. -->
+  <div class="flex items-center gap-1.5 min-w-0 overflow-x-auto overflow-y-hidden">
     <div
       v-for="v in views"
       :key="v.key"
-      class="group relative flex items-center gap-1.5 rounded-md border px-2 py-1 text-[10px] leading-none transition-colors"
+      class="group relative flex h-[19px] shrink-0 items-center gap-1.5 rounded-full border pl-1.5 pr-2 text-[10px] leading-none transition-colors"
       :class="TONE_ROW[tone(v)]"
       :title="tooltip(v)"
     >
-      <!-- status indicator: alert icon when warning/over -->
+      <!-- status indicator: alert icon when warning/over, quiet dot otherwise -->
       <AlertTriangle
         v-if="tone(v) === 'over' || tone(v) === 'warning'"
-        class="h-3 w-3 shrink-0"
+        class="h-2.5 w-2.5 shrink-0"
         :stroke-width="2.5"
       />
+      <span v-else class="h-1.5 w-1.5 shrink-0 rounded-full" :class="TONE_DOT[tone(v)]" />
 
       <!-- provider label (account name for Claude rows) -->
-      <span class="max-w-[80px] shrink-0 truncate font-medium opacity-70">{{ v.label }}</span>
+      <span class="max-w-[90px] shrink-0 truncate font-medium opacity-80">{{ v.label }}</span>
 
       <!-- meter: percent + bar when a real usage % exists -->
       <template v-if="hasMeter(v)">
-        <span class="w-8 shrink-0 text-right font-mono font-semibold tabular-nums">{{ v.percent }}%</span>
-        <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
+        <span class="shrink-0 font-mono font-semibold tabular-nums">{{ v.percent }}%</span>
+        <div class="h-1 w-8 shrink-0 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
           <div
             class="h-full rounded-full transition-[width] duration-300 motion-reduce:transition-none"
             :class="TONE_FILL[tone(v)]"
@@ -353,11 +377,11 @@ onUnmounted(() => {
           />
         </div>
       </template>
-      <!-- otherwise a muted status filling the meter area -->
-      <span v-else class="flex-1 truncate font-mono opacity-60">{{ compactStatus(v) }}</span>
+      <!-- otherwise a muted status in place of the meter -->
+      <span v-else class="max-w-[110px] shrink-0 truncate font-mono opacity-60">{{ compactStatus(v) }}</span>
 
       <!-- right slot: reset time; swaps to the refresh button on hover / while refreshing -->
-      <div class="relative h-3 w-11 shrink-0">
+      <div class="relative h-3 w-9 shrink-0">
         <span
           class="absolute inset-0 flex items-center justify-end font-mono tabular-nums opacity-60 transition-opacity"
           :class="v.refreshing ? 'opacity-0' : 'group-hover:opacity-0'"

@@ -24,6 +24,10 @@ pub struct AppSettings {
     pub animated_background: String,
     pub analyze_issue_prompt: String,
     pub review_pr_prompt: String,
+    /// User's reusable prompt library, stored as a JSON array of
+    /// `{ id, title, body }`. Defaults to `"[]"`. The UI owns the shape; the
+    /// backend only round-trips the string.
+    pub saved_prompts: String,
     pub default_permission_mode: String,
     /// Terminal app to open a project folder with ("terminal" = macOS Terminal.app, "iterm").
     pub terminal_app: String,
@@ -101,6 +105,7 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
         animated_background: "true".to_string(),
         analyze_issue_prompt: "Please analyze the GitHub issue described in the file and create a detailed implementation plan.".to_string(),
         review_pr_prompt: "Please review the pull request described in the file according to the configured skills.".to_string(),
+        saved_prompts: "[]".to_string(),
         default_permission_mode: "default".to_string(),
         terminal_app: "terminal".to_string(),
         context_warn_percent: "80".to_string(),
@@ -142,6 +147,7 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
             "animated_background" => settings.animated_background = value,
             "analyze_issue_prompt" => settings.analyze_issue_prompt = value,
             "review_pr_prompt" => settings.review_pr_prompt = value,
+            "saved_prompts" => settings.saved_prompts = value,
             "default_permission_mode" => settings.default_permission_mode = value,
             "terminal_app" => settings.terminal_app = value,
             "context_warn_percent" => settings.context_warn_percent = value,

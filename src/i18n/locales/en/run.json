@@ -117,6 +117,7 @@
   "dropFileToAttach": "Drop files to attach to the conversation",
   "attachImage": "Attach image (or paste from clipboard)",
   "attachFileByPath": "Attach a file by path (or drag & drop into the composer)",
+  "savedPrompts": "Insert a saved prompt",
   "collapseComposer": "Collapse the composer",
   "expandComposer": "Expand the composer (easier to read/edit long text)",
   "runSettingsTitle": "Run options — using {engine}",

@@ -22,6 +22,7 @@ import { useClaudeAccountsStore } from '@/stores/claudeAccounts'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useModelCatalogStore } from '@/stores/modelCatalog'
 import { useUILayoutStore } from '@/stores/uiLayout'
+import { registerMenuAction } from '@/lib/appMenu'
 import { invoke } from '@/lib/tauri'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -36,13 +37,15 @@ import {
   ShieldQuestion, MessageCircleQuestion,
   Pin, PinOff, Pencil, Check, Github, Gitlab, UserCircle,
   ClipboardCopy, ScrollText, HardDrive, Cloud, Radio, Languages, StickyNote, ListTodo, FolderTree, Loader2, ListChecks,
-  MoreHorizontal, Users
+  MoreHorizontal, Users, BookMarked
 } from 'lucide-vue-next'
 import AppSelect from '@/components/AppSelect.vue'
+import { type SavedPrompt, parseSavedPrompts, promptLabel } from '@/lib/savedPrompts'
 import StreamLog from '@/components/StreamLog.vue'
 import TranslatePopover from '@/components/TranslatePopover.vue'
 import MentionedFiles from '@/components/MentionedFiles.vue'
 import ContextMeter from '@/components/ContextMeter.vue'
+import BudgetBadge from '@/components/BudgetBadge.vue'
 import { mergeContextModel } from '@/lib/contextLimits'
 import PermissionPrompt from '@/components/PermissionPrompt.vue'
 import FileViewer from '@/components/FileViewer.vue'
@@ -557,6 +560,20 @@ function runLabel(run: RunRecord): string {
   return `${run.run_type === 'analyze_issue' ? t('run.labelIssue') : t('run.labelPr')} #${run.ref_number}`
 }
 
+// History row timestamp: date + time, so runs from the same day stay
+// distinguishable. Falls back to the raw string if the date can't be parsed.
+function runTimestamp(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  return d.toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
 // A run awaiting a permission / question response (front of its live queue), or
 // undefined. Drives the animated attention icon in the History list so the user
 // knows which run needs them without a floating toast.
@@ -711,15 +728,10 @@ function scrollOutputToBottom() {
 
 // Re-evaluate the pin whenever the user scrolls the live output.
 function onOutputScroll() {
-  // Pointer interaction pauses auto-follow. Do not silently re-enable it while
-  // the pointer is still down (for example while drag-selecting text).
-  if (outputEl.value && !pointerDownInOutput.value) {
-    stickToBottom.value = isNearBottom(outputEl.value)
-  }
   // The floating translate button is anchored to a viewport rect that scrolling
   // invalidates — hide it (the popover, once open, dismisses on its own).
   clearTranslateTrigger()
-  captureScrollAnchor()
+  scheduleScrollSettle()
 }
 
 // --- Scroll anchoring across layout resizes ---------------------------------
@@ -754,6 +766,25 @@ function captureScrollAnchor() {
     }
   }
   scrollAnchor = null
+}
+
+// Everything a scroll has to recompute reads layout: `scrollHeight` for the
+// bottom pin, entry rects for the anchor. A trackpad emits several scroll events
+// per frame, and each of those reads forces a synchronous layout mid-scroll —
+// that is the stutter. Coalesce into one read per frame; both values only have
+// to be current by the time the frame is painted.
+let scrollSettleFrame = 0
+function scheduleScrollSettle() {
+  if (scrollSettleFrame) return
+  scrollSettleFrame = requestAnimationFrame(() => {
+    scrollSettleFrame = 0
+    // Pointer interaction pauses auto-follow. Do not silently re-enable it while
+    // the pointer is still down (for example while drag-selecting text).
+    if (outputEl.value && !pointerDownInOutput.value) {
+      stickToBottom.value = isNearBottom(outputEl.value)
+    }
+    captureScrollAnchor()
+  })
 }
 
 function restoreScrollAnchor() {
@@ -969,9 +1000,16 @@ onMounted(async () => {
   loadMarkdown()
   nextTick(autoResizeComposer)
   document.addEventListener('mousedown', onRunSettingsPointerDown)
+  // File → New Session (⌘N). Only this screen can serve it: starting a session
+  // needs the project the user is currently in.
+  unbindNewSessionMenu = registerMenuAction('file.newSession', () => {
+    void handleNewSession()
+  })
   // Hydrate the persisted model caches so the composer's picker shows the last
   // refreshed lists (no discovery here — refresh is manual in Settings).
   modelCatalog.ensureLoaded().catch(() => {})
+  // Needed for the composer's saved-prompt dropdown (and the engine default).
+  appSettings.ensureLoaded().catch(() => {})
   if (projectStore.projects.length === 0) {
     await projectStore.fetchProjects()
   }
@@ -1085,10 +1123,16 @@ onUnmounted(() => {
   // Run event listeners live in the liveRuns store, so they intentionally
   // survive this component unmounting — that's what lets runs keep streaming
   // while the user is on another screen.
+  unbindNewSessionMenu?.()
+  unbindNewSessionMenu = null
   if (isResizing.value) stopResize()
   if (isResizingQuestion.value) stopQuestionResize()
   outputRO?.disconnect()
   outputRO = null
+  if (scrollSettleFrame) {
+    cancelAnimationFrame(scrollSettleFrame)
+    scrollSettleFrame = 0
+  }
   window.removeEventListener('focus', onAppFocus)
   document.removeEventListener('mousedown', onRunSettingsPointerDown)
   window.removeEventListener('pointerup', onWindowPointerUp)
@@ -1267,6 +1311,9 @@ async function createSessionWithEngine(engine?: string) {
 async function handleNewSession() {
   await createSessionWithEngine(engineOverride.value || undefined)
 }
+
+// Unbound on unmount so the menu item stops firing into a dead screen.
+let unbindNewSessionMenu: (() => void) | null = null
 
 // Start a brand-new turn on `runId` with `text` as the prompt. Shared by the
 // "fetched" first-run path and by engine handoffs.
@@ -1945,6 +1992,29 @@ function mentionFileInComposer(path: string) {
   const insert = `${sep}@${path} `
   followUpInput.value = before + insert + after
   mentionOpen.value = false
+  nextTick(() => {
+    const pos = (before + insert).length
+    if (el) { el.focus(); el.setSelectionRange(pos, pos) }
+  })
+}
+
+// ── Saved prompt library (edited in Settings → Prompt Templates) ──────────
+const savedPrompts = computed(() => parseSavedPrompts(appSettings.settings?.saved_prompts))
+
+// Insert a saved prompt at the caret, appending when the composer isn't
+// focused — same contract as `mentionFileInComposer`. Deliberately does NOT
+// send: the user reviews/edits first.
+function insertSavedPrompt(p: SavedPrompt) {
+  const el = composerEl.value
+  const cur = followUpInput.value
+  const focused = el && document.activeElement === el
+  const caret = focused ? (el!.selectionStart ?? cur.length) : cur.length
+  const before = cur.slice(0, caret)
+  const after = cur.slice(caret)
+  // Keep an existing draft readable by dropping the prompt onto its own line.
+  const sep = before.length && !/\n$/.test(before) ? '\n' : ''
+  const insert = `${sep}${p.body}`
+  followUpInput.value = before + insert + after
   nextTick(() => {
     const pos = (before + insert).length
     if (el) { el.focus(); el.setSelectionRange(pos, pos) }
@@ -2901,7 +2971,7 @@ function handleRefInput(val: string) {
                   :stroke-width="2"
                   :aria-label="t('run.pinned')"
                 />
-                <span class="flex-1 min-w-0 truncate text-[13px] font-medium leading-tight">{{ runLabel(run) }}</span>
+                <span class="flex-1 min-w-0 truncate text-[13px] font-medium leading-tight" :title="runLabel(run)">{{ runLabel(run) }}</span>
                 <!-- Remote-control marker: a phone is driving (green, pulsing) or
                      a link is waiting for one (amber) on THIS session. Lets the
                      user spot the remotely-controlled session in the list. -->
@@ -2942,7 +3012,7 @@ function handleRefInput(val: string) {
               <div class="flex items-center gap-2 mt-2 pl-6 pr-3 text-[10px] text-muted-foreground/70">
                 <span class="flex items-center gap-1 shrink-0">
                   <Clock class="h-2.5 w-2.5" :stroke-width="1.5" />
-                  {{ new Date(run.created_at).toLocaleDateString() }}
+                  {{ runTimestamp(run.created_at) }}
                 </span>
                 <span class="shrink-0 px-1.5 py-0.5 rounded bg-muted/60 font-mono text-[9px] uppercase tracking-wide text-muted-foreground">
                   {{ run.engine }}
@@ -3300,7 +3370,7 @@ function handleRefInput(val: string) {
                  away from the bottom of the live output. -->
             <button
               v-if="hasLiveOutput && !isViewingHistory && !stickToBottom"
-              class="absolute bottom-4 right-4 z-10 flex items-center gap-1 rounded-full border border-border bg-card/90 px-3 py-1.5 text-[11px] font-mono text-foreground/80 shadow-md backdrop-blur transition-colors hover:bg-card hover:text-foreground cursor-pointer"
+              class="absolute bottom-4 right-4 z-10 flex items-center gap-1 rounded-full border border-border bg-card px-3 py-1.5 text-[11px] font-mono text-foreground/80 shadow-md transition-colors hover:bg-card hover:text-foreground cursor-pointer"
               :title="t('run.scrollToLatest')"
               @click="stickToBottom = true; scrollOutputToBottom()"
             >
@@ -3446,13 +3516,20 @@ function handleRefInput(val: string) {
               @change="onPickImages"
             />
 
-            <!-- Context-window meter (shows once the run reports token usage) -->
-            <ContextMeter
-              :tokens="contextTokens"
-              :model="contextModel"
-              :rate-limit="contextRateLimit"
-              @compact="sendSlashCommand('/compact')"
-            />
+            <!-- Usage row: this run's context window on the left, the account
+                 plan-usage chips filling the width that used to sit empty.
+                 Both parts self-hide, so the row collapses when there is
+                 nothing to report. -->
+            <div class="flex items-center gap-2 px-1 pb-1.5 min-w-0">
+              <ContextMeter
+                :tokens="contextTokens"
+                :model="contextModel"
+                :rate-limit="contextRateLimit"
+                @compact="sendSlashCommand('/compact')"
+              />
+              <span v-if="contextTokens > 0" class="shrink-0 text-[10px] text-muted-foreground/40">·</span>
+              <BudgetBadge />
+            </div>
 
             <!-- Prompt input card: textarea on top, controls toolbar below -->
             <div class="relative rounded-lg border border-border bg-background focus-within:ring-1 focus-within:ring-ring transition-colors">
@@ -3497,6 +3574,23 @@ function handleRefInput(val: string) {
                 >
                   <Paperclip class="h-4 w-4" :stroke-width="2" />
                 </button>
+                <DropdownMenu v-if="savedPrompts.length" align="left" class="shrink-0">
+                  <template #trigger>
+                    <button
+                      class="inline-flex items-center justify-center h-8 w-8 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 shrink-0"
+                      :disabled="sendingFollowUp"
+                      :title="t('run.savedPrompts')"
+                      :aria-label="t('run.savedPrompts')"
+                    >
+                      <BookMarked class="h-4 w-4" :stroke-width="2" />
+                    </button>
+                  </template>
+                  <div class="max-h-64 max-w-72 overflow-y-auto">
+                    <DropdownItem v-for="p in savedPrompts" :key="p.id" @click="insertSavedPrompt(p)">
+                      <span class="min-w-0 flex-1 truncate">{{ promptLabel(p) }}</span>
+                    </DropdownItem>
+                  </div>
+                </DropdownMenu>
                 <button
                   class="inline-flex items-center justify-center h-8 w-8 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 shrink-0"
                   :title="composerExpanded ? t('run.collapseComposer') : t('run.expandComposer')"
