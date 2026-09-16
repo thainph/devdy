@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, type Component } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   ChevronRight, Wrench, Sparkles, CheckCircle2, XCircle, Cpu, Brain, AlertTriangle, Info,
@@ -532,6 +532,111 @@ const lastEntryIsResult = computed(() => {
   return last?.kind === 'result'
 })
 
+// --- Entry height measurement (feeds `content-visibility`) ------------------
+// An entry may only be skipped off-screen once we know how tall it really is;
+// see the `.stream-entry[data-measured]` rule. One shared ResizeObserver across
+// every StreamLog instance measures each entry while it is rendered and records
+// that height on the element itself, so the placeholder it leaves behind is the
+// exact size it occupied — scrollHeight then stays put as entries scroll in and
+// out, and re-reading a long run no longer jumps.
+const measuredHeights = new WeakMap<Element, number>()
+
+// Skipped entries report their placeholder height, not a new measurement —
+// writing that back would slowly drift the reserved size. Re-measure only what
+// is actually being rendered.
+function isRendering(el: HTMLElement): boolean {
+  if (!el.hasAttribute('data-measured')) return true
+  if (typeof el.checkVisibility !== 'function') return true
+  return el.checkVisibility({ contentVisibilityAuto: true } as CheckVisibilityOptions)
+}
+
+// Skipping is not free while scrolling: an entry that comes back into view has
+// to be laid out and painted from scratch inside that frame. Scrolling past
+// content that is already laid out costs nothing but a paint — so an entry only
+// earns its keep if it is big enough that NOT holding it laid out is a real
+// saving. Small entries (the one-line tool headers that make up most of a run)
+// stay rendered, which is what keeps scrolling smooth; the rare huge entry (a
+// long diff, a wall of markdown) is still skipped, and that's where the layout
+// cost of a long run actually lives.
+const SKIP_MIN_HEIGHT = 1200
+
+const entrySizeObserver =
+  typeof ResizeObserver === 'undefined'
+    ? null
+    : new ResizeObserver((records) => {
+        for (const rec of records) {
+          const el = rec.target as HTMLElement
+          const h = rec.borderBoxSize?.[0]?.blockSize ?? rec.contentRect.height
+          if (h <= 0) continue
+          const prev = measuredHeights.get(el)
+          if (prev !== undefined && Math.abs(prev - h) < 1) continue
+          if (!isRendering(el)) continue
+          measuredHeights.set(el, h)
+          if (h < SKIP_MIN_HEIGHT) {
+            // Shrank below the threshold (a tool card collapsed, say): stop
+            // skipping it rather than leaving a stale reservation behind.
+            el.removeAttribute('data-measured')
+            continue
+          }
+          el.style.setProperty('--stream-entry-h', `${Math.round(h)}px`)
+          el.setAttribute('data-measured', '')
+        }
+      })
+
+// Entries mounted by THIS log, so a width change can invalidate their heights.
+const observedEntries = new Set<HTMLElement>()
+
+const vEntrySize = {
+  mounted: (el: HTMLElement) => {
+    observedEntries.add(el)
+    entrySizeObserver?.observe(el)
+  },
+  unmounted: (el: HTMLElement) => {
+    observedEntries.delete(el)
+    entrySizeObserver?.unobserve(el)
+  },
+}
+
+// A narrower column re-wraps text, so every measurement taken at the old width
+// is stale — but a skipped entry is never laid out again, so it would keep
+// reserving its old height and resize the moment it scrolls back into view.
+// Drop the measurements on a width change: each entry renders normally until it
+// has been measured again. Debounced, so dragging the split doesn't re-measure
+// on every intermediate pixel.
+const rootEl = ref<HTMLElement | null>(null)
+let lastWidth = 0
+let invalidateTimer: ReturnType<typeof setTimeout> | undefined
+let widthObserver: ResizeObserver | null = null
+
+function invalidateMeasurements() {
+  for (const el of observedEntries) {
+    el.removeAttribute('data-measured')
+    measuredHeights.delete(el)
+  }
+}
+
+onMounted(() => {
+  const el = rootEl.value
+  if (!el || typeof ResizeObserver === 'undefined') return
+  lastWidth = el.clientWidth
+  widthObserver = new ResizeObserver(() => {
+    const w = rootEl.value?.clientWidth ?? 0
+    if (!w || Math.abs(w - lastWidth) < 1) return
+    lastWidth = w
+    clearTimeout(invalidateTimer)
+    invalidateTimer = setTimeout(invalidateMeasurements, 150)
+  })
+  widthObserver.observe(el)
+})
+
+onBeforeUnmount(() => {
+  widthObserver?.disconnect()
+  widthObserver = null
+  clearTimeout(invalidateTimer)
+  for (const el of observedEntries) entrySizeObserver?.unobserve(el)
+  observedEntries.clear()
+})
+
 // A tool result attaches to its entry AFTER the tool call is first rendered
 // (same object, mutated in place). v-memo compares by reference, so we surface
 // it as an explicit memo dependency — this is the one in-place mutation an
@@ -542,7 +647,7 @@ function toolResult(e: StreamEntry): unknown {
 </script>
 
 <template>
-  <div class="space-y-3">
+  <div ref="rootEl" class="space-y-3">
     <template v-for="(entry, i) in entries" :key="i">
       <!-- v-memo: freeze a finalized entry so a streamed update to the LAST
            entry (or a tool result attaching, a toggle, a copy flash) never
@@ -550,13 +655,19 @@ function toolResult(e: StreamEntry): unknown {
            entry's markup reads: the entry itself, its late-attached result,
            and the per-index toggle/flash/collapse state. -->
       <!-- `stream-entry` opts the entry into `content-visibility: auto` so WebKit
-           skips layout+paint entirely while it is off-screen — scroll cost then
-           tracks what's visible, not how much has accumulated. Excluded for the
-           last entry while streaming: it's always in view (so there's nothing to
-           skip) and its height changes every chunk, which makes the size
-           placeholder thrash. -->
+           skips layout+paint while it is off-screen, keeping the reflow cost of
+           each streamed chunk proportional to what's on screen. It takes effect
+           only once `v-entry-size` has measured the entry (so the skipped entry
+           reserves the height it really had) and only WHILE THE RUN IS LIVE.
+           Reading a finished run is pure scrolling: content that stays laid out
+           costs a paint to scroll past, whereas a skipped entry has to be laid
+           out again from scratch in the frame it re-enters the viewport — so
+           skipping is a loss there, and that stutter is what the reader feels.
+           The last entry is excluded while streaming: it's always in view and
+           its height changes every chunk, which makes the placeholder thrash. -->
       <div
-        :class="{ 'stream-entry': !(running && i === entries.length - 1) }"
+        v-entry-size
+        :class="{ 'stream-entry': running && i !== entries.length - 1 }"
         v-memo="[entry, toolResult(entry), expanded[i], expandedCompacts.has(i), copiedCmd[i], expandedMessageIndices.has(i), running && i === entries.length - 1]"
       >
       <!-- System init banner -->
@@ -693,7 +804,7 @@ function toolResult(e: StreamEntry): unknown {
            command in a copyable terminal block, then its output. -->
       <div
         v-else-if="entry.kind === 'tool' && isBash(entry.name)"
-        class="rounded-lg border border-l-[3px] bg-card/80 backdrop-blur-sm shadow-sm shadow-black/20 overflow-hidden"
+        class="rounded-lg border border-l-[3px] bg-card/80 shadow-sm shadow-black/20 overflow-hidden"
         :class="entry.result?.is_error
           ? 'border-border border-l-red-500/70'
           : ['border-border', toolStyle(entry.name).barClass]"
@@ -759,7 +870,7 @@ function toolResult(e: StreamEntry): unknown {
       <!-- File-editing tool call (Edit / MultiEdit / Write) — unified diff view. -->
       <div
         v-else-if="entry.kind === 'tool' && isEditTool(entry.name)"
-        class="rounded-lg border border-l-[3px] bg-card/80 backdrop-blur-sm shadow-sm shadow-black/20 overflow-hidden"
+        class="rounded-lg border border-l-[3px] bg-card/80 shadow-sm shadow-black/20 overflow-hidden"
         :class="entry.result?.is_error
           ? 'border-border border-l-red-500/70'
           : ['border-border', toolStyle(entry.name).barClass]"
@@ -820,7 +931,7 @@ function toolResult(e: StreamEntry): unknown {
       <!-- Sub-agent (Task): subagent + goal in header, its report rendered as markdown. -->
       <div
         v-else-if="entry.kind === 'tool' && isAgentTool(entry.name)"
-        class="rounded-lg border border-l-[3px] bg-card/80 backdrop-blur-sm shadow-sm shadow-black/20 overflow-hidden"
+        class="rounded-lg border border-l-[3px] bg-card/80 shadow-sm shadow-black/20 overflow-hidden"
         :class="entry.result?.is_error ? 'border-border border-l-red-500/70' : ['border-border', toolStyle(entry.name).barClass]"
       >
         <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(i)">
@@ -854,7 +965,7 @@ function toolResult(e: StreamEntry): unknown {
       <!-- AskUserQuestion: questions + options, and the user's answer. -->
       <div
         v-else-if="entry.kind === 'tool' && isAskUserTool(entry.name)"
-        class="rounded-lg border border-l-[3px] bg-card/80 backdrop-blur-sm shadow-sm shadow-black/20 overflow-hidden"
+        class="rounded-lg border border-l-[3px] bg-card/80 shadow-sm shadow-black/20 overflow-hidden"
         :class="entry.result?.is_error ? 'border-border border-l-red-500/70' : ['border-border', toolStyle(entry.name).barClass]"
       >
         <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(i)">
@@ -883,7 +994,7 @@ function toolResult(e: StreamEntry): unknown {
       <!-- TodoWrite: render the plan as a status checklist. -->
       <div
         v-else-if="entry.kind === 'tool' && isTodoTool(entry.name)"
-        class="rounded-lg border border-l-[3px] bg-card/80 backdrop-blur-sm shadow-sm shadow-black/20 overflow-hidden"
+        class="rounded-lg border border-l-[3px] bg-card/80 shadow-sm shadow-black/20 overflow-hidden"
         :class="['border-border', toolStyle(entry.name).barClass]"
       >
         <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(i)">
@@ -910,7 +1021,7 @@ function toolResult(e: StreamEntry): unknown {
       <!-- ToolSearch: the search query + matched tools. -->
       <div
         v-else-if="entry.kind === 'tool' && isToolSearchTool(entry.name)"
-        class="rounded-lg border border-l-[3px] bg-card/80 backdrop-blur-sm shadow-sm shadow-black/20 overflow-hidden"
+        class="rounded-lg border border-l-[3px] bg-card/80 shadow-sm shadow-black/20 overflow-hidden"
         :class="entry.result?.is_error ? 'border-border border-l-red-500/70' : ['border-border', toolStyle(entry.name).barClass]"
       >
         <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(i)">
@@ -933,7 +1044,7 @@ function toolResult(e: StreamEntry): unknown {
       <!-- WebFetch / WebSearch: fetched content rendered as markdown. -->
       <div
         v-else-if="entry.kind === 'tool' && isWebTool(entry.name)"
-        class="rounded-lg border border-l-[3px] bg-card/80 backdrop-blur-sm shadow-sm shadow-black/20 overflow-hidden"
+        class="rounded-lg border border-l-[3px] bg-card/80 shadow-sm shadow-black/20 overflow-hidden"
         :class="entry.result?.is_error ? 'border-border border-l-red-500/70' : ['border-border', toolStyle(entry.name).barClass]"
       >
         <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(i)">
@@ -960,7 +1071,7 @@ function toolResult(e: StreamEntry): unknown {
       <!-- ExitPlanMode: Claude's proposed plan, rendered as markdown. -->
       <div
         v-else-if="entry.kind === 'tool' && isPlanTool(entry.name)"
-        class="rounded-lg border border-l-[3px] bg-card/80 backdrop-blur-sm shadow-sm shadow-black/20 overflow-hidden"
+        class="rounded-lg border border-l-[3px] bg-card/80 shadow-sm shadow-black/20 overflow-hidden"
         :class="['border-border', toolStyle(entry.name).barClass]"
       >
         <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(i)">
@@ -982,7 +1093,7 @@ function toolResult(e: StreamEntry): unknown {
       <!-- MCP tool / elicitation: server + action are surfaced up front. -->
       <div
         v-else-if="entry.kind === 'tool' && isMcpTool(entry.name)"
-        class="rounded-lg border border-l-[3px] bg-card/80 backdrop-blur-sm shadow-sm shadow-black/20 overflow-hidden"
+        class="rounded-lg border border-l-[3px] bg-card/80 shadow-sm shadow-black/20 overflow-hidden"
         :class="entry.result?.is_error ? 'border-border border-l-red-500/70' : ['border-border', toolStyle(entry.name).barClass]"
       >
         <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(i)">
@@ -1026,7 +1137,7 @@ function toolResult(e: StreamEntry): unknown {
       <!-- Tool call -->
       <div
         v-else-if="entry.kind === 'tool'"
-        class="rounded-lg border border-l-[3px] bg-card/80 backdrop-blur-sm shadow-sm shadow-black/20 overflow-hidden"
+        class="rounded-lg border border-l-[3px] bg-card/80 shadow-sm shadow-black/20 overflow-hidden"
         :class="entry.result?.is_error
           ? 'border-border border-l-red-500/70'
           : ['border-border', toolStyle(entry.name).barClass]"
