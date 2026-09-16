@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
-import { RouterLink, RouterView, useRoute } from 'vue-router'
+import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useProjectsStore } from '@/stores/projects'
 import { useLiveRunsStore } from '@/stores/liveRuns'
@@ -9,23 +9,24 @@ import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useUILayoutStore } from '@/stores/uiLayout'
 import { useI18n } from 'vue-i18n'
 import { setLocale } from '@/i18n'
-import { Puzzle, ScrollText, Server, HardDrive, FolderOpen, GitPullRequest, GanttChartSquare, BarChart3, CalendarClock, CalendarDays, ListTodo, StickyNote, Settings, Info } from 'lucide-vue-next'
+import { PanelLeftClose, PanelLeftOpen } from 'lucide-vue-next'
 import PermissionNotifier from '@/components/PermissionNotifier.vue'
 import CalendarReminder from '@/components/CalendarReminder.vue'
-import BudgetBadge from '@/components/BudgetBadge.vue'
 import WorkspaceTabs from '@/components/WorkspaceTabs.vue'
 import ActiveRunsDock from '@/components/ActiveRunsDock.vue'
 import ActiveRemoteDock from '@/components/ActiveRemoteDock.vue'
 import FileViewerWindow from '@/views/FileViewerWindow.vue'
 import PermissionWindow from '@/views/PermissionWindow.vue'
 import ThemeDecorations from '@/components/ThemeDecorations.vue'
-import { ConfirmModal, PromptModal, ToastHost } from '@/components/ui'
+import { Button, ConfirmModal, PromptModal, ToastHost } from '@/components/ui'
 import ImageCompareHost from '@/components/ImageCompareHost.vue'
 import CyberFoxHost from '@/components/CyberFoxHost.vue'
 import MascotWindow from '@/views/MascotWindow.vue'
 import QuickCreateWindow from '@/views/QuickCreateWindow.vue'
 import QuickCapturePanel from '@/components/QuickCapturePanel.vue'
 import { useQuickCapture } from '@/composables/useQuickCapture'
+import { applyAppMenu, IS_MAC, listenMenuActions, registerMenuAction, runMenuAction } from '@/lib/appMenu'
+import { NAV_ROUTES } from '@/lib/navigation'
 import IssuesGanttView from '@/views/IssuesGanttView.vue'
 import { getVersion } from '@tauri-apps/api/app'
 
@@ -41,12 +42,13 @@ const isPopoutWindow =
   isFileWindow || isPermissionWindow || isQuickCreateWindow || isGanttWindow || isMascotWindow
 
 const route = useRoute()
+const router = useRouter()
 const projectsStore = useProjectsStore()
 const appSettings = useAppSettingsStore()
 const tabsStore = useWorkspaceTabsStore()
 const uiLayout = useUILayoutStore()
 const live = useLiveRunsStore()
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const { openCapture } = useQuickCapture()
 
 const isRunRoute = computed(
@@ -140,17 +142,67 @@ function onGlobalNavKeyGuard(e: KeyboardEvent) {
 // app root, rather than on the mascot: the mascot only mounts when it's enabled
 // and in in-app mode, which used to leave the shortcut silently dead for anyone
 // who had turned the fox off or moved it to the desktop-pet window.
+//
+// ⌘/Ctrl+B (hide/show the sidebar) rides along here for the same reason: it has
+// to work from every screen, including one where the sidebar is already hidden
+// and its own toggle button is off-screen.
+// Both go through `runMenuAction`, which de-duplicates against the identical
+// menu accelerators (see appMenu.ts) so one press never fires twice.
 function onQuickCaptureKey(e: KeyboardEvent) {
   if (!(e.metaKey || e.ctrlKey) || e.altKey) return
   const key = e.key.toLowerCase()
   if (key === 'k' && !e.shiftKey) {
     e.preventDefault()
-    openCapture({ tab: 'todo', context: routeCaptureContext() })
+    runMenuAction('file.newTodo')
   } else if (key === 'n' && e.shiftKey) {
     e.preventDefault()
-    openCapture({ tab: 'note', context: routeCaptureContext() })
+    runMenuAction('file.newNote')
+  } else if (key === 'b' && !e.shiftKey) {
+    e.preventDefault()
+    runMenuAction('view.toggleSidebar')
   }
 }
+
+// The sidebar is gone either because the user hid it (any route, persisted) or
+// because focus mode is collapsing a run down to its conversation.
+const sidebarVisible = computed(
+  () => !uiLayout.sidebarHidden && !(uiLayout.focusMode && isRunRoute.value),
+)
+
+// ── Native menu bar ─────────────────────────────────────────────────────────
+// Every menu action that isn't screen-specific is bound here, at the app root,
+// so it works from any route. RunView binds `file.newSession` itself — starting
+// a session needs a project, which only that screen has.
+function bindGlobalMenuActions() {
+  const unbinds = [
+    registerMenuAction('file.newTodo', () =>
+      openCapture({ tab: 'todo', context: routeCaptureContext() }),
+    ),
+    registerMenuAction('file.newNote', () =>
+      openCapture({ tab: 'note', context: routeCaptureContext() }),
+    ),
+    registerMenuAction('view.toggleSidebar', () => uiLayout.toggleSidebar()),
+    registerMenuAction('view.toggleFocus', () => uiLayout.toggleFocus()),
+    registerMenuAction('view.reload', () => window.location.reload()),
+    ...NAV_ROUTES.map((r) => registerMenuAction(`go.${r.path}`, () => router.push(r.path))),
+  ]
+  return () => unbinds.forEach((off) => off())
+}
+
+let unbindMenuActions: (() => void) | null = null
+let unlistenMenu: UnlistenFn | null = null
+
+// Labels carry both the language AND the current layout state ("Hide" vs "Show
+// Sidebar"), so the menu is rebuilt whenever either moves. Watching the i18n
+// locale rather than the settings row avoids rebuilding with stale labels: the
+// setting is what *drives* the switch, `locale` is what has actually applied.
+watch(
+  () => [locale.value, uiLayout.sidebarHidden, uiLayout.focusMode] as const,
+  () => {
+    if (isPopoutWindow) return
+    applyAppMenu({ sidebarHidden: uiLayout.sidebarHidden, focusMode: uiLayout.focusMode })
+  },
+)
 
 // File the capture under whatever the user is looking at, so capturing from a
 // run needs no project picking at all.
@@ -164,6 +216,10 @@ function routeCaptureContext() {
 onBeforeUnmount(() => {
   unlistenActivated?.()
   unlistenActivated = null
+  unbindMenuActions?.()
+  unbindMenuActions = null
+  unlistenMenu?.()
+  unlistenMenu = null
   window.removeEventListener('keydown', onGlobalNavKeyGuard, true)
   window.removeEventListener('keydown', onQuickCaptureKey)
 })
@@ -180,22 +236,10 @@ onMounted(async () => {
   }
 })
 
-const navItems = computed(() => [
-  { path: '/projects', label: t('nav.projects'), icon: FolderOpen },
-  { path: '/pr-inbox', label: t('nav.prInbox'), icon: GitPullRequest },
-  { path: '/gantt', label: t('nav.gantt'), icon: GanttChartSquare },
-  { path: '/skills', label: t('nav.skills'), icon: Puzzle },
-  { path: '/rules', label: t('nav.rules'), icon: ScrollText },
-  { path: '/mcp', label: t('nav.mcp'), icon: Server },
-  { path: '/servers', label: t('nav.servers'), icon: HardDrive },
-  { path: '/stats', label: t('nav.stats'), icon: BarChart3 },
-  { path: '/work-digest', label: t('nav.digest'), icon: CalendarClock },
-  { path: '/calendar', label: t('nav.calendar'), icon: CalendarDays },
-  { path: '/todos', label: t('nav.todos'), icon: ListTodo },
-  { path: '/notes', label: t('nav.notes'), icon: StickyNote },
-  { path: '/settings', label: t('nav.settings'), icon: Settings },
-  { path: '/about', label: t('nav.about'), icon: Info },
-])
+// Same source of truth as the native "Go" menu (see lib/navigation.ts).
+const navItems = computed(() =>
+  NAV_ROUTES.map((r) => ({ path: r.path, label: t(r.labelKey), icon: r.icon })),
+)
 
 const isDark = ref(false)
 
@@ -239,6 +283,17 @@ onMounted(async () => {
     return
   }
   window.addEventListener('keydown', onQuickCaptureKey)
+
+  // Native menu bar: bind the actions first, then install the menu, so an
+  // impatient click on a freshly drawn item can't land on nothing.
+  unbindMenuActions = bindGlobalMenuActions()
+  try {
+    unlistenMenu = await listenMenuActions()
+  } catch {
+    // Ignore (e.g. running outside the Tauri shell during dev in a browser).
+  }
+  applyAppMenu({ sidebarHidden: uiLayout.sidebarHidden, focusMode: uiLayout.focusMode })
+
   // Attach per-run listeners for any run the backend reports as active — even
   // ones this window never opened (started/resumed from a remote Controller, or
   // still live after a restart). This is what lets a remotely-driven run's
@@ -289,68 +344,101 @@ onMounted(async () => {
   <!-- Desktop-pet window: transparent, frameless host that floats only the fox. -->
   <MascotWindow v-else-if="isMascotWindow" />
 
-  <div v-else class="flex h-screen bg-background text-foreground overflow-hidden">
+  <div v-else class="flex flex-col h-screen bg-background text-foreground overflow-hidden">
     <!-- Animated decorative overlay for scenic themes (e.g. Full Moon 🌕).
          Sits ABOVE the UI as a non-interactive, screen-blended light layer so it
          stays visible over the app's opaque panels without blocking clicks. -->
     <ThemeDecorations :active="sceneOn" :theme="sceneTheme" />
-    <!-- Sidebar (hidden in focus mode, but only while in the run workspace so
-         other routes like project settings keep their navigation) -->
-    <aside v-if="!(uiLayout.focusMode && isRunRoute)" class="w-[220px] shrink-0 flex flex-col bg-sidebar border-r border-border/50">
-      <!-- Brand -->
-      <div class="flex items-center gap-2.5 px-4 h-[52px] border-b border-border/50">
-        <img src="/logo.png" alt="Devdy" class="h-6 w-6 rounded shrink-0" />
-        <div class="min-w-0">
-          <p class="text-sm font-semibold leading-none tracking-tight">Devdy</p>
-          <p class="text-[10px] text-muted-foreground mt-0.5 leading-none">{{ t('nav.tagline') }}</p>
+
+    <!-- Unified title bar: brand + open-project tabs + global actions on ONE 44px
+         row spanning the whole window, above both columns.
+
+         This is the app's only chrome row. The sidebar has no brand header of
+         its own any more, so nothing competes with a view's header for the top
+         line, and the run screen gains back ~52px of height for the conversation.
+         Hidden in focus mode, where the point is no chrome at all. -->
+    <header
+      v-if="!(uiLayout.focusMode && isRunRoute)"
+      class="flex items-center gap-2 h-11 px-3 shrink-0 bg-sidebar border-b border-border/50"
+    >
+      <img src="/logo.png" alt="Devdy" class="h-[18px] w-[18px] rounded shrink-0" />
+      <p class="text-[13px] font-semibold leading-none tracking-tight shrink-0">Devdy</p>
+      <div v-if="tabsStore.tabs.length > 0" class="h-4 w-px bg-border shrink-0 mx-1" aria-hidden="true" />
+
+      <WorkspaceTabs />
+
+      <!-- Sits here rather than inside the sidebar: a "hide" button that
+           disappears along with the thing it hides can't bring it back. -->
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        class="shrink-0 ml-auto"
+        :title="`${uiLayout.sidebarHidden ? t('menu.showSidebar') : t('menu.hideSidebar')} (${IS_MAC ? '⌘B' : 'Ctrl+B'})`"
+        :aria-label="uiLayout.sidebarHidden ? t('menu.showSidebar') : t('menu.hideSidebar')"
+        @click="uiLayout.toggleSidebar()"
+      >
+        <component :is="uiLayout.sidebarHidden ? PanelLeftOpen : PanelLeftClose" class="h-4 w-4" :stroke-width="1.75" />
+      </Button>
+    </header>
+
+    <div class="flex flex-1 min-h-0">
+    <!-- Sidebar. Hidden either by the ⌘/Ctrl+B toggle (all routes, persisted) or
+         by focus mode — the latter only while in the run workspace, so other
+         routes like project settings keep their navigation. Once hidden it is
+         gone entirely; View → Show Sidebar (⌘B) brings it back.
+
+         It collapses by animating its own width to zero while the inner column
+         keeps a fixed 220px, so the nav slides out of view instead of the labels
+         reflowing into a squashed mess on the way. -->
+    <Transition name="sidebar">
+      <aside
+        v-if="sidebarVisible"
+        class="app-sidebar shrink-0 overflow-hidden bg-sidebar border-r border-border/50"
+      >
+        <div class="w-[220px] h-full flex flex-col">
+          <!-- No brand header: the logo moved to the title bar, so the nav starts
+               at the very top and a view's header owns the first line alone. -->
+          <nav class="flex-1 px-2 py-2.5 space-y-0.5">
+            <RouterLink
+              v-for="item in navItems"
+              :key="item.path"
+              :to="item.path"
+              class="relative flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors cursor-pointer select-none"
+              :class="route.path.startsWith(item.path)
+                ? 'bg-accent text-foreground font-medium'
+                : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'"
+            >
+              <span
+                v-if="route.path.startsWith(item.path)"
+                class="absolute left-0 inset-y-[6px] w-[2px] rounded-r-full bg-primary"
+              />
+              <component :is="item.icon" class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
+              <span class="flex-1 truncate">{{ item.label }}</span>
+              <span
+                v-if="item.path === '/projects' && (projectsStore.conflicts.length + projectsStore.ruleConflicts.length) > 0"
+                class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-medium text-white leading-none"
+              >
+                {{ projectsStore.conflicts.length + projectsStore.ruleConflicts.length }}
+              </span>
+            </RouterLink>
+          </nav>
+
+          <!-- App-wide monitor of concurrent runs + permission center -->
+          <ActiveRunsDock />
+
+          <!-- Active Remote Control session (phone paired to a run) -->
+          <ActiveRemoteDock />
+
+          <!-- Version footer -->
+          <div class="px-4 py-3 border-t border-border/50">
+            <p v-if="appVersion" class="text-[10px] text-muted-foreground/50 font-mono">v{{ appVersion }}</p>
+          </div>
         </div>
-      </div>
-
-      <!-- Nav items -->
-      <nav class="flex-1 px-2 py-2.5 space-y-0.5">
-        <RouterLink
-          v-for="item in navItems"
-          :key="item.path"
-          :to="item.path"
-          class="relative flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors cursor-pointer select-none"
-          :class="route.path.startsWith(item.path)
-            ? 'bg-accent text-foreground font-medium'
-            : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'"
-        >
-          <span
-            v-if="route.path.startsWith(item.path)"
-            class="absolute left-0 inset-y-[6px] w-[2px] rounded-r-full bg-primary"
-          />
-          <component :is="item.icon" class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
-          <span class="flex-1 truncate">{{ item.label }}</span>
-          <span
-            v-if="item.path === '/projects' && (projectsStore.conflicts.length + projectsStore.ruleConflicts.length) > 0"
-            class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-medium text-white leading-none"
-          >
-            {{ projectsStore.conflicts.length + projectsStore.ruleConflicts.length }}
-          </span>
-        </RouterLink>
-      </nav>
-
-      <!-- App-wide monitor of concurrent runs + permission center -->
-      <ActiveRunsDock />
-
-      <!-- Active Remote Control session (phone paired to a run) -->
-      <ActiveRemoteDock />
-
-      <!-- Global usage / budget status -->
-      <BudgetBadge />
-
-      <!-- Version footer -->
-      <div class="px-4 py-3 border-t border-border/50">
-        <p v-if="appVersion" class="text-[10px] text-muted-foreground/50 font-mono">v{{ appVersion }}</p>
-      </div>
-    </aside>
+      </aside>
+    </Transition>
 
     <!-- Main content -->
     <main class="flex-1 min-w-0 flex flex-col overflow-hidden">
-      <!-- Open-run tabs (only in the run workspace) -->
-      <WorkspaceTabs v-if="isRunRoute && !uiLayout.focusMode" />
       <div class="flex-1 min-w-0 overflow-auto">
         <!-- `:key` stays on the inner <component>, NOT on <RouterView>: KeepAlive
              caches entries by their vnode key, and a key on the RouterView would
@@ -365,6 +453,7 @@ onMounted(async () => {
         </RouterView>
       </div>
     </main>
+    </div>
 
     <!-- Headless: fires native OS notifications for runs awaiting input while the
          app is backgrounded; the in-app signal is the History attention icon. -->
@@ -394,3 +483,31 @@ onMounted(async () => {
     <QuickCapturePanel />
   </div>
 </template>
+
+<style scoped>
+/* Sidebar collapse/expand. Width is set here rather than as a Tailwind class so
+   the transition classes below can override it without a specificity fight. */
+.app-sidebar {
+  width: 220px;
+}
+
+.sidebar-enter-active,
+.sidebar-leave-active {
+  transition: width 180ms ease, opacity 180ms ease;
+}
+
+.sidebar-enter-from,
+.sidebar-leave-to {
+  width: 0;
+  /* The border would otherwise linger as a 1px line at the very end. */
+  border-right-width: 0;
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-enter-active,
+  .sidebar-leave-active {
+    transition: none;
+  }
+}
+</style>

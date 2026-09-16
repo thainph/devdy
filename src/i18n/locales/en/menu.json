@@ -1,0 +1,18 @@
+{
+  "file": "File",
+  "edit": "Edit",
+  "view": "View",
+  "go": "Go",
+  "window": "Window",
+  "help": "Help",
+  "newSession": "New Session",
+  "newTodo": "New Todo",
+  "newNote": "New Note",
+  "settings": "Settings…",
+  "hideSidebar": "Hide Sidebar",
+  "showSidebar": "Show Sidebar",
+  "enterFocusMode": "Enter Focus Mode",
+  "exitFocusMode": "Exit Focus Mode",
+  "reload": "Reload",
+  "about": "About Devdy"
+}

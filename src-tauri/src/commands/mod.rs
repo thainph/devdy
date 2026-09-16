@@ -1,4 +1,5 @@
 pub mod agents_block;
+pub mod app_menu;
 pub mod aws_accounts;
 pub mod claude_accounts;
 pub mod codex_sessions;

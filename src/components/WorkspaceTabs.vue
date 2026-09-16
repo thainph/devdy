@@ -93,15 +93,17 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 </script>
 
 <template>
+  <!-- Lives inside the app title bar (see App.vue), which owns the row's height,
+       background and bottom border — hence none of those here. -->
   <div
     v-if="tabsStore.tabs.length > 0"
-    class="flex items-stretch gap-1 px-2 h-[38px] shrink-0 border-b border-border/50 bg-sidebar overflow-x-auto overflow-y-hidden"
+    class="flex items-center gap-1 min-w-0 flex-1 h-full overflow-x-auto overflow-y-hidden"
   >
     <button
       v-for="tab in tabsStore.tabs"
       :key="tab.projectId"
       type="button"
-      class="group relative flex min-w-0 shrink items-center gap-2 pl-3 pr-2 my-[5px] rounded-md text-[13px] max-w-[200px] transition-colors cursor-pointer select-none"
+      class="group relative flex h-7 min-w-0 shrink items-center gap-2 pl-3 pr-2 rounded-md text-[13px] max-w-[200px] transition-colors cursor-pointer select-none"
       :class="tab.projectId === activeProjectId
         ? 'bg-accent text-foreground'
         : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'"
