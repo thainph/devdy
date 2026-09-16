@@ -183,7 +183,7 @@ pub(crate) fn parse_transcript(file: &Path, project_path: &str) -> Option<Parsed
     }
 
     let title = match title.filter(|t| !t.trim().is_empty()) {
-        Some(t) => truncate(&t, 100),
+        Some(t) => truncate(&t, TITLE_MAX_CHARS),
         None => title_from_first_message(first_message.as_deref()),
     };
 
@@ -199,7 +199,7 @@ pub(crate) fn parse_transcript(file: &Path, project_path: &str) -> Option<Parsed
 /// Resolve a run title from the first user message: trimmed, truncated, with a
 /// generic fallback. Shared with the Codex parser.
 pub(crate) fn title_from_first_message(first: Option<&str>) -> String {
-    let t = truncate(first.unwrap_or("").trim(), 100);
+    let t = truncate(first.unwrap_or("").trim(), TITLE_MAX_CHARS);
     if t.is_empty() {
         "Imported session".to_string()
     } else {
@@ -227,14 +227,26 @@ fn message_text(msg: &Value) -> Option<String> {
     None
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    let s = s.trim();
+/// How much of the first message a stored run title keeps. Long enough that a
+/// two-sentence prompt still reads as a sentence in the History list.
+pub(crate) const TITLE_MAX_CHARS: usize = 200;
+
+/// Collapse a prompt into a single line and cut it to `max` characters. The cut
+/// falls back to the last word boundary so a title never ends mid-word.
+pub(crate) fn truncate(s: &str, max: usize) -> String {
+    let s: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if s.chars().count() <= max {
-        return s.to_string();
+        return s;
     }
-    let mut out: String = s.chars().take(max).collect();
-    out.push('…');
-    out
+    let head: String = s.chars().take(max).collect();
+    // Keep the whole window unless a word boundary sits reasonably close to the
+    // end; cutting back further than that loses more than it gains.
+    let cut = head
+        .rfind(char::is_whitespace)
+        .filter(|i| head[..*i].chars().count() * 4 >= max * 3)
+        .map(|i| head[..i].to_string())
+        .unwrap_or(head);
+    format!("{}…", cut.trim_end())
 }
 
 fn file_modified_rfc3339(path: &Path) -> String {
@@ -632,6 +644,17 @@ mod tests {
         assert!(p.title.contains("Hello"));
         assert_eq!(p.log.lines().count(), 2);
         let _ = fs::remove_file(&f);
+    }
+
+    #[test]
+    fn truncate_collapses_lines_and_cuts_on_a_word_boundary() {
+        assert_eq!(truncate("  hai  dòng\nprompt ", 40), "hai dòng prompt");
+        // The 40-char window lands inside "handling"; the cut falls back to the
+        // space before it rather than leaving a half word.
+        let long = "Please refactor the session title logic so it keeps handling long prompts";
+        assert_eq!(truncate(long, 40), "Please refactor the session title logic…");
+        // No usable boundary (one long word): keep the full window.
+        assert_eq!(truncate(&"a".repeat(50), 10), "aaaaaaaaaa…");
     }
 
     #[test]

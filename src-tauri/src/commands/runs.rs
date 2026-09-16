@@ -291,9 +291,9 @@ pub(crate) async fn start_run_inner(
 
     // For a session, derive a sidebar title from the first message (once).
     if is_session {
-        let title: String = prompt.chars().take(60).collect();
+        let title = super::sessions::truncate(&prompt, super::sessions::TITLE_MAX_CHARS);
         let _ = sqlx::query("UPDATE runs SET title = ? WHERE id = ? AND title IS NULL")
-            .bind(title.trim())
+            .bind(title.as_str())
             .bind(&payload.run_id)
             .execute(db)
             .await;
