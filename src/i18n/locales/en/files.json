@@ -26,6 +26,7 @@
     "tooLargeHint": "This file is larger than 2 MB. Open it in an external editor to view the full contents.",
     "openInVscode": "Open in VS Code",
     "pdfPreview": "PDF preview",
+    "htmlPreview": "HTML preview",
     "translateSelection": "Translate selection",
     "translate": "Translate",
     "searchInFile": "Search in file",
