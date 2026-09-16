@@ -30,6 +30,9 @@ import { useMascotSpeech, useVoiceList, speechSupported } from '@/composables/us
 import { useMascotSpeaking } from '@/composables/useMascotSpeaking'
 import { useBudgetStore } from '@/stores/budget'
 import { useModelCatalogStore } from '@/stores/modelCatalog'
+import {
+  type SavedPrompt, newPromptId, parseSavedPrompts, serializeSavedPrompts,
+} from '@/lib/savedPrompts'
 
 const { t, locale } = useI18n()
 const appSettings = useAppSettingsStore()
@@ -57,6 +60,7 @@ interface AppSettings {
   animated_background: string
   analyze_issue_prompt: string
   review_pr_prompt: string
+  saved_prompts: string
   default_permission_mode: string
   terminal_app: string
   context_warn_percent: string
@@ -95,6 +99,7 @@ const settings = ref<AppSettings>({
   animated_background: 'true',
   analyze_issue_prompt: '',
   review_pr_prompt: '',
+  saved_prompts: '[]',
   default_permission_mode: 'default',
   terminal_app: 'terminal',
   context_warn_percent: '80',
@@ -972,6 +977,7 @@ onMounted(async () => {
   try {
     settings.value = await invoke<AppSettings>('get_settings')
     lastSaved = { ...settings.value }
+    savedPrompts.value = parseSavedPrompts(settings.value.saved_prompts)
     await ghStore.fetch()
     await glStore.fetch()
     await awsStore.fetch()
@@ -993,6 +999,11 @@ onMounted(async () => {
 onUnmounted(() => {
   if (unlistenPlanUsage) unlistenPlanUsage()
   if (unlistenBudgetStatus) unlistenBudgetStatus()
+  // Don't lose a prompt edit made within the debounce window before leaving.
+  if (savedPromptsTimer) {
+    clearTimeout(savedPromptsTimer)
+    flushSavedPrompts()
+  }
 })
 
 function applyTheme(theme: string) {
@@ -1020,6 +1031,40 @@ function resetCyberFoxPosition() {
   } catch (e) {
     toast.error(String(e))
   }
+}
+
+// ── Saved prompt library ──────────────────────────────────────────────────
+// Edited as a list here, stored as a JSON string in the `saved_prompts` setting.
+// The generic auto-save below waits 400ms, which is far too eager while typing a
+// multi-line prompt body — it fires (and toasts) between words. Give this field
+// its own, longer debounce and persist from it directly.
+const savedPrompts = ref<SavedPrompt[]>([])
+const SAVED_PROMPTS_DEBOUNCE_MS = 1500
+let savedPromptsTimer: ReturnType<typeof setTimeout> | null = null
+
+function flushSavedPrompts() {
+  savedPromptsTimer = null
+  const next = serializeSavedPrompts(savedPrompts.value)
+  if (next === settings.value.saved_prompts) return
+  settings.value.saved_prompts = next
+  // Persist directly: `watch(settings)` is stopped once this view unmounts, so
+  // relying on it would silently drop a flush that lands after navigation.
+  // It re-runs harmlessly — persistChanges() no-ops when nothing differs.
+  persistChanges()
+}
+
+watch(savedPrompts, () => {
+  if (loading.value) return
+  if (savedPromptsTimer) clearTimeout(savedPromptsTimer)
+  savedPromptsTimer = setTimeout(flushSavedPrompts, SAVED_PROMPTS_DEBOUNCE_MS)
+}, { deep: true })
+
+function addSavedPrompt() {
+  savedPrompts.value.push({ id: newPromptId(), title: '', body: '' })
+}
+
+function removeSavedPrompt(id: string) {
+  savedPrompts.value = savedPrompts.value.filter((p) => p.id !== id)
 }
 
 async function persistChanges() {
@@ -1529,9 +1574,9 @@ watch(() => settings.value.language, (v) => {
           <div class="rounded-md border border-border/60 bg-muted/30 p-3 space-y-2">
             <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.mcp.availableTools') }}</div>
             <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
-              <span>📝 notes_list / read / create / update / append</span>
+              <span>📝 notes_list / read / search / create / update / append / set_project / reorder / delete</span>
               <span>🧠 sessions_recent / search / read</span>
-              <span>✅ todos_list / add / done</span>
+              <span>✅ todos_list / add / done / update / set_project / reorder / delete / clear_done</span>
               <span>📁 project_info / file_tree</span>
               <span>🔀 git_status / git_diff</span>
               <span>🖥️ vps_list / vps_run</span>
@@ -2515,6 +2560,53 @@ watch(() => settings.value.language, (v) => {
                 rows="3"
                 :placeholder="t('settings.prompts.reviewPrPlaceholder')"
               />
+            </div>
+
+            <!-- Reusable prompt library: picked from the composer dropdown in a run -->
+            <div class="space-y-2 border-t border-border/60 pt-4">
+              <div class="flex items-center justify-between gap-2">
+                <div class="space-y-0.5">
+                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.prompts.library') }}</label>
+                  <p class="text-[11px] text-muted-foreground">{{ t('settings.prompts.libraryHint') }}</p>
+                </div>
+                <Button variant="outline" size="sm" class="shrink-0" @click="addSavedPrompt">
+                  <Plus class="h-3.5 w-3.5" :stroke-width="2" />
+                  {{ t('settings.prompts.addPrompt') }}
+                </Button>
+              </div>
+
+              <p v-if="!savedPrompts.length" class="rounded-md border border-dashed border-border/70 px-3 py-4 text-center text-xs text-muted-foreground">
+                {{ t('settings.prompts.libraryEmpty') }}
+              </p>
+
+              <div
+                v-for="(p, i) in savedPrompts"
+                :key="p.id"
+                class="space-y-1.5 rounded-md border border-border/70 bg-muted/20 p-3"
+              >
+                <div class="flex items-center gap-2">
+                  <Input
+                    v-model="p.title"
+                    class="flex-1"
+                    :placeholder="t('settings.prompts.titlePlaceholder', { n: i + 1 })"
+                  />
+                  <Button
+                    variant="destructive-ghost"
+                    size="icon-sm"
+                    :title="t('common.delete')"
+                    :aria-label="t('common.delete')"
+                    @click="removeSavedPrompt(p.id)"
+                  >
+                    <Trash2 class="h-3.5 w-3.5" :stroke-width="2" />
+                  </Button>
+                </div>
+                <Textarea
+                  v-model="p.body"
+                  rows="3"
+                  class="font-mono"
+                  :placeholder="t('settings.prompts.bodyPlaceholder')"
+                />
+              </div>
             </div>
         </Card>
 

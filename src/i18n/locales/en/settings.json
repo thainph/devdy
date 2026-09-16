@@ -303,7 +303,13 @@
     "analyzeIssue": "Analyze Issue prompt",
     "analyzeIssuePlaceholder": "Analyze the following GitHub issue and create a detailed implementation plan…",
     "reviewPr": "Review PR prompt",
-    "reviewPrPlaceholder": "Review the following pull request and provide detailed feedback…"
+    "reviewPrPlaceholder": "Review the following pull request and provide detailed feedback…",
+    "library": "Saved prompts",
+    "libraryHint": "Pick these from the dropdown in the chat box to reuse them without retyping.",
+    "libraryEmpty": "No saved prompts yet.",
+    "addPrompt": "Add prompt",
+    "titlePlaceholder": "Prompt {n} title",
+    "bodyPlaceholder": "The prompt text to insert into the chat box…"
   },
   "toast": {
     "saved": "Saved"

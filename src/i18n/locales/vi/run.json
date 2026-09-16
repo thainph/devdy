@@ -117,6 +117,7 @@
   "dropFileToAttach": "Thả file để đính kèm vào hội thoại",
   "attachImage": "Đính kèm ảnh (hoặc dán từ clipboard)",
   "attachFileByPath": "Đính kèm file theo đường dẫn (hoặc kéo & thả vào ô soạn thảo)",
+  "savedPrompts": "Chèn prompt đã lưu",
   "collapseComposer": "Thu gọn ô soạn thảo",
   "expandComposer": "Mở rộng ô soạn thảo (dễ đọc/sửa văn bản dài)",
   "runSettingsTitle": "Tùy chọn run — đang dùng {engine}",
