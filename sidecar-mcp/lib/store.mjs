@@ -21,6 +21,68 @@ function db() {
 
 const nowIso = () => new Date().toISOString();
 
+/** Run `fn` inside a transaction so a failure mid-batch rolls the whole thing back. */
+function tx(fn) {
+  const d = db();
+  d.exec('BEGIN');
+  try {
+    const out = fn(d);
+    d.exec('COMMIT');
+    return out;
+  } catch (err) {
+    try {
+      d.exec('ROLLBACK');
+    } catch {
+      /* the transaction is already gone — surface the original error */
+    }
+    throw err;
+  }
+}
+
+/** Accepts a single id or an array; returns a deduped, non-empty list. */
+function normIds(ids) {
+  const list = (Array.isArray(ids) ? ids : [ids])
+    .map((x) => String(x ?? '').trim())
+    .filter(Boolean);
+  if (!list.length) throw new Error('at least one id is required');
+  return [...new Set(list)];
+}
+
+/** The current project id, or throw — for tools that can't fall back to global. */
+function requireProject() {
+  const id = process.env.DEVDY_PROJECT_ID || null;
+  if (!id) throw new Error('no current project (DEVDY_PROJECT_ID is not set)');
+  return id;
+}
+
+/** scope="global" detaches; anything else links to the current project (when any). */
+function scopedProjectId(scope) {
+  return scope === 'global' ? null : process.env.DEVDY_PROJECT_ID || null;
+}
+
+/**
+ * Rewrite `position` so the given ids sit at the top in the given order, with
+ * every other row keeping its relative order below. Passing the full list is
+ * therefore a plain reorder (same as the app's drag-and-drop), while passing a
+ * few ids is a safe "move these to the top" — neither can corrupt the ordering.
+ */
+function reorderRows(table, ids, orderBy) {
+  const all = db()
+    .prepare(`SELECT id FROM ${table} ORDER BY ${orderBy}`)
+    .all()
+    .map((r) => r.id);
+  const known = new Set(all);
+  const missing = ids.filter((id) => !known.has(id));
+  if (missing.length) throw new Error(`unknown ${table} id(s): ${missing.join(', ')}`);
+  const moved = new Set(ids);
+  const order = [...ids, ...all.filter((id) => !moved.has(id))];
+  return tx((d) => {
+    const stmt = d.prepare(`UPDATE ${table} SET position = ? WHERE id = ?`);
+    order.forEach((id, index) => stmt.run(index, id));
+    return { ordered: order.length };
+  });
+}
+
 // ---- Notes -----------------------------------------------------------------
 
 export function listNotes({ scope = 'project', limit = 50 } = {}) {
@@ -54,7 +116,7 @@ export function createNote({ title = '', content = '', scope = 'project' } = {})
   const t = String(title || '').trim();
   const c = String(content || '').trim();
   if (!t && !c) throw new Error('a title or content is required');
-  const projectId = scope === 'global' ? null : process.env.DEVDY_PROJECT_ID || null;
+  const projectId = scopedProjectId(scope);
   const min = db().prepare('SELECT MIN(position) AS m FROM notes').get();
   const position = (min && min.m != null ? min.m : 0) - 1;
   const id = randomUUID();
@@ -88,6 +150,53 @@ export function appendNote({ id, text } = {}) {
   const now = nowIso();
   db().prepare('UPDATE notes SET content = ?, updated_at = ? WHERE id = ?').run(content, now, id);
   return { id, content, updated_at: now };
+}
+
+/** Substring search over title + content. `%`/`_`/`\` in the query are literal. */
+export function searchNotes({ query, scope = 'project', limit = 20 } = {}) {
+  const q = String(query || '').trim();
+  if (!q) throw new Error('query is required');
+  const projectId = process.env.DEVDY_PROJECT_ID || null;
+  const lim = Math.max(1, Math.min(200, Number(limit) || 20));
+  const like = `%${q.replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
+  const cols = 'id, title, content, project_id, updated_at';
+  const match = `(title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\')`;
+  const order = 'ORDER BY position ASC, updated_at DESC LIMIT ?';
+  if (scope === 'project' && projectId) {
+    return db()
+      .prepare(`SELECT ${cols} FROM notes WHERE project_id = ? AND ${match} ${order}`)
+      .all(projectId, like, like, lim);
+  }
+  return db().prepare(`SELECT ${cols} FROM notes WHERE ${match} ${order}`).all(like, like, lim);
+}
+
+export function deleteNotes({ ids } = {}) {
+  const list = normIds(ids);
+  return tx((d) => {
+    const stmt = d.prepare('DELETE FROM notes WHERE id = ?');
+    const deleted = list.filter((id) => stmt.run(id).changes > 0);
+    return { deleted: deleted.length, requested: list.length };
+  });
+}
+
+/** Link a note to the current project, or detach it with scope="global". */
+export function setNoteProject({ id, scope = 'project' } = {}) {
+  if (!readNote(id)) throw new Error(`note not found: ${id}`);
+  const now = nowIso();
+  if (scope === 'global') {
+    // The run backlink only means anything alongside its project.
+    db()
+      .prepare('UPDATE notes SET project_id = NULL, run_id = NULL, updated_at = ? WHERE id = ?')
+      .run(now, id);
+    return { id, project_id: null };
+  }
+  const projectId = requireProject();
+  db().prepare('UPDATE notes SET project_id = ?, updated_at = ? WHERE id = ?').run(projectId, now, id);
+  return { id, project_id: projectId };
+}
+
+export function reorderNotes({ ids } = {}) {
+  return reorderRows('notes', normIds(ids), 'position ASC, updated_at DESC');
 }
 
 // ---- Sessions / runs --------------------------------------------------------
@@ -126,24 +235,52 @@ export function getRun(runId) {
 
 // ---- Todos (global scratchpad) ---------------------------------------------
 
-export function listTodos({ includeDone = true } = {}) {
-  const where = includeDone ? '' : 'WHERE done = 0';
+/** scope="project" narrows to the current project's todos; default spans all. */
+export function listTodos({ includeDone = true, scope = 'all' } = {}) {
+  const clauses = [];
+  const params = [];
+  if (!includeDone) clauses.push('t.done = 0');
+  if (scope === 'project') {
+    clauses.push('t.project_id = ?');
+    params.push(requireProject());
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
   return db()
-    .prepare(`SELECT id, text, done, position, created_at FROM todos ${where} ORDER BY position ASC`)
-    .all();
+    .prepare(
+      `SELECT t.id, t.text, t.done, t.position, t.created_at, t.project_id, t.run_id,
+              p.name AS project_name
+       FROM todos t LEFT JOIN projects p ON p.id = t.project_id
+       ${where} ORDER BY t.position ASC, t.created_at DESC`,
+    )
+    .all(...params);
 }
 
-export function addTodo({ text } = {}) {
+/** New todos go to the top (a position below the current minimum), like the app. */
+export function addTodo({ text, scope = 'project' } = {}) {
   const t = String(text || '').trim();
   if (!t) throw new Error('text is required');
+  const projectId = scopedProjectId(scope);
   const min = db().prepare('SELECT MIN(position) AS m FROM todos').get();
   const position = (min && min.m != null ? min.m : 0) - 1;
   const id = randomUUID();
   const now = nowIso();
   db()
-    .prepare('INSERT INTO todos (id, text, done, position, created_at) VALUES (?, ?, 0, ?, ?)')
-    .run(id, t, position, now);
-  return { id, text: t };
+    .prepare(
+      'INSERT INTO todos (id, text, done, position, created_at, project_id) VALUES (?, ?, 0, ?, ?, ?)',
+    )
+    .run(id, t, position, now, projectId);
+  return { id, text: t, project_id: projectId };
+}
+
+export function readTodo(id) {
+  if (!id) throw new Error('id is required');
+  return db()
+    .prepare(
+      `SELECT t.id, t.text, t.done, t.position, t.created_at, t.project_id, t.run_id,
+              p.name AS project_name
+       FROM todos t LEFT JOIN projects p ON p.id = t.project_id WHERE t.id = ?`,
+    )
+    .get(id);
 }
 
 export function setTodoDone({ id, done = true } = {}) {
@@ -152,6 +289,60 @@ export function setTodoDone({ id, done = true } = {}) {
   if (!row) throw new Error(`todo not found: ${id}`);
   db().prepare('UPDATE todos SET done = ? WHERE id = ?').run(done ? 1 : 0, id);
   return { id, done: !!done };
+}
+
+/** Flip done state without having to read it first. */
+export function toggleTodo({ id } = {}) {
+  if (!id) throw new Error('id is required');
+  const row = db().prepare('SELECT id, done FROM todos WHERE id = ?').get(id);
+  if (!row) throw new Error(`todo not found: ${id}`);
+  const done = !row.done;
+  db().prepare('UPDATE todos SET done = ? WHERE id = ?').run(done ? 1 : 0, id);
+  return { id, done };
+}
+
+export function updateTodo({ id, text } = {}) {
+  if (!id) throw new Error('id is required');
+  const t = String(text || '').trim();
+  if (!t) throw new Error('text is required');
+  const row = db().prepare('SELECT id FROM todos WHERE id = ?').get(id);
+  if (!row) throw new Error(`todo not found: ${id}`);
+  db().prepare('UPDATE todos SET text = ? WHERE id = ?').run(t, id);
+  return { id, text: t };
+}
+
+export function deleteTodos({ ids } = {}) {
+  const list = normIds(ids);
+  return tx((d) => {
+    const stmt = d.prepare('DELETE FROM todos WHERE id = ?');
+    const deleted = list.filter((id) => stmt.run(id).changes > 0);
+    return { deleted: deleted.length, requested: list.length };
+  });
+}
+
+export function clearDoneTodos() {
+  const r = db().prepare('DELETE FROM todos WHERE done = 1').run();
+  return { deleted: Number(r.changes) };
+}
+
+/** Link a todo to the current project, or detach it with scope="global". */
+export function setTodoProject({ id, scope = 'project' } = {}) {
+  if (!id) throw new Error('id is required');
+  if (!db().prepare('SELECT id FROM todos WHERE id = ?').get(id)) {
+    throw new Error(`todo not found: ${id}`);
+  }
+  if (scope === 'global') {
+    // The run backlink only means anything alongside its project.
+    db().prepare('UPDATE todos SET project_id = NULL, run_id = NULL WHERE id = ?').run(id);
+    return { id, project_id: null };
+  }
+  const projectId = requireProject();
+  db().prepare('UPDATE todos SET project_id = ? WHERE id = ?').run(projectId, id);
+  return { id, project_id: projectId };
+}
+
+export function reorderTodos({ ids } = {}) {
+  return reorderRows('todos', normIds(ids), 'position ASC, created_at DESC');
 }
 
 // ---- Project info -----------------------------------------------------------
