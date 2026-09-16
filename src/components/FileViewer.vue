@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Self-contained file viewer: loads a project file and renders it (syntax-
-// highlighted text, rendered/raw markdown, images, video, audio, PDF, or an
+// highlighted text, rendered/raw markdown or HTML, images, video, audio, PDF, or an
 // "open externally" fallback). Used both inside the in-app modal (RunView) and
 // in the standalone pop-out window (FileViewerWindow). Hosts supply chrome-
 // specific buttons (full-screen, pop-out, close) via the #actions slot.
@@ -169,7 +169,13 @@ const viewerBodyEl = ref<HTMLElement | null>(null)
 
 const lines = computed(() => content.value.split('\n'))
 const isMarkdown = computed(() => /\.(md|markdown|mdx)$/i.test(curPath.value))
+const isHtml = computed(() => /\.(html?|xhtml)$/i.test(curPath.value))
+// Markdown and HTML are text files that also offer a rendered view.
+const previewable = computed(() => isMarkdown.value || isHtml.value)
 const mode = ref<'code' | 'preview'>('code')
+// The HTML preview lives in an iframe, out of reach of the font-size control,
+// the in-page search and the selection-translate trigger.
+const htmlPreview = computed(() => isHtml.value && mode.value === 'preview')
 
 // ── Inline editing (text / markdown only) ───────────────────────────────────
 // Only plain-text/markdown files that loaded fully (not truncated, no error)
@@ -188,8 +194,8 @@ function startEdit() {
   editContent.value = content.value
   saveError.value = null
   editing.value = true
-  // Markdown edits happen against the raw source, not the rendered preview.
-  if (isMarkdown.value) mode.value = 'code'
+  // Markdown / HTML edits happen against the raw source, not the rendered preview.
+  if (previewable.value) mode.value = 'code'
 }
 
 function cancelEdit() {
@@ -205,6 +211,8 @@ async function saveEdit() {
     await runsStore.writeProjectFile(props.projectPath, curPath.value, editContent.value)
     content.value = editContent.value
     editing.value = false
+    // The preview renders the file on disk, so it must re-fetch after a save.
+    if (isHtml.value) assetUrl.value = pageUrl(absPath.value)
   } catch (e) {
     saveError.value = String(e)
   } finally {
@@ -351,6 +359,19 @@ function mediaUrl(abs: string): string {
   return `${convertFileSrc(abs)}?v=${Date.now()}`
 }
 
+// HTML previews need their relative sub-resources (stylesheets, scripts, images)
+// to resolve, which `convertFileSrc` can't do: it percent-encodes the whole path
+// into a single URL segment, so `style.css` next to the file would resolve to the
+// asset root. Rebuild the same origin with one encoded segment per path component
+// instead — on unix an extra leading slash keeps the decoded path absolute, since
+// the asset protocol strips the first `/` before opening the file.
+function pageUrl(abs: string): string {
+  const { origin } = new URL(convertFileSrc(abs))
+  const segments = abs.split(/[\\/]/).filter(Boolean).map(encodeURIComponent)
+  const prefix = abs.startsWith('/') ? '//' : '/'
+  return `${origin}${prefix}${segments.join('/')}?v=${Date.now()}`
+}
+
 async function load() {
   const projPath = props.projectPath
   const path = props.path
@@ -359,9 +380,9 @@ async function load() {
   curPath.value = path
   curLine.value = props.line ?? null
   absPath.value = abs
-  // Markdown opens rendered by default unless a specific line was requested
+  // Markdown / HTML open rendered by default unless a specific line was requested
   // (the line-numbered raw view is what can scroll to it).
-  mode.value = /\.(md|markdown|mdx)$/i.test(path) && !props.line ? 'preview' : 'code'
+  mode.value = /\.(md|markdown|mdx|html?|xhtml)$/i.test(path) && !props.line ? 'preview' : 'code'
   error.value = null
   content.value = ''
   truncated.value = false
@@ -378,6 +399,10 @@ async function load() {
     loading.value = false
     return
   }
+
+  // HTML stays a text file (editable, line-numbered raw view) but its preview
+  // renders the file itself from disk, so it needs an asset URL too.
+  if (isHtml.value) assetUrl.value = pageUrl(abs)
 
   loading.value = true
   try {
@@ -439,6 +464,8 @@ async function reload() {
   error.value = null
   editing.value = false
   saveError.value = null
+  // Re-point the iframe at a fresh URL so the preview picks up the new content.
+  if (isHtml.value) assetUrl.value = pageUrl(absPath.value)
   try {
     const res = await runsStore.readProjectFile(projPath, path)
     curPath.value = res.path
@@ -620,6 +647,8 @@ watch(searchQuery, () => {
 // DOM (old Range objects point at detached nodes).
 watch([content, mode, editing], () => {
   if (!searchOpen.value) return
+  // Nothing in the parent document to search once the iframe preview takes over.
+  if (htmlPreview.value) { closeSearch(); return }
   nextTick(runSearch)
 })
 
@@ -665,9 +694,9 @@ defineExpose({ onRevealInFolder, onOpenInApp })
     <div class="sticky top-0 z-10 flex items-center gap-2 border-b border-border bg-card px-4 py-3 shrink-0">
       <FileCode2 class="h-4 w-4 text-primary shrink-0" :stroke-width="1.75" />
       <span class="text-xs font-mono text-foreground/90 truncate flex-1" :title="curPath">{{ curPath }}</span>
-      <!-- Raw / rendered toggle, only meaningful for markdown files -->
+      <!-- Raw / rendered toggle, only meaningful for markdown and HTML files -->
       <div
-        v-if="isMarkdown && content && !editing"
+        v-if="previewable && !editing && !loading && !error && (content || isHtml)"
         class="flex items-center rounded-md border border-border overflow-hidden shrink-0 text-[10px] font-medium"
       >
         <button
@@ -682,7 +711,7 @@ defineExpose({ onRevealInFolder, onOpenInApp })
         >{{ t('files.viewer.raw') }}</button>
       </div>
       <!-- Font size controls -->
-      <div v-if="content" class="flex items-center rounded-md border border-border overflow-hidden shrink-0">
+      <div v-if="content && !htmlPreview" class="flex items-center rounded-md border border-border overflow-hidden shrink-0">
         <button
           class="flex items-center justify-center h-6 w-6 text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
           :title="t('files.viewer.smallerFont')"
@@ -737,7 +766,7 @@ defineExpose({ onRevealInFolder, onOpenInApp })
       </button>
       <!-- Toggle the in-page search bar -->
       <button
-        v-if="content"
+        v-if="content && !htmlPreview"
         class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
         :class="{ 'bg-primary/15 text-primary': searchOpen }"
         :title="t('files.viewer.searchInFile')"
@@ -932,6 +961,16 @@ defineExpose({ onRevealInFolder, onOpenInApp })
           </Button>
         </div>
       </div>
+      <!-- Rendered HTML preview: an iframe over the real file on disk, so its
+           own styles, scripts and relative assets load like in a browser.
+           Sandboxed to keep the page out of the app window. -->
+      <iframe
+        v-else-if="htmlPreview"
+        :src="assetUrl"
+        sandbox="allow-scripts allow-forms allow-popups allow-modals allow-same-origin"
+        class="w-full h-full min-h-[400px] bg-white"
+        :title="t('files.viewer.htmlPreview')"
+      />
       <!-- Oversized text file: refuse to render a partial view, point the user
            at an external editor that can open the whole thing. -->
       <div v-else-if="truncated" class="p-10 flex flex-col items-center gap-3 text-center">

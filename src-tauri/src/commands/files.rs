@@ -46,9 +46,10 @@ pub struct FileContent {
 }
 
 /// Read a file referenced by the AI (tool call or prose mention) so the UI can
-/// preview it. `file_path` may be absolute or relative to the project root, but
-/// the resolved path must stay inside the project — we refuse anything that
-/// escapes the root (path traversal / absolute paths elsewhere on disk).
+/// preview it. `file_path` may be absolute or relative to the project root; the
+/// resolved path must land inside the project or one of the allowed outside
+/// roots (see [`preview_allows`]) — anything else (`/etc`, another user's home,
+/// …) is refused.
 #[tauri::command]
 pub async fn read_project_file(
     project_path: String,
@@ -90,6 +91,32 @@ fn home_allows(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// True when `path` lives under a system scratch directory. The AI routinely
+/// writes working files outside the project (`/tmp/commitment.md`, `$TMPDIR/…`)
+/// and then links them in the stream, so the viewer must be able to open what it
+/// just offered as a link. On macOS `/tmp` is a symlink to `/private/tmp`, hence
+/// canonicalizing each candidate root before comparing.
+fn temp_root_allows(path: &Path) -> bool {
+    let mut roots = vec![std::env::temp_dir()];
+    roots.push(PathBuf::from("/tmp"));
+    roots.push(PathBuf::from("/var/tmp"));
+    roots.iter().any(|root| {
+        root.canonicalize()
+            .map(|root| path.starts_with(&root))
+            .unwrap_or(false)
+    })
+}
+
+/// Path-confinement shared by the viewer's read / write / list paths: inside the
+/// project root, or one of the allowed outside roots (AI transcripts, HOME,
+/// system temp).
+fn preview_allows(root: &Path, path: &Path) -> bool {
+    path.starts_with(root)
+        || transcript_root_allows(path)
+        || home_allows(path)
+        || temp_root_allows(path)
+}
+
 fn read_within(project_path: &str, file_path: &str) -> Result<FileContent, String> {
     let root = Path::new(project_path)
         .canonicalize()
@@ -107,13 +134,11 @@ fn read_within(project_path: &str, file_path: &str) -> Result<FileContent, Strin
         .canonicalize()
         .map_err(|_| format!("File not found: {file_path}"))?;
 
-    // Allow the project root plus the shared AI transcript stores. Session logs
-    // Devdy mirrors live under `~/.claude` / `~/.codex`, so the file viewer must
-    // be able to read them even though they sit outside any project.
-    if !canonical.starts_with(&root)
-        && !transcript_root_allows(&canonical)
-        && !home_allows(&canonical)
-    {
+    // Allow the project root plus the shared AI transcript stores, HOME and the
+    // system temp dirs. Session logs Devdy mirrors live under `~/.claude` /
+    // `~/.codex`, and AI scratch files land in `/tmp`, so the file viewer must be
+    // able to read them even though they sit outside any project.
+    if !preview_allows(&root, &canonical) {
         return Err("Refusing to read a file outside the project".to_string());
     }
     if canonical.is_dir() {
@@ -173,10 +198,7 @@ fn write_within(project_path: &str, file_path: &str, content: &str) -> Result<()
         .canonicalize()
         .map_err(|_| format!("File not found: {file_path}"))?;
 
-    if !canonical.starts_with(&root)
-        && !transcript_root_allows(&canonical)
-        && !home_allows(&canonical)
-    {
+    if !preview_allows(&root, &canonical) {
         return Err("Refusing to write a file outside the project".to_string());
     }
     if canonical.is_dir() {
@@ -657,4 +679,47 @@ fn base64_encode(input: &[u8]) -> String {
         out.push(if chunk.len() > 2 { TABLE[(n & 0x3f) as usize] as char } else { '=' });
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A file the AI dropped in the system temp dir (`/tmp/commitment.md`) must
+    /// open in the viewer even though it lives outside every project root.
+    #[test]
+    fn reads_a_file_from_the_temp_dir() {
+        let path = std::env::temp_dir().join(format!("devdy-viewer-{}.md", std::process::id()));
+        std::fs::write(&path, "# commitment\n").unwrap();
+
+        let project = env!("CARGO_MANIFEST_DIR");
+        let res = read_within(project, path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+
+        let res = res.expect("temp-dir file should be readable");
+        assert_eq!(res.content, "# commitment\n");
+    }
+
+    /// `/tmp` is a symlink to `/private/tmp` on macOS — the literal path the AI
+    /// prints must resolve through it.
+    #[cfg(unix)]
+    #[test]
+    fn reads_a_file_via_the_slash_tmp_symlink() {
+        let name = format!("devdy-viewer-tmp-{}.md", std::process::id());
+        let path = Path::new("/tmp").join(&name);
+        std::fs::write(&path, "ok\n").unwrap();
+
+        let res = read_within(env!("CARGO_MANIFEST_DIR"), path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(res.expect("/tmp file should be readable").content, "ok\n");
+    }
+
+    /// System directories stay off-limits.
+    #[cfg(unix)]
+    #[test]
+    fn refuses_a_system_file() {
+        let err = read_within(env!("CARGO_MANIFEST_DIR"), "/etc/hosts").unwrap_err();
+        assert!(err.contains("outside the project"), "unexpected error: {err}");
+    }
 }
