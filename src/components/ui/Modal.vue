@@ -12,6 +12,9 @@ const props = withDefaults(defineProps<{
   size?: 'sm' | 'md' | 'lg' | 'xl' | 'full'
   /** When false, hides the X and disables Esc / overlay-click dismissal. */
   closable?: boolean
+  /** When false, clicking the dimmed overlay won't close it (X / Esc still do).
+   *  Mirrors Drawer: a stray click must not discard a half-typed edit. */
+  dismissOnOverlay?: boolean
   /** Caps panel height and makes the body scroll. */
   scrollBody?: boolean
   /** Suppress the built-in header (the body provides its own). Esc / overlay
@@ -20,6 +23,7 @@ const props = withDefaults(defineProps<{
 }>(), {
   size: 'md',
   closable: true,
+  dismissOnOverlay: true,
   scrollBody: false,
   hideHeader: false,
 })
@@ -45,6 +49,11 @@ function close() {
   emit('update:open', false)
 }
 
+function onOverlayClick() {
+  if (!props.dismissOnOverlay) return
+  close()
+}
+
 function onKey(e: KeyboardEvent) {
   if (e.key === 'Escape') close()
 }
@@ -63,7 +72,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   <div
     v-if="open"
     class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-    @click.self="close"
+    @click.self="onOverlayClick"
   >
     <div :class="panelClass">
       <!-- Header -->

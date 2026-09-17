@@ -21,6 +21,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   'open-file': [path: string]
   'context-menu': [payload: { entry: DirEntry; x: number; y: number }]
+  /** Hover in/out for the panel-level tooltip (`null` = left the row). */
+  hover: [payload: { entry: DirEntry; rect: DOMRect } | null]
 }>()
 
 const store = useFileTreeStore()
@@ -42,7 +44,21 @@ function onClick() {
 }
 
 function onContextMenu(e: MouseEvent) {
+  emit('hover', null)
   emit('context-menu', { entry: props.entry, x: e.clientX, y: e.clientY })
+}
+
+// ── Hover tooltip ────────────────────────────────────────────────────────────
+// Long names are truncated by the panel width, so the row reports its geometry
+// upward and FileTree renders a single floating tooltip with the full name. The
+// native `title` attribute can't be used here: WebKit suppresses it on
+// draggable elements, which every row is.
+function onEnter(e: MouseEvent) {
+  if (isEditing.value) return
+  emit('hover', { entry: props.entry, rect: (e.currentTarget as HTMLElement).getBoundingClientRect() })
+}
+function onLeave() {
+  emit('hover', null)
 }
 
 // ── Inline rename ────────────────────────────────────────────────────────────
@@ -80,6 +96,7 @@ const isDropTarget = ref(false)
 
 function onDragStart(e: DragEvent) {
   if (isEditing.value) { e.preventDefault(); return }
+  emit('hover', null)
   e.dataTransfer?.setData(DND_MIME, props.entry.path)
   if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
 }
@@ -114,12 +131,14 @@ async function onDrop(e: DragEvent) {
     :class="[
       isActive ? 'bg-primary/15 text-foreground' : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground',
       isDropTarget && 'ring-1 ring-primary/70 bg-primary/10',
+      entry.ignored && !isActive && 'opacity-50',
     ]"
     :style="{ paddingLeft: indent }"
-    :title="entry.name"
     :draggable="!isEditing"
     @click="onClick"
     @contextmenu.prevent.stop="onContextMenu"
+    @mouseenter="onEnter"
+    @mouseleave="onLeave"
     @dragstart="onDragStart"
     @dragover="onDragOver"
     @dragleave="onDragLeave"
@@ -167,6 +186,7 @@ async function onDrop(e: DragEvent) {
       :active-path="activePath"
       @open-file="(p) => emit('open-file', p)"
       @context-menu="(payload) => emit('context-menu', payload)"
+      @hover="(payload) => emit('hover', payload)"
     />
   </template>
 </template>

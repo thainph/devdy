@@ -3,6 +3,11 @@ import { ref, computed, onBeforeUnmount, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Files, FilePen, FilePlus2, ChevronDown } from 'lucide-vue-next'
 import type { StreamEntry } from '@/lib/streamEvents'
+// Path extraction lives in `@/lib/toolFiles` so this list and the run log's own
+// file links always agree on what a tool call touched — `path` is safe to read
+// here because only writing tools reach it (search tools, where `path` means a
+// directory, are filtered out by `writeActionOf` first).
+import { toolFileTargets } from '@/lib/toolFiles'
 
 const { t } = useI18n()
 
@@ -29,52 +34,6 @@ function writeActionOf(name: string): Action | null {
   return null
 }
 
-// Input keys holding a concrete file path. `path` is safe to include because we
-// only ever inspect writing tools here — search tools (where `path` means a
-// directory) never reach this point.
-const FILE_PATH_KEYS = ['file_path', 'notebook_path', 'path']
-
-function asObj(v: unknown): Record<string, unknown> {
-  return v && typeof v === 'object' ? (v as Record<string, unknown>) : {}
-}
-
-// `*** Add File: x`, `*** Update File: x`, `*** Delete File: x` — the envelope
-// Codex `apply_patch` calls carry instead of a structured path.
-const PATCH_FILE_RE = /^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm
-
-// Every file a single write tool_use touches. Claude tools carry one path;
-// Codex maps its `fileChange` item / `apply_patch` call onto the `Edit` tool but
-// keeps its own payload, which can name several files at once.
-function fileTargets(input: unknown): string[] {
-  const obj = asObj(input)
-  // A Set, not an array: one payload can name the same file twice (e.g. a `path`
-  // key alongside a `changes` entry) and that must not inflate the touch count.
-  const out = new Set<string>()
-  const push = (v: unknown) => {
-    if (typeof v === 'string' && v.trim()) out.add(v.trim())
-  }
-
-  for (const k of FILE_PATH_KEYS) push(obj[k])
-
-  // Codex `fileChange`: `changes` is either an array of `{ path, kind }` or an
-  // object keyed by path, depending on the app-server payload.
-  const changes = obj.changes
-  if (Array.isArray(changes)) {
-    for (const c of changes) push(typeof c === 'string' ? c : asObj(c).path)
-  } else if (changes && typeof changes === 'object') {
-    for (const k of Object.keys(changes)) push(k)
-  }
-
-  // Codex `apply_patch`: the patch text itself names the files.
-  for (const k of ['input', 'patch']) {
-    const raw = obj[k]
-    if (typeof raw !== 'string') continue
-    for (const m of raw.matchAll(PATCH_FILE_RE)) push(m[1])
-  }
-
-  return [...out]
-}
-
 interface MentionedFile {
   path: string
   name: string
@@ -97,7 +56,7 @@ const files = computed<MentionedFile[]>(() => {
     // A rejected or failed write never reached the disk. A still-running call
     // has no result yet, so it stays listed (optimistic while streaming).
     if (e.result?.is_error) continue
-    for (const path of fileTargets(e.input)) {
+    for (const path of toolFileTargets(e.input)) {
       const existing = map.get(path)
       if (existing) {
         existing.count++

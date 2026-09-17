@@ -1,6 +1,6 @@
 //! Read-only Google Calendar access for the unified Calendar screen.
 //!
-//! Unlike the built-in `gdrive`/`gmail` MCP servers (which run only during agent
+//! Unlike the built-in `google` MCP server (which runs only during agent
 //! runs), the Calendar view is a dedicated UI screen that needs synchronous data.
 //! So we call the Google Calendar REST API directly from Rust: mint a short-lived
 //! access token from each account's stored `refresh_token` (same pattern as the

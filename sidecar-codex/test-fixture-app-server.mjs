@@ -4,6 +4,12 @@ import { writeFileSync } from 'node:fs'
 
 const marker = process.env.DEVDY_DENY_TEST_MARKER
 const mcpMode = process.env.DEVDY_MCP_PERMISSION_KEY_TEST === '1'
+// Codex's real app-server v2 elicitation has no `toolName` field; this mode
+// reproduces that so the per-server permission key stays covered.
+const mcpOmitToolName = process.env.DEVDY_MCP_OMIT_TOOLNAME === '1'
+// When set, record the approval decision the sidecar sent so a test can assert
+// it (e.g. `acceptForSession` for an "always" allow).
+const decisionOut = process.env.DEVDY_DECISION_OUT
 let buffer = ''
 
 function send(message) {
@@ -39,7 +45,7 @@ process.stdin.on('data', (chunk) => {
           method: 'mcpServer/elicitation/request',
           params: {
             serverName: 'Google Drive',
-            toolName: 'list_files',
+            ...(mcpOmitToolName ? {} : { toolName: 'list_files' }),
             mode: 'permission',
             message: 'Allow listing Drive files?',
           },
@@ -54,6 +60,7 @@ process.stdin.on('data', (chunk) => {
       })
     } else if (message.id === 91 && message.result) {
       const decision = message.result.decision
+      if (decisionOut) writeFileSync(decisionOut, String(decision))
       const denied = decision === 'cancel' || decision === 'decline'
       if (!denied && marker) writeFileSync(marker, 'executed')
       send({

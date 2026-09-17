@@ -51,6 +51,11 @@ use commands::google::{
     add_google_account, delete_google_account, google_client_status, google_forget_client,
     list_google_accounts, rename_google_account, set_default_google_account,
 };
+use commands::groups::{
+    apply_group_to_all_projects, create_group, delete_group, disable_group_for_project,
+    enable_group_for_project, get_group_members, get_item_groups, get_project_groups, list_groups,
+    set_group_members, update_group,
+};
 use commands::notifications::{show_calendar_reminder, show_permission_notification};
 use commands::projects::{
     add_project, add_repo, apply_skill, apply_skill_to_all_projects, detect_project_info,
@@ -244,6 +249,17 @@ pub fn run() {
             remove_rule_from_project,
             list_rule_sync_conflicts,
             resolve_rule_sync_conflict,
+            list_groups,
+            create_group,
+            update_group,
+            delete_group,
+            get_group_members,
+            get_item_groups,
+            set_group_members,
+            get_project_groups,
+            enable_group_for_project,
+            disable_group_for_project,
+            apply_group_to_all_projects,
             list_mcp_servers,
             get_mcp_server,
             create_mcp_server,

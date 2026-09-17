@@ -467,7 +467,12 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
           }
           if (s.allowedTools.includes(req.tool_name)) {
             runsStore
-              .respondPermission(req.run_id, req.request_id, 'allow', 'Auto-allowed for this session')
+              .respondPermission(req.run_id, req.request_id, 'allow', 'Auto-allowed for this session', {
+                // The tool is already on the project's standing allow list, so
+                // let the engine cache it too (codex `acceptForSession`) rather
+                // than prompting through this path again for every call.
+                remember: true,
+              })
               .catch(() => {})
             return
           }

@@ -49,6 +49,11 @@ pub struct AppliedRule {
     pub has_claude: bool,
     pub has_codex: bool,
     pub applied_at: String,
+    /// The user switched this rule on for the project directly.
+    pub manual: bool,
+    /// Some group the project has enabled contains this rule. Independent of `manual`: either one
+    /// on its own keeps the rule applied.
+    pub from_group: bool,
 }
 
 fn rules_dir(app: &AppHandle) -> PathBuf {
@@ -455,7 +460,11 @@ pub async fn get_applied_rules(
     use sqlx::Row;
     let rows = sqlx::query(
         "SELECT pr.rule_id, r.name as rule_name, r.description as rule_description,
-                pr.target, pr.synced_hash_claude, pr.synced_hash_codex, pr.applied_at
+                pr.target, pr.synced_hash_claude, pr.synced_hash_codex, pr.applied_at, pr.manual,
+                (SELECT COUNT(*) FROM rule_group_members m
+                   JOIN project_rule_groups pg
+                     ON pg.group_id = m.group_id AND pg.project_id = pr.project_id
+                  WHERE m.rule_id = pr.rule_id) as group_count
          FROM project_rules pr JOIN rules r ON r.id = pr.rule_id
          WHERE pr.project_id = ? ORDER BY r.name"
     )
@@ -467,6 +476,8 @@ pub async fn get_applied_rules(
     Ok(rows.iter().map(|row| {
         let claude: Option<String> = row.get("synced_hash_claude");
         let codex: Option<String> = row.get("synced_hash_codex");
+        let manual: i64 = row.get("manual");
+        let group_count: i64 = row.get("group_count");
         AppliedRule {
             rule_id: row.get("rule_id"),
             rule_name: row.get("rule_name"),
@@ -475,6 +486,8 @@ pub async fn get_applied_rules(
             has_claude: claude.is_some(),
             has_codex: codex.is_some(),
             applied_at: row.get("applied_at"),
+            manual: manual != 0,
+            from_group: group_count > 0,
         }
     }).collect())
 }
@@ -485,7 +498,7 @@ pub async fn apply_rule(
     project_id: String,
     rule_id: String,
 ) -> Result<(), String> {
-    apply_rule_to_project(db.inner(), &project_id, &rule_id).await
+    apply_rule_to_project(db.inner(), &project_id, &rule_id, true).await
 }
 
 /// Summary returned by "apply to all projects" bulk operations (rules & skills).
@@ -518,7 +531,7 @@ pub async fn apply_rule_to_all_projects(
     for row in &rows {
         let project_id: String = row.get("id");
         let project_name: String = row.get("name");
-        match apply_rule_to_project(db.inner(), &project_id, &rule_id).await {
+        match apply_rule_to_project(db.inner(), &project_id, &rule_id, true).await {
             Ok(()) => applied += 1,
             Err(error) => failures.push(ApplyFailure { project_id, project_name, error }),
         }
@@ -526,11 +539,15 @@ pub async fn apply_rule_to_all_projects(
     Ok(ApplyAllOutcome { applied, failures })
 }
 
-/// Core apply logic shared by `apply_rule` and `apply_rule_to_all_projects`.
-async fn apply_rule_to_project(
+/// Core apply logic shared by `apply_rule`, `apply_rule_to_all_projects` and group enablement.
+///
+/// See `apply_skill_to_project` for what `manual` means: hand-picked rules (`true`) survive a
+/// group being switched off, rules a group pulled in (`false`) do not.
+pub async fn apply_rule_to_project(
     db: &Db,
     project_id: &str,
     rule_id: &str,
+    manual: bool,
 ) -> Result<(), String> {
     use sqlx::Row;
     let rule_row = sqlx::query("SELECT name, target, source_path FROM rules WHERE id = ?")
@@ -555,9 +572,15 @@ async fn apply_rule_to_project(
     let now = chrono::Utc::now().to_rfc3339();
 
     sqlx::query(
-        "INSERT OR REPLACE INTO project_rules
-         (project_id, rule_id, target, synced_hash_claude, synced_hash_codex, applied_at)
-         VALUES (?, ?, ?, ?, ?, ?)"
+        "INSERT INTO project_rules
+         (project_id, rule_id, target, synced_hash_claude, synced_hash_codex, applied_at, manual)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(project_id, rule_id) DO UPDATE SET
+            target = excluded.target,
+            synced_hash_claude = excluded.synced_hash_claude,
+            synced_hash_codex = excluded.synced_hash_codex,
+            applied_at = excluded.applied_at,
+            manual = CASE WHEN excluded.manual = 1 THEN 1 ELSE project_rules.manual END"
     )
     .bind(project_id)
     .bind(rule_id)
@@ -565,6 +588,7 @@ async fn apply_rule_to_project(
     .bind(&hash_claude)
     .bind(&hash_codex)
     .bind(&now)
+    .bind(if manual { 1 } else { 0 })
     .execute(db)
     .await
     .map_err(|e| e.to_string())?;
@@ -599,22 +623,57 @@ fn write_rule_artifacts(
 }
 
 #[tauri::command]
+/// Drop the *direct* link between a project and a rule; see `remove_skill_from_project` for why an
+/// enabled group containing the rule keeps it applied.
 pub async fn remove_rule_from_project(
     db: State<'_, Db>,
     project_id: String,
     rule_id: String,
 ) -> Result<(), String> {
+    unlink_rule_from_project(db.inner(), &project_id, &rule_id).await
+}
+
+pub async fn unlink_rule_from_project(
+    db: &Db,
+    project_id: &str,
+    rule_id: &str,
+) -> Result<(), String> {
+    if crate::commands::groups::claimed_by_enabled_group(
+        db,
+        crate::commands::groups::GroupKind::Rule,
+        project_id,
+        rule_id,
+    )
+    .await?
+    {
+        sqlx::query("UPDATE project_rules SET manual = 0 WHERE project_id = ? AND rule_id = ?")
+            .bind(project_id)
+            .bind(rule_id)
+            .execute(db)
+            .await
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    remove_rule_from_project_inner(db, project_id, rule_id).await
+}
+
+/// Core removal logic shared by the command above and group disablement.
+pub async fn remove_rule_from_project_inner(
+    db: &Db,
+    project_id: &str,
+    rule_id: &str,
+) -> Result<(), String> {
     use sqlx::Row;
     let rule_row = sqlx::query("SELECT name FROM rules WHERE id = ?")
-        .bind(&rule_id)
-        .fetch_one(db.inner())
+        .bind(rule_id)
+        .fetch_one(db)
         .await
         .map_err(|e| e.to_string())?;
     let name: String = rule_row.get("name");
 
     let project_row = sqlx::query("SELECT path FROM projects WHERE id = ?")
-        .bind(&project_id)
-        .fetch_one(db.inner())
+        .bind(project_id)
+        .fetch_one(db)
         .await
         .map_err(|e| e.to_string())?;
     let project_path: String = project_row.get("path");
@@ -623,9 +682,9 @@ pub async fn remove_rule_from_project(
     remove_agents_block(&agents_path(&project_path), &name);
 
     sqlx::query("DELETE FROM project_rules WHERE project_id = ? AND rule_id = ?")
-        .bind(&project_id)
-        .bind(&rule_id)
-        .execute(db.inner())
+        .bind(project_id)
+        .bind(rule_id)
+        .execute(db)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())

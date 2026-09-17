@@ -362,10 +362,18 @@ function mcpToolKeyPart(value, fallback) {
   return clean || fallback
 }
 
+// Stable key for Devdy's "allow always" / "deny always" store. Codex's
+// `mcpServer/elicitation/request` carries only `serverName` — there is no
+// `toolName` in the app-server v2 protocol — so the finest grain we can offer
+// is PER SERVER (`mcp__pms`). Returning a bare `MCP` here is what used to make
+// the prompt unrememberable, so every MCP request asked again forever.
+// `toolName` is still honored when a future codex build starts sending it.
 function mcpPermissionToolName(params, server) {
+  const serverKey = mcpToolKeyPart(server, '')
+  if (!serverKey) return 'MCP'
   const tool = pickString(params, ['toolName', 'name'])
-  if (!tool) return 'MCP'
-  return `mcp__${mcpToolKeyPart(server, 'server')}__${mcpToolKeyPart(tool, 'request')}`
+  if (!tool) return `mcp__${serverKey}`
+  return `mcp__${serverKey}__${mcpToolKeyPart(tool, 'request')}`
 }
 
 function mcpServerDisplayName(params, server) {
@@ -559,13 +567,13 @@ function onServerMessage(msg) {
         emitPermission(msg.id, { tool_name: 'Bash', tool_input: { command: p.command }, title: p.reason || 'Run a shell command', description: p.command })
         return
       case 'execCommandApproval':
-        emitPermission(msg.id, { tool_name: 'Bash', tool_input: { command: Array.isArray(p.command) ? p.command.join(' ') : p.command }, title: p.reason || 'Run a shell command' })
+        emitPermission(msg.id, { tool_name: 'Bash', tool_input: { command: Array.isArray(p.command) ? p.command.join(' ') : p.command }, title: p.reason || 'Run a shell command' }, { legacy: true })
         return
       case 'item/fileChange/requestApproval':
         emitPermission(msg.id, { tool_name: 'Edit', tool_input: p, title: p.reason || 'Apply a file change' })
         return
       case 'applyPatchApproval':
-        emitPermission(msg.id, { tool_name: 'Edit', tool_input: p, title: p.reason || 'Apply a patch' })
+        emitPermission(msg.id, { tool_name: 'Edit', tool_input: p, title: p.reason || 'Apply a patch' }, { legacy: true })
         return
       case 'mcpServer/elicitation/request':
         if (process.env.DEVDY_CODEX_MCP_TRACE) {
@@ -818,7 +826,16 @@ function handleCommand(cmd) {
       // interrupts the turn, preventing a command from racing ahead while the
       // approval response propagates through the remote controller/host path.
       // A later prompt can resume the same conversation normally.
-      rpcRespond(w.rpcId, { decision: accept ? 'accept' : 'cancel' })
+      //
+      // An "always" allow additionally opts into codex's OWN session-scoped
+      // approval cache (`acceptForSession`), so matching commands / file changes
+      // later in the session never come back as a prompt at all — Devdy's
+      // per-project list would auto-answer them, but only after a full
+      // sidecar → host → UI → sidecar round trip.
+      const allowDecision = cmd.remember
+        ? (w.legacy ? 'approved_for_session' : 'acceptForSession')
+        : (w.legacy ? 'approved' : 'accept')
+      rpcRespond(w.rpcId, { decision: accept ? allowDecision : 'cancel' })
       break
     }
     case 'interrupt':

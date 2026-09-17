@@ -10,6 +10,7 @@ import type { StreamEntry } from '@/lib/streamEvents'
 import { vMermaid } from '@/lib/mermaid'
 import { vCopyCode } from '@/lib/copyCode'
 import { computeDiff } from '@/lib/diff'
+import { toolFileTarget, toolFileTargets, codexEditParts, type DiffPart } from '@/lib/toolFiles'
 import IdeContextChip from './IdeContextChip.vue'
 import DiffView from './DiffView.vue'
 import { CollapsibleMessage } from '@/components/ui'
@@ -94,18 +95,17 @@ function onProseClick(e: MouseEvent) {
   }
 }
 
-// Tools whose input carries a file path we can open in the viewer.
-const FILE_PATH_KEYS = ['file_path', 'notebook_path', 'path']
-
 // Return the file path a tool acts on, or null when the tool isn't file-based.
+// Engine-agnostic: Claude's `file_path` and Codex's `fileChange` / `apply_patch`
+// payloads both resolve here (see `@/lib/toolFiles`).
 function fileTarget(input: unknown): string | null {
-  if (!input || typeof input !== 'object') return null
-  const obj = input as Record<string, unknown>
-  for (const k of FILE_PATH_KEYS) {
-    const v = obj[k]
-    if (typeof v === 'string' && v.trim()) return v
-  }
-  return null
+  return toolFileTarget(input)
+}
+
+// How many *extra* files the same call touches — Codex can patch several files
+// in one `fileChange` item, and only the first fits in the header.
+function extraFileCount(input: unknown): number {
+  return Math.max(toolFileTargets(input).length - 1, 0)
 }
 
 // Per-tool visual identity: distinct icon + accent color per tool category,
@@ -228,18 +228,28 @@ function isEditTool(name: string): boolean {
   return EDIT_TOOLS.has((name || '').toLowerCase())
 }
 
-interface DiffPart {
-  before: string
-  after: string
+// Extract the before/after pair(s) a file-editing tool changes: Edit → one pair,
+// MultiEdit → one per edit, Write → whole content as an all-added block, Codex
+// `fileChange` → one per patch hunk, tagged with the file it belongs to.
+// Memoized per input object: the template re-reads this while rendering each
+// part (to decide where a new per-file heading starts), and parsing a patch on
+// every one of those reads would be quadratic for a large diff.
+const editPartsCache = new WeakMap<object, DiffPart[]>()
+function editParts(name: string, input: unknown): DiffPart[] {
+  if (!input || typeof input !== 'object') return []
+  const cached = editPartsCache.get(input)
+  if (cached) return cached
+  const parts = computeEditParts(name, input)
+  editPartsCache.set(input, parts)
+  return parts
 }
 
-// Extract the before/after pair(s) a file-editing tool changes: Edit → one pair,
-// MultiEdit → one per edit, Write → whole content as an all-added block.
-function editParts(name: string, input: unknown): DiffPart[] {
+function computeEditParts(name: string, input: unknown): DiffPart[] {
   if (!input || typeof input !== 'object') return []
   const obj = input as Record<string, unknown>
   const n = (name || '').toLowerCase()
   const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+  if (obj.changes) return codexEditParts(obj)
   if (n === 'edit') {
     const before = str(obj.old_string)
     const after = str(obj.new_string)
@@ -665,8 +675,12 @@ function toolResult(e: StreamEntry): unknown {
            skipping is a loss there, and that stutter is what the reader feels.
            The last entry is excluded while streaming: it's always in view and
            its height changes every chunk, which makes the placeholder thrash. -->
+      <!-- `data-user-turn` marks the reader's landmarks: the turn navigator in
+           RunView walks these to jump between the user's own messages. On the
+           wrapper, not the bubble, so the jump lands on the top of the turn. -->
       <div
         v-entry-size
+        :data-user-turn="entry.kind === 'user' ? i : undefined"
         :class="{ 'stream-entry': running && i !== entries.length - 1 }"
         v-memo="[entry, toolResult(entry), expanded[i], expandedCompacts.has(i), copiedCmd[i], expandedMessageIndices.has(i), running && i === entries.length - 1]"
       >
@@ -898,6 +912,12 @@ function toolResult(e: StreamEntry): unknown {
             role="button"
             @click.stop="emit('open-file', fileTarget(entry.input)!)"
           >{{ fileTarget(entry.input) }}</span>
+          <!-- One Codex patch can span several files; the rest are listed below. -->
+          <span
+            v-if="extraFileCount(entry.input)"
+            class="text-[10px] font-mono text-foreground/45 shrink-0"
+            :title="toolFileTargets(entry.input).join('\n')"
+          >{{ t('streamLog.moreFiles', { count: extraFileCount(entry.input) }) }}</span>
           <!-- +added / −removed stat badge -->
           <span
             v-if="editStats(entry.name, entry.input).added || editStats(entry.name, entry.input).removed"
@@ -915,12 +935,18 @@ function toolResult(e: StreamEntry): unknown {
           <span v-else class="ml-auto text-[10px] text-amber-500/80 dark:text-amber-400/70 animate-pulse shrink-0">{{ t('streamLog.running') }}</span>
         </button>
         <div v-if="expanded[i]" class="border-t border-border p-2 space-y-2">
-          <DiffView
-            v-for="(part, pi) in editParts(entry.name, entry.input)"
-            :key="pi"
-            :before="part.before"
-            :after="part.after"
-          />
+          <template v-for="(part, pi) in editParts(entry.name, entry.input)" :key="pi">
+            <!-- Per-file heading, shown once per file when a call spans several.
+                 A single-file call already names it in the header. -->
+            <div
+              v-if="part.path && extraFileCount(entry.input) && part.path !== editParts(entry.name, entry.input)[pi - 1]?.path"
+              class="px-1 pt-1 text-[11px] font-mono text-sky-600 dark:text-sky-400/90 truncate underline decoration-dotted underline-offset-2 hover:text-sky-500 cursor-pointer"
+              :title="t('streamLog.openFile', { path: part.path })"
+              role="button"
+              @click="emit('open-file', part.path!)"
+            >{{ part.path }}</div>
+            <DiffView :before="part.before" :after="part.after" />
+          </template>
           <div v-if="entry.result?.is_error" class="px-1">
             <div class="text-[10px] uppercase tracking-wider text-foreground/40 mb-1">{{ t('streamLog.error') }}</div>
             <pre class="text-[11px] font-mono text-red-600 dark:text-red-300/90 whitespace-pre-wrap break-words max-h-60 overflow-auto">{{ entry.result.content }}</pre>

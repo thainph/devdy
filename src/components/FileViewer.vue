@@ -7,12 +7,17 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  FileCode2, AArrowDown, AArrowUp, ExternalLink, Copy, FileQuestion, FileWarning, FolderOpen, RotateCw, Code2, ClipboardCopy, Check, Languages, Pencil, Save, X, Search, ChevronUp, ChevronDown, ZoomIn, ZoomOut, MoreHorizontal, Columns2,
+  FileCode2, AArrowDown, AArrowUp, ExternalLink, FileQuestion, FileWarning, FolderOpen, RotateCw, Code2, Languages, Pencil, Save, X, Search, ChevronUp, ChevronDown, ZoomIn, ZoomOut, MoreHorizontal, Columns2,
 } from 'lucide-vue-next'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener'
 import type MarkdownIt from 'markdown-it'
-import { Button, DropdownMenu, DropdownItem } from '@/components/ui'
+import { Button, DropdownMenu } from '@/components/ui'
+import FileActionsMenu from '@/components/FileActionsMenu.vue'
+import { useFileTreeStore } from '@/stores/fileTree'
+import { usePrompt } from '@/composables/usePrompt'
+import { useToast } from '@/composables/useToast'
+import type { FileTarget } from '@/lib/fileActions'
 import TranslatePopover from '@/components/TranslatePopover.vue'
 import { invoke } from '@/lib/tauri'
 import { useRunsStore } from '@/stores/runs'
@@ -40,10 +45,17 @@ const emit = defineEmits<{
   'open-file': [path: string, line: number | null]
   /** An http(s)/mailto link inside the markdown preview was clicked. */
   'open-url': [url: string]
+  /** Renamed from the ⋯ menu; the host should follow the file to its new path. */
+  renamed: [path: string]
+  /** Deleted from the ⋯ menu; there is nothing left to show. */
+  deleted: []
 }>()
 
 const { t } = useI18n()
+const { prompt } = usePrompt()
+const { toast } = useToast()
 const runsStore = useRunsStore()
+const fileTree = useFileTreeStore()
 const projectsStore = useProjectsStore()
 const appSettings = useAppSettingsStore()
 const imageCompare = useImageCompareStore()
@@ -52,6 +64,35 @@ const imageCompare = useImageCompareStore()
 // for the second image (via picker or a right-click in the file tree).
 function startCompare() {
   imageCompare.selectFirst(props.projectPath, curPath.value)
+}
+
+// What the shared ⋯ menu acts on: always this file.
+const menuTarget = computed<FileTarget | null>(() =>
+  curPath.value
+    ? { path: curPath.value, name: curPath.value.split('/').pop() || curPath.value, isDir: false }
+    : null,
+)
+
+/**
+ * Rename from the menu.
+ *
+ * The explorer renames inline in the row it owns; this window has no row, so it
+ * asks. Either way the file moves, and the host is told to follow it.
+ */
+async function promptRename(target: FileTarget) {
+  const name = await prompt({
+    title: t('files.tree.rename'),
+    label: t('files.tree.fileNameLabel'),
+    initialValue: target.name,
+    confirmLabel: t('files.tree.rename'),
+  })
+  if (!name || name === target.name) return
+  try {
+    const next = await fileTree.rename(props.projectPath, target.path, name)
+    emit('renamed', next)
+  } catch (e) {
+    toast.error(String(e))
+  }
 }
 
 // ── File-type classification ──────────────────────────────────────────────
@@ -86,8 +127,6 @@ const content = ref('')
 const truncated = ref(false)
 const loading = ref(false)
 const error = ref<string | null>(null)
-const copied = ref(false)
-const pathCopied = ref(false)
 const reloading = ref(false)
 const kind = ref<FileKind>('text')
 const assetUrl = ref('')
@@ -386,7 +425,6 @@ async function load() {
   error.value = null
   content.value = ''
   truncated.value = false
-  copied.value = false
   assetUrl.value = ''
   resetZoom()
   editing.value = false
@@ -431,22 +469,6 @@ function onRevealInFolder() {
 }
 function onOpenInVscode() {
   if (absPath.value) projectsStore.openInVscode(absPath.value).catch(() => { /* VS Code unavailable */ })
-}
-async function copyPath() {
-  const target = absPath.value || curPath.value
-  if (!target) return
-  try {
-    await navigator.clipboard.writeText(target)
-    pathCopied.value = true
-    setTimeout(() => { pathCopied.value = false }, 1500)
-  } catch { /* clipboard unavailable */ }
-}
-async function copyContent() {
-  try {
-    await navigator.clipboard.writeText(content.value)
-    copied.value = true
-    setTimeout(() => { copied.value = false }, 1500)
-  } catch { /* clipboard unavailable */ }
 }
 
 // Re-read the file from disk, preserving the current view mode / font size /
@@ -824,25 +846,12 @@ defineExpose({ onRevealInFolder, onOpenInApp })
             <MoreHorizontal class="h-4 w-4" :stroke-width="1.75" />
           </button>
         </template>
-        <DropdownItem v-if="content" @click="copyContent">
-          <Check v-if="copied" class="h-3.5 w-3.5 text-primary shrink-0" :stroke-width="1.75" />
-          <Copy v-else class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-          {{ copied ? t('files.viewer.copied') : t('files.viewer.copyContent') }}
-        </DropdownItem>
-        <DropdownItem @click="copyPath">
-          <Check v-if="pathCopied" class="h-3.5 w-3.5 text-primary shrink-0" :stroke-width="1.75" />
-          <ClipboardCopy v-else class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-          {{ pathCopied ? t('files.viewer.pathCopied') : t('files.viewer.copyFilePath') }}
-        </DropdownItem>
-        <div class="my-1 h-px bg-border" aria-hidden="true" />
-        <DropdownItem @click="onOpenInApp">
-          <ExternalLink class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-          {{ t('files.viewer.openInDefaultApp') }}
-        </DropdownItem>
-        <DropdownItem @click="onRevealInFolder">
-          <FolderOpen class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-          {{ t('files.viewer.revealInFolder') }}
-        </DropdownItem>
+        <FileActionsMenu
+          :project-path="projectPath"
+          :target="menuTarget"
+          @rename="promptRename"
+          @deleted="emit('deleted')"
+        />
       </DropdownMenu>
       <!-- Host-supplied chrome controls (full-screen, pop-out, close) -->
       <slot name="actions" />

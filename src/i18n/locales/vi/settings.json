@@ -123,9 +123,9 @@
     "availableTools": "Tool khả dụng"
   },
   "google": {
-    "title": "Tài khoản Google (Drive + Gmail)",
-    "intro": "Kết nối một hoặc nhiều tài khoản Google để AI làm việc với file Drive và Gmail của bạn. Các tool xuất hiện dưới dạng mcp__gdrive__* và mcp__gmail__*; với nhiều tài khoản, AI chọn một tài khoản qua tham số account của mỗi tool (dùng tài khoản mặc định khi bỏ trống). Hành động ghi, xóa, chia sẻ và gửi vẫn qua bước xác nhận quyền. Refresh token được lưu trong OS Keychain (không ghi ra đĩa). Có hiệu lực ở lần chạy tiếp theo.",
-    "credsWarning": "Tự tạo thông tin xác thực OAuth Desktop app trong Google Cloud Console, bật Drive API và Gmail API, rồi dán Client ID và Secret vào bên dưới.",
+    "title": "Tài khoản Google (Drive + Gmail + Lịch)",
+    "intro": "Kết nối một hoặc nhiều tài khoản Google để AI làm việc với file Drive, Gmail và Lịch của bạn. Các tool xuất hiện dưới dạng mcp__google__* theo ba nhóm — drive_*, mail_* và cal_*; với nhiều tài khoản, AI chọn một tài khoản qua tham số account của mỗi tool (dùng tài khoản mặc định khi bỏ trống). Hành động ghi, xóa, chia sẻ và gửi vẫn qua bước xác nhận quyền; riêng lịch sẽ không gửi mail cho người tham dự trừ khi AI yêu cầu rõ ràng. Refresh token được lưu trong OS Keychain (không ghi ra đĩa). Có hiệu lực ở lần chạy tiếp theo.",
+    "credsWarning": "Tự tạo thông tin xác thực OAuth Desktop app trong Google Cloud Console, bật Drive API, Gmail API và Calendar API, rồi dán Client ID và Secret vào bên dưới.",
     "default": "mặc định",
     "driveGmail": "Drive + Gmail",
     "setAsDefault": "Đặt làm mặc định",

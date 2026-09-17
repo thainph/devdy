@@ -96,7 +96,7 @@ pub fn resolve_mcp_sidecar_script(app: &AppHandle) -> PathBuf {
 }
 
 /// Best-effort path to a sibling built-in MCP server script inside the bundled
-/// `sidecar-mcp/` directory (e.g. `gdrive.mjs`, `gmail.mjs`). Same resolution as
+/// `sidecar-mcp/` directory (e.g. `google.mjs`). Same resolution as
 /// [`resolve_mcp_sidecar_script`] (`DEVDY_MCP_SIDECAR_DIR` env → bundled resource
 /// → dev fallback); never errors — callers skip injection when the file is
 /// absent.
@@ -665,13 +665,16 @@ pub async fn drain_sidecar(
     };
     let final_status = if was_cancelled { "cancelled" } else { "done" };
     let finished_at = chrono::Utc::now().to_rfc3339();
-    let _ = sqlx::query("UPDATE runs SET status = ?, finished_at = ?, output_path = ? WHERE id = ?")
-        .bind(final_status)
-        .bind(&finished_at)
-        .bind(log_path.to_string_lossy().as_ref())
-        .bind(&run_id)
-        .execute(&db_pool)
-        .await;
+    let _ = sqlx::query(
+        "UPDATE runs SET status = ?, finished_at = ?, last_activity_at = ?, output_path = ? WHERE id = ?",
+    )
+    .bind(final_status)
+    .bind(&finished_at)
+    .bind(&finished_at)
+    .bind(log_path.to_string_lossy().as_ref())
+    .bind(&run_id)
+    .execute(&db_pool)
+    .await;
 
     if let Some(bus) = &remote_bus {
         bus.publish(crate::remote::RemoteRunEvent::Done {

@@ -7,6 +7,7 @@
   "contextCompacted": "Đã nén ngữ cảnh",
   "thinking": "đang nghĩ",
   "openFile": "Mở {path}",
+  "moreFiles": "+{count} file khác",
   "running": "đang chạy…",
   "error": "lỗi",
   "command": "lệnh",

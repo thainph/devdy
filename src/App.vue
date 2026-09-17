@@ -9,7 +9,7 @@ import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useUILayoutStore } from '@/stores/uiLayout'
 import { useI18n } from 'vue-i18n'
 import { setLocale } from '@/i18n'
-import { PanelLeftClose, PanelLeftOpen } from 'lucide-vue-next'
+import { ListTodo, PanelLeftClose, PanelLeftOpen } from 'lucide-vue-next'
 import PermissionNotifier from '@/components/PermissionNotifier.vue'
 import CalendarReminder from '@/components/CalendarReminder.vue'
 import WorkspaceTabs from '@/components/WorkspaceTabs.vue'
@@ -22,9 +22,10 @@ import { Button, ConfirmModal, PromptModal, ToastHost } from '@/components/ui'
 import ImageCompareHost from '@/components/ImageCompareHost.vue'
 import CyberFoxHost from '@/components/CyberFoxHost.vue'
 import MascotWindow from '@/views/MascotWindow.vue'
-import QuickCreateWindow from '@/views/QuickCreateWindow.vue'
-import QuickCapturePanel from '@/components/QuickCapturePanel.vue'
-import { useQuickCapture } from '@/composables/useQuickCapture'
+import ItemWindow from '@/views/ItemWindow.vue'
+import ItemListDrawer from '@/components/ItemListDrawer.vue'
+import { useItemPanel } from '@/composables/useItemPanel'
+import { openItemCreateWindow } from '@/lib/itemWindow'
 import { applyAppMenu, IS_MAC, listenMenuActions, registerMenuAction, runMenuAction } from '@/lib/appMenu'
 import { NAV_ROUTES } from '@/lib/navigation'
 import IssuesGanttView from '@/views/IssuesGanttView.vue'
@@ -34,12 +35,12 @@ import { getVersion } from '@tauri-apps/api/app'
 // chrome-less host (no sidebar / nav / background work) in those cases.
 const isFileWindow = new URLSearchParams(window.location.search).get('fileWindow') === '1'
 const isPermissionWindow = new URLSearchParams(window.location.search).get('permissionWindow') === '1'
-const isQuickCreateWindow = new URLSearchParams(window.location.search).get('quickCreateWindow') === '1'
+const isItemWindow = new URLSearchParams(window.location.search).get('itemWindow') === '1'
 const isGanttWindow = new URLSearchParams(window.location.search).get('ganttWindow') === '1'
 const isMascotWindow = new URLSearchParams(window.location.search).get('mascotWindow') === '1'
 // All pop-out kinds only need the theme applied; skip the main app's data work.
 const isPopoutWindow =
-  isFileWindow || isPermissionWindow || isQuickCreateWindow || isGanttWindow || isMascotWindow
+  isFileWindow || isPermissionWindow || isItemWindow || isGanttWindow || isMascotWindow
 
 const route = useRoute()
 const router = useRouter()
@@ -49,7 +50,7 @@ const tabsStore = useWorkspaceTabsStore()
 const uiLayout = useUILayoutStore()
 const live = useLiveRunsStore()
 const { t, locale } = useI18n()
-const { openCapture } = useQuickCapture()
+const itemPanel = useItemPanel()
 
 const isRunRoute = computed(
   () => route.name === 'project-run' || route.name === 'project-run-detail',
@@ -138,10 +139,11 @@ function onGlobalNavKeyGuard(e: KeyboardEvent) {
   }
 }
 
-// Quick capture (⌘/Ctrl+K → Todo, ⌘/Ctrl+Shift+N → Note) is bound HERE, at the
-// app root, rather than on the mascot: the mascot only mounts when it's enabled
-// and in in-app mode, which used to leave the shortcut silently dead for anyone
-// who had turned the fox off or moved it to the desktop-pet window.
+// Todo / note shortcuts (⌘/Ctrl+K → new Todo, ⌘/Ctrl+Shift+N → new Note, both
+// opening the item window; ⌘/Ctrl+Shift+K → the list drawer) are bound HERE, at
+// the app root, rather than on the mascot: the mascot only mounts when it's
+// enabled and in in-app mode, which used to leave the shortcut silently dead for
+// anyone who had turned the fox off or moved it to the desktop-pet window.
 //
 // ⌘/Ctrl+B (hide/show the sidebar) rides along here for the same reason: it has
 // to work from every screen, including one where the sidebar is already hidden
@@ -154,6 +156,9 @@ function onQuickCaptureKey(e: KeyboardEvent) {
   if (key === 'k' && !e.shiftKey) {
     e.preventDefault()
     runMenuAction('file.newTodo')
+  } else if (key === 'k' && e.shiftKey) {
+    e.preventDefault()
+    runMenuAction('view.itemPanel')
   } else if (key === 'n' && e.shiftKey) {
     e.preventDefault()
     runMenuAction('file.newNote')
@@ -175,11 +180,16 @@ const sidebarVisible = computed(
 // a session needs a project, which only that screen has.
 function bindGlobalMenuActions() {
   const unbinds = [
+    // Writing a todo / note ALWAYS happens in the standalone item window, from
+    // every entry point — menu, shortcut, mascot, run screen.
     registerMenuAction('file.newTodo', () =>
-      openCapture({ tab: 'todo', context: routeCaptureContext() }),
+      openItemCreateWindow('todo', routeCaptureContext()),
     ),
     registerMenuAction('file.newNote', () =>
-      openCapture({ tab: 'note', context: routeCaptureContext() }),
+      openItemCreateWindow('note', routeCaptureContext()),
+    ),
+    registerMenuAction('view.itemPanel', () =>
+      itemPanel.togglePanel({ projectId: routeCaptureContext().projectId }),
     ),
     registerMenuAction('view.toggleSidebar', () => uiLayout.toggleSidebar()),
     registerMenuAction('view.toggleFocus', () => uiLayout.toggleFocus()),
@@ -335,8 +345,8 @@ onMounted(async () => {
   <!-- Pop-out permission prompt window: bare layout, mirrors the main window. -->
   <PermissionWindow v-else-if="isPermissionWindow" />
 
-  <!-- Pop-out quick-create window: bare Todo/Note form, writes to shared DB. -->
-  <QuickCreateWindow v-else-if="isQuickCreateWindow" />
+  <!-- THE todo / note window: create or edit, the only place either is written. -->
+  <ItemWindow v-else-if="isItemWindow" />
 
   <!-- Pop-out Gantt window: bare Gantt chart on its own OS window. -->
   <IssuesGanttView v-else-if="isGanttWindow" />
@@ -399,28 +409,46 @@ onMounted(async () => {
           <!-- No brand header: the logo moved to the title bar, so the nav starts
                at the very top and a view's header owns the first line alone. -->
           <nav class="flex-1 px-2 py-2.5 space-y-0.5">
-            <RouterLink
-              v-for="item in navItems"
-              :key="item.path"
-              :to="item.path"
-              class="relative flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors cursor-pointer select-none"
-              :class="route.path.startsWith(item.path)
-                ? 'bg-accent text-foreground font-medium'
-                : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'"
-            >
-              <span
-                v-if="route.path.startsWith(item.path)"
-                class="absolute left-0 inset-y-[6px] w-[2px] rounded-r-full bg-primary"
-              />
-              <component :is="item.icon" class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
-              <span class="flex-1 truncate">{{ item.label }}</span>
-              <span
-                v-if="item.path === '/projects' && (projectsStore.conflicts.length + projectsStore.ruleConflicts.length) > 0"
-                class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-medium text-white leading-none"
+            <template v-for="item in navItems" :key="item.path">
+              <!-- Todos & Notes is an overlay, not a destination: it opens the
+                   app-wide drawer instead of navigating, so whatever screen (or
+                   running session) is underneath survives untouched. It rides
+                   just above Settings, so the settings/about pair stays last. -->
+              <button
+                v-if="item.path === '/settings'"
+                type="button"
+                class="relative flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors cursor-pointer select-none"
+                :class="itemPanel.open.value
+                  ? 'bg-accent text-foreground font-medium'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'"
+                :title="`${t('item.panelTitle')} (${IS_MAC ? '⌘⇧K' : 'Ctrl+Shift+K'})`"
+                @click="runMenuAction('view.itemPanel')"
               >
-                {{ projectsStore.conflicts.length + projectsStore.ruleConflicts.length }}
-              </span>
-            </RouterLink>
+                <ListTodo class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
+                <span class="flex-1 truncate text-left">{{ t('item.panelTitle') }}</span>
+              </button>
+
+              <RouterLink
+                :to="item.path"
+                class="relative flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors cursor-pointer select-none"
+                :class="route.path.startsWith(item.path)
+                  ? 'bg-accent text-foreground font-medium'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'"
+              >
+                <span
+                  v-if="route.path.startsWith(item.path)"
+                  class="absolute left-0 inset-y-[6px] w-[2px] rounded-r-full bg-primary"
+                />
+                <component :is="item.icon" class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
+                <span class="flex-1 truncate">{{ item.label }}</span>
+                <span
+                  v-if="item.path === '/projects' && (projectsStore.conflicts.length + projectsStore.ruleConflicts.length) > 0"
+                  class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-medium text-white leading-none"
+                >
+                  {{ projectsStore.conflicts.length + projectsStore.ruleConflicts.length }}
+                </span>
+              </RouterLink>
+            </template>
           </nav>
 
           <!-- App-wide monitor of concurrent runs + permission center -->
@@ -478,9 +506,10 @@ onMounted(async () => {
     <!-- DY mascot: app-wide operator. Host picks in-app floating vs desktop pet. -->
     <CyberFoxHost />
 
-    <!-- App-wide quick capture (⌘K Todo / ⌘⇧N Note). An overlay, never a route
-         change, so a run in progress keeps its scroll and panel state. -->
-    <QuickCapturePanel />
+    <!-- App-wide Todos & Notes list (⌘⇧K). An overlay, never a route change, so
+         a run in progress keeps its scroll and panel state. It replaced the two
+         list screens; writing happens in the item window. -->
+    <ItemListDrawer />
   </div>
 </template>
 

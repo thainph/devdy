@@ -123,9 +123,9 @@
     "availableTools": "Available tools"
   },
   "google": {
-    "title": "Google Account (Drive + Gmail)",
-    "intro": "Connect one or more Google accounts so the AI can work with your Drive files and Gmail. Tools appear as mcp__gdrive__* and mcp__gmail__*; with multiple accounts the AI targets one via each tool's account argument (the default account when omitted). Write, delete, share and send actions still go through the permission prompt. Refresh tokens are stored in your OS Keychain (never written to disk). Takes effect on the next run.",
-    "credsWarning": "Create your own OAuth Desktop app credentials in Google Cloud Console, enable the Drive API and Gmail API, then paste the Client ID and Secret below.",
+    "title": "Google Account (Drive + Gmail + Calendar)",
+    "intro": "Connect one or more Google accounts so the AI can work with your Drive files, Gmail and Calendar. Tools appear as mcp__google__* in three groups — drive_*, mail_* and cal_*; with multiple accounts the AI targets one via each tool's account argument (the default account when omitted). Write, delete, share and send actions still go through the permission prompt, and calendar attendees are never emailed unless the AI explicitly asks to notify them. Refresh tokens are stored in your OS Keychain (never written to disk). Takes effect on the next run.",
+    "credsWarning": "Create your own OAuth Desktop app credentials in Google Cloud Console, enable the Drive API, Gmail API and Calendar API, then paste the Client ID and Secret below.",
     "default": "default",
     "driveGmail": "Drive + Gmail",
     "setAsDefault": "Set as default",

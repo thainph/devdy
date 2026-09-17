@@ -11,7 +11,7 @@ import { useAppSettingsStore } from '@/stores/appSettings'
 import { useMascotState } from '@/composables/useMascotState'
 import { useMascotBubble } from '@/composables/useMascotBubble'
 import { useMascotLevelUp } from '@/composables/useMascotLevelUp'
-import { useQuickCapture, type QuickCaptureTab } from '@/composables/useQuickCapture'
+import { openItemCreateWindow, type ItemKind } from '@/lib/itemWindow'
 
 interface Position {
   x: number
@@ -28,7 +28,6 @@ const DEFAULT_BOTTOM = 20
 const { t } = useI18n()
 const appSettings = useAppSettingsStore()
 const route = useRoute()
-const { openCapture } = useQuickCapture()
 // Shared mascot brain: enabled flag, size preference, current phase + streams.
 const {
   enabled,
@@ -63,8 +62,8 @@ const menuOpen = ref(false)
 const menuPos = ref({ x: 0, y: 0 })
 
 const menuItems = computed<MascotMenuItem[]>(() => [
-  { key: 'todo', label: t('todos.quick.newTodo'), icon: ListTodo },
-  { key: 'note', label: t('todos.quick.newNote'), icon: StickyNote },
+  { key: 'todo', label: t('item.newTodo'), icon: ListTodo },
+  { key: 'note', label: t('item.newNote'), icon: StickyNote },
 ])
 
 function openContextMenu(e: MouseEvent) {
@@ -75,12 +74,9 @@ function openContextMenu(e: MouseEvent) {
 
 function pickQuickCreate(key: string) {
   // File it under whatever the user is looking at (same rule as ⌘K in App.vue).
-  openCapture({
-    tab: key as QuickCaptureTab,
-    context: {
-      projectId: typeof route.params.projectId === 'string' ? route.params.projectId : null,
-      runId: typeof route.params.runId === 'string' ? route.params.runId : null,
-    },
+  openItemCreateWindow(key as ItemKind, {
+    projectId: typeof route.params.projectId === 'string' ? route.params.projectId : null,
+    runId: typeof route.params.runId === 'string' ? route.params.runId : null,
   })
 }
 

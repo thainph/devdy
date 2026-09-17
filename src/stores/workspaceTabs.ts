@@ -74,6 +74,19 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
     return tabs.some((t) => t.projectId === projectId)
   }
 
+  /**
+   * Move the tab at `from` to `to` (drag-and-drop reorder). Called repeatedly
+   * while a drag is in flight, so the tab slides under the cursor live.
+   */
+  function move(from: number, to: number) {
+    if (from === to) return
+    if (from < 0 || from >= tabs.length) return
+    if (to < 0 || to >= tabs.length) return
+    const [moved] = tabs.splice(from, 1)
+    tabs.splice(to, 0, moved)
+    persist()
+  }
+
   /** Forget a deleted run so a tab never resumes onto a run that's gone. */
   function forgetRun(runId: string) {
     let changed = false
@@ -86,5 +99,5 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
     if (changed) persist()
   }
 
-  return { tabs, open, close, has, forgetRun }
+  return { tabs, open, close, has, move, forgetRun }
 })

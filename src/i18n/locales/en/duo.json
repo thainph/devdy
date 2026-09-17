@@ -7,6 +7,18 @@
   "openSession": "View details",
   "historyTitle": "Duo history",
   "noHistory": "No saved Duo sessions yet.",
+  "noMatchingHistory": "No matching Duo sessions",
+  "searchHistoryPlaceholder": "Search Duo sessions…",
+  "clearSearch": "Clear search",
+  "moreActions": "More actions",
+  "clearAll": "Clear all",
+  "clearAllTitle": "Remove every saved Duo of this project from history",
+  "clearAllBlocked": "Can't clear history while a Duo is running",
+  "clearHistoryTitle": "Clear Duo history?",
+  "clearHistoryMessage": "{n} saved Duo session(s) will be removed from history. The underlying sessions are not deleted.",
+  "historyCleared": "Duo history cleared",
+  "deleteHistoryTitle": "Remove this Duo?",
+  "deleteHistoryMessage": "\"{label}\" will be removed from history. The underlying sessions are not deleted.",
   "startFailed": "Couldn't start Duo: {error}",
   "noRuns": "This project has no sessions yet. Create sessions or switch to New mode.",
   "sameRun": "The two sessions must be different.",
@@ -55,7 +67,8 @@
     "reset": "Reset",
     "newDuo": "New Duo",
     "expand": "Settings",
-    "deleteHistory": "Remove from history"
+    "deleteHistory": "Remove from history",
+    "openSide": "Open {label}'s session"
   },
   "phase": {
     "idle": "Idle",

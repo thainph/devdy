@@ -1,25 +1,25 @@
-// App-wide "quick capture" channel: the single source of truth for the Todo/Note
-// capture surface — what's open, which tab, the draft being typed, and which
-// project/run it should be filed under.
+// The capture draft inside the item window: which tab, the text being typed, and
+// which project/run it will be filed under.
 //
-// The point is that jotting something down must NEVER cost the user their
-// working context. A route change to /todos or /notes remounts RunView (its
-// RouterView is keyed per project, with no KeepAlive), so the stream scroll
-// position, open panels and viewed diff are all lost. Capture therefore happens
-// in an overlay — QuickCapturePanel, mounted once in App.vue — which leaves the
-// screen underneath completely untouched.
+// The draft lives HERE rather than inside QuickCaptureForm so switching tab (or
+// anything else that re-renders the form) can't throw away a half-written note —
+// the fields come back exactly as they were.
 //
-// The draft lives HERE rather than inside the form component so closing the
-// panel to go re-read something doesn't throw away a half-written note: the
-// fields come back exactly as they were.
-//
-// State is module-scope, so every caller shares one surface: the ⌘K / ⌘⇧N
-// shortcuts, the mascot menu and the "save selection" button all drive the same
-// panel. The standalone pop-out window is a separate webview and therefore gets
-// its own independent copy of this state, which is what we want.
+// State is module-scope, but that scope is ONE webview: the item window is its
+// own window, so its capture state is naturally isolated from the main window.
+// A capture started elsewhere ("save this selection as a note") arrives as a
+// prefill event and is merged through adoptDraft, which only fills fields that
+// are still empty — an in-flight capture is never clobbered.
 import { ref } from 'vue'
 
 export type QuickCaptureTab = 'todo' | 'note'
+
+/** The individual draft fields, addressable so a draft can be handed between surfaces. */
+export type QuickCaptureField = 'todoText' | 'noteTitle' | 'noteContent'
+
+export type QuickCaptureDraft = Partial<Record<QuickCaptureField, string>>
+
+const DRAFT_FIELDS: QuickCaptureField[] = ['todoText', 'noteTitle', 'noteContent']
 
 /** Where the capture came from; used to pre-fill the project and backlink. */
 export interface QuickCaptureContext {
@@ -102,6 +102,50 @@ export function useQuickCapture() {
     }
   }
 
+  /** Everything typed so far, for handing the capture over to another surface. */
+  function draftSnapshot(): QuickCaptureDraft {
+    return {
+      todoText: todoText.value,
+      noteTitle: noteTitle.value,
+      noteContent: noteContent.value,
+    }
+  }
+
+  /**
+   * Drop only the named fields — used once another surface has taken them over.
+   *
+   * `expected` guards the handoff round-trip: if the user reopened the panel and
+   * kept typing while the pop-out was still booting, the field no longer holds
+   * what was handed over and must be left alone.
+   */
+  function clearDraftFields(fields: QuickCaptureField[], expected?: QuickCaptureDraft) {
+    const targets = { todoText, noteTitle, noteContent }
+    for (const field of fields) {
+      if (expected && targets[field].value !== expected[field]) continue
+      targets[field].value = ''
+    }
+  }
+
+  /**
+   * Take over a draft handed in from another surface (the ⌘K panel popping out).
+   *
+   * Only fills fields that are still empty here: a draft already being typed in
+   * this surface must never be clobbered. Returns the fields actually adopted so
+   * the sender can clear exactly those and keep the rest.
+   */
+  function adoptDraft(incoming: QuickCaptureDraft): QuickCaptureField[] {
+    const targets = { todoText, noteTitle, noteContent }
+    const adopted: QuickCaptureField[] = []
+    for (const field of DRAFT_FIELDS) {
+      const value = incoming[field]
+      if (!value?.trim()) continue
+      if (targets[field].value.trim()) continue
+      targets[field].value = value
+      adopted.push(field)
+    }
+    return adopted
+  }
+
   /** Point the capture at a project/run without touching the draft text. */
   function setContext(context: QuickCaptureContext) {
     contextProjectId.value = context.projectId ?? null
@@ -121,6 +165,9 @@ export function useQuickCapture() {
     openCapture,
     closeCapture,
     clearDraft,
+    draftSnapshot,
+    clearDraftFields,
+    adoptDraft,
     setContext,
   }
 }

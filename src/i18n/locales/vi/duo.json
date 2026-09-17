@@ -7,6 +7,18 @@
   "openSession": "Xem chi tiết",
   "historyTitle": "Lịch sử Duo",
   "noHistory": "Chưa có phiên Duo nào được lưu.",
+  "noMatchingHistory": "Không có phiên Duo nào khớp",
+  "searchHistoryPlaceholder": "Tìm phiên Duo…",
+  "clearSearch": "Xóa tìm kiếm",
+  "moreActions": "Thao tác khác",
+  "clearAll": "Xóa hết",
+  "clearAllTitle": "Xóa toàn bộ Duo đã lưu của dự án này khỏi lịch sử",
+  "clearAllBlocked": "Không thể xóa lịch sử khi một Duo đang chạy",
+  "clearHistoryTitle": "Xóa lịch sử Duo?",
+  "clearHistoryMessage": "{n} phiên Duo đã lưu sẽ bị xóa khỏi lịch sử. Các session gốc không bị xóa.",
+  "historyCleared": "Đã xóa lịch sử Duo",
+  "deleteHistoryTitle": "Xóa Duo này?",
+  "deleteHistoryMessage": "\"{label}\" sẽ bị xóa khỏi lịch sử. Các session gốc không bị xóa.",
   "startFailed": "Không thể bắt đầu Duo: {error}",
   "noRuns": "Dự án chưa có session nào. Hãy tạo session hoặc chuyển sang chế độ Tạo mới.",
   "sameRun": "Hai session phải khác nhau.",
@@ -55,7 +67,8 @@
     "reset": "Đặt lại",
     "newDuo": "Phiên Duo mới",
     "expand": "Cấu hình",
-    "deleteHistory": "Xóa khỏi lịch sử"
+    "deleteHistory": "Xóa khỏi lịch sử",
+    "openSide": "Mở session của {label}"
   },
   "phase": {
     "idle": "Chưa chạy",

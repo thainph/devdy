@@ -1,7 +1,8 @@
 import { defineStore } from 'pinia'
 import { reactive } from 'vue'
-import { listen } from '@tauri-apps/api/event'
+import { emit, listen } from '@tauri-apps/api/event'
 import { useRunsStore, type DirEntry } from '@/stores/runs'
+import { FILE_DELETED_EVENT, FILE_MOVED_EVENT } from '@/lib/fileEvents'
 
 // Per-project state for the VSCode-style file-tree panel. Directories are loaded
 // lazily (one level at a time) when the user expands a node; loaded children are
@@ -36,6 +37,10 @@ export const useFileTreeStore = defineStore('fileTree', () => {
 
   // Path of the entry currently being renamed inline, per project (null = none).
   const renaming = reactive<Record<string, string | null>>({})
+
+  // Projects with a full-tree reload in flight (drives the toolbar spinner,
+  // which must stay on past the root load while sub-levels are re-fetched).
+  const refreshing = reactive<Record<string, boolean>>({})
 
   function treeFor(projectPath: string): ProjectTree {
     if (!trees[projectPath]) {
@@ -73,19 +78,46 @@ export const useFileTreeStore = defineStore('fileTree', () => {
     }
   }
 
-  // Drop cached children and reload. Without `relDir`, resets the whole tree to
-  // just the (reloaded) root; with one, reloads that subtree in place.
+  // Reload from disk. With a `relDir`, drops that dir's cache and reloads it.
+  // Without one, reloads the whole visible tree *in place*: every currently
+  // expanded folder is re-fetched top-down and stays open, so the user ends up
+  // looking at exactly the same folders (and scroll position) as before.
   async function refresh(projectPath: string, relDir = ''): Promise<void> {
     const t = treeFor(projectPath)
-    if (relDir === '') {
-      t.children = {}
-      t.error = {}
-      // Keep only still-relevant expanded paths (root always).
-      t.expanded = new Set([''])
-    } else {
+    if (relDir !== '') {
       delete t.children[relDir]
+      await loadDir(projectPath, relDir, true)
+      return
     }
-    await loadDir(projectPath, relDir, true)
+    refreshing[projectPath] = true
+    try {
+      const wasExpanded = new Set(t.expanded)
+      // Dirs actually reloaded: root plus every expanded dir that still exists.
+      const visited = new Set<string>([''])
+      t.error = {}
+      await loadDir(projectPath, '', true)
+      let level = ['']
+      while (level.length) {
+        const next: string[] = []
+        for (const dir of level) {
+          for (const entry of t.children[dir] ?? []) {
+            if (entry.is_dir && wasExpanded.has(entry.path)) next.push(entry.path)
+          }
+        }
+        if (next.length === 0) break
+        await Promise.all(next.map((d) => {
+          visited.add(d)
+          return loadDir(projectPath, d, true)
+        }))
+        level = next
+      }
+      // Forget folders that vanished (or were cached while collapsed) so they
+      // load fresh on the next expand.
+      for (const dir of Object.keys(t.children)) if (!visited.has(dir)) delete t.children[dir]
+      t.expanded = visited
+    } finally {
+      delete refreshing[projectPath]
+    }
   }
 
   function collapseAll(projectPath: string): void {
@@ -113,6 +145,17 @@ export const useFileTreeStore = defineStore('fileTree', () => {
     if (t && dir in t.children) void reloadDir(project_path, dir)
   })
 
+  // A file window is a separate webview showing one path; when that path moves
+  // or disappears it has no way to know, and would sit on a stale (or deleted)
+  // file. Every mutation that changes WHERE a file is announces it app-wide.
+  function announceMove(projectPath: string, from: string, to: string) {
+    if (from === to) return
+    emit(FILE_MOVED_EVENT, { projectPath, from, to }).catch(() => { /* event bus unavailable */ })
+  }
+  function announceDelete(projectPath: string, path: string) {
+    emit(FILE_DELETED_EVENT, { projectPath, path }).catch(() => { /* event bus unavailable */ })
+  }
+
   // ── Mutations (context-menu / toolbar / drag-and-drop) ─────────────────────
   // Each calls the backend, then reloads (and expands) the affected folder so the
   // change appears without a full-tree refresh. Errors propagate to the caller.
@@ -131,11 +174,13 @@ export const useFileTreeStore = defineStore('fileTree', () => {
   async function rename(projectPath: string, relPath: string, newName: string): Promise<string> {
     const p = await runs.renameEntry(projectPath, relPath, newName)
     await reloadDir(projectPath, parentOf(relPath))
+    announceMove(projectPath, relPath, p)
     return p
   }
   async function remove(projectPath: string, relPath: string): Promise<void> {
     await runs.deleteEntry(projectPath, relPath)
     await reloadDir(projectPath, parentOf(relPath))
+    announceDelete(projectPath, relPath)
   }
   async function copyInto(projectPath: string, srcRel: string, destDir: string): Promise<string> {
     const p = await runs.copyEntry(projectPath, srcRel, destDir)
@@ -150,6 +195,7 @@ export const useFileTreeStore = defineStore('fileTree', () => {
     treeFor(projectPath).expanded.add(destDir)
     await reloadDir(projectPath, srcParent)
     await reloadDir(projectPath, destDir)
+    announceMove(projectPath, srcRel, p)
     return p
   }
   async function duplicate(projectPath: string, relPath: string): Promise<string> {
@@ -171,7 +217,7 @@ export const useFileTreeStore = defineStore('fileTree', () => {
   }
 
   return {
-    trees, renaming, treeFor, loadDir, toggle, refresh, reloadDir, collapseAll,
+    trees, renaming, refreshing, treeFor, loadDir, toggle, refresh, reloadDir, collapseAll,
     createDir, createFile, rename, remove, copyInto, moveInto, duplicate,
     beginRename, cancelRename, commitRename,
   }

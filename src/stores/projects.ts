@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@/lib/tauri'
 import { ref } from 'vue'
+import type { GroupApplyOutcome, GroupDisableOutcome, GroupKind, ProjectGroupState } from '@/stores/groups'
 
 export interface Project {
   id: string
@@ -58,6 +59,10 @@ export interface AppliedSkill {
   has_claude: boolean
   has_codex: boolean
   applied_at: string
+  /** Switched on for this project directly. Independent of `from_group`. */
+  manual: boolean
+  /** Provided by a group the project has enabled. Either link alone keeps the skill applied. */
+  from_group: boolean
 }
 
 export interface DetectedRepo {
@@ -94,6 +99,10 @@ export interface AppliedRule {
   has_claude: boolean
   has_codex: boolean
   applied_at: string
+  /** Switched on for this project directly. Independent of `from_group`. */
+  manual: boolean
+  /** Provided by a group the project has enabled. Either link alone keeps the rule applied. */
+  from_group: boolean
 }
 
 export interface RuleSyncConflict {
@@ -307,6 +316,20 @@ export const useProjectsStore = defineStore('projects', () => {
     await fetchRuleConflicts()
   }
 
+  // ---- Skill / rule groups -------------------------------------------------
+
+  async function getProjectGroups(kind: GroupKind, project_id: string): Promise<ProjectGroupState[]> {
+    return invoke<ProjectGroupState[]>('get_project_groups', { kind, projectId: project_id })
+  }
+
+  async function enableGroup(kind: GroupKind, project_id: string, group_id: string): Promise<GroupApplyOutcome> {
+    return invoke<GroupApplyOutcome>('enable_group_for_project', { kind, projectId: project_id, groupId: group_id })
+  }
+
+  async function disableGroup(kind: GroupKind, project_id: string, group_id: string): Promise<GroupDisableOutcome> {
+    return invoke<GroupDisableOutcome>('disable_group_for_project', { kind, projectId: project_id, groupId: group_id })
+  }
+
   return {
     projects, loading, error, conflicts, ruleConflicts,
     fetchProjects, reorder, detectProjectInfo, addProject, removeProject, updateProject,
@@ -316,5 +339,6 @@ export const useProjectsStore = defineStore('projects', () => {
     openInVscode, openInFolder, openInTerminal,
     getAppliedRules, applyRule, removeRuleFromProject,
     fetchRuleConflicts, resolveRuleConflict,
+    getProjectGroups, enableGroup, disableGroup,
   }
 })

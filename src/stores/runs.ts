@@ -63,8 +63,24 @@ export interface RunRecord {
   started_at: string | null
   finished_at: string | null
   created_at: string
+  /**
+   * Last time the session was worked on — start/resume, a follow-up turn, a
+   * finished turn, or a transcript touched by the CLI outside Devdy. `list_runs`
+   * always fills it (COALESCE on the backend); the single-run endpoints may
+   * return null, so read it through `runActivityAt`.
+   */
+  last_activity_at: string | null
   title: string | null
   pinned: boolean
+}
+
+/**
+ * The timestamp the History list sorts and labels by. Mirrors the backend's
+ * COALESCE so a record from an endpoint that doesn't compute it still lands in
+ * the right place instead of falling back to the epoch.
+ */
+export function runActivityAt(run: RunRecord): string {
+  return run.last_activity_at ?? run.finished_at ?? run.started_at ?? run.created_at
 }
 
 export interface RunOutput {
@@ -90,6 +106,8 @@ export interface DirEntry {
   name: string
   path: string
   is_dir: boolean
+  /** Covered by .gitignore — still listed, shown dimmed in the tree. */
+  ignored: boolean
 }
 
 export interface HandoffResult {
@@ -170,6 +188,7 @@ export const useRunsStore = defineStore('runs', () => {
         override_budget: override_budget ?? false,
       },
     })
+    touchRun(run_id)
   }
 
   async function respondPermission(
@@ -177,7 +196,7 @@ export const useRunsStore = defineStore('runs', () => {
     request_id: string,
     decision: 'allow' | 'deny' | 'ask',
     reason?: string,
-    extra?: { answers?: Record<string, string>; response?: string },
+    extra?: { answers?: Record<string, string>; response?: string; remember?: boolean },
   ): Promise<void> {
     await invoke('respond_permission', {
       payload: {
@@ -187,6 +206,9 @@ export const useRunsStore = defineStore('runs', () => {
         reason: reason ?? null,
         answers: extra?.answers ?? null,
         response: extra?.response ?? null,
+        // "Always" — lets an engine with its own session approval cache (codex)
+        // stop re-asking instead of round-tripping to the UI every time.
+        remember: extra?.remember ?? false,
       },
     })
   }
@@ -200,6 +222,7 @@ export const useRunsStore = defineStore('runs', () => {
     await invoke('send_user_message', {
       payload: { run_id, content, images: images ?? [], override_budget: override_budget ?? false },
     })
+    touchRun(run_id)
   }
 
   async function endRunInput(run_id: string): Promise<void> {
@@ -284,6 +307,7 @@ export const useRunsStore = defineStore('runs', () => {
       modelOverride: model_override ?? null,
       overrideBudget: override_budget ?? false,
     })
+    touchRun(run_id)
   }
 
   async function listProjectFiles(project_path: string): Promise<ProjectEntry[]> {
@@ -369,13 +393,29 @@ export const useRunsStore = defineStore('runs', () => {
   }
 
   // Keep the local list ordered the same way the backend does: pinned runs
-  // first, then by created_at descending. Called after pin toggles so the row
-  // jumps to/from the top without a round-trip refetch.
+  // first, then by last activity descending. Called after pin toggles and after
+  // `touchRun` so the row jumps without a round-trip refetch.
   function sortRuns() {
     runs.value.sort((a, b) => {
       if (a.pinned !== b.pinned) return a.pinned ? -1 : 1
-      return b.created_at.localeCompare(a.created_at)
+      return runActivityAt(b).localeCompare(runActivityAt(a))
     })
+  }
+
+  /**
+   * Mark a run as just-interacted-with locally. The backend stamps the same
+   * thing, but only the next `list_runs` would reveal it — this moves the row to
+   * the top the instant the user starts/resumes a run or sends a turn.
+   */
+  function touchRun(run_id: string) {
+    const now = new Date().toISOString()
+    const run = runs.value.find(r => r.id === run_id)
+    if (run) {
+      run.last_activity_at = now
+      sortRuns()
+    }
+    const cached = runMeta.get(run_id)
+    if (cached) cached.last_activity_at = now
   }
 
   async function renameRun(run_id: string, title: string): Promise<void> {
@@ -415,6 +455,6 @@ export const useRunsStore = defineStore('runs', () => {
     createDir, createFile, renameEntry, deleteEntry, copyEntry, moveEntry,
     createHandoffRun, createSessionRun,
     reconcileClaudeSessions, reconcileCodexSessions,
-    deleteRun, deleteAllRuns, renameRun, setRunClaudeAccount, setRunPinned,
+    deleteRun, deleteAllRuns, renameRun, setRunClaudeAccount, setRunPinned, touchRun,
   }
 })

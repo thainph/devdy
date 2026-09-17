@@ -5,6 +5,7 @@ import { useRoute } from 'vue-router'
 import { useProjectsStore, type AppliedSkill, type AppliedRule, type Repo } from '@/stores/projects'
 import { useSkillsStore } from '@/stores/skills'
 import { useRulesStore } from '@/stores/rules'
+import type { GroupKind, ProjectGroupState } from '@/stores/groups'
 import { useMcpServersStore, type ProjectMcpServer } from '@/stores/mcpServers'
 import { useServersStore, type ProjectServer, type VpsServer } from '@/stores/servers'
 import { useAppSettingsStore } from '@/stores/appSettings'
@@ -21,6 +22,7 @@ import {
 } from 'lucide-vue-next'
 import { Button, Input, Card, Badge, AppSelect } from '@/components/ui'
 import BackToRunButton from '@/components/BackToRunButton.vue'
+import ProjectGroupToggles from '@/components/ProjectGroupToggles.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { parseRepoUrl, repoWebUrl } from '@/lib/repoUrl'
@@ -106,12 +108,16 @@ const loadingRules = ref(false)
 const togglingRuleId = ref<string | null>(null)
 // Unified list of every rule with its per-project applied state, mirroring the
 // MCP servers tab (single toggleable list instead of add/applied panels).
+// `manual` (this switch) and `from_group` are two independent links — either one on its own keeps
+// the rule applied, so the switch only ever controls the direct link.
 const ruleItems = computed(() =>
   rulesStore.rules.map(r => {
     const applied = appliedRules.value.find(a => a.rule_id === r.id)
     return {
       ...r,
       applied: !!applied,
+      manual: applied?.manual ?? false,
+      from_group: applied?.from_group ?? false,
       has_claude: applied?.has_claude ?? false,
       has_codex: applied?.has_codex ?? false,
     }
@@ -204,20 +210,89 @@ async function loadAppliedRules() {
   }
 }
 
-async function handleToggleRule(rule: { id: string; applied: boolean }) {
+// Direct link only — see `handleToggleSkill`.
+async function handleToggleRule(rule: { id: string; manual: boolean }) {
   togglingRuleId.value = rule.id
   try {
-    if (rule.applied) {
+    if (rule.manual) {
       await projectStore.removeRuleFromProject(projectId.value, rule.id)
     } else {
       await projectStore.applyRule(projectId.value, rule.id)
     }
-    await loadAppliedRules()
+    await Promise.all([loadAppliedRules(), loadGroupStates('rule')])
     toast.success(t('projectDetail.toastSaved'))
   } catch (e) {
     toast.error(String(e))
   } finally {
     togglingRuleId.value = null
+  }
+}
+
+// ── Skill / rule groups: flip a whole bundle on or off for this project ──────
+const skillGroupStates = ref<ProjectGroupState[]>([])
+const ruleGroupStates = ref<ProjectGroupState[]>([])
+const togglingGroupId = ref<string | null>(null)
+
+async function loadGroupStates(kind: GroupKind) {
+  const states = await projectStore.getProjectGroups(kind, projectId.value)
+  if (kind === 'skill') skillGroupStates.value = states
+  else ruleGroupStates.value = states
+}
+
+/** Re-read both the group states and the per-item list they just changed. */
+async function refreshAfterGroupChange(kind: GroupKind) {
+  await loadGroupStates(kind)
+  if (kind === 'skill') await loadAppliedSkills()
+  else await loadAppliedRules()
+}
+
+async function handleToggleGroup(kind: GroupKind, group: ProjectGroupState) {
+  if (group.member_count === 0) return
+  togglingGroupId.value = group.group_id
+  try {
+    // The group link is independent of the per-item switches: this toggle only adds or drops that
+    // link, so it reads straight off `linked`.
+    if (group.linked) {
+      const outcome = await projectStore.disableGroup(kind, projectId.value, group.group_id)
+      const kept = outcome.kept_manual + outcome.kept_other_group
+      toast.success(
+        kept > 0
+          ? t('groups.toastGroupDisabledKept', { name: group.name, removed: outcome.removed, kept })
+          : t('groups.toastGroupDisabled', { name: group.name, removed: outcome.removed }),
+      )
+    } else {
+      const outcome = await projectStore.enableGroup(kind, projectId.value, group.group_id)
+      if (outcome.failures.length > 0) {
+        const details = outcome.failures.map(f => `• ${f.item_name}: ${f.error}`).join('\n')
+        toast.error(t('groups.toastGroupEnabledPartial', { name: group.name, applied: outcome.applied, details }))
+      } else {
+        toast.success(t('groups.toastGroupEnabled', { name: group.name, count: outcome.applied }))
+      }
+    }
+    await refreshAfterGroupChange(kind)
+  } catch (e) {
+    toast.error(String(e))
+  } finally {
+    togglingGroupId.value = null
+  }
+}
+
+/** A linked group whose members were partly switched off by hand: re-apply the missing ones. */
+async function handleReapplyGroup(kind: GroupKind, group: ProjectGroupState) {
+  togglingGroupId.value = group.group_id
+  try {
+    const outcome = await projectStore.enableGroup(kind, projectId.value, group.group_id)
+    if (outcome.failures.length > 0) {
+      const details = outcome.failures.map(f => `• ${f.item_name}: ${f.error}`).join('\n')
+      toast.error(t('groups.toastGroupEnabledPartial', { name: group.name, applied: outcome.applied, details }))
+    } else {
+      toast.success(t('groups.toastGroupEnabled', { name: group.name, count: outcome.applied }))
+    }
+    await refreshAfterGroupChange(kind)
+  } catch (e) {
+    toast.error(String(e))
+  } finally {
+    togglingGroupId.value = null
   }
 }
 
@@ -503,6 +578,8 @@ const skillItems = computed(() =>
     return {
       ...s,
       applied: !!applied,
+      manual: applied?.manual ?? false,
+      from_group: applied?.from_group ?? false,
       has_claude: applied?.has_claude ?? false,
       has_codex: applied?.has_codex ?? false,
     }
@@ -534,6 +611,8 @@ onMounted(async () => {
   await appSettings.ensureLoaded()
   await loadAppliedSkills()
   await loadAppliedRules()
+  await loadGroupStates('skill')
+  await loadGroupStates('rule')
   await loadProjectMcpServers()
   await serversStore.fetchServers()
   await loadProjectServers()
@@ -654,15 +733,19 @@ async function handleAddRepo() {
   }
 }
 
-async function handleToggleSkill(skill: { id: string; applied: boolean }) {
+// The switch owns the direct link only: turning it off on a skill a group also provides leaves the
+// skill in place (the group still wants it), it just stops being hand-picked.
+async function handleToggleSkill(skill: { id: string; manual: boolean }) {
   togglingSkillId.value = skill.id
   try {
-    if (skill.applied) {
+    if (skill.manual) {
       await projectStore.removeSkillFromProject(projectId.value, skill.id)
     } else {
       await projectStore.applySkill(projectId.value, skill.id)
     }
-    await loadAppliedSkills()
+    // One skill can complete or break a group, so the group rows have to follow — in parallel, so
+    // the row isn't frozen for two round trips.
+    await Promise.all([loadAppliedSkills(), loadGroupStates('skill')])
     toast.success(t('projectDetail.toastSaved'))
   } catch (e) {
     toast.error(String(e))
@@ -876,6 +959,13 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
 
         <!-- Skills tab -->
         <div v-if="activeTab === 'skills'" class="max-w-lg space-y-5">
+          <ProjectGroupToggles
+            kind="skill"
+            :groups="skillGroupStates"
+            :toggling="togglingGroupId"
+            @toggle="handleToggleGroup('skill', $event)"
+            @reapply="handleReapplyGroup('skill', $event)"
+          />
           <Card>
             <template #header>
               <Puzzle class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
@@ -921,24 +1011,36 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
                     <Badge tone="neutral" size="xs" class="shrink-0 uppercase tracking-wide">
                       {{ targetLabel[skill.target] }}
                     </Badge>
+                    <Badge v-if="skill.from_group" tone="info" size="xs" class="shrink-0">{{ t('groups.viaGroup') }}</Badge>
                     <Badge v-if="skill.has_claude" tone="primary" size="xs" class="shrink-0">.claude/skills</Badge>
                     <Badge v-if="skill.has_codex" tone="neutral" size="xs" class="shrink-0">.codex/skills</Badge>
                   </div>
                   <p v-if="skill.description" class="text-[10px] text-muted-foreground truncate mt-0.5">{{ skill.description }}</p>
                 </div>
+                <!-- Controls the direct link; a skill a group provides stays applied either way. -->
                 <button
                   type="button"
                   role="switch"
-                  :aria-checked="skill.applied"
-                  :disabled="togglingSkillId !== null"
+                  :aria-checked="skill.manual"
+                  :disabled="togglingSkillId === skill.id"
                   class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
-                  :class="skill.applied ? 'bg-primary' : 'bg-muted'"
-                  :title="skill.applied ? 'Disable for this project' : 'Enable for this project'"
+                  :class="{
+                    'bg-primary': skill.manual,
+                    'bg-primary/40': !skill.manual && skill.from_group,
+                    'bg-muted': !skill.manual && !skill.from_group,
+                  }"
+                  :title="skill.manual
+                    ? t('projectDetail.disableForProject')
+                    : skill.from_group ? t('groups.viaGroupHint') : t('projectDetail.enableForProject')"
                   @click="handleToggleSkill(skill)"
                 >
                   <span
                     class="inline-flex h-4 w-4 transform items-center justify-center rounded-full bg-white shadow transition-transform"
-                    :class="skill.applied ? 'translate-x-6' : 'translate-x-1'"
+                    :class="{
+                      'translate-x-6': skill.manual,
+                      'translate-x-3.5': !skill.manual && skill.from_group,
+                      'translate-x-1': !skill.manual && !skill.from_group,
+                    }"
                   >
                     <Loader2
                       v-if="togglingSkillId === skill.id"
@@ -954,6 +1056,13 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
 
         <!-- Rules tab -->
         <div v-if="activeTab === 'rules'" class="max-w-lg space-y-5">
+          <ProjectGroupToggles
+            kind="rule"
+            :groups="ruleGroupStates"
+            :toggling="togglingGroupId"
+            @toggle="handleToggleGroup('rule', $event)"
+            @reapply="handleReapplyGroup('rule', $event)"
+          />
           <Card>
             <template #header>
               <ScrollText class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
@@ -999,24 +1108,36 @@ async function handleToggleSkill(skill: { id: string; applied: boolean }) {
                     <Badge tone="neutral" size="xs" class="shrink-0 uppercase tracking-wide">
                       {{ targetLabel[rule.target] }}
                     </Badge>
+                    <Badge v-if="rule.from_group" tone="info" size="xs" class="shrink-0">{{ t('groups.viaGroup') }}</Badge>
                     <Badge v-if="rule.has_claude" tone="primary" size="xs" class="shrink-0">.claude/rules</Badge>
                     <Badge v-if="rule.has_codex" tone="neutral" size="xs" class="shrink-0">AGENTS.md</Badge>
                   </div>
                   <p v-if="rule.description" class="text-[10px] text-muted-foreground truncate mt-0.5">{{ rule.description }}</p>
                 </div>
+                <!-- Controls the direct link; a rule a group provides stays applied either way. -->
                 <button
                   type="button"
                   role="switch"
-                  :aria-checked="rule.applied"
-                  :disabled="togglingRuleId !== null"
+                  :aria-checked="rule.manual"
+                  :disabled="togglingRuleId === rule.id"
                   class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
-                  :class="rule.applied ? 'bg-primary' : 'bg-muted'"
-                  :title="rule.applied ? t('projectDetail.disableForProject') : t('projectDetail.enableForProject')"
+                  :class="{
+                    'bg-primary': rule.manual,
+                    'bg-primary/40': !rule.manual && rule.from_group,
+                    'bg-muted': !rule.manual && !rule.from_group,
+                  }"
+                  :title="rule.manual
+                    ? t('projectDetail.disableForProject')
+                    : rule.from_group ? t('groups.viaGroupHint') : t('projectDetail.enableForProject')"
                   @click="handleToggleRule(rule)"
                 >
                   <span
                     class="inline-flex h-4 w-4 transform items-center justify-center rounded-full bg-white shadow transition-transform"
-                    :class="rule.applied ? 'translate-x-6' : 'translate-x-1'"
+                    :class="{
+                      'translate-x-6': rule.manual,
+                      'translate-x-3.5': !rule.manual && rule.from_group,
+                      'translate-x-1': !rule.manual && !rule.from_group,
+                    }"
                   >
                     <Loader2
                       v-if="togglingRuleId === rule.id"

@@ -7,6 +7,7 @@
 
 use ignore::WalkBuilder;
 use serde::Serialize;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// Hard ceiling so huge repos can't flood the IPC channel or the picker.
@@ -217,12 +218,17 @@ pub struct DirEntry {
     /// Relative POSIX path from the project root.
     pub path: String,
     pub is_dir: bool,
+    /// True when `.gitignore` (or a global/exclude rule) covers this entry. It is
+    /// still listed — the UI just dims it, the way VSCode marks ignored files.
+    pub ignored: bool,
 }
 
 /// List exactly one level of `rel_dir` (relative to the project root, `""` = root)
-/// for the VSCode-style file tree. Honors `.gitignore` like [`list_project_files`]
-/// so noise dirs (`node_modules`, build output, …) stay hidden, and confines the
-/// resolved path to the project root to block traversal.
+/// for the VSCode-style file tree. Lists *everything* on disk — dotfiles and
+/// `.gitignore`d entries (`node_modules`, build output, `.env`, …) included, each
+/// flagged via `ignored` — so the tree mirrors Finder rather than `git ls-files`.
+/// Only `.git` itself stays hidden (repo plumbing, not project content). The
+/// resolved path is confined to the project root to block traversal.
 #[tauri::command]
 pub async fn list_dir(project_path: String, rel_dir: String) -> Result<Vec<DirEntry>, String> {
     tokio::task::spawn_blocking(move || list_dir_inner(&project_path, &rel_dir))
@@ -250,16 +256,36 @@ fn list_dir_inner(project_path: &str, rel_dir: &str) -> Result<Vec<DirEntry>, St
         return Err(format!("{rel_dir} is not a directory"));
     }
 
-    // One level only: max_depth(1) yields the target itself plus its direct
-    // children. `.gitignore` still applies via the WalkBuilder git flags.
-    let mut entries: Vec<DirEntry> = Vec::new();
-    let walker = WalkBuilder::new(&target)
+    // Names git would keep at this level, used only to tag the rest as ignored.
+    // A separate pass is the cheap way to get that flag: the listing walker below
+    // has every ignore source switched off, so it can't report it itself.
+    let mut tracked: HashSet<String> = HashSet::new();
+    let tracked_walker = WalkBuilder::new(&target)
         .max_depth(Some(1))
-        .hidden(false) // surface dotfiles; .gitignore still applies
+        .hidden(false)
         .git_ignore(true)
         .git_global(true)
         .git_exclude(true)
         .parents(true)
+        .build();
+    for entry in tracked_walker.flatten() {
+        if entry.depth() == 0 {
+            continue;
+        }
+        tracked.insert(entry.file_name().to_string_lossy().into_owned());
+    }
+
+    // One level only: max_depth(1) yields the target itself plus its direct
+    // children. Every ignore source is off so nothing is silently dropped.
+    let mut entries: Vec<DirEntry> = Vec::new();
+    let walker = WalkBuilder::new(&target)
+        .max_depth(Some(1))
+        .hidden(false) // dotfiles
+        .ignore(false) // .ignore files
+        .git_ignore(false)
+        .git_global(false)
+        .git_exclude(false)
+        .parents(false)
         .filter_entry(|e| e.file_name() != ".git")
         .build();
 
@@ -281,7 +307,8 @@ fn list_dir_inner(project_path: &str, rel_dir: &str) -> Result<Vec<DirEntry>, St
         let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
         let name = entry.file_name().to_string_lossy().into_owned();
         let path = rel.to_string_lossy().replace('\\', "/");
-        entries.push(DirEntry { name, path, is_dir });
+        let ignored = !tracked.contains(&name);
+        entries.push(DirEntry { name, path, is_dir, ignored });
     }
 
     // Directories first, then files; case-insensitive by name (VSCode order).

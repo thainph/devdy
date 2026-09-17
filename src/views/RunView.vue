@@ -6,6 +6,7 @@ import { useProjectsStore, type Repo } from '@/stores/projects'
 import {
   useRunsStore,
   sameRunLogRevision,
+  runActivityAt,
   type RunRecord,
   type ProjectEntry,
   type RunLogRevision,
@@ -32,12 +33,12 @@ import {
   Play, Square, GitPullRequest, Bug,
   Clock, Cpu, Terminal, FileText, RotateCcw, RefreshCw,
   Send, MessageSquare, Trash2, Settings, Code2, FolderClosed, FolderOpen, Sparkles, ExternalLink,
-  ChevronDown, Maximize2, Minimize2, AppWindow,
+  ChevronDown, ChevronUp, Maximize2, Minimize2, AppWindow,
   ImagePlus, X, Paperclip,
   ShieldQuestion, MessageCircleQuestion,
   Pin, PinOff, Pencil, Check, Github, Gitlab, UserCircle,
   ClipboardCopy, ScrollText, HardDrive, Cloud, Radio, Languages, StickyNote, ListTodo, FolderTree, Loader2, ListChecks,
-  MoreHorizontal, Users, BookMarked
+  MoreHorizontal, Users, BookMarked, Search
 } from 'lucide-vue-next'
 import AppSelect from '@/components/AppSelect.vue'
 import { type SavedPrompt, parseSavedPrompts, promptLabel } from '@/lib/savedPrompts'
@@ -48,18 +49,19 @@ import ContextMeter from '@/components/ContextMeter.vue'
 import BudgetBadge from '@/components/BudgetBadge.vue'
 import { mergeContextModel } from '@/lib/contextLimits'
 import PermissionPrompt from '@/components/PermissionPrompt.vue'
-import FileViewer from '@/components/FileViewer.vue'
 import FileTree from '@/components/FileTree.vue'
 import DuoHistoryList from '@/components/duo/DuoHistoryList.vue'
 import DuoWorkspace from '@/components/duo/DuoWorkspace.vue'
-import { Button, Input, StatusBadge, Badge, Modal, DropdownMenu, DropdownItem } from '@/components/ui'
+import { Button, Input, StatusBadge, Badge, Modal, DropdownMenu, DropdownItem, DropdownSeparator } from '@/components/ui'
+import { useTurnNavigator } from '@/composables/useTurnNavigator'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
-import { useQuickCapture, type QuickCaptureTab } from '@/composables/useQuickCapture'
+import { openItemCreateWindow, type ItemKind } from '@/lib/itemWindow'
 import { vMermaid } from '@/lib/mermaid'
 import { vCopyCode } from '@/lib/copyCode'
 import { matchProjectFile, parseLineRef, decorateFileLinks } from '@/lib/fileLinks'
 import { openFileWindow } from '@/lib/fileWindow'
+import { FILE_MENTION_EVENT } from '@/lib/fileEvents'
 import { openPermissionWindow, closePermissionWindow } from '@/lib/permissionWindow'
 import { useMarkdown } from '@/lib/markdown'
 import {
@@ -562,6 +564,8 @@ function runLabel(run: RunRecord): string {
 
 // History row timestamp: date + time, so runs from the same day stay
 // distinguishable. Falls back to the raw string if the date can't be parsed.
+// Fed with `runActivityAt(run)` — the same value the list sorts by, so the
+// printed time always explains the row's position.
 function runTimestamp(iso: string): string {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return iso
@@ -573,6 +577,29 @@ function runTimestamp(iso: string): string {
     minute: '2-digit',
   })
 }
+
+// ── History search ────────────────────────────────────────────────────────
+// Free-text filter over the History list. Matching is done on what the row
+// actually shows (title/label, engine, status, issue/PR number) so whatever the
+// user reads in the list is also what they can type to find it again.
+const sessionSearch = ref('')
+const filteredRuns = computed(() => {
+  const q = sessionSearch.value.trim().toLowerCase()
+  if (!q) return runsStore.runs
+  return runsStore.runs.filter((run) => {
+    const haystack = [
+      runLabel(run),
+      run.title ?? '',
+      run.engine,
+      run.status,
+      run.run_type,
+      run.ref_number != null ? `#${run.ref_number}` : '',
+    ]
+      .join(' ')
+      .toLowerCase()
+    return haystack.includes(q)
+  })
+})
 
 // A run awaiting a permission / question response (front of its live queue), or
 // undefined. Drives the animated attention icon in the History list so the user
@@ -820,6 +847,73 @@ watch(() => permissionQueue.value.length > 0, () => captureScrollAnchor())
 // the reading position across that toggle too so it doesn't jump.
 watch(poppedOut, () => captureScrollAnchor())
 
+// ── Jump between user prompts ───────────────────────────────────────────────
+// In a long run, scrolling back to "where did I ask for this?" is a long drag
+// past tool calls and assistant output. The user's own messages are the
+// landmarks worth landing on, so they get their own navigation. It drives
+// whichever pane is showing — the live output or a history log.
+const turnScrollEl = computed(() => (isViewingHistory.value ? historyEl.value : outputEl.value))
+const turnEntries = computed(() => (isViewingHistory.value ? historyEntries.value : liveEntries.value))
+const {
+  turns: promptTurns,
+  scrollToTurn,
+  activeEntryIndex,
+  goPrev: goPrevTurn,
+  goNext: goNextTurn,
+} = useTurnNavigator(turnScrollEl, turnEntries)
+
+// One landmark is nothing to navigate between, and the legacy (non-stream)
+// renderer has no turn markers to walk.
+const showTurnNav = computed(
+  () =>
+    promptTurns.value.length > 1 &&
+    !!turnScrollEl.value &&
+    (isViewingHistory.value ? historyHasStream.value : liveHasStream.value),
+)
+
+// Which prompt the reader is parked on, marked in the jump list. Resolved when
+// the menu opens: keeping it live would mean reading every turn's layout on
+// every scroll, which is exactly the cost the output pane works to avoid.
+const activeTurnEntry = ref(-1)
+function onTurnMenuToggle(open: boolean) {
+  if (open) activeTurnEntry.value = activeEntryIndex()
+}
+
+// Jumping away from the bottom has to release the auto-follow pin, or the next
+// streamed chunk yanks the reader straight back down.
+function afterTurnJump() {
+  const el = outputEl.value
+  if (el && !isViewingHistory.value) stickToBottom.value = isNearBottom(el)
+}
+
+function goToTurn(entryIndex: number) {
+  scrollToTurn(entryIndex)
+  activeTurnEntry.value = entryIndex
+  afterTurnJump()
+}
+
+function prevTurn() {
+  goPrevTurn()
+  afterTurnJump()
+}
+
+function nextTurn() {
+  goNextTurn()
+  afterTurnJump()
+}
+
+// ⌘/Ctrl+⌥+↑/↓. The bare arrows — and their plain ⌘ or ⌥ variants — all move the
+// caret inside the composer's textarea, so the shortcut takes the one
+// combination both macOS and the text field leave free.
+function onTurnNavKey(e: KeyboardEvent) {
+  if (!(e.metaKey || e.ctrlKey) || !e.altKey) return
+  if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
+  if (!showTurnNav.value) return
+  e.preventDefault()
+  if (e.key === 'ArrowUp') prevTurn()
+  else nextTurn()
+}
+
 // While the user is actively interacting with the output — holding the mouse
 // down to drag-select, or with text already selected inside it — we must NOT
 // yank the view to the bottom when new streamed content arrives. Otherwise a
@@ -891,28 +985,25 @@ function closeTranslate() {
 }
 
 // ── Quick capture from a run ────────────────────────────────────────────────
-// Jotting a thought down mid-run must not cost the user this screen: capture
-// opens the app-wide slide-over (no route change, so the stream keeps its scroll
-// and every open panel survives) pre-filed under this project and run.
-const { openCapture } = useQuickCapture()
-
+// Jotting a thought down mid-run must not cost the user this screen: the capture
+// opens in the standalone item window (its own OS window, so no route change and
+// no overlay — the stream keeps its scroll and every open panel survives),
+// pre-filed under this project and run.
 function captureContext() {
   return { projectId: projectId.value, runId: currentRunId.value }
 }
 
-function openQuickCapture(tab: QuickCaptureTab) {
-  openCapture({ tab, context: captureContext() })
+function openQuickCapture(kind: ItemKind) {
+  openItemCreateWindow(kind, captureContext())
 }
 
 /** Turn the current output selection into a pre-filled note. */
 function captureSelectionAsNote() {
   const trigger = translateTrigger.value
   if (!trigger) return
-  openCapture({
-    tab: 'note',
+  openItemCreateWindow('note', captureContext(), {
     title: currentRun.value?.title ?? project.value?.name ?? '',
     content: trigger.text,
-    context: captureContext(),
   })
   translateTrigger.value = null
 }
@@ -921,7 +1012,7 @@ function captureSelectionAsNote() {
 function captureSelectionAsTodo() {
   const trigger = translateTrigger.value
   if (!trigger) return
-  openCapture({ tab: 'todo', content: trigger.text, context: captureContext() })
+  openItemCreateWindow('todo', captureContext(), { content: trigger.text })
   translateTrigger.value = null
 }
 
@@ -1029,7 +1120,8 @@ onMounted(async () => {
   } else {
     // Bare project route (no runId): reopen the most recent session so the user
     // lands back on their last conversation instead of an empty screen. Runs are
-    // sorted pinned-first then created_at desc, so the first one is the latest.
+    // sorted pinned-first then last-activity desc, so the first one is the one
+    // the user worked on most recently.
     // With no runs at all, the "chưa có session nào" empty state is shown.
     const latest = runsStore.runs[0]
     if (latest) await loadRunLog(latest.id)
@@ -1037,7 +1129,9 @@ onMounted(async () => {
   window.addEventListener('focus', onAppFocus)
   window.addEventListener('pointerup', onWindowPointerUp)
   window.addEventListener('mouseup', onSelectionMouseUp)
+  window.addEventListener('keydown', onTurnNavKey)
   setupPopoutBridge()
+  setupMentionBridge()
 
   // Remote-control live indicator: reflect whether a phone is actively driving
   // THIS run, updated by the host agent events (and an initial status read).
@@ -1137,6 +1231,7 @@ onUnmounted(() => {
   document.removeEventListener('mousedown', onRunSettingsPointerDown)
   window.removeEventListener('pointerup', onWindowPointerUp)
   window.removeEventListener('mouseup', onSelectionMouseUp)
+  window.removeEventListener('keydown', onTurnNavKey)
   sessionsChangedUnlisten?.()
   sessionsChangedUnlisten = null
   dragDropUnlisten?.()
@@ -1147,6 +1242,8 @@ onUnmounted(() => {
   metaUnlisten = null
   popoutUnlisten.forEach((fn) => fn())
   popoutUnlisten = []
+  mentionUnlisten?.()
+  mentionUnlisten = null
   // Tear down the pop-out with its owner view so it can't outlive the run.
   closePermissionWindow()
 })
@@ -1827,14 +1924,12 @@ async function ensureProjectFiles(force = false) {
   }
 }
 
-// ── File viewer (click a file the AI created/mentioned to preview it) ─────
-// The viewer body lives in the reusable <FileViewer> component; RunView only
-// tracks which file/line is shown and the modal's open / full-screen state.
-const fileViewerOpen = ref(false)
-const fileViewerPath = ref('')
-// Target line to highlight + scroll to (from a `file:NN` / `#LNN` link), or null.
-const fileViewerLine = ref<number | null>(null)
-const fileViewerFullscreen = ref(false)
+// ── Opening a file ────────────────────────────────────────────────────────
+// Every file opens in its own OS window (FileViewerWindow), never in a modal
+// over the conversation: reading a file is something you do ALONGSIDE the run,
+// and a modal covered the very output that made you click it. One window per
+// file, so several can sit side by side; reopening the same file focuses the
+// window already showing it.
 
 // Set of known project file paths, for resolving inline-code mentions.
 const projectFileSet = computed(() => new Set(projectFiles.value.map(e => !e.is_dir && e.path).filter(Boolean) as string[]))
@@ -1845,26 +1940,11 @@ function fileMatcher(raw: string): string | null {
   return matchProjectFile(raw, projectFileSet.value)
 }
 
-// Open a file in the in-app modal viewer. The <FileViewer> component does the
-// actual reading / rendering; we just point it at the file + line.
-function openFileViewer(path: string, line?: number | null) {
-  if (!project.value?.path) return
-  fileViewerPath.value = path
-  fileViewerLine.value = line ?? null
-  fileViewerFullscreen.value = false
-  fileViewerOpen.value = true
-}
-
-function closeFileViewer() {
-  fileViewerOpen.value = false
-}
-
-// Pop the current file out into a standalone OS window (for side-by-side
-// viewing on another monitor), then close the in-app modal.
-function popOutFileViewer() {
-  const p = project.value?.path
-  if (p && fileViewerPath.value) openFileWindow(p, fileViewerPath.value, fileViewerLine.value)
-  closeFileViewer()
+/** Show a file (optionally scrolled to `line`) in its own window. */
+function openFile(path: string, line?: number | null) {
+  const projectPath = project.value?.path
+  if (!projectPath || !path) return
+  openFileWindow(projectPath, path, line ?? null)
 }
 
 // Directive for RunView's own markdown containers (issue/PR Content, legacy
@@ -1877,7 +1957,7 @@ function onProseClick(e: MouseEvent) {
   const target = e.target as HTMLElement
   const code = target.closest('code.file-link') as HTMLElement | null
   const path = code?.getAttribute('data-file-path')
-  if (path) { e.preventDefault(); openFileViewer(path); return }
+  if (path) { e.preventDefault(); openFile(path); return }
   // Markdown link: prevent the webview from navigating (relative hrefs blank
   // the SPA). Open project files in the viewer, external URLs in the browser.
   const anchor = target.closest('a') as HTMLAnchorElement | null
@@ -1887,7 +1967,7 @@ function onProseClick(e: MouseEvent) {
     if (!href) return
     if (/^(https?:|mailto:)/i.test(href)) { onOpenUrl(href); return }
     const fp = fileMatcher(href.replace(/#.*$/, ''))
-    if (fp) openFileViewer(fp, parseLineRef(href))
+    if (fp) openFile(fp, parseLineRef(href))
   }
 }
 
@@ -1979,8 +2059,10 @@ function selectMention(entry: ProjectEntry) {
   })
 }
 
-// Insert a file mention (`@path`) into the composer from the file-tree context
-// menu. Inserts at the caret when the composer is focused, otherwise appends.
+// Insert a file mention (`@path`) into the composer. Reached from the shared
+// file menu — the explorer's right-click AND a file window's ⋯ menu — which
+// broadcasts it, because the composer only exists here in the main window.
+// Inserts at the caret when the composer is focused, otherwise appends.
 function mentionFileInComposer(path: string) {
   const el = composerEl.value
   const cur = followUpInput.value
@@ -2148,7 +2230,7 @@ async function handlePermissionDecision(decision: 'allow' | 'deny' | 'ask', reme
     live.rememberDeniedTool(id, req.tool_name)
   }
   try {
-    await runsStore.respondPermission(req.run_id, req.request_id, decision)
+    await runsStore.respondPermission(req.run_id, req.request_id, decision, undefined, { remember })
   } catch (e) {
     live.appendOutput(id, t('run.permissionResponseFailed', { error: String(e) }))
   }
@@ -2200,6 +2282,24 @@ watch(
   () => [permissionQueue.value[0]?.request_id ?? null, poppedOut.value] as const,
   () => syncPermissionToPopout(),
 )
+
+// A file menu anywhere (including another webview) asking for an @mention here.
+let mentionUnlisten: UnlistenFn | null = null
+async function setupMentionBridge() {
+  try {
+    mentionUnlisten = await listen<{ projectPath: string; path: string }>(
+      FILE_MENTION_EVENT,
+      (e) => {
+        const payload = e.payload
+        // Ignore files from a project this screen isn't showing.
+        if (!payload?.path || (payload.projectPath && payload.projectPath !== project.value?.path)) return
+        mentionFileInComposer(payload.path)
+      },
+    )
+  } catch {
+    /* running outside the Tauri shell */
+  }
+}
 
 let popoutUnlisten: UnlistenFn[] = []
 async function setupPopoutBridge() {
@@ -2923,187 +3023,220 @@ function handleRefInput(val: string) {
         </div>
 
         <!-- Run history -->
-        <div v-show="leftTab === 'session'" ref="sessionListEl" class="flex-1 overflow-auto">
-          <div class="flex items-center justify-between px-4 py-2.5 border-b border-border/40">
-            <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">{{ t('run.history') }}</p>
-            <button
-              v-if="runsStore.runs.length > 0"
-              class="flex items-center gap-1 text-[10px] text-muted-foreground/70 hover:text-destructive transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-              :disabled="clearingAll"
-              :title="clearingAll ? t('run.clearing') : t('run.clearAllRunsTitle')"
-              @click="handleClearAllRuns"
-            >
-              <Trash2 class="h-3 w-3" :stroke-width="1.75" />
-              {{ clearingAll ? t('run.clearing') : t('run.clearAll') }}
-            </button>
-          </div>
-          <div v-if="runsStore.loading" class="px-4 py-3 text-xs text-muted-foreground">{{ t('common.loading') }}</div>
-          <div v-else-if="runsStore.runs.length === 0" class="px-4 py-6 text-center text-xs text-muted-foreground">
-            {{ t('run.noSessionsYet') }}
-          </div>
-          <div
-            v-else
-            v-for="run in runsStore.runs"
-            :key="run.id"
-            :data-run-id="run.id"
-            class="group relative border-b border-border/30 transition-colors hover:bg-accent/40 focus-within:bg-accent/40"
-            :class="{ 'bg-accent/60': currentRunId === run.id }"
-          >
-            <!-- Selected indicator bar -->
-            <span
-              v-if="currentRunId === run.id"
-              class="absolute left-0 inset-y-0 w-0.5 bg-primary"
-            />
-            <button
-              class="w-full text-left px-3 py-3 cursor-pointer rounded-sm focus:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
-              @click="loadRunLog(run.id)"
-            >
-              <!-- Title + status -->
-              <div class="flex items-center gap-2">
-                <component
-                  :is="run.run_type === 'session' ? MessageSquare : run.run_type === 'analyze_issue' ? Bug : GitPullRequest"
-                  class="h-4 w-4 text-muted-foreground shrink-0"
-                  :stroke-width="1.75"
-                />
-                <Pin
-                  v-if="run.pinned"
-                  class="h-3 w-3 shrink-0 text-primary"
-                  :stroke-width="2"
-                  :aria-label="t('run.pinned')"
-                />
-                <span class="flex-1 min-w-0 truncate text-[13px] font-medium leading-tight" :title="runLabel(run)">{{ runLabel(run) }}</span>
-                <!-- Remote-control marker: a phone is driving (green, pulsing) or
-                     a link is waiting for one (amber) on THIS session. Lets the
-                     user spot the remotely-controlled session in the list. -->
-                <span
-                  v-if="remoteRowMarker && remoteRowMarker.runId === run.id"
-                  class="relative flex h-4 w-4 shrink-0 items-center justify-center"
-                  :class="remoteRowMarker.tone === 'success' ? 'text-emerald-500' : 'text-amber-500'"
-                  :title="remoteRowMarker.title"
-                >
-                  <span
-                    v-if="remoteRowMarker.tone === 'success'"
-                    class="absolute inset-0 animate-ping rounded-full bg-emerald-500/30"
-                  />
-                  <Radio class="relative h-3.5 w-3.5" :stroke-width="2" />
-                </span>
-                <!-- Animated attention marker: this run is waiting for a
-                     permission / question answer (replaces the floating toast). -->
-                <span
-                  v-if="pendingRequest(run.id)"
-                  class="relative flex h-4 w-4 shrink-0 items-center justify-center text-primary"
-                  :title="
-                    pendingRequest(run.id)?.tool_name === 'AskUserQuestion'
-                      ? t('run.waitingForAnswer')
-                      : t('run.waitingForPermission')
-                  "
-                >
-                  <span class="absolute inset-0 animate-ping rounded-full bg-primary/30" />
-                  <component
-                    :is="pendingRequest(run.id)?.tool_name === 'AskUserQuestion' ? MessageCircleQuestion : ShieldQuestion"
-                    class="relative h-4 w-4"
-                    :stroke-width="2"
-                  />
-                </span>
-                <StatusBadge :status="run.status" :run-type="run.run_type" size="xs" class="shrink-0" />
-              </div>
-              <!-- Meta: date + engine. Always visible so hovering never hides
-                   the session info; actions sit to the right of this band. -->
-              <div class="flex items-center gap-2 mt-2 pl-6 pr-3 text-[10px] text-muted-foreground/70">
-                <span class="flex items-center gap-1 shrink-0">
-                  <Clock class="h-2.5 w-2.5" :stroke-width="1.5" />
-                  {{ runTimestamp(run.created_at) }}
-                </span>
-                <span class="shrink-0 px-1.5 py-0.5 rounded bg-muted/60 font-mono text-[9px] uppercase tracking-wide text-muted-foreground">
-                  {{ run.engine }}
-                </span>
-              </div>
-            </button>
-            <!-- Actions: a single overflow (⋯) menu revealed on hover/focus, so
-                 the row's meta info stays fully visible. The trigger also stays
-                 put while its menu is open (actionsMenuRunId). Running sessions
-                 get a safe subset — delete/refetch are hidden while live. -->
-            <div
-              class="absolute right-2 bottom-2 flex items-center opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto"
-              :class="{ '!opacity-100 !pointer-events-auto': actionsMenuRunId === run.id }"
-            >
-              <DropdownMenu
-                align="right"
-                @update:open="(o) => (actionsMenuRunId = o ? run.id : null)"
+        <!-- The header (title + Clear all + search) is pinned: only the rows
+             below it scroll, so the filter and the bulk action stay reachable
+             no matter how far down the list the user is. -->
+        <div v-show="leftTab === 'session'" class="flex-1 min-h-0 flex flex-col">
+          <div class="shrink-0 border-b border-border/40">
+            <div class="flex items-center justify-between px-4 py-2.5">
+              <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">{{ t('run.history') }}</p>
+              <button
+                v-if="runsStore.runs.length > 0"
+                class="flex items-center gap-1 text-[10px] text-muted-foreground/70 hover:text-destructive transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                :disabled="clearingAll"
+                :title="clearingAll ? t('run.clearing') : t('run.clearAllRunsTitle')"
+                @click="handleClearAllRuns"
               >
-                <template #trigger>
-                  <button
-                    type="button"
-                    class="flex items-center justify-center h-6 w-6 rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-                    :aria-label="t('run.moreActions')"
-                    :title="t('run.moreActions')"
-                  >
-                    <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
-                  </button>
-                </template>
-
-                <DropdownItem v-if="runGithubUrl(run)" @click="openRunInBrowser(run)">
-                  <ExternalLink class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-                  {{ run.run_type === 'analyze_issue' ? t('run.openIssueOnGithub') : t('run.openPrOnGithub') }}
-                </DropdownItem>
-                <DropdownItem
-                  v-if="run.run_type !== 'session' && run.status !== 'running'"
-                  :disabled="refetchingRunId === run.id"
-                  @click="handleRefetch(run.id)"
-                >
-                  <RefreshCw class="h-3.5 w-3.5 shrink-0" :class="{ 'animate-spin': refetchingRunId === run.id }" :stroke-width="1.75" />
-                  {{ run.run_type === 'analyze_issue' ? t('run.refetchIssue') : t('run.refetchPr') }}
-                </DropdownItem>
-                <DropdownItem @click="copyLogPath(run)">
-                  <ClipboardCopy class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-                  {{ t('run.copyLogPath') }}
-                </DropdownItem>
-                <DropdownItem @click="viewLogFile(run)">
-                  <ScrollText class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-                  {{ t('run.viewLogFile') }}
-                </DropdownItem>
-                <div class="my-1 h-px bg-border" aria-hidden="true" />
-                <DropdownItem @click="startRename(run, $event)">
-                  <Pencil class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-                  {{ t('run.rename') }}
-                </DropdownItem>
-                <DropdownItem :disabled="pinningRunId === run.id" @click="handleTogglePin(run, $event)">
-                  <component :is="run.pinned ? PinOff : Pin" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-                  {{ run.pinned ? t('run.unpinFromTop') : t('run.pinToTop') }}
-                </DropdownItem>
-                <template v-if="run.status !== 'running'">
-                  <div class="my-1 h-px bg-border" aria-hidden="true" />
-                  <DropdownItem :disabled="deletingRunId === run.id" @click="handleDeleteRun(run.id, $event)">
-                    <Trash2 class="h-3.5 w-3.5 shrink-0 text-destructive" :stroke-width="1.75" />
-                    <span class="text-destructive">{{ t('run.deleteThisRun') }}</span>
-                  </DropdownItem>
-                </template>
-              </DropdownMenu>
+                <Trash2 class="h-3 w-3" :stroke-width="1.75" />
+                {{ clearingAll ? t('run.clearing') : t('run.clearAll') }}
+              </button>
             </div>
-
-            <!-- Inline rename: overlays the row title while editing. -->
+            <div v-if="runsStore.runs.length > 0" class="px-3 pb-2.5">
+              <div class="relative">
+                <Search class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.75" />
+                <Input
+                  v-model="sessionSearch"
+                  :placeholder="t('run.searchSessionsPlaceholder')"
+                  class="h-8 pl-8 pr-8 text-xs"
+                />
+                <button
+                  v-if="sessionSearch"
+                  type="button"
+                  class="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer"
+                  :title="t('run.clearSearch')"
+                  @click="sessionSearch = ''"
+                >
+                  <X class="h-3.5 w-3.5" :stroke-width="2" />
+                </button>
+              </div>
+            </div>
+          </div>
+          <div ref="sessionListEl" class="flex-1 min-h-0 overflow-auto">
+            <div v-if="runsStore.loading" class="px-4 py-3 text-xs text-muted-foreground">{{ t('common.loading') }}</div>
+            <div v-else-if="runsStore.runs.length === 0" class="px-4 py-6 text-center text-xs text-muted-foreground">
+              {{ t('run.noSessionsYet') }}
+            </div>
+            <div v-else-if="filteredRuns.length === 0" class="px-4 py-6 text-center text-xs text-muted-foreground">
+              {{ t('run.noMatchingSessions') }}
+            </div>
             <div
-              v-if="renamingRunId === run.id"
-              class="absolute inset-0 z-20 flex items-center gap-2 px-3 bg-card"
-              @click.stop
+              v-else
+              v-for="run in filteredRuns"
+              :key="run.id"
+              :data-run-id="run.id"
+              class="group relative border-b border-border/30 transition-colors hover:bg-accent/40 focus-within:bg-accent/40"
+              :class="{ 'bg-accent/60': currentRunId === run.id }"
             >
-              <Pencil class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
-              <input
-                :ref="setRenameInputRef"
-                v-model="renameDraft"
-                type="text"
-                class="flex-1 min-w-0 bg-transparent text-[13px] font-medium leading-tight outline-none border-b border-primary/60 pb-0.5"
-                :placeholder="t('run.runNamePlaceholder')"
-                @keyup.enter="commitRename(run.id)"
-                @keyup.esc="cancelRename()"
-                @blur="commitRename(run.id)"
+              <!-- Selected indicator bar -->
+              <span
+                v-if="currentRunId === run.id"
+                class="absolute left-0 inset-y-0 w-0.5 bg-primary"
               />
-              <Button variant="ghost" size="icon-sm" :aria-label="t('run.saveName')" :title="t('common.save')" @mousedown.prevent @click.stop="commitRename(run.id)">
-                <Check class="h-3.5 w-3.5" :stroke-width="2" />
-              </Button>
-              <Button variant="ghost" size="icon-sm" :aria-label="t('run.cancelRename')" :title="t('common.cancel')" @mousedown.prevent @click.stop="cancelRename()">
-                <X class="h-3.5 w-3.5" :stroke-width="2" />
-              </Button>
+              <button
+                class="w-full text-left px-3 py-3 cursor-pointer rounded-sm focus:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+                @click="loadRunLog(run.id)"
+              >
+                <!-- Title + status -->
+                <div class="flex items-center gap-2">
+                  <component
+                    :is="run.run_type === 'session' ? MessageSquare : run.run_type === 'analyze_issue' ? Bug : GitPullRequest"
+                    class="h-4 w-4 text-muted-foreground shrink-0"
+                    :stroke-width="1.75"
+                  />
+                  <Pin
+                    v-if="run.pinned"
+                    class="h-3 w-3 shrink-0 text-primary"
+                    :stroke-width="2"
+                    :aria-label="t('run.pinned')"
+                  />
+                  <span class="flex-1 min-w-0 truncate text-[13px] font-medium leading-tight" :title="runLabel(run)">{{ runLabel(run) }}</span>
+                  <!-- Remote-control marker: a phone is driving (green, pulsing) or
+                       a link is waiting for one (amber) on THIS session. Lets the
+                       user spot the remotely-controlled session in the list. -->
+                  <span
+                    v-if="remoteRowMarker && remoteRowMarker.runId === run.id"
+                    class="relative flex h-4 w-4 shrink-0 items-center justify-center"
+                    :class="remoteRowMarker.tone === 'success' ? 'text-emerald-500' : 'text-amber-500'"
+                    :title="remoteRowMarker.title"
+                  >
+                    <span
+                      v-if="remoteRowMarker.tone === 'success'"
+                      class="absolute inset-0 animate-ping rounded-full bg-emerald-500/30"
+                    />
+                    <Radio class="relative h-3.5 w-3.5" :stroke-width="2" />
+                  </span>
+                  <!-- Animated attention marker: this run is waiting for a
+                       permission / question answer (replaces the floating toast). -->
+                  <span
+                    v-if="pendingRequest(run.id)"
+                    class="relative flex h-4 w-4 shrink-0 items-center justify-center text-primary"
+                    :title="
+                      pendingRequest(run.id)?.tool_name === 'AskUserQuestion'
+                        ? t('run.waitingForAnswer')
+                        : t('run.waitingForPermission')
+                    "
+                  >
+                    <span class="absolute inset-0 animate-ping rounded-full bg-primary/30" />
+                    <component
+                      :is="pendingRequest(run.id)?.tool_name === 'AskUserQuestion' ? MessageCircleQuestion : ShieldQuestion"
+                      class="relative h-4 w-4"
+                      :stroke-width="2"
+                    />
+                  </span>
+                  <StatusBadge :status="run.status" :run-type="run.run_type" size="xs" class="shrink-0" />
+                </div>
+                <!-- Meta: date + engine. Always visible so hovering never hides
+                     the session info; actions sit to the right of this band. -->
+                <div class="flex items-center gap-2 mt-2 pl-6 pr-3 text-[10px] text-muted-foreground/70">
+                  <span class="flex items-center gap-1 shrink-0" :title="t('run.lastActivity')">
+                    <Clock class="h-2.5 w-2.5" :stroke-width="1.5" />
+                    {{ runTimestamp(runActivityAt(run)) }}
+                  </span>
+                  <span class="shrink-0 px-1.5 py-0.5 rounded bg-muted/60 font-mono text-[9px] uppercase tracking-wide text-muted-foreground">
+                    {{ run.engine }}
+                  </span>
+                </div>
+              </button>
+              <!-- Actions: a single overflow (⋯) menu revealed on hover/focus, so
+                   the row's meta info stays fully visible. The trigger also stays
+                   put while its menu is open (actionsMenuRunId). Running sessions
+                   get a safe subset — delete/refetch are hidden while live. -->
+              <div
+                class="absolute right-2 bottom-2 flex items-center opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto"
+                :class="{ '!opacity-100 !pointer-events-auto': actionsMenuRunId === run.id }"
+              >
+                <DropdownMenu
+                  align="right"
+                  @update:open="(o) => (actionsMenuRunId = o ? run.id : null)"
+                >
+                  <template #trigger>
+                    <button
+                      type="button"
+                      class="flex items-center justify-center h-6 w-6 rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+                      :aria-label="t('run.moreActions')"
+                      :title="t('run.moreActions')"
+                    >
+                      <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
+                    </button>
+                  </template>
+
+                  <DropdownItem v-if="runGithubUrl(run)" @click="openRunInBrowser(run)">
+                    <ExternalLink class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+                    {{ run.run_type === 'analyze_issue' ? t('run.openIssueOnGithub') : t('run.openPrOnGithub') }}
+                  </DropdownItem>
+                  <DropdownItem
+                    v-if="run.run_type !== 'session' && run.status !== 'running'"
+                    :disabled="refetchingRunId === run.id"
+                    @click="handleRefetch(run.id)"
+                  >
+                    <RefreshCw class="h-3.5 w-3.5 shrink-0" :class="{ 'animate-spin': refetchingRunId === run.id }" :stroke-width="1.75" />
+                    {{ run.run_type === 'analyze_issue' ? t('run.refetchIssue') : t('run.refetchPr') }}
+                  </DropdownItem>
+                  <DropdownItem @click="copyLogPath(run)">
+                    <ClipboardCopy class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+                    {{ t('run.copyLogPath') }}
+                  </DropdownItem>
+                  <DropdownItem @click="viewLogFile(run)">
+                    <ScrollText class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+                    {{ t('run.viewLogFile') }}
+                  </DropdownItem>
+                  <DropdownSeparator />
+                  <DropdownItem @click="startRename(run, $event)">
+                    <Pencil class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+                    {{ t('run.rename') }}
+                  </DropdownItem>
+                  <DropdownItem :disabled="pinningRunId === run.id" @click="handleTogglePin(run, $event)">
+                    <component :is="run.pinned ? PinOff : Pin" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+                    {{ run.pinned ? t('run.unpinFromTop') : t('run.pinToTop') }}
+                  </DropdownItem>
+                  <template v-if="run.status !== 'running'">
+                    <DropdownSeparator />
+                    <DropdownItem
+                      variant="destructive"
+                      :disabled="deletingRunId === run.id"
+                      @click="handleDeleteRun(run.id, $event)"
+                    >
+                      <Trash2 class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+                      {{ t('run.deleteThisRun') }}
+                    </DropdownItem>
+                  </template>
+                </DropdownMenu>
+              </div>
+
+              <!-- Inline rename: overlays the row title while editing. -->
+              <div
+                v-if="renamingRunId === run.id"
+                class="absolute inset-0 z-20 flex items-center gap-2 px-3 bg-card"
+                @click.stop
+              >
+                <Pencil class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
+                <input
+                  :ref="setRenameInputRef"
+                  v-model="renameDraft"
+                  type="text"
+                  class="flex-1 min-w-0 bg-transparent text-[13px] font-medium leading-tight outline-none border-b border-primary/60 pb-0.5"
+                  :placeholder="t('run.runNamePlaceholder')"
+                  @keyup.enter="commitRename(run.id)"
+                  @keyup.esc="cancelRename()"
+                  @blur="commitRename(run.id)"
+                />
+                <Button variant="ghost" size="icon-sm" :aria-label="t('run.saveName')" :title="t('common.save')" @mousedown.prevent @click.stop="commitRename(run.id)">
+                  <Check class="h-3.5 w-3.5" :stroke-width="2" />
+                </Button>
+                <Button variant="ghost" size="icon-sm" :aria-label="t('run.cancelRename')" :title="t('common.cancel')" @mousedown.prevent @click.stop="cancelRename()">
+                  <X class="h-3.5 w-3.5" :stroke-width="2" />
+                </Button>
+              </div>
             </div>
           </div>
         </div>
@@ -3114,14 +3247,12 @@ function handleRefInput(val: string) {
           v-if="project?.path"
           :project-path="project.path"
           :active="leftTab === 'files'"
-          :active-path="fileViewerOpen ? fileViewerPath : null"
-          @open-file="openFileViewer"
-          @mention-file="mentionFileInComposer"
+          @open-file="openFile"
         />
 
         <!-- Duo tab: saved Duo-session switcher, scoped to this project. -->
         <div v-show="leftTab === 'duo'" class="flex-1 overflow-hidden">
-          <DuoHistoryList :project-id="projectId" />
+          <DuoHistoryList :project-id="projectId" @open-session="openDuoSession" />
         </div>
       </div>
 
@@ -3252,7 +3383,7 @@ function handleRefInput(val: string) {
                     <FileText class="h-3.5 w-3.5" :stroke-width="1.75" />
                     {{ t('run.content') }}
                   </button>
-                  <MentionedFiles :entries="mentionedFileEntries" @open-file="openFileViewer" />
+                  <MentionedFiles :entries="mentionedFileEntries" @open-file="openFile" />
                   <!-- When popped out the drawer is hidden, so surface the
                        re-dock control here (the pop-out control lives in the
                        drawer itself, see below). -->
@@ -3305,7 +3436,7 @@ function handleRefInput(val: string) {
                   :running="false"
                   :render-text="renderText"
                   :file-matcher="fileMatcher"
-                  @open-file="openFileViewer"
+                  @open-file="openFile"
                   @open-url="onOpenUrl"
                 />
               </template>
@@ -3334,7 +3465,7 @@ function handleRefInput(val: string) {
                 :running="currentStatus === 'running'"
                 :render-text="renderText"
                 :file-matcher="fileMatcher"
-                @open-file="openFileViewer"
+                @open-file="openFile"
                 @open-url="onOpenUrl"
               />
               <template v-else>
@@ -3367,16 +3498,66 @@ function handleRefInput(val: string) {
             </div>
 
             <!-- Jump-to-latest button: shown when the user has scrolled up
-                 away from the bottom of the live output. -->
+                 away from the bottom of the live output. Sits above the prompt
+                 navigator when that one is showing. -->
             <button
               v-if="hasLiveOutput && !isViewingHistory && !stickToBottom"
-              class="absolute bottom-4 right-4 z-10 flex items-center gap-1 rounded-full border border-border bg-card px-3 py-1.5 text-[11px] font-mono text-foreground/80 shadow-md transition-colors hover:bg-card hover:text-foreground cursor-pointer"
+              class="absolute right-4 z-10 flex items-center gap-1 rounded-full border border-border bg-card px-3 py-1.5 text-[11px] font-mono text-foreground/80 shadow-md transition-colors hover:bg-card hover:text-foreground cursor-pointer"
+              :class="showTurnNav ? 'bottom-14' : 'bottom-4'"
               :title="t('run.scrollToLatest')"
               @click="stickToBottom = true; scrollOutputToBottom()"
             >
               <ChevronDown class="h-3.5 w-3.5" :stroke-width="2" />
               {{ t('run.latest') }}
             </button>
+
+            <!-- Prompt navigator: step between the user's own messages, or pick
+                 one straight out of the list. Only worth showing once there is
+                 more than one prompt to move between. -->
+            <div
+              v-if="showTurnNav"
+              class="absolute bottom-4 right-4 z-10 flex items-center rounded-full border border-border bg-card text-[11px] font-mono text-foreground/70 shadow-md"
+            >
+              <button
+                type="button"
+                class="flex items-center rounded-l-full px-2 py-1.5 transition-colors hover:bg-accent/60 hover:text-foreground cursor-pointer"
+                :title="t('run.prevPrompt')"
+                @click="prevTurn"
+              >
+                <ChevronUp class="h-3.5 w-3.5" :stroke-width="2" />
+              </button>
+              <DropdownMenu align="right" @update:open="onTurnMenuToggle">
+                <template #trigger>
+                  <button
+                    type="button"
+                    class="flex items-center gap-1 border-x border-border px-2.5 py-1.5 transition-colors hover:bg-accent/60 hover:text-foreground cursor-pointer"
+                    :title="t('run.promptList')"
+                  >
+                    <MessageSquare class="h-3.5 w-3.5" :stroke-width="1.75" />
+                    {{ promptTurns.length }}
+                  </button>
+                </template>
+                <div class="max-h-72 w-72 overflow-y-auto">
+                  <DropdownItem
+                    v-for="(turn, ti) in promptTurns"
+                    :key="turn.entryIndex"
+                    :variant="turn.entryIndex === activeTurnEntry ? 'primary' : 'default'"
+                    @click="goToTurn(turn.entryIndex)"
+                  >
+                    <span class="w-5 shrink-0 text-right text-[11px] font-mono text-foreground/35">{{ ti + 1 }}</span>
+                    <span class="min-w-0 truncate">{{ turn.label || t('run.promptNoText') }}</span>
+                  </DropdownItem>
+                </div>
+              </DropdownMenu>
+              <button
+                type="button"
+                class="flex items-center rounded-r-full px-2 py-1.5 transition-colors hover:bg-accent/60 hover:text-foreground cursor-pointer"
+                :title="t('run.nextPrompt')"
+                @click="nextTurn"
+              >
+                <ChevronDown class="h-3.5 w-3.5" :stroke-width="2" />
+              </button>
+            </div>
             </div>
 
             <!-- Question / permission prompt: an overlay drawer sliding in from
@@ -3748,52 +3929,6 @@ function handleRefInput(val: string) {
         </div>
       </div>
     </div>
-
-    <!-- File viewer: preview a file the AI created/edited/mentioned -->
-    <Modal
-      :open="fileViewerOpen"
-      :size="fileViewerFullscreen ? 'full' : 'xl'"
-      scroll-body
-      hide-header
-      @close="closeFileViewer"
-    >
-      <FileViewer
-        v-if="fileViewerOpen"
-        :project-path="project?.path || ''"
-        :path="fileViewerPath"
-        :line="fileViewerLine"
-        can-compare
-        @open-file="openFileViewer"
-        @open-url="onOpenUrl"
-      >
-        <template #actions>
-          <!-- Pop the file out into a standalone OS window for side-by-side viewing -->
-          <button
-            class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
-            :title="t('run.openInNewWindow')"
-            @click="popOutFileViewer"
-          >
-            <AppWindow class="h-3.5 w-3.5" :stroke-width="1.75" />
-          </button>
-          <!-- Full-screen toggle -->
-          <button
-            class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
-            :title="fileViewerFullscreen ? t('run.exitFullScreen') : t('run.fullScreen')"
-            @click="fileViewerFullscreen = !fileViewerFullscreen"
-          >
-            <component :is="fileViewerFullscreen ? Minimize2 : Maximize2" class="h-3.5 w-3.5" :stroke-width="1.75" />
-          </button>
-          <!-- Close -->
-          <button
-            class="flex items-center justify-center h-6 w-6 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
-            :title="t('run.closeEsc')"
-            @click="closeFileViewer"
-          >
-            <X class="h-4 w-4" :stroke-width="1.75" />
-          </button>
-        </template>
-      </FileViewer>
-    </Modal>
 
     <!-- Engine-switch dialog: new session vs. continue (carry context) -->
     <Modal

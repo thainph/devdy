@@ -4,15 +4,41 @@
 //   • a floating banner while a first image is picked, awaiting the second;
 //   • the project image picker for choosing the second image;
 //   • the full-screen side-by-side compare view.
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { Images, X, Search } from 'lucide-vue-next'
 import { Modal } from '@/components/ui'
 import ImageCompareView from '@/components/ImageCompareView.vue'
 import { useImageCompareStore } from '@/stores/imageCompare'
+import { FILE_COMPARE_EVENT } from '@/lib/fileEvents'
 
 const { t } = useI18n()
 const store = useImageCompareStore()
+
+// "Compare" picked in a file window (a different webview, with its own store
+// copy): only THIS window knows whether an image is already waiting, so it
+// decides whether the incoming one starts a comparison or completes it.
+let unlistenCompare: UnlistenFn | null = null
+onMounted(async () => {
+  try {
+    unlistenCompare = await listen<{ projectPath: string; path: string }>(
+      FILE_COMPARE_EVENT,
+      (e) => {
+        const payload = e.payload
+        if (!payload?.path) return
+        if (store.hasPending && store.pendingFirst !== payload.path) store.selectSecond(payload.path)
+        else store.selectFirst(payload.projectPath, payload.path)
+      },
+    )
+  } catch {
+    /* running outside the Tauri shell */
+  }
+})
+onBeforeUnmount(() => {
+  unlistenCompare?.()
+  unlistenCompare = null
+})
 
 const query = ref('')
 watch(

@@ -1698,13 +1698,16 @@ watch(() => settings.value.language, (v) => {
           <div class="rounded-md border border-border/60 bg-muted/30 p-3 space-y-2">
             <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.google.availableTools') }}</div>
             <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
-              <span>📁 gdrive list / search / read / download</span>
-              <span>✏️ gdrive create / upload / update / rename / move</span>
-              <span>🗑️ gdrive delete (permanent) · share / permissions</span>
-              <span>📧 gmail list / search / read_message / read_thread</span>
-              <span>📎 gmail list_attachments / download_attachment(s)</span>
-              <span>✉️ gmail send / create_draft / reply</span>
-              <span>🏷️ gmail modify_labels / mark / trash / delete</span>
+              <span>📁 drive_list / search / read / download</span>
+              <span>✏️ drive_create / upload / update / rename / move</span>
+              <span>🗑️ drive_delete (permanent) · share / permissions</span>
+              <span>📧 mail_list_messages / search / read_message / read_thread</span>
+              <span>📎 mail_list_attachments / download_attachment(s)</span>
+              <span>✉️ mail_send / create_draft / reply</span>
+              <span>🏷️ mail_modify_labels / mark / trash / delete</span>
+              <span>📅 cal_list_calendars / list_events / search_events</span>
+              <span>🕒 cal_freebusy / get_event / respond_event</span>
+              <span>🗓️ cal_create_event / update_event / delete_event</span>
             </div>
           </div>
         </Card>
