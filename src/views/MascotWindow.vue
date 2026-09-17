@@ -16,7 +16,7 @@ import CyberFox from '@/components/CyberFoxCanvas.vue'
 import MascotStars from '@/components/MascotStars.vue'
 import MascotContextMenu, { type MascotMenuItem } from '@/components/MascotContextMenu.vue'
 import MascotBubble from '@/components/MascotBubble.vue'
-import { openQuickCreateWindow, type QuickCreateTab } from '@/lib/quickCreateWindow'
+import { openItemCreateWindow, type ItemKind } from '@/lib/itemWindow'
 import {
   MASCOT_STATE_EVENT,
   MASCOT_READY_EVENT,
@@ -48,8 +48,8 @@ const menuOpen = ref(false)
 const menuPos = ref({ x: 0, y: 0 })
 
 const menuItems = computed<MascotMenuItem[]>(() => [
-  { key: 'todo', label: t('todos.quick.newTodo'), icon: ListTodo },
-  { key: 'note', label: t('todos.quick.newNote'), icon: StickyNote },
+  { key: 'todo', label: t('item.newTodo'), icon: ListTodo },
+  { key: 'note', label: t('item.newNote'), icon: StickyNote },
 ])
 
 function openContextMenu(e: MouseEvent) {
@@ -57,7 +57,7 @@ function openContextMenu(e: MouseEvent) {
   menuOpen.value = true
 }
 function pickQuickCreate(key: string) {
-  openQuickCreateWindow(key as QuickCreateTab)
+  openItemCreateWindow(key as ItemKind)
 }
 
 // Drag = OS-native window move via startDragging(). The compositor moves the

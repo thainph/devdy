@@ -1,9 +1,7 @@
-#!/usr/bin/env node
-// Devdy built-in MCP server: Gmail (stdio, JSON-RPC 2.0).
+// Gmail tool group for the built-in `google` MCP server.
 //
-// Injected under the key `gmail` (tools namespaced `mcp__gmail__*`) when a
-// Google account is connected in Devdy Settings. OAuth creds arrive via env and
-// are refreshed on demand (see lib/google.mjs). Zero runtime dependencies.
+// Exposed as `mail_*` (tools namespaced `mcp__google__mail_*`). OAuth creds
+// arrive via env and are refreshed on demand (see ../google.mjs).
 //
 // Scope: gmail.modify (read / attachments / send / label / trash — NOT permanent mailbox
 // wipe). `delete` needs the broader scope and will fail cleanly if not granted.
@@ -11,7 +9,7 @@
 
 import { mkdir, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
-import { gapi, runServer } from './lib/google.mjs';
+import { gapi } from '../google.mjs';
 
 const BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const enc = encodeURIComponent;
@@ -131,7 +129,7 @@ async function fetchSummary(id) {
   return `- [${id}] ${headerOf(m.payload, 'Date')} · ${headerOf(m.payload, 'From')}\n  ${headerOf(m.payload, 'Subject') || '(no subject)'}${m.snippet ? `\n  ${m.snippet}` : ''}`;
 }
 
-const tools = {
+export const tools = {
   list_messages: {
     description: 'List recent Gmail messages (most recent first). Optionally filter by label ids.',
     inputSchema: {
@@ -189,7 +187,7 @@ const tools = {
         `Labels: ${(m.labelIds || []).join(', ')}`,
         `Thread: ${m.threadId}`,
         ...(atts.length
-          ? [`Attachments (${atts.length}): ${atts.map((x) => `${x.filename} (${fmtSize(x.size)})`).join(', ')} — use list_attachments / download_attachments to save them.`]
+          ? [`Attachments (${atts.length}): ${atts.map((x) => `${x.filename} (${fmtSize(x.size)})`).join(', ')} — use mail_list_attachments / mail_download_attachments to save them.`]
           : []),
         '',
         body || '(no plain-text body)',
@@ -221,7 +219,7 @@ const tools = {
       properties: {
         message_id: { type: 'string' },
         dest_path: { type: 'string', description: 'Absolute local path to write' },
-        attachment_id: { type: 'string', description: 'From list_attachments; most precise' },
+        attachment_id: { type: 'string', description: 'From mail_list_attachments; most precise' },
         filename_contains: { type: 'string', description: 'Case-insensitive substring of the attachment filename' },
       },
       required: ['message_id', 'dest_path'],
@@ -300,7 +298,7 @@ const tools = {
   },
 
   list_labels: {
-    description: 'List Gmail labels (id + name), for use with list_messages / modify_labels.',
+    description: 'List Gmail labels (id + name), for use with mail_list_messages / mail_modify_labels.',
     inputSchema: { type: 'object', properties: {} },
     handler: async () => {
       const data = await gapi(`${BASE}/labels`);
@@ -450,7 +448,7 @@ const tools = {
   },
 
   delete: {
-    description: 'PERMANENTLY delete a message (bypasses Trash, cannot be undone). Requires broad Gmail scope; use trash for normal deletion.',
+    description: 'PERMANENTLY delete a message (bypasses Trash, cannot be undone). Requires broad Gmail scope; use mail_trash for normal deletion.',
     inputSchema: {
       type: 'object',
       properties: { message_id: { type: 'string' } },
@@ -462,5 +460,3 @@ const tools = {
     },
   },
 };
-
-runServer({ serverInfo: { name: 'gmail', version: '0.1.0' }, tools, multiAccount: true });

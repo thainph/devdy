@@ -15,7 +15,7 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Play, RotateCcw, Loader2 } from 'lucide-vue-next'
 import { useProjectsStore } from '@/stores/projects'
-import { useRunsStore } from '@/stores/runs'
+import { useRunsStore, runActivityAt } from '@/stores/runs'
 import { useOrchestratorStore, type DuoSourceMode } from '@/stores/orchestrator'
 import { modelOptionsFor, PERMISSION_MODE_OPTIONS } from '@/lib/engineOptions'
 import { useToast } from '@/composables/useToast'
@@ -79,7 +79,7 @@ const runOptions = computed(() => {
   return runsStore.runs.map((r) => {
     const kind = runTypeLabels[r.run_type] || r.run_type
     const label = r.title?.trim() || (r.ref_number ? `${kind} #${r.ref_number}` : kind)
-    const when = formatWhen(r.finished_at || r.started_at || r.created_at)
+    const when = formatWhen(runActivityAt(r))
     const parts = [r.engine, r.status, when, `#${r.id.slice(0, 6)}`].filter(Boolean)
     return { value: r.id, label: `${r.pinned ? '📌 ' : ''}${label}`, description: parts.join(' · ') }
   })

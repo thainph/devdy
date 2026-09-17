@@ -44,7 +44,8 @@
   },
   "tabs": {
     "project": "Project",
-    "closeTab": "Close tab"
+    "closeTab": "Close tab",
+    "dragToReorder": "Drag to reorder"
   },
   "translate": {
     "heading": "Translation",

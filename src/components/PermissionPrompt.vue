@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ShieldAlert, Check, X, FileEdit, HelpCircle, ChevronLeft, ChevronRight, ClipboardList } from 'lucide-vue-next'
+import { ShieldAlert, Check, X, FileEdit, HelpCircle, ChevronLeft, ChevronRight, ClipboardList, AlertTriangle } from 'lucide-vue-next'
 import { Button } from '@/components/ui'
 
 const { t } = useI18n()
@@ -83,7 +83,20 @@ const isQuestions = computed(() => props.request.tool_name === 'AskUserQuestion'
 // and asking to leave plan mode. Render it as a plan review (Approve / Keep
 // planning) instead of the generic "allow this tool call?" permission prompt.
 const isPlan = computed(() => props.request.tool_name === 'ExitPlanMode')
+// "Always" needs a stable key to store the choice under. Bare `MCP` is the
+// fallback an engine emits when it can't name the server/tool, so remembering
+// it would silently allow every MCP request from every server — keep it
+// once-only. Keyed prompts (`mcp__<server>[__<tool>]`) are rememberable.
 const canRemember = computed(() => !isPlan.value && props.request.tool_name !== 'MCP')
+// Codex's elicitation carries no tool name, so its MCP prompts key on the SERVER
+// (`mcp__google`) — and the built-in `google` server is Drive + Gmail + Calendar
+// in one. "Always" there is therefore much broader than the single action shown:
+// it also opts into codex's own `acceptForSession` cache for the rest of the run.
+// Spell that out so approving a calendar read never quietly unlocks mail send or
+// permanent file deletion.
+const broadRememberWarning = computed(
+  () => canRemember.value && props.request.tool_name === 'mcp__google',
+)
 const planText = computed(() => {
   const p = input.value['plan']
   return typeof p === 'string' ? p : ''
@@ -528,6 +541,13 @@ function onKeydown(e: KeyboardEvent) {
       </div>
 
       <div class="@container/footer px-5 py-3 border-t border-border shrink-0">
+        <div
+          v-if="broadRememberWarning"
+          class="flex items-start gap-2 mb-2 text-[11px] leading-snug text-amber-600 dark:text-amber-400/90"
+        >
+          <AlertTriangle class="h-3 w-3 mt-0.5 shrink-0" :stroke-width="1.75" />
+          <span>{{ t('permission.broadScopeWarning') }}</span>
+        </div>
         <div class="flex flex-col gap-2 @[26rem]/footer:flex-row @[26rem]/footer:items-center">
           <span class="hidden min-w-0 truncate text-[10px] text-foreground/40 @[26rem]/footer:mr-auto @[26rem]/footer:block">
             <template v-if="isQuestions">{{ t('permission.hintQuestions') }}</template>

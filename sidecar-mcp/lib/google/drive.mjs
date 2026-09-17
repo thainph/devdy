@@ -1,9 +1,7 @@
-#!/usr/bin/env node
-// Devdy built-in MCP server: Google Drive (stdio, JSON-RPC 2.0).
+// Google Drive tool group for the built-in `google` MCP server.
 //
-// Injected under the key `gdrive` (tools namespaced `mcp__gdrive__*`) when a
-// Google account is connected in Devdy Settings. OAuth creds arrive via env and
-// are refreshed on demand (see lib/google.mjs). Zero runtime dependencies.
+// Exposed as `drive_*` (tools namespaced `mcp__google__drive_*`). OAuth creds
+// arrive via env and are refreshed on demand (see ../google.mjs).
 //
 // Full CRUD + sharing: list/search/read/download/mkdir/upload/create/update/
 // rename/move/delete (permanent — QĐ)/share/permissions. Destructive tools still
@@ -11,7 +9,7 @@
 
 import { readFile, writeFile } from 'node:fs/promises';
 import { basename } from 'node:path';
-import { gapi, runServer } from './lib/google.mjs';
+import { gapi } from '../google.mjs';
 
 const BASE = 'https://www.googleapis.com/drive/v3';
 const UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files';
@@ -41,7 +39,7 @@ function multipartBody(metadata, mediaBuffer, mediaMime, boundary) {
   return Buffer.concat([head, mediaBuffer, tail]);
 }
 
-const tools = {
+export const tools = {
   list: {
     description:
       'List Google Drive files. Optionally scope to a folder via folder_id. Returns name, id, mimeType. Folders have mimeType application/vnd.google-apps.folder.',
@@ -130,7 +128,7 @@ const tools = {
       // Best-effort: return text if it looks like UTF-8, else advise download.
       const text = buf.toString('utf8');
       if (!text.includes('�')) return text;
-      return `[binary ${meta.mimeType}, ${buf.length} bytes] Use gdrive download to save it locally.`;
+      return `[binary ${meta.mimeType}, ${buf.length} bytes] Use drive_download to save it locally.`;
     },
   },
 
@@ -361,7 +359,7 @@ const tools = {
   },
 
   unshare: {
-    description: 'Remove a permission (revoke access) by permission id. Use get_permissions to find ids.',
+    description: 'Remove a permission (revoke access) by permission id. Use drive_get_permissions to find ids.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -379,5 +377,3 @@ const tools = {
     },
   },
 };
-
-runServer({ serverInfo: { name: 'gdrive', version: '0.1.0' }, tools, multiAccount: true });

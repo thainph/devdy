@@ -2,21 +2,19 @@
 // VSCode-style file explorer panel for a project. Loads the root level on mount
 // (and whenever the project changes), then lazy-loads deeper levels as folders
 // are expanded. Clicking a file bubbles `open-file` so the host (RunView) can
-// show it in the shared <FileViewer>. Right-clicking an entry (or empty space)
-// opens a context menu with the full set of file operations: new file/folder,
-// rename, delete (to trash), cut/copy/paste, duplicate, path copy, reveal in
-// Finder, open in VSCode/Chrome, and mention in the composer.
+// open it in its own window. Right-clicking an entry (or empty space) opens the
+// shared <ContextMenu> filled with <FileActionsMenu> — the same rows the file
+// window's ⋯ menu shows. Only "new file / new folder" is added here, because
+// only the tree knows which folder to create in.
 import { computed, ref, watch, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
-import {
-  RotateCw, ListCollapse, FilePlus, FolderPlus, Copy, Link, Scissors,
-  ClipboardPaste, CopyPlus, Pencil, Trash2, FolderOpen, Code, Chrome, AtSign, Columns2,
-} from 'lucide-vue-next'
+import { RotateCw, ListCollapse } from 'lucide-vue-next'
 import FileTreeNode from '@/components/FileTreeNode.vue'
+import FileActionsMenu from '@/components/FileActionsMenu.vue'
+import { ContextMenu } from '@/components/ui'
+import type { FileTarget } from '@/lib/fileActions'
 import { useFileTreeStore } from '@/stores/fileTree'
-import { useImageCompareStore, isImagePath } from '@/stores/imageCompare'
 import { useToast } from '@/composables/useToast'
-import { useConfirm } from '@/composables/useConfirm'
 import { usePrompt } from '@/composables/usePrompt'
 import { invoke } from '@/lib/tauri'
 import type { DirEntry } from '@/stores/runs'
@@ -33,19 +31,18 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'open-file': [path: string]
-  'mention-file': [path: string]
 }>()
 
 const { t } = useI18n()
 const store = useFileTreeStore()
-const imageCompare = useImageCompareStore()
 const { toast } = useToast()
-const { confirm } = useConfirm()
 const { prompt } = usePrompt()
 const tree = computed(() => store.treeFor(props.projectPath))
 const rootEntries = computed(() => tree.value.children[''] ?? [])
 const rootLoading = computed(() => tree.value.loading.has(''))
 const rootError = computed(() => tree.value.error[''])
+// Reload spins until every expanded level has been re-fetched, not just the root.
+const reloading = computed(() => rootLoading.value || store.refreshing[props.projectPath] === true)
 
 watch(
   () => props.projectPath,
@@ -83,56 +80,56 @@ async function syncWatch() {
 }
 watch([() => props.active, () => props.projectPath, watchedDirs], syncWatch, { immediate: true })
 
-// Internal cut/copy clipboard (in-app only; survives across menu opens).
-const clipboard = ref<{ path: string; name: string; mode: 'copy' | 'cut' } | null>(null)
-
 function parentDir(relPath: string): string {
   const i = relPath.lastIndexOf('/')
   return i === -1 ? '' : relPath.slice(0, i)
 }
 
-// Absolute path for a relative entry (backend open commands + clipboard use the
-// real on-disk path, matching the FileViewer's "copy path" behavior).
-function absOf(relPath: string): string {
-  const root = props.projectPath.replace(/\/+$/, '')
-  return relPath ? `${root}/${relPath}` : root
+// ── Hover tooltip ───────────────────────────────────────────────────────────
+// One floating tooltip for the whole panel (rows only report hover + geometry),
+// showing the full name and relative path that the narrow column truncates.
+const TIP_DELAY_MS = 350
+const TIP_MAX_W = 360
+const tip = ref<{ name: string; path: string; ignored: boolean; x: number; y: number; above: boolean } | null>(null)
+let tipTimer: ReturnType<typeof setTimeout> | null = null
+
+function hideTip() {
+  if (tipTimer) { clearTimeout(tipTimer); tipTimer = null }
+  tip.value = null
+}
+
+function onHover(payload: { entry: DirEntry; rect: DOMRect } | null) {
+  if (tipTimer) { clearTimeout(tipTimer); tipTimer = null }
+  if (!payload) { tip.value = null; return }
+  const { entry, rect } = payload
+  tipTimer = setTimeout(() => {
+    tipTimer = null
+    // Anchor under the row, flipping above it near the bottom edge, and keep the
+    // box inside the viewport horizontally.
+    const above = rect.bottom + 76 > window.innerHeight
+    tip.value = {
+      name: entry.name,
+      path: entry.path,
+      ignored: entry.ignored,
+      x: Math.max(8, Math.min(rect.left + 12, window.innerWidth - TIP_MAX_W - 8)),
+      y: above ? rect.top - 6 : rect.bottom + 6,
+      above,
+    }
+  }, TIP_DELAY_MS)
 }
 
 // ── Context menu ────────────────────────────────────────────────────────────
 const menu = ref<{ entry: DirEntry | null; x: number; y: number } | null>(null)
-const menuEl = ref<HTMLElement | null>(null)
-const menuEntry = computed(() => menu.value?.entry ?? null)
-// Image-only compare actions in the context menu.
-const menuIsImage = computed(() => {
+// What the shared menu acts on; null on an empty-space click (project root).
+const menuTarget = computed<FileTarget | null>(() => {
   const e = menu.value?.entry
-  return !!e && !e.is_dir && isImagePath(e.path)
+  return e ? { path: e.path, name: e.name, isDir: e.is_dir } : null
 })
-// A pending first image exists and the right-clicked one is a different image —
-// offer to complete the pair immediately.
-const canCompleteCompare = computed(
-  () =>
-    menuIsImage.value &&
-    imageCompare.hasPending &&
-    imageCompare.pendingFirst !== menuEntry.value?.path,
-)
-
-function compareWith() {
-  const e = menu.value?.entry
-  closeMenu()
-  if (e) imageCompare.selectFirst(props.projectPath, e.path)
-}
-function compareComplete() {
-  const e = menu.value?.entry
-  closeMenu()
-  if (e) imageCompare.selectSecond(e.path)
-}
 
 function openMenu(payload: { entry: DirEntry | null; x: number; y: number }) {
-  // Clamp so the menu never overflows the right / bottom edges.
-  const w = 240, h = 440
-  const x = Math.min(payload.x, window.innerWidth - w)
-  const y = Math.max(8, Math.min(payload.y, window.innerHeight - h))
-  menu.value = { entry: payload.entry, x, y }
+  hideTip()
+  // ContextMenu clamps itself to the viewport from its measured size.
+  menu.value = { ...payload }
 }
 function openRootMenu(e: MouseEvent) {
   openMenu({ entry: null, x: e.clientX, y: e.clientY })
@@ -171,115 +168,9 @@ function newFile() { const dir = containerDir(); closeMenu(); promptCreate('file
 function newFolder() { const dir = containerDir(); closeMenu(); promptCreate('folder', dir) }
 
 // ── Rename (inline) / Delete (to trash) ─────────────────────────────────────
-function renameEntry() {
-  const e = menu.value?.entry
+function renameEntry(target: FileTarget) {
   closeMenu()
-  if (e) store.beginRename(props.projectPath, e.path)
-}
-
-async function deleteEntry() {
-  const e = menu.value?.entry
-  closeMenu()
-  if (!e) return
-  const ok = await confirm({
-    title: e.is_dir ? t('files.tree.deleteFolder') : t('files.tree.deleteFile'),
-    message: t('files.tree.moveToTrash', { name: e.name }),
-    confirmLabel: t('common.delete'),
-    variant: 'destructive',
-  })
-  if (!ok) return
-  try {
-    await store.remove(props.projectPath, e.path)
-    toast.success(t('files.tree.toastMovedToTrash'))
-  } catch (err) { toast.error(String(err)) }
-}
-
-// ── Cut / Copy / Paste / Duplicate ──────────────────────────────────────────
-function copyToClipboard(mode: 'copy' | 'cut') {
-  const e = menu.value?.entry
-  closeMenu()
-  if (e) clipboard.value = { path: e.path, name: e.name, mode }
-}
-
-async function paste() {
-  const dir = containerDir()
-  const clip = clipboard.value
-  closeMenu()
-  if (!clip) return
-  try {
-    if (clip.mode === 'copy') {
-      await store.copyInto(props.projectPath, clip.path, dir)
-    } else {
-      await store.moveInto(props.projectPath, clip.path, dir)
-      clipboard.value = null
-    }
-    toast.success(t('files.tree.toastPasted'))
-  } catch (e) { toast.error(String(e)) }
-}
-
-async function duplicate() {
-  const e = menu.value?.entry
-  closeMenu()
-  if (!e) return
-  try {
-    await store.duplicate(props.projectPath, e.path)
-    toast.success(t('files.tree.toastDuplicated'))
-  } catch (err) { toast.error(String(err)) }
-}
-
-// ── Path / open actions ─────────────────────────────────────────────────────
-async function copyPath() {
-  const e = menu.value?.entry
-  closeMenu()
-  if (!e) return
-  try {
-    await navigator.clipboard.writeText(absOf(e.path))
-    toast.success(t('files.tree.toastPathCopied'))
-  } catch { toast.error(t('files.tree.toastFailedCopyPath')) }
-}
-
-async function copyRelPath() {
-  const e = menu.value?.entry
-  closeMenu()
-  if (!e) return
-  try {
-    await navigator.clipboard.writeText(e.path)
-    toast.success(t('files.tree.toastRelativePathCopied'))
-  } catch { toast.error(t('files.tree.toastFailedCopyPath')) }
-}
-
-async function revealInFinder() {
-  const e = menu.value?.entry
-  closeMenu()
-  if (!e) return
-  // Files: open the containing folder; folders: open the folder itself.
-  const target = e.is_dir ? absOf(e.path) : absOf(parentDir(e.path))
-  try { await invoke('open_in_folder', { path: target }) }
-  catch (err) { toast.error(String(err)) }
-}
-
-async function openInVscode() {
-  const e = menu.value?.entry
-  closeMenu()
-  if (!e) return
-  try {
-    if (e.is_dir) await invoke('open_in_vscode', { path: absOf(e.path), file: null })
-    else await invoke('open_in_vscode', { path: props.projectPath, file: absOf(e.path) })
-  } catch (err) { toast.error(String(err)) }
-}
-
-function mentionFile() {
-  const e = menu.value?.entry
-  closeMenu()
-  if (e) emit('mention-file', `${e.path}${e.is_dir ? '/' : ''}`)
-}
-
-async function openInChrome() {
-  const e = menu.value?.entry
-  closeMenu()
-  if (!e) return
-  try { await invoke('open_in_chrome', { path: absOf(e.path) }) }
-  catch (err) { toast.error(String(err)) }
+  store.beginRename(props.projectPath, target.path)
 }
 
 // ── Drop onto empty panel area → move to project root ───────────────────────
@@ -290,27 +181,8 @@ async function onRootDrop(e: DragEvent) {
   catch (err) { toast.error(String(err)) }
 }
 
-// Dismiss on outside interaction / escape. Ignore pointerdowns inside the menu
-// itself, otherwise this capture-phase handler would close it before the item's
-// click fires and the action would never run.
-function onGlobalPointer(e: PointerEvent) {
-  if (!menu.value) return
-  if (menuEl.value && e.target instanceof Node && menuEl.value.contains(e.target)) return
-  closeMenu()
-}
-function onKeydown(e: KeyboardEvent) { if (e.key === 'Escape') closeMenu() }
-watch(menu, (m) => {
-  if (m) {
-    window.addEventListener('pointerdown', onGlobalPointer, true)
-    window.addEventListener('keydown', onKeydown, true)
-  } else {
-    window.removeEventListener('pointerdown', onGlobalPointer, true)
-    window.removeEventListener('keydown', onKeydown, true)
-  }
-})
 onBeforeUnmount(() => {
-  window.removeEventListener('pointerdown', onGlobalPointer, true)
-  window.removeEventListener('keydown', onKeydown, true)
+  hideTip()
   if (watchedProject) invoke('stop_file_tree_watch', { projectPath: watchedProject }).catch(() => {})
 })
 </script>
@@ -345,10 +217,10 @@ onBeforeUnmount(() => {
         <button
           class="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 cursor-pointer"
           :title="t('files.tree.reload')"
-          :class="rootLoading && 'opacity-50 pointer-events-none'"
+          :class="reloading && 'opacity-50 pointer-events-none'"
           @click="store.refresh(projectPath)"
         >
-          <RotateCw class="h-3.5 w-3.5" :class="rootLoading && 'animate-spin'" :stroke-width="2" />
+          <RotateCw class="h-3.5 w-3.5" :class="reloading && 'animate-spin'" :stroke-width="2" />
         </button>
       </div>
     </div>
@@ -359,6 +231,8 @@ onBeforeUnmount(() => {
       @contextmenu.self.prevent="openRootMenu"
       @dragover.prevent
       @drop="onRootDrop"
+      @scroll="hideTip"
+      @mouseleave="hideTip"
     >
       <div v-if="rootError" class="px-3 py-2 text-xs text-destructive">{{ rootError }}</div>
       <div v-else-if="rootLoading && rootEntries.length === 0" class="px-3 py-2 text-xs text-muted-foreground">{{ t('common.loading') }}</div>
@@ -372,95 +246,40 @@ onBeforeUnmount(() => {
         :active-path="activePath"
         @open-file="(p) => emit('open-file', p)"
         @context-menu="openMenu"
+        @hover="onHover"
       />
     </div>
 
-    <!-- Right-click context menu (teleported so it floats above everything).
-         Kept INSIDE the single root element so `v-show` fallthrough works when
-         the host toggles this panel; a second root node would disable it. -->
+    <!-- Hover tooltip: full name + relative path for truncated rows. -->
     <Teleport to="body">
       <div
-        v-if="menu"
-        ref="menuEl"
-        class="fixed z-[100] min-w-[220px] py-1 rounded-md border border-border bg-popover shadow-lg text-xs"
-        :style="{ left: `${menu.x}px`, top: `${menu.y}px` }"
-        @contextmenu.prevent
+        v-if="tip"
+        class="fixed z-[90] pointer-events-none rounded-md border border-border bg-popover px-2 py-1.5 shadow-lg"
+        :style="{
+          left: `${tip.x}px`,
+          top: `${tip.y}px`,
+          maxWidth: `${TIP_MAX_W}px`,
+          transform: tip.above ? 'translateY(-100%)' : undefined,
+        }"
       >
-        <!-- Create -->
-        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="newFile">
-          <FilePlus class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.newFile') }}
-        </button>
-        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="newFolder">
-          <FolderPlus class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.newFolder') }}
-        </button>
-
-        <!-- Clipboard -->
-        <div class="my-1 border-t border-border/60" />
-        <template v-if="menuEntry">
-          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="copyToClipboard('copy')">
-            <Copy class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.copy') }}
-          </button>
-          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="copyToClipboard('cut')">
-            <Scissors class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.cut') }}
-          </button>
-          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="duplicate">
-            <CopyPlus class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.duplicate') }}
-          </button>
-        </template>
-        <button v-if="clipboard" class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="paste">
-          <ClipboardPaste class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.paste') }}
-        </button>
-
-        <!-- Edit -->
-        <template v-if="menuEntry">
-          <div class="my-1 border-t border-border/60" />
-          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="renameEntry">
-            <Pencil class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.rename') }}
-          </button>
-          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-destructive hover:bg-destructive/10 cursor-pointer" @click="deleteEntry">
-            <Trash2 class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('common.delete') }}
-          </button>
-        </template>
-
-        <!-- Path / open -->
-        <template v-if="menuEntry">
-          <div class="my-1 border-t border-border/60" />
-          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="copyPath">
-            <Copy class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.copyPath') }}
-          </button>
-          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="copyRelPath">
-            <Link class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.copyRelativePath') }}
-          </button>
-          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="revealInFinder">
-            <FolderOpen class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.revealInFinder') }}
-          </button>
-          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="openInVscode">
-            <Code class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.openInVscode') }}
-          </button>
-          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="openInChrome">
-            <Chrome class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.openInChrome') }}
-          </button>
-          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="mentionFile">
-            <AtSign class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.mentionInChat') }}
-          </button>
-        </template>
-
-        <!-- Compare images (image entries only) -->
-        <template v-if="menuIsImage">
-          <div class="my-1 border-t border-border/60" />
-          <button
-            v-if="canCompleteCompare"
-            class="w-full flex items-center gap-2 px-3 py-1.5 text-primary hover:bg-accent cursor-pointer"
-            @click="compareComplete"
-          >
-            <Columns2 class="h-3.5 w-3.5" :stroke-width="2" />
-            {{ t('files.tree.compareWithPending', { name: imageCompare.pendingName }) }}
-          </button>
-          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-foreground hover:bg-accent cursor-pointer" @click="compareWith">
-            <Columns2 class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('files.tree.compareWith') }}
-          </button>
-        </template>
+        <div class="text-xs text-foreground break-all">{{ tip.name }}</div>
+        <div v-if="tip.path !== tip.name" class="text-[11px] text-muted-foreground break-all">{{ tip.path }}</div>
+        <div v-if="tip.ignored" class="text-[11px] text-muted-foreground/80 italic">{{ t('files.tree.gitIgnored') }}</div>
       </div>
     </Teleport>
+
+    <!-- Right-click menu. Same component AND same rows as the file window's ⋯
+         menu — only "new file / new folder" is extra here, because only the tree
+         knows which folder to create in. -->
+    <ContextMenu :open="!!menu" :x="menu?.x ?? 0" :y="menu?.y ?? 0" @close="closeMenu">
+      <FileActionsMenu
+        :project-path="projectPath"
+        :target="menuTarget"
+        show-create
+        @create-file="newFile"
+        @create-folder="newFolder"
+        @rename="renameEntry"
+      />
+    </ContextMenu>
   </div>
 </template>

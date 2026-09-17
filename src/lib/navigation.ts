@@ -10,8 +10,6 @@ import {
   BarChart3,
   CalendarClock,
   CalendarDays,
-  ListTodo,
-  StickyNote,
   Settings,
   Info,
 } from 'lucide-vue-next'
@@ -39,8 +37,6 @@ export const NAV_ROUTES: NavRoute[] = [
   { path: '/stats', labelKey: 'nav.stats', icon: BarChart3 },
   { path: '/work-digest', labelKey: 'nav.digest', icon: CalendarClock },
   { path: '/calendar', labelKey: 'nav.calendar', icon: CalendarDays },
-  { path: '/todos', labelKey: 'nav.todos', icon: ListTodo },
-  { path: '/notes', labelKey: 'nav.notes', icon: StickyNote },
   { path: '/settings', labelKey: 'nav.settings', icon: Settings },
   { path: '/about', labelKey: 'nav.about', icon: Info },
 ]

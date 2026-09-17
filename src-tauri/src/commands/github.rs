@@ -25,6 +25,12 @@ pub struct RunRecord {
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub created_at: String,
+    /// Last time this session was worked on — start/resume, a follow-up turn, a
+    /// finished turn, or a transcript touched outside Devdy. Drives the History
+    /// order. Null when nothing has happened since the row was created; readers
+    /// fall back to finished_at / started_at / created_at.
+    #[serde(default)]
+    pub last_activity_at: Option<String>,
     /// Human label for the run. Null for issue/PR runs (UI derives "Issue #N");
     /// set for standalone `session` runs from the first user message.
     pub title: Option<String>,
@@ -315,6 +321,7 @@ pub async fn fetch_issue(
         started_at: None,
         finished_at: None,
         created_at: now,
+        last_activity_at: None,
         title: None,
         pinned: false,
     })
@@ -655,6 +662,7 @@ pub async fn fetch_pr(
         started_at: None,
         finished_at: None,
         created_at: now,
+        last_activity_at: None,
         title: None,
         pinned: false,
     })
@@ -670,7 +678,7 @@ pub async fn refetch_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord,
     use sqlx::Row;
 
     let row = sqlx::query(
-        "SELECT id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, session_id, claude_account_id, started_at, finished_at, created_at, title, pinned FROM runs WHERE id = ?",
+        "SELECT id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, session_id, claude_account_id, started_at, finished_at, created_at, last_activity_at, title, pinned FROM runs WHERE id = ?",
     )
     .bind(&run_id)
     .fetch_one(db.inner())
@@ -795,6 +803,7 @@ pub async fn refetch_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord,
         started_at: row.get("started_at"),
         finished_at: row.get("finished_at"),
         created_at: row.get("created_at"),
+        last_activity_at: row.get("last_activity_at"),
         title: row.get("title"),
         pinned: row.get::<i64, _>("pinned") != 0,
     })
@@ -815,9 +824,16 @@ pub async fn list_runs(
     project_id: String,
 ) -> Result<Vec<RunRecord>, String> {
     use sqlx::Row;
+    // Ordered by last activity, not creation: a session resumed today belongs at
+    // the top even if its row is months old. The COALESCE is also what the row
+    // reports as `last_activity_at`, so the list and the timestamp the UI prints
+    // can never disagree.
     let rows = sqlx::query(
-        "SELECT id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, session_id, claude_account_id, started_at, finished_at, created_at, title, pinned
-         FROM runs WHERE project_id = ? ORDER BY pinned DESC, created_at DESC LIMIT 50"
+        "SELECT id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, session_id, claude_account_id, started_at, finished_at, created_at, title, pinned,
+                COALESCE(last_activity_at, finished_at, started_at, created_at) AS last_activity_at
+         FROM runs WHERE project_id = ?
+         ORDER BY pinned DESC, COALESCE(last_activity_at, finished_at, started_at, created_at) DESC
+         LIMIT 50"
     )
     .bind(&project_id)
     .fetch_all(db.inner())
@@ -839,6 +855,7 @@ pub async fn list_runs(
         started_at: row.get("started_at"),
         finished_at: row.get("finished_at"),
         created_at: row.get("created_at"),
+        last_activity_at: row.get("last_activity_at"),
         title: row.get("title"),
         pinned: row.get::<i64, _>("pinned") != 0,
     }).collect())

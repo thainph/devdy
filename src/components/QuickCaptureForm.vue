@@ -1,12 +1,12 @@
 <script setup lang="ts">
-// The Todo/Note capture form itself — deliberately UI-shell-free so the exact
-// same fields, shortcuts and save behaviour back BOTH capture surfaces:
-//   • QuickCapturePanel — the in-app slide-over (no route change, no lost context)
-//   • QuickCreateWindow — the standalone always-on-top OS window (second monitor)
+// The "new Todo / Note" fields — deliberately UI-shell-free, hosted by
+// ItemWindow's create mode (the standalone always-on-top window that is the only
+// place either object is written).
 //
-// The draft it edits lives in useQuickCapture, not here, so closing the surface
-// doesn't discard a half-written capture. Saving writes straight to the shared
-// SQLite DB via the stores and emits `saved` so the host can react.
+// The draft it edits lives in useQuickCapture, not here, so re-rendering or
+// switching tab doesn't discard a half-written capture. Saving writes straight
+// to the shared SQLite DB via the stores and emits `saved` so the host can
+// announce the change to the main window.
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Input, Textarea, AppSelect } from '@/components/ui'
@@ -48,7 +48,7 @@ const todoRef = ref<InstanceType<typeof Textarea> | null>(null)
 const noteBodyRef = ref<InstanceType<typeof Textarea> | null>(null)
 
 const projectOptions = computed(() => [
-  { value: NO_PROJECT, label: t('todos.quick.noProject') },
+  { value: NO_PROJECT, label: t('item.noProject') },
   ...projects.projects.map((p) => ({ value: p.id, label: p.name })),
 ])
 
@@ -89,10 +89,10 @@ async function submit() {
   try {
     if (savedTab === 'todo') {
       await todos.add(todoText.value, project, effectiveRunId.value)
-      toast.success(t('todos.quick.todoAdded'))
+      toast.success(t('item.todoAdded'))
     } else {
       await notes.add(noteTitle.value, noteContent.value, project, effectiveRunId.value)
-      toast.success(t('todos.quick.noteSaved'))
+      toast.success(t('item.noteSaved'))
     }
     clearDraft(savedTab)
     emit('saved', savedTab)
@@ -123,7 +123,7 @@ onMounted(() => {
   focusFirstField()
 })
 
-defineExpose({ submit, canSubmit, saving })
+defineExpose({ submit, canSubmit, saving, focus: focusFirstField })
 </script>
 
 <template>
@@ -134,33 +134,33 @@ defineExpose({ submit, canSubmit, saving })
         ref="todoRef"
         v-model="todoText"
         rows="6"
-        :placeholder="t('todos.quick.todoPlaceholder')"
+        :placeholder="t('item.todoPlaceholder')"
       />
     </template>
 
     <!-- Note -->
     <template v-else>
-      <Input ref="titleRef" v-model="noteTitle" :placeholder="t('todos.quick.noteTitlePlaceholder')" />
+      <Input ref="titleRef" v-model="noteTitle" :placeholder="t('item.noteTitlePlaceholder')" />
       <Textarea
         ref="noteBodyRef"
         v-model="noteContent"
         rows="8"
-        :placeholder="t('todos.quick.notePlaceholder')"
+        :placeholder="t('item.notePlaceholder')"
       />
     </template>
 
     <!-- Project link (pre-selected from the capture context) -->
     <div class="space-y-1">
       <label class="block text-[11px] font-medium text-muted-foreground">
-        {{ t('todos.quick.projectLabel') }}
+        {{ t('item.projectLabel') }}
       </label>
       <AppSelect
         v-model="projectId"
         :options="projectOptions"
-        :placeholder="t('todos.quick.noProject')"
+        :placeholder="t('item.noProject')"
       />
       <p v-if="effectiveRunId" class="text-[11px] text-muted-foreground/80">
-        {{ t('todos.quick.runLinked') }}
+        {{ t('item.runLinked') }}
       </p>
     </div>
   </div>

@@ -1,8 +1,16 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window and pop-out (file viewer + permission + quick-create + gantt + mascot) windows",
-  "windows": ["main", "fileviewer-*", "permission-prompt", "quick-create", "gantt", "mascot"],
+  "description": "Capability for the main window and pop-out (file viewer + permission + todo/note item + gantt + mascot) windows",
+  "windows": [
+    "main",
+    "fileviewer-*",
+    "permission-prompt",
+    "item-create",
+    "item-edit-*",
+    "gantt",
+    "mascot"
+  ],
   "permissions": [
     "core:default",
     "core:webview:allow-create-webview-window",

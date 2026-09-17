@@ -44,7 +44,8 @@
   },
   "tabs": {
     "project": "Dự án",
-    "closeTab": "Đóng tab"
+    "closeTab": "Đóng tab",
+    "dragToReorder": "Kéo để sắp xếp lại"
   },
   "translate": {
     "heading": "Bản dịch",

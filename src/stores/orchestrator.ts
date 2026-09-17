@@ -717,9 +717,23 @@ export const useOrchestratorStore = defineStore('orchestrator', () => {
     draftNonce.value++
   }
 
-  function clearHistory() {
-    history.splice(0, history.length)
+  /**
+   * Drop saved duos in one shot, persisting once instead of per entry.
+   *
+   * `projectId` scopes the wipe to that project — the history array is shared by
+   * every project, so a project-scoped rail MUST pass it or "clear all" would
+   * silently take other projects' duos down with it. Omit it only for a
+   * deliberate global wipe.
+   *
+   * Returns how many entries were removed.
+   */
+  function clearHistory(projectId?: string): number {
+    const kept = projectId ? history.filter((h) => h.projectId !== projectId) : []
+    const removed = history.length - kept.length
+    if (!removed) return 0
+    history.splice(0, history.length, ...kept)
     saveHistory()
+    return removed
   }
 
   return {

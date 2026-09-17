@@ -31,10 +31,10 @@ const addingName = ref<string | null>(null)
 // list); it's toggled from Settings → MCP Server.
 const builtinEnabled = computed(() => appSettings.settings?.mcp_builtin_devdy_enabled !== 'false')
 
-// Google-backed built-ins (gdrive/gmail) are injected at run launch only when an
-// OAuth client is configured AND at least one account is connected (mirrors the
-// backend `with_builtin_google` gate). Fetch that status so the cards below can
-// reflect it accurately instead of pretending only `devdy` exists.
+// The Google-backed built-in is injected at run launch only when an OAuth client
+// is configured AND at least one account is connected (mirrors the backend
+// `with_builtin_google` gate). Fetch that status so the cards below can reflect
+// it accurately instead of pretending only `devdy` exists.
 const googleAccountCount = ref(0)
 const googleHasClient = ref(false)
 async function loadGoogleStatus() {
@@ -48,8 +48,8 @@ async function loadGoogleStatus() {
   }
 }
 
-// The 3 native Devdy MCP servers, each with its real runtime status so the
-// screen shows the truth (active / disabled / needs setup) rather than a single
+// The native Devdy MCP servers, each with its real runtime status so the screen
+// shows the truth (active / disabled / needs setup) rather than a single
 // hardcoded devdy card.
 type NativeStatus = { tone: 'success' | 'neutral' | 'warning'; label: string }
 interface NativeServer {
@@ -77,18 +77,10 @@ const nativeServers = computed<NativeServer[]>(() => {
       section: 'mcp',
     },
     {
-      name: 'gdrive',
-      tools: 'mcp__gdrive__*',
+      name: 'google',
+      tools: 'mcp__google__*',
       description:
-        'Google Drive: list, search, read, upload, update, share and delete files. Injected when a Google account is connected.',
-      status: google,
-      section: 'google',
-    },
-    {
-      name: 'gmail',
-      tools: 'mcp__gmail__*',
-      description:
-        'Gmail: list, search, read, download attachments, send, reply, draft and manage labels. Injected when a Google account is connected.',
+        'Drive (drive_*): list, search, read, upload, share, delete files. Gmail (mail_*): search, read, attachments, send, reply, labels. Calendar (cal_*): view events, check free slots, create and update meetings. Injected when a Google account is connected.',
       status: google,
       section: 'google',
     },

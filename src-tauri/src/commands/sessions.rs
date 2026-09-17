@@ -431,9 +431,14 @@ pub(crate) async fn upsert_session_run_core(
         };
         sync_run_usage(db, &id, project_id, project_name, engine, &parsed, &created_at).await;
         // Remember where the transcript lives and how far we've mirrored it.
-        let _ = sqlx::query("UPDATE runs SET transcript_path = ?, transcript_synced_size = ? WHERE id = ?")
+        // The transcript grew, so the session WAS worked on — outside Devdy, in
+        // `claude`/`codex` at a terminal. Stamp last_activity_at with the
+        // transcript mtime; without it those turns are invisible to the History
+        // order and the session stays buried at its original created_at.
+        let _ = sqlx::query("UPDATE runs SET transcript_path = ?, transcript_synced_size = ?, last_activity_at = ? WHERE id = ?")
             .bind(file.to_string_lossy().as_ref())
             .bind(cur_size)
+            .bind(&created_at)
             .bind(&id)
             .execute(db)
             .await;
@@ -481,8 +486,8 @@ pub(crate) async fn upsert_session_run_core(
     // (rows_affected == 0) and we treat it as a no-op — the winner already
     // imported the session.
     let res = sqlx::query(
-        "INSERT OR IGNORE INTO runs (id, project_id, type, status, engine, session_id, output_path, transcript_path, transcript_synced_size, started_at, finished_at, created_at, title)
-         VALUES (?, ?, 'session', 'done', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT OR IGNORE INTO runs (id, project_id, type, status, engine, session_id, output_path, transcript_path, transcript_synced_size, started_at, finished_at, created_at, last_activity_at, title)
+         VALUES (?, ?, 'session', 'done', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&new_id)
     .bind(project_id)
@@ -493,6 +498,10 @@ pub(crate) async fn upsert_session_run_core(
     .bind(synced_size)
     .bind(&created_at)
     .bind(&finished_at)
+    .bind(&created_at)
+    // last_activity_at = transcript mtime (not `finished_at`, which is merely
+    // when Devdy noticed the session): the import must sort where the work
+    // actually happened.
     .bind(&created_at)
     .bind(&parsed.title)
     .execute(db)

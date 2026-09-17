@@ -396,6 +396,9 @@ async fn handle_respond_permission(ctx: &HandlerCtx, cmd: &CmdPayload) {
         // forwarding answers never relaxes it.
         answers: cmd.answers.clone(),
         response: None,
+        // Remote decisions are once-only by design (BR-016/AC-17): never opt a
+        // remote answer into an engine-side "for this session" approval cache.
+        remember: false,
     };
     match crate::commands::runs::respond_permission_inner(
         &ctx.registry,

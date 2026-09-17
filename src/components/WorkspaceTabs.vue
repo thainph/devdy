@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, onBeforeUnmount } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { X, FolderOpen } from 'lucide-vue-next'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useProjectsStore } from '@/stores/projects'
+import { useDragSort } from '@/composables/useDragSort'
 
 /**
  * Horizontal tab bar for fast switching between PROJECTS. One tab per open
@@ -33,15 +34,26 @@ interface ProjectState {
   running: boolean
   pending: number
 }
-function stateOf(projectId: string): ProjectState {
-  let running = false
-  let pending = 0
+
+/**
+ * Live status per open project, built in one pass over the sessions. A computed
+ * rather than a per-tab helper so a drag — which re-renders the strip on every
+ * pointer frame — doesn't re-scan every session four times per tab per frame.
+ */
+const states = computed(() => {
+  const map: Record<string, ProjectState> = {}
+  for (const tab of tabsStore.tabs) map[tab.projectId] = { running: false, pending: 0 }
   live.sessions.forEach((s) => {
-    if (s.projectId !== projectId) return
-    if (s.status === 'running') running = true
-    pending += s.permissionQueue.length
+    const st = map[s.projectId]
+    if (!st) return
+    if (s.status === 'running') st.running = true
+    st.pending += s.permissionQueue.length
   })
-  return { running, pending }
+  return map
+})
+
+function stateOf(projectId: string): ProjectState {
+  return states.value[projectId] ?? { running: false, pending: 0 }
 }
 
 function select(projectId: string) {
@@ -66,6 +78,23 @@ function closeTab(projectId: string, e?: MouseEvent) {
   } else {
     router.push({ name: 'projects' }).catch(() => {})
   }
+}
+
+// --- Drag & drop reorder ---------------------------------------------------
+// The tab strip is a single-row case of the shared sortable; the whole tab is
+// the handle (a tab is too small for a separate grip), so a press only becomes
+// a drag past a few pixels of travel — below that it stays an ordinary click
+// that switches project.
+const stripRef = ref<HTMLElement | null>(null)
+const { dragFrom, start: startDrag, itemStyle: tabStyle, clickWasDrag } = useDragSort({
+  container: stripRef,
+  onDrop: (from, to) => tabsStore.move(from, to),
+})
+
+/** Click after a drag means "drop here", not "switch to this project". */
+function onTabClick(projectId: string) {
+  if (clickWasDrag()) return
+  select(projectId)
 }
 
 // --- keyboard: Cmd/Ctrl+1..9 switch project, Cmd/Ctrl+W close active -------
@@ -97,18 +126,26 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
        background and bottom border — hence none of those here. -->
   <div
     v-if="tabsStore.tabs.length > 0"
+    ref="stripRef"
     class="flex items-center gap-1 min-w-0 flex-1 h-full overflow-x-auto overflow-y-hidden"
   >
     <button
-      v-for="tab in tabsStore.tabs"
+      v-for="(tab, index) in tabsStore.tabs"
       :key="tab.projectId"
       type="button"
-      class="group relative flex h-7 min-w-0 shrink items-center gap-2 pl-3 pr-2 rounded-md text-[13px] max-w-[200px] transition-colors cursor-pointer select-none"
-      :class="tab.projectId === activeProjectId
-        ? 'bg-accent text-foreground'
-        : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'"
-      :title="projectName(tab.projectId)"
-      @click="select(tab.projectId)"
+      :data-drag-index="index"
+      class="group relative flex h-7 min-w-0 shrink items-center gap-2 pl-3 pr-2 rounded-md text-[13px] max-w-[200px] transition-colors select-none touch-none"
+      :class="[
+        dragFrom === index
+          ? 'bg-accent text-foreground shadow-md cursor-grabbing'
+          : tab.projectId === activeProjectId
+            ? 'bg-accent text-foreground cursor-pointer'
+            : 'text-muted-foreground hover:text-foreground hover:bg-accent/50 cursor-pointer',
+      ]"
+      :style="tabStyle(index)"
+      :title="`${projectName(tab.projectId)} — ${t('misc.tabs.dragToReorder')}`"
+      @pointerdown="startDrag(index, $event)"
+      @click="onTabClick(tab.projectId)"
     >
       <!-- status dot: running / awaiting permission -->
       <span class="relative flex h-2 w-2 shrink-0">
@@ -141,6 +178,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
         :class="{ 'opacity-60': tab.projectId === activeProjectId }"
         role="button"
         :aria-label="t('misc.tabs.closeTab')"
+        @pointerdown.stop
         @click="closeTab(tab.projectId, $event)"
       >
         <X class="h-3 w-3" :stroke-width="2" />

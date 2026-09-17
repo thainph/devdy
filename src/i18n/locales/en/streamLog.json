@@ -7,6 +7,7 @@
   "contextCompacted": "Context compacted",
   "thinking": "thinking",
   "openFile": "Open {path}",
+  "moreFiles": "+{count} more",
   "running": "running…",
   "error": "error",
   "command": "command",

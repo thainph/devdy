@@ -109,6 +109,12 @@ function buildSpec(state: MenuState): MenuSpec {
       },
       {
         kind: 'item',
+        id: 'view.itemPanel',
+        label: t('menu.itemPanel'),
+        accelerator: 'CmdOrCtrl+Shift+K',
+      },
+      {
+        kind: 'item',
         id: 'view.toggleFocus',
         label: state.focusMode ? t('menu.exitFocusMode') : t('menu.enterFocusMode'),
         accelerator: 'CmdOrCtrl+Shift+F',

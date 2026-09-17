@@ -54,6 +54,11 @@ pub struct AppliedSkill {
     pub has_claude: bool,
     pub has_codex: bool,
     pub applied_at: String,
+    /// The user switched this skill on for the project directly.
+    pub manual: bool,
+    /// Some group the project has enabled contains this skill. Independent of `manual`: either
+    /// one on its own keeps the skill applied.
+    pub from_group: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -862,7 +867,11 @@ pub async fn get_applied_skills(
     use sqlx::Row;
     let rows = sqlx::query(
         "SELECT ps.skill_id, s.name as skill_name, s.description as skill_description,
-                ps.target, ps.synced_hash_claude, ps.synced_hash_codex, ps.applied_at
+                ps.target, ps.synced_hash_claude, ps.synced_hash_codex, ps.applied_at, ps.manual,
+                (SELECT COUNT(*) FROM skill_group_members m
+                   JOIN project_skill_groups pg
+                     ON pg.group_id = m.group_id AND pg.project_id = ps.project_id
+                  WHERE m.skill_id = ps.skill_id) as group_count
          FROM project_skills ps
          JOIN skills s ON s.id = ps.skill_id
          WHERE ps.project_id = ?
@@ -878,6 +887,8 @@ pub async fn get_applied_skills(
         .map(|row| {
             let claude: Option<String> = row.get("synced_hash_claude");
             let codex: Option<String> = row.get("synced_hash_codex");
+            let manual: i64 = row.get("manual");
+            let group_count: i64 = row.get("group_count");
             AppliedSkill {
                 skill_id: row.get("skill_id"),
                 skill_name: row.get("skill_name"),
@@ -886,6 +897,8 @@ pub async fn get_applied_skills(
                 has_claude: claude.is_some(),
                 has_codex: codex.is_some(),
                 applied_at: row.get("applied_at"),
+                manual: manual != 0,
+                from_group: group_count > 0,
             }
         })
         .collect())
@@ -897,7 +910,7 @@ pub async fn apply_skill(
     project_id: String,
     skill_id: String,
 ) -> Result<(), String> {
-    apply_skill_to_project(db.inner(), &project_id, &skill_id).await
+    apply_skill_to_project(db.inner(), &project_id, &skill_id, true).await
 }
 
 #[tauri::command]
@@ -916,7 +929,7 @@ pub async fn apply_skill_to_all_projects(
     for row in &rows {
         let project_id: String = row.get("id");
         let project_name: String = row.get("name");
-        match apply_skill_to_project(db.inner(), &project_id, &skill_id).await {
+        match apply_skill_to_project(db.inner(), &project_id, &skill_id, true).await {
             Ok(()) => applied += 1,
             Err(error) => failures.push(ApplyFailure {
                 project_id,
@@ -928,8 +941,17 @@ pub async fn apply_skill_to_all_projects(
     Ok(ApplyAllOutcome { applied, failures })
 }
 
-/// Core apply logic shared by `apply_skill` and `apply_skill_to_all_projects`.
-async fn apply_skill_to_project(db: &Db, project_id: &str, skill_id: &str) -> Result<(), String> {
+/// Core apply logic shared by `apply_skill`, `apply_skill_to_all_projects` and group enablement.
+///
+/// `manual` marks who asked for it: `true` when the user flipped the skill on directly, `false`
+/// when a skill group brought it in. An existing manual row never gets downgraded, so disabling a
+/// group leaves hand-picked skills alone.
+pub async fn apply_skill_to_project(
+    db: &Db,
+    project_id: &str,
+    skill_id: &str,
+    manual: bool,
+) -> Result<(), String> {
     use sqlx::Row;
 
     let skill_row =
@@ -962,9 +984,15 @@ async fn apply_skill_to_project(db: &Db, project_id: &str, skill_id: &str) -> Re
     let now = chrono::Utc::now().to_rfc3339();
 
     sqlx::query(
-        "INSERT OR REPLACE INTO project_skills
-         (project_id, skill_id, target, synced_hash_claude, synced_hash_codex, applied_at)
-         VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO project_skills
+         (project_id, skill_id, target, synced_hash_claude, synced_hash_codex, applied_at, manual)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(project_id, skill_id) DO UPDATE SET
+            target = excluded.target,
+            synced_hash_claude = excluded.synced_hash_claude,
+            synced_hash_codex = excluded.synced_hash_codex,
+            applied_at = excluded.applied_at,
+            manual = CASE WHEN excluded.manual = 1 THEN 1 ELSE project_skills.manual END",
     )
     .bind(project_id)
     .bind(skill_id)
@@ -972,6 +1000,7 @@ async fn apply_skill_to_project(db: &Db, project_id: &str, skill_id: &str) -> Re
     .bind(&hash_claude)
     .bind(&hash_codex)
     .bind(&now)
+    .bind(if manual { 1 } else { 0 })
     .execute(db)
     .await
     .map_err(|e| e.to_string())?;
@@ -980,23 +1009,59 @@ async fn apply_skill_to_project(db: &Db, project_id: &str, skill_id: &str) -> Re
 }
 
 #[tauri::command]
+/// Drop the *direct* link between a project and a skill. The group link is separate: if some
+/// enabled group still contains the skill, it stays applied and only loses its `manual` flag —
+/// otherwise nothing is keeping it and the artifacts go.
 pub async fn remove_skill_from_project(
     db: State<'_, Db>,
     project_id: String,
     skill_id: String,
 ) -> Result<(), String> {
+    unlink_skill_from_project(db.inner(), &project_id, &skill_id).await
+}
+
+pub async fn unlink_skill_from_project(
+    db: &Db,
+    project_id: &str,
+    skill_id: &str,
+) -> Result<(), String> {
+    if crate::commands::groups::claimed_by_enabled_group(
+        db,
+        crate::commands::groups::GroupKind::Skill,
+        project_id,
+        skill_id,
+    )
+    .await?
+    {
+        sqlx::query("UPDATE project_skills SET manual = 0 WHERE project_id = ? AND skill_id = ?")
+            .bind(project_id)
+            .bind(skill_id)
+            .execute(db)
+            .await
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    remove_skill_from_project_inner(db, project_id, skill_id).await
+}
+
+/// Core removal logic shared by the command above and group disablement.
+pub async fn remove_skill_from_project_inner(
+    db: &Db,
+    project_id: &str,
+    skill_id: &str,
+) -> Result<(), String> {
     use sqlx::Row;
 
     let skill_row = sqlx::query("SELECT name FROM skills WHERE id = ?")
-        .bind(&skill_id)
-        .fetch_one(db.inner())
+        .bind(skill_id)
+        .fetch_one(db)
         .await
         .map_err(|e| e.to_string())?;
     let skill_name: String = skill_row.get("name");
 
     let project_row = sqlx::query("SELECT path FROM projects WHERE id = ?")
-        .bind(&project_id)
-        .fetch_one(db.inner())
+        .bind(project_id)
+        .fetch_one(db)
         .await
         .map_err(|e| e.to_string())?;
     let project_path: String = project_row.get("path");
@@ -1004,9 +1069,9 @@ pub async fn remove_skill_from_project(
     remove_skill_artifacts(&project_path, &skill_name);
 
     sqlx::query("DELETE FROM project_skills WHERE project_id = ? AND skill_id = ?")
-        .bind(&project_id)
-        .bind(&skill_id)
-        .execute(db.inner())
+        .bind(project_id)
+        .bind(skill_id)
+        .execute(db)
         .await
         .map_err(|e| e.to_string())?;
 

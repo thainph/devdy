@@ -306,13 +306,16 @@ pub(crate) async fn start_run_inner(
 
     // Update run status to running
     let started_at = chrono::Utc::now().to_rfc3339();
-    sqlx::query("UPDATE runs SET status = 'running', engine = ?, started_at = ? WHERE id = ?")
-        .bind(&engine)
-        .bind(&started_at)
-        .bind(&payload.run_id)
-        .execute(db)
-        .await
-        .map_err(|e| e.to_string())?;
+    sqlx::query(
+        "UPDATE runs SET status = 'running', engine = ?, started_at = ?, last_activity_at = ? WHERE id = ?",
+    )
+    .bind(&engine)
+    .bind(&started_at)
+    .bind(&started_at)
+    .bind(&payload.run_id)
+    .execute(db)
+    .await
+    .map_err(|e| e.to_string())?;
 
     // Build extra args vec
     let extra: Vec<String> = extra_args
@@ -410,14 +413,13 @@ pub(crate) async fn start_run_inner(
             } else {
                 mcp
             };
-            // Add the built-in `gdrive` + `gmail` MCP servers when a Google
+            // Add the built-in `google` MCP server (Drive + Gmail + Calendar) when a
             // account is connected (no-op otherwise).
             let mcp = crate::commands::mcp::with_builtin_google(
                 &db_pool,
                 mcp,
                 &node_bin,
-                &crate::runs::sidecar::resolve_mcp_script(&app, "gdrive.mjs"),
-                &crate::runs::sidecar::resolve_mcp_script(&app, "gmail.mjs"),
+                &crate::runs::sidecar::resolve_mcp_script(&app, "google.mjs"),
             )
             .await;
             if !mcp.is_null() {
@@ -523,8 +525,7 @@ pub(crate) async fn start_run_inner(
         &db_pool,
         codex_mcp,
         &node_bin,
-        &crate::runs::sidecar::resolve_mcp_script(&app, "gdrive.mjs"),
-        &crate::runs::sidecar::resolve_mcp_script(&app, "gmail.mjs"),
+        &crate::runs::sidecar::resolve_mcp_script(&app, "google.mjs"),
     )
     .await;
     if !codex_mcp.is_null() {
@@ -937,8 +938,10 @@ pub(crate) async fn cancel_run_inner(
         let _ = handles.child.kill().await;
     }
 
-    sqlx::query("UPDATE runs SET status = 'cancelled', finished_at = ? WHERE id = ?")
-        .bind(chrono::Utc::now().to_rfc3339())
+    let cancelled_at = chrono::Utc::now().to_rfc3339();
+    sqlx::query("UPDATE runs SET status = 'cancelled', finished_at = ?, last_activity_at = ? WHERE id = ?")
+        .bind(&cancelled_at)
+        .bind(&cancelled_at)
         .bind(&run_id)
         .execute(db)
         .await
@@ -1031,6 +1034,17 @@ pub(crate) async fn send_user_message_inner(
         let mut buf = log_buf.lock().await;
         buf.push_str(&log_line);
     }
+    // Registry lock released before the DB write — nothing below needs the
+    // handle, and the sidecar registry must not be held across IO.
+    drop(reg);
+    // The turn is now the run's newest activity. Stamped here rather than only on
+    // `run:done` so the History row moves the moment the user hits send, even for
+    // a turn that then runs for minutes.
+    let _ = sqlx::query("UPDATE runs SET last_activity_at = ? WHERE id = ?")
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(&payload.run_id)
+        .execute(db)
+        .await;
     Ok(())
 }
 
@@ -1060,6 +1074,12 @@ pub struct RespondPermissionPayload {
     /// Optional freeform text the user typed instead of a structured option.
     #[serde(default)]
     pub response: Option<String>,
+    /// The user picked "always" (or the decision came from a standing
+    /// allow-list). Forwarded to the sidecar so an engine with its own
+    /// session-scoped approval cache (codex `acceptForSession`) can stop
+    /// re-asking. Remote decisions are once-only (BR-016/AC-17) and never set it.
+    #[serde(default)]
+    pub remember: bool,
 }
 
 #[tauri::command]
@@ -1104,6 +1124,7 @@ pub(crate) async fn respond_permission_inner(
             "reason": payload.reason,
             "answers": payload.answers,
             "response": payload.response,
+            "remember": payload.remember,
         })
     );
     let mut reg = registry.lock().await;
@@ -1946,6 +1967,7 @@ pub async fn rerun_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord, S
         started_at: None,
         finished_at: None,
         created_at: now,
+        last_activity_at: None,
         title: None,
         pinned: false,
     })
@@ -2026,6 +2048,7 @@ pub async fn create_handoff_run(
             started_at: None,
             finished_at: None,
             created_at: now,
+            last_activity_at: None,
             title: src.title,
             pinned: false,
         },
@@ -2077,6 +2100,7 @@ pub async fn create_session_run(
         started_at: None,
         finished_at: None,
         created_at: now,
+        last_activity_at: None,
         title: None,
         pinned: false,
     })
@@ -2575,10 +2599,13 @@ pub async fn resume_run(
     let log_path = runs_dir.join(format!("{}.log", run_id));
 
     // Mark running; finished_at cleared so the UI reflects the active state.
+    // Resuming is the clearest signal of "I'm working on this one again", so it
+    // also stamps last_activity_at and floats the session to the top of History.
     let started_at = chrono::Utc::now().to_rfc3339();
     sqlx::query(
-        "UPDATE runs SET status = 'running', started_at = ?, finished_at = NULL WHERE id = ?",
+        "UPDATE runs SET status = 'running', started_at = ?, finished_at = NULL, last_activity_at = ? WHERE id = ?",
     )
+    .bind(&started_at)
     .bind(&started_at)
     .bind(&run_id)
     .execute(db.inner())
@@ -2658,8 +2685,7 @@ pub async fn resume_run(
             db.inner(),
             codex_mcp,
             &node_bin,
-            &crate::runs::sidecar::resolve_mcp_script(&app, "gdrive.mjs"),
-            &crate::runs::sidecar::resolve_mcp_script(&app, "gmail.mjs"),
+            &crate::runs::sidecar::resolve_mcp_script(&app, "google.mjs"),
         )
         .await;
         if !codex_mcp.is_null() {
@@ -2702,8 +2728,7 @@ pub async fn resume_run(
             db.inner(),
             mcp,
             &node_bin,
-            &crate::runs::sidecar::resolve_mcp_script(&app, "gdrive.mjs"),
-            &crate::runs::sidecar::resolve_mcp_script(&app, "gmail.mjs"),
+            &crate::runs::sidecar::resolve_mcp_script(&app, "google.mjs"),
         )
         .await;
         if !mcp.is_null() {

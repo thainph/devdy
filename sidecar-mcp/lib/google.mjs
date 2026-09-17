@@ -1,4 +1,4 @@
-// Shared plumbing for the built-in `gdrive` / `gmail` MCP servers.
+// Shared plumbing for the built-in `google` MCP server (Drive / Gmail / Calendar).
 //
 // - OAuth: mints short-lived access tokens from the stored refresh_token
 //   (env GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN), caching

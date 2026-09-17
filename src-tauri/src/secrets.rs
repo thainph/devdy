@@ -395,8 +395,8 @@ pub fn delete_mcp_secrets(server_id: &str) -> Result<()> {
 
 // ---- Google OAuth credentials ----------------------------------------------
 //
-// Powers the built-in `gdrive` / `gmail` MCP servers. Two layers, both in the
-// consolidated Keychain item:
+// Powers the built-in `google` MCP server (Drive + Gmail + Calendar). Two
+// layers, both in the consolidated Keychain item:
 //   • CLIENT (GoogleClientCreds): the user-pasted OAuth Desktop-app
 //     client_id/client_secret. Persisted at the APP level and REUSED across
 //     connect/disconnect — switching accounts never re-prompts for these.

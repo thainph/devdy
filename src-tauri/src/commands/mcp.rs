@@ -1013,23 +1013,28 @@ pub fn with_builtin_devdy(
     serde_json::Value::Object(map)
 }
 
-/// Add the built-in `gdrive` + `gmail` stdio MCP servers to an already-resolved
-/// MCP map when at least one Google account is connected. Both run the same Node
-/// binary as the Claude/devdy sidecar and receive ALL connected accounts via env
-/// (`GOOGLE_ACCOUNTS` = JSON array of {label,email,refresh_token,default}); the
-/// servers mint their own short-lived access tokens per account, so a run can
-/// outlive the 1h access-token lifetime. The AI selects an account via each
-/// tool's optional `account` argument (default account when omitted).
+/// Add the built-in `google` stdio MCP server (Drive + Gmail + Calendar) to an
+/// already-resolved MCP map when at least one Google account is connected. It
+/// runs the same Node binary as the Claude/devdy sidecar and receives ALL
+/// connected accounts via env (`GOOGLE_ACCOUNTS` = JSON array of
+/// {label,email,refresh_token,default}); the server mints its own short-lived
+/// access tokens per account, so a run can outlive the 1h access-token lifetime.
+/// The AI selects an account via each tool's optional `account` argument
+/// (default account when omitted).
 ///
-/// No-ops (returns `mcp` unchanged) when no client creds or no accounts exist.
-/// Each server is only injected if its script exists and the map does not
-/// already carry a user server of the same name (user servers take precedence).
+/// One server rather than three: the three product groups share this exact gate,
+/// these exact credentials and one lifetime, so separate processes bought
+/// nothing. Tools stay distinguishable via the `drive_` / `mail_` / `cal_`
+/// prefixes applied in `sidecar-mcp/google.mjs`.
+///
+/// No-ops (returns `mcp` unchanged) when no client creds or no accounts exist,
+/// when the script is missing, or when the map already carries a user server
+/// named `google` (user servers take precedence).
 pub async fn with_builtin_google(
     db: &Db,
     mcp: serde_json::Value,
     node_bin: &str,
-    gdrive_script: &std::path::Path,
-    gmail_script: &std::path::Path,
+    google_script: &std::path::Path,
 ) -> serde_json::Value {
     use sqlx::Row;
     let client = match secrets::get_google_client() {
@@ -1073,23 +1078,12 @@ pub async fn with_builtin_google(
         serde_json::Value::Object(m) => m,
         _ => serde_json::Map::new(),
     };
-    if gdrive_script.exists() {
-        let env = env.clone();
-        map.entry("gdrive".to_string()).or_insert_with(|| {
+    if google_script.exists() {
+        map.entry("google".to_string()).or_insert_with(|| {
             serde_json::json!({
                 "type": "stdio",
                 "command": node_bin,
-                "args": [gdrive_script.to_string_lossy()],
-                "env": env,
-            })
-        });
-    }
-    if gmail_script.exists() {
-        map.entry("gmail".to_string()).or_insert_with(|| {
-            serde_json::json!({
-                "type": "stdio",
-                "command": node_bin,
-                "args": [gmail_script.to_string_lossy()],
+                "args": [google_script.to_string_lossy()],
                 "env": env,
             })
         });

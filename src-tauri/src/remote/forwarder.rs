@@ -364,7 +364,7 @@ pub async fn build_run_list(db: &Db, only_run_id: Option<&str>) -> Vec<RunInfo> 
     const COLUMNS: &str = "SELECT r.id AS id, r.project_id AS project_id, p.name AS project_name,
                 r.title AS title, r.type AS run_type, r.ref_number AS ref_number,
                 r.status AS status, r.engine AS engine, r.created_at AS created_at,
-                COALESCE(r.finished_at, r.started_at, r.created_at) AS updated_at
+                COALESCE(r.last_activity_at, r.finished_at, r.started_at, r.created_at) AS updated_at
          FROM runs r JOIN projects p ON p.id = r.project_id";
     let rows = match only_run_id {
         Some(run_id) => sqlx::query(&format!("{COLUMNS} WHERE r.id = ?"))

@@ -24,6 +24,7 @@
   "always": "Luôn cho phép",
   "allowAlwaysTitle": "Cho phép ngay và tự động cho phép công cụ này cho dự án này",
   "allow": "Cho phép",
+  "broadScopeWarning": "\"Luôn cho phép\" ở đây áp dụng cho toàn bộ server Google — Drive, Gmail và Calendar, gồm cả gửi mail và xóa file vĩnh viễn — chứ không riêng thao tác này.",
   "window": {
     "title": "Quyền — Devdy",
     "headerLabel": "Claude — Quyền",

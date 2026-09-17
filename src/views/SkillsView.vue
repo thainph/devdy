@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useActivatedRefresh } from '@/composables/useActivatedRefresh'
 import { useRouter } from 'vue-router'
 import { useSkillsStore, type Skill } from '@/stores/skills'
 import { useProjectsStore } from '@/stores/projects'
+import { useSkillGroupsStore } from '@/stores/groups'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { Button, Card, Badge } from '@/components/ui'
+import GroupManagerModal from '@/components/GroupManagerModal.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
-import { Plus, Upload, Download, Pencil, Trash2, Puzzle, CalendarDays, FolderCheck } from 'lucide-vue-next'
+import { Plus, Upload, Download, Pencil, Trash2, Puzzle, CalendarDays, FolderCheck, Layers } from 'lucide-vue-next'
 
 // Named explicitly: <KeepAlive :include> in App.vue matches on component name,
 // and an inferred name is a build detail that minification can change.
@@ -19,16 +21,34 @@ const { t } = useI18n()
 const router = useRouter()
 const store = useSkillsStore()
 const projectsStore = useProjectsStore()
+const groupsStore = useSkillGroupsStore()
 const { confirm } = useConfirm()
 const { toast } = useToast()
 const deletingId = ref<string | null>(null)
 const applyingId = ref<string | null>(null)
 const importingZip = ref(false)
+const groupsOpen = ref(false)
+/** Group id, or 'ungrouped' / null for the two catch-all chips. */
+const groupFilter = ref<string | null>(null)
 const targetLabel: Record<string, string> = { claude: t('skills.editor.targetClaude'), codex: t('skills.editor.targetCodex'), both: t('skills.editor.targetBoth') }
+
+const visibleSkills = computed(() => {
+  if (!groupFilter.value) return store.skills
+  if (groupFilter.value === 'ungrouped') {
+    return store.skills.filter(s => (groupsStore.itemGroups[s.id]?.length ?? 0) === 0)
+  }
+  return store.skills.filter(s => groupsStore.itemGroups[s.id]?.includes(groupFilter.value!))
+})
+
+function groupsOf(skillId: string) {
+  const ids = groupsStore.itemGroups[skillId] ?? []
+  return groupsStore.groups.filter(g => ids.includes(g.id))
+}
 
 onMounted(() => {
   store.fetchSkills()
   projectsStore.fetchProjects()
+  groupsStore.fetchGroups()
 })
 
 // Cached by <KeepAlive> (App.vue): onMounted fires once for the app's whole
@@ -37,6 +57,7 @@ onMounted(() => {
 useActivatedRefresh(() => {
   store.fetchSkills()
   projectsStore.fetchProjects()
+  groupsStore.fetchGroups()
 })
 
 async function handleApplyToAll(skill: Skill) {
@@ -136,6 +157,13 @@ function formatDate(iso: string) {
       <div class="flex items-center gap-2">
         <Button
           variant="outline"
+          @click="groupsOpen = true"
+        >
+          <Layers class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ t('groups.manageSkillGroups') }}
+        </Button>
+        <Button
+          variant="outline"
           :disabled="importingZip"
           @click="handleImport"
         >
@@ -179,10 +207,31 @@ function formatDate(iso: string) {
         </Button>
       </div>
 
+      <!-- Group filter chips -->
+      <div v-else-if="groupsStore.groups.length > 0" class="flex items-center gap-1.5 flex-wrap mb-3">
+        <button
+          class="px-2 py-1 rounded-md text-[11px] transition-colors cursor-pointer"
+          :class="groupFilter === null ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:text-foreground'"
+          @click="groupFilter = null"
+        >{{ t('groups.allGroups') }}</button>
+        <button
+          v-for="group in groupsStore.groups"
+          :key="group.id"
+          class="px-2 py-1 rounded-md text-[11px] transition-colors cursor-pointer"
+          :class="groupFilter === group.id ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:text-foreground'"
+          @click="groupFilter = group.id"
+        >{{ group.name }} <span class="opacity-60">{{ group.member_count }}</span></button>
+        <button
+          class="px-2 py-1 rounded-md text-[11px] transition-colors cursor-pointer"
+          :class="groupFilter === 'ungrouped' ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:text-foreground'"
+          @click="groupFilter = 'ungrouped'"
+        >{{ t('groups.ungrouped') }}</button>
+      </div>
+
       <!-- Cards grid -->
-      <div v-else class="grid grid-cols-2 xl:grid-cols-3 gap-3">
+      <div v-if="!store.loading && !store.error && store.skills.length > 0" class="grid grid-cols-2 xl:grid-cols-3 gap-3">
         <Card
-          v-for="skill in store.skills"
+          v-for="skill in visibleSkills"
           :key="skill.id"
           class="group relative flex flex-col transition-all duration-150 cursor-pointer hover:border-primary/40 hover:shadow-[0_1px_3px_0_rgb(0_0_0/0.08)] hover:-translate-y-0.5"
           body-class="flex flex-col flex-1 p-4"
@@ -197,8 +246,15 @@ function formatDate(iso: string) {
               <Puzzle class="h-4.5 w-4.5" :stroke-width="1.75" />
             </div>
             <div class="min-w-0 flex-1">
-              <div class="flex items-center gap-1.5">
+              <div class="flex items-center gap-1.5 flex-wrap">
                 <p class="text-sm font-semibold font-mono truncate leading-tight">{{ skill.name }}</p>
+                <Badge
+                  v-for="group in groupsOf(skill.id)"
+                  :key="group.id"
+                  :tone="group.color ?? 'neutral'"
+                  size="xs"
+                  class="shrink-0"
+                >{{ group.name }}</Badge>
               </div>
               <p class="text-xs text-muted-foreground mt-1 line-clamp-2 leading-relaxed">{{ skill.description }}</p>
             </div>
@@ -252,5 +308,13 @@ function formatDate(iso: string) {
         </Card>
       </div>
     </div>
+
+    <GroupManagerModal
+      :open="groupsOpen"
+      kind="skill"
+      :items="store.skills"
+      @close="groupsOpen = false"
+      @changed="groupsStore.fetchGroups()"
+    />
   </div>
 </template>

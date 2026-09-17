@@ -10,6 +10,7 @@ pub mod github;
 pub mod github_accounts;
 pub mod gitlab_accounts;
 pub mod google;
+pub mod groups;
 pub mod health;
 pub mod mascot_speak;
 pub mod mcp;
