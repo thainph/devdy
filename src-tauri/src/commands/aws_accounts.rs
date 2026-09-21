@@ -10,6 +10,23 @@ use uuid::Uuid;
 
 const DEFAULT_REGION: &str = "ap-northeast-1";
 const STS_TIMEOUT: Duration = Duration::from_secs(15);
+// SSO login opens a browser and blocks until the user finishes the flow, so it
+// needs a much more generous window than a plain STS call.
+const SSO_LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
+// Sentinel error the frontend matches to offer an "SSO login" button instead of
+// a generic validation-failed message.
+const SSO_LOGIN_REQUIRED: &str = "SSO_LOGIN_REQUIRED";
+
+/// Detect the AWS CLI stderr signatures that mean the profile is SSO-based and
+/// its cached token is missing or expired (i.e. `aws sso login` is needed).
+fn is_sso_login_required(stderr: &str) -> bool {
+    let lower = stderr.to_lowercase();
+    lower.contains("error loading sso token")
+        || (lower.contains("token") && lower.contains("does not exist"))
+        || (lower.contains("token") && lower.contains("has expired"))
+        || (lower.contains("sso") && lower.contains("expired"))
+        || lower.contains("the sso session associated with this profile has expired")
+}
 
 #[derive(Debug, Serialize, Clone)]
 pub struct AwsAccount {
@@ -195,6 +212,10 @@ async fn validate_aws_identity(
     };
 
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if is_sso_login_required(&stderr) {
+            return Err(SSO_LOGIN_REQUIRED.to_string());
+        }
         return Err(
             "AWS STS validation failed. Check AWS CLI, region, profile, and permissions."
                 .to_string(),
@@ -468,6 +489,58 @@ pub async fn validate_aws_account(db: State<'_, Db>, id: String) -> Result<AwsVa
     .await;
 
     Ok(validation)
+}
+
+/// Run `aws sso login` for a profile-based account so the user can refresh an
+/// expired/missing SSO token from the UI instead of dropping to a terminal.
+/// This launches the browser SSO flow and blocks until it completes.
+#[tauri::command]
+pub async fn aws_sso_login(db: State<'_, Db>, id: String) -> Result<(), String> {
+    let account = fetch_account(db.inner(), &id).await?;
+    if account.auth_method != "profile" {
+        return Err("SSO login is only available for profile-based accounts.".to_string());
+    }
+    let profile_name = account
+        .profile_name
+        .as_deref()
+        .ok_or_else(|| "profile_name is missing".to_string())?;
+
+    let mut cmd = Command::new("aws");
+    cmd.arg("sso")
+        .arg("login")
+        .arg("--profile")
+        .arg(profile_name)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // GUI launches don't inherit the login-shell PATH; recover it like the STS
+    // validation path does so `aws` resolves.
+    crate::runs::sidecar::augment_command_path(&mut cmd);
+    cmd.env_remove("AWS_ACCESS_KEY_ID");
+    cmd.env_remove("AWS_SECRET_ACCESS_KEY");
+    cmd.env_remove("AWS_SESSION_TOKEN");
+
+    let output = match tokio::time::timeout(SSO_LOGIN_TIMEOUT, cmd.output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(e)) => return Err(format!("Failed to run aws CLI: {e}")),
+        Err(_) => {
+            return Err(format!(
+                "AWS SSO login timed out after {}s",
+                SSO_LOGIN_TIMEOUT.as_secs()
+            ))
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr.trim();
+        if detail.is_empty() {
+            return Err("AWS SSO login failed.".to_string());
+        }
+        return Err(format!("AWS SSO login failed: {detail}"));
+    }
+
+    Ok(())
 }
 
 #[tauri::command]

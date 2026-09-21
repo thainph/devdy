@@ -4,6 +4,15 @@ import { ref } from 'vue'
 
 export type AwsAuthMethod = 'keys' | 'profile'
 
+// Sentinel returned by validate_aws_account when a profile's SSO token is
+// missing or expired and the user needs to run `aws sso login` again.
+export const SSO_LOGIN_REQUIRED = 'SSO_LOGIN_REQUIRED'
+
+/** True when a validate error means the SSO token must be refreshed. */
+export function isSsoLoginRequired(error: unknown): boolean {
+  return String(error).includes(SSO_LOGIN_REQUIRED)
+}
+
 export interface AwsAccount {
   id: string
   label: string
@@ -76,5 +85,9 @@ export const useAwsAccountsStore = defineStore('awsAccounts', () => {
     return invoke<AwsValidation>('validate_aws_account', { id })
   }
 
-  return { accounts, loading, error, fetch, create, update, remove, validate }
+  async function ssoLogin(id: string): Promise<void> {
+    await invoke('aws_sso_login', { id })
+  }
+
+  return { accounts, loading, error, fetch, create, update, remove, validate, ssoLogin }
 })

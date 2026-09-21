@@ -65,6 +65,17 @@ pub struct GoogleClientStatus {
     pub has_client: bool,
 }
 
+/// Result of validating a connected account's stored refresh_token.
+#[derive(Serialize)]
+pub struct GoogleValidation {
+    pub email: String,
+    pub scope: String,
+}
+
+/// Sentinel error the frontend matches to offer a "Login" (re-auth) button when
+/// the stored refresh_token is missing, revoked, or expired.
+const GOOGLE_LOGIN_REQUIRED: &str = "GOOGLE_LOGIN_REQUIRED";
+
 #[derive(Deserialize)]
 struct TokenResponse {
     access_token: String,
@@ -441,6 +452,135 @@ pub async fn add_google_account(
         scope: oauth.scope,
         is_default: is_default != 0,
         created_at: now,
+    })
+}
+
+/// Validate a connected account by exchanging its stored refresh_token for a
+/// fresh access token and resolving the account email. Returns
+/// `GOOGLE_LOGIN_REQUIRED` when the token is missing/revoked/expired so the UI
+/// can offer a re-login, mirroring the AWS SSO flow.
+#[tauri::command]
+pub async fn validate_google_account(
+    db: State<'_, Db>,
+    id: String,
+) -> Result<GoogleValidation, String> {
+    let refresh_token =
+        secrets::get_google_account_token(&id).ok_or_else(|| GOOGLE_LOGIN_REQUIRED.to_string())?;
+    let (client_id, client_secret) = match secrets::get_google_client() {
+        Some(c) => (c.client_id, c.client_secret),
+        None => {
+            return Err(
+                "No saved OAuth credentials. Enter your Client ID and Client Secret.".into(),
+            )
+        }
+    };
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(TOKEN_ENDPOINT)
+        .form(&[
+            ("client_id", client_id.as_str()),
+            ("client_secret", client_secret.as_str()),
+            ("refresh_token", refresh_token.as_str()),
+            ("grant_type", "refresh_token"),
+        ])
+        .send()
+        .await
+        .map_err(|e| format!("Token refresh request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        // A revoked/expired refresh_token comes back as 400 invalid_grant; treat
+        // that as "needs login" rather than a generic failure.
+        let body = resp.text().await.unwrap_or_default();
+        if body.contains("invalid_grant") {
+            return Err(GOOGLE_LOGIN_REQUIRED.to_string());
+        }
+        return Err(format!("Google rejected the token refresh: {body}"));
+    }
+
+    let token: TokenResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse token response: {e}"))?;
+
+    let email = match client
+        .get(USERINFO_ENDPOINT)
+        .bearer_auth(&token.access_token)
+        .send()
+        .await
+        .ok()
+        .and_then(|r| r.error_for_status().ok())
+    {
+        Some(r) => r.json::<UserInfo>().await.map(|u| u.email).unwrap_or_default(),
+        None => String::new(),
+    };
+
+    // Keep the stored email fresh when Google returns one.
+    if !email.is_empty() {
+        let _ = sqlx::query("UPDATE google_accounts SET email = ? WHERE id = ?")
+            .bind(&email)
+            .bind(&id)
+            .execute(db.inner())
+            .await;
+    }
+
+    let scope: String = sqlx::query_scalar("SELECT scope FROM google_accounts WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(db.inner())
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+
+    Ok(GoogleValidation { email, scope })
+}
+
+/// Re-run the OAuth consent flow for an existing account and replace its stored
+/// refresh_token. Used when validation reports the token needs a fresh login.
+#[tauri::command]
+pub async fn reauth_google_account(
+    app: AppHandle,
+    db: State<'_, Db>,
+    id: String,
+) -> Result<GoogleAccount, String> {
+    let row = sqlx::query("SELECT id, label, email, scope, is_default, created_at FROM google_accounts WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(db.inner())
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Account not found.".to_string())?;
+    let account = row_to_account(&row);
+
+    let (client_id, client_secret) = match secrets::get_google_client() {
+        Some(c) => (c.client_id, c.client_secret),
+        None => {
+            return Err(
+                "No saved OAuth credentials. Enter your Client ID and Client Secret.".into(),
+            )
+        }
+    };
+
+    let oauth = run_oauth(&app, &client_id, &client_secret).await?;
+
+    sqlx::query("UPDATE google_accounts SET email = ?, scope = ? WHERE id = ?")
+        .bind(&oauth.email)
+        .bind(&oauth.scope)
+        .bind(&id)
+        .execute(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    secrets::set_google_account_token(&id, &oauth.refresh_token)
+        .map_err(|e| format!("Failed to store token: {e}"))?;
+
+    Ok(GoogleAccount {
+        id,
+        label: account.label,
+        email: oauth.email,
+        calendar_writable: scope_has_calendar_write(&oauth.scope),
+        scope: oauth.scope,
+        is_default: account.is_default,
+        created_at: account.created_at,
     })
 }
 
