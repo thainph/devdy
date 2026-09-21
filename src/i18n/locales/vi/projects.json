@@ -25,8 +25,9 @@
   "projectNamePlaceholder": "Dự án của tôi",
   "repositories": "Repository",
   "autoDetected": "Tự động phát hiện {count}",
-  "repoNamePlaceholder": "Tên repo",
-  "ownerPlaceholder": "owner",
-  "repoPlaceholder": "repo",
-  "noReposHint": "Chưa có repository — bấm Thêm để thêm thủ công"
+  "repoUrlPlaceholder": "Dán URL repo — github.com/owner/repo",
+  "repoUrlHint": "Nhập link repo GitHub hoặc GitLab, ví dụ github.com/owner/repo",
+  "alreadyAdded": "Đã thêm",
+  "removeRepo": "Gỡ repository",
+  "noReposHint": "Chưa có repository — dán link repo ở trên để thêm"
 }

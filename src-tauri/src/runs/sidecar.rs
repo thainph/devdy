@@ -390,6 +390,16 @@ pub async fn drain_sidecar(
     // Most-recent model id seen on a `system.init` event; attached to usage rows.
     let mut last_model: Option<String> = None;
 
+    // How many background tasks (backgrounded Bash, Monitor watchers…) the CLI
+    // currently has alive, taken from the authoritative `background_tasks_changed`
+    // event (its `tasks` array is the full live set, resent on every change).
+    // A `result` can arrive with tasks still running: the CLI keeps the session
+    // alive and WAKES it in-process when a task finishes (a fresh `init` + turn,
+    // no resume). If we close stdin on that result we tear down the permission
+    // channel for the wake-up turn, and every tool needing approval then fails
+    // with "AbortError: Stream closed". So we only close once this reaches 0.
+    let mut live_bg_tasks: usize = 0;
+
     // Incremental persistence: snapshot any pre-existing on-disk log once (for
     // resumes), then periodically flush `prefix + buf` to disk while the run
     // streams. This lets the frontend recover partial output after an app
@@ -546,6 +556,17 @@ pub async fn drain_sidecar(
                                         serde_json::json!({ "run_id": run_id }),
                                     );
                                 }
+                                // Keep the live background-task count current: its
+                                // `tasks` array is the full set the CLI still has
+                                // running, so we gate the turn-end stdin close on it.
+                                if v.get("type").and_then(|x| x.as_str()) == Some("system")
+                                    && v.get("subtype").and_then(|x| x.as_str())
+                                        == Some("background_tasks_changed")
+                                {
+                                    if let Some(tasks) = v.get("tasks").and_then(|t| t.as_array()) {
+                                        live_bg_tasks = tasks.len();
+                                    }
+                                }
                                 // End the turn: closing stdin makes the sidecar's
                                 // input stream close, the query finish, and the
                                 // process exit so `run:done` can fire. Follow-ups
@@ -562,7 +583,21 @@ pub async fn drain_sidecar(
                                             serde_json::json!({ "run_id": run_id }),
                                         );
                                     }
-                                    {
+                                    // …but ONLY when this result truly ends the
+                                    // session's work. Two cases must NOT close it,
+                                    // or the permission channel dies mid-turn and
+                                    // tools fail with "AbortError: Stream closed":
+                                    //   1. a `result` the user never asked for (a
+                                    //      resumed session's leftover background
+                                    //      task) — see `result_ends_user_turn`;
+                                    //   2. a `result` emitted while background tasks
+                                    //      are still running — the CLI keeps the
+                                    //      session alive and wakes it in-process
+                                    //      when a task finishes.
+                                    // The run stays "running" until the last task
+                                    // drains; follow-ups then go to this same live
+                                    // sidecar rather than a resume.
+                                    if result_should_close_stdin(v, live_bg_tasks) {
                                         let mut reg = registry.lock().await;
                                         if let Some(handles) = reg.get_mut(&run_id) {
                                             handles.stdin.take();
@@ -686,6 +721,34 @@ pub async fn drain_sidecar(
         &format!("run:done:{}", run_id),
         serde_json::json!({ "run_id": run_id, "status": final_status }),
     );
+}
+
+/// Does this `result` event close the turn the user started?
+///
+/// A user turn ends with a plain `result` (no `origin`). But the CLI also runs
+/// turns nobody typed a prompt for — a background task that outlived the
+/// previous session, a scheduled wake-up — and those emit their own `result`,
+/// tagged with `origin: { kind: … }`. On a resume these land BEFORE the user's
+/// real turn even starts, so treating them as "turn over" closes the sidecar's
+/// stdin too early: the SDK then ends the CLI's input stream and every
+/// subsequent permission request dies instantly with "AbortError: Stream
+/// closed", leaving the turn running but unable to ask for approval.
+///
+/// Only origin-less results end the user's turn; the rest are pass-through.
+fn result_ends_user_turn(value: &Value) -> bool {
+    match value.get("origin") {
+        None | Some(Value::Null) => true,
+        Some(_) => false,
+    }
+}
+
+/// Should this `result` cause the drain to close the sidecar's stdin (ending the
+/// turn and letting the process exit)? Only when it ends the user's own turn AND
+/// no background tasks are still alive — a live task means the CLI will wake the
+/// session in-process, and closing stdin would kill that wake-up turn's
+/// permission channel.
+fn result_should_close_stdin(value: &Value, live_bg_tasks: usize) -> bool {
+    result_ends_user_turn(value) && live_bg_tasks == 0
 }
 
 async fn capture_session_id(
@@ -1138,5 +1201,64 @@ mod plan_usage_tests {
         });
         merge_prior_window_status(&mut fresh, &None);
         assert_eq!(fresh["windows"]["five_hour"]["utilization"].as_f64(), Some(5.0));
+    }
+}
+
+#[cfg(test)]
+mod turn_end_tests {
+    use super::*;
+
+    #[test]
+    fn plain_result_ends_the_user_turn() {
+        let v = serde_json::json!({
+            "type": "result", "subtype": "success", "num_turns": 61, "origin": null,
+        });
+        assert!(result_ends_user_turn(&v));
+        // Older CLIs omit the field entirely.
+        let v = serde_json::json!({ "type": "result", "subtype": "success", "num_turns": 61 });
+        assert!(result_ends_user_turn(&v));
+    }
+
+    #[test]
+    fn background_origin_result_does_not_end_the_user_turn() {
+        // Shape seen on resume when a background shell outlived the last session.
+        let v = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "num_turns": 0,
+            "duration_ms": 9,
+            "origin": { "kind": "task-notification" },
+        });
+        assert!(!result_ends_user_turn(&v));
+        // Any other system-initiated origin is treated the same way.
+        let v = serde_json::json!({
+            "type": "result", "subtype": "success", "origin": { "kind": "wakeup" },
+        });
+        assert!(!result_ends_user_turn(&v));
+    }
+
+    // The four `result` events from the run that surfaced this bug, keyed by
+    // (origin, live background tasks at that point) → whether stdin should close.
+    #[test]
+    fn close_gate_matches_the_real_run() {
+        // Turn 2 (resume): spurious task-notification result, no live tasks.
+        let bg = serde_json::json!({
+            "type": "result", "subtype": "success", "num_turns": 0,
+            "origin": { "kind": "task-notification" },
+        });
+        assert!(!result_should_close_stdin(&bg, 0));
+
+        // Turn 3: real result but a docker build + 2 monitors still running →
+        // the CLI will wake this session in-process, so keep stdin open.
+        let with_tasks = serde_json::json!({
+            "type": "result", "subtype": "success", "num_turns": 14, "origin": null,
+        });
+        assert!(!result_should_close_stdin(&with_tasks, 3));
+
+        // Turn 4: real result, all background tasks drained → close for real.
+        let done = serde_json::json!({
+            "type": "result", "subtype": "success", "num_turns": 1, "origin": null,
+        });
+        assert!(result_should_close_stdin(&done, 0));
     }
 }

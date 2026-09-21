@@ -70,6 +70,9 @@ export interface DetectedRepo {
   path: string
   github_owner: string | null
   github_repo: string | null
+  /** Provider read off the `origin` remote; 'github' when there's nothing to go on. */
+  provider: 'github' | 'gitlab'
+  gitlab_project_path: string | null
 }
 
 export interface DetectedProjectInfo {
@@ -160,7 +163,15 @@ export const useProjectsStore = defineStore('projects', () => {
   async function addProject(payload: {
     path: string
     name?: string
-    repos?: Array<{ name: string; path: string; github_owner?: string; github_repo?: string }>
+    repos?: Array<{
+      name: string
+      path: string
+      github_owner?: string
+      github_repo?: string
+      provider?: 'github' | 'gitlab'
+      gitlab_project_path?: string | null
+      gitlab_project_id?: number | null
+    }>
   }): Promise<Project> {
     const project = await invoke<Project>('add_project', { payload })
     await fetchProjects()

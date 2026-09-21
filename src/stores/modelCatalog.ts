@@ -2,25 +2,25 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { invoke } from '@/lib/tauri'
 import {
+  CLAUDE_MODEL_IDS,
   codexOptions as mergeCodex,
-  mergedClaudeOptions as mergeClaude,
   type SelectOption,
 } from '@/lib/engineOptions'
 
 /**
- * Persisted model catalog. Both Claude and Codex model lists are refreshed
- * MANUALLY (from the Settings screen) and cached in the backend `settings` table
- * keyed by account. Screens hydrate the cache via `get_model_caches` — they never
- * trigger discovery on open, so launching the app / Run screen / composer spawns
- * nothing. When a cache is empty the UI falls back to the curated alias tables.
+ * Model catalog state, persisted by the backend in the `settings` table and
+ * keyed by account. Screens hydrate it via `get_model_caches` — nothing is
+ * discovered or probed on open, so launching the app / Run screen / composer
+ * spawns no process.
  *
- * - Claude discovery bridges the Agent SDK's `supportedModels()` (sidecar).
- * - Codex discovery runs `codex debug models` (CLI).
+ * The two engines work differently on purpose:
  *
- * The fetched Claude list AUGMENTS the curated aliases (`opus`/`sonnet`/`haiku`
- * and the `[1m]` 1M-context variants stay, along with the context-limit math).
- * The Codex cache, being authoritative from the CLI, REPLACES the curated list
- * (keeping only the leading "Default" option).
+ * - **Codex** has a real catalog (`codex debug models`), so its list is fetched
+ *   and REPLACES the curated fallback (keeping only the leading "Default").
+ * - **Claude** has no catalog worth reading — `supportedModels()` reports only
+ *   the handful of rows the CLI picker shows, while `--model` accepts many more.
+ *   Its list is therefore curated in `@/lib/engineOptions`, and what we persist
+ *   here is a VALIDATION report: which pinned ids the account still serves.
  */
 export interface FetchedModel {
   value: string
@@ -38,75 +38,109 @@ export interface ModelCacheEntry {
   error_at?: string | null
 }
 
-interface ModelCaches {
-  claude: Record<string, ModelCacheEntry>
-  codex: Record<string, ModelCacheEntry>
-  claude_active_key: string
-  codex_active_key: string
+/** One model's verdict from the last validation sweep. */
+export interface ModelValidation {
+  model: string
+  ok: boolean
+  error?: string | null
 }
 
-function pickEntry(
-  map: Record<string, ModelCacheEntry>,
-  activeKey: string,
-): ModelCacheEntry | null {
+export interface ModelValidationReport {
+  account_key: string
+  account_label: string
+  checked_at: string
+  results: ModelValidation[]
+}
+
+interface ModelCaches {
+  codex: Record<string, ModelCacheEntry>
+  codex_active_key: string
+  claude_validation: Record<string, ModelValidationReport>
+  claude_validation_active_key: string
+}
+
+function pickEntry<T>(map: Record<string, T>, activeKey: string): T | null {
   return map[activeKey] ?? map.default ?? Object.values(map)[0] ?? null
 }
 
 export const useModelCatalogStore = defineStore('modelCatalog', () => {
-  const claudeByAccount = ref<Record<string, ModelCacheEntry>>({})
   const codexByAccount = ref<Record<string, ModelCacheEntry>>({})
-  const claudeActiveKey = ref('default')
   const codexActiveKey = ref('default')
-  const claudeLoading = ref(false)
   const codexLoading = ref(false)
   // Fatal (thrown) errors from the refresh command itself, distinct from a
   // discovery failure recorded on the cache entry.
-  const claudeThrow = ref<string | null>(null)
   const codexThrow = ref<string | null>(null)
+
+  const validationByAccount = ref<Record<string, ModelValidationReport>>({})
+  const validationActiveKey = ref('default')
+  const validating = ref(false)
+  const validationThrow = ref<string | null>(null)
+
   const loaded = ref(false)
 
-  const claudeEntry = computed(() => pickEntry(claudeByAccount.value, claudeActiveKey.value))
   const codexEntry = computed(() => pickEntry(codexByAccount.value, codexActiveKey.value))
-
-  const claudeModels = computed<FetchedModel[]>(() => claudeEntry.value?.models ?? [])
   const codexModels = computed<FetchedModel[]>(() => codexEntry.value?.models ?? [])
-
-  const claudeError = computed(() => claudeThrow.value ?? claudeEntry.value?.error ?? null)
   const codexError = computed(() => codexThrow.value ?? codexEntry.value?.error ?? null)
-  const claudeRefreshedAt = computed(() => claudeEntry.value?.refreshed_at ?? null)
   const codexRefreshedAt = computed(() => codexEntry.value?.refreshed_at ?? null)
-  const claudeAccountLabel = computed(() => claudeEntry.value?.account_label ?? '')
   const codexAccountLabel = computed(() => codexEntry.value?.account_label ?? '')
 
-  /** Hydrate the caches from the backend (no discovery). Loads once. */
+  const validation = computed(() =>
+    pickEntry(validationByAccount.value, validationActiveKey.value),
+  )
+  const validationCheckedAt = computed(() => validation.value?.checked_at ?? null)
+  const validationAccountLabel = computed(() => validation.value?.account_label ?? '')
+  const validationError = computed(() => validationThrow.value)
+
+  /** Verdict per model id, for O(1) lookup while rendering the selector. */
+  const validationByModel = computed<Record<string, ModelValidation>>(() => {
+    const out: Record<string, ModelValidation> = {}
+    for (const r of validation.value?.results ?? []) out[r.model] = r
+    return out
+  })
+
+  /** Models the last sweep could not reach. Empty when nothing has run yet. */
+  const unsupportedModels = computed(() =>
+    (validation.value?.results ?? []).filter((r) => !r.ok).map((r) => r.model),
+  )
+
+  /** Hydrate from the backend (no discovery, no probing). Loads once. */
   async function ensureLoaded(force = false) {
     if (loaded.value && !force) return
     try {
       const caches = await invoke<ModelCaches>('get_model_caches')
-      claudeByAccount.value = caches.claude ?? {}
       codexByAccount.value = caches.codex ?? {}
-      claudeActiveKey.value = caches.claude_active_key || 'default'
       codexActiveKey.value = caches.codex_active_key || 'default'
+      validationByAccount.value = caches.claude_validation ?? {}
+      validationActiveKey.value = caches.claude_validation_active_key || 'default'
       loaded.value = true
     } catch {
       // Leave whatever we have; screens fall back to curated lists.
     }
   }
 
-  /** Manually refresh Claude models from the account and persist the cache. */
-  async function refreshClaude() {
-    if (claudeLoading.value) return
-    claudeLoading.value = true
-    claudeThrow.value = null
+  /**
+   * Check every pinned Claude id against the signed-in account and persist the
+   * verdicts. Each check is a real one-word turn — the only way to know whether
+   * `--model <id>` still works — so this is strictly user-initiated.
+   */
+  async function validateClaude() {
+    if (validating.value) return
+    validating.value = true
+    validationThrow.value = null
     try {
-      const entry = await invoke<ModelCacheEntry>('refresh_claude_models')
-      claudeByAccount.value = { ...claudeByAccount.value, [entry.account_key]: entry }
-      claudeActiveKey.value = entry.account_key
+      const report = await invoke<ModelValidationReport>('validate_claude_models', {
+        models: CLAUDE_MODEL_IDS,
+      })
+      validationByAccount.value = {
+        ...validationByAccount.value,
+        [report.account_key]: report,
+      }
+      validationActiveKey.value = report.account_key
       loaded.value = true
     } catch (e) {
-      claudeThrow.value = String(e)
+      validationThrow.value = String(e)
     } finally {
-      claudeLoading.value = false
+      validating.value = false
     }
   }
 
@@ -127,43 +161,50 @@ export const useModelCatalogStore = defineStore('modelCatalog', () => {
     }
   }
 
-  /** Delegates to the shared pure merge in `@/lib/engineOptions`, which the
-   * remote controller uses too — the two surfaces must never disagree about
-   * which models are on offer. */
-  function mergedClaudeOptions(base: SelectOption[]): SelectOption[] {
-    return mergeClaude(base, claudeModels.value)
-  }
-
   /** Delegates to the shared pure merge in `@/lib/engineOptions`. */
   function codexOptions(base: SelectOption[]): SelectOption[] {
     return mergeCodex(base, codexModels.value)
   }
 
+  /**
+   * Annotate a Claude option list with the last sweep's verdicts, so a model the
+   * account no longer serves is visibly marked instead of failing at launch.
+   * Options are never removed — a stale report must not hide a working model.
+   */
+  function withValidation(options: SelectOption[]): SelectOption[] {
+    const verdicts = validationByModel.value
+    if (!Object.keys(verdicts).length) return options
+    return options.map((o) => {
+      const v = verdicts[o.value]
+      if (!v || v.ok) return o
+      return { ...o, description: `⚠ Not available · ${v.error ?? 'check failed'}` }
+    })
+  }
+
   return {
     // state
-    claudeByAccount,
     codexByAccount,
-    claudeActiveKey,
     codexActiveKey,
-    claudeLoading,
     codexLoading,
+    validating,
     loaded,
     // getters
-    claudeEntry,
     codexEntry,
-    claudeModels,
     codexModels,
-    claudeError,
     codexError,
-    claudeRefreshedAt,
     codexRefreshedAt,
-    claudeAccountLabel,
     codexAccountLabel,
+    validation,
+    validationByModel,
+    validationCheckedAt,
+    validationAccountLabel,
+    validationError,
+    unsupportedModels,
     // actions
     ensureLoaded,
-    refreshClaude,
+    validateClaude,
     refreshCodex,
-    mergedClaudeOptions,
     codexOptions,
+    withValidation,
   }
 })

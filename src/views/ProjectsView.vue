@@ -9,7 +9,8 @@ import { useServersStore, type ProjectServer } from '@/stores/servers'
 import { useAwsAccountsStore } from '@/stores/awsAccounts'
 import { open } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@/lib/tauri'
-import { Plus, FolderOpen, GitBranch, Github, Gitlab, Trash2, X, SquareTerminal, Code2, Settings, HardDrive, Cloud, GanttChartSquare, GripVertical } from 'lucide-vue-next'
+import { parseRepoUrl, repoKey } from '@/lib/repoUrl'
+import { Plus, FolderOpen, GitBranch, Github, Gitlab, Trash2, AlertTriangle, SquareTerminal, Code2, Settings, HardDrive, Cloud, GanttChartSquare, GripVertical } from 'lucide-vue-next'
 import { Button, Input, Badge, Modal, Card } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
@@ -115,6 +116,33 @@ const pending = ref<DetectedProjectInfo | null>(null)
 const pendingName = ref('')
 const pendingRepos = ref<PendingRepo[]>([])
 
+// Adding a repo mirrors project settings: paste a link, we parse it — no manual
+// provider / owner / repo fields.
+const newRepoUrl = ref('')
+const parsedRepo = computed(() => parseRepoUrl(newRepoUrl.value))
+
+// URL typed but not yet a valid repo link — used to show a gentle hint.
+const repoUrlInvalid = computed(() => !!newRepoUrl.value.trim() && !parsedRepo.value)
+
+// The repo being entered is already on the list (auto-detected or just pasted).
+const isDuplicateRepo = computed(() => {
+  const parsed = parsedRepo.value
+  if (!parsed) return false
+  const key = repoKey(parsed)
+  return pendingRepos.value.some(r => repoKey(r) === key)
+})
+
+const canAddRepo = computed(() => !!parsedRepo.value && !isDuplicateRepo.value)
+
+// Second line of a repo row: its provider coordinates, or the path when the
+// folder has no recognised remote.
+function repoCoords(repo: PendingRepo): string {
+  if (repo.provider === 'gitlab') return repo.gitlab_project_path || repo.path
+  return repo.github_owner && repo.github_repo
+    ? `${repo.github_owner}/${repo.github_repo}`
+    : repo.path
+}
+
 onMounted(async () => {
   await store.fetchProjects()
   if (ghStore.accounts.length === 0) ghStore.fetch()
@@ -136,9 +164,7 @@ async function handleAdd() {
     pending.value = info
     pendingName.value = info.name
     pendingRepos.value = info.repos.map(r => ({ ...r, _key: _keyCounter++ }))
-    if (pendingRepos.value.length === 0) {
-      pendingRepos.value.push({ name: '', path: selected, github_owner: null, github_repo: null, _key: _keyCounter++ })
-    }
+    newRepoUrl.value = ''
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -146,14 +172,19 @@ async function handleAdd() {
   }
 }
 
-function addRepoRow() {
+function addRepoFromUrl() {
+  const parsed = parsedRepo.value
+  if (!parsed || isDuplicateRepo.value) return
   pendingRepos.value.push({
-    name: '',
+    name: parsed.name,
     path: pending.value?.path ?? '',
-    github_owner: null,
-    github_repo: null,
+    provider: parsed.provider,
+    github_owner: parsed.github_owner || null,
+    github_repo: parsed.github_repo || null,
+    gitlab_project_path: parsed.gitlab_project_path || null,
     _key: _keyCounter++,
   })
+  newRepoUrl.value = ''
 }
 
 function removeRepoRow(key: number) {
@@ -163,6 +194,7 @@ function removeRepoRow(key: number) {
 function cancelAdd() {
   pending.value = null
   pendingRepos.value = []
+  newRepoUrl.value = ''
 }
 
 async function confirmAdd() {
@@ -174,8 +206,10 @@ async function confirmAdd() {
       .map(r => ({
         name: r.name.trim(),
         path: r.path,
+        provider: r.provider,
         github_owner: r.github_owner || undefined,
         github_repo: r.github_repo || undefined,
+        gitlab_project_path: r.gitlab_project_path || null,
       }))
 
     const project = await store.addProject({
@@ -185,6 +219,7 @@ async function confirmAdd() {
     })
     pending.value = null
     pendingRepos.value = []
+    newRepoUrl.value = ''
     toast.success(t('projects.toastAdded'))
     router.push(`/projects/${project.id}`)
   } catch (e) {
@@ -438,68 +473,101 @@ async function handleOpenInFolder(project: { path: string }) {
               />
             </div>
 
-            <!-- Repos -->
+            <!-- Repos — same paste-a-URL flow as project settings -->
             <div>
-              <div class="flex items-center justify-between mb-2">
+              <div class="flex items-center gap-1.5 mb-2">
                 <label class="flex items-center gap-1.5 text-xs text-muted-foreground">
                   <GitBranch class="h-3 w-3" :stroke-width="1.5" />
                   {{ t('projects.repositories') }}
-                  <span v-if="pending.repos.length > 0" class="text-[10px] text-emerald-500 font-medium">
-                    {{ t('projects.autoDetected', { count: pending.repos.length }) }}
-                  </span>
                 </label>
-                <button
-                  class="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-                  @click="addRepoRow"
-                >
-                  <Plus class="h-3 w-3" :stroke-width="2" />
-                  {{ t('common.add') }}
-                </button>
+                <span
+                  v-if="pendingRepos.length"
+                  class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1 text-[10px] font-medium text-muted-foreground leading-none"
+                >{{ pendingRepos.length }}</span>
+                <span v-if="pending.repos.length > 0" class="text-[10px] text-emerald-500 font-medium">
+                  {{ t('projects.autoDetected', { count: pending.repos.length }) }}
+                </span>
               </div>
 
+              <!-- Add new repo — paste a URL, no manual fields -->
               <div class="space-y-2">
+                <div class="flex gap-2">
+                  <div class="relative flex-1">
+                    <GitBranch class="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" :stroke-width="1.5" />
+                    <Input
+                      v-model="newRepoUrl"
+                      type="text"
+                      size="sm"
+                      class="pl-8"
+                      :placeholder="t('projects.repoUrlPlaceholder')"
+                      @keydown.enter="addRepoFromUrl"
+                    />
+                  </div>
+                  <Button
+                    size="sm"
+                    :disabled="!canAddRepo"
+                    @click="addRepoFromUrl"
+                  >
+                    <Plus class="h-3.5 w-3.5" :stroke-width="2" />
+                    {{ t('common.add') }}
+                  </Button>
+                </div>
+
+                <!-- Parsed preview: what will be added -->
+                <div
+                  v-if="parsedRepo"
+                  class="flex items-center gap-1.5 flex-wrap text-[11px] px-0.5"
+                >
+                  <Badge :tone="parsedRepo.provider === 'gitlab' ? 'warning' : 'info'" size="xs">
+                    <component :is="parsedRepo.provider === 'gitlab' ? Gitlab : Github" class="h-2.5 w-2.5" :stroke-width="2" />
+                    {{ parsedRepo.provider === 'gitlab' ? 'GitLab' : 'GitHub' }}
+                  </Badge>
+                  <span class="font-mono text-muted-foreground truncate">
+                    {{ parsedRepo.provider === 'gitlab' ? parsedRepo.gitlab_project_path : `${parsedRepo.github_owner}/${parsedRepo.github_repo}` }}
+                  </span>
+                  <span v-if="isDuplicateRepo" class="flex items-center gap-1 text-amber-500 font-medium">
+                    <AlertTriangle class="h-2.5 w-2.5" :stroke-width="2" />
+                    {{ t('projects.alreadyAdded') }}
+                  </span>
+                </div>
+
+                <!-- Invalid URL hint -->
+                <p v-else-if="repoUrlInvalid" class="text-[11px] text-muted-foreground px-0.5">
+                  {{ t('projects.repoUrlHint') }}
+                </p>
+              </div>
+
+              <!-- Repos to create with the project (remove to change) -->
+              <div v-if="pendingRepos.length" class="border-t border-border/60 pt-3 mt-3 space-y-1.5">
                 <div
                   v-for="repo in pendingRepos"
                   :key="repo._key"
-                  class="flex flex-col gap-1.5 p-3 bg-muted/30 border border-border/60 rounded-md"
+                  class="flex items-center gap-2 border border-border rounded-md px-3 py-2"
                 >
-                  <!-- Repo path (read-only) -->
-                  <div class="flex items-center gap-1.5 text-[10px] text-muted-foreground font-mono truncate">
-                    <FolderOpen class="h-2.5 w-2.5 shrink-0" :stroke-width="1.5" />
-                    {{ repo.path }}
+                  <component
+                    :is="repo.provider === 'gitlab' ? Gitlab : Github"
+                    class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                    :stroke-width="1.75"
+                  />
+                  <div class="min-w-0 flex-1">
+                    <p class="text-xs font-medium truncate">{{ repo.name }}</p>
+                    <p class="text-[11px] text-muted-foreground font-mono truncate">{{ repoCoords(repo) }}</p>
                   </div>
-                  <!-- Name + delete -->
-                  <div class="flex gap-2 items-center">
-                    <Input
-                      v-model="repo.name"
-                      class="flex-1"
-                      :placeholder="t('projects.repoNamePlaceholder')"
-                    />
-                    <button
-                      class="flex h-6 w-6 items-center justify-center rounded text-destructive/40 hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer shrink-0"
-                      @click="removeRepoRow(repo._key)"
-                    >
-                      <X class="h-3 w-3" :stroke-width="2" />
-                    </button>
-                  </div>
-                  <!-- Owner / Repo -->
-                  <div class="flex gap-1.5 items-center">
-                    <Input
-                      v-model="repo.github_owner"
-                      :placeholder="t('projects.ownerPlaceholder')"
-                    />
-                    <span class="text-muted-foreground text-xs shrink-0">/</span>
-                    <Input
-                      v-model="repo.github_repo"
-                      :placeholder="t('projects.repoPlaceholder')"
-                    />
-                  </div>
-                </div>
-
-                <div v-if="pendingRepos.length === 0" class="text-[11px] text-muted-foreground text-center py-2">
-                  {{ t('projects.noReposHint') }}
+                  <Button
+                    variant="destructive-ghost"
+                    size="icon-sm"
+                    class="shrink-0"
+                    :title="t('projects.removeRepo')"
+                    @click="removeRepoRow(repo._key)"
+                  >
+                    <Trash2 class="h-3 w-3" :stroke-width="1.75" />
+                  </Button>
                 </div>
               </div>
+
+              <p v-else class="text-[11px] text-muted-foreground text-center py-2">
+                {{ t('projects.noReposHint') }}
+              </p>
             </div>
           </div>
 

@@ -71,7 +71,7 @@ import {
   type StreamEntry,
   type ImageAttachment,
 } from '@/lib/streamEvents'
-import { MODEL_OPTIONS, PERMISSION_MODE_OPTIONS } from '@/lib/engineOptions'
+import { MODEL_OPTIONS, PERMISSION_MODE_OPTIONS, withCurrentModel } from '@/lib/engineOptions'
 import RemoteSessionModal from '@/components/remote/RemoteSessionModal.vue'
 import { useRemoteControlStore } from '@/stores/remoteControl'
 
@@ -251,13 +251,15 @@ function onRunSettingsPointerDown(e: MouseEvent) {
   closeRunSettingsMenu()
 }
 // Model choices depend on the engine. Empty value = let the engine/setting decide.
-// Option tables live in @/lib/engineOptions (shared with the remote controller);
-// for Claude we augment them with models discovered from the account.
+// Option tables live in @/lib/engineOptions (shared with the remote controller).
+// Claude's is curated and annotated with the last validation sweep; Codex's is
+// replaced by whatever `codex debug models` last reported.
 const modelOptions = computed(() => {
   const base = MODEL_OPTIONS[effectiveEngine.value] ?? MODEL_OPTIONS.claude
-  if (effectiveEngine.value === 'claude') return modelCatalog.mergedClaudeOptions(base)
   if (effectiveEngine.value === 'codex') return modelCatalog.codexOptions(base)
-  return base
+  // Keep an override saved before this table changed selectable rather than
+  // silently blanking it.
+  return modelCatalog.withValidation(withCurrentModel(base, modelOverride.value))
 })
 // Reset the model when switching to an engine that doesn't offer the current pick.
 watch(effectiveEngine, () => {
@@ -1588,20 +1590,37 @@ let fileSeq = 0
 const isDraggingFile = ref(false)
 
 // ── Draft persistence ─────────────────────────────────────────────────────
-// RunView remounts on project switch (RouterView key is `run-<projectId>`), so
-// the composer would otherwise start empty. Restore any unsent draft for this
-// project — text, pasted images and attached files — and mirror later edits
-// back to the store so they survive project switches and full app reloads.
-{
-  const draft = draftsStore.get(projectId.value)
-  followUpInput.value = draft.text
-  for (const img of draft.images) pushPendingImage(img.media_type, img.data)
-  for (const f of draft.files) addPendingFile(f.path)
+// The composer's unsent draft (text, pasted images and attached files) is kept
+// PER SESSION, keyed by run id: switching between sessions — or leaving the
+// screen and coming back (the run reopens from the route / most-recent) —
+// restores exactly that session's draft instead of a shared, easily-clobbered
+// project-wide one. Mirrored to localStorage so it also survives app reloads.
+// `restoringDraft` guards the persist watcher while we swap a session's draft in.
+let restoringDraft = false
+
+function restoreDraftFor(runId: string | null) {
+  restoringDraft = true
+  pendingImages.value = []
+  pendingFiles.value = []
+  followUpInput.value = ''
+  if (runId) {
+    const draft = draftsStore.get(runId)
+    followUpInput.value = draft.text
+    for (const img of draft.images) pushPendingImage(img.media_type, img.data)
+    for (const f of draft.files) addPendingFile(f.path)
+  }
+  nextTick(() => { restoringDraft = false })
 }
+
+// Load the focused session's draft whenever it changes (initial open, session
+// switch, new session). The persist watcher below then tracks edits for it.
+watch(currentRunId, (id) => restoreDraftFor(id), { immediate: true })
+
 watch(
   [followUpInput, pendingImages, pendingFiles],
   () => {
-    draftsStore.set(projectId.value, {
+    if (restoringDraft || !currentRunId.value) return
+    draftsStore.set(currentRunId.value, {
       text: followUpInput.value,
       images: pendingImages.value.map(({ media_type, data }) => ({ media_type, data })),
       files: pendingFiles.value.map(({ name, path }) => ({ name, path })),

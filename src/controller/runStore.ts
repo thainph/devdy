@@ -164,9 +164,10 @@ export interface RunStoreState {
   slashCommands: SlashCommand[]
   /** Engine/model options the Host offers (composer footer selectors). */
   engineModelOptions: EngineModelOption[]
-  /** Models the Host discovered from the account, merged into the composer's
-   * curated table exactly as the desktop composer merges them. */
-  discoveredModels: { claude: FetchedModel[]; codex: FetchedModel[] }
+  /** Codex models the Host discovered, which replace the composer's curated
+   * Codex table exactly as on the desktop. Claude needs no counterpart: its list
+   * is curated in the shared bundle both surfaces import. */
+  discoveredModels: { codex: FetchedModel[] }
   /** Project file paths for the bound run (`@`-mention autocomplete). */
   projectFiles: string[]
   /** The bound run's live selection, mirrored from the Host (engine/model/mode). */
@@ -198,7 +199,7 @@ export function createRunStore() {
     notice: null,
     slashCommands: [],
     engineModelOptions: [],
-    discoveredModels: { claude: [], codex: [] },
+    discoveredModels: { codex: [] },
     projectFiles: [],
     runMeta: { engine: '', model: '', permissionMode: '', claudeAccountId: '' },
     claudeAccountChoices: [],
@@ -280,10 +281,7 @@ export function createRunStore() {
         break
       case 'engine_model_options':
         state.engineModelOptions = payload.engines
-        state.discoveredModels = {
-          claude: payload.claude_models ?? [],
-          codex: payload.codex_models ?? [],
-        }
+        state.discoveredModels = { codex: payload.codex_models ?? [] }
         state.claudeAccountChoices = payload.claude_accounts ?? []
         break
       case 'project_file_list':
@@ -474,7 +472,7 @@ export function createRunStore() {
     state.notice = null
     state.slashCommands = []
     state.engineModelOptions = []
-    state.discoveredModels = { claude: [], codex: [] }
+    state.discoveredModels = { codex: [] }
     state.projectFiles = []
     state.runMeta = { engine: '', model: '', permissionMode: '', claudeAccountId: '' }
     state.claudeAccountChoices = []

@@ -519,7 +519,11 @@ export function parseStreamPayload(json: unknown): StreamPayload | null {
         (Array.isArray(v) ? v : [])
           .filter((m): m is Record<string, unknown> => !!m && typeof m === 'object')
           .filter((m) => typeof m.value === 'string' && typeof m.label === 'string')
-          .map((m) => ({ value: m.value as string, label: m.label as string }))
+          .map((m) => ({
+            value: m.value as string,
+            label: m.label as string,
+            ...(typeof m.description === 'string' ? { description: m.description } : {}),
+          }))
       const accounts: ClaudeAccountChoice[] = (
         Array.isArray(o.claude_accounts) ? o.claude_accounts : []
       )

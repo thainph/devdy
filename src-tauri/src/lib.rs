@@ -99,9 +99,7 @@ use commands::vps_servers::{
     map_server_to_project, test_vps_connection, unmap_server, update_vps_server,
 };
 use commands::work_digest::get_work_digest;
-use commands::models::{
-    get_model_caches, list_claude_models, refresh_claude_models, refresh_codex_models,
-};
+use commands::models::{get_model_caches, refresh_codex_models, validate_claude_models};
 use commands::translate::{cancel_translate, prewarm_translate, translate_text, TranslateState};
 use commands::work_summary::{cancel_work_summary, summarize_work_digest, WorkSummaryState};
 use remote::commands::{
@@ -390,8 +388,7 @@ pub fn run() {
             prewarm_translate,
             mascot_speak,
             cancel_mascot_speak,
-            list_claude_models,
-            refresh_claude_models,
+            validate_claude_models,
             refresh_codex_models,
             get_model_caches,
             backfill_usage,

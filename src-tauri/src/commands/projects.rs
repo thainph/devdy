@@ -67,6 +67,13 @@ pub struct AddRepoPayload {
     pub path: String,
     pub github_owner: Option<String>,
     pub github_repo: Option<String>,
+    /// Git host provider: `github` (default) or `gitlab`.
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub gitlab_project_path: Option<String>,
+    #[serde(default)]
+    pub gitlab_project_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -76,7 +83,65 @@ pub struct AddProjectPayload {
     pub repos: Option<Vec<AddRepoPayload>>,
 }
 
-fn detect_github_remote(project_path: &str) -> Option<(String, String)> {
+/// Coordinates read off a repo's `origin` remote, mirroring the shapes the
+/// frontend URL parser accepts (see `src/lib/repoUrl.ts`).
+struct DetectedRemote {
+    provider: String,
+    github_owner: Option<String>,
+    github_repo: Option<String>,
+    gitlab_project_path: Option<String>,
+}
+
+/// Split a remote URL into host + path, accepting https/ssh/git schemes as well
+/// as scp-style `git@host:group/repo`.
+fn split_remote_host_path(raw: &str) -> Option<(String, String)> {
+    let trimmed = raw.trim().trim_end_matches('/');
+    let url = trimmed.strip_suffix(".git").unwrap_or(trimmed);
+
+    // scp-style has no scheme but carries a colon before the path.
+    if !url.contains("://") {
+        if let Some((userhost, path)) = url.split_once(':') {
+            let host = userhost.rsplit('@').next().unwrap_or(userhost);
+            return Some((host.to_lowercase(), path.to_string()));
+        }
+    }
+
+    let no_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    let (host, path) = no_scheme.split_once('/')?;
+    // Strip userinfo (git@host) without eating an `@` that lives in the path.
+    let host = host.rsplit('@').next().unwrap_or(host);
+    Some((host.to_lowercase(), path.to_string()))
+}
+
+fn parse_remote_url(raw: &str) -> Option<DetectedRemote> {
+    let (host, path) = split_remote_host_path(raw)?;
+    let path = path.split(['?', '#']).next().unwrap_or(&path).to_string();
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if segments.len() < 2 {
+        return None;
+    }
+    let name = segments[segments.len() - 1].to_string();
+
+    if host.contains("gitlab") {
+        return Some(DetectedRemote {
+            provider: "gitlab".to_string(),
+            github_owner: None,
+            github_repo: None,
+            gitlab_project_path: Some(segments.join("/")),
+        });
+    }
+    if host.contains("github") {
+        return Some(DetectedRemote {
+            provider: "github".to_string(),
+            github_owner: Some(segments[0].to_string()),
+            github_repo: Some(name),
+            gitlab_project_path: None,
+        });
+    }
+    None
+}
+
+fn detect_remote(project_path: &str) -> Option<DetectedRemote> {
     let output = Command::new("git")
         .args(["remote", "get-url", "origin"])
         .current_dir(project_path)
@@ -86,21 +151,7 @@ fn detect_github_remote(project_path: &str) -> Option<(String, String)> {
         return None;
     }
     let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    // Parse github.com/owner/repo from https or git URL
-    let url = url.trim_end_matches(".git");
-    if let Some(path) = url.strip_prefix("https://github.com/") {
-        let parts: Vec<&str> = path.splitn(2, '/').collect();
-        if parts.len() == 2 {
-            return Some((parts[0].to_string(), parts[1].to_string()));
-        }
-    }
-    if let Some(path) = url.strip_prefix("git@github.com:") {
-        let parts: Vec<&str> = path.splitn(2, '/').collect();
-        if parts.len() == 2 {
-            return Some((parts[0].to_string(), parts[1].to_string()));
-        }
-    }
-    None
+    parse_remote_url(&url)
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -133,6 +184,25 @@ pub struct DetectedRepo {
     pub path: String,
     pub github_owner: Option<String>,
     pub github_repo: Option<String>,
+    /// Provider read off the `origin` remote; `github` when there's nothing to go on.
+    pub provider: String,
+    pub gitlab_project_path: Option<String>,
+}
+
+impl DetectedRepo {
+    fn from_remote(name: String, path: String, remote: Option<DetectedRemote>) -> Self {
+        Self {
+            name,
+            path,
+            github_owner: remote.as_ref().and_then(|r| r.github_owner.clone()),
+            github_repo: remote.as_ref().and_then(|r| r.github_repo.clone()),
+            provider: remote
+                .as_ref()
+                .map(|r| r.provider.clone())
+                .unwrap_or_else(default_provider),
+            gitlab_project_path: remote.as_ref().and_then(|r| r.gitlab_project_path.clone()),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -480,13 +550,11 @@ pub async fn detect_project_info(path: String) -> Result<DetectedProjectInfo, St
 
     // Check root for .git
     if Path::new(&path).join(".git").exists() {
-        let github = detect_github_remote(&path);
-        repos.push(DetectedRepo {
-            name: project_name.clone(),
-            path: path.clone(),
-            github_owner: github.as_ref().map(|(o, _)| o.clone()),
-            github_repo: github.as_ref().map(|(_, r)| r.clone()),
-        });
+        repos.push(DetectedRepo::from_remote(
+            project_name.clone(),
+            path.clone(),
+            detect_remote(&path),
+        ));
     }
 
     // Scan immediate subdirectories for .git
@@ -504,13 +572,8 @@ pub async fn detect_project_info(path: String) -> Result<DetectedProjectInfo, St
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| subdir_str.clone());
-                let github = detect_github_remote(&subdir_str);
-                repos.push(DetectedRepo {
-                    name: subdir_name,
-                    path: subdir_str,
-                    github_owner: github.as_ref().map(|(o, _)| o.clone()),
-                    github_repo: github.as_ref().map(|(_, r)| r.clone()),
-                });
+                let remote = detect_remote(&subdir_str);
+                repos.push(DetectedRepo::from_remote(subdir_name, subdir_str, remote));
             }
         }
     }
@@ -601,8 +664,12 @@ pub async fn add_project(db: State<'_, Db>, payload: AddProjectPayload) -> Resul
     if let Some(repos) = payload.repos {
         for repo in repos {
             let repo_id = Uuid::new_v4().to_string();
+            let provider = repo
+                .provider
+                .filter(|p| !p.is_empty())
+                .unwrap_or_else(default_provider);
             sqlx::query(
-                "INSERT INTO repos (id, project_id, name, path, github_owner, github_repo, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+                "INSERT INTO repos (id, project_id, name, path, github_owner, github_repo, created_at, provider, gitlab_project_path, gitlab_project_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             )
             .bind(&repo_id)
             .bind(&id)
@@ -611,6 +678,9 @@ pub async fn add_project(db: State<'_, Db>, payload: AddProjectPayload) -> Resul
             .bind(&repo.github_owner)
             .bind(&repo.github_repo)
             .bind(&now)
+            .bind(&provider)
+            .bind(&repo.gitlab_project_path)
+            .bind(repo.gitlab_project_id)
             .execute(db.inner())
             .await
             .map_err(|e| e.to_string())?;
@@ -1193,4 +1263,41 @@ pub async fn resolve_sync_conflict(
         .map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_remote_url;
+
+    #[test]
+    fn parses_github_https_and_scp_remotes() {
+        let https = parse_remote_url("https://github.com/acme/widget.git").unwrap();
+        assert_eq!(https.provider, "github");
+        assert_eq!(https.github_owner.as_deref(), Some("acme"));
+        assert_eq!(https.github_repo.as_deref(), Some("widget"));
+
+        let scp = parse_remote_url("git@github.com:acme/widget.git").unwrap();
+        assert_eq!(scp.provider, "github");
+        assert_eq!(scp.github_owner.as_deref(), Some("acme"));
+        assert_eq!(scp.github_repo.as_deref(), Some("widget"));
+    }
+
+    #[test]
+    fn parses_gitlab_remotes_keeping_nested_groups() {
+        let https = parse_remote_url("https://gitlab.com/group/sub/widget.git").unwrap();
+        assert_eq!(https.provider, "gitlab");
+        assert_eq!(https.gitlab_project_path.as_deref(), Some("group/sub/widget"));
+        assert!(https.github_owner.is_none());
+
+        let scp = parse_remote_url("git@gitlab.example.com:group/widget.git").unwrap();
+        assert_eq!(scp.provider, "gitlab");
+        assert_eq!(scp.gitlab_project_path.as_deref(), Some("group/widget"));
+    }
+
+    #[test]
+    fn ignores_unknown_hosts_and_incomplete_urls() {
+        assert!(parse_remote_url("https://bitbucket.org/acme/widget.git").is_none());
+        assert!(parse_remote_url("https://github.com/acme").is_none());
+        assert!(parse_remote_url("").is_none());
+    }
 }
