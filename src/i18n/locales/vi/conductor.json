@@ -1,0 +1,45 @@
+{
+  "title": "Conductor",
+  "status": {
+    "idle": "Chờ",
+    "running": "Đang chạy",
+    "done": "Hoàn tất",
+    "failed": "Lỗi",
+    "cancelled": "Đã hủy",
+    "fetched": "Sẵn sàng"
+  },
+  "workerCount": "{n}/{max} worker",
+  "workerCountShort": "{n} worker",
+  "goalLabel": "Mục tiêu",
+  "goalPlaceholder": "Mô tả việc bạn muốn hoàn thành. Conductor sẽ chia thành các vai trò và tạo worker để thực hiện.",
+  "maxWorkersLabel": "Worker tối đa",
+  "errGoalRequired": "Hãy nhập mục tiêu cho conductor.",
+  "conductorStream": "Conductor",
+  "streamEmpty": "Đang chờ conductor bắt đầu điều phối…",
+  "workers": "Worker",
+  "noWorkers": "Chưa có worker nào được tạo.",
+  "needsPermission": "Cần duyệt quyền",
+  "modeToggle": "Conductor",
+  "collapse": "Thu gọn",
+  "expand": "Mở rộng",
+  "permissionFrom": "Yêu cầu quyền — {label}",
+  "timeline": "Dòng thời gian",
+  "noEvents": "Chưa có sự kiện điều phối nào.",
+  "emptyState": "Tạo phiên conductor mới để điều phối nhiều agent từ một mục tiêu duy nhất.",
+  "untitled": "(chưa có mục tiêu)",
+  "historyTitle": "Phiên",
+  "searchPlaceholder": "Tìm phiên…",
+  "noHistory": "Chưa có phiên conductor nào.",
+  "noMatching": "Không có phiên phù hợp.",
+  "action": {
+    "new": "Tạo mới",
+    "launch": "Khởi chạy",
+    "openConductor": "Mở conductor"
+  },
+  "event": {
+    "spawn": "Đã tạo {role} ({id})",
+    "send": "Gửi thêm cho {id}",
+    "cancel": "Đã hủy {id}",
+    "permission": "Quyền {decision}: {tool}"
+  }
+}

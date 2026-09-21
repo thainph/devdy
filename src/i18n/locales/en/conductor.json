@@ -1,0 +1,45 @@
+{
+  "title": "Conductor",
+  "status": {
+    "idle": "Idle",
+    "running": "Running",
+    "done": "Done",
+    "failed": "Failed",
+    "cancelled": "Cancelled",
+    "fetched": "Ready"
+  },
+  "workerCount": "{n}/{max} workers",
+  "workerCountShort": "{n} workers",
+  "goalLabel": "Goal",
+  "goalPlaceholder": "Describe what you want done. The conductor will split it into roles and spawn workers to do the work.",
+  "maxWorkersLabel": "Max workers",
+  "errGoalRequired": "Please enter a goal for the conductor.",
+  "conductorStream": "Conductor",
+  "streamEmpty": "Waiting for the conductor to start orchestrating…",
+  "workers": "Workers",
+  "noWorkers": "No workers spawned yet.",
+  "needsPermission": "Needs permission",
+  "modeToggle": "Conductor",
+  "collapse": "Collapse",
+  "expand": "Expand",
+  "permissionFrom": "Permission request — {label}",
+  "timeline": "Timeline",
+  "noEvents": "No control-plane events yet.",
+  "emptyState": "Start a new conductor session to orchestrate multiple agents from a single goal.",
+  "untitled": "(no goal)",
+  "historyTitle": "Sessions",
+  "searchPlaceholder": "Search sessions…",
+  "noHistory": "No conductor sessions yet.",
+  "noMatching": "No matching sessions.",
+  "action": {
+    "new": "New",
+    "launch": "Launch",
+    "openConductor": "Open conductor"
+  },
+  "event": {
+    "spawn": "Spawned {role} ({id})",
+    "send": "Follow-up to {id}",
+    "cancel": "Cancelled {id}",
+    "permission": "Permission {decision}: {tool}"
+  }
+}

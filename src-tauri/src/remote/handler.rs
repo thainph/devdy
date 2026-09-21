@@ -579,6 +579,8 @@ async fn handle_start_run(ctx: &HandlerCtx, cmd: &CmdPayload) {
         model_override: model,
         images: convert_attachments(&cmd.attachments),
         override_budget: false,
+        append_system_prompt: None,
+        conductor_token: None,
     };
     match crate::commands::runs::start_run_inner(
         ctx.app.clone(),

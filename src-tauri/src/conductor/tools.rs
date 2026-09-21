@@ -1,0 +1,427 @@
+//! Implementation of the `session_*` control tools. Each tool reaches into the
+//! app's managed state (`Db`, `RunRegistry`) via the `AppHandle` and reuses the
+//! same core the desktop UI / Remote Control use (`start_run_inner`,
+//! `send_user_message_inner`, `cancel_run_inner`, `resume_run`).
+
+use serde_json::{json, Value};
+use sqlx::Row;
+use std::path::Path;
+use std::time::{Duration, Instant};
+use tauri::Manager;
+
+use super::mcp_http::HttpState;
+use crate::commands::runs::{start_run_inner, StartRunPayload};
+use crate::db::Db;
+use crate::runs::RunRegistry;
+
+const DEFAULT_WAIT_MS: u64 = 120_000;
+const MAX_WAIT_MS: u64 = 600_000;
+const POLL_INTERVAL_MS: u64 = 400;
+
+/// Route a tool name to its handler. `Ok` payloads are surfaced to the model as
+/// JSON; `Err(String)` becomes an MCP `isError` tool result.
+pub async fn dispatch(
+    state: &HttpState,
+    conductor_run_id: &str,
+    name: &str,
+    args: Value,
+) -> Result<Value, String> {
+    match name {
+        "session_spawn" => session_spawn(state, conductor_run_id, args).await,
+        "session_list" => session_list(state, conductor_run_id).await,
+        "session_poll" => session_poll(state, conductor_run_id, args).await,
+        "session_wait" => session_wait(state, conductor_run_id, args).await,
+        "session_read" => session_read(state, conductor_run_id, args).await,
+        "session_send" => session_send(state, conductor_run_id, args).await,
+        "session_cancel" => session_cancel(state, conductor_run_id, args).await,
+        other => Err(format!("unknown tool: {}", other)),
+    }
+}
+
+fn db(state: &HttpState) -> Db {
+    state.app.state::<Db>().inner().clone()
+}
+
+fn registry(state: &HttpState) -> RunRegistry {
+    state.app.state::<RunRegistry>().inner().clone()
+}
+
+fn arg_str(args: &Value, key: &str) -> Option<String> {
+    args.get(key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+async fn session_spawn(
+    state: &HttpState,
+    conductor_run_id: &str,
+    args: Value,
+) -> Result<Value, String> {
+    let session = state
+        .conductor
+        .session(conductor_run_id)
+        .ok_or_else(|| "unknown conductor session".to_string())?;
+
+    let prompt = arg_str(&args, "prompt")
+        .ok_or_else(|| "`prompt` is required".to_string())?;
+    let role_label = arg_str(&args, "role_label").unwrap_or_else(|| "worker".to_string());
+    let instruction = arg_str(&args, "instruction");
+    let model = arg_str(&args, "model");
+    // No override => worker uses the project's default permission mode, exactly
+    // like a normal session; its prompts surface in the standard drawer.
+    let permission_mode = arg_str(&args, "permission_mode");
+
+    let db = db(state);
+    let engine = match arg_str(&args, "engine") {
+        Some(e) => e,
+        None => crate::commands::settings::resolve_default_engine(&db).await,
+    };
+
+    let worker_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let title = truncate(&format!("[{}] {}", role_label, prompt), 80);
+
+    sqlx::query(
+        "INSERT INTO runs (id, project_id, type, status, engine, created_at, title, role, conductor_run_id)
+         VALUES (?, ?, 'session', 'fetched', ?, ?, ?, 'worker', ?)",
+    )
+    .bind(&worker_id)
+    .bind(&session.project_id)
+    .bind(&engine)
+    .bind(&now)
+    .bind(&title)
+    .bind(conductor_run_id)
+    .execute(&db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // Reserve the worker slot (enforces the per-conductor cap).
+    if !state.conductor.add_worker(conductor_run_id, &worker_id) {
+        let _ = sqlx::query("DELETE FROM runs WHERE id = ?")
+            .bind(&worker_id)
+            .execute(&db)
+            .await;
+        return Err(format!(
+            "worker cap reached ({} max) — read/cancel existing workers first",
+            session.max_workers
+        ));
+    }
+
+    let payload = StartRunPayload {
+        run_id: worker_id.clone(),
+        engine_override: Some(engine.clone()),
+        permission_mode_override: permission_mode,
+        prompt_override: Some(prompt.clone()),
+        model_override: model,
+        images: Vec::new(),
+        override_budget: false,
+        append_system_prompt: instruction,
+        conductor_token: None,
+    };
+
+    start_run_inner(state.app.clone(), db.clone(), registry(state), payload).await?;
+
+    log_event(
+        &db,
+        conductor_run_id,
+        "spawn",
+        json!({ "worker_id": worker_id, "role_label": role_label, "engine": engine }),
+    )
+    .await;
+
+    Ok(json!({ "worker_id": worker_id, "role_label": role_label, "status": "running" }))
+}
+
+async fn session_list(state: &HttpState, conductor_run_id: &str) -> Result<Value, String> {
+    let db = db(state);
+    let rows = sqlx::query(
+        "SELECT id, title, status, engine, role FROM runs WHERE conductor_run_id = ? ORDER BY created_at",
+    )
+    .bind(conductor_run_id)
+    .fetch_all(&db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let workers: Vec<Value> = rows
+        .iter()
+        .map(|r| {
+            let status: String = r.get("status");
+            json!({
+                "worker_id": r.get::<String, _>("id"),
+                "title": r.get::<Option<String>, _>("title"),
+                "engine": r.get::<String, _>("engine"),
+                "status": normalize_status(&status),
+            })
+        })
+        .collect();
+    Ok(json!({ "workers": workers }))
+}
+
+async fn session_poll(
+    state: &HttpState,
+    conductor_run_id: &str,
+    args: Value,
+) -> Result<Value, String> {
+    let ids = requested_ids(state, conductor_run_id, &args).await?;
+    let db = db(state);
+    let mut out = Vec::new();
+    for id in ids {
+        let status = worker_status(&db, &id).await?;
+        out.push(json!({ "worker_id": id, "status": normalize_status(&status) }));
+    }
+    Ok(json!({ "workers": out }))
+}
+
+async fn session_wait(
+    state: &HttpState,
+    conductor_run_id: &str,
+    args: Value,
+) -> Result<Value, String> {
+    let ids = requested_ids(state, conductor_run_id, &args).await?;
+    if ids.is_empty() {
+        return Err("`worker_ids` is required and must be non-empty".to_string());
+    }
+    let timeout_ms = args
+        .get("timeout_ms")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(DEFAULT_WAIT_MS)
+        .min(MAX_WAIT_MS);
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let db = db(state);
+
+    loop {
+        let mut done = Vec::new();
+        let mut pending = Vec::new();
+        for id in &ids {
+            let status = worker_status(&db, id).await?;
+            if status == "running" {
+                pending.push(id.clone());
+            } else {
+                done.push(json!({ "worker_id": id, "status": normalize_status(&status) }));
+            }
+        }
+        if pending.is_empty() || Instant::now() >= deadline {
+            return Ok(json!({
+                "done": done,
+                "pending": pending,
+                "timed_out": !pending.is_empty(),
+            }));
+        }
+        tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+}
+
+async fn session_read(
+    state: &HttpState,
+    conductor_run_id: &str,
+    args: Value,
+) -> Result<Value, String> {
+    let worker_id = arg_str(&args, "worker_id")
+        .ok_or_else(|| "`worker_id` is required".to_string())?;
+    ensure_owned(state, conductor_run_id, &worker_id)?;
+
+    let db = db(state);
+    let row = sqlx::query(
+        "SELECT r.status, p.path as project_path FROM runs r
+         JOIN projects p ON p.id = r.project_id WHERE r.id = ?",
+    )
+    .bind(&worker_id)
+    .fetch_one(&db)
+    .await
+    .map_err(|e| e.to_string())?;
+    let status: String = row.get("status");
+    let project_path: String = row.get("project_path");
+
+    let log_path = Path::new(&project_path)
+        .join(".devdy")
+        .join("runs")
+        .join(format!("{}.log", worker_id));
+    let reply = extract_latest_reply(&log_path);
+
+    Ok(json!({
+        "worker_id": worker_id,
+        "status": normalize_status(&status),
+        "reply": reply,
+    }))
+}
+
+async fn session_send(
+    state: &HttpState,
+    conductor_run_id: &str,
+    args: Value,
+) -> Result<Value, String> {
+    let worker_id = arg_str(&args, "worker_id")
+        .ok_or_else(|| "`worker_id` is required".to_string())?;
+    let text = arg_str(&args, "text").ok_or_else(|| "`text` is required".to_string())?;
+    ensure_owned(state, conductor_run_id, &worker_id)?;
+
+    let db = db(state);
+    let reg = registry(state);
+    let status = worker_status(&db, &worker_id).await?;
+
+    // A worker's turn ends by exiting its sidecar, so a follow-up first resumes
+    // the session, then delivers the message — mirroring the desktop composer.
+    if status != "running" {
+        crate::commands::runs::resume_run(
+            state.app.clone(),
+            state.app.state::<Db>(),
+            state.app.state::<RunRegistry>(),
+            worker_id.clone(),
+            None,
+            None,
+            Some(false),
+        )
+        .await?;
+    }
+
+    crate::commands::runs::send_user_message_inner(
+        &db,
+        &reg,
+        crate::commands::runs::SendUserMessagePayload {
+            run_id: worker_id.clone(),
+            content: text,
+            images: Vec::new(),
+            override_budget: false,
+        },
+    )
+    .await?;
+
+    log_event(&db, conductor_run_id, "send", json!({ "worker_id": worker_id })).await;
+    Ok(json!({ "worker_id": worker_id, "accepted": true, "status": "running" }))
+}
+
+async fn session_cancel(
+    state: &HttpState,
+    conductor_run_id: &str,
+    args: Value,
+) -> Result<Value, String> {
+    let worker_id = arg_str(&args, "worker_id")
+        .ok_or_else(|| "`worker_id` is required".to_string())?;
+    ensure_owned(state, conductor_run_id, &worker_id)?;
+
+    let db = db(state);
+    crate::commands::runs::cancel_run_inner(&registry(state), &db, &worker_id).await?;
+    log_event(&db, conductor_run_id, "cancel", json!({ "worker_id": worker_id })).await;
+    Ok(json!({ "worker_id": worker_id, "status": "cancelled" }))
+}
+
+// ---- helpers ---------------------------------------------------------------
+
+/// The worker ids the tool should act on: an explicit `worker_ids` (scoped to
+/// this conductor) or all of the conductor's workers.
+async fn requested_ids(
+    state: &HttpState,
+    conductor_run_id: &str,
+    args: &Value,
+) -> Result<Vec<String>, String> {
+    if let Some(arr) = args.get("worker_ids").and_then(|v| v.as_array()) {
+        let mut ids = Vec::new();
+        for v in arr {
+            if let Some(s) = v.as_str() {
+                ensure_owned(state, conductor_run_id, s)?;
+                ids.push(s.to_string());
+            }
+        }
+        Ok(ids)
+    } else {
+        Ok(state
+            .conductor
+            .session(conductor_run_id)
+            .map(|s| s.worker_ids)
+            .unwrap_or_default())
+    }
+}
+
+fn ensure_owned(
+    state: &HttpState,
+    conductor_run_id: &str,
+    worker_id: &str,
+) -> Result<(), String> {
+    if state.conductor.owns_worker(conductor_run_id, worker_id) {
+        Ok(())
+    } else {
+        Err(format!("worker {} is not owned by this conductor", worker_id))
+    }
+}
+
+async fn worker_status(db: &Db, worker_id: &str) -> Result<String, String> {
+    sqlx::query_scalar::<_, String>("SELECT status FROM runs WHERE id = ?")
+        .bind(worker_id)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("worker {} not found", worker_id))
+}
+
+/// Map DB run status onto the conductor's vocabulary. `running` == turn in
+/// progress; everything terminal is idle/awaitable.
+fn normalize_status(status: &str) -> &'static str {
+    match status {
+        "running" => "running",
+        "done" => "idle",
+        "failed" => "failed",
+        "cancelled" => "cancelled",
+        _ => "idle",
+    }
+}
+
+/// Parse the worker's stream-json log and return the assistant text produced
+/// since its last user turn. Empty string when nothing is readable yet.
+fn extract_latest_reply(log_path: &Path) -> String {
+    let content = match std::fs::read_to_string(log_path) {
+        Ok(c) => c,
+        Err(_) => return String::new(),
+    };
+    let mut reply = String::new();
+    for line in content.lines() {
+        let v: Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        match v.get("type").and_then(|t| t.as_str()) {
+            Some("user") => reply.clear(),
+            Some("assistant") => {
+                if let Some(blocks) = v
+                    .get("message")
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| c.as_array())
+                {
+                    for b in blocks {
+                        if b.get("type").and_then(|t| t.as_str()) == Some("text") {
+                            if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
+                                if !reply.is_empty() {
+                                    reply.push('\n');
+                                }
+                                reply.push_str(t);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    reply.trim().to_string()
+}
+
+async fn log_event(db: &Db, session_id: &str, kind: &str, payload: Value) {
+    let _ = sqlx::query(
+        "INSERT INTO conductor_events (session_id, ts, kind, payload_json) VALUES (?, ?, ?, ?)",
+    )
+    .bind(session_id)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .bind(kind)
+    .bind(payload.to_string())
+    .execute(db)
+    .await;
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    let t: String = s.chars().take(max).collect();
+    if s.chars().count() > max {
+        format!("{}…", t)
+    } else {
+        t
+    }
+}

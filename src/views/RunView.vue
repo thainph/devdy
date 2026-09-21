@@ -38,7 +38,7 @@ import {
   ShieldQuestion, MessageCircleQuestion,
   Pin, PinOff, Pencil, Check, Github, Gitlab, UserCircle,
   ClipboardCopy, ScrollText, HardDrive, Cloud, Radio, Languages, StickyNote, ListTodo, FolderTree, Loader2, ListChecks,
-  MoreHorizontal, Users, BookMarked, Search
+  MoreHorizontal, BookMarked, Search, Network, ChevronLeft, ChevronRight
 } from 'lucide-vue-next'
 import AppSelect from '@/components/AppSelect.vue'
 import { type SavedPrompt, parseSavedPrompts, promptLabel } from '@/lib/savedPrompts'
@@ -50,8 +50,8 @@ import BudgetBadge from '@/components/BudgetBadge.vue'
 import { mergeContextModel } from '@/lib/contextLimits'
 import PermissionPrompt from '@/components/PermissionPrompt.vue'
 import FileTree from '@/components/FileTree.vue'
-import DuoHistoryList from '@/components/duo/DuoHistoryList.vue'
-import DuoWorkspace from '@/components/duo/DuoWorkspace.vue'
+import ConductorWorkerPanel from '@/components/conductor/ConductorWorkerPanel.vue'
+import { useConductorStore } from '@/stores/conductor'
 import { Button, Input, StatusBadge, Badge, Modal, DropdownMenu, DropdownItem, DropdownSeparator } from '@/components/ui'
 import { useTurnNavigator } from '@/composables/useTurnNavigator'
 import { useConfirm } from '@/composables/useConfirm'
@@ -81,6 +81,7 @@ const router = useRouter()
 const projectStore = useProjectsStore()
 const runsStore = useRunsStore()
 const live = useLiveRunsStore()
+const conductorStore = useConductorStore()
 const tabsStore = useWorkspaceTabsStore()
 const draftsStore = useChatDraftsStore()
 const runPrefsStore = useRunPrefsStore()
@@ -201,10 +202,10 @@ const fetching = ref(false)
 // The fetch form is collapsed by default so the run History gets the space.
 const fetchOpen = ref(false)
 // Left rail view: session controls/history, or the project file tree.
-const leftTab = ref<'session' | 'files' | 'duo'>('session')
+const leftTab = ref<'session' | 'files'>('session')
 
-// Open one of a Duo's two sessions in the Session tab (from DuoWorkspace).
-async function openDuoSession(runId: string) {
+// Open a session in the Session tab (e.g. a worker from the conductor panel).
+async function openSession(runId: string) {
   leftTab.value = 'session'
   // Make sure the project's run list is loaded so the row highlights, then open.
   if (!runsStore.runs.some((r) => r.id === runId)) {
@@ -541,7 +542,6 @@ const liveEntries = computed(() => session.value?.entries ?? [])
 const liveOutputLines = computed(() => session.value?.outputLines ?? [])
 const liveHasStream = computed(() => session.value?.hasStreamEvents ?? false)
 const permissionQueue = computed(() => session.value?.permissionQueue ?? [])
-const allowedToolsList = computed(() => session.value?.allowedTools ?? [])
 // Context-window meter state for the focused run. Prefer the live session; for
 // a past run with no live session, use the figures reconstructed from its log.
 const contextTokens = computed(() => session.value?.contextTokens ?? historyContextTokens.value)
@@ -557,6 +557,53 @@ const contextRateLimit = computed(() => session.value?.rateLimit ?? null)
 // Prefer the live session's status, fall back to the persisted run row.
 const currentStatus = computed(() => session.value?.status ?? currentRun.value?.status ?? 'idle')
 const currentSessionId = computed(() => session.value?.sessionId ?? currentRun.value?.session_id ?? null)
+
+// ── Conductor ──────────────────────────────────────────────────────────────
+// A conductor is just this session that also drives worker runs. When the open
+// run is one, we show the worker sidebar; the conductor store polls its tree.
+const isConductor = computed(() => !!conductorStore.detail?.session)
+const conductorWorkers = computed(() => conductorStore.detail?.workers ?? [])
+const conductorEvents = computed(() => conductorStore.detail?.events ?? [])
+const workerPanelOpen = ref(true)
+// "New session as conductor" toggle (shown on a fresh session's composer).
+const conductorMode = ref(false)
+const conductorMaxWorkers = ref(6)
+// Point the conductor store at whatever run is now open; it self-clears when the
+// run is a normal session.
+watch(currentRunId, (id) => { void conductorStore.select(id ?? null) }, { immediate: true })
+// Keep worker permission prompts flowing: listen to each running worker so its
+// queue populates (and the sidebar's ⚠ flag lights up) even before it's opened.
+watch(conductorWorkers, (ws) => {
+  for (const w of ws) {
+    if (w.status === 'running') void live.startListening(w.worker_id, projectId.value)
+  }
+}, { immediate: true })
+
+// First worker (of the open conductor) with a pending permission request, if
+// the open run itself has none. Lets a conductor answer its workers' prompts in
+// its OWN drawer without navigating to the worker session.
+const workerPermission = computed(() => {
+  if (!isConductor.value) return null
+  for (const w of conductorWorkers.value) {
+    const q = live.get(w.worker_id)?.permissionQueue
+    if (q && q.length) return { runId: w.worker_id, req: q[0] }
+  }
+  return null
+})
+// The permission the drawer actually shows + the run it belongs to. For a normal
+// session this is always the current run's own queue (unchanged behavior); a
+// conductor additionally surfaces its workers' prompts here.
+const effectivePermRunId = computed(() =>
+  permissionQueue.value.length ? currentRunId.value : workerPermission.value?.runId ?? currentRunId.value,
+)
+const effectivePermReq = computed(() => permissionQueue.value[0] ?? workerPermission.value?.req ?? null)
+const effectivePermAllowedTools = computed(
+  () => live.get(effectivePermRunId.value ?? '')?.allowedTools ?? [],
+)
+function workerLabel(runId: string | null): string {
+  const w = conductorWorkers.value.find((x) => x.worker_id === runId)
+  return w?.title ?? (runId ? runId.slice(0, 8) : '')
+}
 
 // Sidebar/label text for a run: sessions show their title; issue/PR show "#N".
 function runLabel(run: RunRecord): string {
@@ -1221,6 +1268,7 @@ onUnmounted(() => {
   // while the user is on another screen.
   unbindNewSessionMenu?.()
   unbindNewSessionMenu = null
+  conductorStore.stopPolling()
   if (isResizing.value) stopResize()
   if (isResizingQuestion.value) stopQuestionResize()
   outputRO?.disconnect()
@@ -2196,6 +2244,20 @@ async function handleSendFollowUp() {
     const prompt = composePrompt(text, takePendingFilePaths())
 
     if (isFetched) {
+      // Conductor mode: promote this fresh session into a conductor and launch
+      // it with the typed text as its goal. It then streams here like any
+      // session, and the worker sidebar appears once its tree is polled.
+      if (conductorMode.value) {
+        await conductorStore.start(id, prompt, { maxWorkers: conductorMaxWorkers.value })
+        conductorMode.value = false
+        live.setStatus(id, 'running')
+        setLocalRunStatus(id, 'running')
+        await live.startListening(id, projectId.value)
+        live.pushUser(id, projectId.value, prompt, images)
+        void conductorStore.select(id)
+        followUpInput.value = ''
+        return
+      }
       // First run on this fetched record — use the typed text as the prompt.
       await launchFreshRun(id, engineOverride.value || undefined, prompt, images, override)
       followUpInput.value = ''
@@ -2238,9 +2300,11 @@ async function handleSendFollowUp() {
 }
 
 async function handlePermissionDecision(decision: 'allow' | 'deny' | 'ask', remember: boolean) {
-  const id = currentRunId.value
+  // Route to the run the drawer is actually showing — the current run, or (for a
+  // conductor) the worker whose prompt we surfaced.
+  const id = effectivePermRunId.value
   if (!id) return
-  const req = permissionQueue.value[0]
+  const req = effectivePermReq.value
   if (!req) return
   live.shiftPermission(id)
   if (remember && decision === 'allow') {
@@ -2263,14 +2327,14 @@ async function handlePermissionDecision(decision: 'allow' | 'deny' | 'ask', reme
 // logic here when it forwards the user's decision back.
 function syncPermissionToPopout() {
   if (!poppedOut.value) return
-  const head = permissionQueue.value[0] ?? null
+  const head = effectivePermReq.value
   // Nothing left to answer (resolved or run finished) → close the pop-out and
   // re-dock, so the window doesn't linger after the user responds.
   if (!head) {
     redockPermission()
     return
   }
-  emit('permission:sync', { request: head, allowedTools: allowedToolsList.value })
+  emit('permission:sync', { request: head, allowedTools: effectivePermAllowedTools.value })
 }
 
 async function openPermissionPopout() {
@@ -2298,7 +2362,7 @@ function redockPermission() {
 // Keep the pop-out in sync whenever the head request changes (queue advances,
 // new request arrives, or the run finishes and clears it).
 watch(
-  () => [permissionQueue.value[0]?.request_id ?? null, poppedOut.value] as const,
+  () => [effectivePermReq.value?.request_id ?? null, poppedOut.value] as const,
   () => syncPermissionToPopout(),
 )
 
@@ -2328,14 +2392,14 @@ async function setupPopoutBridge() {
       'permission:decide',
       (e) => {
         // Ignore stale decisions that don't match the current head request.
-        if (e.payload?.request_id !== permissionQueue.value[0]?.request_id) return
+        if (e.payload?.request_id !== effectivePermReq.value?.request_id) return
         handlePermissionDecision(e.payload.decision, e.payload.remember)
       },
     ),
     await listen<{ request_id: string; answers: Record<string, string> }>(
       'permission:answer',
       (e) => {
-        if (e.payload?.request_id !== permissionQueue.value[0]?.request_id) return
+        if (e.payload?.request_id !== effectivePermReq.value?.request_id) return
         handlePermissionAnswer(e.payload.answers)
       },
     ),
@@ -2343,9 +2407,9 @@ async function setupPopoutBridge() {
 }
 
 async function handlePermissionAnswer(answers: Record<string, string>) {
-  const id = currentRunId.value
+  const id = effectivePermRunId.value
   if (!id) return
-  const req = permissionQueue.value[0]
+  const req = effectivePermReq.value
   if (!req) return
   live.shiftPermission(id)
   try {
@@ -2942,14 +3006,6 @@ function handleRefInput(val: string) {
             <FolderTree class="h-3.5 w-3.5" :stroke-width="2" />
             {{ t('run.files') }}
           </button>
-          <button
-            class="flex-1 flex items-center justify-center gap-1.5 py-2 transition-colors cursor-pointer"
-            :class="leftTab === 'duo' ? 'text-foreground border-b-2 border-primary' : 'text-muted-foreground hover:text-foreground'"
-            @click="leftTab = 'duo'"
-          >
-            <Users class="h-3.5 w-3.5" :stroke-width="2" />
-            {{ t('run.duo') }}
-          </button>
         </div>
 
         <!-- Compact top toolbar: New session, then a collapsible Fetch -->
@@ -3269,19 +3325,10 @@ function handleRefInput(val: string) {
           @open-file="openFile"
         />
 
-        <!-- Duo tab: saved Duo-session switcher, scoped to this project. -->
-        <div v-show="leftTab === 'duo'" class="flex-1 overflow-hidden">
-          <DuoHistoryList :project-id="projectId" @open-session="openDuoSession" />
-        </div>
       </div>
 
-      <!-- Duo workspace takes over the main area when its tab is active. Mounted
-           only on demand (v-if) so opening a project doesn't auto-restore a duo. -->
-      <DuoWorkspace v-if="leftTab === 'duo'" :project-id="projectId" class="flex-1 min-w-0"
-        @open-session="openDuoSession" />
-
       <!-- Terminal panel (split-pane: Content | AI Result) -->
-      <div v-show="leftTab !== 'duo'" class="flex-1 flex flex-col overflow-hidden bg-background">
+      <div class="flex-1 flex flex-col overflow-hidden bg-background">
         <!-- No sessions yet: hide the Content / AI Result panels entirely and
              show a single centered empty state. -->
         <div v-if="noSession" class="flex-1 flex items-center justify-center p-6">
@@ -3584,7 +3631,7 @@ function handleRefInput(val: string) {
                  sharing the flex row, so the chat keeps its full width and never
                  reflows / loses the reading position when a prompt appears. -->
             <div
-              v-if="permissionQueue.length > 0 && !poppedOut"
+              v-if="effectivePermReq && !poppedOut"
               class="absolute inset-y-0 right-0 z-20 flex bg-card border-l border-border shadow-[-8px_0_24px_-12px_rgba(0,0,0,0.45)]"
               :style="{ width: questionWidthPct + '%' }"
             >
@@ -3610,10 +3657,19 @@ function handleRefInput(val: string) {
                 >
                   <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
                 </button>
+                <!-- When the prompt belongs to a worker of the open conductor,
+                     name it so the user knows who is asking (they answer here,
+                     without leaving the conductor). -->
+                <div
+                  v-if="effectivePermRunId !== currentRunId"
+                  class="px-3 pt-2 text-[11px] font-medium text-amber-600 dark:text-amber-400"
+                >
+                  {{ t('conductor.permissionFrom', { label: workerLabel(effectivePermRunId) }) }}
+                </div>
                 <PermissionPrompt
-                  :key="permissionQueue[0].request_id"
-                  :request="permissionQueue[0]"
-                  :allowed-tools="allowedToolsList"
+                  :key="effectivePermReq.request_id"
+                  :request="effectivePermReq"
+                  :allowed-tools="effectivePermAllowedTools"
                   :render-text="renderText"
                   @decide="handlePermissionDecision"
                   @answer="handlePermissionAnswer"
@@ -3628,6 +3684,25 @@ function handleRefInput(val: string) {
           v-if="composerVisible"
           class="border-t border-border bg-card/40 px-3 py-2 shrink-0"
         >
+          <!-- Conductor toggle: only on a fresh session's first message. When on,
+               the first message becomes the goal and this session orchestrates
+               worker sessions. -->
+          <div v-if="currentStatus === 'fetched'" class="mb-2 flex items-center gap-2 text-[11px]">
+            <button
+              type="button"
+              class="flex items-center gap-1.5 rounded px-1.5 h-6 font-medium transition-colors cursor-pointer"
+              :class="conductorMode ? 'bg-primary/15 text-primary' : 'text-foreground/50 hover:text-foreground/80 hover:bg-accent/60'"
+              :aria-pressed="conductorMode"
+              @click="conductorMode = !conductorMode"
+            >
+              <Network class="h-3.5 w-3.5" :stroke-width="1.75" />
+              {{ t('conductor.modeToggle') }}
+            </button>
+            <template v-if="conductorMode">
+              <label class="text-muted-foreground">{{ t('conductor.maxWorkersLabel') }}</label>
+              <Input v-model.number="conductorMaxWorkers" type="number" min="1" max="12" class="h-6 w-16 text-xs" />
+            </template>
+          </div>
           <div class="relative">
             <!-- Slash-command palette (anchored above the textarea) -->
             <div
@@ -3947,6 +4022,38 @@ function handleRefInput(val: string) {
           </div>
         </div>
       </div>
+
+      <!-- Conductor worker sidebar: only when the open run is a conductor. The
+           conductor itself is just this session; this panel adds its worker
+           tree + control-plane timeline, collapsible to a thin rail. -->
+      <aside
+        v-if="isConductor"
+        class="shrink-0 border-l border-border/60 flex flex-col overflow-hidden bg-card/20 transition-[width]"
+        :class="workerPanelOpen ? 'w-80' : 'w-9'"
+      >
+        <div class="flex items-center gap-1.5 px-2 h-8 border-b border-border/60 shrink-0">
+          <button
+            type="button"
+            class="flex items-center justify-center h-6 w-6 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+            :title="workerPanelOpen ? t('conductor.collapse') : t('conductor.expand')"
+            @click="workerPanelOpen = !workerPanelOpen"
+          >
+            <component :is="workerPanelOpen ? ChevronRight : ChevronLeft" class="h-3.5 w-3.5" :stroke-width="2" />
+          </button>
+          <template v-if="workerPanelOpen">
+            <Network class="h-3.5 w-3.5 text-foreground/40 shrink-0" :stroke-width="1.75" />
+            <span class="text-xs font-medium text-foreground/90 truncate">{{ t('conductor.workers') }}</span>
+            <span class="ml-auto text-[11px] text-muted-foreground font-mono">{{ conductorWorkers.length }}</span>
+          </template>
+          <Network v-else class="h-3.5 w-3.5 text-foreground/40 mx-auto" :stroke-width="1.75" />
+        </div>
+        <ConductorWorkerPanel
+          v-if="workerPanelOpen"
+          :workers="conductorWorkers"
+          :events="conductorEvents"
+          @open-session="openSession"
+        />
+      </aside>
     </div>
 
     <!-- Engine-switch dialog: new session vs. continue (carry context) -->
