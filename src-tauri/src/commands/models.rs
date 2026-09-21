@@ -1,16 +1,21 @@
-//! Model discovery — fetch the models the account can actually use.
+//! Model catalog support — the two engines need opposite treatment.
 //!
-//! Claude exposes this via the Agent SDK's `supportedModels()` (surfaced by the
-//! sidecar's `list_models` command). Codex exposes a raw catalog through the
-//! `codex debug models` CLI command. Neither list is fetched automatically:
-//! the app only refreshes when the user clicks Refresh in Settings, and the
-//! normalized result is persisted into the `settings` table keyed by account so
-//! every screen can read the cache back without spawning anything.
+//! **Codex** publishes a real catalog through `codex debug models`, so its list
+//! is DISCOVERED and cached. A failed refresh never drops a good cache: the
+//! error lands on the account's entry while the last models and `refreshed_at`
+//! survive, and screens fall back to the curated table when a cache is empty.
 //!
-//! The refresh commands never drop a good cache on failure — a failed refresh
-//! records the error on the account's entry while leaving the last models and
-//! `refreshed_at` intact. Screens fall back to the curated alias list when a
-//! cache is empty.
+//! **Claude** has no usable catalog endpoint. The Agent SDK's
+//! `supportedModels()` returns only the few rows the CLI picker advertises,
+//! which is a strict subset of the ids `--model` accepts — an older pinned
+//! version works fine yet never appears. So the Claude list is CURATED in the
+//! frontend (`src/lib/engineOptions.ts`) and this module instead offers
+//! VALIDATION: `validate_claude_models` runs a one-word turn per id and records
+//! which ones the account still serves.
+//!
+//! Neither path runs automatically — both are user-initiated from Settings, and
+//! the normalized result is persisted into the `settings` table keyed by account
+//! so every screen can read it back without spawning anything.
 
 use crate::db::Db;
 use crate::runs::sidecar::{
@@ -55,8 +60,6 @@ pub struct ModelCacheEntry {
 }
 
 /// Settings keys that hold the persisted caches.
-const CLAUDE_CACHE_KEY: &str = "claude_models_cache_by_account";
-const CLAUDE_ACTIVE_KEY: &str = "claude_models_active_account_key";
 const CODEX_CACHE_KEY: &str = "codex_models_cache_by_account";
 const CODEX_ACTIVE_KEY: &str = "codex_models_active_account_key";
 
@@ -64,10 +67,11 @@ const CODEX_ACTIVE_KEY: &str = "codex_models_active_account_key";
 /// without triggering any discovery.
 #[derive(Debug, Serialize)]
 pub struct ModelCaches {
-    pub claude: HashMap<String, ModelCacheEntry>,
     pub codex: HashMap<String, ModelCacheEntry>,
-    pub claude_active_key: String,
     pub codex_active_key: String,
+    /// Last validation sweep per account — which pinned Claude ids still work.
+    pub claude_validation: HashMap<String, ModelValidationReport>,
+    pub claude_validation_active_key: String,
 }
 
 // ── settings helpers ─────────────────────────────────────────────────────────
@@ -104,132 +108,251 @@ fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-// ── Claude discovery (sidecar `supportedModels()` bridge) ─────────────────────
+// ── Claude validation (`claude -p` probe per model) ───────────────────────────
 
-/// Discover the Claude models the default account can use, via the sidecar's
-/// `supportedModels()` bridge. Returns canonical model ids + display names.
-async fn discover_claude_models(app: &AppHandle, db: &Db) -> Result<Vec<ModelOption>, String> {
-    // ── settings needed to spawn the Claude sidecar ───────────────────────────
+/// One model's verdict from the last validation sweep.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ModelValidation {
+    pub model: String,
+    /// True when a real turn through the sidecar completed AND the model id was
+    /// honored (not silently swapped for a fallback).
+    pub ok: bool,
+    /// Why it failed, trimmed to something a tooltip can hold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// The persisted result of validating the pinned Claude model table against one
+/// account. Unlike the Codex cache this is not a catalog — the catalog is
+/// curated in the frontend — it only records which entries still work.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ModelValidationReport {
+    pub account_key: String,
+    pub account_label: String,
+    /// ISO timestamp of the sweep that produced `results`.
+    pub checked_at: String,
+    pub results: Vec<ModelValidation>,
+}
+
+/// Settings key holding the validation reports, keyed by account.
+const CLAUDE_VALIDATION_KEY: &str = "claude_model_validation_by_account";
+const CLAUDE_VALIDATION_ACTIVE_KEY: &str = "claude_model_validation_active_key";
+
+/// How many probes run at once. Each check is a real (tiny) billed turn, so keep
+/// the burst small — both to stay gentle on the rate limiter and because each
+/// probe spawns its own node sidecar.
+const VALIDATE_CONCURRENCY: usize = 3;
+
+/// Seconds a single probe may take before it is treated as a failure.
+const VALIDATE_TIMEOUT_SECS: u64 = 120;
+
+/// Everything a probe needs to spawn a sidecar, resolved once per sweep.
+#[derive(Clone)]
+struct ProbeEnv {
+    node_bin: String,
+    sidecar_script: std::path::PathBuf,
+    claude_path: String,
+    config_dir: Option<String>,
+}
+
+/// Probe one model id by running the shortest possible real turn THROUGH THE
+/// SIDECAR — the same Agent SDK path a run uses, so the binary the SDK resolves
+/// (its bundled CLI, or `DEVDY_CLAUDE_PATH` when the user set a custom one) is
+/// exactly the one a real run would use. A direct `claude --model` spawn can hit
+/// a different binary and give a false verdict; it also can't see that the SDK
+/// silently falls back to a default when the id is unrecognized. The sidecar
+/// resolves both cases and replies `_devdy_valid` / `_devdy_invalid`.
+async fn probe_claude_model(env: ProbeEnv, model: String) -> ModelValidation {
+    let cwd = std::env::temp_dir();
+    let mut cmd = tokio::process::Command::new(&env.node_bin);
+    cmd.current_dir(&cwd).arg(&env.sidecar_script);
+    augment_command_path(&mut cmd);
+    // Match a real run: only pin the binary when a custom path is configured,
+    // otherwise let the SDK use its bundled CLI (see commands/runs.rs).
+    if env.claude_path != "claude" && !env.claude_path.trim().is_empty() {
+        cmd.env("DEVDY_CLAUDE_PATH", &env.claude_path);
+    }
+    apply_claude_config_dir(&mut cmd, env.config_dir.as_deref());
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    detach_process_group(&mut cmd);
+    cmd.kill_on_drop(true);
+
+    let fail = |model: String, msg: String| ModelValidation {
+        model,
+        ok: false,
+        error: Some(msg),
+    };
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return fail(model, format!("Failed to spawn sidecar: {e}")),
+    };
+    let Some(stdout) = child.stdout.take() else {
+        return fail(model, "sidecar produced no stdout".to_string());
+    };
+    let Some(mut stdin) = child.stdin.take() else {
+        return fail(model, "sidecar produced no stdin".to_string());
+    };
+
+    let req = serde_json::json!({
+        "type": "validate_model",
+        "options": { "model": model, "cwd": cwd.to_string_lossy() },
+    });
+    if let Err(e) = stdin.write_all(format!("{req}\n").as_bytes()).await {
+        return fail(model, format!("Failed to send request: {e}"));
+    }
+    stdin.flush().await.ok();
+
+    let drain = async {
+        let mut lines = BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let line = line.trim();
+            if !line.starts_with('{') {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            match v.get("type").and_then(|x| x.as_str()) {
+                Some("_devdy_valid") => return ModelValidation { model: model.clone(), ok: true, error: None },
+                Some("_devdy_invalid") | Some("_devdy_error") => {
+                    let msg = v
+                        .get("error")
+                        .and_then(|e| e.as_str())
+                        .map(|s| s.chars().take(300).collect())
+                        .unwrap_or_else(|| "Validation failed".to_string());
+                    return fail(model.clone(), msg);
+                }
+                _ => {}
+            }
+        }
+        fail(model.clone(), "Sidecar closed without a verdict".to_string())
+    };
+
+    let verdict = match tokio::time::timeout(Duration::from_secs(VALIDATE_TIMEOUT_SECS), drain).await
+    {
+        Ok(v) => v,
+        Err(_) => fail(model.clone(), format!("Timed out after {VALIDATE_TIMEOUT_SECS}s")),
+    };
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    drop(stdin);
+    verdict
+}
+
+/// Validate the given Claude model ids against the default account by running a
+/// one-word turn on each through the sidecar, then persist the report. Replaces
+/// the old `supportedModels()` refresh: that call only ever returned the handful
+/// of rows the CLI picker advertises, which is a strict subset of the ids
+/// `--model` accepts — so it could not answer "is THIS pinned id still served?".
+#[tauri::command]
+pub async fn validate_claude_models(
+    app: AppHandle,
+    db: State<'_, Db>,
+    models: Vec<String>,
+) -> Result<ModelValidationReport, String> {
+    let account = crate::commands::claude_accounts::default_runtime_account(db.inner()).await?;
+    let account_key = account
+        .as_ref()
+        .map(|a| a.id.clone())
+        .filter(|id| !id.trim().is_empty())
+        .unwrap_or_else(|| "default".to_string());
+    let account_label = account
+        .as_ref()
+        .map(|a| a.label.clone())
+        .filter(|l| !l.trim().is_empty())
+        .unwrap_or_else(|| "Global Claude profile".to_string());
+    let config_dir = account.as_ref().map(|a| a.config_dir.clone());
+
+    // Sidecar spawn settings, resolved once and shared by every probe.
     let rows = sqlx::query("SELECT key, value FROM settings")
-        .fetch_all(db)
+        .fetch_all(db.inner())
         .await
         .map_err(|e| e.to_string())?;
     let mut node_path = "node".to_string();
     let mut sidecar_path = String::new();
-    let mut claude_path = String::new();
+    let mut claude_path = "claude".to_string();
     for row in &rows {
         let key: String = row.get("key");
         let value: String = row.get("value");
         match key.as_str() {
             "node_path" => node_path = value,
             "sidecar_path" => sidecar_path = value,
-            "claude_path" => claude_path = value,
+            "claude_path" if !value.trim().is_empty() => claude_path = value,
             _ => {}
         }
     }
+    let (node_bin, sidecar_script) = resolve_sidecar(&app, &node_path, &sidecar_path)?;
+    let env = ProbeEnv {
+        node_bin,
+        sidecar_script,
+        claude_path,
+        config_dir,
+    };
 
-    let (node_bin, sidecar_script) = resolve_sidecar(app, &node_path, &sidecar_path)?;
-    let cwd = std::env::temp_dir();
-    let mut cmd = tokio::process::Command::new(&node_bin);
-    cmd.current_dir(&cwd).arg(&sidecar_script);
-    augment_command_path(&mut cmd);
-    if claude_path != "claude" && !claude_path.trim().is_empty() {
-        cmd.env("DEVDY_CLAUDE_PATH", &claude_path);
-    }
-    // Discover models against the default Claude account's profile (if any).
-    let claude_account = crate::commands::claude_accounts::default_runtime_account(db).await?;
-    apply_claude_config_dir(&mut cmd, claude_account.as_ref().map(|a| a.config_dir.as_str()));
-    cmd.stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    detach_process_group(&mut cmd);
-    cmd.kill_on_drop(true);
-
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("Failed to spawn sidecar ({node_bin}): {e}"))?;
-    let stdout = child.stdout.take().ok_or("no stdout")?;
-    let mut stdin = child.stdin.take().ok_or("no stdin")?;
-
-    let msg = serde_json::json!({
-        "type": "list_models",
-        "options": { "cwd": cwd.to_string_lossy() },
-    });
-    stdin
-        .write_all(format!("{msg}\n").as_bytes())
-        .await
-        .map_err(|e| e.to_string())?;
-    stdin.flush().await.ok();
-
-    // ── drain until the models arrive (or the sidecar errors) ─────────────────
-    let mut models: Vec<ModelOption> = Vec::new();
-    let mut sidecar_error: Option<String> = None;
-    let mut lines = BufReader::new(stdout).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        let line = line.trim();
-        if line.is_empty() || !line.starts_with('{') {
-            continue;
+    // Dedupe but keep the caller's order so the UI can zip the report back onto
+    // its own table without a lookup.
+    let mut wanted: Vec<String> = Vec::new();
+    for m in models {
+        let m = m.trim().to_string();
+        if !m.is_empty() && !wanted.contains(&m) {
+            wanted.push(m);
         }
-        let Ok(v) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        match v.get("type").and_then(|x| x.as_str()) {
-            Some("_devdy_models") => {
-                if let Some(arr) = v.get("models").and_then(|m| m.as_array()) {
-                    for m in arr {
-                        let value = m.get("value").and_then(|x| x.as_str()).unwrap_or("");
-                        if value.is_empty() {
-                            continue;
-                        }
-                        let label = m
-                            .get("displayName")
-                            .and_then(|x| x.as_str())
-                            .filter(|s| !s.is_empty())
-                            .unwrap_or(value)
-                            .to_string();
-                        let description = m
-                            .get("description")
-                            .and_then(|x| x.as_str())
-                            .filter(|s| !s.is_empty())
-                            .map(str::to_string);
-                        models.push(ModelOption {
-                            value: value.to_string(),
-                            label,
-                            description,
-                        });
-                    }
-                }
-                break;
+    }
+
+    let mut results: Vec<ModelValidation> = Vec::with_capacity(wanted.len());
+    for chunk in wanted.chunks(VALIDATE_CONCURRENCY) {
+        let mut set = tokio::task::JoinSet::new();
+        for (idx, model) in chunk.iter().enumerate() {
+            let (env, model) = (env.clone(), model.clone());
+            set.spawn(async move { (idx, probe_claude_model(env, model).await) });
+        }
+        // JoinSet completes out of order; restore the chunk's order before
+        // appending so `results` still lines up with `wanted`.
+        let mut done: Vec<(usize, ModelValidation)> = Vec::with_capacity(chunk.len());
+        while let Some(joined) = set.join_next().await {
+            match joined {
+                Ok(pair) => done.push(pair),
+                Err(e) => return Err(format!("Validation task failed: {e}")),
             }
-            Some("_devdy_error") => {
-                sidecar_error = v.get("error").and_then(|e| e.as_str()).map(str::to_string);
-                break;
-            }
-            _ => {}
         }
+        done.sort_by_key(|(idx, _)| *idx);
+        results.extend(done.into_iter().map(|(_, v)| v));
     }
 
-    let _ = child.start_kill();
-    let _ = child.wait().await;
-    drop(stdin);
+    let report = ModelValidationReport {
+        account_key: account_key.clone(),
+        account_label,
+        checked_at: now_iso(),
+        results,
+    };
 
-    if models.is_empty() {
-        if let Some(err) = sidecar_error {
-            return Err(err);
-        }
-    }
-    Ok(models)
+    let mut map = parse_validation_map(
+        read_setting(db.inner(), CLAUDE_VALIDATION_KEY)
+            .await
+            .as_deref(),
+    );
+    map.insert(account_key.clone(), report.clone());
+    let serialized = serde_json::to_string(&Map::from_iter(
+        map.into_iter()
+            .map(|(k, v)| (k, serde_json::to_value(v).unwrap_or(Value::Null))),
+    ))
+    .map_err(|e| e.to_string())?;
+    write_setting(db.inner(), CLAUDE_VALIDATION_KEY, &serialized).await?;
+    write_setting(db.inner(), CLAUDE_VALIDATION_ACTIVE_KEY, &account_key).await?;
+
+    Ok(report)
 }
 
-/// List the Claude models the signed-in account can use. Kept as a read-only
-/// command for backward compatibility; the UI now prefers `refresh_claude_models`
-/// (which persists the result) and `get_model_caches` (which reads it back).
-#[tauri::command]
-pub async fn list_claude_models(
-    app: AppHandle,
-    db: State<'_, Db>,
-) -> Result<Vec<ModelOption>, String> {
-    discover_claude_models(&app, db.inner()).await
+/// Parse the stored validation blob into a key → report map. Malformed or
+/// missing values decode to an empty map rather than erroring.
+fn parse_validation_map(raw: Option<&str>) -> HashMap<String, ModelValidationReport> {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return HashMap::new();
+    };
+    serde_json::from_str::<HashMap<String, ModelValidationReport>>(raw).unwrap_or_default()
 }
 
 // ── Codex discovery (`codex debug models` CLI) ────────────────────────────────
@@ -405,48 +528,6 @@ async fn persist_entry(
     Ok(())
 }
 
-/// Refresh the Claude model list via `supportedModels()` and persist it to the
-/// settings cache under the default account's key. Returns the resulting cache
-/// entry (which carries `error` when discovery failed but the cache was kept).
-#[tauri::command]
-pub async fn refresh_claude_models(
-    app: AppHandle,
-    db: State<'_, Db>,
-) -> Result<ModelCacheEntry, String> {
-    let account = crate::commands::claude_accounts::default_runtime_account(db.inner()).await?;
-    let account_key = account
-        .as_ref()
-        .map(|a| a.id.clone())
-        .filter(|id| !id.trim().is_empty())
-        .unwrap_or_else(|| "default".to_string());
-    let account_label = account
-        .as_ref()
-        .map(|a| a.label.clone())
-        .filter(|l| !l.trim().is_empty())
-        .unwrap_or_else(|| "Global Claude profile".to_string());
-
-    let outcome = discover_claude_models(&app, db.inner()).await;
-
-    let prev = parse_cache_map(read_setting(db.inner(), CLAUDE_CACHE_KEY).await.as_deref())
-        .remove(&account_key);
-    let entry = merge_refresh(
-        prev,
-        &account_key,
-        &account_label,
-        "supportedModels()",
-        outcome,
-    );
-    persist_entry(
-        db.inner(),
-        CLAUDE_CACHE_KEY,
-        CLAUDE_ACTIVE_KEY,
-        &account_key,
-        &entry,
-    )
-    .await?;
-    Ok(entry)
-}
-
 /// Refresh the Codex model list via `codex debug models` and persist it under the
 /// `default` account key. Codex has no multi-account concept in Devdy yet, so the
 /// key is fixed for now but the schema is already account-scoped.
@@ -498,48 +579,44 @@ fn pick_entry<'a>(
         .or_else(|| map.values().next())
 }
 
-/// The discovered model lists (Claude, Codex) for the currently active account,
-/// with no discovery triggered.
+/// The discovered Codex model list for the currently active account, with no
+/// discovery triggered.
 ///
 /// Exists so non-Tauri callers — the Remote Control forwarder — can ship the
-/// same discovered models the desktop composer shows. Empty vectors mean nothing
-/// has been discovered yet, and the caller should fall back to the curated table.
-pub async fn active_discovered_models(db: &Db) -> (Vec<ModelOption>, Vec<ModelOption>) {
-    let claude_map = parse_cache_map(read_setting(db, CLAUDE_CACHE_KEY).await.as_deref());
+/// same Codex models the desktop composer shows. An empty vector means nothing
+/// has been discovered yet, and the caller should fall back to the curated
+/// table. Claude has no counterpart: its list is curated in the frontend, so
+/// both surfaces already read it from their own bundle.
+pub async fn active_discovered_models(db: &Db) -> Vec<ModelOption> {
     let codex_map = parse_cache_map(read_setting(db, CODEX_CACHE_KEY).await.as_deref());
-    let claude_key = read_setting(db, CLAUDE_ACTIVE_KEY)
-        .await
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| "default".to_string());
     let codex_key = read_setting(db, CODEX_ACTIVE_KEY)
         .await
         .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(|| "default".to_string());
-    (
-        pick_entry(&claude_map, &claude_key)
-            .map(|e| e.models.clone())
-            .unwrap_or_default(),
-        pick_entry(&codex_map, &codex_key)
-            .map(|e| e.models.clone())
-            .unwrap_or_default(),
-    )
+    pick_entry(&codex_map, &codex_key)
+        .map(|e| e.models.clone())
+        .unwrap_or_default()
 }
 
-/// Read the persisted model caches (no discovery). Screens call this on load so
-/// dropdowns show the last refreshed lists without spawning any process.
+/// Read the persisted Codex cache and Claude validation report (neither triggers
+/// any process). Screens call this on load so the dropdowns can render the last
+/// known state immediately.
 #[tauri::command]
 pub async fn get_model_caches(db: State<'_, Db>) -> Result<ModelCaches, String> {
     let db = db.inner();
     Ok(ModelCaches {
-        claude: parse_cache_map(read_setting(db, CLAUDE_CACHE_KEY).await.as_deref()),
         codex: parse_cache_map(read_setting(db, CODEX_CACHE_KEY).await.as_deref()),
-        claude_active_key: read_setting(db, CLAUDE_ACTIVE_KEY)
+        codex_active_key: read_setting(db, CODEX_ACTIVE_KEY)
             .await
             .filter(|v| !v.trim().is_empty())
             .unwrap_or_else(|| "default".to_string()),
-        codex_active_key: read_setting(db, CODEX_ACTIVE_KEY)
+        claude_validation: parse_validation_map(
+            read_setting(db, CLAUDE_VALIDATION_KEY).await.as_deref(),
+        ),
+        claude_validation_active_key: read_setting(db, CLAUDE_VALIDATION_ACTIVE_KEY)
             .await
             .filter(|v| !v.trim().is_empty())
             .unwrap_or_else(|| "default".to_string()),
     })
 }
+

@@ -25,7 +25,7 @@ import BackToRunButton from '@/components/BackToRunButton.vue'
 import ProjectGroupToggles from '@/components/ProjectGroupToggles.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
-import { parseRepoUrl, repoWebUrl } from '@/lib/repoUrl'
+import { parseRepoUrl, repoKey, repoWebUrl } from '@/lib/repoUrl'
 import { openUrl } from '@tauri-apps/plugin-opener'
 
 const { t } = useI18n()
@@ -537,20 +537,6 @@ const repoFieldsValid = computed(() => {
     ? !!newRepoGitlabPath.value.trim()
     : !!(newRepoOwner.value.trim() && newRepoRepo.value.trim())
 })
-
-// Identity key for a repo, used to detect duplicates (case-insensitive).
-function repoKey(r: {
-  provider?: 'github' | 'gitlab' | null
-  github_owner?: string | null
-  github_repo?: string | null
-  gitlab_project_path?: string | null
-}): string {
-  const provider = r.provider ?? 'github'
-  const coords = provider === 'gitlab'
-    ? (r.gitlab_project_path ?? '').trim()
-    : `${(r.github_owner ?? '').trim()}/${(r.github_repo ?? '').trim()}`
-  return `${provider}:${coords}`.toLowerCase()
-}
 
 // The repo being entered already exists in this project.
 const isDuplicateRepo = computed(() => {

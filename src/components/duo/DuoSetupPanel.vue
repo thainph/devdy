@@ -17,7 +17,9 @@ import { Play, RotateCcw, Loader2 } from 'lucide-vue-next'
 import { useProjectsStore } from '@/stores/projects'
 import { useRunsStore, runActivityAt } from '@/stores/runs'
 import { useOrchestratorStore, type DuoSourceMode } from '@/stores/orchestrator'
-import { modelOptionsFor, PERMISSION_MODE_OPTIONS } from '@/lib/engineOptions'
+import { useDuoDraftsStore, type DuoDraft } from '@/stores/duoDrafts'
+import { effectiveModelOptions, PERMISSION_MODE_OPTIONS } from '@/lib/engineOptions'
+import { useModelCatalogStore } from '@/stores/modelCatalog'
 import { useToast } from '@/composables/useToast'
 import { Button, AppSelect, Input, Textarea } from '@/components/ui'
 
@@ -28,6 +30,8 @@ const { t } = useI18n()
 const projectsStore = useProjectsStore()
 const runsStore = useRunsStore()
 const orch = useOrchestratorStore()
+const duoDrafts = useDuoDraftsStore()
+const modelCatalog = useModelCatalogStore()
 const { toast } = useToast()
 
 const ENGINE_OPTIONS = [
@@ -59,8 +63,19 @@ const starting = ref(false)
 const projectOptions = computed(() =>
   projectsStore.projects.map((p) => ({ value: p.id, label: p.name })),
 )
-const designerModelOptions = computed(() => modelOptionsFor(designerEngine.value))
-const reviewerModelOptions = computed(() => modelOptionsFor(reviewerEngine.value))
+// Same source as Settings and the Run composer: the curated Claude table
+// (annotated with the last validation sweep) and the cached Codex catalog.
+const discoveredModels = computed(() => ({ codex: modelCatalog.codexModels }))
+const designerModelOptions = computed(() =>
+  modelCatalog.withValidation(
+    effectiveModelOptions(designerEngine.value, discoveredModels.value),
+  ),
+)
+const reviewerModelOptions = computed(() =>
+  modelCatalog.withValidation(
+    effectiveModelOptions(reviewerEngine.value, discoveredModels.value),
+  ),
+)
 
 const isActive = computed(() => orch.state.active)
 
@@ -106,11 +121,13 @@ async function loadProjectRuns() {
 // watcher below doesn't wipe the restored picks.
 let hydrating = false
 
-watch([projectId, sourceMode], () => {
-  if (hydrating) return
+watch([projectId, sourceMode], (cur, prev) => {
+  if (hydrating || restoringDraft) return
   existingDesignerId.value = ''
   existingReviewerId.value = ''
   if (sourceMode.value === 'existing') void loadProjectRuns()
+  // Switching project (standalone route) loads that project's saved draft.
+  if (cur[0] !== prev[0]) applyDraft()
 })
 
 // Bumping the cap on a paused duo and hitting Continue should extend it, so
@@ -119,6 +136,83 @@ watch(maxRounds, (v) => {
   if (hydrating || orch.state.active || orch.state.phase === 'idle') return
   if (Number.isFinite(v) && v > 0) orch.state.maxRounds = v
 })
+
+// ── Idle-form draft persistence ──────────────────────────────────────────
+// The workspace mounts this panel on demand, so a half-composed "new duo" would
+// vanish on a tab switch or reload. Cache the idle form per project and restore
+// it when the panel comes back. `restoringDraft` starts true so the persist
+// watcher stays quiet until onMounted has finished seeding the form.
+let restoringDraft = true
+
+function draftKey(): string {
+  return projectId.value || '__global__'
+}
+
+/** True only while a fresh "new duo" is being composed (no started/restored
+ * duo drives the form), i.e. when a draft is meaningful to keep. */
+function draftEditable(): boolean {
+  return !isActive.value && orch.state.phase === 'idle'
+}
+
+function applyDraft() {
+  if (!draftEditable()) return
+  const d = duoDrafts.get(draftKey())
+  if (!d) return
+  restoringDraft = true
+  sourceMode.value = d.sourceMode
+  existingDesignerId.value = d.existingDesignerId
+  existingReviewerId.value = d.existingReviewerId
+  designerEngine.value = d.designerEngine
+  reviewerEngine.value = d.reviewerEngine
+  designerModel.value = d.designerModel
+  reviewerModel.value = d.reviewerModel
+  designerLabel.value = d.designerLabel
+  reviewerLabel.value = d.reviewerLabel
+  designerInstruction.value = d.designerInstruction
+  reviewerInstruction.value = d.reviewerInstruction
+  permissionMode.value = d.permissionMode
+  goal.value = d.goal
+  maxRounds.value = d.maxRounds
+  consensusToken.value = d.consensusToken
+  overrideBudget.value = d.overrideBudget
+  if (d.sourceMode === 'existing') void loadProjectRuns()
+  nextTick(() => { restoringDraft = false })
+}
+
+function captureDraft(): DuoDraft {
+  return {
+    sourceMode: sourceMode.value,
+    existingDesignerId: existingDesignerId.value,
+    existingReviewerId: existingReviewerId.value,
+    designerEngine: designerEngine.value,
+    reviewerEngine: reviewerEngine.value,
+    designerModel: designerModel.value,
+    reviewerModel: reviewerModel.value,
+    designerLabel: designerLabel.value,
+    reviewerLabel: reviewerLabel.value,
+    designerInstruction: designerInstruction.value,
+    reviewerInstruction: reviewerInstruction.value,
+    permissionMode: permissionMode.value,
+    goal: goal.value,
+    maxRounds: maxRounds.value,
+    consensusToken: consensusToken.value,
+    overrideBudget: overrideBudget.value,
+  }
+}
+
+// Mirror every idle-form edit to the draft store. Hydration / draft-restore
+// and any active/restored duo are skipped so we only ever cache genuine edits.
+watch(
+  [
+    sourceMode, existingDesignerId, existingReviewerId, designerEngine, reviewerEngine,
+    designerModel, reviewerModel, designerLabel, reviewerLabel, designerInstruction,
+    reviewerInstruction, permissionMode, goal, maxRounds, consensusToken, overrideBudget,
+  ],
+  () => {
+    if (restoringDraft || hydrating || !draftEditable()) return
+    duoDrafts.set(draftKey(), captureDraft())
+  },
+)
 
 function hydrateFromState() {
   const s = orch.state
@@ -151,6 +245,11 @@ function hydrateFromState() {
 
 /** Reset the config form back to editable defaults. */
 function resetForm() {
+  // Silence the persist watcher so these defaults don't re-save as a draft, and
+  // drop any cached draft so "New" truly starts clean.
+  restoringDraft = true
+  duoDrafts.clear(draftKey())
+  nextTick(() => { restoringDraft = false })
   sourceMode.value = 'new'
   existingDesignerId.value = ''
   existingReviewerId.value = ''
@@ -206,6 +305,9 @@ async function start() {
       consensusToken: consensusToken.value,
       overrideBudget: overrideBudget.value,
     })
+    // The config now lives in the orchestrator history; drop the idle draft so a
+    // later "new duo" doesn't reopen this one's leftovers.
+    duoDrafts.clear(draftKey())
     emit('started')
   } catch (e) {
     toast.error(t('duo.startFailed', { error: String(e) }))
@@ -221,14 +323,20 @@ function newDuo() {
 
 function onDesignerEngineChange(v: string) {
   designerEngine.value = v
-  if (!modelOptionsFor(v).some((o) => o.value === designerModel.value)) designerModel.value = ''
+  if (!designerModelOptions.value.some((o) => o.value === designerModel.value)) {
+    designerModel.value = ''
+  }
 }
 function onReviewerEngineChange(v: string) {
   reviewerEngine.value = v
-  if (!modelOptionsFor(v).some((o) => o.value === reviewerModel.value)) reviewerModel.value = ''
+  if (!reviewerModelOptions.value.some((o) => o.value === reviewerModel.value)) {
+    reviewerModel.value = ''
+  }
 }
 
 onMounted(async () => {
+  // Reads the persisted cache only — never triggers discovery.
+  modelCatalog.ensureLoaded().catch(() => {})
   hydrateFromState()
   if (!designerLabel.value) designerLabel.value = t('duo.defaults.designerLabel')
   if (!reviewerLabel.value) reviewerLabel.value = t('duo.defaults.reviewerLabel')
@@ -238,6 +346,11 @@ onMounted(async () => {
   if (!projectId.value && !lockedProject.value && projectsStore.projects.length) {
     projectId.value = projectsStore.projects[0].id
   }
+  // Restore any half-composed idle form for this project, then release the
+  // persist watcher so subsequent edits (and only those) are cached.
+  applyDraft()
+  await nextTick()
+  restoringDraft = false
 })
 </script>
 

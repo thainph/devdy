@@ -42,7 +42,7 @@ const props = defineProps<{
   slashCommands: SlashCommand[]
   projectFiles: string[]
   /** Models the Host discovered from the account (composer model selector). */
-  discoveredModels: { claude: FetchedModel[]; codex: FetchedModel[] }
+  discoveredModels: { codex: FetchedModel[] }
   /** Managed Claude accounts a run may be switched to. */
   claudeAccountChoices: ClaudeAccountChoice[]
   /** The account the run executes with; `''` = global `~/.claude`. */

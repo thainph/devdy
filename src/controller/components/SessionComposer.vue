@@ -44,7 +44,7 @@ const props = withDefaults(
     projectFiles?: string[]
     /** Models the Host discovered from the account (merged into the curated
      * model table, mirroring the desktop composer). */
-    discoveredModels?: { claude: FetchedModel[]; codex: FetchedModel[] }
+    discoveredModels?: { codex: FetchedModel[] }
     /** Managed Claude accounts a run may be switched to. */
     claudeAccounts?: ClaudeAccountChoice[]
     /** The account the run currently executes with; `''` = global `~/.claude`. */
@@ -63,7 +63,7 @@ const props = withDefaults(
   {
     slashCommands: () => [],
     projectFiles: () => [],
-    discoveredModels: () => ({ claude: [], codex: [] }),
+    discoveredModels: () => ({ codex: [] }),
     claudeAccounts: () => [],
     claudeAccountId: '',
     engine: '',
@@ -100,8 +100,8 @@ const engineOptions = computed<SelectOption[]>(() => [
   { value: 'claude', label: 'claude' },
   { value: 'codex', label: 'codex' },
 ])
-// Curated aliases PLUS whatever the Host discovered from the account — the same
-// merge the desktop composer does, so the two selectors never disagree.
+// The curated Claude table, or the Host's discovered Codex catalog — the same
+// resolution the desktop composer does, so the two selectors never disagree.
 const modelOptions = computed(() =>
   effectiveModelOptions(props.engine || 'claude', props.discoveredModels),
 )

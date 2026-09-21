@@ -282,49 +282,6 @@ function startQuery(firstText, opts = {}, firstImages) {
   })()
 }
 
-// List the models the account can use, via the SDK's `supportedModels()`. Runs
-// a throwaway query (no user turn) purely to open the control channel, asks for
-// the model list, then closes. Emits `_devdy_models` with the ModelInfo[] array.
-function startListModels(opts = {}) {
-  inputQueue = new MessageQueue()
-
-  const options = {
-    permissionMode: 'bypassPermissions',
-    includePartialMessages: false,
-    stderr: (data) => send({ type: '_devdy_stderr', text: data }),
-  }
-  if (opts.cwd) options.cwd = opts.cwd
-  if (process.env.DEVDY_CLAUDE_PATH) options.pathToClaudeCodeExecutable = process.env.DEVDY_CLAUDE_PATH
-
-  ;(async () => {
-    try {
-      currentQuery = query({ prompt: inputQueue, options })
-      // Pump the message loop so the control response for supportedModels() can
-      // be delivered (same reason captureUsage needs the loop running).
-      const pump = (async () => {
-        try {
-          for await (const _msg of currentQuery) { /* drain */ }
-        } catch { /* loop torn down after we close input — ignore */ }
-      })()
-      const fn = currentQuery.supportedModels
-      if (typeof fn === 'function') {
-        const models = await fn.call(currentQuery)
-        send({ type: '_devdy_models', models: Array.isArray(models) ? models : [] })
-      } else {
-        send({ type: '_devdy_models', models: [] })
-      }
-      if (inputQueue) inputQueue.close()
-      await pump
-      send({ type: '_devdy_done' })
-    } catch (err) {
-      send({ type: '_devdy_error', error: String(err && err.stack ? err.stack : err) })
-    } finally {
-      if (inputQueue) inputQueue.close()
-      send({ type: '_devdy_closed' })
-    }
-  })()
-}
-
 function startUsageProbe(opts = {}) {
   inputQueue = new MessageQueue()
   inputQueue.push(userMessage('/usage'))
@@ -376,6 +333,74 @@ function startUsageProbe(opts = {}) {
   })()
 }
 
+// Validate one model id by running the shortest possible real turn through the
+// SAME SDK path a run uses — so the binary the SDK resolves (its bundled CLI, or
+// DEVDY_CLAUDE_PATH when set) is exactly the one a real run would use. A direct
+// `claude --model` spawn could hit a different binary and give a false verdict.
+// Emits `_devdy_valid` on a successful result, `_devdy_invalid` (with a reason)
+// when the turn errors or the model is rejected.
+function startValidateModel(opts = {}) {
+  inputQueue = new MessageQueue()
+  inputQueue.push(userMessage('say ok'))
+
+  // The bundled CLI does NOT hard-fail an unknown model — it warns on stderr and
+  // silently falls back to a default, then completes a "successful" turn. So a
+  // green result is not enough: an unrecognized id must be caught from this
+  // warning, or we would green-light a model the run would never actually use.
+  let stderrAll = ''
+  // The SDK/stream path flags an unknown id with a structured stderr tag —
+  // `[claude-code:unrecognized_model] {"model":"…","query_source":"sdk"}` — while
+  // the print CLI uses a prose sentence. Match either so a fallback is caught.
+  const UNKNOWN_MODEL_HINTS = ['unrecognized_model', 'is not a model this version of claude code recognizes']
+  const options = {
+    permissionMode: 'bypassPermissions',
+    includePartialMessages: false,
+    stderr: (data) => {
+      const text = String(data || '')
+      if (text.trim()) stderrAll += text
+    },
+  }
+  if (opts.model) options.model = opts.model
+  if (opts.cwd) options.cwd = opts.cwd
+  if (process.env.DEVDY_CLAUDE_PATH) options.pathToClaudeCodeExecutable = process.env.DEVDY_CLAUDE_PATH
+
+  const firstStderrLine = () => stderrAll.split('\n').map((l) => l.trim()).find(Boolean) || ''
+
+  ;(async () => {
+    try {
+      currentQuery = query({ prompt: inputQueue, options })
+      let completed = false
+      let failure = ''
+      for await (const message of currentQuery) {
+        if (message && message.type === 'result') {
+          if (message.subtype === 'success') completed = true
+          else failure = message.subtype || 'result_error'
+          break
+        }
+      }
+      if (inputQueue) inputQueue.close()
+      // A turn can complete on a fallback even though the id was never honored.
+      const lowered = stderrAll.toLowerCase()
+      const unrecognized = UNKNOWN_MODEL_HINTS.some((h) => lowered.includes(h))
+      if (completed && !unrecognized) {
+        send({ type: '_devdy_valid' })
+      } else if (unrecognized) {
+        send({ type: '_devdy_invalid', error: 'Not recognized by this Claude Code version' })
+      } else {
+        send({ type: '_devdy_invalid', error: failure || firstStderrLine() || 'No successful result' })
+      }
+    } catch (err) {
+      // A model the CLI rejects outright throws here; the reason is usually in
+      // the error message (and sometimes only on stderr), so prefer either.
+      const msg = String(err && err.message ? err.message : err).trim()
+      send({ type: '_devdy_invalid', error: msg || firstStderrLine() || 'Validation failed' })
+    } finally {
+      if (inputQueue) inputQueue.close()
+      send({ type: '_devdy_closed' })
+    }
+  })()
+}
+
 const rl = readline.createInterface({ input: process.stdin })
 rl.on('line', (raw) => {
   const line = raw.trim()
@@ -422,10 +447,10 @@ rl.on('line', (raw) => {
         requestUsageCapture()
       }
       break
-    case 'list_models':
+    case 'validate_model':
       if (!started) {
         started = true
-        startListModels(cmd.options || {})
+        startValidateModel(cmd.options || {})
       }
       break
     case 'abort':

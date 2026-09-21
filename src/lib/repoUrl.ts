@@ -68,6 +68,20 @@ export function repoWebUrl(repo: {
   return owner && name ? `https://github.com/${owner}/${name}` : null
 }
 
+// Identity key for a repo, used to detect duplicates (case-insensitive).
+export function repoKey(repo: {
+  provider?: 'github' | 'gitlab' | null
+  github_owner?: string | null
+  github_repo?: string | null
+  gitlab_project_path?: string | null
+}): string {
+  const provider = repo.provider ?? 'github'
+  const coords = provider === 'gitlab'
+    ? (repo.gitlab_project_path ?? '').trim()
+    : `${(repo.github_owner ?? '').trim()}/${(repo.github_repo ?? '').trim()}`
+  return `${provider}:${coords}`.toLowerCase()
+}
+
 export function parseRepoUrl(raw: string): ParsedRepo | null {
   const split = splitHostPath(raw)
   if (!split) return null

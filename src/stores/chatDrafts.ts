@@ -2,12 +2,14 @@ import { defineStore } from 'pinia'
 import { reactive } from 'vue'
 
 /**
- * Unsent chatbox drafts, keyed by project id. RunView is remounted whenever the
- * active project changes (its RouterView key is `run-<projectId>`), which would
- * otherwise wipe whatever the user was composing. Persisting the draft here —
- * and mirroring it to localStorage — lets the composer survive both project
- * switches and full app reloads. We keep the typed text, pasted images
- * (base64) and attached files (by path).
+ * Unsent chatbox drafts, keyed by SESSION (run id). Switching between sessions,
+ * leaving RunView and coming back, or a full app reload would otherwise wipe
+ * whatever the user was composing. Keying by run id means each session keeps its
+ * own draft instead of sharing one project-wide slot that the next session would
+ * clobber. Persisting here — and mirroring to localStorage — lets the composer
+ * survive session switches and reloads. We keep the typed text, pasted images
+ * (base64) and attached files (by path). The key is an opaque string, so any
+ * stable id works.
  */
 export interface DraftImage {
   media_type: string
@@ -86,25 +88,25 @@ export const useChatDraftsStore = defineStore('chatDrafts', () => {
     }
   }
 
-  function get(projectId: string): ChatDraft {
-    const d = projectId && drafts[projectId]
+  function get(key: string): ChatDraft {
+    const d = key && drafts[key]
     return d ? { text: d.text, images: [...d.images], files: [...d.files] } : emptyDraft()
   }
 
-  /** Save (or clear, when empty) the draft for a project. */
-  function set(projectId: string, draft: ChatDraft) {
-    if (!projectId) return
+  /** Save (or clear, when empty) the draft for a session/key. */
+  function set(key: string, draft: ChatDraft) {
+    if (!key) return
     if (isEmpty(draft)) {
-      if (!(projectId in drafts)) return
-      delete drafts[projectId]
+      if (!(key in drafts)) return
+      delete drafts[key]
     } else {
-      drafts[projectId] = { text: draft.text, images: [...draft.images], files: [...draft.files] }
+      drafts[key] = { text: draft.text, images: [...draft.images], files: [...draft.files] }
     }
     persist()
   }
 
-  function clear(projectId: string) {
-    set(projectId, emptyDraft())
+  function clear(key: string) {
+    set(key, emptyDraft())
   }
 
   return { drafts, get, set, clear }

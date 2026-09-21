@@ -541,7 +541,7 @@ pub async fn send_engine_model_options(
     out: &OutboundTx,
     seq: &SeqCounter,
 ) {
-    let (claude, codex) = crate::commands::models::active_discovered_models(db).await;
+    let codex = crate::commands::models::active_discovered_models(db).await;
     let to_wire = |m: crate::commands::models::ModelOption| DiscoveredModel {
         value: m.value,
         label: m.label,
@@ -568,7 +568,10 @@ pub async fn send_engine_model_options(
 
     let payload = StreamPayload::EngineModelOptions {
         engines: engine_model_options(),
-        claude_models: claude.into_iter().map(to_wire).collect(),
+        // Claude's list is curated in the shared frontend bundle, so the
+        // controller already has it — nothing to discover or ship. The field
+        // stays on the wire (empty, hence skipped) for older controllers.
+        claude_models: Vec::new(),
         codex_models: codex.into_iter().map(to_wire).collect(),
         claude_accounts,
     };
