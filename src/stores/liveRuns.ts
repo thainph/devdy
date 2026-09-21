@@ -126,10 +126,9 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
   // Side tables that don't need to be reactive (and shouldn't be proxied).
   const toolIndexes = new Map<string, Map<string, number>>()
   const unlisteners = new Map<string, UnlistenFn[]>()
-  // Subscribers notified when a run emits `run:done`. Used by the Duo
-  // orchestrator to relay one session's completed reply into the other. Kept
-  // across turns on purpose — a persistent run fires this on EVERY finished
-  // turn, and the orchestrator re-arms listeners before its next turn.
+  // Subscribers notified when a run emits `run:done`. Kept across turns on
+  // purpose — a persistent run fires this on EVERY finished turn, and a
+  // subscriber can re-arm its listeners before the next turn.
   const doneCallbacks = new Map<string, Set<(status: string) => void>>()
 
   // Slash commands advertised by each engine on `system.init`, cached (and
@@ -169,9 +168,8 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
    *     would strand a prompt the user can never answer);
    *  3. `notifyDone` is false — the user hasn't acknowledged the finish yet, and
    *     the Active runs dock still needs the row;
-   *  4. no `doneCallbacks` — the Duo orchestrator registers these and keeps them
-   *     across turns on purpose; evicting would break the relay between the two
-   *     agents mid-conversation.
+   *  4. no `doneCallbacks` — a subscriber registered these and keeps them across
+   *     turns on purpose; evicting would break its relay mid-conversation.
    */
   function evictTerminalSessions() {
     const candidates: { runId: string; touched: number }[] = []
@@ -301,6 +299,13 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
    */
   async function startListening(runId: string, projectId: string) {
     if (unlisteners.has(runId)) return
+    // Reserve the slot SYNCHRONOUSLY before the `await listen(...)` calls below.
+    // Two callers can fire in the same tick (e.g. RunView's `run:activated`
+    // handler and the Conductor workspace's watcher both starting the conductor
+    // run); without this reservation both pass the guard above before either
+    // reaches the final `unlisteners.set`, each registers a full listener set,
+    // and every `run:event` is then processed twice → duplicated chat entries.
+    unlisteners.set(runId, [])
     const runsStore = useRunsStore()
     const remoteControl = useRemoteControlStore()
     const s = ensure(runId, projectId)
@@ -410,8 +415,8 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
         if (runsStore.loadedProjectId === projectId) {
           runsStore.fetchRuns(projectId).catch(() => {})
         }
-        // Notify Duo-orchestrator subscribers AFTER state is settled, so a
-        // callback that reads `entries` sees the fully-drained turn.
+        // Notify `run:done` subscribers AFTER state is settled, so a callback
+        // that reads `entries` sees the fully-drained turn.
         const cbs = doneCallbacks.get(runId)
         if (cbs) for (const cb of cbs) {
           try { cb(event.payload.status) } catch { /* subscriber error must not break teardown */ }
@@ -493,6 +498,13 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
       }),
     )
 
+    // If stopListening ran while we were awaiting the listen() calls, its slot
+    // was deleted — honor that and tear down what we just created rather than
+    // resurrecting a stale listener set.
+    if (!unlisteners.has(runId)) {
+      fns.forEach((f) => f())
+      return
+    }
     unlisteners.set(runId, fns)
   }
 

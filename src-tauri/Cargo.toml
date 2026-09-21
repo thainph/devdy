@@ -49,6 +49,9 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 rand = "0.8"
 base64 = "0.22"
 remote-e2e = { path = "../remote-e2e" }
+# Conductor: in-process localhost-only MCP server (Streamable HTTP) that lets a
+# conductor run drive worker runs via session_* tools. Bound to 127.0.0.1 only.
+axum = "0.7"
 
 [target.'cfg(unix)'.dependencies]
 # Process-group SIGKILL on app exit / cancel, so sidecar + CLI children don't

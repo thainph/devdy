@@ -44,6 +44,15 @@ pub struct StartRunPayload {
     /// Proceed even when the global token budget is exceeded (user confirmed).
     #[serde(default)]
     pub override_budget: bool,
+    /// Extra text appended to the system prompt, on top of any git-account
+    /// context. Used by the Conductor to inject role/orchestration framing.
+    #[serde(default)]
+    pub append_system_prompt: Option<String>,
+    /// When set, this run is a Conductor: inject the loopback `conductor` MCP
+    /// server (Streamable HTTP) carrying this bearer token so the run can drive
+    /// worker sessions via the `session_*` tools. `None` for ordinary runs.
+    #[serde(default)]
+    pub conductor_token: Option<String>,
 }
 
 /// JSON the sidecar consumes on its `prompt` line: a flat array of
@@ -390,8 +399,23 @@ pub(crate) async fn start_run_inner(
                 "permissionMode": sdk_permission_mode(&permission_mode),
                 "model": model,
             });
+            // Combine the git-account context with any caller-supplied system
+            // prompt (the Conductor's orchestration framing) into one append.
+            let mut append_parts: Vec<String> = Vec::new();
             if let Some(ctx) = &account_context {
-                options["appendSystemPrompt"] = serde_json::Value::String(ctx.clone());
+                append_parts.push(ctx.clone());
+            }
+            if let Some(extra) = payload
+                .append_system_prompt
+                .as_ref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+            {
+                append_parts.push(extra.to_string());
+            }
+            if !append_parts.is_empty() {
+                options["appendSystemPrompt"] =
+                    serde_json::Value::String(append_parts.join("\n\n"));
             }
             // Inject the project's enabled MCP servers for the ACTUAL run engine
             // (QĐ-2). Claude gets the full 3-transport map via options.mcpServers;
@@ -422,6 +446,17 @@ pub(crate) async fn start_run_inner(
                 &crate::runs::sidecar::resolve_mcp_script(&app, "google.mjs"),
             )
             .await;
+            // Conductor runs additionally get the loopback `conductor` MCP server
+            // (session_* control tools), scoped by their bearer token.
+            let mcp = if let Some(token) = payload.conductor_token.as_deref() {
+                if let Some(cst) = app.try_state::<crate::conductor::ConductorState>() {
+                    crate::conductor::with_conductor(mcp, &cst.base_url(), token)
+                } else {
+                    mcp
+                }
+            } else {
+                mcp
+            };
             if !mcp.is_null() {
                 options["mcpServers"] = mcp;
             }
@@ -2503,7 +2538,7 @@ pub async fn resume_run(
     use sqlx::Row;
 
     let row = sqlx::query(
-        "SELECT r.engine, r.status, r.session_id, r.project_id, r.claude_account_id, p.path as project_path
+        "SELECT r.engine, r.status, r.session_id, r.project_id, r.claude_account_id, r.role, p.path as project_path
          FROM runs r JOIN projects p ON p.id = r.project_id
          WHERE r.id = ?",
     )
@@ -2517,6 +2552,7 @@ pub async fn resume_run(
     let session_id: Option<String> = row.get("session_id");
     let project_id: String = row.get("project_id");
     let claude_account_id: Option<String> = row.get("claude_account_id");
+    let run_role: Option<String> = row.get("role");
     let project_path: String = row.get("project_path");
 
     // Same budget guardrail as start_run — resuming a finished run starts a new
@@ -2731,6 +2767,22 @@ pub async fn resume_run(
             &crate::runs::sidecar::resolve_mcp_script(&app, "google.mjs"),
         )
         .await;
+        // A resumed conductor must keep its `session_*` control tools. Re-inject
+        // the loopback conductor MCP server with the session's current token
+        // (restored on startup for pre-restart sessions).
+        let mcp = if run_role.as_deref() == Some("conductor") {
+            if let Some(cst) = app.try_state::<crate::conductor::ConductorState>() {
+                if let Some(token) = cst.token_for(&run_id) {
+                    crate::conductor::with_conductor(mcp, &cst.base_url(), &token)
+                } else {
+                    mcp
+                }
+            } else {
+                mcp
+            }
+        } else {
+            mcp
+        };
         if !mcp.is_null() {
             cmd.env("DEVDY_MCP_SERVERS", mcp.to_string());
         }
