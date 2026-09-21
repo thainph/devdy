@@ -5,7 +5,7 @@ import { invoke } from '@/lib/tauri'
 import {
   Cpu, Palette, FileText, ShieldAlert, Sparkles, Github, Gitlab, Cloud,
   CheckCircle2, AlertTriangle, Trash2, Plus, Pencil, Gauge, Radio,
-  RefreshCw, Loader2, Server, HardDrive, Bot, RotateCcw, UserCircle,
+  RefreshCw, Loader2, BadgeCheck, Server, HardDrive, Bot, RotateCcw, UserCircle,
   LogIn, Star,
 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
@@ -20,8 +20,8 @@ import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useGithubAccountsStore, type PatValidation } from '@/stores/githubAccounts'
 import { useGitlabAccountsStore, type GitlabPatValidation } from '@/stores/gitlabAccounts'
-import { useAwsAccountsStore, type AwsAccountPayload, type AwsAuthMethod, type AwsValidation } from '@/stores/awsAccounts'
-import { useClaudeAccountsStore } from '@/stores/claudeAccounts'
+import { useAwsAccountsStore, isSsoLoginRequired, type AwsAccountPayload, type AwsAuthMethod, type AwsValidation } from '@/stores/awsAccounts'
+import { useClaudeAccountsStore, type ClaudeValidation } from '@/stores/claudeAccounts'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useMascotLevelStore } from '@/stores/mascotLevel'
 import { type MascotBubbleVariant, type MascotBubbleMessage } from '@/composables/useMascotBubble'
@@ -30,6 +30,7 @@ import { useMascotSpeech, useVoiceList, speechSupported } from '@/composables/us
 import { useMascotSpeaking } from '@/composables/useMascotSpeaking'
 import { useBudgetStore } from '@/stores/budget'
 import { useModelCatalogStore } from '@/stores/modelCatalog'
+import { MODEL_OPTIONS, withCurrentModel } from '@/lib/engineOptions'
 import {
   type SavedPrompt, newPromptId, parseSavedPrompts, serializeSavedPrompts,
 } from '@/lib/savedPrompts'
@@ -356,9 +357,14 @@ function selectPreviewState(state: CyberFoxPreviewState) {
   }
 }
 
-// Claude model choices = curated aliases + any newly-released models discovered
-// from the account (Codex has no discovery API, so it stays curated).
-const claudeModelOptions = computed(() => modelCatalog.mergedClaudeOptions(CLAUDE_MODEL_OPTIONS))
+// Claude model choices = the pinned table, annotated with the last validation
+// sweep, plus whatever is already saved (so an id dropped from the table — or a
+// family alias from an older build — is never silently rewritten).
+const claudeModelOptions = computed(() =>
+  modelCatalog.withValidation(
+    withCurrentModel(CLAUDE_MODEL_OPTIONS, settings.value.claude_model),
+  ),
+)
 // Codex model choices = curated fallback, replaced by the CLI-refreshed cache
 // (`codex debug models`) once the user refreshes in Settings.
 const codexModelOptions = computed(() => modelCatalog.codexOptions(CODEX_MODEL_OPTIONS))
@@ -400,17 +406,11 @@ const TRANSLATE_STYLE_OPTIONS = computed(() => [
   { value: 'casual', label: t('settings.ai.styleCasual') },
 ])
 
-// `[1m]` selects the 1M-context variant; the bare alias uses the 200K default.
-// Aliases (not pinned ids) keep these current as new model versions ship.
-const CLAUDE_MODEL_OPTIONS = [
-  { value: '', label: t('settings.ai.modelDefault') },
-  { value: 'fable', label: 'Fable 5 (1M)' },
-  { value: 'opus', label: 'Opus (200K)' },
-  { value: 'opus[1m]', label: 'Opus (1M)' },
-  { value: 'sonnet', label: 'Sonnet (200K)' },
-  { value: 'sonnet[1m]', label: 'Sonnet (1M)' },
-  { value: 'haiku', label: 'Haiku' },
-]
+// The pinned Claude table, shared with the composer and the remote controller.
+// Only the leading "Default" placeholder is translated; the rest are model ids.
+const CLAUDE_MODEL_OPTIONS = MODEL_OPTIONS.claude.map((o) =>
+  o.value === '' ? { ...o, label: t('settings.ai.modelDefault') } : o,
+)
 const CODEX_MODEL_OPTIONS = [
   { value: '', label: t('settings.ai.modelDefault') },
   { value: 'gpt-5.5', label: 'gpt-5.5' },
@@ -534,6 +534,50 @@ async function forgetGoogleClient() {
     await loadGoogleStatus()
     toast.success(t('settings.google.credsRemoved'))
   } catch (e) { googleError.value = String(e) }
+}
+
+// --- Google validate / re-login (mirrors the AWS section) ---
+interface GoogleValidation { email: string; scope: string }
+const GOOGLE_LOGIN_REQUIRED = 'GOOGLE_LOGIN_REQUIRED'
+const googleValidations = ref<Record<string, GoogleValidation>>({})
+const googleAccountError = ref<Record<string, string>>({})
+const googleLoginNeeded = ref<Record<string, boolean>>({})
+const googleBusyAccount = ref<string | null>(null)
+
+async function handleValidateGoogle(id: string) {
+  googleBusyAccount.value = id
+  googleAccountError.value[id] = ''
+  googleLoginNeeded.value[id] = false
+  delete googleValidations.value[id]
+  try {
+    googleValidations.value[id] = await invoke<GoogleValidation>('validate_google_account', { id })
+    await loadGoogleStatus()
+  } catch (e) {
+    // "Needs login" is a state (amber notice), not a hard error (red).
+    if (String(e).includes(GOOGLE_LOGIN_REQUIRED)) {
+      googleLoginNeeded.value[id] = true
+    } else {
+      googleAccountError.value[id] = String(e)
+    }
+  } finally {
+    googleBusyAccount.value = null
+  }
+}
+
+async function handleGoogleReauth(id: string) {
+  googleBusyAccount.value = id
+  googleAccountError.value[id] = ''
+  try {
+    await invoke<GoogleAccount>('reauth_google_account', { id })
+    googleLoginNeeded.value[id] = false
+    await loadGoogleStatus()
+    // Re-validate straight away so a successful login turns the row green.
+    await handleValidateGoogle(id)
+  } catch (e) {
+    googleAccountError.value[id] = String(e)
+  } finally {
+    if (googleBusyAccount.value === id) googleBusyAccount.value = null
+  }
 }
 
 const ghCount = computed(() => ghStore.accounts.length)
@@ -740,6 +784,8 @@ const awsEditing = ref<string | null>(null)
 const awsValidations = ref<Record<string, AwsValidation>>({})
 const awsAccountError = ref<Record<string, string>>({})
 const awsBusyAccount = ref<string | null>(null)
+// Accounts whose last validation failed because their SSO token needs refreshing.
+const awsSsoLoginNeeded = ref<Record<string, boolean>>({})
 
 function maskAccessKey(value: string | null): string {
   if (!value) return ''
@@ -841,13 +887,34 @@ async function handleSaveAwsEdit(id: string) {
 async function handleValidateAws(id: string) {
   awsBusyAccount.value = id
   awsAccountError.value[id] = ''
+  awsSsoLoginNeeded.value[id] = false
   delete awsValidations.value[id]
   try {
     awsValidations.value[id] = await awsStore.validate(id)
   } catch (e) {
-    awsAccountError.value[id] = String(e)
+    // "Needs login" is a state (amber notice), not a hard error (red).
+    if (isSsoLoginRequired(e)) {
+      awsSsoLoginNeeded.value[id] = true
+    } else {
+      awsAccountError.value[id] = String(e)
+    }
   } finally {
     awsBusyAccount.value = null
+  }
+}
+
+async function handleAwsSsoLogin(id: string) {
+  awsBusyAccount.value = id
+  awsAccountError.value[id] = ''
+  try {
+    await awsStore.ssoLogin(id)
+    awsSsoLoginNeeded.value[id] = false
+    // Re-validate straight away so a successful login turns the row green.
+    await handleValidateAws(id)
+  } catch (e) {
+    awsAccountError.value[id] = String(e)
+  } finally {
+    if (awsBusyAccount.value === id) awsBusyAccount.value = null
   }
 }
 
@@ -874,6 +941,9 @@ const claudeEditing = ref<string | null>(null)
 const claudeEditLabel = ref<Record<string, string>>({})
 const claudeBusyAccount = ref<string | null>(null)
 const claudeAccountError = ref<Record<string, string>>({})
+// Last validation result per account, shown inline (mirrors the AWS section)
+// instead of via a toast.
+const claudeValidations = ref<Record<string, ClaudeValidation>>({})
 
 function claudeStatusTone(status: string): string {
   switch (status) {
@@ -935,13 +1005,9 @@ async function handleClaudeLogin(id: string) {
 async function handleValidateClaude(id: string) {
   claudeBusyAccount.value = id
   claudeAccountError.value[id] = ''
+  delete claudeValidations.value[id]
   try {
-    const result = await claudeStore.validate(id)
-    if (result.logged_in) {
-      toast.success(t('settings.claude.validReady'))
-    } else {
-      toast.info(t('settings.claude.validNeedsLogin'))
-    }
+    claudeValidations.value[id] = await claudeStore.validate(id)
   } catch (e) {
     claudeAccountError.value[id] = String(e)
   } finally {
@@ -1622,17 +1688,55 @@ watch(() => settings.value.language, (v) => {
                     <div class="text-[11px] text-muted-foreground truncate">{{ acc.email || t('settings.google.driveGmail') }}</div>
                   </div>
                   <div class="flex items-center gap-1 shrink-0">
-                    <Button v-if="!acc.is_default" size="sm" variant="ghost" :title="t('settings.google.setAsDefault')" @click="makeGoogleDefault(acc)">
-                      <CheckCircle2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      :disabled="googleBusyAccount === acc.id"
+                      @click="handleValidateGoogle(acc.id)"
+                    >
+                      {{ googleBusyAccount === acc.id ? '…' : t('settings.google.validate') }}
                     </Button>
-                    <Button size="sm" variant="ghost" :title="t('settings.google.rename')" @click="googleEditing = acc.id; googleEditLabel = acc.label">
+                    <Button
+                      v-if="googleLoginNeeded[acc.id]"
+                      variant="outline"
+                      size="xs"
+                      :disabled="googleBusyAccount === acc.id"
+                      @click="handleGoogleReauth(acc.id)"
+                    >
+                      <LogIn class="h-3.5 w-3.5" :stroke-width="1.75" />
+                      {{ t('settings.google.login') }}
+                    </Button>
+                    <Button v-if="!acc.is_default" size="icon-sm" variant="ghost" :title="t('settings.google.setAsDefault')" @click="makeGoogleDefault(acc)">
+                      <Star class="h-3.5 w-3.5" :stroke-width="1.75" />
+                    </Button>
+                    <Button size="icon-sm" variant="ghost" :title="t('settings.google.rename')" @click="googleEditing = acc.id; googleEditLabel = acc.label">
                       <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
                     </Button>
-                    <Button size="sm" variant="ghost" :title="t('common.remove')" @click="removeGoogleAccount(acc)">
+                    <Button size="icon-sm" variant="destructive-ghost" :title="t('common.remove')" @click="removeGoogleAccount(acc)">
                       <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
                     </Button>
                   </div>
                 </div>
+                <div
+                  v-if="googleValidations[acc.id]"
+                  class="p-2 bg-emerald-500/10 border border-emerald-500/20 rounded-md text-[11px]"
+                >
+                  <div class="flex items-center gap-1.5 text-emerald-500 font-medium">
+                    <CheckCircle2 class="h-3 w-3" :stroke-width="2" />
+                    {{ t('settings.google.valid') }}
+                  </div>
+                  <p v-if="googleValidations[acc.id].email" class="text-muted-foreground mt-1 truncate">
+                    {{ googleValidations[acc.id].email }}
+                  </p>
+                </div>
+                <div
+                  v-if="googleLoginNeeded[acc.id]"
+                  class="p-2 bg-amber-500/10 border border-amber-500/20 rounded-md text-[11px] text-amber-500 flex items-start gap-1.5"
+                >
+                  <AlertTriangle class="h-3 w-3 shrink-0 mt-0.5" :stroke-width="1.75" />
+                  <span>{{ googleBusyAccount === acc.id ? t('settings.google.loggingIn') : t('settings.google.loginExpired') }}</span>
+                </div>
+                <p v-if="googleAccountError[acc.id]" class="text-[11px] text-destructive">{{ googleAccountError[acc.id] }}</p>
               </template>
               <template v-else>
                 <div class="flex items-center gap-2">
@@ -1780,8 +1884,9 @@ watch(() => settings.value.language, (v) => {
                   >
                     <div class="flex items-center gap-1.5 text-emerald-500 font-medium">
                       <CheckCircle2 class="h-3 w-3" :stroke-width="2" />
-                      {{ t('settings.github.valid', { username: validations[acc.id].username }) }}
+                      {{ t('settings.github.valid') }}
                     </div>
+                    <p v-if="validations[acc.id].username" class="text-muted-foreground mt-1 truncate">@{{ validations[acc.id].username }}</p>
                     <p v-if="!validations[acc.id].has_repo_scope" class="text-amber-500 mt-1 flex items-center gap-1">
                       <AlertTriangle class="h-3 w-3" :stroke-width="1.75" />
                       {{ t('settings.github.missingRepoScope') }}
@@ -1921,10 +2026,11 @@ watch(() => settings.value.language, (v) => {
                   >
                     <div class="flex items-center gap-1.5 text-emerald-500 font-medium">
                       <CheckCircle2 class="h-3 w-3" :stroke-width="2" />
-                      {{ t('settings.gitlab.valid', { username: glValidations[acc.id].username }) }}
+                      {{ t('settings.gitlab.valid') }}
                     </div>
-                    <p v-if="glValidations[acc.id].email" class="text-muted-foreground mt-1">
-                      {{ glValidations[acc.id].email }}
+                    <p v-if="glValidations[acc.id].username || glValidations[acc.id].email" class="text-muted-foreground mt-1 truncate">
+                      <template v-if="glValidations[acc.id].username">@{{ glValidations[acc.id].username }}</template>
+                      <template v-if="glValidations[acc.id].email"> · {{ glValidations[acc.id].email }}</template>
                     </p>
                   </div>
                 </template>
@@ -2058,6 +2164,16 @@ watch(() => settings.value.language, (v) => {
                         {{ awsBusyAccount === acc.id ? '…' : t('settings.aws.validate') }}
                       </Button>
                       <Button
+                        v-if="awsSsoLoginNeeded[acc.id]"
+                        variant="outline"
+                        size="xs"
+                        :disabled="awsBusyAccount === acc.id"
+                        @click="handleAwsSsoLogin(acc.id)"
+                      >
+                        <LogIn class="h-3.5 w-3.5" :stroke-width="1.75" />
+                        {{ t('settings.aws.ssoLogin') }}
+                      </Button>
+                      <Button
                         variant="ghost"
                         size="icon-sm"
                         :title="t('common.edit')"
@@ -2081,9 +2197,17 @@ watch(() => settings.value.language, (v) => {
                   >
                     <div class="flex items-center gap-1.5 text-emerald-500 font-medium">
                       <CheckCircle2 class="h-3 w-3" :stroke-width="2" />
-                      {{ t('settings.aws.valid', { accountId: awsValidations[acc.id].account_id }) }}
+                      {{ t('settings.aws.valid') }}
                     </div>
+                    <p v-if="awsValidations[acc.id].account_id" class="text-muted-foreground mt-1 truncate">{{ awsValidations[acc.id].account_id }}</p>
                     <p class="text-muted-foreground mt-1 truncate">{{ awsValidations[acc.id].arn }}</p>
+                  </div>
+                  <div
+                    v-if="awsSsoLoginNeeded[acc.id]"
+                    class="p-2 bg-amber-500/10 border border-amber-500/20 rounded-md text-[11px] text-amber-500 flex items-start gap-1.5"
+                  >
+                    <AlertTriangle class="h-3 w-3 shrink-0 mt-0.5" :stroke-width="1.75" />
+                    <span>{{ awsBusyAccount === acc.id ? t('settings.aws.ssoLoggingIn') : t('settings.aws.ssoExpired') }}</span>
                   </div>
                 </template>
 
@@ -2246,18 +2370,19 @@ watch(() => settings.value.language, (v) => {
                       <Button
                         variant="outline"
                         size="xs"
-                        @click="handleClaudeLogin(acc.id)"
-                      >
-                        <LogIn class="h-3.5 w-3.5" :stroke-width="1.75" />
-                        {{ t('settings.claude.login') }}
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="xs"
                         :disabled="claudeBusyAccount === acc.id"
                         @click="handleValidateClaude(acc.id)"
                       >
                         {{ claudeBusyAccount === acc.id ? '…' : t('settings.claude.validate') }}
+                      </Button>
+                      <Button
+                        v-if="acc.status !== 'ready'"
+                        variant="outline"
+                        size="xs"
+                        @click="handleClaudeLogin(acc.id)"
+                      >
+                        <LogIn class="h-3.5 w-3.5" :stroke-width="1.75" />
+                        {{ t('settings.claude.login') }}
                       </Button>
                       <Button
                         v-if="!acc.is_default"
@@ -2285,6 +2410,25 @@ watch(() => settings.value.language, (v) => {
                         <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
                       </Button>
                     </div>
+                  </div>
+                  <div
+                    v-if="claudeValidations[acc.id]?.logged_in"
+                    class="p-2 bg-emerald-500/10 border border-emerald-500/20 rounded-md text-[11px]"
+                  >
+                    <div class="flex items-center gap-1.5 text-emerald-500 font-medium">
+                      <CheckCircle2 class="h-3 w-3" :stroke-width="2" />
+                      {{ t('settings.claude.validReady') }}
+                    </div>
+                    <p v-if="claudeValidations[acc.id].email" class="text-muted-foreground mt-1 truncate">
+                      {{ claudeValidations[acc.id].email }}
+                    </p>
+                  </div>
+                  <div
+                    v-else-if="claudeValidations[acc.id]"
+                    class="p-2 bg-amber-500/10 border border-amber-500/20 rounded-md text-[11px] text-amber-500 flex items-start gap-1.5"
+                  >
+                    <AlertTriangle class="h-3 w-3 shrink-0 mt-0.5" :stroke-width="1.75" />
+                    <span>{{ t('settings.claude.validNeedsLogin') }}</span>
                   </div>
                 </template>
 
@@ -2400,17 +2544,20 @@ watch(() => settings.value.language, (v) => {
                   <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.ai.defaultClaudeModel') }}</label>
                   <button
                     class="inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer disabled:opacity-50"
-                    :disabled="modelCatalog.claudeLoading"
-                    :title="t('settings.ai.reloadModelsTitle')"
-                    @click="modelCatalog.refreshClaude()"
+                    :disabled="modelCatalog.validating"
+                    :title="t('settings.ai.validateModelsTitle')"
+                    @click="modelCatalog.validateClaude()"
                   >
-                    <component :is="modelCatalog.claudeLoading ? Loader2 : RefreshCw" class="h-3 w-3" :class="{ 'animate-spin': modelCatalog.claudeLoading }" :stroke-width="1.75" />
-                    {{ modelCatalog.claudeLoading ? t('settings.ai.loading') : t('settings.ai.reload') }}
+                    <component :is="modelCatalog.validating ? Loader2 : BadgeCheck" class="h-3 w-3" :class="{ 'animate-spin': modelCatalog.validating }" :stroke-width="1.75" />
+                    {{ modelCatalog.validating ? t('settings.ai.validating') : t('settings.ai.validate') }}
                   </button>
                 </div>
                 <AppSelect size="sm" v-model="settings.claude_model" :options="claudeModelOptions" />
-                <p v-if="modelCatalog.claudeError" class="text-[11px] text-amber-500">{{ t('settings.ai.modelsRefreshError') }}</p>
-                <p v-else-if="modelCatalog.claudeRefreshedAt" class="text-[11px] text-muted-foreground">{{ t('settings.ai.modelsCached', { count: modelCatalog.claudeModels.length, when: fmtRefreshed(modelCatalog.claudeRefreshedAt) }) }}</p>
+                <p v-if="modelCatalog.validationError" class="text-[11px] text-amber-500">{{ t('settings.ai.validateError') }}</p>
+                <p v-else-if="modelCatalog.validating" class="text-[11px] text-muted-foreground">{{ t('settings.ai.validateRunning') }}</p>
+                <p v-else-if="modelCatalog.unsupportedModels.length" class="text-[11px] text-amber-500">{{ t('settings.ai.validateSomeFailed', { models: modelCatalog.unsupportedModels.join(', '), when: fmtRefreshed(modelCatalog.validationCheckedAt) }) }}</p>
+                <p v-else-if="modelCatalog.validationCheckedAt" class="text-[11px] text-muted-foreground">{{ t('settings.ai.validateAllOk', { when: fmtRefreshed(modelCatalog.validationCheckedAt) }) }}</p>
+                <p v-else class="text-[11px] text-muted-foreground">{{ t('settings.ai.validateHint') }}</p>
               </div>
               <div class="space-y-1.5">
                 <div class="flex items-center justify-between">

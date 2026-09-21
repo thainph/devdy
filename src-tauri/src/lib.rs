@@ -8,8 +8,8 @@ mod secrets;
 
 use commands::app_menu::set_app_menu;
 use commands::aws_accounts::{
-    create_aws_account, delete_aws_account, list_aws_accounts, set_project_aws_account,
-    update_aws_account, validate_aws_account,
+    aws_sso_login, create_aws_account, delete_aws_account, list_aws_accounts,
+    set_project_aws_account, update_aws_account, validate_aws_account,
 };
 use commands::claude_accounts::{
     create_claude_account, delete_claude_account, list_claude_accounts,
@@ -49,7 +49,8 @@ use commands::gcalendar::{
 };
 use commands::google::{
     add_google_account, delete_google_account, google_client_status, google_forget_client,
-    list_google_accounts, rename_google_account, set_default_google_account,
+    list_google_accounts, reauth_google_account, rename_google_account,
+    set_default_google_account, validate_google_account,
 };
 use commands::groups::{
     apply_group_to_all_projects, create_group, delete_group, disable_group_for_project,
@@ -275,6 +276,8 @@ pub fn run() {
             delete_google_account,
             rename_google_account,
             set_default_google_account,
+            validate_google_account,
+            reauth_google_account,
             google_client_status,
             google_forget_client,
             list_claude_accounts,
@@ -321,6 +324,7 @@ pub fn run() {
             update_aws_account,
             delete_aws_account,
             validate_aws_account,
+            aws_sso_login,
             set_project_aws_account,
             get_applied_skills,
             apply_skill,
