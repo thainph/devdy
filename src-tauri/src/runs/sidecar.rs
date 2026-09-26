@@ -400,6 +400,20 @@ pub async fn drain_sidecar(
     // with "AbortError: Stream closed". So we only close once this reaches 0.
     let mut live_bg_tasks: usize = 0;
 
+    // Set once the user's own foreground turn has ended (an origin-less `result`)
+    // in THIS sidecar. It distinguishes the two look-alike shapes of an
+    // origin-tagged `task-notification` result, both of which carry
+    // `live_bg_tasks == 0`:
+    //   • BEFORE any user turn — a spurious leftover from a previous session that
+    //     lands on resume; closing stdin here would strand the real turn's
+    //     permission channel (flag false → keep open);
+    //   • AFTER the user turn plus all the background tasks it spawned have
+    //     drained — the genuine end of the session's work (flag true → close).
+    // Without it, a turn that spawns background subagents and finishes via a
+    // task-notification wake-up never closes stdin: the process never exits, so
+    // `run:done`/`status='done'` never fire and the run is stuck "running".
+    let mut user_turn_ended_once = false;
+
     // Incremental persistence: snapshot any pre-existing on-disk log once (for
     // resumes), then periodically flush `prefix + buf` to disk while the run
     // streams. This lets the frontend recover partial output after an app
@@ -455,6 +469,10 @@ pub async fn drain_sidecar(
                                 };
                                 // Remote tap: forward the permission_request with full
                                 // context so a Controller can decide (FR-006/BR-007).
+                                // Conductor workers use the SAME flow as any session:
+                                // the request surfaces in the standard permission drawer
+                                // (shown in the Conductor tab for worker runs), with the
+                                // per-project "always allow/deny" list applying as usual.
                                 if let Some(bus) = &remote_bus {
                                     bus.publish(crate::remote::RemoteRunEvent::PermissionRequest {
                                         run_id: run_id.clone(),
@@ -597,7 +615,10 @@ pub async fn drain_sidecar(
                                     // The run stays "running" until the last task
                                     // drains; follow-ups then go to this same live
                                     // sidecar rather than a resume.
-                                    if result_should_close_stdin(v, live_bg_tasks) {
+                                    if result_ends_user_turn(v) {
+                                        user_turn_ended_once = true;
+                                    }
+                                    if result_should_close_stdin(v, live_bg_tasks, user_turn_ended_once) {
                                         let mut reg = registry.lock().await;
                                         if let Some(handles) = reg.get_mut(&run_id) {
                                             handles.stdin.take();
@@ -743,12 +764,22 @@ fn result_ends_user_turn(value: &Value) -> bool {
 }
 
 /// Should this `result` cause the drain to close the sidecar's stdin (ending the
-/// turn and letting the process exit)? Only when it ends the user's own turn AND
-/// no background tasks are still alive — a live task means the CLI will wake the
-/// session in-process, and closing stdin would kill that wake-up turn's
-/// permission channel.
-fn result_should_close_stdin(value: &Value, live_bg_tasks: usize) -> bool {
-    result_ends_user_turn(value) && live_bg_tasks == 0
+/// turn and letting the process exit)?
+///
+/// A live background task always keeps stdin open: the CLI will wake the session
+/// in-process when it finishes, and closing stdin would kill that wake-up turn's
+/// permission channel. With no tasks left, stdin closes when EITHER:
+///   • this `result` ends the user's own turn (origin-less); or
+///   • the user's turn already ended earlier in this sidecar (`user_turn_ended`)
+///     and this is the origin-tagged `task-notification` result that fires once
+///     the last background task the turn spawned drains — the true end of work.
+/// The `user_turn_ended` guard is what stops a spurious leftover task-notification
+/// result (arriving BEFORE the user's turn on resume) from closing stdin early.
+fn result_should_close_stdin(value: &Value, live_bg_tasks: usize, user_turn_ended: bool) -> bool {
+    if live_bg_tasks != 0 {
+        return false;
+    }
+    result_ends_user_turn(value) || user_turn_ended
 }
 
 async fn capture_session_id(
@@ -1241,24 +1272,50 @@ mod turn_end_tests {
     // (origin, live background tasks at that point) → whether stdin should close.
     #[test]
     fn close_gate_matches_the_real_run() {
-        // Turn 2 (resume): spurious task-notification result, no live tasks.
+        // Turn 2 (resume): spurious task-notification result BEFORE the user's
+        // turn runs, no live tasks → must NOT close (user turn hasn't ended yet).
         let bg = serde_json::json!({
             "type": "result", "subtype": "success", "num_turns": 0,
             "origin": { "kind": "task-notification" },
         });
-        assert!(!result_should_close_stdin(&bg, 0));
+        assert!(!result_should_close_stdin(&bg, 0, false));
 
         // Turn 3: real result but a docker build + 2 monitors still running →
         // the CLI will wake this session in-process, so keep stdin open.
         let with_tasks = serde_json::json!({
             "type": "result", "subtype": "success", "num_turns": 14, "origin": null,
         });
-        assert!(!result_should_close_stdin(&with_tasks, 3));
+        assert!(!result_should_close_stdin(&with_tasks, 3, false));
 
         // Turn 4: real result, all background tasks drained → close for real.
         let done = serde_json::json!({
             "type": "result", "subtype": "success", "num_turns": 1, "origin": null,
         });
-        assert!(result_should_close_stdin(&done, 0));
+        assert!(result_should_close_stdin(&done, 0, false));
+    }
+
+    // Regression for run e075dd38: a user turn spawns background subagents, its
+    // own foreground `result` lands while they're still running (kept open), then
+    // the FINAL `result` that drains the last task is tagged
+    // `origin: task-notification`. Once the user turn has ended and no tasks
+    // remain, that task-notification result must close stdin — otherwise the
+    // process never exits and the run is stuck "running".
+    #[test]
+    fn task_notification_end_after_user_turn_closes() {
+        // Foreground result while 2 subagents still run → keep open, but it marks
+        // the user turn as ended.
+        let fg = serde_json::json!({
+            "type": "result", "subtype": "success", "num_turns": 15, "origin": null,
+        });
+        assert!(result_ends_user_turn(&fg));
+        assert!(!result_should_close_stdin(&fg, 2, false));
+
+        // Final wake-up result once the last task drained → close for real.
+        let wake = serde_json::json!({
+            "type": "result", "subtype": "success", "num_turns": 1,
+            "origin": { "kind": "task-notification" },
+        });
+        assert!(!result_ends_user_turn(&wake));
+        assert!(result_should_close_stdin(&wake, 0, /* user_turn_ended */ true));
     }
 }

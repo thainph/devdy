@@ -26,6 +26,7 @@ use crate::db::Db;
 use approver::Approver;
 use async_trait::async_trait;
 use policy::PolicyDecision;
+use tauri::AppHandle;
 
 /// Request sent by the shim over the socket (one NDJSON line).
 #[derive(Debug, Deserialize)]
@@ -144,6 +145,10 @@ pub struct BrokerConfig {
     pub socket_label: String,
     /// Per-request approver resolver (see `ApproverResolver`).
     pub resolver: Arc<dyn ApproverResolver>,
+    /// App handle for user-facing side effects (e.g. an OS notification when an
+    /// AWS SSO session expires mid-run). `None` in unit tests — notifications are
+    /// then skipped, everything else is unchanged.
+    pub app: Option<AppHandle>,
 }
 
 /// Handle to a running broker. Dropping it aborts the accept loop and removes the
@@ -202,6 +207,7 @@ pub async fn start_broker(db: Db, cfg: BrokerConfig) -> Result<BrokerHandle, Str
 
     let resolver = cfg.resolver.clone();
     let db_clone = db.clone();
+    let app = cfg.app.clone();
 
     let task = tokio::spawn(async move {
         loop {
@@ -209,9 +215,10 @@ pub async fn start_broker(db: Db, cfg: BrokerConfig) -> Result<BrokerHandle, Str
                 Ok((stream, _addr)) => {
                     let db = db_clone.clone();
                     let resolver = resolver.clone();
+                    let app = app.clone();
                     // One task per connection; a bad client must not kill the loop.
                     tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, &db, resolver).await {
+                        if let Err(e) = handle_connection(stream, &db, resolver, app).await {
                             tracing::warn!(target: "devdy::broker", "connection error: {e}");
                         }
                     });
@@ -232,6 +239,7 @@ async fn handle_connection(
     stream: UnixStream,
     db: &Db,
     resolver: Arc<dyn ApproverResolver>,
+    app: Option<AppHandle>,
 ) -> Result<(), String> {
     let (read_half, mut write_half) = stream.into_split();
     let mut lines = BufReader::new(read_half).lines();
@@ -240,7 +248,7 @@ async fn handle_connection(
         if line.trim().is_empty() {
             continue;
         }
-        let resp = process_line(&line, db, resolver.as_ref()).await;
+        let resp = process_line(&line, db, resolver.as_ref(), app.as_ref()).await;
         let mut out = serde_json::to_string(&resp).map_err(|e| e.to_string())?;
         out.push('\n');
         write_half
@@ -254,7 +262,12 @@ async fn handle_connection(
 
 /// Process a single request line into a response, auditing along the way.
 /// Never returns a token in any log or error path.
-async fn process_line(line: &str, db: &Db, resolver: &dyn ApproverResolver) -> BrokerResponse {
+async fn process_line(
+    line: &str,
+    db: &Db,
+    resolver: &dyn ApproverResolver,
+    app: Option<&AppHandle>,
+) -> BrokerResponse {
     // 1. Parse — malformed → deny (fail-closed).
     let req: BrokerRequest = match serde_json::from_str(line) {
         Ok(r) => r,
@@ -311,6 +324,26 @@ async fn process_line(line: &str, db: &Db, resolver: &dyn ApproverResolver) -> B
                 audit::audit_request(run_id, &req.tool, &req.argv, "deny", Some(reason));
                 BrokerResponse::deny(reason)
             }
+            Err(e) if e == token::AWS_SSO_LOGIN_REQUIRED => {
+                // Actionable, machine-detectable reason: the linked SSO session
+                // expired. The `aws_sso_login_required` prefix lets the UI offer
+                // an in-app `aws sso login`; the text guides a human in the run.
+                let reason = format!(
+                    "{}: AWS SSO session expired — run `aws sso login` for the linked profile (Devdy can do this from AWS settings)",
+                    token::AWS_SSO_LOGIN_REQUIRED
+                );
+                audit::audit_request(
+                    run_id,
+                    &req.tool,
+                    &req.argv,
+                    "deny",
+                    Some(token::AWS_SSO_LOGIN_REQUIRED),
+                );
+                // Alert the user mid-run so they can re-login from AWS settings
+                // without hunting through the run output for the cause.
+                notify_sso_login_required(app, &req.project_id);
+                BrokerResponse::deny(reason)
+            }
             Err(_) => {
                 let reason = "AWS credential resolve error";
                 audit::audit_request(run_id, &req.tool, &req.argv, "deny", Some(reason));
@@ -359,6 +392,42 @@ async fn process_line(line: &str, db: &Db, resolver: &dyn ApproverResolver) -> B
             BrokerResponse::deny(reason)
         }
     }
+}
+
+/// Debounced OS notification prompting the user to refresh an expired AWS SSO
+/// session. Fires at most once per project per debounce window so a burst of
+/// failing `aws` calls in a run does not spam the user. No-op without an
+/// `AppHandle` (unit tests). Carries no secret — only a generic hint.
+fn notify_sso_login_required(app: Option<&AppHandle>, project_id: &str) {
+    let Some(app) = app else {
+        return;
+    };
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+    const DEBOUNCE: Duration = Duration::from_secs(60);
+    static LAST: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    let map = LAST.get_or_init(|| Mutex::new(HashMap::new()));
+    {
+        let mut guard = match map.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        let now = Instant::now();
+        if let Some(prev) = guard.get(project_id) {
+            if now.duration_since(*prev) < DEBOUNCE {
+                return;
+            }
+        }
+        guard.insert(project_id.to_string(), now);
+    }
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app
+        .notification()
+        .builder()
+        .title("AWS SSO session expired")
+        .body("A run's aws command was blocked. Open Devdy → Settings → AWS to sign in again.")
+        .show();
 }
 
 /// Provider-appropriate git credential username when the account has none stored.
@@ -428,6 +497,7 @@ mod tests {
             BrokerConfig {
                 socket_label,
                 resolver,
+                app: None,
             },
         )
         .await
@@ -527,6 +597,7 @@ mod tests {
             BrokerConfig {
                 socket_label,
                 resolver,
+                app: None,
             },
         )
         .await
@@ -563,9 +634,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn round_trip_aws_profile_allow_returns_profile_fields() {
+    async fn round_trip_aws_profile_unresolvable_is_deny() {
+        // A `profile` account now mints fresh temporary credentials via the real
+        // `aws` CLI. A profile that does not exist on this machine cannot be
+        // resolved, so the broker fail-closed denies and leaks no secret fields.
+        // (Deterministic across environments: `aws` either is missing or cannot
+        // find the fake profile — both yield deny.)
         let db = mem_db().await;
-        sqlx::query("INSERT INTO aws_accounts (id, label, auth_method, account_id, arn, region, profile_name) VALUES ('aws1','Work','profile','123456789012','arn:aws:iam::123456789012:user/dev','ap-northeast-1','work-sso')")
+        sqlx::query("INSERT INTO aws_accounts (id, label, auth_method, account_id, arn, region, profile_name) VALUES ('aws1','Work','profile','123456789012','arn:aws:iam::123456789012:user/dev','ap-northeast-1','devdy-nonexistent-profile-xyz')")
             .execute(&db)
             .await
             .unwrap();
@@ -579,9 +655,10 @@ mod tests {
             r#"{"project_id":"p1","tool":"aws","argv":["sts","get-caller-identity"]}"#,
         )
         .await;
-        assert_eq!(resp.decision, "allow");
-        assert_eq!(resp.aws_profile.as_deref(), Some("work-sso"));
-        assert_eq!(resp.aws_region.as_deref(), Some("ap-northeast-1"));
+        assert_eq!(resp.decision, "deny");
+        assert!(resp.aws_access_key_id.is_none());
+        assert!(resp.aws_secret_access_key.is_none());
+        assert!(resp.aws_session_token.is_none());
         assert!(resp.token.is_none());
     }
 
@@ -661,6 +738,7 @@ mod tests {
             BrokerConfig {
                 socket_label,
                 resolver,
+                app: None,
             },
         )
         .await

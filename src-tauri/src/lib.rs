@@ -118,6 +118,18 @@ use std::sync::Arc;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // MUST be the first plugin: a second launch of the same build hands its
+        // args to the running instance and exits, instead of starting a rival
+        // process that would steal the broker's fixed Unix socket (start_broker
+        // unlinks + rebinds the same path), stranding the live runs' shims.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            use tauri::Manager;
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -136,6 +148,33 @@ pub fn run() {
                 .expect("Failed to create skills dir");
             std::fs::create_dir_all(app_data_dir.join("rules"))
                 .expect("Failed to create rules dir");
+
+            // Persist logs so the credential broker's audit trail and its
+            // "broker unreachable / accept error" warnings are actually recorded.
+            // Before this, no `tracing` subscriber was installed, so every
+            // `tracing::*` call (including `devdy::broker::audit`) was dropped and
+            // broker failures could not be diagnosed after the fact. Rolls daily;
+            // override verbosity with RUST_LOG. The non-blocking worker guard is
+            // parked in a process-lifetime static so the writer never shuts down
+            // early. SECURITY: broker audit is token-free by construction, so no
+            // secret reaches these files.
+            {
+                use std::sync::OnceLock;
+                use tracing_appender::non_blocking::WorkerGuard;
+                static LOG_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
+                let logs_dir = app_data_dir.join("logs");
+                let _ = std::fs::create_dir_all(&logs_dir);
+                let file_appender = tracing_appender::rolling::daily(&logs_dir, "devdy.log");
+                let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+                let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+                let _ = tracing_subscriber::fmt()
+                    .with_env_filter(filter)
+                    .with_ansi(false)
+                    .with_writer(non_blocking)
+                    .try_init();
+                let _ = LOG_GUARD.set(guard);
+            }
 
             let db_path = app_data_dir.join("data.db");
             let db = tauri::async_runtime::block_on(db::init_db(&db_path))
@@ -166,6 +205,7 @@ pub fn run() {
                     // của bản kia khi chạy song song).
                     socket_label: if cfg!(debug_assertions) { "app-dev" } else { "app" }.to_string(),
                     resolver,
+                    app: Some(app.handle().clone()),
                 },
             ))
             .expect("Failed to start credential broker");
