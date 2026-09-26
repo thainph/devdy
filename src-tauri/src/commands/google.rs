@@ -69,7 +69,25 @@ pub struct GoogleClientStatus {
 #[derive(Serialize)]
 pub struct GoogleValidation {
     pub email: String,
+    /// Scopes actually granted to the token, as reported by Google on refresh
+    /// (falls back to the stored scope when Google echoes none back).
     pub scope: String,
+    /// Requested scopes (`SCOPES`) that the granted token is missing. Non-empty
+    /// means the account was connected before some scope was added and needs a
+    /// re-auth — this is why an account can validate yet still 401 on, e.g.,
+    /// Calendar API calls.
+    pub missing_scopes: Vec<String>,
+}
+
+/// Scopes that the granted `scope` string is missing versus what this app
+/// requests in `SCOPES`. Order follows `SCOPES`; extra granted scopes are fine.
+fn missing_scopes(granted: &str) -> Vec<String> {
+    let granted: std::collections::HashSet<&str> = granted.split_whitespace().collect();
+    SCOPES
+        .split_whitespace()
+        .filter(|s| !granted.contains(s))
+        .map(|s| s.to_string())
+        .collect()
 }
 
 /// Sentinel error the frontend matches to offer a "Login" (re-auth) button when
@@ -524,15 +542,37 @@ pub async fn validate_google_account(
             .await;
     }
 
-    let scope: String = sqlx::query_scalar("SELECT scope FROM google_accounts WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(db.inner())
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
+    // Google echoes the scopes actually granted to the token on refresh. Trust
+    // that over the stored value (which only reflects the original consent) so we
+    // catch accounts connected before a scope — e.g. Calendar — was added. Fall
+    // back to the DB scope only when Google returns none.
+    let granted = token.scope.unwrap_or_default();
+    let scope = if granted.trim().is_empty() {
+        sqlx::query_scalar("SELECT scope FROM google_accounts WHERE id = ?")
+            .bind(&id)
+            .fetch_optional(db.inner())
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+    } else {
+        // Keep the stored scope (and the calendar_writable flag derived from it)
+        // in sync with reality.
+        let _ = sqlx::query("UPDATE google_accounts SET scope = ? WHERE id = ?")
+            .bind(&granted)
+            .bind(&id)
+            .execute(db.inner())
+            .await;
+        granted
+    };
 
-    Ok(GoogleValidation { email, scope })
+    let missing_scopes = missing_scopes(&scope);
+
+    Ok(GoogleValidation {
+        email,
+        scope,
+        missing_scopes,
+    })
 }
 
 /// Re-run the OAuth consent flow for an existing account and replace its stored
