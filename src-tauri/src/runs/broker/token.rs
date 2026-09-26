@@ -322,6 +322,169 @@ async fn resolve_token_for_project_with(
     }
 }
 
+// ============================================================================
+// AWS profile/SSO credential minting.
+//
+// A `profile` account has no static secret in the Keychain; its credentials live
+// behind the machine's AWS config (typically an SSO session with a short-lived
+// cached token). Rather than delegate that token to each run — where it silently
+// expires mid-session and cannot be refreshed (`aws sso login` is browser-bound
+// and policy-blocked inside a run) — the broker mints fresh *temporary*
+// credentials itself by shelling out to the real `aws` CLI. This runs in the
+// trusted app process (exactly like reading the Keychain for `keys` accounts),
+// transparently refreshes the SSO token when a refresh token exists, and the
+// resulting creds still flow ONLY through the existing per-call shim response
+// (never wired into SDK `credential_process`), so per-call policy gating is
+// unchanged.
+// ============================================================================
+
+/// Deny-reason marker: the linked profile is SSO and its cached token is
+/// expired/absent, so the broker could not mint temporary credentials. The UI
+/// matches this prefix to offer an in-app `aws sso login`. Carries no secret.
+pub const AWS_SSO_LOGIN_REQUIRED: &str = "aws_sso_login_required";
+
+/// Refresh window: re-mint when within this many seconds of expiry.
+const AWS_CREDS_SKEW_SECS: i64 = 300;
+
+/// Minted temporary credentials for one profile. Secret — never logged.
+#[derive(Clone)]
+struct CachedAwsSecret {
+    access_key_id: String,
+    secret_access_key: String,
+    session_token: Option<String>,
+    /// Absolute expiry (unix seconds).
+    expires_at: i64,
+}
+
+/// Process-wide cache of minted creds, keyed by profile name. Avoids spawning
+/// `aws` on every single brokered call within a run.
+fn aws_creds_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, CachedAwsSecret>>
+{
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, CachedAwsSecret>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn get_cached_aws_secret(profile: &str, now: i64) -> Option<CachedAwsSecret> {
+    let store = aws_creds_cache().lock().ok()?;
+    let entry = store.get(profile)?;
+    if entry.expires_at - now > AWS_CREDS_SKEW_SECS {
+        Some(entry.clone())
+    } else {
+        None
+    }
+}
+
+fn put_cached_aws_secret(profile: &str, sec: &CachedAwsSecret) {
+    if let Ok(mut store) = aws_creds_cache().lock() {
+        store.insert(profile.to_string(), sec.clone());
+    }
+}
+
+/// Heuristic: does this `aws` stderr mean "the SSO session needs a fresh login"?
+/// Matches the CLI's varied phrasings (e.g. `Error loading SSO Token: Token for
+/// <session> does not exist`, `The SSO session ... has expired`).
+fn stderr_is_sso_login_required(stderr: &str) -> bool {
+    let s = stderr.to_ascii_lowercase();
+    s.contains("error loading sso token")
+        || s.contains("token has expired")
+        || (s.contains("sso")
+            && (s.contains("login")
+                || s.contains("expired")
+                || s.contains("does not exist")))
+}
+
+/// Parse `aws configure export-credentials --format process` output (credential
+/// process JSON v1). Never logs the payload.
+fn parse_export_credentials(stdout: &[u8]) -> Result<CachedAwsSecret, String> {
+    #[derive(serde::Deserialize)]
+    struct Proc {
+        #[serde(rename = "AccessKeyId")]
+        access_key_id: String,
+        #[serde(rename = "SecretAccessKey")]
+        secret_access_key: String,
+        #[serde(rename = "SessionToken")]
+        session_token: Option<String>,
+        #[serde(rename = "Expiration")]
+        expiration: Option<String>,
+    }
+    let parsed: Proc = serde_json::from_slice(stdout)
+        .map_err(|_| "aws export-credentials: unparseable output".to_string())?;
+    // No `Expiration` (e.g. static profile creds) → treat as short-lived so we
+    // re-resolve soon rather than caching a value we cannot age out.
+    let expires_at = parsed
+        .expiration
+        .as_deref()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.timestamp())
+        .unwrap_or_else(|| chrono::Utc::now().timestamp() + AWS_CREDS_SKEW_SECS * 2);
+    Ok(CachedAwsSecret {
+        access_key_id: parsed.access_key_id,
+        secret_access_key: parsed.secret_access_key,
+        session_token: parsed.session_token.filter(|s| !s.trim().is_empty()),
+        expires_at,
+    })
+}
+
+/// Mint fresh temporary credentials for a profile via the real `aws` CLI. This
+/// transparently refreshes an SSO token when possible; when the SSO session
+/// itself is expired/absent it returns `Err(AWS_SSO_LOGIN_REQUIRED)`.
+async fn export_aws_credentials(profile: &str, region: &str) -> Result<CachedAwsSecret, String> {
+    let mut cmd = tokio::process::Command::new("aws");
+    cmd.arg("configure")
+        .arg("export-credentials")
+        .arg("--profile")
+        .arg(profile)
+        .arg("--format")
+        .arg("process")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    // GUI launches (Finder/Dock) don't inherit the login-shell PATH, so `aws`
+    // isn't found by name; recover it like the STS/ssh commands. The login PATH
+    // never contains the per-run shim dir, so this resolves the real binary.
+    crate::runs::sidecar::augment_command_path(&mut cmd);
+    // Read the user's real AWS config; never let an inherited profile shadow
+    // `--profile`. The broker (app process) env holds the real config paths;
+    // per-run overrides are applied only to child run commands, not here.
+    cmd.env_remove("AWS_PROFILE");
+    cmd.env_remove("AWS_DEFAULT_PROFILE");
+    cmd.env("AWS_REGION", region);
+    cmd.env("AWS_DEFAULT_REGION", region);
+
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| format!("aws spawn failed: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr_is_sso_login_required(&stderr) {
+            return Err(AWS_SSO_LOGIN_REQUIRED.to_string());
+        }
+        // Never surface stdout (may hold creds); keep the message generic.
+        return Err("aws export-credentials failed".to_string());
+    }
+    parse_export_credentials(&output.stdout)
+}
+
+/// Build the wire-level resolved credentials from account metadata + minted
+/// secret. `profile_name` is intentionally `None`: the creds are injected
+/// directly, so the `aws` shim uses its access-key branch (no profile hand-off).
+fn resolved_from_minted(meta: &AwsRuntimeMetadata, sec: CachedAwsSecret) -> ResolvedAwsCredentials {
+    ResolvedAwsCredentials {
+        account_label: meta.account_label.clone(),
+        auth_method: meta.auth_method.clone(),
+        account_id: meta.account_id.clone(),
+        arn: meta.arn.clone(),
+        region: meta.region.clone(),
+        access_key_id: Some(sec.access_key_id),
+        secret_access_key: Some(sec.secret_access_key),
+        session_token: sec.session_token,
+        profile_name: None,
+    }
+}
+
 /// Resolve AWS credentials for a project. Fail-closed: returns `Ok(None)` when
 /// no account is linked, metadata is incomplete, or a keys account is missing
 /// its Keychain secret.
@@ -365,17 +528,17 @@ pub async fn resolve_aws_credentials_for_project(
                 Some(v) => v,
                 None => return Ok(None),
             };
-            Ok(Some(ResolvedAwsCredentials {
-                account_label: meta.account_label,
-                auth_method: meta.auth_method,
-                account_id: meta.account_id,
-                arn: meta.arn,
-                region: meta.region,
-                access_key_id: None,
-                secret_access_key: None,
-                session_token: None,
-                profile_name: Some(profile_name),
-            }))
+            // Serve fresh-enough cached creds without spawning `aws`.
+            let now = chrono::Utc::now().timestamp();
+            if let Some(sec) = get_cached_aws_secret(&profile_name, now) {
+                return Ok(Some(resolved_from_minted(&meta, sec)));
+            }
+            // Miss/stale → mint fresh temporary credentials (also refreshes the
+            // SSO token when possible). Propagates AWS_SSO_LOGIN_REQUIRED so the
+            // socket layer can render an actionable deny reason.
+            let sec = export_aws_credentials(&profile_name, &meta.region).await?;
+            put_cached_aws_secret(&profile_name, &sec);
+            Ok(Some(resolved_from_minted(&meta, sec)))
         }
         _ => Ok(None),
     }
@@ -1322,5 +1485,68 @@ mod tests {
             GitlabProjectTokenProvider {}.fetch(&s),
             Err(TokenError::Unsupported)
         ));
+    }
+
+    // ---- AWS profile/SSO credential minting (pure helpers) ----
+
+    #[test]
+    fn parse_export_credentials_reads_v1_process_json() {
+        let json = br#"{"Version":1,"AccessKeyId":"ASIAEXAMPLE","SecretAccessKey":"secret","SessionToken":"tok","Expiration":"2099-01-01T00:00:00Z"}"#;
+        let sec = parse_export_credentials(json).unwrap();
+        assert_eq!(sec.access_key_id, "ASIAEXAMPLE");
+        assert_eq!(sec.secret_access_key, "secret");
+        assert_eq!(sec.session_token.as_deref(), Some("tok"));
+        // 2099-01-01T00:00:00Z
+        assert_eq!(sec.expires_at, 4070908800);
+    }
+
+    #[test]
+    fn parse_export_credentials_without_expiration_is_short_lived() {
+        let json = br#"{"Version":1,"AccessKeyId":"AKIAEXAMPLE","SecretAccessKey":"secret"}"#;
+        let before = chrono::Utc::now().timestamp();
+        let sec = parse_export_credentials(json).unwrap();
+        assert!(sec.session_token.is_none());
+        // No Expiration → a near-future expiry so it ages out quickly.
+        assert!(sec.expires_at >= before);
+        assert!(sec.expires_at <= chrono::Utc::now().timestamp() + AWS_CREDS_SKEW_SECS * 2 + 5);
+    }
+
+    #[test]
+    fn parse_export_credentials_rejects_garbage() {
+        assert!(parse_export_credentials(b"not json").is_err());
+    }
+
+    #[test]
+    fn stderr_detects_sso_login_required() {
+        assert!(stderr_is_sso_login_required(
+            "aws: [ERROR]: Error loading SSO Token: Token for SSO_ICT does not exist"
+        ));
+        assert!(stderr_is_sso_login_required(
+            "The SSO session associated with this profile has expired"
+        ));
+        assert!(stderr_is_sso_login_required("Token has expired and refresh failed"));
+        // A generic non-SSO failure must NOT be classified as login-required.
+        assert!(!stderr_is_sso_login_required(
+            "The config profile (foo) could not be found"
+        ));
+    }
+
+    #[test]
+    fn aws_creds_cache_serves_fresh_and_ages_out() {
+        let profile = "unit-test-cache-profile-abc";
+        let now = chrono::Utc::now().timestamp();
+        put_cached_aws_secret(
+            profile,
+            &CachedAwsSecret {
+                access_key_id: "ak".into(),
+                secret_access_key: "sk".into(),
+                session_token: None,
+                expires_at: now + 3600,
+            },
+        );
+        // Fresh (well beyond skew) → served.
+        assert!(get_cached_aws_secret(profile, now).is_some());
+        // Within the skew window of expiry → treated as stale (re-mint).
+        assert!(get_cached_aws_secret(profile, now + 3600 - AWS_CREDS_SKEW_SECS + 1).is_none());
     }
 }

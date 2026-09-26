@@ -199,12 +199,18 @@ function startQuery(firstText, opts = {}, firstImages) {
     return { behavior: 'deny', message: decision.reason || 'Denied by user' }
   }
 
+  const permissionMode = opts.permissionMode || process.env.DEVDY_PERMISSION_MODE || 'default'
   const options = {
-    canUseTool,
-    permissionMode: opts.permissionMode || process.env.DEVDY_PERMISSION_MODE || 'default',
+    permissionMode,
     includePartialMessages: !!opts.includePartialMessages,
     stderr: (data) => send({ type: '_devdy_stderr', text: data }),
   }
+  // 'bypassPermissions' auto-approves every tool call before canUseTool is ever
+  // consulted, so passing the callback there only triggers the SDK's
+  // CLAUDE_SDK_CAN_USE_TOOL_SHADOWED warning without ever running. Only wire the
+  // permission modal when the mode can actually gate a call (e.g. conductor
+  // sessions run in bypass and never need it).
+  if (permissionMode !== 'bypassPermissions') options.canUseTool = canUseTool
   // Model: explicit per-turn option wins, else the broker-provided env default.
   if (opts.model) options.model = opts.model
   else if (process.env.DEVDY_MODEL) options.model = process.env.DEVDY_MODEL

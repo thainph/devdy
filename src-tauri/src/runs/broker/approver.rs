@@ -108,13 +108,25 @@ impl Approver for ModalApprover {
             return false;
         }
 
-        // 3. Await the user's decision. A dropped sender (run ended) → deny.
-        match rx.await {
-            Ok(allow) => allow,
-            Err(_) => false,
+        // 3. Await the user's decision, bounded so a never-answered modal cannot
+        //    pin the connection forever. Symmetric with the shim's socket timeout
+        //    (shim.mjs, 300s). On timeout / dropped sender (run ended) → deny, and
+        //    clean up the pending entry so respond_permission can't leak it.
+        match tokio::time::timeout(APPROVAL_TIMEOUT, rx).await {
+            Ok(Ok(allow)) => allow,
+            Ok(Err(_)) => false,
+            Err(_) => {
+                self.approvals.lock().await.remove(&request_id);
+                false
+            }
         }
     }
 }
+
+/// Upper bound on how long an `Ask` waits for the user's modal decision. Kept in
+/// lock-step with the shim's socket inactivity timeout (`shim.mjs`, 300s) so both
+/// sides give up together instead of one hanging past the other.
+const APPROVAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// GĐ7 resolver for the app-wide singleton broker. Given a request's `run_id`,
 /// it looks the run up in `BrokerRuns`; if the run is alive it builds a
