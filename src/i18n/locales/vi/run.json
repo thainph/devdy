@@ -108,6 +108,7 @@
   "couldNotLoadContent": "Không tải được nội dung",
   "noContentAvailable": "Không có nội dung cho run này.",
   "noRunSelected": "Chưa chọn run",
+  "popOutSession": "Mở session này trong cửa sổ riêng",
   "questionInOwnWindow": "Câu hỏi đang ở cửa sổ riêng — bấm để thu về drawer",
   "dockBack": "Thu về",
   "loadingLog": "Đang tải log…",

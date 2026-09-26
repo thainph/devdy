@@ -9,13 +9,17 @@
     "item-create",
     "item-edit-*",
     "gantt",
-    "mascot"
+    "mascot",
+    "session-*"
   ],
   "permissions": [
     "core:default",
     "core:webview:allow-create-webview-window",
+    "core:webview:allow-get-all-webviews",
     "core:window:allow-set-focus",
     "core:window:allow-show",
+    "core:window:allow-title",
+    "core:window:allow-set-title",
     "core:window:allow-unminimize",
     "core:window:allow-set-always-on-top",
     "core:window:allow-close",
