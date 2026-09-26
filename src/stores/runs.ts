@@ -72,6 +72,13 @@ export interface RunRecord {
   last_activity_at: string | null
   title: string | null
   pinned: boolean
+  /**
+   * Orchestration role: 'conductor' for a session that drives worker sessions,
+   * null/undefined for an ordinary session or an issue/PR run. Only `list_runs`
+   * fills it; single-run endpoints return null. Lets the History list flag a
+   * conductor without a per-row lookup.
+   */
+  role?: string | null
 }
 
 /**

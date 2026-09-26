@@ -452,6 +452,7 @@ pub fn run() {
             create_session_run,
             conductor::commands::start_conductor,
             conductor::commands::get_conductor_detail,
+            conductor::commands::set_conductor_max_workers,
             get_usage_stats,
             get_work_digest,
             summarize_work_digest,

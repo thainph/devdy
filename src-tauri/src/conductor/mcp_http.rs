@@ -187,7 +187,7 @@ fn tool_specs() -> Value {
         },
         {
             "name": "session_wait",
-            "description": "Block until the given workers finish their current turn (status != running) or timeout_ms elapses.",
+            "description": "Block until the given workers finish their current turn (status != running) or timeout_ms elapses. Returns `waited_ms` = how long this call actually blocked; report that as the wait time, not timeout_ms (which is only the ceiling).",
             "inputSchema": {
                 "type": "object",
                 "properties": {

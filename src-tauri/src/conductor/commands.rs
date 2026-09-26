@@ -217,6 +217,47 @@ pub async fn get_conductor_detail(
     })
 }
 
+/// Bounds for the worker cap, mirrored by the composer/sidebar number inputs.
+const MIN_MAX_WORKERS: u32 = 1;
+const MAX_MAX_WORKERS: u32 = 12;
+
+/// Change a conductor's concurrent-worker cap while it is running (or after).
+///
+/// Persists the new cap to `conductor_sessions` (so a resume/reconnect keeps it)
+/// and updates the live in-memory session, which `session_spawn` reads under the
+/// lock — so raising the cap lets the conductor spawn more workers on its next
+/// attempt, and lowering it blocks further spawns past the new limit (already
+/// running workers are never killed).
+#[tauri::command]
+pub async fn set_conductor_max_workers(
+    db: State<'_, Db>,
+    conductor: State<'_, ConductorState>,
+    conductor_run_id: String,
+    max_workers: u32,
+) -> Result<i64, String> {
+    let clamped = max_workers.clamp(MIN_MAX_WORKERS, MAX_MAX_WORKERS) as i64;
+
+    let affected = sqlx::query("UPDATE conductor_sessions SET max_workers = ? WHERE id = ?")
+        .bind(clamped)
+        .bind(&conductor_run_id)
+        .execute(db.inner())
+        .await
+        .map_err(|e| e.to_string())?
+        .rows_affected();
+    if affected == 0 {
+        return Err("conductor session not found".to_string());
+    }
+
+    // Best-effort live update: a conductor that finished (or predates a restart)
+    // may no longer be in memory — the persisted value above is what a resume
+    // would reload, so a missing in-memory session is not an error.
+    conductor
+        .inner()
+        .set_max_workers(&conductor_run_id, clamped as usize);
+
+    Ok(clamped)
+}
+
 /// On app startup, restore in-memory ownership for conductor sessions that were
 /// still `running` when the app last closed, so a resumed conductor keeps control
 /// of its workers (and its `session_*` tools re-inject with a valid token).

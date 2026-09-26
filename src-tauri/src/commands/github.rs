@@ -37,6 +37,11 @@ pub struct RunRecord {
     /// Pinned runs sort to the top of the History list.
     #[serde(default)]
     pub pinned: bool,
+    /// Orchestration role of the run. `Some("conductor")` marks a session that
+    /// drives worker sessions; `None` for an ordinary session or an issue/PR run.
+    /// Lets the History list flag conductors without a per-row lookup.
+    #[serde(default)]
+    pub role: Option<String>,
 }
 
 /// Repo identity loaded from the `repos` row, used to branch fetch by provider
@@ -324,6 +329,7 @@ pub async fn fetch_issue(
         last_activity_at: None,
         title: None,
         pinned: false,
+        role: None,
     })
 }
 
@@ -665,6 +671,7 @@ pub async fn fetch_pr(
         last_activity_at: None,
         title: None,
         pinned: false,
+        role: None,
     })
 }
 
@@ -806,6 +813,7 @@ pub async fn refetch_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord,
         last_activity_at: row.get("last_activity_at"),
         title: row.get("title"),
         pinned: row.get::<i64, _>("pinned") != 0,
+        role: None,
     })
 }
 
@@ -829,7 +837,7 @@ pub async fn list_runs(
     // reports as `last_activity_at`, so the list and the timestamp the UI prints
     // can never disagree.
     let rows = sqlx::query(
-        "SELECT id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, session_id, claude_account_id, started_at, finished_at, created_at, title, pinned,
+        "SELECT id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, session_id, claude_account_id, started_at, finished_at, created_at, title, pinned, role,
                 COALESCE(last_activity_at, finished_at, started_at, created_at) AS last_activity_at
          FROM runs WHERE project_id = ?
          ORDER BY pinned DESC, COALESCE(last_activity_at, finished_at, started_at, created_at) DESC
@@ -858,6 +866,7 @@ pub async fn list_runs(
         last_activity_at: row.get("last_activity_at"),
         title: row.get("title"),
         pinned: row.get::<i64, _>("pinned") != 0,
+        role: row.get("role"),
     }).collect())
 }
 
