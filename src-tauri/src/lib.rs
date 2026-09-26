@@ -8,6 +8,7 @@ mod runs;
 mod secrets;
 
 use commands::app_menu::set_app_menu;
+use commands::tray::set_tray_menu;
 use commands::aws_accounts::{
     aws_sso_login, create_aws_account, delete_aws_account, list_aws_accounts,
     set_project_aws_account, update_aws_account, validate_aws_account,
@@ -281,11 +282,19 @@ pub fn run() {
                     }
                 });
             }
+
+            // macOS menu-bar icon: a quick switcher for open windows. The menu
+            // contents are pushed by the frontend (set_tray_menu); this only
+            // installs the icon so it appears immediately at launch.
+            if let Err(e) = commands::tray::init(app.handle()) {
+                tracing::warn!(event = "tray_init_failed", error = %e);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             health_check,
             set_app_menu,
+            set_tray_menu,
             get_settings,
             update_setting,
             list_skills,

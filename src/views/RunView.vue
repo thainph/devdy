@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, shallowRef, computed, onMounted, onUnmounted, watch, nextTick, type ComponentPublicInstance } from 'vue'
+import { ref, reactive, shallowRef, computed, onMounted, onUnmounted, watch, nextTick, type ComponentPublicInstance } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectsStore, type Repo } from '@/stores/projects'
@@ -61,6 +61,8 @@ import { vMermaid } from '@/lib/mermaid'
 import { vCopyCode } from '@/lib/copyCode'
 import { matchProjectFile, parseLineRef, decorateFileLinks } from '@/lib/fileLinks'
 import { openFileWindow } from '@/lib/fileWindow'
+import { openSessionWindow } from '@/lib/sessionWindow'
+import { IS_SESSION_WINDOW } from '@/lib/windowMode'
 import { FILE_MENTION_EVENT } from '@/lib/fileEvents'
 import { openPermissionWindow, closePermissionWindow } from '@/lib/permissionWindow'
 import { useMarkdown } from '@/lib/markdown'
@@ -99,6 +101,14 @@ const { toast } = useToast()
 
 const projectId = computed(() => route.params.projectId as string)
 const project = computed(() => projectStore.projects.find(p => p.id === projectId.value))
+
+// True when THIS webview is a standalone session pop-out (see lib/sessionWindow).
+// Such a window is locked to its one run: the session-switching chrome (left rail
+// + the navigation buttons in the toolbar) is hidden so it stays a single
+// conversation, and its own "pop out" button is suppressed. Read from windowMode
+// (captured at module load) rather than the live URL, which the router rewrites
+// once it navigates this window to the run.
+const isSessionWindow = IS_SESSION_WINDOW
 
 // GĐ6 (AC3): the project's active git account(s). Shows one badge per linked
 // provider (GitHub first, then GitLab) so both attached accounts are visible.
@@ -204,14 +214,20 @@ const fetchOpen = ref(false)
 // Left rail view: session controls/history, or the project file tree.
 const leftTab = ref<'session' | 'files'>('session')
 
-// Open a session in the Session tab (e.g. a worker from the conductor panel).
+// Open a worker session (from the conductor sidebar) in ITS OWN window — one
+// window per run, so clicking the same worker again just focuses the window
+// already showing it rather than hijacking the conductor's view.
 async function openSession(runId: string) {
-  leftTab.value = 'session'
-  // Make sure the project's run list is loaded so the row highlights, then open.
-  if (!runsStore.runs.some((r) => r.id === runId)) {
-    await runsStore.fetchRuns(projectId.value).catch(() => {})
-  }
-  await loadRunLog(runId)
+  if (!runId) return
+  await openSessionWindow(projectId.value, runId)
+}
+
+// Pop the currently viewed session out into its own standalone window. Suppressed
+// inside a session window (you can't pop out what is already popped out).
+function popOutCurrentSession() {
+  const id = currentRunId.value
+  if (!id) return
+  void openSessionWindow(projectId.value, id)
 }
 const fetchError = ref<string | null>(null)
 const needsLinkedIssue = ref(false)
@@ -563,11 +579,81 @@ const currentSessionId = computed(() => session.value?.sessionId ?? currentRun.v
 // run is one, we show the worker sidebar; the conductor store polls its tree.
 const isConductor = computed(() => !!conductorStore.detail?.session)
 const conductorWorkers = computed(() => conductorStore.detail?.workers ?? [])
+// The conductor's concurrent-worker cap (set at launch, editable live from the
+// sidebar header). Shown next to the live worker count so the user sees headroom
+// at a glance. (Distinct from `conductorMaxWorkers`, the launch default applied
+// when a "New conductor" session sends its first message.)
+const conductorWorkerCap = computed(() => conductorStore.detail?.session?.max_workers ?? 0)
 const conductorEvents = computed(() => conductorStore.detail?.events ?? [])
 const workerPanelOpen = ref(true)
-// "New session as conductor" toggle (shown on a fresh session's composer).
-const conductorMode = ref(false)
+
+// ── Worker-cap editing (sidebar header) ─────────────────────────────────────
+// Two states share one editor:
+//  • pre-launch (a "New conductor" session not yet started) — the cap edits the
+//    local `conductorMaxWorkers` ref that seeds the launch; no backend row exists.
+//  • running/finished conductor — the cap is raised/lowered live: the backend
+//    clamps to [1,12], persists it, and the next session_spawn enforces it.
+// The draft is a separate ref so the 2s detail poll can't clobber it mid-edit.
+// Emitted value from <Input> is a string, so we parse on commit.
+const editingWorkerCap = ref(false)
+const workerCapDraft = ref<string | number>(0)
+const savingWorkerCap = ref(false)
+function beginEditWorkerCap() {
+  workerCapDraft.value = effectiveWorkerCap.value || 1
+  editingWorkerCap.value = true
+}
+function cancelEditWorkerCap() {
+  editingWorkerCap.value = false
+}
+async function commitWorkerCap() {
+  if (!editingWorkerCap.value) return
+  editingWorkerCap.value = false
+  const parsed = Math.round(Number(workerCapDraft.value))
+  if (!Number.isFinite(parsed)) return
+  const next = Math.min(12, Math.max(1, parsed))
+  // Pre-launch conductor: no session row yet, so just remember the launch cap.
+  if (!isConductor.value) {
+    conductorMaxWorkers.value = next
+    return
+  }
+  const id = currentRunId.value
+  if (!id || next === conductorWorkerCap.value) return
+  savingWorkerCap.value = true
+  try {
+    await conductorStore.setMaxWorkers(id, next)
+  } catch (e) {
+    toast.error(t('conductor.setMaxWorkersFailed', { error: String(e) }))
+  } finally {
+    savingWorkerCap.value = false
+  }
+}
+
+// Run ids created via "New conductor" whose goal has NOT been sent yet (so they
+// have no role/conductor row in the DB). Tracked by id — not a single global
+// bool — so the intent survives switching to another session: the History icon
+// keeps flagging the run as a conductor, and returning to it still launches as a
+// conductor. An id is dropped when its goal is sent (it becomes a real
+// conductor) or the run is deleted. `conductorMaxWorkers` is the launch-time cap,
+// editable from the sidebar before the goal is sent.
+const pendingConductorIds = reactive(new Set<string>())
 const conductorMaxWorkers = ref(6)
+function isPendingConductor(runId: string | null | undefined): boolean {
+  return !!runId && pendingConductorIds.has(runId)
+}
+
+// The OPEN run is a pending (pre-launch) conductor. We surface the worker sidebar
+// in this state too so the user can set the worker limit BEFORE sending the goal.
+const pendingConductor = computed(
+  () => isPendingConductor(currentRunId.value) && !isConductor.value && currentStatus.value === 'fetched',
+)
+// Show the worker sidebar for a live conductor OR a pending (pre-launch) one.
+const showWorkerPanel = computed(() => isConductor.value || pendingConductor.value)
+// Cap shown/edited in the header: the persisted live cap once launched, else the
+// local launch-time ref.
+const effectiveWorkerCap = computed(() =>
+  isConductor.value ? conductorWorkerCap.value : conductorMaxWorkers.value,
+)
+
 // Point the conductor store at whatever run is now open; it self-clears when the
 // run is a normal session.
 watch(currentRunId, (id) => { void conductorStore.select(id ?? null) }, { immediate: true })
@@ -609,6 +695,26 @@ function workerLabel(runId: string | null): string {
 function runLabel(run: RunRecord): string {
   if (run.run_type === 'session') return run.title || t('run.labelSession')
   return `${run.run_type === 'analyze_issue' ? t('run.labelIssue') : t('run.labelPr')} #${run.ref_number}`
+}
+
+// A conductor is an ordinary session run tagged with role='conductor' (see
+// start_conductor). The History list uses this to give it a distinct icon/tone.
+// A freshly created "New conductor" session has no role in the DB until its goal
+// is sent, so we also treat the open, pending-conductor run as a conductor — the
+// History row then flags it the moment it is created, before launch.
+function isConductorRun(run: RunRecord): boolean {
+  if (run.run_type === 'session' && run.role === 'conductor') return true
+  return isPendingConductor(run.id)
+}
+
+// History-row icon: conductor (Network) → plain session (MessageSquare) →
+// issue (Bug) → PR (GitPullRequest). Kept as a function so the conductor case
+// short-circuits before the plain-session one.
+function runIcon(run: RunRecord) {
+  if (isConductorRun(run)) return Network
+  if (run.run_type === 'session') return MessageSquare
+  if (run.run_type === 'analyze_issue') return Bug
+  return GitPullRequest
 }
 
 // History row timestamp: date + time, so runs from the same day stay
@@ -1459,6 +1565,15 @@ async function handleNewSession() {
   await createSessionWithEngine(engineOverride.value || undefined)
 }
 
+// Create a fresh session already primed as a conductor: mark the new run id as a
+// pending conductor so the History icon flags it and the worker sidebar opens.
+// Its first message becomes the goal and launches it as a conductor (see the send
+// path, which promotes the run via conductorStore.start and clears the mark).
+async function handleNewConductor() {
+  await createSessionWithEngine(engineOverride.value || undefined)
+  if (currentRunId.value) pendingConductorIds.add(currentRunId.value)
+}
+
 // Unbound on unmount so the menu item stops firing into a dead screen.
 let unbindNewSessionMenu: (() => void) | null = null
 
@@ -2247,9 +2362,13 @@ async function handleSendFollowUp() {
       // Conductor mode: promote this fresh session into a conductor and launch
       // it with the typed text as its goal. It then streams here like any
       // session, and the worker sidebar appears once its tree is polled.
-      if (conductorMode.value) {
+      if (isPendingConductor(id)) {
         await conductorStore.start(id, prompt, { maxWorkers: conductorMaxWorkers.value })
-        conductorMode.value = false
+        // start_conductor has marked the run role='conductor' in the DB. Refresh
+        // the list so that role is present locally BEFORE dropping the pending
+        // mark — otherwise the History icon flickers back to a plain session.
+        await runsStore.fetchRuns(projectId.value)
+        pendingConductorIds.delete(id)
         live.setStatus(id, 'running')
         setLocalRunStatus(id, 'running')
         await live.startListening(id, projectId.value)
@@ -2568,6 +2687,8 @@ async function handleDeleteRun(runId: string, e?: MouseEvent) {
   deletingRunId.value = runId
   try {
     await runsStore.deleteRun(runId)
+    // Drop any pending-conductor mark for the removed run.
+    pendingConductorIds.delete(runId)
     if (currentRunId.value === runId || viewingLogRunId.value === runId) {
       clearActiveRunState()
     } else {
@@ -2890,8 +3011,10 @@ function handleRefInput(val: string) {
       </div>
       <!-- Icon-only actions, split into three clusters: capture, open-elsewhere,
            then the session/project controls. Labels live in the tooltips so the
-           header stays short no matter how narrow the pane gets. -->
-      <div class="flex items-center gap-1 shrink-0">
+           header stays short no matter how narrow the pane gets.
+           Hidden entirely in a session pop-out for now — that window is a bare
+           conversation view. -->
+      <div v-if="!isSessionWindow" class="flex items-center gap-1 shrink-0">
         <!-- Capture a thought without leaving the run (⌘K / ⌘⇧N do the same). -->
         <Button
           variant="outline"
@@ -2957,6 +3080,7 @@ function handleRefInput(val: string) {
           </span>
         </Button>
         <Button
+          v-if="!isSessionWindow"
           variant="outline"
           size="icon"
           :disabled="!project"
@@ -2966,6 +3090,7 @@ function handleRefInput(val: string) {
           <ListChecks class="h-4 w-4" :stroke-width="2" />
         </Button>
         <Button
+          v-if="!isSessionWindow"
           variant="outline"
           size="icon"
           :title="t('run.projectSettingsTitle')"
@@ -2974,6 +3099,7 @@ function handleRefInput(val: string) {
           <Settings class="h-4 w-4" :stroke-width="2" />
         </Button>
         <Button
+          v-if="!isSessionWindow"
           variant="outline"
           size="icon"
           :title="uiLayout.focusMode ? t('run.exitFocusMode') : t('run.enterFocusMode')"
@@ -2985,8 +3111,9 @@ function handleRefInput(val: string) {
     </div>
 
     <div class="flex flex-1 overflow-hidden">
-      <!-- Left panel: controls + history (hidden in focus mode) -->
-      <div v-if="!uiLayout.focusMode" class="w-72 shrink-0 border-r border-border/60 flex flex-col overflow-hidden bg-card/20">
+      <!-- Left panel: controls + history (hidden in focus mode, and in a session
+           pop-out — that window is locked to its one run, no switcher). -->
+      <div v-if="!uiLayout.focusMode && !isSessionWindow" class="w-72 shrink-0 border-r border-border/60 flex flex-col overflow-hidden bg-card/20">
 
         <!-- Rail tab switcher: Session (controls + history) vs Files (tree). -->
         <div class="flex shrink-0 border-b border-border/60 text-xs font-medium">
@@ -3010,10 +3137,26 @@ function handleRefInput(val: string) {
 
         <!-- Compact top toolbar: New session, then a collapsible Fetch -->
         <div v-show="leftTab === 'session'" class="p-3 border-b border-border/60 space-y-2">
-          <Button class="w-full" :disabled="creatingSession" @click="handleNewSession">
-            <MessageSquare class="h-3.5 w-3.5" :stroke-width="2" />
-            {{ creatingSession ? t('run.creating') : t('run.newSession') }}
-          </Button>
+          <!-- Session type is chosen right here at the entry point: a plain
+               conversation, or a conductor that orchestrates worker sessions.
+               Both create a fresh session; "New conductor" pre-arms the composer's
+               conductor toggle so the first message becomes the goal. -->
+          <div class="flex gap-1.5">
+            <Button class="flex-1" :disabled="creatingSession" @click="handleNewSession">
+              <MessageSquare class="h-3.5 w-3.5" :stroke-width="2" />
+              {{ creatingSession ? t('run.creating') : t('run.newSession') }}
+            </Button>
+            <Button
+              variant="outline"
+              class="flex-1"
+              :disabled="creatingSession"
+              :title="t('conductor.newConductorHint')"
+              @click="handleNewConductor"
+            >
+              <Network class="h-3.5 w-3.5" :stroke-width="2" />
+              {{ t('conductor.newConductor') }}
+            </Button>
+          </div>
 
           <!-- Fetch toggle -->
           <Button
@@ -3164,9 +3307,11 @@ function handleRefInput(val: string) {
                 <!-- Title + status -->
                 <div class="flex items-center gap-2">
                   <component
-                    :is="run.run_type === 'session' ? MessageSquare : run.run_type === 'analyze_issue' ? Bug : GitPullRequest"
-                    class="h-4 w-4 text-muted-foreground shrink-0"
+                    :is="runIcon(run)"
+                    class="h-4 w-4 shrink-0"
+                    :class="isConductorRun(run) ? 'text-primary' : 'text-muted-foreground'"
                     :stroke-width="1.75"
+                    :title="isConductorRun(run) ? t('conductor.modeToggle') : undefined"
                   />
                   <Pin
                     v-if="run.pinned"
@@ -3338,10 +3483,21 @@ function handleRefInput(val: string) {
             <p class="text-xs text-foreground/40 leading-relaxed mb-4">
               {{ t('run.createNewSessionHint') }}
             </p>
-            <Button :disabled="creatingSession" @click="handleNewSession">
-              <MessageSquare class="h-3.5 w-3.5" :stroke-width="2" />
-              {{ creatingSession ? t('run.creating') : t('run.newSession') }}
-            </Button>
+            <div class="flex items-center justify-center gap-1.5">
+              <Button :disabled="creatingSession" @click="handleNewSession">
+                <MessageSquare class="h-3.5 w-3.5" :stroke-width="2" />
+                {{ creatingSession ? t('run.creating') : t('run.newSession') }}
+              </Button>
+              <Button
+                variant="outline"
+                :disabled="creatingSession"
+                :title="t('conductor.newConductorHint')"
+                @click="handleNewConductor"
+              >
+                <Network class="h-3.5 w-3.5" :stroke-width="2" />
+                {{ t('conductor.newConductor') }}
+              </Button>
+            </div>
           </div>
         </div>
 
@@ -3462,6 +3618,18 @@ function handleRefInput(val: string) {
                   >
                     <AppWindow class="h-3.5 w-3.5" :stroke-width="1.75" />
                     {{ t('run.dockBack') }}
+                  </button>
+                  <!-- Pop this session out into its own OS window (one per run).
+                       Hidden inside a session window — can't re-pop what's popped. -->
+                  <button
+                    v-if="!isSessionWindow && currentRunId"
+                    type="button"
+                    class="flex items-center justify-center h-6 w-6 rounded text-foreground/50 hover:text-foreground/80 hover:bg-accent/60 transition-colors cursor-pointer"
+                    :title="t('run.popOutSession')"
+                    :aria-label="t('run.popOutSession')"
+                    @click="popOutCurrentSession"
+                  >
+                    <AppWindow class="h-3.5 w-3.5" :stroke-width="1.75" />
                   </button>
                   <span v-if="currentStatus === 'running'" class="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
                 </div>
@@ -3684,25 +3852,6 @@ function handleRefInput(val: string) {
           v-if="composerVisible"
           class="border-t border-border bg-card/40 px-3 py-2 shrink-0"
         >
-          <!-- Conductor toggle: only on a fresh session's first message. When on,
-               the first message becomes the goal and this session orchestrates
-               worker sessions. -->
-          <div v-if="currentStatus === 'fetched'" class="mb-2 flex items-center gap-2 text-[11px]">
-            <button
-              type="button"
-              class="flex items-center gap-1.5 rounded px-1.5 h-6 font-medium transition-colors cursor-pointer"
-              :class="conductorMode ? 'bg-primary/15 text-primary' : 'text-foreground/50 hover:text-foreground/80 hover:bg-accent/60'"
-              :aria-pressed="conductorMode"
-              @click="conductorMode = !conductorMode"
-            >
-              <Network class="h-3.5 w-3.5" :stroke-width="1.75" />
-              {{ t('conductor.modeToggle') }}
-            </button>
-            <template v-if="conductorMode">
-              <label class="text-muted-foreground">{{ t('conductor.maxWorkersLabel') }}</label>
-              <Input v-model.number="conductorMaxWorkers" type="number" min="1" max="12" class="h-6 w-16 text-xs" />
-            </template>
-          </div>
           <div class="relative">
             <!-- Slash-command palette (anchored above the textarea) -->
             <div
@@ -4023,11 +4172,13 @@ function handleRefInput(val: string) {
         </div>
       </div>
 
-      <!-- Conductor worker sidebar: only when the open run is a conductor. The
-           conductor itself is just this session; this panel adds its worker
-           tree + control-plane timeline, collapsible to a thin rail. -->
+      <!-- Conductor worker sidebar: for a live conductor, and also for a
+           "New conductor" session not yet launched (so its worker limit can be
+           set before the goal is sent). The conductor itself is just this
+           session; this panel adds its worker tree + control-plane timeline,
+           collapsible to a thin rail. -->
       <aside
-        v-if="isConductor"
+        v-if="showWorkerPanel"
         class="shrink-0 border-l border-border/60 flex flex-col overflow-hidden bg-card/20 transition-[width]"
         :class="workerPanelOpen ? 'w-80' : 'w-9'"
       >
@@ -4043,12 +4194,51 @@ function handleRefInput(val: string) {
           <template v-if="workerPanelOpen">
             <Network class="h-3.5 w-3.5 text-foreground/40 shrink-0" :stroke-width="1.75" />
             <span class="text-xs font-medium text-foreground/90 truncate">{{ t('conductor.workers') }}</span>
-            <span class="ml-auto text-[11px] text-muted-foreground font-mono">{{ conductorWorkers.length }}</span>
+            <!-- Live count / editable cap. Click the cap to raise or lower the
+                 worker limit — before launch it seeds the launch cap, after it
+                 changes the running conductor's limit live. -->
+            <div class="ml-auto flex items-center gap-0.5 shrink-0">
+              <span
+                class="text-[11px] text-muted-foreground font-mono"
+                :title="t('conductor.workerCount', { n: conductorWorkers.length, max: effectiveWorkerCap })"
+              >{{ conductorWorkers.length }}/</span>
+              <Input
+                v-if="editingWorkerCap"
+                v-model="workerCapDraft"
+                type="number"
+                min="1"
+                max="12"
+                autofocus
+                class="h-5 w-11 px-1 text-center text-[11px]"
+                @keyup.enter="commitWorkerCap"
+                @keyup.esc="cancelEditWorkerCap"
+                @blur="commitWorkerCap"
+              />
+              <button
+                v-else
+                type="button"
+                class="flex items-center gap-0.5 rounded px-1 h-5 text-[11px] font-mono text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors cursor-pointer disabled:opacity-50"
+                :title="t('conductor.editMaxWorkers')"
+                :disabled="savingWorkerCap"
+                @click="beginEditWorkerCap"
+              >
+                {{ effectiveWorkerCap }}
+                <component :is="savingWorkerCap ? Loader2 : Pencil" class="h-2.5 w-2.5" :class="{ 'animate-spin': savingWorkerCap }" :stroke-width="1.75" />
+              </button>
+            </div>
           </template>
           <Network v-else class="h-3.5 w-3.5 text-foreground/40 mx-auto" :stroke-width="1.75" />
         </div>
+        <!-- Pre-launch: no workers/timeline yet — guide the user to set the limit
+             and send the goal, rather than showing an empty worker tree. -->
+        <div
+          v-if="workerPanelOpen && pendingConductor"
+          class="p-3 text-[11px] leading-relaxed text-muted-foreground"
+        >
+          {{ t('conductor.preLaunchHint') }}
+        </div>
         <ConductorWorkerPanel
-          v-if="workerPanelOpen"
+          v-else-if="workerPanelOpen"
           :workers="conductorWorkers"
           :events="conductorEvents"
           @open-session="openSession"

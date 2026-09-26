@@ -108,6 +108,7 @@
   "couldNotLoadContent": "Could not load content",
   "noContentAvailable": "No content available for this run.",
   "noRunSelected": "No run selected",
+  "popOutSession": "Open this session in its own window",
   "questionInOwnWindow": "The question is in its own window — click to dock it back",
   "dockBack": "Dock back",
   "loadingLog": "Loading log…",

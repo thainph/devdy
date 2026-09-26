@@ -184,21 +184,9 @@ const TONE_DOT: Record<string, string> = {
   ok: 'bg-emerald-500',
   neutral: 'bg-muted-foreground/30',
 }
-const TONE_FILL: Record<string, string> = {
-  over: 'bg-red-500',
-  warning: 'bg-amber-500',
-  stale: 'bg-muted-foreground/40',
-  ok: 'bg-indigo-500',
-  neutral: 'bg-muted-foreground/40',
-}
-
-/** True when we have a real usage % to render as number + bar. */
+/** True when we have a real usage % to render as number. */
 function hasMeter(v: ProviderView): boolean {
   return v.hasStatus && v.enabled
-}
-
-function barWidth(v: ProviderView): string {
-  return Math.min(100, Math.max(0, v.percent)) + '%'
 }
 
 /** Compact reset label for the dense row, e.g. "2h10m", "3d", "45m". */
@@ -363,25 +351,16 @@ onUnmounted(() => {
       />
       <span v-else class="h-1.5 w-1.5 shrink-0 rounded-full" :class="TONE_DOT[tone(v)]" />
 
-      <!-- provider label (account name for Claude rows) -->
-      <span class="max-w-[90px] shrink-0 truncate font-medium opacity-80">{{ v.label }}</span>
+      <!-- provider label (account name for Claude rows), shortened; full name in tooltip -->
+      <span class="max-w-[48px] shrink-0 truncate font-medium opacity-80">{{ v.label }}</span>
 
-      <!-- meter: percent + bar when a real usage % exists -->
-      <template v-if="hasMeter(v)">
-        <span class="shrink-0 font-mono font-semibold tabular-nums">{{ v.percent }}%</span>
-        <div class="h-1 w-8 shrink-0 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
-          <div
-            class="h-full rounded-full transition-[width] duration-300 motion-reduce:transition-none"
-            :class="TONE_FILL[tone(v)]"
-            :style="{ width: barWidth(v) }"
-          />
-        </div>
-      </template>
+      <!-- meter: just the percent; the bar still lives in the tooltip -->
+      <span v-if="hasMeter(v)" class="shrink-0 font-mono font-semibold tabular-nums">{{ v.percent }}%</span>
       <!-- otherwise a muted status in place of the meter -->
-      <span v-else class="max-w-[110px] shrink-0 truncate font-mono opacity-60">{{ compactStatus(v) }}</span>
+      <span v-else class="max-w-[72px] shrink-0 truncate font-mono opacity-60">{{ compactStatus(v) }}</span>
 
-      <!-- right slot: reset time; swaps to the refresh button on hover / while refreshing -->
-      <div class="relative h-3 w-9 shrink-0">
+      <!-- right slot: compact reset time; swaps to the refresh button on hover / while refreshing -->
+      <div class="relative h-3 w-8 shrink-0">
         <span
           class="absolute inset-0 flex items-center justify-end font-mono tabular-nums opacity-60 transition-opacity"
           :class="v.refreshing ? 'opacity-0' : 'group-hover:opacity-0'"

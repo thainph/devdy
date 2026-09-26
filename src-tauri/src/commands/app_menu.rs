@@ -132,6 +132,12 @@ pub fn set_app_menu<R: Runtime>(app: AppHandle<R>, spec: MenuSpec) -> Result<(),
 /// first: a "Go → Todos" that navigated an invisible window would look broken.
 pub fn on_menu_event<R: Runtime>(app: &AppHandle<R>, event: tauri::menu::MenuEvent) {
     let id = event.id().0.clone();
+    // Tauri routes tray-menu clicks through this same global listener. Tray ids are
+    // namespaced `tray:` and handled in `tray::on_menu_event`; ignore them here so a
+    // tray "focus session" click doesn't also yank focus back to the main window.
+    if id.starts_with("tray:") {
+        return;
+    }
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.set_focus();
     }

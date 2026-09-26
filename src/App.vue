@@ -28,8 +28,12 @@ import { useItemPanel } from '@/composables/useItemPanel'
 import { openItemCreateWindow } from '@/lib/itemWindow'
 import { applyAppMenu, IS_MAC, listenMenuActions, registerMenuAction, runMenuAction } from '@/lib/appMenu'
 import { NAV_ROUTES } from '@/lib/navigation'
+import { IS_SESSION_WINDOW, SESSION_WINDOW_PROJECT_ID, SESSION_WINDOW_RUN_ID } from '@/lib/windowMode'
 import IssuesGanttView from '@/views/IssuesGanttView.vue'
 import { getVersion } from '@tauri-apps/api/app'
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
+import { useRunsStore } from '@/stores/runs'
+import { refreshTray } from '@/lib/tray'
 
 // Pop-out windows load the same SPA with a query flag; render a bare,
 // chrome-less host (no sidebar / nav / background work) in those cases.
@@ -38,6 +42,12 @@ const isPermissionWindow = new URLSearchParams(window.location.search).get('perm
 const isItemWindow = new URLSearchParams(window.location.search).get('itemWindow') === '1'
 const isGanttWindow = new URLSearchParams(window.location.search).get('ganttWindow') === '1'
 const isMascotWindow = new URLSearchParams(window.location.search).get('mascotWindow') === '1'
+// A session pop-out is different from the bare pop-outs above: it reuses the full
+// RunView (routed to one run) with the app chrome hidden, so it still needs the
+// stores + router — only the sidebar / nav / docks / app-wide notifiers are cut.
+// Captured at module load (see windowMode) so it survives the router rewriting
+// the URL out from under us on the first navigation.
+const isSessionWindow = IS_SESSION_WINDOW
 // All pop-out kinds only need the theme applied; skip the main app's data work.
 const isPopoutWindow =
   isFileWindow || isPermissionWindow || isItemWindow || isGanttWindow || isMascotWindow
@@ -49,8 +59,44 @@ const appSettings = useAppSettingsStore()
 const tabsStore = useWorkspaceTabsStore()
 const uiLayout = useUILayoutStore()
 const live = useLiveRunsStore()
+const runsStore = useRunsStore()
 const { t, locale } = useI18n()
 const itemPanel = useItemPanel()
+
+// Session pop-out: drive the router to the run as early as possible (in setup,
+// before first paint) so the window lands on RunView instead of flashing the
+// default `/projects` redirect on the way there.
+if (isSessionWindow && SESSION_WINDOW_PROJECT_ID && SESSION_WINDOW_RUN_ID) {
+  router
+    .replace({
+      name: 'project-run-detail',
+      params: { projectId: SESSION_WINDOW_PROJECT_ID, runId: SESSION_WINDOW_RUN_ID },
+    })
+    .catch(() => {})
+}
+
+// Session pop-out: keep the OS window title on the run's name so the menu-bar
+// switcher (lib/tray.ts) can label this window, and refresh the tray whenever the
+// title lands or is renamed.
+if (isSessionWindow && SESSION_WINDOW_RUN_ID) {
+  const runId = SESSION_WINDOW_RUN_ID
+  watch(
+    () =>
+      runsStore.runMeta.get(runId)?.title ??
+      runsStore.runs.find((r) => r.id === runId)?.title ??
+      null,
+    async (title) => {
+      const name = (title && title.trim()) || t('tray.untitledSession')
+      try {
+        await getCurrentWebviewWindow().setTitle(name)
+      } catch {
+        /* outside the Tauri shell */
+      }
+      void refreshTray()
+    },
+    { immediate: true },
+  )
+}
 
 const isRunRoute = computed(
   () => route.name === 'project-run' || route.name === 'project-run-detail',
@@ -107,6 +153,8 @@ const CACHED_VIEWS = [
 watch(
   () => [route.name, route.params.projectId, route.params.runId] as const,
   ([name, projectId, runId]) => {
+    // A session pop-out is locked to one run; it must not pin workspace tabs.
+    if (isSessionWindow) return
     if ((name === 'project-run' || name === 'project-run-detail') && typeof projectId === 'string') {
       tabsStore.open(projectId, typeof runId === 'string' ? runId : null)
     }
@@ -209,10 +257,17 @@ let unlistenMenu: UnlistenFn | null = null
 watch(
   () => [locale.value, uiLayout.sidebarHidden, uiLayout.focusMode] as const,
   () => {
-    if (isPopoutWindow) return
+    if (isPopoutWindow || isSessionWindow) return
     applyAppMenu({ sidebarHidden: uiLayout.sidebarHidden, focusMode: uiLayout.focusMode })
   },
 )
+
+// Rebuild the tray on language change so its static labels (Main Window / Quit)
+// follow the app language, matching the app menu above.
+watch(locale, () => {
+  if (isSessionWindow) return
+  void refreshTray()
+})
 
 // File the capture under whatever the user is looking at, so capturing from a
 // run needs no project picking at all.
@@ -292,6 +347,22 @@ onMounted(async () => {
     }
     return
   }
+  if (isSessionWindow) {
+    // Chrome-less run window: apply the theme, then let RunView (already routed to
+    // the run in setup) fetch its own projects / runs and open its stream. Skip
+    // the main window's app-wide services — native menu, quick-capture keys, the
+    // run:activated mirror and PermissionNotifier — so a popped-out session can't
+    // double-fire OS notifications the main window already owns.
+    try {
+      await appSettings.refresh()
+      applyTheme(appSettings.settings?.theme ?? 'system')
+      applyColorTheme(appSettings.settings?.color_theme ?? 'default')
+      setLocale(appSettings.settings?.language ?? 'en')
+    } catch {
+      applyTheme('system')
+    }
+    return
+  }
   window.addEventListener('keydown', onQuickCaptureKey)
 
   // Native menu bar: bind the actions first, then install the menu, so an
@@ -303,6 +374,10 @@ onMounted(async () => {
     // Ignore (e.g. running outside the Tauri shell during dev in a browser).
   }
   applyAppMenu({ sidebarHidden: uiLayout.sidebarHidden, focusMode: uiLayout.focusMode })
+
+  // Populate the menu-bar window switcher (just the main window at first; session
+  // pop-outs re-send as they open — see lib/tray.ts / lib/sessionWindow.ts).
+  void refreshTray()
 
   // Attach per-run listeners for any run the backend reports as active — even
   // ones this window never opened (started/resumed from a remote Controller, or
@@ -353,6 +428,27 @@ onMounted(async () => {
 
   <!-- Desktop-pet window: transparent, frameless host that floats only the fox. -->
   <MascotWindow v-else-if="isMascotWindow" />
+
+  <!-- Session pop-out: one run in its own OS window. Reuses the full RunView via
+       the router, but with no sidebar / nav / docks / app-wide notifiers — just
+       the conversation, its toolbar and composer. -->
+  <div
+    v-else-if="isSessionWindow"
+    class="flex flex-col h-screen bg-background text-foreground overflow-hidden"
+  >
+    <ThemeDecorations :active="sceneOn" :theme="sceneTheme" />
+    <main class="flex-1 min-w-0 flex flex-col overflow-hidden">
+      <div class="flex-1 min-w-0 overflow-auto">
+        <RouterView />
+      </div>
+    </main>
+    <!-- Overlay hosts the run screen relies on; NOT PermissionNotifier /
+         CalendarReminder — those stay owned by the main window. -->
+    <ConfirmModal />
+    <PromptModal />
+    <ToastHost />
+    <ImageCompareHost />
+  </div>
 
   <div v-else class="flex flex-col h-screen bg-background text-foreground overflow-hidden">
     <!-- Animated decorative overlay for scenic themes (e.g. Full Moon 🌕).
