@@ -187,7 +187,8 @@ async fn session_wait(
         .and_then(|v| v.as_u64())
         .unwrap_or(DEFAULT_WAIT_MS)
         .min(MAX_WAIT_MS);
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let started = Instant::now();
+    let deadline = started + Duration::from_millis(timeout_ms);
     let db = db(state);
 
     loop {
@@ -206,6 +207,7 @@ async fn session_wait(
                 "done": done,
                 "pending": pending,
                 "timed_out": !pending.is_empty(),
+                "waited_ms": started.elapsed().as_millis() as u64,
             }));
         }
         tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;

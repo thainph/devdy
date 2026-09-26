@@ -5,8 +5,9 @@
  * permission" flag) plus the control-plane event timeline. Everything else about
  * a conductor is just the normal session screen.
  *
- * Clicking a worker opens that worker's own session (it is an ordinary run), so
- * its permission prompt / stream shows in the standard viewer.
+ * Clicking a worker pops that worker's own session out into its own OS window (it
+ * is an ordinary run), so its permission prompt / stream can be watched and
+ * driven side by side with the conductor.
  */
 import { useI18n } from 'vue-i18n'
 import { Cpu, ExternalLink, ShieldQuestion } from 'lucide-vue-next'

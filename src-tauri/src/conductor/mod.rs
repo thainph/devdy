@@ -35,7 +35,9 @@ You control workers with these MCP tools (server `conductor`):
 - session_list() -> all your workers and their status.
 - session_poll(worker_ids?) -> instant status of workers (running | idle | ...).
 - session_wait(worker_ids, timeout_ms?) -> block until those workers finish their
-    current turn (status != running) or the timeout elapses.
+    current turn (status != running) or the timeout elapses. Returns `waited_ms`,
+    the time this call actually blocked. When you tell the human how long you
+    waited, use `waited_ms` — never `timeout_ms`, which is only the upper bound.
 - session_read(worker_id) -> the worker's latest assistant reply (its result).
 - session_send(worker_id, text) -> give a worker a follow-up turn.
 - session_cancel(worker_id) -> stop a worker.
@@ -165,6 +167,20 @@ impl ConductorState {
                     return false;
                 }
                 s.worker_ids.push(worker_id.to_string());
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Update a live conductor's worker cap. Returns false when the conductor is
+    /// unknown (never registered, or the app restarted without it). The new cap
+    /// takes effect on the next `session_spawn` — `add_worker` reads it live under
+    /// the lock — so it can be raised or lowered while the conductor is running.
+    pub fn set_max_workers(&self, conductor_run_id: &str, max_workers: usize) -> bool {
+        if let Ok(mut g) = self.inner.lock() {
+            if let Some(s) = g.sessions.get_mut(conductor_run_id) {
+                s.max_workers = max_workers;
                 return true;
             }
         }

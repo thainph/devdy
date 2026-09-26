@@ -68,6 +68,21 @@ export const useConductorStore = defineStore('conductor', () => {
     })
   }
 
+  /**
+   * Change the worker cap of a running (or finished) conductor. The backend
+   * clamps to [1, 12], persists it, and updates the live cap the next
+   * session_spawn enforces; returns the value actually stored. We refresh the
+   * detail so the sidebar reflects the new max immediately.
+   */
+  async function setMaxWorkers(conductorRunId: string, maxWorkers: number): Promise<number> {
+    const applied = await invoke<number>('set_conductor_max_workers', {
+      conductorRunId,
+      maxWorkers,
+    })
+    await refreshDetail()
+    return applied
+  }
+
   async function refreshDetail(): Promise<void> {
     if (!selectedId.value) return
     try {
@@ -103,5 +118,5 @@ export const useConductorStore = defineStore('conductor', () => {
     }
   }
 
-  return { selectedId, detail, start, select, refreshDetail, stopPolling }
+  return { selectedId, detail, start, select, refreshDetail, setMaxWorkers, stopPolling }
 })
