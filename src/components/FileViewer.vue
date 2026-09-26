@@ -10,6 +10,9 @@ import {
   FileCode2, AArrowDown, AArrowUp, ExternalLink, FileQuestion, FileWarning, FolderOpen, RotateCw, Code2, Languages, Pencil, Save, X, Search, ChevronUp, ChevronDown, ZoomIn, ZoomOut, MoreHorizontal, Columns2,
 } from 'lucide-vue-next'
 import { convertFileSrc } from '@tauri-apps/api/core'
+import * as pdfjsLib from 'pdfjs-dist'
+import PdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+pdfjsLib.GlobalWorkerOptions.workerSrc = PdfWorkerUrl
 import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener'
 import type MarkdownIt from 'markdown-it'
 import { Button, DropdownMenu } from '@/components/ui'
@@ -151,6 +154,91 @@ const imageTransform = computed(() => ({
   transform: `translate(${panX.value}px, ${panY.value}px) scale(${zoom.value})`,
   cursor: zoom.value > 1 ? (panning.value ? 'grabbing' : 'grab') : 'default',
 }))
+
+// ── PDF (pdf.js → canvas) ────────────────────────────────────────────────────
+// PDFs render page-by-page into <canvas> elements so the app owns the zoom: the
+// current `zoom` becomes pdf.js's render scale, giving sharp output at any level
+// (unlike scaling a raster snapshot). Re-rendering is serialised so a zoom change
+// mid-render restarts cleanly instead of drawing to a canvas already in use.
+const pdfPageCount = ref(0)
+const pdfLoading = ref(false)
+const pdfError = ref<string | null>(null)
+let pdfDoc: import('pdfjs-dist').PDFDocumentProxy | null = null
+let pdfLoadingTask: import('pdfjs-dist').PDFDocumentLoadingTask | null = null
+const pdfCanvases = new Map<number, HTMLCanvasElement>()
+let pdfRendering = false
+let pdfRerenderQueued = false
+
+function setPdfCanvas(n: number, el: unknown) {
+  if (el) pdfCanvases.set(n, el as HTMLCanvasElement)
+  else pdfCanvases.delete(n)
+}
+
+function destroyPdf() {
+  pdfRerenderQueued = false
+  pdfCanvases.clear()
+  pdfPageCount.value = 0
+  pdfError.value = null
+  pdfDoc = null
+  if (pdfLoadingTask) { pdfLoadingTask.destroy(); pdfLoadingTask = null }
+}
+
+async function loadPdf(url: string) {
+  destroyPdf()
+  pdfLoading.value = true
+  try {
+    // Fetch bytes on the webview thread (where the asset URL already resolves for
+    // images/iframes) and hand the data to pdf.js, sidestepping range-request and
+    // cross-origin quirks of streaming the URL from the worker.
+    const buf = await (await fetch(url)).arrayBuffer()
+    const task = pdfjsLib.getDocument({ data: new Uint8Array(buf) })
+    pdfLoadingTask = task
+    const doc = await task.promise
+    pdfDoc = doc
+    pdfPageCount.value = doc.numPages
+    await nextTick()
+    await scheduleRenderPdf()
+  } catch (e) {
+    pdfError.value = String(e)
+  } finally {
+    pdfLoading.value = false
+  }
+}
+
+async function scheduleRenderPdf() {
+  if (pdfRendering) { pdfRerenderQueued = true; return }
+  pdfRendering = true
+  try {
+    do {
+      pdfRerenderQueued = false
+      await renderPdf()
+    } while (pdfRerenderQueued)
+  } finally {
+    pdfRendering = false
+  }
+}
+
+async function renderPdf() {
+  const doc = pdfDoc
+  if (!doc) return
+  const dpr = window.devicePixelRatio || 1
+  const scale = zoom.value
+  for (let n = 1; n <= pdfPageCount.value; n++) {
+    if (pdfRerenderQueued || doc !== pdfDoc) return // newer zoom / file — restart
+    const canvas = pdfCanvases.get(n)
+    if (!canvas) continue
+    const page = await doc.getPage(n)
+    const viewport = page.getViewport({ scale })
+    // Back the canvas with device pixels for crisp text on HiDPI displays, then
+    // let CSS size it back down to the logical page dimensions.
+    canvas.width = Math.floor(viewport.width * dpr)
+    canvas.height = Math.floor(viewport.height * dpr)
+    canvas.style.width = `${Math.floor(viewport.width)}px`
+    canvas.style.height = `${Math.floor(viewport.height)}px`
+    const transform = dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined
+    await page.render({ canvas, viewport, transform }).promise
+  }
+}
 
 function resetZoom() {
   zoom.value = 1
@@ -432,8 +520,10 @@ async function load() {
   const k = fileKind(path)
   kind.value = k
 
+  if (k !== 'pdf') destroyPdf()
   if (k !== 'text') {
     if (k !== 'other') assetUrl.value = mediaUrl(abs)
+    if (k === 'pdf') loadPdf(assetUrl.value)
     loading.value = false
     return
   }
@@ -480,6 +570,7 @@ async function reload() {
   if (kind.value !== 'text') {
     // Re-resolve the asset URL so updated media re-fetches from disk.
     if (kind.value !== 'other') assetUrl.value = mediaUrl(absPath.value)
+    if (kind.value === 'pdf') loadPdf(assetUrl.value)
     return
   }
   reloading.value = true
@@ -701,7 +792,10 @@ onUnmounted(() => {
   window.removeEventListener('mouseup', onSelectionMouseUp)
   window.removeEventListener('keydown', onSearchKeydown)
   clearHighlights()
+  destroyPdf()
 })
+// Re-render the PDF at the new scale whenever the shared zoom changes.
+watch(zoom, () => { if (kind.value === 'pdf' && pdfDoc) scheduleRenderPdf() })
 watch(() => [props.projectPath, props.path, props.line], () => {
   loadProjectFiles()
   load()
@@ -752,8 +846,8 @@ defineExpose({ onRevealInFolder, onOpenInApp })
           <AArrowUp class="h-3.5 w-3.5" :stroke-width="1.75" />
         </button>
       </div>
-      <!-- Zoom controls (images) — mirrors the font-size group for consistency -->
-      <div v-if="kind === 'image'" class="flex items-center rounded-md border border-border overflow-hidden shrink-0">
+      <!-- Zoom controls (images & PDF) — mirrors the font-size group for consistency -->
+      <div v-if="kind === 'image' || kind === 'pdf'" class="flex items-center rounded-md border border-border overflow-hidden shrink-0">
         <button
           class="flex items-center justify-center h-6 w-6 text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
           :title="t('files.viewer.zoomOut')"
@@ -947,13 +1041,27 @@ defineExpose({ onRevealInFolder, onOpenInApp })
       <div v-else-if="kind === 'audio'" class="p-8 flex items-center justify-center">
         <audio :src="assetUrl" controls class="w-full max-w-lg" />
       </div>
-      <!-- PDF -->
-      <iframe
+      <!-- PDF (rendered to <canvas> by pdf.js so zoom stays sharp) -->
+      <div
         v-else-if="kind === 'pdf'"
-        :src="assetUrl"
-        class="w-full h-full min-h-[400px] bg-white"
+        class="w-full h-full min-h-[400px] overflow-auto bg-foreground/5"
         :title="t('files.viewer.pdfPreview')"
-      />
+      >
+        <div v-if="pdfError" class="p-10 flex items-center justify-center text-sm text-destructive">
+          {{ pdfError }}
+        </div>
+        <div v-else-if="pdfLoading" class="p-10 flex items-center justify-center text-sm text-foreground/50">
+          {{ t('files.viewer.loadingPdf') }}
+        </div>
+        <div v-else class="flex flex-col items-center gap-3 p-4">
+          <canvas
+            v-for="n in pdfPageCount"
+            :key="n"
+            :ref="(el) => setPdfCanvas(n, el)"
+            class="shadow-sm bg-white max-w-none"
+          />
+        </div>
+      </div>
       <!-- Non-previewable (office docs, archives, binaries) -->
       <div v-else-if="kind === 'other'" class="p-10 flex flex-col items-center gap-3 text-center">
         <FileQuestion class="h-12 w-12 text-foreground/30" :stroke-width="1.5" />

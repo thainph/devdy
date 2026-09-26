@@ -22,6 +22,7 @@
     "tooLargeHint": "Tệp này lớn hơn 2 MB. Hãy mở bằng trình soạn thảo ngoài để xem toàn bộ nội dung.",
     "openInVscode": "Mở bằng VS Code",
     "pdfPreview": "Xem trước PDF",
+    "loadingPdf": "Đang tải PDF…",
     "htmlPreview": "Xem trước HTML",
     "translateSelection": "Dịch đoạn đã chọn",
     "translate": "Dịch",
