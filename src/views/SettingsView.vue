@@ -537,7 +537,11 @@ async function forgetGoogleClient() {
 }
 
 // --- Google validate / re-login (mirrors the AWS section) ---
-interface GoogleValidation { email: string; scope: string }
+interface GoogleValidation { email: string; scope: string; missing_scopes: string[] }
+// Short, human-readable label for a Google scope URL (last path segment).
+function scopeLabel(scope: string): string {
+  return scope.split('/').pop() || scope
+}
 const GOOGLE_LOGIN_REQUIRED = 'GOOGLE_LOGIN_REQUIRED'
 const googleValidations = ref<Record<string, GoogleValidation>>({})
 const googleAccountError = ref<Record<string, string>>({})
@@ -1697,7 +1701,7 @@ watch(() => settings.value.language, (v) => {
                       {{ googleBusyAccount === acc.id ? '…' : t('settings.google.validate') }}
                     </Button>
                     <Button
-                      v-if="googleLoginNeeded[acc.id]"
+                      v-if="googleLoginNeeded[acc.id] || googleValidations[acc.id]?.missing_scopes?.length"
                       variant="outline"
                       size="xs"
                       :disabled="googleBusyAccount === acc.id"
@@ -1718,7 +1722,7 @@ watch(() => settings.value.language, (v) => {
                   </div>
                 </div>
                 <div
-                  v-if="googleValidations[acc.id]"
+                  v-if="googleValidations[acc.id] && !googleValidations[acc.id].missing_scopes?.length"
                   class="p-2 bg-emerald-500/10 border border-emerald-500/20 rounded-md text-[11px]"
                 >
                   <div class="flex items-center gap-1.5 text-emerald-500 font-medium">
@@ -1728,6 +1732,13 @@ watch(() => settings.value.language, (v) => {
                   <p v-if="googleValidations[acc.id].email" class="text-muted-foreground mt-1 truncate">
                     {{ googleValidations[acc.id].email }}
                   </p>
+                </div>
+                <div
+                  v-else-if="googleValidations[acc.id]?.missing_scopes?.length"
+                  class="p-2 bg-amber-500/10 border border-amber-500/20 rounded-md text-[11px] text-amber-500 flex items-start gap-1.5"
+                >
+                  <AlertTriangle class="h-3 w-3 shrink-0 mt-0.5" :stroke-width="1.75" />
+                  <span>{{ t('settings.google.missingScopes', { scopes: googleValidations[acc.id].missing_scopes.map(scopeLabel).join(', ') }) }}</span>
                 </div>
                 <div
                   v-if="googleLoginNeeded[acc.id]"

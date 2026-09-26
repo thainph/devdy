@@ -134,6 +134,7 @@
     "valid": "Hợp lệ",
     "login": "Đăng nhập",
     "loginExpired": "Phiên đăng nhập Google đã hết hạn hoặc bị thu hồi. Bấm \"Đăng nhập\" để cấp quyền lại.",
+    "missingScopes": "Tài khoản này thiếu quyền ({scopes}) — do được kết nối trước khi các quyền đó được thêm, nên một số API (ví dụ Lịch) trả về 401. Bấm \"Đăng nhập\" để cấp quyền lại.",
     "loggingIn": "Đang mở trình duyệt để đăng nhập lại…",
     "addAnother": "Thêm tài khoản khác",
     "connectAccount": "Kết nối tài khoản",

@@ -134,6 +134,7 @@
     "valid": "Valid",
     "login": "Login",
     "loginExpired": "Google session expired or was revoked. Click \"Login\" to re-authorize.",
+    "missingScopes": "This account is missing permissions ({scopes}) — it was connected before they were added, so some APIs (e.g. Calendar) return 401. Click \"Login\" to re-authorize.",
     "loggingIn": "Opening browser to sign in again…",
     "addAnother": "Add another account",
     "connectAccount": "Connect an account",
