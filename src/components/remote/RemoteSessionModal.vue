@@ -28,7 +28,7 @@ const props = defineProps<{
   runId: string | null
 }>()
 
-const emit = defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: []; openSettings: [] }>()
 
 const store = useRemoteControlStore()
 const { t } = useI18n()
@@ -42,12 +42,19 @@ type Phase =
   | 'auth-failed'
   | 'expired'
   | 'error'
+  | 'disabled'
 
 const phase = ref<Phase>('creating')
 const link = ref<SessionLink | null>(null)
 const linkUrl = ref('')
 const errorMsg = ref('')
 const copied = ref(false)
+const enabling = ref(false)
+
+// When Remote Control is off, the agent can only be started if a relay URL is
+// already saved (mirrors the Settings `canToggle` guard). Otherwise we route the
+// owner to Settings to configure the relay first.
+const canEnableHere = computed(() => !!store.status?.relay_url?.trim())
 
 // Auth state (from remote://controller-requested-session / auth-failed). The OTP
 // itself is no longer shown in this modal — it is still auto-generated on the
@@ -166,10 +173,37 @@ async function openFlow() {
       phase.value = 'connected'
       return
     }
+    // Feature off? Offer to turn it on right here instead of forcing a trip to
+    // Settings — the backend would otherwise reject createLink with an error.
+    if (!s.enabled) {
+      phase.value = 'disabled'
+      return
+    }
   } catch {
     // Status unavailable — fall through to create a fresh link.
   }
   await createLink()
+}
+
+/** Enable Remote Control from the modal, then mint the link. Used by the
+ * 'disabled' view so the owner doesn't have to detour through Settings when a
+ * relay is already configured. */
+async function enableAndCreate() {
+  if (enabling.value) return
+  enabling.value = true
+  try {
+    await store.enable()
+    await createLink()
+  } catch (e) {
+    phase.value = 'error'
+    errorMsg.value = String(e)
+  } finally {
+    enabling.value = false
+  }
+}
+
+function goToSettings() {
+  emit('openSettings')
 }
 
 async function stopControl() {
@@ -361,6 +395,23 @@ watch(() => props.runId, () => {
         </div>
         <Button variant="outline" @click="createLink">
           <RotateCcw class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('remote.session.createNewLink') }}
+        </Button>
+      </div>
+
+      <!-- disabled: Remote Control is off — offer to enable it here -->
+      <div v-else-if="phase === 'disabled'" class="flex flex-col items-center gap-4 py-6">
+        <ShieldAlert class="h-8 w-8 text-amber-500" :stroke-width="1.75" />
+        <p class="text-sm font-medium text-foreground">{{ t('remote.session.disabledTitle') }}</p>
+        <p class="text-center text-xs text-muted-foreground">
+          {{ canEnableHere ? t('remote.session.disabledDesc') : t('remote.session.disabledNoRelay') }}
+        </p>
+        <Button v-if="canEnableHere" :disabled="enabling" @click="enableAndCreate">
+          <Loader2 v-if="enabling" class="h-3.5 w-3.5 animate-spin" :stroke-width="2" />
+          <Radio v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ t('remote.session.enableNow') }}
+        </Button>
+        <Button v-else variant="outline" @click="goToSettings">
+          {{ t('remote.session.openSettings') }}
         </Button>
       </div>
 
