@@ -2590,8 +2590,7 @@ function setRenameInputRef(el: Element | ComponentPublicInstance | null) {
   renameInputEl.value = (el as HTMLInputElement | null) ?? null
 }
 
-function startRename(run: RunRecord, e?: MouseEvent) {
-  e?.stopPropagation()
+function startRename(run: RunRecord) {
   renamingRunId.value = run.id
   renameDraft.value = run.title ?? runLabel(run)
   nextTick(() => {
@@ -2649,8 +2648,7 @@ async function commitRename(runId: string) {
   }
 }
 
-async function handleTogglePin(run: RunRecord, e?: MouseEvent) {
-  e?.stopPropagation()
+async function handleTogglePin(run: RunRecord) {
   pinningRunId.value = run.id
   const willPin = !run.pinned
   try {
@@ -2675,8 +2673,7 @@ function clearActiveRunState() {
   inputContentError.value = null
 }
 
-async function handleDeleteRun(runId: string, e?: MouseEvent) {
-  e?.stopPropagation()
+async function handleDeleteRun(runId: string) {
   const run = runsStore.runs.find(r => r.id === runId)
   const label = run ? runLabel(run) : t('run.thisRun')
   if (!(await confirm({
@@ -3411,11 +3408,11 @@ function handleRefInput(val: string) {
                     {{ t('run.viewLogFile') }}
                   </DropdownItem>
                   <DropdownSeparator />
-                  <DropdownItem @click="startRename(run, $event)">
+                  <DropdownItem @click="startRename(run)">
                     <Pencil class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
                     {{ t('run.rename') }}
                   </DropdownItem>
-                  <DropdownItem :disabled="pinningRunId === run.id" @click="handleTogglePin(run, $event)">
+                  <DropdownItem :disabled="pinningRunId === run.id" @click="handleTogglePin(run)">
                     <component :is="run.pinned ? PinOff : Pin" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
                     {{ run.pinned ? t('run.unpinFromTop') : t('run.pinToTop') }}
                   </DropdownItem>
@@ -3424,7 +3421,7 @@ function handleRefInput(val: string) {
                     <DropdownItem
                       variant="destructive"
                       :disabled="deletingRunId === run.id"
-                      @click="handleDeleteRun(run.id, $event)"
+                      @click="handleDeleteRun(run.id)"
                     >
                       <Trash2 class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
                       {{ t('run.deleteThisRun') }}
@@ -4290,6 +4287,7 @@ function handleRefInput(val: string) {
       :open="remoteModalOpen"
       :run-id="currentRunId"
       @close="remoteModalOpen = false; refreshRemoteActive()"
+      @open-settings="remoteModalOpen = false; router.push({ name: 'settings', query: { section: 'remote' } })"
     />
 
     <!-- Floating actions for a text selection in the AI-result output: translate
