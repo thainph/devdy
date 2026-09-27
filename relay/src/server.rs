@@ -75,6 +75,12 @@ pub async fn serve(config: Config) -> std::io::Result<(RelayHandle, impl std::fu
         loop {
             match listener.accept().await {
                 Ok((stream, peer)) => {
+                    // OS-level defence in depth against half-open sockets: without
+                    // this a peer that vanished (mobile network drop, laptop sleep)
+                    // with no FIN/RST would linger for the kernel's ~2 h default.
+                    // The app-level `sweep_peer_liveness` is the primary detector;
+                    // this just lets the kernel reap the dead socket in ~1 min too.
+                    apply_tcp_keepalive(&stream);
                     let s = accept_shared.clone();
                     tokio::spawn(async move {
                         if let Err(e) = handle_connection(s, stream, peer).await {
@@ -95,16 +101,29 @@ pub async fn serve(config: Config) -> std::io::Result<(RelayHandle, impl std::fu
 /// Background loop that expires pending pair codes and idle rooms.
 async fn sweep_loop(shared: Arc<Shared>) {
     let idle = shared.config.room_idle_timeout;
+    let liveness = shared.config.peer_liveness_timeout;
+    let reconnect_window = shared.config.reconnect_window;
     let mut ticker = tokio::time::interval(Duration::from_secs(1));
     loop {
         ticker.tick().await;
         let now = Instant::now();
-        let closed = {
+        let (closed, dropped) = {
             let mut rooms = shared.rooms.lock().await;
-            rooms.sweep(now, idle)
+            // TTL / idle sweep first, then per-peer liveness on what survives.
+            let closed = rooms.sweep(now, idle);
+            let dropped = rooms.sweep_peer_liveness(now, liveness, reconnect_window);
+            (closed, dropped)
         };
         for (room_id, survivors) in closed {
             tracing::info!(event = "room_swept", room_id = %room_id);
+            for sink in survivors {
+                let _ = sink.send(Envelope::peer_left(room_id.clone()));
+            }
+        }
+        // A peer went silent (half-open, no TCP close). The survivor is told
+        // `peer_left` exactly as if the socket had closed cleanly.
+        for (room_id, survivors) in dropped {
+            tracing::info!(event = "peer_liveness_timeout", room_id = %room_id);
             for sink in survivors {
                 let _ = sink.send(Envelope::peer_left(room_id.clone()));
             }
@@ -490,6 +509,20 @@ async fn dispatch(
             tracing::debug!(event = "ignored_inbound_control", conn = conn_id);
             false
         }
+    }
+}
+
+/// Enable TCP keepalive probes on an accepted connection so the kernel reaps a
+/// half-open socket (peer vanished with no FIN/RST) in ~1 minute instead of its
+/// multi-hour default. Best-effort: a failure here only forfeits this OS-level
+/// backstop, and `sweep_peer_liveness` still detects the drop at the app layer.
+fn apply_tcp_keepalive(stream: &TcpStream) {
+    let ka = socket2::TcpKeepalive::new()
+        .with_time(Duration::from_secs(30))
+        .with_interval(Duration::from_secs(10));
+    let sref = socket2::SockRef::from(stream);
+    if let Err(e) = sref.set_tcp_keepalive(&ka) {
+        tracing::debug!(event = "tcp_keepalive_failed", error = %e);
     }
 }
 

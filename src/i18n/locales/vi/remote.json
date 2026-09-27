@@ -2,6 +2,7 @@
   "settings": {
     "title": "Remote Control",
     "connected": "Đã kết nối",
+    "reconnecting": "Đang kết nối lại…",
     "waiting": "Đang chờ",
     "off": "Tắt",
     "intro": "Điều khiển host này từ thiết bị từ xa thông qua relay tự vận hành của bạn. Relay chỉ nhìn thấy lưu lượng đã mã hóa đầu cuối.",
@@ -80,6 +81,11 @@
     "expired": "Phiên đã hết hạn",
     "errorOccurred": "Đã xảy ra lỗi",
     "noRunOpen": "Không có run nào đang mở.",
-    "copyFailed": "Không thể copy vào clipboard"
+    "copyFailed": "Không thể copy vào clipboard",
+    "disabledTitle": "Remote Control đang tắt",
+    "disabledDesc": "Remote Control chưa được bật. Bật lên để tạo link cho điện thoại.",
+    "disabledNoRelay": "Remote Control chưa được bật. Hãy cấu hình relay URL trong Settings trước, sau đó bật lên.",
+    "enableNow": "Bật Remote Control",
+    "openSettings": "Mở Settings"
   }
 }

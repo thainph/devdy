@@ -47,6 +47,11 @@ pub struct Config {
     pub rate_limit_window: Duration,
     /// Idle timeout for an ACTIVE room with no traffic before it is closed.
     pub room_idle_timeout: Duration,
+    /// How long a single peer (Host or Controller) may go without sending ANY
+    /// frame before the relay treats it as dropped — the authoritative liveness
+    /// check for half-open sockets that never delivered a TCP close. Sized at
+    /// ~3× the client keepalive cadence so one or two lost beats never trip it.
+    pub peer_liveness_timeout: Duration,
     /// Grace window kept for an ACTIVE room after its Controller drops, during
     /// which the Controller may `resume` the same room (phone screen off/on).
     pub reconnect_window: Duration,
@@ -83,6 +88,8 @@ impl Config {
             Duration::from_secs(parse_u64("RELAY_ROOM_IDLE_TIMEOUT_SECS", 3600)?);
         let reconnect_window =
             Duration::from_secs(parse_u64("RELAY_RECONNECT_WINDOW_SECS", 3600)?);
+        let peer_liveness_timeout =
+            Duration::from_secs(parse_u64("RELAY_PEER_LIVENESS_TIMEOUT_SECS", 45)?);
         let max_rooms = parse_u64("RELAY_MAX_ROOMS", 256)? as usize;
         // Sized off the worst legitimate frame, not off the protocol's typical
         // one. The controller composer accepts images up to 10 MiB raw; base64
@@ -100,6 +107,7 @@ impl Config {
             rate_limit_window,
             room_idle_timeout,
             reconnect_window,
+            peer_liveness_timeout,
             max_rooms,
             max_message_bytes,
         })

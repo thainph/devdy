@@ -19,6 +19,9 @@ export interface RemoteStatus {
   enabled: boolean
   running: boolean
   connected: boolean
+  /** Host↔relay socket is down and the agent is retrying (backoff). Distinct from
+   * `connected`: drives a "reconnecting…" badge during a transient blip. */
+  reconnecting: boolean
   relay_url: string
   has_auth_token: boolean
   /** Whether an owner master password is set (controller may use it vs the OTP). */

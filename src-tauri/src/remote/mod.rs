@@ -72,6 +72,11 @@ pub struct RemoteState {
     /// remote control is active.
     pub bound: Arc<TokioMutex<Option<BoundSession>>>,
     pub connected: Arc<AtomicBool>,
+    /// True while the agent's host↔relay socket is down and it is retrying with
+    /// backoff (as opposed to a clean idle wait, where the socket is up). Lets the
+    /// desktop badge show a truthful "reconnecting…" instead of a bare
+    /// "disconnected" during a transient network blip.
+    pub reconnecting: Arc<AtomicBool>,
     /// Rooms queued for revoke; drained by the agent → `revoke{room_id}`.
     pub revoke_queue: Arc<TokioMutex<Vec<String>>>,
     pub revoke_signal: Arc<tokio::sync::Notify>,
@@ -98,6 +103,7 @@ impl RemoteState {
             bus: RemoteBus::new(),
             bound: Arc::new(TokioMutex::new(None)),
             connected: Arc::new(AtomicBool::new(false)),
+            reconnecting: Arc::new(AtomicBool::new(false)),
             revoke_queue: Arc::new(TokioMutex::new(Vec::new())),
             revoke_signal: Arc::new(tokio::sync::Notify::new()),
             announce_signal: Arc::new(tokio::sync::Notify::new()),
@@ -141,6 +147,7 @@ impl RemoteState {
             bus: self.bus.clone(),
             bound: self.bound.clone(),
             connected: self.connected.clone(),
+            reconnecting: self.reconnecting.clone(),
             revoke_queue: self.revoke_queue.clone(),
             revoke_signal: self.revoke_signal.clone(),
             announce_signal: self.announce_signal.clone(),
@@ -166,6 +173,8 @@ impl RemoteState {
             ctrl.handle.abort();
         }
         self.connected
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.reconnecting
             .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }

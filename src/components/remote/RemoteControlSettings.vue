@@ -31,6 +31,7 @@ const status = computed(() => store.status)
 const enabled = computed(() => status.value?.enabled ?? false)
 const running = computed(() => status.value?.running ?? false)
 const connected = computed(() => status.value?.connected ?? false)
+const reconnecting = computed(() => status.value?.reconnecting ?? false)
 // Can't start the agent without a relay to dial — allow turning OFF anytime, but
 // only allow turning ON once a Relay URL has been saved.
 const canToggle = computed(() => enabled.value || !!status.value?.relay_url?.trim())
@@ -167,6 +168,9 @@ function resultTone(r: string): 'success' | 'error' | 'neutral' {
         <h3 class="text-sm font-semibold flex-1">{{ t('remote.settings.title') }}</h3>
         <Badge v-if="enabled && connected" tone="success" class="gap-1">
           <Wifi class="h-3 w-3" :stroke-width="2" /> {{ t('remote.settings.connected') }}
+        </Badge>
+        <Badge v-else-if="enabled && reconnecting" tone="warning" class="gap-1">
+          <Loader2 class="h-3 w-3 animate-spin" :stroke-width="2" /> {{ t('remote.settings.reconnecting') }}
         </Badge>
         <Badge v-else-if="enabled && running" tone="warning" class="gap-1">
           <WifiOff class="h-3 w-3" :stroke-width="2" /> {{ t('remote.settings.waiting') }}

@@ -2,6 +2,7 @@
   "settings": {
     "title": "Remote Control",
     "connected": "Connected",
+    "reconnecting": "Reconnecting…",
     "waiting": "Waiting",
     "off": "Off",
     "intro": "Control this host from a remote device through your self-hosted relay. The relay only ever sees end-to-end encrypted traffic.",
@@ -80,6 +81,11 @@
     "expired": "Session expired",
     "errorOccurred": "An error occurred",
     "noRunOpen": "No run is currently open.",
-    "copyFailed": "Could not copy to clipboard"
+    "copyFailed": "Could not copy to clipboard",
+    "disabledTitle": "Remote Control is off",
+    "disabledDesc": "Remote Control isn't enabled yet. Turn it on to create a link for your phone.",
+    "disabledNoRelay": "Remote Control isn't enabled yet. Configure a relay URL in Settings first, then turn it on.",
+    "enableNow": "Enable Remote Control",
+    "openSettings": "Open Settings"
   }
 }
