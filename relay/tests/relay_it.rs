@@ -10,7 +10,7 @@
 //! - routing Host→Controller and back       — forward opaque cipher by room_id
 //! - AC-13  revoke_closes_room              — Host revoke closes room immediately
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use devdy_relay::config::Config;
 use futures_util::{SinkExt, StreamExt};
@@ -24,6 +24,12 @@ type Ws = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// Start a relay on an ephemeral port with the given pair TTL; returns the URL.
 async fn start_relay(pair_ttl: Duration) -> String {
+    start_relay_with_liveness(pair_ttl, Duration::from_secs(45)).await
+}
+
+/// Start a relay with a custom per-peer liveness timeout (so the half-open-drop
+/// test can trip it in a couple of seconds instead of the 45 s default).
+async fn start_relay_with_liveness(pair_ttl: Duration, peer_liveness_timeout: Duration) -> String {
     let config = Config {
         bind: "127.0.0.1:0".to_string(),
         host_token: TEST_TOKEN.to_string(),
@@ -32,6 +38,7 @@ async fn start_relay(pair_ttl: Duration) -> String {
         rate_limit_window: Duration::from_secs(1),
         room_idle_timeout: Duration::from_secs(3600),
         reconnect_window: Duration::from_secs(60),
+        peer_liveness_timeout,
         max_rooms: 256,
         max_message_bytes: 32 * 1024 * 1024,
     };
@@ -319,6 +326,45 @@ async fn resume_after_controller_drop_reattaches() {
     let got = recv_json(&mut ctrl2).await.expect("resumed controller receives stream");
     assert_eq!(got["t"], "stream");
     assert_eq!(got["cipher"], "cmVzdW1lZA==");
+}
+
+// ---------------------------------------------------------------------------
+// Half-open drop — the Controller goes SILENT (no TCP close, socket still open),
+// while the Host keeps sending keepalives. The relay's per-peer liveness sweep
+// must still detect the dead Controller and tell the Host `peer_left` — the
+// Host's own keepalive must NOT keep the room "alive" and mask it (the bug where
+// the desktop stayed "connected" while the phone was long gone).
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn silent_controller_triggers_peer_left_to_host() {
+    // 2 s liveness so the sweep (1 s cadence) trips within the test.
+    let url = start_relay_with_liveness(Duration::from_secs(60), Duration::from_secs(2)).await;
+    let (mut host, _ctrl, room_id) = active_room(&url, "PAIRCODE-HALFOPEN").await;
+    // `_ctrl` is intentionally kept OPEN but never written to again — a half-open
+    // peer that the relay's read loop can never notice on its own.
+
+    // Keep the Host alive (as the real agent does) and watch for peer_left.
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut got_peer_left = false;
+    while Instant::now() < deadline {
+        send(&mut host, json!({ "t": "keepalive", "room_id": room_id })).await;
+        match tokio::time::timeout(Duration::from_millis(600), host.next()).await {
+            Ok(Some(Ok(Message::Text(t)))) => {
+                let v: Value = serde_json::from_str(&t).unwrap_or(Value::Null);
+                if v["t"] == "peer_left" {
+                    assert_eq!(v["room_id"], room_id);
+                    got_peer_left = true;
+                    break;
+                }
+                // else: the relay's keepalive echo — ignore and keep beating.
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        got_peer_left,
+        "host must be told peer_left when the controller goes silent, despite the host's own keepalives",
+    );
 }
 
 // ---------------------------------------------------------------------------

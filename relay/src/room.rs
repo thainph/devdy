@@ -142,6 +142,12 @@ struct Peer {
     conn: ConnId,
     out: Outbound,
     handshake_done: bool,
+    /// Last time ANY frame (data, control, keepalive) was received from this
+    /// peer. Tracked per-peer — NOT merged into the room's `last_activity` — so a
+    /// still-present peer's own keepalive can never mask the OTHER peer having
+    /// gone silent (half-open drop with no TCP close). Drives
+    /// [`RoomRegistry::sweep_peer_liveness`].
+    last_seen: Instant,
 }
 
 /// A single room's metadata (DATA-004). No payload is stored here.
@@ -179,6 +185,18 @@ impl Room {
                 .as_ref()
                 .map(|c| c.handshake_done)
                 .unwrap_or(false)
+    }
+
+    /// Refresh the `last_seen` clock of whichever member `conn` identifies. A
+    /// no-op if `conn` is not a member of this room.
+    fn touch_peer(&mut self, conn: ConnId, now: Instant) {
+        if self.host.conn == conn {
+            self.host.last_seen = now;
+        } else if let Some(c) = self.controller.as_mut() {
+            if c.conn == conn {
+                c.last_seen = now;
+            }
+        }
     }
 }
 
@@ -285,6 +303,7 @@ impl RoomRegistry {
                 conn: host_conn,
                 out: host_out,
                 handshake_done: false,
+                last_seen: now,
             },
             controller: None,
         };
@@ -338,9 +357,11 @@ impl RoomRegistry {
             conn: controller_conn,
             out: controller_out.clone(),
             handshake_done: false,
+            last_seen: now,
         });
         room.state = RoomState::Handshaking;
         room.last_activity = now;
+        room.host.last_seen = now;
         room.resume_token_hash = Some(resume_token_hash);
         room.resume_deadline = None;
         // Pair code is now consumed (one-time, BR-002).
@@ -390,10 +411,12 @@ impl RoomRegistry {
 
         // Re-attach the fresh Controller connection; both peers must re-handshake.
         room.host.handshake_done = false;
+        room.host.last_seen = now;
         room.controller = Some(Peer {
             conn: controller_conn,
             out: controller_out.clone(),
             handshake_done: false,
+            last_seen: now,
         });
         room.state = RoomState::Handshaking;
         room.resume_deadline = None;
@@ -441,6 +464,7 @@ impl RoomRegistry {
         if room.state != RoomState::Handshaking {
             return Some((room_id.to_string(), room.state == RoomState::Active));
         }
+        room.touch_peer(conn, now);
         if is_host {
             room.host.handshake_done = true;
         } else if let Some(c) = room.controller.as_mut() {
@@ -485,6 +509,7 @@ impl RoomRegistry {
             return None;
         }
         room.last_activity = now;
+        room.touch_peer(sender_conn, now);
 
         let mut sinks = Vec::new();
         if !is_host {
@@ -513,6 +538,7 @@ impl RoomRegistry {
             .unwrap_or(false);
         if is_host || is_ctrl {
             room.last_activity = now;
+            room.touch_peer(conn, now);
         }
     }
 
@@ -654,6 +680,71 @@ impl RoomRegistry {
         for id in to_close {
             let survivors = self.close_room(&id, None);
             out.push((id, survivors));
+        }
+        out
+    }
+
+    /// Detect peers that have gone silent past `liveness_timeout` — a half-open
+    /// drop (mobile network change, sleep) where TCP delivered no FIN/RST so the
+    /// relay's read loop never returned and `on_disconnect` never ran.
+    ///
+    /// This is the relay-authoritative counterpart to the clients' own watchdogs:
+    /// the relay is the only party that sees BOTH sockets, so it decides liveness
+    /// per peer. Because `last_seen` is per-peer (never the room-wide
+    /// `last_activity`), a present peer's own keepalive can never keep the room
+    /// "alive" while the other peer is actually dead — the bug where the Host
+    /// stayed "connected" after the Controller silently dropped.
+    ///
+    /// Mirrors [`Self::on_disconnect`] exactly:
+    /// - a silent **Controller** in an ACTIVE room → controller-away: the Host is
+    ///   notified `peer_left`, the room and its resume token survive for
+    ///   `reconnect_window` so the phone can `resume`;
+    /// - a silent **Host** → the room is closed and the Controller notified.
+    ///
+    /// Returns `(room_id, survivor sinks)` to receive `peer_left`.
+    pub fn sweep_peer_liveness(
+        &mut self,
+        now: Instant,
+        liveness_timeout: std::time::Duration,
+        reconnect_window: std::time::Duration,
+    ) -> Vec<(String, Vec<Outbound>)> {
+        // Collect decisions first; act after, so we never mutate while iterating.
+        let mut host_gone: Vec<(String, ConnId)> = Vec::new();
+        let mut ctrl_gone: Vec<(String, ConnId)> = Vec::new();
+        for room in self.rooms.values() {
+            if room.state != RoomState::Active {
+                continue;
+            }
+            // A Host silence closes the whole room, so check it first and skip the
+            // controller check for that room.
+            if now.duration_since(room.host.last_seen) >= liveness_timeout {
+                host_gone.push((room.room_id.clone(), room.host.conn));
+                continue;
+            }
+            if let Some(c) = room.controller.as_ref() {
+                if now.duration_since(c.last_seen) >= liveness_timeout {
+                    ctrl_gone.push((room.room_id.clone(), c.conn));
+                }
+            }
+        }
+
+        let mut out = Vec::new();
+        // Host gone → close the room; the Host is the originator (it's dead) so
+        // only the Controller is notified.
+        for (room_id, host_conn) in host_gone {
+            let survivors = self.close_room(&room_id, Some(host_conn));
+            out.push((room_id, survivors));
+        }
+        // Controller gone → controller-away: keep the room, open the resume
+        // window, notify the Host so it tears down its live view.
+        for (room_id, ctrl_conn) in ctrl_gone {
+            if let Some(room) = self.rooms.get_mut(&room_id) {
+                let host_out = room.host.out.clone();
+                room.controller = None;
+                room.resume_deadline = Some(now + reconnect_window);
+                self.conn_to_room.remove(&ctrl_conn);
+                out.push((room_id, vec![host_out]));
+            }
         }
         out
     }
@@ -1004,6 +1095,90 @@ mod tests {
         assert_eq!(survivors.len(), 1, "controller is notified peer_left");
         assert_eq!(reg.state_of(&room), None, "room closed when host drops");
         assert!(matches!(reg.resume(5200, 5201, 21, sink(), now), ResumeOutcome::Invalid));
+    }
+
+    #[test]
+    fn silent_controller_is_swept_to_away_and_host_notified() {
+        // Half-open drop: the Controller stops sending (no TCP close) while the
+        // Host keeps keepaliving. Per-peer liveness must still detect the dead
+        // Controller — the Host's own keepalive must NOT mask it (the "Host stuck
+        // connected" bug). Room is kept for resume; Host gets peer_left.
+        let mut reg = RoomRegistry::default();
+        let now = Instant::now();
+        let room = active_room(&mut reg, 70, 10, 20, 8000, now);
+        let liveness = Duration::from_secs(45);
+        let window = Duration::from_secs(60);
+
+        // Host keeps beating right up to the deadline; controller went silent at t0.
+        let almost = now + Duration::from_secs(44);
+        reg.touch(&room, 10, almost);
+        assert!(
+            reg.sweep_peer_liveness(almost, liveness, window).is_empty(),
+            "no drop before the controller's liveness deadline",
+        );
+
+        // Past the deadline: controller-away even though the Host is still live.
+        let past = now + Duration::from_secs(46);
+        reg.touch(&room, 10, past); // Host beats again — must not save the controller.
+        let dropped = reg.sweep_peer_liveness(past, liveness, window);
+        assert_eq!(dropped.len(), 1, "silent controller detected");
+        assert_eq!(dropped[0].0, room);
+        assert_eq!(dropped[0].1.len(), 1, "host is notified peer_left");
+        assert_eq!(reg.state_of(&room), Some(RoomState::Active), "room kept for resume");
+        assert!(reg.room_of(20).is_none(), "controller conn index cleared");
+
+        // The resume token still works within the window.
+        assert!(matches!(
+            reg.resume(8000, 8001, 21, sink(), past + Duration::from_secs(1)),
+            ResumeOutcome::Resumed { .. }
+        ));
+    }
+
+    #[test]
+    fn silent_host_is_swept_and_room_closed() {
+        // The Host vanished half-open. Per-peer liveness closes the room and
+        // notifies the Controller — the mirror of a Host TCP drop.
+        let mut reg = RoomRegistry::default();
+        let now = Instant::now();
+        let room = active_room(&mut reg, 71, 10, 20, 8100, now);
+        let liveness = Duration::from_secs(45);
+        let window = Duration::from_secs(60);
+
+        // Controller keeps beating; Host went silent at t0.
+        let past = now + Duration::from_secs(46);
+        reg.touch(&room, 20, past);
+        let dropped = reg.sweep_peer_liveness(past, liveness, window);
+        assert_eq!(dropped.len(), 1, "silent host detected");
+        assert_eq!(dropped[0].1.len(), 1, "controller is notified peer_left");
+        assert_eq!(reg.state_of(&room), None, "room closed when host is silent");
+        assert!(reg.room_of(10).is_none());
+        assert!(reg.room_of(20).is_none());
+    }
+
+    #[test]
+    fn peer_liveness_never_touches_a_healthy_or_non_active_room() {
+        let mut reg = RoomRegistry::default();
+        let now = Instant::now();
+        // ACTIVE but both peers beating right now → untouched.
+        let room = active_room(&mut reg, 72, 10, 20, 8200, now);
+        let liveness = Duration::from_secs(45);
+        let window = Duration::from_secs(60);
+        assert!(reg.sweep_peer_liveness(now, liveness, window).is_empty());
+        assert_eq!(reg.state_of(&room), Some(RoomState::Active));
+
+        // PENDING/HANDSHAKING rooms are governed by PAIR_TTL, not peer liveness.
+        let pending_room = pending(&mut reg, 73, 30, now, Duration::from_secs(60));
+        let later = now + Duration::from_secs(120);
+        // Keep the ACTIVE room genuinely healthy at `later` so it is not itself a
+        // liveness casualty — this test is about the PENDING room being ignored.
+        reg.touch(&room, 10, later);
+        reg.touch(&room, 20, later);
+        assert!(
+            reg.sweep_peer_liveness(later, liveness, window).is_empty(),
+            "peer liveness ignores non-ACTIVE rooms",
+        );
+        assert_eq!(reg.state_of(&pending_room), Some(RoomState::PendingPair));
+        assert_eq!(reg.state_of(&room), Some(RoomState::Active));
     }
 
     #[test]

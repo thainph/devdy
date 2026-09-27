@@ -41,8 +41,23 @@ const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
 
 /// Heartbeat cadence to the relay. Well under the typical 60 s idle cutoff of
-/// proxies/load-balancers so an idle (post-run) socket is never reaped.
-const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
+/// proxies/load-balancers so an idle (post-run) socket is never reaped. Matched
+/// to the Controller's 15 s cadence so both liveness watchdogs share the same
+/// arithmetic (2 missed beats + slack).
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
+
+/// Zombie-socket watchdog. The relay echoes every keepalive, so a live host↔relay
+/// socket receives an inbound frame at least every [`KEEPALIVE_INTERVAL`]. If
+/// nothing arrives for this long the socket has gone half-open (proxy idle-reap,
+/// laptop sleep, network change) with no TCP close — the read stream would
+/// otherwise block forever and the Host would sit falsely "connected" while the
+/// relay has already told the Controller `peer_left`. This is the Host-side
+/// mirror of the Controller's `LIVENESS_TIMEOUT_MS`.
+const LIVENESS_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// How often the liveness watchdog checks the inbound clock. Small relative to
+/// [`LIVENESS_TIMEOUT`] so detection latency is close to the timeout itself.
+const LIVENESS_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Sliding idle window for a remote session token: 3 hours of inactivity.
 pub const IDLE_TTL_SECS: u64 = 3 * 3600;
@@ -93,6 +108,9 @@ pub struct AgentDeps {
     pub bound: Arc<TokioMutex<Option<BoundSession>>>,
     /// Whether a relay connection is currently up + authenticated.
     pub connected: Arc<std::sync::atomic::AtomicBool>,
+    /// Whether the host↔relay socket is down and the agent is retrying (backoff),
+    /// surfaced to the desktop badge as "reconnecting…".
+    pub reconnecting: Arc<std::sync::atomic::AtomicBool>,
     /// Room ids the Owner asked to revoke (teardown / supersede). The agent
     /// drains this and sends a `revoke{room_id}` to the relay.
     pub revoke_queue: Arc<TokioMutex<Vec<String>>>,
@@ -125,6 +143,9 @@ pub async fn run_agent(
             ConnectOutcome::Stopped => break,
             ConnectOutcome::Disconnected => {
                 deps.connected.store(false, Ordering::SeqCst);
+                // The socket is down and we're about to wait+retry — surface this
+                // as "reconnecting…" on the desktop (cleared once we reconnect).
+                deps.reconnecting.store(true, Ordering::SeqCst);
                 if started.elapsed() > Duration::from_secs(30) {
                     backoff = BACKOFF_MIN;
                 }
@@ -138,6 +159,7 @@ pub async fn run_agent(
         }
     }
     deps.connected.store(false, Ordering::SeqCst);
+    deps.reconnecting.store(false, Ordering::SeqCst);
     tracing::info!(event = "remote_agent_stopped");
 }
 
@@ -161,6 +183,8 @@ async fn connect_once(
         }
     };
     tracing::info!(event = "remote_connected", url = %config.relay_url);
+    // Socket is back up; leave "reconnecting" even before a controller authenticates.
+    deps.reconnecting.store(false, Ordering::SeqCst);
 
     let (mut sink, mut stream) = ws.split();
 
@@ -222,6 +246,13 @@ async fn connect_once(
     let mut keepalive = tokio::time::interval(KEEPALIVE_INTERVAL);
     keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+    // Zombie-socket watchdog: the relay echoes every keepalive, so any live socket
+    // delivers an inbound frame within KEEPALIVE_INTERVAL. `last_inbound` is primed
+    // to now (the socket just connected) so the check measures silence from here.
+    let mut last_inbound = Instant::now();
+    let mut liveness = tokio::time::interval(LIVENESS_CHECK_INTERVAL);
+    liveness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
     let result = loop {
         tokio::select! {
             _ = stop.changed() => {
@@ -230,6 +261,20 @@ async fn connect_once(
             _ = keepalive.tick() => {
                 let room_id = room_ctx.as_ref().map(|c| c.room_id.clone()).unwrap_or_default();
                 if out_tx.send(Envelope::keepalive(room_id)).is_err() {
+                    break ConnectOutcome::Disconnected;
+                }
+            }
+            _ = liveness.tick() => {
+                // No inbound frame (not even the relay's keepalive echo) for the
+                // whole window ⇒ the socket is half-open. Drop it so the reconnect
+                // loop dials a fresh one; this also flips `connected` to false so
+                // the UI stops lying, and re-announces the rendezvous on reconnect
+                // so the Controller can resume.
+                if last_inbound.elapsed() >= LIVENESS_TIMEOUT {
+                    tracing::warn!(
+                        event = "remote_liveness_timeout",
+                        silent_secs = last_inbound.elapsed().as_secs(),
+                    );
                     break ConnectOutcome::Disconnected;
                 }
             }
@@ -248,6 +293,9 @@ async fn connect_once(
                         break ConnectOutcome::Disconnected;
                     }
                 };
+                // Any inbound frame — including the relay's keepalive echo and
+                // WS ping/pong — proves the socket is alive; refresh the watchdog.
+                last_inbound = Instant::now();
                 let text = match msg {
                     Message::Text(t) => t,
                     Message::Close(_) => break ConnectOutcome::Disconnected,
