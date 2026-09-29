@@ -20,12 +20,53 @@ function encodeHeader(value) {
   return /^[\x00-\x7F]*$/.test(value) ? value : `=?UTF-8?B?${Buffer.from(value, 'utf8').toString('base64')}?=`;
 }
 
+/** Split a comma-separated address list, respecting quotes and <...> so a comma
+ *  inside a quoted display name doesn't split an address. */
+function splitAddresses(value) {
+  const out = [];
+  let cur = '';
+  let inQuote = false;
+  let inAngle = false;
+  for (const ch of value) {
+    if (ch === '"' && !inAngle) inQuote = !inQuote;
+    else if (ch === '<' && !inQuote) inAngle = true;
+    else if (ch === '>' && !inQuote) inAngle = false;
+    if (ch === ',' && !inQuote && !inAngle) {
+      out.push(cur);
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur.trim()) out.push(cur);
+  return out;
+}
+
+/** RFC 2047-encode the display-name part of each address in a list, leaving the
+ *  <addr> untouched. Non-ASCII names (e.g. "Huyền Nguyễn") would otherwise land
+ *  raw in the header and be mis-decoded into mojibake by the receiving client. */
+function encodeAddressList(value) {
+  if (!value) return value;
+  return splitAddresses(value)
+    .map((raw) => {
+      const addr = raw.trim();
+      if (!addr) return '';
+      const m = addr.match(/^(.*?)\s*<([^>]+)>$/);
+      if (!m) return addr; // bare email address, no display name
+      const name = m[1].trim().replace(/^"(.*)"$/, '$1');
+      const email = m[2].trim();
+      return name ? `${encodeHeader(name)} <${email}>` : `<${email}>`;
+    })
+    .filter(Boolean)
+    .join(', ');
+}
+
 /** Build a raw RFC 822 message and base64url-encode it for the Gmail API. */
 function buildRaw({ to, cc, bcc, subject, body, headers = {} }) {
   const lines = [];
-  if (to) lines.push(`To: ${to}`);
-  if (cc) lines.push(`Cc: ${cc}`);
-  if (bcc) lines.push(`Bcc: ${bcc}`);
+  if (to) lines.push(`To: ${encodeAddressList(to)}`);
+  if (cc) lines.push(`Cc: ${encodeAddressList(cc)}`);
+  if (bcc) lines.push(`Bcc: ${encodeAddressList(bcc)}`);
   lines.push(`Subject: ${encodeHeader(subject || '')}`);
   for (const [k, v] of Object.entries(headers)) if (v) lines.push(`${k}: ${v}`);
   lines.push('MIME-Version: 1.0');
