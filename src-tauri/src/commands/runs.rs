@@ -2006,6 +2006,7 @@ pub async fn rerun_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord, S
         title: None,
         pinned: false,
         role: None,
+        conductor_run_id: None,
     })
 }
 
@@ -2088,6 +2089,7 @@ pub async fn create_handoff_run(
             title: src.title,
             pinned: false,
             role: None,
+            conductor_run_id: None,
         },
         context_path,
     })
@@ -2141,6 +2143,7 @@ pub async fn create_session_run(
         title: None,
         pinned: false,
         role: None,
+        conductor_run_id: None,
     })
 }
 
