@@ -42,6 +42,11 @@ pub struct RunRecord {
     /// Lets the History list flag conductors without a per-row lookup.
     #[serde(default)]
     pub role: Option<String>,
+    /// Id of the conductor run that spawned this session, when it is a worker.
+    /// `None` for standalone sessions, conductors, and issue/PR runs. Lets the
+    /// History list nest workers under their conductor without a per-row lookup.
+    #[serde(default)]
+    pub conductor_run_id: Option<String>,
 }
 
 /// Repo identity loaded from the `repos` row, used to branch fetch by provider
@@ -330,6 +335,7 @@ pub async fn fetch_issue(
         title: None,
         pinned: false,
         role: None,
+        conductor_run_id: None,
     })
 }
 
@@ -672,6 +678,7 @@ pub async fn fetch_pr(
         title: None,
         pinned: false,
         role: None,
+        conductor_run_id: None,
     })
 }
 
@@ -814,6 +821,7 @@ pub async fn refetch_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord,
         title: row.get("title"),
         pinned: row.get::<i64, _>("pinned") != 0,
         role: None,
+        conductor_run_id: None,
     })
 }
 
@@ -837,11 +845,11 @@ pub async fn list_runs(
     // reports as `last_activity_at`, so the list and the timestamp the UI prints
     // can never disagree.
     let rows = sqlx::query(
-        "SELECT id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, session_id, claude_account_id, started_at, finished_at, created_at, title, pinned, role,
+        "SELECT id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, session_id, claude_account_id, started_at, finished_at, created_at, title, pinned, role, conductor_run_id,
                 COALESCE(last_activity_at, finished_at, started_at, created_at) AS last_activity_at
          FROM runs WHERE project_id = ?
          ORDER BY pinned DESC, COALESCE(last_activity_at, finished_at, started_at, created_at) DESC
-         LIMIT 50"
+         LIMIT 500"
     )
     .bind(&project_id)
     .fetch_all(db.inner())
@@ -867,6 +875,7 @@ pub async fn list_runs(
         title: row.get("title"),
         pinned: row.get::<i64, _>("pinned") != 0,
         role: row.get("role"),
+        conductor_run_id: row.get("conductor_run_id"),
     }).collect())
 }
 

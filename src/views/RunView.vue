@@ -756,6 +756,102 @@ const filteredRuns = computed(() => {
   })
 })
 
+// ── History grouping (conductor → workers) ─────────────────────────────────
+// A worker session (run.conductor_run_id set) is nested under its conductor so
+// the flat History list isn't cluttered by every spawned worker. Grouping is
+// purely a display concern — every row still acts on its own run.id.
+//
+// One display row, flat for rendering, tagged with the metadata the template
+// needs (nesting depth, chevron, worker count). Workers only appear when their
+// conductor is expanded (or while searching — see below).
+interface DisplayRun {
+  run: RunRecord
+  // True for a conductor that owns at least one worker in the current list.
+  isGroup: boolean
+  // Total workers owned by this conductor (across the full list, not just the
+  // filtered slice), shown as a badge on the header.
+  workerCount: number
+  // True when this row is a worker rendered nested under its conductor.
+  isWorker: boolean
+  // For a group header: whether its workers are currently shown.
+  expanded: boolean
+}
+
+// Which conductors are expanded. In-memory only — resets each session by design.
+const expandedConductors = ref<Set<string>>(new Set())
+function toggleConductor(id: string) {
+  const next = new Set(expandedConductors.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  expandedConductors.value = next
+}
+
+// Flattened, grouped view of `filteredRuns`. Top-level order follows the store's
+// sort (a conductor keeps its own activity position, decision: workers never
+// pull their parent up); a conductor's workers are emitted right after it in
+// their filtered order. A worker whose conductor isn't in the list falls back to
+// a top-level row. While searching, every group auto-expands so matches nested
+// inside a collapsed conductor stay visible.
+const displayRuns = computed<DisplayRun[]>(() => {
+  const rows = filteredRuns.value
+  const searching = sessionSearch.value.trim().length > 0
+
+  // Conductors present in the filtered list, and their workers (filtered order).
+  const conductorIds = new Set(
+    rows.filter((r) => r.role === 'conductor').map((r) => r.id),
+  )
+  const workersByParent = new Map<string, RunRecord[]>()
+  for (const r of rows) {
+    const parent = r.conductor_run_id
+    if (parent && conductorIds.has(parent)) {
+      const list = workersByParent.get(parent) ?? []
+      list.push(r)
+      workersByParent.set(parent, list)
+    }
+  }
+
+  // Accurate worker totals come from the full list, not the filtered slice.
+  const totalWorkerCount = new Map<string, number>()
+  for (const r of runsStore.runs) {
+    if (r.conductor_run_id) {
+      totalWorkerCount.set(
+        r.conductor_run_id,
+        (totalWorkerCount.get(r.conductor_run_id) ?? 0) + 1,
+      )
+    }
+  }
+
+  const out: DisplayRun[] = []
+  for (const run of rows) {
+    // Workers owned by a listed conductor are emitted under that conductor, not
+    // at the top level.
+    if (run.conductor_run_id && conductorIds.has(run.conductor_run_id)) continue
+
+    if (run.role === 'conductor') {
+      const workers = workersByParent.get(run.id) ?? []
+      const isGroup = workers.length > 0
+      const expanded = isGroup && (searching || expandedConductors.value.has(run.id))
+      out.push({
+        run,
+        isGroup,
+        workerCount: totalWorkerCount.get(run.id) ?? workers.length,
+        isWorker: false,
+        expanded,
+      })
+      if (expanded) {
+        for (const w of workers) {
+          out.push({ run: w, isGroup: false, workerCount: 0, isWorker: true, expanded: false })
+        }
+      }
+      continue
+    }
+
+    // Ordinary session / issue / PR, or an orphan worker (conductor not listed).
+    out.push({ run, isGroup: false, workerCount: 0, isWorker: false, expanded: false })
+  }
+  return out
+})
+
 // A run awaiting a permission / question response (front of its live queue), or
 // undefined. Drives the animated attention icon in the History list so the user
 // knows which run needs them without a floating toast.
@@ -3286,12 +3382,19 @@ function handleRefInput(val: string) {
             </div>
             <div
               v-else
-              v-for="run in filteredRuns"
+              v-for="{ run, isGroup, workerCount, isWorker, expanded } in displayRuns"
               :key="run.id"
               :data-run-id="run.id"
               class="group relative border-b border-border/30 transition-colors hover:bg-accent/40 focus-within:bg-accent/40"
-              :class="{ 'bg-accent/60': currentRunId === run.id }"
+              :class="{ 'bg-accent/60': currentRunId === run.id, 'bg-muted/20': isWorker }"
             >
+              <!-- Worker rows nest under their conductor: a guide rail marks the
+                   parent relationship. -->
+              <span
+                v-if="isWorker"
+                class="absolute left-4 inset-y-0 w-px bg-border/60"
+                aria-hidden="true"
+              />
               <!-- Selected indicator bar -->
               <span
                 v-if="currentRunId === run.id"
@@ -3299,10 +3402,31 @@ function handleRefInput(val: string) {
               />
               <button
                 class="w-full text-left px-3 py-3 cursor-pointer rounded-sm focus:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+                :class="isWorker ? 'pl-8' : ''"
                 @click="loadRunLog(run.id)"
               >
                 <!-- Title + status -->
                 <div class="flex items-center gap-2">
+                  <!-- Conductor group toggle: collapses/expands its worker rows.
+                       A span (not a nested button) with @click.stop so tapping it
+                       never opens the conductor session. -->
+                  <span
+                    v-if="isGroup"
+                    role="button"
+                    tabindex="0"
+                    class="flex h-4 w-4 shrink-0 items-center justify-center -ml-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent cursor-pointer"
+                    :aria-label="expanded ? t('conductor.collapse') : t('conductor.expand')"
+                    :aria-expanded="expanded"
+                    @click.stop.prevent="toggleConductor(run.id)"
+                    @keyup.enter.stop.prevent="toggleConductor(run.id)"
+                    @keyup.space.stop.prevent="toggleConductor(run.id)"
+                  >
+                    <ChevronRight
+                      class="h-3.5 w-3.5 transition-transform"
+                      :class="{ 'rotate-90': expanded }"
+                      :stroke-width="2"
+                    />
+                  </span>
                   <component
                     :is="runIcon(run)"
                     class="h-4 w-4 shrink-0"
@@ -3317,6 +3441,15 @@ function handleRefInput(val: string) {
                     :aria-label="t('run.pinned')"
                   />
                   <span class="flex-1 min-w-0 truncate text-[13px] font-medium leading-tight" :title="runLabel(run)">{{ runLabel(run) }}</span>
+                  <!-- Worker count for a conductor group. -->
+                  <span
+                    v-if="isGroup"
+                    class="shrink-0 flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-primary/10 text-primary text-[9px] font-medium"
+                    :title="t('conductor.workerCountShort', { n: workerCount })"
+                  >
+                    <Network class="h-2.5 w-2.5" :stroke-width="2" />
+                    {{ workerCount }}
+                  </span>
                   <!-- Remote-control marker: a phone is driving (green, pulsing) or
                        a link is waiting for one (amber) on THIS session. Lets the
                        user spot the remotely-controlled session in the list. -->

@@ -79,6 +79,12 @@ export interface RunRecord {
    * conductor without a per-row lookup.
    */
   role?: string | null
+  /**
+   * Id of the conductor run that spawned this session, when it is a worker.
+   * null/undefined for standalone sessions, conductors, and issue/PR runs. Lets
+   * the History list nest workers under their conductor.
+   */
+  conductor_run_id?: string | null
 }
 
 /**
