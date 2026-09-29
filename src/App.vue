@@ -98,6 +98,18 @@ if (isSessionWindow && SESSION_WINDOW_RUN_ID) {
   )
 }
 
+// Main window owns the menu-bar badge (the running-session count). Refresh the
+// tray whenever that count changes so the badge tracks sessions starting and
+// finishing, even for runs that were never popped out into their own window.
+if (!isPopoutWindow && !isSessionWindow) {
+  watch(
+    () => live.runningIds.length,
+    () => {
+      void refreshTray()
+    },
+  )
+}
+
 const isRunRoute = computed(
   () => route.name === 'project-run' || route.name === 'project-run-detail',
 )

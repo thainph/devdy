@@ -6,6 +6,7 @@
 // One window per file (deduped by a deterministic label) — opening the same file
 // again just focuses the existing window.
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
+import { trackWindowForTray } from '@/lib/tray'
 
 // Small deterministic string hash (djb2) → safe, stable window label per file.
 function hashLabel(s: string): string {
@@ -59,4 +60,5 @@ export async function openFileWindow(
   win.once('tauri://error', (e) => {
     console.error('[fileWindow] failed to open viewer window', e)
   })
+  trackWindowForTray(win)
 }

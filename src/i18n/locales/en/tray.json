@@ -1,5 +1,9 @@
 {
   "mainWindow": "Devdy — Main Window",
   "quit": "Quit Devdy",
-  "untitledSession": "Untitled Session"
+  "untitledSession": "Untitled Session",
+  "fileWindow": "File Viewer",
+  "ganttWindow": "Gantt",
+  "newItem": "New Item",
+  "editItem": "Item Editor"
 }

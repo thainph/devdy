@@ -17,7 +17,7 @@
 // per-run events. Closing the MAIN window still tears every popout down and kills
 // the sidecars (see src-tauri/src/lib.rs).
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
-import { refreshTray } from '@/lib/tray'
+import { trackWindowForTray } from '@/lib/tray'
 
 // Small deterministic string hash (djb2) → a stable, label-safe window id per run.
 function hashLabel(s: string): string {
@@ -68,13 +68,8 @@ export async function openSessionWindow(
     console.error('[sessionWindow] failed to open window', e)
   })
   // Keep the menu-bar switcher in sync as this window comes and goes. The window
-  // sets its own OS title from the run name (App.vue), which refreshes the tray
-  // again once that lands — this just covers the open/close edges.
-  win.once('tauri://created', () => {
-    void refreshTray()
-  })
-  win.once('tauri://destroyed', () => {
-    void refreshTray()
-  })
+  // also sets its own OS title from the run name (App.vue), which refreshes the
+  // tray again once that lands — this just covers the open/close edges.
+  trackWindowForTray(win)
   return win
 }

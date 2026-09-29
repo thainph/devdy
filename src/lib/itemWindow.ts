@@ -19,6 +19,7 @@
 // buffered.
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { emit, listen } from '@tauri-apps/api/event'
+import { trackWindowForTray } from '@/lib/tray'
 
 export type ItemKind = 'todo' | 'note'
 export type ItemWindowMode = 'create' | 'edit'
@@ -146,6 +147,7 @@ export async function openItemCreateWindow(
   win.once('tauri://error', (e) => {
     console.error('[itemWindow] failed to open create window', e)
   })
+  trackWindowForTray(win)
 
   if (awaitReady) {
     await awaitReady()
@@ -181,5 +183,6 @@ export async function openItemEditWindow(
   win.once('tauri://error', (e) => {
     console.error('[itemWindow] failed to open edit window', e)
   })
+  trackWindowForTray(win)
   return win
 }

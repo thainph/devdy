@@ -7,6 +7,7 @@
 // and switches it to the requested project.
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { emit } from '@tauri-apps/api/event'
+import { trackWindowForTray } from '@/lib/tray'
 
 const GANTT_WINDOW_LABEL = 'gantt'
 
@@ -38,5 +39,6 @@ export async function openGanttWindow(projectId?: string): Promise<WebviewWindow
   win.once('tauri://error', (e) => {
     console.error('[ganttWindow] failed to open window', e)
   })
+  trackWindowForTray(win)
   return win
 }

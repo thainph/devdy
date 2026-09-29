@@ -44,6 +44,14 @@ pub enum TrayItem {
 #[derive(Debug, Deserialize)]
 pub struct TraySpec {
     items: Vec<TrayItem>,
+    /// Text shown next to the menu-bar glyph (macOS) — the count of running
+    /// sessions, including ones not popped out into their own window. Only the
+    /// main window sends this; other windows omit it so they don't clobber the
+    /// count. The double Option lets serde tell "key absent" (outer `None` →
+    /// leave the title untouched) from "present but empty" (`Some(Some(""))` →
+    /// clear back to icon-only).
+    #[serde(default)]
+    title: Option<Option<String>>,
 }
 
 /// Build a Tauri menu from the frontend spec.
@@ -130,6 +138,13 @@ pub fn set_tray_menu<R: Runtime>(app: AppHandle<R>, spec: TraySpec) -> Result<()
     let menu = build_menu(&app, &spec)?;
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
+        // Only touch the title when the frontend actually sent one (outer Some);
+        // an empty string collapses back to icon-only, a non-empty one shows the
+        // running-session count beside the glyph.
+        if let Some(title) = &spec.title {
+            let title = title.as_deref().filter(|t| !t.is_empty());
+            tray.set_title(title).map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
 }
