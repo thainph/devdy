@@ -91,6 +91,8 @@
   "refetchIssue": "Fetch lại nội dung issue này từ GitHub (giữ nguyên kết quả AI)",
   "refetchPr": "Fetch lại nội dung PR này từ GitHub (giữ nguyên kết quả AI)",
   "copyLogPath": "Sao chép đường dẫn file log",
+  "copySessionId": "Sao chép ID session",
+  "sessionIdCopied": "Đã sao chép ID session",
   "viewLogFile": "Xem file log",
   "moreActions": "Thao tác khác",
   "rename": "Đổi tên",

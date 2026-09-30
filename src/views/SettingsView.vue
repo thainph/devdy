@@ -6,7 +6,7 @@ import {
   Cpu, Palette, FileText, ShieldAlert, Sparkles, Github, Gitlab, Cloud,
   CheckCircle2, AlertTriangle, Trash2, Plus, Pencil, Gauge, Radio,
   RefreshCw, Loader2, BadgeCheck, Server, HardDrive, Bot, RotateCcw, UserCircle,
-  LogIn, Star,
+  LogIn, Star, ChevronDown,
 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
@@ -20,7 +20,8 @@ import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useGithubAccountsStore, type PatValidation } from '@/stores/githubAccounts'
 import { useGitlabAccountsStore, type GitlabPatValidation } from '@/stores/gitlabAccounts'
-import { useAwsAccountsStore, isSsoLoginRequired, type AwsAccountPayload, type AwsAuthMethod, type AwsValidation } from '@/stores/awsAccounts'
+import { useAwsAccountsStore, isSsoLoginRequired, type AwsAccountPayload, type AwsProfileInfo, type AwsValidation } from '@/stores/awsAccounts'
+import AwsProfilePicker from '@/components/AwsProfilePicker.vue'
 import { useClaudeAccountsStore, type ClaudeValidation } from '@/stores/claudeAccounts'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useMascotLevelStore } from '@/stores/mascotLevel'
@@ -32,7 +33,7 @@ import { useBudgetStore } from '@/stores/budget'
 import { useModelCatalogStore } from '@/stores/modelCatalog'
 import { MODEL_OPTIONS, withCurrentModel } from '@/lib/engineOptions'
 import {
-  type SavedPrompt, newPromptId, parseSavedPrompts, serializeSavedPrompts,
+  type SavedPrompt, newPromptId, parseSavedPrompts, serializeSavedPrompts, promptLabel,
 } from '@/lib/savedPrompts'
 
 const { t, locale } = useI18n()
@@ -760,28 +761,10 @@ async function handleDeleteGitlabAccount(id: string) {
   }
 }
 
-// --- AWS accounts (mirror of Git account management, with keys/profile auth) ---
+// --- AWS accounts (profile/SSO only) ---
 const awsStore = useAwsAccountsStore()
-const AWS_AUTH_OPTIONS = computed<{ value: AwsAuthMethod; label: string }[]>(() => [
-  { value: 'keys', label: t('settings.aws.authKeys') },
-  { value: 'profile', label: t('settings.aws.authProfile') },
-])
-const awsNewLabel = ref('')
-const awsNewAuthMethod = ref<AwsAuthMethod>('keys')
-const awsNewRegion = ref('ap-northeast-1')
-const awsNewAccessKeyId = ref('')
-const awsNewSecretAccessKey = ref('')
-const awsNewSessionToken = ref('')
-const awsNewProfileName = ref('')
-const awsNewTags = ref('')
-const awsAdding = ref(false)
-const awsAddError = ref<string | null>(null)
 const awsEditLabel = ref<Record<string, string>>({})
-const awsEditAuthMethod = ref<Record<string, AwsAuthMethod>>({})
 const awsEditRegion = ref<Record<string, string>>({})
-const awsEditAccessKeyId = ref<Record<string, string>>({})
-const awsEditSecretAccessKey = ref<Record<string, string>>({})
-const awsEditSessionToken = ref<Record<string, string>>({})
 const awsEditProfileName = ref<Record<string, string>>({})
 const awsEditTags = ref<Record<string, string>>({})
 const awsEditing = ref<string | null>(null)
@@ -791,87 +774,93 @@ const awsBusyAccount = ref<string | null>(null)
 // Accounts whose last validation failed because their SSO token needs refreshing.
 const awsSsoLoginNeeded = ref<Record<string, boolean>>({})
 
-function maskAccessKey(value: string | null): string {
-  if (!value) return ''
-  if (value.length <= 8) return value
-  return `${value.slice(0, 4)}…${value.slice(-4)}`
-}
+// Local ~/.aws profiles available to add, one click each.
+const awsProfiles = ref<AwsProfileInfo[]>([])
+const awsProfilesLoading = ref(false)
+const awsAddError = ref<string | null>(null)
+const awsAddingProfile = ref<string | null>(null) // profile name currently being added
+const awsSsoLoginProfile = ref<string | null>(null) // profile whose token needs a refresh
 
-function awsPayloadFromNew() {
-  return {
-    label: awsNewLabel.value.trim(),
-    authMethod: awsNewAuthMethod.value,
-    region: awsNewRegion.value.trim(),
-    accessKeyId: awsNewAccessKeyId.value.trim(),
-    secretAccessKey: awsNewSecretAccessKey.value.trim(),
-    sessionToken: awsNewSessionToken.value.trim(),
-    profileName: awsNewProfileName.value.trim(),
-    tags: awsNewTags.value.trim(),
-  }
-}
-
-function awsPayloadForEdit(id: string) {
-  const payload: AwsAccountPayload = {
-    label: awsEditLabel.value[id]?.trim() || '',
-    authMethod: awsEditAuthMethod.value[id],
-    region: awsEditRegion.value[id]?.trim() || 'ap-northeast-1',
-    accessKeyId: awsEditAccessKeyId.value[id]?.trim(),
-    profileName: awsEditProfileName.value[id]?.trim(),
-    tags: awsEditTags.value[id]?.trim(),
-  }
-  const secretAccessKey = awsEditSecretAccessKey.value[id]?.trim() || ''
-  const sessionToken = awsEditSessionToken.value[id]?.trim() || ''
-  if (secretAccessKey) {
-    payload.secretAccessKey = secretAccessKey
-    payload.sessionToken = sessionToken
-  } else if (sessionToken) {
-    payload.sessionToken = sessionToken
-  }
-  return payload
-}
-
-const canAddAwsAccount = computed(() => {
-  if (!awsNewLabel.value.trim() || !awsNewRegion.value.trim()) return false
-  if (awsNewAuthMethod.value === 'keys') {
-    return !!awsNewAccessKeyId.value.trim() && !!awsNewSecretAccessKey.value.trim()
-  }
-  return !!awsNewProfileName.value.trim()
-})
-
-async function handleAddAwsAccount() {
-  if (!canAddAwsAccount.value) return
-  awsAdding.value = true
-  awsAddError.value = null
+async function loadAwsProfiles() {
+  awsProfilesLoading.value = true
   try {
-    await awsStore.create(awsPayloadFromNew())
-    awsNewLabel.value = ''
-    awsNewAccessKeyId.value = ''
-    awsNewSecretAccessKey.value = ''
-    awsNewSessionToken.value = ''
-    awsNewProfileName.value = ''
-    awsNewTags.value = ''
-    toast.success(t('settings.github.accountAdded'))
+    awsProfiles.value = await awsStore.listProfiles()
   } catch (e) {
     awsAddError.value = String(e)
   } finally {
-    awsAdding.value = false
+    awsProfilesLoading.value = false
   }
 }
 
-function startAwsEdit(acc: { id: string; label: string; auth_method: AwsAuthMethod; region: string; access_key_id: string | null; profile_name: string | null; tags: string | null }) {
-  awsEditing.value = acc.id
-  awsEditLabel.value[acc.id] = acc.label
-  awsEditAuthMethod.value[acc.id] = acc.auth_method
-  awsEditRegion.value[acc.id] = acc.region
-  awsEditAccessKeyId.value[acc.id] = acc.access_key_id ?? ''
-  awsEditSecretAccessKey.value[acc.id] = ''
-  awsEditSessionToken.value[acc.id] = ''
-  awsEditProfileName.value[acc.id] = acc.profile_name ?? ''
-  awsEditTags.value[acc.id] = acc.tags ?? ''
+// Profiles not already linked (compared by profile name).
+const addableAwsProfiles = computed(() => {
+  const used = new Set(awsStore.accounts.map((a) => a.profile_name).filter(Boolean))
+  return awsProfiles.value.filter((p) => !used.has(p.name))
+})
+
+function awsProfileCaption(p: AwsProfileInfo): string {
+  const parts: string[] = []
+  if (p.isSso) {
+    parts.push(p.ssoRoleName ?? 'SSO')
+    if (p.ssoAccountId) parts.push(p.ssoAccountId)
+  } else {
+    parts.push(t('settings.aws.profileNonSso'))
+  }
+  if (p.region) parts.push(p.region)
+  return parts.join(' · ')
 }
 
-function setAwsEditAuthMethod(id: string, value: string) {
-  awsEditAuthMethod.value[id] = value === 'profile' ? 'profile' : 'keys'
+async function handleQuickAddProfile(p: AwsProfileInfo) {
+  awsAddingProfile.value = p.name
+  awsAddError.value = null
+  awsSsoLoginProfile.value = null
+  try {
+    await awsStore.create({ label: p.name, region: p.region ?? undefined, profileName: p.name })
+    toast.success(t('settings.github.accountAdded'))
+  } catch (e) {
+    if (isSsoLoginRequired(e)) awsSsoLoginProfile.value = p.name
+    else awsAddError.value = String(e)
+  } finally {
+    awsAddingProfile.value = null
+  }
+}
+
+// The profile's SSO token expired → run `aws sso login`, then retry the add.
+async function handleQuickAddSsoLogin(p: AwsProfileInfo) {
+  awsAddingProfile.value = p.name
+  awsAddError.value = null
+  try {
+    await awsStore.ssoLoginProfile(p.name)
+    awsSsoLoginProfile.value = null
+    await awsStore.create({ label: p.name, region: p.region ?? undefined, profileName: p.name })
+    toast.success(t('settings.github.accountAdded'))
+  } catch (e) {
+    if (isSsoLoginRequired(e)) awsSsoLoginProfile.value = p.name
+    else awsAddError.value = String(e)
+  } finally {
+    awsAddingProfile.value = null
+  }
+}
+
+function awsPayloadForEdit(id: string): AwsAccountPayload {
+  return {
+    label: awsEditLabel.value[id]?.trim() || '',
+    region: awsEditRegion.value[id]?.trim() || 'ap-northeast-1',
+    profileName: awsEditProfileName.value[id]?.trim(),
+    tags: awsEditTags.value[id]?.trim(),
+  }
+}
+function onAwsEditProfilePicked(id: string, p: AwsProfileInfo) {
+  if (p.region) awsEditRegion.value[id] = p.region
+  if (!awsEditLabel.value[id]?.trim()) awsEditLabel.value[id] = p.name
+}
+
+function startAwsEdit(acc: { id: string; label: string; region: string; profile_name: string | null; tags: string | null }) {
+  awsEditing.value = acc.id
+  awsEditLabel.value[acc.id] = acc.label
+  awsEditRegion.value[acc.id] = acc.region
+  awsEditProfileName.value[acc.id] = acc.profile_name ?? ''
+  awsEditTags.value[acc.id] = acc.tags ?? ''
 }
 
 async function handleSaveAwsEdit(id: string) {
@@ -1051,6 +1040,7 @@ onMounted(async () => {
     await ghStore.fetch()
     await glStore.fetch()
     await awsStore.fetch()
+    loadAwsProfiles()
     await claudeStore.fetch()
     await loadGoogleStatus()
     budget.refresh()
@@ -1129,12 +1119,32 @@ watch(savedPrompts, () => {
   savedPromptsTimer = setTimeout(flushSavedPrompts, SAVED_PROMPTS_DEBOUNCE_MS)
 }, { deep: true })
 
+// Library items render as a collapsed list and expand only when clicked, so a
+// long library stays scannable. Only one row is open at a time.
+const expandedPromptId = ref<string | null>(null)
+
+function togglePrompt(id: string) {
+  expandedPromptId.value = expandedPromptId.value === id ? null : id
+}
+
 function addSavedPrompt() {
-  savedPrompts.value.push({ id: newPromptId(), title: '', body: '' })
+  const id = newPromptId()
+  savedPrompts.value.push({ id, title: '', body: '' })
+  expandedPromptId.value = id // open the empty row so it can be filled in
 }
 
 function removeSavedPrompt(id: string) {
   savedPrompts.value = savedPrompts.value.filter((p) => p.id !== id)
+  if (expandedPromptId.value === id) expandedPromptId.value = null
+}
+
+// ── GitHub action prompts ──────────────────────────────────────────────────
+// The analyze/review fields customize the prompt used by the "Analyze issue" /
+// "Review PR" GitHub actions. An empty value is stored as-is; the backend then
+// falls back to its built-in default (see runs.rs), so clearing a field simply
+// restores the default behaviour.
+function clearActionPrompt(field: 'analyze_issue_prompt' | 'review_pr_prompt') {
+  settings.value[field] = ''
 }
 
 async function persistChanges() {
@@ -2158,11 +2168,9 @@ watch(() => settings.value.language, (v) => {
                     <div class="min-w-0">
                       <div class="text-sm font-medium truncate">{{ acc.label }}</div>
                       <div class="text-[11px] text-muted-foreground truncate">
-                        <span class="uppercase">{{ acc.auth_method }}</span>
+                        <span v-if="acc.profile_name" class="font-mono">{{ acc.profile_name }}</span>
                         <span> · {{ acc.region }}</span>
                         <span v-if="acc.account_id"> · {{ acc.account_id }}</span>
-                        <span v-if="acc.auth_method === 'keys' && acc.access_key_id"> · {{ maskAccessKey(acc.access_key_id) }}</span>
-                        <span v-if="acc.auth_method === 'profile' && acc.profile_name"> · {{ acc.profile_name }}</span>
                       </div>
                     </div>
                     <div class="flex items-center gap-1 shrink-0">
@@ -2223,38 +2231,12 @@ watch(() => settings.value.language, (v) => {
                 </template>
 
                 <template v-else>
-                  <Input v-model="awsEditLabel[acc.id]" size="sm" :placeholder="t('settings.aws.labelPlaceholder')" />
-                  <AppSelect
-                    size="sm"
-                    :model-value="awsEditAuthMethod[acc.id]"
-                    :options="AWS_AUTH_OPTIONS"
-                    @update:model-value="setAwsEditAuthMethod(acc.id, $event)"
-                  />
-                  <Input v-model="awsEditRegion[acc.id]" size="sm" :placeholder="t('settings.aws.regionPlaceholder')" class="font-mono" />
-                  <template v-if="awsEditAuthMethod[acc.id] === 'keys'">
-                    <Input v-model="awsEditAccessKeyId[acc.id]" size="sm" :placeholder="t('settings.aws.accessKeyIdPlaceholder')" class="font-mono" />
-                    <Input
-                      v-model="awsEditSecretAccessKey[acc.id]"
-                      type="password"
-                      size="sm"
-                      :placeholder="t('settings.aws.newSecretPlaceholder')"
-                      class="font-mono"
-                    />
-                    <Input
-                      v-model="awsEditSessionToken[acc.id]"
-                      type="password"
-                      size="sm"
-                      :placeholder="t('settings.aws.sessionTokenReplacePlaceholder')"
-                      class="font-mono"
-                    />
-                  </template>
-                  <Input
-                    v-else
+                  <AwsProfilePicker
                     v-model="awsEditProfileName[acc.id]"
-                    size="sm"
-                    :placeholder="t('settings.aws.profileNamePlaceholder')"
-                    class="font-mono"
+                    @picked="onAwsEditProfilePicked(acc.id, $event)"
                   />
+                  <Input v-model="awsEditLabel[acc.id]" size="sm" :placeholder="t('settings.aws.labelPlaceholder')" />
+                  <Input v-model="awsEditRegion[acc.id]" size="sm" :placeholder="t('settings.aws.regionPlaceholder')" class="font-mono" />
                   <Input v-model="awsEditTags[acc.id]" size="sm" :placeholder="t('settings.aws.tagsPlaceholder')" />
                   <div class="flex items-center gap-2">
                     <Button
@@ -2271,50 +2253,43 @@ watch(() => settings.value.language, (v) => {
               </div>
             </div>
 
-            <!-- Add account -->
+            <!-- Add account: one-click from the local ~/.aws profiles -->
             <div class="border-t border-border/60 pt-3 space-y-2">
-              <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.aws.addAccount') }}</div>
-              <Input v-model="awsNewLabel" size="sm" :placeholder="t('settings.aws.addLabelPlaceholder')" />
-              <AppSelect
-                size="sm"
-                v-model="awsNewAuthMethod"
-                :options="AWS_AUTH_OPTIONS"
-              />
-              <Input v-model="awsNewRegion" size="sm" :placeholder="t('settings.aws.regionPlaceholder')" class="font-mono" />
-              <template v-if="awsNewAuthMethod === 'keys'">
-                <Input v-model="awsNewAccessKeyId" size="sm" :placeholder="t('settings.aws.accessKeyIdPlaceholder')" class="font-mono" />
-                <Input
-                  v-model="awsNewSecretAccessKey"
-                  type="password"
-                  size="sm"
-                  :placeholder="t('settings.aws.secretPlaceholder')"
-                  class="font-mono"
-                />
-                <Input
-                  v-model="awsNewSessionToken"
-                  type="password"
-                  size="sm"
-                  :placeholder="t('settings.aws.sessionTokenPlaceholder')"
-                  class="font-mono"
-                  @keyup.enter="handleAddAwsAccount"
-                />
-              </template>
-              <Input
-                v-else
-                v-model="awsNewProfileName"
-                size="sm"
-                :placeholder="t('settings.aws.profileNamePlaceholder')"
-                class="font-mono"
-                @keyup.enter="handleAddAwsAccount"
-              />
-              <Input v-model="awsNewTags" size="sm" :placeholder="t('settings.aws.tagsPlaceholder')" />
-              <div class="flex justify-end">
+              <div class="flex items-center justify-between">
+                <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.aws.addFromProfile') }}</div>
+                <Button variant="ghost" size="icon-sm" :title="t('common.refresh')" :disabled="awsProfilesLoading" @click="loadAwsProfiles">
+                  <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': awsProfilesLoading }" :stroke-width="1.75" />
+                </Button>
+              </div>
+              <p v-if="awsProfilesLoading" class="text-[11px] text-muted-foreground">{{ t('common.loading') }}</p>
+              <p v-else-if="!addableAwsProfiles.length" class="text-[11px] text-muted-foreground">{{ t('settings.aws.profileAllAdded') }}</p>
+              <div
+                v-for="p in addableAwsProfiles"
+                :key="p.name"
+                class="flex items-center justify-between gap-2 border border-border rounded-md p-2"
+              >
+                <div class="min-w-0">
+                  <div class="text-sm font-medium truncate font-mono">{{ p.name }}</div>
+                  <div class="text-[11px] text-muted-foreground truncate">{{ awsProfileCaption(p) }}</div>
+                </div>
                 <Button
-                  :disabled="!canAddAwsAccount || awsAdding"
-                  @click="handleAddAwsAccount"
+                  v-if="awsSsoLoginProfile === p.name"
+                  size="xs"
+                  variant="outline"
+                  :disabled="awsAddingProfile === p.name"
+                  @click="handleQuickAddSsoLogin(p)"
+                >
+                  <LogIn class="h-3.5 w-3.5" :stroke-width="1.75" />
+                  {{ awsAddingProfile === p.name ? t('settings.aws.ssoLoggingIn') : t('settings.aws.ssoLogin') }}
+                </Button>
+                <Button
+                  v-else
+                  size="xs"
+                  :disabled="awsAddingProfile === p.name"
+                  @click="handleQuickAddProfile(p)"
                 >
                   <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-                  {{ awsAdding ? t('settings.aws.adding') : t('common.add') }}
+                  {{ awsAddingProfile === p.name ? t('settings.aws.adding') : t('common.add') }}
                 </Button>
               </div>
               <p v-if="awsAddError" class="text-[11px] text-destructive">{{ awsAddError }}</p>
@@ -2701,33 +2676,67 @@ watch(() => settings.value.language, (v) => {
         </Card>
 
         <!-- Prompt Templates section -->
-        <Card v-show="activeSection === 'prompts'" body-class="p-4 space-y-4">
+        <Card v-show="activeSection === 'prompts'" body-class="p-4 space-y-6">
           <template #header>
             <FileText class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
             <span class="text-xs font-semibold">{{ t('settings.prompts.title') }}</span>
           </template>
-            <div class="space-y-1.5">
-              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.prompts.analyzeIssue') }}</label>
-              <Textarea
-                v-model="settings.analyze_issue_prompt"
-                rows="3"
-                :placeholder="t('settings.prompts.analyzeIssuePlaceholder')"
-              />
-            </div>
-            <div class="space-y-1.5">
-              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.prompts.reviewPr') }}</label>
-              <Textarea
-                v-model="settings.review_pr_prompt"
-                rows="3"
-                :placeholder="t('settings.prompts.reviewPrPlaceholder')"
-              />
-            </div>
 
-            <!-- Reusable prompt library: picked from the composer dropdown in a run -->
-            <div class="space-y-2 border-t border-border/60 pt-4">
+            <!-- Group A: prompts wired to the GitHub "Analyze issue" / "Review PR" actions -->
+            <section class="space-y-3">
+              <div class="space-y-0.5">
+                <h3 class="text-xs font-semibold text-foreground">{{ t('settings.prompts.actionsTitle') }}</h3>
+                <p class="text-[11px] text-muted-foreground">{{ t('settings.prompts.actionsHint') }}</p>
+              </div>
+
+              <div class="space-y-1.5">
+                <div class="flex items-center justify-between gap-2">
+                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.prompts.analyzeIssue') }}</label>
+                  <Button
+                    v-if="settings.analyze_issue_prompt.trim()"
+                    variant="ghost"
+                    size="sm"
+                    class="h-6 shrink-0 px-2 text-[11px]"
+                    @click="clearActionPrompt('analyze_issue_prompt')"
+                  >
+                    <RotateCcw class="h-3 w-3" :stroke-width="2" />
+                    {{ t('settings.prompts.restoreDefault') }}
+                  </Button>
+                </div>
+                <Textarea
+                  v-model="settings.analyze_issue_prompt"
+                  rows="3"
+                  :placeholder="t('settings.prompts.analyzeIssuePlaceholder')"
+                />
+              </div>
+
+              <div class="space-y-1.5">
+                <div class="flex items-center justify-between gap-2">
+                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.prompts.reviewPr') }}</label>
+                  <Button
+                    v-if="settings.review_pr_prompt.trim()"
+                    variant="ghost"
+                    size="sm"
+                    class="h-6 shrink-0 px-2 text-[11px]"
+                    @click="clearActionPrompt('review_pr_prompt')"
+                  >
+                    <RotateCcw class="h-3 w-3" :stroke-width="2" />
+                    {{ t('settings.prompts.restoreDefault') }}
+                  </Button>
+                </div>
+                <Textarea
+                  v-model="settings.review_pr_prompt"
+                  rows="3"
+                  :placeholder="t('settings.prompts.reviewPrPlaceholder')"
+                />
+              </div>
+            </section>
+
+            <!-- Group B: reusable prompt library, picked from the composer dropdown in a run -->
+            <section class="space-y-3 border-t border-border/60 pt-5">
               <div class="flex items-center justify-between gap-2">
                 <div class="space-y-0.5">
-                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.prompts.library') }}</label>
+                  <h3 class="text-xs font-semibold text-foreground">{{ t('settings.prompts.library') }}</h3>
                   <p class="text-[11px] text-muted-foreground">{{ t('settings.prompts.libraryHint') }}</p>
                 </div>
                 <Button variant="outline" size="sm" class="shrink-0" @click="addSavedPrompt">
@@ -2740,35 +2749,65 @@ watch(() => settings.value.language, (v) => {
                 {{ t('settings.prompts.libraryEmpty') }}
               </p>
 
-              <div
-                v-for="(p, i) in savedPrompts"
-                :key="p.id"
-                class="space-y-1.5 rounded-md border border-border/70 bg-muted/20 p-3"
-              >
-                <div class="flex items-center gap-2">
-                  <Input
-                    v-model="p.title"
-                    class="flex-1"
-                    :placeholder="t('settings.prompts.titlePlaceholder', { n: i + 1 })"
-                  />
-                  <Button
-                    variant="destructive-ghost"
-                    size="icon-sm"
-                    :title="t('common.delete')"
-                    :aria-label="t('common.delete')"
-                    @click="removeSavedPrompt(p.id)"
+              <div class="space-y-1.5">
+                <div
+                  v-for="(p, i) in savedPrompts"
+                  :key="p.id"
+                  class="overflow-hidden rounded-md border border-border/70 bg-muted/20"
+                >
+                  <!-- Collapsed row: click to reveal the editor -->
+                  <button
+                    type="button"
+                    class="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-muted/40"
+                    :aria-expanded="expandedPromptId === p.id"
+                    @click="togglePrompt(p.id)"
                   >
-                    <Trash2 class="h-3.5 w-3.5" :stroke-width="2" />
-                  </Button>
+                    <ChevronDown
+                      class="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform"
+                      :class="{ '-rotate-90': expandedPromptId !== p.id }"
+                      :stroke-width="2"
+                    />
+                    <span
+                      class="min-w-0 flex-1 truncate text-xs"
+                      :class="promptLabel(p) ? 'text-foreground' : 'italic text-muted-foreground'"
+                    >
+                      {{ promptLabel(p) || t('settings.prompts.untitled', { n: i + 1 }) }}
+                    </span>
+                    <Pencil
+                      v-if="expandedPromptId !== p.id"
+                      class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                      :stroke-width="1.75"
+                    />
+                  </button>
+
+                  <!-- Expanded editor -->
+                  <div v-if="expandedPromptId === p.id" class="space-y-1.5 border-t border-border/60 p-3">
+                    <div class="flex items-center gap-2">
+                      <Input
+                        v-model="p.title"
+                        class="flex-1"
+                        :placeholder="t('settings.prompts.titlePlaceholder', { n: i + 1 })"
+                      />
+                      <Button
+                        variant="destructive-ghost"
+                        size="icon-sm"
+                        :title="t('common.delete')"
+                        :aria-label="t('common.delete')"
+                        @click="removeSavedPrompt(p.id)"
+                      >
+                        <Trash2 class="h-3.5 w-3.5" :stroke-width="2" />
+                      </Button>
+                    </div>
+                    <Textarea
+                      v-model="p.body"
+                      rows="3"
+                      class="font-mono"
+                      :placeholder="t('settings.prompts.bodyPlaceholder')"
+                    />
+                  </div>
                 </div>
-                <Textarea
-                  v-model="p.body"
-                  rows="3"
-                  class="font-mono"
-                  :placeholder="t('settings.prompts.bodyPlaceholder')"
-                />
               </div>
-            </div>
+            </section>
         </Card>
 
         </div>

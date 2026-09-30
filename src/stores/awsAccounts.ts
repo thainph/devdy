@@ -2,7 +2,8 @@ import { defineStore } from 'pinia'
 import { invoke } from '@/lib/tauri'
 import { ref } from 'vue'
 
-export type AwsAuthMethod = 'keys' | 'profile'
+// All AWS accounts are profile/SSO based.
+export type AwsAuthMethod = 'profile'
 
 // Sentinel returned by validate_aws_account when a profile's SSO token is
 // missing or expired and the user needs to run `aws sso login` again.
@@ -36,13 +37,19 @@ export interface AwsValidation {
 
 export interface AwsAccountPayload {
   label: string
-  authMethod: AwsAuthMethod
   region?: string
-  accessKeyId?: string
-  secretAccessKey?: string
-  sessionToken?: string
   profileName?: string
   tags?: string
+}
+
+/** A CLI profile discovered in ~/.aws/config. */
+export interface AwsProfileInfo {
+  name: string
+  ssoRoleName: string | null
+  ssoAccountId: string | null
+  ssoSession: string | null
+  region: string | null
+  isSso: boolean
 }
 
 export const useAwsAccountsStore = defineStore('awsAccounts', () => {
@@ -89,5 +96,27 @@ export const useAwsAccountsStore = defineStore('awsAccounts', () => {
     await invoke('aws_sso_login', { id })
   }
 
-  return { accounts, loading, error, fetch, create, update, remove, validate, ssoLogin }
+  /** List profiles found in ~/.aws/config. */
+  async function listProfiles(): Promise<AwsProfileInfo[]> {
+    return invoke<AwsProfileInfo[]>('list_aws_profiles')
+  }
+
+  /** Refresh an expired SSO token for a profile (browser flow). */
+  async function ssoLoginProfile(profileName: string): Promise<void> {
+    await invoke('aws_sso_login_profile', { profileName })
+  }
+
+  return {
+    accounts,
+    loading,
+    error,
+    fetch,
+    create,
+    update,
+    remove,
+    validate,
+    ssoLogin,
+    listProfiles,
+    ssoLoginProfile,
+  }
 })

@@ -608,41 +608,6 @@ pub struct AwsSecrets {
     pub session_token: Option<String>,
 }
 
-/// Persist an AWS account's secret material into the consolidated store.
-pub fn set_aws_secret(
-    account_id: &str,
-    secret_access_key: &str,
-    session_token: Option<&str>,
-) -> Result<()> {
-    let mut guard = CACHE.lock().map_err(|_| anyhow!("secret cache poisoned"))?;
-    ensure_loaded(&mut guard);
-    let store = guard.as_mut().expect("store loaded");
-    store.aws.insert(
-        account_id.to_string(),
-        AwsSecrets {
-            secret_access_key: Some(secret_access_key.to_string()),
-            session_token: session_token
-                .map(|s| s.to_string())
-                .filter(|s| !s.trim().is_empty()),
-        },
-    );
-    persist(store)?;
-    Ok(())
-}
-
-/// Read an AWS account's secret payload. Missing values return an error so
-/// callers can fail-closed.
-pub fn get_aws_secret(account_id: &str) -> Result<AwsSecrets> {
-    let mut guard = CACHE.lock().map_err(|_| anyhow!("secret cache poisoned"))?;
-    ensure_loaded(&mut guard);
-    let store = guard.as_mut().expect("store loaded");
-    store
-        .aws
-        .get(account_id)
-        .cloned()
-        .ok_or_else(|| anyhow!("No AWS secret stored for account"))
-}
-
 /// Delete an AWS account's secret from the consolidated store (no-op if absent).
 pub fn delete_aws_secret(account_id: &str) -> Result<()> {
     let mut guard = CACHE.lock().map_err(|_| anyhow!("secret cache poisoned"))?;

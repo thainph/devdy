@@ -584,6 +584,23 @@ pub async fn drain_sidecar(
                                     if let Some(tasks) = v.get("tasks").and_then(|t| t.as_array()) {
                                         live_bg_tasks = tasks.len();
                                     }
+                                    // The turn-end stdin close is normally driven by the
+                                    // `result` branch below, but the ordering isn't
+                                    // guaranteed: a `task-notification` wake `result` can
+                                    // arrive BEFORE the `background_tasks_changed` that
+                                    // clears the count, so the result branch sees a
+                                    // non-zero count and keeps stdin open — and nothing
+                                    // re-checks once the count finally hits 0 here. Without
+                                    // this, the process never exits and the run is stuck
+                                    // "running" (a conductor waiting on it never sees it
+                                    // finish). Re-run the same close gate on drain: once the
+                                    // user's own turn has ended and no tasks remain, close.
+                                    if drain_should_close_stdin(live_bg_tasks, user_turn_ended_once) {
+                                        let mut reg = registry.lock().await;
+                                        if let Some(handles) = reg.get_mut(&run_id) {
+                                            handles.stdin.take();
+                                        }
+                                    }
                                 }
                                 // End the turn: closing stdin makes the sidecar's
                                 // input stream close, the query finish, and the
@@ -780,6 +797,17 @@ fn result_should_close_stdin(value: &Value, live_bg_tasks: usize, user_turn_ende
         return false;
     }
     result_ends_user_turn(value) || user_turn_ended
+}
+
+/// Should the last background task draining (a `background_tasks_changed` with an
+/// empty `tasks` set) close stdin? This is the same gate as
+/// `result_should_close_stdin`, minus the `result`-shape check, for the case
+/// where the count reaches 0 via a `background_tasks_changed` event rather than a
+/// `result`. It only fires once the user's own turn has already ended, so a
+/// spurious leftover task draining on resume (before the real turn runs) can't
+/// close stdin early.
+fn drain_should_close_stdin(live_bg_tasks: usize, user_turn_ended: bool) -> bool {
+    live_bg_tasks == 0 && user_turn_ended
 }
 
 async fn capture_session_id(
@@ -1317,5 +1345,31 @@ mod turn_end_tests {
         });
         assert!(!result_ends_user_turn(&wake));
         assert!(result_should_close_stdin(&wake, 0, /* user_turn_ended */ true));
+    }
+
+    // Regression: the `task-notification` wake `result` can arrive BEFORE the
+    // `background_tasks_changed` that clears the count. The result branch then
+    // sees a non-zero count and keeps stdin open, so the close must happen when
+    // the drain event finally brings the count to 0 — otherwise the process
+    // never exits and the run (e.g. a conductor worker) is stuck "running".
+    #[test]
+    fn drain_after_wake_result_closes_when_count_hits_zero() {
+        // User turn already ended earlier in this sidecar.
+        let user_turn_ended = true;
+
+        // Wake result arrives while the drain event is still in flight (count 1).
+        let wake = serde_json::json!({
+            "type": "result", "subtype": "success", "num_turns": 1,
+            "origin": { "kind": "task-notification" },
+        });
+        assert!(!result_should_close_stdin(&wake, 1, user_turn_ended));
+
+        // The delayed `background_tasks_changed` drains the last task → close now.
+        assert!(drain_should_close_stdin(0, user_turn_ended));
+
+        // A leftover task draining BEFORE the user's turn (resume) must NOT close.
+        assert!(!drain_should_close_stdin(0, /* user_turn_ended */ false));
+        // Tasks still live never close on drain.
+        assert!(!drain_should_close_stdin(2, user_turn_ended));
     }
 }

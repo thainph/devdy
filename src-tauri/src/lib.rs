@@ -13,6 +13,7 @@ use commands::aws_accounts::{
     aws_sso_login, create_aws_account, delete_aws_account, list_aws_accounts,
     set_project_aws_account, update_aws_account, validate_aws_account,
 };
+use commands::aws_sso::{aws_sso_login_profile, list_aws_profiles};
 use commands::claude_accounts::{
     create_claude_account, delete_claude_account, list_claude_accounts,
     open_claude_account_login, rename_claude_account, set_default_claude_account,
@@ -394,6 +395,8 @@ pub fn run() {
             delete_aws_account,
             validate_aws_account,
             aws_sso_login,
+            list_aws_profiles,
+            aws_sso_login_profile,
             set_project_aws_account,
             get_applied_skills,
             apply_skill,

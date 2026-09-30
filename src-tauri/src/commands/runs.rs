@@ -199,8 +199,19 @@ pub(crate) async fn start_run_inner(
             "claude_model" => claude_model = value,
             "codex_model" => codex_model = value,
             "extra_args" => extra_args = value,
-            "analyze_issue_prompt" => analyze_prompt = value,
-            "review_pr_prompt" => review_prompt = value,
+            // Empty means "not customized": keep the built-in default rather than
+            // running with a blank prompt. The Settings UI stores an empty string
+            // when the user clears the field / restores the default.
+            "analyze_issue_prompt" => {
+                if !value.trim().is_empty() {
+                    analyze_prompt = value;
+                }
+            }
+            "review_pr_prompt" => {
+                if !value.trim().is_empty() {
+                    review_prompt = value;
+                }
+            }
             "default_permission_mode" => default_permission_mode = value,
             _ => {}
         }
@@ -788,10 +799,9 @@ async fn wire_broker(
     wire_git_config(cmd, &helper_path);
     wire_commit_identity(cmd, db, project_id).await;
 
-    // AWS: route SDK credential loading through credential_process for keys
-    // accounts. The `aws` CLI itself is broker-gated by the PATH shim.
-    let aws_helper_path = shim_dir.join("aws-credential-devdy");
-    wire_aws_config(app, db, cmd, run_id, project_id, &aws_helper_path).await;
+    // AWS: write a minimal per-run config; the `aws` CLI itself is broker-gated by
+    // the PATH shim, which injects broker-minted credentials.
+    wire_aws_config(app, db, cmd, run_id, project_id).await;
 
     // ssh-transparent-connect: wire per-run transparent SSH for this project's
     // mapped VPS servers. No mapping → Ok(None) (no env set, no agent — AC-305).
@@ -839,7 +849,6 @@ async fn wire_aws_config(
     cmd: &mut Command,
     run_id: &str,
     project_id: &str,
-    helper_path: &Path,
 ) {
     // Strip inherited AWS credentials from the sidecar parent. AWS SDKs prefer
     // env credentials over credential_process, so leaving these in place would
@@ -895,35 +904,13 @@ async fn wire_aws_config(
     cmd.env("AWS_REGION", &meta.region);
     cmd.env("AWS_DEFAULT_REGION", &meta.region);
 
-    // For keys accounts, SDKs resolve credentials through the brokered
-    // credential_process and must not fall back to global credentials. For named
-    // profile/SSO accounts, the `aws` CLI shim injects AWS_PROFILE only into the
-    // real CLI child. SDK credential_process cannot emit a profile name, so do
-    // not set AWS_PROFILE on the sidecar parent.
-    if meta.auth_method != "keys" {
-        let _ = fs::write(&config_path, format!("[default]\nregion = {}\n", meta.region));
-        cmd.env("AWS_CONFIG_FILE", config_path);
-        cmd.env("AWS_SHARED_CREDENTIALS_FILE", credentials_path);
-        cmd.env("AWS_SDK_LOAD_CONFIG", "1");
-        return;
-    }
-
-    let config = format!(
-        "[default]\nregion = {}\ncredential_process = {}\n",
-        meta.region,
-        shell_quote_path(helper_path),
-    );
-    if fs::write(&config_path, config).is_err() {
-        return;
-    }
+    // The `aws` CLI shim injects broker-minted credentials into the real CLI
+    // child. SDK credential_process cannot emit a profile name, so we only pin a
+    // minimal region config here and never set AWS_PROFILE on the sidecar parent.
+    let _ = fs::write(&config_path, format!("[default]\nregion = {}\n", meta.region));
     cmd.env("AWS_CONFIG_FILE", config_path);
     cmd.env("AWS_SHARED_CREDENTIALS_FILE", credentials_path);
     cmd.env("AWS_SDK_LOAD_CONFIG", "1");
-}
-
-fn shell_quote_path(path: &Path) -> String {
-    let s = path.to_string_lossy();
-    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 /// Set `GIT_AUTHOR_*`/`GIT_COMMITTER_*` from the project's linked account so
