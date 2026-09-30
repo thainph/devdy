@@ -15,11 +15,11 @@ const STS_TIMEOUT: Duration = Duration::from_secs(15);
 const SSO_LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 // Sentinel error the frontend matches to offer an "SSO login" button instead of
 // a generic validation-failed message.
-const SSO_LOGIN_REQUIRED: &str = "SSO_LOGIN_REQUIRED";
+pub(crate) const SSO_LOGIN_REQUIRED: &str = "SSO_LOGIN_REQUIRED";
 
 /// Detect the AWS CLI stderr signatures that mean the profile is SSO-based and
 /// its cached token is missing or expired (i.e. `aws sso login` is needed).
-fn is_sso_login_required(stderr: &str) -> bool {
+pub(crate) fn is_sso_login_required(stderr: &str) -> bool {
     let lower = stderr.to_lowercase();
     lower.contains("error loading sso token")
         || (lower.contains("token") && lower.contains("does not exist"))
@@ -55,11 +55,7 @@ pub struct AwsValidation {
 #[serde(rename_all = "camelCase")]
 pub struct CreateAwsAccountPayload {
     pub label: String,
-    pub auth_method: String,
     pub region: Option<String>,
-    pub access_key_id: Option<String>,
-    pub secret_access_key: Option<String>,
-    pub session_token: Option<String>,
     pub profile_name: Option<String>,
     pub tags: Option<String>,
 }
@@ -69,11 +65,7 @@ pub struct CreateAwsAccountPayload {
 pub struct UpdateAwsAccountPayload {
     pub id: String,
     pub label: String,
-    pub auth_method: String,
     pub region: Option<String>,
-    pub access_key_id: Option<String>,
-    pub secret_access_key: Option<String>,
-    pub session_token: Option<String>,
     pub profile_name: Option<String>,
     pub tags: Option<String>,
 }
@@ -86,17 +78,6 @@ struct StsCallerIdentity {
     arn: String,
     #[serde(rename = "UserId")]
     user_id: String,
-}
-
-enum AwsAuthForSts<'a> {
-    Keys {
-        access_key_id: &'a str,
-        secret_access_key: &'a str,
-        session_token: Option<&'a str>,
-    },
-    Profile {
-        profile_name: &'a str,
-    },
 }
 
 fn row_to_account(row: &sqlx::sqlite::SqliteRow) -> AwsAccount {
@@ -132,14 +113,6 @@ fn clean_optional(value: Option<String>) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-fn normalize_auth_method(value: &str) -> Result<String, String> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "keys" => Ok("keys".to_string()),
-        "profile" => Ok("profile".to_string()),
-        _ => Err("auth_method must be 'keys' or 'profile'".to_string()),
-    }
-}
-
 fn normalize_region(value: Option<String>) -> String {
     clean_optional(value).unwrap_or_else(|| DEFAULT_REGION.to_string())
 }
@@ -157,10 +130,7 @@ async fn fetch_account(db: &Db, id: &str) -> Result<AwsAccount, String> {
     Ok(row_to_account(&row))
 }
 
-async fn validate_aws_identity(
-    auth: AwsAuthForSts<'_>,
-    region: &str,
-) -> Result<AwsValidation, String> {
+async fn validate_aws_identity(profile_name: &str, region: &str) -> Result<AwsValidation, String> {
     let mut cmd = Command::new("aws");
     cmd.arg("sts")
         .arg("get-caller-identity")
@@ -168,6 +138,8 @@ async fn validate_aws_identity(
         .arg("json")
         .arg("--region")
         .arg(region)
+        .arg("--profile")
+        .arg(profile_name)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -175,30 +147,15 @@ async fn validate_aws_identity(
     // (typically /usr/local/bin or /opt/homebrew/bin) isn't found. Recover the
     // login PATH like the sidecar/ssh commands do.
     crate::runs::sidecar::augment_command_path(&mut cmd);
-
-    match auth {
-        AwsAuthForSts::Keys {
-            access_key_id,
-            secret_access_key,
-            session_token,
-        } => {
-            cmd.env("AWS_ACCESS_KEY_ID", access_key_id);
-            cmd.env("AWS_SECRET_ACCESS_KEY", secret_access_key);
-            if let Some(token) = session_token.filter(|s| !s.trim().is_empty()) {
-                cmd.env("AWS_SESSION_TOKEN", token);
-            } else {
-                cmd.env_remove("AWS_SESSION_TOKEN");
-            }
-            cmd.env_remove("AWS_PROFILE");
-            cmd.env_remove("AWS_DEFAULT_PROFILE");
-        }
-        AwsAuthForSts::Profile { profile_name } => {
-            cmd.arg("--profile").arg(profile_name);
-            cmd.env_remove("AWS_ACCESS_KEY_ID");
-            cmd.env_remove("AWS_SECRET_ACCESS_KEY");
-            cmd.env_remove("AWS_SESSION_TOKEN");
-        }
-    }
+    // The app may have inherited a per-run AWS_CONFIG_FILE / credentials override
+    // (Devdy's sandbox writes a minimal one for run children). Force the CLI back
+    // to the user's real ~/.aws config so `--profile` resolves against the same
+    // file the profile picker reads.
+    cmd.env_remove("AWS_CONFIG_FILE");
+    cmd.env_remove("AWS_SHARED_CREDENTIALS_FILE");
+    cmd.env_remove("AWS_ACCESS_KEY_ID");
+    cmd.env_remove("AWS_SECRET_ACCESS_KEY");
+    cmd.env_remove("AWS_SESSION_TOKEN");
 
     let output = match tokio::time::timeout(STS_TIMEOUT, cmd.output()).await {
         Ok(Ok(output)) => output,
@@ -252,66 +209,32 @@ pub async fn create_aws_account(
     payload: CreateAwsAccountPayload,
 ) -> Result<AwsAccount, String> {
     let label = clean_required(&payload.label, "label")?;
-    let auth_method = normalize_auth_method(&payload.auth_method)?;
     let region = normalize_region(payload.region);
     let tags = clean_optional(payload.tags);
     let id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
 
-    let (access_key_id, profile_name, validation) = if auth_method == "keys" {
-        let access_key_id = clean_optional(payload.access_key_id)
-            .ok_or_else(|| "access_key_id is required for keys auth".to_string())?;
-        let secret_access_key = clean_optional(payload.secret_access_key)
-            .ok_or_else(|| "secret_access_key is required for keys auth".to_string())?;
-        let session_token = clean_optional(payload.session_token);
-        let validation = validate_aws_identity(
-            AwsAuthForSts::Keys {
-                access_key_id: &access_key_id,
-                secret_access_key: &secret_access_key,
-                session_token: session_token.as_deref(),
-            },
-            &region,
-        )
-        .await?;
-        secrets::set_aws_secret(&id, &secret_access_key, session_token.as_deref())
-            .map_err(|e| e.to_string())?;
-        (Some(access_key_id), None, validation)
-    } else {
-        let profile_name = clean_optional(payload.profile_name)
-            .ok_or_else(|| "profile_name is required for profile auth".to_string())?;
-        let validation = validate_aws_identity(
-            AwsAuthForSts::Profile {
-                profile_name: &profile_name,
-            },
-            &region,
-        )
-        .await?;
-        (None, Some(profile_name), validation)
-    };
+    let profile_name = clean_optional(payload.profile_name)
+        .ok_or_else(|| "profile_name is required".to_string())?;
+    let validation = validate_aws_identity(&profile_name, &region).await?;
 
-    let insert_result = sqlx::query(
+    sqlx::query(
         "INSERT INTO aws_accounts \
          (id, label, auth_method, account_id, arn, region, access_key_id, profile_name, tags, last_validated_at, created_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, 'profile', ?, ?, ?, NULL, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&label)
-    .bind(&auth_method)
     .bind(&validation.account_id)
     .bind(&validation.arn)
     .bind(&region)
-    .bind(&access_key_id)
     .bind(&profile_name)
     .bind(&tags)
     .bind(&now)
     .bind(&now)
     .execute(db.inner())
-    .await;
-
-    if let Err(e) = insert_result {
-        let _ = secrets::delete_aws_secret(&id);
-        return Err(e.to_string());
-    }
+    .await
+    .map_err(|e| e.to_string())?;
 
     fetch_account(db.inner(), &id).await
 }
@@ -323,104 +246,33 @@ pub async fn update_aws_account(
 ) -> Result<AwsAccount, String> {
     let current = fetch_account(db.inner(), &payload.id).await?;
     let label = clean_required(&payload.label, "label")?;
-    let auth_method = normalize_auth_method(&payload.auth_method)?;
     let region = normalize_region(payload.region);
     let tags = clean_optional(payload.tags);
     let mut account_id = current.account_id.clone();
     let mut arn = current.arn.clone();
     let mut last_validated_at = current.last_validated_at.clone();
-    let mut secret_to_persist: Option<(String, Option<String>)> = None;
 
-    let access_key_id = if auth_method == "keys" {
-        Some(
-            clean_optional(payload.access_key_id)
-                .ok_or_else(|| "access_key_id is required for keys auth".to_string())?,
-        )
-    } else {
-        None
-    };
-    let profile_name = if auth_method == "profile" {
-        Some(
-            clean_optional(payload.profile_name)
-                .ok_or_else(|| "profile_name is required for profile auth".to_string())?,
-        )
-    } else {
-        None
-    };
+    let profile_name = clean_optional(payload.profile_name)
+        .ok_or_else(|| "profile_name is required".to_string())?;
 
-    let new_secret = clean_optional(payload.secret_access_key);
-    let session_token_was_sent = payload.session_token.is_some();
-    let new_session_token = clean_optional(payload.session_token);
-    let secret_update_requested = new_secret.is_some() || session_token_was_sent;
-    let auth_changed = auth_method != current.auth_method
-        || region != current.region
-        || access_key_id != current.access_key_id
-        || profile_name != current.profile_name
-        || secret_update_requested;
-
+    // Re-validate when the profile or region changed.
+    let auth_changed = region != current.region || Some(&profile_name) != current.profile_name.as_ref();
     if auth_changed {
-        let validation = if auth_method == "keys" {
-            let access_key_id = access_key_id.as_deref().expect("keys access key checked");
-            let stored_secret = if new_secret.is_none() || !session_token_was_sent {
-                Some(secrets::get_aws_secret(&payload.id).map_err(|e| e.to_string())?)
-            } else {
-                None
-            };
-            let secret_access_key = new_secret.clone().or_else(|| {
-                    stored_secret
-                        .as_ref()
-                        .and_then(|s| s.secret_access_key.clone())
-                })
-                .ok_or_else(|| "secret_access_key is required for keys auth".to_string())?;
-            let session_token = if session_token_was_sent {
-                new_session_token.clone()
-            } else {
-                stored_secret
-                    .as_ref()
-                    .and_then(|s| s.session_token.clone())
-            };
-            if secret_update_requested {
-                secret_to_persist = Some((secret_access_key.clone(), session_token.clone()));
-            }
-            validate_aws_identity(
-                AwsAuthForSts::Keys {
-                    access_key_id,
-                    secret_access_key: &secret_access_key,
-                    session_token: session_token.as_deref(),
-                },
-                &region,
-            )
-            .await?
-        } else {
-            let profile_name = profile_name.as_deref().expect("profile checked");
-            validate_aws_identity(AwsAuthForSts::Profile { profile_name }, &region).await?
-        };
-        let now = chrono::Utc::now().to_rfc3339();
+        let validation = validate_aws_identity(&profile_name, &region).await?;
         account_id = Some(validation.account_id);
         arn = Some(validation.arn);
-        last_validated_at = Some(now);
-
-        if auth_method == "keys" {
-            if let Some((secret_access_key, session_token)) = secret_to_persist.as_ref() {
-                secrets::set_aws_secret(&payload.id, secret_access_key, session_token.as_deref())
-                    .map_err(|e| e.to_string())?;
-            }
-        } else {
-            let _ = secrets::delete_aws_secret(&payload.id);
-        }
+        last_validated_at = Some(chrono::Utc::now().to_rfc3339());
     }
 
     sqlx::query(
         "UPDATE aws_accounts SET \
-         label = ?, auth_method = ?, account_id = ?, arn = ?, region = ?, access_key_id = ?, \
-         profile_name = ?, tags = ?, last_validated_at = ? WHERE id = ?",
+         label = ?, auth_method = 'profile', account_id = ?, arn = ?, region = ?, \
+         access_key_id = NULL, profile_name = ?, tags = ?, last_validated_at = ? WHERE id = ?",
     )
     .bind(&label)
-    .bind(&auth_method)
     .bind(&account_id)
     .bind(&arn)
     .bind(&region)
-    .bind(&access_key_id)
     .bind(&profile_name)
     .bind(&tags)
     .bind(&last_validated_at)
@@ -450,32 +302,11 @@ pub async fn delete_aws_account(db: State<'_, Db>, id: String) -> Result<(), Str
 #[tauri::command]
 pub async fn validate_aws_account(db: State<'_, Db>, id: String) -> Result<AwsValidation, String> {
     let account = fetch_account(db.inner(), &id).await?;
-    let validation = if account.auth_method == "keys" {
-        let access_key_id = account
-            .access_key_id
-            .as_deref()
-            .ok_or_else(|| "access_key_id is missing".to_string())?;
-        let secret = secrets::get_aws_secret(&id).map_err(|e| e.to_string())?;
-        let secret_access_key = secret
-            .secret_access_key
-            .as_deref()
-            .ok_or_else(|| "secret_access_key is missing".to_string())?;
-        validate_aws_identity(
-            AwsAuthForSts::Keys {
-                access_key_id,
-                secret_access_key,
-                session_token: secret.session_token.as_deref(),
-            },
-            &account.region,
-        )
-        .await?
-    } else {
-        let profile_name = account
-            .profile_name
-            .as_deref()
-            .ok_or_else(|| "profile_name is missing".to_string())?;
-        validate_aws_identity(AwsAuthForSts::Profile { profile_name }, &account.region).await?
-    };
+    let profile_name = account
+        .profile_name
+        .as_deref()
+        .ok_or_else(|| "profile_name is missing".to_string())?;
+    let validation = validate_aws_identity(profile_name, &account.region).await?;
 
     let now = chrono::Utc::now().to_rfc3339();
     let _ = sqlx::query(
@@ -519,6 +350,9 @@ pub async fn aws_sso_login(db: State<'_, Db>, id: String) -> Result<(), String> 
     cmd.env_remove("AWS_ACCESS_KEY_ID");
     cmd.env_remove("AWS_SECRET_ACCESS_KEY");
     cmd.env_remove("AWS_SESSION_TOKEN");
+    // Use the user's real ~/.aws config, not any inherited per-run override.
+    cmd.env_remove("AWS_CONFIG_FILE");
+    cmd.env_remove("AWS_SHARED_CREDENTIALS_FILE");
 
     let output = match tokio::time::timeout(SSO_LOGIN_TIMEOUT, cmd.output()).await {
         Ok(Ok(output)) => output,

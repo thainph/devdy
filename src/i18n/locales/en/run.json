@@ -91,6 +91,8 @@
   "refetchIssue": "Re-fetch this issue content from GitHub (keeps AI result)",
   "refetchPr": "Re-fetch this PR content from GitHub (keeps AI result)",
   "copyLogPath": "Copy log file path",
+  "copySessionId": "Copy session ID",
+  "sessionIdCopied": "Session ID copied",
   "viewLogFile": "View log file",
   "moreActions": "More actions",
   "rename": "Rename",

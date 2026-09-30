@@ -38,7 +38,7 @@ import {
   ShieldQuestion, MessageCircleQuestion,
   Pin, PinOff, Pencil, Check, Github, Gitlab, UserCircle,
   ClipboardCopy, ScrollText, HardDrive, Cloud, Radio, Languages, StickyNote, ListTodo, FolderTree, Loader2, ListChecks,
-  MoreHorizontal, BookMarked, Search, Network, ChevronLeft, ChevronRight
+  MoreHorizontal, BookMarked, Search, Network, ChevronLeft, ChevronRight, Hash
 } from 'lucide-vue-next'
 import AppSelect from '@/components/AppSelect.vue'
 import { type SavedPrompt, parseSavedPrompts, promptLabel } from '@/lib/savedPrompts'
@@ -52,7 +52,7 @@ import PermissionPrompt from '@/components/PermissionPrompt.vue'
 import FileTree from '@/components/FileTree.vue'
 import ConductorWorkerPanel from '@/components/conductor/ConductorWorkerPanel.vue'
 import { useConductorStore } from '@/stores/conductor'
-import { Button, Input, StatusBadge, Badge, Modal, DropdownMenu, DropdownItem, DropdownSeparator } from '@/components/ui'
+import { Button, Input, Badge, Modal, DropdownMenu, DropdownItem, DropdownSeparator } from '@/components/ui'
 import { useTurnNavigator } from '@/composables/useTurnNavigator'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
@@ -715,6 +715,32 @@ function runIcon(run: RunRecord) {
   if (run.run_type === 'session') return MessageSquare
   if (run.run_type === 'analyze_issue') return Bug
   return GitPullRequest
+}
+
+// History row: tint the session icon by run status so the list conveys state
+// at a glance without a separate status pill. Mirrors StatusBadge's palette.
+// A freshly-created chat session ('fetched' + session) is a draft → stays muted.
+function runIconColorClass(run: RunRecord): string {
+  if (run.status === 'fetched' && run.run_type === 'session') return 'text-muted-foreground'
+  switch (run.status) {
+    case 'running': return 'text-blue-500'
+    case 'done': return 'text-emerald-500'
+    case 'failed': return 'text-red-500'
+    case 'cancelled': return 'text-amber-500'
+    case 'fetched': return 'text-violet-500'
+    default: return 'text-muted-foreground'
+  }
+}
+
+// History row: which Claude account this run used. Only Claude runs record an
+// account id (Codex has no per-run account), so we return a label just for
+// engine 'claude' with a matching, known account — otherwise '' (no badge).
+// Legacy runs with no run-level account fall back to the global ~/.claude, so
+// they intentionally show nothing rather than a guessed account.
+function runClaudeAccountLabel(run: RunRecord): string {
+  if (run.engine !== 'claude' || !run.claude_account_id) return ''
+  const acc = claudeStore.accounts.find((a) => a.id === run.claude_account_id)
+  return acc ? acc.label : ''
 }
 
 // History row timestamp: date + time, so runs from the same day stay
@@ -2707,6 +2733,17 @@ async function copyLogPath(run: RunRecord) {
   }
 }
 
+// Copy this run/session's Devdy run ID to the clipboard — the id the devdy MCP
+// (session_read) uses to load the session.
+async function copySessionId(run: RunRecord) {
+  try {
+    await navigator.clipboard.writeText(run.id)
+    toast.success(t('run.sessionIdCopied'))
+  } catch (e) {
+    toast.error(String(e))
+  }
+}
+
 // Open this run/session's log file in a standalone file viewer window.
 async function viewLogFile(run: RunRecord) {
   const p = project.value
@@ -3430,9 +3467,13 @@ function handleRefInput(val: string) {
                   <component
                     :is="runIcon(run)"
                     class="h-4 w-4 shrink-0"
-                    :class="isConductorRun(run) ? 'text-primary' : 'text-muted-foreground'"
+                    :class="[runIconColorClass(run), { 'animate-pulse': run.status === 'running' }]"
                     :stroke-width="1.75"
-                    :title="isConductorRun(run) ? t('conductor.modeToggle') : undefined"
+                    :title="isConductorRun(run)
+                      ? t('conductor.modeToggle')
+                      : (run.status === 'fetched' && run.run_type === 'session'
+                        ? t('common.status.draft')
+                        : t(`common.status.${run.status}`))"
                   />
                   <Pin
                     v-if="run.pinned"
@@ -3483,7 +3524,6 @@ function handleRefInput(val: string) {
                       :stroke-width="2"
                     />
                   </span>
-                  <StatusBadge :status="run.status" :run-type="run.run_type" size="xs" class="shrink-0" />
                 </div>
                 <!-- Meta: date + engine. Always visible so hovering never hides
                      the session info; actions sit to the right of this band. -->
@@ -3492,7 +3532,21 @@ function handleRefInput(val: string) {
                     <Clock class="h-2.5 w-2.5" :stroke-width="1.5" />
                     {{ runTimestamp(runActivityAt(run)) }}
                   </span>
-                  <span class="shrink-0 px-1.5 py-0.5 rounded bg-muted/60 font-mono text-[9px] uppercase tracking-wide text-muted-foreground">
+                  <!-- Account badge replaces the engine badge when the run has a
+                       known Claude account (the account name already implies
+                       Claude). Codex and legacy/account-less runs keep the plain
+                       engine badge since there's no per-run account to show. -->
+                  <span
+                    v-if="runClaudeAccountLabel(run)"
+                    class="shrink-0 truncate max-w-[10rem] px-1.5 py-0.5 rounded bg-primary/10 text-[9px] font-medium tracking-wide text-primary"
+                    :title="runClaudeAccountLabel(run)"
+                  >
+                    {{ runClaudeAccountLabel(run) }}
+                  </span>
+                  <span
+                    v-else
+                    class="shrink-0 px-1.5 py-0.5 rounded bg-muted/60 font-mono text-[9px] uppercase tracking-wide text-muted-foreground"
+                  >
                     {{ run.engine }}
                   </span>
                 </div>
@@ -3535,6 +3589,10 @@ function handleRefInput(val: string) {
                   <DropdownItem @click="copyLogPath(run)">
                     <ClipboardCopy class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
                     {{ t('run.copyLogPath') }}
+                  </DropdownItem>
+                  <DropdownItem @click="copySessionId(run)">
+                    <Hash class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+                    {{ t('run.copySessionId') }}
                   </DropdownItem>
                   <DropdownItem @click="viewLogFile(run)">
                     <ScrollText class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />

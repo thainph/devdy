@@ -47,13 +47,11 @@ pub struct CommitIdentity {
 /// Metadata for a project's linked AWS account. Contains no secret and is safe
 /// for prompts/per-run env setup.
 pub struct AwsRuntimeMetadata {
-    pub account_db_id: String,
     pub account_label: String,
     pub auth_method: String,
     pub account_id: Option<String>,
     pub arn: Option<String>,
     pub region: String,
-    pub access_key_id: Option<String>,
     pub profile_name: Option<String>,
 }
 
@@ -450,6 +448,10 @@ async fn export_aws_credentials(profile: &str, region: &str) -> Result<CachedAws
     // per-run overrides are applied only to child run commands, not here.
     cmd.env_remove("AWS_PROFILE");
     cmd.env_remove("AWS_DEFAULT_PROFILE");
+    // Force the user's real ~/.aws config; never let an inherited per-run
+    // AWS_CONFIG_FILE/credentials override shadow the linked profile.
+    cmd.env_remove("AWS_CONFIG_FILE");
+    cmd.env_remove("AWS_SHARED_CREDENTIALS_FILE");
     cmd.env("AWS_REGION", region);
     cmd.env("AWS_DEFAULT_REGION", region);
 
@@ -496,52 +498,27 @@ pub async fn resolve_aws_credentials_for_project(
         return Ok(None);
     };
 
-    match meta.auth_method.as_str() {
-        "keys" => {
-            let access_key_id = match meta.access_key_id.clone().filter(|s| !s.trim().is_empty()) {
-                Some(v) => v,
-                None => return Ok(None),
-            };
-            let secret = match secrets::get_aws_secret(&meta.account_db_id) {
-                Ok(secret) => secret,
-                Err(_) => return Ok(None),
-            };
-            let secret_access_key = match secret.secret_access_key.filter(|s| !s.trim().is_empty())
-            {
-                Some(v) => v,
-                None => return Ok(None),
-            };
-            Ok(Some(ResolvedAwsCredentials {
-                account_label: meta.account_label,
-                auth_method: meta.auth_method,
-                account_id: meta.account_id,
-                arn: meta.arn,
-                region: meta.region,
-                access_key_id: Some(access_key_id),
-                secret_access_key: Some(secret_access_key),
-                session_token: secret.session_token.filter(|s| !s.trim().is_empty()),
-                profile_name: None,
-            }))
-        }
-        "profile" => {
-            let profile_name = match meta.profile_name.clone().filter(|s| !s.trim().is_empty()) {
-                Some(v) => v,
-                None => return Ok(None),
-            };
-            // Serve fresh-enough cached creds without spawning `aws`.
-            let now = chrono::Utc::now().timestamp();
-            if let Some(sec) = get_cached_aws_secret(&profile_name, now) {
-                return Ok(Some(resolved_from_minted(&meta, sec)));
-            }
-            // Miss/stale → mint fresh temporary credentials (also refreshes the
-            // SSO token when possible). Propagates AWS_SSO_LOGIN_REQUIRED so the
-            // socket layer can render an actionable deny reason.
-            let sec = export_aws_credentials(&profile_name, &meta.region).await?;
-            put_cached_aws_secret(&profile_name, &sec);
-            Ok(Some(resolved_from_minted(&meta, sec)))
-        }
-        _ => Ok(None),
+    // Only profile-based accounts are supported. The broker mints fresh temporary
+    // credentials from the linked CLI profile (refreshing the SSO token when
+    // possible) and serves them through the shim's access-key path.
+    if meta.auth_method != "profile" {
+        return Ok(None);
     }
+    let profile_name = match meta.profile_name.clone().filter(|s| !s.trim().is_empty()) {
+        Some(v) => v,
+        None => return Ok(None),
+    };
+    // Serve fresh-enough cached creds without spawning `aws`.
+    let now = chrono::Utc::now().timestamp();
+    if let Some(sec) = get_cached_aws_secret(&profile_name, now) {
+        return Ok(Some(resolved_from_minted(&meta, sec)));
+    }
+    // Miss/stale → mint fresh temporary credentials (also refreshes the SSO token
+    // when possible). Propagates AWS_SSO_LOGIN_REQUIRED so the socket layer can
+    // render an actionable deny reason.
+    let sec = export_aws_credentials(&profile_name, &meta.region).await?;
+    put_cached_aws_secret(&profile_name, &sec);
+    Ok(Some(resolved_from_minted(&meta, sec)))
 }
 
 /// Resolve non-secret AWS metadata for prompt/context and per-run env setup.
@@ -551,8 +528,7 @@ pub async fn resolve_aws_runtime_metadata(
     project_id: &str,
 ) -> Result<Option<AwsRuntimeMetadata>, String> {
     let row = sqlx::query(
-        "SELECT a.id, a.label, a.auth_method, a.account_id, a.arn, a.region, \
-                a.access_key_id, a.profile_name \
+        "SELECT a.label, a.auth_method, a.account_id, a.arn, a.region, a.profile_name \
          FROM projects p \
          JOIN aws_accounts a ON a.id = p.aws_account_id \
          WHERE p.id = ?",
@@ -567,13 +543,11 @@ pub async fn resolve_aws_runtime_metadata(
     };
 
     Ok(Some(AwsRuntimeMetadata {
-        account_db_id: row.get("id"),
         account_label: row.get("label"),
         auth_method: row.get("auth_method"),
         account_id: row.get("account_id"),
         arn: row.get("arn"),
         region: row.get("region"),
-        access_key_id: row.get("access_key_id"),
         profile_name: row.get("profile_name"),
     }))
 }
