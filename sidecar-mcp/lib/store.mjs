@@ -16,6 +16,11 @@ function db() {
   const dbPath = process.env.DEVDY_DB_PATH;
   if (!dbPath) throw new Error('DEVDY_DB_PATH is not set — cannot open Devdy store');
   handle = new DatabaseSync(dbPath);
+  // The conductor runs several sidecar processes at once, each with its own
+  // connection into the same data.db. Without a busy timeout, concurrent writers
+  // (e.g. two workers appending to the shared master note) would fail with
+  // SQLITE_BUSY instead of serializing; wait for the lock instead.
+  handle.exec('PRAGMA busy_timeout = 5000');
   return handle;
 }
 
@@ -133,23 +138,52 @@ export function createNote({ title = '', content = '', scope = 'project' } = {})
 export function updateNote({ id, title, content } = {}) {
   const existing = readNote(id);
   if (!existing) throw new Error(`note not found: ${id}`);
-  const t = title != null ? String(title).trim() : existing.title;
-  const c = content != null ? String(content).trim() : existing.content;
-  if (!t && !c) throw new Error('a title or content is required');
+  const t = title != null ? String(title).trim() : null;
+  const c = content != null ? String(content).trim() : null;
+  if (t == null && c == null) throw new Error('a title or content is required');
+  // Don't let a partial update empty the note entirely.
+  if ((t != null ? t : existing.title) === '' && (c != null ? c : existing.content) === '') {
+    throw new Error('a title or content is required');
+  }
   const now = nowIso();
-  db().prepare('UPDATE notes SET title = ?, content = ?, updated_at = ? WHERE id = ?').run(t, c, now, id);
-  return { id, title: t, content: c, updated_at: now };
+  // COALESCE so an omitted field keeps its current DB value atomically. Resolving
+  // omitted fields from a prior read and writing them all back is a read-modify-
+  // write: a partial update (e.g. title only) would rewrite `content` with the
+  // value it read, silently clobbering a content change a concurrent writer just
+  // committed. Passing NULL for omitted fields leaves that column untouched.
+  db()
+    .prepare(
+      'UPDATE notes SET title = COALESCE(?, title), content = COALESCE(?, content), updated_at = ? WHERE id = ?',
+    )
+    .run(t, c, now, id);
+  const row = readNote(id);
+  return { id, title: row.title, content: row.content, updated_at: now };
 }
 
 export function appendNote({ id, text } = {}) {
-  const existing = readNote(id);
-  if (!existing) throw new Error(`note not found: ${id}`);
+  if (!id) throw new Error('note id is required');
   const add = String(text || '').trim();
   if (!add) throw new Error('text is required');
-  const content = existing.content ? `${existing.content}\n\n${add}` : add;
   const now = nowIso();
-  db().prepare('UPDATE notes SET content = ?, updated_at = ? WHERE id = ?').run(content, now, id);
-  return { id, content, updated_at: now };
+  // Concatenate inside the UPDATE so the read and write are one atomic statement.
+  // A read-modify-write in JS (read content, append in memory, write back) lets a
+  // concurrent writer clobber us: two workers both read the old content and the
+  // second write wins, silently dropping the first append. Doing `content || ...`
+  // in SQL means SQLite holds the write lock for the whole read-append-write.
+  const res = db()
+    .prepare(
+      `UPDATE notes
+          SET content = CASE
+                WHEN content IS NULL OR content = '' THEN ?
+                ELSE content || char(10) || char(10) || ?
+              END,
+              updated_at = ?
+        WHERE id = ?`,
+    )
+    .run(add, add, now, id);
+  if (res.changes === 0) throw new Error(`note not found: ${id}`);
+  const row = db().prepare('SELECT content FROM notes WHERE id = ?').get(id);
+  return { id, content: row.content, updated_at: now };
 }
 
 /** Substring search over title + content. `%`/`_`/`\` in the query are literal. */
@@ -537,10 +571,12 @@ export function updateSkill({ id, name, description, target, content } = {}) {
     .prepare('SELECT id, name, description, target, source_path FROM skills WHERE id = ?')
     .get(id);
   if (!row) throw new Error(`skill not found: ${id}`);
+  // null = field omitted → keep current value (COALESCE below), so an omitted
+  // field can't clobber a concurrent writer's change to it.
+  const descParam = description != null ? String(description).trim() : null;
+  if (descParam === '') throw new Error('description cannot be empty');
+  const targetParam = target != null ? validateTarget(target) : null;
   const newName = name != null ? validateLibName(name, 'skill') : row.name;
-  const newTarget = target != null ? validateTarget(target) : row.target;
-  const newDesc = description != null ? String(description).trim() : row.description;
-  if (!newDesc) throw new Error('description cannot be empty');
   if (newName !== row.name && db().prepare('SELECT id FROM skills WHERE name = ? AND id != ?').get(newName, id)) {
     throw new Error(`skill '${newName}' already exists`);
   }
@@ -552,10 +588,15 @@ export function updateSkill({ id, name, description, target, content } = {}) {
   if (content != null) writeFileSync(join(sourcePath, 'SKILL.md'), String(content));
   const now = nowIso();
   db()
-    .prepare('UPDATE skills SET name = ?, description = ?, target = ?, source_path = ?, updated_at = ? WHERE id = ?')
-    .run(newName, newDesc, newTarget, sourcePath, now, id);
+    .prepare(
+      'UPDATE skills SET name = ?, description = COALESCE(?, description), target = COALESCE(?, target), source_path = ?, updated_at = ? WHERE id = ?',
+    )
+    .run(newName, descParam, targetParam, sourcePath, now, id);
+  const updated = db()
+    .prepare('SELECT id, name, description, target, source_path, updated_at FROM skills WHERE id = ?')
+    .get(id);
   return {
-    skill: { id, name: newName, description: newDesc, target: newTarget, source_path: sourcePath, updated_at: now },
+    skill: updated,
     renamed: newName !== row.name,
     applied: appliedProjects('skill', id),
   };
@@ -719,10 +760,12 @@ export function updateRule({ id, name, description, target, content } = {}) {
     .prepare('SELECT id, name, description, target, source_path FROM rules WHERE id = ?')
     .get(id);
   if (!row) throw new Error(`rule not found: ${id}`);
+  // null = field omitted → keep current value (COALESCE below), so an omitted
+  // field can't clobber a concurrent writer's change to it.
+  const descParam = description != null ? String(description).trim() : null;
+  if (descParam === '') throw new Error('description cannot be empty');
+  const targetParam = target != null ? validateTarget(target) : null;
   const newName = name != null ? validateLibName(name, 'rule') : row.name;
-  const newTarget = target != null ? validateTarget(target) : row.target;
-  const newDesc = description != null ? String(description).trim() : row.description;
-  if (!newDesc) throw new Error('description cannot be empty');
   if (newName !== row.name && db().prepare('SELECT id FROM rules WHERE name = ? AND id != ?').get(newName, id)) {
     throw new Error(`rule '${newName}' already exists`);
   }
@@ -734,10 +777,15 @@ export function updateRule({ id, name, description, target, content } = {}) {
   if (content != null) writeFileSync(sourcePath, String(content));
   const now = nowIso();
   db()
-    .prepare('UPDATE rules SET name = ?, description = ?, target = ?, source_path = ?, updated_at = ? WHERE id = ?')
-    .run(newName, newDesc, newTarget, sourcePath, now, id);
+    .prepare(
+      'UPDATE rules SET name = ?, description = COALESCE(?, description), target = COALESCE(?, target), source_path = ?, updated_at = ? WHERE id = ?',
+    )
+    .run(newName, descParam, targetParam, sourcePath, now, id);
+  const updated = db()
+    .prepare('SELECT id, name, description, target, source_path, updated_at FROM rules WHERE id = ?')
+    .get(id);
   return {
-    rule: { id, name: newName, description: newDesc, target: newTarget, source_path: sourcePath, updated_at: now },
+    rule: updated,
     renamed: newName !== row.name,
     applied: appliedProjects('rule', id),
   };
