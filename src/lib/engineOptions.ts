@@ -11,6 +11,13 @@ export interface SelectOption {
   description?: string
 }
 
+/** A row in the unified model picker: a concrete model carries the engine it
+ * runs on; `header` rows are non-selectable group titles ("Claude" / "Codex"). */
+export interface CombinedOption extends SelectOption {
+  engine?: string
+  header?: boolean
+}
+
 // Model choices depend on the engine. Empty value = let the engine/setting decide.
 //
 // The Claude list is PINNED to exact wire ids rather than family aliases
@@ -40,6 +47,43 @@ export const MODEL_OPTIONS: Record<string, SelectOption[]> = {
     { value: 'gpt-5.2-codex', label: 'gpt-5.2-codex' },
     { value: 'gpt-5.1-codex-mini', label: 'gpt-5.1-codex-mini' },
   ],
+}
+
+/**
+ * Flatten the per-engine Claude + Codex lists into ONE grouped picker, so the
+ * composer needs a single model pick and no separate engine selector — the
+ * engine is implied by the chosen model. The leading entry is the global Default
+ * (empty value + empty engine = follow settings); each group is preceded by a
+ * non-selectable header. Callers pass lists already annotated for their context
+ * (validation marks on desktop, discovered Codex models on both).
+ */
+export function combinedModelOptions(args: {
+  claude: SelectOption[]
+  codex: SelectOption[]
+  defaultLabel: string
+  claudeLabel: string
+  codexLabel: string
+}): CombinedOption[] {
+  const strip = (opts: SelectOption[]) => opts.filter((o) => o.value !== '')
+  const out: CombinedOption[] = [{ value: '', engine: '', label: args.defaultLabel }]
+  const claude = strip(args.claude)
+  if (claude.length) {
+    out.push({ value: '__group:claude', label: args.claudeLabel, header: true })
+    for (const o of claude) out.push({ ...o, engine: 'claude' })
+  }
+  const codex = strip(args.codex)
+  if (codex.length) {
+    out.push({ value: '__group:codex', label: args.codexLabel, header: true })
+    for (const o of codex) out.push({ ...o, engine: 'codex' })
+  }
+  return out
+}
+
+/** Engine a picked model belongs to, looked up in a combined list. Empty value
+ * (Default) returns '' — the caller then falls back to the global default. */
+export function engineForModel(model: string, opts: CombinedOption[]): string {
+  if (!model) return ''
+  return opts.find((o) => !o.header && o.value === model)?.engine || ''
 }
 
 export const PERMISSION_MODE_OPTIONS: SelectOption[] = [

@@ -56,6 +56,12 @@ export interface RunRecord {
   ref_number: number | null
   status: 'fetched' | 'running' | 'done' | 'failed' | 'cancelled'
   engine: string
+  /**
+   * Model the run executes with, resolved at start/resume (per-run override else
+   * the engine default). Null until the run has started, or when the engine used
+   * its own default. Lets the History list and composer show the applied model.
+   */
+  model: string | null
   input_path: string | null
   output_path: string | null
   session_id: string | null
@@ -291,6 +297,27 @@ export const useRunsStore = defineStore('runs', () => {
   }
 
   /**
+   * Every `type: "user"` prompt in the run, pruned to just text/image stubs,
+   * each with the byte offset it starts at (so the viewer can jump straight to
+   * it with a forward read). Scanned in Rust so the whole log never crosses IPC
+   * — see `get_run_user_records`. Backs the turn navigator, which has to list
+   * every prompt even though the viewer only loads a window.
+   */
+  async function getRunUserRecords(run_id: string): Promise<{ offset: number; json: string }[]> {
+    const r = await invoke<{ records: { offset: number; json: string }[] }>('get_run_user_records', { runId: run_id })
+    return r.records
+  }
+
+  /**
+   * One window of records reading FORWARD from `after` (a cursor from a previous
+   * read). Pairs with `getRunLogPage` (which reads backward) to append as the
+   * reader scrolls down and to load a fresh window at a jumped-to byte offset.
+   */
+  async function getRunLogForward(run_id: string, after: number, limit?: number): Promise<RunLogPage> {
+    return invoke<RunLogPage>('get_run_log_forward', { runId: run_id, after, limit })
+  }
+
+  /**
    * One window of log records, newest last. Omit `before` for the newest page;
    * pass a previous response's `cursor` to walk backwards.
    */
@@ -406,8 +433,17 @@ export const useRunsStore = defineStore('runs', () => {
 
   async function deleteAllRuns(project_id: string): Promise<number> {
     const count = await invoke<number>('delete_all_runs', { projectId: project_id })
-    // Mirror the backend: keep running runs (never deleted) and protected runs.
-    runs.value = runs.value.filter(r => r.status === 'running' || r.protected)
+    // Mirror the backend: keep running runs (never deleted), protected runs, and
+    // workers whose conductor is protected (protection cascades to its workers).
+    const protectedIds = new Set(
+      runs.value.filter(r => r.protected).map(r => r.id),
+    )
+    runs.value = runs.value.filter(
+      r =>
+        r.status === 'running' ||
+        r.protected ||
+        (r.conductor_run_id != null && protectedIds.has(r.conductor_run_id)),
+    )
     return count
   }
 
@@ -476,7 +512,7 @@ export const useRunsStore = defineStore('runs', () => {
     runs, loading, loadedProjectId, runMeta,
     fetchRuns, fetchIssue, fetchPr,
     startRun, rerunRun, refetchRun, cancelRun, resumeRun,
-    getRunLog, getRunLogRevision, getRunLogPage, getRunLogPath, getRunToolRecords, readRunInput,
+    getRunLog, getRunLogRevision, getRunLogPage, getRunLogForward, getRunLogPath, getRunToolRecords, getRunUserRecords, readRunInput,
     respondPermission, sendUserMessage, endRunInput,
     listProjectFiles, readProjectFile, writeProjectFile, listDir,
     createDir, createFile, renameEntry, deleteEntry, copyEntry, moveEntry,

@@ -8,6 +8,9 @@ interface Option {
   label: string
   /** Optional dimmed second line shown under the label in the dropdown. */
   description?: string
+  /** A non-selectable section header (e.g. "Claude" / "Codex"). Skipped by
+   * keyboard navigation and ignored by selection. */
+  header?: boolean
 }
 
 const props = withDefaults(defineProps<{
@@ -79,11 +82,15 @@ const displayLabel = computed(() =>
   selectedOption.value?.label ?? props.placeholder
 )
 
+function isSelectable(i: number): boolean {
+  return !props.options[i]?.header
+}
+
 function open() {
   if (props.disabled) return
   isOpen.value = true
-  highlightedIndex.value = props.options.findIndex(o => o.value === props.modelValue)
-  if (highlightedIndex.value < 0) highlightedIndex.value = 0
+  highlightedIndex.value = props.options.findIndex(o => !o.header && o.value === props.modelValue)
+  if (highlightedIndex.value < 0) highlightedIndex.value = props.options.findIndex(o => !o.header)
   updatePosition()
   nextTick(() => scrollHighlightedIntoView())
 }
@@ -104,6 +111,21 @@ function select(value: string) {
   triggerRef.value?.focus()
 }
 
+/** Step the highlight to the next selectable row, skipping header rows. */
+function moveHighlight(dir: 1 | -1) {
+  const n = props.options.length
+  let i = highlightedIndex.value
+  for (let step = 0; step < n; step++) {
+    i += dir
+    if (i < 0 || i >= n) return
+    if (isSelectable(i)) {
+      highlightedIndex.value = i
+      scrollHighlightedIntoView()
+      return
+    }
+  }
+}
+
 function scrollHighlightedIntoView() {
   if (!listRef.value) return
   const el = listRef.value.children[highlightedIndex.value] as HTMLElement | undefined
@@ -121,18 +143,18 @@ function onKeydown(e: KeyboardEvent) {
   switch (e.key) {
     case 'ArrowDown':
       e.preventDefault()
-      highlightedIndex.value = Math.min(highlightedIndex.value + 1, props.options.length - 1)
-      scrollHighlightedIntoView()
+      moveHighlight(1)
       break
     case 'ArrowUp':
       e.preventDefault()
-      highlightedIndex.value = Math.max(highlightedIndex.value - 1, 0)
-      scrollHighlightedIntoView()
+      moveHighlight(-1)
       break
     case 'Enter':
     case ' ':
       e.preventDefault()
-      if (highlightedIndex.value >= 0) select(props.options[highlightedIndex.value].value)
+      if (highlightedIndex.value >= 0 && isSelectable(highlightedIndex.value)) {
+        select(props.options[highlightedIndex.value].value)
+      }
       break
     case 'Escape':
     case 'Tab':
@@ -230,37 +252,44 @@ watch(isOpen, (val) => {
         tabindex="-1"
         @keydown="onKeydown"
       >
-        <li
-          v-for="(option, i) in options"
-          :key="option.value"
-          role="option"
-          :aria-selected="option.value === modelValue"
-          class="relative flex items-start gap-2 cursor-pointer select-none transition-colors"
-          :class="[
-            size === 'sm' ? controlSize.sm : controlSize.md,
-            highlightedIndex === i
-              ? 'bg-accent text-accent-foreground'
-              : 'text-foreground',
-          ]"
-          @mouseenter="highlightedIndex = i"
-          @mouseleave="highlightedIndex = -1"
-          @mousedown.prevent="select(option.value)"
-        >
-          <Check
-            class="shrink-0 text-primary mt-0.5"
+        <template v-for="(option, i) in options" :key="option.value">
+          <!-- Non-selectable section header -->
+          <li
+            v-if="option.header"
+            role="presentation"
+            class="px-2 pt-2 pb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground select-none"
+          >{{ option.label }}</li>
+          <li
+            v-else
+            role="option"
+            :aria-selected="option.value === modelValue"
+            class="relative flex items-start gap-2 cursor-pointer select-none transition-colors"
             :class="[
-              option.value === modelValue ? 'opacity-100' : 'opacity-0',
-              size === 'sm' ? 'h-3 w-3' : 'h-3.5 w-3.5',
+              size === 'sm' ? controlSize.sm : controlSize.md,
+              highlightedIndex === i
+                ? 'bg-accent text-accent-foreground'
+                : 'text-foreground',
             ]"
-            :stroke-width="2.5"
-          />
-          <span class="flex min-w-0 flex-col">
-            <span class="truncate">{{ option.label }}</span>
-            <span v-if="option.description" class="truncate text-[11px] leading-tight text-muted-foreground">
-              {{ option.description }}
+            @mouseenter="highlightedIndex = i"
+            @mouseleave="highlightedIndex = -1"
+            @mousedown.prevent="select(option.value)"
+          >
+            <Check
+              class="shrink-0 text-primary mt-0.5"
+              :class="[
+                option.value === modelValue ? 'opacity-100' : 'opacity-0',
+                size === 'sm' ? 'h-3 w-3' : 'h-3.5 w-3.5',
+              ]"
+              :stroke-width="2.5"
+            />
+            <span class="flex min-w-0 flex-col">
+              <span class="truncate">{{ option.label }}</span>
+              <span v-if="option.description" class="truncate text-[11px] leading-tight text-muted-foreground">
+                {{ option.description }}
+              </span>
             </span>
-          </span>
-        </li>
+          </li>
+        </template>
       </ul>
     </Transition>
     </Teleport>

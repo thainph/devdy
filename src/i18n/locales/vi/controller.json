@@ -35,8 +35,9 @@
     "claudeAccountSetting": "Tài khoản Claude",
     "permissionSetting": "Quyền",
     "modelSetting": "Model",
+    "modelDefault": "Mặc định (theo cài đặt)",
     "globalClaudeAccount": "Chung (~/.claude)",
-    "accountDefault": "mặc định",
+    "claudeAccountDefaultWith": "Mặc định · {account}",
     "settingsLockedRunning": "Không đổi được thiết lập khi run đang chạy"
   },
   "session": {

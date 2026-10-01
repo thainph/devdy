@@ -20,6 +20,8 @@ import { Button, AppSelect } from '@/components/ui'
 const { t } = useI18n()
 import {
   effectiveModelOptions,
+  combinedModelOptions,
+  engineForModel,
   PERMISSION_MODE_OPTIONS,
   type FetchedModel,
   type SelectOption,
@@ -94,16 +96,23 @@ const composerEl = ref<HTMLTextAreaElement | null>(null)
 const imageInputEl = ref<HTMLInputElement | null>(null)
 const fileInputEl = ref<HTMLInputElement | null>(null)
 
-// ── engine/model options ──────────────────────────────────────────────────
-const engineOptions = computed<SelectOption[]>(() => [
-  { value: '', label: t('controller.composer.defaultEngine') },
-  { value: 'claude', label: 'claude' },
-  { value: 'codex', label: 'codex' },
-])
-// The curated Claude table, or the Host's discovered Codex catalog — the same
-// resolution the desktop composer does, so the two selectors never disagree.
+// ── unified model picker ───────────────────────────────────────────────────
+// One grouped list of Claude + Codex models (the engine is implied by the pick),
+// mirroring the desktop composer so the two never disagree. The leading Default
+// entry follows the Host's settings.
 const modelOptions = computed(() =>
-  effectiveModelOptions(props.engine || 'claude', props.discoveredModels),
+  combinedModelOptions({
+    claude: effectiveModelOptions('claude', props.discoveredModels),
+    codex: effectiveModelOptions('codex', props.discoveredModels),
+    defaultLabel: t('controller.composer.modelDefault'),
+    claudeLabel: 'Claude',
+    codexLabel: 'Codex',
+  }),
+)
+// Engine implied by the current pick; falls back to the run's engine (from Host
+// meta) when Default is selected, so Claude-only UI still keys off the right one.
+const selectedEngine = computed(
+  () => engineForModel(props.model, modelOptions.value) || props.engine || 'claude',
 )
 
 // ── run-settings popover ──────────────────────────────────────────────────
@@ -129,25 +138,31 @@ onUnmounted(() => document.removeEventListener('mousedown', onSettingsPointerDow
  * actually manages some (or the run already points at one). */
 const showAccountSelect = computed(
   () =>
-    (props.engine || 'claude') === 'claude' &&
+    selectedEngine.value === 'claude' &&
     (props.claudeAccounts.length > 0 || !!props.claudeAccountId),
 )
 
 const accountOptions = computed<SelectOption[]>(() => {
   const opts: SelectOption[] = props.claudeAccounts.map((a) => ({
     value: a.id,
-    label:
-      a.label +
-      (a.is_default ? ` (${t('controller.composer.accountDefault')})` : '') +
-      (a.email ? ` · ${a.email}` : ''),
+    label: a.label + (a.email ? ` · ${a.email}` : ''),
   }))
   // An account the Host no longer lists (revoked/renamed) must still render, or
   // the selector would silently show someone else's account as selected.
   if (props.claudeAccountId && !opts.some((o) => o.value === props.claudeAccountId)) {
     opts.unshift({ value: props.claudeAccountId, label: props.claudeAccountId })
   }
-  opts.unshift({ value: '', label: t('controller.composer.globalClaudeAccount') })
+  // One Default tier (empty = let the Host follow its settings), surfacing the
+  // configured default account so the choice is never opaque — mirrors desktop.
+  opts.unshift({ value: '', label: defaultAccountLabel.value })
   return opts
+})
+
+const defaultAccountLabel = computed(() => {
+  const def = props.claudeAccounts.find((a) => a.is_default)
+  return def
+    ? t('controller.composer.claudeAccountDefaultWith', { account: def.label })
+    : t('controller.composer.globalClaudeAccount')
 })
 
 /** Trigger-button label: the engine, or the account when one is chosen — that is
@@ -155,19 +170,14 @@ const accountOptions = computed<SelectOption[]>(() => {
 const settingsBadge = computed(() => {
   const acct = props.claudeAccounts.find((a) => a.id === props.claudeAccountId)
   if (acct) return acct.label
-  return props.engine || 'claude'
+  return selectedEngine.value
 })
 
-function onEngineChange(next: string): void {
-  emit('update:engine', next)
-  // Reset the model when it isn't valid for the new engine (desktop parity).
-  if (
-    !effectiveModelOptions(next || 'claude', props.discoveredModels).some(
-      (o) => o.value === props.model,
-    )
-  ) {
-    emit('update:model', '')
-  }
+// Picking a model drives the engine too: Default (empty) follows the Host's
+// settings, a concrete pick sends its engine alongside.
+function onModelSelect(value: string): void {
+  emit('update:engine', engineForModel(value, modelOptions.value))
+  emit('update:model', value)
 }
 
 // ── attachments (base64 images) + file references ─────────────────────────
@@ -715,14 +725,16 @@ function onKeydown(e: KeyboardEvent): void {
               >
                 <div class="space-y-1.5">
                   <p class="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                    {{ t('controller.composer.engineSetting') }}
+                    {{ t('controller.composer.modelSetting') }}
                   </p>
                   <AppSelect
-                    :model-value="engine"
+                    :model-value="model"
                     size="sm"
-                    :options="engineOptions"
+                    :options="modelOptions"
+                    :disabled="running"
                     class="h-8 w-full"
-                    @update:model-value="onEngineChange"
+                    :title="t('controller.composer.modelTitle')"
+                    @update:model-value="onModelSelect"
                   />
                 </div>
 
@@ -754,21 +766,6 @@ function onKeydown(e: KeyboardEvent): void {
                     class="h-8 w-full"
                     :title="t('controller.composer.permTitle')"
                     @update:model-value="emit('update:permissionMode', $event)"
-                  />
-                </div>
-
-                <div class="space-y-1.5">
-                  <p class="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                    {{ t('controller.composer.modelSetting') }}
-                  </p>
-                  <AppSelect
-                    :model-value="model"
-                    size="sm"
-                    :options="modelOptions"
-                    :disabled="running"
-                    class="h-8 w-full"
-                    :title="t('controller.composer.modelTitle')"
-                    @update:model-value="emit('update:model', $event)"
                   />
                 </div>
               </div>

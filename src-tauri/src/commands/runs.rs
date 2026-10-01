@@ -313,12 +313,15 @@ pub(crate) async fn start_run_inner(
     fs::create_dir_all(&runs_dir).map_err(|e| e.to_string())?;
     let log_path = runs_dir.join(format!("{}.log", payload.run_id));
 
-    // Update run status to running
+    // Update run status to running. Persist the resolved model so the History
+    // list and composer can show which model the session actually runs on
+    // (NULL means the engine's own default was used).
     let started_at = chrono::Utc::now().to_rfc3339();
     sqlx::query(
-        "UPDATE runs SET status = 'running', engine = ?, started_at = ?, last_activity_at = ? WHERE id = ?",
+        "UPDATE runs SET status = 'running', engine = ?, model = ?, started_at = ?, last_activity_at = ? WHERE id = ?",
     )
     .bind(&engine)
+    .bind(&model)
     .bind(&started_at)
     .bind(&started_at)
     .bind(&payload.run_id)
@@ -1625,6 +1628,71 @@ fn read_records_backwards(
     Ok((records, cursor))
 }
 
+/// Forward sibling of `read_records_backwards`: whole records starting AT `after`
+/// (a record boundary — a cursor from a previous read) reading toward EOF.
+/// Returns the records and the byte offset just past the last one, which the
+/// next forward read resumes from.
+fn read_records_forward(
+    path: &Path,
+    after: u64,
+    max_records: usize,
+    max_bytes: u64,
+) -> std::io::Result<(Vec<String>, u64)> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut f = fs::File::open(path)?;
+    let len = f.metadata()?.len();
+    let start = after.min(len);
+    if start >= len || max_records == 0 {
+        return Ok((Vec::new(), len));
+    }
+    f.seek(SeekFrom::Start(start))?;
+
+    const CHUNK: usize = 64 * 1024;
+    let mut chunk = vec![0u8; CHUNK];
+    let mut buf: Vec<u8> = Vec::new();
+    let mut records: Vec<String> = Vec::new();
+    // Bytes of COMPLETE records consumed (newline included), so the cursor lands
+    // on the next record's first byte.
+    let mut consumed: u64 = 0;
+    let mut done = false;
+
+    while !done {
+        let n = f.read(&mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        while let Some(pos) = buf.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = buf.drain(..=pos).collect();
+            consumed += line.len() as u64;
+            let s = String::from_utf8_lossy(&line[..line.len() - 1])
+                .trim_end_matches('\r')
+                .to_string();
+            if !s.is_empty() {
+                records.push(s);
+            }
+            if records.len() >= max_records || (consumed >= max_bytes && !records.is_empty()) {
+                done = true;
+                break;
+            }
+        }
+    }
+    // The file's final record isn't newline-terminated — include it if there's
+    // still room (and we didn't already stop on a limit).
+    if !done && records.len() < max_records && !buf.is_empty() {
+        let s = String::from_utf8_lossy(&buf)
+            .trim_end_matches('\r')
+            .to_string();
+        if !s.is_empty() {
+            consumed += buf.len() as u64;
+            records.push(s);
+        }
+    }
+
+    Ok((records, start + consumed))
+}
+
 /// Read a bounded window of a run's log instead of the whole file.
 ///
 /// `before = None` means "the newest records". To page backwards, pass the
@@ -1668,6 +1736,51 @@ pub async fn get_run_log_page(
         cursor,
         has_more,
         preamble,
+        revision,
+    })
+}
+
+/// One window of log records reading FORWARD from `after` (a cursor from an
+/// earlier read), newest last. Backs appending as the reader scrolls down past
+/// the loaded window and the "jump to an old prompt" path, which loads a fresh
+/// window starting at the prompt's byte offset instead of paging from the tail.
+#[tauri::command]
+pub async fn get_run_log_forward(
+    db: State<'_, Db>,
+    run_id: String,
+    after: u64,
+    limit: Option<usize>,
+) -> Result<RunLogPage, String> {
+    const DEFAULT_LIMIT: usize = 120;
+    const MAX_LIMIT: usize = 500;
+    const MAX_BYTES: u64 = 4 * 1024 * 1024;
+
+    let row = fetch_run_log_row(db.inner(), &run_id).await?;
+    let revision = build_revision(&row, &run_id);
+    let Some(path) = revision.path.as_ref().map(PathBuf::from) else {
+        return Ok(RunLogPage {
+            records: Vec::new(),
+            cursor: after,
+            has_more: false,
+            preamble: None,
+            revision,
+        });
+    };
+
+    let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+    let (records, cursor) = read_records_forward(&path, after, limit, MAX_BYTES)
+        .map_err(|e| format!("read log: {}", e))?;
+    // `cursor` is the offset past the last record; anything beyond it is older
+    // content still on disk. The preamble (model id) is only needed by a tail
+    // window that can't see the top of the file — a forward window above it will
+    // already carry `system.init`, and a mid-file jump is seeded by the caller.
+    let has_more = cursor < revision.size;
+
+    Ok(RunLogPage {
+        records,
+        cursor,
+        has_more,
+        preamble: None,
         revision,
     })
 }
@@ -1786,6 +1899,152 @@ pub async fn get_run_tool_records(
     }
 
     Ok(RunToolRecords { records, revision })
+}
+
+/// One pruned `type: "user"` record plus the byte offset it starts at, so the
+/// viewer can jump straight to it with a forward read instead of paging back.
+#[derive(Debug, Serialize)]
+pub struct UserRecord {
+    pub offset: u64,
+    pub json: String,
+}
+
+/// The `type: "user"` records of a run, pruned to just what the turn navigator
+/// needs. One per record, in chronological order.
+#[derive(Debug, Serialize)]
+pub struct RunUserRecords {
+    pub records: Vec<UserRecord>,
+    pub revision: RunLogRevision,
+}
+
+/// Longest user-text kept per block. A preview only ever shows the first ~160
+/// chars (see `turnLabel`), so anything beyond a small bound is dead weight.
+const USER_TEXT_MAX: usize = 4000;
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        s.chars().take(max).collect()
+    }
+}
+
+/// Prune a `type: "user"` record down to what the frontend turn navigator reads.
+///
+/// Keeps every top-level field (so `isCompactSummary` and friends still drive the
+/// SAME frontend detection) but strips the message content to text + image
+/// placeholders: `tool_result` blocks (the SDK's echo of tool output — often
+/// whole file reads) are dropped, and an image block's multi-MB base64 payload is
+/// replaced with a stub so an image-only turn still registers without shipping
+/// the bytes. Returns the record re-serialised as one JSON line.
+fn prune_user_record(mut v: serde_json::Value) -> String {
+    use serde_json::{json, Value};
+    if let Some(msg) = v.get_mut("message").and_then(|m| m.as_object_mut()) {
+        if let Some(content) = msg.remove("content") {
+            let pruned = match content {
+                Value::String(s) => Value::String(truncate_chars(&s, USER_TEXT_MAX)),
+                Value::Array(blocks) => {
+                    let mut kept: Vec<Value> = Vec::new();
+                    for block in &blocks {
+                        match block.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+                            "text" => {
+                                let text = block.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                                kept.push(json!({
+                                    "type": "text",
+                                    "text": truncate_chars(text, USER_TEXT_MAX),
+                                }));
+                            }
+                            "image" => {
+                                let media = block
+                                    .get("source")
+                                    .and_then(|s| s.get("media_type"))
+                                    .and_then(|m| m.as_str())
+                                    .unwrap_or("image/png");
+                                kept.push(json!({
+                                    "type": "image",
+                                    "source": { "type": "base64", "media_type": media, "data": "x" },
+                                }));
+                            }
+                            // tool_result and anything else carry no user text.
+                            _ => {}
+                        }
+                    }
+                    Value::Array(kept)
+                }
+                other => other,
+            };
+            msg.insert("content".to_string(), pruned);
+        }
+    }
+    v.to_string()
+}
+
+/// Scan a whole log for the user's own prompts, WITHOUT sending the log to the
+/// frontend. Backs the turn navigator, which must reflect every prompt in the
+/// session — the run viewer only loads a tail window, so deriving the list from
+/// what's on screen under-reports (a single turn spans many tool records).
+///
+/// Returns the pruned `type: "user"` records in their original shape so the
+/// existing `parseStreamLogWindow` logic runs on them unchanged (compaction
+/// summaries, slash-command messages and tool_result-only echoes are filtered
+/// there, exactly as in the main view) — no risk of a Rust reimplementation
+/// drifting from the TypeScript.
+#[tauri::command]
+pub async fn get_run_user_records(
+    db: State<'_, Db>,
+    run_id: String,
+) -> Result<RunUserRecords, String> {
+    use serde_json::Value;
+    use std::io::{BufRead, BufReader};
+
+    let row = fetch_run_log_row(db.inner(), &run_id).await?;
+    let revision = build_revision(&row, &run_id);
+    let Some(path) = revision.path.as_ref().map(PathBuf::from) else {
+        return Ok(RunUserRecords {
+            records: Vec::new(),
+            revision,
+        });
+    };
+
+    let file = fs::File::open(&path).map_err(|e| format!("open log: {}", e))?;
+    let mut reader = BufReader::with_capacity(256 * 1024, file);
+    let mut records: Vec<UserRecord> = Vec::new();
+
+    // Track the byte offset of each line start — `read_until` keeps the raw bytes
+    // (newline included) so the running total matches what the forward reader
+    // seeks to.
+    let mut offset: u64 = 0;
+    let mut raw: Vec<u8> = Vec::new();
+    loop {
+        raw.clear();
+        let n = reader
+            .read_until(b'\n', &mut raw)
+            .map_err(|e| format!("read log: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        let start = offset;
+        offset += n as u64;
+
+        let line = String::from_utf8_lossy(&raw[..n]);
+        let line = line.trim_end_matches('\n').trim_end_matches('\r');
+        // Cheap substring reject before paying for a JSON parse.
+        if !line.contains("\"user\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) != Some("user") {
+            continue;
+        }
+        records.push(UserRecord {
+            offset: start,
+            json: prune_user_record(v),
+        });
+    }
+
+    Ok(RunUserRecords { records, revision })
 }
 
 /// Source-run fields needed to clone a run into a new `fetched` record.
@@ -2006,6 +2265,7 @@ pub async fn rerun_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord, S
         ref_number: src.ref_number,
         status: "fetched".to_string(),
         engine: src.engine,
+        model: None,
         input_path: Some(src.resolved_input.clone()),
         output_path: Some(src.resolved_input),
         session_id: None,
@@ -2090,6 +2350,7 @@ pub async fn create_handoff_run(
             ref_number: src.ref_number,
             status: "fetched".to_string(),
             engine: target_engine,
+            model: None,
             input_path: src.input_path.clone(),
             output_path: src.input_path,
             session_id: None,
@@ -2145,6 +2406,7 @@ pub async fn create_session_run(
         ref_number: None,
         status: "fetched".to_string(),
         engine,
+        model: None,
         input_path: None,
         output_path: None,
         session_id: None,
@@ -2514,7 +2776,9 @@ pub async fn set_run_protected(
 }
 
 /// Bulk delete all non-running, non-protected runs for a project. Returns the
-/// number deleted. Protected runs are kept so an important session survives.
+/// number deleted. Protected runs are kept so an important session survives, and
+/// protection cascades: a worker whose conductor is protected is kept too (users
+/// can still delete such a worker individually via `delete_run`).
 #[tauri::command]
 pub async fn delete_all_runs(
     db: State<'_, Db>,
@@ -2524,7 +2788,11 @@ pub async fn delete_all_runs(
     use sqlx::Row;
 
     let rows = sqlx::query(
-        "SELECT id FROM runs WHERE project_id = ? AND status != 'running' AND protected = 0",
+        "SELECT id FROM runs r \
+         WHERE r.project_id = ? AND r.status != 'running' AND r.protected = 0 \
+         AND NOT EXISTS ( \
+             SELECT 1 FROM runs c WHERE c.id = r.conductor_run_id AND c.protected = 1 \
+         )",
     )
         .bind(&project_id)
         .fetch_all(db.inner())
@@ -2678,8 +2946,9 @@ pub async fn resume_run(
     // also stamps last_activity_at and floats the session to the top of History.
     let started_at = chrono::Utc::now().to_rfc3339();
     sqlx::query(
-        "UPDATE runs SET status = 'running', started_at = ?, finished_at = NULL, last_activity_at = ? WHERE id = ?",
+        "UPDATE runs SET status = 'running', model = ?, started_at = ?, finished_at = NULL, last_activity_at = ? WHERE id = ?",
     )
+    .bind(&model)
     .bind(&started_at)
     .bind(&started_at)
     .bind(&run_id)
