@@ -319,8 +319,11 @@ pub async fn get_conductor_detail(
         finished_at: r.get("finished_at"),
     });
 
+    // Newest activity first, mirroring the History list's sort (list_runs) so the
+    // most recently active worker sits at the top instead of forcing a scroll down.
     let wrows = sqlx::query(
-        "SELECT id, title, status, engine FROM runs WHERE conductor_run_id = ? ORDER BY created_at",
+        "SELECT id, title, status, engine FROM runs WHERE conductor_run_id = ?
+         ORDER BY COALESCE(last_activity_at, finished_at, started_at, created_at) DESC",
     )
     .bind(&conductor_run_id)
     .fetch_all(db.inner())
