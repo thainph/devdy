@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { Activity, ShieldAlert, CheckCircle2, XCircle, ChevronRight, Network } from 'lucide-vue-next'
+import { Activity, ShieldAlert, CheckCircle2, XCircle, Network } from 'lucide-vue-next'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useRunsStore } from '@/stores/runs'
 import { useProjectsStore } from '@/stores/projects'
@@ -67,37 +67,26 @@ const waitingCount = computed(() => rows.value.filter((r) => r.pending > 0).leng
 const doneCount = computed(() => rows.value.filter((r) => r.done).length)
 
 // ── Conductor grouping (conductor → workers) ───────────────────────────────
-// A worker run (its conductor_run_id points at a conductor that also has an
-// active row) is nested under that conductor so the dock isn't cluttered by
-// every spawned worker — mirroring the History list. Grouping is purely a
-// display concern: every row still opens its own run.id.
+// Workers are NEVER listed on their own in the dock: a conductor is the single
+// unit the user tracks here. Every worker spawned by a conductor is folded into
+// that conductor's row, which aggregates the workers' state (a running worker
+// keeps the conductor "running"; a worker awaiting permission floats the
+// conductor and lights its Review badge; finished workers show as a count).
+// Clicking the conductor opens its session, where the worker sidebar lists the
+// individual workers. Grouping is purely a display concern: the row opens the
+// conductor's own run.id.
 interface DisplayRow {
   row: DockRow
-  /** True for a conductor header that owns at least one active worker. */
+  /** True for a conductor that owns at least one active worker. */
   isGroup: boolean
-  /** True for a worker rendered nested under its conductor. */
-  isWorker: boolean
-  /** Active workers owned by this conductor (badge on the header). */
+  /** Active workers owned by this conductor (badge on the row). */
   workerCount: number
-  /** For a group header: whether its workers are currently shown. */
-  expanded: boolean
-  /** Finished workers in a folded group, surfaced as a header badge. */
+  /** Finished workers, surfaced as a row badge. */
   groupDone: number
 }
 
-// Conductors the user has expanded. In-memory only — resets each session.
-const expandedConductors = ref<Set<string>>(new Set())
-function toggleConductor(id: string) {
-  const next = new Set(expandedConductors.value)
-  if (next.has(id)) next.delete(id)
-  else next.add(id)
-  expandedConductors.value = next
-}
-
-// Flattened, grouped view of `rows`. Top-level items keep the same urgency sort
-// (a group sorts by the combined urgency of its header + workers); a conductor's
-// workers are emitted right after it. A group auto-expands while any of its
-// workers is awaiting permission so a blocked worker is never hidden by a fold.
+// Flattened view of `rows`: normal sessions and conductors only. A conductor's
+// workers are merged into its row rather than emitted separately.
 const displayRows = computed<DisplayRow[]>(() => {
   const base = rows.value
 
@@ -119,7 +108,7 @@ const displayRows = computed<DisplayRow[]>(() => {
   const tops: Top[] = []
   const seenGroups = new Set<string>()
   for (const r of base) {
-    // A worker owned by a listed conductor is emitted under it, not top-level.
+    // A worker owned by a conductor never appears on its own — it's merged in.
     if (r.conductorRunId && groupIds.has(r.conductorRunId)) continue
     if (groupIds.has(r.runId)) {
       tops.push({ kind: 'group', id: r.runId, header: r, workers: workersByParent.get(r.runId)! })
@@ -129,8 +118,8 @@ const displayRows = computed<DisplayRow[]>(() => {
     }
   }
   // A conductor can finish its own turn while its workers keep running, so it
-  // won't have an active row — synthesize a header from the cached metadata so
-  // those workers still nest instead of scattering to the top level.
+  // won't have an active row — synthesize one from the cached metadata so those
+  // workers still report under the conductor instead of vanishing.
   for (const id of groupIds) {
     if (seenGroups.has(id)) continue
     const workers = workersByParent.get(id)!
@@ -151,8 +140,8 @@ const displayRows = computed<DisplayRow[]>(() => {
     })
   }
 
-  // Sort key: pending first, then done — same priority as the flat list, but a
-  // group folds in its workers' urgency so a group with a blocked worker floats.
+  // Sort key: pending first, then done — a conductor folds in its workers'
+  // urgency so a conductor with a blocked worker floats to the top.
   const urgency = (t: Top): [number, number] => {
     if (t.kind === 'single') return [t.row.pending > 0 ? 1 : 0, t.row.done ? 1 : 0]
     const pending = t.header.pending + t.workers.reduce((s, w) => s + w.pending, 0)
@@ -164,25 +153,23 @@ const displayRows = computed<DisplayRow[]>(() => {
   const out: DisplayRow[] = []
   for (const top of tops) {
     if (top.kind === 'single') {
-      out.push({ row: top.row, isGroup: false, isWorker: false, workerCount: 0, expanded: false, groupDone: 0 })
+      out.push({ row: top.row, isGroup: false, workerCount: 0, groupDone: 0 })
       continue
     }
-    const groupPending = top.workers.reduce((s, w) => s + w.pending, 0)
-    const groupDone = top.workers.filter((w) => w.done).length
-    const expanded = expandedConductors.value.has(top.id) || groupPending > 0
-    out.push({
-      row: top.header,
-      isGroup: true,
-      isWorker: false,
-      workerCount: top.workers.length,
-      expanded,
-      groupDone,
-    })
-    if (expanded) {
-      for (const w of top.workers) {
-        out.push({ row: w, isGroup: false, isWorker: true, workerCount: 0, expanded: false, groupDone: 0 })
-      }
+    // Merge the workers' state onto the conductor row so one row conveys the
+    // whole group: pending = any worker needs permission; running = the
+    // conductor or any worker is still streaming; done = everything settled.
+    const groupPending = top.header.pending + top.workers.reduce((s, w) => s + w.pending, 0)
+    const groupDone = (top.header.done ? 1 : 0) + top.workers.filter((w) => w.done).length
+    const anyRunning =
+      top.header.status === 'running' || top.workers.some((w) => w.status === 'running')
+    const merged: DockRow = {
+      ...top.header,
+      status: anyRunning ? 'running' : top.header.status,
+      pending: groupPending,
+      done: !anyRunning && groupPending === 0 && groupDone > 0,
     }
+    out.push({ row: merged, isGroup: true, workerCount: top.workers.length, groupDone })
   }
   return out
 })
@@ -243,49 +230,19 @@ function open(row: DockRow) {
 
     <div class="space-y-0.5 max-h-[210px] overflow-y-auto">
       <div
-        v-for="{ row, isGroup, isWorker, workerCount, expanded, groupDone } in displayRows"
+        v-for="{ row, isGroup, workerCount, groupDone } in displayRows"
         :key="row.runId"
         class="relative"
       >
-        <!-- Worker rows nest under their conductor: a guide rail marks the
-             parent relationship. -->
-        <span
-          v-if="isWorker"
-          class="absolute left-3 inset-y-0 w-px bg-border/60"
-          aria-hidden="true"
-        />
         <button
           type="button"
-          class="w-full flex items-center gap-2 py-1.5 rounded-md text-left transition-colors cursor-pointer select-none"
-          :class="[
-            row.runId === activeRunId
-              ? 'bg-accent text-foreground'
-              : 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
-            isWorker ? 'pl-6 pr-2' : 'px-2',
-          ]"
+          class="w-full flex items-center gap-2 py-1.5 px-2 rounded-md text-left transition-colors cursor-pointer select-none"
+          :class="row.runId === activeRunId
+            ? 'bg-accent text-foreground'
+            : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'"
           :title="projectName(row.projectId) + ' — ' + label(row)"
           @click="open(row)"
         >
-          <!-- Conductor group toggle: folds/unfolds its worker rows. A span (not
-               a nested button) with @click.stop so tapping it never opens the
-               conductor session. -->
-          <span
-            v-if="isGroup"
-            role="button"
-            tabindex="0"
-            class="flex h-4 w-4 shrink-0 items-center justify-center -ml-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent cursor-pointer"
-            :aria-label="expanded ? t('conductor.collapse') : t('conductor.expand')"
-            :aria-expanded="expanded"
-            @click.stop.prevent="toggleConductor(row.runId)"
-            @keyup.enter.stop.prevent="toggleConductor(row.runId)"
-            @keyup.space.stop.prevent="toggleConductor(row.runId)"
-          >
-            <ChevronRight
-              class="h-3.5 w-3.5 transition-transform"
-              :class="{ 'rotate-90': expanded }"
-              :stroke-width="2"
-            />
-          </span>
           <span class="relative flex h-2 w-2 shrink-0">
             <span
               v-if="row.status === 'running'"
@@ -306,7 +263,7 @@ function open(row: DockRow) {
             <span class="block truncate text-[13px] leading-tight">{{ label(row) }}</span>
             <span class="block truncate text-[10px] text-muted-foreground/70 leading-tight">{{ projectName(row.projectId) }}</span>
           </span>
-          <!-- Active-worker count for a conductor group. -->
+          <!-- Active-worker count for a conductor. -->
           <span
             v-if="isGroup"
             class="shrink-0 flex items-center gap-0.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-[9px] font-medium text-primary"
@@ -315,11 +272,9 @@ function open(row: DockRow) {
             <Network class="h-2.5 w-2.5" :stroke-width="2" />
             {{ workerCount }}
           </span>
-          <!-- A folded group still surfaces a finished worker so the badge is
-               not lost behind the collapse (pending auto-expands, so it only
-               applies to done here). -->
+          <!-- Finished workers of a conductor, surfaced as a count. -->
           <span
-            v-if="isGroup && !expanded && groupDone > 0"
+            v-if="isGroup && groupDone > 0"
             class="flex items-center gap-0.5 rounded bg-emerald-500/15 px-1 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 shrink-0"
           >
             <CheckCircle2 class="h-3 w-3" :stroke-width="2" />
@@ -333,14 +288,14 @@ function open(row: DockRow) {
             Review
           </span>
           <span
-            v-else-if="row.done && isFailure(row.status)"
+            v-else-if="!isGroup && row.done && isFailure(row.status)"
             class="flex items-center gap-0.5 rounded bg-red-500/15 px-1 py-0.5 text-[10px] font-medium text-red-600 dark:text-red-400 shrink-0"
           >
             <XCircle class="h-3 w-3" :stroke-width="2" />
             {{ row.status === 'cancelled' ? 'Stopped' : 'Failed' }}
           </span>
           <span
-            v-else-if="row.done"
+            v-else-if="!isGroup && row.done"
             class="flex items-center gap-0.5 rounded bg-emerald-500/15 px-1 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 shrink-0"
           >
             <CheckCircle2 class="h-3 w-3" :stroke-width="2" />

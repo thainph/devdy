@@ -14,7 +14,6 @@ import {
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useChatDraftsStore } from '@/stores/chatDrafts'
-import { useRunPrefsStore } from '@/stores/runPrefs'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import { useGitlabAccountsStore } from '@/stores/gitlabAccounts'
 import { useServersStore, type ProjectServer } from '@/stores/servers'
@@ -53,7 +52,7 @@ import FileTree from '@/components/FileTree.vue'
 import ConductorWorkerPanel from '@/components/conductor/ConductorWorkerPanel.vue'
 import { useConductorStore } from '@/stores/conductor'
 import { Button, Input, Badge, Modal, DropdownMenu, DropdownItem, DropdownSeparator } from '@/components/ui'
-import { useTurnNavigator } from '@/composables/useTurnNavigator'
+import { useTurnNavigator, turnLabel } from '@/composables/useTurnNavigator'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { openItemCreateWindow, type ItemKind } from '@/lib/itemWindow'
@@ -70,10 +69,12 @@ import {
   entriesToPlainText,
   parseStreamLogWindow,
   modelFromPreamble,
+  createStreamState,
+  applyStreamEvent,
   type StreamEntry,
   type ImageAttachment,
 } from '@/lib/streamEvents'
-import { MODEL_OPTIONS, PERMISSION_MODE_OPTIONS, withCurrentModel } from '@/lib/engineOptions'
+import { MODEL_OPTIONS, PERMISSION_MODE_OPTIONS, withCurrentModel, combinedModelOptions, engineForModel } from '@/lib/engineOptions'
 import RemoteSessionModal from '@/components/remote/RemoteSessionModal.vue'
 import { useRemoteControlStore } from '@/stores/remoteControl'
 
@@ -86,7 +87,6 @@ const live = useLiveRunsStore()
 const conductorStore = useConductorStore()
 const tabsStore = useWorkspaceTabsStore()
 const draftsStore = useChatDraftsStore()
-const runPrefsStore = useRunPrefsStore()
 const remoteControlStore = useRemoteControlStore()
 const ghStore = useGithubAccountsStore()
 const glStore = useGitlabAccountsStore()
@@ -267,37 +267,67 @@ function onRunSettingsPointerDown(e: MouseEvent) {
   if (target.closest('[data-app-select-dropdown]')) return
   closeRunSettingsMenu()
 }
-// Model choices depend on the engine. Empty value = let the engine/setting decide.
-// Option tables live in @/lib/engineOptions (shared with the remote controller).
-// Claude's is curated and annotated with the last validation sweep; Codex's is
-// replaced by whatever `codex debug models` last reported.
+// One unified picker: Claude + Codex models in a single grouped list, so the
+// chosen model implies the engine and no separate engine selector is needed.
+// Option tables live in @/lib/engineOptions (shared with the remote controller):
+// Claude's is curated + annotated with the last validation sweep; Codex's is
+// whatever `codex debug models` last reported.
+//
+// The model that an empty (Default) pick resolves to, read reactively from the
+// global settings so changing the default in Settings is reflected here at once.
+const globalDefaultModel = computed(() =>
+  (effectiveEngine.value === 'codex'
+    ? appSettings.settings?.codex_model
+    : appSettings.settings?.claude_model) || '',
+)
 const modelOptions = computed(() => {
-  const base = MODEL_OPTIONS[effectiveEngine.value] ?? MODEL_OPTIONS.claude
-  if (effectiveEngine.value === 'codex') return modelCatalog.codexOptions(base)
-  // Keep an override saved before this table changed selectable rather than
-  // silently blanking it.
-  return modelCatalog.withValidation(withCurrentModel(base, modelOverride.value))
+  let claude = modelCatalog.withValidation(MODEL_OPTIONS.claude)
+  let codex = modelCatalog.codexOptions(MODEL_OPTIONS.codex)
+  // Keep an off-table saved pick selectable (a dropped/aliased id) by appending
+  // it to the group matching the loaded run's engine.
+  const cur = modelOverride.value
+  if (cur && !claude.some(o => o.value === cur) && !codex.some(o => o.value === cur)) {
+    const eng = loadedRunEngine.value || currentRun.value?.engine
+    if (eng === 'codex') codex = withCurrentModel(codex, cur)
+    else claude = withCurrentModel(claude, cur)
+  }
+  const def = globalDefaultModel.value
+  return combinedModelOptions({
+    claude,
+    codex,
+    defaultLabel: def ? t('run.modelDefaultWith', { model: def }) : t('run.modelDefault'),
+    claudeLabel: 'Claude',
+    codexLabel: 'Codex',
+  })
 })
-// Reset the model when switching to an engine that doesn't offer the current pick.
-watch(effectiveEngine, () => {
-  if (!modelOptions.value.some(o => o.value === modelOverride.value)) modelOverride.value = ''
-})
+// Picking a model drives the engine. Switching engine mid-conversation routes
+// through the handoff flow (which remembers the model to apply after the switch).
+const pendingEngineModel = ref<string | null>(null)
+function onModelSelect(value: string) {
+  const nextEngine = engineForModel(value, modelOptions.value) // '' = Default → global
+  const currentEngine = loadedRunEngine.value || currentRun.value?.engine || effectiveEngine.value
+  const resolvedNext = nextEngine || appSettings.settings?.default_engine || 'claude'
+  const hasConversation =
+    !!currentRunId.value &&
+    currentStatus.value !== 'fetched' &&
+    sourceText.value.trim().length > 0
+  if (hasConversation && resolvedNext !== currentEngine) {
+    pendingEngineModel.value = value
+    closeRunSettingsMenu()
+    handoffTarget.value = resolvedNext
+    return
+  }
+  engineOverride.value = nextEngine
+  modelOverride.value = value
+}
 const permissionMode = ref('')
 
-// ── Per-project run preferences ───────────────────────────────────────────
-// Permission mode, engine and model selectors used to reset to the global
-// default on every new run / app reload. Restore the project's remembered
-// choices here and mirror later edits back so they stick. Engine is persisted
-// explicitly in `onEngineChange` (the selector value also mirrors the loaded
-// run's engine, which must not overwrite the saved default).
-{
-  const p = runPrefsStore.get(projectId.value)
-  if (p.permissionMode) permissionMode.value = p.permissionMode
-  if (p.engine) engineOverride.value = p.engine
-  if (p.model) modelOverride.value = p.model
-}
-watch(permissionMode, (v) => runPrefsStore.set(projectId.value, { permissionMode: v }))
-watch(modelOverride, (v) => runPrefsStore.set(projectId.value, { model: v }))
+// ── Run selectors: two levels only — global default, or per-session ────────
+// Engine, model and permission have exactly two tiers: an empty selector value
+// means "follow the global setting" (reactive), and any explicit pick applies
+// to THIS run only. Per-run choices are persisted in the run's own meta
+// (`set_run_meta` / the `run:meta:<id>` listener below), never project-wide, so
+// one run's override never leaks into another session.
 
 const outputEl = ref<HTMLDivElement | null>(null)
 const historyEl = ref<HTMLDivElement | null>(null)
@@ -454,6 +484,22 @@ const HISTORY_PAGE_STEP = 120
 const historyCursor = ref<number | null>(null)
 const historyHasMore = ref(false)
 const historyLoadingMore = ref(false)
+// The window can sit mid-file after a jump (not just the tail), so we also track
+// the BOTTOM edge: `historyBottomCursor` is the byte offset just past the last
+// loaded record, `historyHasMoreBelow` is true when newer content remains on
+// disk below it, and `historyFileSize` is the log's size (to compute the above).
+const historyBottomCursor = ref<number | null>(null)
+const historyHasMoreBelow = ref(false)
+const historyFileSize = ref(0)
+// Session-prompt index of the FIRST loaded turn, tracked only while the window is
+// mid-file (after a jump). At the tail it is derived as a suffix instead — see
+// `loadedTurnOffset`. Lets the navigator map loaded turns back to the full list
+// even when the window isn't anchored to the end.
+const firstLoadedSeq = ref(0)
+// Briefly after a jump, ignore scroll-driven auto-loading: the programmatic
+// scroll-to-top would otherwise instantly trigger a prepend and shove the landing
+// out of view.
+let historyAutoLoadBlockedUntil = 0
 // Model id recovered from the page preamble (the `system.init` record at the top
 // of the log). A tail window cannot contain it, and without it the context-window
 // limit is unknown.
@@ -504,15 +550,11 @@ async function showEarlierHistory() {
     historyCursor.value = page.cursor
     historyHasMore.value = page.has_more
     if (parsed.entries.length) {
-      // Tool indices are positional, so every existing one shifts right by the
-      // number of entries we just prepended.
-      const shift = parsed.entries.length
-      const rebuilt = new Map<string, number>()
-      for (const [k, v] of parsed.toolIndex) rebuilt.set(k, v)
-      for (const [k, v] of historyToolIndex) rebuilt.set(k, v + shift)
-      historyToolIndex.clear()
-      for (const [k, v] of rebuilt) historyToolIndex.set(k, v)
       historyEntries.value = [...parsed.entries, ...historyEntries.value]
+      // Older turns now sit before the window's first, so the first-loaded index
+      // moves back by however many prompts we just prepended.
+      const added = parsed.entries.reduce((n, e) => n + (e.kind === 'user' ? 1 : 0), 0)
+      firstLoadedSeq.value = Math.max(0, firstLoadedSeq.value - added)
     }
     await nextTick()
     requestAnimationFrame(() => {
@@ -520,6 +562,58 @@ async function showEarlierHistory() {
       if (!e) return
       e.scrollTop = beforeTop + (e.scrollHeight - beforeHeight)
     })
+  } catch {
+    /* leave what's already loaded on screen */
+  } finally {
+    historyLoadingMore.value = false
+  }
+}
+
+// Append the next window of newer records below the loaded ones — the mirror of
+// `showEarlierHistory`. Needed once the window can sit mid-file (after a jump),
+// so scrolling down past it keeps reading toward the end. New content lands below
+// the viewport, so no scroll compensation is required.
+async function showLaterHistory() {
+  const runId = viewingLogRunId.value
+  if (!runId || !historyHasMoreBelow.value || historyLoadingMore.value) return
+  if (historyBottomCursor.value === null) return
+  historyLoadingMore.value = true
+  try {
+    const page = await runsStore.getRunLogForward(runId, historyBottomCursor.value, HISTORY_PAGE_STEP)
+    if (viewingLogRunId.value !== runId) return
+    const parsed = parseStreamLogWindow(page.records, { seedModel: historyPreambleModel.value })
+    historyBottomCursor.value = page.cursor
+    historyHasMoreBelow.value = page.has_more
+    if (parsed.entries.length) {
+      historyEntries.value = [...historyEntries.value, ...parsed.entries]
+    }
+  } catch {
+    /* leave what's already loaded on screen */
+  } finally {
+    historyLoadingMore.value = false
+  }
+}
+
+// Replace the loaded window with a fresh one starting at a byte offset (the start
+// of a prompt record, from the whole-session scan). One forward read instead of
+// paging back from the tail — the heavy part of jumping to an old prompt.
+async function jumpToHistoryOffset(offset: number) {
+  const runId = viewingLogRunId.value
+  if (!runId) return
+  historyLoadingMore.value = true
+  try {
+    const page = await runsStore.getRunLogForward(runId, offset, HISTORY_PAGE_STEP)
+    if (viewingLogRunId.value !== runId) return
+    const parsed = parseStreamLogWindow(page.records, { seedModel: historyPreambleModel.value })
+    historyEntries.value = parsed.entries
+    historyCursor.value = offset
+    historyHasMore.value = offset > 0
+    historyBottomCursor.value = page.cursor
+    historyHasMoreBelow.value = page.has_more
+    historyFileSize.value = page.revision.size
+    // The programmatic scroll that follows sits at the very top → would trip the
+    // scroll-up auto-loader; hold it off briefly.
+    historyAutoLoadBlockedUntil = Date.now() + 500
   } catch {
     /* leave what's already loaded on screen */
   } finally {
@@ -568,6 +662,17 @@ const contextModel = computed(() =>
     session.value?.model ?? historyModel.value ?? currentRun.value?.engine ?? null,
     modelOverride.value,
   ),
+)
+// Model shown on the composer's run-settings badge: the live session's actual
+// model when available, else the run's persisted model, else the pending pick
+// or the resolved global default. Empty only when nothing is known yet.
+const composerModelLabel = computed(() =>
+  session.value?.model
+  || historyModel.value
+  || modelOverride.value
+  || currentRun.value?.model
+  || globalDefaultModel.value
+  || '',
 )
 const contextRateLimit = computed(() => session.value?.rateLimit ?? null)
 // Prefer the live session's status, fall back to the persisted run row.
@@ -681,7 +786,13 @@ const effectiveWorkerCap = computed(() =>
 
 // Point the conductor store at whatever run is now open; it self-clears when the
 // run is a normal session.
-watch(currentRunId, (id) => { void conductorStore.select(id ?? null) }, { immediate: true })
+watch(currentRunId, (id) => {
+  void conductorStore.select(id ?? null)
+  // Opening a run resets the worker sidebar to expanded, so arriving at a
+  // conductor (e.g. by clicking it in the Active-runs dock) always reveals its
+  // workers instead of inheriting a previous manual collapse.
+  workerPanelOpen.value = true
+}, { immediate: true })
 // Keep worker permission prompts flowing: listen to each running worker so its
 // queue populates (and the sidebar's ⚠ flag lights up) even before it's opened.
 watch(conductorWorkers, (ws) => {
@@ -775,6 +886,13 @@ function runClaudeAccountLabel(run: RunRecord): string {
   if (run.engine !== 'claude' || !run.claude_account_id) return ''
   const acc = claudeStore.accounts.find((a) => a.id === run.claude_account_id)
   return acc ? acc.label : ''
+}
+
+// History row: the model this run runs on. Prefer the persisted per-run model
+// (resolved at start/resume); fall back to the engine name for runs that never
+// started or predate model persistence, so the badge is never empty.
+function runModelLabel(run: RunRecord): string {
+  return run.model || run.engine
 }
 
 // History row timestamp: date + time, so runs from the same day stay
@@ -911,6 +1029,26 @@ const displayRuns = computed<DisplayRun[]>(() => {
   }
   return out
 })
+
+// Ids of conductors the user has protected. Protection cascades to their
+// workers for "Clear all" (the bulk cleanup keeps them), so we badge those
+// workers too even though their own `protected` flag stays false — they remain
+// individually deletable.
+const protectedConductorIds = computed(
+  () =>
+    new Set(
+      runsStore.runs
+        .filter((r) => r.role === 'conductor' && r.protected)
+        .map((r) => r.id),
+    ),
+)
+function isProtectedByConductor(run: RunRecord): boolean {
+  return (
+    !run.protected &&
+    run.conductor_run_id != null &&
+    protectedConductorIds.value.has(run.conductor_run_id)
+  )
+}
 
 // A run awaiting a permission / question response (front of its live queue), or
 // undefined. Drives the animated attention icon in the History list so the user
@@ -1169,25 +1307,103 @@ const {
   turns: promptTurns,
   scrollToTurn,
   activeEntryIndex,
-  goPrev: goPrevTurn,
-  goNext: goNextTurn,
 } = useTurnNavigator(turnScrollEl, turnEntries)
+
+// The navigator must list EVERY prompt in the session, but the viewer only
+// holds a window (the tail of a history log), so `promptTurns` — derived from
+// what's on screen — under-reports. `sessionTurns` is the whole-session list,
+// scanned from the log in Rust and parsed with the SAME parser (see
+// `loadSessionTurns`); empty until that resolves, when we fall back to the
+// loaded turns.
+type SessionTurn = { label: string; offset: number }
+const sessionTurns = shallowRef<SessionTurn[]>([])
+
+async function loadSessionTurns(runId: string) {
+  try {
+    const records = await runsStore.getRunUserRecords(runId)
+    if (currentRunId.value !== runId) return
+    // Feed the pruned user records through the SAME parser the main view uses,
+    // one at a time, so compaction summaries / slash-command messages are
+    // filtered identically — and tag each resulting prompt with the byte offset
+    // of the record that produced it (for jump-to-offset). A real user prompt is
+    // always the last entry pushed by its record, so identity-compare the tail.
+    const state = createStreamState()
+    const turns: SessionTurn[] = []
+    let lastUser: StreamEntry | null = null
+    for (const r of records) {
+      try {
+        applyStreamEvent(state, JSON.parse(r.json))
+      } catch {
+        continue
+      }
+      const last = state.entries[state.entries.length - 1]
+      if (last && last.kind === 'user' && last !== lastUser) {
+        lastUser = last
+        turns.push({ label: turnLabel(last.text), offset: r.offset })
+      }
+    }
+    sessionTurns.value = turns
+  } catch {
+    if (currentRunId.value === runId) sessionTurns.value = []
+  }
+}
+
+// Rescan whenever the focused run changes. The scan reads the persisted log that
+// both the live and history panes share, so it covers either mode.
+watch(
+  currentRunId,
+  (id) => {
+    sessionTurns.value = []
+    if (id) void loadSessionTurns(id)
+  },
+  { immediate: true },
+)
+
+// The list that actually drives the navigator: the whole-session scan when it's
+// at least as complete as what's loaded, otherwise the loaded turns (covers a
+// live run that just produced a prompt the scan predates, and the pre-scan gap).
+const navTurns = computed<{ label: string; offset?: number }[]>(() =>
+  sessionTurns.value.length >= promptTurns.value.length && sessionTurns.value.length > 0
+    ? sessionTurns.value
+    : promptTurns.value.map((t) => ({ label: t.label })),
+)
+
+// Session-prompt index of the loaded window's first turn. While more content
+// remains BELOW (a mid-file window, i.e. after a jump), that index is tracked
+// explicitly in `firstLoadedSeq`. Otherwise the window reaches the end, so the
+// loaded turns are the tail — a plain suffix of the full list — which also stays
+// correct for the live pane.
+const loadedTurnOffset = computed(() =>
+  historyHasMoreBelow.value
+    ? firstLoadedSeq.value
+    : Math.max(0, navTurns.value.length - promptTurns.value.length),
+)
 
 // One landmark is nothing to navigate between, and the legacy (non-stream)
 // renderer has no turn markers to walk.
 const showTurnNav = computed(
   () =>
-    promptTurns.value.length > 1 &&
+    navTurns.value.length > 1 &&
     !!turnScrollEl.value &&
     (isViewingHistory.value ? historyHasStream.value : liveHasStream.value),
 )
 
-// Which prompt the reader is parked on, marked in the jump list. Resolved when
-// the menu opens: keeping it live would mean reading every turn's layout on
-// every scroll, which is exactly the cost the output pane works to avoid.
-const activeTurnEntry = ref(-1)
+// Which prompt (as an index into the full `navTurns`) the reader is parked on,
+// marked in the jump list. Resolved when the menu opens: keeping it live would
+// mean reading every turn's layout on every scroll, which is exactly the cost
+// the output pane works to avoid.
+const activeTurnSeq = ref(-1)
+function loadedTurnIndexOf(entryIndex: number): number {
+  return promptTurns.value.findIndex((t) => t.entryIndex === entryIndex)
+}
+// Full-list index of the turn currently at the top, or -1 when above the first
+// loaded one.
+function activeSessionSeq(): number {
+  const li = loadedTurnIndexOf(activeEntryIndex())
+  return li < 0 ? -1 : loadedTurnOffset.value + li
+}
 function onTurnMenuToggle(open: boolean) {
-  if (open) activeTurnEntry.value = activeEntryIndex()
+  if (open) activeTurnSeq.value = activeSessionSeq()
 }
 
 // Jumping away from the bottom has to release the auto-follow pin, or the next
@@ -1197,20 +1413,64 @@ function afterTurnJump() {
   if (el && !isViewingHistory.value) stickToBottom.value = isNearBottom(el)
 }
 
-function goToTurn(entryIndex: number) {
-  scrollToTurn(entryIndex)
-  activeTurnEntry.value = entryIndex
+function goToTurn(entryIndex: number, smooth = false) {
+  scrollToTurn(entryIndex, smooth)
   afterTurnJump()
+}
+
+// Jump to a prompt by its position in the WHOLE session. `smooth` glides to the
+// landing — used for an explicit pick from the list; prev/next step instantly so
+// rapid presses stay snappy.
+async function jumpToSessionTurn(seq: number, smooth = false) {
+  if (seq < 0 || seq >= navTurns.value.length) return
+
+  // Already in the loaded window → just scroll, no reload.
+  const localIfLoaded = seq - loadedTurnOffset.value
+  if (localIfLoaded >= 0 && localIfLoaded < promptTurns.value.length) {
+    goToTurn(promptTurns.value[localIfLoaded].entryIndex, smooth)
+    return
+  }
+
+  // History + we know the prompt's byte offset → load a fresh window right there
+  // in one read, then land on it (now the window's first turn).
+  const offset = navTurns.value[seq]?.offset
+  if (isViewingHistory.value && typeof offset === 'number') {
+    firstLoadedSeq.value = seq
+    await jumpToHistoryOffset(offset)
+    await nextTick()
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    const turn = promptTurns.value[seq - loadedTurnOffset.value]
+    if (turn) goToTurn(turn.entryIndex, smooth)
+    return
+  }
+
+  // Fallback (live pane, or offset not scanned yet): page backwards until the
+  // target is in, then scroll.
+  if (isViewingHistory.value) {
+    let guard = 0
+    while (seq < loadedTurnOffset.value && historyHasMore.value && !historyLoadingMore.value && guard < 500) {
+      await showEarlierHistory()
+      guard++
+    }
+    await nextTick()
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+  }
+  const turn = promptTurns.value[seq - loadedTurnOffset.value]
+  if (turn) goToTurn(turn.entryIndex, smooth)
 }
 
 function prevTurn() {
-  goPrevTurn()
-  afterTurnJump()
+  const cur = activeSessionSeq()
+  // -1 means the reader is above the first loaded turn — step to the one just
+  // before the loaded window.
+  const target = cur < 0 ? loadedTurnOffset.value - 1 : cur - 1
+  if (target >= 0) void jumpToSessionTurn(target)
 }
 
 function nextTurn() {
-  goNextTurn()
-  afterTurnJump()
+  const cur = activeSessionSeq()
+  const target = cur < 0 ? loadedTurnOffset.value : cur + 1
+  if (target < navTurns.value.length) void jumpToSessionTurn(target)
 }
 
 // ⌘/Ctrl+⌥+↑/↓. The bare arrows — and their plain ⌘ or ⌥ variants — all move the
@@ -1259,6 +1519,24 @@ const defaultTranslateLang = computed(() => appSettings.settings?.translate_targ
 
 function clearTranslateTrigger() {
   translateTrigger.value = null
+}
+
+// Auto-load the history window as the reader approaches either edge: older
+// records when near the top, newer ones when near the bottom. Held off briefly
+// right after a jump (the programmatic scroll would otherwise instantly prepend).
+const HISTORY_SCROLL_MARGIN = 400
+function onHistoryScroll() {
+  clearTranslateTrigger()
+  const el = historyEl.value
+  if (!el || historyLoadingMore.value || Date.now() < historyAutoLoadBlockedUntil) return
+  if (el.scrollTop < HISTORY_SCROLL_MARGIN && historyHasMore.value) {
+    void showEarlierHistory()
+  } else if (
+    el.scrollHeight - el.scrollTop - el.clientHeight < HISTORY_SCROLL_MARGIN &&
+    historyHasMoreBelow.value
+  ) {
+    void showLaterHistory()
+  }
 }
 
 function nodeInOutput(node: Node | null): boolean {
@@ -1589,6 +1867,10 @@ function clearHistoryView() {
   historyModel.value = null
   historyCursor.value = null
   historyHasMore.value = false
+  historyBottomCursor.value = null
+  historyHasMoreBelow.value = false
+  historyFileSize.value = 0
+  firstLoadedSeq.value = 0
   historyPreambleModel.value = null
   historyRevision.value = null
   historyToolEntries.value = []
@@ -1765,26 +2047,10 @@ const handingOff = ref(false)
 const startingEngineSession = ref(false)
 const engineSwitchBusy = computed(() => handingOff.value || startingEngineSession.value)
 
-// Called when the engine selector changes. Offer to carry context only when a
-// real conversation exists and the user picked a *different* engine than the
-// one that produced it.
-function onEngineChange(next: string) {
-  if (next === engineOverride.value) return
-  const nextEngine = resolveEngineChoice(next)
-  const currentEngine = loadedRunEngine.value || currentRun.value?.engine || effectiveEngine.value
-  // Works for both Claude (streamEntries) and Codex (raw log) runs.
-  const hasConversation =
-    !!currentRunId.value &&
-    currentStatus.value !== 'fetched' &&
-    sourceText.value.trim().length > 0
-  if (hasConversation && nextEngine !== currentEngine) {
-    closeRunSettingsMenu()
-    handoffTarget.value = nextEngine
-    return
-  }
-  engineOverride.value = next
-  // Remember the engine as the project default for future runs.
-  runPrefsStore.set(projectId.value, { engine: next })
+// Dismiss the handoff prompt without switching (also drops any pending model).
+function closeHandoffDialog() {
+  handoffTarget.value = null
+  pendingEngineModel.value = null
 }
 
 async function doHandoff(targetEngine: string) {
@@ -1804,6 +2070,8 @@ async function doHandoff(targetEngine: string) {
     const { run, context_path } = await runsStore.createHandoffRun(sourceId, targetEngine, transcript)
     await runsStore.fetchRuns(projectId.value) // surface the new run in the sidebar
     syncLoadedRunEngine(targetEngine)
+    // Carry the model the user picked when they triggered the switch.
+    if (pendingEngineModel.value !== null) modelOverride.value = pendingEngineModel.value
     const seed = t('run.handoffSeed', { engine: sourceEngine, path: context_path })
     await launchFreshRun(run.id, targetEngine, seed, [], override)
   } catch (e) {
@@ -1811,6 +2079,7 @@ async function doHandoff(targetEngine: string) {
   } finally {
     handingOff.value = false
     handoffTarget.value = null
+    pendingEngineModel.value = null
   }
 }
 
@@ -1819,9 +2088,11 @@ async function startNewEngineSession(targetEngine: string) {
   startingEngineSession.value = true
   try {
     handoffTarget.value = null
+    if (pendingEngineModel.value !== null) modelOverride.value = pendingEngineModel.value
     await createSessionWithEngine(targetEngine)
   } finally {
     startingEngineSession.value = false
+    pendingEngineModel.value = null
   }
 }
 
@@ -1838,23 +2109,30 @@ const effectiveProjectClaudeAccountId = computed(() =>
 const selectedClaudeAccountId = computed(() => {
   const run = currentRun.value
   if (!run) return ''
-  if (run.claude_account_id) return run.claude_account_id
-  // Existing sessions with no run-level account are legacy/global ~/.claude.
-  // Not-yet-started runs still inherit project/default at start time.
-  return run.session_id ? '' : effectiveProjectClaudeAccountId.value
+  // Empty = the Default tier (follows project/global). Only a run-level
+  // override pins a concrete account for this session.
+  return run.claude_account_id || ''
+})
+// Label for the Default account entry: legacy sessions with no run-level
+// account run on the global ~/.claude; everything else resolves to the
+// project/default account, which we surface so the default is never opaque.
+const defaultClaudeAccountLabel = computed(() => {
+  if (currentRun.value?.session_id) return t('run.globalClaudeAccount')
+  const acc = claudeStore.accounts.find((a) => a.id === effectiveProjectClaudeAccountId.value)
+  return acc ? t('run.claudeAccountDefaultWith', { account: acc.label }) : t('run.globalClaudeAccount')
 })
 const claudeAccountOptions = computed(() => {
   const opts = claudeStore.accounts.map((acc) => ({
     value: acc.id,
-    label: `${acc.label}${acc.is_default ? ` (${t('settings.claude.default')})` : ''}${acc.email ? ` · ${acc.email}` : ''}`,
+    label: `${acc.label}${acc.email ? ` · ${acc.email}` : ''}`,
   }))
   const currentId = currentRun.value?.claude_account_id
   if (currentId && !opts.some((opt) => opt.value === currentId)) {
     opts.unshift({ value: currentId, label: t('run.missingClaudeAccount') })
   }
-  if (currentRun.value?.session_id) {
-    opts.unshift({ value: '', label: t('run.globalClaudeAccount') })
-  }
+  // Always offer the Default tier so a per-session pick can be cleared back to
+  // "follow project/global".
+  opts.unshift({ value: '', label: defaultClaudeAccountLabel.value })
   return opts
 })
 const showClaudeAccountSelect = computed(() =>
@@ -2849,8 +3127,8 @@ async function handleToggleProtect(run: RunRecord) {
 function clearActiveRunState() {
   if (currentRunId.value) live.discard(currentRunId.value)
   currentRunId.value = null
-  // A fresh run starts from the project's remembered engine default, not blank.
-  engineOverride.value = runPrefsStore.get(projectId.value).engine
+  // A fresh run starts on the global default (empty = follow settings).
+  engineOverride.value = ''
   loadedRunEngine.value = ''
   clearHistoryView()
   inputContent.value = ''
@@ -3012,6 +3290,10 @@ async function loadRunLog(runId: string, opts: { preferDisk?: boolean; force?: b
     historyModel.value = null
     historyCursor.value = null
     historyHasMore.value = false
+    historyBottomCursor.value = null
+    historyHasMoreBelow.value = false
+    historyFileSize.value = 0
+    firstLoadedSeq.value = 0
     historyPreambleModel.value = null
     historyRevision.value = null
     historyToolEntries.value = []
@@ -3043,6 +3325,11 @@ async function loadRunLog(runId: string, opts: { preferDisk?: boolean; force?: b
       historyModel.value = parsed.model
       historyCursor.value = page.cursor
       historyHasMore.value = page.has_more
+      // The initial window is the tail, so it already reaches the end of the log.
+      historyBottomCursor.value = page.revision.size
+      historyHasMoreBelow.value = false
+      historyFileSize.value = page.revision.size
+      firstLoadedSeq.value = 0
       historyPreambleModel.value = seedModel
       historyRevision.value = page.revision
       viewingLog.value = ''
@@ -3518,7 +3805,7 @@ function handleRefInput(val: string) {
             </div>
             <div
               v-else
-              v-for="{ run, isGroup, workerCount, isWorker, expanded } in displayRuns"
+              v-for="{ run, isGroup, isWorker, expanded } in displayRuns"
               :key="run.id"
               :data-run-id="run.id"
               class="group relative border-b border-border/30 transition-colors hover:bg-accent/40 focus-within:bg-accent/40"
@@ -3543,26 +3830,6 @@ function handleRefInput(val: string) {
               >
                 <!-- Title + status -->
                 <div class="flex items-center gap-2">
-                  <!-- Conductor group toggle: collapses/expands its worker rows.
-                       A span (not a nested button) with @click.stop so tapping it
-                       never opens the conductor session. -->
-                  <span
-                    v-if="isGroup"
-                    role="button"
-                    tabindex="0"
-                    class="flex h-4 w-4 shrink-0 items-center justify-center -ml-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent cursor-pointer"
-                    :aria-label="expanded ? t('conductor.collapse') : t('conductor.expand')"
-                    :aria-expanded="expanded"
-                    @click.stop.prevent="toggleConductor(run.id)"
-                    @keyup.enter.stop.prevent="toggleConductor(run.id)"
-                    @keyup.space.stop.prevent="toggleConductor(run.id)"
-                  >
-                    <ChevronRight
-                      class="h-3.5 w-3.5 transition-transform"
-                      :class="{ 'rotate-90': expanded }"
-                      :stroke-width="2"
-                    />
-                  </span>
                   <component
                     :is="runIcon(run)"
                     class="h-4 w-4 shrink-0"
@@ -3577,7 +3844,7 @@ function handleRefInput(val: string) {
                   <!-- Pin / protect badges grouped so they stay tightly aligned
                        when both are shown (own gap, not the row's gap-2). -->
                   <span
-                    v-if="run.pinned || run.protected"
+                    v-if="run.pinned || run.protected || isProtectedByConductor(run)"
                     class="flex shrink-0 items-center gap-1"
                   >
                     <Pin
@@ -3592,17 +3859,15 @@ function handleRefInput(val: string) {
                       :stroke-width="2"
                       :aria-label="t('run.protected')"
                     />
+                    <Shield
+                      v-else-if="isProtectedByConductor(run)"
+                      class="h-3 w-3 text-emerald-500/50"
+                      :stroke-width="2"
+                      :aria-label="t('run.protectedByConductor')"
+                      :title="t('run.protectedByConductor')"
+                    />
                   </span>
                   <span class="flex-1 min-w-0 truncate text-[13px] font-medium leading-tight" :title="runLabel(run)">{{ runLabel(run) }}</span>
-                  <!-- Worker count for a conductor group. -->
-                  <span
-                    v-if="isGroup"
-                    class="shrink-0 flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-primary/10 text-primary text-[9px] font-medium"
-                    :title="t('conductor.workerCountShort', { n: workerCount })"
-                  >
-                    <Network class="h-2.5 w-2.5" :stroke-width="2" />
-                    {{ workerCount }}
-                  </span>
                   <!-- Remote-control marker: a phone is driving (green, pulsing) or
                        a link is waiting for one (amber) on THIS session. Lets the
                        user spot the remotely-controlled session in the list. -->
@@ -3636,31 +3901,58 @@ function handleRefInput(val: string) {
                       :stroke-width="2"
                     />
                   </span>
+                  <!-- Conductor group toggle: collapses/expands its worker rows.
+                       Sits at the end of the title row (not before the icon) so a
+                       conductor's icon + title stay aligned with ordinary sessions.
+                       A span (not a nested button) with @click.stop so tapping it
+                       never opens the conductor session. -->
+                  <span
+                    v-if="isGroup"
+                    role="button"
+                    tabindex="0"
+                    class="flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent cursor-pointer"
+                    :aria-label="expanded ? t('conductor.collapse') : t('conductor.expand')"
+                    :aria-expanded="expanded"
+                    @click.stop.prevent="toggleConductor(run.id)"
+                    @keyup.enter.stop.prevent="toggleConductor(run.id)"
+                    @keyup.space.stop.prevent="toggleConductor(run.id)"
+                  >
+                    <ChevronRight
+                      class="h-3.5 w-3.5 transition-transform"
+                      :class="{ 'rotate-90': expanded }"
+                      :stroke-width="2"
+                    />
+                  </span>
                 </div>
-                <!-- Meta: date + engine. Always visible so hovering never hides
-                     the session info; actions sit to the right of this band. -->
-                <div class="flex items-center gap-2 mt-2 pl-6 pr-3 text-[10px] text-muted-foreground/70">
-                  <span class="flex items-center gap-1 shrink-0" :title="t('run.lastActivity')">
-                    <Clock class="h-2.5 w-2.5" :stroke-width="1.5" />
+                <!-- Meta: timestamp on top, the AI badges (account + model) on
+                     their own line so a long model id gets the full row width
+                     instead of being squeezed next to the date. Always visible so
+                     hovering never hides the session info. -->
+                <div class="mt-2 pl-6 pr-3 text-[10px] text-muted-foreground/70">
+                  <span class="flex items-center gap-1" :title="t('run.lastActivity')">
+                    <Clock class="h-2.5 w-2.5 shrink-0" :stroke-width="1.5" />
                     {{ runTimestamp(runActivityAt(run)) }}
                   </span>
-                  <!-- Account badge replaces the engine badge when the run has a
-                       known Claude account (the account name already implies
-                       Claude). Codex and legacy/account-less runs keep the plain
-                       engine badge since there's no per-run account to show. -->
-                  <span
-                    v-if="runClaudeAccountLabel(run)"
-                    class="shrink-0 truncate max-w-[10rem] px-1.5 py-0.5 rounded bg-primary/10 text-[9px] font-medium tracking-wide text-primary"
-                    :title="runClaudeAccountLabel(run)"
-                  >
-                    {{ runClaudeAccountLabel(run) }}
-                  </span>
-                  <span
-                    v-else
-                    class="shrink-0 px-1.5 py-0.5 rounded bg-muted/60 font-mono text-[9px] uppercase tracking-wide text-muted-foreground"
-                  >
-                    {{ run.engine }}
-                  </span>
+                  <!-- Account badge shown alongside the model when the run has a
+                       known Claude account (the name implies Claude); Codex and
+                       legacy/account-less runs show just the model. `pr-6` keeps
+                       the badges clear of the hover actions (⋯) at the row's end. -->
+                  <div class="mt-1 flex flex-wrap items-center gap-1.5 pr-6">
+                    <span
+                      v-if="runClaudeAccountLabel(run)"
+                      class="shrink-0 truncate max-w-[10rem] px-1.5 py-0.5 rounded bg-primary/10 text-[9px] font-medium tracking-wide text-primary"
+                      :title="runClaudeAccountLabel(run)"
+                    >
+                      {{ runClaudeAccountLabel(run) }}
+                    </span>
+                    <!-- The model this run actually runs on (falls back to engine). -->
+                    <span
+                      class="min-w-0 max-w-full truncate px-1.5 py-0.5 rounded bg-muted/60 font-mono text-[9px] tracking-wide text-muted-foreground"
+                      :title="runModelLabel(run)"
+                    >
+                      {{ runModelLabel(run) }}
+                    </span>
+                  </div>
                 </div>
               </button>
               <!-- Actions: a single overflow (⋯) menu revealed on hover/focus, so
@@ -3903,6 +4195,64 @@ function handleRefInput(val: string) {
                   {{ currentRun ? runLabel(currentRun) : t('run.noRunSelected') }}
                 </span>
                 <div class="ml-auto flex items-center gap-1.5 shrink-0">
+                  <!-- Prompt navigator: step between the user's own messages or
+                       pick one from the list. Lives in the toolbar (not floating
+                       over the chat) so it never covers the conversation. Only
+                       worth showing once there is more than one prompt. -->
+                  <div
+                    v-if="showTurnNav"
+                    class="flex items-center h-6 rounded border border-border text-[11px] font-mono text-foreground/70"
+                  >
+                    <button
+                      type="button"
+                      class="flex items-center h-full rounded-l px-1 transition-colors hover:bg-accent/60 hover:text-foreground cursor-pointer"
+                      :title="t('run.prevPrompt')"
+                      @click="prevTurn"
+                    >
+                      <ChevronUp class="h-3.5 w-3.5" :stroke-width="2" />
+                    </button>
+                    <DropdownMenu align="right" @update:open="onTurnMenuToggle">
+                      <template #trigger>
+                        <button
+                          type="button"
+                          class="flex items-center gap-1 h-full border-x border-border px-1.5 transition-colors hover:bg-accent/60 hover:text-foreground cursor-pointer"
+                          :title="t('run.promptList')"
+                        >
+                          <MessageSquare class="h-3.5 w-3.5" :stroke-width="1.75" />
+                          {{ navTurns.length }}
+                        </button>
+                      </template>
+                      <div class="max-h-96 w-[24rem] max-w-[80vw] overflow-y-auto">
+                        <div class="px-2.5 pt-1 pb-1.5 text-[10px] font-medium uppercase tracking-wide text-foreground/40">
+                          {{ t('run.promptList') }}
+                        </div>
+                        <DropdownItem
+                          v-for="(turn, ti) in navTurns"
+                          :key="ti"
+                          :variant="ti === activeTurnSeq ? 'primary' : 'default'"
+                          class="!items-start"
+                          @click="jumpToSessionTurn(ti, true)"
+                        >
+                          <span
+                            class="mt-px flex h-4 min-w-4 shrink-0 items-center justify-center rounded px-1 text-[10px] font-mono tabular-nums"
+                            :class="ti === activeTurnSeq ? 'bg-primary/15 text-primary' : 'bg-muted text-foreground/45'"
+                          >{{ ti + 1 }}</span>
+                          <span
+                            class="min-w-0 flex-1 whitespace-normal break-words leading-snug line-clamp-2"
+                            :class="turn.label ? '' : 'italic text-foreground/40'"
+                          >{{ turn.label || t('run.promptNoText') }}</span>
+                        </DropdownItem>
+                      </div>
+                    </DropdownMenu>
+                    <button
+                      type="button"
+                      class="flex items-center h-full rounded-r px-1 transition-colors hover:bg-accent/60 hover:text-foreground cursor-pointer"
+                      :title="t('run.nextPrompt')"
+                      @click="nextTurn"
+                    >
+                      <ChevronDown class="h-3.5 w-3.5" :stroke-width="2" />
+                    </button>
+                  </div>
                   <!-- Issue / PR runs only: opens the fetched Content as a left
                        split column. Sessions have no Content to show. -->
                   <button
@@ -3953,7 +4303,7 @@ function handleRefInput(val: string) {
               v-if="isViewingHistory"
               ref="historyEl"
               class="flex-1 min-h-0 overflow-auto p-4"
-              @scroll="clearTranslateTrigger"
+              @scroll="onHistoryScroll"
             >
               <!-- Loading animation while the log is read + parsed from disk. -->
               <div
@@ -3985,6 +4335,18 @@ function handleRefInput(val: string) {
                   @open-file="openFile"
                   @open-url="onOpenUrl"
                 />
+                <!-- Newer records below the loaded window (only after a jump into
+                     the middle of the log). Scrolling down loads them too. -->
+                <div v-if="historyHasMoreBelow" class="mt-3 flex justify-center">
+                  <button
+                    type="button"
+                    class="rounded-full border border-border bg-muted/60 px-3 py-1 text-[11px] text-foreground/70 hover:bg-accent/60 transition-colors cursor-pointer disabled:opacity-50"
+                    :disabled="historyLoadingMore"
+                    @click="showLaterHistory"
+                  >
+                    {{ historyLoadingMore ? t('common.loading') : t('run.showLater', { count: HISTORY_PAGE_STEP }) }}
+                  </button>
+                </div>
               </template>
               <div
                 v-else
@@ -4044,66 +4406,17 @@ function handleRefInput(val: string) {
             </div>
 
             <!-- Jump-to-latest button: shown when the user has scrolled up
-                 away from the bottom of the live output. Sits above the prompt
-                 navigator when that one is showing. -->
+                 away from the bottom of the live output. The prompt navigator
+                 now lives in the toolbar, so this always sits at the bottom. -->
             <button
               v-if="hasLiveOutput && !isViewingHistory && !stickToBottom"
-              class="absolute right-4 z-10 flex items-center gap-1 rounded-full border border-border bg-card px-3 py-1.5 text-[11px] font-mono text-foreground/80 shadow-md transition-colors hover:bg-card hover:text-foreground cursor-pointer"
-              :class="showTurnNav ? 'bottom-14' : 'bottom-4'"
+              class="absolute bottom-4 right-4 z-10 flex items-center gap-1 rounded-full border border-border bg-card px-3 py-1.5 text-[11px] font-mono text-foreground/80 shadow-md transition-colors hover:bg-card hover:text-foreground cursor-pointer"
               :title="t('run.scrollToLatest')"
               @click="stickToBottom = true; scrollOutputToBottom()"
             >
               <ChevronDown class="h-3.5 w-3.5" :stroke-width="2" />
               {{ t('run.latest') }}
             </button>
-
-            <!-- Prompt navigator: step between the user's own messages, or pick
-                 one straight out of the list. Only worth showing once there is
-                 more than one prompt to move between. -->
-            <div
-              v-if="showTurnNav"
-              class="absolute bottom-4 right-4 z-10 flex items-center rounded-full border border-border bg-card text-[11px] font-mono text-foreground/70 shadow-md"
-            >
-              <button
-                type="button"
-                class="flex items-center rounded-l-full px-2 py-1.5 transition-colors hover:bg-accent/60 hover:text-foreground cursor-pointer"
-                :title="t('run.prevPrompt')"
-                @click="prevTurn"
-              >
-                <ChevronUp class="h-3.5 w-3.5" :stroke-width="2" />
-              </button>
-              <DropdownMenu align="right" @update:open="onTurnMenuToggle">
-                <template #trigger>
-                  <button
-                    type="button"
-                    class="flex items-center gap-1 border-x border-border px-2.5 py-1.5 transition-colors hover:bg-accent/60 hover:text-foreground cursor-pointer"
-                    :title="t('run.promptList')"
-                  >
-                    <MessageSquare class="h-3.5 w-3.5" :stroke-width="1.75" />
-                    {{ promptTurns.length }}
-                  </button>
-                </template>
-                <div class="max-h-72 w-72 overflow-y-auto">
-                  <DropdownItem
-                    v-for="(turn, ti) in promptTurns"
-                    :key="turn.entryIndex"
-                    :variant="turn.entryIndex === activeTurnEntry ? 'primary' : 'default'"
-                    @click="goToTurn(turn.entryIndex)"
-                  >
-                    <span class="w-5 shrink-0 text-right text-[11px] font-mono text-foreground/35">{{ ti + 1 }}</span>
-                    <span class="min-w-0 truncate">{{ turn.label || t('run.promptNoText') }}</span>
-                  </DropdownItem>
-                </div>
-              </DropdownMenu>
-              <button
-                type="button"
-                class="flex items-center rounded-r-full px-2 py-1.5 transition-colors hover:bg-accent/60 hover:text-foreground cursor-pointer"
-                :title="t('run.nextPrompt')"
-                @click="nextTurn"
-              >
-                <ChevronDown class="h-3.5 w-3.5" :stroke-width="2" />
-              </button>
-            </div>
             </div>
 
             <!-- Question / permission prompt: an overlay drawer sliding in from
@@ -4350,7 +4663,12 @@ function handleRefInput(val: string) {
                     @click.stop="toggleRunSettingsMenu"
                   >
                     <component :is="engineBadgeIcon" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-                    <span class="text-xs font-medium">{{ engineBadgeLabel }}</span>
+                    <span class="text-xs font-medium shrink-0">{{ engineBadgeLabel }}</span>
+                    <span
+                      v-if="composerModelLabel"
+                      class="max-w-[9rem] truncate font-mono text-[10px] text-muted-foreground"
+                      :title="composerModelLabel"
+                    >· {{ composerModelLabel }}</span>
                     <ChevronDown
                       class="h-3 w-3 shrink-0 text-muted-foreground transition-transform duration-200"
                       :class="{ 'rotate-180': runSettingsOpen }"
@@ -4372,22 +4690,20 @@ function handleRefInput(val: string) {
                       <div class="space-y-3">
                         <div class="space-y-1.5">
                           <div class="flex items-center gap-1.5 text-[10px] font-medium uppercase text-muted-foreground">
-                            <Cpu class="h-3 w-3 shrink-0" :stroke-width="1.5" />
-                            <span>{{ t('run.engineSetting') }}</span>
+                            <Sparkles class="h-3 w-3 shrink-0" :stroke-width="1.5" />
+                            <span>{{ t('run.modelSetting') }}</span>
                           </div>
                           <AppSelect
-                            :model-value="engineOverride"
-                            @update:model-value="onEngineChange"
+                            :model-value="modelOverride"
+                            @update:model-value="onModelSelect"
                             size="sm"
-                            :options="[
-                              { value: '', label: t('run.defaultEngine') },
-                              { value: 'claude', label: 'claude' },
-                              { value: 'codex', label: 'codex' },
-                            ]"
+                            :options="modelOptions"
+                            :disabled="currentStatus === 'running'"
                             class="h-8 w-full"
+                            :title="t('run.modelTitle')"
                           >
                             <template #leading>
-                              <Cpu class="h-3 w-3 text-muted-foreground shrink-0" :stroke-width="1.5" />
+                              <Sparkles class="h-3 w-3 text-muted-foreground shrink-0" :stroke-width="1.5" />
                             </template>
                           </AppSelect>
                         </div>
@@ -4425,24 +4741,6 @@ function handleRefInput(val: string) {
                           >
                             <template #leading>
                               <span class="text-[10px] font-mono text-muted-foreground shrink-0">{{ t('run.perm') }}</span>
-                            </template>
-                          </AppSelect>
-                        </div>
-                        <div class="space-y-1.5">
-                          <div class="flex items-center gap-1.5 text-[10px] font-medium uppercase text-muted-foreground">
-                            <Sparkles class="h-3 w-3 shrink-0" :stroke-width="1.5" />
-                            <span>{{ t('run.modelSetting') }}</span>
-                          </div>
-                          <AppSelect
-                            v-model="modelOverride"
-                            size="sm"
-                            :options="modelOptions"
-                            :disabled="currentStatus === 'running'"
-                            class="h-8 w-full"
-                            :title="t('run.modelTitle')"
-                          >
-                            <template #leading>
-                              <Sparkles class="h-3 w-3 text-muted-foreground shrink-0" :stroke-width="1.5" />
                             </template>
                           </AppSelect>
                         </div>
@@ -4563,7 +4861,7 @@ function handleRefInput(val: string) {
       :open="!!handoffTarget"
       size="sm"
       :closable="!engineSwitchBusy"
-      @close="handoffTarget = null"
+      @close="closeHandoffDialog"
     >
       <template #header>
         <Cpu class="h-4 w-4 text-primary shrink-0" :stroke-width="2" />

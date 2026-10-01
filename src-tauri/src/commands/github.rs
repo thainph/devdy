@@ -18,6 +18,11 @@ pub struct RunRecord {
     pub ref_number: Option<i64>,
     pub status: String,
     pub engine: String,
+    /// Model the run executes with, resolved at start/resume (per-run override
+    /// else the engine default). `None` until the run has started, or when the
+    /// engine used its own default. Lets History/composer show the applied model.
+    #[serde(default)]
+    pub model: Option<String>,
     pub input_path: Option<String>,
     pub output_path: Option<String>,
     pub session_id: Option<String>,
@@ -328,6 +333,7 @@ pub async fn fetch_issue(
         ref_number: Some(issue_number as i64),
         status: "fetched".to_string(),
         engine,
+        model: None,
         input_path: Some(file_path_str.clone()),
         output_path: Some(file_path_str),
         session_id: None,
@@ -672,6 +678,7 @@ pub async fn fetch_pr(
         ref_number: Some(pr_number as i64),
         status: "fetched".to_string(),
         engine,
+        model: None,
         input_path: Some(file_path_str.clone()),
         output_path: Some(file_path_str),
         session_id: None,
@@ -698,7 +705,7 @@ pub async fn refetch_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord,
     use sqlx::Row;
 
     let row = sqlx::query(
-        "SELECT id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, session_id, claude_account_id, started_at, finished_at, created_at, last_activity_at, title, pinned, protected FROM runs WHERE id = ?",
+        "SELECT id, project_id, repo_id, type, ref_number, status, engine, model, input_path, output_path, session_id, claude_account_id, started_at, finished_at, created_at, last_activity_at, title, pinned, protected FROM runs WHERE id = ?",
     )
     .bind(&run_id)
     .fetch_one(db.inner())
@@ -816,6 +823,7 @@ pub async fn refetch_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord,
         ref_number,
         status: row.get("status"),
         engine: row.get("engine"),
+        model: row.get("model"),
         input_path: Some(canonical_str),
         output_path,
         session_id: row.get("session_id"),
@@ -852,7 +860,7 @@ pub async fn list_runs(
     // reports as `last_activity_at`, so the list and the timestamp the UI prints
     // can never disagree.
     let rows = sqlx::query(
-        "SELECT id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, session_id, claude_account_id, started_at, finished_at, created_at, title, pinned, protected, role, conductor_run_id,
+        "SELECT id, project_id, repo_id, type, ref_number, status, engine, model, input_path, output_path, session_id, claude_account_id, started_at, finished_at, created_at, title, pinned, protected, role, conductor_run_id,
                 COALESCE(last_activity_at, finished_at, started_at, created_at) AS last_activity_at
          FROM runs WHERE project_id = ?
          ORDER BY pinned DESC, COALESCE(last_activity_at, finished_at, started_at, created_at) DESC
@@ -871,6 +879,7 @@ pub async fn list_runs(
         ref_number: row.get("ref_number"),
         status: row.get("status"),
         engine: row.get("engine"),
+        model: row.get("model"),
         input_path: row.get("input_path"),
         output_path: row.get("output_path"),
         session_id: row.get("session_id"),

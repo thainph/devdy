@@ -35,8 +35,9 @@
     "claudeAccountSetting": "Claude account",
     "permissionSetting": "Permission",
     "modelSetting": "Model",
+    "modelDefault": "Default (from settings)",
     "globalClaudeAccount": "Global (~/.claude)",
-    "accountDefault": "default",
+    "claudeAccountDefaultWith": "Default · {account}",
     "settingsLockedRunning": "Settings are locked while the run is executing"
   },
   "session": {

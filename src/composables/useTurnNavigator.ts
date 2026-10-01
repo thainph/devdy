@@ -27,9 +27,11 @@ export interface PromptTurn {
 const TOP_GAP = 12
 /** Slack around the anchor line so the turn just jumped to isn't picked again. */
 const EPS = 4
-const LABEL_MAX = 70
+const LABEL_MAX = 160
 
-function previewOf(text: string): string {
+/** One-line jump-list preview for a user prompt. Exported so the whole-session
+ *  scan (which parses records outside this composable) labels turns identically. */
+export function turnLabel(text: string): string {
   const flat = text.replace(/\s+/g, ' ').trim()
   return flat.length > LABEL_MAX ? `${flat.slice(0, LABEL_MAX)}…` : flat
 }
@@ -41,7 +43,7 @@ export function useTurnNavigator(
   const turns = computed<PromptTurn[]>(() => {
     const out: PromptTurn[] = []
     entries.value.forEach((e, entryIndex) => {
-      if (e.kind === 'user') out.push({ entryIndex, label: previewOf(e.text) })
+      if (e.kind === 'user') out.push({ entryIndex, label: turnLabel(e.text) })
     })
     return out
   })
@@ -59,20 +61,32 @@ export function useTurnNavigator(
     }))
   }
 
-  function scrollTo(el: HTMLElement) {
+  function scrollTo(el: HTMLElement, smooth = false) {
     const root = scrollEl.value
     if (!root) return
     // Delta from the container's own rect rather than `offsetTop`: the entry's
     // offsetParent isn't necessarily the scroll container.
     const delta = el.getBoundingClientRect().top - root.getBoundingClientRect().top
-    // Jumps land instantly on purpose — smooth-scrolling a long run animates
-    // through thousands of pixels, and a second press mid-animation fights it.
-    root.scrollTop = Math.max(0, root.scrollTop + delta - TOP_GAP)
+    const target = Math.max(0, root.scrollTop + delta - TOP_GAP)
+    // Stepping (prev/next) lands instantly on purpose — a second press mid-
+    // animation would fight it. An explicit pick asks for a smooth glide, but
+    // smooth-scrolling the full height of a long run crawls for seconds, so we
+    // teleport to within ~1.5 screens of the target first and animate only the
+    // last stretch — a consistent, quick landing however far the prompt is.
+    if (!smooth) {
+      root.scrollTop = target
+      return
+    }
+    const maxAnim = root.clientHeight * 1.5
+    if (Math.abs(target - root.scrollTop) > maxAnim) {
+      root.scrollTop = target + (target < root.scrollTop ? maxAnim : -maxAnim)
+    }
+    root.scrollTo({ top: target, behavior: 'smooth' })
   }
 
-  function scrollToTurn(entryIndex: number) {
+  function scrollToTurn(entryIndex: number, smooth = false) {
     const el = scrollEl.value?.querySelector<HTMLElement>(`[data-user-turn="${entryIndex}"]`)
-    if (el) scrollTo(el)
+    if (el) scrollTo(el, smooth)
   }
 
   /** The turn the reader is currently parked on, or -1 when above the first. */
