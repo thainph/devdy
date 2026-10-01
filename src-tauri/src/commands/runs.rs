@@ -175,9 +175,11 @@ pub(crate) async fn start_run_inner(
     let mut claude_model = String::new();
     let mut codex_model = String::new();
     let mut extra_args = String::new();
-    let mut analyze_prompt =
+    // Fixed prompts for the GitHub "Analyze issue" / "Review PR" actions. No longer
+    // user-configurable; a per-run `custom_prompt` from the payload still overrides them.
+    let analyze_prompt =
         "Please analyze this GitHub issue and create a detailed implementation plan.".to_string();
-    let mut review_prompt =
+    let review_prompt =
         "Please review this pull request according to the configured skills.".to_string();
     let mut default_permission_mode = "default".to_string();
     let mut default_engine = "claude".to_string();
@@ -199,19 +201,6 @@ pub(crate) async fn start_run_inner(
             "claude_model" => claude_model = value,
             "codex_model" => codex_model = value,
             "extra_args" => extra_args = value,
-            // Empty means "not customized": keep the built-in default rather than
-            // running with a blank prompt. The Settings UI stores an empty string
-            // when the user clears the field / restores the default.
-            "analyze_issue_prompt" => {
-                if !value.trim().is_empty() {
-                    analyze_prompt = value;
-                }
-            }
-            "review_pr_prompt" => {
-                if !value.trim().is_empty() {
-                    review_prompt = value;
-                }
-            }
             "default_permission_mode" => default_permission_mode = value,
             _ => {}
         }
@@ -280,7 +269,7 @@ pub(crate) async fn start_run_inner(
     } else {
         claude_model
     };
-    let model = resolve_model(payload.model_override, engine_default_model);
+    let model = resolve_model_for_engine(&engine, payload.model_override, engine_default_model);
 
     let custom_prompt = payload
         .prompt_override
@@ -670,10 +659,45 @@ pub(crate) async fn start_run_inner(
 
 /// Resolve the effective model from a per-run override and the per-engine
 /// default. Returns None when neither is set (engine picks its own default).
-fn resolve_model(override_model: Option<String>, default_model: String) -> Option<String> {
+/// Classify a model id to the engine that serves it, by family prefix.
+///
+/// Returns `None` for ids we don't recognize (a custom or newly-pinned alias)
+/// so callers do NOT drop them — only a KNOWN cross-engine mismatch (a Claude id
+/// handed to a Codex run, or vice versa) should be rejected.
+fn engine_of_model(model: &str) -> Option<&'static str> {
+    let m = model.trim().to_ascii_lowercase();
+    if m.starts_with("claude-") || m.starts_with("claude[") || m == "claude" {
+        Some("claude")
+    } else if m.starts_with("gpt-") || m.starts_with("gpt[") || m == "gpt" {
+        Some("codex")
+    } else {
+        None
+    }
+}
+
+/// Resolve the model a run of `engine` should use. Single source of truth for
+/// every launch/resume path (desktop sessions, conductor, workers):
+///
+/// 1. the explicit `override_model` — but only when it belongs to `engine` (an
+///    unrecognized id is trusted and kept),
+/// 2. else the engine's global default (`claude_model` / `codex_model`),
+/// 3. else `None` so the engine picks its own default.
+///
+/// Dropping a cross-engine override is what lets a conductor spawn a worker on a
+/// DIFFERENT engine without its own model leaking in: the worker falls back to
+/// its own engine's global default (requirement #3).
+fn resolve_model_for_engine(
+    engine: &str,
+    override_model: Option<String>,
+    default_model: String,
+) -> Option<String> {
     override_model
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+        .filter(|s| match engine_of_model(s) {
+            Some(e) => e == engine,
+            None => true,
+        })
         .or_else(|| {
             let d = default_model.trim().to_string();
             if d.is_empty() {
@@ -1992,6 +2016,7 @@ pub async fn rerun_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord, S
         last_activity_at: None,
         title: None,
         pinned: false,
+        protected: false,
         role: None,
         conductor_run_id: None,
     })
@@ -2075,6 +2100,7 @@ pub async fn create_handoff_run(
             last_activity_at: None,
             title: src.title,
             pinned: false,
+            protected: false,
             role: None,
             conductor_run_id: None,
         },
@@ -2129,6 +2155,7 @@ pub async fn create_session_run(
         last_activity_at: None,
         title: None,
         pinned: false,
+        protected: false,
         role: None,
         conductor_run_id: None,
     })
@@ -2470,7 +2497,24 @@ pub async fn set_run_pinned(db: State<'_, Db>, run_id: String, pinned: bool) -> 
     Ok(())
 }
 
-/// Bulk delete all non-running runs for a project. Returns the number deleted.
+/// Protect or unprotect a run so "Clear all" skips it during a bulk cleanup.
+#[tauri::command]
+pub async fn set_run_protected(
+    db: State<'_, Db>,
+    run_id: String,
+    protected: bool,
+) -> Result<(), String> {
+    sqlx::query("UPDATE runs SET protected = ? WHERE id = ?")
+        .bind(if protected { 1 } else { 0 })
+        .bind(&run_id)
+        .execute(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Bulk delete all non-running, non-protected runs for a project. Returns the
+/// number deleted. Protected runs are kept so an important session survives.
 #[tauri::command]
 pub async fn delete_all_runs(
     db: State<'_, Db>,
@@ -2479,7 +2523,9 @@ pub async fn delete_all_runs(
 ) -> Result<u32, String> {
     use sqlx::Row;
 
-    let rows = sqlx::query("SELECT id FROM runs WHERE project_id = ? AND status != 'running'")
+    let rows = sqlx::query(
+        "SELECT id FROM runs WHERE project_id = ? AND status != 'running' AND protected = 0",
+    )
         .bind(&project_id)
         .fetch_all(db.inner())
         .await
@@ -2611,7 +2657,7 @@ pub async fn resume_run(
     } else {
         claude_model
     };
-    let model = resolve_model(model_override, engine_default_model);
+    let model = resolve_model_for_engine(&engine, model_override, engine_default_model);
 
     let permission_mode = permission_mode_override
         .filter(|v| is_valid_permission_mode(v))
@@ -2844,6 +2890,69 @@ pub async fn resume_run(
     ));
 
     Ok(())
+}
+
+#[cfg(test)]
+mod model_resolution_tests {
+    use super::{engine_of_model, resolve_model_for_engine};
+
+    #[test]
+    fn classifies_known_families() {
+        assert_eq!(engine_of_model("claude-opus-4-8[1m]"), Some("claude"));
+        assert_eq!(engine_of_model("claude-sonnet-4-6"), Some("claude"));
+        assert_eq!(engine_of_model("gpt-5.5"), Some("codex"));
+        assert_eq!(engine_of_model("gpt-5.3-codex"), Some("codex"));
+        // Unrecognized ids are left unclassified so they are never dropped.
+        assert_eq!(engine_of_model("o3-mini"), None);
+        assert_eq!(engine_of_model(""), None);
+    }
+
+    #[test]
+    fn override_of_same_engine_wins() {
+        let m = resolve_model_for_engine(
+            "claude",
+            Some("claude-opus-4-8[1m]".into()),
+            "claude-sonnet-4-6".into(),
+        );
+        assert_eq!(m.as_deref(), Some("claude-opus-4-8[1m]"));
+    }
+
+    #[test]
+    fn cross_engine_override_falls_back_to_global() {
+        // A conductor hands a Claude model to a Codex worker: drop it, use the
+        // Codex global default instead (requirement #3).
+        let m = resolve_model_for_engine(
+            "codex",
+            Some("claude-opus-4-8[1m]".into()),
+            "gpt-5.5".into(),
+        );
+        assert_eq!(m.as_deref(), Some("gpt-5.5"));
+    }
+
+    #[test]
+    fn unknown_override_is_trusted() {
+        let m = resolve_model_for_engine("claude", Some("o3-custom".into()), "claude-x".into());
+        assert_eq!(m.as_deref(), Some("o3-custom"));
+    }
+
+    #[test]
+    fn no_override_uses_global() {
+        let m = resolve_model_for_engine("claude", None, "claude-opus-4-8[1m]".into());
+        assert_eq!(m.as_deref(), Some("claude-opus-4-8[1m]"));
+    }
+
+    #[test]
+    fn empty_override_and_empty_global_is_none() {
+        assert_eq!(resolve_model_for_engine("claude", Some("  ".into()), "".into()), None);
+        assert_eq!(resolve_model_for_engine("codex", None, "   ".into()), None);
+    }
+
+    #[test]
+    fn cross_engine_override_with_empty_global_is_none() {
+        // Dropped override + no global default => let the engine pick its own.
+        let m = resolve_model_for_engine("codex", Some("claude-opus-4-8[1m]".into()), "".into());
+        assert_eq!(m, None);
+    }
 }
 
 #[cfg(test)]

@@ -13,7 +13,7 @@
   "goalLabel": "Goal",
   "goalPlaceholder": "Describe what you want done. The conductor will split it into roles and spawn workers to do the work.",
   "maxWorkersLabel": "Max workers",
-  "editMaxWorkers": "Change the max worker count (1–12). Applies to the next spawn.",
+  "editMaxWorkers": "Change the max worker count (1–50). Applies to the next spawn.",
   "preLaunchHint": "Set the max workers above, then send your goal in the chat box to launch the conductor. Workers will appear here once spawned.",
   "setMaxWorkersFailed": "Couldn't update the max worker count: {error}",
   "errGoalRequired": "Please enter a goal for the conductor.",

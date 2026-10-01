@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use sqlx::Row;
 use std::path::Path;
 use std::time::{Duration, Instant};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use super::mcp_http::HttpState;
 use crate::commands::runs::{start_run_inner, StartRunPayload};
@@ -67,6 +67,10 @@ async fn session_spawn(
         .ok_or_else(|| "`prompt` is required".to_string())?;
     let role_label = arg_str(&args, "role_label").unwrap_or_else(|| "worker".to_string());
     let instruction = arg_str(&args, "instruction");
+    // Passed through as the worker's model override. `start_run_inner` resolves it
+    // against the WORKER's engine (which may differ from the conductor's) and drops
+    // it when it belongs to the other engine, so a cross-engine spawn falls back to
+    // that engine's global default instead of leaking the conductor's model.
     let model = arg_str(&args, "model");
     // No override => worker uses the project's default permission mode, exactly
     // like a normal session; its prompts surface in the standard drawer.
@@ -123,7 +127,7 @@ async fn session_spawn(
     start_run_inner(state.app.clone(), db.clone(), registry(state), payload).await?;
 
     log_event(
-        &db,
+        state,
         conductor_run_id,
         "spawn",
         json!({ "worker_id": worker_id, "role_label": role_label, "engine": engine }),
@@ -289,7 +293,7 @@ async fn session_send(
     )
     .await?;
 
-    log_event(&db, conductor_run_id, "send", json!({ "worker_id": worker_id })).await;
+    log_event(state, conductor_run_id, "send", json!({ "worker_id": worker_id })).await;
     Ok(json!({ "worker_id": worker_id, "accepted": true, "status": "running" }))
 }
 
@@ -304,7 +308,7 @@ async fn session_cancel(
 
     let db = db(state);
     crate::commands::runs::cancel_run_inner(&registry(state), &db, &worker_id).await?;
-    log_event(&db, conductor_run_id, "cancel", json!({ "worker_id": worker_id })).await;
+    log_event(state, conductor_run_id, "cancel", json!({ "worker_id": worker_id })).await;
     Ok(json!({ "worker_id": worker_id, "status": "cancelled" }))
 }
 
@@ -407,7 +411,13 @@ fn extract_latest_reply(log_path: &Path) -> String {
     reply.trim().to_string()
 }
 
-async fn log_event(db: &Db, session_id: &str, kind: &str, payload: Value) {
+/// Append a control-plane event AND notify the UI. The emit is the push signal
+/// that replaces the old 2s `get_conductor_detail` poll: it fires exactly at the
+/// discrete points that change a conductor's worker membership / timeline
+/// (spawn/send/cancel), so the frontend can refresh on demand instead of on a
+/// timer. (Per-worker run status changes are not emitted here — the frontend
+/// reads those live from the `liveRuns` store via `run:done:{workerId}`.)
+async fn log_event(state: &HttpState, session_id: &str, kind: &str, payload: Value) {
     let _ = sqlx::query(
         "INSERT INTO conductor_events (session_id, ts, kind, payload_json) VALUES (?, ?, ?, ?)",
     )
@@ -415,8 +425,13 @@ async fn log_event(db: &Db, session_id: &str, kind: &str, payload: Value) {
     .bind(chrono::Utc::now().to_rfc3339())
     .bind(kind)
     .bind(payload.to_string())
-    .execute(db)
+    .execute(&db(state))
     .await;
+
+    let _ = state.app.emit(
+        &format!("conductor:changed:{}", session_id),
+        json!({ "kind": kind }),
+    );
 }
 
 fn truncate(s: &str, max: usize) -> String {

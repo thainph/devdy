@@ -278,12 +278,24 @@ fn token_cache() -> &'static Mutex<HashMap<String, (String, Instant)>> {
 }
 
 /// Mint (or reuse a cached) short-lived access token for one account.
-async fn access_token_for(client: &reqwest::Client, account_id: &str) -> Result<String, String> {
-    // Fast path: a still-valid cached token.
-    if let Ok(cache) = token_cache().lock() {
-        if let Some((tok, exp)) = cache.get(account_id) {
-            if *exp > Instant::now() {
-                return Ok(tok.clone());
+///
+/// `force_refresh` bypasses the cache and mints a fresh token — used after a
+/// Google API call comes back 401, which means the cached token is no longer
+/// valid even though our TTL still considers it live (the TTL is measured with a
+/// monotonic `Instant`, which on macOS does not advance while the machine is
+/// asleep, so a token can outlive its real ~1h expiry in cache after a sleep).
+async fn access_token_for(
+    client: &reqwest::Client,
+    account_id: &str,
+    force_refresh: bool,
+) -> Result<String, String> {
+    // Fast path: a still-valid cached token (unless the caller forces a refresh).
+    if !force_refresh {
+        if let Ok(cache) = token_cache().lock() {
+            if let Some((tok, exp)) = cache.get(account_id) {
+                if *exp > Instant::now() {
+                    return Ok(tok.clone());
+                }
             }
         }
     }
@@ -321,14 +333,46 @@ async fn access_token_for(client: &reqwest::Client, account_id: &str) -> Result<
     Ok(token.access_token)
 }
 
+/// Send an authenticated Google API request, retrying ONCE with a force-refreshed
+/// access token when the first attempt returns 401. The `build` closure must
+/// (re)construct the full request from a bearer token so it can be sent twice; it
+/// is called with a cached token first, then with a freshly minted one on 401.
+///
+/// This is what keeps the Calendar screen working after the machine wakes from
+/// sleep: the cached token looks live to our monotonic-clock TTL but Google has
+/// already expired it, so the first call 401s and the retry succeeds. Without
+/// this the screen stayed broken for up to the full cache TTL (or an app restart).
+async fn send_authed<F>(
+    client: &reqwest::Client,
+    account_id: &str,
+    build: F,
+) -> Result<reqwest::Response, String>
+where
+    F: Fn(&str) -> reqwest::RequestBuilder,
+{
+    let token = access_token_for(client, account_id, false).await?;
+    let resp = build(&token)
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+    if resp.status() != reqwest::StatusCode::UNAUTHORIZED {
+        return Ok(resp);
+    }
+    let token = access_token_for(client, account_id, true).await?;
+    build(&token)
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))
+}
+
 async fn fetch_calendars(
     client: &reqwest::Client,
-    token: &str,
+    account_id: &str,
 ) -> Result<Vec<CalendarListEntry>, String> {
-    let resp: CalendarListResponse = client
-        .get(CALENDAR_LIST_ENDPOINT)
-        .bearer_auth(token)
-        .send()
+    let resp: CalendarListResponse =
+        send_authed(client, account_id, |tok| {
+            client.get(CALENDAR_LIST_ENDPOINT).bearer_auth(tok)
+        })
         .await
         .map_err(|e| format!("calendarList request failed: {e}"))?
         .error_for_status()
@@ -371,12 +415,7 @@ pub async fn list_google_calendars(
     let mut errors = Vec::new();
 
     for (id, label) in accounts {
-        match async {
-            let token = access_token_for(&client, &id).await?;
-            fetch_calendars(&client, &token).await
-        }
-        .await
-        {
+        match fetch_calendars(&client, &id).await {
             Ok(items) => {
                 for c in items {
                     calendars.push(CalendarMeta {
@@ -404,9 +443,8 @@ pub async fn list_google_calendars(
 /// Fetch and map one calendar's events in `[time_min, time_max)`.
 async fn fetch_calendar_events(
     client: &reqwest::Client,
-    token: &str,
-    cal: &CalendarListEntry,
     account_id: &str,
+    cal: &CalendarListEntry,
     account_label: &str,
     time_min: &str,
     time_max: &str,
@@ -415,24 +453,22 @@ async fn fetch_calendar_events(
         "https://www.googleapis.com/calendar/v3/calendars/{}/events",
         urlencoding_component(&cal.id)
     );
-    let resp: EventsResponse = client
-        .get(&url)
-        .bearer_auth(token)
-        .query(&[
+    let resp: EventsResponse = send_authed(client, account_id, |tok| {
+        client.get(&url).bearer_auth(tok).query(&[
             ("timeMin", time_min),
             ("timeMax", time_max),
             ("singleEvents", "true"),
             ("orderBy", "startTime"),
             ("maxResults", "2500"),
         ])
-        .send()
-        .await
-        .map_err(|e| format!("events request failed for '{}': {e}", cal.summary))?
-        .error_for_status()
-        .map_err(|e| format!("events rejected for '{}': {e}", cal.summary))?
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse events for '{}': {e}", cal.summary))?;
+    })
+    .await
+    .map_err(|e| format!("events request failed for '{}': {e}", cal.summary))?
+    .error_for_status()
+    .map_err(|e| format!("events rejected for '{}': {e}", cal.summary))?
+    .json()
+    .await
+    .map_err(|e| format!("Failed to parse events for '{}': {e}", cal.summary))?;
 
     let mut out = Vec::new();
     for ev in resp.items {
@@ -543,10 +579,9 @@ pub async fn list_google_calendar_events(
         let time_max = time_max.clone();
         async move {
             let res = async {
-                let token = access_token_for(&client, &id).await?;
                 let calendars = {
                     let _permit = sem.acquire().await.unwrap();
-                    fetch_calendars(&client, &token).await?
+                    fetch_calendars(&client, &id).await?
                 };
                 // Only the calendars the user actually shows in Google (plus the
                 // primary one) — skips holiday/birthday/subscribed calendars.
@@ -558,7 +593,6 @@ pub async fn list_google_calendar_events(
                 let cal_futs = wanted.iter().map(|cal| {
                     let client = client.clone();
                     let sem = sem.clone();
-                    let token = token.clone();
                     let id = id.clone();
                     let label = label.clone();
                     let time_min = time_min.clone();
@@ -566,7 +600,7 @@ pub async fn list_google_calendar_events(
                     async move {
                         let _permit = sem.acquire().await.unwrap();
                         fetch_calendar_events(
-                            &client, &token, cal, &id, &label, &time_min, &time_max,
+                            &client, &id, cal, &label, &time_min, &time_max,
                         )
                         .await
                     }
@@ -617,20 +651,20 @@ pub async fn create_google_calendar_event(
     payload: EventPayload,
 ) -> Result<CalEvent, String> {
     let client = reqwest::Client::new();
-    let token = access_token_for(&client, &account_id).await?;
     let url = format!(
         "{EVENTS_BASE}/{}/events",
         urlencoding_component(&calendar_id)
     );
 
-    let resp = client
-        .post(&url)
-        .bearer_auth(&token)
-        .query(&[("conferenceDataVersion", "1"), ("sendUpdates", "all")])
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|e| format!("Create event request failed: {e}"))?;
+    let resp = send_authed(&client, &account_id, |tok| {
+        client
+            .post(&url)
+            .bearer_auth(tok)
+            .query(&[("conferenceDataVersion", "1"), ("sendUpdates", "all")])
+            .json(&payload)
+    })
+    .await
+    .map_err(|e| format!("Create event request failed: {e}"))?;
 
     let ev = parse_event_response(resp, "Create").await?;
     let label = account_label_for(db.inner(), &account_id).await;
@@ -649,21 +683,21 @@ pub async fn update_google_calendar_event(
     payload: EventPayload,
 ) -> Result<CalEvent, String> {
     let client = reqwest::Client::new();
-    let token = access_token_for(&client, &account_id).await?;
     let url = format!(
         "{EVENTS_BASE}/{}/events/{}",
         urlencoding_component(&calendar_id),
         urlencoding_component(&event_id)
     );
 
-    let resp = client
-        .patch(&url)
-        .bearer_auth(&token)
-        .query(&[("conferenceDataVersion", "1"), ("sendUpdates", "all")])
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|e| format!("Update event request failed: {e}"))?;
+    let resp = send_authed(&client, &account_id, |tok| {
+        client
+            .patch(&url)
+            .bearer_auth(tok)
+            .query(&[("conferenceDataVersion", "1"), ("sendUpdates", "all")])
+            .json(&payload)
+    })
+    .await
+    .map_err(|e| format!("Update event request failed: {e}"))?;
 
     let ev = parse_event_response(resp, "Update").await?;
     let label = account_label_for(db.inner(), &account_id).await;
@@ -682,20 +716,20 @@ pub async fn delete_google_calendar_event(
 ) -> Result<(), String> {
     let _ = &db; // kept for signature symmetry with create/update
     let client = reqwest::Client::new();
-    let token = access_token_for(&client, &account_id).await?;
     let url = format!(
         "{EVENTS_BASE}/{}/events/{}",
         urlencoding_component(&calendar_id),
         urlencoding_component(&event_id)
     );
 
-    let resp = client
-        .delete(&url)
-        .bearer_auth(&token)
-        .query(&[("sendUpdates", "all")])
-        .send()
-        .await
-        .map_err(|e| format!("Delete event request failed: {e}"))?;
+    let resp = send_authed(&client, &account_id, |tok| {
+        client
+            .delete(&url)
+            .bearer_auth(tok)
+            .query(&[("sendUpdates", "all")])
+    })
+    .await
+    .map_err(|e| format!("Delete event request failed: {e}"))?;
 
     let status = resp.status();
     if status.is_success() || status == reqwest::StatusCode::GONE {

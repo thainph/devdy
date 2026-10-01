@@ -60,8 +60,6 @@ interface AppSettings {
   language: string
   color_theme: string
   animated_background: string
-  analyze_issue_prompt: string
-  review_pr_prompt: string
   saved_prompts: string
   default_permission_mode: string
   terminal_app: string
@@ -99,8 +97,6 @@ const settings = ref<AppSettings>({
   language: 'en',
   color_theme: 'default',
   animated_background: 'true',
-  analyze_issue_prompt: '',
-  review_pr_prompt: '',
   saved_prompts: '[]',
   default_permission_mode: 'default',
   terminal_app: 'terminal',
@@ -1133,18 +1129,14 @@ function addSavedPrompt() {
   expandedPromptId.value = id // open the empty row so it can be filled in
 }
 
-function removeSavedPrompt(id: string) {
+async function removeSavedPrompt(id: string) {
+  if (!(await confirm({
+    title: t('settings.prompts.deleteTitle'),
+    message: t('settings.prompts.deleteMessage'),
+    confirmLabel: t('common.delete'),
+  }))) return
   savedPrompts.value = savedPrompts.value.filter((p) => p.id !== id)
   if (expandedPromptId.value === id) expandedPromptId.value = null
-}
-
-// ── GitHub action prompts ──────────────────────────────────────────────────
-// The analyze/review fields customize the prompt used by the "Analyze issue" /
-// "Review PR" GitHub actions. An empty value is stored as-is; the backend then
-// falls back to its built-in default (see runs.rs), so clearing a field simply
-// restores the default behaviour.
-function clearActionPrompt(field: 'analyze_issue_prompt' | 'review_pr_prompt') {
-  settings.value[field] = ''
 }
 
 async function persistChanges() {
@@ -2682,58 +2674,8 @@ watch(() => settings.value.language, (v) => {
             <span class="text-xs font-semibold">{{ t('settings.prompts.title') }}</span>
           </template>
 
-            <!-- Group A: prompts wired to the GitHub "Analyze issue" / "Review PR" actions -->
+            <!-- Reusable prompt library, picked from the composer dropdown in a run -->
             <section class="space-y-3">
-              <div class="space-y-0.5">
-                <h3 class="text-xs font-semibold text-foreground">{{ t('settings.prompts.actionsTitle') }}</h3>
-                <p class="text-[11px] text-muted-foreground">{{ t('settings.prompts.actionsHint') }}</p>
-              </div>
-
-              <div class="space-y-1.5">
-                <div class="flex items-center justify-between gap-2">
-                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.prompts.analyzeIssue') }}</label>
-                  <Button
-                    v-if="settings.analyze_issue_prompt.trim()"
-                    variant="ghost"
-                    size="sm"
-                    class="h-6 shrink-0 px-2 text-[11px]"
-                    @click="clearActionPrompt('analyze_issue_prompt')"
-                  >
-                    <RotateCcw class="h-3 w-3" :stroke-width="2" />
-                    {{ t('settings.prompts.restoreDefault') }}
-                  </Button>
-                </div>
-                <Textarea
-                  v-model="settings.analyze_issue_prompt"
-                  rows="3"
-                  :placeholder="t('settings.prompts.analyzeIssuePlaceholder')"
-                />
-              </div>
-
-              <div class="space-y-1.5">
-                <div class="flex items-center justify-between gap-2">
-                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.prompts.reviewPr') }}</label>
-                  <Button
-                    v-if="settings.review_pr_prompt.trim()"
-                    variant="ghost"
-                    size="sm"
-                    class="h-6 shrink-0 px-2 text-[11px]"
-                    @click="clearActionPrompt('review_pr_prompt')"
-                  >
-                    <RotateCcw class="h-3 w-3" :stroke-width="2" />
-                    {{ t('settings.prompts.restoreDefault') }}
-                  </Button>
-                </div>
-                <Textarea
-                  v-model="settings.review_pr_prompt"
-                  rows="3"
-                  :placeholder="t('settings.prompts.reviewPrPlaceholder')"
-                />
-              </div>
-            </section>
-
-            <!-- Group B: reusable prompt library, picked from the composer dropdown in a run -->
-            <section class="space-y-3 border-t border-border/60 pt-5">
               <div class="flex items-center justify-between gap-2">
                 <div class="space-y-0.5">
                   <h3 class="text-xs font-semibold text-foreground">{{ t('settings.prompts.library') }}</h3>
@@ -2755,53 +2697,57 @@ watch(() => settings.value.language, (v) => {
                   :key="p.id"
                   class="overflow-hidden rounded-md border border-border/70 bg-muted/20"
                 >
-                  <!-- Collapsed row: click to reveal the editor -->
-                  <button
-                    type="button"
-                    class="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-muted/40"
-                    :aria-expanded="expandedPromptId === p.id"
-                    @click="togglePrompt(p.id)"
-                  >
-                    <ChevronDown
-                      class="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform"
-                      :class="{ '-rotate-90': expandedPromptId !== p.id }"
-                      :stroke-width="2"
-                    />
-                    <span
-                      class="min-w-0 flex-1 truncate text-xs"
-                      :class="promptLabel(p) ? 'text-foreground' : 'italic text-muted-foreground'"
+                  <!-- Collapsed row: toggle on the left, edit + delete actions on the right -->
+                  <div class="flex items-center gap-1 pr-1.5 transition-colors hover:bg-muted/40">
+                    <button
+                      type="button"
+                      class="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left"
+                      :aria-expanded="expandedPromptId === p.id"
+                      @click="togglePrompt(p.id)"
                     >
-                      {{ promptLabel(p) || t('settings.prompts.untitled', { n: i + 1 }) }}
-                    </span>
-                    <Pencil
-                      v-if="expandedPromptId !== p.id"
-                      class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-                      :stroke-width="1.75"
-                    />
-                  </button>
-
-                  <!-- Expanded editor -->
-                  <div v-if="expandedPromptId === p.id" class="space-y-1.5 border-t border-border/60 p-3">
-                    <div class="flex items-center gap-2">
-                      <Input
-                        v-model="p.title"
-                        class="flex-1"
-                        :placeholder="t('settings.prompts.titlePlaceholder', { n: i + 1 })"
+                      <ChevronDown
+                        class="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform"
+                        :class="{ '-rotate-90': expandedPromptId !== p.id }"
+                        :stroke-width="2"
                       />
-                      <Button
-                        variant="destructive-ghost"
-                        size="icon-sm"
-                        :title="t('common.delete')"
-                        :aria-label="t('common.delete')"
-                        @click="removeSavedPrompt(p.id)"
+                      <span
+                        class="min-w-0 flex-1 truncate text-xs"
+                        :class="promptLabel(p) ? 'text-foreground' : 'italic text-muted-foreground'"
                       >
-                        <Trash2 class="h-3.5 w-3.5" :stroke-width="2" />
-                      </Button>
-                    </div>
+                        {{ promptLabel(p) || t('settings.prompts.untitled', { n: i + 1 }) }}
+                      </span>
+                    </button>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      :title="t('common.edit')"
+                      :aria-label="t('common.edit')"
+                      @click="togglePrompt(p.id)"
+                    >
+                      <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
+                    </Button>
+                    <Button
+                      variant="destructive-ghost"
+                      size="icon-sm"
+                      :title="t('common.delete')"
+                      :aria-label="t('common.delete')"
+                      @click="removeSavedPrompt(p.id)"
+                    >
+                      <Trash2 class="h-3.5 w-3.5" :stroke-width="2" />
+                    </Button>
+                  </div>
+
+                  <!-- Expanded editor: title and body share the same full width -->
+                  <div v-if="expandedPromptId === p.id" class="space-y-1.5 border-t border-border/60 p-3">
+                    <Input
+                      v-model="p.title"
+                      class="w-full"
+                      :placeholder="t('settings.prompts.titlePlaceholder', { n: i + 1 })"
+                    />
                     <Textarea
                       v-model="p.body"
                       rows="3"
-                      class="font-mono"
+                      class="w-full font-mono"
                       :placeholder="t('settings.prompts.bodyPlaceholder')"
                     />
                   </div>

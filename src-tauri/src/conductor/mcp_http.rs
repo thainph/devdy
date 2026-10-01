@@ -164,7 +164,7 @@ fn tool_specs() -> Value {
                     "prompt": { "type": "string", "description": "The worker's first task message." },
                     "instruction": { "type": "string", "description": "Optional role/system framing appended to the worker's system prompt." },
                     "engine": { "type": "string", "enum": ["claude", "codex"], "description": "Engine for the worker. Defaults to project default." },
-                    "model": { "type": "string", "description": "Optional model override." },
+                    "model": { "type": "string", "description": "Optional model override. Must belong to the worker's engine; a mismatched id is ignored and the worker uses that engine's global default model. Omit to use the global default." },
                     "permission_mode": { "type": "string", "enum": ["default", "acceptEdits", "bypassPermissions", "plan"], "description": "Worker permission mode. Defaults to the project's default; the human answers any prompts in the permission drawer." }
                 },
                 "required": ["prompt"]

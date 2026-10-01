@@ -36,7 +36,7 @@ import {
   ChevronDown, ChevronUp, Maximize2, Minimize2, AppWindow,
   ImagePlus, X, Paperclip,
   ShieldQuestion, MessageCircleQuestion,
-  Pin, PinOff, Pencil, Check, Github, Gitlab, UserCircle,
+  Pin, PinOff, Shield, ShieldOff, Pencil, Check, Github, Gitlab, UserCircle,
   ClipboardCopy, ScrollText, HardDrive, Cloud, Radio, Languages, StickyNote, ListTodo, FolderTree, Loader2, ListChecks,
   MoreHorizontal, BookMarked, Search, Network, ChevronLeft, ChevronRight, Hash
 } from 'lucide-vue-next'
@@ -576,9 +576,19 @@ const currentSessionId = computed(() => session.value?.sessionId ?? currentRun.v
 
 // ── Conductor ──────────────────────────────────────────────────────────────
 // A conductor is just this session that also drives worker runs. When the open
-// run is one, we show the worker sidebar; the conductor store polls its tree.
+// run is one, we show the worker sidebar. The conductor store tracks the worker
+// tree event-driven (membership + timeline); per-worker *status* comes live from
+// the `liveRuns` store, so a worker flipping running→done updates instantly
+// without any backend round-trip.
 const isConductor = computed(() => !!conductorStore.detail?.session)
-const conductorWorkers = computed(() => conductorStore.detail?.workers ?? [])
+const conductorWorkers = computed(() =>
+  (conductorStore.detail?.workers ?? []).map((w) => ({
+    ...w,
+    // Prefer the live status (from run:activated/run:done events); fall back to
+    // the DB snapshot for workers liveRuns isn't tracking (e.g. already finished).
+    status: live.get(w.worker_id)?.status ?? w.status,
+  })),
+)
 // The conductor's concurrent-worker cap (set at launch, editable live from the
 // sidebar header). Shown next to the live worker count so the user sees headroom
 // at a glance. (Distinct from `conductorMaxWorkers`, the launch default applied
@@ -592,7 +602,7 @@ const workerPanelOpen = ref(true)
 //  • pre-launch (a "New conductor" session not yet started) — the cap edits the
 //    local `conductorMaxWorkers` ref that seeds the launch; no backend row exists.
 //  • running/finished conductor — the cap is raised/lowered live: the backend
-//    clamps to [1,12], persists it, and the next session_spawn enforces it.
+//    clamps to [1,50], persists it, and the next session_spawn enforces it.
 // The draft is a separate ref so the 2s detail poll can't clobber it mid-edit.
 // Emitted value from <Input> is a string, so we parse on commit.
 const editingWorkerCap = ref(false)
@@ -610,7 +620,7 @@ async function commitWorkerCap() {
   editingWorkerCap.value = false
   const parsed = Math.round(Number(workerCapDraft.value))
   if (!Number.isFinite(parsed)) return
-  const next = Math.min(12, Math.max(1, parsed))
+  const next = Math.min(50, Math.max(1, parsed))
   // Pre-launch conductor: no session row yet, so just remember the launch cap.
   if (!isConductor.value) {
     conductorMaxWorkers.value = next
@@ -1488,6 +1498,9 @@ async function refreshViewedRunOnFocus(force = false) {
 // arg, which must not be read as `force` (it's truthy).
 function onAppFocus() {
   void refreshViewedRunOnFocus(false)
+  // Safety-net for the event-driven conductor panel: catch any `conductor:changed`
+  // event that may have been missed while the window was in the background.
+  if (conductorStore.selectedId) void conductorStore.refreshDetail()
 }
 
 onUnmounted(() => {
@@ -2698,6 +2711,8 @@ const deletingRunId = ref<string | null>(null)
 const refetchingRunId = ref<string | null>(null)
 const clearingAll = ref(false)
 const pinningRunId = ref<string | null>(null)
+const protectingRunId = ref<string | null>(null)
+const convertingRunId = ref<string | null>(null)
 // Which History row currently has its actions (⋯) menu open. Kept so the
 // trigger stays visible even when the pointer leaves the row while open.
 const actionsMenuRunId = ref<string | null>(null)
@@ -2794,6 +2809,19 @@ async function handleTogglePin(run: RunRecord) {
   }
 }
 
+async function handleToggleProtect(run: RunRecord) {
+  protectingRunId.value = run.id
+  const willProtect = !run.protected
+  try {
+    await runsStore.setRunProtected(run.id, willProtect)
+    toast.success(willProtect ? t('run.runProtected') : t('run.runUnprotected'))
+  } catch (err) {
+    toast.error(String(err))
+  } finally {
+    protectingRunId.value = null
+  }
+}
+
 function clearActiveRunState() {
   if (currentRunId.value) live.discard(currentRunId.value)
   currentRunId.value = null
@@ -2804,6 +2832,53 @@ function clearActiveRunState() {
   inputContent.value = ''
   inputContentRunId.value = null
   inputContentError.value = null
+}
+
+// Convert a stopped normal session into a conductor: the backend marks the role,
+// creates the conductor session, then resumes the existing conversation with the
+// conductor tools + framing injected. We then open it live and start polling its
+// worker tree, seeding the viewer from the on-disk transcript so the prior
+// conversation stays visible while new conductor turns stream in.
+async function handleConvertToConductor(run: RunRecord) {
+  const label = runLabel(run)
+  if (!(await confirm({
+    title: t('run.convertToConductorTitle'),
+    message: t('run.convertToConductorMessage', { label }),
+    confirmLabel: t('run.convertToConductorConfirm'),
+  }))) return
+  convertingRunId.value = run.id
+  try {
+    await conductorStore.convertToConductor(run.id)
+    // Role is now 'conductor' in the DB — refresh so History reflects it.
+    await runsStore.fetchRuns(projectId.value)
+    // Open the run live. Seed from disk so the earlier conversation stays on
+    // screen, then attach the stream for the new conductor turns.
+    currentRunId.value = run.id
+    clearHistoryView()
+    const s = live.ensure(run.id, projectId.value)
+    if (s.entries.length === 0) {
+      try {
+        const page = await runsStore.getRunLogPage(run.id, undefined, HISTORY_PAGE_INITIAL)
+        const parsed = parseStreamLogWindow(page.records, { seedModel: modelFromPreamble(page.preamble) })
+        if (parsed.entries.length > 0) {
+          s.entries.push(...parsed.entries)
+          s.hasStreamEvents = true
+          for (const e of parsed.entries) {
+            if (e.kind === 'system' && e.sessionId) s.sessionId = e.sessionId
+          }
+        }
+      } catch { /* fall back to a live-only view */ }
+    }
+    live.setStatus(run.id, 'running')
+    setLocalRunStatus(run.id, 'running')
+    await live.startListening(run.id, projectId.value)
+    void conductorStore.select(run.id)
+    toast.success(t('run.convertedToConductor'))
+  } catch (e) {
+    toast.error(String(e))
+  } finally {
+    convertingRunId.value = null
+  }
 }
 
 async function handleDeleteRun(runId: string) {
@@ -3475,12 +3550,25 @@ function handleRefInput(val: string) {
                         ? t('common.status.draft')
                         : t(`common.status.${run.status}`))"
                   />
-                  <Pin
-                    v-if="run.pinned"
-                    class="h-3 w-3 shrink-0 text-primary"
-                    :stroke-width="2"
-                    :aria-label="t('run.pinned')"
-                  />
+                  <!-- Pin / protect badges grouped so they stay tightly aligned
+                       when both are shown (own gap, not the row's gap-2). -->
+                  <span
+                    v-if="run.pinned || run.protected"
+                    class="flex shrink-0 items-center gap-1"
+                  >
+                    <Pin
+                      v-if="run.pinned"
+                      class="h-3 w-3 text-primary"
+                      :stroke-width="2"
+                      :aria-label="t('run.pinned')"
+                    />
+                    <Shield
+                      v-if="run.protected"
+                      class="h-3 w-3 text-emerald-500"
+                      :stroke-width="2"
+                      :aria-label="t('run.protected')"
+                    />
+                  </span>
                   <span class="flex-1 min-w-0 truncate text-[13px] font-medium leading-tight" :title="runLabel(run)">{{ runLabel(run) }}</span>
                   <!-- Worker count for a conductor group. -->
                   <span
@@ -3606,6 +3694,18 @@ function handleRefInput(val: string) {
                   <DropdownItem :disabled="pinningRunId === run.id" @click="handleTogglePin(run)">
                     <component :is="run.pinned ? PinOff : Pin" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
                     {{ run.pinned ? t('run.unpinFromTop') : t('run.pinToTop') }}
+                  </DropdownItem>
+                  <DropdownItem :disabled="protectingRunId === run.id" @click="handleToggleProtect(run)">
+                    <component :is="run.protected ? ShieldOff : Shield" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+                    {{ run.protected ? t('run.unprotect') : t('run.protect') }}
+                  </DropdownItem>
+                  <DropdownItem
+                    v-if="run.run_type === 'session' && run.role !== 'conductor' && run.role !== 'worker' && run.status !== 'running' && run.status !== 'fetched'"
+                    :disabled="convertingRunId === run.id"
+                    @click="handleConvertToConductor(run)"
+                  >
+                    <Network class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+                    {{ t('run.convertToConductor') }}
                   </DropdownItem>
                   <template v-if="run.status !== 'running'">
                     <DropdownSeparator />
@@ -4395,7 +4495,7 @@ function handleRefInput(val: string) {
                 v-model="workerCapDraft"
                 type="number"
                 min="1"
-                max="12"
+                max="50"
                 autofocus
                 class="h-5 w-11 px-1 text-center text-[11px]"
                 @keyup.enter="commitWorkerCap"
