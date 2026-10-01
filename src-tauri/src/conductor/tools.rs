@@ -434,6 +434,127 @@ async fn log_event(state: &HttpState, session_id: &str, kind: &str, payload: Val
     );
 }
 
+/// Called from the sidecar drain when ANY run finishes a turn. Closes the
+/// conductor control loop so the human never has to prod it:
+///   • if the finished run is itself a conductor, release its auto-wake slot so
+///     the next worker completion can resume it again;
+///   • if the finished run is a worker, auto-wake its (idle) conductor.
+/// A no-op for ordinary (non-conductor, non-worker) runs.
+pub async fn on_run_finished(app: &tauri::AppHandle, run_id: &str) {
+    let Some(cst) = app.try_state::<crate::conductor::ConductorState>() else {
+        return;
+    };
+    let cst = cst.inner().clone();
+
+    // A finishing conductor frees its slot BEFORE we consider any worker wake, so
+    // a worker that finished during the conductor's turn can resume it next.
+    if cst.session(run_id).is_some() {
+        cst.finish_wake(run_id);
+    }
+
+    wake_conductor_for_worker(app, &cst, run_id).await;
+}
+
+/// If `worker_run_id` is a worker whose conductor is live and idle, resume the
+/// conductor and inject a nudge so it reads the result and continues. No-op when
+/// the run isn't a worker, its conductor isn't a tracked (live) session, the
+/// conductor is still running (it'll see the worker via its own poll/wait), or a
+/// wake is already in flight for it.
+async fn wake_conductor_for_worker(
+    app: &tauri::AppHandle,
+    cst: &crate::conductor::ConductorState,
+    worker_run_id: &str,
+) {
+    let db = db_from(app);
+
+    // DB is the source of truth for the role + conductor link.
+    let row = match sqlx::query("SELECT role, conductor_run_id FROM runs WHERE id = ?")
+        .bind(worker_run_id)
+        .fetch_optional(&db)
+        .await
+    {
+        Ok(Some(r)) => r,
+        _ => return,
+    };
+    let role: Option<String> = row.get("role");
+    if role.as_deref() != Some("worker") {
+        return;
+    }
+    let Some(conductor_run_id) = row.get::<Option<String>, _>("conductor_run_id") else {
+        return;
+    };
+
+    // Only wake a conductor we still track in memory — it has a live token so the
+    // resumed run keeps its `session_*` tools. A finished/forgotten conductor is
+    // left alone.
+    if cst.session(&conductor_run_id).is_none() {
+        return;
+    }
+
+    // If the conductor is mid-turn it will observe the worker itself; injecting now
+    // would collide with its in-flight turn.
+    match worker_status(&db, &conductor_run_id).await {
+        Ok(s) if s == "running" => return,
+        Ok(_) => {}
+        Err(_) => return,
+    }
+
+    // Serialize concurrent wakes: the first worker in a burst wins; the rest are
+    // covered because the woken conductor polls ALL its workers.
+    if !cst.begin_wake(&conductor_run_id) {
+        return;
+    }
+
+    let nudge = "[conductor] A worker you spawned has finished its turn. \
+Call session_poll() or session_list() to see which of your workers are now idle, \
+session_read() each finished worker's result, then continue toward the goal \
+(send follow-ups, spawn a specialist, or conclude). If the goal is now met, give \
+the human your final summary.";
+
+    let outcome = async {
+        crate::commands::runs::resume_run(
+            app.clone(),
+            app.state::<Db>(),
+            app.state::<RunRegistry>(),
+            conductor_run_id.clone(),
+            None,
+            None,
+            Some(false),
+        )
+        .await?;
+        crate::commands::runs::send_user_message_inner(
+            &db,
+            &registry_from(app),
+            crate::commands::runs::SendUserMessagePayload {
+                run_id: conductor_run_id.clone(),
+                content: nudge.to_string(),
+                images: Vec::new(),
+                override_budget: false,
+            },
+        )
+        .await
+    }
+    .await;
+
+    if let Err(e) = outcome {
+        // Couldn't wake now (budget gate, lost race, missing session id…). Release
+        // the slot so a later worker completion can retry, and surface why.
+        eprintln!(
+            "conductor auto-wake failed for {}: {}",
+            conductor_run_id, e
+        );
+        cst.finish_wake(&conductor_run_id);
+    }
+}
+
+fn db_from(app: &tauri::AppHandle) -> Db {
+    app.state::<Db>().inner().clone()
+}
+
+fn registry_from(app: &tauri::AppHandle) -> RunRegistry {
+    app.state::<RunRegistry>().inner().clone()
+}
+
 fn truncate(s: &str, max: usize) -> String {
     let t: String = s.chars().take(max).collect();
     if s.chars().count() > max {

@@ -759,6 +759,17 @@ pub async fn drain_sidecar(
         &format!("run:done:{}", run_id),
         serde_json::json!({ "run_id": run_id, "status": final_status }),
     );
+
+    // Close the conductor control loop: hand this finished run's id to the
+    // conductor wake consumer (a channel send, never a direct resume). If the run
+    // is a worker, the consumer auto-resumes its idle conductor so it reads the
+    // result and continues without the human having to prod it; if the run is
+    // itself a conductor, the consumer frees its auto-wake slot. The channel hop
+    // keeps this drain future independent of `resume_run` (which spawns another
+    // drain), which would otherwise make the drain's auto-traits cyclic.
+    if let Some(cst) = app.try_state::<crate::conductor::ConductorState>() {
+        cst.notify_run_finished(run_id.clone());
+    }
 }
 
 /// Does this `result` event close the turn the user started?

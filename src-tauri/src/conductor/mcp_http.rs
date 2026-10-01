@@ -26,6 +26,7 @@ pub struct HttpState {
 /// Start the loopback MCP server on an ephemeral port and record it in
 /// `ConductorState`. Runs for the app's lifetime.
 pub async fn start(app: AppHandle, conductor: ConductorState) -> std::io::Result<()> {
+    let app_for_wake = app.clone();
     let state = HttpState {
         app,
         conductor: conductor.clone(),
@@ -38,6 +39,20 @@ pub async fn start(app: AppHandle, conductor: ConductorState) -> std::io::Result
     let port = listener.local_addr()?.port();
     conductor.set_port(port);
     tracing::info!(event = "conductor_mcp_listening", port = port);
+
+    // Wake consumer: the sidecar drain pushes every finished run's id here (a plain
+    // channel send); this task performs the resume/slot-release off the drain's
+    // call stack, breaking the drain → resume_run → drain type cycle.
+    {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        conductor.set_wake_sender(tx);
+        let app = app_for_wake;
+        tokio::spawn(async move {
+            while let Some(run_id) = rx.recv().await {
+                tools::on_run_finished(&app, &run_id).await;
+            }
+        });
+    }
 
     tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, router).await {

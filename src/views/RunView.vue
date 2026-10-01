@@ -597,6 +597,21 @@ const conductorWorkerCap = computed(() => conductorStore.detail?.session?.max_wo
 const conductorEvents = computed(() => conductorStore.detail?.events ?? [])
 const workerPanelOpen = ref(true)
 
+// Conductor ids that currently have at least one worker streaming. A conductor's
+// own status can be 'done' (it finished planning) while its workers keep running,
+// so we surface the running state on the parent row too — its icon stays the live
+// spinner until every worker settles. Worker status comes live from liveRuns,
+// falling back to the DB snapshot for workers liveRuns isn't tracking.
+const conductorIdsWithRunningWorker = computed(() => {
+  const ids = new Set<string>()
+  for (const r of runsStore.runs) {
+    if (!r.conductor_run_id) continue
+    const status = live.get(r.id)?.status ?? r.status
+    if (status === 'running') ids.add(r.conductor_run_id)
+  }
+  return ids
+})
+
 // ── Worker-cap editing (sidebar header) ─────────────────────────────────────
 // Two states share one editor:
 //  • pre-launch (a "New conductor" session not yet started) — the cap edits the
@@ -720,7 +735,15 @@ function isConductorRun(run: RunRecord): boolean {
 // History-row icon: conductor (Network) → plain session (MessageSquare) →
 // issue (Bug) → PR (GitPullRequest). Kept as a function so the conductor case
 // short-circuits before the plain-session one.
+// A run is "running" for display when it is streaming itself, or — for a
+// conductor — when any of its workers is still streaming.
+function runIsRunning(run: RunRecord): boolean {
+  if (run.status === 'running') return true
+  return conductorIdsWithRunningWorker.value.has(run.id)
+}
+
 function runIcon(run: RunRecord) {
+  if (runIsRunning(run)) return Loader2
   if (isConductorRun(run)) return Network
   if (run.run_type === 'session') return MessageSquare
   if (run.run_type === 'analyze_issue') return Bug
@@ -731,6 +754,7 @@ function runIcon(run: RunRecord) {
 // at a glance without a separate status pill. Mirrors StatusBadge's palette.
 // A freshly-created chat session ('fetched' + session) is a draft → stays muted.
 function runIconColorClass(run: RunRecord): string {
+  if (runIsRunning(run)) return 'text-blue-500'
   if (run.status === 'fetched' && run.run_type === 'session') return 'text-muted-foreground'
   switch (run.status) {
     case 'running': return 'text-blue-500'
@@ -3542,7 +3566,7 @@ function handleRefInput(val: string) {
                   <component
                     :is="runIcon(run)"
                     class="h-4 w-4 shrink-0"
-                    :class="[runIconColorClass(run), { 'animate-pulse': run.status === 'running' }]"
+                    :class="[runIconColorClass(run), { 'animate-spin': runIsRunning(run) }]"
                     :stroke-width="1.75"
                     :title="isConductorRun(run)
                       ? t('conductor.modeToggle')

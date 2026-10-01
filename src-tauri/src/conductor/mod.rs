@@ -16,7 +16,7 @@ pub mod commands;
 pub mod mcp_http;
 pub mod tools;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 /// System prompt appended to a conductor run, teaching it the control-plane
@@ -47,12 +47,25 @@ the normal permission drawer (shown in the Conductor tab). You do not handle
 worker permissions yourself; if a worker is blocked waiting for approval it will
 show as still running until the human responds.
 
+YOU ARE AUTOMATICALLY RESUMED WHEN A WORKER FINISHES. After spawning workers you
+have two equally valid ways to stay in the loop:
+  (a) Block in session_wait for them, then read + continue in the same turn; or
+  (b) End your turn with a short status line to the human (e.g. "Spawned 2 workers
+      — I'll report back when they finish"). The system resumes you as soon as a
+      worker finishes its turn; you then poll/read and continue.
+NEVER tell the human you will report back and then stop WITHOUT either blocking in
+session_wait or relying on this auto-resume — a plain stop that does neither is a
+broken promise. The auto-resume nudge covers every worker that finished, so when
+you are resumed, session_poll / session_list ALL your workers (not just one).
+
 Typical loop:
 1) Decide the roles you need (e.g. an implementer + a reviewer). Spawn them.
-2) session_wait for them, then session_read each result.
-3) Judge the results yourself (do NOT rely on string matching). Decide whether to
+2) Either session_wait for them, or end your turn and wait for the auto-resume.
+3) On resume (or after session_wait), session_poll/session_list to find the idle
+   workers and session_read each finished worker's result.
+4) Judge the results yourself (do NOT rely on string matching). Decide whether to
    send follow-ups, spawn a specialist, or conclude.
-4) When the goal is met, write a concise final summary for the human.
+5) When the goal is met, write a concise final summary for the human.
 
 Rules:
 - Respect any max-worker limit; never spin up workers without bound.
@@ -78,6 +91,18 @@ struct Inner {
     port: u16,
     sessions: HashMap<String, ConductorSession>, // keyed by conductor_run_id
     token_index: HashMap<String, String>,        // token -> conductor_run_id
+    /// Conductor ids with an auto-wake resume in flight. Set when a finished
+    /// worker resumes its idle conductor, cleared when that conductor's turn ends
+    /// (its `run:done`). Serializes a burst of workers finishing together into a
+    /// single resume — the woken conductor polls ALL its workers, covering the
+    /// rest — and prevents a second resume while the first turn is still running.
+    waking: HashSet<String>,
+    /// Sender for finished-run ids. The sidecar drain pushes every run's id here on
+    /// `run:done`; a dedicated consumer task (started with the MCP server) performs
+    /// the actual resume. This channel hop deliberately decouples the sidecar drain
+    /// from `resume_run` — `resume_run` spawns a new drain, so a direct call would
+    /// make the drain future's auto-traits cyclic and un-inferrable.
+    wake_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
 /// Managed Tauri state: the conductor registry + the MCP server's bound port.
@@ -99,6 +124,8 @@ impl ConductorState {
                 port: 0,
                 sessions: HashMap::new(),
                 token_index: HashMap::new(),
+                waking: HashSet::new(),
+                wake_tx: None,
             })),
         }
     }
@@ -185,6 +212,45 @@ impl ConductorState {
             }
         }
         false
+    }
+
+    /// Install the finished-run channel sender (called once when the MCP server's
+    /// wake consumer task starts).
+    pub fn set_wake_sender(&self, tx: tokio::sync::mpsc::UnboundedSender<String>) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.wake_tx = Some(tx);
+        }
+    }
+
+    /// Enqueue a finished run id for the wake consumer. A no-op before the consumer
+    /// is installed. Never blocks and never calls `resume_run` itself — that keeps
+    /// the sidecar drain's future free of a cyclic dependency on itself.
+    pub fn notify_run_finished(&self, run_id: String) {
+        if let Ok(g) = self.inner.lock() {
+            if let Some(tx) = g.wake_tx.as_ref() {
+                let _ = tx.send(run_id);
+            }
+        }
+    }
+
+    /// Claim the single in-flight auto-wake slot for a conductor. Returns true to
+    /// the first caller (which should perform the resume) and false while a wake is
+    /// already pending — so a burst of workers finishing produces exactly one
+    /// resume. Cleared by [`finish_wake`] when the conductor's turn ends.
+    pub fn begin_wake(&self, conductor_run_id: &str) -> bool {
+        if let Ok(mut g) = self.inner.lock() {
+            g.waking.insert(conductor_run_id.to_string())
+        } else {
+            false
+        }
+    }
+
+    /// Release the auto-wake slot (the conductor's turn has ended, so the next
+    /// worker completion may wake it again). No-op if no wake was pending.
+    pub fn finish_wake(&self, conductor_run_id: &str) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.waking.remove(conductor_run_id);
+        }
     }
 
     /// Whether `worker_id` belongs to `conductor_run_id` (scoping check).
