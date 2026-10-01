@@ -180,23 +180,23 @@ defineExpose({ canSave, dirty, save, reset, draft, applyDraft, focus })
 </script>
 
 <template>
-  <div v-if="item" @keydown="onKeydown">
+  <div v-if="item" class="flex min-h-0 flex-1 flex-col" @keydown="onKeydown">
     <!-- Edit mode -->
     <template v-if="editing">
       <Input
         v-if="isNote"
         ref="titleRef"
         v-model="title"
-        class="mb-2 font-medium"
+        class="mb-2 shrink-0 font-medium"
         :placeholder="t('item.titlePlaceholder')"
       />
       <Textarea
         ref="contentRef"
         v-model="content"
-        class="min-h-[45vh] font-mono leading-relaxed"
+        class="min-h-[8rem] flex-1 font-mono leading-relaxed"
         :placeholder="isNote ? t('item.notePlaceholder') : t('item.todoPlaceholder')"
       />
-      <div class="mt-3 space-y-1">
+      <div class="mt-3 shrink-0 space-y-1">
         <label class="block text-[11px] font-medium text-muted-foreground">
           {{ t('item.projectLabel') }}
         </label>

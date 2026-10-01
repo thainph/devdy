@@ -53,11 +53,12 @@ function t(key: string): string {
 // it would just make a row flicker). Everything else is listed.
 const HIDDEN_WINDOW_LABELS = new Set(['mascot', 'permission-prompt'])
 
-// The label shown for a window in the switcher. Two window kinds carry a genuinely
-// meaningful OS title — a session (the run name) and a file viewer (the file's
-// basename) — so those use the live title, falling back to a generic name. Every
-// other kind gets a fixed, localized name keyed off its label prefix; their OS
-// titles are just static placeholders like "Gantt — Devdy".
+// The label shown for a window in the switcher. Some window kinds carry a
+// genuinely meaningful OS title — a session (the run name), a file viewer (the
+// file's basename) and an item editor (the note title / todo id) — so those use
+// the live title, falling back to a generic name. Every other kind gets a fixed,
+// localized name keyed off its label prefix; their OS titles are just static
+// placeholders like "Gantt — Devdy".
 function labelFor(windowLabel: string, osTitle: string): string {
   const title = osTitle.trim()
   const meaningful = title && title !== 'Devdy' ? title : ''
@@ -67,7 +68,7 @@ function labelFor(windowLabel: string, osTitle: string): string {
   if (windowLabel.startsWith('fileviewer-')) return meaningful || t('tray.fileWindow')
   if (windowLabel === 'gantt') return t('tray.ganttWindow')
   if (windowLabel === 'item-create') return t('tray.newItem')
-  if (windowLabel.startsWith('item-edit-')) return t('tray.editItem')
+  if (windowLabel.startsWith('item-edit-')) return meaningful || t('tray.editItem')
   // Unknown / future window kind: best effort — its title, else the raw label.
   return meaningful || windowLabel
 }

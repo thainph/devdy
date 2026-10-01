@@ -14,7 +14,7 @@
 //   create — QuickCaptureForm, with Todo/Note tabs; stays open so several
 //            thoughts can be captured in a row.
 //   edit   — ItemDetail, with a preview/edit toggle, delete and save.
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -37,6 +37,7 @@ import {
   type ItemWindowMode,
   type ItemWindowSetTab,
 } from '@/lib/itemWindow'
+import { refreshTray } from '@/lib/tray'
 
 const { t } = useI18n()
 const { toast } = useToast()
@@ -82,6 +83,23 @@ const heading = computed(() => {
 })
 /** The id is an identifier, not prose: monospaced, and never struck through. */
 const headingIsId = computed(() => initialKind === 'todo' && !!itemId)
+
+// The OS window title doubles as this window's row label in the menu-bar
+// switcher (lib/tray.ts), so keep it on something that actually names the item —
+// a note's title (or its id, for a todo) — instead of a constant like "Item
+// Editor". It mirrors the in-window heading, updates once the item loads, and
+// refreshes the switcher on every change so the row follows a rename.
+const windowTitle = computed(() =>
+  mode === 'edit' ? heading.value : t('item.createWindowTitle'),
+)
+watch(
+  windowTitle,
+  (title) => {
+    document.title = title
+    void refreshTray()
+  },
+  { immediate: true },
+)
 
 const saveLabel = computed(() =>
   mode === 'edit'
@@ -171,8 +189,6 @@ function onSaveClick() {
 }
 
 onMounted(async () => {
-  document.title = mode === 'create' ? t('item.createWindowTitle') : t('item.editWindowTitle')
-
   if (mode === 'edit') {
     await loadItem()
   } else {
@@ -242,7 +258,7 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- Body -->
-    <div class="min-h-0 flex-1 overflow-auto p-3">
+    <div class="min-h-0 flex-1 flex flex-col overflow-auto p-3">
       <!-- Create: the shared capture form, with its Todo / Note tabs -->
       <template v-if="mode === 'create'">
         <div class="mb-3 flex items-center gap-1">

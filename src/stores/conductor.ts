@@ -1,9 +1,12 @@
 /**
  * Conductor store — thin wrapper over the Tauri conductor commands plus the
- * currently-selected session and a light poller for its live detail (workers +
- * event timeline). NO orchestration logic lives here: the conductor *run itself*
- * drives its workers via MCP. This store only launches sessions and reads their
- * state back for display.
+ * currently-selected session and its live detail (workers + event timeline).
+ * Detail is refreshed event-driven: we subscribe to `conductor:changed:{id}`
+ * (emitted by the backend on spawn/send/cancel) rather than polling on a timer.
+ * Per-worker run status is read live from the `liveRuns` store by consumers.
+ * NO orchestration logic lives here: the conductor *run itself* drives its
+ * workers via MCP. This store only launches sessions and reads their state back
+ * for display.
  *
  * A conductor IS an ordinary session run (role='conductor'), so it lives in the
  * normal run viewer; this store just adds the worker-tree/timeline it needs.
@@ -13,6 +16,7 @@
  */
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from '@/lib/tauri'
 
 export interface ConductorStarted {
@@ -52,7 +56,15 @@ export const useConductorStore = defineStore('conductor', () => {
   const selectedId = ref<string | null>(null)
   const detail = ref<ConductorDetail | null>(null)
 
-  let pollTimer: ReturnType<typeof setInterval> | null = null
+  // Event-driven: we subscribe to `conductor:changed:{id}` (emitted by the backend
+  // on spawn/send/cancel) instead of polling. `unlistenChanged` tears that down
+  // when we retarget or clear. `refreshScheduled` coalesces bursts (e.g. several
+  // workers spawned at once) into a single detail fetch.
+  let unlistenChanged: UnlistenFn | null = null
+  let refreshScheduled = false
+  // Bumped on every select(); lets an in-flight select() detect it was superseded
+  // by a newer one while awaiting, and bail without clobbering the newer state.
+  let selectToken = 0
 
   /** Promote an existing fetched session run into a conductor and launch it. */
   async function start(
@@ -69,8 +81,25 @@ export const useConductorStore = defineStore('conductor', () => {
   }
 
   /**
+   * Convert an already-started, now-stopped normal session into a conductor:
+   * the backend marks the role, creates the conductor session, then resumes the
+   * existing conversation with the conductor tools + framing injected. Only works
+   * on a session that has run before and is not currently running.
+   */
+  async function convertToConductor(
+    runId: string,
+    opts?: { maxWorkers?: number; modelOverride?: string },
+  ): Promise<ConductorStarted> {
+    return invoke<ConductorStarted>('convert_run_to_conductor', {
+      runId,
+      maxWorkers: opts?.maxWorkers ?? null,
+      modelOverride: opts?.modelOverride ?? null,
+    })
+  }
+
+  /**
    * Change the worker cap of a running (or finished) conductor. The backend
-   * clamps to [1, 12], persists it, and updates the live cap the next
+   * clamps to [1, 50], persists it, and updates the live cap the next
    * session_spawn enforces; returns the value actually stored. We refresh the
    * detail so the sidebar reflects the new max immediately.
    */
@@ -86,37 +115,72 @@ export const useConductorStore = defineStore('conductor', () => {
   async function refreshDetail(): Promise<void> {
     if (!selectedId.value) return
     try {
-      detail.value = await invoke<ConductorDetail>('get_conductor_detail', {
+      const d = await invoke<ConductorDetail>('get_conductor_detail', {
         conductorRunId: selectedId.value,
       })
+      detail.value = d
+      // Definitive answer that this run is a plain session (no conductor row):
+      // stop tracking so the viewer shows it as an ordinary run.
+      if (!d.session) {
+        stopPolling()
+        selectedId.value = null
+      }
     } catch {
-      /* transient — keep last snapshot */
+      /* Transient failure (e.g. SQLite busy while workers write their status).
+         Keep the last snapshot — a later `conductor:changed` event or a focus
+         refresh recovers. We must not treat this as "not a conductor", or the
+         worker panel stays blank while the tray still counts the workers. */
     }
   }
 
-  /** Point the store at the run currently open in the viewer. If it turns out to
-   * be a conductor (detail.session != null) we keep polling its worker tree;
-   * otherwise we clear so the viewer shows a plain session. */
+  /** Coalesce a burst of `conductor:changed` events into one fetch on the next
+   * microtask — spawning N workers fires N events but needs only one refresh. */
+  function scheduleRefresh(): void {
+    if (refreshScheduled) return
+    refreshScheduled = true
+    void Promise.resolve().then(() => {
+      refreshScheduled = false
+      void refreshDetail()
+    })
+  }
+
+  /** Point the store at the run currently open in the viewer. Does one probe, and
+   * if it's a conductor subscribes to its `conductor:changed` stream (worker
+   * membership + timeline). Per-worker status stays live via the `liveRuns` store,
+   * so there is no polling here. A transient probe failure keeps the selection so
+   * a later event / focus refresh can recover; only a successful "not a conductor"
+   * probe clears it. */
   async function select(runId: string | null): Promise<void> {
     stopPolling()
+    const token = ++selectToken
     selectedId.value = runId
     detail.value = null
     if (!runId) return
     await refreshDetail()
-    // Only keep polling when this run is actually a conductor.
-    if ((detail.value as ConductorDetail | null)?.session) {
-      pollTimer = setInterval(() => void refreshDetail(), 2000)
-    } else {
-      selectedId.value = null
+    // Superseded by a newer select() while awaiting? Leave its state alone.
+    if (token !== selectToken) return
+    // refreshDetail clears selectedId when the probe proved it's not a conductor.
+    if (!selectedId.value) return
+    const un = await listen(`conductor:changed:${runId}`, () => scheduleRefresh())
+    if (token !== selectToken) {
+      // A newer select() (or stopPolling) took over during the await — drop the
+      // listener we just made; the newer call owns `unlistenChanged`.
+      un()
+      return
     }
+    unlistenChanged = un
   }
 
+  /** Tear down the event subscription. Kept the historical name so existing call
+   * sites (e.g. RunView.onUnmounted) stay valid; there is no timer anymore. */
   function stopPolling(): void {
-    if (pollTimer) {
-      clearInterval(pollTimer)
-      pollTimer = null
+    // Invalidate any in-flight select() so it won't attach a listener after us.
+    selectToken++
+    if (unlistenChanged) {
+      unlistenChanged()
+      unlistenChanged = null
     }
   }
 
-  return { selectedId, detail, start, select, refreshDetail, setMaxWorkers, stopPolling }
+  return { selectedId, detail, start, convertToConductor, select, refreshDetail, setMaxWorkers, stopPolling }
 })

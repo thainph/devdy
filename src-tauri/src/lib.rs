@@ -76,7 +76,7 @@ use commands::rules::{
 use commands::runs::{
     cancel_run, create_handoff_run, create_session_run, delete_all_runs, delete_run, end_run_input,
     get_run_log, get_run_log_page, get_run_log_path, get_run_log_revision, get_run_tool_records, read_run_input, rename_run, rerun_run, respond_permission,
-    resume_run, send_user_message, set_run_claude_account, set_run_pinned, start_run,
+    resume_run, send_user_message, set_run_claude_account, set_run_pinned, set_run_protected, start_run,
 };
 use commands::sessions::reconcile_claude_sessions;
 use commands::settings::{get_settings, update_setting};
@@ -438,6 +438,7 @@ pub fn run() {
             rename_run,
             set_run_claude_account,
             set_run_pinned,
+            set_run_protected,
             list_project_files,
             list_dir,
             set_file_tree_watch,
@@ -454,6 +455,7 @@ pub fn run() {
             create_handoff_run,
             create_session_run,
             conductor::commands::start_conductor,
+            conductor::commands::convert_run_to_conductor,
             conductor::commands::get_conductor_detail,
             conductor::commands::set_conductor_max_workers,
             get_usage_stats,

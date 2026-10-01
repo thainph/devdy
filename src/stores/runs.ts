@@ -73,6 +73,11 @@ export interface RunRecord {
   title: string | null
   pinned: boolean
   /**
+   * Protected sessions are skipped by "Clear all" so an important session
+   * survives a bulk cleanup. Independent of `pinned` (which only sorts to top).
+   */
+  protected: boolean
+  /**
    * Orchestration role: 'conductor' for a session that drives worker sessions,
    * null/undefined for an ordinary session or an issue/PR run. Only `list_runs`
    * fills it; single-run endpoints return null. Lets the History list flag a
@@ -401,7 +406,8 @@ export const useRunsStore = defineStore('runs', () => {
 
   async function deleteAllRuns(project_id: string): Promise<number> {
     const count = await invoke<number>('delete_all_runs', { projectId: project_id })
-    runs.value = runs.value.filter(r => r.status === 'running')
+    // Mirror the backend: keep running runs (never deleted) and protected runs.
+    runs.value = runs.value.filter(r => r.status === 'running' || r.protected)
     return count
   }
 
@@ -449,6 +455,14 @@ export const useRunsStore = defineStore('runs', () => {
     }
   }
 
+  async function setRunProtected(run_id: string, protectedFlag: boolean): Promise<void> {
+    await invoke('set_run_protected', { runId: run_id, protected: protectedFlag })
+    const run = runs.value.find(r => r.id === run_id)
+    if (run) run.protected = protectedFlag
+    const cached = runMeta.get(run_id)
+    if (cached) cached.protected = protectedFlag
+  }
+
   async function setRunClaudeAccount(run_id: string, account_id: string | null): Promise<void> {
     await invoke('set_run_claude_account', { runId: run_id, accountId: account_id })
     const next = account_id?.trim() || null
@@ -468,6 +482,6 @@ export const useRunsStore = defineStore('runs', () => {
     createDir, createFile, renameEntry, deleteEntry, copyEntry, moveEntry,
     createHandoffRun, createSessionRun,
     reconcileClaudeSessions, reconcileCodexSessions,
-    deleteRun, deleteAllRuns, renameRun, setRunClaudeAccount, setRunPinned, touchRun,
+    deleteRun, deleteAllRuns, renameRun, setRunClaudeAccount, setRunPinned, setRunProtected, touchRun,
   }
 })

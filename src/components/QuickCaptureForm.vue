@@ -127,13 +127,13 @@ defineExpose({ submit, canSubmit, saving, focus: focusFirstField })
 </script>
 
 <template>
-  <div class="space-y-2.5" @keydown="onKeydown">
+  <div class="flex min-h-0 flex-1 flex-col space-y-2.5" @keydown="onKeydown">
     <!-- Todo -->
     <template v-if="tab === 'todo'">
       <Textarea
         ref="todoRef"
         v-model="todoText"
-        rows="6"
+        class="min-h-[8rem] flex-1"
         :placeholder="t('item.todoPlaceholder')"
       />
     </template>
@@ -144,13 +144,13 @@ defineExpose({ submit, canSubmit, saving, focus: focusFirstField })
       <Textarea
         ref="noteBodyRef"
         v-model="noteContent"
-        rows="8"
+        class="min-h-[10rem] flex-1"
         :placeholder="t('item.notePlaceholder')"
       />
     </template>
 
     <!-- Project link (pre-selected from the capture context) -->
-    <div class="space-y-1">
+    <div class="shrink-0 space-y-1">
       <label class="block text-[11px] font-medium text-muted-foreground">
         {{ t('item.projectLabel') }}
       </label>

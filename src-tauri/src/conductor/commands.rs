@@ -5,7 +5,9 @@ use sqlx::Row;
 use tauri::{AppHandle, State};
 
 use super::{ConductorState, CONDUCTOR_SYSTEM_PROMPT};
-use crate::commands::runs::{start_run_inner, StartRunPayload};
+use crate::commands::runs::{
+    resume_run, send_user_message_inner, start_run_inner, SendUserMessagePayload, StartRunPayload,
+};
 use crate::db::Db;
 use crate::runs::RunRegistry;
 
@@ -107,6 +109,147 @@ pub async fn start_conductor(
             .await;
         return Err(e);
     }
+
+    Ok(ConductorStarted {
+        conductor_run_id: run_id,
+        project_id,
+    })
+}
+
+/// Convert an already-started, now-stopped normal session into a conductor.
+///
+/// Unlike [`start_conductor`] (which cold-starts a fresh `fetched` run with the
+/// goal as its first message), this operates on a session that has already run
+/// and holds a captured `session_id`. It marks the run as a conductor, creates
+/// the conductor session row + token, then RESUMES the existing session so the
+/// prior conversation is preserved — `resume_run` re-injects the `conductor` MCP
+/// tools because the role is now `conductor`. The conductor framing can't ride a
+/// resume (append-system-prompt is only applied on a cold start), so it is
+/// delivered as the first follow-up turn instead.
+///
+/// Only stopped sessions can be converted: a running session owns a live query
+/// whose options are frozen, and a `fetched` one should use `start_conductor`.
+#[tauri::command]
+pub async fn convert_run_to_conductor(
+    app: AppHandle,
+    db: State<'_, Db>,
+    registry: State<'_, RunRegistry>,
+    conductor: State<'_, ConductorState>,
+    run_id: String,
+    max_workers: Option<u32>,
+    model_override: Option<String>,
+) -> Result<ConductorStarted, String> {
+    let row = sqlx::query(
+        "SELECT project_id, status, role, type as run_type, session_id FROM runs WHERE id = ?",
+    )
+    .bind(&run_id)
+    .fetch_optional(db.inner())
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| "run not found".to_string())?;
+
+    let project_id: String = row.get("project_id");
+    let status: String = row.get("status");
+    let role: Option<String> = row.get("role");
+    let run_type: String = row.get("run_type");
+    let session_id: Option<String> = row.get("session_id");
+
+    if run_type != "session" {
+        return Err("Chỉ có thể chuyển session thường sang conductor.".to_string());
+    }
+    match role.as_deref() {
+        Some("conductor") => return Err("Phiên này đã là conductor.".to_string()),
+        Some("worker") => return Err("Không thể chuyển một worker thành conductor.".to_string()),
+        _ => {}
+    }
+    if status == "running" {
+        return Err("Hãy dừng phiên trước khi chuyển sang conductor.".to_string());
+    }
+    if status == "fetched" {
+        return Err("Phiên chưa khởi chạy — hãy dùng 'Conductor mới' thay vì chuyển đổi.".to_string());
+    }
+    if session_id.as_deref().map(str::trim).unwrap_or("").is_empty() {
+        return Err(
+            "Phiên này chưa có session id để tiếp tục — không thể chuyển sang conductor.".to_string(),
+        );
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let max_workers = max_workers.map(|m| m as usize).unwrap_or(DEFAULT_MAX_WORKERS);
+
+    sqlx::query("UPDATE runs SET role = 'conductor' WHERE id = ?")
+        .bind(&run_id)
+        .execute(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    sqlx::query(
+        "INSERT OR REPLACE INTO conductor_sessions (id, project_id, goal, status, max_workers, created_at)
+         VALUES (?, ?, '', 'running', ?, ?)",
+    )
+    .bind(&run_id)
+    .bind(&project_id)
+    .bind(max_workers as i64)
+    .bind(&now)
+    .execute(db.inner())
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // Mint the token + in-memory session BEFORE the resume: resume_run looks it up
+    // (token_for) to re-inject the loopback `conductor` MCP server.
+    let _token = conductor
+        .inner()
+        .register_session(&run_id, &project_id, max_workers);
+
+    // Resume the existing session (preserves the transcript via merge_existing_log)
+    // under bypassPermissions so the conductor can drive its own session_* tools.
+    if let Err(e) = resume_run(
+        app.clone(),
+        db.clone(),
+        registry.clone(),
+        run_id.clone(),
+        Some("bypassPermissions".to_string()),
+        model_override,
+        Some(false),
+    )
+    .await
+    {
+        // Revert to a plain session so the user can retry/resume normally.
+        let _ = sqlx::query("UPDATE runs SET role = NULL, status = ? WHERE id = ?")
+            .bind(&status)
+            .bind(&run_id)
+            .execute(db.inner())
+            .await;
+        let _ = sqlx::query("DELETE FROM conductor_sessions WHERE id = ?")
+            .bind(&run_id)
+            .execute(db.inner())
+            .await;
+        return Err(e);
+    }
+
+    // The conductor system prompt can't ride a resume, so deliver it as the first
+    // turn. No goal is attached — the prior conversation is the context and the
+    // user supplies the orchestration objective in their next message.
+    let brief = format!(
+        "{}\n\nYour worker cap for this session is {} concurrent workers.\n\n\
+         (You have just been converted into the CONDUCTOR of this existing session. \
+         The conversation above is your context. From now on you do NOT do the work \
+         yourself — orchestrate workers through your session_* tools. Review the \
+         context, then wait for the user's next message describing the orchestration \
+         goal if it is not already clear.)",
+        CONDUCTOR_SYSTEM_PROMPT, max_workers
+    );
+    send_user_message_inner(
+        db.inner(),
+        registry.inner(),
+        SendUserMessagePayload {
+            run_id: run_id.clone(),
+            content: brief,
+            images: Vec::new(),
+            override_budget: true,
+        },
+    )
+    .await?;
 
     Ok(ConductorStarted {
         conductor_run_id: run_id,
@@ -219,7 +362,7 @@ pub async fn get_conductor_detail(
 
 /// Bounds for the worker cap, mirrored by the composer/sidebar number inputs.
 const MIN_MAX_WORKERS: u32 = 1;
-const MAX_MAX_WORKERS: u32 = 12;
+const MAX_MAX_WORKERS: u32 = 50;
 
 /// Change a conductor's concurrent-worker cap while it is running (or after).
 ///
