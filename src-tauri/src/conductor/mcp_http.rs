@@ -6,16 +6,28 @@
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     routing::post,
     Json, Router,
 };
 use serde_json::{json, Value};
+use std::convert::Infallible;
+use std::time::{Duration, Instant};
 use tauri::AppHandle;
 
 use super::{tools, ConductorState};
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
+
+/// How often the streaming `session_wait` emits a `notifications/progress` while a
+/// worker is still running. Each progress message keeps the client's tool-call
+/// alive (per MCP, progress resets the call timeout) and carries live status so
+/// the conductor — and the UI — can track the wait instead of it silently timing
+/// out. Must be comfortably below any client tool timeout.
+const PROGRESS_INTERVAL_MS: u64 = 15_000;
 
 #[derive(Clone)]
 pub struct HttpState {
@@ -102,6 +114,16 @@ async fn handle_post(
     }
     let id = id.unwrap();
 
+    // `session_wait` can block for minutes. Serve it as an SSE stream that emits
+    // periodic progress (keeping the client's tool call alive) and finally the
+    // JSON-RPC result — instead of a single response the client aborts with "The
+    // operation timed out." before it ever sees the real `waited_ms`.
+    if method == "tools/call"
+        && params.get("name").and_then(|n| n.as_str()) == Some("session_wait")
+    {
+        return session_wait_stream(&state, &conductor_run_id, id, &params).await;
+    }
+
     let result = match method {
         "initialize" => Ok(json!({
             "protocolVersion": params
@@ -142,16 +164,147 @@ async fn handle_tools_call(
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
 
     let outcome = tools::dispatch(state, conductor_run_id, name, args).await;
-    match outcome {
-        Ok(value) => Ok(json!({
-            "content": [{ "type": "text", "text": value.to_string() }],
-            "isError": false,
-        })),
-        Err(msg) => Ok(json!({
-            "content": [{ "type": "text", "text": json!({ "error": msg }).to_string() }],
-            "isError": true,
-        })),
+    Ok(match outcome {
+        Ok(value) => tool_result_ok(value),
+        Err(msg) => tool_result_err(&msg),
+    })
+}
+
+/// Wrap a successful tool payload in MCP `content` blocks.
+fn tool_result_ok(value: Value) -> Value {
+    json!({
+        "content": [{ "type": "text", "text": value.to_string() }],
+        "isError": false,
+    })
+}
+
+/// Wrap a tool-level failure as an MCP `{ isError: true }` result (not a JSON-RPC
+/// error) so the model can read and react to it.
+fn tool_result_err(msg: &str) -> Value {
+    json!({
+        "content": [{ "type": "text", "text": json!({ "error": msg }).to_string() }],
+        "isError": true,
+    })
+}
+
+/// Stream a `session_wait` call as Server-Sent Events: emit `notifications/progress`
+/// every `PROGRESS_INTERVAL_MS` while workers run, then the final JSON-RPC result,
+/// then close. Keeps the client's tool call alive through long waits and delivers
+/// the real `waited_ms`/`waited_human` instead of a client-side timeout.
+async fn session_wait_stream(
+    state: &HttpState,
+    conductor_run_id: &str,
+    id: Value,
+    params: &Value,
+) -> Response {
+    let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+    // The client's progress token (if any) must be echoed on every progress
+    // notification so the client can correlate it with this call.
+    let progress_token = params
+        .get("_meta")
+        .and_then(|m| m.get("progressToken"))
+        .cloned();
+
+    // Resolve ids up front so a bad request fails fast as a one-shot result.
+    let ids = match tools::resolve_wait_ids(state, conductor_run_id, &args).await {
+        Ok(ids) => ids,
+        Err(msg) => {
+            let payload = json!({ "jsonrpc": "2.0", "id": id, "result": tool_result_err(&msg) });
+            return one_shot_sse(payload);
+        }
+    };
+    let timeout_ms = tools::wait_timeout_ms(&args);
+
+    struct WaitState {
+        state: HttpState,
+        ids: Vec<String>,
+        id: Value,
+        progress_token: Option<Value>,
+        timeout_ms: u64,
+        started: Instant,
+        deadline: Instant,
+        done: bool,
     }
+
+    let started = Instant::now();
+    let init = WaitState {
+        state: state.clone(),
+        ids,
+        id,
+        progress_token,
+        timeout_ms,
+        started,
+        deadline: started + Duration::from_millis(timeout_ms),
+        done: false,
+    };
+
+    let stream = futures_util::stream::unfold(init, |mut st| async move {
+        if st.done {
+            return None;
+        }
+        let tick_start = Instant::now();
+        loop {
+            let (done, pending) = match tools::wait_snapshot(&st.state, &st.ids).await {
+                Ok(snap) => snap,
+                Err(msg) => {
+                    st.done = true;
+                    let payload =
+                        json!({ "jsonrpc": "2.0", "id": st.id, "result": tool_result_err(&msg) });
+                    let ev = Event::default().data(payload.to_string());
+                    return Some((Ok::<_, Infallible>(ev), st));
+                }
+            };
+            let now = Instant::now();
+            // Terminal: everyone idle, or the wait ceiling reached.
+            if pending.is_empty() || now >= st.deadline {
+                st.done = true;
+                let waited_ms = st.started.elapsed().as_millis() as u64;
+                let result = tools::build_wait_result(done, pending, waited_ms);
+                let payload =
+                    json!({ "jsonrpc": "2.0", "id": st.id, "result": tool_result_ok(result) });
+                let ev = Event::default().data(payload.to_string());
+                return Some((Ok(ev), st));
+            }
+            // Time to heartbeat: emit a progress notification and yield so the
+            // client keeps the call alive.
+            if now.duration_since(tick_start) >= Duration::from_millis(PROGRESS_INTERVAL_MS) {
+                let waited_ms = st.started.elapsed().as_millis() as u64;
+                let mut progress = json!({
+                    "progress": waited_ms,
+                    "total": st.timeout_ms,
+                    "message": format!(
+                        "{} worker(s) still running — {} elapsed",
+                        pending.len(),
+                        tools::format_waited(waited_ms)
+                    ),
+                });
+                if let Some(tok) = &st.progress_token {
+                    progress["progressToken"] = tok.clone();
+                }
+                let payload = json!({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/progress",
+                    "params": progress,
+                });
+                let ev = Event::default().data(payload.to_string());
+                return Some((Ok(ev), st));
+            }
+            tokio::time::sleep(Duration::from_millis(tools::POLL_INTERVAL_MS)).await;
+        }
+    });
+
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+/// A single JSON-RPC message delivered as a one-event SSE stream (used for
+/// fail-fast errors on the streaming endpoint).
+fn one_shot_sse(payload: Value) -> Response {
+    let stream = futures_util::stream::once(async move {
+        Ok::<_, Infallible>(Event::default().data(payload.to_string()))
+    });
+    Sse::new(stream).into_response()
 }
 
 fn bearer(headers: &HeaderMap) -> Option<String> {
@@ -202,7 +355,7 @@ fn tool_specs() -> Value {
         },
         {
             "name": "session_wait",
-            "description": "Block until the given workers finish their current turn (status != running) or timeout_ms elapses. Returns `waited_ms` = how long this call actually blocked; report that as the wait time, not timeout_ms (which is only the ceiling).",
+            "description": "Block until the given workers finish their current turn (status != running) or timeout_ms elapses. Streams progress while it waits (kept alive, not aborted) and always returns real data. The result's `waited_human` (e.g. \"1m 3s\") and `waited_ms` are how long THIS call actually blocked — quote `waited_human` verbatim as the wait time. NEVER report timeout_ms (the ceiling you asked for); doing so is what turns a 1-minute wait into a false \"10 minutes\". If it returns `timed_out: true`, the workers are still running — end your turn and the auto-resume will wake you when one finishes, or use session_poll to track them.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

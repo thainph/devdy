@@ -16,7 +16,22 @@ use crate::runs::RunRegistry;
 
 const DEFAULT_WAIT_MS: u64 = 120_000;
 const MAX_WAIT_MS: u64 = 600_000;
-const POLL_INTERVAL_MS: u64 = 400;
+pub(crate) const POLL_INTERVAL_MS: u64 = 400;
+
+/// Format an elapsed duration in ms as a short, human-readable string the model
+/// can quote verbatim (e.g. "58s", "1m 3s", "10m 0s"). Giving the model a ready
+/// string stops it inventing a wait time from the `timeout_ms` ceiling it passed
+/// in — the single most common "waited 10 minutes" misreport.
+pub(crate) fn format_waited(ms: u64) -> String {
+    let total_secs = ms / 1000;
+    let mins = total_secs / 60;
+    let secs = total_secs % 60;
+    if mins == 0 {
+        format!("{secs}s")
+    } else {
+        format!("{mins}m {secs}s")
+    }
+}
 
 /// Route a tool name to its handler. `Ok` payloads are surfaced to the model as
 /// JSON; `Err(String)` becomes an MCP `isError` tool result.
@@ -177,42 +192,95 @@ async fn session_poll(
     Ok(json!({ "workers": out }))
 }
 
+/// Resolve + validate the worker ids a `session_wait` call targets. Shared by the
+/// blocking fallback below and the streaming (SSE) path in `mcp_http`.
+pub(crate) async fn resolve_wait_ids(
+    state: &HttpState,
+    conductor_run_id: &str,
+    args: &Value,
+) -> Result<Vec<String>, String> {
+    let ids = requested_ids(state, conductor_run_id, args).await?;
+    if ids.is_empty() {
+        return Err("`worker_ids` is required and must be non-empty".to_string());
+    }
+    Ok(ids)
+}
+
+/// The effective wait ceiling for a call: the requested `timeout_ms` clamped to
+/// `[_, MAX_WAIT_MS]`, defaulting to `DEFAULT_WAIT_MS`. This is only the upper
+/// bound; the real elapsed time is always reported via `waited_human`.
+pub(crate) fn wait_timeout_ms(args: &Value) -> u64 {
+    args.get("timeout_ms")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(DEFAULT_WAIT_MS)
+        .min(MAX_WAIT_MS)
+}
+
+/// One poll pass over `ids`: partitions them into `done` (status blocks) and
+/// `pending` (still running). Cheap — a single status read per worker.
+pub(crate) async fn wait_snapshot(
+    state: &HttpState,
+    ids: &[String],
+) -> Result<(Vec<Value>, Vec<String>), String> {
+    let db = db(state);
+    let mut done = Vec::new();
+    let mut pending = Vec::new();
+    for id in ids {
+        let status = worker_status(&db, id).await?;
+        if status == "running" {
+            pending.push(id.clone());
+        } else {
+            done.push(json!({ "worker_id": id, "status": normalize_status(&status) }));
+        }
+    }
+    Ok((done, pending))
+}
+
+/// Build the terminal `session_wait` result from a final snapshot + real elapsed.
+/// Carries `waited_human` + a pointed `note` so the model quotes the real wait,
+/// never the `timeout_ms` ceiling.
+pub(crate) fn build_wait_result(done: Vec<Value>, pending: Vec<String>, waited_ms: u64) -> Value {
+    let timed_out = !pending.is_empty();
+    let note = if timed_out {
+        format!(
+            "You actually waited {} (the worker is still running); report this, \
+             NOT the timeout_ms ceiling you passed in.",
+            format_waited(waited_ms)
+        )
+    } else {
+        format!(
+            "You actually waited {}; report this exact figure as the wait time.",
+            format_waited(waited_ms)
+        )
+    };
+    json!({
+        "done": done,
+        "pending": pending,
+        "timed_out": timed_out,
+        "waited_ms": waited_ms,
+        "waited_human": format_waited(waited_ms),
+        "note": note,
+    })
+}
+
+/// Blocking fallback for `session_wait`. The primary path streams progress over
+/// SSE (`mcp_http::session_wait_stream`) to keep the tool call alive; this plain
+/// version is kept for any non-streaming dispatch and shares the same helpers.
 async fn session_wait(
     state: &HttpState,
     conductor_run_id: &str,
     args: Value,
 ) -> Result<Value, String> {
-    let ids = requested_ids(state, conductor_run_id, &args).await?;
-    if ids.is_empty() {
-        return Err("`worker_ids` is required and must be non-empty".to_string());
-    }
-    let timeout_ms = args
-        .get("timeout_ms")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(DEFAULT_WAIT_MS)
-        .min(MAX_WAIT_MS);
+    let ids = resolve_wait_ids(state, conductor_run_id, &args).await?;
+    let timeout_ms = wait_timeout_ms(&args);
     let started = Instant::now();
     let deadline = started + Duration::from_millis(timeout_ms);
-    let db = db(state);
 
     loop {
-        let mut done = Vec::new();
-        let mut pending = Vec::new();
-        for id in &ids {
-            let status = worker_status(&db, id).await?;
-            if status == "running" {
-                pending.push(id.clone());
-            } else {
-                done.push(json!({ "worker_id": id, "status": normalize_status(&status) }));
-            }
-        }
+        let (done, pending) = wait_snapshot(state, &ids).await?;
         if pending.is_empty() || Instant::now() >= deadline {
-            return Ok(json!({
-                "done": done,
-                "pending": pending,
-                "timed_out": !pending.is_empty(),
-                "waited_ms": started.elapsed().as_millis() as u64,
-            }));
+            let waited_ms = started.elapsed().as_millis() as u64;
+            return Ok(build_wait_result(done, pending, waited_ms));
         }
         tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
     }
