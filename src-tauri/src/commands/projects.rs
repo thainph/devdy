@@ -4,7 +4,7 @@ use crate::db::Db;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Command;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -707,12 +707,19 @@ pub async fn add_project(db: State<'_, Db>, payload: AddProjectPayload) -> Resul
 }
 
 #[tauri::command]
-pub async fn remove_project(db: State<'_, Db>, id: String) -> Result<(), String> {
+pub async fn remove_project(
+    app: AppHandle,
+    db: State<'_, Db>,
+    id: String,
+) -> Result<(), String> {
     sqlx::query("DELETE FROM projects WHERE id = ?")
         .bind(&id)
         .execute(db.inner())
         .await
         .map_err(|e| e.to_string())?;
+    if let Ok(app_data_dir) = app.path().app_data_dir() {
+        crate::aws_sandbox::remove_project_aws_config(&app_data_dir, &id);
+    }
     Ok(())
 }
 

@@ -919,7 +919,9 @@ fn aws_account_line(meta: &AwsRuntimeMetadata) -> String {
         "access keys".to_string()
     };
     format!(
-        "- AWS: account \"{}\" ({account}) in {} via {auth}",
+        "- AWS: account \"{}\" ({account}) in {} via {auth}. Run `aws` WITHOUT a \
+         `--profile` flag — the linked account is selected automatically; a \
+         `--profile` argument is ignored.",
         meta.account_label, meta.region
     )
 }

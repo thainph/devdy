@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use std::process::Stdio;
 use std::time::Duration;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 use tokio::process::Command;
 use uuid::Uuid;
 
@@ -241,6 +241,7 @@ pub async fn create_aws_account(
 
 #[tauri::command]
 pub async fn update_aws_account(
+    app: AppHandle,
     db: State<'_, Db>,
     payload: UpdateAwsAccountPayload,
 ) -> Result<AwsAccount, String> {
@@ -281,12 +282,39 @@ pub async fn update_aws_account(
     .await
     .map_err(|e| e.to_string())?;
 
+    // A region change must reach every project linked to this account, since
+    // runs no longer rewrite the sandbox themselves.
+    if let Ok(app_data_dir) = app.path().app_data_dir() {
+        let affected: Vec<String> =
+            sqlx::query_scalar("SELECT id FROM projects WHERE aws_account_id = ?")
+                .bind(&payload.id)
+                .fetch_all(db.inner())
+                .await
+                .unwrap_or_default();
+        for project_id in &affected {
+            crate::aws_sandbox::write_project_aws_config(db.inner(), &app_data_dir, project_id)
+                .await;
+        }
+    }
+
     fetch_account(db.inner(), &payload.id).await
 }
 
 #[tauri::command]
-pub async fn delete_aws_account(db: State<'_, Db>, id: String) -> Result<(), String> {
+pub async fn delete_aws_account(
+    app: AppHandle,
+    db: State<'_, Db>,
+    id: String,
+) -> Result<(), String> {
     let _ = secrets::delete_aws_secret(&id);
+    // Capture the projects losing this account before we NULL the link, so their
+    // now-stale sandboxes can be removed.
+    let affected: Vec<String> =
+        sqlx::query_scalar("SELECT id FROM projects WHERE aws_account_id = ?")
+            .bind(&id)
+            .fetch_all(db.inner())
+            .await
+            .unwrap_or_default();
     let _ = sqlx::query("UPDATE projects SET aws_account_id = NULL WHERE aws_account_id = ?")
         .bind(&id)
         .execute(db.inner())
@@ -296,6 +324,11 @@ pub async fn delete_aws_account(db: State<'_, Db>, id: String) -> Result<(), Str
         .execute(db.inner())
         .await
         .map_err(|e| e.to_string())?;
+    if let Ok(app_data_dir) = app.path().app_data_dir() {
+        for project_id in &affected {
+            crate::aws_sandbox::remove_project_aws_config(&app_data_dir, project_id);
+        }
+    }
     Ok(())
 }
 
@@ -379,6 +412,7 @@ pub async fn aws_sso_login(db: State<'_, Db>, id: String) -> Result<(), String> 
 
 #[tauri::command]
 pub async fn set_project_aws_account(
+    app: AppHandle,
     db: State<'_, Db>,
     project_id: String,
     account_id: Option<String>,
@@ -389,5 +423,10 @@ pub async fn set_project_aws_account(
         .execute(db.inner())
         .await
         .map_err(|e| e.to_string())?;
+    // Refresh (or remove) the project's AWS sandbox so runs read current config
+    // without ever writing it themselves.
+    if let Ok(app_data_dir) = app.path().app_data_dir() {
+        crate::aws_sandbox::write_project_aws_config(db.inner(), &app_data_dir, &project_id).await;
+    }
     Ok(())
 }
