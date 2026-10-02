@@ -22,6 +22,7 @@
   "workers": "Worker",
   "noWorkers": "Chưa có worker nào được tạo.",
   "needsPermission": "Cần duyệt quyền",
+  "backToConductor": "Quay lại conductor",
   "modeToggle": "Conductor",
   "newConductor": "Conductor mới",
   "newConductorHint": "Tạo phiên điều phối: tin nhắn đầu là mục tiêu, conductor tự chia vai trò và tạo worker.",

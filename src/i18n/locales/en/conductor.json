@@ -22,6 +22,7 @@
   "workers": "Workers",
   "noWorkers": "No workers spawned yet.",
   "needsPermission": "Needs permission",
+  "backToConductor": "Back to conductor",
   "modeToggle": "Conductor",
   "newConductor": "New conductor",
   "newConductorHint": "Start an orchestrator session: your first message is the goal, the conductor splits it into roles and spawns workers.",
