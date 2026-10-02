@@ -2,8 +2,8 @@ use crate::commands::github::RunRecord;
 use crate::db::Db;
 use crate::runs::broker::BrokerHandle;
 use crate::runs::sidecar::{
-    apply_claude_config_dir, augment_command_path, detach_process_group, drain_sidecar,
-    kill_process_group, resolve_codex_sidecar, resolve_sidecar, sdk_permission_mode,
+    apply_claude_config_dir, apply_mcp_tool_timeout, augment_command_path, detach_process_group,
+    drain_sidecar, kill_process_group, resolve_codex_sidecar, resolve_sidecar, sdk_permission_mode,
 };
 use crate::runs::ssh_access::{self, SshAccessGuard};
 use crate::runs::{BrokerRunCtx, BrokerRunGuard, BrokerRuns, RunHandles, RunRegistry};
@@ -348,6 +348,7 @@ pub(crate) async fn start_run_inner(
         let mut cmd = Command::new(&node_bin);
         cmd.current_dir(&project_path).arg(&sidecar_script);
         augment_command_path(&mut cmd);
+        apply_mcp_tool_timeout(&mut cmd);
         // GĐ3: per-run credential broker + gh/glab shim. Prepends the shim dir to
         // PATH and sets DEVDY_BROKER_SOCK/DEVDY_PROJECT_ID. Fail-closed: no token
         // is ever placed on the sidecar env. Held in RunHandles for Drop cleanup.
@@ -527,6 +528,7 @@ pub(crate) async fn start_run_inner(
     let mut cmd = Command::new(&node_bin);
     cmd.current_dir(&project_path).arg(&sidecar_script);
     augment_command_path(&mut cmd);
+    apply_mcp_tool_timeout(&mut cmd);
     let (broker_run, ssh_access) = wire_broker(
         &app,
         db,
@@ -2977,6 +2979,7 @@ pub async fn resume_run(
         // The sidecar resumes this session/thread on its first prompt.
         .env("DEVDY_RESUME_SESSION", &session_id);
     augment_command_path(&mut cmd);
+    apply_mcp_tool_timeout(&mut cmd);
     // Wire the broker + shims for both Claude and Codex resumes so resumed
     // sessions get the same per-project credential treatment as fresh runs.
     let (broker, ssh_access) = wire_broker(

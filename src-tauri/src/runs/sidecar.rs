@@ -48,6 +48,19 @@ pub fn apply_claude_config_dir(cmd: &mut tokio::process::Command, config_dir: Op
     cmd.env("CLAUDE_CONFIG_DIR", config_dir);
 }
 
+/// Give MCP tool calls a generous ceiling so long-blocking loopback tools aren't
+/// aborted by the client's default tool timeout with "The operation timed out."
+/// The conductor's `session_wait` streams progress and can block up to its
+/// ~10-minute cap; without a high ceiling the client kills the call early and the
+/// model never sees the real `waited_ms` (it then misreports the `timeout_ms`
+/// ceiling as the elapsed wait). Respects an explicit user-provided value.
+pub fn apply_mcp_tool_timeout(cmd: &mut tokio::process::Command) {
+    if std::env::var_os("MCP_TOOL_TIMEOUT").is_none() {
+        // 15 min — comfortably above session_wait's 10-min cap.
+        cmd.env("MCP_TOOL_TIMEOUT", "900000");
+    }
+}
+
 /// Map a Devdy permission mode onto a permission mode the Agent SDK accepts.
 /// Unknown/legacy modes (`auto`, `dontAsk`) fall back to `default`.
 pub fn sdk_permission_mode(mode: &str) -> &'static str {

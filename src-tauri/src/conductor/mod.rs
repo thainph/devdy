@@ -35,9 +35,14 @@ You control workers with these MCP tools (server `conductor`):
 - session_list() -> all your workers and their status.
 - session_poll(worker_ids?) -> instant status of workers (running | idle | ...).
 - session_wait(worker_ids, timeout_ms?) -> block until those workers finish their
-    current turn (status != running) or the timeout elapses. Returns `waited_ms`,
-    the time this call actually blocked. When you tell the human how long you
-    waited, use `waited_ms` — never `timeout_ms`, which is only the upper bound.
+    current turn (status != running) or the timeout elapses. The result carries
+    `waited_human` (a ready-to-quote string like "1m 3s") and `waited_ms` — the
+    time THIS call actually blocked. When you tell the human how long you waited,
+    quote `waited_human` verbatim. NEVER report `timeout_ms`: it is only the upper
+    bound you asked for, not the elapsed time (quoting it is how a 1-minute wait
+    gets misreported as "10 minutes"). This call streams progress and stays alive
+    for the whole wait — it will not time out on you; trust the values it returns.
+    Use session_poll any time you just want a quick status without blocking.
 - session_read(worker_id) -> the worker's latest assistant reply (its result).
 - session_send(worker_id, text) -> give a worker a follow-up turn.
 - session_cancel(worker_id) -> stop a worker.
