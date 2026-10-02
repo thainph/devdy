@@ -172,6 +172,19 @@ export const useRunsStore = defineStore('runs', () => {
     }
   }
 
+  /**
+   * Refresh `runMeta` for a project WITHOUT touching the foreground `runs` array
+   * or `loadedProjectId`. `list_runs` is the only endpoint that fills `role` and
+   * `conductor_run_id`, so app-wide surfaces (the active-runs dock) need this to
+   * learn a freshly-spawned worker's conductor before it can group it — but they
+   * must not clobber whatever project the user is currently viewing. Safe to call
+   * for a background project.
+   */
+  async function refreshMeta(project_id: string) {
+    const list = await invoke<RunRecord[]>('list_runs', { projectId: project_id })
+    rememberRuns(list)
+  }
+
   async function fetchIssue(project_id: string, repo_id: string, issue_number: number): Promise<RunRecord> {
     return invoke<RunRecord>('fetch_issue', { projectId: project_id, repoId: repo_id, issueNumber: issue_number })
   }
@@ -510,7 +523,7 @@ export const useRunsStore = defineStore('runs', () => {
 
   return {
     runs, loading, loadedProjectId, runMeta,
-    fetchRuns, fetchIssue, fetchPr,
+    fetchRuns, refreshMeta, fetchIssue, fetchPr,
     startRun, rerunRun, refetchRun, cancelRun, resumeRun,
     getRunLog, getRunLogRevision, getRunLogPage, getRunLogForward, getRunLogPath, getRunToolRecords, getRunUserRecords, readRunInput,
     respondPermission, sendUserMessage, endRunInput,

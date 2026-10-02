@@ -402,7 +402,19 @@ onMounted(async () => {
       'run:activated',
       (e) => {
         const { run_id, project_id } = e.payload ?? {}
-        if (run_id && project_id) live.startListening(run_id, project_id).catch(() => {})
+        if (run_id && project_id) {
+          live.startListening(run_id, project_id).catch(() => {})
+          // A freshly-spawned run (notably a conductor's worker) lands in
+          // live.sessions the instant it activates, but the dock groups workers
+          // under their conductor via runMeta[run].conductor_run_id — which only
+          // list_runs fills. Without this, a new worker flashes as a standalone
+          // row until something opens a RunView for its project and refetches.
+          // Refresh the project's metadata (not the foreground runs list) when the
+          // run is unknown so the dock nests it under its conductor immediately.
+          if (!runsStore.runMeta.has(run_id)) {
+            runsStore.refreshMeta(project_id).catch(() => {})
+          }
+        }
       },
     )
   } catch {
