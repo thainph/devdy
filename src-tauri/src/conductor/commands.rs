@@ -5,9 +5,7 @@ use sqlx::Row;
 use tauri::{AppHandle, State};
 
 use super::{ConductorState, CONDUCTOR_SYSTEM_PROMPT};
-use crate::commands::runs::{
-    resume_run, send_user_message_inner, start_run_inner, SendUserMessagePayload, StartRunPayload,
-};
+use crate::commands::runs::{start_run_inner, StartRunPayload};
 use crate::db::Db;
 use crate::runs::RunRegistry;
 
@@ -120,24 +118,22 @@ pub async fn start_conductor(
 ///
 /// Unlike [`start_conductor`] (which cold-starts a fresh `fetched` run with the
 /// goal as its first message), this operates on a session that has already run
-/// and holds a captured `session_id`. It marks the run as a conductor, creates
-/// the conductor session row + token, then RESUMES the existing session so the
-/// prior conversation is preserved — `resume_run` re-injects the `conductor` MCP
-/// tools because the role is now `conductor`. The conductor framing can't ride a
-/// resume (append-system-prompt is only applied on a cold start), so it is
-/// delivered as the first follow-up turn instead.
+/// and holds a captured `session_id`. It is a pure in-place UPGRADE: it marks the
+/// run as a conductor and creates the conductor session row + token, and nothing
+/// else. It deliberately does NOT resume the session or send any turn, so the
+/// conversion consumes no tokens. The user resumes the session with their own
+/// prompt when ready; `resume_run` then re-injects the `conductor` MCP tools
+/// because the role is now `conductor` (the token is live for this app session,
+/// and `reconnect_running` restores it from the 'running' row after a restart).
 ///
 /// Only stopped sessions can be converted: a running session owns a live query
 /// whose options are frozen, and a `fetched` one should use `start_conductor`.
 #[tauri::command]
 pub async fn convert_run_to_conductor(
-    app: AppHandle,
     db: State<'_, Db>,
-    registry: State<'_, RunRegistry>,
     conductor: State<'_, ConductorState>,
     run_id: String,
     max_workers: Option<u32>,
-    model_override: Option<String>,
 ) -> Result<ConductorStarted, String> {
     let row = sqlx::query(
         "SELECT project_id, status, role, type as run_type, session_id FROM runs WHERE id = ?",
@@ -195,61 +191,17 @@ pub async fn convert_run_to_conductor(
     .await
     .map_err(|e| e.to_string())?;
 
-    // Mint the token + in-memory session BEFORE the resume: resume_run looks it up
-    // (token_for) to re-inject the loopback `conductor` MCP server.
+    // Register the in-memory session + token now so a resume within this app
+    // session re-injects the loopback `conductor` MCP server (resume_run looks it
+    // up via token_for). After a restart, `reconnect_running` restores it from the
+    // 'running' conductor_sessions row.
     let _token = conductor
         .inner()
         .register_session(&run_id, &project_id, max_workers);
 
-    // Resume the existing session (preserves the transcript via merge_existing_log)
-    // under bypassPermissions so the conductor can drive its own session_* tools.
-    if let Err(e) = resume_run(
-        app.clone(),
-        db.clone(),
-        registry.clone(),
-        run_id.clone(),
-        Some("bypassPermissions".to_string()),
-        model_override,
-        Some(false),
-    )
-    .await
-    {
-        // Revert to a plain session so the user can retry/resume normally.
-        let _ = sqlx::query("UPDATE runs SET role = NULL, status = ? WHERE id = ?")
-            .bind(&status)
-            .bind(&run_id)
-            .execute(db.inner())
-            .await;
-        let _ = sqlx::query("DELETE FROM conductor_sessions WHERE id = ?")
-            .bind(&run_id)
-            .execute(db.inner())
-            .await;
-        return Err(e);
-    }
-
-    // The conductor system prompt can't ride a resume, so deliver it as the first
-    // turn. No goal is attached — the prior conversation is the context and the
-    // user supplies the orchestration objective in their next message.
-    let brief = format!(
-        "{}\n\nYour worker cap for this session is {} concurrent workers.\n\n\
-         (You have just been converted into the CONDUCTOR of this existing session. \
-         The conversation above is your context. From now on you do NOT do the work \
-         yourself — orchestrate workers through your session_* tools. Review the \
-         context, then wait for the user's next message describing the orchestration \
-         goal if it is not already clear.)",
-        CONDUCTOR_SYSTEM_PROMPT, max_workers
-    );
-    send_user_message_inner(
-        db.inner(),
-        registry.inner(),
-        SendUserMessagePayload {
-            run_id: run_id.clone(),
-            content: brief,
-            images: Vec::new(),
-            override_budget: true,
-        },
-    )
-    .await?;
+    // Deliberately no resume and no auto-sent turn: converting only upgrades the
+    // session in the DB. The user resumes it with their own prompt when ready, at
+    // which point resume_run injects the conductor tools (role is now 'conductor').
 
     Ok(ConductorStarted {
         conductor_run_id: run_id,

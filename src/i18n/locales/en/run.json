@@ -106,7 +106,7 @@
   "unprotect": "Remove protection",
   "convertToConductor": "Convert to conductor",
   "convertToConductorTitle": "Convert to conductor",
-  "convertToConductorMessage": "Convert {label} into a conductor session? It resumes with the orchestration tools, keeping the earlier conversation. This consumes tokens.",
+  "convertToConductorMessage": "Convert {label} into a conductor session? This only upgrades the session in the database so it can spawn workers — it does not resume or run anything and consumes no tokens. The orchestration tools come online the next time you resume it with your own prompt.",
   "convertToConductorConfirm": "Convert",
   "convertedToConductor": "Converted to conductor",
   "deleteThisRun": "Delete this run",
