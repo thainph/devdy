@@ -5,18 +5,36 @@
  * permission" flag) plus the control-plane event timeline. Everything else about
  * a conductor is just the normal session screen.
  *
- * Clicking a worker pops that worker's own session out into its own OS window (it
- * is an ordinary run), so its permission prompt / stream can be watched and
- * driven side by side with the conductor.
+ * Clicking a worker opens that worker's own session IN-PLACE (it is an ordinary
+ * run), replacing the main view in the current window while this panel stays put.
+ * A "back to conductor" row returns the main view to the conductor.
  */
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Cpu, ExternalLink, ShieldQuestion } from 'lucide-vue-next'
+import { ChevronLeft, Cpu, Loader2, ShieldQuestion } from 'lucide-vue-next'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import type { ConductorWorker, ConductorEvent } from '@/stores/conductor'
-import { StatusBadge } from '@/components/ui'
 
-defineProps<{ workers: ConductorWorker[]; events: ConductorEvent[] }>()
-const emit = defineEmits<{ openSession: [runId: string] }>()
+const props = defineProps<{
+  workers: ConductorWorker[]
+  events: ConductorEvent[]
+  /** The run currently shown in the main view — highlights that worker's row. */
+  activeWorkerId?: string | null
+  /** The conductor this panel is anchored to (used to detect "viewing a worker"). */
+  conductorRunId?: string | null
+}>()
+const emit = defineEmits<{
+  openSession: [runId: string]
+  backToConductor: []
+}>()
+
+// A worker (not the conductor itself) is the open run — offer a way back.
+const viewingWorker = computed(
+  () => !!props.activeWorkerId && props.activeWorkerId !== props.conductorRunId,
+)
+function isActive(w: ConductorWorker): boolean {
+  return !!props.activeWorkerId && props.activeWorkerId === w.worker_id
+}
 
 const { t } = useI18n()
 const live = useLiveRunsStore()
@@ -26,6 +44,33 @@ function hasPending(workerId: string): boolean {
 }
 function shortId(id: string): string {
   return id.slice(0, 8)
+}
+
+// Mirror the History (session) rows: a worker is an ordinary run, so render it
+// the same way — a status-tinted icon that spins while running, instead of a
+// separate status pill.
+function isRunning(w: ConductorWorker): boolean {
+  return w.status === 'running'
+}
+function workerIcon(w: ConductorWorker) {
+  return isRunning(w) ? Loader2 : Cpu
+}
+// Status→color, mirroring RunView's runIconColorClass / StatusBadge palette so
+// workers read the same as sessions at a glance.
+function workerIconColor(w: ConductorWorker): string {
+  switch (w.status) {
+    case 'running': return 'text-blue-500'
+    case 'done': return 'text-emerald-500'
+    case 'failed': return 'text-red-500'
+    case 'cancelled': return 'text-amber-500'
+    case 'fetched': return 'text-violet-500'
+    default: return 'text-muted-foreground'
+  }
+}
+function statusTitle(w: ConductorWorker): string {
+  const key = `common.status.${w.status}`
+  const translated = t(key)
+  return translated === key ? w.status : translated
 }
 function eventSummary(e: ConductorEvent): string {
   const p = (e.payload ?? {}) as Record<string, unknown>
@@ -50,38 +95,69 @@ function formatWhen(iso: string): string {
   <div class="flex h-full flex-col overflow-hidden">
     <!-- Workers -->
     <div class="flex-1 min-h-0 flex flex-col overflow-hidden">
-      <div class="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground border-b border-border/40 shrink-0">
-        {{ t('conductor.workers') }}
-      </div>
       <div class="flex-1 min-h-0 overflow-y-auto">
+        <!-- Viewing a worker in-place: a one-tap way back to the conductor's own
+             stream, since the worker now fills the main view. -->
+        <button
+          v-if="viewingWorker"
+          type="button"
+          class="w-full flex items-center gap-1.5 px-3 py-2 border-b border-border/30 text-[12px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors cursor-pointer"
+          @click="emit('backToConductor')"
+        >
+          <ChevronLeft class="h-3.5 w-3.5 shrink-0" :stroke-width="2" />
+          {{ t('conductor.backToConductor') }}
+        </button>
         <p v-if="!workers.length" class="px-3 py-6 text-center text-[11px] text-muted-foreground">
           {{ t('conductor.noWorkers') }}
         </p>
-        <button
+        <div
           v-for="w in workers"
           :key="w.worker_id"
-          class="group w-full text-left px-3 py-2 border-b border-border/30 hover:bg-accent/40 transition-colors cursor-pointer"
-          @click="emit('openSession', w.worker_id)"
+          class="group relative border-b border-border/30 transition-colors"
+          :class="isActive(w) ? 'bg-accent/60' : 'hover:bg-accent/40'"
         >
-          <div class="flex items-center gap-1.5">
-            <Cpu class="h-3 w-3 text-muted-foreground shrink-0" :stroke-width="1.75" />
-            <span class="flex-1 min-w-0 truncate text-[12px] font-medium leading-tight" :title="w.title ?? w.worker_id">
-              {{ w.title ?? shortId(w.worker_id) }}
-            </span>
-            <ShieldQuestion
-              v-if="hasPending(w.worker_id)"
-              class="h-3.5 w-3.5 text-amber-500 shrink-0"
-              :title="t('conductor.needsPermission')"
-            />
-            <StatusBadge :status="w.status" size="xs" />
-          </div>
-          <div class="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
-            <span class="font-mono">{{ w.engine }}</span>
-            <span>·</span>
-            <span class="font-mono">{{ shortId(w.worker_id) }}</span>
-            <ExternalLink class="h-3 w-3 ml-auto opacity-0 group-hover:opacity-100 transition-opacity" :stroke-width="1.75" />
-          </div>
-        </button>
+          <!-- Selected indicator bar, mirroring the History list's active row. -->
+          <span v-if="isActive(w)" class="absolute left-0 inset-y-0 w-0.5 bg-primary" aria-hidden="true" />
+          <button
+            class="w-full text-left px-3 py-3 cursor-pointer"
+            @click="emit('openSession', w.worker_id)"
+          >
+            <!-- Title + status: a status-tinted icon (spins while running) replaces
+                 the status pill, exactly like the History session rows. -->
+            <div class="flex items-center gap-2">
+              <component
+                :is="workerIcon(w)"
+                class="h-3.5 w-3.5 shrink-0"
+                :class="[workerIconColor(w), { 'animate-spin': isRunning(w) }]"
+                :stroke-width="1.75"
+                :title="statusTitle(w)"
+              />
+              <span class="flex-1 min-w-0 truncate text-[13px] font-medium leading-tight" :title="w.title ?? w.worker_id">
+                {{ w.title ?? shortId(w.worker_id) }}
+              </span>
+              <!-- Animated attention marker: this worker is waiting for a
+                   permission answer (mirrors the session rows' ping marker). -->
+              <span
+                v-if="hasPending(w.worker_id)"
+                class="relative flex h-3.5 w-3.5 shrink-0 items-center justify-center text-primary"
+                :title="t('conductor.needsPermission')"
+              >
+                <span class="absolute inset-0 animate-ping rounded-full bg-primary/30" />
+                <ShieldQuestion class="relative h-3 w-3" :stroke-width="2" />
+              </span>
+            </div>
+            <!-- Meta: the engine badge mirrors the session rows' model badge. -->
+            <div class="mt-2 pl-6 pr-3 flex items-center gap-1.5 text-[10px] text-muted-foreground/70">
+              <span
+                class="min-w-0 truncate px-1.5 py-0.5 rounded bg-muted/60 font-mono text-[9px] tracking-wide text-muted-foreground"
+                :title="w.engine"
+              >
+                {{ w.engine }}
+              </span>
+              <span class="font-mono">{{ shortId(w.worker_id) }}</span>
+            </div>
+          </button>
+        </div>
       </div>
     </div>
 

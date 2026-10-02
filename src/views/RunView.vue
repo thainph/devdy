@@ -214,20 +214,20 @@ const fetchOpen = ref(false)
 // Left rail view: session controls/history, or the project file tree.
 const leftTab = ref<'session' | 'files'>('session')
 
-// Open a worker session (from the conductor sidebar) in ITS OWN window — one
-// window per run, so clicking the same worker again just focuses the window
-// already showing it rather than hijacking the conductor's view.
+// Open a worker session (from the conductor sidebar) IN-PLACE, replacing the main
+// view in the current window — the worker panel stays visible (anchored to the
+// conductor, see conductorAnchorId) so the user can hop between workers or back to
+// the conductor without a forest of OS windows.
 async function openSession(runId: string) {
   if (!runId) return
-  await openSessionWindow(projectId.value, runId)
+  await loadRunLog(runId)
 }
-
-// Pop the currently viewed session out into its own standalone window. Suppressed
-// inside a session window (you can't pop out what is already popped out).
-function popOutCurrentSession() {
-  const id = currentRunId.value
-  if (!id) return
-  void openSessionWindow(projectId.value, id)
+// Secondary action: pop a worker out into its OWN OS window (one window per run),
+// for watching several workers side by side. Clicking the same worker again just
+// focuses the window already showing it.
+async function popoutSession(runId: string) {
+  if (!runId) return
+  await openSessionWindow(projectId.value, runId)
 }
 const fetchError = ref<string | null>(null)
 const needsLinkedIssue = ref(false)
@@ -700,6 +700,16 @@ const conductorWorkers = computed(() =>
 // when a "New conductor" session sends its first message.)
 const conductorWorkerCap = computed(() => conductorStore.detail?.session?.max_workers ?? 0)
 const conductorEvents = computed(() => conductorStore.detail?.events ?? [])
+// The conductor the worker panel is anchored to for the open run: the run itself
+// when it's a conductor, otherwise its parent conductor when the open run is a
+// worker (so viewing a worker in-place keeps the panel + its sibling list alive).
+// Falls back to the run's own id for ordinary sessions (store self-clears those).
+const conductorAnchorId = computed<string | null>(() => {
+  const id = currentRunId.value
+  if (!id) return null
+  const meta = runsStore.runMeta.get(id) ?? runsStore.runs.find((r) => r.id === id)
+  return meta?.conductor_run_id ?? id
+})
 const workerPanelOpen = ref(true)
 
 // Conductor ids that currently have at least one worker streaming. A conductor's
@@ -746,7 +756,8 @@ async function commitWorkerCap() {
     conductorMaxWorkers.value = next
     return
   }
-  const id = currentRunId.value
+  // Target the anchored conductor — the open run may be one of its workers.
+  const id = conductorStore.selectedId
   if (!id || next === conductorWorkerCap.value) return
   savingWorkerCap.value = true
   try {
@@ -784,13 +795,14 @@ const effectiveWorkerCap = computed(() =>
   isConductor.value ? conductorWorkerCap.value : conductorMaxWorkers.value,
 )
 
-// Point the conductor store at whatever run is now open; it self-clears when the
-// run is a normal session.
-watch(currentRunId, (id) => {
+// Point the conductor store at the conductor anchoring the open run (itself if it
+// IS a conductor, else its parent conductor when viewing a worker in-place); it
+// self-clears when the run is a normal session. Watching the anchor — not the raw
+// run id — means hopping between a conductor's workers keeps the same panel.
+watch(conductorAnchorId, (id) => {
   void conductorStore.select(id ?? null)
-  // Opening a run resets the worker sidebar to expanded, so arriving at a
-  // conductor (e.g. by clicking it in the Active-runs dock) always reveals its
-  // workers instead of inheriting a previous manual collapse.
+  // Arriving at a new conductor resets the worker sidebar to expanded, so it
+  // always reveals its workers instead of inheriting a previous manual collapse.
   workerPanelOpen.value = true
 }, { immediate: true })
 // Keep worker permission prompts flowing: listen to each running worker so its
@@ -934,98 +946,23 @@ const filteredRuns = computed(() => {
   })
 })
 
-// ── History grouping (conductor → workers) ─────────────────────────────────
-// A worker session (run.conductor_run_id set) is nested under its conductor so
-// the flat History list isn't cluttered by every spawned worker. Grouping is
-// purely a display concern — every row still acts on its own run.id.
-//
-// One display row, flat for rendering, tagged with the metadata the template
-// needs (nesting depth, chevron, worker count). Workers only appear when their
-// conductor is expanded (or while searching — see below).
+// ── History list ───────────────────────────────────────────────────────────
+// Worker sessions (run.conductor_run_id set) NEVER appear in the History list —
+// they live solely in the conductor's right-side worker panel. The History list
+// therefore shows only conductors and ordinary sessions/issues/PRs, each row
+// acting on its own run.id.
 interface DisplayRun {
   run: RunRecord
-  // True for a conductor that owns at least one worker in the current list.
-  isGroup: boolean
-  // Total workers owned by this conductor (across the full list, not just the
-  // filtered slice), shown as a badge on the header.
-  workerCount: number
-  // True when this row is a worker rendered nested under its conductor.
-  isWorker: boolean
-  // For a group header: whether its workers are currently shown.
-  expanded: boolean
 }
 
-// Which conductors are expanded. In-memory only — resets each session by design.
-const expandedConductors = ref<Set<string>>(new Set())
-function toggleConductor(id: string) {
-  const next = new Set(expandedConductors.value)
-  if (next.has(id)) next.delete(id)
-  else next.add(id)
-  expandedConductors.value = next
-}
-
-// Flattened, grouped view of `filteredRuns`. Top-level order follows the store's
-// sort (a conductor keeps its own activity position, decision: workers never
-// pull their parent up); a conductor's workers are emitted right after it in
-// their filtered order. A worker whose conductor isn't in the list falls back to
-// a top-level row. While searching, every group auto-expands so matches nested
-// inside a collapsed conductor stay visible.
+// Flat view of `filteredRuns` with every worker filtered out (both workers
+// nested under a listed conductor and orphan workers whose conductor isn't
+// listed). Top-level order follows the store's sort.
 const displayRuns = computed<DisplayRun[]>(() => {
-  const rows = filteredRuns.value
-  const searching = sessionSearch.value.trim().length > 0
-
-  // Conductors present in the filtered list, and their workers (filtered order).
-  const conductorIds = new Set(
-    rows.filter((r) => r.role === 'conductor').map((r) => r.id),
-  )
-  const workersByParent = new Map<string, RunRecord[]>()
-  for (const r of rows) {
-    const parent = r.conductor_run_id
-    if (parent && conductorIds.has(parent)) {
-      const list = workersByParent.get(parent) ?? []
-      list.push(r)
-      workersByParent.set(parent, list)
-    }
-  }
-
-  // Accurate worker totals come from the full list, not the filtered slice.
-  const totalWorkerCount = new Map<string, number>()
-  for (const r of runsStore.runs) {
-    if (r.conductor_run_id) {
-      totalWorkerCount.set(
-        r.conductor_run_id,
-        (totalWorkerCount.get(r.conductor_run_id) ?? 0) + 1,
-      )
-    }
-  }
-
   const out: DisplayRun[] = []
-  for (const run of rows) {
-    // Workers owned by a listed conductor are emitted under that conductor, not
-    // at the top level.
-    if (run.conductor_run_id && conductorIds.has(run.conductor_run_id)) continue
-
-    if (run.role === 'conductor') {
-      const workers = workersByParent.get(run.id) ?? []
-      const isGroup = workers.length > 0
-      const expanded = isGroup && (searching || expandedConductors.value.has(run.id))
-      out.push({
-        run,
-        isGroup,
-        workerCount: totalWorkerCount.get(run.id) ?? workers.length,
-        isWorker: false,
-        expanded,
-      })
-      if (expanded) {
-        for (const w of workers) {
-          out.push({ run: w, isGroup: false, workerCount: 0, isWorker: true, expanded: false })
-        }
-      }
-      continue
-    }
-
-    // Ordinary session / issue / PR, or an orphan worker (conductor not listed).
-    out.push({ run, isGroup: false, workerCount: 0, isWorker: false, expanded: false })
+  for (const run of filteredRuns.value) {
+    if (run.conductor_run_id) continue
+    out.push({ run })
   }
   return out
 })
@@ -2113,11 +2050,10 @@ const selectedClaudeAccountId = computed(() => {
   // override pins a concrete account for this session.
   return run.claude_account_id || ''
 })
-// Label for the Default account entry: legacy sessions with no run-level
-// account run on the global ~/.claude; everything else resolves to the
-// project/default account, which we surface so the default is never opaque.
+// Label for the Default account entry: resolves to the project/global default
+// account so the choice is never opaque. Falls back to "Global ~/.claude" only
+// when no default account is configured at all.
 const defaultClaudeAccountLabel = computed(() => {
-  if (currentRun.value?.session_id) return t('run.globalClaudeAccount')
   const acc = claudeStore.accounts.find((a) => a.id === effectiveProjectClaudeAccountId.value)
   return acc ? t('run.claudeAccountDefaultWith', { account: acc.label }) : t('run.globalClaudeAccount')
 })
@@ -2816,6 +2752,10 @@ async function handleSendFollowUp() {
       }
       // First run on this fetched record — use the typed text as the prompt.
       await launchFreshRun(id, engineOverride.value || undefined, prompt, images, override)
+      // start_run has derived the sidebar title from this first prompt. Refresh in
+      // place (no `loading` flash) so History shows that title immediately instead
+      // of the "Session" placeholder until a later `sessions:changed` arrives.
+      await runsStore.refreshMeta(projectId.value)
       followUpInput.value = ''
       return
     }
@@ -3785,19 +3725,12 @@ function handleRefInput(val: string) {
             </div>
             <div
               v-else
-              v-for="{ run, isGroup, isWorker, expanded } in displayRuns"
+              v-for="{ run } in displayRuns"
               :key="run.id"
               :data-run-id="run.id"
               class="group relative border-b border-border/30 transition-colors hover:bg-accent/40 focus-within:bg-accent/40"
-              :class="{ 'bg-accent/60': currentRunId === run.id, 'bg-muted/20': isWorker }"
+              :class="{ 'bg-accent/60': currentRunId === run.id }"
             >
-              <!-- Worker rows nest under their conductor: a guide rail marks the
-                   parent relationship. -->
-              <span
-                v-if="isWorker"
-                class="absolute left-4 inset-y-0 w-px bg-border/60"
-                aria-hidden="true"
-              />
               <!-- Selected indicator bar -->
               <span
                 v-if="currentRunId === run.id"
@@ -3805,7 +3738,6 @@ function handleRefInput(val: string) {
               />
               <button
                 class="w-full text-left px-3 py-3 cursor-pointer rounded-sm focus:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
-                :class="isWorker ? 'pl-8' : ''"
                 @click="loadRunLog(run.id)"
               >
                 <!-- Title + status -->
@@ -3881,28 +3813,6 @@ function handleRefInput(val: string) {
                       :stroke-width="2"
                     />
                   </span>
-                  <!-- Conductor group toggle: collapses/expands its worker rows.
-                       Sits at the end of the title row (not before the icon) so a
-                       conductor's icon + title stay aligned with ordinary sessions.
-                       A span (not a nested button) with @click.stop so tapping it
-                       never opens the conductor session. -->
-                  <span
-                    v-if="isGroup"
-                    role="button"
-                    tabindex="0"
-                    class="flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent cursor-pointer"
-                    :aria-label="expanded ? t('conductor.collapse') : t('conductor.expand')"
-                    :aria-expanded="expanded"
-                    @click.stop.prevent="toggleConductor(run.id)"
-                    @keyup.enter.stop.prevent="toggleConductor(run.id)"
-                    @keyup.space.stop.prevent="toggleConductor(run.id)"
-                  >
-                    <ChevronRight
-                      class="h-3.5 w-3.5 transition-transform"
-                      :class="{ 'rotate-90': expanded }"
-                      :stroke-width="2"
-                    />
-                  </span>
                 </div>
                 <!-- Meta: timestamp on top, the AI badges (account + model) on
                      their own line so a long model id gets the full row width
@@ -3958,6 +3868,12 @@ function handleRefInput(val: string) {
                     </button>
                   </template>
 
+                  <!-- Pop this session out into its own OS window (one per run).
+                       Hidden inside a session window — can't re-pop what's popped. -->
+                  <DropdownItem v-if="!isSessionWindow" @click="popoutSession(run.id)">
+                    <AppWindow class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+                    {{ t('run.popOutSession') }}
+                  </DropdownItem>
                   <DropdownItem v-if="runGithubUrl(run)" @click="openRunInBrowser(run)">
                     <ExternalLink class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
                     {{ run.run_type === 'analyze_issue' ? t('run.openIssueOnGithub') : t('run.openPrOnGithub') }}
@@ -4260,18 +4176,6 @@ function handleRefInput(val: string) {
                   >
                     <AppWindow class="h-3.5 w-3.5" :stroke-width="1.75" />
                     {{ t('run.dockBack') }}
-                  </button>
-                  <!-- Pop this session out into its own OS window (one per run).
-                       Hidden inside a session window — can't re-pop what's popped. -->
-                  <button
-                    v-if="!isSessionWindow && currentRunId"
-                    type="button"
-                    class="flex items-center justify-center h-6 w-6 rounded text-foreground/50 hover:text-foreground/80 hover:bg-accent/60 transition-colors cursor-pointer"
-                    :title="t('run.popOutSession')"
-                    :aria-label="t('run.popOutSession')"
-                    @click="popOutCurrentSession"
-                  >
-                    <AppWindow class="h-3.5 w-3.5" :stroke-width="1.75" />
                   </button>
                   <span v-if="currentStatus === 'running'" class="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
                 </div>
@@ -4786,36 +4690,46 @@ function handleRefInput(val: string) {
             <span class="text-xs font-medium text-foreground/90 truncate">{{ t('conductor.workers') }}</span>
             <!-- Live count / editable cap. Click the cap to raise or lower the
                  worker limit — before launch it seeds the launch cap, after it
-                 changes the running conductor's limit live. -->
-            <div class="ml-auto flex items-center gap-0.5 shrink-0">
-              <span
-                class="text-[11px] text-muted-foreground font-mono"
-                :title="t('conductor.workerCount', { n: conductorWorkers.length, max: effectiveWorkerCap })"
-              >{{ conductorWorkers.length }}/</span>
+                 changes the running conductor's limit live. Rendered as a compact
+                 pill (running / limit) with the pencil revealed on hover. -->
+            <div
+              v-if="editingWorkerCap"
+              class="ml-auto flex items-center gap-1 shrink-0 rounded-md border border-border bg-background pl-1.5 pr-1 h-6"
+            >
+              <Cpu class="h-3 w-3 text-muted-foreground shrink-0" :stroke-width="1.75" />
+              <span class="text-[11px] font-mono text-muted-foreground">{{ conductorWorkers.length }}/</span>
               <Input
-                v-if="editingWorkerCap"
                 v-model="workerCapDraft"
                 type="number"
                 min="1"
                 max="50"
                 autofocus
-                class="h-5 w-11 px-1 text-center text-[11px]"
+                class="h-5 w-10 px-1 text-center text-[11px]"
                 @keyup.enter="commitWorkerCap"
                 @keyup.esc="cancelEditWorkerCap"
                 @blur="commitWorkerCap"
               />
-              <button
-                v-else
-                type="button"
-                class="flex items-center gap-0.5 rounded px-1 h-5 text-[11px] font-mono text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors cursor-pointer disabled:opacity-50"
-                :title="t('conductor.editMaxWorkers')"
-                :disabled="savingWorkerCap"
-                @click="beginEditWorkerCap"
-              >
-                {{ effectiveWorkerCap }}
-                <component :is="savingWorkerCap ? Loader2 : Pencil" class="h-2.5 w-2.5" :class="{ 'animate-spin': savingWorkerCap }" :stroke-width="1.75" />
-              </button>
             </div>
+            <button
+              v-else
+              type="button"
+              class="group/cap ml-auto flex items-center gap-1 shrink-0 rounded-md border border-transparent px-1.5 h-6 text-[11px] font-mono text-muted-foreground hover:text-foreground hover:border-border hover:bg-accent/60 transition-colors cursor-pointer disabled:opacity-50"
+              :title="t('conductor.editMaxWorkers')"
+              :aria-label="t('conductor.editMaxWorkers')"
+              :disabled="savingWorkerCap"
+              @click="beginEditWorkerCap"
+            >
+              <Cpu class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+              <span :title="t('conductor.workerCount', { n: conductorWorkers.length, max: effectiveWorkerCap })">
+                <span class="text-foreground/90">{{ conductorWorkers.length }}</span>/{{ effectiveWorkerCap }}
+              </span>
+              <component
+                :is="savingWorkerCap ? Loader2 : Pencil"
+                class="h-2.5 w-2.5 shrink-0 opacity-0 transition-opacity group-hover/cap:opacity-100"
+                :class="{ 'animate-spin !opacity-100': savingWorkerCap }"
+                :stroke-width="1.75"
+              />
+            </button>
           </template>
           <Network v-else class="h-3.5 w-3.5 text-foreground/40 mx-auto" :stroke-width="1.75" />
         </div>
@@ -4831,7 +4745,10 @@ function handleRefInput(val: string) {
           v-else-if="workerPanelOpen"
           :workers="conductorWorkers"
           :events="conductorEvents"
+          :active-worker-id="currentRunId"
+          :conductor-run-id="conductorStore.selectedId"
           @open-session="openSession"
+          @back-to-conductor="openSession(conductorStore.selectedId ?? '')"
         />
       </aside>
     </div>

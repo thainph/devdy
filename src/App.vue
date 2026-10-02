@@ -33,6 +33,7 @@ import IssuesGanttView from '@/views/IssuesGanttView.vue'
 import { getVersion } from '@tauri-apps/api/app'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { useRunsStore } from '@/stores/runs'
+import { useConductorStore } from '@/stores/conductor'
 import { refreshTray } from '@/lib/tray'
 
 // Pop-out windows load the same SPA with a query flag; render a bare,
@@ -60,6 +61,7 @@ const tabsStore = useWorkspaceTabsStore()
 const uiLayout = useUILayoutStore()
 const live = useLiveRunsStore()
 const runsStore = useRunsStore()
+const conductorStore = useConductorStore()
 const { t, locale } = useI18n()
 const itemPanel = useItemPanel()
 
@@ -400,20 +402,32 @@ onMounted(async () => {
   try {
     unlistenActivated = await listen<{ run_id: string; project_id: string }>(
       'run:activated',
-      (e) => {
+      async (e) => {
         const { run_id, project_id } = e.payload ?? {}
-        if (run_id && project_id) {
-          live.startListening(run_id, project_id).catch(() => {})
-          // A freshly-spawned run (notably a conductor's worker) lands in
-          // live.sessions the instant it activates, but the dock groups workers
-          // under their conductor via runMeta[run].conductor_run_id — which only
-          // list_runs fills. Without this, a new worker flashes as a standalone
-          // row until something opens a RunView for its project and refetches.
-          // Refresh the project's metadata (not the foreground runs list) when the
-          // run is unknown so the dock nests it under its conductor immediately.
-          if (!runsStore.runMeta.has(run_id)) {
-            runsStore.refreshMeta(project_id).catch(() => {})
-          }
+        if (!run_id || !project_id) return
+        live.startListening(run_id, project_id).catch(() => {})
+        // A freshly-spawned run (notably a conductor's worker) lands in
+        // live.sessions the instant it activates, but the dock groups workers
+        // under their conductor via runMeta[run].conductor_run_id — which only
+        // list_runs fills. Without this, a new worker flashes as a standalone
+        // row until something opens a RunView for its project and refetches.
+        // refreshMeta learns the worker's conductor so the dock nests it at
+        // once; when the run is in the on-screen project it also refreshes the
+        // foreground runs list (quietly, no loading flash) so RunView's History
+        // gives the conductor its expand chevron immediately too.
+        if (!runsStore.runMeta.has(run_id)) {
+          await runsStore.refreshMeta(project_id).catch(() => {})
+        }
+        // Worker of the conductor currently open in a RunView? Refresh that
+        // conductor's right-side worker panel too. The panel is otherwise driven
+        // ONLY by the per-select `conductor:changed` listener — a single point of
+        // failure that, if it misses or is torn down, leaves a freshly-spawned
+        // worker invisible until the user reopens the session. Piggybacking on
+        // this always-on `run:activated` signal (the same one the dock trusts)
+        // makes the new worker appear in the panel the instant it activates.
+        const meta = runsStore.runMeta.get(run_id)
+        if (meta?.conductor_run_id && meta.conductor_run_id === conductorStore.selectedId) {
+          conductorStore.refreshDetail().catch(() => {})
         }
       },
     )

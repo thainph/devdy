@@ -16,7 +16,7 @@ const props = withDefaults(
 
 const classes = computed(() =>
   cn(
-    'flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-[13px] transition-colors cursor-pointer text-left disabled:opacity-50 disabled:pointer-events-none',
+    'flex w-full items-center gap-2 whitespace-nowrap rounded px-2.5 py-1.5 text-[13px] transition-colors cursor-pointer text-left disabled:opacity-50 disabled:pointer-events-none',
     props.variant === 'destructive'
       ? 'text-destructive hover:bg-destructive/10'
       : props.variant === 'primary'

@@ -173,16 +173,23 @@ export const useRunsStore = defineStore('runs', () => {
   }
 
   /**
-   * Refresh `runMeta` for a project WITHOUT touching the foreground `runs` array
-   * or `loadedProjectId`. `list_runs` is the only endpoint that fills `role` and
-   * `conductor_run_id`, so app-wide surfaces (the active-runs dock) need this to
-   * learn a freshly-spawned worker's conductor before it can group it — but they
-   * must not clobber whatever project the user is currently viewing. Safe to call
-   * for a background project.
+   * Refresh `runMeta` for a project. `list_runs` is the only endpoint that fills
+   * `role` and `conductor_run_id`, so app-wide surfaces (the active-runs dock)
+   * need this to learn a freshly-spawned worker's conductor before they can group
+   * it. For a BACKGROUND project this must not clobber whatever project the user
+   * is currently viewing, so it only folds the result into `runMeta`.
+   *
+   * When the project IS the one on screen, it also replaces the foreground `runs`
+   * array in place — but WITHOUT toggling `loading`, so RunView's History tree
+   * (and a conductor's expand chevron) picks up freshly-spawned workers at once
+   * instead of only after a later `fetchRuns`. A full `fetchRuns` can't be used
+   * here: its `loading` flash blanks the whole session list to "Loading…" on
+   * every spawn, which flickers badly when a conductor spawns a batch of workers.
    */
   async function refreshMeta(project_id: string) {
     const list = await invoke<RunRecord[]>('list_runs', { projectId: project_id })
     rememberRuns(list)
+    if (project_id === loadedProjectId.value) runs.value = list
   }
 
   async function fetchIssue(project_id: string, repo_id: string, issue_number: number): Promise<RunRecord> {
