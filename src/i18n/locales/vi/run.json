@@ -106,7 +106,7 @@
   "unprotect": "Bỏ bảo vệ",
   "convertToConductor": "Chuyển sang conductor",
   "convertToConductorTitle": "Chuyển sang conductor",
-  "convertToConductorMessage": "Chuyển {label} thành phiên conductor? Phiên sẽ được tiếp tục với bộ công cụ điều phối, giữ nguyên hội thoại trước đó. Hành động này tiêu tốn token.",
+  "convertToConductorMessage": "Chuyển {label} thành phiên conductor? Thao tác này chỉ nâng cấp phiên trong cơ sở dữ liệu để có thể tạo worker — không tiếp tục/chạy gì và không tốn token. Bộ công cụ điều phối sẽ sẵn sàng ở lần bạn tự tiếp tục phiên với prompt của mình.",
   "convertToConductorConfirm": "Chuyển đổi",
   "convertedToConductor": "Đã chuyển sang conductor",
   "deleteThisRun": "Xóa run này",

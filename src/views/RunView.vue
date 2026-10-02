@@ -3151,30 +3151,10 @@ async function handleConvertToConductor(run: RunRecord) {
   convertingRunId.value = run.id
   try {
     await conductorStore.convertToConductor(run.id)
-    // Role is now 'conductor' in the DB — refresh so History reflects it.
+    // Pure DB upgrade: the session is NOT resumed and stays stopped. Just refresh
+    // History so the new 'conductor' role shows. The conductor tools come online
+    // the next time the user resumes the session with their own prompt.
     await runsStore.fetchRuns(projectId.value)
-    // Open the run live. Seed from disk so the earlier conversation stays on
-    // screen, then attach the stream for the new conductor turns.
-    currentRunId.value = run.id
-    clearHistoryView()
-    const s = live.ensure(run.id, projectId.value)
-    if (s.entries.length === 0) {
-      try {
-        const page = await runsStore.getRunLogPage(run.id, undefined, HISTORY_PAGE_INITIAL)
-        const parsed = parseStreamLogWindow(page.records, { seedModel: modelFromPreamble(page.preamble) })
-        if (parsed.entries.length > 0) {
-          s.entries.push(...parsed.entries)
-          s.hasStreamEvents = true
-          for (const e of parsed.entries) {
-            if (e.kind === 'system' && e.sessionId) s.sessionId = e.sessionId
-          }
-        }
-      } catch { /* fall back to a live-only view */ }
-    }
-    live.setStatus(run.id, 'running')
-    setLocalRunStatus(run.id, 'running')
-    await live.startListening(run.id, projectId.value)
-    void conductorStore.select(run.id)
     toast.success(t('run.convertedToConductor'))
   } catch (e) {
     toast.error(String(e))

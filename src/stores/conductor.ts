@@ -81,19 +81,20 @@ export const useConductorStore = defineStore('conductor', () => {
   }
 
   /**
-   * Convert an already-started, now-stopped normal session into a conductor:
-   * the backend marks the role, creates the conductor session, then resumes the
-   * existing conversation with the conductor tools + framing injected. Only works
-   * on a session that has run before and is not currently running.
+   * Convert an already-started, now-stopped normal session into a conductor.
+   * This is a pure in-place upgrade: the backend marks the role and creates the
+   * conductor session row + token, and nothing else — it does NOT resume the
+   * session or send any turn, so it consumes no tokens. The conductor tools are
+   * injected the next time the user resumes the session with their own prompt.
+   * Only works on a session that has run before and is not currently running.
    */
   async function convertToConductor(
     runId: string,
-    opts?: { maxWorkers?: number; modelOverride?: string },
+    opts?: { maxWorkers?: number },
   ): Promise<ConductorStarted> {
     return invoke<ConductorStarted>('convert_run_to_conductor', {
       runId,
       maxWorkers: opts?.maxWorkers ?? null,
-      modelOverride: opts?.modelOverride ?? null,
     })
   }
 
