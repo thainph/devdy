@@ -427,6 +427,13 @@ pub async fn drain_sidecar(
     // `run:done`/`status='done'` never fire and the run is stuck "running".
     let mut user_turn_ended_once = false;
 
+    // Deferred drain-close (fixes "AbortError: Stream closed" on in-process wake
+    // turns). `Some(deadline)` means a background task drained to 0 after the
+    // user's turn and we are inside the grace window before closing stdin — see
+    // the `background_tasks_changed` branch. Disarmed the moment a wake turn shows
+    // activity; fires (closes) only if the session stays idle through the window.
+    let mut drain_close_deadline: Option<tokio::time::Instant> = None;
+
     // Incremental persistence: snapshot any pre-existing on-disk log once (for
     // resumes), then periodically flush `prefix + buf` to disk while the run
     // streams. This lets the frontend recover partial output after an app
@@ -454,6 +461,24 @@ pub async fn drain_sidecar(
             _ = flush_tick.tick() => {
                 let buf = log_buf.lock().await;
                 flush_to_disk(&buf);
+            }
+            // Deferred drain-close safety net: a background task drained to 0 and no
+            // wake turn started within the grace window, so the session is genuinely
+            // idle — close stdin now so the process exits and the run isn't stuck
+            // "running". Pends forever while unarmed so this arm never wins then.
+            _ = async {
+                match drain_close_deadline {
+                    Some(dl) => tokio::time::sleep_until(dl).await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
+                drain_close_deadline = None;
+                if drain_should_close_stdin(live_bg_tasks, user_turn_ended_once) {
+                    let mut reg = registry.lock().await;
+                    if let Some(handles) = reg.get_mut(&run_id) {
+                        handles.stdin.take();
+                    }
+                }
             }
             line = stdout_reader.next_line() => {
                 match line {
@@ -597,23 +622,40 @@ pub async fn drain_sidecar(
                                     if let Some(tasks) = v.get("tasks").and_then(|t| t.as_array()) {
                                         live_bg_tasks = tasks.len();
                                     }
-                                    // The turn-end stdin close is normally driven by the
-                                    // `result` branch below, but the ordering isn't
-                                    // guaranteed: a `task-notification` wake `result` can
-                                    // arrive BEFORE the `background_tasks_changed` that
-                                    // clears the count, so the result branch sees a
-                                    // non-zero count and keeps stdin open — and nothing
-                                    // re-checks once the count finally hits 0 here. Without
-                                    // this, the process never exits and the run is stuck
-                                    // "running" (a conductor waiting on it never sees it
-                                    // finish). Re-run the same close gate on drain: once the
-                                    // user's own turn has ended and no tasks remain, close.
+                                    // A `background_tasks_changed` that drains the last
+                                    // task must EVENTUALLY close stdin (otherwise the
+                                    // process never exits and the run is stuck "running"),
+                                    // but it must NOT close it immediately: the CLI reacts
+                                    // to a task finishing by WAKING the session in-process
+                                    // for a fresh turn, and that drain event usually
+                                    // arrives just BEFORE the wake turn starts. Closing on
+                                    // it tears down the permission channel for the wake
+                                    // turn, so every tool needing approval there fails with
+                                    // "AbortError: Stream closed".
+                                    //
+                                    // So we DEFER: arm a short grace deadline instead of
+                                    // closing. If a wake turn starts (any assistant/init/
+                                    // stream activity) we disarm it below and let the wake
+                                    // turn's own `result` close stdin via
+                                    // `result_should_close_stdin`. If nothing comes (the
+                                    // session is genuinely idle — the drain arrived after
+                                    // the wake turn's result), the timer fires and closes.
                                     if drain_should_close_stdin(live_bg_tasks, user_turn_ended_once) {
-                                        let mut reg = registry.lock().await;
-                                        if let Some(handles) = reg.get_mut(&run_id) {
-                                            handles.stdin.take();
-                                        }
+                                        drain_close_deadline =
+                                            Some(tokio::time::Instant::now() + DRAIN_CLOSE_GRACE);
+                                    } else {
+                                        // Count went back up (a new task spawned) — cancel
+                                        // any pending deferred close; the new work will
+                                        // re-arm when it drains.
+                                        drain_close_deadline = None;
                                     }
+                                }
+                                // Any wake-turn activity cancels a pending deferred
+                                // drain-close: the turn is live, so its own `result` will
+                                // close stdin once its tasks drain. Closing mid-turn here
+                                // is exactly what caused "AbortError: Stream closed".
+                                if drain_close_deadline.is_some() && is_wake_activity(v) {
+                                    drain_close_deadline = None;
                                 }
                                 // End the turn: closing stdin makes the sidecar's
                                 // input stream close, the query finish, and the
@@ -785,6 +827,28 @@ pub async fn drain_sidecar(
     }
 }
 
+/// Grace window after a background task drains to 0 before the deferred
+/// drain-close fires. Long enough for the CLI's in-process wake-up turn to start
+/// emitting (which disarms the close), short enough that a genuinely idle session
+/// still finishes promptly. Biased generous: closing late only delays `run:done`
+/// by this much, while closing early reintroduces "AbortError: Stream closed".
+const DRAIN_CLOSE_GRACE: std::time::Duration = std::time::Duration::from_millis(3000);
+
+/// Does this raw SDK stream message mean a (wake-up) turn is actively running?
+/// Used to disarm a pending deferred drain-close: once the CLI has started a turn,
+/// its own `result` is what should close stdin — not the drain event that preceded
+/// it. Only `system/init` counts among system messages; `background_tasks_changed`
+/// (also `type: system`) is the drain signal itself and must not disarm.
+fn is_wake_activity(value: &Value) -> bool {
+    match value.get("type").and_then(|t| t.as_str()) {
+        Some("assistant") | Some("user") | Some("stream_event") => true,
+        Some("system") => {
+            value.get("subtype").and_then(|s| s.as_str()) == Some("init")
+        }
+        _ => false,
+    }
+}
+
 /// Does this `result` event close the turn the user started?
 ///
 /// A user turn ends with a plain `result` (no `origin`). But the CLI also runs
@@ -823,13 +887,17 @@ fn result_should_close_stdin(value: &Value, live_bg_tasks: usize, user_turn_ende
     result_ends_user_turn(value) || user_turn_ended
 }
 
-/// Should the last background task draining (a `background_tasks_changed` with an
-/// empty `tasks` set) close stdin? This is the same gate as
-/// `result_should_close_stdin`, minus the `result`-shape check, for the case
-/// where the count reaches 0 via a `background_tasks_changed` event rather than a
-/// `result`. It only fires once the user's own turn has already ended, so a
-/// spurious leftover task draining on resume (before the real turn runs) can't
-/// close stdin early.
+/// Is a `background_tasks_changed` draining to an empty set eligible to (eventually)
+/// close stdin? Same shape as `result_should_close_stdin` minus the `result` check,
+/// for the case where the count reaches 0 via a `background_tasks_changed` event.
+///
+/// NOTE: a `true` here no longer closes stdin immediately — the caller ARMS a
+/// [`DRAIN_CLOSE_GRACE`] deadline instead, because the drain event usually lands
+/// just before the CLI's in-process wake-up turn and closing now would kill that
+/// turn's permission channel ("AbortError: Stream closed"). The deadline is
+/// disarmed by [`is_wake_activity`] if a wake turn starts, and only fires (closes)
+/// if the session stays idle. The `user_turn_ended` guard still stops a spurious
+/// leftover task draining on resume (before the real turn runs) from arming at all.
 fn drain_should_close_stdin(live_bg_tasks: usize, user_turn_ended: bool) -> bool {
     live_bg_tasks == 0 && user_turn_ended
 }
@@ -1395,5 +1463,31 @@ mod turn_end_tests {
         assert!(!drain_should_close_stdin(0, /* user_turn_ended */ false));
         // Tasks still live never close on drain.
         assert!(!drain_should_close_stdin(2, user_turn_ended));
+    }
+
+    // Deferred drain-close (fix for "AbortError: Stream closed"): when a background
+    // task drains to 0, the drain event often arrives just BEFORE the CLI's
+    // in-process wake-up turn starts. Closing stdin on it kills that turn's
+    // permission channel. So the drain now only ARMS a grace deadline; any wake-turn
+    // activity disarms it (the wake turn's own `result` closes instead), and the
+    // timer closes only if the session stays idle. `is_wake_activity` is the disarm
+    // signal — it must fire for turn content but NOT for the drain event itself.
+    #[test]
+    fn wake_activity_disarms_but_drain_signal_does_not() {
+        // Wake-turn content → disarm.
+        assert!(is_wake_activity(&serde_json::json!({ "type": "assistant" })));
+        assert!(is_wake_activity(&serde_json::json!({ "type": "user" })));
+        assert!(is_wake_activity(&serde_json::json!({ "type": "stream_event" })));
+        assert!(is_wake_activity(
+            &serde_json::json!({ "type": "system", "subtype": "init" })
+        ));
+
+        // The drain signal itself is `type: system` too, but must NOT disarm —
+        // otherwise it would cancel the very deadline it just armed.
+        assert!(!is_wake_activity(&serde_json::json!({
+            "type": "system", "subtype": "background_tasks_changed", "tasks": []
+        })));
+        // A `result` is handled by its own close gate, not by the disarm path.
+        assert!(!is_wake_activity(&serde_json::json!({ "type": "result" })));
     }
 }
