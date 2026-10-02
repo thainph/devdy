@@ -828,7 +828,7 @@ async fn wire_broker(
 
     // AWS: write a minimal per-run config; the `aws` CLI itself is broker-gated by
     // the PATH shim, which injects broker-minted credentials.
-    wire_aws_config(app, db, cmd, run_id, project_id).await;
+    wire_aws_config(app, db, cmd, project_id).await;
 
     // ssh-transparent-connect: wire per-run transparent SSH for this project's
     // mapped VPS servers. No mapping → Ok(None) (no env set, no agent — AC-305).
@@ -870,13 +870,7 @@ fn wire_git_config(cmd: &mut Command, helper_path: &Path) {
     cmd.env("GIT_TERMINAL_PROMPT", "0");
 }
 
-async fn wire_aws_config(
-    app: &AppHandle,
-    db: &Db,
-    cmd: &mut Command,
-    run_id: &str,
-    project_id: &str,
-) {
+async fn wire_aws_config(app: &AppHandle, db: &Db, cmd: &mut Command, project_id: &str) {
     // Strip inherited AWS credentials from the sidecar parent. AWS SDKs prefer
     // env credentials over credential_process, so leaving these in place would
     // bypass the broker.
@@ -906,14 +900,10 @@ async fn wire_aws_config(
         Ok(dir) => dir,
         Err(_) => return,
     };
-    let run_dir = app_data_dir.join("aws-runs").join(run_id);
-    if fs::create_dir_all(&run_dir).is_err() {
-        return;
-    }
-    let config_path = run_dir.join("config");
-    let credentials_path = run_dir.join("credentials");
-    let _ = fs::write(&credentials_path, "");
 
+    // Read-only: the sandbox files are written when the project's AWS account is
+    // configured (and backfilled at startup), never here. A project with no
+    // linked account shares the static `_empty` sandbox.
     let meta = match crate::runs::broker::token::resolve_aws_runtime_metadata(db, project_id).await
     {
         Ok(Some(meta)) => Some(meta),
@@ -921,9 +911,9 @@ async fn wire_aws_config(
     };
 
     let Some(meta) = meta else {
-        let _ = fs::write(&config_path, "[default]\n");
-        cmd.env("AWS_CONFIG_FILE", config_path);
-        cmd.env("AWS_SHARED_CREDENTIALS_FILE", credentials_path);
+        let empty_dir = crate::aws_sandbox::empty_aws_dir(&app_data_dir);
+        cmd.env("AWS_CONFIG_FILE", empty_dir.join("config"));
+        cmd.env("AWS_SHARED_CREDENTIALS_FILE", empty_dir.join("credentials"));
         cmd.env("AWS_SDK_LOAD_CONFIG", "1");
         return;
     };
@@ -932,11 +922,11 @@ async fn wire_aws_config(
     cmd.env("AWS_DEFAULT_REGION", &meta.region);
 
     // The `aws` CLI shim injects broker-minted credentials into the real CLI
-    // child. SDK credential_process cannot emit a profile name, so we only pin a
-    // minimal region config here and never set AWS_PROFILE on the sidecar parent.
-    let _ = fs::write(&config_path, format!("[default]\nregion = {}\n", meta.region));
-    cmd.env("AWS_CONFIG_FILE", config_path);
-    cmd.env("AWS_SHARED_CREDENTIALS_FILE", credentials_path);
+    // child. SDK credential_process cannot emit a profile name, so the per-project
+    // sandbox only pins a region; AWS_PROFILE is never set on the sidecar parent.
+    let project_dir = crate::aws_sandbox::project_aws_dir(&app_data_dir, project_id);
+    cmd.env("AWS_CONFIG_FILE", project_dir.join("config"));
+    cmd.env("AWS_SHARED_CREDENTIALS_FILE", project_dir.join("credentials"));
     cmd.env("AWS_SDK_LOAD_CONFIG", "1");
 }
 

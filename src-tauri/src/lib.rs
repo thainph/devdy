@@ -1,3 +1,4 @@
+mod aws_sandbox;
 mod commands;
 mod conductor;
 mod db;
@@ -184,6 +185,12 @@ pub fn run() {
             // Watch the shared Claude transcript store so sessions created or
             // continued outside Devdy (claude CLI / VS Code) mirror in live.
             runs::session_watcher::start(db.clone(), app.handle().clone());
+
+            // Materialize per-project AWS sandboxes for already-linked projects
+            // and sweep the legacy per-run `aws-runs` dirs. Runs only read these
+            // files; they are written here and when AWS config changes, never by
+            // a run.
+            tauri::async_runtime::block_on(aws_sandbox::sync_all(&db, &app_data_dir));
 
             // App-wide singleton credential broker (GĐ7). One Unix socket serves
             // every run for the whole app lifetime, so runs never race a per-run

@@ -101,6 +101,37 @@ function resolveReal(tool) {
 }
 
 /**
+ * Drop any `--profile <name>` / `--profile=<name>` tokens from an `aws` argv.
+ *
+ * Inside a run the account is decided by the broker (the project's linked AWS
+ * account), never by a CLI flag — creds arrive as injected access keys and
+ * AWS_PROFILE is stripped. A stray `--profile foo` would make the real `aws`
+ * look `foo` up in the sandbox config (which only holds `[default]`) and fail
+ * with "The config profile (foo) could not be found". Silently ignoring the
+ * flag lets the agent pass it without breaking.
+ * @param {string[]} argv
+ * @returns {{argv: string[], stripped: boolean}}
+ */
+export function stripAwsProfileArgs(argv) {
+  const out = []
+  let stripped = false
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]
+    if (a === '--profile') {
+      stripped = true
+      if (i + 1 < argv.length) i++ // also drop the value token
+      continue
+    }
+    if (a.startsWith('--profile=')) {
+      stripped = true
+      continue
+    }
+    out.push(a)
+  }
+  return { argv: out, stripped }
+}
+
+/**
  * Entry point for a shim. `tool` is 'gh', 'glab', or 'aws'.
  * @param {string} tool
  */
@@ -152,6 +183,7 @@ export async function run(tool) {
 
   // Credentials go ONLY into the child env. Never logged, never persisted.
   const childEnv = { ...process.env }
+  let execArgv = argv
   const originalAwsConfigFile = childEnv.DEVDY_ORIGINAL_AWS_CONFIG_FILE
   const originalAwsCredentialsFile = childEnv.DEVDY_ORIGINAL_AWS_SHARED_CREDENTIALS_FILE
   delete childEnv.DEVDY_BROKER_SOCK
@@ -161,6 +193,16 @@ export async function run(tool) {
   delete childEnv.DEVDY_ORIGINAL_AWS_SHARED_CREDENTIALS_FILE
 
   if (tool === 'aws') {
+    // The broker (project-linked account) decides which identity is used, so a
+    // `--profile` flag on the command line can only point at a profile the
+    // sandbox config does not contain. Drop it instead of letting `aws` fail.
+    const sanitized = stripAwsProfileArgs(argv)
+    if (sanitized.stripped) {
+      process.stderr.write(
+        'devdy: ignoring --profile for aws; using the account linked to this project\n',
+      )
+    }
+    execArgv = sanitized.argv
     if (resp.aws_region) {
       childEnv.AWS_REGION = resp.aws_region
       childEnv.AWS_DEFAULT_REGION = resp.aws_region
@@ -194,7 +236,7 @@ export async function run(tool) {
     }
   }
 
-  const child = spawn(realBin, argv, { stdio: 'inherit', env: childEnv })
+  const child = spawn(realBin, execArgv, { stdio: 'inherit', env: childEnv })
   child.on('error', () => {
     process.stderr.write(`devdy: failed to exec ${tool}\n`)
     process.exit(EXIT_EXEC_FAILED)
