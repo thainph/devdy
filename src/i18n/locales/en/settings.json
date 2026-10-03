@@ -267,6 +267,13 @@
     "period": {
       "5h": "5h limit",
       "week": "weekly limit"
+    },
+    "balance": {
+      "title": "Auto-balance default",
+      "hint": "Automatically point the default at the least-used account so plan usage spreads evenly. New runs that aren't pinned to a project follow it; running/resumed runs keep their account.",
+      "cooldown": "Min minutes between swaps",
+      "threshold": "Swap threshold (% gap)",
+      "suggest": "Suggestion: switch the default to {account} to balance usage."
     }
   },
   "engine": {

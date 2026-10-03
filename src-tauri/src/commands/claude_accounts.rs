@@ -7,8 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use std::process::Stdio;
 use std::time::Duration;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::process::Command;
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 const STATUS_UNKNOWN: &str = "unknown";
@@ -250,21 +251,28 @@ pub async fn delete_claude_account(db: State<'_, Db>, id: String) -> Result<(), 
 
 #[tauri::command]
 pub async fn set_default_claude_account(db: State<'_, Db>, id: String) -> Result<(), String> {
+    set_default_claude_account_inner(db.inner(), &id).await
+}
+
+/// Point `is_default` at `id` in a single transaction (resets the flag on every
+/// other account first). Shared by the manual Settings action and the
+/// auto-balancer, so both go through the exact same atomic swap.
+pub async fn set_default_claude_account_inner(db: &Db, id: &str) -> Result<(), String> {
     let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM claude_accounts WHERE id = ?")
-        .bind(&id)
-        .fetch_one(db.inner())
+        .bind(id)
+        .fetch_one(db)
         .await
         .map_err(|e| e.to_string())?;
     if exists == 0 {
         return Err("Claude account not found".to_string());
     }
-    let mut tx = db.inner().begin().await.map_err(|e| e.to_string())?;
+    let mut tx = db.begin().await.map_err(|e| e.to_string())?;
     sqlx::query("UPDATE claude_accounts SET is_default = 0")
         .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
     sqlx::query("UPDATE claude_accounts SET is_default = 1 WHERE id = ?")
-        .bind(&id)
+        .bind(id)
         .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
@@ -554,6 +562,323 @@ pub async fn project_account_id(db: &Db, project_id: &str) -> Option<String> {
         .ok()
         .flatten()
         .flatten()
+}
+
+// ===========================================================================
+// Auto-balance: keep `is_default` pointed at the least-loaded managed account
+// so plan usage spreads across logins instead of hammering one. This only
+// automates the "Set as default" action a user would otherwise click by hand;
+// run resolution (`resolve_runtime_account`) is untouched — pinned/project runs
+// still win, and already-running/resumed runs keep their snapshotted account.
+// ===========================================================================
+
+/// Quiet window (ms) that coalesces a burst of plan-usage updates (e.g. many
+/// runs finishing together) into a single balance evaluation. See `BalanceGuard`.
+const BALANCE_DEBOUNCE_MS: u64 = 2500;
+
+const ENGINE_CLAUDE: &str = "claude";
+const KEY_AUTO_BALANCE: &str = "claude_auto_balance";
+const KEY_MIN_SWAP_MINUTES: &str = "claude_auto_balance_min_swap_minutes";
+const KEY_SWAP_THRESHOLD: &str = "claude_auto_balance_swap_threshold_pct";
+const KEY_LAST_SWAP_AT: &str = "claude_auto_balance_last_swap_at";
+
+/// Shared, Tauri-managed guard for the auto-balancer. `scheduled` debounces many
+/// triggers into one evaluation; `apply` single-flights the decide-and-swap
+/// section so two overlapping evaluations can never both swap in the same window.
+#[derive(Default)]
+pub struct BalanceGuard {
+    scheduled: Mutex<bool>,
+    apply: Mutex<()>,
+}
+
+/// One account's load reading, as surfaced to the Settings UI.
+#[derive(Debug, Serialize, Clone)]
+pub struct AccountLoad {
+    pub id: String,
+    pub label: String,
+    /// Comparable load in [0, 100]. In `plan` metric mode this is the account's
+    /// real plan utilization; in `ledger` mode it's the account's share of the
+    /// last 7 days' token usage across eligible accounts.
+    pub load_percent: f64,
+    pub source: String,
+    pub eligible: bool,
+}
+
+/// The balancer's verdict: which account should be default and whether the gap
+/// is wide enough to act on. Read-only; consumed by the UI and by the automatic
+/// swap path alike.
+#[derive(Debug, Serialize, Clone)]
+pub struct BalanceRecommendation {
+    pub enabled: bool,
+    pub metric: String,
+    pub current_default_id: Option<String>,
+    pub recommended_id: Option<String>,
+    pub should_swap: bool,
+    pub threshold_pct: f64,
+    pub min_swap_minutes: i64,
+    pub last_swap_at: Option<String>,
+    pub accounts: Vec<AccountLoad>,
+}
+
+async fn setting_value(db: &Db, key: &str) -> Option<String> {
+    sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+        .bind(key)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Whether auto-balance is on. Defaults to ON when unset, matching the setting
+/// default; only an explicit "false" disables it.
+async fn auto_balance_enabled(db: &Db) -> bool {
+    setting_value(db, KEY_AUTO_BALANCE)
+        .await
+        .map(|v| v.trim() != "false")
+        .unwrap_or(true)
+}
+
+fn setting_f64(value: Option<String>, default: f64, min: f64, max: f64) -> f64 {
+    value
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|v| v.is_finite())
+        .unwrap_or(default)
+        .clamp(min, max)
+}
+
+fn setting_i64(value: Option<String>, default: i64, min: i64, max: i64) -> i64 {
+    value
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .unwrap_or(default)
+        .clamp(min, max)
+}
+
+/// Compute the current balance verdict without changing anything. Pure read —
+/// safe to call from the UI command and from the swap path.
+pub async fn compute_recommendation(db: &Db) -> Result<BalanceRecommendation, String> {
+    let enabled = auto_balance_enabled(db).await;
+    let threshold_pct = setting_f64(setting_value(db, KEY_SWAP_THRESHOLD).await, 10.0, 0.0, 100.0);
+    let min_swap_minutes = setting_i64(setting_value(db, KEY_MIN_SWAP_MINUTES).await, 10, 0, 1440);
+    let last_swap_at = setting_value(db, KEY_LAST_SWAP_AT)
+        .await
+        .filter(|v| !v.trim().is_empty());
+
+    let rows = sqlx::query("SELECT id, label, status, is_default FROM claude_accounts")
+        .fetch_all(db)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Per-account raw signals: fresh plan utilization (if any) + 7d token ledger.
+    struct Raw {
+        id: String,
+        label: String,
+        eligible: bool,
+        is_default: bool,
+        plan_pct: Option<f64>,
+        ledger_tokens: i64,
+    }
+    let since_7d = (chrono::Utc::now() - chrono::Duration::days(7)).to_rfc3339();
+    let mut raws: Vec<Raw> = Vec::with_capacity(rows.len());
+    let mut current_default_id: Option<String> = None;
+    for row in &rows {
+        let id: String = row.get("id");
+        let label: String = row.get("label");
+        let status: String = row.get("status");
+        let is_default = row.get::<i64, _>("is_default") != 0;
+        if is_default {
+            current_default_id = Some(id.clone());
+        }
+
+        let budget = crate::commands::stats::budget_status_for(db, ENGINE_CLAUDE, Some(&id))
+            .await
+            .ok();
+        let is_over = budget.as_ref().map(|b| b.is_over).unwrap_or(false);
+        let plan_pct = budget.as_ref().and_then(|b| {
+            (b.source == "plan" && !b.is_stale).then_some(b.percent as f64)
+        });
+        // Eligible = a healthy account we can safely route new runs to.
+        let eligible = status == STATUS_READY && !is_over;
+
+        let ledger_tokens: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(ru.total_tokens), 0) FROM run_usage ru \
+             JOIN runs r ON r.id = ru.run_id \
+             WHERE r.claude_account_id = ? AND ru.created_at >= ?",
+        )
+        .bind(&id)
+        .bind(&since_7d)
+        .fetch_one(db)
+        .await
+        .unwrap_or(0);
+
+        raws.push(Raw {
+            id,
+            label,
+            eligible,
+            is_default,
+            plan_pct,
+            ledger_tokens,
+        });
+    }
+
+    // Metric mode: prefer real plan utilization, but only when EVERY eligible
+    // account has a fresh snapshot — otherwise a never-run account would look
+    // "0%" and always win. Fall back to the local 7d token-share ledger.
+    let eligible_ids: Vec<&Raw> = raws.iter().filter(|r| r.eligible).collect();
+    let use_plan =
+        !eligible_ids.is_empty() && eligible_ids.iter().all(|r| r.plan_pct.is_some());
+    let metric = if use_plan { "plan" } else { "ledger" };
+    let ledger_total: i64 = eligible_ids.iter().map(|r| r.ledger_tokens).sum();
+
+    let load_of = |r: &Raw| -> f64 {
+        if use_plan {
+            r.plan_pct.unwrap_or(0.0)
+        } else if ledger_total > 0 {
+            (r.ledger_tokens as f64 / ledger_total as f64) * 100.0
+        } else {
+            0.0
+        }
+    };
+
+    let accounts: Vec<AccountLoad> = raws
+        .iter()
+        .map(|r| AccountLoad {
+            id: r.id.clone(),
+            label: r.label.clone(),
+            load_percent: (load_of(r) * 100.0).round() / 100.0,
+            source: metric.to_string(),
+            eligible: r.eligible,
+        })
+        .collect();
+
+    // Recommend the lightest eligible account; tie-break on fewer 7d tokens.
+    let recommended = raws
+        .iter()
+        .filter(|r| r.eligible)
+        .min_by(|a, b| {
+            load_of(a)
+                .partial_cmp(&load_of(b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.ledger_tokens.cmp(&b.ledger_tokens))
+        });
+    let recommended_id = recommended.map(|r| r.id.clone());
+
+    // Decide whether the gap justifies a swap.
+    let default_raw = raws.iter().find(|r| r.is_default);
+    let should_swap = match (&recommended_id, &current_default_id) {
+        (Some(rec_id), Some(def_id)) if rec_id == def_id => false,
+        (Some(_), Some(_)) => match default_raw {
+            // Default is a healthy account: only swap when the lighter account is
+            // ahead by at least the hysteresis threshold.
+            Some(def) if def.eligible => {
+                let rec = recommended.expect("recommended present");
+                (load_of(def) - load_of(rec)) >= threshold_pct
+            }
+            // Default is unhealthy (needs login / over budget): move off it now.
+            _ => true,
+        },
+        // No default set but we found a candidate → adopt it.
+        (Some(_), None) => true,
+        _ => false,
+    };
+
+    Ok(BalanceRecommendation {
+        enabled,
+        metric: metric.to_string(),
+        current_default_id,
+        recommended_id,
+        should_swap,
+        threshold_pct,
+        min_swap_minutes,
+        last_swap_at,
+        accounts,
+    })
+}
+
+/// Read-only balance verdict for the Settings UI (works regardless of the
+/// toggle, so the panel can show the current spread and suggestion).
+#[tauri::command]
+pub async fn get_claude_balance(db: State<'_, Db>) -> Result<BalanceRecommendation, String> {
+    compute_recommendation(db.inner()).await
+}
+
+/// Decide and, if warranted, perform one automatic default swap. Honors the
+/// toggle, the hysteresis threshold, and the min-interval cooldown. Serialized
+/// by `BalanceGuard::apply` so concurrent evaluations never double-swap.
+pub async fn evaluate_and_maybe_swap(app: &AppHandle, db: &Db) -> Result<(), String> {
+    if !auto_balance_enabled(db).await {
+        return Ok(());
+    }
+    let guard = app.state::<BalanceGuard>();
+    let _apply = guard.apply.lock().await;
+
+    let rec = compute_recommendation(db).await?;
+    let (Some(recommended_id), true) = (rec.recommended_id.clone(), rec.should_swap) else {
+        return Ok(());
+    };
+
+    // Cooldown: enforce a minimum gap between automatic swaps.
+    if rec.min_swap_minutes > 0 {
+        if let Some(last) = rec
+            .last_swap_at
+            .as_deref()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        {
+            let elapsed = chrono::Utc::now().signed_duration_since(last.with_timezone(&chrono::Utc));
+            if elapsed < chrono::Duration::minutes(rec.min_swap_minutes) {
+                // Within cooldown — leave the default alone; a later trigger past
+                // the window will apply it. The UI still shows the suggestion.
+                return Ok(());
+            }
+        }
+    }
+
+    set_default_claude_account_inner(db, &recommended_id).await?;
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
+        .bind(KEY_LAST_SWAP_AT)
+        .bind(&now)
+        .execute(db)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Tell the UI: the account list / badge should refresh and a toast can fire.
+    let _ = app.emit(
+        "claude_default_changed",
+        serde_json::json!({
+            "account_id": recommended_id,
+            "previous_id": rec.current_default_id,
+            "metric": rec.metric,
+            "automatic": true,
+        }),
+    );
+    Ok(())
+}
+
+/// Debounced entry point: call on every plan-usage update. The first call in a
+/// burst schedules one evaluation after a short quiet window; calls arriving
+/// during the window coalesce into it. Cheap and safe from hot stream paths.
+pub fn request_balance_eval(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        {
+            let guard = app.state::<BalanceGuard>();
+            let mut scheduled = guard.scheduled.lock().await;
+            if *scheduled {
+                return; // coalesced into the already-pending evaluation
+            }
+            *scheduled = true;
+        }
+        tokio::time::sleep(Duration::from_millis(BALANCE_DEBOUNCE_MS)).await;
+        {
+            let guard = app.state::<BalanceGuard>();
+            let mut scheduled = guard.scheduled.lock().await;
+            *scheduled = false;
+        }
+        let db = app.state::<Db>().inner().clone();
+        if let Err(e) = evaluate_and_maybe_swap(&app, &db).await {
+            eprintln!("claude auto-balance eval failed: {e}");
+        }
+    });
 }
 
 /// Absolute config dirs of every Devdy-managed Claude account. Used by session

@@ -6,7 +6,7 @@ import {
   Cpu, Palette, FileText, ShieldAlert, Sparkles, Github, Gitlab, Cloud,
   CheckCircle2, AlertTriangle, Trash2, Plus, Pencil, Gauge, Radio,
   RefreshCw, Loader2, BadgeCheck, Server, HardDrive, Bot, RotateCcw, UserCircle,
-  LogIn, Star, ChevronDown,
+  LogIn, Star, ChevronDown, ArrowRightLeft,
 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
@@ -48,6 +48,7 @@ const { toast } = useToast()
 // (which derives from the same /usage data) in sync.
 let unlistenPlanUsage: UnlistenFn | null = null
 let unlistenBudgetStatus: UnlistenFn | null = null
+let unlistenDefaultChanged: UnlistenFn | null = null
 
 interface AppSettings {
   default_engine: string
@@ -67,6 +68,9 @@ interface AppSettings {
   context_limit_override: string
   budget_5h_percent: string
   budget_week_percent: string
+  claude_auto_balance: string
+  claude_auto_balance_min_swap_minutes: string
+  claude_auto_balance_swap_threshold_pct: string
   translate_engine: string
   translate_model: string
   translate_target_lang: string
@@ -104,6 +108,9 @@ const settings = ref<AppSettings>({
   context_limit_override: '',
   budget_5h_percent: '',
   budget_week_percent: '',
+  claude_auto_balance: 'true',
+  claude_auto_balance_min_swap_minutes: '10',
+  claude_auto_balance_swap_threshold_pct: '10',
   translate_engine: 'claude',
   translate_model: '',
   translate_target_lang: 'vi',
@@ -943,6 +950,32 @@ function claudeStatusTone(status: string): string {
   }
 }
 
+// Label of the account the balancer currently suggests as default.
+const balanceRecommendedLabel = computed(() => {
+  const id = claudeStore.balance?.recommended_id
+  return claudeStore.accounts.find((a) => a.id === id)?.label ?? ''
+})
+// Whether the balancer is flagging a worthwhile swap off the current default.
+const showBalanceSuggestion = computed(() => {
+  const b = claudeStore.balance
+  return !!b && b.should_swap && !!b.recommended_id
+    && b.recommended_id !== b.current_default_id
+})
+
+// Re-read the balance verdict shortly after the balance settings change (the
+// backend reads them from the DB, so wait out the debounced persist above).
+watch(
+  () => [
+    settings.value.claude_auto_balance,
+    settings.value.claude_auto_balance_swap_threshold_pct,
+    settings.value.claude_auto_balance_min_swap_minutes,
+  ],
+  () => {
+    if (loading.value) return
+    setTimeout(() => claudeStore.fetchBalance(), 700)
+  },
+)
+
 async function handleAddClaudeAccount() {
   const label = claudeNewLabel.value.trim()
   if (!label) return
@@ -1045,6 +1078,8 @@ onMounted(async () => {
       if (e.payload?.provider !== 'codex' && !budget.refreshingPlan) budget.refresh()
     })
     unlistenBudgetStatus = await listen('budget_status_updated', () => budget.refresh())
+    // Auto-balancer swapped the default account → refresh the list + star + badge.
+    unlistenDefaultChanged = await listen('claude_default_changed', () => claudeStore.fetch())
     // Hydrate the persisted model caches (no discovery — refresh is manual).
     modelCatalog.ensureLoaded().catch(() => {})
   } finally {
@@ -1055,6 +1090,7 @@ onMounted(async () => {
 onUnmounted(() => {
   if (unlistenPlanUsage) unlistenPlanUsage()
   if (unlistenBudgetStatus) unlistenBudgetStatus()
+  if (unlistenDefaultChanged) unlistenDefaultChanged()
   // Don't lose a prompt edit made within the debounce window before leaving.
   if (savedPromptsTimer) {
     clearTimeout(savedPromptsTimer)
@@ -2429,6 +2465,45 @@ watch(() => settings.value.language, (v) => {
                 </template>
 
                 <p v-if="claudeAccountError[acc.id]" class="text-[11px] text-destructive">{{ claudeAccountError[acc.id] }}</p>
+              </div>
+            </div>
+
+            <!-- Auto-balance default across accounts -->
+            <div v-if="claudeStore.accounts.length > 1" class="border-t border-border/60 pt-3 space-y-3">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.claude.balance.title') }}</div>
+                  <p class="text-[11px] text-muted-foreground leading-relaxed mt-0.5">{{ t('settings.claude.balance.hint') }}</p>
+                </div>
+                <AppSelect size="sm" v-model="settings.claude_auto_balance" :options="cyberFoxSoundOptions" />
+              </div>
+
+              <div v-if="settings.claude_auto_balance !== 'false'" class="grid grid-cols-2 gap-3">
+                <div class="space-y-1">
+                  <label class="text-[11px] text-muted-foreground">{{ t('settings.claude.balance.cooldown') }}</label>
+                  <Input v-model="settings.claude_auto_balance_min_swap_minutes" type="number" min="0" max="1440" placeholder="10" />
+                </div>
+                <div class="space-y-1">
+                  <label class="text-[11px] text-muted-foreground">{{ t('settings.claude.balance.threshold') }}</label>
+                  <Input v-model="settings.claude_auto_balance_swap_threshold_pct" type="number" min="0" max="100" placeholder="10" />
+                </div>
+              </div>
+
+              <div
+                v-if="showBalanceSuggestion"
+                class="p-2 bg-indigo-500/10 border border-indigo-500/20 rounded-md text-[11px] text-indigo-400 flex items-center gap-1.5"
+              >
+                <ArrowRightLeft class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+                <span>{{ t('settings.claude.balance.suggest', { account: balanceRecommendedLabel }) }}</span>
+                <Button
+                  v-if="settings.claude_auto_balance === 'false'"
+                  size="xs"
+                  variant="outline"
+                  class="ml-auto"
+                  @click="handleSetDefaultClaude(claudeStore.balance!.recommended_id!)"
+                >
+                  {{ t('settings.claude.setDefault') }}
+                </Button>
               </div>
             </div>
 

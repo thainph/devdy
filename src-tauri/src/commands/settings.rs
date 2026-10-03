@@ -39,6 +39,17 @@ pub struct AppSettings {
     /// Block new runs when the weekly plan window reaches this percent
     /// ("" = don't enforce the weekly window).
     pub budget_week_percent: String,
+    /// Auto-balance the default Claude account across managed accounts, so plan
+    /// usage spreads instead of hammering one login. "true" (default) | "false".
+    /// When on, new runs that aren't pinned to a project/account follow whichever
+    /// account the balancer keeps as default.
+    pub claude_auto_balance: String,
+    /// Minimum minutes between two automatic default-account swaps (cooldown).
+    /// Default "10". Prevents thrashing when many runs finish close together.
+    pub claude_auto_balance_min_swap_minutes: String,
+    /// Only auto-swap the default when the lightest account's load is at least
+    /// this many points below the current default's (hysteresis). Default "10".
+    pub claude_auto_balance_swap_threshold_pct: String,
     /// Engine used by the "translate selection" feature ("claude" | "codex").
     pub translate_engine: String,
     /// Model used for translations ("" = a fast default, e.g. haiku for Claude).
@@ -108,6 +119,9 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
         context_limit_override: "".to_string(),
         budget_5h_percent: "".to_string(),
         budget_week_percent: "".to_string(),
+        claude_auto_balance: "true".to_string(),
+        claude_auto_balance_min_swap_minutes: "10".to_string(),
+        claude_auto_balance_swap_threshold_pct: "10".to_string(),
         translate_engine: "claude".to_string(),
         translate_model: "".to_string(),
         translate_target_lang: "vi".to_string(),
@@ -148,6 +162,13 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
             "context_limit_override" => settings.context_limit_override = value,
             "budget_5h_percent" => settings.budget_5h_percent = value,
             "budget_week_percent" => settings.budget_week_percent = value,
+            "claude_auto_balance" => settings.claude_auto_balance = value,
+            "claude_auto_balance_min_swap_minutes" => {
+                settings.claude_auto_balance_min_swap_minutes = value
+            }
+            "claude_auto_balance_swap_threshold_pct" => {
+                settings.claude_auto_balance_swap_threshold_pct = value
+            }
             "translate_engine" => settings.translate_engine = value,
             "translate_model" => settings.translate_model = value,
             "translate_target_lang" => settings.translate_target_lang = value,

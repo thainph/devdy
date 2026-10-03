@@ -267,6 +267,13 @@
     "period": {
       "5h": "giới hạn 5h",
       "week": "giới hạn tuần"
+    },
+    "balance": {
+      "title": "Tự cân bằng mặc định",
+      "hint": "Tự động trỏ tài khoản mặc định sang tài khoản đang dùng ít hơn để san đều mức sử dụng. Run mới (không gán cứng cho dự án) sẽ theo mặc định này; run đang chạy/tiếp tục vẫn giữ tài khoản cũ.",
+      "cooldown": "Số phút tối thiểu giữa 2 lần đổi",
+      "threshold": "Ngưỡng đổi (% chênh lệch)",
+      "suggest": "Gợi ý: nên chuyển mặc định sang {account} để cân bằng mức dùng."
     }
   },
   "engine": {

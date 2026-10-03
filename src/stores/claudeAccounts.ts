@@ -36,8 +36,30 @@ export interface AccountBudget {
   rolled_over: boolean
 }
 
+export interface AccountLoad {
+  id: string
+  label: string
+  load_percent: number
+  source: string
+  eligible: boolean
+}
+
+export interface BalanceRecommendation {
+  enabled: boolean
+  metric: 'plan' | 'ledger'
+  current_default_id: string | null
+  recommended_id: string | null
+  should_swap: boolean
+  threshold_pct: number
+  min_swap_minutes: number
+  last_swap_at: string | null
+  accounts: AccountLoad[]
+}
+
 export const useClaudeAccountsStore = defineStore('claudeAccounts', () => {
   const accounts = ref<ClaudeAccount[]>([])
+  // Latest auto-balance verdict (which account should be default + the spread).
+  const balance = ref<BalanceRecommendation | null>(null)
   const loading = ref(false)
   const error = ref<string | null>(null)
   // Per-account plan-usage verdict, keyed by account id (populated lazily).
@@ -52,10 +74,20 @@ export const useClaudeAccountsStore = defineStore('claudeAccounts', () => {
     try {
       accounts.value = await invoke<ClaudeAccount[]>('list_claude_accounts')
       await Promise.all(accounts.value.map(a => fetchBudget(a.id)))
+      await fetchBalance()
     } catch (e) {
       error.value = String(e)
     } finally {
       loading.value = false
+    }
+  }
+
+  // Read-only balance verdict (lightest account + whether a swap is suggested).
+  async function fetchBalance() {
+    try {
+      balance.value = await invoke<BalanceRecommendation>('get_claude_balance')
+    } catch {
+      // Best-effort; leave any prior value.
     }
   }
 
@@ -116,5 +148,5 @@ export const useClaudeAccountsStore = defineStore('claudeAccounts', () => {
     return result
   }
 
-  return { accounts, loading, error, budgets, refreshingUsage, usageErrors, fetch, fetchBudget, refreshUsage, create, rename, remove, setDefault, openLogin, validate }
+  return { accounts, balance, loading, error, budgets, refreshingUsage, usageErrors, fetch, fetchBudget, fetchBalance, refreshUsage, create, rename, remove, setDefault, openLogin, validate }
 })
