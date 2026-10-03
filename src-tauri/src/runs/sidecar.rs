@@ -569,7 +569,8 @@ pub async fn drain_sidecar(
                                     // Codex sidecar tags its snapshot `provider:"codex"`
                                     // and carries `rate_limits` directly; route it to
                                     // the separate Codex plan-usage state.
-                                    let persisted = if usage.get("provider").and_then(|p| p.as_str()) == Some("codex") {
+                                    let is_codex = usage.get("provider").and_then(|p| p.as_str()) == Some("codex");
+                                    let persisted = if is_codex {
                                         if let Some(rl) = usage.get("rate_limits") {
                                             crate::commands::codex_sessions::persist_codex_plan_usage(&db_pool, rl).await
                                         } else {
@@ -580,6 +581,10 @@ pub async fn drain_sidecar(
                                     };
                                     if persisted {
                                         let _ = app.emit("plan_usage_updated", serde_json::json!({ "run_id": run_id }));
+                                        // Fresh Claude plan utilization → re-balance the default account.
+                                        if !is_codex {
+                                            crate::commands::claude_accounts::request_balance_eval(&app);
+                                        }
                                     }
                                 }
                             }
@@ -602,6 +607,7 @@ pub async fn drain_sidecar(
                                             "plan_usage_updated",
                                             serde_json::json!({ "run_id": run_id }),
                                         );
+                                        crate::commands::claude_accounts::request_balance_eval(&app);
                                     }
                                 }
                                 if v.get("type").and_then(|x| x.as_str()) == Some("rate_limit_event")
@@ -611,6 +617,7 @@ pub async fn drain_sidecar(
                                         "plan_usage_updated",
                                         serde_json::json!({ "run_id": run_id }),
                                     );
+                                    crate::commands::claude_accounts::request_balance_eval(&app);
                                 }
                                 // Keep the live background-task count current: its
                                 // `tasks` array is the full set the CLI still has

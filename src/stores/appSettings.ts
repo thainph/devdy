@@ -27,6 +27,9 @@ export interface AppSettings {
   context_limit_override: string
   budget_5h_percent: string
   budget_week_percent: string
+  claude_auto_balance: string
+  claude_auto_balance_min_swap_minutes: string
+  claude_auto_balance_swap_threshold_pct: string
   translate_engine: string
   translate_model: string
   translate_target_lang: string

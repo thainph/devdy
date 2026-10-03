@@ -16,9 +16,9 @@ use commands::aws_accounts::{
 };
 use commands::aws_sso::{aws_sso_login_profile, list_aws_profiles};
 use commands::claude_accounts::{
-    create_claude_account, delete_claude_account, list_claude_accounts,
+    create_claude_account, delete_claude_account, get_claude_balance, list_claude_accounts,
     open_claude_account_login, rename_claude_account, set_default_claude_account,
-    set_project_claude_account, validate_claude_account,
+    set_project_claude_account, validate_claude_account, BalanceGuard,
 };
 use commands::codex_sessions::reconcile_codex_sessions;
 use commands::file_tree_watcher::{
@@ -224,6 +224,7 @@ pub fn run() {
             app.manage(WorkSummaryState::default());
             app.manage(TranslateState::default());
             app.manage(MascotSpeakState::default());
+            app.manage(BalanceGuard::default());
             app.manage(new_registry());
             app.manage(approvals);
             app.manage(broker_runs);
@@ -365,6 +366,7 @@ pub fn run() {
             open_claude_account_login,
             validate_claude_account,
             set_project_claude_account,
+            get_claude_balance,
             list_google_calendars,
             list_google_calendar_events,
             create_google_calendar_event,
