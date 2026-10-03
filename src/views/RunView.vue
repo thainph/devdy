@@ -907,6 +907,17 @@ function runModelLabel(run: RunRecord): string {
   return run.model || run.engine
 }
 
+// A freshly created session that was never run (status 'fetched', `started_at`
+// still null) has no real model/account/activity yet — only `created_at`.
+// Showing the engine name as a model and a "last activity" that is really the
+// creation time reads as wrong. So for an unstarted session the meta block is
+// made `invisible` (kept in the layout, so the row stays the same height as a
+// full one) rather than removed. `started_at` is set the moment a run begins,
+// so it is the clean signal that there is real info worth showing.
+function runStarted(run: RunRecord): boolean {
+  return !!run.started_at
+}
+
 // History row timestamp: date + time, so runs from the same day stay
 // distinguishable. Falls back to the raw string if the date can't be parsed.
 // Fed with `runActivityAt(run)` — the same value the list sorts by, so the
@@ -3814,20 +3825,19 @@ function handleRefInput(val: string) {
                     />
                   </span>
                 </div>
-                <!-- Meta: timestamp on top, the AI badges (account + model) on
-                     their own line so a long model id gets the full row width
-                     instead of being squeezed next to the date. Always visible so
-                     hovering never hides the session info. -->
-                <div class="mt-2 pl-6 pr-3 text-[10px] text-muted-foreground/70">
-                  <span class="flex items-center gap-1" :title="t('run.lastActivity')">
-                    <Clock class="h-2.5 w-2.5 shrink-0" :stroke-width="1.5" />
-                    {{ runTimestamp(runActivityAt(run)) }}
-                  </span>
+                <!-- Meta: the AI badges (account + model) on top so a long model
+                     id gets the full row width, with the timestamp on its own line
+                     underneath. Always visible so hovering never hides the session
+                     info. -->
+                <div
+                  class="mt-2 pl-6 pr-3 text-[10px] text-muted-foreground/70"
+                  :class="{ invisible: !runStarted(run) }"
+                >
                   <!-- Account badge shown alongside the model when the run has a
                        known Claude account (the name implies Claude); Codex and
                        legacy/account-less runs show just the model. `pr-6` keeps
                        the badges clear of the hover actions (⋯) at the row's end. -->
-                  <div class="mt-1 flex flex-wrap items-center gap-1.5 pr-6">
+                  <div class="flex flex-wrap items-center gap-1.5 pr-6">
                     <span
                       v-if="runClaudeAccountLabel(run)"
                       class="shrink-0 truncate max-w-[10rem] px-1.5 py-0.5 rounded bg-primary/10 text-[9px] font-medium tracking-wide text-primary"
@@ -3843,6 +3853,10 @@ function handleRefInput(val: string) {
                       {{ runModelLabel(run) }}
                     </span>
                   </div>
+                  <span class="mt-1 flex items-center gap-1" :title="t('run.lastActivity')">
+                    <Clock class="h-2.5 w-2.5 shrink-0" :stroke-width="1.5" />
+                    {{ runTimestamp(runActivityAt(run)) }}
+                  </span>
                 </div>
               </button>
               <!-- Actions: a single overflow (⋯) menu revealed on hover/focus, so
