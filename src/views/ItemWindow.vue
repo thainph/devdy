@@ -18,7 +18,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { Check, Copy, ListTodo, Pencil, StickyNote, Trash2, Undo2 } from 'lucide-vue-next'
+import { Check, Copy, ListTodo, Pencil, RotateCw, StickyNote, Trash2, Undo2 } from 'lucide-vue-next'
 import { Button, ConfirmModal, ToastHost } from '@/components/ui'
 import QuickCaptureForm from '@/components/QuickCaptureForm.vue'
 import ItemDetail from '@/components/ItemDetail.vue'
@@ -53,6 +53,7 @@ const initialKind: ItemKind = params.get('kind') === 'note' ? 'note' : 'todo'
 const itemId = params.get('id') ?? ''
 
 const loading = ref(mode === 'edit')
+const reloading = ref(false)
 // Edit mode opens on the item as it READS; writing is a deliberate step from
 // there, and saving returns here. Create mode has nothing to preview.
 const previewing = ref(mode === 'edit')
@@ -125,6 +126,26 @@ async function loadItem() {
     else await todos.fetchTodos()
   } finally {
     loading.value = false
+  }
+}
+
+// Pull the item's latest content back from the DB — the analog of the file
+// viewer's reload button, for when the AI side (or another window) changed it
+// while this one was open. Unlike loadItem() it never flips to the skeleton, so
+// the preview / fields stay put while refetching. The read view (storedContent)
+// updates on its own; the edit draft is re-synced to the fresh values too —
+// except when the user has unsaved edits in progress, which must not be lost.
+async function reload() {
+  if (mode !== 'edit' || reloading.value) return
+  reloading.value = true
+  try {
+    if (initialKind === 'note') await notes.fetchNotes()
+    else await todos.fetchTodos()
+    await nextTick()
+    const detail = detailRef.value
+    if (detail && !(!previewing.value && detail.dirty)) detail.reset()
+  } finally {
+    reloading.value = false
   }
 }
 
@@ -255,6 +276,15 @@ onBeforeUnmount(() => {
         · {{ t('item.unsaved') }}
       </span>
 
+      <!-- Reload the item's latest content from the DB (mirrors the file viewer). -->
+      <button
+        class="ml-auto flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-default"
+        :title="t('item.reload')"
+        :disabled="reloading"
+        @click="reload"
+      >
+        <RotateCw class="h-3.5 w-3.5" :class="{ 'animate-spin': reloading }" :stroke-width="1.75" />
+      </button>
     </div>
 
     <!-- Body -->
