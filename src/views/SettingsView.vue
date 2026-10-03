@@ -2475,7 +2475,20 @@ watch(() => settings.value.language, (v) => {
                   <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.claude.balance.title') }}</div>
                   <p class="text-[11px] text-muted-foreground leading-relaxed mt-0.5">{{ t('settings.claude.balance.hint') }}</p>
                 </div>
-                <AppSelect size="sm" v-model="settings.claude_auto_balance" :options="cyberFoxSoundOptions" />
+                <button
+                  type="button"
+                  role="switch"
+                  :aria-checked="settings.claude_auto_balance !== 'false'"
+                  :aria-label="t('settings.claude.balance.title')"
+                  class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                  :class="settings.claude_auto_balance !== 'false' ? 'bg-primary' : 'bg-muted'"
+                  @click="settings.claude_auto_balance = settings.claude_auto_balance === 'false' ? 'true' : 'false'"
+                >
+                  <span
+                    class="inline-flex h-4 w-4 transform rounded-full bg-white shadow transition-transform"
+                    :class="settings.claude_auto_balance !== 'false' ? 'translate-x-6' : 'translate-x-1'"
+                  />
+                </button>
               </div>
 
               <div v-if="settings.claude_auto_balance !== 'false'" class="grid grid-cols-2 gap-3">
