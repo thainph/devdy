@@ -39,7 +39,7 @@ ssh -p <SSH_PORT> <user>@<VPS_IP>
 ### 2.1. Controller web (luôn cần khi sửa FE/controller)
 ```bash
 cd /path/to/Tools/devdy
-npm run build            # vue-tsc --noEmit && vite build  ->  dist/
+npm run build:vite       # vue-tsc --noEmit && vite build  ->  dist/
 ```
 Output `dist/` gồm `controller.html`, `index.html`, `assets/…` (tên file có hash).
 `controller.html` tham chiếu asset theo đường dẫn tuyệt đối `/assets/...` nên phục
