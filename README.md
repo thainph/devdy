@@ -207,8 +207,8 @@ OS Keychain                    # GitHub/GitLab PATs + MCP env/header secret valu
 pnpm install                  # frontend deps
 npm --prefix sidecar install  # Claude Agent SDK sidecar deps
 
-pnpm tauri dev                # run the app (Vite + Tauri, hot reload)
-pnpm tauri build              # build a production bundle
+pnpm dev                      # run the app (Vite + Tauri, hot reload)
+pnpm build                    # build a production bundle
 ```
 
 ---
