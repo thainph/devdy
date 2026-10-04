@@ -297,8 +297,51 @@ const viewerBodyEl = ref<HTMLElement | null>(null)
 const lines = computed(() => content.value.split('\n'))
 const isMarkdown = computed(() => /\.(md|markdown|mdx)$/i.test(curPath.value))
 const isHtml = computed(() => /\.(html?|xhtml)$/i.test(curPath.value))
-// Markdown and HTML are text files that also offer a rendered view.
-const previewable = computed(() => isMarkdown.value || isHtml.value)
+const isCsv = computed(() => /\.(csv|tsv)$/i.test(curPath.value))
+// Markdown, HTML and CSV are text files that also offer a rendered view.
+const previewable = computed(() => isMarkdown.value || isHtml.value || isCsv.value)
+
+// ── CSV / TSV parsing ───────────────────────────────────────────────────────
+// A small RFC 4180-style parser: it honours quoted fields (which may contain the
+// delimiter, quotes escaped as "", and embedded newlines) so the rendered table
+// matches what a spreadsheet would show. TSV files use a tab delimiter.
+function parseDelimited(text: string, delimiter: string): string[][] {
+  const rows: string[][] = []
+  let row: string[] = []
+  let field = ''
+  let inQuotes = false
+  let started = false
+  const pushField = () => { row.push(field); field = '' }
+  const pushRow = () => { pushField(); rows.push(row); row = []; started = false }
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    started = true
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++ }
+        else inQuotes = false
+      } else field += c
+      continue
+    }
+    if (c === '"') inQuotes = true
+    else if (c === delimiter) pushField()
+    else if (c === '\n') pushRow()
+    else if (c === '\r') { /* swallow CR, handled by the following LF */ }
+    else field += c
+  }
+  // Flush the trailing field/row unless the file ends on a clean newline.
+  if (started || field.length || row.length) pushRow()
+  return rows
+}
+
+const csvRows = computed<string[][]>(() => {
+  if (!isCsv.value || !content.value) return []
+  const delimiter = /\.tsv$/i.test(curPath.value) ? '\t' : ','
+  return parseDelimited(content.value, delimiter)
+})
+const csvColumnCount = computed(() =>
+  csvRows.value.reduce((max, r) => Math.max(max, r.length), 0),
+)
 const mode = ref<'code' | 'preview'>('code')
 // The HTML preview lives in an iframe, out of reach of the font-size control,
 // the in-page search and the selection-translate trigger.
@@ -507,9 +550,9 @@ async function load() {
   curPath.value = path
   curLine.value = props.line ?? null
   absPath.value = abs
-  // Markdown / HTML open rendered by default unless a specific line was requested
-  // (the line-numbered raw view is what can scroll to it).
-  mode.value = /\.(md|markdown|mdx|html?|xhtml)$/i.test(path) && !props.line ? 'preview' : 'code'
+  // Markdown / HTML / CSV open rendered by default unless a specific line was
+  // requested (the line-numbered raw view is what can scroll to it).
+  mode.value = /\.(md|markdown|mdx|html?|xhtml|csv|tsv)$/i.test(path) && !props.line ? 'preview' : 'code'
   error.value = null
   content.value = ''
   truncated.value = false
@@ -1117,6 +1160,45 @@ defineExpose({ onRevealInFolder, onOpenInApp })
           v-if="saveError"
           class="shrink-0 px-4 py-2 text-xs text-destructive border-t border-border bg-destructive/10 break-all"
         >{{ saveError }}</p>
+      </div>
+      <!-- Rendered CSV / TSV table -->
+      <div
+        v-else-if="isCsv && mode === 'preview'"
+        class="p-4 overflow-auto"
+      >
+        <p v-if="!csvRows.length" class="text-xs text-foreground/50">
+          {{ t('files.viewer.csvEmpty') }}
+        </p>
+        <table
+          v-else
+          class="border-collapse font-mono text-foreground/90"
+          :style="{ fontSize: fontSize + 'px' }"
+        >
+          <thead>
+            <tr>
+              <th
+                class="sticky top-0 z-[1] select-none text-right tabular-nums w-12 px-2 py-1 border border-border bg-card text-foreground/30"
+              ></th>
+              <th
+                v-for="col in csvColumnCount"
+                :key="col"
+                class="sticky top-0 z-[1] text-left font-semibold px-3 py-1 border border-border bg-muted/50 text-foreground whitespace-pre"
+              >{{ csvRows[0][col - 1] ?? '' }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(r, ri) in csvRows.slice(1)" :key="ri" class="even:bg-muted/20">
+              <td
+                class="select-none text-right tabular-nums px-2 py-1 border border-border bg-card text-foreground/30"
+              >{{ ri + 1 }}</td>
+              <td
+                v-for="col in csvColumnCount"
+                :key="col"
+                class="px-3 py-1 border border-border whitespace-pre align-top"
+              >{{ r[col - 1] ?? '' }}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
       <!-- Rendered markdown preview -->
       <div
