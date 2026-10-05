@@ -4,13 +4,20 @@
 // side-by-side with the main app window. Clicking a file link inside opens yet
 // another pop-out window, keeping the "one window per file" model.
 import { ref, onBeforeUnmount, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { Pin, PinOff } from 'lucide-vue-next'
 import { FILE_DELETED_EVENT, FILE_MOVED_EVENT } from '@/lib/fileEvents'
 import FileViewer from '@/components/FileViewer.vue'
 import { ConfirmModal, PromptModal, ToastHost } from '@/components/ui'
 import { openFileWindow } from '@/lib/fileWindow'
+import { useFloatingWindow } from '@/composables/useFloatingWindow'
+
+const { t } = useI18n()
+// Floats above other apps while focused; pin to keep it on top deliberately.
+const { pinned, togglePin } = useFloatingWindow()
 
 const params = new URLSearchParams(window.location.search)
 const projectPath = ref(params.get('projectPath') ?? '')
@@ -93,7 +100,21 @@ function closeWindow() {
       @open-url="onOpenUrl"
       @renamed="onRenamed"
       @deleted="closeWindow"
-    />
+    >
+      <!-- Pin: keep this viewer above other apps even after it loses focus. -->
+      <template #actions>
+        <button
+          class="flex items-center justify-center h-6 w-6 rounded-md transition-colors cursor-pointer shrink-0"
+          :class="pinned
+            ? 'bg-primary/15 text-primary hover:bg-primary/25'
+            : 'text-foreground/60 hover:text-foreground hover:bg-accent'"
+          :title="pinned ? t('files.viewer.unpin') : t('files.viewer.pin')"
+          @click="togglePin"
+        >
+          <component :is="pinned ? Pin : PinOff" class="h-3.5 w-3.5" :stroke-width="1.75" />
+        </button>
+      </template>
+    </FileViewer>
 
     <!-- The ⋯ menu's delete asks, its rename prompts, and both report back —
          none of which works without these hosts, and this window doesn't mount

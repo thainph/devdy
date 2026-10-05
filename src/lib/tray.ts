@@ -69,6 +69,7 @@ function labelFor(windowLabel: string, osTitle: string): string {
   if (windowLabel === 'gantt') return t('tray.ganttWindow')
   if (windowLabel === 'item-create') return t('tray.newItem')
   if (windowLabel.startsWith('item-edit-')) return meaningful || t('tray.editItem')
+  if (windowLabel === 'item-list') return t('tray.itemListWindow')
   // Unknown / future window kind: best effort — its title, else the raw label.
   return meaningful || windowLabel
 }

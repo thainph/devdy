@@ -11,12 +11,14 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { openUrl } from '@tauri-apps/plugin-opener'
+import { openFileWindow } from '@/lib/fileWindow'
 import { FolderOpen, MessageSquare } from 'lucide-vue-next'
 import { AppSelect, Input, Textarea } from '@/components/ui'
 import { useMarkdown } from '@/lib/markdown'
 import { useNotesStore, type Note } from '@/stores/notes'
 import { useTodosStore, type Todo } from '@/stores/todos'
 import { useProjectsStore } from '@/stores/projects'
+import { useToast } from '@/composables/useToast'
 
 const NO_PROJECT = ''
 
@@ -47,6 +49,7 @@ const { t } = useI18n()
 const notes = useNotesStore()
 const todos = useTodosStore()
 const projects = useProjectsStore()
+const { toast } = useToast()
 const { renderText, loadMarkdown } = useMarkdown()
 
 const saving = ref(false)
@@ -77,6 +80,12 @@ const projectOptions = computed(() => [
 
 const projectName = computed(
   () => projects.projects.find((p) => p.id === props.item?.project_id)?.name ?? null,
+)
+
+// Absolute root of the note's project on disk, used to resolve relative file
+// links (e.g. `[CV](sora/recruitment/cv/x.pdf)`) so they can be opened.
+const projectPath = computed(
+  () => projects.projects.find((p) => p.id === props.item?.project_id)?.path ?? null,
 )
 
 const dirty = computed(
@@ -152,13 +161,42 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
-// Markdown links must not navigate the webview; hand them to the OS browser.
-function onViewClick(e: MouseEvent) {
+// Markdown links must not navigate the webview. External URLs go to the OS
+// browser; a relative link is a file in the note's project — resolve it against
+// the project root and open it in the app's own FileViewer window (so CV PDFs,
+// images, etc. render inside the app instead of handing off to the OS browser).
+async function onViewClick(e: MouseEvent) {
   const anchor = (e.target as HTMLElement).closest('a') as HTMLAnchorElement | null
   if (!anchor) return
   e.preventDefault()
   const href = anchor.getAttribute('href') ?? ''
-  if (/^(https?:|mailto:)/i.test(href)) openUrl(href).catch(() => { /* opener unavailable */ })
+  if (!href) return
+  if (/^(https?:|mailto:)/i.test(href)) {
+    openUrl(href).catch(() => { /* opener unavailable */ })
+    return
+  }
+  // Relative / absolute file path: strip any #fragment, decode %-escapes, then
+  // resolve against the project root unless it is already an absolute path.
+  let rel = href.replace(/#.*$/, '')
+  try { rel = decodeURIComponent(rel) } catch { /* keep raw on malformed escapes */ }
+  if (!rel) return
+  // This window is its own webview with its own store copy; the projects list may
+  // not have loaded yet when the click lands, so fetch it on demand.
+  let root = projectPath.value
+  if (!root) {
+    await projects.fetchProjects()
+    root = projectPath.value
+  }
+  if (!root) {
+    toast.error(`Note chưa gắn project có đường dẫn (project_id=${props.item?.project_id ?? 'none'})`)
+    return
+  }
+  const abs = rel.startsWith('/') ? rel : `${root.replace(/\/$/, '')}/${rel}`
+  try {
+    await openFileWindow(root, abs)
+  } catch (err) {
+    toast.error(`Không mở được: ${abs} — ${String(err)}`)
+  }
 }
 
 // A different item in the same host (next row in the drawer) starts clean.

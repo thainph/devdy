@@ -25,7 +25,7 @@ import { useUILayoutStore } from '@/stores/uiLayout'
 import { registerMenuAction } from '@/lib/appMenu'
 import { invoke } from '@/lib/tauri'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
 import {
@@ -36,7 +36,7 @@ import {
   ImagePlus, X, Paperclip,
   ShieldQuestion, MessageCircleQuestion,
   Pin, PinOff, Shield, ShieldOff, Pencil, Check, Github, Gitlab, UserCircle,
-  ClipboardCopy, ScrollText, HardDrive, Cloud, Radio, Languages, StickyNote, ListTodo, FolderTree, Loader2, ListChecks,
+  ClipboardCopy, ScrollText, HardDrive, Cloud, Radio, Languages, StickyNote, ListTodo, FolderTree, Loader2,
   MoreHorizontal, BookMarked, Search, Network, ChevronLeft, ChevronRight, Hash
 } from 'lucide-vue-next'
 import AppSelect from '@/components/AppSelect.vue'
@@ -47,7 +47,6 @@ import MentionedFiles from '@/components/MentionedFiles.vue'
 import ContextMeter from '@/components/ContextMeter.vue'
 import BudgetBadge from '@/components/BudgetBadge.vue'
 import { mergeContextModel } from '@/lib/contextLimits'
-import PermissionPrompt from '@/components/PermissionPrompt.vue'
 import FileTree from '@/components/FileTree.vue'
 import ConductorWorkerPanel from '@/components/conductor/ConductorWorkerPanel.vue'
 import { useConductorStore } from '@/stores/conductor'
@@ -63,7 +62,6 @@ import { openFileWindow } from '@/lib/fileWindow'
 import { openSessionWindow } from '@/lib/sessionWindow'
 import { IS_SESSION_WINDOW } from '@/lib/windowMode'
 import { FILE_MENTION_EVENT } from '@/lib/fileEvents'
-import { openPermissionWindow, closePermissionWindow } from '@/lib/permissionWindow'
 import { useMarkdown } from '@/lib/markdown'
 import {
   entriesToPlainText,
@@ -651,7 +649,6 @@ watch(
 const liveEntries = computed(() => session.value?.entries ?? [])
 const liveOutputLines = computed(() => session.value?.outputLines ?? [])
 const liveHasStream = computed(() => session.value?.hasStreamEvents ?? false)
-const permissionQueue = computed(() => session.value?.permissionQueue ?? [])
 // Context-window meter state for the focused run. Prefer the live session; for
 // a past run with no live session, use the figures reconstructed from its log.
 const contextTokens = computed(() => session.value?.contextTokens ?? historyContextTokens.value)
@@ -812,32 +809,6 @@ watch(conductorWorkers, (ws) => {
     if (w.status === 'running') void live.startListening(w.worker_id, projectId.value)
   }
 }, { immediate: true })
-
-// First worker (of the open conductor) with a pending permission request, if
-// the open run itself has none. Lets a conductor answer its workers' prompts in
-// its OWN drawer without navigating to the worker session.
-const workerPermission = computed(() => {
-  if (!isConductor.value) return null
-  for (const w of conductorWorkers.value) {
-    const q = live.get(w.worker_id)?.permissionQueue
-    if (q && q.length) return { runId: w.worker_id, req: q[0] }
-  }
-  return null
-})
-// The permission the drawer actually shows + the run it belongs to. For a normal
-// session this is always the current run's own queue (unchanged behavior); a
-// conductor additionally surfaces its workers' prompts here.
-const effectivePermRunId = computed(() =>
-  permissionQueue.value.length ? currentRunId.value : workerPermission.value?.runId ?? currentRunId.value,
-)
-const effectivePermReq = computed(() => permissionQueue.value[0] ?? workerPermission.value?.req ?? null)
-const effectivePermAllowedTools = computed(
-  () => live.get(effectivePermRunId.value ?? '')?.allowedTools ?? [],
-)
-function workerLabel(runId: string | null): string {
-  const w = conductorWorkers.value.find((x) => x.worker_id === runId)
-  return w?.title ?? (runId ? runId.slice(0, 8) : '')
-}
 
 // Sidebar/label text for a run: sessions show their title; issue/PR show "#N".
 function runLabel(run: RunRecord): string {
@@ -1046,17 +1017,8 @@ const splitContainerEl = ref<HTMLElement | null>(null)
 const leftWidthPct = ref(50)
 const isResizing = ref(false)
 
-// Inner split inside the AI Result column: AI result (left) vs question /
-// permission prompt (right). Percentage is the question panel's width.
+// Container for the AI Result column (left: AI result, right: optional content).
 const resultSplitEl = ref<HTMLElement | null>(null)
-// Width of the permission drawer as a % of the AI-result column.
-const questionWidthPct = ref(42)
-const isResizingQuestion = ref(false)
-
-// When true, the permission prompt is detached into a standalone pop-out window
-// (see permissionWindow.ts). The inline panel is hidden so the chat reclaims
-// full width and stops reflowing; this window mirrors its state to the pop-out.
-const poppedOut = ref(false)
 
 // Panel visibility: the AI Result column is always on — issue/PR runs can pull
 // the fetched Content in as a left split column via the header toggle. Sessions
@@ -1093,30 +1055,6 @@ function stopResize() {
   document.body.style.userSelect = ''
   window.removeEventListener('mousemove', onResize)
   window.removeEventListener('mouseup', stopResize)
-}
-
-function startQuestionResize(e: MouseEvent) {
-  e.preventDefault()
-  isResizingQuestion.value = true
-  document.body.style.cursor = 'col-resize'
-  document.body.style.userSelect = 'none'
-  window.addEventListener('mousemove', onQuestionResize)
-  window.addEventListener('mouseup', stopQuestionResize)
-}
-
-function onQuestionResize(e: MouseEvent) {
-  if (!resultSplitEl.value) return
-  const rect = resultSplitEl.value.getBoundingClientRect()
-  const pct = ((rect.right - e.clientX) / rect.width) * 100
-  questionWidthPct.value = Math.max(20, Math.min(80, pct))
-}
-
-function stopQuestionResize() {
-  isResizingQuestion.value = false
-  document.body.style.cursor = ''
-  document.body.style.userSelect = ''
-  window.removeEventListener('mousemove', onQuestionResize)
-  window.removeEventListener('mouseup', stopQuestionResize)
 }
 
 const sourceText = computed(() => {
@@ -1233,16 +1171,6 @@ watch(outputEl, (el) => {
     outputRO.observe(el)
   }
 })
-
-// The question panel opening/closing is the main trigger for the reflow. This
-// watcher runs before Vue patches the DOM (default 'pre' flush), so it snapshots
-// the reading position *before* the width changes; the ResizeObserver then
-// restores it after layout settles — covering the case where the user hasn't
-// scrolled yet and no anchor was captured otherwise.
-watch(() => permissionQueue.value.length > 0, () => captureScrollAnchor())
-// Detaching/re-docking the prompt also changes the chat column's width; anchor
-// the reading position across that toggle too so it doesn't jump.
-watch(poppedOut, () => captureScrollAnchor())
 
 // ── Jump between user prompts ───────────────────────────────────────────────
 // In a long run, scrolling back to "where did I ask for this?" is a long drag
@@ -1667,7 +1595,6 @@ onMounted(async () => {
   window.addEventListener('pointerup', onWindowPointerUp)
   window.addEventListener('mouseup', onSelectionMouseUp)
   window.addEventListener('keydown', onTurnNavKey)
-  setupPopoutBridge()
   setupMentionBridge()
 
   // Remote-control live indicator: reflect whether a phone is actively driving
@@ -1761,7 +1688,6 @@ onUnmounted(() => {
   unbindNewSessionMenu = null
   conductorStore.stopPolling()
   if (isResizing.value) stopResize()
-  if (isResizingQuestion.value) stopQuestionResize()
   outputRO?.disconnect()
   outputRO = null
   if (scrollSettleFrame) {
@@ -1781,12 +1707,8 @@ onUnmounted(() => {
   remoteUnlisteners.length = 0
   metaUnlisten?.()
   metaUnlisten = null
-  popoutUnlisten.forEach((fn) => fn())
-  popoutUnlisten = []
   mentionUnlisten?.()
   mentionUnlisten = null
-  // Tear down the pop-out with its owner view so it can't outlive the run.
-  closePermissionWindow()
 })
 
 async function loadInputContent(runId: string) {
@@ -2806,72 +2728,9 @@ async function handleSendFollowUp() {
   }
 }
 
-async function handlePermissionDecision(decision: 'allow' | 'deny' | 'ask', remember: boolean) {
-  // Route to the run the drawer is actually showing — the current run, or (for a
-  // conductor) the worker whose prompt we surfaced.
-  const id = effectivePermRunId.value
-  if (!id) return
-  const req = effectivePermReq.value
-  if (!req) return
-  live.shiftPermission(id)
-  if (remember && decision === 'allow') {
-    live.rememberAllowedTool(id, req.tool_name)
-  } else if (remember && decision === 'deny') {
-    live.rememberDeniedTool(id, req.tool_name)
-  }
-  try {
-    await runsStore.respondPermission(req.run_id, req.request_id, decision, undefined, { remember })
-  } catch (e) {
-    live.appendOutput(id, t('run.permissionResponseFailed', { error: String(e) }))
-  }
-  // Return focus to the composer so the user can keep chatting right away.
-  nextTick(() => composerEl.value?.focus())
-}
-
-// --- Detachable permission window ------------------------------------------
-// The pop-out window is a remote view; this component stays the single source
-// of truth. We mirror the current head request to it, and run the real resolve
-// logic here when it forwards the user's decision back.
-function syncPermissionToPopout() {
-  if (!poppedOut.value) return
-  const head = effectivePermReq.value
-  // Nothing left to answer (resolved or run finished) → close the pop-out and
-  // re-dock, so the window doesn't linger after the user responds.
-  if (!head) {
-    redockPermission()
-    return
-  }
-  emit('permission:sync', { request: head, allowedTools: effectivePermAllowedTools.value })
-}
-
-async function openPermissionPopout() {
-  poppedOut.value = true
-  const win = await openPermissionWindow()
-  // Re-dock whenever the window goes away, regardless of who closed it (OS close
-  // button, "Thu về", or programmatic close). The lifecycle event is reliable,
-  // unlike an app-level event emitted mid-teardown.
-  win.once('tauri://destroyed', () => {
-    poppedOut.value = false
-  })
-  // Initial state is also pushed on the window's 'ready' ping, but send now too
-  // in case it was already open (focus path emits no ready event).
-  syncPermissionToPopout()
-}
-
-// Re-dock: return the prompt to the inline panel and close the pop-out. Flip the
-// flag immediately (don't wait for the destroyed event) so the panel comes back
-// even if the window is slow to tear down.
-function redockPermission() {
-  poppedOut.value = false
-  closePermissionWindow()
-}
-
-// Keep the pop-out in sync whenever the head request changes (queue advances,
-// new request arrives, or the run finishes and clears it).
-watch(
-  () => [effectivePermReq.value?.request_id ?? null, poppedOut.value] as const,
-  () => syncPermissionToPopout(),
-)
+// Permission / question prompts no longer live in this view at all: the global
+// PermissionWindowManager opens one standalone window per run that is asking (this
+// run, a popped-out session, or a background run) and owns the resolve logic.
 
 // A file menu anywhere (including another webview) asking for an @mention here.
 let mentionUnlisten: UnlistenFn | null = null
@@ -2889,43 +2748,6 @@ async function setupMentionBridge() {
   } catch {
     /* running outside the Tauri shell */
   }
-}
-
-let popoutUnlisten: UnlistenFn[] = []
-async function setupPopoutBridge() {
-  popoutUnlisten.push(
-    await listen('permission:window-ready', () => syncPermissionToPopout()),
-    await listen<{ request_id: string; decision: 'allow' | 'deny'; remember: boolean }>(
-      'permission:decide',
-      (e) => {
-        // Ignore stale decisions that don't match the current head request.
-        if (e.payload?.request_id !== effectivePermReq.value?.request_id) return
-        handlePermissionDecision(e.payload.decision, e.payload.remember)
-      },
-    ),
-    await listen<{ request_id: string; answers: Record<string, string> }>(
-      'permission:answer',
-      (e) => {
-        if (e.payload?.request_id !== effectivePermReq.value?.request_id) return
-        handlePermissionAnswer(e.payload.answers)
-      },
-    ),
-  )
-}
-
-async function handlePermissionAnswer(answers: Record<string, string>) {
-  const id = effectivePermRunId.value
-  if (!id) return
-  const req = effectivePermReq.value
-  if (!req) return
-  live.shiftPermission(id)
-  try {
-    await runsStore.respondPermission(req.run_id, req.request_id, 'allow', undefined, { answers })
-  } catch (e) {
-    live.appendOutput(id, t('run.permissionResponseFailed', { error: String(e) }))
-  }
-  // Return focus to the composer so the user can keep chatting right away.
-  nextTick(() => composerEl.value?.focus())
 }
 
 // Re-fetch fresh PR/issue content from GitHub and overwrite this run's input
@@ -3462,11 +3284,20 @@ function handleRefInput(val: string) {
            Hidden entirely in a session pop-out for now — that window is a bare
            conversation view. -->
       <div v-if="!isSessionWindow" class="flex items-center gap-1 shrink-0">
-        <!-- Capture a thought without leaving the run (⌘K / ⌘⇧N do the same). -->
+        <!-- Capture a thought without leaving the run (⌘K / ⌘⇧N do the same).
+             A todo and a note sit side by side so either is one click away. -->
         <Button
           variant="outline"
           size="icon"
-          :title="t('run.quickCaptureTitle')"
+          :title="t('run.quickCaptureTodoTitle')"
+          @click="openQuickCapture('todo')"
+        >
+          <ListTodo class="h-4 w-4" :stroke-width="2" />
+        </Button>
+        <Button
+          variant="outline"
+          size="icon"
+          :title="t('run.quickCaptureNoteTitle')"
           @click="openQuickCapture('note')"
         >
           <StickyNote class="h-4 w-4" :stroke-width="2" />
@@ -3525,16 +3356,6 @@ function handleRefInput(val: string) {
             <span class="absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-75 animate-ping" />
             <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-background" />
           </span>
-        </Button>
-        <Button
-          v-if="!isSessionWindow"
-          variant="outline"
-          size="icon"
-          :disabled="!project"
-          :title="t('run.issuesByMilestone')"
-          @click="router.push({ name: 'gantt', query: { project: projectId } })"
-        >
-          <ListChecks class="h-4 w-4" :stroke-width="2" />
         </Button>
         <Button
           v-if="!isSessionWindow"
@@ -4178,19 +3999,6 @@ function handleRefInput(val: string) {
                     {{ t('run.content') }}
                   </button>
                   <MentionedFiles :entries="mentionedFileEntries" @open-file="openFile" />
-                  <!-- When popped out the drawer is hidden, so surface the
-                       re-dock control here (the pop-out control lives in the
-                       drawer itself, see below). -->
-                  <button
-                    v-if="poppedOut"
-                    type="button"
-                    class="flex items-center gap-1 rounded h-6 px-1.5 text-[11px] text-indigo-500 hover:bg-accent/60 transition-colors cursor-pointer"
-                    :title="t('run.questionInOwnWindow')"
-                    @click="redockPermission"
-                  >
-                    <AppWindow class="h-3.5 w-3.5" :stroke-width="1.75" />
-                    {{ t('run.dockBack') }}
-                  </button>
                   <span v-if="currentStatus === 'running'" class="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
                 </div>
               </div>
@@ -4317,56 +4125,10 @@ function handleRefInput(val: string) {
             </button>
             </div>
 
-            <!-- Question / permission prompt: an overlay drawer sliding in from
-                 the right. It floats ABOVE the AI result (absolute) instead of
-                 sharing the flex row, so the chat keeps its full width and never
-                 reflows / loses the reading position when a prompt appears. -->
-            <div
-              v-if="effectivePermReq && !poppedOut"
-              class="absolute inset-y-0 right-0 z-20 flex bg-card border-l border-border shadow-[-8px_0_24px_-12px_rgba(0,0,0,0.45)]"
-              :style="{ width: questionWidthPct + '%' }"
-            >
-              <!-- Left-edge resize handle to widen / narrow the drawer. -->
-              <div
-                class="group relative shrink-0 w-px bg-border cursor-col-resize select-none"
-                :class="{ 'bg-primary/60': isResizingQuestion }"
-                @mousedown="startQuestionResize"
-              >
-                <div
-                  class="absolute inset-y-0 -left-1.5 -right-1.5 z-10 transition-colors group-hover:bg-primary/30"
-                  :class="{ 'bg-primary/40': isResizingQuestion }"
-                />
-              </div>
-
-              <div class="relative flex-1 min-w-0 min-h-0 overflow-auto">
-                <!-- Detach into a standalone window (drag to another monitor). -->
-                <button
-                  type="button"
-                  class="absolute top-2 right-2 z-10 flex items-center justify-center rounded p-1 text-foreground/50 hover:bg-accent/60 hover:text-foreground transition-colors cursor-pointer"
-                  :title="t('run.detachQuestion')"
-                  @click="openPermissionPopout"
-                >
-                  <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
-                </button>
-                <!-- When the prompt belongs to a worker of the open conductor,
-                     name it so the user knows who is asking (they answer here,
-                     without leaving the conductor). -->
-                <div
-                  v-if="effectivePermRunId !== currentRunId"
-                  class="px-3 pt-2 text-[11px] font-medium text-amber-600 dark:text-amber-400"
-                >
-                  {{ t('conductor.permissionFrom', { label: workerLabel(effectivePermRunId) }) }}
-                </div>
-                <PermissionPrompt
-                  :key="effectivePermReq.request_id"
-                  :request="effectivePermReq"
-                  :allowed-tools="effectivePermAllowedTools"
-                  :render-text="renderText"
-                  @decide="handlePermissionDecision"
-                  @answer="handlePermissionAnswer"
-                />
-              </div>
-            </div>
+            <!-- The permission / question prompt is no longer an inline drawer:
+                 it pops out into its own window the instant a request arrives
+                 (see the openPermissionPopout watch), so the chat is never
+                 covered. -->
           </div>
         </div>
 
