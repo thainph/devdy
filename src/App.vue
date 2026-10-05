@@ -35,7 +35,8 @@ import { getVersion } from '@tauri-apps/api/app'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { useRunsStore } from '@/stores/runs'
 import { useConductorStore } from '@/stores/conductor'
-import { refreshTray } from '@/lib/tray'
+import { refreshTray, buildSessionItems, TRAY_OPEN_RUN, type TrayOpenRun } from '@/lib/tray'
+import { focusSessionWindow } from '@/lib/sessionWindow'
 
 // Pop-out windows load the same SPA with a query flag; render a bare,
 // chrome-less host (no sidebar / nav / background work) in those cases.
@@ -106,16 +107,47 @@ if (isSessionWindow && SESSION_WINDOW_RUN_ID) {
   )
 }
 
-// Main window owns the menu-bar badge (the running-session count). Refresh the
-// tray whenever that count changes so the badge tracks sessions starting and
-// finishing, even for runs that were never popped out into their own window.
+// Main window owns the menu-bar badge (the running-session count) and the tray's
+// running-session section. Refresh the tray whenever either changes — sessions
+// starting / finishing / blocking on a permission, or being renamed — even for
+// runs that were never popped out into their own window. Debounced: a burst of
+// stream events shouldn't rebuild the native menu on every one.
 if (!isPopoutWindow && !isSessionWindow) {
+  let trayTimer: ReturnType<typeof setTimeout> | null = null
   watch(
-    () => live.runningIds.length,
+    () => `${live.runningIds.length}|${JSON.stringify(buildSessionItems())}`,
     () => {
-      void refreshTray()
+      if (trayTimer) clearTimeout(trayTimer)
+      trayTimer = setTimeout(() => {
+        trayTimer = null
+        void refreshTray()
+      }, 150)
     },
   )
+}
+
+// A session row in the menu-bar switcher was clicked: show the run where it
+// lives — its own pop-out if it has one, otherwise this window.
+async function openRunFromTray(runId: string) {
+  if (await focusSessionWindow(runId)) return
+  const projectId =
+    live.sessions.get(runId)?.projectId ?? runsStore.runMeta.get(runId)?.project_id
+  if (!projectId) return
+  try {
+    const win = getCurrentWebviewWindow()
+    await win.unminimize()
+    await win.show()
+    await win.setFocus()
+  } catch {
+    /* best-effort focus */
+  }
+  live.markSeen(runId)
+  // Open the project's workspace tab before routing — the run workspace is
+  // driven by the tabs store (see PermissionNotifier.navigateToRun).
+  tabsStore.open(projectId, runId)
+  router
+    .push({ name: 'project-run-detail', params: { projectId, runId } })
+    .catch(() => {})
 }
 
 const isRunRoute = computed(
@@ -188,6 +220,9 @@ let unlistenActivated: UnlistenFn | null = null
 
 // Listener for the todo/note list window asking to open a captured run's session.
 let unlistenItemListRun: UnlistenFn | null = null
+
+// Listener for a session row clicked in the menu-bar switcher (see lib/tray.ts).
+let unlistenTrayRun: UnlistenFn | null = null
 
 // True when the event target is a text-entry surface where Backspace/navigation
 // keys are legitimately used to edit text.
@@ -306,6 +341,8 @@ onBeforeUnmount(() => {
   unlistenActivated = null
   unlistenItemListRun?.()
   unlistenItemListRun = null
+  unlistenTrayRun?.()
+  unlistenTrayRun = null
   unbindMenuActions?.()
   unbindMenuActions = null
   unlistenMenu?.()
@@ -461,6 +498,14 @@ onMounted(async () => {
       router
         .push({ name: 'project-run-detail', params: { projectId, runId } })
         .catch(() => {})
+    })
+  } catch {
+    // Ignore (e.g. running outside the Tauri shell during dev in a browser).
+  }
+
+  try {
+    unlistenTrayRun = await listen<TrayOpenRun>(TRAY_OPEN_RUN, (e) => {
+      if (e.payload?.runId) void openRunFromTray(e.payload.runId)
     })
   } catch {
     // Ignore (e.g. running outside the Tauri shell during dev in a browser).

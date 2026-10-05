@@ -6,5 +6,10 @@
   "ganttWindow": "Gantt",
   "newItem": "New Item",
   "editItem": "Item Editor",
-  "itemListWindow": "Todos & Notes"
+  "itemListWindow": "Todos & Notes",
+  "windows": "Windows",
+  "runningSessions": "Running Sessions ({count})",
+  "noRunningSessions": "No running sessions",
+  "todoItem": "Task: {name}",
+  "noteItem": "Note: {name}"
 }
