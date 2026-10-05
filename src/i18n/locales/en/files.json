@@ -31,7 +31,9 @@
     "searchPlaceholder": "Find in file…",
     "previousMatch": "Previous match",
     "nextMatch": "Next match",
-    "closeSearch": "Close search"
+    "closeSearch": "Close search",
+    "pin": "Pin above other windows",
+    "unpin": "Unpin (float only while focused)"
   },
   "tree": {
     "explorer": "Explorer",

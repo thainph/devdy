@@ -8,6 +8,7 @@
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { emit } from '@tauri-apps/api/event'
 import { trackWindowForTray } from '@/lib/tray'
+import { centerOnCurrentMonitor } from '@/lib/windowCascade'
 
 const GANTT_WINDOW_LABEL = 'gantt'
 
@@ -35,6 +36,8 @@ export async function openGanttWindow(projectId?: string): Promise<WebviewWindow
     height: 760,
     minWidth: 720,
     minHeight: 480,
+    // Open on the monitor the user is working on, not the primary screen.
+    ...(await centerOnCurrentMonitor(1200, 760)),
   })
   win.once('tauri://error', (e) => {
     console.error('[ganttWindow] failed to open window', e)

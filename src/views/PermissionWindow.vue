@@ -1,12 +1,13 @@
 <script setup lang="ts">
-// Bare, chrome-less host for the pop-out permission prompt, shown in a
-// standalone OS window (opened via openPermissionWindow / `?permissionWindow=1`).
+// Bare, chrome-less host for one run's pop-out permission prompt, shown in a
+// standalone OS window (opened via openPermissionWindow / `?permissionWindow=1&runId=…`).
 //
-// This window is a REMOTE VIEW only: the main window remains the single source
-// of truth for the permission queue. We render whatever the main window syncs
-// to us and forward the user's decision back — the main window runs the actual
-// resolve logic (shiftPermission + respond_permission), so there is exactly one
-// writer and no double-handling.
+// This window is a REMOTE VIEW only: the main window (PermissionWindowManager)
+// remains the single source of truth for the permission queue. We render whatever
+// it syncs to us and forward the user's decision back — it runs the actual resolve
+// logic (shiftPermission + respond_permission), so there is exactly one writer and
+// no double-handling. All events are namespaced by runId so each run's window only
+// ever sees its own run.
 import { onMounted, onBeforeUnmount, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -20,6 +21,9 @@ import { useMarkdown } from '@/lib/markdown'
 const { t } = useI18n()
 
 const { renderText, loadMarkdown } = useMarkdown()
+
+// Which run this window answers for; every event is scoped to it.
+const runId = new URLSearchParams(window.location.search).get('runId') ?? ''
 
 const request = ref<PermissionRequest | null>(null)
 const allowedTools = ref<string[]>([])
@@ -38,14 +42,14 @@ onMounted(async () => {
   document.title = 'Permission — Devdy'
   loadMarkdown()
 
-  syncUnlisten = await listen<SyncPayload>('permission:sync', (event) => {
+  syncUnlisten = await listen<SyncPayload>(`permission:sync:${runId}`, (event) => {
     request.value = event.payload?.request ?? null
     allowedTools.value = event.payload?.allowedTools ?? []
   })
 
   // Tell the main window we're ready so it (re)sends the current state — covers
   // the case where the request arrived before this window finished mounting.
-  await emit('permission:window-ready')
+  await emit(`permission:window-ready:${runId}`)
 })
 
 onBeforeUnmount(() => {
@@ -56,7 +60,7 @@ onBeforeUnmount(() => {
 function onDecide(decision: 'allow' | 'deny', remember: boolean) {
   const req = request.value
   if (!req) return
-  emit('permission:decide', { request_id: req.request_id, decision, remember })
+  emit(`permission:decide:${runId}`, { request_id: req.request_id, decision, remember })
   // Optimistically clear so the panel doesn't linger; the main window will sync
   // the next request (or null) right after it resolves this one.
   request.value = null
@@ -65,7 +69,7 @@ function onDecide(decision: 'allow' | 'deny', remember: boolean) {
 function onAnswer(answers: Record<string, string>) {
   const req = request.value
   if (!req) return
-  emit('permission:answer', { request_id: req.request_id, answers })
+  emit(`permission:answer:${runId}`, { request_id: req.request_id, answers })
   request.value = null
 }
 

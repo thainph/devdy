@@ -186,5 +186,7 @@
   "saveSelectionAsTodo": "Việc",
   "saveSelectionAsTodoTitle": "Lưu đoạn đã chọn thành việc cần làm của phiên này",
   "quickCapture": "Ghi chú",
-  "quickCaptureTitle": "Ghi chú / thêm việc nhanh mà không rời phiên đang chạy — ⌘/Ctrl+K"
+  "quickCaptureTitle": "Ghi chú / thêm việc nhanh mà không rời phiên đang chạy — ⌘/Ctrl+K",
+  "quickCaptureNoteTitle": "Ghi chú nhanh mà không rời phiên đang chạy — ⌘/Ctrl+Shift+N",
+  "quickCaptureTodoTitle": "Thêm việc nhanh mà không rời phiên đang chạy — ⌘/Ctrl+K"
 }

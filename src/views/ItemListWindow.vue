@@ -1,28 +1,24 @@
 <script setup lang="ts">
-// THE todo / note list — a right-side drawer mounted once in App.vue and
-// reachable from every screen (⌘⇧K, the sidebar button, the View menu).
+// THE todo / note LIST — a standalone, chrome-less OS window that sits BESIDE the
+// main window (opened via lib/itemListWindow, `?itemListWindow=1&kind=…`).
 //
-// This replaced the /todos and /notes screens outright. A list screen forced a
-// route change, which remounts the run workspace and throws away stream scroll
-// position, open panels and the viewed diff — a heavy price for "what was that
-// task again?". The drawer leaves the screen underneath completely untouched.
+// It replaced the right-side drawer, which covered the screen underneath. A real
+// window sits next to the main one instead: the opener splits the desktop 2/3
+// (main) + 1/3 (list), so reading a todo never hides what the app was showing.
 //
-// It only READS. Adding and editing happen in the standalone item window (see
-// lib/itemWindow), so there is exactly one place where these objects are
-// written, and no half-typed state to lose when this closes. Rows are one line
-// each: scanning is the job here, and a wall of expanded markdown isn't
-// scannable.
+// It only READS. Adding and editing happen in the item window (lib/itemWindow),
+// so there is exactly one place these objects are written, and no half-typed state
+// to lose when this closes. Rows are one line each: scanning is the job here.
 //
-// Rows come from the shared Pinia stores; the window is a different webview with
-// its own store copy, so its ITEM_CHANGED broadcast triggers the refetch.
+// Its own webview means its own store copy, so an ITEM_CHANGED broadcast from the
+// item window is what triggers the refetch.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import { Check, ListTodo, MessageSquare, Plus, Search, StickyNote, Trash2, X } from 'lucide-vue-next'
-import { Button, Drawer, Input } from '@/components/ui'
+import { Button, ConfirmModal, Input, ToastHost } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
-import { useItemPanel } from '@/composables/useItemPanel'
 import { useProjectsStore } from '@/stores/projects'
 import { useNotesStore } from '@/stores/notes'
 import { useTodosStore } from '@/stores/todos'
@@ -32,14 +28,25 @@ import {
   openItemEditWindow,
   type ItemKind,
 } from '@/lib/itemWindow'
+import {
+  ITEM_LIST_CLOSED,
+  ITEM_LIST_OPEN_RUN,
+  ITEM_LIST_SET_KIND,
+  type ItemListOpenRun,
+  type ItemListSetKind,
+} from '@/lib/itemListWindow'
+import { refreshTray } from '@/lib/tray'
 
 const { t } = useI18n()
-const router = useRouter()
 const { confirm } = useConfirm()
-const { open, kind, contextProjectId, closePanel } = useItemPanel()
 const todos = useTodosStore()
 const notes = useNotesStore()
 const projects = useProjectsStore()
+
+const params = new URLSearchParams(window.location.search)
+const kind = ref<ItemKind>(params.get('kind') === 'note' ? 'note' : 'todo')
+/** The project being worked on, used to offer "this project only". */
+const contextProjectId = ref<string | null>(params.get('projectId') || null)
 
 const search = ref('')
 const onlyThisProject = ref(false)
@@ -132,15 +139,12 @@ function openItem(id: string) {
 /**
  * Jump to the AI session this item was captured from.
  *
- * The one action here that IS a route change — the user asked to go to that
- * session — so the drawer closes with it.
+ * This window has no router of the main app, so ask the main window to focus
+ * itself and navigate there (see App.vue's ITEM_LIST_OPEN_RUN listener).
  */
 function openLinkedRun(row: Row) {
   if (!row.projectId || !row.runId) return
-  closePanel()
-  router
-    .push({ name: 'project-run-detail', params: { projectId: row.projectId, runId: row.runId } })
-    .catch(() => {})
+  emit(ITEM_LIST_OPEN_RUN, { projectId: row.projectId, runId: row.runId } satisfies ItemListOpenRun)
 }
 
 async function toggleDone(id: string) {
@@ -163,24 +167,46 @@ async function remove(row: Row) {
   else await todos.remove(row.id)
 }
 
+// The OS window title doubles as this window's row label in the menu-bar switcher
+// (lib/tray.ts); keep it on the active tab so the titlebar names what's shown.
+const windowTitle = computed(() =>
+  kind.value === 'note' ? t('item.navNotes') : t('item.navTodos'),
+)
+watch(
+  windowTitle,
+  async (title) => {
+    document.title = title
+    try {
+      await getCurrentWindow().setTitle(title)
+    } catch {
+      /* outside the Tauri shell */
+    }
+    void refreshTray()
+  },
+  { immediate: true },
+)
+
 // Switching tab shows a different list; clear the search and resync.
 watch(kind, () => {
   search.value = ''
   refresh()
 })
 
-// Opening the drawer is the moment its rows must be right.
-watch(open, (isOpen) => {
-  if (!isOpen) return
+onMounted(async () => {
   refresh()
   projects.fetchProjects()
-})
-
-onMounted(async () => {
   try {
     unlisten.push(
+      // A write in the item window (a different webview) → refetch our rows.
       await listen<{ kind: string }>(ITEM_CHANGED, (e) => {
         if (!e.payload?.kind || e.payload.kind === kind.value) refresh()
+      }),
+      // Reopened from the main window with a different tab / project context.
+      await listen<ItemListSetKind>(ITEM_LIST_SET_KIND, (e) => {
+        const payload = e.payload
+        if (!payload) return
+        if (payload.kind === 'todo' || payload.kind === 'note') kind.value = payload.kind
+        if (payload.projectId !== undefined) contextProjectId.value = payload.projectId ?? null
       }),
     )
   } catch {
@@ -191,12 +217,15 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   unlisten.forEach((off) => off())
   unlisten = []
+  // Let the main window reclaim the space the split gave up.
+  emit(ITEM_LIST_CLOSED, {}).catch(() => {})
 })
 </script>
 
 <template>
-  <Drawer :open="open" side="right" size="lg" @close="closePanel">
-    <template #header>
+  <div class="flex h-screen w-screen flex-col bg-background text-foreground overflow-hidden">
+    <!-- Header: Todo / Note tabs + New, mirroring the old drawer header. -->
+    <div class="flex items-center gap-2 border-b border-border/60 px-3 h-11 shrink-0">
       <div class="flex min-w-0 flex-1 items-center gap-1">
         <button
           v-for="item in TABS"
@@ -217,9 +246,9 @@ onBeforeUnmount(() => {
         <Plus class="h-3.5 w-3.5" :stroke-width="2" />
         {{ kind === 'todo' ? t('item.newTodo') : t('item.newNote') }}
       </Button>
-    </template>
+    </div>
 
-    <div class="flex h-full flex-col">
+    <div class="flex min-h-0 flex-1 flex-col">
       <!-- Search + filters -->
       <div class="shrink-0 space-y-2 border-b border-border/60 px-4 py-3">
         <div class="relative">
@@ -358,5 +387,9 @@ onBeforeUnmount(() => {
         </ul>
       </div>
     </div>
-  </Drawer>
+
+    <!-- The pop-out doesn't mount the main app's dialog/toast hosts. -->
+    <ConfirmModal />
+    <ToastHost />
+  </div>
 </template>

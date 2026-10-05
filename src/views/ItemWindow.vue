@@ -18,13 +18,14 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { Check, Copy, ListTodo, Pencil, RotateCw, StickyNote, Trash2, Undo2 } from 'lucide-vue-next'
+import { Check, Copy, ListTodo, Pencil, Pin, PinOff, RotateCw, StickyNote, Trash2, Undo2 } from 'lucide-vue-next'
 import { Button, ConfirmModal, ToastHost } from '@/components/ui'
 import QuickCaptureForm from '@/components/QuickCaptureForm.vue'
 import ItemDetail from '@/components/ItemDetail.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useQuickCapture } from '@/composables/useQuickCapture'
+import { useFloatingWindow } from '@/composables/useFloatingWindow'
 import { useNotesStore, type Note } from '@/stores/notes'
 import { useTodosStore, type Todo } from '@/stores/todos'
 import {
@@ -46,6 +47,8 @@ const notes = useNotesStore()
 const todos = useTodosStore()
 // This is its own webview, so it gets its own copy of the capture state.
 const { tab, openCapture, setContext, adoptDraft } = useQuickCapture()
+// Floats above other apps while focused; pin to keep it on top deliberately.
+const { pinned, togglePin } = useFloatingWindow()
 
 const params = new URLSearchParams(window.location.search)
 const mode: ItemWindowMode = params.get('mode') === 'edit' ? 'edit' : 'create'
@@ -95,8 +98,17 @@ const windowTitle = computed(() =>
 )
 watch(
   windowTitle,
-  (title) => {
+  async (title) => {
     document.title = title
+    // Setting document.title alone does NOT update the OS window title in Tauri,
+    // and the menu-bar switcher reads the OS title (lib/tray.ts). So push it to the
+    // window explicitly — the same way the session pop-out does (App.vue) — or the
+    // titlebar and the switcher row stay stuck on the static creation-time title.
+    try {
+      await getCurrentWindow().setTitle(title)
+    } catch {
+      /* outside the Tauri shell */
+    }
     void refreshTray()
   },
   { immediate: true },
@@ -276,9 +288,21 @@ onBeforeUnmount(() => {
         · {{ t('item.unsaved') }}
       </span>
 
+      <!-- Pin: keep this window above other apps even after it loses focus. -->
+      <button
+        class="ml-auto flex items-center justify-center h-6 w-6 rounded-md transition-colors cursor-pointer shrink-0"
+        :class="pinned
+          ? 'bg-primary/15 text-primary hover:bg-primary/25'
+          : 'text-foreground/60 hover:text-foreground hover:bg-accent'"
+        :title="pinned ? t('item.unpin') : t('item.pin')"
+        @click="togglePin"
+      >
+        <component :is="pinned ? Pin : PinOff" class="h-3.5 w-3.5" :stroke-width="1.75" />
+      </button>
+
       <!-- Reload the item's latest content from the DB (mirrors the file viewer). -->
       <button
-        class="ml-auto flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-default"
+        class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-default"
         :title="t('item.reload')"
         :disabled="reloading"
         @click="reload"
@@ -304,6 +328,19 @@ onBeforeUnmount(() => {
           >
             <component :is="tabItem.icon" class="h-3.5 w-3.5" :stroke-width="1.75" />
             {{ t(tabItem.labelKey) }}
+          </button>
+
+          <!-- Pin: keep the capture window above other apps even when unfocused. -->
+          <button
+            type="button"
+            class="ml-auto flex items-center justify-center h-6 w-6 rounded-md transition-colors cursor-pointer shrink-0"
+            :class="pinned
+              ? 'bg-primary/15 text-primary hover:bg-primary/25'
+              : 'text-foreground/60 hover:text-foreground hover:bg-accent'"
+            :title="pinned ? t('item.unpin') : t('item.pin')"
+            @click="togglePin"
+          >
+            <component :is="pinned ? Pin : PinOff" class="h-3.5 w-3.5" :stroke-width="1.75" />
           </button>
         </div>
 

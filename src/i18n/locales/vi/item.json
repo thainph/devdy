@@ -1,5 +1,7 @@
 {
   "panelTitle": "Việc & Ghi chú",
+  "navTodos": "Việc cần làm",
+  "navNotes": "Ghi chú",
   "tabTodo": "Việc",
   "tabNote": "Ghi chú",
   "newTodo": "Việc mới",
@@ -22,6 +24,8 @@
   "saved": "Đã lưu",
   "unsaved": "Chưa lưu",
   "reload": "Tải lại nội dung mới nhất",
+  "pin": "Ghim nổi trên cùng",
+  "unpin": "Bỏ ghim (chỉ nổi khi đang dùng)",
   "missing": "Mục này không còn tồn tại.",
   "empty": "Chưa có nội dung.",
   "edit": "Sửa",
