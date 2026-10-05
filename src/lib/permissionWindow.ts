@@ -14,6 +14,9 @@ import { trackWindowForTray } from '@/lib/tray'
 import { dockRightOnCurrentMonitor } from '@/lib/windowCascade'
 
 const PERMISSION_WINDOW_WIDTH = 460
+// Cap the panel height so it doesn't stretch the full height of a large external
+// monitor — the prompt content is short, so a side panel this tall is plenty.
+const PERMISSION_WINDOW_MAX_HEIGHT = 720
 // Gap between stacked permission windows when more than one is open at once.
 const STACK_GAP = 12
 
@@ -55,7 +58,11 @@ export async function openPermissionWindow(
 
   // Dock against the right edge of the monitor the user is working on, spanning
   // its height — a side panel beside the main window, which is never resized.
-  const dock = await dockRightOnCurrentMonitor(PERMISSION_WINDOW_WIDTH)
+  const dock = await dockRightOnCurrentMonitor(
+    PERMISSION_WINDOW_WIDTH,
+    24,
+    PERMISSION_WINDOW_MAX_HEIGHT,
+  )
   const shift = indexFromRight * (PERMISSION_WINDOW_WIDTH + STACK_GAP)
   const params = new URLSearchParams({ permissionWindow: '1', runId })
   const win = new WebviewWindow(label, {

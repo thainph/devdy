@@ -8,7 +8,8 @@
 //
 // It only READS. Adding and editing happen in the item window (lib/itemWindow),
 // so there is exactly one place these objects are written, and no half-typed state
-// to lose when this closes. Rows are one line each: scanning is the job here.
+// to lose when this closes. Todos are one-line checklist rows (scanning is the
+// job); notes are cards with a short preview, since their body is the point.
 //
 // Its own webview means its own store copy, so an ITEM_CHANGED broadcast from the
 // item window is what triggers the refetch.
@@ -16,8 +17,8 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { Check, ListTodo, MessageSquare, Plus, Search, StickyNote, Trash2, X } from 'lucide-vue-next'
-import { Button, ConfirmModal, Input, ToastHost } from '@/components/ui'
+import { Check, Folder, ListTodo, MessageSquare, Plus, Search, StickyNote, Trash2, X } from 'lucide-vue-next'
+import { AppSelect, Button, ConfirmModal, Input, ToastHost } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useProjectsStore } from '@/stores/projects'
 import { useNotesStore } from '@/stores/notes'
@@ -29,7 +30,6 @@ import {
   type ItemKind,
 } from '@/lib/itemWindow'
 import {
-  ITEM_LIST_CLOSED,
   ITEM_LIST_OPEN_RUN,
   ITEM_LIST_SET_KIND,
   type ItemListOpenRun,
@@ -49,8 +49,12 @@ const kind = ref<ItemKind>(params.get('kind') === 'note' ? 'note' : 'todo')
 const contextProjectId = ref<string | null>(params.get('projectId') || null)
 
 const search = ref('')
-const onlyThisProject = ref(false)
-const hideDone = ref(true)
+/** Project filter: '' = all projects, NO_PROJECT = items without one, else a project id. */
+const NO_PROJECT = '__none__'
+// Default to the project the window was opened from, so "its" items show first.
+const projectFilter = ref<string>(contextProjectId.value ?? '')
+/** Todo status filter: 'active' (not done, the default) | 'done' | 'all'. */
+const statusFilter = ref<string>('active')
 
 let unlisten: UnlistenFn[] = []
 
@@ -64,10 +68,13 @@ interface Row {
   id: string
   title: string
   body: string
+  /** Notes only: the body as plain prose for the card's two-line preview. */
+  preview: string
   done: boolean
   projectId: string | null
   /** The AI session it was captured from, for the backlink. */
   runId: string | null
+  createdAt: string
 }
 
 const rows = computed<Row[]>(() =>
@@ -76,25 +83,37 @@ const rows = computed<Row[]>(() =>
         id: todo.id,
         title: firstLine(todo.text),
         body: todo.text,
+        preview: '',
         done: todo.done,
         projectId: todo.project_id,
         runId: todo.run_id,
+        createdAt: todo.created_at,
       }))
-    : notes.notes.map((note) => ({
-        id: note.id,
-        title: note.title.trim() || firstLine(note.content) || t('item.untitled'),
-        body: note.content,
-        done: false,
-        projectId: note.project_id,
-        runId: note.run_id,
-      })),
+    : notes.notes.map((note) => {
+        const hasTitle = !!note.title.trim()
+        return {
+          id: note.id,
+          title: hasTitle ? note.title.trim() : firstLine(note.content) || t('item.untitled'),
+          body: note.content,
+          preview: noteSnippet(note.content, hasTitle),
+          done: false,
+          projectId: note.project_id,
+          runId: note.run_id,
+          createdAt: note.created_at,
+        }
+      }),
 )
 
 const filtered = computed(() => {
   const q = search.value.trim().toLowerCase()
   return rows.value.filter((row) => {
-    if (kind.value === 'todo' && hideDone.value && row.done) return false
-    if (onlyThisProject.value && contextProjectId.value && row.projectId !== contextProjectId.value) {
+    if (kind.value === 'todo') {
+      if (statusFilter.value === 'active' && row.done) return false
+      if (statusFilter.value === 'done' && !row.done) return false
+    }
+    if (projectFilter.value === NO_PROJECT) {
+      if (row.projectId) return false
+    } else if (projectFilter.value && row.projectId !== projectFilter.value) {
       return false
     }
     if (q && !`${row.title}\n${row.body}`.toLowerCase().includes(q)) return false
@@ -102,9 +121,48 @@ const filtered = computed(() => {
   })
 })
 
-const doneCount = computed(() =>
-  kind.value === 'todo' ? todos.todos.filter((x) => x.done).length : 0,
+/**
+ * The project dropdown's options, built from the projects actually used by the
+ * current tab's items (plus the currently-selected one, so a filter never points
+ * at a missing option), with "all" first and "no project" last when relevant.
+ */
+const projectOptions = computed(() => {
+  const ids = new Set<string>()
+  let hasNone = false
+  for (const row of rows.value) {
+    if (row.projectId) ids.add(row.projectId)
+    else hasNone = true
+  }
+  if (projectFilter.value && projectFilter.value !== NO_PROJECT) ids.add(projectFilter.value)
+  const named = [...ids]
+    .map((id) => ({ value: id, label: projectName(id) ?? id }))
+    .sort((a, b) => a.label.localeCompare(b.label))
+  const opts = [{ value: '', label: t('item.allProjects') }, ...named]
+  if (hasNone) opts.push({ value: NO_PROJECT, label: t('item.noProject') })
+  return opts
+})
+
+const statusOptions = computed(() => [
+  { value: 'active', label: t('item.statusActive') },
+  { value: 'done', label: t('item.statusDone') },
+  { value: 'all', label: t('item.statusAll') },
+])
+
+const hasActiveFilters = computed(
+  () =>
+    !!search.value ||
+    !!projectFilter.value ||
+    (kind.value === 'todo' && statusFilter.value !== 'active'),
 )
+
+/** A todo row names its project only while the list mixes projects. */
+const showTodoProject = computed(() => projectFilter.value === '')
+
+function resetFilters() {
+  search.value = ''
+  projectFilter.value = ''
+  statusFilter.value = 'active'
+}
 
 function projectName(id: string | null): string | null {
   if (!id) return null
@@ -120,6 +178,28 @@ function firstLine(text: string): string {
     .replace(/^\s*#{1,6}\s+/, '') // heading
     .replace(/^\s*>\s?/, '') // quote
     .trim()
+}
+
+/**
+ * A note's body flattened to plain prose for the card preview. When the title was
+ * derived from the body's first line, that line is dropped so it isn't repeated.
+ */
+function noteSnippet(content: string, hasTitle: boolean): string {
+  const lines = content.split('\n').map(firstLine).filter(Boolean)
+  return (hasTitle ? lines : lines.slice(1)).join(' ')
+}
+
+/** Compact "2h", "3d" style age of an item, falling back to a short date. */
+function relativeTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime()
+  const mins = Math.round(diff / 60000)
+  if (mins < 1) return t('item.justNow')
+  if (mins < 60) return t('item.minsAgo', { mins })
+  const hours = Math.round(mins / 60)
+  if (hours < 24) return t('item.hoursAgo', { hours })
+  const days = Math.round(hours / 24)
+  if (days < 30) return t('item.daysAgo', { days })
+  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
 /** Pull the current rows from the DB (the item window may have changed them). */
@@ -192,6 +272,11 @@ watch(kind, () => {
   refresh()
 })
 
+// Reopened from a different project context → refocus the filter on that project.
+watch(contextProjectId, (id) => {
+  projectFilter.value = id ?? ''
+})
+
 onMounted(async () => {
   refresh()
   projects.fetchProjects()
@@ -217,8 +302,6 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   unlisten.forEach((off) => off())
   unlisten = []
-  // Let the main window reclaim the space the split gave up.
-  emit(ITEM_LIST_CLOSED, {}).catch(() => {})
 })
 </script>
 
@@ -268,36 +351,30 @@ onBeforeUnmount(() => {
           </button>
         </div>
 
-        <div
-          v-if="contextProjectId || (kind === 'todo' && doneCount > 0)"
-          class="flex flex-wrap items-center gap-1.5"
-        >
+        <div class="flex items-center gap-1.5">
+          <div class="min-w-0 flex-1">
+            <AppSelect v-model="projectFilter" :options="projectOptions" size="sm">
+              <template #leading>
+                <Folder class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.75" />
+              </template>
+            </AppSelect>
+          </div>
+          <div v-if="kind === 'todo'" class="w-28 shrink-0">
+            <AppSelect v-model="statusFilter" :options="statusOptions" size="sm" />
+          </div>
           <button
-            v-if="contextProjectId"
+            v-if="hasActiveFilters"
             type="button"
-            class="cursor-pointer rounded-full border px-2 py-0.5 text-[11px] transition-colors"
-            :class="onlyThisProject
-              ? 'border-primary/50 bg-primary/10 text-foreground'
-              : 'border-border text-muted-foreground hover:text-foreground'"
-            @click="onlyThisProject = !onlyThisProject"
+            class="shrink-0 cursor-pointer rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            :title="t('item.resetFilters')"
+            @click="resetFilters"
           >
-            {{ t('item.onlyThisProject') }}
-          </button>
-          <button
-            v-if="kind === 'todo' && doneCount > 0"
-            type="button"
-            class="cursor-pointer rounded-full border px-2 py-0.5 text-[11px] transition-colors"
-            :class="hideDone
-              ? 'border-primary/50 bg-primary/10 text-foreground'
-              : 'border-border text-muted-foreground hover:text-foreground'"
-            @click="hideDone = !hideDone"
-          >
-            {{ t('item.hideDone', { count: doneCount }) }}
+            <X class="h-3.5 w-3.5" :stroke-width="2" />
           </button>
         </div>
       </div>
 
-      <!-- Rows: one line each; opening one is the item window's job -->
+      <!-- Rows: todo checklist / note cards; opening one is the item window's job -->
       <div class="min-h-0 flex-1 overflow-auto p-2">
         <div
           v-if="rows.length === 0"
@@ -326,63 +403,92 @@ onBeforeUnmount(() => {
           {{ t('item.noResults') }}
         </p>
 
-        <ul v-else class="space-y-0.5">
-          <li
-            v-for="row in filtered"
-            :key="row.id"
-            class="group flex items-center gap-1.5 rounded-md px-2 py-1.5 transition-colors hover:bg-accent/40"
-          >
-            <button
+        <ul v-else :class="kind === 'todo' ? 'space-y-px' : 'space-y-2'">
+          <li v-for="row in filtered" :key="row.id" class="group relative">
+            <!-- Todo: a compact one-line checklist row. -->
+            <div
               v-if="kind === 'todo'"
-              type="button"
-              class="flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded border transition-colors"
-              :class="row.done
-                ? 'bg-primary border-primary text-primary-foreground'
-                : 'border-border hover:border-primary/60'"
-              :title="row.done ? t('item.markNotDone') : t('item.markDone')"
-              @click="toggleDone(row.id)"
+              class="flex items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-accent/50"
             >
-              <Check v-if="row.done" class="h-2.5 w-2.5" :stroke-width="3" />
-            </button>
-
-            <button
-              type="button"
-              class="min-w-0 flex-1 cursor-pointer text-left"
-              :title="t('item.openTitle')"
-              @click="openItem(row.id)"
-            >
-              <span
-                class="block truncate text-xs"
-                :class="row.done ? 'text-muted-foreground line-through' : ''"
+              <button
+                type="button"
+                class="flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded-[5px] border transition-colors"
+                :class="row.done
+                  ? 'bg-primary border-primary text-primary-foreground'
+                  : 'border-muted-foreground/40 hover:border-primary'"
+                :title="row.done ? t('item.markNotDone') : t('item.markDone')"
+                @click="toggleDone(row.id)"
+              >
+                <Check v-if="row.done" class="h-2.5 w-2.5" :stroke-width="3" />
+              </button>
+              <button
+                type="button"
+                class="min-w-0 flex-1 cursor-pointer truncate text-left text-[13px] leading-snug"
+                :class="row.done ? 'text-muted-foreground line-through' : 'text-foreground'"
+                :title="t('item.openTitle')"
+                @click="openItem(row.id)"
               >
                 {{ row.title || t('item.untitled') }}
-              </span>
+              </button>
               <span
-                v-if="projectName(row.projectId)"
-                class="block truncate text-[10px] text-muted-foreground/70"
+                v-if="showTodoProject && projectName(row.projectId)"
+                class="max-w-[35%] shrink-0 truncate text-[11px] text-muted-foreground/70"
               >
                 {{ projectName(row.projectId) }}
               </span>
+            </div>
+
+            <!-- Note: a card — title, a two-line preview, then project · age. -->
+            <button
+              v-else
+              type="button"
+              class="block w-full cursor-pointer rounded-lg border border-border/70 bg-card px-3 py-2.5 text-left transition-colors hover:border-border hover:bg-accent/40"
+              :title="t('item.openTitle')"
+              @click="openItem(row.id)"
+            >
+              <span class="block truncate text-[13px] font-medium leading-snug text-foreground">
+                {{ row.title || t('item.untitled') }}
+              </span>
+              <span
+                v-if="row.preview"
+                class="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground"
+              >
+                {{ row.preview }}
+              </span>
+              <span class="mt-2 flex items-center gap-1.5 text-[10px] text-muted-foreground/70">
+                <template v-if="projectName(row.projectId)">
+                  <Folder class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+                  <span class="truncate">{{ projectName(row.projectId) }}</span>
+                  <span aria-hidden="true">·</span>
+                </template>
+                <span class="shrink-0 tabular-nums">{{ relativeTime(row.createdAt) }}</span>
+              </span>
             </button>
 
-            <button
-              v-if="row.projectId && row.runId"
-              type="button"
-              class="shrink-0 cursor-pointer rounded p-1 text-muted-foreground/60 opacity-0 transition hover:bg-accent hover:text-primary group-hover:opacity-100"
-              :title="kind === 'note' ? t('item.openRunNoteTitle') : t('item.openRunTodoTitle')"
-              @click="openLinkedRun(row)"
+            <!-- Row actions float over the right edge on hover, so they take no
+                 space at rest and every row keeps the same width. -->
+            <div
+              class="pointer-events-none absolute flex items-center gap-0.5 rounded-md border border-border/60 bg-popover p-0.5 opacity-0 shadow-sm transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100"
+              :class="kind === 'todo' ? 'right-1.5 top-1/2 -translate-y-1/2' : 'right-2 top-2'"
             >
-              <MessageSquare class="h-3.5 w-3.5" :stroke-width="1.75" />
-            </button>
-
-            <button
-              type="button"
-              class="shrink-0 cursor-pointer rounded p-1 text-muted-foreground/60 opacity-0 transition hover:bg-accent hover:text-destructive group-hover:opacity-100"
-              :title="t('common.delete')"
-              @click="remove(row)"
-            >
-              <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-            </button>
+              <button
+                v-if="row.projectId && row.runId"
+                type="button"
+                class="cursor-pointer rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-primary"
+                :title="kind === 'note' ? t('item.openRunNoteTitle') : t('item.openRunTodoTitle')"
+                @click="openLinkedRun(row)"
+              >
+                <MessageSquare class="h-3.5 w-3.5" :stroke-width="1.75" />
+              </button>
+              <button
+                type="button"
+                class="cursor-pointer rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-destructive"
+                :title="t('common.delete')"
+                @click="remove(row)"
+              >
+                <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+              </button>
+            </div>
           </li>
         </ul>
       </div>
