@@ -6,5 +6,10 @@
   "ganttWindow": "Gantt",
   "newItem": "Tạo mới",
   "editItem": "Trình sửa mục",
-  "itemListWindow": "Việc & Ghi chú"
+  "itemListWindow": "Việc & Ghi chú",
+  "windows": "Cửa sổ",
+  "runningSessions": "Phiên đang chạy ({count})",
+  "noRunningSessions": "Không có phiên nào đang chạy",
+  "todoItem": "Việc: {name}",
+  "noteItem": "Ghi chú: {name}"
 }

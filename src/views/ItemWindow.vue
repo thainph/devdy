@@ -39,6 +39,7 @@ import {
   type ItemWindowSetTab,
 } from '@/lib/itemWindow'
 import { refreshTray } from '@/lib/tray'
+import { firstLine } from '@/lib/itemText'
 
 const { t } = useI18n()
 const { toast } = useToast()
@@ -89,13 +90,21 @@ const heading = computed(() => {
 const headingIsId = computed(() => initialKind === 'todo' && !!itemId)
 
 // The OS window title doubles as this window's row label in the menu-bar
-// switcher (lib/tray.ts), so keep it on something that actually names the item —
-// a note's title (or its id, for a todo) — instead of a constant like "Item
-// Editor". It mirrors the in-window heading, updates once the item loads, and
-// refreshes the switcher on every change so the row follows a rename.
-const windowTitle = computed(() =>
-  mode === 'edit' ? heading.value : t('item.createWindowTitle'),
-)
+// switcher (lib/tray.ts), so keep it on something a person recognizes: the kind
+// plus the item's own words — a note's title, a todo's first line (its id would
+// just be a UUID). Create mode follows the active tab. Updates once the item
+// loads, and refreshes the switcher on every change so the row follows a rename.
+const windowTitle = computed(() => {
+  if (mode !== 'edit') return tab.value === 'note' ? t('item.newNote') : t('item.newTodo')
+  if (initialKind === 'note') {
+    const note = item.value as Note | null
+    const name =
+      note?.title?.trim() || firstLine(note?.content ?? '') || t('item.editNoteHeading')
+    return t('tray.noteItem', { name })
+  }
+  const name = firstLine((item.value as Todo | null)?.text ?? '') || t('item.editTodoHeading')
+  return t('tray.todoItem', { name })
+})
 watch(
   windowTitle,
   async (title) => {

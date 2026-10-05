@@ -27,6 +27,11 @@ function hashLabel(s: string): string {
   return `session-${h.toString(36)}`
 }
 
+/** The window label of a run's pop-out (whether or not it is currently open). */
+export function sessionWindowLabel(runId: string): string {
+  return hashLabel(runId)
+}
+
 /** Bring an existing window to the front. Returns false if it's mid-teardown. */
 async function focusWindow(win: WebviewWindow): Promise<boolean> {
   try {
@@ -37,6 +42,16 @@ async function focusWindow(win: WebviewWindow): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+/**
+ * Bring the run's pop-out to the front if it has one. Returns false when the run
+ * isn't popped out (or its window is mid-teardown), so the caller can fall back
+ * to showing it in the main window.
+ */
+export async function focusSessionWindow(runId: string): Promise<boolean> {
+  const existing = await WebviewWindow.getByLabel(hashLabel(runId))
+  return existing ? focusWindow(existing) : false
 }
 
 /**
