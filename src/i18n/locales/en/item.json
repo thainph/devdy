@@ -1,5 +1,7 @@
 {
   "panelTitle": "Todos & Notes",
+  "navTodos": "Todos",
+  "navNotes": "Notes",
   "tabTodo": "Todo",
   "tabNote": "Note",
   "newTodo": "New Todo",
@@ -22,6 +24,8 @@
   "saved": "Saved",
   "unsaved": "Unsaved changes",
   "reload": "Reload latest content",
+  "pin": "Pin above other windows",
+  "unpin": "Unpin (float only while focused)",
   "missing": "This item no longer exists.",
   "empty": "Nothing here yet.",
   "edit": "Edit",

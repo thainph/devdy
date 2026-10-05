@@ -166,6 +166,11 @@ const pdfError = ref<string | null>(null)
 let pdfDoc: import('pdfjs-dist').PDFDocumentProxy | null = null
 let pdfLoadingTask: import('pdfjs-dist').PDFDocumentLoadingTask | null = null
 const pdfCanvases = new Map<number, HTMLCanvasElement>()
+// A transparent text layer is overlaid on each page's canvas so the rendered
+// image gains real, selectable text: this is what makes copy, drag-select and
+// the shared in-page find (which walks the DOM text nodes under viewerBodyEl)
+// work on PDFs, matching a browser's built-in viewer.
+const pdfTextLayers = new Map<number, HTMLDivElement>()
 let pdfRendering = false
 let pdfRerenderQueued = false
 
@@ -174,9 +179,15 @@ function setPdfCanvas(n: number, el: unknown) {
   else pdfCanvases.delete(n)
 }
 
+function setPdfTextLayer(n: number, el: unknown) {
+  if (el) pdfTextLayers.set(n, el as HTMLDivElement)
+  else pdfTextLayers.delete(n)
+}
+
 function destroyPdf() {
   pdfRerenderQueued = false
   pdfCanvases.clear()
+  pdfTextLayers.clear()
   pdfPageCount.value = 0
   pdfError.value = null
   pdfDoc = null
@@ -196,11 +207,15 @@ async function loadPdf(url: string) {
     const doc = await task.promise
     pdfDoc = doc
     pdfPageCount.value = doc.numPages
+    // Clear the loading state *before* rendering: the <canvas> elements live in
+    // the `v-else` branch, so they only mount (and register their refs via
+    // setPdfCanvas) once pdfLoading is false. Rendering while still loading would
+    // find no canvases and leave every page blank.
+    pdfLoading.value = false
     await nextTick()
     await scheduleRenderPdf()
   } catch (e) {
     pdfError.value = String(e)
-  } finally {
     pdfLoading.value = false
   }
 }
@@ -237,7 +252,28 @@ async function renderPdf() {
     canvas.style.height = `${Math.floor(viewport.height)}px`
     const transform = dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined
     await page.render({ canvas, viewport, transform }).promise
+    await renderPdfTextLayer(n, page, viewport)
   }
+}
+
+// Build the selectable text overlay for one page. pdf.js positions each glyph's
+// <span> as a percentage of the unscaled page box and sizes it via the
+// --total-scale-factor CSS variable, so the layer tracks the canvas at any zoom.
+async function renderPdfTextLayer(
+  n: number,
+  page: import('pdfjs-dist').PDFPageProxy,
+  viewport: import('pdfjs-dist').PageViewport,
+) {
+  const container = pdfTextLayers.get(n)
+  if (!container) return
+  container.replaceChildren()
+  container.style.setProperty('--total-scale-factor', String(viewport.scale))
+  container.style.setProperty('--scale-round-x', '1px')
+  container.style.setProperty('--scale-round-y', '1px')
+  const textContentSource = await page.getTextContent()
+  if (pdfRerenderQueued) return // a newer zoom / file restarted the render
+  const textLayer = new pdfjsLib.TextLayer({ textContentSource, container, viewport })
+  await textLayer.render()
 }
 
 function resetZoom() {
@@ -1097,12 +1133,14 @@ defineExpose({ onRevealInFolder, onOpenInApp })
           {{ t('files.viewer.loadingPdf') }}
         </div>
         <div v-else class="flex flex-col items-center gap-3 p-4">
-          <canvas
+          <div
             v-for="n in pdfPageCount"
             :key="n"
-            :ref="(el) => setPdfCanvas(n, el)"
-            class="shadow-sm bg-white max-w-none"
-          />
+            class="pdf-page relative shadow-sm bg-white max-w-none"
+          >
+            <canvas :ref="(el) => setPdfCanvas(n, el)" class="block" />
+            <div :ref="(el) => setPdfTextLayer(n, el)" class="textLayer" />
+          </div>
         </div>
       </div>
       <!-- Non-previewable (office docs, archives, binaries) -->
@@ -1282,5 +1320,48 @@ defineExpose({ onRevealInFolder, onOpenInApp })
 ::highlight(file-search-current) {
   background-color: rgba(249, 115, 22, 0.75);
   color: #fff;
+}
+
+/* pdf.js text overlay. Global (not scoped) because pdf.js builds these <span>s
+   itself, so they never carry Vue's scoped-style data attribute. Mirrors the
+   essentials of pdfjs-dist/web/pdf_viewer.css: transparent, precisely-placed
+   text the user can select, copy and search over the rendered page image. */
+.textLayer {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  opacity: 1;
+  line-height: 1;
+  text-align: initial;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  z-index: 1;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+.textLayer :is(span, br) {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+  user-select: text;
+}
+.textLayer > :not(.markedContent),
+.textLayer .markedContent span:not(.markedContent) {
+  z-index: 1;
+  --font-height: 0;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1;
+  --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+.textLayer .markedContent {
+  display: contents;
+}
+.textLayer ::selection {
+  background: rgba(0, 100, 255, 0.3);
 }
 </style>

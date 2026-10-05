@@ -7,6 +7,7 @@
 // again just focuses the existing window.
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { trackWindowForTray } from '@/lib/tray'
+import { nextCascadePosition } from '@/lib/windowCascade'
 
 // Small deterministic string hash (djb2) → safe, stable window label per file.
 function hashLabel(s: string): string {
@@ -56,6 +57,10 @@ export async function openFileWindow(
     height: 820,
     minWidth: 420,
     minHeight: 300,
+    // Opens focused, so start on top; the window lowers itself on blur unless
+    // the user pins it (see useFloatingWindow).
+    alwaysOnTop: true,
+    ...(await nextCascadePosition()),
   })
   win.once('tauri://error', (e) => {
     console.error('[fileWindow] failed to open viewer window', e)

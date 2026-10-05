@@ -186,5 +186,7 @@
   "saveSelectionAsTodo": "Todo",
   "saveSelectionAsTodoTitle": "Save the selection as a task on this session",
   "quickCapture": "Note",
-  "quickCaptureTitle": "Quick capture a note / todo without leaving this session — ⌘/Ctrl+K"
+  "quickCaptureTitle": "Quick capture a note / todo without leaving this session — ⌘/Ctrl+K",
+  "quickCaptureNoteTitle": "Quick capture a note without leaving this session — ⌘/Ctrl+Shift+N",
+  "quickCaptureTodoTitle": "Quick capture a todo without leaving this session — ⌘/Ctrl+K"
 }

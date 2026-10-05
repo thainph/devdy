@@ -9,8 +9,9 @@ import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useUILayoutStore } from '@/stores/uiLayout'
 import { useI18n } from 'vue-i18n'
 import { setLocale } from '@/i18n'
-import { ListTodo, PanelLeftClose, PanelLeftOpen } from 'lucide-vue-next'
+import { ListTodo, PanelLeftClose, PanelLeftOpen, StickyNote } from 'lucide-vue-next'
 import PermissionNotifier from '@/components/PermissionNotifier.vue'
+import PermissionWindowManager from '@/components/PermissionWindowManager.vue'
 import CalendarReminder from '@/components/CalendarReminder.vue'
 import WorkspaceTabs from '@/components/WorkspaceTabs.vue'
 import ActiveRunsDock from '@/components/ActiveRunsDock.vue'
@@ -23,9 +24,9 @@ import ImageCompareHost from '@/components/ImageCompareHost.vue'
 import CyberFoxHost from '@/components/CyberFoxHost.vue'
 import MascotWindow from '@/views/MascotWindow.vue'
 import ItemWindow from '@/views/ItemWindow.vue'
-import ItemListDrawer from '@/components/ItemListDrawer.vue'
-import { useItemPanel } from '@/composables/useItemPanel'
+import ItemListWindow from '@/views/ItemListWindow.vue'
 import { openItemCreateWindow } from '@/lib/itemWindow'
+import { openItemListWindow, ITEM_LIST_OPEN_RUN, type ItemListOpenRun } from '@/lib/itemListWindow'
 import { applyAppMenu, IS_MAC, listenMenuActions, registerMenuAction, runMenuAction } from '@/lib/appMenu'
 import { NAV_ROUTES } from '@/lib/navigation'
 import { IS_SESSION_WINDOW, SESSION_WINDOW_PROJECT_ID, SESSION_WINDOW_RUN_ID } from '@/lib/windowMode'
@@ -41,6 +42,7 @@ import { refreshTray } from '@/lib/tray'
 const isFileWindow = new URLSearchParams(window.location.search).get('fileWindow') === '1'
 const isPermissionWindow = new URLSearchParams(window.location.search).get('permissionWindow') === '1'
 const isItemWindow = new URLSearchParams(window.location.search).get('itemWindow') === '1'
+const isItemListWindow = new URLSearchParams(window.location.search).get('itemListWindow') === '1'
 const isGanttWindow = new URLSearchParams(window.location.search).get('ganttWindow') === '1'
 const isMascotWindow = new URLSearchParams(window.location.search).get('mascotWindow') === '1'
 // A session pop-out is different from the bare pop-outs above: it reuses the full
@@ -51,7 +53,12 @@ const isMascotWindow = new URLSearchParams(window.location.search).get('mascotWi
 const isSessionWindow = IS_SESSION_WINDOW
 // All pop-out kinds only need the theme applied; skip the main app's data work.
 const isPopoutWindow =
-  isFileWindow || isPermissionWindow || isItemWindow || isGanttWindow || isMascotWindow
+  isFileWindow ||
+  isPermissionWindow ||
+  isItemWindow ||
+  isItemListWindow ||
+  isGanttWindow ||
+  isMascotWindow
 
 const route = useRoute()
 const router = useRouter()
@@ -63,7 +70,6 @@ const live = useLiveRunsStore()
 const runsStore = useRunsStore()
 const conductorStore = useConductorStore()
 const { t, locale } = useI18n()
-const itemPanel = useItemPanel()
 
 // Session pop-out: drive the router to the run as early as possible (in setup,
 // before first paint) so the window lands on RunView instead of flashing the
@@ -180,6 +186,9 @@ watch(
 // store (see onMounted). Torn down on unmount to avoid a dangling subscription.
 let unlistenActivated: UnlistenFn | null = null
 
+// Listener for the todo/note list window asking to open a captured run's session.
+let unlistenItemListRun: UnlistenFn | null = null
+
 // True when the event target is a text-entry surface where Backspace/navigation
 // keys are legitimately used to edit text.
 function isEditableTarget(el: EventTarget | null): boolean {
@@ -251,7 +260,7 @@ function bindGlobalMenuActions() {
       openItemCreateWindow('note', routeCaptureContext()),
     ),
     registerMenuAction('view.itemPanel', () =>
-      itemPanel.togglePanel({ projectId: routeCaptureContext().projectId }),
+      openItemListWindow('todo', { projectId: routeCaptureContext().projectId }),
     ),
     registerMenuAction('view.toggleSidebar', () => uiLayout.toggleSidebar()),
     registerMenuAction('view.toggleFocus', () => uiLayout.toggleFocus()),
@@ -295,6 +304,8 @@ function routeCaptureContext() {
 onBeforeUnmount(() => {
   unlistenActivated?.()
   unlistenActivated = null
+  unlistenItemListRun?.()
+  unlistenItemListRun = null
   unbindMenuActions?.()
   unbindMenuActions = null
   unlistenMenu?.()
@@ -435,6 +446,26 @@ onMounted(async () => {
     // Ignore (e.g. running outside the Tauri shell during dev in a browser).
   }
 
+  // The todo/note list lives in its own window with no router of this app, so it
+  // asks the main window to focus itself and open the run a captured item came
+  // from (the one action in that list that IS a navigation).
+  try {
+    unlistenItemListRun = await listen<ItemListOpenRun>(ITEM_LIST_OPEN_RUN, async (e) => {
+      const { projectId, runId } = e.payload ?? {}
+      if (!projectId || !runId) return
+      try {
+        await getCurrentWebviewWindow().setFocus()
+      } catch {
+        /* best-effort focus */
+      }
+      router
+        .push({ name: 'project-run-detail', params: { projectId, runId } })
+        .catch(() => {})
+    })
+  } catch {
+    // Ignore (e.g. running outside the Tauri shell during dev in a browser).
+  }
+
   // Load projects up front so app-wide UI (e.g. permission notifications) can
   // resolve project names without waiting for the Projects view to open.
   projectsStore.fetchProjects()
@@ -460,6 +491,9 @@ onMounted(async () => {
 
   <!-- THE todo / note window: create or edit, the only place either is written. -->
   <ItemWindow v-else-if="isItemWindow" />
+
+  <!-- THE todo / note LIST window: stands beside the main window, replacing the drawer. -->
+  <ItemListWindow v-else-if="isItemListWindow" />
 
   <!-- Pop-out Gantt window: bare Gantt chart on its own OS window. -->
   <IssuesGanttView v-else-if="isGanttWindow" />
@@ -544,23 +578,32 @@ onMounted(async () => {
                at the very top and a view's header owns the first line alone. -->
           <nav class="flex-1 px-2 py-2.5 space-y-0.5">
             <template v-for="item in navItems" :key="item.path">
-              <!-- Todos & Notes is an overlay, not a destination: it opens the
-                   app-wide drawer instead of navigating, so whatever screen (or
-                   running session) is underneath survives untouched. It rides
-                   just above Settings, so the settings/about pair stays last. -->
-              <button
-                v-if="item.path === '/settings'"
-                type="button"
-                class="relative flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors cursor-pointer select-none"
-                :class="itemPanel.open.value
-                  ? 'bg-accent text-foreground font-medium'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'"
-                :title="`${t('item.panelTitle')} (${IS_MAC ? '⌘⇧K' : 'Ctrl+Shift+K'})`"
-                @click="runMenuAction('view.itemPanel')"
-              >
-                <ListTodo class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
-                <span class="flex-1 truncate text-left">{{ t('item.panelTitle') }}</span>
-              </button>
+              <!-- Todos and Notes are two overlays, not destinations: each opens
+                   the app-wide drawer on its own tab instead of navigating, so
+                   whatever screen (or running session) is underneath survives
+                   untouched. They ride just above Settings, so the
+                   settings/about pair stays last. -->
+              <template v-if="item.path === '/settings'">
+                <button
+                  type="button"
+                  class="relative flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors cursor-pointer select-none text-muted-foreground hover:text-foreground hover:bg-accent/50"
+                  :title="`${t('item.navTodos')} (${IS_MAC ? '⌘⇧K' : 'Ctrl+Shift+K'})`"
+                  @click="openItemListWindow('todo', { projectId: routeCaptureContext().projectId })"
+                >
+                  <ListTodo class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
+                  <span class="flex-1 truncate text-left">{{ t('item.navTodos') }}</span>
+                </button>
+
+                <button
+                  type="button"
+                  class="relative flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors cursor-pointer select-none text-muted-foreground hover:text-foreground hover:bg-accent/50"
+                  :title="t('item.navNotes')"
+                  @click="openItemListWindow('note', { projectId: routeCaptureContext().projectId })"
+                >
+                  <StickyNote class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
+                  <span class="flex-1 truncate text-left">{{ t('item.navNotes') }}</span>
+                </button>
+              </template>
 
               <RouterLink
                 :to="item.path"
@@ -621,6 +664,10 @@ onMounted(async () => {
          app is backgrounded; the in-app signal is the History attention icon. -->
     <PermissionNotifier />
 
+    <!-- Headless: opens one standalone permission window per run that is asking
+         (viewed, popped-out, or background) and owns the resolve logic. -->
+    <PermissionWindowManager />
+
     <!-- Headless: fires native reminders for upcoming calendar events app-wide;
          clicking opens the event's detail drawer on the Calendar screen. -->
     <CalendarReminder />
@@ -639,11 +686,6 @@ onMounted(async () => {
 
     <!-- DY mascot: app-wide operator. Host picks in-app floating vs desktop pet. -->
     <CyberFoxHost />
-
-    <!-- App-wide Todos & Notes list (⌘⇧K). An overlay, never a route change, so
-         a run in progress keeps its scroll and panel state. It replaced the two
-         list screens; writing happens in the item window. -->
-    <ItemListDrawer />
   </div>
 </template>
 
