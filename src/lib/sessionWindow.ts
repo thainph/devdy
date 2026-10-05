@@ -18,6 +18,7 @@
 // the sidecars (see src-tauri/src/lib.rs).
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { trackWindowForTray } from '@/lib/tray'
+import { centerOnCurrentMonitor } from '@/lib/windowCascade'
 
 // Small deterministic string hash (djb2) → a stable, label-safe window id per run.
 function hashLabel(s: string): string {
@@ -63,6 +64,8 @@ export async function openSessionWindow(
     height: 720,
     minWidth: 600,
     minHeight: 420,
+    // Open on the monitor the user is working on, not the primary screen.
+    ...(await centerOnCurrentMonitor(1000, 720)),
   })
   win.once('tauri://error', (e) => {
     console.error('[sessionWindow] failed to open window', e)

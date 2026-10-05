@@ -20,6 +20,7 @@
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { emit, listen } from '@tauri-apps/api/event'
 import { trackWindowForTray } from '@/lib/tray'
+import { nextCascadePosition } from '@/lib/windowCascade'
 
 export type ItemKind = 'todo' | 'note'
 export type ItemWindowMode = 'create' | 'edit'
@@ -49,8 +50,8 @@ export const ITEM_WINDOW_PREFILL = 'item:window-prefill'
 
 /**
  * Broadcast after the window writes anything (create, save, delete, toggle), so
- * the list drawer in the main window — a different webview, with its own store —
- * refetches instead of showing stale rows. Payload: `{ kind }`.
+ * the list window — a different webview, with its own store — refetches instead of
+ * showing stale rows. Payload: `{ kind }`.
  */
 export const ITEM_CHANGED = 'item:changed'
 
@@ -142,7 +143,10 @@ export async function openItemCreateWindow(
     height: 600,
     minWidth: 340,
     minHeight: 380,
+    // Opens focused, so start on top; the window lowers itself on blur unless
+    // pinned (see useFloatingWindow).
     alwaysOnTop: true,
+    ...(await nextCascadePosition()),
   })
   win.once('tauri://error', (e) => {
     console.error('[itemWindow] failed to open create window', e)
@@ -174,11 +178,14 @@ export async function openItemEditWindow(
   const win = new WebviewWindow(label, {
     url: `index.html?${params.toString()}`,
     title: kind === 'note' ? 'Note — Devdy' : 'Task — Devdy',
-    width: 520,
-    height: 620,
-    minWidth: 360,
-    minHeight: 320,
+    width: 680,
+    height: 780,
+    minWidth: 420,
+    minHeight: 420,
+    // Opens focused, so start on top; the window lowers itself on blur unless
+    // pinned (see useFloatingWindow).
     alwaysOnTop: true,
+    ...(await nextCascadePosition()),
   })
   win.once('tauri://error', (e) => {
     console.error('[itemWindow] failed to open edit window', e)
