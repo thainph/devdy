@@ -453,7 +453,10 @@ onMounted(async () => {
       async (e) => {
         const { run_id, project_id } = e.payload ?? {}
         if (!run_id || !project_id) return
-        live.startListening(run_id, project_id).catch(() => {})
+        // `activate` (not just `startListening`): on a backend-driven resume the
+        // listeners survived the previous turn, so only this resets the stale
+        // terminal status that would otherwise let the session be evicted.
+        live.activate(run_id, project_id).catch(() => {})
         // A freshly-spawned run (notably a conductor's worker) lands in
         // live.sessions the instant it activates, but the dock groups workers
         // under their conductor via runMeta[run].conductor_run_id — which only
