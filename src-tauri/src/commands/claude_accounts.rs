@@ -596,9 +596,8 @@ pub struct BalanceGuard {
 pub struct AccountLoad {
     pub id: String,
     pub label: String,
-    /// Comparable load in [0, 100]. In `plan` metric mode this is the account's
-    /// real plan utilization; in `ledger` mode it's the account's share of the
-    /// last 7 days' token usage across eligible accounts.
+    /// Comparable load in [0, 100]: the same plan-usage % the usage chip shows
+    /// for this account (5h window first; 0 when no snapshot yet).
     pub load_percent: f64,
     pub source: String,
     pub eligible: bool,
@@ -668,16 +667,14 @@ pub async fn compute_recommendation(db: &Db) -> Result<BalanceRecommendation, St
         .await
         .map_err(|e| e.to_string())?;
 
-    // Per-account raw signals: fresh plan utilization (if any) + 7d token ledger.
+    // Per-account load = the same % the usage chip shows for that account.
     struct Raw {
         id: String,
         label: String,
         eligible: bool,
         is_default: bool,
-        plan_pct: Option<f64>,
-        ledger_tokens: i64,
+        load: f64,
     }
-    let since_7d = (chrono::Utc::now() - chrono::Duration::days(7)).to_rfc3339();
     let mut raws: Vec<Raw> = Vec::with_capacity(rows.len());
     let mut current_default_id: Option<String> = None;
     for row in &rows {
@@ -693,73 +690,42 @@ pub async fn compute_recommendation(db: &Db) -> Result<BalanceRecommendation, St
             .await
             .ok();
         let is_over = budget.as_ref().map(|b| b.is_over).unwrap_or(false);
-        let plan_pct = budget.as_ref().and_then(|b| {
-            (b.source == "plan" && !b.is_stale).then_some(b.percent as f64)
-        });
         // Eligible = a healthy account we can safely route new runs to.
         let eligible = status == STATUS_READY && !is_over;
-
-        let ledger_tokens: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(ru.total_tokens), 0) FROM run_usage ru \
-             JOIN runs r ON r.id = ru.run_id \
-             WHERE r.claude_account_id = ? AND ru.created_at >= ?",
-        )
-        .bind(&id)
-        .bind(&since_7d)
-        .fetch_one(db)
-        .await
-        .unwrap_or(0);
+        // No snapshot yet (never run) counts as 0%: it gets picked, runs once,
+        // and from then on reports its real usage.
+        let load = crate::commands::stats::claude_display_percent(db, &id)
+            .await
+            .unwrap_or(0.0);
 
         raws.push(Raw {
             id,
             label,
             eligible,
             is_default,
-            plan_pct,
-            ledger_tokens,
+            load,
         });
     }
 
-    // Metric mode: prefer real plan utilization, but only when EVERY eligible
-    // account has a fresh snapshot — otherwise a never-run account would look
-    // "0%" and always win. Fall back to the local 7d token-share ledger.
-    let eligible_ids: Vec<&Raw> = raws.iter().filter(|r| r.eligible).collect();
-    let use_plan =
-        !eligible_ids.is_empty() && eligible_ids.iter().all(|r| r.plan_pct.is_some());
-    let metric = if use_plan { "plan" } else { "ledger" };
-    let ledger_total: i64 = eligible_ids.iter().map(|r| r.ledger_tokens).sum();
-
-    let load_of = |r: &Raw| -> f64 {
-        if use_plan {
-            r.plan_pct.unwrap_or(0.0)
-        } else if ledger_total > 0 {
-            (r.ledger_tokens as f64 / ledger_total as f64) * 100.0
-        } else {
-            0.0
-        }
-    };
+    let metric = "plan";
+    let load_of = |r: &Raw| -> f64 { r.load };
 
     let accounts: Vec<AccountLoad> = raws
         .iter()
         .map(|r| AccountLoad {
             id: r.id.clone(),
             label: r.label.clone(),
-            load_percent: (load_of(r) * 100.0).round() / 100.0,
+            load_percent: r.load,
             source: metric.to_string(),
             eligible: r.eligible,
         })
         .collect();
 
-    // Recommend the lightest eligible account; tie-break on fewer 7d tokens.
+    // Recommend the lightest eligible account.
     let recommended = raws
         .iter()
         .filter(|r| r.eligible)
-        .min_by(|a, b| {
-            load_of(a)
-                .partial_cmp(&load_of(b))
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.ledger_tokens.cmp(&b.ledger_tokens))
-        });
+        .min_by(|a, b| a.load.partial_cmp(&b.load).unwrap_or(std::cmp::Ordering::Equal));
     let recommended_id = recommended.map(|r| r.id.clone());
 
     // Decide whether the gap justifies a swap.

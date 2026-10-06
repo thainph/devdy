@@ -17,6 +17,9 @@ use crate::runs::RunRegistry;
 const DEFAULT_WAIT_MS: u64 = 120_000;
 const MAX_WAIT_MS: u64 = 600_000;
 pub(crate) const POLL_INTERVAL_MS: u64 = 400;
+/// How long a permission request must stay unanswered before a worker is
+/// reported as `awaiting_permission`.
+const AWAITING_PERMISSION_MIN_MS: u64 = 10_000;
 
 /// Format an elapsed duration in ms as a short, human-readable string the model
 /// can quote verbatim (e.g. "58s", "1m 3s", "10m 0s"). Giving the model a ready
@@ -31,6 +34,39 @@ pub(crate) fn format_waited(ms: u64) -> String {
     } else {
         format!("{mins}m {secs}s")
     }
+}
+
+/// The approvals a worker's sidecar is blocked on, oldest first, or `None` when
+/// it isn't waiting on any. A worker stuck here makes no progress until a human
+/// answers in the desktop permission drawer, so the conductor should surface it
+/// to the user rather than treat the worker as merely slow.
+pub(crate) fn awaiting_permission(worker_id: &str) -> Option<Value> {
+    let pending = crate::runs::permission::pending_for(worker_id);
+    let oldest = pending.first()?;
+    let waited_ms = chrono::Utc::now()
+        .signed_duration_since(oldest.requested_at)
+        .num_milliseconds()
+        .max(0) as u64;
+    // Standing allow-list answers land within milliseconds; only a request that
+    // has sat unanswered for a while means a human is actually needed.
+    if waited_ms < AWAITING_PERMISSION_MIN_MS {
+        return None;
+    }
+    Some(json!({
+        "count": pending.len(),
+        "tools": pending.iter().map(|p| p.event.tool_name.clone()).collect::<Vec<_>>(),
+        "since": oldest.requested_at.to_rfc3339(),
+        "waited_human": format_waited(waited_ms),
+        "note": "Blocked on a permission prompt in the desktop app; it will not progress until the user answers it. Tell the user instead of waiting or cancelling.",
+    }))
+}
+
+/// Attach `awaiting_permission` to a worker status object when it applies.
+fn with_awaiting_permission(mut entry: Value, worker_id: &str) -> Value {
+    if let (Some(obj), Some(info)) = (entry.as_object_mut(), awaiting_permission(worker_id)) {
+        obj.insert("awaiting_permission".to_string(), info);
+    }
+    entry
 }
 
 /// Route a tool name to its handler. `Ok` payloads are surfaced to the model as
@@ -166,12 +202,14 @@ async fn session_list(state: &HttpState, conductor_run_id: &str) -> Result<Value
         .iter()
         .map(|r| {
             let status: String = r.get("status");
-            json!({
-                "worker_id": r.get::<String, _>("id"),
+            let id: String = r.get("id");
+            let entry = json!({
+                "worker_id": id,
                 "title": r.get::<Option<String>, _>("title"),
                 "engine": r.get::<String, _>("engine"),
                 "status": normalize_status(&status),
-            })
+            });
+            with_awaiting_permission(entry, &id)
         })
         .collect();
     Ok(json!({ "workers": workers }))
@@ -187,7 +225,8 @@ async fn session_poll(
     let mut out = Vec::new();
     for id in ids {
         let status = worker_status(&db, &id).await?;
-        out.push(json!({ "worker_id": id, "status": normalize_status(&status) }));
+        let entry = json!({ "worker_id": id, "status": normalize_status(&status) });
+        out.push(with_awaiting_permission(entry, &id));
     }
     Ok(json!({ "workers": out }))
 }
@@ -253,14 +292,24 @@ pub(crate) fn build_wait_result(done: Vec<Value>, pending: Vec<String>, waited_m
             format_waited(waited_ms)
         )
     };
-    json!({
+    let awaiting: Vec<Value> = pending
+        .iter()
+        .filter_map(|id| {
+            awaiting_permission(id).map(|info| json!({ "worker_id": id, "awaiting_permission": info }))
+        })
+        .collect();
+    let mut result = json!({
         "done": done,
         "pending": pending,
         "timed_out": timed_out,
         "waited_ms": waited_ms,
         "waited_human": format_waited(waited_ms),
         "note": note,
-    })
+    });
+    if !awaiting.is_empty() {
+        result["awaiting_permission"] = Value::Array(awaiting);
+    }
+    result
 }
 
 /// Blocking fallback for `session_wait`. The primary path streams progress over
@@ -313,11 +362,12 @@ async fn session_read(
         .join(format!("{}.log", worker_id));
     let reply = extract_latest_reply(&log_path);
 
-    Ok(json!({
+    let entry = json!({
         "worker_id": worker_id,
         "status": normalize_status(&status),
         "reply": reply,
-    }))
+    });
+    Ok(with_awaiting_permission(entry, &worker_id))
 }
 
 async fn session_send(
@@ -502,11 +552,12 @@ async fn log_event(state: &HttpState, session_id: &str, kind: &str, payload: Val
     );
 }
 
-/// Called from the sidecar drain when ANY run finishes a turn. Closes the
-/// conductor control loop so the human never has to prod it:
-///   • if the finished run is itself a conductor, release its auto-wake slot so
-///     the next worker completion can resume it again;
-///   • if the finished run is a worker, auto-wake its (idle) conductor.
+/// Called (via the wake channel) when ANY run's sidecar exits, and when a
+/// conductor's turn ends while its sidecar stays alive. Closes the conductor
+/// control loop so the human never has to prod it:
+///   • if the run is a conductor, its turn is over: release its auto-wake slot
+///     and deliver any wake a worker deferred while it was busy;
+///   • if the run is a worker, wake its conductor.
 /// A no-op for ordinary (non-conductor, non-worker) runs.
 pub async fn on_run_finished(app: &tauri::AppHandle, run_id: &str) {
     let Some(cst) = app.try_state::<crate::conductor::ConductorState>() else {
@@ -515,19 +566,20 @@ pub async fn on_run_finished(app: &tauri::AppHandle, run_id: &str) {
     let cst = cst.inner().clone();
 
     // A finishing conductor frees its slot BEFORE we consider any worker wake, so
-    // a worker that finished during the conductor's turn can resume it next.
+    // a worker that finished during the conductor's turn can wake it next.
     if cst.session(run_id).is_some() {
-        cst.finish_wake(run_id);
+        if cst.turn_ended(run_id) {
+            wake_conductor(app, &cst, run_id).await;
+        }
+        return;
     }
 
     wake_conductor_for_worker(app, &cst, run_id).await;
 }
 
-/// If `worker_run_id` is a worker whose conductor is live and idle, resume the
-/// conductor and inject a nudge so it reads the result and continues. No-op when
-/// the run isn't a worker, its conductor isn't a tracked (live) session, the
-/// conductor is still running (it'll see the worker via its own poll/wait), or a
-/// wake is already in flight for it.
+/// If `worker_run_id` is a worker of a live (tracked) conductor, wake that
+/// conductor. No-op when the run isn't a worker or its conductor is a
+/// finished/forgotten session.
 async fn wake_conductor_for_worker(
     app: &tauri::AppHandle,
     cst: &crate::conductor::ConductorState,
@@ -559,17 +611,32 @@ async fn wake_conductor_for_worker(
         return;
     }
 
-    // If the conductor is mid-turn it will observe the worker itself; injecting now
-    // would collide with its in-flight turn.
-    match worker_status(&db, &conductor_run_id).await {
-        Ok(s) if s == "running" => return,
-        Ok(_) => {}
-        Err(_) => return,
-    }
+    wake_conductor(app, cst, &conductor_run_id).await;
+}
 
-    // Serialize concurrent wakes: the first worker in a burst wins; the rest are
-    // covered because the woken conductor polls ALL its workers.
-    if !cst.begin_wake(&conductor_run_id) {
+/// Nudge a conductor to read its finished workers. Three cases:
+///   • mid-turn → defer; the nudge is delivered when that turn ends (injecting
+///     now would collide with the in-flight turn);
+///   • turn over but sidecar still alive (DB `running`, e.g. kept up by a
+///     backgrounded Bash) → send the nudge straight to the live sidecar;
+///   • sidecar exited → resume the conductor, then send the nudge.
+/// A burst of workers finishing produces one nudge: the woken conductor polls
+/// ALL its workers, covering the rest.
+async fn wake_conductor(
+    app: &tauri::AppHandle,
+    cst: &crate::conductor::ConductorState,
+    conductor_run_id: &str,
+) {
+    let db = db_from(app);
+
+    if cst.defer_wake_if_busy(conductor_run_id) {
+        return;
+    }
+    let alive = match worker_status(&db, conductor_run_id).await {
+        Ok(s) => s == "running",
+        Err(_) => return,
+    };
+    if !cst.begin_wake_turn(conductor_run_id) {
         return;
     }
 
@@ -580,21 +647,23 @@ session_read() each finished worker's result, then continue toward the goal \
 the human your final summary.";
 
     let outcome = async {
-        crate::commands::runs::resume_run(
-            app.clone(),
-            app.state::<Db>(),
-            app.state::<RunRegistry>(),
-            conductor_run_id.clone(),
-            None,
-            None,
-            Some(false),
-        )
-        .await?;
+        if !alive {
+            crate::commands::runs::resume_run(
+                app.clone(),
+                app.state::<Db>(),
+                app.state::<RunRegistry>(),
+                conductor_run_id.to_string(),
+                None,
+                None,
+                Some(false),
+            )
+            .await?;
+        }
         crate::commands::runs::send_user_message_inner(
             &db,
             &registry_from(app),
             crate::commands::runs::SendUserMessagePayload {
-                run_id: conductor_run_id.clone(),
+                run_id: conductor_run_id.to_string(),
                 content: nudge.to_string(),
                 images: Vec::new(),
                 override_budget: false,
@@ -605,13 +674,14 @@ the human your final summary.";
     .await;
 
     if let Err(e) = outcome {
-        // Couldn't wake now (budget gate, lost race, missing session id…). Release
-        // the slot so a later worker completion can retry, and surface why.
-        eprintln!(
-            "conductor auto-wake failed for {}: {}",
-            conductor_run_id, e
-        );
-        cst.finish_wake(&conductor_run_id);
+        // Couldn't wake now (budget gate, lost race, sidecar shutting down…).
+        // Release the slot and keep the wake pending: if the live sidecar was on
+        // its way out, its exit (`run:done`) delivers it via a resume instead.
+        eprintln!("conductor auto-wake failed for {}: {}", conductor_run_id, e);
+        cst.turn_ended(conductor_run_id);
+        if alive {
+            cst.defer_wake(conductor_run_id);
+        }
     }
 }
 

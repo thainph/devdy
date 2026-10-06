@@ -13,6 +13,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ChevronLeft, Cpu, Loader2, ShieldQuestion } from 'lucide-vue-next'
 import { useLiveRunsStore } from '@/stores/liveRuns'
+import { useClaudeAccountsStore } from '@/stores/claudeAccounts'
 import type { ConductorWorker, ConductorEvent } from '@/stores/conductor'
 
 const props = defineProps<{
@@ -38,6 +39,18 @@ function isActive(w: ConductorWorker): boolean {
 
 const { t } = useI18n()
 const live = useLiveRunsStore()
+const claudeStore = useClaudeAccountsStore()
+
+// Same rules as RunView's runClaudeAccountLabel: only Claude workers with a
+// known account get a badge; Codex / legacy runs show nothing.
+function workerAccountLabel(w: ConductorWorker): string {
+  if (w.engine !== 'claude' || !w.claude_account_id) return ''
+  return claudeStore.accounts.find((a) => a.id === w.claude_account_id)?.label ?? ''
+}
+// Mirrors RunView's runModelLabel: persisted model, else the engine name.
+function workerModelLabel(w: ConductorWorker): string {
+  return w.model || w.engine
+}
 
 function hasPending(workerId: string): boolean {
   return !!live.get(workerId)?.permissionQueue?.length
@@ -146,13 +159,20 @@ function formatWhen(iso: string): string {
                 <ShieldQuestion class="relative h-3 w-3" :stroke-width="2" />
               </span>
             </div>
-            <!-- Meta: the engine badge mirrors the session rows' model badge. -->
+            <!-- Meta: account + model badges mirror the session (History) rows. -->
             <div class="mt-2 pl-6 pr-3 flex items-center gap-1.5 text-[10px] text-muted-foreground/70">
               <span
-                class="min-w-0 truncate px-1.5 py-0.5 rounded bg-muted/60 font-mono text-[9px] tracking-wide text-muted-foreground"
-                :title="w.engine"
+                v-if="workerAccountLabel(w)"
+                class="shrink-0 truncate max-w-[10rem] px-1.5 py-0.5 rounded bg-primary/10 text-[9px] font-medium tracking-wide text-primary"
+                :title="workerAccountLabel(w)"
               >
-                {{ w.engine }}
+                {{ workerAccountLabel(w) }}
+              </span>
+              <span
+                class="min-w-0 truncate px-1.5 py-0.5 rounded bg-muted/60 font-mono text-[9px] tracking-wide text-muted-foreground"
+                :title="workerModelLabel(w)"
+              >
+                {{ workerModelLabel(w) }}
               </span>
               <span class="font-mono">{{ shortId(w.worker_id) }}</span>
             </div>

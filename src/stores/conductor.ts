@@ -38,6 +38,8 @@ export interface ConductorWorker {
   title: string | null
   status: string
   engine: string
+  model: string | null
+  claude_account_id: string | null
 }
 export interface ConductorEvent {
   ts: string

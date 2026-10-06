@@ -27,6 +27,7 @@
   "broadScopeWarning": "\"Luôn cho phép\" ở đây áp dụng cho toàn bộ server Google — Drive, Gmail và Calendar, gồm cả gửi mail và xóa file vĩnh viễn — chứ không riêng thao tác này.",
   "window": {
     "title": "Quyền — Devdy",
+    "osTitlePrefix": "Xin quyền",
     "headerLabel": "Claude — Quyền",
     "pinned": "Đã ghim",
     "pin": "Ghim",

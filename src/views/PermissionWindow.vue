@@ -32,19 +32,41 @@ const pinned = ref(true)
 
 let syncUnlisten: UnlistenFn | null = null
 
+// Which session is asking — shown in the header and the OS title so several
+// permission windows open at once can be told apart.
+const session = ref<{ name: string; project: string } | null>(null)
+
 // Main → popup: the current head request (or null when the queue is empty).
 interface SyncPayload {
   request: PermissionRequest | null
   allowedTools: string[]
+  session?: { name: string; project: string }
+}
+
+async function applyTitle() {
+  const s = session.value
+  const name = s ? (s.project && s.name !== s.project ? `${s.name} — ${s.project}` : s.name) : ''
+  const title = name ? `${t('permission.window.osTitlePrefix')}: ${name}` : t('permission.window.title')
+  document.title = title
+  try {
+    await getCurrentWindow().setTitle(title)
+  } catch {
+    /* window api unavailable */
+  }
 }
 
 onMounted(async () => {
-  document.title = 'Permission — Devdy'
+  document.title = t('permission.window.title')
   loadMarkdown()
 
   syncUnlisten = await listen<SyncPayload>(`permission:sync:${runId}`, (event) => {
     request.value = event.payload?.request ?? null
     allowedTools.value = event.payload?.allowedTools ?? []
+    const next = event.payload?.session ?? null
+    if (next?.name !== session.value?.name || next?.project !== session.value?.project) {
+      session.value = next
+      void applyTitle()
+    }
   })
 
   // Tell the main window we're ready so it (re)sends the current state — covers
@@ -87,11 +109,23 @@ async function togglePin() {
   <div class="flex h-screen w-screen flex-col bg-background text-foreground overflow-hidden">
     <!-- Slim titlebar: pin toggle so the user can drop always-on-top if it
          gets in the way while comparing against the chat on another monitor. -->
-    <div class="flex items-center gap-2 px-3 h-9 border-b border-border/60 shrink-0">
-      <span class="text-xs font-medium text-foreground/70">{{ t('permission.window.headerLabel') }}</span>
+    <div class="flex items-center gap-2 px-3 h-11 border-b border-border/60 shrink-0">
+      <div class="flex min-w-0 flex-col leading-tight">
+        <span class="text-[10px] uppercase tracking-wide text-foreground/50">{{ t('permission.window.headerLabel') }}</span>
+        <span
+          v-if="session"
+          class="truncate text-xs font-medium text-foreground/85"
+          :title="session.project ? `${session.name} — ${session.project}` : session.name"
+        >
+          {{ session.name }}
+          <span v-if="session.project && session.project !== session.name" class="font-normal text-foreground/50">
+            · {{ session.project }}
+          </span>
+        </span>
+      </div>
       <button
         type="button"
-        class="ml-auto flex items-center gap-1 rounded px-1.5 py-1 text-[11px] text-foreground/60 hover:bg-accent/60 hover:text-foreground transition-colors cursor-pointer"
+        class="ml-auto shrink-0 flex items-center gap-1 rounded px-1.5 py-1 text-[11px] text-foreground/60 hover:bg-accent/60 hover:text-foreground transition-colors cursor-pointer"
         :title="pinned ? t('permission.window.pinnedTitle') : t('permission.window.pinTitle')"
         @click="togglePin"
       >

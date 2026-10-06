@@ -1184,7 +1184,21 @@ pub(crate) async fn respond_permission_inner(
         .flush()
         .await
         .map_err(|e| format!("flush stdin: {}", e))?;
+    crate::runs::permission::resolve_pending(&payload.run_id, &payload.request_id);
     Ok(())
+}
+
+/// Permission requests a live run is still blocked on. Lets a webview listener
+/// that attached (or re-attached) after the `run:permission_request` event was
+/// emitted recover prompts it never received, instead of leaving the run hung.
+#[tauri::command]
+pub async fn list_pending_permissions(
+    run_id: String,
+) -> Result<Vec<crate::runs::permission::PermissionRequestEvent>, String> {
+    Ok(crate::runs::permission::pending_for(&run_id)
+        .into_iter()
+        .map(|p| p.event)
+        .collect())
 }
 
 #[derive(Debug, Serialize)]
