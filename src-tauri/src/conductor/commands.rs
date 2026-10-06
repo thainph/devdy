@@ -9,7 +9,7 @@ use crate::commands::runs::{start_run_inner, StartRunPayload};
 use crate::db::Db;
 use crate::runs::RunRegistry;
 
-const DEFAULT_MAX_WORKERS: usize = 6;
+const DEFAULT_MAX_WORKERS: usize = 10;
 
 #[derive(Serialize)]
 pub struct ConductorStarted {
@@ -317,7 +317,7 @@ pub async fn get_conductor_detail(
 
 /// Bounds for the worker cap, mirrored by the composer/sidebar number inputs.
 const MIN_MAX_WORKERS: u32 = 1;
-const MAX_MAX_WORKERS: u32 = 50;
+const MAX_MAX_WORKERS: u32 = 100;
 
 /// Change a conductor's concurrent-worker cap while it is running (or after).
 ///
