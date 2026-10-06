@@ -119,9 +119,18 @@ interface ActiveRun {
 // else the project name — read from the session-wide `runMeta` cache so runs of
 // background projects are named too. The project is appended for context.
 function runLabel(r: ActiveRun): string {
+  const { name, project } = runDisplayName(r.runId, r.projectId)
+  return clip(project && name !== project ? `${name} — ${project}` : name)
+}
+
+/**
+ * A run's human-readable name and its project's name (empty if unknown). Shared by
+ * the tray and the permission windows so both identify a run the same way.
+ */
+export function runDisplayName(runId: string, projectId: string): { name: string; project: string } {
   const runs = useRunsStore()
-  const project = useProjectsStore().projects.find((p) => p.id === r.projectId)?.name ?? ''
-  const meta = runs.runMeta.get(r.runId)
+  const project = useProjectsStore().projects.find((p) => p.id === projectId)?.name ?? ''
+  const meta = runs.runMeta.get(runId)
   let name = ''
   if (meta && meta.run_type !== 'session' && meta.ref_number != null) {
     name = `${meta.run_type === 'analyze_issue' ? 'Issue' : 'PR'} #${meta.ref_number}`
@@ -130,7 +139,7 @@ function runLabel(r: ActiveRun): string {
   } else {
     name = project || t('tray.untitledSession')
   }
-  return clip(project && name !== project ? `${name} — ${project}` : name)
+  return { name, project }
 }
 
 // ⚠ = blocked on a permission / question, ● = streaming.
