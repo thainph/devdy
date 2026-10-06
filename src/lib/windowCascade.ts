@@ -78,19 +78,27 @@ export async function centerOnCurrentMonitor(
 
 /**
  * Place a `width`-wide window flush against the right edge of the CURRENT monitor,
- * tall enough to span (almost) its full height — so it reads like a side panel
- * beside the main window without resizing it. Returns the logical x/y plus the
- * computed height; `undefined` when the monitor can't be read.
+ * reading like a side panel beside the main window without resizing it.
+ *
+ * Height spans the monitor (minus margins) but is capped at `maxHeight` so that on
+ * a large external display the panel doesn't stretch the full screen height. When
+ * the cap kicks in the panel is centred vertically for a balanced look. Returns the
+ * logical x/y plus the computed height; `undefined` when the monitor can't be read.
  */
 export async function dockRightOnCurrentMonitor(
   width: number,
   margin = 24,
+  maxHeight = Infinity,
 ): Promise<{ x: number; y: number; height: number } | undefined> {
   const monitor = await currentMonitorBounds()
   if (!monitor) return undefined
+  const available = monitor.height - margin * 2
+  const height = Math.round(Math.min(available, maxHeight))
+  // Centre vertically when capped; otherwise sit at the top margin.
+  const y = Math.round(monitor.y + (monitor.height - height) / 2)
   return {
     x: Math.round(monitor.x + monitor.width - width - margin),
-    y: Math.round(monitor.y + margin),
-    height: Math.round(monitor.height - margin * 2),
+    y,
+    height,
   }
 }

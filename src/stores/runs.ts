@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { invoke } from '@/lib/tauri'
 import { ref, reactive } from 'vue'
 import type { ImageAttachment } from '@/lib/streamEvents'
+import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
 
 /**
  * Fingerprint of the file(s) backing a run's log, from `get_run_log_revision`.
@@ -233,6 +234,11 @@ export const useRunsStore = defineStore('runs', () => {
       },
     })
     touchRun(run_id)
+  }
+
+  /** Permission requests a live run is still blocked on (for listener recovery). */
+  async function listPendingPermissions(run_id: string): Promise<PermissionRequest[]> {
+    return invoke<PermissionRequest[]>('list_pending_permissions', { runId: run_id })
   }
 
   async function respondPermission(
@@ -533,7 +539,7 @@ export const useRunsStore = defineStore('runs', () => {
     fetchRuns, refreshMeta, fetchIssue, fetchPr,
     startRun, rerunRun, refetchRun, cancelRun, resumeRun,
     getRunLog, getRunLogRevision, getRunLogPage, getRunLogForward, getRunLogPath, getRunToolRecords, getRunUserRecords, readRunInput,
-    respondPermission, sendUserMessage, endRunInput,
+    respondPermission, listPendingPermissions, sendUserMessage, endRunInput,
     listProjectFiles, readProjectFile, writeProjectFile, listDir,
     createDir, createFile, renameEntry, deleteEntry, copyEntry, moveEntry,
     createHandoffRun, createSessionRun,

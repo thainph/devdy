@@ -9,7 +9,7 @@ use crate::commands::runs::{start_run_inner, StartRunPayload};
 use crate::db::Db;
 use crate::runs::RunRegistry;
 
-const DEFAULT_MAX_WORKERS: usize = 6;
+const DEFAULT_MAX_WORKERS: usize = 10;
 
 #[derive(Serialize)]
 pub struct ConductorStarted {
@@ -227,6 +227,10 @@ pub struct ConductorWorker {
     pub title: Option<String>,
     pub status: String,
     pub engine: String,
+    /// Resolved model / Claude account snapshotted on the worker run at start,
+    /// so the worker panel can show the same badges as the History rows.
+    pub model: Option<String>,
+    pub claude_account_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -274,7 +278,7 @@ pub async fn get_conductor_detail(
     // Newest activity first, mirroring the History list's sort (list_runs) so the
     // most recently active worker sits at the top instead of forcing a scroll down.
     let wrows = sqlx::query(
-        "SELECT id, title, status, engine FROM runs WHERE conductor_run_id = ?
+        "SELECT id, title, status, engine, model, claude_account_id FROM runs WHERE conductor_run_id = ?
          ORDER BY COALESCE(last_activity_at, finished_at, started_at, created_at) DESC",
     )
     .bind(&conductor_run_id)
@@ -288,6 +292,8 @@ pub async fn get_conductor_detail(
             title: r.get("title"),
             status: r.get("status"),
             engine: r.get("engine"),
+            model: r.get("model"),
+            claude_account_id: r.get("claude_account_id"),
         })
         .collect();
 
@@ -317,7 +323,7 @@ pub async fn get_conductor_detail(
 
 /// Bounds for the worker cap, mirrored by the composer/sidebar number inputs.
 const MIN_MAX_WORKERS: u32 = 1;
-const MAX_MAX_WORKERS: u32 = 50;
+const MAX_MAX_WORKERS: u32 = 100;
 
 /// Change a conductor's concurrent-worker cap while it is running (or after).
 ///

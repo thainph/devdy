@@ -729,7 +729,7 @@ const conductorIdsWithRunningWorker = computed(() => {
 //  • pre-launch (a "New conductor" session not yet started) — the cap edits the
 //    local `conductorMaxWorkers` ref that seeds the launch; no backend row exists.
 //  • running/finished conductor — the cap is raised/lowered live: the backend
-//    clamps to [1,50], persists it, and the next session_spawn enforces it.
+//    clamps to [1,100], persists it, and the next session_spawn enforces it.
 // The draft is a separate ref so the 2s detail poll can't clobber it mid-edit.
 // Emitted value from <Input> is a string, so we parse on commit.
 const editingWorkerCap = ref(false)
@@ -747,7 +747,7 @@ async function commitWorkerCap() {
   editingWorkerCap.value = false
   const parsed = Math.round(Number(workerCapDraft.value))
   if (!Number.isFinite(parsed)) return
-  const next = Math.min(50, Math.max(1, parsed))
+  const next = Math.min(100, Math.max(1, parsed))
   // Pre-launch conductor: no session row yet, so just remember the launch cap.
   if (!isConductor.value) {
     conductorMaxWorkers.value = next
@@ -774,7 +774,7 @@ async function commitWorkerCap() {
 // conductor) or the run is deleted. `conductorMaxWorkers` is the launch-time cap,
 // editable from the sidebar before the goal is sent.
 const pendingConductorIds = reactive(new Set<string>())
-const conductorMaxWorkers = ref(6)
+const conductorMaxWorkers = ref(10)
 function isPendingConductor(runId: string | null | undefined): boolean {
   return !!runId && pendingConductorIds.has(runId)
 }
@@ -4478,7 +4478,7 @@ function handleRefInput(val: string) {
                 v-model="workerCapDraft"
                 type="number"
                 min="1"
-                max="50"
+                max="100"
                 autofocus
                 class="h-5 w-10 px-1 text-center text-[11px]"
                 @keyup.enter="commitWorkerCap"
