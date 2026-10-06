@@ -50,7 +50,10 @@ You control workers with these MCP tools (server `conductor`):
 Permissions: a worker that needs approval for a tool is answered by the human via
 the normal permission drawer (shown in the Conductor tab). You do not handle
 worker permissions yourself; if a worker is blocked waiting for approval it will
-show as still running until the human responds.
+show as still running until the human responds. session_list / session_poll /
+session_read / session_wait then add an `awaiting_permission` field (tools and
+`waited_human`) to that worker: tell the human it needs their approval instead
+of cancelling or replacing the worker.
 
 YOU ARE AUTOMATICALLY RESUMED WHEN A WORKER FINISHES. After spawning workers you
 have two equally valid ways to stay in the loop:
@@ -96,12 +99,20 @@ struct Inner {
     port: u16,
     sessions: HashMap<String, ConductorSession>, // keyed by conductor_run_id
     token_index: HashMap<String, String>,        // token -> conductor_run_id
-    /// Conductor ids with an auto-wake resume in flight. Set when a finished
-    /// worker resumes its idle conductor, cleared when that conductor's turn ends
-    /// (its `run:done`). Serializes a burst of workers finishing together into a
+    /// Conductor ids with an auto-wake nudge in flight. Set when a finished
+    /// worker wakes its idle conductor, cleared when that conductor's turn ends
+    /// (its `result`, or `run:done`). Serializes a burst of workers finishing together into a
     /// single resume — the woken conductor polls ALL its workers, covering the
     /// rest — and prevents a second resume while the first turn is still running.
     waking: HashSet<String>,
+    /// Conductors whose sidecar is mid-turn (a `system/init` seen, its `result`
+    /// not yet). A conductor can stay `running` in the DB long after its turn
+    /// ended (a backgrounded Bash keeps the sidecar alive), so the DB status alone
+    /// can't tell "busy" from "idle but alive".
+    turn_active: HashSet<String>,
+    /// Conductors a worker finished for while they were mid-turn. The wake is
+    /// deferred, not dropped: it is delivered when that turn ends.
+    pending_wake: HashSet<String>,
     /// Sender for finished-run ids. The sidecar drain pushes every run's id here on
     /// `run:done`; a dedicated consumer task (started with the MCP server) performs
     /// the actual resume. This channel hop deliberately decouples the sidecar drain
@@ -130,6 +141,8 @@ impl ConductorState {
                 sessions: HashMap::new(),
                 token_index: HashMap::new(),
                 waking: HashSet::new(),
+                turn_active: HashSet::new(),
+                pending_wake: HashSet::new(),
                 wake_tx: None,
             })),
         }
@@ -238,23 +251,61 @@ impl ConductorState {
         }
     }
 
-    /// Claim the single in-flight auto-wake slot for a conductor. Returns true to
-    /// the first caller (which should perform the resume) and false while a wake is
-    /// already pending — so a burst of workers finishing produces exactly one
-    /// resume. Cleared by [`finish_wake`] when the conductor's turn ends.
-    pub fn begin_wake(&self, conductor_run_id: &str) -> bool {
+    /// A tracked conductor's sidecar started a turn (`system/init`).
+    pub fn turn_started(&self, conductor_run_id: &str) {
         if let Ok(mut g) = self.inner.lock() {
-            g.waking.insert(conductor_run_id.to_string())
+            if g.sessions.contains_key(conductor_run_id) {
+                g.turn_active.insert(conductor_run_id.to_string());
+            }
+        }
+    }
+
+    /// A conductor's turn ended (its `result`, or its sidecar exited). Releases
+    /// the auto-wake slot and returns whether a wake was deferred meanwhile, which
+    /// the caller must now deliver.
+    pub fn turn_ended(&self, conductor_run_id: &str) -> bool {
+        if let Ok(mut g) = self.inner.lock() {
+            g.turn_active.remove(conductor_run_id);
+            g.waking.remove(conductor_run_id);
+            g.pending_wake.remove(conductor_run_id)
         } else {
             false
         }
     }
 
-    /// Release the auto-wake slot (the conductor's turn has ended, so the next
-    /// worker completion may wake it again). No-op if no wake was pending.
-    pub fn finish_wake(&self, conductor_run_id: &str) {
+    /// If the conductor is mid-turn, record a deferred wake and return true; the
+    /// caller then leaves it alone. Checked under the same lock `turn_ended`
+    /// takes, so a wake can't slip between "busy" and "turn just ended".
+    pub fn defer_wake_if_busy(&self, conductor_run_id: &str) -> bool {
         if let Ok(mut g) = self.inner.lock() {
-            g.waking.remove(conductor_run_id);
+            if g.turn_active.contains(conductor_run_id) {
+                g.pending_wake.insert(conductor_run_id.to_string());
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Defer a wake unconditionally (the nudge couldn't be delivered now, e.g.
+    /// the sidecar is shutting down); the conductor's next turn end delivers it.
+    pub fn defer_wake(&self, conductor_run_id: &str) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.pending_wake.insert(conductor_run_id.to_string());
+        }
+    }
+
+    /// Claim the auto-wake slot for an idle conductor and mark it busy at once, so
+    /// a second worker finishing before the nudge's `system/init` arrives defers
+    /// instead of sending a duplicate nudge.
+    pub fn begin_wake_turn(&self, conductor_run_id: &str) -> bool {
+        if let Ok(mut g) = self.inner.lock() {
+            if !g.waking.insert(conductor_run_id.to_string()) {
+                return false;
+            }
+            g.turn_active.insert(conductor_run_id.to_string());
+            true
+        } else {
+            false
         }
     }
 
@@ -327,4 +378,46 @@ fn mint_token() -> String {
     let mut bytes = [0u8; 24];
     rand::thread_rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state_with(conductor: &str) -> ConductorState {
+        let cst = ConductorState::new();
+        cst.register_session(conductor, "project", 4);
+        cst
+    }
+
+    #[test]
+    fn wake_during_turn_is_deferred_then_delivered_at_turn_end() {
+        let cst = state_with("c1");
+        cst.turn_started("c1");
+        assert!(cst.defer_wake_if_busy("c1"), "mid-turn conductor must defer");
+        assert!(cst.turn_ended("c1"), "turn end must hand back the deferred wake");
+        assert!(!cst.turn_ended("c1"), "a deferred wake is delivered once");
+    }
+
+    #[test]
+    fn idle_alive_conductor_is_woken_once_per_turn() {
+        let cst = state_with("c1");
+        // Turn ended, sidecar still alive: not busy, so the wake goes through.
+        assert!(!cst.defer_wake_if_busy("c1"));
+        assert!(cst.begin_wake_turn("c1"));
+        // A second worker finishing before the nudge's init defers instead of
+        // sending a duplicate nudge.
+        assert!(cst.defer_wake_if_busy("c1"));
+        assert!(!cst.begin_wake_turn("c1"));
+        // The nudged turn ends → slot released, deferred wake delivered.
+        assert!(cst.turn_ended("c1"));
+        assert!(cst.begin_wake_turn("c1"));
+    }
+
+    #[test]
+    fn untracked_runs_never_become_busy() {
+        let cst = ConductorState::new();
+        cst.turn_started("plain-run");
+        assert!(!cst.defer_wake_if_busy("plain-run"));
+    }
 }

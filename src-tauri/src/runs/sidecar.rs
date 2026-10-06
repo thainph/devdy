@@ -520,6 +520,10 @@ pub async fn drain_sidecar(
                                         cwd: evt.cwd.clone(),
                                     });
                                 }
+                                // Remember it until answered: the emit below is lost if
+                                // no webview listener is attached right now, and a
+                                // re-attached listener recovers it from this store.
+                                crate::runs::permission::track_pending(evt.clone());
                                 let _ = app.emit(&format!("run:permission_request:{}", run_id), evt);
                             }
                             // ---- control: diagnostic log (codex tracing / notes) -
@@ -601,6 +605,11 @@ pub async fn drain_sidecar(
                                 {
                                     if let Some(m) = v.get("model").and_then(|x| x.as_str()) {
                                         last_model = Some(m.to_string());
+                                    }
+                                    // A conductor's turn is live: a worker finishing now
+                                    // defers its wake until this turn's `result`.
+                                    if let Some(cst) = app.try_state::<crate::conductor::ConductorState>() {
+                                        cst.turn_started(&run_id);
                                     }
                                     if persist_plan_init_rate_limits(&db_pool, &plan_usage_key, v).await {
                                         let _ = app.emit(
@@ -702,6 +711,16 @@ pub async fn drain_sidecar(
                                         if let Some(handles) = reg.get_mut(&run_id) {
                                             handles.stdin.take();
                                         }
+                                    } else if let Some(cst) = app.try_state::<crate::conductor::ConductorState>() {
+                                        // A conductor's turn ended but its sidecar stays
+                                        // alive (e.g. a backgrounded Bash), so `run:done`
+                                        // won't fire. Signal the turn end on the wake
+                                        // channel so a wake a worker deferred meanwhile is
+                                        // delivered to the live sidecar instead of lost.
+                                        // (When stdin closes, `run:done` covers it.)
+                                        if cst.session(&run_id).is_some() {
+                                            cst.notify_run_finished(run_id.clone());
+                                        }
                                     }
                                     // This turn's usage is now recorded. Re-check
                                     // the global budget; if it tipped over, tell
@@ -793,11 +812,17 @@ pub async fn drain_sidecar(
         flush_to_disk(&buf);
     }
 
+    // The sidecar is gone, so any request it was blocked on can never be answered.
+    crate::runs::permission::clear_pending(&run_id);
+
+    // Hold the registry lock until `run:done` is emitted. A resume (e.g. a
+    // conductor `session_send` that sees the DB status flip) needs this lock to
+    // register the next turn, so its `run:activated` can never overtake this
+    // turn's `run:done` — otherwise the webview applies them out of order and
+    // shows the live worker as finished.
+    let mut reg = registry.lock().await;
     // Cancelled iff the entry was already removed by cancel_run.
-    let was_cancelled = {
-        let mut reg = registry.lock().await;
-        reg.remove(&run_id).is_none()
-    };
+    let was_cancelled = reg.remove(&run_id).is_none();
     let final_status = if was_cancelled { "cancelled" } else { "done" };
     let finished_at = chrono::Utc::now().to_rfc3339();
     let _ = sqlx::query(
@@ -821,6 +846,7 @@ pub async fn drain_sidecar(
         &format!("run:done:{}", run_id),
         serde_json::json!({ "run_id": run_id, "status": final_status }),
     );
+    drop(reg);
 
     // Close the conductor control loop: hand this finished run's id to the
     // conductor wake consumer (a channel send, never a direct resume). If the run

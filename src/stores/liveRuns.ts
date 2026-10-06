@@ -130,6 +130,14 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
   // purpose — a persistent run fires this on EVERY finished turn, and a
   // subscriber can re-arm its listeners before the next turn.
   const doneCallbacks = new Map<string, Set<(status: string) => void>>()
+  // Runs the backend has announced as live (`run:activated`) and that haven't
+  // emitted `run:done` since. This is the backend's view, independent of
+  // `s.status`, so a session can never be evicted — and lose its permission
+  // listener — while its sidecar is still running.
+  const activeRunIds = new Set<string>()
+  // Permission request ids already handled per run, so a request delivered both
+  // live and through `list_pending_permissions` recovery is processed once.
+  const seenPermissionIds = new Map<string, Set<string>>()
 
   // Slash commands advertised by each engine on `system.init`, cached (and
   // persisted) per engine so a brand-new session — which hasn't produced an
@@ -169,7 +177,11 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
    *  3. `notifyDone` is false — the user hasn't acknowledged the finish yet, and
    *     the Active runs dock still needs the row;
    *  4. no `doneCallbacks` — a subscriber registered these and keeps them across
-   *     turns on purpose; evicting would break its relay mid-conversation.
+   *     turns on purpose; evicting would break its relay mid-conversation;
+   *  5. the backend hasn't reported it live (`activeRunIds`) — a run resumed
+   *     from the backend (e.g. a conductor follow-up) can still carry a stale
+   *     terminal `status`, and evicting it drops the listener that answers its
+   *     permission prompts, hanging the run.
    */
   function evictTerminalSessions() {
     const candidates: { runId: string; touched: number }[] = []
@@ -178,6 +190,7 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
       if (s.permissionQueue.length) return
       if (s.notifyDone) return
       if (doneCallbacks.get(id)?.size) return
+      if (activeRunIds.has(id)) return
       candidates.push({ runId: id, touched: lastTouched.get(id) ?? 0 })
     })
     if (candidates.length <= MAX_TERMINAL_SESSIONS) return
@@ -293,6 +306,22 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
   }
 
   /**
+   * The backend announced this run as live (`run:activated`): a fresh start or
+   * a resume, possibly driven from outside this window (conductor follow-up,
+   * Remote Control). `startListening` is a no-op when listeners survived the
+   * previous turn, so reset the turn state here — otherwise the session keeps
+   * the terminal status from its last `run:done` and becomes evictable while
+   * running.
+   */
+  async function activate(runId: string, projectId: string) {
+    activeRunIds.add(runId)
+    const s = ensure(runId, projectId)
+    s.status = 'running'
+    s.notifyDone = false
+    await startListening(runId, projectId)
+  }
+
+  /**
    * Attach the run's Tauri event listeners. Idempotent — calling it again for
    * an already-listened run is a no-op, so it's safe to call on every view
    * (re)load. Listeners stay attached until the run emits `run:done`.
@@ -398,6 +427,8 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
     fns.push(
       await listen<{ run_id: string; status: string }>(`run:done:${runId}`, (event) => {
         flushEvents() // drain any events still buffered this frame before stopping
+        activeRunIds.delete(runId)
+        seenPermissionIds.delete(runId)
         s.status = event.payload.status
         s.permissionQueue = []
         // Flag a "run finished" notification for the Active runs dock. It stays
@@ -441,48 +472,58 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
       ),
     )
 
+    const handlePermissionRequest = (req: PermissionRequest) => {
+      let seen = seenPermissionIds.get(runId)
+      if (!seen) {
+        seen = new Set()
+        seenPermissionIds.set(runId, seen)
+      }
+      if (seen.has(req.request_id)) return
+      seen.add(req.request_id)
+      // When an AUTHENTICATED remote controller is WATCHING this run, the human
+      // being asked is remote — the desktop must NOT auto-allow/deny from its
+      // local per-project lists. Doing so races and beats the remote user's
+      // Deny (a local auto-`allow` fired ~24ms before the relayed deny),
+      // silently running a tool the remote user rejected. Defer to the remote:
+      // just enqueue; the controller answers and `run:permission_resolved`
+      // clears it. (A human at the desktop can still answer manually.)
+      //
+      // Scoped to runs the controller has OPEN rather than to "a phone is
+      // paired at all". A paired phone receives prompts for every run, but
+      // suppressing standing auto-allow/deny across every run the moment a
+      // phone pairs would silently disable the user's own automation on runs
+      // nobody is watching.
+      const rc = remoteControl.status
+      const remoteDriven =
+        !!rc?.session_authenticated && (rc?.subscribed_run_ids ?? []).includes(req.run_id)
+      // AskUserQuestion must always reach the user — auto-deciding it would
+      // submit empty answers. Other tools honor the project's standing
+      // deny/allow choices (deny wins if both somehow apply).
+      if (!remoteDriven && req.tool_name !== 'AskUserQuestion') {
+        if (s.deniedTools.includes(req.tool_name)) {
+          runsStore
+            .respondPermission(req.run_id, req.request_id, 'deny', 'Auto-denied for this project')
+            .catch(() => {})
+          return
+        }
+        if (s.allowedTools.includes(req.tool_name)) {
+          runsStore
+            .respondPermission(req.run_id, req.request_id, 'allow', 'Auto-allowed for this session', {
+              // The tool is already on the project's standing allow list, so
+              // let the engine cache it too (codex `acceptForSession`) rather
+              // than prompting through this path again for every call.
+              remember: true,
+            })
+            .catch(() => {})
+          return
+        }
+      }
+      s.permissionQueue.push(req)
+    }
+
     fns.push(
       await listen<PermissionRequest>(`run:permission_request:${runId}`, (event) => {
-        const req = event.payload
-        // When an AUTHENTICATED remote controller is WATCHING this run, the human
-        // being asked is remote — the desktop must NOT auto-allow/deny from its
-        // local per-project lists. Doing so races and beats the remote user's
-        // Deny (a local auto-`allow` fired ~24ms before the relayed deny),
-        // silently running a tool the remote user rejected. Defer to the remote:
-        // just enqueue; the controller answers and `run:permission_resolved`
-        // clears it. (A human at the desktop can still answer manually.)
-        //
-        // Scoped to runs the controller has OPEN rather than to "a phone is
-        // paired at all". A paired phone receives prompts for every run, but
-        // suppressing standing auto-allow/deny across every run the moment a
-        // phone pairs would silently disable the user's own automation on runs
-        // nobody is watching.
-        const rc = remoteControl.status
-        const remoteDriven =
-          !!rc?.session_authenticated && (rc?.subscribed_run_ids ?? []).includes(req.run_id)
-        // AskUserQuestion must always reach the user — auto-deciding it would
-        // submit empty answers. Other tools honor the project's standing
-        // deny/allow choices (deny wins if both somehow apply).
-        if (!remoteDriven && req.tool_name !== 'AskUserQuestion') {
-          if (s.deniedTools.includes(req.tool_name)) {
-            runsStore
-              .respondPermission(req.run_id, req.request_id, 'deny', 'Auto-denied for this project')
-              .catch(() => {})
-            return
-          }
-          if (s.allowedTools.includes(req.tool_name)) {
-            runsStore
-              .respondPermission(req.run_id, req.request_id, 'allow', 'Auto-allowed for this session', {
-                // The tool is already on the project's standing allow list, so
-                // let the engine cache it too (codex `acceptForSession`) rather
-                // than prompting through this path again for every call.
-                remember: true,
-              })
-              .catch(() => {})
-            return
-          }
-        }
-        s.permissionQueue.push(req)
+        handlePermissionRequest(event.payload)
       }),
     )
 
@@ -506,6 +547,16 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
       return
     }
     unlisteners.set(runId, fns)
+
+    // Recover prompts emitted before this listener existed (e.g. the session
+    // was evicted and re-created mid-run). Without this the sidecar stays
+    // blocked on a request no window ever received.
+    try {
+      const pending = await runsStore.listPendingPermissions(runId)
+      if (unlisteners.has(runId)) pending.forEach(handlePermissionRequest)
+    } catch {
+      /* run not live / backend unavailable — nothing to recover */
+    }
   }
 
   function stopListening(runId: string) {
@@ -604,6 +655,8 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
     sessions.delete(runId)
     toolIndexes.delete(runId)
     lastTouched.delete(runId)
+    activeRunIds.delete(runId)
+    seenPermissionIds.delete(runId)
   }
 
   /** Run ids that are currently streaming — for live status indicators. */
@@ -623,6 +676,7 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
     pushUser,
     setStatus,
     isListening,
+    activate,
     startListening,
     stopListening,
     rememberAllowedTool,
