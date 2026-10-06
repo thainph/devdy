@@ -31,6 +31,8 @@ export interface CombinedOption extends SelectOption {
 export const MODEL_OPTIONS: Record<string, SelectOption[]> = {
   claude: [
     { value: '', label: 'Default (from settings)' },
+    { value: 'claude-opus-5-5', label: 'claude-opus-5-5', description: 'Opus 5.5 · 200K context' },
+    { value: 'claude-opus-5-5[1m]', label: 'claude-opus-5-5[1m]', description: 'Opus 5.5 · 1M context' },
     { value: 'claude-opus-4-8', label: 'claude-opus-4-8', description: 'Opus 4.8 · 200K context' },
     { value: 'claude-opus-4-8[1m]', label: 'claude-opus-4-8[1m]', description: 'Opus 4.8 · 1M context' },
     { value: 'claude-sonnet-4-6', label: 'claude-sonnet-4-6', description: 'Sonnet 4.6 · 200K context' },
