@@ -1033,6 +1033,16 @@ pub async fn budget_status(db: &Db, key: &str) -> BudgetStatus {
     }
 }
 
+/// The exact % the usage chip shows for one Claude account (its smallest plan
+/// window, 5h first). `None` when the account has no plan snapshot yet. Used by
+/// the auto-balancer so swaps follow the same number the user sees.
+pub async fn claude_display_percent(db: &Db, account_id: &str) -> Option<f64> {
+    let key = claude_plan_usage_key(Some(account_id));
+    let (plan_json, stale_secs) = read_plan_snapshot(db, &key).await.ok()?;
+    let status = plan_display_status(plan_json.as_deref(), stale_secs);
+    (status.source == "plan").then_some(status.percent as f64)
+}
+
 #[tauri::command]
 pub async fn get_budget_status(db: State<'_, Db>) -> Result<BudgetStatus, String> {
     // Badge = the DEFAULT Claude account's REAL plan usage (most-constraining
