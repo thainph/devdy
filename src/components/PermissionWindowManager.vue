@@ -14,6 +14,7 @@ import type { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useRunsStore } from '@/stores/runs'
 import { openPermissionWindow, closePermissionWindow } from '@/lib/permissionWindow'
+import { runDisplayName } from '@/lib/tray'
 
 const live = useLiveRunsStore()
 const runsStore = useRunsStore()
@@ -41,10 +42,17 @@ function headOf(runId: string) {
   return live.get(runId)?.permissionQueue[0] ?? null
 }
 
+// Which session / project a run belongs to, so its window can say who is asking.
+function sessionOf(runId: string) {
+  const s = live.get(runId)
+  return runDisplayName(runId, s?.projectId ?? '')
+}
+
 function sync(runId: string) {
   void emit(`permission:sync:${runId}`, {
     request: headOf(runId),
     allowedTools: live.get(runId)?.allowedTools ?? [],
+    session: sessionOf(runId),
   })
 }
 
@@ -150,6 +158,18 @@ async function reconcile() {
   }
 }
 watch(pending, () => void reconcile(), { deep: false })
+
+// Re-sync open windows when a run's name resolves or changes (rename, or runMeta
+// arriving after the window opened) so the header never stays on a stale name.
+watch(
+  () => [...pending.value.keys()].map((runId) => {
+    const { name, project } = sessionOf(runId)
+    return `${runId}\u0000${name}\u0000${project}`
+  }).join('\u0001'),
+  () => {
+    for (const runId of tracked.keys()) sync(runId)
+  },
+)
 
 onBeforeUnmount(() => {
   for (const [runId, entry] of tracked) {
