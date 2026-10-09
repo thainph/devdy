@@ -18,7 +18,8 @@
 // API). They are not written by hand: "New" becomes "Import .zip/.md", a row opens
 // the capture's own detail window (lib/captureWindow), and the backend's
 // `captures://changed` event drives the refetch. Being bulk inbox items, they also
-// get a select mode for multi-delete and an inline rename (pencil / F2).
+// get a select mode for multi-delete. Notes and captures share one card (title,
+// meta, preview, project · age footer) and its inline rename (pencil / F2).
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -364,18 +365,33 @@ function openOriginal(row: Row) {
   openUrl(row.url).catch((e) => toast.error(String(e)))
 }
 
-/** The capture row whose title is being renamed inline (one at a time). */
+/** The note / capture card whose title is being renamed inline (one at a time). */
 const renamingId = ref<string | null>(null)
+/** Cards carry a renamable title; a todo row is its text, edited in its window. */
+const canRename = computed(() => kind.value !== 'todo')
 
 function startRename(row: Row) {
-  if (selecting.value) return
+  if (selecting.value || !canRename.value) return
   renamingId.value = row.id
+}
+
+/** The value the rename field starts from: a note's own title, not a derived one. */
+function renameValue(row: Row): string {
+  if (kind.value !== 'note') return row.title
+  return notes.notes.find((n) => n.id === row.id)?.title.trim() ?? ''
 }
 
 /** Empty or unchanged → just close the field, no request. */
 async function commitRename(row: Row, title: string) {
   renamingId.value = null
-  if (!title || title === row.title) return
+  if (!title || title === renameValue(row)) return
+  if (kind.value === 'note') {
+    const note = notes.notes.find((n) => n.id === row.id)
+    if (!note) return
+    await notes.update(row.id, title, note.content)
+    emit(ITEM_CHANGED, { kind: 'note' })
+    return
+  }
   try {
     await captures.rename(row.id, title)
   } catch (e) {
@@ -383,7 +399,7 @@ async function commitRename(row: Row, title: string) {
   }
 }
 
-function onCaptureCardKeydown(e: KeyboardEvent, row: Row) {
+function onCardKeydown(e: KeyboardEvent, row: Row) {
   if (e.isComposing) return
   if (e.key === 'F2') {
     e.preventDefault()
@@ -572,7 +588,8 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="flex h-screen w-screen flex-col bg-background text-foreground overflow-hidden">
-    <!-- Header: Todo / Note tabs + New, mirroring the old drawer header. -->
+    <!-- Header: the tabs (and, on capture tabs, the select toggle).
+         Creating — New todo / New note / Import — is the footer's job. -->
     <div class="flex items-center gap-2 border-b border-border/60 px-3 h-11 shrink-0">
       <div class="flex min-w-0 flex-1 items-center gap-1">
         <button
@@ -588,30 +605,19 @@ onBeforeUnmount(() => {
           <component :is="item.icon" class="h-3.5 w-3.5" :stroke-width="1.75" />
           {{ t(item.labelKey) }}
         </button>
-        <span class="ml-1 text-[11px] tabular-nums text-muted-foreground/60">{{ filtered.length }}</span>
       </div>
-      <template v-if="captureKind">
-        <button
-          v-if="rows.length > 0"
-          type="button"
-          class="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md transition-colors"
-          :class="selecting
-            ? 'bg-primary/15 text-primary hover:bg-primary/25'
-            : 'text-muted-foreground hover:bg-accent hover:text-foreground'"
-          :title="selecting ? t('capture.exitSelect') : t(`capture.${captureKind}.select`)"
-          @click="selecting ? exitSelect() : (selecting = true)"
-        >
-          <ListChecks class="h-3.5 w-3.5" :stroke-width="1.75" />
-        </button>
-        <Button size="sm" :disabled="importing" :title="t(`capture.${captureKind}.importTitle`)" @click="importCaptures">
-          <Upload class="h-3.5 w-3.5" :stroke-width="2" />
-          {{ t('capture.import') }}
-        </Button>
-      </template>
-      <Button v-else size="sm" @click="openCreate">
-        <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-        {{ kind === 'todo' ? t('item.newTodo') : t('item.newNote') }}
-      </Button>
+      <button
+        v-if="captureKind && rows.length > 0"
+        type="button"
+        class="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md transition-colors"
+        :class="selecting
+          ? 'bg-primary/15 text-primary hover:bg-primary/25'
+          : 'text-muted-foreground hover:bg-accent hover:text-foreground'"
+        :title="selecting ? t('capture.exitSelect') : t(`capture.${captureKind}.select`)"
+        @click="selecting ? exitSelect() : (selecting = true)"
+      >
+        <ListChecks class="h-3.5 w-3.5" :stroke-width="1.75" />
+      </button>
     </div>
 
     <!-- Capture select mode: bulk actions over the picked rows. -->
@@ -703,13 +709,9 @@ onBeforeUnmount(() => {
           <p class="text-xs text-muted-foreground">
             {{ kind === 'todo' ? t('item.emptyTodo') : captureKind ? t(`capture.${captureKind}.empty`) : t('item.emptyNote') }}
           </p>
-          <p v-if="captureKind" class="mt-1 max-w-xs text-[11px] text-muted-foreground/70">
-            {{ t(`capture.${captureKind}.emptyHint`) }}
+          <p class="mt-1 max-w-xs text-[11px] text-muted-foreground/70">
+            {{ captureKind ? t(`capture.${captureKind}.emptyHint`) : kind === 'todo' ? t('item.emptyTodoHint') : t('item.emptyNoteHint') }}
           </p>
-          <Button size="sm" class="mt-3" :disabled="importing" @click="openCreate">
-            <component :is="isCapture ? Upload : Plus" class="h-3.5 w-3.5" :stroke-width="2" />
-            {{ kind === 'todo' ? t('item.newTodo') : isCapture ? t('capture.import') : t('item.newNote') }}
-          </Button>
         </div>
 
         <p
@@ -754,13 +756,13 @@ onBeforeUnmount(() => {
               </span>
             </div>
 
-            <!-- Capture: a card — title, then Slack `#channel · workspace` / web
-                 avatar + `domain · age` (+ Excerpt), a preview, then attachments ·
-                 project (· age for Slack). In select mode a click toggles it. -->
+            <!-- Note / capture: a card — title, then (Slack) `#channel · workspace`
+                 / (web) avatar + `domain · age` (+ Excerpt), a preview, then
+                 attachments · project · age. In select mode a click toggles it. -->
             <!-- A focusable div rather than a <button>: it hosts the inline rename
                  input, which can't live inside a button. F2 renames the focused card. -->
             <div
-              v-else-if="isCapture"
+              v-else
               role="button"
               tabindex="0"
               class="flex w-full cursor-pointer items-start gap-2.5 rounded-lg border bg-card px-3 py-2.5 text-left outline-none transition-colors hover:bg-accent/40 focus-visible:ring-1 focus-visible:ring-ring"
@@ -769,7 +771,7 @@ onBeforeUnmount(() => {
                 : 'border-border/70 hover:border-border'"
               :title="selecting || renamingId === row.id ? undefined : t('item.openTitle')"
               @click="renamingId !== row.id && openItem(row.id)"
-              @keydown.self="onCaptureCardKeydown($event, row)"
+              @keydown.self="onCardKeydown($event, row)"
             >
               <span
                 v-if="selecting"
@@ -792,8 +794,8 @@ onBeforeUnmount(() => {
                 <InlineRenameInput
                   v-if="renamingId === row.id"
                   class="w-full text-[13px] font-medium leading-snug"
-                  :value="row.title"
-                  :placeholder="t(`capture.${captureKind}.renamePlaceholder`)"
+                  :value="renameValue(row)"
+                  :placeholder="captureKind ? t(`capture.${captureKind}.renamePlaceholder`) : t('item.titlePlaceholder')"
                   @commit="commitRename(row, $event)"
                   @cancel="renamingId = null"
                 />
@@ -802,7 +804,7 @@ onBeforeUnmount(() => {
                     class="block truncate text-[13px] font-medium leading-snug text-foreground"
                     :title="row.custom ? t('capture.renamedHint') : undefined"
                   >
-                    {{ row.title }}
+                    {{ row.title || t('item.untitled') }}
                   </span>
                   <Badge v-if="row.excerpt" tone="info" size="xs" class="shrink-0" :title="t('capture.excerptHint')">
                     {{ t('capture.excerpt') }}
@@ -844,42 +846,15 @@ onBeforeUnmount(() => {
               </span>
             </div>
 
-            <!-- Note: a card — title, a two-line preview, then project · age. -->
-            <button
-              v-else
-              type="button"
-              class="block w-full cursor-pointer rounded-lg border border-border/70 bg-card px-3 py-2.5 text-left transition-colors hover:border-border hover:bg-accent/40"
-              :title="t('item.openTitle')"
-              @click="openItem(row.id)"
-            >
-              <span class="block truncate text-[13px] font-medium leading-snug text-foreground">
-                {{ row.title || t('item.untitled') }}
-              </span>
-              <span
-                v-if="row.preview"
-                class="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground"
-              >
-                {{ row.preview }}
-              </span>
-              <span class="mt-2 flex items-center gap-1.5 text-[10px] text-muted-foreground/70">
-                <template v-if="projectName(row.projectId)">
-                  <Folder class="h-3 w-3 shrink-0" :stroke-width="1.75" />
-                  <span class="truncate">{{ projectName(row.projectId) }}</span>
-                  <span aria-hidden="true">·</span>
-                </template>
-                <span class="shrink-0 tabular-nums">{{ relativeTime(row.createdAt) }}</span>
-              </span>
-            </button>
-
             <!-- Row actions float over the right edge on hover, so they take no
                  space at rest and every row keeps the same width. -->
             <div
-              v-if="!(isCapture && (selecting || renamingId === row.id))"
+              v-if="!(selecting || renamingId === row.id)"
               class="pointer-events-none absolute flex items-center gap-0.5 rounded-md border border-border/60 bg-popover p-0.5 opacity-0 shadow-sm transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100"
               :class="kind === 'todo' ? 'right-1.5 top-1/2 -translate-y-1/2' : 'right-2 top-2'"
             >
               <button
-                v-if="isCapture"
+                v-if="canRename"
                 type="button"
                 class="cursor-pointer rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                 :title="t('capture.rename')"
@@ -917,6 +892,29 @@ onBeforeUnmount(() => {
           </li>
         </ul>
       </div>
+    </div>
+
+    <!-- Footer: the item count on the left ("shown / total" while filtered),
+         the tab's create action on the right, laid out like the detail
+         windows' action bar. Captures are not written by hand, so their tabs
+         import an exported .zip / .md instead. -->
+    <div class="flex items-center gap-2 border-t border-border/60 px-3 py-2.5 shrink-0">
+      <span class="mr-auto min-w-0 truncate text-[11px] tabular-nums text-muted-foreground">
+        {{
+          filtered.length === rows.length
+            ? t('item.count', { count: rows.length }, rows.length)
+            : t('item.countFiltered', { shown: filtered.length, total: rows.length }, rows.length)
+        }}
+      </span>
+      <Button
+        size="sm"
+        :disabled="isCapture && importing"
+        :title="captureKind ? t(`capture.${captureKind}.importTitle`) : undefined"
+        @click="openCreate"
+      >
+        <component :is="isCapture ? Upload : Plus" class="h-3.5 w-3.5" :stroke-width="2" />
+        {{ isCapture ? t('capture.import') : kind === 'todo' ? t('item.newTodo') : t('item.newNote') }}
+      </Button>
     </div>
 
     <!-- The pop-out doesn't mount the main app's dialog/toast hosts. -->

@@ -59,5 +59,14 @@
     "deleteTodoMessage": "Gỡ việc này?",
     "deleteNoteTitle": "Xóa ghi chú",
     "deleteNoteMessage": "Gỡ ghi chú này?"
-  }
+  },
+  "emptyTodoHint": "Thêm bằng nút Việc mới, hoặc để AI thêm qua các tool todos.",
+  "emptyNoteHint": "Viết bằng nút Ghi chú mới, hoặc để AI lưu qua các tool notes.",
+  "createdAt": "Tạo lúc {date}",
+  "updatedAt": "Cập nhật lúc {date}",
+  "renameHint": "Bấm hoặc nhấn F2 để đổi tên",
+  "editTitle": "Sửa (E)",
+  "moreActions": "Thao tác khác",
+  "count": "{count} mục | {count} mục",
+  "countFiltered": "{shown} / {total} mục | {shown} / {total} mục"
 }
