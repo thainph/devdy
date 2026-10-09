@@ -13,7 +13,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  ChevronDown, Cpu, FileText, ImagePlus, Maximize2, Minimize2, Paperclip, Play, Send, Square, X,
+  ChevronDown, Cpu, FileText, Maximize2, Minimize2, Paperclip, Play, Send, Square, X,
 } from 'lucide-vue-next'
 import { Button, AppSelect } from '@/components/ui'
 
@@ -93,7 +93,6 @@ const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 const text = ref('')
 const composerEl = ref<HTMLTextAreaElement | null>(null)
-const imageInputEl = ref<HTMLInputElement | null>(null)
 const fileInputEl = ref<HTMLInputElement | null>(null)
 
 // ── unified model picker ───────────────────────────────────────────────────
@@ -217,18 +216,13 @@ function addImageFile(file: File | null): void {
   reader.readAsDataURL(file)
 }
 
-function onPickImages(e: Event): void {
-  const inp = e.target as HTMLInputElement
-  for (const f of Array.from(inp.files ?? [])) addImageFile(f)
-  inp.value = ''
-}
-
 function removePendingImage(id: string): void {
   pendingImages.value = pendingImages.value.filter((img) => img.id !== id)
 }
 
-// Non-image files are attached by name (embedded base64). The FileReader reads
-// them the same way; the Host receives {name, mime, data_base64}.
+// One picker for everything: images go to the thumbnail strip, other files are
+// attached by name (embedded base64). The FileReader reads them the same way;
+// the Host receives {name, mime, data_base64}.
 const pendingFileData = new Map<string, CmdAttachment>()
 
 function onPickFiles(e: Event): void {
@@ -648,7 +642,6 @@ function onKeydown(e: KeyboardEvent): void {
         </div>
       </div>
 
-      <input ref="imageInputEl" type="file" accept="image/*" multiple class="hidden" @change="onPickImages" />
       <input ref="fileInputEl" type="file" multiple class="hidden" @change="onPickFiles" />
 
       <!-- Prompt card -->
@@ -673,14 +666,6 @@ function onKeydown(e: KeyboardEvent): void {
         <div class="px-1.5 pb-1.5 space-y-1.5">
           <!-- Action row: attachments/expand on the left, Send/Cancel on the right. -->
           <div class="flex items-center gap-1.5">
-            <button
-              class="inline-flex items-center justify-center h-8 w-8 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 shrink-0"
-              :disabled="disabled || sending"
-              :title="t('controller.composer.attachImage')"
-              @click="imageInputEl?.click()"
-            >
-              <ImagePlus class="h-4 w-4" :stroke-width="2" />
-            </button>
             <button
               class="inline-flex items-center justify-center h-8 w-8 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 shrink-0"
               :disabled="disabled || sending"

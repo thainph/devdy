@@ -14,7 +14,8 @@
     "google": "Google Account",
     "usage": "Usage & Budget",
     "remote": "Remote Control",
-    "prompts": "Prompt Templates"
+    "prompts": "Prompt Templates",
+    "inbox": "Inbox API"
   },
   "general": {
     "theme": "Theme",
@@ -353,5 +354,25 @@
   },
   "toast": {
     "saved": "Saved"
+  },
+  "inboxApi": {
+    "title": "Inbox API (Chrome extension)",
+    "help": "A local HTTP endpoint (127.0.0.1 only) the Chrome extension pushes captures to: Slack threads to /v1/slack-threads, web pages to /v1/web-pages. Paste the base URL and token into the extension.",
+    "status": "Status",
+    "running": "Listening on port {port}",
+    "stopped": "Not running",
+    "refresh": "Refresh status",
+    "baseUrl": "Base URL",
+    "token": "Token",
+    "copy": "Copy",
+    "copied": "Copied",
+    "reveal": "Show token",
+    "hide": "Hide token",
+    "regenerate": "Regenerate",
+    "regenerateTitle": "Regenerate token",
+    "regenerateMessage": "The current token stops working immediately; the extension must be updated with the new one. Continue?",
+    "regenerated": "New token generated",
+    "regenerateHint": "Invalidates the old token immediately.",
+    "usage": "Request format"
   }
 }

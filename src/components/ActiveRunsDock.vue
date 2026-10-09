@@ -203,6 +203,18 @@ function projectName(projectId: string): string {
 function open(row: DockRow) {
   // Opening the run counts as viewing it — clear its finished notification.
   live.markSeen(row.runId)
+  // A conductor row stands in for its workers, so opening it acknowledges their
+  // finished notifications too — no need to visit each worker. Pending
+  // permissions are left alone; those still need an explicit answer.
+  if (row.role === 'conductor') {
+    const finishedWorkers: string[] = []
+    live.sessions.forEach((s) => {
+      if (s.notifyDone && runsStore.runMeta.get(s.runId)?.conductor_run_id === row.runId) {
+        finishedWorkers.push(s.runId)
+      }
+    })
+    finishedWorkers.forEach((id) => live.markSeen(id))
+  }
   tabsStore.open(row.projectId, row.runId)
   if (row.runId === activeRunId.value) return
   router

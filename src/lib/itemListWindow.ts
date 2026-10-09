@@ -1,4 +1,4 @@
-// Opens THE todo / note LIST window — a standalone OS window docked against the
+// Opens THE todo / note / capture LIST window — a standalone OS window docked against the
 // right edge of the monitor the user is working on (same as the permission
 // window), so it reads like a side panel beside the main window WITHOUT ever
 // resizing it (resizing the main window was janky).
@@ -11,6 +11,14 @@ import { emit } from '@tauri-apps/api/event'
 import { trackWindowForTray } from '@/lib/tray'
 import { dockRightOnCurrentMonitor } from '@/lib/windowCascade'
 import type { ItemKind } from '@/lib/itemWindow'
+import type { CaptureKind } from '@/stores/captures'
+
+/**
+ * The list window's tabs: the two hand-written kinds plus the two capture kinds
+ * (Slack threads, web pages), which arrive from the Inbox API and open in their
+ * own detail window (lib/captureWindow) instead of the item window.
+ */
+export type ItemListKind = ItemKind | CaptureKind
 
 const LIST_WINDOW_LABEL = 'item-list'
 const LIST_WINDOW_WIDTH = 460
@@ -24,7 +32,7 @@ export const ITEM_LIST_SET_KIND = 'item-list:set-kind'
 export const ITEM_LIST_OPEN_RUN = 'item-list:open-run'
 
 export interface ItemListSetKind {
-  kind: ItemKind
+  kind: ItemListKind
   projectId?: string | null
 }
 
@@ -38,7 +46,7 @@ export interface ItemListOpenRun {
  * optionally scoped to a project.
  */
 export async function openItemListWindow(
-  kind: ItemKind = 'todo',
+  kind: ItemListKind = 'todo',
   opts: { projectId?: string | null } = {},
 ): Promise<WebviewWindow | null> {
   const projectId = opts.projectId ?? null

@@ -26,6 +26,23 @@ function db() {
 
 const nowIso = () => new Date().toISOString();
 
+/**
+ * Current UTC time in the exact shape of Rust's `chrono::Utc::now().to_rfc3339()`
+ * (`2026-10-08T09:00:00.123456+00:00`): `+00:00` offset instead of `Z`, and the
+ * fraction printed like chrono's AutoSi — omitted when zero, else 3 or 6 digits
+ * (JS has no nanosecond clock, so we stop at microseconds). Used for tables the
+ * Rust backend also writes, so `ORDER BY updated_at` compares like with like.
+ */
+function nowRfc3339() {
+  const micros = Math.floor((performance.timeOrigin + performance.now()) * 1000);
+  const secs = Math.floor(micros / 1e6);
+  const frac = micros - secs * 1e6;
+  const base = new Date(secs * 1000).toISOString().slice(0, 19);
+  let f = '';
+  if (frac) f = frac % 1000 === 0 ? `.${String(frac / 1000).padStart(3, '0')}` : `.${String(frac).padStart(6, '0')}`;
+  return `${base}${f}+00:00`;
+}
+
 /** Run `fn` inside a transaction so a failure mid-batch rolls the whole thing back. */
 function tx(fn) {
   const d = db();
@@ -71,14 +88,16 @@ function scopedProjectId(scope) {
  * therefore a plain reorder (same as the app's drag-and-drop), while passing a
  * few ids is a safe "move these to the top" — neither can corrupt the ordering.
  */
-function reorderRows(table, ids, orderBy) {
+function reorderRows(table, ids, orderBy, { where = '', params = [], label = table } = {}) {
+  // `where`/`params` narrow the set being renumbered (e.g. one capture kind).
+  const filter = where ? `WHERE ${where}` : '';
   const all = db()
-    .prepare(`SELECT id FROM ${table} ORDER BY ${orderBy}`)
-    .all()
+    .prepare(`SELECT id FROM ${table} ${filter} ORDER BY ${orderBy}`)
+    .all(...params)
     .map((r) => r.id);
   const known = new Set(all);
   const missing = ids.filter((id) => !known.has(id));
-  if (missing.length) throw new Error(`unknown ${table} id(s): ${missing.join(', ')}`);
+  if (missing.length) throw new Error(`unknown ${label} id(s): ${missing.join(', ')}`);
   const moved = new Set(ids);
   const order = [...ids, ...all.filter((id) => !moved.has(id))];
   return tx((d) => {
@@ -231,6 +250,295 @@ export function setNoteProject({ id, scope = 'project' } = {}) {
 
 export function reorderNotes({ ids } = {}) {
   return reorderRows('notes', normIds(ids), 'position ASC, updated_at DESC');
+}
+
+// ---- Captures (Slack threads + web pages) -----------------------------------
+//
+// Content pushed by the Chrome extension (or imported manually) into `captures`,
+// one row per item with `kind` = 'slack' | 'web', and attachment rows in
+// `capture_attachments`. Attachment `file_path` is stored RELATIVE to <app_data>;
+// files live under <app_data>/<kind dir>/<capture_id>/files/. Every function
+// takes the kind and only ever sees rows of that kind, so a slack_* tool can
+// never touch a web page (and vice versa). Scope semantics mirror notes.
+
+const CAPTURE_KINDS = {
+  slack: { label: 'slack thread', dir: 'slack-threads', search: ['title', 'content', 'channel'] },
+  web: { label: 'web page', dir: 'web-pages', search: ['title', 'content', 'site_name', 'source_url'] },
+};
+const CAPTURE_COLS = `c.id, c.kind, c.title, c.title_custom, c.content, c.project_id, c.position,
+  c.created_at, c.updated_at, c.exported_at,
+  c.workspace, c.channel, c.thread_url, c.thread_ts,
+  c.source_url, c.site_name, c.author, c.published_at, c.description, c.selection,
+  (SELECT COUNT(*) FROM capture_attachments a WHERE a.capture_id = c.id) AS attachment_count`;
+const CAPTURE_ORDER = 'ORDER BY c.position ASC, c.updated_at DESC';
+const CAPTURE_TITLE_MAX = 200;
+// Inline-read cap for *_read_attachment.
+const ATTACHMENT_INLINE_MAX = 1024 * 1024;
+
+function captureKind(kind) {
+  const k = CAPTURE_KINDS[kind];
+  if (!k) throw new Error(`unknown capture kind: ${kind}`);
+  return k;
+}
+
+/** Resolve a stored (app_data-relative) attachment path to an absolute one inside app_data. */
+function attachmentAbsPath(filePath) {
+  const base = resolve(appDataDir());
+  const target = resolve(base, String(filePath || ''));
+  if (target === base || !target.startsWith(base + sep)) {
+    throw new Error(`attachment path escapes the app data dir: ${filePath}`);
+  }
+  return target;
+}
+
+/** The capture's files dir for its kind, or null when the id isn't a safe single path segment. */
+function captureDir(kind, id) {
+  if (!/^[A-Za-z0-9_-]+$/.test(String(id))) return null;
+  const base = resolve(appDataDir(), captureKind(kind).dir);
+  const target = resolve(base, String(id));
+  return target.startsWith(base + sep) ? target : null;
+}
+
+/** Throw "<kind> not found" unless `id` is an existing row of this kind. */
+function requireCapture(kind, id) {
+  const k = captureKind(kind);
+  if (!id) throw new Error(`${k.label} id is required`);
+  const row = db().prepare('SELECT id, title, content FROM captures WHERE id = ? AND kind = ?').get(id, kind);
+  if (!row) throw new Error(`${k.label} not found: ${id}`);
+  return row;
+}
+
+export function listCaptures(kind, { scope = 'project', limit = 50 } = {}) {
+  captureKind(kind);
+  const projectId = process.env.DEVDY_PROJECT_ID || null;
+  const lim = Math.max(1, Math.min(200, Number(limit) || 50));
+  if (scope === 'project' && projectId) {
+    return db()
+      .prepare(`SELECT ${CAPTURE_COLS} FROM captures c WHERE c.kind = ? AND c.project_id = ? ${CAPTURE_ORDER} LIMIT ?`)
+      .all(kind, projectId, lim);
+  }
+  return db()
+    .prepare(`SELECT ${CAPTURE_COLS} FROM captures c WHERE c.kind = ? ${CAPTURE_ORDER} LIMIT ?`)
+    .all(kind, lim);
+}
+
+/** One capture plus its attachments (with ABSOLUTE `path`), or undefined. */
+export function readCapture(kind, id) {
+  const k = captureKind(kind);
+  if (!id) throw new Error(`${k.label} id is required`);
+  const row = db().prepare(`SELECT ${CAPTURE_COLS} FROM captures c WHERE c.id = ? AND c.kind = ?`).get(id, kind);
+  if (!row) return row;
+  const attachments = db()
+    .prepare(
+      `SELECT id, capture_id, name, file_path, size, mime, created_at
+       FROM capture_attachments WHERE capture_id = ? ORDER BY name`,
+    )
+    .all(id)
+    .map((a) => {
+      let path;
+      try {
+        path = attachmentAbsPath(a.file_path);
+      } catch {
+        path = null;
+      }
+      return { ...a, path };
+    });
+  return { ...row, attachments };
+}
+
+/** Substring search over the kind's text columns. `%`/`_`/`\` in the query are literal. */
+export function searchCaptures(kind, { query, scope = 'project', limit = 20 } = {}) {
+  const k = captureKind(kind);
+  const q = String(query || '').trim();
+  if (!q) throw new Error('query is required');
+  const projectId = process.env.DEVDY_PROJECT_ID || null;
+  const lim = Math.max(1, Math.min(200, Number(limit) || 20));
+  const like = `%${q.replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
+  const match = `(${k.search.map((col) => `c.${col} LIKE ? ESCAPE '\\'`).join(' OR ')})`;
+  const likes = k.search.map(() => like);
+  if (scope === 'project' && projectId) {
+    return db()
+      .prepare(
+        `SELECT ${CAPTURE_COLS} FROM captures c WHERE c.kind = ? AND c.project_id = ? AND ${match} ${CAPTURE_ORDER} LIMIT ?`,
+      )
+      .all(kind, projectId, ...likes, lim);
+  }
+  return db()
+    .prepare(`SELECT ${CAPTURE_COLS} FROM captures c WHERE c.kind = ? AND ${match} ${CAPTURE_ORDER} LIMIT ?`)
+    .all(kind, ...likes, lim);
+}
+
+export function updateCapture(kind, { id, title, content } = {}) {
+  const existing = requireCapture(kind, id);
+  const t = title != null ? String(title).trim() : null;
+  // Content is stored verbatim (matching the Rust backend) — only the title is trimmed.
+  const c = content != null ? String(content) : null;
+  if (t == null && c == null) throw new Error('a title or content is required');
+  if (t != null && [...t].length > CAPTURE_TITLE_MAX) {
+    throw new Error(`title must be at most ${CAPTURE_TITLE_MAX} characters`);
+  }
+  // Don't let a partial update empty the capture entirely.
+  if ((t != null ? t : existing.title) === '' && (c != null ? c : existing.content).trim() === '') {
+    throw new Error('a title or content is required');
+  }
+  const now = nowRfc3339();
+  // COALESCE so an omitted field keeps its current DB value atomically (see updateNote).
+  // A title that actually changes marks it custom (title_custom = 1) so re-exports
+  // from the extension keep it; SET expressions see the pre-update `title`.
+  db()
+    .prepare(
+      `UPDATE captures
+          SET title_custom = CASE WHEN ? IS NOT NULL AND ? <> title THEN 1 ELSE title_custom END,
+              title = COALESCE(?, title), content = COALESCE(?, content), updated_at = ?
+        WHERE id = ? AND kind = ?`,
+    )
+    .run(t, t, t, c, now, id, kind);
+  const row = db().prepare('SELECT title, title_custom, content FROM captures WHERE id = ?').get(id);
+  return { id, title: row.title, title_custom: row.title_custom, content: row.content, updated_at: now };
+}
+
+/** Set a custom title; title_custom = 1 makes it survive re-exports from the extension. */
+export function renameCapture(kind, { id, title } = {}) {
+  const k = captureKind(kind);
+  if (!id) throw new Error(`${k.label} id is required`);
+  const t = String(title ?? '').trim();
+  if (!t) throw new Error('title is required');
+  if ([...t].length > CAPTURE_TITLE_MAX) throw new Error(`title must be at most ${CAPTURE_TITLE_MAX} characters`);
+  const now = nowRfc3339();
+  const res = db()
+    .prepare('UPDATE captures SET title = ?, title_custom = 1, updated_at = ? WHERE id = ? AND kind = ?')
+    .run(t, now, id, kind);
+  if (res.changes === 0) throw new Error(`${k.label} not found: ${id}`);
+  return { id, title: t, title_custom: 1, updated_at: now };
+}
+
+export function appendCapture(kind, { id, text } = {}) {
+  const k = captureKind(kind);
+  if (!id) throw new Error(`${k.label} id is required`);
+  const add = String(text || '').trim();
+  if (!add) throw new Error('text is required');
+  const now = nowRfc3339();
+  // Concatenate inside the UPDATE so the read and write are one atomic statement (see appendNote).
+  const res = db()
+    .prepare(
+      `UPDATE captures
+          SET content = CASE
+                WHEN content IS NULL OR content = '' THEN ?
+                ELSE content || char(10) || char(10) || ?
+              END,
+              updated_at = ?
+        WHERE id = ? AND kind = ?`,
+    )
+    .run(add, add, now, id, kind);
+  if (res.changes === 0) throw new Error(`${k.label} not found: ${id}`);
+  const row = db().prepare('SELECT content FROM captures WHERE id = ?').get(id);
+  return { id, content: row.content, updated_at: now };
+}
+
+/**
+ * Delete captures of this kind by id: attachment rows are removed explicitly (not
+ * relying on the FK cascade, which needs PRAGMA foreign_keys), then each deleted
+ * row's <app_data>/<kind dir>/<id> dir is removed. Ids of another kind are left
+ * alone; ids that aren't a safe single path segment never touch the filesystem.
+ */
+export function deleteCaptures(kind, { ids } = {}) {
+  captureKind(kind);
+  const list = normIds(ids);
+  const deleted = tx((d) => {
+    const isKind = d.prepare('SELECT 1 FROM captures WHERE id = ? AND kind = ?');
+    const delAtt = d.prepare('DELETE FROM capture_attachments WHERE capture_id = ?');
+    const delRow = d.prepare('DELETE FROM captures WHERE id = ? AND kind = ?');
+    return list.filter((id) => {
+      if (!isKind.get(id, kind)) return false;
+      delAtt.run(id);
+      return delRow.run(id, kind).changes > 0;
+    });
+  });
+  let dirsRemoved = 0;
+  for (const id of deleted) {
+    const dir = captureDir(kind, id);
+    if (!dir || !existsSync(dir)) continue;
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      dirsRemoved += 1;
+    } catch {
+      /* best effort — the rows are already gone */
+    }
+  }
+  return { deleted: deleted.length, requested: list.length, dirs_removed: dirsRemoved };
+}
+
+/** Link a capture to the current project, or detach it with scope="global". */
+export function setCaptureProject(kind, { id, scope = 'project' } = {}) {
+  requireCapture(kind, id);
+  const now = nowRfc3339();
+  if (scope === 'global') {
+    db().prepare('UPDATE captures SET project_id = NULL, updated_at = ? WHERE id = ?').run(now, id);
+    return { id, project_id: null };
+  }
+  const projectId = requireProject();
+  db().prepare('UPDATE captures SET project_id = ?, updated_at = ? WHERE id = ?').run(projectId, now, id);
+  return { id, project_id: projectId };
+}
+
+/** Ordering is per kind: only rows of this kind are renumbered. */
+export function reorderCaptures(kind, { ids } = {}) {
+  const k = captureKind(kind);
+  return reorderRows('captures', normIds(ids), 'position ASC, updated_at DESC', {
+    where: 'kind = ?',
+    params: [kind],
+    label: `${k.label}`,
+  });
+}
+
+// Mimes that are never worth sniffing as text. `application/octet-stream` is
+// deliberately absent: it is the generic fallback, so those files get sniffed.
+const BINARY_MIME = /^(image|audio|video|font)\/|^application\/(pdf|zip|gzip|x-tar|x-7z|vnd\.|msword)/i;
+
+/**
+ * Read one attachment (of a capture of this kind) by attachment id. Small
+ * (≤ 1 MB) UTF-8 text files come back inline as `text`; anything else returns
+ * `text: null` plus a `reason` so the caller can point the AI at its own file
+ * reader with the absolute path.
+ */
+export function readCaptureAttachment(kind, id) {
+  captureKind(kind);
+  if (!id) throw new Error('attachment id is required');
+  const att = db()
+    .prepare(
+      `SELECT a.id, a.capture_id, a.name, a.file_path, a.size, a.mime, a.created_at, c.title AS capture_title
+       FROM capture_attachments a JOIN captures c ON c.id = a.capture_id
+       WHERE a.id = ? AND c.kind = ?`,
+    )
+    .get(id, kind);
+  if (!att) throw new Error(`attachment not found: ${id}`);
+  const path = attachmentAbsPath(att.file_path);
+  const out = { ...att, path, text: null, reason: null };
+  if (!existsSync(path) || !statSync(path).isFile()) {
+    out.reason = 'file is missing on disk';
+    return out;
+  }
+  const size = statSync(path).size;
+  out.size = size;
+  if (size > ATTACHMENT_INLINE_MAX) {
+    out.reason = `file is larger than ${ATTACHMENT_INLINE_MAX} bytes`;
+    return out;
+  }
+  if (att.mime && BINARY_MIME.test(att.mime)) {
+    out.reason = `binary mime type (${att.mime})`;
+    return out;
+  }
+  const buf = readFileSync(path);
+  if (buf.includes(0)) {
+    out.reason = 'file looks binary';
+    return out;
+  }
+  try {
+    out.text = new TextDecoder('utf-8', { fatal: true }).decode(buf);
+  } catch {
+    out.reason = 'file is not valid UTF-8';
+  }
+  return out;
 }
 
 // ---- Sessions / runs --------------------------------------------------------
