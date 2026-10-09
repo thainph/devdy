@@ -1,22 +1,24 @@
 <script setup lang="ts">
-// "Insert Slack thread / web page" picker for the chat composer — the sibling
-// of the saved-prompt dropdown (RunView, BookMarked icon), built on the same
-// DropdownMenu. Picking a capture does NOT paste its content: it emits a short
-// reference (title, source, id) plus a hint to read it through the devdy MCP
-// tools, so the AI pulls the full text + attachments on demand.
+// "Insert Slack thread / web page / note / todo" picker for the chat composer —
+// the sibling of the saved-prompt dropdown (RunView, BookMarked icon), built on
+// the same DropdownMenu. Picking an item does NOT paste its content: it emits a
+// one-line reference — `[Slack|Web|Note] <title> (id: …)`, or `[Todo] (id: …)` —
+// and the AI resolves the id through the devdy MCP tools when it needs more.
 //
 // The host inserts the emitted text at the caret (same contract as a saved
 // prompt: own line, focus, never sends).
 //
-// A segmented All | Slack | Web filter (remembered in localStorage) narrows the
-// kind; rows: the run's project first, then the rest; newest first. The search
-// box filters title / channel / workspace / domain / site; ↑ ↓ move, Enter inserts.
+// A segmented All | Slack | Web | Note | Todo filter (remembered in
+// localStorage) narrows the kind; todos show open ones unless "Show done" is on.
+// Rows: the run's project first, then the rest; newest first. The search box
+// filters title / channel / workspace / domain / site / note body / todo text;
+// ↑ ↓ move, Enter inserts.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { Globe, Inbox, Search, Slack } from 'lucide-vue-next'
+import { Check, Globe, Inbox, ListTodo, Search, Slack, StickyNote } from 'lucide-vue-next'
 import { DropdownMenu } from '@/components/ui'
-import { relativeAge } from '@/lib/itemText'
+import { firstLine, relativeAge } from '@/lib/itemText'
 import {
   CAPTURES_CHANGED,
   captureDomain,
@@ -25,9 +27,11 @@ import {
   type Capture,
   type CaptureKind,
 } from '@/stores/captures'
+import { useNotesStore, type Note } from '@/stores/notes'
+import { useTodosStore, type Todo } from '@/stores/todos'
 
 const props = defineProps<{
-  /** The run's project: its captures are listed first. */
+  /** The run's project: its items are listed first. */
   projectId?: string | null
   disabled?: boolean
 }>()
@@ -37,9 +41,11 @@ const emit = defineEmits<{
   insert: [text: string]
 }>()
 
-type Filter = 'all' | CaptureKind
+type PickKind = CaptureKind | 'note' | 'todo'
+type Filter = 'all' | PickKind
 const FILTER_STORAGE_KEY = 'devdy.capturePicker.filter'
-const FILTERS: Filter[] = ['all', 'slack', 'web']
+const FILTERS: Filter[] = ['all', 'slack', 'web', 'note', 'todo']
+const KIND_ICON = { slack: Slack, web: Globe, note: StickyNote, todo: ListTodo } as const
 
 function loadFilter(): Filter {
   try {
@@ -50,42 +56,131 @@ function loadFilter(): Filter {
   }
 }
 
+/** One row of any kind; `reference` is what gets inserted. */
+interface PickItem {
+  key: string
+  kind: PickKind
+  title: string
+  meta: string
+  projectId: string | null
+  /** ISO time the "newest first" order uses. */
+  sortAt: string
+  /** Lower-cased text the search box matches. */
+  hay: string
+  done: boolean
+  reference: string
+}
+
 const { t } = useI18n()
-const store = useCapturesStore()
+const captures = useCapturesStore()
+const notes = useNotesStore()
+const todos = useTodosStore()
 
 const open = ref(false)
 const query = ref('')
 const filter = ref<Filter>(loadFilter())
+/** Todos: open ones only unless this is on. */
+const showDone = ref(false)
 const active = ref(0)
 const searchEl = ref<HTMLInputElement | null>(null)
 const rowEls = ref<HTMLButtonElement[]>([])
 let unlisten: UnlistenFn | null = null
 
-function titleOf(c: Capture): string {
-  return c.title.trim() || t(`capture.${c.kind}.untitled`)
+// ── Rows per kind ───────────────────────────────────────────────────────────
+
+function captureItem(c: Capture): PickItem {
+  const title = c.title.trim() || t(`capture.${c.kind}.untitled`)
+  const source =
+    c.kind === 'slack' ? [channelLabel(c)] : [captureDomain(c) || c.siteName?.trim() || '']
+  const meta = [...source]
+  if (c.attachmentCount > 0) meta.push(`📎${c.attachmentCount}`)
+  meta.push(relativeAge(c.updatedAt))
+  const hay =
+    c.kind === 'slack'
+      ? `${c.title}\n${c.channel ?? ''}\n${c.workspace ?? ''}`
+      : `${c.title}\n${captureDomain(c)}\n${c.siteName ?? ''}`
+  return {
+    key: `capture:${c.id}`,
+    kind: c.kind,
+    title,
+    meta: meta.filter(Boolean).join(' · '),
+    projectId: c.projectId,
+    sortAt: c.updatedAt,
+    hay: hay.toLowerCase(),
+    done: false,
+    reference: reference(c.kind, c.id, title),
+  }
 }
 
-const byNewest = (a: Capture, b: Capture) => b.updatedAt.localeCompare(a.updatedAt)
+function noteItem(n: Note): PickItem {
+  const title = n.title.trim() || firstLine(n.content) || t('item.untitled')
+  // The body's first line as the source line, unless it already is the title.
+  const preview = n.title.trim() ? firstLine(n.content) : ''
+  return {
+    key: `note:${n.id}`,
+    kind: 'note',
+    title,
+    meta: [preview, relativeAge(n.updated_at)].filter(Boolean).join(' · '),
+    projectId: n.project_id,
+    sortAt: n.updated_at,
+    hay: `${n.title}\n${n.content}`.toLowerCase(),
+    done: false,
+    reference: reference('note', n.id, title),
+  }
+}
+
+function todoItem(x: Todo): PickItem {
+  const title = firstLine(x.text) || t('item.untitled')
+  return {
+    key: `todo:${x.id}`,
+    kind: 'todo',
+    title,
+    meta: [x.done ? t('item.statusDone') : '', relativeAge(x.created_at)].filter(Boolean).join(' · '),
+    projectId: x.project_id,
+    sortAt: x.created_at,
+    hay: x.text.toLowerCase(),
+    done: x.done,
+    reference: reference('todo', x.id),
+  }
+}
+
+const REF_TAG: Record<PickKind, string> = { slack: 'Slack', web: 'Web', note: 'Note', todo: 'Todo' }
+
+/** The one-line reference the AI gets: kind, title (none for a todo), id. */
+function reference(kind: PickKind, id: string, title?: string): string {
+  return `[${REF_TAG[kind]}]${title ? ` ${title}` : ''} (id: ${id})`
+}
+
+// ── Filtering / grouping ────────────────────────────────────────────────────
+
+const allItems = computed<PickItem[]>(() => [
+  ...captures.captures.map(captureItem),
+  ...notes.notes.map(noteItem),
+  ...todos.todos.map(todoItem),
+])
+
+/** The current kind, before the search: what "nothing here yet" is judged on. */
+const ofFilter = computed(() =>
+  allItems.value.filter((it) => {
+    if (filter.value !== 'all' && it.kind !== filter.value) return false
+    if (it.kind === 'todo' && it.done && !showDone.value) return false
+    return true
+  }),
+)
 
 const filtered = computed(() => {
   const q = query.value.trim().toLowerCase()
-  return store.captures.filter((c) => {
-    if (filter.value !== 'all' && c.kind !== filter.value) return false
-    if (!q) return true
-    const hay =
-      c.kind === 'slack'
-        ? `${c.title}\n${c.channel ?? ''}\n${c.workspace ?? ''}`
-        : `${c.title}\n${captureDomain(c)}\n${c.siteName ?? ''}`
-    return hay.toLowerCase().includes(q)
-  })
+  return q ? ofFilter.value.filter((it) => it.hay.includes(q)) : ofFilter.value
 })
+
+const byNewest = (a: PickItem, b: PickItem) => b.sortAt.localeCompare(a.sortAt)
 
 /** "This project" first (only when the run has one), then everything else. */
 const groups = computed(() => {
   const pid = props.projectId || null
-  const mine = pid ? filtered.value.filter((c) => c.projectId === pid).sort(byNewest) : []
-  const rest = filtered.value.filter((c) => !pid || c.projectId !== pid).sort(byNewest)
-  const out: { key: string; label: string | null; items: Capture[] }[] = []
+  const mine = pid ? filtered.value.filter((it) => it.projectId === pid).sort(byNewest) : []
+  const rest = filtered.value.filter((it) => !pid || it.projectId !== pid).sort(byNewest)
+  const out: { key: string; label: string | null; items: PickItem[] }[] = []
   if (mine.length) out.push({ key: 'mine', label: t('capture.picker.thisProject'), items: mine })
   if (rest.length) {
     out.push({
@@ -101,35 +196,25 @@ const groups = computed(() => {
 /** Flat order of the rendered rows, for keyboard navigation. */
 const flat = computed(() => groups.value.flatMap((g) => g.items))
 
-function meta(c: Capture): string {
-  const parts =
-    c.kind === 'slack' ? [channelLabel(c)] : [captureDomain(c) || c.siteName?.trim() || '']
-  if (c.attachmentCount > 0) parts.push(`📎${c.attachmentCount}`)
-  parts.push(relativeAge(c.updatedAt))
-  return parts.filter(Boolean).join(' · ')
-}
-
-/** The reference the AI gets: short, English, and pointing at the MCP tools. */
-function reference(c: Capture): string {
-  if (c.kind === 'web') {
-    const domain = captureDomain(c) || c.siteName?.trim() || ''
-    return (
-      `[Web page] ${titleOf(c)}${domain ? ` (${domain})` : ''} — id: ${c.id}\n` +
-      'Read it with the web_pages_read tool (use max_chars/offset or section for long pages).'
-    )
+/** "Nothing here yet" for the current kind. */
+const emptyText = computed(() => {
+  switch (filter.value) {
+    case 'slack':
+    case 'web':
+      return t(`capture.${filter.value}.empty`)
+    case 'note':
+      return t('item.emptyNote')
+    case 'todo':
+      return t('item.emptyTodo')
+    default:
+      return t('capture.picker.empty')
   }
-  const details = [channelLabel(c)]
-  if (c.attachmentCount > 0) details.push(`${c.attachmentCount} files`)
-  const shown = details.filter(Boolean)
-  const suffix = shown.length ? ` (${shown.join(' · ')})` : ''
-  return (
-    `[Slack thread] ${titleOf(c)}${suffix} — id: ${c.id}\n` +
-    'Read it with the slack_threads_read tool (attachments via slack_threads_read_attachment).'
-  )
-}
+})
 
-function pick(c: Capture) {
-  emit('insert', reference(c))
+const showDoneToggle = computed(() => filter.value === 'all' || filter.value === 'todo')
+
+function pick(it: PickItem) {
+  emit('insert', it.reference)
 }
 
 function setFilter(next: Filter) {
@@ -142,12 +227,23 @@ function setFilter(next: Filter) {
   nextTick(() => searchEl.value?.focus())
 }
 
+function toggleShowDone() {
+  showDone.value = !showDone.value
+  nextTick(() => searchEl.value?.focus())
+}
+
+function refresh() {
+  void captures.fetchCaptures()
+  void notes.fetchNotes()
+  void todos.fetchTodos()
+}
+
 function onOpenChange(value: boolean) {
   open.value = value
   if (!value) return
   query.value = ''
   active.value = 0
-  void store.fetchCaptures()
+  refresh()
   nextTick(() => searchEl.value?.focus())
 }
 
@@ -168,7 +264,7 @@ function onSearchKeydown(e: KeyboardEvent) {
   }
 }
 
-watch([query, filter], () => {
+watch([query, filter, showDone], () => {
   active.value = 0
 })
 watch(active, (i) => {
@@ -178,7 +274,7 @@ watch(active, (i) => {
 onMounted(async () => {
   try {
     unlisten = await listen(CAPTURES_CHANGED, () => {
-      if (open.value) void store.fetchCaptures()
+      if (open.value) void captures.fetchCaptures()
     })
   } catch {
     /* running outside the Tauri shell */
@@ -204,7 +300,7 @@ onBeforeUnmount(() => {
       </button>
     </template>
 
-    <div class="w-80">
+    <div class="w-[22rem]">
       <!-- Kind filter + search. Clicks stop here so they don't close the menu. -->
       <div class="mb-1 space-y-1" @click.stop>
         <div class="flex rounded-md bg-muted p-0.5 text-[11px] font-medium">
@@ -219,8 +315,7 @@ onBeforeUnmount(() => {
             :aria-pressed="filter === f"
             @click="setFilter(f)"
           >
-            <Slack v-if="f === 'slack'" class="h-3 w-3" :stroke-width="2" />
-            <Globe v-else-if="f === 'web'" class="h-3 w-3" :stroke-width="2" />
+            <component :is="KIND_ICON[f]" v-if="f !== 'all'" class="h-3 w-3" :stroke-width="2" />
             {{ t(`capture.picker.${f}`) }}
           </button>
         </div>
@@ -238,15 +333,31 @@ onBeforeUnmount(() => {
             @keydown="onSearchKeydown"
           >
         </div>
+        <!-- Todos: open ones by default; done ones on request. -->
+        <button
+          v-if="showDoneToggle"
+          type="button"
+          class="flex cursor-pointer items-center gap-1.5 px-0.5 text-[11px] text-muted-foreground hover:text-foreground"
+          :aria-pressed="showDone"
+          @click="toggleShowDone"
+        >
+          <span
+            class="flex h-3 w-3 items-center justify-center rounded-[3px] border transition-colors"
+            :class="showDone ? 'bg-primary border-primary text-primary-foreground' : 'border-muted-foreground/40'"
+          >
+            <Check v-if="showDone" class="h-2 w-2" :stroke-width="3" />
+          </span>
+          {{ t('capture.picker.showDone') }}
+        </button>
       </div>
 
       <div class="max-h-72 overflow-y-auto">
         <p
-          v-if="store.captures.length === 0"
+          v-if="ofFilter.length === 0"
           class="px-2.5 py-4 text-center text-[11px] text-muted-foreground"
           @click.stop
         >
-          {{ t('capture.picker.empty') }}
+          {{ emptyText }}
         </p>
         <p
           v-else-if="flat.length === 0"
@@ -264,23 +375,26 @@ onBeforeUnmount(() => {
             {{ group.label }}
           </div>
           <button
-            v-for="c in group.items"
-            :key="c.id"
-            :ref="(el) => { if (el) rowEls[flat.indexOf(c)] = el as HTMLButtonElement }"
+            v-for="it in group.items"
+            :key="it.key"
+            :ref="(el) => { if (el) rowEls[flat.indexOf(it)] = el as HTMLButtonElement }"
             type="button"
             class="flex w-full cursor-pointer items-start gap-2 rounded px-2.5 py-1.5 text-left transition-colors"
-            :class="flat[active] === c ? 'bg-accent' : 'hover:bg-accent'"
-            @mouseenter="active = flat.indexOf(c)"
-            @click="pick(c)"
+            :class="flat[active] === it ? 'bg-accent' : 'hover:bg-accent'"
+            @mouseenter="active = flat.indexOf(it)"
+            @click="pick(it)"
           >
             <component
-              :is="c.kind === 'web' ? Globe : Slack"
+              :is="KIND_ICON[it.kind]"
               class="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground"
               :stroke-width="1.75"
             />
             <span class="block min-w-0 flex-1">
-              <span class="block w-full truncate text-[13px] text-popover-foreground">{{ titleOf(c) }}</span>
-              <span class="block w-full truncate text-[11px] text-muted-foreground">{{ meta(c) }}</span>
+              <span
+                class="block w-full truncate text-[13px] text-popover-foreground"
+                :class="it.done && 'text-muted-foreground line-through'"
+              >{{ it.title }}</span>
+              <span class="block w-full truncate text-[11px] text-muted-foreground">{{ it.meta }}</span>
             </span>
           </button>
         </template>

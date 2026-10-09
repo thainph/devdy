@@ -2588,7 +2588,7 @@ function insertSavedPrompt(p: SavedPrompt) {
   })
 }
 
-// A capture reference from CapturePicker goes in like a saved prompt.
+// A reference from CapturePicker (Slack / web / note / todo) goes in like a saved prompt.
 function insertCaptureRef(text: string) {
   insertSavedPrompt({ id: '', title: '', body: text })
 }
