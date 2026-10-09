@@ -10,8 +10,9 @@
 //     or F2 → inline field; Enter / blur save, Esc cancels); web excerpts carry
 //     an "Excerpt" badge;
 //   • one compact metadata line (Slack: `#channel · workspace · 2h`, web:
-//     `domain · author · 2h`; full dates in its tooltip) and a row of chips:
-//     project, files, Open in Slack / Open original;
+//     `domain · author · 2h`; full dates in its tooltip) and a files chip;
+//     Open in Slack / Open original is an icon in the titlebar, the project
+//     picker sits on the left of the footer;
 //   • the attachments as a thumbnail strip (images via the asset protocol, any
 //     file opens with the OS default app);
 //   • web only: a collapsible outline of the page's headings (click = scroll);
@@ -27,36 +28,26 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { openPath, openUrl } from '@tauri-apps/plugin-opener'
 import {
-  Check,
   ChevronDown,
   ChevronRight,
-  Copy,
-  ExternalLink,
   FileText,
-  FolderOpen,
   Globe,
-  MoreHorizontal,
   Paperclip,
-  Pencil,
   PencilLine,
-  Pin,
-  PinOff,
-  RotateCw,
   Slack,
-  Trash2,
 } from 'lucide-vue-next'
 import {
-  AppSelect,
   Badge,
   Button,
   ConfirmModal,
-  DropdownItem,
-  DropdownMenu,
-  DropdownSeparator,
   Textarea,
   ToastHost,
 } from '@/components/ui'
 import InlineRenameInput from '@/components/InlineRenameInput.vue'
+import DetailWindowTitlebar from '@/components/DetailWindowTitlebar.vue'
+import DetailWindowFooter from '@/components/DetailWindowFooter.vue'
+import CopyMarkdownButton from '@/components/CopyMarkdownButton.vue'
+import ProjectSelect from '@/components/ProjectSelect.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useFloatingWindow } from '@/composables/useFloatingWindow'
@@ -88,7 +79,6 @@ const params = new URLSearchParams(window.location.search)
 const captureId = params.get('id') ?? ''
 /** The opener passes the kind so even a missing capture gets the right wording. */
 const kindHint: CaptureKind = params.get('kind') === 'web' ? 'web' : 'slack'
-const NO_PROJECT = ''
 /** Attachments shown in the collapsed strip before the "+N" tile. */
 const STRIP_LIMIT = 6
 
@@ -104,7 +94,6 @@ const attachmentsEl = ref<HTMLElement | null>(null)
 
 // Edit mode edits the content only; the title has its own inline rename.
 const content = ref('')
-const projectId = ref<string>(NO_PROJECT)
 
 let unlisten: UnlistenFn[] = []
 
@@ -156,11 +145,6 @@ const metaTooltip = computed(() => {
   return lines.join('\n')
 })
 
-const projectOptions = computed(() => [
-  { value: NO_PROJECT, label: t('item.noProject') },
-  ...projects.projects.map((p) => ({ value: p.id, label: p.name })),
-])
-
 const visibleFiles = computed(() => {
   const all = capture.value?.attachments ?? []
   return showAllFiles.value ? all : all.slice(0, STRIP_LIMIT)
@@ -187,7 +171,6 @@ watch(
 
 function resetDraft() {
   content.value = capture.value?.content ?? ''
-  projectId.value = capture.value?.projectId ?? NO_PROJECT
 }
 
 /**
@@ -335,16 +318,14 @@ function onContentClick(e: MouseEvent) {
   if (att) void openAttachment(att)
 }
 
-async function onProjectChange(value: string) {
-  if (!capture.value) return
-  const next = value || null
-  if (next === capture.value.projectId) return
+/** The footer's project picker writes straight away; a failure leaves it as stored. */
+async function onProjectChange(next: string | null) {
+  if (!capture.value || next === capture.value.projectId) return
   try {
     await store.setProject(captureId, next)
     capture.value.projectId = next
   } catch (e) {
     toast.error(String(e))
-    projectId.value = capture.value.projectId ?? NO_PROJECT
   }
 }
 
@@ -431,17 +412,16 @@ async function remove() {
     })
 }
 
-/** Which copy button just fired, for its Check-icon feedback. */
-const copied = ref<'markdown' | 'id' | null>(null)
-async function copy(what: 'markdown' | 'id') {
-  const text = what === 'markdown' ? capture.value?.content ?? '' : captureId
+/** Copy ID just fired, for its Check-icon feedback (Copy markdown has its own). */
+const copiedId = ref(false)
+async function copyId() {
   try {
-    await navigator.clipboard.writeText(text)
-    copied.value = what
+    await navigator.clipboard.writeText(captureId)
+    copiedId.value = true
     setTimeout(() => {
-      if (copied.value === what) copied.value = null
+      copiedId.value = false
     }, 1500)
-    toast.success(what === 'markdown' ? t('capture.markdownCopied') : t('item.idCopied'))
+    toast.success(t('item.idCopied'))
   } catch {
     /* clipboard unavailable */
   }
@@ -517,36 +497,17 @@ onBeforeUnmount(() => {
 <template>
   <div class="flex h-screen w-screen flex-col bg-background text-foreground overflow-hidden">
     <!-- Slim titlebar: which capture this is and whether it has unsaved changes. -->
-    <div class="flex items-center gap-2 px-3 h-9 border-b border-border/60 shrink-0">
-      <component
-        :is="kind === 'web' ? Globe : Slack"
-        class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-        :stroke-width="1.75"
-      />
-      <span class="truncate text-xs text-muted-foreground" :title="heading">{{ heading }}</span>
-      <span v-if="dirty" class="shrink-0 text-[11px] text-muted-foreground/70">
-        · {{ t('item.unsaved') }}
-      </span>
-
-      <button
-        class="ml-auto flex items-center justify-center h-6 w-6 rounded-md transition-colors cursor-pointer shrink-0"
-        :class="pinned
-          ? 'bg-primary/15 text-primary hover:bg-primary/25'
-          : 'text-foreground/60 hover:text-foreground hover:bg-accent'"
-        :title="pinned ? t('item.unpin') : t('item.pin')"
-        @click="togglePin"
-      >
-        <component :is="pinned ? Pin : PinOff" class="h-3.5 w-3.5" :stroke-width="1.75" />
-      </button>
-      <button
-        class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-default"
-        :title="t('item.reload')"
-        :disabled="reloading"
-        @click="load({ quiet: true })"
-      >
-        <RotateCw class="h-3.5 w-3.5" :class="{ 'animate-spin': reloading }" :stroke-width="1.75" />
-      </button>
-    </div>
+    <DetailWindowTitlebar
+      :icon="kind === 'web' ? Globe : Slack"
+      :title="heading"
+      :dirty="dirty"
+      :pinned="pinned"
+      :reloading="reloading"
+      :external-label="originalUrl ? (kind === 'web' ? t('capture.openOriginal') : t('capture.openInSlack')) : undefined"
+      @toggle-pin="togglePin"
+      @reload="load({ quiet: true })"
+      @open-external="openOriginal"
+    />
 
     <!-- Body -->
     <div class="min-h-0 flex-1 flex flex-col overflow-auto px-4 py-3">
@@ -608,33 +569,16 @@ onBeforeUnmount(() => {
           {{ metaLine }}
         </p>
 
-        <!-- Chips: project · files · Open in Slack / Open original -->
-        <div class="mt-2 flex shrink-0 flex-wrap items-center gap-1.5">
-          <div class="w-48 max-w-full">
-            <AppSelect
-              v-model="projectId"
-              variant="ghost"
-              :options="projectOptions"
-              :placeholder="t('item.noProject')"
-              @update:model-value="onProjectChange"
-            >
-              <template #leading>
-                <FolderOpen class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.75" />
-              </template>
-            </AppSelect>
-          </div>
+        <!-- Files chip (jumps to the strip). The project picker is in the footer,
+             Open in Slack / Open original in the titlebar. -->
+        <div v-if="capture.attachments.length" class="mt-2 flex shrink-0 flex-wrap items-center gap-1.5">
           <Button
-            v-if="capture.attachments.length"
             variant="outline"
             size="xs"
             @click="scrollToFiles"
           >
             <Paperclip class="h-3 w-3" :stroke-width="1.75" />
             {{ t('capture.filesChip', { count: capture.attachments.length }, capture.attachments.length) }}
-          </Button>
-          <Button v-if="originalUrl" variant="outline" size="xs" :title="originalUrl" @click="openOriginal">
-            <ExternalLink class="h-3 w-3" :stroke-width="1.75" />
-            {{ kind === 'web' ? t('capture.openOriginal') : t('capture.openInSlack') }}
           </Button>
         </div>
 
@@ -744,46 +688,27 @@ onBeforeUnmount(() => {
       </template>
     </div>
 
-    <!-- Actions. Reading: Copy markdown + the ⋯ menu; editing: Cancel + Save. -->
-    <div v-if="capture && !missing" class="flex items-center gap-2 border-t border-border/60 px-3 py-2.5 shrink-0">
-      <template v-if="editing">
-        <span class="mr-auto" />
-        <Button variant="ghost" size="sm" @click="cancelEdit">
-          {{ t('common.cancel') }}
-        </Button>
-        <Button variant="primary" size="sm" :disabled="saving" @click="save">
-          {{ t('common.save') }}
-        </Button>
+    <!-- Actions (shared with the note / todo window). Reading: project on the
+         left; Copy markdown · Edit · ⋯ (Copy ID, Delete) on the right.
+         Editing: Cancel · Save. -->
+    <DetailWindowFooter
+      v-if="capture && !missing"
+      :editing="editing"
+      :can-save="!saving"
+      :copied-id="copiedId"
+      @edit="startEdit"
+      @cancel="cancelEdit"
+      @save="save"
+      @copy-id="copyId"
+      @delete="remove"
+    >
+      <template #left>
+        <ProjectSelect :model-value="capture.projectId" @update:model-value="onProjectChange" />
       </template>
-      <template v-else>
-        <Button variant="outline" size="sm" @click="copy('markdown')">
-          <component :is="copied === 'markdown' ? Check : Copy" class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ t('capture.copyMarkdown') }}
-        </Button>
-        <span class="mr-auto" />
-        <DropdownMenu align="right">
-          <template #trigger>
-            <Button variant="ghost" size="icon-sm" :title="t('capture.moreActions')">
-              <MoreHorizontal class="h-4 w-4" :stroke-width="1.75" />
-            </Button>
-          </template>
-          <DropdownItem @click="startEdit">
-            <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
-            <span class="flex-1">{{ t('capture.editContent') }}</span>
-            <span class="text-[11px] text-muted-foreground">E</span>
-          </DropdownItem>
-          <DropdownItem @click="copy('id')">
-            <component :is="copied === 'id' ? Check : Copy" class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ t('item.copyId') }}
-          </DropdownItem>
-          <DropdownSeparator />
-          <DropdownItem variant="destructive" @click="remove">
-            <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ t('common.delete') }}
-          </DropdownItem>
-        </DropdownMenu>
+      <template #actions>
+        <CopyMarkdownButton :text="capture.content" />
       </template>
-    </div>
+    </DetailWindowFooter>
 
     <!-- The pop-out doesn't mount the main app's dialog/toast hosts. -->
     <ConfirmModal />

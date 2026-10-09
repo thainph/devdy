@@ -66,17 +66,18 @@
   "showLessFiles": "Thu gọn danh sách tệp",
   "copyMarkdown": "Sao chép markdown",
   "markdownCopied": "Đã sao chép markdown",
-  "moreActions": "Thao tác khác",
-  "editContent": "Sửa nội dung",
   "outline": "Mục lục ({count})",
   "picker": {
-    "title": "Chèn thread Slack hoặc trang web",
+    "title": "Chèn thread Slack, trang web, ghi chú hoặc todo",
     "search": "Tìm…",
     "thisProject": "Project này",
     "otherProjects": "Project khác",
     "all": "Tất cả",
     "slack": "Slack",
     "web": "Web",
-    "empty": "Gửi thread Slack hoặc trang web từ Chrome extension, hoặc nhập trong tab Slack / Web."
+    "empty": "Chưa có gì để chèn: gửi thread Slack hoặc trang web từ Chrome extension, hoặc viết ghi chú / todo.",
+    "note": "Ghi chú",
+    "todo": "Todo",
+    "showDone": "Hiện cả todo đã xong"
   }
 }

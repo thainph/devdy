@@ -8,12 +8,22 @@
 // split is kept because the fields and their persistence are the part worth
 // protecting: "title + body + project, ⌘⏎ saves, then update() and maybe
 // setProject()" used to exist in three places and drifted between them.
+//
+// The read view follows the capture window's layout (views/CaptureWindow.vue):
+// a note's title as a large heading — renamed in place (click or F2 → inline
+// field) —, one compact metadata line (age; full dates in its tooltip), the
+// session backlink when offered, a divider, then the body as markdown. The
+// project picker of the read view is the host's (the footer's left side); the
+// edit form keeps its own project field, saved with the rest of the draft.
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { openFileWindow } from '@/lib/fileWindow'
-import { FolderOpen, MessageSquare } from 'lucide-vue-next'
-import { AppSelect, Input, Textarea } from '@/components/ui'
+import { MessageSquare } from 'lucide-vue-next'
+import { Badge, Button, Input, Textarea } from '@/components/ui'
+import InlineRenameInput from '@/components/InlineRenameInput.vue'
+import ProjectSelect from '@/components/ProjectSelect.vue'
+import { firstLine, relativeAge } from '@/lib/itemText'
 import { useMarkdown } from '@/lib/markdown'
 import { useNotesStore, type Note } from '@/stores/notes'
 import { useTodosStore, type Todo } from '@/stores/todos'
@@ -40,6 +50,8 @@ const props = withDefaults(
 const emit = defineEmits<{
   /** Written to the DB; the host decides what to close / notify. */
   saved: []
+  /** Renamed / moved to another project straight from the read view. */
+  changed: []
   /** Esc in edit mode (only when `escCancels`). */
   cancel: []
   openRun: []
@@ -73,14 +85,59 @@ const storedContent = computed(() =>
 const storedProject = computed(() => props.item?.project_id ?? NO_PROJECT)
 const done = computed(() => (isNote.value ? false : !!(props.item as Todo | null)?.done))
 
-const projectOptions = computed(() => [
-  { value: NO_PROJECT, label: t('item.noProject') },
-  ...projects.projects.map((p) => ({ value: p.id, label: p.name })),
-])
+// ── Read view header ────────────────────────────────────────────────────────
 
-const projectName = computed(
-  () => projects.projects.find((p) => p.id === props.item?.project_id)?.name ?? null,
+/** A note's heading: its title, else its first line (as the list shows it). */
+const heading = computed(
+  () => storedTitle.value.trim() || firstLine(storedContent.value) || t('item.untitled'),
 )
+
+/** Compact age: a note by its last edit, a todo by its creation. */
+const metaLine = computed(() => {
+  const item = props.item
+  if (!item) return ''
+  return relativeAge(isNote.value ? (item as Note).updated_at : item.created_at)
+})
+
+/** Full dates for the metadata line's tooltip. */
+const metaTooltip = computed(() => {
+  const item = props.item
+  if (!item) return ''
+  const lines = [t('item.createdAt', { date: formatDate(item.created_at) })]
+  const updated = isNote.value ? (item as Note).updated_at : null
+  if (updated && updated !== item.created_at) {
+    lines.push(t('item.updatedAt', { date: formatDate(updated) }))
+  }
+  return lines.join('\n')
+})
+
+function formatDate(iso: string): string {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString()
+}
+
+const renaming = ref(false)
+
+/** Inline rename of a note's title (the heading); todos have no title. */
+function startRename() {
+  if (!isNote.value || !props.item || props.editing) return
+  renaming.value = true
+}
+
+/** Empty or unchanged → just close the field, no request. */
+async function commitRename(value: string) {
+  renaming.value = false
+  if (!props.item || !value || value === storedTitle.value) return
+  await notes.update(props.item.id, value, storedContent.value)
+  if (!props.editing) title.value = storedTitle.value
+  emit('changed')
+}
+
+// The host's project picker writes straight to the store while reading: keep
+// the draft in step, or the next Edit would open already "dirty".
+watch(storedProject, (value) => {
+  if (!props.editing) projectId.value = value
+})
 
 // Absolute root of the note's project on disk, used to resolve relative file
 // links (e.g. `[CV](sora/recruitment/cv/x.pdf)`) so they can be opened.
@@ -204,7 +261,10 @@ watch(() => props.item?.id, reset, { immediate: true })
 watch(
   () => props.editing,
   (on) => {
-    if (on) focus()
+    if (on) {
+      renaming.value = false
+      focus()
+    }
   },
 )
 
@@ -214,7 +274,7 @@ onMounted(() => {
   if (props.editing) focus()
 })
 
-defineExpose({ canSave, dirty, save, reset, draft, applyDraft, focus })
+defineExpose({ canSave, dirty, save, reset, draft, applyDraft, focus, startRename })
 </script>
 
 <template>
@@ -238,15 +298,11 @@ defineExpose({ canSave, dirty, save, reset, draft, applyDraft, focus })
         <label class="block text-[11px] font-medium text-muted-foreground">
           {{ t('item.projectLabel') }}
         </label>
-        <AppSelect
-          v-model="projectId"
-          :options="projectOptions"
-          :placeholder="t('item.noProject')"
-        >
-          <template #leading>
-            <FolderOpen class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.75" />
-          </template>
-        </AppSelect>
+        <ProjectSelect
+          variant="default"
+          :model-value="projectId || null"
+          @update:model-value="projectId = $event ?? NO_PROJECT"
+        />
       </div>
       <p class="mt-2 text-[11px] text-muted-foreground">
         {{
@@ -259,6 +315,49 @@ defineExpose({ canSave, dirty, save, reset, draft, applyDraft, focus })
 
     <!-- View mode -->
     <template v-else>
+      <!-- Note title: the in-place rename (click or F2). -->
+      <div v-if="isNote" class="flex shrink-0 items-center gap-1.5">
+        <InlineRenameInput
+          v-if="renaming"
+          class="w-full text-lg font-semibold leading-snug"
+          :value="storedTitle"
+          :placeholder="t('item.titlePlaceholder')"
+          @commit="commitRename"
+          @cancel="renaming = false"
+        />
+        <h1
+          v-else
+          class="min-w-0 cursor-text rounded px-0.5 -mx-0.5 text-lg font-semibold leading-snug break-words transition-colors hover:bg-accent/50"
+          :title="t('item.renameHint')"
+          @click="startRename"
+        >
+          {{ heading }}
+        </h1>
+      </div>
+
+      <!-- Compact metadata: age (full dates in the tooltip); a done todo says so. -->
+      <div class="flex shrink-0 items-center gap-1.5" :class="isNote ? 'mt-1' : ''">
+        <Badge v-if="done" tone="success" size="xs" class="shrink-0">{{ t('item.statusDone') }}</Badge>
+        <p class="min-w-0 truncate text-xs text-muted-foreground" :title="metaTooltip">
+          {{ metaLine }}
+        </p>
+      </div>
+
+      <!-- The AI session it was captured from (the project picker is the host's). -->
+      <div v-if="showRunLink && item.run_id" class="mt-2 flex shrink-0 flex-wrap items-center gap-1.5">
+        <Button
+          variant="outline"
+          size="xs"
+          :title="isNote ? t('item.openRunNoteTitle') : t('item.openRunTodoTitle')"
+          @click="emit('openRun')"
+        >
+          <MessageSquare class="h-3 w-3" :stroke-width="1.75" />
+          {{ t('item.openRun') }}
+        </Button>
+      </div>
+
+      <div class="my-3 h-px shrink-0 bg-border/60" />
+
       <div
         v-if="storedContent.trim()"
         class="markdown-output text-sm"
@@ -267,27 +366,6 @@ defineExpose({ canSave, dirty, save, reset, draft, applyDraft, focus })
         v-html="renderText(storedContent)"
       />
       <p v-else class="text-sm text-muted-foreground italic">{{ t('item.empty') }}</p>
-
-      <!-- Capture context: where this was jotted down -->
-      <div
-        v-if="projectName"
-        class="mt-4 flex items-center gap-3 border-t border-border/60 pt-3 text-xs text-muted-foreground"
-      >
-        <span class="flex min-w-0 items-center gap-1.5">
-          <FolderOpen class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-          <span class="truncate">{{ projectName }}</span>
-        </span>
-        <button
-          v-if="showRunLink && item.run_id"
-          type="button"
-          class="flex items-center gap-1.5 rounded px-1.5 py-1 text-primary transition-colors hover:bg-accent/60 cursor-pointer"
-          :title="isNote ? t('item.openRunNoteTitle') : t('item.openRunTodoTitle')"
-          @click="emit('openRun')"
-        >
-          <MessageSquare class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ t('item.openRun') }}
-        </button>
-      </div>
     </template>
   </div>
 </template>
