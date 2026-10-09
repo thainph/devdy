@@ -4,6 +4,9 @@
 // Injected automatically into every run under the server key `devdy`, so tools
 // are namespaced `mcp__devdy__<name>` on the AI side. Capabilities:
 //   • Quick notes  — full CRUD over Devdy's markdown scratchpad (per-project or global)
+//   • Captures — Slack threads (slack_threads_*) and web pages (web_pages_*) pushed by
+//     the Chrome extension: list/read/search/rename/edit/delete, long-doc reads by
+//     slice or section with an outline, attachments (absolute paths; small text inline)
 //   • Session recall — search & read past run transcripts across sessions
 //   • Todos / project context / VPS — full CRUD on quick tasks, git, managed servers
 //   • Skills & Rules library — CRUD the reusable skill/rule definitions (source-only)
@@ -17,6 +20,7 @@ import * as store from './lib/store.mjs';
 import { readRunTranscript, renderTranscript, findSnippet } from './lib/transcript.mjs';
 import { fileTree, gitStatus, gitDiff } from './lib/project.mjs';
 import { runOnServer } from './lib/ssh.mjs';
+import { captureTools } from './lib/capture-tools.mjs';
 
 const SERVER_INFO = { name: 'devdy', version: '0.1.0' };
 const DEFAULT_PROTOCOL = '2025-06-18';
@@ -198,6 +202,13 @@ const tools = {
       return `Reordered ${r.ordered} note(s).`;
     },
   },
+
+  // ---- Captures: Slack threads + web pages ---------------------------------
+  // Content pushed into Devdy by the Chrome extension, stored in one `captures`
+  // table by kind. Same 10 tools per kind (see lib/capture-tools.mjs); same scope
+  // semantics as notes; attachments are files under <app_data>.
+  ...captureTools('slack', { firstLine, snippetAround }),
+  ...captureTools('web', { firstLine, snippetAround }),
 
   sessions_recent: {
     description:

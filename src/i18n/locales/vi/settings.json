@@ -14,7 +14,8 @@
     "google": "Tài khoản Google",
     "usage": "Sử dụng & Ngân sách",
     "remote": "Điều khiển từ xa",
-    "prompts": "Mẫu Prompt"
+    "prompts": "Mẫu Prompt",
+    "inbox": "Inbox API"
   },
   "general": {
     "theme": "Giao diện",
@@ -353,5 +354,25 @@
   },
   "toast": {
     "saved": "Đã lưu"
+  },
+  "inboxApi": {
+    "title": "Inbox API (Chrome extension)",
+    "help": "Endpoint HTTP nội bộ (chỉ 127.0.0.1) để Chrome extension gửi nội dung vào Devdy: thread Slack tới /v1/slack-threads, trang web tới /v1/web-pages. Dán Base URL và token vào extension.",
+    "status": "Trạng thái",
+    "running": "Đang lắng nghe ở cổng {port}",
+    "stopped": "Không chạy",
+    "refresh": "Làm mới trạng thái",
+    "baseUrl": "Base URL",
+    "token": "Token",
+    "copy": "Sao chép",
+    "copied": "Đã sao chép",
+    "reveal": "Hiện token",
+    "hide": "Ẩn token",
+    "regenerate": "Tạo lại",
+    "regenerateTitle": "Tạo lại token",
+    "regenerateMessage": "Token hiện tại sẽ mất hiệu lực ngay lập tức; cần cập nhật token mới cho extension. Tiếp tục?",
+    "regenerated": "Đã tạo token mới",
+    "regenerateHint": "Token cũ mất hiệu lực ngay.",
+    "usage": "Định dạng request"
   }
 }

@@ -6,7 +6,7 @@ import {
   Cpu, Palette, FileText, ShieldAlert, Sparkles, Github, Gitlab, Cloud,
   CheckCircle2, AlertTriangle, Trash2, Plus, Pencil, Gauge, Radio,
   RefreshCw, Loader2, BadgeCheck, Server, HardDrive, Bot, RotateCcw, UserCircle,
-  LogIn, Star, ChevronDown, ArrowRightLeft,
+  LogIn, Star, ChevronDown, ArrowRightLeft, Inbox,
 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
@@ -16,6 +16,7 @@ import CyberFox from '@/components/CyberFoxCanvas.vue'
 import MascotStars from '@/components/MascotStars.vue'
 import MascotBubble from '@/components/MascotBubble.vue'
 import RemoteControlSettings from '@/components/remote/RemoteControlSettings.vue'
+import InboxApiSettings from '@/components/InboxApiSettings.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useGithubAccountsStore, type PatValidation } from '@/stores/githubAccounts'
@@ -442,6 +443,7 @@ const SECTIONS = [
   { id: 'google', labelKey: 'settings.sections.google', icon: HardDrive },
   { id: 'usage', labelKey: 'settings.sections.usage', icon: Gauge },
   { id: 'remote', labelKey: 'settings.sections.remote', icon: Radio },
+  { id: 'inbox', labelKey: 'settings.sections.inbox', icon: Inbox },
   { id: 'prompts', labelKey: 'settings.sections.prompts', icon: FileText },
 ] as const
 const activeSection = ref<(typeof SECTIONS)[number]['id']>('general')
@@ -1690,6 +1692,8 @@ watch(() => settings.value.language, (v) => {
               <span>🖥️ vps_list / vps_run</span>
               <span>🧩 skills_list / read / create / update / delete</span>
               <span>📏 rules_list / read / create / update / delete</span>
+              <span>💬 slack_threads_list / read / search / rename / update / append / set_project / reorder / delete / read_attachment</span>
+              <span>🌐 web_pages_list / read / search / rename / update / append / set_project / reorder / delete / read_attachment</span>
             </div>
           </div>
         </Card>
@@ -2849,6 +2853,12 @@ watch(() => settings.value.language, (v) => {
         <!-- Remote Control (wider than the max-w-lg forms to fit the audit table) -->
         <div v-show="!loading && activeSection === 'remote'" class="max-w-3xl">
           <RemoteControlSettings />
+        </div>
+
+        <!-- Inbox API for the Chrome extension (Slack threads + web pages). Mounted only while
+             shown, so opening the section always reads the live port / status. -->
+        <div v-if="!loading && activeSection === 'inbox'" class="max-w-lg">
+          <InboxApiSettings />
         </div>
       </div>
     </div>

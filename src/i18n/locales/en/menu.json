@@ -15,5 +15,7 @@
   "exitFocusMode": "Exit Focus Mode",
   "reload": "Reload",
   "about": "About Devdy",
-  "itemPanel": "Todos & Notes"
+  "itemPanel": "Todos & Notes",
+  "slackThreads": "Slack Threads",
+  "webPages": "Web Pages"
 }

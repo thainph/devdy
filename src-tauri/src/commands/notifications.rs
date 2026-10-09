@@ -36,17 +36,17 @@ pub const CALENDAR_REMINDER_CLICKED_EVENT: &str = "calendar-reminder-clicked";
 #[cfg(target_os = "macos")]
 static SET_APP: std::sync::Once = std::sync::Once::new();
 
-/// Show a native notification for a pending permission/question on a run the
-/// user isn't currently viewing. Returns immediately; the blocking wait for the
-/// user's click runs on a dedicated OS thread.
-#[tauri::command]
-pub async fn show_permission_notification(
+/// Show a native notification whose click (body or "Open" button) raises the
+/// main window and then runs `on_click`. Returns immediately; the blocking
+/// wait for the user's click runs on a dedicated OS thread. `label` only names
+/// the notification in the failure log.
+pub(crate) fn show_clickable(
     app: AppHandle,
     title: String,
     body: String,
-    project_id: String,
-    run_id: String,
-) -> Result<(), String> {
+    label: &'static str,
+    on_click: impl FnOnce(&AppHandle) + Send + 'static,
+) {
     // macOS needs a bundle identifier to own the notification via
     // NSUserNotificationCenter. Dev builds aren't bundled, so we borrow
     // Terminal's identity exactly like tauri-plugin-notification does.
@@ -92,27 +92,38 @@ pub async fn show_permission_notification(
                             let _ = win.show();
                             let _ = win.set_focus();
                         }
-                        let _ = app.emit(
-                            NOTIFICATION_CLICKED_EVENT,
-                            NotificationClick {
-                                project_id,
-                                run_id,
-                            },
-                        );
+                        on_click(&app);
                     }
                 });
             }
             Err(err) => {
-                tracing::warn!("failed to show permission notification: {err}");
+                tracing::warn!("failed to show {label}: {err}");
             }
         }
     });
+}
 
+/// Show a native notification for a pending permission/question on a run the
+/// user isn't currently viewing. A click emits `NOTIFICATION_CLICKED_EVENT`
+/// with the originating project/run.
+#[tauri::command]
+pub async fn show_permission_notification(
+    app: AppHandle,
+    title: String,
+    body: String,
+    project_id: String,
+    run_id: String,
+) -> Result<(), String> {
+    show_clickable(app, title, body, "permission notification", move |app| {
+        let _ = app.emit(
+            NOTIFICATION_CLICKED_EVENT,
+            NotificationClick { project_id, run_id },
+        );
+    });
     Ok(())
 }
 
-/// Show a native calendar-reminder notification for an upcoming event. Mirrors
-/// `show_permission_notification`: a background thread waits for the click and
+/// Show a native calendar-reminder notification for an upcoming event. A click
 /// emits `CALENDAR_REMINDER_CLICKED_EVENT` with the event id so the frontend can
 /// open that event's detail drawer.
 #[tauri::command]
@@ -122,46 +133,8 @@ pub async fn show_calendar_reminder(
     body: String,
     event_id: String,
 ) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    SET_APP.call_once(|| {
-        let ident = if tauri::is_dev() {
-            "com.apple.Terminal"
-        } else {
-            "vn.papay.devdy"
-        };
-        let _ = notify_rust::set_application(ident);
+    show_clickable(app, title, body, "calendar reminder", move |app| {
+        let _ = app.emit(CALENDAR_REMINDER_CLICKED_EVENT, ReminderClick { event_id });
     });
-
-    std::thread::spawn(move || {
-        let mut notification = notify_rust::Notification::new();
-        notification.summary(&title).body(&body);
-        #[cfg(target_os = "macos")]
-        {
-            notification.sound_name("default");
-            notification.action("open", "Open");
-        }
-
-        match notification.show() {
-            Ok(handle) => {
-                handle.wait_for_action(|action| {
-                    if action != "__closed" {
-                        if let Some(win) = app.get_webview_window("main") {
-                            let _ = win.unminimize();
-                            let _ = win.show();
-                            let _ = win.set_focus();
-                        }
-                        let _ = app.emit(
-                            CALENDAR_REMINDER_CLICKED_EVENT,
-                            ReminderClick { event_id },
-                        );
-                    }
-                });
-            }
-            Err(err) => {
-                tracing::warn!("failed to show calendar reminder: {err}");
-            }
-        }
-    });
-
     Ok(())
 }
