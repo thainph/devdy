@@ -33,14 +33,16 @@ import {
   Clock, Cpu, Terminal, FileText, RotateCcw, RefreshCw,
   Send, MessageSquare, Trash2, Settings, Code2, FolderClosed, FolderOpen, Sparkles, ExternalLink,
   ChevronDown, ChevronUp, Maximize2, Minimize2, AppWindow,
-  ImagePlus, X, Paperclip,
+  X, Paperclip,
   ShieldQuestion, MessageCircleQuestion,
   Pin, PinOff, Shield, ShieldOff, Pencil, Check, Github, Gitlab, UserCircle,
   ClipboardCopy, ScrollText, HardDrive, Cloud, Radio, Languages, StickyNote, ListTodo, FolderTree, Loader2,
-  MoreHorizontal, BookMarked, Search, Network, ChevronLeft, ChevronRight, Hash
+  MoreHorizontal, Search, Network, ChevronLeft, ChevronRight, Hash
 } from 'lucide-vue-next'
 import AppSelect from '@/components/AppSelect.vue'
-import { type SavedPrompt, parseSavedPrompts, promptLabel } from '@/lib/savedPrompts'
+import { type SavedPrompt, parseSavedPrompts } from '@/lib/savedPrompts'
+import CapturePicker from '@/components/CapturePicker.vue'
+import SavedPromptPicker from '@/components/SavedPromptPicker.vue'
 import StreamLog from '@/components/StreamLog.vue'
 import TranslatePopover from '@/components/TranslatePopover.vue'
 import MentionedFiles from '@/components/MentionedFiles.vue'
@@ -2040,7 +2042,6 @@ interface PendingImage extends ImageAttachment {
   url: string // data URL for the thumbnail preview
 }
 const pendingImages = ref<PendingImage[]>([])
-const imageInputEl = ref<HTMLInputElement | null>(null)
 let imageSeq = 0
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024 // ~10MB per image, matches engine limits
@@ -2132,7 +2133,8 @@ function addImageFile(file: File | null) {
 
 // Handle a batch of absolute paths from a drag-drop (or the file picker): images
 // are read to base64 through the backend (frontend fs scope can't reach arbitrary
-// paths); other files are attached by reference.
+// paths); other files are attached by reference. An image that can't be inlined
+// (e.g. over the size limit) falls back to a path reference so it isn't lost.
 async function addDroppedPaths(paths: string[]) {
   for (const path of paths) {
     if (IMAGE_EXT_RE.test(path)) {
@@ -2140,7 +2142,8 @@ async function addDroppedPaths(paths: string[]) {
         const img = await invoke<{ media_type: string; data: string }>('read_file_base64', { path })
         pushPendingImage(img.media_type, img.data)
       } catch (e) {
-        toast.error(String(e))
+        toast.info(t('run.imageAttachedByPath', { error: String(e) }))
+        addPendingFile(path)
       }
     } else {
       addPendingFile(path)
@@ -2197,12 +2200,6 @@ function onComposerPaste(e: ClipboardEvent) {
   // Only swallow the paste when it actually carried an image, so text pastes
   // (and mixed paste) still land in the textarea.
   if (handled) e.preventDefault()
-}
-
-function onPickImages(e: Event) {
-  const input = e.target as HTMLInputElement
-  for (const f of Array.from(input.files ?? [])) addImageFile(f)
-  input.value = '' // allow re-picking the same file
 }
 
 function removePendingImage(id: string) {
@@ -2589,6 +2586,11 @@ function insertSavedPrompt(p: SavedPrompt) {
     const pos = (before + insert).length
     if (el) { el.focus(); el.setSelectionRange(pos, pos) }
   })
+}
+
+// A capture reference from CapturePicker goes in like a saved prompt.
+function insertCaptureRef(text: string) {
+  insertSavedPrompt({ id: '', title: '', body: text })
 }
 
 function onComposerKeydown(e: KeyboardEvent) {
@@ -4216,15 +4218,6 @@ function handleRefInput(val: string) {
               </div>
             </div>
 
-            <input
-              ref="imageInputEl"
-              type="file"
-              accept="image/*"
-              multiple
-              class="hidden"
-              @change="onPickImages"
-            />
-
             <!-- Usage row: this run's context window on the left, the account
                  plan-usage chips filling the width that used to sit empty.
                  Both parts self-hide, so the row collapses when there is
@@ -4270,36 +4263,18 @@ function handleRefInput(val: string) {
                 <button
                   class="inline-flex items-center justify-center h-8 w-8 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 shrink-0"
                   :disabled="sendingFollowUp"
-                  :title="t('run.attachImage')"
-                  @click="imageInputEl?.click()"
-                >
-                  <ImagePlus class="h-4 w-4" :stroke-width="2" />
-                </button>
-                <button
-                  class="inline-flex items-center justify-center h-8 w-8 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 shrink-0"
-                  :disabled="sendingFollowUp"
-                  :title="t('run.attachFileByPath')"
+                  :title="t('run.attachFile')"
                   @click="onPickFiles"
                 >
                   <Paperclip class="h-4 w-4" :stroke-width="2" />
                 </button>
-                <DropdownMenu v-if="savedPrompts.length" align="left" class="shrink-0">
-                  <template #trigger>
-                    <button
-                      class="inline-flex items-center justify-center h-8 w-8 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 shrink-0"
-                      :disabled="sendingFollowUp"
-                      :title="t('run.savedPrompts')"
-                      :aria-label="t('run.savedPrompts')"
-                    >
-                      <BookMarked class="h-4 w-4" :stroke-width="2" />
-                    </button>
-                  </template>
-                  <div class="max-h-64 max-w-72 overflow-y-auto">
-                    <DropdownItem v-for="p in savedPrompts" :key="p.id" @click="insertSavedPrompt(p)">
-                      <span class="min-w-0 flex-1 truncate">{{ promptLabel(p) }}</span>
-                    </DropdownItem>
-                  </div>
-                </DropdownMenu>
+                <SavedPromptPicker
+                  v-if="savedPrompts.length"
+                  :prompts="savedPrompts"
+                  :disabled="sendingFollowUp"
+                  @insert="insertSavedPrompt"
+                />
+                <CapturePicker :project-id="projectId" :disabled="sendingFollowUp" @insert="insertCaptureRef" />
                 <button
                   class="inline-flex items-center justify-center h-8 w-8 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 shrink-0"
                   :title="composerExpanded ? t('run.collapseComposer') : t('run.expandComposer')"
@@ -4420,7 +4395,10 @@ function handleRefInput(val: string) {
                     <Square class="h-3.5 w-3.5" :stroke-width="2" fill="currentColor" />
                     {{ t('run.cancel') }}
                   </Button>
+                  <!-- While running, Cancel is the only action unless there is a
+                       follow-up typed — a disabled Send next to it is just noise. -->
                   <button
+                    v-if="currentStatus !== 'running' || !primaryDisabled"
                     class="inline-flex items-center justify-center gap-1.5 h-8 px-3.5 text-xs bg-primary text-primary-foreground rounded-md hover:opacity-90 transition-opacity cursor-pointer disabled:opacity-50 shrink-0"
                     :disabled="primaryDisabled"
                     @click="handlePrimaryAction"
