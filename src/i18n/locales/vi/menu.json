@@ -15,5 +15,7 @@
   "exitFocusMode": "Thoát chế độ tập trung",
   "reload": "Tải lại",
   "about": "Giới thiệu Devdy",
-  "itemPanel": "Việc & Ghi chú"
+  "itemPanel": "Việc & Ghi chú",
+  "slackThreads": "Thread Slack",
+  "webPages": "Trang web"
 }

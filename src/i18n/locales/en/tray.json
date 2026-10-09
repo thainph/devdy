@@ -11,5 +11,6 @@
   "runningSessions": "Running Sessions ({count})",
   "noRunningSessions": "No running sessions",
   "todoItem": "Task: {name}",
-  "noteItem": "Note: {name}"
+  "noteItem": "Note: {name}",
+  "captureWindow": "Capture"
 }
