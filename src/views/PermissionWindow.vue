@@ -111,16 +111,12 @@ async function togglePin() {
          gets in the way while comparing against the chat on another monitor. -->
     <div class="flex items-center gap-2 px-3 h-11 border-b border-border/60 shrink-0">
       <div class="flex min-w-0 flex-col leading-tight">
-        <span class="text-[10px] uppercase tracking-wide text-foreground/50">{{ t('permission.window.headerLabel') }}</span>
-        <span
-          v-if="session"
-          class="truncate text-xs font-medium text-foreground/85"
-          :title="session.project ? `${session.name} — ${session.project}` : session.name"
-        >
+        <!-- Project on top, session name below; generic label until the first sync. -->
+        <span class="truncate text-[10px] uppercase tracking-wide text-foreground/50" :title="session?.project">
+          {{ session?.project || t('permission.window.headerLabel') }}
+        </span>
+        <span v-if="session" class="truncate text-xs font-medium text-foreground/85" :title="session.name">
           {{ session.name }}
-          <span v-if="session.project && session.project !== session.name" class="font-normal text-foreground/50">
-            · {{ session.project }}
-          </span>
         </span>
       </div>
       <button

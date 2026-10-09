@@ -11,7 +11,8 @@
     "item-list",
     "gantt",
     "mascot",
-    "session-*"
+    "session-*",
+    "capture-*"
   ],
   "permissions": [
     "core:default",
