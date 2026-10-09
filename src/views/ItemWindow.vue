@@ -14,12 +14,23 @@
 //   create — QuickCaptureForm, with Todo/Note tabs; stays open so several
 //            thoughts can be captured in a row.
 //   edit   — ItemDetail, with a preview/edit toggle, delete and save.
+//
+// Edit mode shares the capture window's chrome (views/CaptureWindow.vue): the
+// same titlebar, the same action bar — reading: the project on the left, Mark
+// done (todo) / Copy markdown (note) + Edit + the ⋯ menu (Copy ID, Delete) on
+// the right; writing: Cancel + Save — and the same shortcuts: E edits, F2 renames a note's title,
+// ⌘/Ctrl+Enter saves.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { Check, Copy, ListTodo, Pencil, Pin, PinOff, RotateCw, StickyNote, Trash2, Undo2 } from 'lucide-vue-next'
+import { Check, ListTodo, StickyNote, Undo2 } from 'lucide-vue-next'
 import { Button, ConfirmModal, ToastHost } from '@/components/ui'
+import DetailWindowTitlebar from '@/components/DetailWindowTitlebar.vue'
+import DetailWindowFooter from '@/components/DetailWindowFooter.vue'
+import CopyMarkdownButton from '@/components/CopyMarkdownButton.vue'
+import ProjectSelect from '@/components/ProjectSelect.vue'
+import WindowPinButton from '@/components/WindowPinButton.vue'
 import QuickCaptureForm from '@/components/QuickCaptureForm.vue'
 import ItemDetail from '@/components/ItemDetail.vue'
 import { useConfirm } from '@/composables/useConfirm'
@@ -43,7 +54,7 @@ import { firstLine } from '@/lib/itemText'
 
 const { t } = useI18n()
 const { toast } = useToast()
-const { confirm } = useConfirm()
+const { confirm, state: confirmState } = useConfirm()
 const notes = useNotesStore()
 const todos = useTodosStore()
 // This is its own webview, so it gets its own copy of the capture state.
@@ -79,15 +90,19 @@ const done = computed(() => (initialKind === 'todo' ? !!(item.value as Todo | nu
 
 // Edit mode only: create mode has no titlebar (its tabs carry the identity).
 //
-// A todo has no title, so the heading showed a constant ("Edit task") that said
-// nothing. Its id is the one thing here that identifies it — and the thing the
-// AI side needs to address it — so show that instead, next to Copy ID.
+// A todo has no title, so it is labelled by its own words: the first sentence
+// of its first line (the full line is in the tooltip). Its id — what the AI
+// side addresses it by — stays one click away under ⋯ → Copy ID.
+const todoLine = computed(() => firstLine((item.value as Todo | null)?.text ?? ''))
 const heading = computed(() => {
-  if (initialKind === 'todo') return itemId || t('item.editTodoHeading')
+  if (initialKind === 'todo') return firstSentence(todoLine.value) || t('item.editTodoHeading')
   return (item.value as Note | null)?.title?.trim() || t('item.editNoteHeading')
 })
-/** The id is an identifier, not prose: monospaced, and never struck through. */
-const headingIsId = computed(() => initialKind === 'todo' && !!itemId)
+
+/** Up to the first sentence end (Latin or CJK punctuation); the whole line if none. */
+function firstSentence(line: string): string {
+  return line.match(/^.*?[.!?。！？](?=\s|$)/)?.[0] ?? line
+}
 
 // The OS window title doubles as this window's row label in the menu-bar
 // switcher (lib/tray.ts), so keep it on something a person recognizes: the kind
@@ -183,6 +198,14 @@ async function copyId() {
   } catch { /* clipboard unavailable */ }
 }
 
+/** The footer's project picker (read view) writes straight away. */
+async function onProjectChange(next: string | null) {
+  if (mode !== 'edit' || !item.value || next === item.value.project_id) return
+  if (initialKind === 'note') await notes.setProject(itemId, next)
+  else await todos.setProject(itemId, next)
+  announce()
+}
+
 async function toggleDone() {
   if (mode !== 'edit' || initialKind !== 'todo' || !item.value) return
   await todos.toggle(itemId)
@@ -230,7 +253,45 @@ function onSaveClick() {
   else previewing.value = true
 }
 
+/** Leave the fields without saving: back to reading, the draft dropped. */
+function cancelEdit() {
+  detailRef.value?.reset()
+  previewing.value = true
+}
+
+function startEdit() {
+  if (mode !== 'edit' || !item.value) return
+  previewing.value = false
+}
+
+// ── Shortcuts (edit mode, reading) ──────────────────────────────────────────
+// E = edit, F2 = rename a note's title — as in the capture window. ⌘/Ctrl+Enter
+// is ItemDetail's own. Unlike the capture window, Esc deliberately does NOT
+// cancel the fields here: a stray Esc must not discard a hand-written note, so
+// dropping the draft takes the explicit Cancel button. Nothing
+// fires mid-composition (IME) or while typing in a field.
+
+function isTypingTarget(el: EventTarget | null): boolean {
+  const node = el as HTMLElement | null
+  if (!node) return false
+  return node.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(node.tagName)
+}
+
+function onKeydown(e: KeyboardEvent) {
+  if (e.isComposing || e.keyCode === 229) return
+  if (mode !== 'edit' || !item.value || !previewing.value || confirmState.open) return
+  if (isTypingTarget(e.target)) return
+  if (e.key === 'F2') {
+    e.preventDefault()
+    detailRef.value?.startRename()
+  } else if (e.key.toLowerCase() === 'e' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    e.preventDefault()
+    startEdit()
+  }
+}
+
 onMounted(async () => {
+  document.addEventListener('keydown', onKeydown)
   if (mode === 'edit') {
     await loadItem()
   } else {
@@ -269,6 +330,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  document.removeEventListener('keydown', onKeydown)
   unlisten.forEach((off) => off())
   unlisten = []
 })
@@ -280,48 +342,28 @@ onBeforeUnmount(() => {
          which item this is and whether it has unsaved changes. Every ACTION
          (done, delete, edit/save) lives in the action bar. Create mode has no
          titlebar at all: its Todo/Note tabs already say what the window is. -->
-    <div v-if="mode === 'edit'" class="flex items-center gap-2 px-3 h-9 border-b border-border/60 shrink-0">
-      <component
-        :is="initialKind === 'note' ? StickyNote : ListTodo"
-        class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-        :stroke-width="1.75"
-      />
-      <span
-        class="truncate text-xs text-foreground/70"
-        :class="headingIsId
-          ? 'font-mono text-[11px] text-muted-foreground'
-          : done ? 'font-medium line-through decoration-muted-foreground/60' : 'font-medium'"
-        :title="heading"
-      >{{ heading }}</span>
-      <span v-if="detailRef?.dirty" class="shrink-0 text-[11px] text-muted-foreground/70">
-        · {{ t('item.unsaved') }}
-      </span>
-
-      <!-- Pin: keep this window above other apps even after it loses focus. -->
-      <button
-        class="ml-auto flex items-center justify-center h-6 w-6 rounded-md transition-colors cursor-pointer shrink-0"
-        :class="pinned
-          ? 'bg-primary/15 text-primary hover:bg-primary/25'
-          : 'text-foreground/60 hover:text-foreground hover:bg-accent'"
-        :title="pinned ? t('item.unpin') : t('item.pin')"
-        @click="togglePin"
-      >
-        <component :is="pinned ? Pin : PinOff" class="h-3.5 w-3.5" :stroke-width="1.75" />
-      </button>
-
-      <!-- Reload the item's latest content from the DB (mirrors the file viewer). -->
-      <button
-        class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-default"
-        :title="t('item.reload')"
-        :disabled="reloading"
-        @click="reload"
-      >
-        <RotateCw class="h-3.5 w-3.5" :class="{ 'animate-spin': reloading }" :stroke-width="1.75" />
-      </button>
-    </div>
+    <DetailWindowTitlebar
+      v-if="mode === 'edit'"
+      :icon="initialKind === 'note' ? StickyNote : ListTodo"
+      :title="heading"
+      :dirty="detailRef?.dirty"
+      :pinned="pinned"
+      :reloading="reloading"
+      @toggle-pin="togglePin"
+      @reload="reload"
+    >
+      <!-- A todo: its first sentence, struck through once done. -->
+      <template v-if="initialKind === 'todo'" #label>
+        <span
+          class="truncate text-xs text-muted-foreground"
+          :class="done && 'line-through decoration-muted-foreground/60'"
+          :title="todoLine || heading"
+        >{{ heading }}</span>
+      </template>
+    </DetailWindowTitlebar>
 
     <!-- Body -->
-    <div class="min-h-0 flex-1 flex flex-col overflow-auto p-3">
+    <div class="min-h-0 flex-1 flex flex-col overflow-auto px-4 py-3">
       <!-- Create: the shared capture form, with its Todo / Note tabs -->
       <template v-if="mode === 'create'">
         <div class="mb-3 flex items-center gap-1">
@@ -340,17 +382,7 @@ onBeforeUnmount(() => {
           </button>
 
           <!-- Pin: keep the capture window above other apps even when unfocused. -->
-          <button
-            type="button"
-            class="ml-auto flex items-center justify-center h-6 w-6 rounded-md transition-colors cursor-pointer shrink-0"
-            :class="pinned
-              ? 'bg-primary/15 text-primary hover:bg-primary/25'
-              : 'text-foreground/60 hover:text-foreground hover:bg-accent'"
-            :title="pinned ? t('item.unpin') : t('item.pin')"
-            @click="togglePin"
-          >
-            <component :is="pinned ? Pin : PinOff" class="h-3.5 w-3.5" :stroke-width="1.75" />
-          </button>
+          <WindowPinButton class="ml-auto" :pinned="pinned" @toggle="togglePin" />
         </div>
 
         <QuickCaptureForm ref="formRef" @saved="onSaved" />
@@ -378,58 +410,50 @@ onBeforeUnmount(() => {
           :show-run-link="false"
           :esc-cancels="false"
           @saved="onSaved"
+          @changed="announce"
         />
       </template>
     </div>
 
-    <!-- Actions. In edit mode the two modes share one slot: reading offers
-         Edit, writing offers Save — and saving is what returns to reading, so
-         the window never shows both at once. -->
-    <div v-if="!missing" class="flex items-center gap-2 border-t border-border/60 px-3 py-2.5 shrink-0">
-      <Button v-if="mode === 'edit'" variant="destructive" size="sm" @click="remove">
-        <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-        {{ t('common.delete') }}
-      </Button>
-      <Button
-        v-if="mode === 'edit' && initialKind === 'todo'"
-        variant="outline"
-        size="sm"
-        @click="toggleDone"
-      >
-        <component :is="done ? Undo2 : Check" class="h-3.5 w-3.5" :stroke-width="1.75" />
-        {{ done ? t('item.markNotDone') : t('item.markDone') }}
-      </Button>
-      <Button
-        v-if="mode === 'edit' && item"
-        variant="outline"
-        size="sm"
-        @click="copyId"
-      >
-        <!-- Label stays put: the tick and the toast carry the feedback, and a
-             swapping label would resize the button mid-row. -->
-        <component :is="copiedId ? Check : Copy" class="h-3.5 w-3.5" :stroke-width="1.75" />
-        {{ t('item.copyId') }}
-      </Button>
-      <span v-if="!previewing" class="mr-auto text-[11px] text-muted-foreground/70">⌘/Ctrl + Enter</span>
-      <span v-else class="mr-auto" />
-
-      <Button
-        v-if="mode === 'create'"
-        variant="primary"
-        size="sm"
-        :disabled="!formRef?.canSubmit || formRef?.saving"
-        @click="formRef?.submit()"
-      >
-        {{ saveLabel }}
-      </Button>
-      <Button v-else-if="previewing" size="sm" @click="previewing = false">
-        <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
-        {{ t('item.edit') }}
-      </Button>
-      <Button v-else variant="primary" size="sm" :disabled="!detailRef?.canSave" @click="onSaveClick">
-        {{ saveLabel }}
-      </Button>
-    </div>
+    <!-- Actions (shared with the capture window). Create: the capture form's
+         submit. Edit — reading: project on the left; Mark done (todo) / Copy
+         markdown (note) · Edit · ⋯ (Copy ID, Delete) on the right. Writing:
+         Cancel · Save (the form has its own project field). Saving is what returns to reading. -->
+    <DetailWindowFooter
+      v-if="!missing"
+      :editing="!previewing"
+      :can-save="!!detailRef?.canSave"
+      :save-label="saveLabel"
+      :copied-id="copiedId"
+      @edit="startEdit"
+      @cancel="cancelEdit"
+      @save="onSaveClick"
+      @copy-id="copyId"
+      @delete="remove"
+    >
+      <template v-if="mode === 'create'" #default>
+        <span class="mr-auto text-[11px] text-muted-foreground/70">⌘/Ctrl + Enter</span>
+        <Button
+          variant="primary"
+          size="sm"
+          :disabled="!formRef?.canSubmit || formRef?.saving"
+          @click="formRef?.submit()"
+        >
+          {{ saveLabel }}
+        </Button>
+      </template>
+      <template v-if="item" #left>
+        <ProjectSelect :model-value="item.project_id" @update:model-value="onProjectChange" />
+      </template>
+      <template v-if="item" #actions>
+        <Button v-if="initialKind === 'todo'" variant="outline" size="sm" @click="toggleDone">
+          <component :is="done ? Undo2 : Check" class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ done ? t('item.markNotDone') : t('item.markDone') }}
+        </Button>
+        <!-- The body only, as the capture window copies a capture's. -->
+        <CopyMarkdownButton v-else :text="(item as Note).content" />
+      </template>
+    </DetailWindowFooter>
 
     <!-- The pop-out doesn't mount the main app's dialog/toast hosts. -->
     <ConfirmModal />

@@ -66,17 +66,18 @@
   "showLessFiles": "Show fewer files",
   "copyMarkdown": "Copy markdown",
   "markdownCopied": "Markdown copied",
-  "moreActions": "More actions",
-  "editContent": "Edit content",
   "outline": "Outline ({count})",
   "picker": {
-    "title": "Insert Slack thread or web page",
+    "title": "Insert a Slack thread, web page, note or todo",
     "search": "Search…",
     "thisProject": "This project",
     "otherProjects": "Other projects",
     "all": "All",
     "slack": "Slack",
     "web": "Web",
-    "empty": "Send a Slack thread or web page from the Chrome extension, or import one in the Slack / Web tabs."
+    "empty": "Nothing to insert yet: send a Slack thread or web page from the Chrome extension, or write a note or todo.",
+    "note": "Note",
+    "todo": "Todo",
+    "showDone": "Show done todos"
   }
 }

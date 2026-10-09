@@ -20,7 +20,9 @@ const props = withDefaults(defineProps<{
   // Mirrors Input's sizing (see controlStyles). Default 'sm' so a bare
   // <AppSelect> matches a bare <Input> on every screen.
   size?: 'sm' | 'md'
-  variant?: 'default' | 'ghost'
+  // 'outline' matches Button's outline variant, for a select sitting in a row
+  // of chips (the detail windows' project chip): bordered, raised, clearly a control.
+  variant?: 'default' | 'ghost' | 'outline'
   disabled?: boolean
 }>(), {
   placeholder: 'Select…',
@@ -203,12 +205,14 @@ watch(isOpen, (val) => {
       :aria-haspopup="'listbox'"
       :aria-expanded="isOpen"
       :aria-label="displayLabel"
-      class="flex w-full h-full items-center gap-2 rounded-md border transition-colors cursor-pointer select-none disabled:opacity-50 disabled:cursor-not-allowed"
+      class="flex w-full h-full items-center gap-2 rounded-md border transition-colors cursor-pointer select-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
       :class="[
         size === 'sm' ? controlSize.sm : controlSize.md,
         variant === 'ghost'
           ? 'border-transparent bg-transparent hover:bg-accent hover:text-accent-foreground'
-          : 'border-border bg-background hover:bg-accent hover:text-accent-foreground',
+          : variant === 'outline'
+            ? 'border-border bg-secondary shadow-sm hover:bg-accent hover:text-accent-foreground hover:border-primary/40'
+            : 'border-border bg-background hover:bg-accent hover:text-accent-foreground',
         isOpen && variant !== 'ghost' && 'border-ring ring-1 ring-ring',
         isOpen && variant === 'ghost' && 'bg-accent text-accent-foreground',
       ]"
@@ -247,7 +251,7 @@ watch(isOpen, (val) => {
         ref="listRef"
         data-app-select-dropdown
         role="listbox"
-        class="z-50 min-w-32 overflow-auto rounded-md border border-border bg-popover py-1 shadow-md focus:outline-none"
+        class="z-50 min-w-32 overflow-auto rounded-md border border-border bg-popover py-1 shadow-lg shadow-black/20 focus:outline-none"
         :style="dropdownStyle"
         tabindex="-1"
         @keydown="onKeydown"

@@ -59,5 +59,14 @@
     "deleteTodoMessage": "Remove this task?",
     "deleteNoteTitle": "Delete note",
     "deleteNoteMessage": "Remove this note?"
-  }
+  },
+  "emptyTodoHint": "Add one with New Todo, or let the AI add it through the todos tools.",
+  "emptyNoteHint": "Write one with New Note, or let the AI save it through the notes tools.",
+  "createdAt": "Created {date}",
+  "updatedAt": "Updated {date}",
+  "renameHint": "Click or press F2 to rename",
+  "editTitle": "Edit (E)",
+  "moreActions": "More actions",
+  "count": "{count} item | {count} items",
+  "countFiltered": "{shown} / {total} item | {shown} / {total} items"
 }
