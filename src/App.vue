@@ -132,6 +132,22 @@ if (!isPopoutWindow && !isSessionWindow) {
       }, 150)
     },
   )
+
+  // A session whose `run:done` was missed would stay "running" forever and keep
+  // the badge lit; poll the backend's live runs while any session claims to run.
+  let reconcileTimer: ReturnType<typeof setInterval> | null = null
+  watch(
+    () => live.runningIds.length > 0,
+    (anyRunning) => {
+      if (anyRunning && !reconcileTimer) {
+        reconcileTimer = setInterval(() => void live.reconcileRunning(), 10_000)
+      } else if (!anyRunning && reconcileTimer) {
+        clearInterval(reconcileTimer)
+        reconcileTimer = null
+      }
+    },
+    { immediate: true },
+  )
 }
 
 // A session row in the menu-bar switcher was clicked: show the run where it

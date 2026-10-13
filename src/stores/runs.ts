@@ -241,6 +241,11 @@ export const useRunsStore = defineStore('runs', () => {
     return invoke<PermissionRequest[]>('list_pending_permissions', { runId: run_id })
   }
 
+  /** Ids of every run whose sidecar is still alive in the backend. */
+  async function listLiveRuns(): Promise<string[]> {
+    return invoke<string[]>('list_live_runs')
+  }
+
   async function respondPermission(
     run_id: string,
     request_id: string,
@@ -539,7 +544,7 @@ export const useRunsStore = defineStore('runs', () => {
     fetchRuns, refreshMeta, fetchIssue, fetchPr,
     startRun, rerunRun, refetchRun, cancelRun, resumeRun,
     getRunLog, getRunLogRevision, getRunLogPage, getRunLogForward, getRunLogPath, getRunToolRecords, getRunUserRecords, readRunInput,
-    respondPermission, listPendingPermissions, sendUserMessage, endRunInput,
+    respondPermission, listPendingPermissions, listLiveRuns, sendUserMessage, endRunInput,
     listProjectFiles, readProjectFile, writeProjectFile, listDir,
     createDir, createFile, renameEntry, deleteEntry, copyEntry, moveEntry,
     createHandoffRun, createSessionRun,
