@@ -659,6 +659,56 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
     seenPermissionIds.delete(runId)
   }
 
+  // Sessions shown as running that the backend didn't report live on the last
+  // reconcile pass. A run gets one pass of grace: the UI flips to 'running'
+  // before `start_run` / `resume_run` registers the sidecar.
+  const staleRunning = new Set<string>()
+
+  /**
+   * Settle sessions stuck on 'running' whose sidecar is gone. That happens when
+   * `run:done` was missed — the run ended while `startListening` was still
+   * attaching listeners, or a start/resume call failed after the UI had already
+   * marked the run running. Without this they inflate the menu-bar count and the
+   * running list forever. A session is only settled after two consecutive passes
+   * miss it, so a run that is just starting is never touched.
+   */
+  async function reconcileRunning() {
+    const running: string[] = []
+    sessions.forEach((s, id) => {
+      if (s.status === 'running') running.push(id)
+    })
+    if (!running.length) {
+      staleRunning.clear()
+      return
+    }
+    const runsStore = useRunsStore()
+    let live: Set<string>
+    try {
+      live = new Set(await runsStore.listLiveRuns())
+    } catch {
+      return // backend unavailable — leave state alone
+    }
+    for (const id of [...staleRunning]) {
+      if (!running.includes(id) || live.has(id)) staleRunning.delete(id)
+    }
+    for (const id of running) {
+      if (live.has(id)) continue
+      if (!staleRunning.has(id)) {
+        staleRunning.add(id)
+        continue
+      }
+      staleRunning.delete(id)
+      const s = sessions.get(id)
+      if (!s || s.status !== 'running') continue
+      const dbStatus = runsStore.runs.find((r) => r.id === id)?.status ?? runsStore.runMeta.get(id)?.status
+      s.status = dbStatus && TERMINAL_STATUSES.has(dbStatus) ? dbStatus : 'done'
+      s.permissionQueue = []
+      activeRunIds.delete(id)
+      seenPermissionIds.delete(id)
+      stopListening(id)
+    }
+  }
+
   /** Run ids that are currently streaming — for live status indicators. */
   const runningIds = computed(() => {
     const ids: string[] = []
@@ -688,6 +738,7 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
     appendOutput,
     discard,
     runningIds,
+    reconcileRunning,
     cachedSlashCommands,
   }
 })
