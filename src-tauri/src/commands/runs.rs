@@ -1201,6 +1201,14 @@ pub async fn list_pending_permissions(
         .collect())
 }
 
+/// Ids of every run whose sidecar is still registered (alive). The webview uses
+/// it to reconcile sessions it still shows as "running" after missing their
+/// `run:done` (e.g. the run ended before its listener attached).
+#[tauri::command]
+pub async fn list_live_runs(registry: State<'_, RunRegistry>) -> Result<Vec<String>, String> {
+    Ok(registry.lock().await.keys().cloned().collect())
+}
+
 #[derive(Debug, Serialize)]
 pub struct RunLog {
     pub content: String,
