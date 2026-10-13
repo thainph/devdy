@@ -77,7 +77,7 @@ use commands::rules::{
 };
 use commands::runs::{
     cancel_run, create_handoff_run, create_session_run, delete_all_runs, delete_run, end_run_input,
-    get_run_log, get_run_log_forward, get_run_log_page, get_run_log_path, get_run_log_revision, get_run_tool_records, get_run_user_records, list_pending_permissions, read_run_input, rename_run, rerun_run, respond_permission,
+    get_run_log, get_run_log_forward, get_run_log_page, get_run_log_path, get_run_log_revision, get_run_tool_records, get_run_user_records, list_live_runs, list_pending_permissions, read_run_input, rename_run, rerun_run, respond_permission,
     resume_run, send_user_message, set_run_claude_account, set_run_pinned, set_run_protected, start_run,
 };
 use commands::sessions::reconcile_claude_sessions;
@@ -467,6 +467,7 @@ pub fn run() {
             rerun_run,
             respond_permission,
             list_pending_permissions,
+            list_live_runs,
             send_user_message,
             end_run_input,
             read_run_input,
