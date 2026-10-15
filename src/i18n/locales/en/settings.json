@@ -357,7 +357,10 @@
   },
   "inboxApi": {
     "title": "Inbox API (Chrome extension)",
-    "help": "A local HTTP endpoint (127.0.0.1 only) the Chrome extension pushes captures to: Slack threads to /v1/slack-threads, web pages to /v1/web-pages. Paste the base URL and token into the extension.",
+    "help": "A local HTTP endpoint (127.0.0.1 only) the Chrome extension pushes captures to: Slack threads to /v1/slack-threads, web pages to /v1/web-pages. It also offers translation at /v1/translate. Paste the base URL and token into the extension.",
+    "enable": "Enable Inbox API",
+    "enableHint": "When off, nothing listens on the port.",
+    "disabled": "Off",
     "status": "Status",
     "running": "Listening on port {port}",
     "stopped": "Not running",
