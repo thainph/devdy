@@ -95,6 +95,7 @@ use commands::storage::{clean_storage, get_storage_stats};
 use commands::captures::{
     delete_captures, get_capture, get_inbox_api_info, import_capture_file, list_captures,
     regenerate_inbox_api_token, rename_capture, reorder_captures, set_capture_project,
+    set_inbox_api_enabled,
     update_capture,
 };
 use commands::notes::{
@@ -228,7 +229,9 @@ pub fn run() {
             app.manage(db);
             app.manage(FileTreeWatchers::default());
             app.manage(WorkSummaryState::default());
-            app.manage(TranslateState::default());
+            // One warm translation sidecar, shared by the UI and the Inbox API.
+            let translate_state = TranslateState::default();
+            app.manage(translate_state.clone());
             app.manage(MascotSpeakState::default());
             app.manage(BalanceGuard::default());
             app.manage(new_registry());
@@ -258,6 +261,7 @@ pub fn run() {
             // Slack Thread Inbox: loopback HTTP API (127.0.0.1:47821..47830) the
             // Chrome extension pushes exported threads to. The token is loaded
             // (or generated) synchronously so commands never see an empty one.
+            // Only started when enabled (`inbox_api_enabled`, default on).
             {
                 let db_for_inbox = app.state::<db::Db>().inner().clone();
                 let inbox_state = inbox_api::InboxApiState::default();
@@ -267,13 +271,24 @@ pub fn run() {
                     Ok(token) => inbox_state.set_token(token),
                     Err(e) => tracing::error!(event = "inbox_api_token_load_failed", error = %e),
                 }
+                let enabled =
+                    tauri::async_runtime::block_on(inbox_api::load_enabled(&db_for_inbox));
+                inbox_state.set_enabled(enabled);
                 app.manage(inbox_state.clone());
-                let app_handle = app.handle().clone();
-                let inbox_app_data = app_data_dir.clone();
-                tauri::async_runtime::spawn(async move {
-                    inbox_api::server::start(app_handle, db_for_inbox, inbox_app_data, inbox_state)
+                if enabled {
+                    let app_handle = app.handle().clone();
+                    let inbox_app_data = app_data_dir.clone();
+                    tauri::async_runtime::spawn(async move {
+                        inbox_api::server::start_server(
+                            app_handle,
+                            db_for_inbox,
+                            inbox_app_data,
+                            inbox_state,
+                            translate_state,
+                        )
                         .await;
-                });
+                    });
+                }
             }
             // Keep the broker alive for the whole app lifetime (Drop removes the
             // socket on exit).
@@ -549,6 +564,7 @@ pub fn run() {
             import_capture_file,
             get_inbox_api_info,
             regenerate_inbox_api_token,
+            set_inbox_api_enabled,
             show_permission_notification,
             show_calendar_reminder,
             remote_set_config,
