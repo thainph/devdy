@@ -18,6 +18,10 @@ use tauri::{AppHandle, Emitter};
 /// `settings` key holding the API bearer token.
 pub const TOKEN_SETTING_KEY: &str = "inbox_api_token";
 
+/// `settings` key for the server on/off switch (`"true"` / `"false"`; missing
+/// means enabled).
+pub const ENABLED_SETTING_KEY: &str = "inbox_api_enabled";
+
 /// Event emitted to all windows on every create/update/delete.
 pub const CAPTURES_CHANGED_EVENT: &str = "captures://changed";
 
@@ -77,6 +81,7 @@ pub fn notify_received(app: &AppHandle, id: &str, kind: ingest::CaptureKind, tit
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct InboxApiInfo {
+    pub enabled: bool,
     pub running: bool,
     pub port: Option<u16>,
     pub token: String,
@@ -87,6 +92,7 @@ pub struct InboxApiInfo {
 struct Inner {
     token: String,
     port: Option<u16>,
+    enabled: bool,
 }
 
 /// Managed state shared by the HTTP server and the commands. The token lives
@@ -94,6 +100,8 @@ struct Inner {
 #[derive(Clone, Default)]
 pub struct InboxApiState {
     inner: Arc<RwLock<Inner>>,
+    /// Handle of the running server; the async lock serializes start / stop.
+    server: Arc<tokio::sync::Mutex<Option<server::ServerHandle>>>,
 }
 
 impl InboxApiState {
@@ -117,6 +125,16 @@ impl InboxApiState {
         }
     }
 
+    pub fn enabled(&self) -> bool {
+        self.inner.read().map(|g| g.enabled).unwrap_or(false)
+    }
+
+    pub fn set_enabled(&self, enabled: bool) {
+        if let Ok(mut g) = self.inner.write() {
+            g.enabled = enabled;
+        }
+    }
+
     /// Constant-time comparison against the current token (empty never matches).
     pub fn check_token(&self, candidate: &str) -> bool {
         let token = self.token();
@@ -133,6 +151,7 @@ impl InboxApiState {
     pub fn info(&self) -> InboxApiInfo {
         let port = self.port();
         InboxApiInfo {
+            enabled: self.enabled(),
             running: port.is_some(),
             port,
             token: self.token(),
@@ -168,6 +187,26 @@ pub async fn save_token(db: &Db, token: &str) -> Result<(), sqlx::Error> {
     sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
         .bind(TOKEN_SETTING_KEY)
         .bind(token)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+/// Whether the server should run (missing / unreadable setting → enabled).
+pub async fn load_enabled(db: &Db) -> bool {
+    let value: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+        .bind(ENABLED_SETTING_KEY)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten();
+    value.is_none_or(|v| v.trim() != "false")
+}
+
+pub async fn save_enabled(db: &Db, enabled: bool) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
+        .bind(ENABLED_SETTING_KEY)
+        .bind(if enabled { "true" } else { "false" })
         .execute(db)
         .await?;
     Ok(())

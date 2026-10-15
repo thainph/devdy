@@ -61,6 +61,7 @@ export interface CaptureDetail extends Capture {
 }
 
 export interface InboxApiInfo {
+  enabled: boolean
   running: boolean
   port: number | null
   token: string
@@ -226,6 +227,11 @@ export const useCapturesStore = defineStore('captures', () => {
     return invoke<InboxApiInfo>('regenerate_inbox_api_token')
   }
 
+  /** Start or stop the whole Inbox API server (persisted). */
+  async function setInboxApiEnabled(enabled: boolean): Promise<InboxApiInfo> {
+    return invoke<InboxApiInfo>('set_inbox_api_enabled', { enabled })
+  }
+
   return {
     captures,
     loading,
@@ -241,5 +247,6 @@ export const useCapturesStore = defineStore('captures', () => {
     importFile,
     getInboxApiInfo,
     regenerateInboxApiToken,
+    setInboxApiEnabled,
   }
 })

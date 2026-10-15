@@ -357,7 +357,10 @@
   },
   "inboxApi": {
     "title": "Inbox API (Chrome extension)",
-    "help": "Endpoint HTTP nội bộ (chỉ 127.0.0.1) để Chrome extension gửi nội dung vào Devdy: thread Slack tới /v1/slack-threads, trang web tới /v1/web-pages. Dán Base URL và token vào extension.",
+    "help": "Endpoint HTTP nội bộ (chỉ 127.0.0.1) để Chrome extension gửi nội dung vào Devdy: thread Slack tới /v1/slack-threads, trang web tới /v1/web-pages. Ngoài ra có dịch văn bản qua /v1/translate. Dán Base URL và token vào extension.",
+    "enable": "Bật Inbox API",
+    "enableHint": "Khi tắt, không có gì lắng nghe trên cổng.",
+    "disabled": "Đã tắt",
     "status": "Trạng thái",
     "running": "Đang lắng nghe ở cổng {port}",
     "stopped": "Không chạy",
