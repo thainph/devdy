@@ -1,8 +1,9 @@
+use crate::commands::translate::TranslateState;
 use crate::db::Db;
 use crate::inbox_api::{
     self, emit_changed,
     ingest::{self, CaptureKind},
-    server::app_data_dir,
+    server::{self, app_data_dir},
     store::{self, Capture, CaptureDetail, IngestResult, Overrides},
     InboxApiInfo, InboxApiState,
 };
@@ -144,5 +145,28 @@ pub async fn regenerate_inbox_api_token(
         .await
         .map_err(|e| e.to_string())?;
     api.set_token(token);
+    Ok(api.info())
+}
+
+/// Turn the whole Inbox API on or off: persists `inbox_api_enabled`, then
+/// starts the server (binding a port) or stops it (nothing listens).
+#[tauri::command]
+pub async fn set_inbox_api_enabled(
+    app: AppHandle,
+    db: State<'_, Db>,
+    api: State<'_, InboxApiState>,
+    translate: State<'_, TranslateState>,
+    enabled: bool,
+) -> Result<InboxApiInfo, String> {
+    let app_data = app_data_dir(&app)?;
+    server::set_enabled(
+        app,
+        db.inner().clone(),
+        app_data,
+        api.inner().clone(),
+        translate.inner().clone(),
+        enabled,
+    )
+    .await?;
     Ok(api.info())
 }
