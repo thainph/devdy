@@ -1,9 +1,12 @@
 <script setup lang="ts">
 // "Insert Slack thread / web page / note / todo" picker for the chat composer —
 // the sibling of the saved-prompt dropdown (RunView, BookMarked icon), built on
-// the same DropdownMenu. Picking an item does NOT paste its content: it emits a
-// one-line reference — `[Slack|Web|Note] <title> (id: …)`, or `[Todo] (id: …)` —
-// and the AI resolves the id through the devdy MCP tools when it needs more.
+// the same DropdownMenu. Picking a web page / note / todo does NOT paste its
+// content: it emits a one-line reference — `[Web|Note] <title> (id: …)`, or
+// `[Todo] (id: …)` — and the AI resolves the id through the devdy MCP tools when
+// it needs more. Picking a Slack thread inserts its translated transcript, built
+// by the backend (`get_slack_thread_prompt_text`), optionally with the original
+// of each message ("Include original", remembered in localStorage).
 //
 // The host inserts the emitted text at the caret (same contract as a saved
 // prompt: own line, focus, never sends).
@@ -11,22 +14,31 @@
 // A segmented All | Slack | Web | Note | Todo filter (remembered in
 // localStorage) narrows the kind; todos show open ones unless "Show done" is on.
 // Rows: the run's project first, then the rest; newest first. The search box
-// filters title / channel / workspace / domain / site / note body / todo text;
-// ↑ ↓ move, Enter inserts.
+// filters title / channel / workspace / thread preview / domain / site / note
+// body / todo text; ↑ ↓ move, Enter inserts. Slack rows not yet `ready` carry
+// their status mark (spinner / error).
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { Check, Globe, Inbox, ListTodo, Search, Slack, StickyNote } from 'lucide-vue-next'
 import { DropdownMenu } from '@/components/ui'
+import SlackStatusIcon from '@/components/slack/SlackStatusIcon.vue'
+import { useSlackText } from '@/components/slack/useSlackText'
+import { useToast } from '@/composables/useToast'
 import { firstLine, relativeAge } from '@/lib/itemText'
 import {
   CAPTURES_CHANGED,
   captureDomain,
-  channelLabel,
   useCapturesStore,
   type Capture,
   type CaptureKind,
 } from '@/stores/captures'
+import {
+  SLACK_THREADS_CHANGED,
+  errorCode,
+  useSlackThreadsStore,
+  type SlackThreadSummary,
+} from '@/stores/slackThreads'
 import { useNotesStore, type Note } from '@/stores/notes'
 import { useTodosStore, type Todo } from '@/stores/todos'
 
@@ -41,9 +53,10 @@ const emit = defineEmits<{
   insert: [text: string]
 }>()
 
-type PickKind = CaptureKind | 'note' | 'todo'
+type PickKind = CaptureKind | 'slack' | 'note' | 'todo'
 type Filter = 'all' | PickKind
 const FILTER_STORAGE_KEY = 'devdy.capturePicker.filter'
+const SLACK_ORIGINAL_STORAGE_KEY = 'devdy.capturePicker.slackOriginal'
 const FILTERS: Filter[] = ['all', 'slack', 'web', 'note', 'todo']
 const KIND_ICON = { slack: Slack, web: Globe, note: StickyNote, todo: ListTodo } as const
 
@@ -68,11 +81,17 @@ interface PickItem {
   /** Lower-cased text the search box matches. */
   hay: string
   done: boolean
+  /** Inserted as-is (web / note / todo); Slack builds its text on pick. */
   reference: string
+  /** Slack only: the thread, for its status mark and the transcript request. */
+  thread?: SlackThreadSummary
 }
 
 const { t } = useI18n()
+const { toast } = useToast()
+const { errorText } = useSlackText()
 const captures = useCapturesStore()
+const slack = useSlackThreadsStore()
 const notes = useNotesStore()
 const todos = useTodosStore()
 
@@ -81,24 +100,29 @@ const query = ref('')
 const filter = ref<Filter>(loadFilter())
 /** Todos: open ones only unless this is on. */
 const showDone = ref(false)
+/** Slack: add the original under each translated message. */
+const slackOriginal = ref(loadSlackOriginal())
 const active = ref(0)
 const searchEl = ref<HTMLInputElement | null>(null)
 const rowEls = ref<HTMLButtonElement[]>([])
-let unlisten: UnlistenFn | null = null
+let unlisten: UnlistenFn[] = []
+
+function loadSlackOriginal(): boolean {
+  try {
+    return localStorage.getItem(SLACK_ORIGINAL_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
 
 // ── Rows per kind ───────────────────────────────────────────────────────────
 
 function captureItem(c: Capture): PickItem {
   const title = c.title.trim() || t(`capture.${c.kind}.untitled`)
-  const source =
-    c.kind === 'slack' ? [channelLabel(c)] : [captureDomain(c) || c.siteName?.trim() || '']
-  const meta = [...source]
+  const meta = [captureDomain(c) || c.siteName?.trim() || '']
   if (c.attachmentCount > 0) meta.push(`📎${c.attachmentCount}`)
   meta.push(relativeAge(c.updatedAt))
-  const hay =
-    c.kind === 'slack'
-      ? `${c.title}\n${c.channel ?? ''}\n${c.workspace ?? ''}`
-      : `${c.title}\n${captureDomain(c)}\n${c.siteName ?? ''}`
+  const hay = `${c.title}\n${captureDomain(c)}\n${c.siteName ?? ''}`
   return {
     key: `capture:${c.id}`,
     kind: c.kind,
@@ -109,6 +133,26 @@ function captureItem(c: Capture): PickItem {
     hay: hay.toLowerCase(),
     done: false,
     reference: reference(c.kind, c.id, title),
+  }
+}
+
+function slackItem(th: SlackThreadSummary): PickItem {
+  const title = th.title.trim() || t('slackThread.untitled')
+  const channel = th.channel ? `#${th.channel}` : th.channelId ? `#${th.channelId}` : ''
+  const meta = [channel]
+  if (th.fileCount > 0) meta.push(`📎${th.fileCount}`)
+  meta.push(relativeAge(th.updatedAt))
+  return {
+    key: `slack:${th.id}`,
+    kind: 'slack',
+    title,
+    meta: meta.filter(Boolean).join(' · '),
+    projectId: th.projectId,
+    sortAt: th.updatedAt,
+    hay: `${th.title}\n${th.channel ?? ''}\n${th.workspace ?? ''}\n${th.preview}`.toLowerCase(),
+    done: false,
+    reference: '',
+    thread: th,
   }
 }
 
@@ -154,7 +198,8 @@ function reference(kind: PickKind, id: string, title?: string): string {
 // ── Filtering / grouping ────────────────────────────────────────────────────
 
 const allItems = computed<PickItem[]>(() => [
-  ...captures.captures.map(captureItem),
+  ...slack.threads.map(slackItem),
+  ...captures.captures.filter((c) => c.kind === 'web').map(captureItem),
   ...notes.notes.map(noteItem),
   ...todos.todos.map(todoItem),
 ])
@@ -200,6 +245,7 @@ const flat = computed(() => groups.value.flatMap((g) => g.items))
 const emptyText = computed(() => {
   switch (filter.value) {
     case 'slack':
+      return t('slackThread.sidebar.empty')
     case 'web':
       return t(`capture.${filter.value}.empty`)
     case 'note':
@@ -212,9 +258,32 @@ const emptyText = computed(() => {
 })
 
 const showDoneToggle = computed(() => filter.value === 'all' || filter.value === 'todo')
+const showOriginalToggle = computed(() => filter.value === 'all' || filter.value === 'slack')
 
-function pick(it: PickItem) {
-  emit('insert', it.reference)
+async function pick(it: PickItem) {
+  if (!it.thread) {
+    emit('insert', it.reference)
+    return
+  }
+  // Slack: the translated transcript (§13.9), built by the backend.
+  try {
+    const res = await slack.promptText(it.thread.id, slackOriginal.value)
+    emit('insert', res.text)
+    if (res.truncated) toast.info(t('slackThread.picker.truncated'))
+  } catch (e) {
+    const { code, detail } = errorCode(e)
+    toast.error(t('slackThread.picker.failed', { error: errorText(code, detail) }))
+  }
+}
+
+function toggleSlackOriginal() {
+  slackOriginal.value = !slackOriginal.value
+  try {
+    localStorage.setItem(SLACK_ORIGINAL_STORAGE_KEY, slackOriginal.value ? '1' : '0')
+  } catch {
+    /* storage unavailable */
+  }
+  nextTick(() => searchEl.value?.focus())
 }
 
 function setFilter(next: Filter) {
@@ -233,6 +302,7 @@ function toggleShowDone() {
 }
 
 function refresh() {
+  void slack.fetchList(null)
   void captures.fetchCaptures()
   void notes.fetchNotes()
   void todos.fetchTodos()
@@ -273,17 +343,22 @@ watch(active, (i) => {
 
 onMounted(async () => {
   try {
-    unlisten = await listen(CAPTURES_CHANGED, () => {
-      if (open.value) void captures.fetchCaptures()
-    })
+    unlisten.push(
+      await listen(CAPTURES_CHANGED, () => {
+        if (open.value) void captures.fetchCaptures()
+      }),
+      await listen(SLACK_THREADS_CHANGED, () => {
+        if (open.value) void slack.fetchList(null)
+      }),
+    )
   } catch {
     /* running outside the Tauri shell */
   }
 })
 
 onBeforeUnmount(() => {
-  unlisten?.()
-  unlisten = null
+  unlisten.forEach((off) => off())
+  unlisten = []
 })
 </script>
 
@@ -349,6 +424,22 @@ onBeforeUnmount(() => {
           </span>
           {{ t('capture.picker.showDone') }}
         </button>
+        <!-- Slack: also insert the original under each translated message. -->
+        <button
+          v-if="showOriginalToggle"
+          type="button"
+          class="flex cursor-pointer items-center gap-1.5 px-0.5 text-[11px] text-muted-foreground hover:text-foreground"
+          :aria-pressed="slackOriginal"
+          @click="toggleSlackOriginal"
+        >
+          <span
+            class="flex h-3 w-3 items-center justify-center rounded-[3px] border transition-colors"
+            :class="slackOriginal ? 'bg-primary border-primary text-primary-foreground' : 'border-muted-foreground/40'"
+          >
+            <Check v-if="slackOriginal" class="h-2 w-2" :stroke-width="3" />
+          </span>
+          {{ t('slackThread.picker.includeOriginal') }}
+        </button>
       </div>
 
       <div class="max-h-72 overflow-y-auto">
@@ -396,6 +487,11 @@ onBeforeUnmount(() => {
               >{{ it.title }}</span>
               <span class="block w-full truncate text-[11px] text-muted-foreground">{{ it.meta }}</span>
             </span>
+            <SlackStatusIcon
+              v-if="it.thread && it.thread.fetchStatus !== 'ready'"
+              :thread="it.thread"
+              class="mt-0.5"
+            />
           </button>
         </template>
       </div>

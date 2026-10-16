@@ -4,18 +4,20 @@ import { ref } from 'vue'
 
 /**
  * Captures pushed in by the Chrome extension over the local Inbox API (or
- * imported by hand from a .zip / .md): Slack threads (`kind: 'slack'`) and web
- * pages (`kind: 'web'`), persisted in the app SQLite DB (captures +
- * capture_attachments) via Tauri commands. Mirrors the notes store: array order
- * follows the `position` column (per kind), mutations apply optimistically and
- * roll back on error.
+ * imported by hand from a .zip / .md): web pages (`kind: 'web'`), persisted in
+ * the app SQLite DB (captures + capture_attachments) via Tauri commands.
+ * Mirrors the notes store: array order follows the `position` column (per
+ * kind), mutations apply optimistically and roll back on error.
  *
- * One list holds every kind; views filter with `ofKind()`. Shapes are the
- * backend contract (serde camelCase) — see docs/srs-web-page-capture.md §4.
+ * Slack threads are NOT captures any more: they have their own tables, store
+ * (stores/slackThreads.ts) and window — see docs/srs-slack-thread-translate.md.
+ *
+ * Views filter with `ofKind()`. Shapes are the backend contract (serde
+ * camelCase) — see docs/srs-web-page-capture.md §4.
  */
-export type CaptureKind = 'slack' | 'web'
+export type CaptureKind = 'web'
 
-export const CAPTURE_KINDS: CaptureKind[] = ['slack', 'web']
+export const CAPTURE_KINDS: CaptureKind[] = ['web']
 
 export interface CaptureAttachment {
   id: string
@@ -41,12 +43,6 @@ export interface Capture {
   updatedAt: string
   exportedAt: string | null
   attachmentCount: number
-  // Slack
-  workspace: string | null
-  channel: string | null
-  threadUrl: string | null
-  threadTs: string | null
-  // Web
   sourceUrl: string | null
   siteName: string | null
   author: string | null
@@ -82,12 +78,6 @@ export interface CapturesChanged {
   action: 'created' | 'updated' | 'deleted'
 }
 
-/** `#channel` with exactly one leading `#`, or '' when the export had none. */
-export function channelLabel(c: Pick<Capture, 'channel'>): string {
-  if (!c.channel) return ''
-  return c.channel.startsWith('#') ? c.channel : `#${c.channel}`
-}
-
 /** A web capture's host without `www.`, or '' when the URL is missing / invalid. */
 export function captureDomain(c: Pick<Capture, 'sourceUrl'>): string {
   if (!c.sourceUrl) return ''
@@ -98,9 +88,9 @@ export function captureDomain(c: Pick<Capture, 'sourceUrl'>): string {
   }
 }
 
-/** Where the capture points back to: the Slack permalink or the page URL. */
+/** Where the capture points back to: the page URL. */
 export function captureOriginalUrl(c: Capture): string | null {
-  return c.kind === 'slack' ? c.threadUrl : c.sourceUrl
+  return c.sourceUrl
 }
 
 export const useCapturesStore = defineStore('captures', () => {

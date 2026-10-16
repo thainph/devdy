@@ -14,12 +14,14 @@
 // Its own webview means its own store copy, so an ITEM_CHANGED broadcast from the
 // item window is what triggers the refetch.
 //
-// The Slack and Web tabs list captures pushed in by the Chrome extension (Inbox
-// API). They are not written by hand: "New" becomes "Import .zip/.md", a row opens
-// the capture's own detail window (lib/captureWindow), and the backend's
+// The Web tab lists web pages pushed in by the Chrome extension (Inbox API).
+// They are not written by hand: "New" becomes "Import .zip/.md", a row opens the
+// capture's own detail window (lib/captureWindow), and the backend's
 // `captures://changed` event drives the refetch. Being bulk inbox items, they also
 // get a select mode for multi-delete. Notes and captures share one card (title,
 // meta, preview, project · age footer) and its inline rename (pencil / F2).
+// Slack threads have their own window (lib/slackWindow); asking this list for
+// the old Slack tab opens that window instead.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -38,7 +40,6 @@ import {
   Plus,
   Search,
   Globe,
-  Slack,
   StickyNote,
   Trash2,
   Upload,
@@ -55,7 +56,6 @@ import {
   CAPTURES_CHANGED,
   captureDomain,
   captureOriginalUrl,
-  channelLabel,
   useCapturesStore,
   type Capture,
   type CaptureKind,
@@ -73,6 +73,7 @@ import {
   type ItemListSetKind,
 } from '@/lib/itemListWindow'
 import { openCaptureWindow } from '@/lib/captureWindow'
+import { openSlackWindow } from '@/lib/slackWindow'
 import { relativeAge } from '@/lib/itemText'
 import { refreshTray } from '@/lib/tray'
 
@@ -85,15 +86,25 @@ const captures = useCapturesStore()
 const projects = useProjectsStore()
 
 const params = new URLSearchParams(window.location.search)
-const KINDS: ItemListKind[] = ['todo', 'note', 'slack', 'web']
-function asKind(value: unknown): ItemListKind | null {
-  return KINDS.includes(value as ItemListKind) ? (value as ItemListKind) : null
+/** The tabs shown here ('slack' is only accepted to redirect to the Slack window). */
+type ListTab = Exclude<ItemListKind, 'slack'>
+const KINDS: ListTab[] = ['todo', 'note', 'web']
+/**
+ * A tab this list shows, or null. The old Slack tab now lives in its own window:
+ * `'slack'` opens that window (projectId = the list's context) and returns null.
+ */
+function asKind(value: unknown, projectId: string | null = null): ListTab | null {
+  if (value === 'slack') {
+    void openSlackWindow({ projectId })
+    return null
+  }
+  return KINDS.includes(value as ListTab) ? (value as ListTab) : null
 }
-const kind = ref<ItemListKind>(asKind(params.get('kind')) ?? 'todo')
-/** The capture kind of the active tab, or null on the todo / note tabs. */
-const captureKind = computed<CaptureKind | null>(() =>
-  kind.value === 'slack' || kind.value === 'web' ? kind.value : null,
+const kind = ref<ListTab>(
+  asKind(params.get('kind'), params.get('projectId') || null) ?? 'todo',
 )
+/** The capture kind of the active tab, or null on the todo / note tabs. */
+const captureKind = computed<CaptureKind | null>(() => (kind.value === 'web' ? 'web' : null))
 const isCapture = computed(() => captureKind.value !== null)
 /** The project being worked on, used to offer "this project only". */
 const contextProjectId = ref<string | null>(params.get('projectId') || null)
@@ -108,10 +119,9 @@ const statusFilter = ref<string>('active')
 
 let unlisten: UnlistenFn[] = []
 
-const TABS: { key: ItemListKind; labelKey: string; icon: typeof ListTodo }[] = [
+const TABS: { key: ListTab; labelKey: string; icon: typeof ListTodo }[] = [
   { key: 'todo', labelKey: 'item.tabTodo', icon: ListTodo },
   { key: 'note', labelKey: 'item.tabNote', icon: StickyNote },
-  { key: 'slack', labelKey: 'capture.slack.tab', icon: Slack },
   { key: 'web', labelKey: 'capture.web.tab', icon: Globe },
 ]
 
@@ -127,11 +137,11 @@ interface Row {
   /** The AI session it was captured from, for the backlink. */
   runId: string | null
   createdAt: string
-  /** Captures only: Slack `#channel · workspace`, web domain. */
+  /** Captures only: the web domain. */
   source: string
   /** Captures only: number of bundled attachments. */
   attachments: number
-  /** Captures only: Slack permalink / page URL ("Open in Slack" / "Open original"). */
+  /** Captures only: the page URL ("Open original"). */
   url: string | null
   /** Captures only: the user renamed it (kept on re-export). */
   custom?: boolean
@@ -175,14 +185,11 @@ const rows = computed<Row[]>(() =>
 )
 
 function captureRow(c: Capture): Row {
-  const source =
-    c.kind === 'slack'
-      ? [channelLabel(c), c.workspace ?? ''].filter(Boolean).join(' · ')
-      : captureDomain(c) || c.siteName?.trim() || ''
+  const source = captureDomain(c) || c.siteName?.trim() || ''
   return {
     id: c.id,
     title: c.title.trim() || firstLine(c.content) || t(`capture.${c.kind}.untitled`),
-    // The source is searchable too (Slack channel / web domain + site name).
+    // The source is searchable too (web domain + site name).
     body: `${c.content}\n${source}\n${c.siteName ?? ''}`,
     preview: noteSnippet(c.content, true),
     done: false,
@@ -302,13 +309,13 @@ function refresh() {
 
 function openCreate() {
   const k = kind.value
-  if (k === 'slack' || k === 'web') void importCaptures()
+  if (k === 'web') void importCaptures()
   else openItemCreateWindow(k, { projectId: contextProjectId.value })
 }
 
 function openItem(id: string) {
   const k = kind.value
-  if (k === 'slack' || k === 'web') {
+  if (k === 'web') {
     if (selecting.value) toggleSelected(id)
     else openCaptureWindow(id, k)
   } else {
@@ -316,7 +323,7 @@ function openItem(id: string) {
   }
 }
 
-// ── Captures (Slack / Web) ──────────────────────────────────────────────────
+// ── Captures (Web) ──────────────────────────────────────────────────
 
 const importing = ref(false)
 
@@ -561,7 +568,7 @@ onMounted(async () => {
       await listen<ItemListSetKind>(ITEM_LIST_SET_KIND, (e) => {
         const payload = e.payload
         if (!payload) return
-        const next = asKind(payload.kind)
+        const next = asKind(payload.kind, payload.projectId ?? contextProjectId.value)
         if (next) kind.value = next
         if (payload.projectId !== undefined) contextProjectId.value = payload.projectId ?? null
       }),
@@ -569,7 +576,7 @@ onMounted(async () => {
       await listen(CAPTURES_CHANGED, () => {
         if (isCapture.value) captures.fetchCaptures()
       }),
-      // MCP sidecar writes (slack_threads_* / web_pages_*) emit no Tauri event:
+      // MCP sidecar writes (web_pages_*) emit no Tauri event:
       // catch up on focus.
       await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
         if (focused && isCapture.value) captures.fetchCaptures()
@@ -701,7 +708,7 @@ onBeforeUnmount(() => {
         >
           <div class="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-muted">
             <component
-              :is="kind === 'todo' ? ListTodo : kind === 'slack' ? Slack : kind === 'web' ? Globe : StickyNote"
+              :is="kind === 'todo' ? ListTodo : kind === 'web' ? Globe : StickyNote"
               class="h-5 w-5 text-muted-foreground"
               :stroke-width="1.5"
             />
@@ -756,8 +763,7 @@ onBeforeUnmount(() => {
               </span>
             </div>
 
-            <!-- Note / capture: a card — title, then (Slack) `#channel · workspace`
-                 / (web) avatar + `domain · age` (+ Excerpt), a preview, then
+            <!-- Note / capture: a card — title, then (web) avatar + `domain · age` (+ Excerpt), a preview, then
                  attachments · project · age. In select mode a click toggles it. -->
             <!-- A focusable div rather than a <button>: it hosts the inline rename
                  input, which can't live inside a button. F2 renames the focused card. -->
@@ -866,7 +872,7 @@ onBeforeUnmount(() => {
                 v-if="isCapture && row.url"
                 type="button"
                 class="cursor-pointer rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-primary"
-                :title="kind === 'web' ? t('capture.openOriginal') : t('capture.openInSlack')"
+                :title="t('capture.openOriginal')"
                 @click="openOriginal(row)"
               >
                 <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />

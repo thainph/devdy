@@ -1,6 +1,7 @@
-// Tool definitions for captured content (Slack threads + web pages). Both kinds
-// share one store (`captures`) and the same 10 tools; `captureTools(kind)` builds
-// the `<prefix>_*` set for one kind so the surfaces can't drift apart.
+// Tool definitions for captured content in the shared `captures` store (web
+// pages). `captureTools(kind)` builds the 10 `<prefix>_*` tools for one kind.
+// Slack threads live in their own tables since migration 0041 — see
+// slack-thread-tools.mjs.
 
 import * as store from './store.mjs';
 import { sliceMarkdown } from './markdown.mjs';
@@ -8,14 +9,6 @@ import { sliceMarkdown } from './markdown.mjs';
 const READ_MAX_DEFAULT = 20000;
 
 const KINDS = {
-  slack: {
-    prefix: 'slack_threads',
-    noun: 'Slack thread',
-    plural: 'Slack threads',
-    what: 'Slack threads saved into Devdy by the Chrome extension (Slack thread inbox)',
-    searchCols: 'title, body and channel',
-    readMeta: 'metadata (workspace, channel, Slack URL…)',
-  },
   web: {
     prefix: 'web_pages',
     noun: 'web page',
@@ -35,42 +28,30 @@ const domainOf = (url) => {
 };
 
 /**
- * @param {'slack'|'web'} kind
+ * @param {'web'} kind
  * @param {{ firstLine: Function, snippetAround: Function }} fmt shared formatters from index.mjs
  */
 export function captureTools(kind, { firstLine, snippetAround }) {
   const k = KINDS[kind];
+  if (!k) throw new Error(`unknown capture kind: ${kind}`);
   const P = k.prefix;
   const titleOf = (c) => c.title || firstLine(c.content) || '(untitled)';
-  // " · #channel · workspace · N attachment(s)" (slack) or " · site · excerpt · …" (web).
+  // " · site · excerpt · N attachment(s)".
   const metaOf = (c) => {
-    const parts =
-      kind === 'slack'
-        ? [c.channel, c.workspace]
-        : [c.site_name || domainOf(c.source_url), c.selection ? 'excerpt' : null];
-    const list = parts.filter(Boolean);
+    const list = [c.site_name || domainOf(c.source_url), c.selection ? 'excerpt' : null].filter(Boolean);
     if (c.attachment_count) list.push(`${c.attachment_count} attachment(s)`);
     return list.length ? ` · ${list.join(' · ')}` : '';
   };
   const detailMeta = (c) =>
-    (kind === 'slack'
-      ? [
-          ['workspace', c.workspace],
-          ['channel', c.channel],
-          ['thread_url', c.thread_url],
-          ['thread_ts', c.thread_ts],
-          ['exported_at', c.exported_at],
-        ]
-      : [
-          ['site', c.site_name || domainOf(c.source_url)],
-          ['source_url', c.source_url],
-          ['author', c.author],
-          ['published_at', c.published_at],
-          ['captured_at', c.exported_at],
-          ['selection', c.selection ? 'yes — only the part the user selected, not the full page' : null],
-          ['description', c.description],
-        ]
-    ).concat([
+    [
+      ['site', c.site_name || domainOf(c.source_url)],
+      ['source_url', c.source_url],
+      ['author', c.author],
+      ['published_at', c.published_at],
+      ['captured_at', c.exported_at],
+      ['selection', c.selection ? 'yes — only the part the user selected, not the full page' : null],
+      ['description', c.description],
+    ].concat([
       ['title_custom', c.title_custom ? 'yes (kept on re-export)' : null],
       ['project_id', c.project_id],
       ['updated_at', c.updated_at],
@@ -78,7 +59,7 @@ export function captureTools(kind, { firstLine, snippetAround }) {
 
   return {
     [`${P}_list`]: {
-      description: `List ${k.what}. Defaults to the current project; pass scope="all" for every project. Returns id, title, ${kind === 'slack' ? 'channel' : 'site'}, attachment count and a short preview.`,
+      description: `List ${k.what}. Defaults to the current project; pass scope="all" for every project. Returns id, title, site, attachment count and a short preview.`,
       inputSchema: {
         type: 'object',
         properties: {

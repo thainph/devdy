@@ -7,10 +7,11 @@ use crate::inbox_api::{
     store::{self, Capture, CaptureDetail, IngestResult, Overrides},
     InboxApiInfo, InboxApiState,
 };
+use crate::slack_threads::SlackThreadsState;
 use tauri::{AppHandle, State};
 
-/// List captures (top-priority first), optionally filtered by kind
-/// (`slack` | `web`) and project.
+/// List captures (top-priority first), optionally filtered by kind (`web`;
+/// Slack threads have their own commands) and project.
 #[tauri::command]
 pub async fn list_captures(
     db: State<'_, Db>,
@@ -33,7 +34,7 @@ pub async fn get_capture(
 }
 
 /// Rename a capture. The title is marked user-chosen, so re-exports of the
-/// same thread/page keep it (unless the extension sends `X-Devdy-Title`).
+/// same page keep it (unless the extension sends `X-Devdy-Title`).
 #[tauri::command]
 pub async fn rename_capture(
     app: AppHandle,
@@ -156,6 +157,7 @@ pub async fn set_inbox_api_enabled(
     db: State<'_, Db>,
     api: State<'_, InboxApiState>,
     translate: State<'_, TranslateState>,
+    slack: State<'_, SlackThreadsState>,
     enabled: bool,
 ) -> Result<InboxApiInfo, String> {
     let app_data = app_data_dir(&app)?;
@@ -165,6 +167,7 @@ pub async fn set_inbox_api_enabled(
         app_data,
         api.inner().clone(),
         translate.inner().clone(),
+        slack.inner().clone(),
         enabled,
     )
     .await?;

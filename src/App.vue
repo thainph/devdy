@@ -26,11 +26,17 @@ import MascotWindow from '@/views/MascotWindow.vue'
 import ItemWindow from '@/views/ItemWindow.vue'
 import ItemListWindow from '@/views/ItemListWindow.vue'
 import CaptureWindow from '@/views/CaptureWindow.vue'
+import SlackThreadsWindow from '@/views/SlackThreadsWindow.vue'
 import {
   CAPTURE_NOTIFICATION_CLICKED,
   openCaptureWindow,
   type CaptureNotificationClicked,
 } from '@/lib/captureWindow'
+import {
+  openSlackWindow,
+  SLACK_WINDOW_OPEN_ROUTE,
+  type SlackWindowOpenRoute,
+} from '@/lib/slackWindow'
 import { openItemCreateWindow } from '@/lib/itemWindow'
 import { openItemListWindow, ITEM_LIST_OPEN_RUN, type ItemListOpenRun } from '@/lib/itemListWindow'
 import { applyAppMenu, IS_MAC, listenMenuActions, registerMenuAction, runMenuAction } from '@/lib/appMenu'
@@ -52,6 +58,7 @@ const isItemWindow = new URLSearchParams(window.location.search).get('itemWindow
 const isItemListWindow = new URLSearchParams(window.location.search).get('itemListWindow') === '1'
 const isGanttWindow = new URLSearchParams(window.location.search).get('ganttWindow') === '1'
 const isCaptureWindow = new URLSearchParams(window.location.search).get('captureWindow') === '1'
+const isSlackWindow = new URLSearchParams(window.location.search).get('slackWindow') === '1'
 const isMascotWindow = new URLSearchParams(window.location.search).get('mascotWindow') === '1'
 // A session pop-out is different from the bare pop-outs above: it reuses the full
 // RunView (routed to one run) with the app chrome hidden, so it still needs the
@@ -67,6 +74,7 @@ const isPopoutWindow =
   isItemListWindow ||
   isGanttWindow ||
   isCaptureWindow ||
+  isSlackWindow ||
   isMascotWindow
 
 const route = useRoute()
@@ -251,6 +259,9 @@ let unlistenTrayRun: UnlistenFn | null = null
 // Listener for a clicked "capture received" OS notification (see lib/captureWindow.ts).
 let unlistenCaptureNotification: UnlistenFn | null = null
 
+// Listener for the Slack threads window asking to navigate (e.g. to the MCP settings).
+let unlistenSlackRoute: UnlistenFn | null = null
+
 // True when the event target is a text-entry surface where Backspace/navigation
 // keys are legitimately used to edit text.
 function isEditableTarget(el: EventTarget | null): boolean {
@@ -325,7 +336,7 @@ function bindGlobalMenuActions() {
       openItemListWindow('todo', { projectId: routeCaptureContext().projectId }),
     ),
     registerMenuAction('view.slackThreads', () =>
-      openItemListWindow('slack', { projectId: routeCaptureContext().projectId }),
+      openSlackWindow({ projectId: routeCaptureContext().projectId }),
     ),
     registerMenuAction('view.webPages', () =>
       openItemListWindow('web', { projectId: routeCaptureContext().projectId }),
@@ -378,6 +389,8 @@ onBeforeUnmount(() => {
   unlistenTrayRun = null
   unlistenCaptureNotification?.()
   unlistenCaptureNotification = null
+  unlistenSlackRoute?.()
+  unlistenSlackRoute = null
   unbindMenuActions?.()
   unbindMenuActions = null
   unlistenMenu?.()
@@ -549,17 +562,37 @@ onMounted(async () => {
     // Ignore (e.g. running outside the Tauri shell during dev in a browser).
   }
 
-  // A clicked "Slack thread / Web page received" notification opens that capture's
-  // detail window (or focuses the one already showing it). Registered here, past
-  // the pop-out / session early returns, so only the main window handles it.
+  // A clicked "Slack thread translated / Web page received" notification opens the
+  // Slack threads window on that thread, or the web page's detail window (or
+  // focuses the one already showing it). Registered here, past the pop-out /
+  // session early returns, so only the main window handles it.
   try {
     unlistenCaptureNotification = await listen<CaptureNotificationClicked>(
       CAPTURE_NOTIFICATION_CLICKED,
       (e) => {
         const { id, kind } = e.payload ?? {}
-        if (id) void openCaptureWindow(id, kind === 'web' ? 'web' : 'slack')
+        if (!id) return
+        if (kind === 'slack') void openSlackWindow({ id })
+        else void openCaptureWindow(id)
       },
     )
+  } catch {
+    // Ignore (e.g. running outside the Tauri shell during dev in a browser).
+  }
+
+  // The Slack threads window has no router of this app: it asks the main window
+  // to focus itself and navigate (e.g. to the MCP settings when no token is set).
+  try {
+    unlistenSlackRoute = await listen<SlackWindowOpenRoute>(SLACK_WINDOW_OPEN_ROUTE, async (e) => {
+      const path = e.payload?.path
+      if (!path || !path.startsWith('/')) return
+      try {
+        await getCurrentWebviewWindow().setFocus()
+      } catch {
+        /* best-effort focus */
+      }
+      router.push(path).catch(() => {})
+    })
   } catch {
     // Ignore (e.g. running outside the Tauri shell during dev in a browser).
   }
@@ -593,8 +626,11 @@ onMounted(async () => {
   <!-- THE todo / note LIST window: stands beside the main window, replacing the drawer. -->
   <ItemListWindow v-else-if="isItemListWindow" />
 
-  <!-- One capture (Slack thread / web page from the Inbox API): metadata, markdown, attachments. -->
+  <!-- One web page capture (from the Inbox API): metadata, markdown, attachments. -->
   <CaptureWindow v-else-if="isCaptureWindow" />
+
+  <!-- THE Slack threads window: Slack-like reader of the fetched + translated threads. -->
+  <SlackThreadsWindow v-else-if="isSlackWindow" />
 
   <!-- Pop-out Gantt window: bare Gantt chart on its own OS window. -->
   <IssuesGanttView v-else-if="isGanttWindow" />
@@ -705,16 +741,16 @@ onMounted(async () => {
                   <span class="flex-1 truncate text-left">{{ t('item.navNotes') }}</span>
                 </button>
 
-                <!-- Captures pushed in by the Chrome extension: the same list
-                     window, on its Slack / Web tab. -->
+                <!-- Slack threads have their own window; web pages pushed in by
+                     the Chrome extension sit on the list window's Web tab. -->
                 <button
                   type="button"
                   class="relative flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors cursor-pointer select-none text-muted-foreground hover:text-foreground hover:bg-accent/50"
-                  :title="t('capture.slack.nav')"
-                  @click="openItemListWindow('slack', { projectId: routeCaptureContext().projectId })"
+                  :title="t('slackThread.nav')"
+                  @click="openSlackWindow({ projectId: routeCaptureContext().projectId })"
                 >
                   <Slack class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
-                  <span class="flex-1 truncate text-left">{{ t('capture.slack.nav') }}</span>
+                  <span class="flex-1 truncate text-left">{{ t('slackThread.nav') }}</span>
                 </button>
 
                 <button

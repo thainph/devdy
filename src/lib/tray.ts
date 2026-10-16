@@ -100,6 +100,7 @@ function rawLabelFor(windowLabel: string, osTitle: string): string {
   if (windowLabel.startsWith('item-edit-')) return meaningful || t('tray.editItem')
   if (windowLabel === 'item-list') return meaningful || t('tray.itemListWindow')
   if (windowLabel.startsWith('capture-')) return meaningful || t('tray.captureWindow')
+  if (windowLabel === 'slack-threads') return meaningful || t('slackThread.window.title')
   // Unknown / future window kind: best effort — its title, else the raw label.
   return meaningful || windowLabel
 }

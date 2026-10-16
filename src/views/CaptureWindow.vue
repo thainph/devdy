@@ -1,6 +1,7 @@
 <script setup lang="ts">
-// The detail window for ONE capture — a Slack thread or a web page pushed in by
-// the Chrome extension (opened via lib/captureWindow, `?captureWindow=1&id=…`).
+// The detail window for ONE capture — a web page pushed in by the Chrome
+// extension (opened via lib/captureWindow, `?captureWindow=1&id=…`). Slack
+// threads have their own window (views/SlackThreadsWindow.vue).
 // It is the capture twin of the note editor window (views/ItemWindow.vue),
 // sharing its chrome: slim titlebar with pin + reload, a read view that flips
 // into a content editor, and an action bar.
@@ -9,13 +10,12 @@
 //   • the title as a large heading — THE one place a capture is renamed (click
 //     or F2 → inline field; Enter / blur save, Esc cancels); web excerpts carry
 //     an "Excerpt" badge;
-//   • one compact metadata line (Slack: `#channel · workspace · 2h`, web:
-//     `domain · author · 2h`; full dates in its tooltip) and a files chip;
-//     Open in Slack / Open original is an icon in the titlebar, the project
-//     picker sits on the left of the footer;
+//   • one compact metadata line (`domain · author · 2h`; full dates in its
+//     tooltip) and a files chip; Open original is an icon in the titlebar, the
+//     project picker sits on the left of the footer;
 //   • the attachments as a thumbnail strip (images via the asset protocol, any
 //     file opens with the OS default app);
-//   • web only: a collapsible outline of the page's headings (click = scroll);
+//   • a collapsible outline of the page's headings (click = scroll);
 //   • the content as markdown, or the content editor in Edit mode.
 //
 // It is its own webview, so it reads the capture straight from the DB and
@@ -34,7 +34,6 @@ import {
   Globe,
   Paperclip,
   PencilLine,
-  Slack,
 } from 'lucide-vue-next'
 import {
   Badge,
@@ -59,7 +58,6 @@ import {
   CAPTURES_CHANGED,
   captureDomain,
   captureOriginalUrl,
-  channelLabel,
   useCapturesStore,
   type CaptureAttachment,
   type CaptureKind,
@@ -77,8 +75,8 @@ const { renderText, loadMarkdown } = useMarkdown()
 
 const params = new URLSearchParams(window.location.search)
 const captureId = params.get('id') ?? ''
-/** The opener passes the kind so even a missing capture gets the right wording. */
-const kindHint: CaptureKind = params.get('kind') === 'web' ? 'web' : 'slack'
+/** Web is the only capture kind left (Slack threads have their own window). */
+const kindHint: CaptureKind = 'web'
 /** Attachments shown in the collapsed strip before the "+N" tile. */
 const STRIP_LIMIT = 6
 
@@ -105,25 +103,19 @@ const dirty = computed(
 
 const heading = computed(() => capture.value?.title.trim() || t(`capture.${kind.value}.untitled`))
 
-/**
- * Slack: `#channel · workspace · 2h` (received); web: `domain · author · 2h`
- * (captured) — whichever parts the export carried.
- */
+/** `domain · author · 2h` (captured) — whichever parts the export carried. */
 const metaLine = computed(() => {
   const c = capture.value
   if (!c) return ''
-  const parts =
-    c.kind === 'slack'
-      ? [channelLabel(c), c.workspace ?? '', relativeAge(c.createdAt)]
-      : [
-          c.siteName?.trim() || captureDomain(c),
-          c.author ? t('capture.byAuthor', { author: c.author }) : '',
-          relativeAge(c.exportedAt ?? c.createdAt),
-        ]
+  const parts = [
+    c.siteName?.trim() || captureDomain(c),
+    c.author ? t('capture.byAuthor', { author: c.author }) : '',
+    relativeAge(c.exportedAt ?? c.createdAt),
+  ]
   return parts.filter(Boolean).join(' · ')
 })
 
-/** Slack permalink / page URL, for the "Open in Slack" / "Open original" chip. */
+/** The page URL, for the "Open original" chip. */
 const originalUrl = computed(() => (capture.value ? captureOriginalUrl(capture.value) : null))
 
 /** Full dates for the metadata line's tooltip. */
@@ -131,13 +123,9 @@ const metaTooltip = computed(() => {
   const th = capture.value
   if (!th) return ''
   const lines = []
-  if (th.kind === 'web') {
-    if (th.sourceUrl) lines.push(th.sourceUrl)
-    if (th.publishedAt) lines.push(t('capture.publishedAt', { date: formatDate(th.publishedAt) }))
-    if (th.exportedAt) lines.push(t('capture.capturedAt', { date: formatDate(th.exportedAt) }))
-  } else if (th.exportedAt) {
-    lines.push(t('capture.exportedAt', { date: formatDate(th.exportedAt) }))
-  }
+  if (th.sourceUrl) lines.push(th.sourceUrl)
+  if (th.publishedAt) lines.push(t('capture.publishedAt', { date: formatDate(th.publishedAt) }))
+  if (th.exportedAt) lines.push(t('capture.capturedAt', { date: formatDate(th.exportedAt) }))
   lines.push(t('capture.receivedAt', { date: formatDate(th.createdAt) }))
   if (th.updatedAt !== th.createdAt) {
     lines.push(t('capture.updatedAt', { date: formatDate(th.updatedAt) }))
@@ -498,12 +486,12 @@ onBeforeUnmount(() => {
   <div class="flex h-screen w-screen flex-col bg-background text-foreground overflow-hidden">
     <!-- Slim titlebar: which capture this is and whether it has unsaved changes. -->
     <DetailWindowTitlebar
-      :icon="kind === 'web' ? Globe : Slack"
+      :icon="Globe"
       :title="heading"
       :dirty="dirty"
       :pinned="pinned"
       :reloading="reloading"
-      :external-label="originalUrl ? (kind === 'web' ? t('capture.openOriginal') : t('capture.openInSlack')) : undefined"
+      :external-label="originalUrl ? t('capture.openOriginal') : undefined"
       @toggle-pin="togglePin"
       @reload="load({ quiet: true })"
       @open-external="openOriginal"
@@ -548,9 +536,9 @@ onBeforeUnmount(() => {
             >
               <PencilLine class="h-3.5 w-3.5" :stroke-width="1.75" />
             </span>
-            <!-- Web: only the user's selection was captured, not the whole page. -->
+            <!-- Only the user's selection was captured, not the whole page. -->
             <Badge
-              v-if="capture.kind === 'web' && capture.selection"
+              v-if="capture.selection"
               tone="info"
               size="xs"
               class="shrink-0"
@@ -570,7 +558,7 @@ onBeforeUnmount(() => {
         </p>
 
         <!-- Files chip (jumps to the strip). The project picker is in the footer,
-             Open in Slack / Open original in the titlebar. -->
+             Open original in the titlebar. -->
         <div v-if="capture.attachments.length" class="mt-2 flex shrink-0 flex-wrap items-center gap-1.5">
           <Button
             variant="outline"
