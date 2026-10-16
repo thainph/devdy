@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useActivatedRefresh } from '@/composables/useActivatedRefresh'
@@ -61,13 +61,24 @@ function prevDay() {
   day.value = shiftDay(day.value || todayYmd.value, -1)
 }
 function nextDay() {
+  refreshToday()
   if (isToday.value) return
   day.value = shiftDay(day.value || todayYmd.value, 1)
 }
 function goToday() {
-  todayYmd.value = fmtLocal(new Date())
+  refreshToday()
   day.value = todayYmd.value
 }
+// The view can stay open (or cached by <KeepAlive>) across midnight. Roll
+// `todayYmd` forward, and keep a selection that was "today" following along.
+function refreshToday() {
+  const now = fmtLocal(new Date())
+  if (now === todayYmd.value) return
+  if (day.value === todayYmd.value) day.value = now
+  todayYmd.value = now
+}
+const todayTimer = setInterval(refreshToday, 60_000)
+onBeforeUnmount(() => clearInterval(todayTimer))
 // Clearing the native date input yields '' — fall back to today.
 watch(day, (v) => {
   if (!v) day.value = todayYmd.value
@@ -172,8 +183,7 @@ onMounted(async () => {
 // throw away the project filter the user picked last time (which <KeepAlive> is
 // now preserving for them).
 useActivatedRefresh(() => {
-  // The app may stay open across midnight: keep "today" current.
-  todayYmd.value = fmtLocal(new Date())
+  refreshToday()
   load()
 })
 
