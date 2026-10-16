@@ -1,6 +1,7 @@
-//! Capture inbox: a loopback HTTP API the Chrome extension pushes exported
-//! Slack threads and web pages to, plus the shared parsing/storage used by the
-//! Tauri commands. Both kinds live in the `captures` table.
+//! Capture inbox: a loopback HTTP API the Chrome extension pushes web pages
+//! and Slack thread links to, plus the shared parsing/storage used by the
+//! Tauri commands. Web pages live in the `captures` table; Slack threads are
+//! handed to `crate::slack_threads` (own tables, fetched from Slack).
 //!
 //! - `ingest`: pure payload parsing (front matter, zip guards).
 //! - `store`: SQLite + attachment files on disk.
@@ -55,7 +56,7 @@ struct CaptureNotificationClick {
     kind: &'static str,
 }
 
-/// Show the "Slack thread / Web page received" OS notification. Clicking it
+/// Show the "Web page received" OS notification. Clicking it
 /// raises the main window and emits `capture-notification-clicked`
 /// `{ id, kind }`.
 pub fn notify_received(app: &AppHandle, id: &str, kind: ingest::CaptureKind, title: &str) {

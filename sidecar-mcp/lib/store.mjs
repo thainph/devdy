@@ -26,6 +26,9 @@ function db() {
 
 const nowIso = () => new Date().toISOString();
 
+// Shared with slack-store.mjs (same handle, same transaction / id / scope rules).
+export { db, tx, normIds, requireProject, nowRfc3339 };
+
 /**
  * Current UTC time in the exact shape of Rust's `chrono::Utc::now().to_rfc3339()`
  * (`2026-10-08T09:00:00.123456+00:00`): `+00:00` offset instead of `Z`, and the
@@ -252,22 +255,21 @@ export function reorderNotes({ ids } = {}) {
   return reorderRows('notes', normIds(ids), 'position ASC, updated_at DESC');
 }
 
-// ---- Captures (Slack threads + web pages) -----------------------------------
+// ---- Captures (web pages) ---------------------------------------------------
 //
 // Content pushed by the Chrome extension (or imported manually) into `captures`,
-// one row per item with `kind` = 'slack' | 'web', and attachment rows in
+// one row per item with `kind` = 'web', and attachment rows in
 // `capture_attachments`. Attachment `file_path` is stored RELATIVE to <app_data>;
 // files live under <app_data>/<kind dir>/<capture_id>/files/. Every function
-// takes the kind and only ever sees rows of that kind, so a slack_* tool can
-// never touch a web page (and vice versa). Scope semantics mirror notes.
+// takes the kind and only ever sees rows of that kind. Scope semantics mirror
+// notes. Slack threads have their own tables since migration 0041 (see
+// slack-store.mjs); the legacy Slack columns of `captures` are no longer read.
 
 const CAPTURE_KINDS = {
-  slack: { label: 'slack thread', dir: 'slack-threads', search: ['title', 'content', 'channel'] },
   web: { label: 'web page', dir: 'web-pages', search: ['title', 'content', 'site_name', 'source_url'] },
 };
 const CAPTURE_COLS = `c.id, c.kind, c.title, c.title_custom, c.content, c.project_id, c.position,
   c.created_at, c.updated_at, c.exported_at,
-  c.workspace, c.channel, c.thread_url, c.thread_ts,
   c.source_url, c.site_name, c.author, c.published_at, c.description, c.selection,
   (SELECT COUNT(*) FROM capture_attachments a WHERE a.capture_id = c.id) AS attachment_count`;
 const CAPTURE_ORDER = 'ORDER BY c.position ASC, c.updated_at DESC';
@@ -282,7 +284,7 @@ function captureKind(kind) {
 }
 
 /** Resolve a stored (app_data-relative) attachment path to an absolute one inside app_data. */
-function attachmentAbsPath(filePath) {
+export function attachmentAbsPath(filePath) {
   const base = resolve(appDataDir());
   const target = resolve(base, String(filePath || ''));
   if (target === base || !target.startsWith(base + sep)) {
@@ -793,7 +795,7 @@ export function getServer(id) {
 // callers get a warning to re-apply via the Devdy app so the sync/hash tracking
 // stays correct.
 
-function appDataDir() {
+export function appDataDir() {
   const dbPath = process.env.DEVDY_DB_PATH;
   if (!dbPath) throw new Error('DEVDY_DB_PATH is not set — cannot locate app data dir');
   return dirname(dbPath);

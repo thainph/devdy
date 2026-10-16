@@ -1,5 +1,5 @@
-//! Pure parsing of an incoming capture payload — a Slack thread or a web page,
-//! sent as a raw `.md` or a `.zip` holding one `.md` plus attachments. No DB or filesystem access here — the
+//! Pure parsing of an incoming capture payload — a web page, sent as a raw
+//! `.md` or a `.zip` holding one `.md` plus attachments. No DB or filesystem access here — the
 //! result is handed to `store::ingest` — so every guard is unit-testable.
 
 use std::io::{Cursor, Read};
@@ -51,26 +51,25 @@ pub struct ParsedAttachment {
 }
 
 /// What a capture is. Stored in `captures.kind`; also picks the files dir,
-/// the default title and the notification text.
+/// the default title and the notification text. Only web pages remain: Slack
+/// threads live in their own tables (`crate::slack_threads`), so `"slack"` is
+/// rejected on deserialization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CaptureKind {
     #[default]
-    Slack,
     Web,
 }
 
 impl CaptureKind {
     pub fn as_str(&self) -> &'static str {
         match self {
-            CaptureKind::Slack => "slack",
             CaptureKind::Web => "web",
         }
     }
 
     pub fn parse(s: &str) -> Option<Self> {
         match s {
-            "slack" => Some(CaptureKind::Slack),
             "web" => Some(CaptureKind::Web),
             _ => None,
         }
@@ -79,14 +78,12 @@ impl CaptureKind {
     /// Subdirectory of `<app_data>` holding one folder per capture.
     pub fn dir_name(&self) -> &'static str {
         match self {
-            CaptureKind::Slack => "slack-threads",
             CaptureKind::Web => "web-pages",
         }
     }
 
     pub fn default_title(&self) -> &'static str {
         match self {
-            CaptureKind::Slack => "Slack thread",
             CaptureKind::Web => "Web page",
         }
     }
@@ -94,28 +91,20 @@ impl CaptureKind {
     /// OS notification text for an API-received capture.
     pub fn received_message(&self, title: &str) -> String {
         match self {
-            CaptureKind::Slack => format!("Slack thread received: {}", title),
             CaptureKind::Web => format!("Web page received: {}", title),
         }
     }
 }
 
-/// A fully parsed capture, ready to be upserted. Slack-only and web-only
-/// fields stay `None` for the other kind.
+/// A fully parsed capture, ready to be upserted.
 #[derive(Debug, Clone, Default)]
 pub struct ParsedCapture {
     pub kind: CaptureKind,
     pub title: String,
     /// Markdown body with the front matter stripped.
     pub content: String,
-    /// Export/capture time (`exported_at` for slack, `captured_at` for web).
+    /// Capture time (`captured_at`, or `exported_at` as a fallback).
     pub exported_at: Option<String>,
-    // slack
-    pub workspace: Option<String>,
-    pub channel: Option<String>,
-    pub thread_url: Option<String>,
-    pub thread_ts: Option<String>,
-    // web
     pub source_url: Option<String>,
     /// Normalized `source_url` (dedup key); `None` when absent/unparseable.
     pub url_key: Option<String>,
@@ -202,13 +191,6 @@ pub fn parse_markdown(kind: CaptureKind, bytes: &[u8]) -> Result<ParsedCapture, 
             let get = |key: &str| map.get(key).and_then(yaml_scalar);
             title = get("title");
             match kind {
-                CaptureKind::Slack => {
-                    thread.workspace = get("workspace");
-                    thread.channel = get("channel");
-                    thread.thread_url = get("thread_url");
-                    thread.thread_ts = get("thread_ts");
-                    thread.exported_at = get("exported_at");
-                }
                 CaptureKind::Web => {
                     thread.source_url = get("url");
                     thread.url_key = thread.source_url.as_deref().and_then(normalize_url);
@@ -602,63 +584,68 @@ pub(crate) mod tests {
         zip.finish().unwrap().into_inner()
     }
 
-    const MD: &str = "---\ntitle: \"Deploy failed on staging\"\nworkspace: malme\nchannel: \"#dev-backend\"\nthread_url: \"https://malme.slack.com/archives/C0123/p1700000000123456\"\nthread_ts: \"1700000000.123456\"\nexported_at: \"2026-10-08T09:00:00Z\"\nextra: ignored\n---\n# Hello\n\nbody text\n";
+    const MD: &str = "---\ntitle: \"Deploy failed on staging\"\nurl: \"https://example.com/a\"\nsite_name: \"Example\"\nexported_at: \"2026-10-08T09:00:00Z\"\nextra: ignored\n---\n# Hello\n\nbody text\n";
 
     #[test]
     fn front_matter_is_parsed_and_stripped() {
-        let t = parse_markdown(CaptureKind::Slack, MD.as_bytes()).unwrap();
+        let t = parse_markdown(CaptureKind::Web, MD.as_bytes()).unwrap();
         assert_eq!(t.title, "Deploy failed on staging");
-        assert_eq!(t.workspace.as_deref(), Some("malme"));
-        assert_eq!(t.channel.as_deref(), Some("#dev-backend"));
-        assert_eq!(
-            t.thread_url.as_deref(),
-            Some("https://malme.slack.com/archives/C0123/p1700000000123456")
-        );
-        assert_eq!(t.thread_ts.as_deref(), Some("1700000000.123456"));
+        assert_eq!(t.source_url.as_deref(), Some("https://example.com/a"));
+        assert_eq!(t.site_name.as_deref(), Some("Example"));
         assert_eq!(t.exported_at.as_deref(), Some("2026-10-08T09:00:00Z"));
         assert_eq!(t.content, "# Hello\n\nbody text\n");
     }
 
     #[test]
+    fn slack_kind_is_rejected() {
+        assert!(serde_json::from_str::<CaptureKind>("\"slack\"").is_err());
+        assert_eq!(
+            serde_json::from_str::<CaptureKind>("\"web\"").unwrap(),
+            CaptureKind::Web
+        );
+        assert_eq!(CaptureKind::parse("slack"), None);
+    }
+
+    #[test]
     fn no_front_matter_keeps_whole_body_and_falls_back_title() {
-        let t = parse_markdown(CaptureKind::Slack, b"\n\n## Incident report  \nmore").unwrap();
+        let t = parse_markdown(CaptureKind::Web, b"\n\n## Incident report  \nmore").unwrap();
         assert_eq!(t.title, "Incident report");
         assert_eq!(t.content, "\n\n## Incident report  \nmore");
-        assert!(t.channel.is_none());
+        assert!(t.source_url.is_none());
     }
 
     #[test]
     fn crlf_front_matter_and_bom() {
-        let md = "\u{feff}---\r\nchannel: general\r\nthread_ts: 1700000000.5\r\n---\r\nhi\r\n";
-        let t = parse_markdown(CaptureKind::Slack, md.as_bytes()).unwrap();
-        assert_eq!(t.channel.as_deref(), Some("general"));
-        assert_eq!(t.thread_ts.as_deref(), Some("1700000000.5"));
+        let md = "\u{feff}---\r\nsite_name: general\r\npublished_at: 1700000000.5\r\n---\r\nhi\r\n";
+        let t = parse_markdown(CaptureKind::Web, md.as_bytes()).unwrap();
+        assert_eq!(t.site_name.as_deref(), Some("general"));
+        assert_eq!(t.published_at.as_deref(), Some("1700000000.5"));
         assert_eq!(t.title, "hi");
         assert_eq!(t.content, "hi\r\n");
     }
 
     #[test]
     fn empty_title_falls_back() {
-        let t = parse_markdown(CaptureKind::Slack, b"---\ntitle: \"  \"\n---\n").unwrap();
-        assert_eq!(t.title, "Slack thread");
+        let t = parse_markdown(CaptureKind::Web, b"---\ntitle: \"  \"\n---\n").unwrap();
+        assert_eq!(t.title, "Web page");
         let long = format!("# {}", "x".repeat(300));
         assert_eq!(first_line_title(&long).unwrap().chars().count(), 120);
     }
 
     #[test]
     fn unclosed_fence_is_body() {
-        let t = parse_markdown(CaptureKind::Slack, b"---\nnot front matter").unwrap();
+        let t = parse_markdown(CaptureKind::Web, b"---\nnot front matter").unwrap();
         assert_eq!(t.content, "---\nnot front matter");
     }
 
     #[test]
     fn invalid_yaml_and_utf8_rejected() {
         assert!(matches!(
-            parse_markdown(CaptureKind::Slack, b"---\ntitle: [unclosed\n---\nx"),
+            parse_markdown(CaptureKind::Web, b"---\ntitle: [unclosed\n---\nx"),
             Err(IngestError::BadRequest(_))
         ));
         assert!(matches!(
-            parse_markdown(CaptureKind::Slack, &[0xff, 0xfe, 0x00]),
+            parse_markdown(CaptureKind::Web, &[0xff, 0xfe, 0x00]),
             Err(IngestError::BadRequest(_))
         ));
     }
@@ -674,7 +661,7 @@ pub(crate) mod tests {
             ("__MACOSX/._thread.md", b"junk"),
             ("attachments/.DS_Store", b"junk"),
         ]);
-        let t = parse_zip(CaptureKind::Slack, &z).unwrap();
+        let t = parse_zip(CaptureKind::Web, &z).unwrap();
         assert_eq!(t.title, "Deploy failed on staging");
         let names: Vec<_> = t.attachments.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(
@@ -690,7 +677,7 @@ pub(crate) mod tests {
     #[test]
     fn zip_single_nested_md_is_conversation() {
         let z = make_zip(&[("export/thread.md", b"# Nested"), ("export/a.png", b"x")]);
-        let t = parse_zip(CaptureKind::Slack, &z).unwrap();
+        let t = parse_zip(CaptureKind::Web, &z).unwrap();
         assert_eq!(t.title, "Nested");
         assert_eq!(t.attachments.len(), 1);
     }
@@ -699,17 +686,17 @@ pub(crate) mod tests {
     fn zip_ambiguous_or_missing_md_rejected() {
         let two_root = make_zip(&[("a.md", b"a"), ("b.md", b"b")]);
         assert!(matches!(
-            parse_zip(CaptureKind::Slack, &two_root),
+            parse_zip(CaptureKind::Web, &two_root),
             Err(IngestError::BadRequest(_))
         ));
         let two_nested = make_zip(&[("x/a.md", b"a"), ("y/b.md", b"b")]);
         assert!(matches!(
-            parse_zip(CaptureKind::Slack, &two_nested),
+            parse_zip(CaptureKind::Web, &two_nested),
             Err(IngestError::BadRequest(_))
         ));
         let none = make_zip(&[("a.png", b"a")]);
         assert!(matches!(
-            parse_zip(CaptureKind::Slack, &none),
+            parse_zip(CaptureKind::Web, &none),
             Err(IngestError::BadRequest(_))
         ));
     }
@@ -720,7 +707,7 @@ pub(crate) mod tests {
             let z = make_zip(&[("t.md", b"t"), (evil, b"pwn")]);
             assert!(
                 matches!(
-                    parse_zip(CaptureKind::Slack, &z),
+                    parse_zip(CaptureKind::Web, &z),
                     Err(IngestError::BadRequest(_))
                 ),
                 "{} should be rejected",
@@ -739,7 +726,7 @@ pub(crate) mod tests {
         entries.push(("t.md", b"t"));
         let z = make_zip(&entries);
         assert!(matches!(
-            parse_zip(CaptureKind::Slack, &z),
+            parse_zip(CaptureKind::Web, &z),
             Err(IngestError::BadRequest(_))
         ));
     }
@@ -761,7 +748,7 @@ pub(crate) mod tests {
         let z = zip.finish().unwrap().into_inner();
         assert!(z.len() < MAX_BODY_BYTES);
         assert!(matches!(
-            parse_zip(CaptureKind::Slack, &z),
+            parse_zip(CaptureKind::Web, &z),
             Err(IngestError::TooLarge(_))
         ));
     }
@@ -769,7 +756,7 @@ pub(crate) mod tests {
     #[test]
     fn garbage_zip_rejected() {
         assert!(matches!(
-            parse_zip(CaptureKind::Slack, b"not a zip"),
+            parse_zip(CaptureKind::Web, b"not a zip"),
             Err(IngestError::BadRequest(_))
         ));
     }
@@ -865,7 +852,6 @@ pub(crate) mod tests {
         assert_eq!(t.exported_at.as_deref(), Some("2026-10-09T10:00:00Z"));
         assert_eq!(t.description.as_deref(), Some("D"));
         assert!(!t.selection);
-        assert!(t.channel.is_none());
 
         let sel = parse_markdown(CaptureKind::Web, b"---\nselection: true\n---\nx").unwrap();
         assert!(sel.selection);
@@ -882,11 +868,6 @@ pub(crate) mod tests {
         let t = parse_markdown(CaptureKind::Web, b"").unwrap();
         assert_eq!(t.title, "Web page");
         assert!(t.url_key.is_none());
-        let t = parse_markdown(CaptureKind::Slack, b"").unwrap();
-        assert_eq!(t.title, "Slack thread");
-        // Slack payloads ignore web keys.
-        let t = parse_markdown(CaptureKind::Slack, b"---\nurl: https://a.b/\n---\nx").unwrap();
-        assert!(t.source_url.is_none());
     }
 
     #[test]

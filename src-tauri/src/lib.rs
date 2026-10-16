@@ -8,6 +8,7 @@ mod inbox_api;
 mod remote;
 mod runs;
 mod secrets;
+mod slack_threads;
 
 use commands::app_menu::set_app_menu;
 use commands::tray::set_tray_menu;
@@ -97,6 +98,11 @@ use commands::captures::{
     regenerate_inbox_api_token, rename_capture, reorder_captures, set_capture_project,
     set_inbox_api_enabled,
     update_capture,
+};
+use commands::slack_threads::{
+    add_slack_thread, delete_slack_threads, get_slack_thread, get_slack_thread_prompt_text,
+    get_slack_token_status, list_slack_threads, mark_slack_thread_seen, refresh_slack_thread,
+    rename_slack_thread, reorder_slack_threads, set_slack_thread_project,
 };
 use commands::notes::{
     add_note, delete_note, delete_notes, list_notes, reorder_notes, set_note_project, update_note,
@@ -232,6 +238,25 @@ pub fn run() {
             // One warm translation sidecar, shared by the UI and the Inbox API.
             let translate_state = TranslateState::default();
             app.manage(translate_state.clone());
+            // Slack Thread Translate: its own warm translation sidecar (so long
+            // thread jobs never block the popover / `/v1/translate`) and the
+            // fetch/translate job queue. Unfinished jobs resume after restart.
+            let slack_translate = slack_threads::SlackTranslateState::default();
+            app.manage(slack_translate.clone());
+            let slack_state = slack_threads::SlackThreadsState::for_app(
+                app.handle(),
+                app.state::<db::Db>().inner().clone(),
+                app_data_dir.clone(),
+                slack_translate,
+            );
+            app.manage(slack_state.clone());
+            {
+                let slack_state = slack_state.clone();
+                tauri::async_runtime::spawn(async move {
+                    slack_state.startup_recover().await;
+                    slack_state.start_worker();
+                });
+            }
             app.manage(MascotSpeakState::default());
             app.manage(BalanceGuard::default());
             app.manage(new_registry());
@@ -258,8 +283,8 @@ pub fn run() {
                     }
                 });
             }
-            // Slack Thread Inbox: loopback HTTP API (127.0.0.1:47821..47830) the
-            // Chrome extension pushes exported threads to. The token is loaded
+            // Capture inbox: loopback HTTP API (127.0.0.1:47821..47830) the
+            // Chrome extension pushes web pages / Slack links to. The token is loaded
             // (or generated) synchronously so commands never see an empty one.
             // Only started when enabled (`inbox_api_enabled`, default on).
             {
@@ -285,6 +310,7 @@ pub fn run() {
                             inbox_app_data,
                             inbox_state,
                             translate_state,
+                            slack_state,
                         )
                         .await;
                     });
@@ -565,6 +591,17 @@ pub fn run() {
             get_inbox_api_info,
             regenerate_inbox_api_token,
             set_inbox_api_enabled,
+            add_slack_thread,
+            list_slack_threads,
+            get_slack_thread,
+            refresh_slack_thread,
+            mark_slack_thread_seen,
+            rename_slack_thread,
+            set_slack_thread_project,
+            reorder_slack_threads,
+            delete_slack_threads,
+            get_slack_token_status,
+            get_slack_thread_prompt_text,
             show_permission_notification,
             show_calendar_reminder,
             remote_set_config,

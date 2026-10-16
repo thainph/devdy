@@ -69,6 +69,8 @@ const RETIRE_CAP: Duration = Duration::from_secs(120);
 pub const ERR_SESSION_ENDED: &str = "Phiên dịch đã kết thúc.";
 pub const ERR_EMPTY_RESULT: &str = "Không nhận được bản dịch.";
 pub const ERR_FAILED: &str = "Dịch thất bại.";
+/// Returned when the text to translate is empty.
+pub const ERR_NOTHING_TO_TRANSLATE: &str = "Không có nội dung để dịch.";
 /// Prefix of the error returned when the prompt cannot be written.
 pub const ERR_SEND_PREFIX: &str = "Không gửi được yêu cầu dịch: ";
 
@@ -124,20 +126,52 @@ struct WarmSidecar {
 
 /// Holds the single warm translation sidecar (if any) and hands out turn ids.
 /// Cloning shares the same sidecar (the UI and the Inbox API use one warm
-/// session).
-#[derive(Default, Clone)]
+/// session). Other features may run their own instance (e.g. the Slack thread
+/// translator) so long jobs never block this one's FIFO.
+#[derive(Clone)]
 pub struct TranslateState {
     inner: Arc<TokioMutex<Option<WarmSidecar>>>,
     turn_seq: Arc<AtomicU64>,
+    /// Recycle a claude session after this many turns.
+    recycle_after: u32,
+    /// Emit `translate:*` Tauri events (the popover listens to them). Off for
+    /// instances whose turn ids would otherwise collide with the popover's.
+    emit_events: bool,
 }
 
-/// Codex is recycled every turn (its multi-turn semantics aren't relied on);
-/// claude keeps a warm session across several translations.
-fn max_turns(is_codex: bool) -> u32 {
-    if is_codex {
-        1
-    } else {
-        MAX_TURNS_BEFORE_RECYCLE
+impl Default for TranslateState {
+    fn default() -> Self {
+        TranslateState {
+            inner: Arc::default(),
+            turn_seq: Arc::default(),
+            recycle_after: MAX_TURNS_BEFORE_RECYCLE,
+            emit_events: true,
+        }
+    }
+}
+
+impl TranslateState {
+    /// Recycle the warm claude session after `n` turns (min 1).
+    pub fn with_recycle_after(mut self, n: u32) -> Self {
+        self.recycle_after = n.max(1);
+        self
+    }
+
+    /// Do not emit `translate:*` Tauri events; results only reach callers that
+    /// asked for a channel (`want_events`).
+    pub fn silent(mut self) -> Self {
+        self.emit_events = false;
+        self
+    }
+
+    /// Codex is recycled every turn (its multi-turn semantics aren't relied on);
+    /// claude keeps a warm session across several translations.
+    fn max_turns(&self, is_codex: bool) -> u32 {
+        if is_codex {
+            1
+        } else {
+            self.recycle_after
+        }
     }
 }
 
@@ -310,7 +344,7 @@ fn target_language_name(code: &str) -> String {
 }
 
 /// Per-style instruction appended to the base translation prompt.
-fn style_instruction(style: &str) -> &'static str {
+pub fn style_instruction(style: &str) -> &'static str {
     match style.trim().to_lowercase().as_str() {
         "literal" => "Translate as literally and faithfully as possible, staying close to the original sentence structure.",
         "technical" => "Keep technical terms, proper nouns, product names, code, and identifiers unchanged; translate only the surrounding prose. Aim for accuracy over fluency.",
@@ -319,6 +353,11 @@ fn style_instruction(style: &str) -> &'static str {
         // "natural" and anything unknown.
         _ => "Translate naturally and fluently, conveying the meaning rather than a word-for-word rendering.",
     }
+}
+
+/// The user's `translate_style` setting (`natural` when unset).
+pub async fn load_style(db: &Db) -> Result<String, String> {
+    Ok(load_settings(db).await?.style)
 }
 
 fn build_prompt(source: &str, target_name: &str, style: &str) -> String {
@@ -342,6 +381,7 @@ async fn spawn_warm(
     app: &AppHandle,
     s: &TranslateSettings,
     is_codex: bool,
+    emit_events: bool,
 ) -> Result<WarmSidecar, String> {
     let (node_bin, sidecar_script) = if is_codex {
         resolve_codex_sidecar(app, &s.node_path, &s.codex_sidecar_path)?
@@ -382,7 +422,7 @@ async fn spawn_warm(
     let alive = Arc::new(AtomicBool::new(true));
 
     tokio::spawn(drain_sidecar(
-        app.clone(),
+        emit_events.then(|| app.clone()),
         stdout,
         routing.clone(),
         alive.clone(),
@@ -403,9 +443,10 @@ async fn spawn_warm(
 
 /// Read the sidecar's stdout forever, streaming `translate:chunk` deltas and
 /// resolving each turn (`translate:done` / `translate:error`) at its `result`
-/// boundary. Turns are matched to output FIFO via `routing.queue`.
+/// boundary. Turns are matched to output FIFO via `routing.queue`. Without an
+/// `app` nothing is emitted (turn channels still receive every event).
 async fn drain_sidecar<R>(
-    app: AppHandle,
+    app: Option<AppHandle>,
     stdout: R,
     routing: Arc<TokioMutex<TurnRouting>>,
     alive: Arc<AtomicBool>,
@@ -413,7 +454,9 @@ async fn drain_sidecar<R>(
     R: tokio::io::AsyncRead + Unpin,
 {
     drain_lines(stdout, routing, alive, |turn, ev| {
-        emit_turn_event(&app, turn, ev)
+        if let Some(app) = &app {
+            emit_turn_event(app, turn, ev)
+        }
     })
     .await;
 }
@@ -592,7 +635,7 @@ pub async fn prewarm_translate(
         if let Some(old) = guard.take() {
             replace_out(old).await;
         }
-        let w = spawn_warm(&app, &settings, is_codex).await?;
+        let w = spawn_warm(&app, &settings, is_codex, state.emit_events).await?;
         *guard = Some(w);
     }
     Ok(())
@@ -631,19 +674,48 @@ pub async fn submit(
 ) -> Result<(u64, Option<UnboundedReceiver<TurnEvent>>, String), String> {
     let source = text.trim();
     if source.is_empty() {
-        return Err("Không có nội dung để dịch.".to_string());
+        return Err(ERR_NOTHING_TO_TRANSLATE.to_string());
     }
 
     let settings = load_settings(db).await?;
-    let sig = signature(&settings);
-    let is_codex = settings.engine.trim().eq_ignore_ascii_case("codex");
-
     let target = target_lang
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| settings.default_target.clone());
     let target_name = target_language_name(&target);
     let prompt = build_prompt(source, &target_name, &settings.style);
+    let (turn_id, rx) = submit_with(app, state, &settings, prompt, want_events).await?;
+    Ok((turn_id, rx, target))
+}
+
+/// Submit a ready-made prompt (no wrapping, no target language) as one turn
+/// on `state`'s warm sidecar. Engine/model/account come from settings. Returns
+/// `(turn id, event channel when want_events)`.
+pub async fn submit_prompt(
+    app: &AppHandle,
+    db: &Db,
+    state: &TranslateState,
+    prompt: String,
+    want_events: bool,
+) -> Result<(u64, Option<UnboundedReceiver<TurnEvent>>), String> {
+    if prompt.trim().is_empty() {
+        return Err(ERR_NOTHING_TO_TRANSLATE.to_string());
+    }
+    let settings = load_settings(db).await?;
+    submit_with(app, state, &settings, prompt, want_events).await
+}
+
+/// Shared body of `submit` / `submit_prompt`: ensure a warm sidecar, enqueue
+/// the turn and write the prompt.
+async fn submit_with(
+    app: &AppHandle,
+    state: &TranslateState,
+    settings: &TranslateSettings,
+    prompt: String,
+    want_events: bool,
+) -> Result<(u64, Option<UnboundedReceiver<TurnEvent>>), String> {
+    let sig = signature(settings);
+    let is_codex = settings.engine.trim().eq_ignore_ascii_case("codex");
 
     let turn_id = state.turn_seq.fetch_add(1, Ordering::SeqCst) + 1;
 
@@ -658,7 +730,7 @@ pub async fn submit(
         Some(w) => {
             !w.alive.load(Ordering::SeqCst)
                 || w.signature != sig
-                || w.turns >= max_turns(w.is_codex)
+                || w.turns >= state.max_turns(w.is_codex)
                 || w.last_used.elapsed() > IDLE_RECYCLE
         }
     };
@@ -666,7 +738,7 @@ pub async fn submit(
         if let Some(old) = guard.take() {
             replace_out(old).await;
         }
-        let w = spawn_warm(app, &settings, is_codex).await?;
+        let w = spawn_warm(app, settings, is_codex, state.emit_events).await?;
         *guard = Some(w);
     }
 
@@ -717,7 +789,7 @@ pub async fn submit(
     w.turns += 1;
     w.last_used = Instant::now();
 
-    Ok((turn_id, rx, target))
+    Ok((turn_id, rx))
 }
 
 /// Called when the popover closes. The warm sidecar is intentionally kept hot
@@ -923,6 +995,17 @@ mod tests {
         );
         assert!(emitted.contains(&(2, TurnEvent::Chunk("two".into()))));
         assert!(emitted.contains(&(2, TurnEvent::Done("two".into()))));
+    }
+
+    #[test]
+    fn recycle_limit_is_per_instance() {
+        let shared = TranslateState::default();
+        assert_eq!(shared.max_turns(false), MAX_TURNS_BEFORE_RECYCLE);
+        assert!(shared.emit_events);
+        let slack = TranslateState::default().with_recycle_after(6).silent();
+        assert_eq!(slack.max_turns(false), 6);
+        assert_eq!(slack.max_turns(true), 1);
+        assert!(!slack.emit_events);
     }
 
     #[test]

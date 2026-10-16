@@ -1,23 +1,29 @@
 #!/usr/bin/env node
-// Smoke test for the capture tools (`slack_threads_*` + `web_pages_*`) of the
-// built-in `devdy` MCP server.
+// Smoke test for the capture tools of the built-in `devdy` MCP server:
+// `web_pages_*` (shared `captures` core) and `slack_threads_*` (own tables since
+// migration 0041, docs/srs-slack-thread-translate.md §14).
 //
 //   node sidecar-mcp/test-captures.mjs
 //
-// Builds a throwaway <app_data> (temp dir) with a data.db at the 0038/0039 schema
-// (docs/srs-slack-thread-inbox.md §4), seeds Slack threads + attachment files,
-// applies the 0040 rename (docs/srs-web-page-capture.md §2) on top, seeds web
-// pages, then drives index.mjs over stdio JSON-RPC and checks every tool against
-// the real DB and filesystem. Nothing outside the temp dir is touched.
+// Builds a throwaway <app_data> (temp dir) whose data.db is created by running
+// every real migration in src-tauri/migrations up to 0040, seeds legacy Slack
+// captures + web pages, then applies 0041 — the real migration file when it
+// exists, else the SQL block of the frozen SRS §5.1 — and seeds fetched Slack
+// threads into the new tables. It then drives index.mjs over stdio JSON-RPC and
+// checks every tool against the real DB and filesystem. Nothing outside the temp
+// dir is touched.
 
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { basename, dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
-const SERVER = join(dirname(fileURLToPath(import.meta.url)), 'index.mjs');
+const HERE = dirname(fileURLToPath(import.meta.url));
+const SERVER = join(HERE, 'index.mjs');
+const MIGRATIONS = join(HERE, '..', 'src-tauri', 'migrations');
+const SRS = join(HERE, '..', 'docs', 'srs-slack-thread-translate.md');
 const PROJECT = 'proj-1';
 
 const failures = [];
@@ -26,95 +32,63 @@ const check = (ok, label) => {
   process.stdout.write(`${ok ? '  ok  ' : '  FAIL'} ${label}\n`);
 };
 
-// ---- Fixture ----------------------------------------------------------------
+// ---- Fixture: migrations ≤ 0040 -------------------------------------------------
 
 const appData = mkdtempSync(join(tmpdir(), 'devdy-captures-'));
 const dbPath = join(appData, 'data.db');
 const outsideName = `${basename(appData)}-outside.txt`;
 const outsidePath = join(dirname(appData), outsideName);
 const db = new DatabaseSync(dbPath);
-db.exec(`
-CREATE TABLE IF NOT EXISTS slack_threads (
-  id          TEXT PRIMARY KEY,
-  title       TEXT NOT NULL DEFAULT '',
-  title_custom INTEGER NOT NULL DEFAULT 0,
-  content     TEXT NOT NULL DEFAULT '',
-  workspace   TEXT,
-  channel     TEXT,
-  thread_url  TEXT,
-  thread_ts   TEXT,
-  exported_at TEXT,
-  project_id  TEXT,
-  position    INTEGER NOT NULL DEFAULT 0,
-  created_at  TEXT NOT NULL,
-  updated_at  TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_slack_threads_position ON slack_threads(position);
-CREATE INDEX IF NOT EXISTS idx_slack_threads_project  ON slack_threads(project_id);
-CREATE INDEX IF NOT EXISTS idx_slack_threads_url      ON slack_threads(thread_url);
-CREATE TABLE IF NOT EXISTS slack_thread_attachments (
-  id         TEXT PRIMARY KEY,
-  thread_id  TEXT NOT NULL REFERENCES slack_threads(id) ON DELETE CASCADE,
-  name       TEXT NOT NULL,
-  file_path  TEXT NOT NULL,
-  size       INTEGER NOT NULL,
-  mime       TEXT,
-  created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_slack_thread_att_thread ON slack_thread_attachments(thread_id);
-`);
+
+const migrationFiles = readdirSync(MIGRATIONS).filter((f) => /^\d{4}_.*\.sql$/.test(f)).sort();
+for (const f of migrationFiles.filter((f) => f < '0041')) db.exec(readFileSync(join(MIGRATIONS, f), 'utf8'));
+
+let migration0041;
+let migration0041Source;
+const real0041 = migrationFiles.find((f) => f.startsWith('0041_'));
+if (real0041) {
+  migration0041 = readFileSync(join(MIGRATIONS, real0041), 'utf8');
+  migration0041Source = `src-tauri/migrations/${real0041}`;
+} else {
+  const srs = readFileSync(SRS, 'utf8');
+  const section = srs.slice(srs.indexOf('### 5.1'));
+  migration0041 = section.slice(section.indexOf('```sql') + 6, section.indexOf('```', section.indexOf('```sql') + 6));
+  migration0041Source = 'SRS §5.1 SQL (0041 migration file not written yet)';
+}
+process.stdout.write(`migration 0041 from: ${migration0041Source}\n`);
 
 const T0 = '2026-01-01T00:00:00.000Z';
-const insThread = db.prepare(
-  `INSERT INTO slack_threads (id, title, content, workspace, channel, thread_url, thread_ts, exported_at, project_id, position, created_at, updated_at)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+const T1 = '2026-02-01T00:00:00.000Z';
+
+// Legacy kind='slack' captures (0038/0039 era), carried over by 0041.
+const insLegacy = db.prepare(
+  `INSERT INTO captures (id, kind, title, title_custom, content, workspace, channel, thread_url, thread_ts, exported_at,
+                         project_id, position, created_at, updated_at)
+   VALUES (?, 'slack', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 );
-insThread.run('th-a', 'Deploy failed on staging', 'alice: deploy broke\nbob: rollback done', 'malme', '#dev-backend',
-  'https://malme.slack.com/archives/C01/p1', '1700000000.1', T0, PROJECT, 0, T0, T0);
-insThread.run('th-b', 'Design review', 'carol: new mockups attached', 'malme', '#design',
-  null, null, null, null, 1, T0, T0);
+insLegacy.run('lg-a', 'Legacy deploy thread', 1, '# Legacy deploy\nalice: deploy broke\nbob: rollback done', 'malme', '#dev-backend',
+  'https://malme.slack.com/archives/C0B83GHDTFG/p1789877283026359', '1789877283.026359', T0, PROJECT, 3, T0, T0);
+insLegacy.run('lg-dup-old', 'Dup old title', 0, 'old copy', 'malme', '#ops',
+  'https://malme.slack.com/archives/C0DUPDUPDUP/p1700000000000100', null, T0, null, 7, T0, T0);
+insLegacy.run('lg-dup-new', 'Dup new title', 1, 'new copy', 'malme', '#ops',
+  'https://malme.slack.com/archives/C0DUPDUPDUP/p1700000000000100', null, T0, PROJECT, 4, T0, T1);
+insLegacy.run('lg-nourl', 'No URL thread', 0, 'carol: mockups', 'malme', '#design', null, null, null, null, 9, T0, T0);
 
 const insAtt = db.prepare(
-  `INSERT INTO slack_thread_attachments (id, thread_id, name, file_path, size, mime, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  'INSERT INTO capture_attachments (id, capture_id, name, file_path, size, mime, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
 );
-const addFile = (attId, threadId, name, file, data, mime) => {
-  const rel = `slack-threads/${threadId}/files/${file}`;
+const addFile = (attId, captureId, dir, name, file, data, mime) => {
+  const rel = `${dir}/${captureId}/files/${file}`;
   mkdirSync(join(appData, dirname(rel)), { recursive: true });
   writeFileSync(join(appData, rel), data);
-  insAtt.run(attId, threadId, name, rel, Buffer.byteLength(data), mime, T0);
+  insAtt.run(attId, captureId, name, rel, Buffer.byteLength(data), mime, T0);
+  return rel;
 };
-addFile('att-log', 'th-a', 'attachments/deploy.log', 'deploy.log', 'ERROR: migration 42 failed\n', 'text/plain');
-addFile('att-png', 'th-a', 'attachments/screenshot.png', 'screenshot.png',
-  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]), 'image/png');
-addFile('att-big', 'th-b', 'big.txt', 'big.txt', 'x'.repeat(1024 * 1024 + 1), 'text/plain');
-addFile('att-latin1', 'th-b', 'latin1.txt', 'latin1.txt', Buffer.from([0x63, 0x61, 0x66, 0xe9]), 'application/octet-stream');
-// A row whose stored path tries to escape <app_data> must be refused.
-insAtt.run('att-evil', 'th-b', 'evil', `../${outsideName}`, 1, 'text/plain', T0);
-writeFileSync(outsidePath, 'secret');
-// A sibling dir a traversal-y delete id would hit if ids weren't validated.
-mkdirSync(join(appData, 'keep-me'), { recursive: true });
+const legacyLogRel = addFile('att-log', 'lg-a', 'slack-threads', 'attachments/deploy.log', 'deploy.log', 'ERROR: migration 42 failed\n', 'text/plain');
+addFile('att-dup-old', 'lg-dup-old', 'slack-threads', 'old.txt', 'old.txt', 'old', 'text/plain');
+addFile('att-dup-new', 'lg-dup-new', 'slack-threads', 'new.txt', 'new.txt', 'new', 'text/plain');
 
-// ---- Migration 0040 (verbatim from the SRS) on top of the seeded 0038/0039 data ----
-db.exec(`
-ALTER TABLE slack_threads RENAME TO captures;
-ALTER TABLE captures ADD COLUMN kind TEXT NOT NULL DEFAULT 'slack';
-ALTER TABLE captures ADD COLUMN source_url  TEXT;
-ALTER TABLE captures ADD COLUMN url_key     TEXT;
-ALTER TABLE captures ADD COLUMN site_name   TEXT;
-ALTER TABLE captures ADD COLUMN author      TEXT;
-ALTER TABLE captures ADD COLUMN published_at TEXT;
-ALTER TABLE captures ADD COLUMN description TEXT;
-ALTER TABLE captures ADD COLUMN selection   INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE slack_thread_attachments RENAME TO capture_attachments;
-ALTER TABLE capture_attachments RENAME COLUMN thread_id TO capture_id;
-CREATE INDEX IF NOT EXISTS idx_captures_kind    ON captures(kind);
-CREATE INDEX IF NOT EXISTS idx_captures_url_key ON captures(url_key);
-`);
-const fk = db.prepare('PRAGMA foreign_key_list(capture_attachments)').all();
-check(fk.length === 1 && fk[0].table === 'captures' && fk[0].from === 'capture_id', 'migration 0040: capture_attachments FK points at captures(capture_id)');
-check(db.prepare("SELECT COUNT(*) AS n FROM captures WHERE kind = 'slack'").get().n === 2 &&
-  db.prepare('SELECT COUNT(*) AS n FROM capture_attachments').get().n === 5, 'migration 0040: slack rows + attachments kept, kind defaults to slack');
-
+// Web pages (unchanged by 0041).
 const insCapture = db.prepare(
   `INSERT INTO captures (id, kind, title, content, source_url, url_key, site_name, author, published_at, description, selection,
                          exported_at, project_id, position, created_at, updated_at)
@@ -164,11 +138,97 @@ const setextDoc = [
 ].join('\n');
 insCapture.run('wp-3', 'web', 'Setext page', setextDoc, 'https://docs.example.org/start', null,
   null, null, null, null, 0, T0, PROJECT, 2, T0, T0);
-const webRel = 'web-pages/wp-1/files/diagram.svg';
-mkdirSync(join(appData, dirname(webRel)), { recursive: true });
-writeFileSync(join(appData, webRel), '<svg/>');
-db.prepare('INSERT INTO capture_attachments (id, capture_id, name, file_path, size, mime, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-  .run('att-web', 'wp-1', 'images/diagram.svg', webRel, 6, 'text/plain', T0);
+const webRel = addFile('att-web', 'wp-1', 'web-pages', 'images/diagram.svg', 'diagram.svg', '<svg/>', 'text/plain');
+addFile('att-big', 'wp-2', 'web-pages', 'big.txt', 'big.txt', 'x'.repeat(1024 * 1024 + 1), 'text/plain');
+addFile('att-latin1', 'wp-2', 'web-pages', 'latin1.txt', 'latin1.txt', Buffer.from([0x63, 0x61, 0x66, 0xe9]), 'application/octet-stream');
+addFile('att-png', 'wp-2', 'web-pages', 'shot.png', 'shot.png', Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0]), 'image/png');
+// A row whose stored path tries to escape <app_data> must be refused.
+insAtt.run('att-evil', 'wp-2', 'evil', `../${outsideName}`, 1, 'text/plain', T0);
+writeFileSync(outsidePath, 'secret');
+// A sibling dir a traversal-y delete id would hit if ids weren't validated.
+mkdirSync(join(appData, 'keep-me'), { recursive: true });
+
+// ---- Migration 0041 ---------------------------------------------------------------
+
+db.exec(migration0041);
+const sl = (sql, ...p) => db.prepare(sql).all(...p);
+check(sl("SELECT COUNT(*) AS n FROM captures WHERE kind = 'slack'")[0].n === 0, '0041: no kind=slack rows left in captures');
+check(sl("SELECT COUNT(*) AS n FROM captures WHERE kind = 'web'")[0].n === 3, '0041: web rows untouched');
+check(sl('SELECT COUNT(*) AS n FROM capture_attachments')[0].n === 5, '0041: capture_attachments only keeps web files');
+const ids0041 = sl('SELECT id FROM slack_threads ORDER BY id').map((r) => r.id).join(',');
+check(ids0041 === 'lg-a,lg-dup-new,lg-nourl', `0041: duplicates merged, newest kept (got ${ids0041})`);
+const lgA = sl('SELECT * FROM slack_threads WHERE id = ?', 'lg-a')[0];
+check(lgA.title === 'Legacy deploy thread' && lgA.title_custom === 1 && lgA.project_id === PROJECT && lgA.position === 3 &&
+  lgA.channel_id === 'C0B83GHDTFG' && lgA.thread_ts === '1789877283.026359' && lgA.channel === 'dev-backend' &&
+  lgA.legacy === 1 && lgA.fetch_status === 'pending' && lgA.legacy_content.startsWith('# Legacy deploy'), '0041: legacy row fields carried over');
+const lgN = sl('SELECT * FROM slack_threads WHERE id = ?', 'lg-nourl')[0];
+check(lgN.channel_id === null && lgN.thread_ts === null && lgN.legacy === 1, '0041: row without thread_url has channel_id NULL');
+check(sl('SELECT id FROM slack_files ORDER BY id').map((r) => r.id).join(',') === 'att-dup-new,att-log', '0041: slack_files only from kept rows');
+check(sl('SELECT file_path FROM slack_files WHERE id = ?', 'att-log')[0].file_path === legacyLogRel, '0041: legacy file_path kept as-is');
+check(sl('SELECT id FROM slack_legacy_orphans').map((r) => r.id).join(',') === 'lg-dup-old', '0041: merged-away id recorded as orphan');
+
+// ---- Fetched (v2) Slack threads -----------------------------------------------------
+
+const insThread = db.prepare(
+  `INSERT INTO slack_threads (id, title, title_custom, project_id, position, created_at, updated_at, workspace_domain, team_id,
+     workspace, channel_id, channel, thread_ts, thread_url, fetch_status, fetch_error_code, fetch_error, fetched_at,
+     reply_count, last_reply_ts, warnings, search_text, legacy, legacy_content)
+   VALUES (?, ?, 0, ?, ?, ?, ?, 'malme.slack.com', ?, 'malme', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 0, NULL)`,
+);
+insThread.run('th-v2', 'Deploy failed on staging', PROJECT, -2, T0, T0, 'T1', 'C0B8TESTAA1', 'dev-backend', '1789877000.000100',
+  'https://malme.slack.com/archives/C0B8TESTAA1/p1789877000000100', 'ready', null, null, T1, 4, '1789877400.000500', '["files_scope"]');
+insThread.run('th-err', 'Broken thread', null, -1, T0, T0, 'T1', 'C0B8TESTAA2', 'private-x', '1789870000.000100',
+  'https://malme.slack.com/archives/C0B8TESTAA2/p1789870000000100', 'error', 'missing_scope', 'needed: groups:history', null, 0, null, '[]');
+insThread.run('th-long', 'Long thread', PROJECT, 10, T0, T0, 'T1', 'C0B8TESTAA3', 'general', '1789800000.000000',
+  'https://malme.slack.com/archives/C0B8TESTAA3/p1789800000000000', 'ready', null, null, T1, 59, '1789800059.000000', '[]');
+
+const insUser = db.prepare('INSERT INTO slack_users (team_id, user_id, display_name, real_name, avatar_url, avatar_path, is_bot, fetched_at) VALUES (?, ?, ?, ?, NULL, ?, 0, ?)');
+insUser.run('T1', 'U1', 'Alice', 'Alice Nguyen', 'slack-cache/avatars/T1/U1-abcd1234.png', T0);
+insUser.run('T1', 'U2', '', 'Bob Tanaka', null, T0);
+insUser.run('T2', 'U1', 'WrongAlice', null, null, T0); // other workspace: must not leak in
+db.prepare('INSERT INTO slack_channels (team_id, channel_id, name, kind, fetched_at) VALUES (?, ?, ?, ?, ?)').run('T1', 'C0B8DESIGN', 'design', 'public', T0);
+mkdirSync(join(appData, 'slack-cache/avatars/T1'), { recursive: true });
+writeFileSync(join(appData, 'slack-cache/avatars/T1/U1-abcd1234.png'), 'png');
+
+const insMsg = db.prepare(
+  `INSERT INTO slack_messages (thread_id, ts, seq, user_id, bot_id, author_name, subtype, text_raw, text_vi, src_hash,
+     translate_status, edited_ts, reactions, file_ids)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'h', ?, ?, ?, ?)`,
+);
+const codeBlock = '```\nif a &lt; b &amp;&amp; c { run(); }\n```';
+insMsg.run('th-v2', '1789877000.000100', 0, 'U1', null, null, null,
+  `<@U1> ステージングのデプロイが失敗しました :fire:\n${codeBlock}`,
+  `<@U1> Triển khai staging bị lỗi :fire:\n${codeBlock}`, 'done', null, '[{"name":"+1","count":2}]', '["sf-img","sf-gone"]');
+insMsg.run('th-v2', '1789877100.000200', 1, 'U2', null, null, null,
+  'See <https://example.com/runbook|the runbook> and <#C0B8DESIGN> &amp; <!here>',
+  'Xem <https://example.com/runbook|the runbook> và <#C0B8DESIGN> &amp; <!here>', 'done', '1789877150.000000', '[]', '[]');
+insMsg.run('th-v2', '1789877200.000300', 2, 'U2', null, null, null, '再起動します `kubectl rollout restart`', null, 'pending', null, '[]', '[]');
+insMsg.run('th-v2', '1789877400.000500', 3, null, 'B1', 'deploy-bot', 'bot_message', 'Rollback <mailto:ops@x.io|ops@x.io> done', 'Đã rollback <mailto:ops@x.io|ops@x.io>', 'done', null, '[]', '[]');
+for (let i = 0; i < 60; i++) {
+  insMsg.run('th-long', `17898000${String(i).padStart(2, '0')}.000000`, i, 'U1', null, null, null,
+    `original line ${i}`, `dòng tiếng Việt số ${i} ${'x'.repeat(80)}`, 'done', null, '[]', '[]');
+}
+
+const insFile = db.prepare(
+  `INSERT INTO slack_files (id, thread_id, slack_file_id, message_ts, name, title, mime, filetype, size, file_path, permalink,
+     download_status, download_error, created_at)
+   VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`,
+);
+const imgRel = 'slack-threads/th-v2/files/F001/screenshot.png';
+mkdirSync(join(appData, dirname(imgRel)), { recursive: true });
+writeFileSync(join(appData, imgRel), 'PNGDATA');
+insFile.run('sf-img', 'th-v2', 'F001', '1789877000.000100', 'screenshot.png', 'image/png', 'png', 7, imgRel,
+  'https://malme.slack.com/files/U1/F001/screenshot.png', 'done', null, T0);
+insFile.run('sf-gone', 'th-v2', 'F002', '1789877000.000100', 'spec.pdf', 'application/pdf', 'pdf', 1234, null,
+  'https://malme.slack.com/files/U1/F002/spec.pdf', 'unavailable', null, T0);
+
+// QA regressions: emoji slicing (M-1), unsafe stored path (M-2), empty text_vi (M-3).
+insThread.run('th-qa', 'QA thread', null, 20, T0, T0, 'T1', 'C0B8TESTAA4', 'qa', '1789900000.000000',
+  'https://malme.slack.com/archives/C0B8TESTAA4/p1789900000000000', 'ready', null, null, T1, 1, '1789900001.000000', '[]');
+insMsg.run('th-qa', '1789900000.000000', 0, 'U1', null, null, null, 'emoji 😀😀 end', 'biểu tượng 😀😀 hết', 'done', null, '[]', '["sf-evil"]');
+insMsg.run('th-qa', '1789900001.000000', 1, 'U1', null, null, null, '空の翻訳', '', 'done', null, '[]', '[]');
+insFile.run('sf-evil', 'th-qa', 'F009', '1789900000.000000', 'evil.txt', 'text/plain', 'text', 6, `../${outsideName}`,
+  'https://malme.slack.com/files/U1/F009/evil.txt', 'done', null, T0);
 
 // ---- Drive the server ---------------------------------------------------------
 
@@ -200,216 +260,271 @@ function drive(frames) {
   });
 }
 
-let nextId = 1;
-const call = (name, args = {}) => {
-  const id = ++nextId;
-  return { jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } };
-};
-
-// Ordered script; results are looked up by label below.
-const script = [
-  ['list-project', call('slack_threads_list')],
-  ['list-all', call('slack_threads_list', { scope: 'all' })],
-  ['read-a', call('slack_threads_read', { id: 'th-a' })],
-  ['read-missing', call('slack_threads_read', { id: 'nope' })],
-  ['search-channel', call('slack_threads_search', { query: '#design', scope: 'all' })],
-  ['search-body', call('slack_threads_search', { query: 'rollback' })],
-  ['search-literal', call('slack_threads_search', { query: '%', scope: 'all' })],
-  ['update', call('slack_threads_update', { id: 'th-b', title: 'Design review v2' })],
-  ['update-empty', call('slack_threads_update', { id: 'th-b' })],
-  ['append', call('slack_threads_append', { id: 'th-a', text: '## Summary\nRolled back.' })],
-  ['set-project', call('slack_threads_set_project', { id: 'th-b' })],
-  ['set-global', call('slack_threads_set_project', { id: 'th-a', scope: 'global' })],
-  ['reorder', call('slack_threads_reorder', { ids: ['th-b'] })],
-  ['att-text', call('slack_threads_read_attachment', { id: 'att-log' })],
-  ['att-png', call('slack_threads_read_attachment', { id: 'att-png' })],
-  ['att-big', call('slack_threads_read_attachment', { id: 'att-big' })],
-  ['att-latin1', call('slack_threads_read_attachment', { id: 'att-latin1' })],
-  ['att-evil', call('slack_threads_read_attachment', { id: 'att-evil' })],
-  ['delete-traversal', call('slack_threads_delete', { ids: ['../keep-me', '..'] })],
-  ['delete-a', call('slack_threads_delete', { id: 'th-a' })],
-];
-
-const { parsed, noise, stderr } = await drive([
-  { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
-  { jsonrpc: '2.0', id: 0, method: 'tools/list' },
-  ...script.map(([, f]) => f),
-]);
-
-const byId = new Map(parsed.map((m) => [m.id, m]));
-const res = Object.fromEntries(
-  script.map(([label, f]) => {
-    const m = byId.get(f.id);
-    return [label, { text: m?.result?.content?.[0]?.text ?? '', isError: !!m?.result?.isError }];
-  }),
-);
-const show = (label) => process.stdout.write(`\n--- ${label} ---\n${res[label].text}\n`);
-
-// ---- Assertions ---------------------------------------------------------------
-
-check(noise.length === 0, 'stdout carries only JSON-RPC frames');
-check(byId.get(1)?.result?.serverInfo?.name === 'devdy', 'initialize reports serverInfo.name = "devdy"');
-const names = (byId.get(0)?.result?.tools || []).map((t) => t.name);
-const SUFFIXES = ['list', 'read', 'search', 'update', 'rename', 'append', 'delete', 'set_project', 'reorder', 'read_attachment'];
-for (const prefix of ['slack_threads', 'web_pages']) {
-  check(SUFFIXES.every((s) => names.includes(`${prefix}_${s}`)), `tools/list advertises all 10 ${prefix}_* tools`);
-}
-
-show('list-project');
-check(res['list-project'].text.includes('[th-a]') && !res['list-project'].text.includes('[th-b]'), 'list: scope=project only shows the current project');
-check(/2 attachment\(s\)/.test(res['list-project'].text) && res['list-project'].text.includes('#dev-backend'), 'list: shows channel + attachment count');
-check(res['list-all'].text.includes('[th-a]') && res['list-all'].text.includes('[th-b]'), 'list: scope=all shows every thread');
-check(!res['list-all'].text.includes('[wp-'), 'list: slack tools never show web rows');
-
-show('read-a');
-check(res['read-a'].text.includes(join(appData, 'slack-threads/th-a/files/deploy.log')), 'read: attachment paths are ABSOLUTE');
-check(res['read-a'].text.includes('thread_url: https://malme.slack.com/archives/C01/p1'), 'read: metadata included');
-check(res['read-missing'].text.startsWith('Slack thread not found'), 'read: unknown id reported');
-
-show('search-channel');
-check(res['search-channel'].text.includes('[th-b]') && !res['search-channel'].text.includes('[th-a]'), 'search: matches channel');
-check(res['search-body'].text.includes('[th-a]') && res['search-body'].text.includes('rollback'), 'search: matches body with snippet');
-check(res['search-literal'].text.startsWith('No Slack threads match'), 'search: LIKE wildcards are literal');
-
-const rowB = db.prepare('SELECT * FROM captures WHERE id = ?').get('th-b');
-const rowA = db.prepare('SELECT * FROM captures WHERE id = ?');
-check(!res.update.isError && rowB.title === 'Design review v2' && rowB.content === 'carol: new mockups attached', 'update: title changed, content kept');
-check(rowB.updated_at !== T0, 'update/set_project: updated_at bumped');
-// Same shape as Rust's chrono `Utc::now().to_rfc3339()`: `+00:00`, never `Z`.
-const RFC3339_RUST = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.(\d{3}|\d{6}|\d{9}))?\+00:00$/;
-check(RFC3339_RUST.test(rowB.updated_at), `timestamps match chrono to_rfc3339 (got ${rowB.updated_at})`);
-check(rowB.title_custom === 1, 'update: a changed title sets title_custom = 1');
-check(res['update-empty'].isError, 'update: rejects a call with neither title nor content');
-check(rowB.project_id === PROJECT, 'set_project: links to the current project');
-
-show('att-text');
-check(res['att-text'].text.includes('ERROR: migration 42 failed'), 'read_attachment: small utf-8 text inline');
-show('att-png');
-check(res['att-png'].text.includes('Not returned inline') && res['att-png'].text.includes(join(appData, 'slack-threads/th-a/files/screenshot.png')), 'read_attachment: image → absolute path + hint');
-check(/larger than/.test(res['att-big'].text), 'read_attachment: >1MB → path + hint');
-check(/not valid UTF-8/.test(res['att-latin1'].text), 'read_attachment: non-utf8 octet-stream → path + hint');
-check(res['att-evil'].isError && /escapes/.test(res['att-evil'].text), 'read_attachment: refuses paths outside app_data');
-
-check(existsSync(join(appData, 'keep-me')) && existsSync(outsidePath), 'delete: traversal ids touch nothing on disk');
-show('delete-a');
-check(!rowA.get('th-a'), 'delete: thread row removed');
-check(db.prepare('SELECT COUNT(*) AS n FROM capture_attachments WHERE capture_id = ?').get('th-a').n === 0, 'delete: attachment rows removed');
-check(!existsSync(join(appData, 'slack-threads/th-a')), 'delete: <app_data>/slack-threads/<id> removed');
-check(existsSync(join(appData, 'slack-threads/th-b')), 'delete: other threads\' files kept');
-
-// Append / set_project(global) / reorder ran before the delete; th-a is gone now,
-// so verify them through the server's own replies.
-check(/^Appended to Slack thread th-a/.test(res.append.text), 'append: succeeded');
-check(/global \(no project\)/.test(res['set-global'].text), 'set_project: scope=global detaches');
-const posB = db.prepare('SELECT position FROM captures WHERE id = ?').get('th-b').position;
-check(!res.reorder.isError && posB === 0, 'reorder: moved id goes to the top');
-
-// Append is verifiable on th-b with a second quick run.
-const { parsed: p2 } = await drive([
-  { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'slack_threads_append', arguments: { id: 'th-b', text: 'follow-up' } } },
-]);
-check(!p2[0]?.result?.isError && db.prepare('SELECT content FROM captures WHERE id = ?').get('th-b').content === 'carol: new mockups attached\n\nfollow-up', 'append: text appended with blank-line separator');
-
-// Content is stored verbatim (no trim), like the Rust backend; the title is trimmed.
-const verbatim = '  indented first line\n\ntrailing newline\n';
-const { parsed: p3 } = await drive([
-  { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'slack_threads_update', arguments: { id: 'th-b', title: '  Padded  ', content: verbatim } } },
-]);
-const rowB2 = db.prepare('SELECT title, content, updated_at FROM captures WHERE id = ?').get('th-b');
-check(!p3[0]?.result?.isError && rowB2.content === verbatim && rowB2.title === 'Padded', 'update: content kept verbatim, title trimmed');
-check(RFC3339_RUST.test(rowB2.updated_at), `update: updated_at in chrono format (got ${rowB2.updated_at})`);
-
-// title_custom: only a real title change flips it; rename always sets it.
-insCapture.run('th-c', 'slack', 'Exported title', 'body', null, null, null, null, null, null, 0, null, null, 5, T0, T0);
-const rename = (args, id) => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'slack_threads_rename', arguments: args } });
-const upd = (args, id) => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'slack_threads_update', arguments: args } });
-const flag = () => db.prepare('SELECT title_custom FROM captures WHERE id = ?').get('th-c').title_custom;
-const { parsed: p4 } = await drive([upd({ id: 'th-c', content: 'new body' }, 1), upd({ id: 'th-c', title: ' Exported title ' }, 2)]);
-check(!p4.some((m) => m.result?.isError) && flag() === 0, 'update: content-only / same title leaves title_custom = 0');
-const long = 'あ'.repeat(201);
-const { parsed: p5 } = await drive([
-  rename({ id: 'th-c', title: '   ' }, 1),
-  rename({ id: 'th-c', title: long }, 2),
-  rename({ id: 'nope', title: 'x' }, 3),
-  rename({ id: 'th-c', title: '  Renamed by AI  ' }, 4),
-]);
-const r5 = new Map(p5.map((m) => [m.id, m.result]));
-check(r5.get(1)?.isError && /required/.test(r5.get(1).content[0].text), 'rename: rejects an empty/blank title');
-check(r5.get(2)?.isError && /200/.test(r5.get(2).content[0].text), 'rename: rejects > 200 characters');
-check(r5.get(3)?.isError && /not found/.test(r5.get(3).content[0].text), 'rename: unknown id reported');
-const rowC = db.prepare('SELECT title, title_custom, updated_at FROM captures WHERE id = ?').get('th-c');
-process.stdout.write(`\n--- rename ---\n${r5.get(4)?.content?.[0]?.text}\n`);
-check(!r5.get(4)?.isError && rowC.title === 'Renamed by AI' && rowC.title_custom === 1, 'rename: title trimmed + title_custom = 1');
-check(RFC3339_RUST.test(rowC.updated_at), `rename: updated_at in chrono format (got ${rowC.updated_at})`);
-const { parsed: p6 } = await drive([rename({ id: 'th-c', title: 'b'.repeat(200) }, 1)]);
-check(!p6[0]?.result?.isError, 'rename: accepts exactly 200 characters');
-
-// ---- Web pages -------------------------------------------------------------------
 const tc = (name, args, id) => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } });
-const webScript = [
-  ['w-list', tc('web_pages_list', {})],
-  ['w-list-all', tc('web_pages_list', { scope: 'all' })],
-  ['w-read', tc('web_pages_read', { id: 'wp-1', max_chars: 300 })],
-  ['w-read-next', tc('web_pages_read', { id: 'wp-1', max_chars: 300, offset: 300 })],
-  ['w-section', tc('web_pages_read', { id: 'wp-1', section: 'configure', max_chars: 500 })],
-  ['w-section-full', tc('web_pages_read', { id: 'wp-1', section: 'Install' })],
-  ['w-section-missing', tc('web_pages_read', { id: 'wp-1', section: 'nope' })],
-  ['w-read-sel', tc('web_pages_read', { id: 'wp-2' })],
-  ['w-read-slack', tc('web_pages_read', { id: 'th-b' })],
-  ['s-read-web', tc('slack_threads_read', { id: 'wp-1' })],
-  ['w-search-site', tc('web_pages_search', { query: 'tauri', scope: 'all' })],
-  ['w-search-url', tc('web_pages_search', { query: 'example.com', scope: 'all' })],
-  ['w-rename', tc('web_pages_rename', { id: 'wp-2', title: 'My excerpt' })],
-  ['w-rename-slack', tc('web_pages_rename', { id: 'th-b', title: 'hijack' })],
-  ['w-append', tc('web_pages_append', { id: 'wp-2', text: 'note' })],
-  ['w-set', tc('web_pages_set_project', { id: 'wp-2' })],
-  ['w-reorder', tc('web_pages_reorder', { ids: ['wp-2'] })],
-  ['w-reorder-slack', tc('web_pages_reorder', { ids: ['th-b'] })],
-  ['w-att', tc('web_pages_read_attachment', { id: 'att-web' })],
-  ['w-att-slack', tc('web_pages_read_attachment', { id: 'att-big' })],
-  ['w-setext', tc('web_pages_read', { id: 'wp-3' })],
-  ['w-setext-section', tc('web_pages_read', { id: 'wp-3', section: 'setup' })],
-  ['w-setext-h1', tc('web_pages_read', { id: 'wp-3', section: 'Getting started' })],
-  ['w-del-slack', tc('slack_threads_delete', { id: 'wp-1' })],
-  ['w-del', tc('web_pages_delete', { id: 'wp-1' })],
-].map(([label, f], i) => [label, { ...f, id: i + 1 }]);
-const { parsed: pw } = await drive(webScript.map(([, f]) => f));
-const wById = new Map(pw.map((m) => [m.id, m.result]));
-const w = Object.fromEntries(webScript.map(([label, f]) => [label, { text: wById.get(f.id)?.content?.[0]?.text ?? '', isError: !!wById.get(f.id)?.isError }]));
-const wshow = (label) => process.stdout.write(`\n--- ${label} ---\n${w[label].text}\n`);
+/** Run a labelled script in one server process; returns label → { text, isError }. */
+async function run(script, extra = []) {
+  const frames = script.map(([label, name, args], i) => [label, tc(name, args, i + 100)]);
+  const { parsed, noise, stderr } = await drive([...extra, ...frames.map(([, f]) => f)]);
+  const byId = new Map(parsed.map((m) => [m.id, m]));
+  const out = Object.fromEntries(
+    frames.map(([label, f]) => {
+      const m = byId.get(f.id);
+      return [label, { text: m?.result?.content?.[0]?.text ?? '', isError: !!m?.result?.isError }];
+    }),
+  );
+  return { out, byId, noise, stderr };
+}
+const show = (r, label) => process.stdout.write(`\n--- ${label} ---\n${r[label].text}\n`);
+
+// ---- tools/list -------------------------------------------------------------------
+
+const head = await drive([
+  { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+  { jsonrpc: '2.0', id: 2, method: 'tools/list' },
+]);
+check(head.noise.length === 0, 'stdout carries only JSON-RPC frames');
+const headById = new Map(head.parsed.map((m) => [m.id, m]));
+check(headById.get(1)?.result?.serverInfo?.name === 'devdy', 'initialize reports serverInfo.name = "devdy"');
+const names = (headById.get(2)?.result?.tools || []).map((t) => t.name);
+const WEB_SUFFIXES = ['list', 'read', 'search', 'update', 'rename', 'append', 'delete', 'set_project', 'reorder', 'read_attachment'];
+check(WEB_SUFFIXES.every((s) => names.includes(`web_pages_${s}`)) && names.filter((n) => n.startsWith('web_pages_')).length === 10,
+  'tools/list advertises exactly the 10 web_pages_* tools');
+const slackNames = names.filter((n) => n.startsWith('slack_threads_')).sort();
+check(slackNames.join(',') === ['delete', 'list', 'read', 'rename', 'search', 'set_project'].map((s) => `slack_threads_${s}`).join(','),
+  `tools/list: slack_threads_* = list/read/search/delete/rename/set_project (got ${slackNames.join(',')})`);
+check(!['update', 'append', 'reorder', 'read_attachment'].some((s) => names.includes(`slack_threads_${s}`)), 'tools/list: no slack update/append/reorder/read_attachment');
+
+// AC-04: no Slack handling left in the shared captures code.
+for (const f of ['lib/capture-tools.mjs', 'lib/store.mjs']) {
+  const src = readFileSync(join(HERE, f), 'utf8');
+  check(!/kind\s*===\s*'slack'|\bslack\s*:\s*\{|captureTools\('slack'|'slack-threads'/.test(src), `${f}: no Slack kind handling left`);
+}
+check(!/captureTools\('slack'/.test(readFileSync(SERVER, 'utf8')), 'index.mjs: no captureTools("slack")');
+
+// ---- Slack threads ----------------------------------------------------------------
+
+const s = await run([
+  ['list-project', 'slack_threads_list', {}],
+  ['list-all', 'slack_threads_list', { scope: 'all' }],
+  ['list-limit', 'slack_threads_list', { scope: 'all', limit: 1 }],
+  ['read', 'slack_threads_read', { id: 'th-v2' }],
+  ['read-both', 'slack_threads_read', { id: 'th-v2', original: 'both' }],
+  ['read-only', 'slack_threads_read', { id: 'th-v2', original: 'only' }],
+  ['read-bad-mode', 'slack_threads_read', { id: 'th-v2', original: 'ja' }],
+  ['read-err', 'slack_threads_read', { id: 'th-err' }],
+  ['read-legacy', 'slack_threads_read', { id: 'lg-a' }],
+  ['read-missing', 'slack_threads_read', { id: 'nope' }],
+  ['read-long', 'slack_threads_read', { id: 'th-long', max_chars: 1000 }],
+  ['search-ja', 'slack_threads_search', { query: 'デプロイ', scope: 'all' }],
+  ['search-vi', 'slack_threads_search', { query: 'TRIỂN KHAI', scope: 'all' }],
+  ['search-vi-ci', 'slack_threads_search', { query: 'triển khai staging', scope: 'all' }],
+  ['search-title', 'slack_threads_search', { query: 'broken', scope: 'all' }],
+  ['search-project', 'slack_threads_search', { query: 'broken' }],
+  ['search-legacy', 'slack_threads_search', { query: 'rollback done', scope: 'all' }],
+  ['search-channel', 'slack_threads_search', { query: 'private-x', scope: 'all' }],
+  ['search-bot', 'slack_threads_search', { query: 'x.io> DONE', scope: 'all' }],
+  ['search-literal', 'slack_threads_search', { query: '%', scope: 'all' }],
+  ['web-on-slack', 'web_pages_read', { id: 'lg-a' }],
+]);
+const S = s.out;
+
+show(S, 'list-project');
+check(S['list-project'].text.includes('[th-v2]') && S['list-project'].text.includes('[lg-a]') && !S['list-project'].text.includes('[th-err]'),
+  'list: scope=project only shows the current project');
+check(S['list-project'].text.includes('- [th-v2] Deploy failed on staging · #dev-backend · malme · ready · 4 replies · last reply 2026-09-20T'),
+  'list: line format title · #channel · workspace · status · N replies · last reply <ISO>');
+check(/\[lg-a\][^\n]*· pending · 0 replies · legacy/.test(S['list-project'].text), 'list: legacy marker');
+check(S['list-project'].text.indexOf('[th-v2]') < S['list-project'].text.indexOf('[lg-a]'), 'list: ordered by position');
+show(S, 'list-all');
+check(/\[th-err\][^\n]*· error · 0 replies · error: missing_scope/.test(S['list-all'].text), 'list: error code shown');
+check(S['list-all'].text.includes('[lg-nourl]') && !S['list-all'].text.includes('[wp-'), 'list: scope=all, never web rows');
+check(S['list-limit'].text.split('\n').length === 1, 'list: limit respected');
+
+show(S, 'read');
+const R = S.read.text;
+check(R.includes('- workspace: malme (malme.slack.com)') && R.includes('- channel: #dev-backend') &&
+  R.includes('- thread_url: https://malme.slack.com/archives/C0B8TESTAA1/p1789877000000100') && R.includes('- fetch_status: ready') &&
+  R.includes(`- fetched_at: ${T1}`) && R.includes(`- project_id: ${PROJECT}`) && R.includes('- warnings: files_scope'), 'read: metadata header');
+check(R.includes('### Alice · 2026-09-20 ') && R.includes(' UTC · ts=1789877000.000100'), 'read: message header with name, UTC time, ts');
+check(R.includes('@Alice Triển khai staging bị lỗi :fire:') && !R.includes('WrongAlice') && !R.includes('<@U1>'), 'read: Vietnamese by default, mention → @Name of the thread workspace');
+check(R.includes('```\nif a < b && c { run(); }\n```'), 'read: code block kept (entities decoded)');
+check(R.includes('Xem [the runbook](https://example.com/runbook) và #design & @here'), 'read: link → [label](url), <#C…> → #name, entity, <!here>');
+check(R.includes('### Bob Tanaka · ') && R.includes('ts=1789877100.000200 · edited'), 'read: real_name fallback + edited marker');
+check(R.includes('再起動します `kubectl rollout restart` [untranslated]'), 'read: untranslated → original + [untranslated]');
+check(R.includes('### deploy-bot · ') && R.includes('Đã rollback [ops@x.io](mailto:ops@x.io)'), 'read: bot author name + mailto');
+check(R.includes(`- 📎 screenshot.png — ${join(appData, imgRel)} · 7 bytes · image/png`) && existsSync(join(appData, imgRel)), 'read: downloaded file → ABSOLUTE existing path');
+check(R.includes('- 📎 spec.pdf — not downloaded (unavailable): https://malme.slack.com/files/U1/F002/spec.pdf'), 'read: not downloaded → status + permalink');
+check(R.includes('reactions: :+1: 2'), 'read: reactions');
+check(!R.includes('> Original:') && !R.includes('ステージング'), 'read: original=none hides the original');
+show(S, 'read-both');
+check(S['read-both'].text.includes('> Original:\n> @Alice ステージングのデプロイが失敗しました :fire:') &&
+  S['read-both'].text.includes('@Alice Triển khai staging'), 'read: original=both adds the > Original: block');
+check(!S['read-both'].text.includes('[untranslated]\n> Original'), 'read: original=both does not duplicate untranslated text');
+check(S['read-only'].text.includes('@Alice ステージングのデプロイが失敗しました') && !S['read-only'].text.includes('Triển khai') &&
+  S['read-only'].text.includes('再起動します `kubectl rollout restart`') && !S['read-only'].text.includes('[untranslated]'), 'read: original=only shows the original');
+check(S['read-bad-mode'].isError, 'read: rejects an unknown original mode');
+check(S['read-err'].text.includes('- error: missing_scope — needed: groups:history') && S['read-err'].text.includes('(no messages fetched yet'), 'read: error + empty thread');
+show(S, 'read-legacy');
+check(S['read-legacy'].text.includes('- status: legacy snapshot (not yet re-fetched)') && S['read-legacy'].text.includes('# Legacy deploy\nalice: deploy broke') &&
+  S['read-legacy'].text.includes(`- 📎 attachments/deploy.log — ${join(appData, legacyLogRel)}`), 'read: legacy → old markdown + legacy files (absolute)');
+check(S['read-missing'].text.startsWith('Slack thread not found'), 'read: unknown id reported');
+show(S, 'read-long');
+const longText = S['read-long'].text;
+const offMatch = longText.match(/Continue with offset=(\d+)\./);
+check(longText.includes('_chars 0–1000 of ') && !!offMatch && offMatch[1] === '1000', 'read: max_chars slice + continue hint');
+const bodyOf = (t) => t.split(/_chars [^_]+_\n\n/)[1]?.split('\n\n---\n… truncated')[0] ?? '';
+
+show(S, 'search-ja');
+check(S['search-ja'].text.includes('[th-v2]') && S['search-ja'].text.includes('  - Alice ts=1789877000.000100: @Alice ステージングのデプロイ'),
+  'search: term only in the Japanese original → thread + original snippet');
+check(S['search-vi'].text.includes('[th-v2]') && S['search-vi'].text.includes('Triển khai staging'), 'search: matches the Vietnamese translation');
+check(S['search-vi-ci'].text.includes('[th-v2]'), 'search: case-insensitive (ASCII)');
+check(S['search-title'].text.includes('[th-err]') && S['search-project'].text.startsWith('No Slack threads match'), 'search: title match + scope=project filter');
+check(S['search-legacy'].text.includes('[lg-a]') && S['search-legacy'].text.includes('legacy snapshot:'), 'search: legacy_content');
+check(S['search-bot'].text.includes('[th-v2]') && S['search-bot'].text.includes('  - deploy-bot ts=1789877400.000500: Rollback [ops@x.io](mailto:ops@x.io) done'), 'search: raw-only match on a bot message → original snippet');
+check(S['search-channel'].text.includes('[th-err]'), 'search: channel');
+check(S['search-literal'].text.startsWith('No Slack threads match'), 'search: LIKE wildcards are literal');
+check(/not found/i.test(S['web-on-slack'].text), 'web_pages_read no longer sees carried-over Slack rows');
+
+// Continuation: offset picks up exactly where the previous slice ended.
+const s2 = await run([['read-long-next', 'slack_threads_read', { id: 'th-long', max_chars: 1000, offset: 1000 }],
+  ['read-long-full', 'slack_threads_read', { id: 'th-long', max_chars: 1000000 }]]);
+check(bodyOf(longText) + bodyOf(s2.out['read-long-next'].text) === bodyOf(s2.out['read-long-full'].text).slice(0, 2000),
+  'read: offset continues exactly where the previous slice ended');
+
+const qaFull = (await run([['f', 'slack_threads_read', { id: 'th-qa', max_chars: 1000000 }]])).out.f.text;
+const qaBody = bodyOf(qaFull);
+const emo = qaBody.indexOf('😀');
+const qa = (await run([
+  ['at', 'slack_threads_read', { id: 'th-qa', max_chars: 1, offset: emo }],
+  ['mid', 'slack_threads_read', { id: 'th-qa', max_chars: 1, offset: emo + 1 }],
+])).out;
+check(bodyOf(qa.at.text) === '😀' && qa.at.text.includes(`Continue with offset=${emo + 2}.`), 'read: max_chars=1 on an emoji returns the full code point and advances (M-1)');
+check(bodyOf(qa.mid.text) === '😀' && qa.mid.text.includes(`Continue with offset=${emo + 2}.`), 'read: offset inside a surrogate pair still advances (M-1)');
+check(qaFull.includes('- 📎 evil.txt — downloaded but not readable (unsafe stored path refused: ../') && !qaFull.includes('not downloaded (done)') &&
+  !qaFull.includes(outsidePath), 'read: done file with unsafe path reported accurately, path not exposed as readable (M-2)');
+check(qaFull.includes('空の翻訳 [untranslated]'), 'read: empty text_vi falls back to the original, marked untranslated (M-3)');
+
+// Mutations.
+const RFC3339_RUST = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.(\d{3}|\d{6}|\d{9}))?\+00:00$/;
+mkdirSync(join(appData, 'slack-threads/th-err/files'), { recursive: true });
+const m = await run([
+  ['rename-blank', 'slack_threads_rename', { id: 'th-v2', title: '   ' }],
+  ['rename-long', 'slack_threads_rename', { id: 'th-v2', title: 'あ'.repeat(201) }],
+  ['rename-missing', 'slack_threads_rename', { id: 'nope', title: 'x' }],
+  ['rename', 'slack_threads_rename', { id: 'th-v2', title: '  Renamed by AI  ' }],
+  ['rename-200', 'slack_threads_rename', { id: 'th-long', title: 'b'.repeat(200) }],
+  ['set-project', 'slack_threads_set_project', { id: 'th-err' }],
+  ['set-global', 'slack_threads_set_project', { id: 'lg-nourl', scope: 'global' }],
+  ['set-missing', 'slack_threads_set_project', { id: 'nope' }],
+  ['delete-traversal', 'slack_threads_delete', { ids: ['../keep-me', '..'] }],
+  ['delete-web-id', 'slack_threads_delete', { id: 'wp-1' }],
+  ['delete', 'slack_threads_delete', { id: 'th-v2' }],
+  ['delete-bulk', 'slack_threads_delete', { ids: ['th-err', 'lg-a', 'nope'] }],
+  ['delete-none', 'slack_threads_delete', {}],
+]);
+const M = m.out;
+check(M['rename-blank'].isError && /required/.test(M['rename-blank'].text), 'rename: rejects an empty/blank title');
+check(M['rename-long'].isError && /200/.test(M['rename-long'].text), 'rename: rejects > 200 characters');
+check(M['rename-missing'].isError && /not found/.test(M['rename-missing'].text), 'rename: unknown id reported');
+check(!M['rename-200'].isError, 'rename: accepts exactly 200 characters');
+const thLong = sl('SELECT title, title_custom, updated_at FROM slack_threads WHERE id = ?', 'th-long')[0];
+check(thLong.title === 'b'.repeat(200) && thLong.title_custom === 1 && thLong.updated_at !== T0 && RFC3339_RUST.test(thLong.updated_at),
+  `rename: title + title_custom = 1 + updated_at bumped in chrono format (got ${thLong.updated_at})`);
+check(M.rename.text === 'Renamed Slack thread th-v2 to "Renamed by AI".', 'rename: trimmed title reported');
+check(!M['set-project'].isError && /linked to project proj-1/.test(M['set-project'].text), 'set_project: links to the current project');
+check(sl('SELECT project_id FROM slack_threads WHERE id = ?', 'lg-nourl')[0].project_id === null && /global \(no project\)/.test(M['set-global'].text),
+  'set_project: scope=global detaches');
+check(M['set-missing'].isError, 'set_project: unknown id reported');
+
+check(existsSync(join(appData, 'keep-me')) && existsSync(outsidePath) && /^Deleted 0\/2/.test(M['delete-traversal'].text), 'delete: traversal ids touch nothing on disk');
+check(/^Deleted 0\/1/.test(M['delete-web-id'].text) && sl('SELECT COUNT(*) AS n FROM captures WHERE id = ?', 'wp-1')[0].n === 1, 'delete: a web id is not a Slack thread');
+show(M, 'delete');
+const countIn = (table, col, id) => sl(`SELECT COUNT(*) AS n FROM ${table} WHERE ${col} = ?`, id)[0].n;
+check(/^Deleted 1\/1 Slack thread\(s\) \(1 file folder/.test(M.delete.text) && countIn('slack_threads', 'id', 'th-v2') === 0 &&
+  countIn('slack_messages', 'thread_id', 'th-v2') === 0 && countIn('slack_files', 'thread_id', 'th-v2') === 0, 'delete: thread, messages and file rows removed');
+check(!existsSync(join(appData, 'slack-threads/th-v2')), 'delete: <app_data>/slack-threads/<id> removed');
+check(existsSync(join(appData, 'slack-cache/avatars/T1/U1-abcd1234.png')) && countIn('slack_users', 'team_id', 'T1') === 2, 'delete: avatar cache + slack_users kept');
+check(/^Deleted 2\/3/.test(M['delete-bulk'].text) && !existsSync(join(appData, 'slack-threads/lg-a')) && !existsSync(join(appData, 'slack-threads/th-err')) &&
+  countIn('slack_files', 'thread_id', 'lg-a') === 0, 'delete: bulk ids incl. legacy row + files dir');
+check(existsSync(join(appData, 'slack-threads/lg-dup-new')) && countIn('slack_threads', 'id', 'th-long') === 1, 'delete: other threads untouched');
+check(M['delete-none'].isError, 'delete: requires an id');
+
+// ---- Web pages (behaviour unchanged) --------------------------------------------------
+
+const wr = await run([
+  ['w-list', 'web_pages_list', {}],
+  ['w-list-all', 'web_pages_list', { scope: 'all' }],
+  ['w-read', 'web_pages_read', { id: 'wp-1', max_chars: 300 }],
+  ['w-read-next', 'web_pages_read', { id: 'wp-1', max_chars: 300, offset: 300 }],
+  ['w-section', 'web_pages_read', { id: 'wp-1', section: 'configure', max_chars: 500 }],
+  ['w-section-full', 'web_pages_read', { id: 'wp-1', section: 'Install' }],
+  ['w-section-missing', 'web_pages_read', { id: 'wp-1', section: 'nope' }],
+  ['w-read-sel', 'web_pages_read', { id: 'wp-2' }],
+  ['w-search-site', 'web_pages_search', { query: 'tauri', scope: 'all' }],
+  ['w-search-url', 'web_pages_search', { query: 'example.com', scope: 'all' }],
+  ['w-rename', 'web_pages_rename', { id: 'wp-2', title: 'My excerpt' }],
+  ['w-update', 'web_pages_update', { id: 'wp-3', title: '  Setext page v2  ' }],
+  ['w-update-empty', 'web_pages_update', { id: 'wp-3' }],
+  ['w-append', 'web_pages_append', { id: 'wp-2', text: 'note' }],
+  ['w-set', 'web_pages_set_project', { id: 'wp-2' }],
+  ['w-reorder', 'web_pages_reorder', { ids: ['wp-2'] }],
+  ['w-reorder-bad', 'web_pages_reorder', { ids: ['lg-a'] }],
+  ['w-att', 'web_pages_read_attachment', { id: 'att-web' }],
+  ['w-att-png', 'web_pages_read_attachment', { id: 'att-png' }],
+  ['w-att-big', 'web_pages_read_attachment', { id: 'att-big' }],
+  ['w-att-latin1', 'web_pages_read_attachment', { id: 'att-latin1' }],
+  ['w-att-evil', 'web_pages_read_attachment', { id: 'att-evil' }],
+  ['w-att-slack', 'web_pages_read_attachment', { id: 'att-log' }],
+  ['w-setext', 'web_pages_read', { id: 'wp-3' }],
+  ['w-setext-section', 'web_pages_read', { id: 'wp-3', section: 'setup' }],
+  ['w-setext-h1', 'web_pages_read', { id: 'wp-3', section: 'Getting started' }],
+  ['w-del', 'web_pages_delete', { id: 'wp-1' }],
+]);
+const w = wr.out;
+const wshow = (label) => show(w, label);
 
 wshow('w-list-all');
 check(w['w-list'].text.includes('[wp-1]') && !w['w-list'].text.includes('[wp-2]'), 'web list: scope=project only shows the current project');
-check(w['w-list-all'].text.includes('Tauri') && /example\.com · excerpt/.test(w['w-list-all'].text) && !w['w-list-all'].text.includes('[th-'), 'web list: site/domain + excerpt badge, no slack rows');
+check(w['w-list-all'].text.includes('Tauri') && /example\.com · excerpt/.test(w['w-list-all'].text) && !/\[(lg|th)-/.test(w['w-list-all'].text),
+  'web list: site/domain + excerpt badge, no slack rows');
+check(/Tauri · 1 attachment\(s\)/.test(w['w-list-all'].text), 'web list: attachment count');
 wshow('w-read');
 const total = longDoc.length;
 check(w['w-read'].text.includes(`total_chars: ${total}`), 'web read: total_chars reported');
-check(/## Outline[\s\S]*# Tauri capabilities \(offset 0\)[\s\S]*### Permissions/.test(w['w-read'].text) && !w['w-read'].text.includes('# not a heading ('), 'web read: outline with offsets, code fences skipped');
+check(/## Outline[\s\S]*# Tauri capabilities \(offset 0\)[\s\S]*### Permissions/.test(w['w-read'].text) && !w['w-read'].text.includes('# not a heading ('),
+  'web read: outline with offsets, code fences skipped');
 check(w['w-read'].text.includes('source_url: https://v2.tauri.app/security/capabilities/') && w['w-read'].text.includes('author: Tauri team') &&
   w['w-read'].text.includes('captured_at: 2026-10-09T10:00:00Z') && w['w-read'].text.includes('published_at: 2026-09-01'), 'web read: web metadata shown');
 check(w['w-read'].text.includes(`chars 0–300 of ${total}`) && w['w-read'].text.includes('Continue with offset=300.'), 'web read: max_chars slice + continue hint');
 check(w['w-read'].text.includes(join(appData, webRel)), 'web read: attachment path is ABSOLUTE under web-pages/');
-const bodyOf = (t) => t.split(/_chars [^_]+_\n\n/)[1]?.split('\n\n---\n… truncated')[0] ?? '';
 check(bodyOf(w['w-read'].text) + bodyOf(w['w-read-next'].text) === longDoc.slice(0, 600), 'web read: offset continues exactly where the previous slice ended');
 wshow('w-section');
 const confStart = longDoc.indexOf('## Configure');
 const confEnd = longDoc.indexOf('## FAQ');
-check(bodyOf(w['w-section'].text) === longDoc.slice(confStart, confStart + 500) && w['w-section'].text.includes('Continue with offset=500 section="Configure"'), 'web read: section (case-insensitive) sliced + section-aware hint');
-check(bodyOf(w['w-section-full'].text) === longDoc.slice(longDoc.indexOf('## Install'), confStart) && !w['w-section-full'].text.includes('truncated'), 'web read: section stops at the next same-level heading');
+check(bodyOf(w['w-section'].text) === longDoc.slice(confStart, confStart + 500) && w['w-section'].text.includes('Continue with offset=500 section="Configure"'),
+  'web read: section (case-insensitive) sliced + section-aware hint');
+check(bodyOf(w['w-section-full'].text) === longDoc.slice(longDoc.indexOf('## Install'), confStart) && !w['w-section-full'].text.includes('truncated'),
+  'web read: section stops at the next same-level heading');
 check(longDoc.slice(confStart, confEnd).includes('### Permissions'), 'fixture: subsection belongs to its parent section');
 check(w['w-section-missing'].isError && /section not found[\s\S]*"Install"/.test(w['w-section-missing'].text), 'web read: unknown section lists headings');
 check(w['w-read-sel'].text.includes('selection: yes'), 'web read: selection flag shown');
-check(/not found/i.test(w['w-read-slack'].text) && /not found/i.test(w['s-read-web'].text), 'kind isolation: read refuses the other kind');
 check(w['w-search-site'].text.includes('[wp-1]') && w['w-search-url'].text.includes('[wp-2]'), 'web search: matches site_name and source_url');
 const wp2 = db.prepare('SELECT * FROM captures WHERE id = ?').get('wp-2');
 check(!w['w-rename'].isError && wp2.title === 'My excerpt' && wp2.title_custom === 1, 'web rename: title + title_custom = 1');
-check(w['w-rename-slack'].isError && db.prepare('SELECT title FROM captures WHERE id = ?').get('th-b').title !== 'hijack', 'kind isolation: web rename refuses a slack id');
+const wp3 = db.prepare('SELECT * FROM captures WHERE id = ?').get('wp-3');
+check(!w['w-update'].isError && wp3.title === 'Setext page v2' && wp3.title_custom === 1 && wp3.content === setextDoc, 'web update: title trimmed + custom, content kept');
+check(w['w-update-empty'].isError, 'web update: rejects a call with neither title nor content');
 check(wp2.content === 'Only this paragraph.\n\nnote' && wp2.project_id === PROJECT && RFC3339_RUST.test(wp2.updated_at), 'web append + set_project + rfc3339 updated_at');
 const pos = (id) => db.prepare('SELECT position FROM captures WHERE id = ?').get(id).position;
-check(!w['w-reorder'].isError && pos('wp-2') === 0 && pos('th-b') === 0, 'web reorder: per kind (slack positions untouched)');
-check(w['w-reorder-slack'].isError, 'kind isolation: web reorder rejects a slack id');
+check(!w['w-reorder'].isError && pos('wp-2') === 0, 'web reorder: moved id goes to the top');
+check(w['w-reorder-bad'].isError, 'web reorder: rejects an id that is not a web page');
 check(w['w-att'].text.includes('<svg/>'), 'web read_attachment: inline text');
-check(w['w-att-slack'].isError, 'kind isolation: web read_attachment refuses a slack attachment');
+check(w['w-att-png'].text.includes('Not returned inline') && w['w-att-png'].text.includes(join(appData, 'web-pages/wp-2/files/shot.png')), 'web read_attachment: image → absolute path + hint');
+check(/larger than/.test(w['w-att-big'].text), 'web read_attachment: >1MB → path + hint');
+check(/not valid UTF-8/.test(w['w-att-latin1'].text), 'web read_attachment: non-utf8 octet-stream → path + hint');
+check(w['w-att-evil'].isError && /escapes/.test(w['w-att-evil'].text), 'web read_attachment: refuses paths outside app_data');
+check(w['w-att-slack'].isError, 'web read_attachment: carried-over Slack file ids are not web attachments');
 wshow('w-setext');
 const outlineOf = (t) => (t.split('## Outline\n')[1] || '').split('\n\n')[0];
 const setextOutline = outlineOf(w['w-setext'].text);
@@ -420,9 +535,11 @@ check(setextOutline.includes(`- # Getting started (offset ${at('Getting started'
 check(setextOutline.split('\n').length === 3 && !/More welcome|Welcome\.|not a heading/.test(setextOutline), 'setext: `---` after a blank line (hr) and inside a code fence is not a heading');
 check(bodyOf(w['w-setext-section'].text) === setextDoc.slice(at('Setup'), at('Usage')), 'setext: section read (case-insensitive) stops at the next h2');
 check(bodyOf(w['w-setext-h1'].text) === setextDoc, 'setext: h1 section spans its h2 subsections');
-check(/^Deleted 0\/1/.test(w['w-del-slack'].text), 'kind isolation: slack delete ignores a web id');
 check(/^Deleted 1\/1 web page/.test(w['w-del'].text) && !existsSync(join(appData, 'web-pages/wp-1')) &&
   db.prepare('SELECT COUNT(*) AS n FROM capture_attachments WHERE capture_id = ?').get('wp-1').n === 0, 'web delete: row, attachment rows and web-pages/<id> dir removed');
+
+const stderrAll = [head, s, s2, m, wr].map((r) => r.stderr || '').join('');
+check(![s, s2, m, wr].some((r) => r.noise.length), 'stdout carries only JSON-RPC frames (all runs)');
 
 db.close();
 rmSync(appData, { recursive: true, force: true });
@@ -430,7 +547,7 @@ rmSync(outsidePath, { force: true });
 
 if (failures.length) {
   process.stderr.write(`\n${failures.length} check(s) failed.\n`);
-  if (stderr.trim()) process.stderr.write(`server stderr:\n${stderr}\n`);
+  if (stderrAll.trim()) process.stderr.write(`server stderr:\n${stderrAll}\n`);
   process.exit(1);
 }
-process.stdout.write(`\nAll checks passed.\n`);
+process.stdout.write(`\nAll checks passed (migration 0041 from: ${migration0041Source}).\n`);

@@ -1,10 +1,12 @@
-//! Loopback HTTP server for the Slack Thread Inbox (axum, 127.0.0.1 only).
+//! Loopback HTTP server for the capture inbox (axum, 127.0.0.1 only): web
+//! pages, Slack thread links and translation.
 //!
 //! Security layers, in order: `Host` must be `127.0.0.1:<port>` /
 //! `localhost:<port>` (DNS-rebinding guard); an `Origin`, when present, must be
 //! a browser-extension origin; every `/v1/*` route needs the bearer token. The
 //! body is only buffered after auth passes, capped at `MAX_BODY_BYTES`
-//! (`MAX_TRANSLATE_BODY_BYTES` for `/v1/translate`).
+//! (`MAX_TRANSLATE_BODY_BYTES` for `/v1/translate`, `MAX_SLACK_BODY_BYTES`
+//! for `/v1/slack-threads`).
 //!
 //! The server can be switched off (`inbox_api_enabled`): `start_server` /
 //! `stop_server` bind and release the port at runtime.
@@ -14,6 +16,7 @@ use super::store::{self, IngestResult, Overrides};
 use super::InboxApiState;
 use crate::commands::translate::{self, TranslateState, TurnEvent, MAX_INPUT_CHARS};
 use crate::db::Db;
+use crate::slack_threads::SlackThreadsState;
 use axum::{
     extract::{Request, State},
     http::{header, HeaderMap, HeaderValue, Method, StatusCode},
@@ -44,6 +47,10 @@ pub const PORT_RANGE: RangeInclusive<u16> = 47821..=47830;
 const API_VERSION: u32 = 1;
 const ALLOWED_HEADERS: &str =
     "Authorization, Content-Type, X-Devdy-Project-Id, X-Devdy-Title, X-Devdy-Mode";
+
+/// `/v1/slack-threads` request body cap.
+pub const MAX_SLACK_BODY_BYTES: usize = 16 * 1024;
+const SLACK_JSON_ONLY: &str = "Content-Type must be application/json ({\"url\": \"<slack thread link>\"}); zip/markdown uploads are no longer supported";
 
 /// `/v1/translate` request body cap.
 pub const MAX_TRANSLATE_BODY_BYTES: usize = 64 * 1024;
@@ -97,6 +104,8 @@ pub struct HttpState {
     /// Flips to `true` when the server is stopping, so long-lived translate
     /// requests (SSE streams) end instead of holding the shutdown open.
     pub shutdown: watch::Receiver<bool>,
+    /// Slack thread add / re-import + job queue.
+    pub slack: SlackThreadsState,
 }
 
 /// A running server: signal `shutdown`, then await / abort `task`.
@@ -124,10 +133,20 @@ pub async fn start_server(
     app_data: PathBuf,
     api: InboxApiState,
     translate_state: TranslateState,
+    slack: SlackThreadsState,
 ) {
     let mut slot = api.server.lock().await;
     start_locked(&mut slot, &api, PORT_RANGE, |port, shutdown| {
-        app_state(app, db, app_data, &api, translate_state, port, shutdown)
+        app_state(
+            app,
+            db,
+            app_data,
+            &api,
+            translate_state,
+            slack,
+            port,
+            shutdown,
+        )
     })
     .await;
 }
@@ -141,6 +160,7 @@ pub async fn set_enabled(
     app_data: PathBuf,
     api: InboxApiState,
     translate_state: TranslateState,
+    slack: SlackThreadsState,
     enabled: bool,
 ) -> Result<(), String> {
     let persist_db = db.clone();
@@ -150,18 +170,29 @@ pub async fn set_enabled(
             .map_err(|e| e.to_string())
     };
     toggle(&api, enabled, persist, PORT_RANGE, |port, shutdown| {
-        app_state(app, db, app_data, &api, translate_state, port, shutdown)
+        app_state(
+            app,
+            db,
+            app_data,
+            &api,
+            translate_state,
+            slack,
+            port,
+            shutdown,
+        )
     })
     .await
 }
 
 /// `HttpState` wired to the real app: notifications + the shared translator.
+#[allow(clippy::too_many_arguments)]
 fn app_state(
     app: AppHandle,
     db: Db,
     app_data: PathBuf,
     api: &InboxApiState,
     translate_state: TranslateState,
+    slack: SlackThreadsState,
     port: u16,
     shutdown: watch::Receiver<bool>,
 ) -> HttpState {
@@ -207,6 +238,7 @@ fn app_state(
         translate_slots: Arc::new(Semaphore::new(MAX_TRANSLATE_IN_FLIGHT)),
         translate_timeout: TRANSLATE_TIMEOUT,
         shutdown,
+        slack,
     }
 }
 
@@ -411,7 +443,7 @@ async fn health(State(state): State<HttpState>) -> Response {
         "app": "devdy",
         "version": state.version,
         "api": API_VERSION,
-        "features": ["translate"],
+        "features": ["translate", "slack-thread-link"],
     }))
     .into_response()
 }
@@ -445,8 +477,101 @@ fn header_string(headers: &HeaderMap, name: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+fn coded_error(status: StatusCode, code: &str, msg: &str) -> Response {
+    (status, Json(json!({ "error": msg, "code": code }))).into_response()
+}
+
+/// `POST /v1/slack-threads`: JSON `{url, projectId?, title?}` → `202`; the
+/// thread is fetched and translated in the background. Headers
+/// `X-Devdy-Project-Id` / `X-Devdy-Title` are ignored here.
 async fn post_slack_thread(State(state): State<HttpState>, req: Request) -> Response {
-    post_capture(state, CaptureKind::Slack, req).await
+    let headers = req.headers().clone();
+    if let Some(r) = check_auth(&state, &headers) {
+        return r;
+    }
+    let is_json = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(';').next())
+        .is_some_and(|m| m.trim().eq_ignore_ascii_case("application/json"));
+    if !is_json {
+        return error(StatusCode::UNSUPPORTED_MEDIA_TYPE, SLACK_JSON_ONLY);
+    }
+    let too_large = || {
+        error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            &format!("payload exceeds {} KB", MAX_SLACK_BODY_BYTES / 1024),
+        )
+    };
+    let declared = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<usize>().ok());
+    if declared.is_some_and(|n| n > MAX_SLACK_BODY_BYTES) {
+        return too_large();
+    }
+    let body = match axum::body::to_bytes(req.into_body(), MAX_SLACK_BODY_BYTES).await {
+        Ok(b) => b,
+        Err(_) => return too_large(),
+    };
+    let Ok(serde_json::Value::Object(obj)) = serde_json::from_slice::<serde_json::Value>(&body)
+    else {
+        return coded_error(StatusCode::BAD_REQUEST, "invalid_json", "invalid JSON body");
+    };
+    let Some(url) = obj.get("url").and_then(|v| v.as_str()) else {
+        return coded_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_link",
+            crate::slack_threads::link::INVALID_LINK_MESSAGE,
+        );
+    };
+    let project_id = match obj.get("projectId") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(p)) => Some(p.as_str()),
+        Some(_) => {
+            return coded_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_project",
+                "projectId must be a string",
+            )
+        }
+    };
+    let title = match obj.get("title") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(t)) => Some(t.as_str()),
+        Some(_) => {
+            return coded_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_title",
+                "title must be a string",
+            )
+        }
+    };
+    if *state.shutdown.borrow() {
+        return error(StatusCode::SERVICE_UNAVAILABLE, SERVER_STOPPING);
+    }
+    match state.slack.add_thread(url, project_id, title, true).await {
+        Ok(r) => {
+            let mut body = json!({
+                "id": r.id,
+                "status": r.status,
+                "fetchStatus": r.fetch_status,
+            });
+            if let Some(code) = r.error_code {
+                body["errorCode"] = json!(code);
+            }
+            (StatusCode::ACCEPTED, Json(body)).into_response()
+        }
+        Err(e) => match e.code.as_str() {
+            "invalid_link" | "dm_unsupported" | "invalid_project" | "invalid_title" => {
+                coded_error(StatusCode::BAD_REQUEST, &e.code, &e.detail)
+            }
+            _ => {
+                tracing::error!(event = "inbox_api_slack_add_failed", code = %e.code);
+                error(StatusCode::INTERNAL_SERVER_ERROR, &e.detail)
+            }
+        },
+    }
 }
 
 async fn post_web_page(State(state): State<HttpState>, req: Request) -> Response {
@@ -493,11 +618,9 @@ async fn post_capture(state: HttpState, capture_kind: CaptureKind, req: Request)
         return error(StatusCode::BAD_REQUEST, "empty body");
     }
 
-    // `X-Devdy-Mode: new` forces a new row; only web pages honour it
-    // (`/v1/slack-threads` is unchanged).
-    let force_new = capture_kind == CaptureKind::Web
-        && header_string(&headers, "x-devdy-mode")
-            .is_some_and(|m| m.eq_ignore_ascii_case("new"));
+    // `X-Devdy-Mode: new` forces a new row.
+    let force_new =
+        header_string(&headers, "x-devdy-mode").is_some_and(|m| m.eq_ignore_ascii_case("new"));
     let overrides = Overrides {
         project_id: header_string(&headers, "x-devdy-project-id"),
         title: header_string(&headers, "x-devdy-title"),
@@ -791,16 +914,22 @@ mod tests {
         abandoned: Arc<std::sync::Mutex<Vec<u64>>>,
         turn_seq: Arc<std::sync::atomic::AtomicU64>,
         slots: Arc<Semaphore>,
+        /// Slack state on the same DB (fake token lookup, no worker).
+        slack: SlackThreadsState,
+        slack_tokens: crate::slack_threads::tests::Tokens,
     }
 
     impl Fakes {
-        fn new() -> Self {
+        fn new(db: &Db, app_data: &std::path::Path) -> Self {
+            let slack_tokens = crate::slack_threads::tests::Tokens::default();
             Fakes {
                 ingested: Arc::default(),
                 held: Arc::default(),
                 abandoned: Arc::default(),
                 turn_seq: Arc::default(),
                 slots: Arc::new(Semaphore::new(MAX_TRANSLATE_IN_FLIGHT)),
+                slack: crate::slack_threads::tests::offline_state(db, app_data, &slack_tokens),
+                slack_tokens,
             }
         }
 
@@ -868,6 +997,7 @@ mod tests {
             translate_slots: fakes.slots.clone(),
             translate_timeout,
             shutdown,
+            slack: fakes.slack.clone(),
         }
     }
 
@@ -905,7 +1035,7 @@ mod tests {
         std::fs::create_dir_all(&app_data).unwrap();
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let fakes = Fakes::new();
+        let fakes = Fakes::new(&db, &app_data);
         let (shutdown, shutdown_rx) = watch::channel(false);
         let state = test_state(
             &db,
@@ -940,7 +1070,7 @@ mod tests {
     impl Harness {
         fn post(&self, ct: &str, body: Vec<u8>) -> reqwest::RequestBuilder {
             self.client
-                .post(format!("{}/v1/slack-threads", self.base))
+                .post(format!("{}/v1/web-pages", self.base))
                 .bearer_auth(&self.token)
                 .header("Content-Type", ct)
                 .body(body)
@@ -999,16 +1129,6 @@ mod tests {
         assert_ne!(id4, id);
         assert_eq!(h.ingested.load(Ordering::SeqCst), 4);
 
-        // Slack endpoint ignores X-Devdy-Mode (unchanged contract).
-        let md = "---\nthread_url: \"https://x.slack.com/archives/C1/p9\"\n---\nx";
-        let (c1, s1, _) = status_and_id(h.post("text/markdown", md.as_bytes().to_vec())).await;
-        let (c2, s2, _) = status_and_id(
-            h.post("text/markdown", md.as_bytes().to_vec()).header("X-Devdy-Mode", "new"),
-        )
-        .await;
-        assert_eq!((c1, c2), (201, 200));
-        assert_eq!(s1, s2);
-
         // Auth + CORS apply to the new route too.
         let r = h
             .client
@@ -1047,7 +1167,7 @@ mod tests {
         let v: serde_json::Value = r.json().await.unwrap();
         assert_eq!(v["app"], "devdy");
         assert_eq!(v["api"], 1);
-        assert_eq!(v["features"], json!(["translate"]));
+        assert_eq!(v["features"], json!(["translate", "slack-thread-link"]));
 
         // Auth.
         let r = h.client.get(format!("{}/v1/projects", h.base)).send().await.unwrap();
@@ -1120,8 +1240,8 @@ mod tests {
             .unwrap()
             .contains("X-Devdy-Project-Id"));
 
-        // Markdown create, then same thread_url → update.
-        let md = "---\nthread_url: \"https://x.slack.com/archives/C1/p1\"\n---\n# Hi\n";
+        // Markdown create, then same url → update.
+        let md = "---\nurl: \"https://example.com/p1\"\n---\n# Hi\n";
         let r = h
             .post("text/markdown; charset=utf-8", md.as_bytes().to_vec())
             .header("X-Devdy-Project-Id", "p1")
@@ -1138,7 +1258,7 @@ mod tests {
         let v: serde_json::Value = r.json().await.unwrap();
         assert_eq!(v, json!({ "id": id, "status": "updated" }));
         assert_eq!(h.ingested.load(Ordering::SeqCst), 2);
-        assert!(h.app_data.join("slack-threads").join(&id).join("files/a.png").exists());
+        assert!(h.app_data.join("web-pages").join(&id).join("files/a.png").exists());
 
         // Bad payloads.
         let r = h.post("application/json", b"{}".to_vec()).send().await.unwrap();
@@ -1166,7 +1286,7 @@ mod tests {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             let mut sock = tokio::net::TcpStream::connect(("127.0.0.1", h.port)).await.unwrap();
             let req = format!(
-                "POST /v1/slack-threads HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\
+                "POST /v1/web-pages HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\
                  Authorization: Bearer {}\r\nContent-Type: application/zip\r\n\
                  Content-Length: {}\r\n\r\n",
                 h.port,
@@ -1495,12 +1615,12 @@ mod tests {
     async fn capture_upload_in_flight_during_shutdown_is_rejected() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let h = spawn().await;
-        let body = "---\nthread_url: \"https://x.slack.com/archives/C1/p5\"\n---\nx";
+        let body = "---\nurl: \"https://example.com/p5\"\n---\nx";
         let mut sock = tokio::net::TcpStream::connect(("127.0.0.1", h.port))
             .await
             .unwrap();
         let head = format!(
-            "POST /v1/slack-threads HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\
+            "POST /v1/web-pages HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\
              Authorization: Bearer {}\r\nContent-Type: text/markdown\r\n\
              Content-Length: {}\r\n\r\n",
             h.port,
@@ -1521,6 +1641,143 @@ mod tests {
         let _ = std::fs::remove_dir_all(&h.app_data);
     }
 
+    fn slack(h: &Harness, body: &str) -> reqwest::RequestBuilder {
+        h.client
+            .post(format!("{}/v1/slack-threads", h.base))
+            .bearer_auth(&h.token)
+            .header("Content-Type", "application/json; charset=utf-8")
+            .body(body.to_string())
+    }
+
+    async fn slack_json(r: reqwest::RequestBuilder) -> (u16, serde_json::Value) {
+        let r = r.send().await.unwrap();
+        (r.status().as_u16(), r.json().await.unwrap())
+    }
+
+    const LINK: &str = "https://malme.slack.com/archives/C0B83GHDTFG/p1789877283026359";
+
+    #[tokio::test]
+    async fn slack_threads_endpoint_status_codes() {
+        let h = spawn().await;
+        // No token → created straight into error/no_token (still 202).
+        let (code, v) = slack_json(slack(&h, &json!({ "url": LINK }).to_string())).await;
+        assert_eq!(code, 202);
+        assert_eq!(v["status"], "created");
+        assert_eq!(v["fetchStatus"], "error");
+        assert_eq!(v["errorCode"], "no_token");
+        let first = v["id"].as_str().unwrap().to_string();
+
+        // With a token → pending; re-sending the same thread → existing, same id.
+        h.fakes.slack_tokens.set(&h.db, "s1", "xoxp-test").await;
+        let reply = format!(
+            "{}?thread_ts=1789877283.026359&cid=C0B83GHDTFG",
+            LINK.replace("p1789877283026359", "p1789877300000100")
+        );
+        let (code, v) = slack_json(slack(
+            &h,
+            &json!({ "url": reply, "projectId": "p1" }).to_string(),
+        ))
+        .await;
+        assert_eq!(code, 202);
+        assert_eq!(
+            v,
+            json!({ "id": first, "status": "existing", "fetchStatus": "pending" })
+        );
+        let (code, v) = slack_json(slack(&h, &json!({ "url": "https://acme.slack.com/archives/C0000000001/p1789877283026359", "title": "Mine" }).to_string())).await;
+        assert_eq!(code, 202);
+        assert_eq!(v["status"], "created");
+        assert_eq!(v["fetchStatus"], "pending");
+        assert!(v.get("errorCode").is_none());
+        // Project only assigned while the thread had none; title kept custom.
+        let (pid, title, custom): (Option<String>, String, i64) = sqlx::query_as(
+            "SELECT project_id, title, title_custom FROM slack_threads WHERE id = ?",
+        )
+        .bind(&first)
+        .fetch_one(&h.db)
+        .await
+        .unwrap();
+        assert_eq!(
+            (pid.as_deref(), title.as_str(), custom),
+            (Some("p1"), "Slack thread", 0)
+        );
+        let id2 = v["id"].as_str().unwrap();
+        let t: (String, i64) =
+            sqlx::query_as("SELECT title, title_custom FROM slack_threads WHERE id = ?")
+                .bind(id2)
+                .fetch_one(&h.db)
+                .await
+                .unwrap();
+        assert_eq!(t, ("Mine".to_string(), 1));
+
+        // 400s with codes.
+        for (body, code) in [
+            (r#"{"url":"abc"}"#.to_string(), "invalid_link"),
+            (r#"{}"#.to_string(), "invalid_link"),
+            (
+                json!({ "url": LINK.replace("C0B83GHDTFG", "D0B83GHDTFG") }).to_string(),
+                "dm_unsupported",
+            ),
+            (
+                json!({ "url": LINK, "projectId": "nope" }).to_string(),
+                "invalid_project",
+            ),
+            (
+                json!({ "url": LINK, "title": "  " }).to_string(),
+                "invalid_title",
+            ),
+            (
+                json!({ "url": LINK, "title": "x".repeat(201) }).to_string(),
+                "invalid_title",
+            ),
+            ("{nope".to_string(), "invalid_json"),
+            ("[1]".to_string(), "invalid_json"),
+        ] {
+            let (status, v) = slack_json(slack(&h, &body)).await;
+            assert_eq!((status, v["code"].as_str()), (400, Some(code)), "{}", body);
+            assert!(v["error"].is_string());
+        }
+        // Zip / markdown → 415 with the migration hint.
+        for ct in ["application/zip", "text/markdown", "text/plain"] {
+            let r = h
+                .client
+                .post(format!("{}/v1/slack-threads", h.base))
+                .bearer_auth(&h.token)
+                .header("Content-Type", ct)
+                .body("x")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(r.status(), 415);
+            let v: serde_json::Value = r.json().await.unwrap();
+            assert_eq!(v["error"], SLACK_JSON_ONLY);
+        }
+        // > 16 KB → 413; no auth → 401.
+        let big = json!({ "url": LINK, "title": "x".repeat(MAX_SLACK_BODY_BYTES) }).to_string();
+        let (code, _) = slack_json(slack(&h, &big)).await;
+        assert_eq!(code, 413);
+        let r = h
+            .client
+            .post(format!("{}/v1/slack-threads", h.base))
+            .header("Content-Type", "application/json")
+            .body(json!({ "url": LINK }).to_string())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 401);
+        // Nothing went to the captures core.
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM captures")
+            .fetch_one(&h.db)
+            .await
+            .unwrap();
+        assert_eq!(n, 0);
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM slack_threads")
+            .fetch_one(&h.db)
+            .await
+            .unwrap();
+        assert_eq!(n, 2);
+        let _ = std::fs::remove_dir_all(&h.app_data);
+    }
+
     /// Everything `toggle` / `start_locked` need, minus the HTTP harness.
     struct Lifecycle {
         db: Db,
@@ -1533,11 +1790,13 @@ mod tests {
         async fn new() -> Self {
             let api = InboxApiState::default();
             api.set_token("t".into());
+            let db = memory_db().await;
+            let app_data = std::env::temp_dir();
             Lifecycle {
-                db: memory_db().await,
+                fakes: Fakes::new(&db, &app_data),
+                db,
                 api,
-                fakes: Fakes::new(),
-                app_data: std::env::temp_dir(),
+                app_data,
             }
         }
 

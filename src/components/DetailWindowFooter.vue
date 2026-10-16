@@ -10,7 +10,8 @@
 // share one slot, so the bar never offers both at once. Delete always lives in
 // the ⋯ menu (Copy ID · Delete), behind the host's confirm; the `menu` slot adds
 // kind-specific items above Copy ID. A host with a different job (the item
-// window's create mode) passes the default slot and gets only the bar.
+// window's create mode) passes the default slot and gets only the bar. A
+// read-only host (the Slack threads window) passes `editable=false` to drop Edit.
 import { useI18n } from 'vue-i18n'
 import { Check, Copy, MoreHorizontal, Pencil, Trash2 } from 'lucide-vue-next'
 import { Button, DropdownItem, DropdownMenu, DropdownSeparator } from '@/components/ui'
@@ -23,8 +24,10 @@ withDefaults(
     saveLabel?: string
     /** Copy ID just fired: its icon becomes a tick. */
     copiedId?: boolean
+    /** false = read-only content: no Edit button. */
+    editable?: boolean
   }>(),
-  { editing: false, canSave: true, saveLabel: undefined, copiedId: false },
+  { editing: false, canSave: true, saveLabel: undefined, copiedId: false, editable: true },
 )
 
 defineEmits<{ edit: []; cancel: []; save: []; copyId: []; delete: [] }>()
@@ -49,7 +52,13 @@ const { t } = useI18n()
           <slot name="left" />
         </div>
         <slot name="actions" />
-        <Button variant="primary" size="sm" :title="t('item.editTitle')" @click="$emit('edit')">
+        <Button
+          v-if="editable"
+          variant="primary"
+          size="sm"
+          :title="t('item.editTitle')"
+          @click="$emit('edit')"
+        >
           <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
           {{ t('item.edit') }}
         </Button>

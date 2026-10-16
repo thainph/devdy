@@ -25,6 +25,7 @@ pub mod runs;
 pub mod sessions;
 pub mod settings;
 pub mod skills;
+pub mod slack_threads;
 pub mod stats;
 pub mod storage;
 pub mod todos;

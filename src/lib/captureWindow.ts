@@ -1,5 +1,6 @@
-// Opens the detail window for one capture — a Slack thread or a web page pushed
-// in by the Chrome extension (views/CaptureWindow.vue, `?captureWindow=1&id=…`).
+// Opens the detail window for one capture — a web page pushed in by the Chrome
+// extension (views/CaptureWindow.vue, `?captureWindow=1&id=…`). Slack threads
+// have their own window (lib/slackWindow).
 // It is the capture analog of the note editor window (lib/itemWindow). One
 // window PER capture (deterministic label), so opening the same capture twice
 // focuses the window already showing it.
@@ -20,15 +21,16 @@ import type { CaptureKind } from '@/stores/captures'
 export const CAPTURE_WINDOW_PREFIX = 'capture-'
 
 /**
- * Emitted by the backend when the user clicks the OS notification for a capture
- * received over the Inbox API (it also focuses the main window). Only the main
- * window listens (App.vue), so the detail window opens exactly once.
+ * Emitted by the backend when the user clicks the OS notification for a web page
+ * received / a Slack thread fetched over the Inbox API (it also focuses the main
+ * window). Only the main window listens (App.vue), so the window opens exactly
+ * once: `slack` → the Slack threads window, `web` → the capture window.
  */
 export const CAPTURE_NOTIFICATION_CLICKED = 'capture-notification-clicked'
 
 export interface CaptureNotificationClicked {
   id: string
-  kind: CaptureKind
+  kind: CaptureKind | 'slack'
 }
 
 // Small deterministic string hash (djb2) → safe, stable window label per capture.

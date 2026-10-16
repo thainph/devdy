@@ -1,23 +1,4 @@
 {
-  "slack": {
-    "tab": "Slack",
-    "nav": "Thread Slack",
-    "untitled": "Thread Slack",
-    "windowTitle": "Slack: {name}",
-    "missing": "Thread Slack này không còn tồn tại.",
-    "importTitle": "Nhập thread đã xuất (.zip / .md)",
-    "importFilter": "Thread Slack đã xuất",
-    "empty": "Chưa có thread Slack nào.",
-    "emptyHint": "Gửi từ Chrome extension, hoặc nhập tệp .zip / .md đã xuất.",
-    "select": "Chọn thread",
-    "renamePlaceholder": "Tiêu đề thread…",
-    "confirm": {
-      "deleteTitle": "Xoá thread Slack",
-      "deleteMessage": "Xoá thread này cùng các tệp đính kèm?",
-      "deleteManyTitle": "Xoá các thread Slack",
-      "deleteManyMessage": "Xoá {count} thread cùng các tệp đính kèm?"
-    }
-  },
   "web": {
     "tab": "Web",
     "nav": "Trang web",
@@ -37,12 +18,10 @@
       "deleteManyMessage": "Xoá {count} trang cùng các tệp đính kèm?"
     }
   },
-  "openInSlack": "Mở trong Slack",
   "openOriginal": "Mở trang gốc",
   "excerpt": "Trích đoạn",
   "excerptHint": "Chỉ lưu phần được chọn của trang",
   "byAuthor": "bởi {author}",
-  "exportedAt": "Xuất lúc {date}",
   "capturedAt": "Lưu lúc {date}",
   "publishedAt": "Đăng lúc {date}",
   "receivedAt": "Nhận lúc {date}",
@@ -75,7 +54,7 @@
     "all": "Tất cả",
     "slack": "Slack",
     "web": "Web",
-    "empty": "Chưa có gì để chèn: gửi thread Slack hoặc trang web từ Chrome extension, hoặc viết ghi chú / todo.",
+    "empty": "Chưa có gì để chèn: thêm thread Slack bằng link, gửi trang web từ Chrome extension, hoặc viết ghi chú / todo.",
     "note": "Ghi chú",
     "todo": "Todo",
     "showDone": "Hiện cả todo đã xong"

@@ -1,4 +1,5 @@
-//! SQLite + filesystem side of the capture inbox (Slack threads + web pages):
+//! SQLite + filesystem side of the capture inbox (web pages; Slack threads
+//! have their own tables in `crate::slack_threads`):
 //! upsert a parsed capture (with its attachment files), list/read/update/
 //! delete/reorder. Shared by the HTTP API and the Tauri commands; takes plain
 //! `&Db` + `app_data` so it is testable against an in-memory DB and a temp dir.
@@ -27,12 +28,6 @@ pub struct Capture {
     pub updated_at: String,
     pub exported_at: Option<String>,
     pub attachment_count: i64,
-    // slack
-    pub workspace: Option<String>,
-    pub channel: Option<String>,
-    pub thread_url: Option<String>,
-    pub thread_ts: Option<String>,
-    // web
     pub source_url: Option<String>,
     pub site_name: Option<String>,
     pub author: Option<String>,
@@ -103,7 +98,6 @@ pub struct Overrides {
 
 const CAPTURE_COLUMNS: &str = "t.id, t.kind, t.title, t.content, t.title_custom, t.project_id, \
      t.position, t.created_at, t.updated_at, t.exported_at, \
-     t.workspace, t.channel, t.thread_url, t.thread_ts, \
      t.source_url, t.site_name, t.author, t.published_at, t.description, t.selection, \
      (SELECT COUNT(*) FROM capture_attachments a WHERE a.capture_id = t.id) AS attachment_count";
 
@@ -124,10 +118,6 @@ fn row_to_capture(row: &sqlx::sqlite::SqliteRow) -> Capture {
         updated_at: row.get("updated_at"),
         exported_at: row.get("exported_at"),
         attachment_count: row.get("attachment_count"),
-        workspace: row.get("workspace"),
-        channel: row.get("channel"),
-        thread_url: row.get("thread_url"),
-        thread_ts: row.get("thread_ts"),
         source_url: row.get("source_url"),
         site_name: row.get("site_name"),
         author: row.get("author"),
@@ -143,7 +133,7 @@ fn is_safe_id(id: &str) -> bool {
     !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
-/// `<app_data>/<kind dir>/<id>` (e.g. `slack-threads/<id>`, `web-pages/<id>`).
+/// `<app_data>/<kind dir>/<id>` (e.g. `web-pages/<id>`).
 fn capture_dir(app_data: &Path, kind: CaptureKind, id: &str) -> PathBuf {
     app_data.join(kind.dir_name()).join(id)
 }
@@ -158,8 +148,7 @@ fn not_found(id: &str) -> String {
 
 /// Find the row a payload should update. Returns `(id, title, title_custom)`.
 ///
-/// - slack: same non-empty `thread_url`, or else same (`channel`, `thread_ts`).
-/// - web: same `url_key` among full-page (`selection = 0`) web rows; when
+/// Same `url_key` among full-page (`selection = 0`) web rows; when
 ///   several share the key (possible after `X-Devdy-Mode: new`), the most
 ///   recently updated one is the target. A
 ///   selection capture, `X-Devdy-Mode: new`, or a missing URL never dedups.
@@ -169,29 +158,6 @@ async fn find_existing(
     force_new: bool,
 ) -> Result<Option<(String, String, i64)>, sqlx::Error> {
     match t.kind {
-        CaptureKind::Slack => {
-            if let Some(url) = t.thread_url.as_deref() {
-                return sqlx::query_as(
-                    "SELECT id, title, title_custom FROM captures \
-                     WHERE kind = 'slack' AND thread_url = ? ORDER BY created_at ASC LIMIT 1",
-                )
-                .bind(url)
-                .fetch_optional(db)
-                .await;
-            }
-            if let (Some(ch), Some(ts)) = (t.channel.as_deref(), t.thread_ts.as_deref()) {
-                return sqlx::query_as(
-                    "SELECT id, title, title_custom FROM captures \
-                     WHERE kind = 'slack' AND channel = ? AND thread_ts = ? \
-                     ORDER BY created_at ASC LIMIT 1",
-                )
-                .bind(ch)
-                .bind(ts)
-                .fetch_optional(db)
-                .await;
-            }
-            Ok(None)
-        }
         CaptureKind::Web => {
             if force_new || t.selection {
                 return Ok(None);
@@ -307,9 +273,8 @@ pub async fn ingest(
                 sqlx::query(
                     "INSERT INTO captures (id, kind, title, content, title_custom, project_id, \
                      position, created_at, updated_at, exported_at, \
-                     workspace, channel, thread_url, thread_ts, \
                      source_url, url_key, site_name, author, published_at, description, selection) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .bind(&id)
                 .bind(kind.as_str())
@@ -321,10 +286,6 @@ pub async fn ingest(
                 .bind(&now)
                 .bind(&now)
                 .bind(&p.exported_at)
-                .bind(&p.workspace)
-                .bind(&p.channel)
-                .bind(&p.thread_url)
-                .bind(&p.thread_ts)
                 .bind(&p.source_url)
                 .bind(&p.url_key)
                 .bind(&p.site_name)
@@ -340,7 +301,6 @@ pub async fn ingest(
                 sqlx::query(
                     "UPDATE captures SET title = ?, content = ?, title_custom = ?, \
                      project_id = COALESCE(?, project_id), updated_at = ?, exported_at = ?, \
-                     workspace = ?, channel = ?, thread_url = ?, thread_ts = ?, \
                      source_url = ?, url_key = ?, site_name = ?, author = ?, published_at = ?, \
                      description = ?, selection = ? WHERE id = ?",
                 )
@@ -350,10 +310,6 @@ pub async fn ingest(
                 .bind(&project_override)
                 .bind(&now)
                 .bind(&p.exported_at)
-                .bind(&p.workspace)
-                .bind(&p.channel)
-                .bind(&p.thread_url)
-                .bind(&p.thread_ts)
                 .bind(&p.source_url)
                 .bind(&p.url_key)
                 .bind(&p.site_name)
@@ -677,7 +633,7 @@ mod tests {
             .await
             .unwrap();
         let dir = std::env::temp_dir().join(format!(
-            "devdy-slack-{}-{}-{}",
+            "devdy-captures-{}-{}-{}",
             label,
             std::process::id(),
             Uuid::new_v4()
@@ -686,10 +642,11 @@ mod tests {
         (pool, dir)
     }
 
-    const MD_URL: &str = "---\nchannel: \"#dev\"\nthread_url: \"https://x.slack.com/archives/C1/p1\"\n---\n# First\nbody";
+    const MD_URL: &str =
+        "---\nsite_name: \"Dev\"\nurl: \"https://example.com/p1\"\n---\n# First\nbody";
 
     #[tokio::test]
-    async fn create_then_update_by_thread_url_replaces_attachments() {
+    async fn create_then_update_by_url_replaces_attachments() {
         let (db, app_data) = setup("upsert").await;
         let z1 = make_zip(&[
             ("t.md", MD_URL.as_bytes()),
@@ -699,7 +656,7 @@ mod tests {
         let r1 = ingest(
             &db,
             &app_data,
-            parse_zip(CaptureKind::Slack, &z1).unwrap(),
+            parse_zip(CaptureKind::Web, &z1).unwrap(),
             Overrides::default(),
         )
         .await
@@ -714,9 +671,9 @@ mod tests {
         }
         assert_eq!(d1.attachments[0].mime.as_deref(), Some("image/png"));
 
-        // Link to a project, reposition, then re-post the same thread_url.
+        // Link to a project, reposition, then re-post the same url.
         set_project(&db, &r1.id, Some("p1".into())).await.unwrap();
-        reorder(&db, &[r1.id.clone()]).await.unwrap();
+        reorder(&db, std::slice::from_ref(&r1.id)).await.unwrap();
         let z2 = make_zip(&[
             ("t.md", MD_URL.replace("First", "Second").as_bytes()),
             ("log.txt", b"l"),
@@ -724,7 +681,7 @@ mod tests {
         let r2 = ingest(
             &db,
             &app_data,
-            parse_zip(CaptureKind::Slack, &z2).unwrap(),
+            parse_zip(CaptureKind::Web, &z2).unwrap(),
             Overrides::default(),
         )
         .await
@@ -741,14 +698,14 @@ mod tests {
         assert_eq!(d2.attachments.len(), 1);
         assert_eq!(d2.attachments[0].name, "log.txt");
         let files: Vec<_> =
-            std::fs::read_dir(app_data.join("slack-threads").join(&r1.id).join("files"))
+            std::fs::read_dir(app_data.join("web-pages").join(&r1.id).join("files"))
                 .unwrap()
                 .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
                 .collect();
         assert_eq!(files, vec!["log.txt"]);
         // No stale staging dirs left behind.
         assert_eq!(
-            std::fs::read_dir(app_data.join("slack-threads").join(&r1.id))
+            std::fs::read_dir(app_data.join("web-pages").join(&r1.id))
                 .unwrap()
                 .count(),
             1
@@ -758,13 +715,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dedup_by_channel_and_ts_and_new_rows_go_on_top() {
+    async fn dedup_by_url_and_new_rows_go_on_top() {
         let (db, app_data) = setup("dedup").await;
-        let md = "---\nchannel: general\nthread_ts: \"1.2\"\n---\nhello";
+        let md = "---\nurl: \"https://example.com/general\"\n---\nhello";
         let a = ingest(
             &db,
             &app_data,
-            parse_markdown(CaptureKind::Slack, md.as_bytes()).unwrap(),
+            parse_markdown(CaptureKind::Web, md.as_bytes()).unwrap(),
             Overrides::default(),
         )
         .await
@@ -772,7 +729,7 @@ mod tests {
         let b = ingest(
             &db,
             &app_data,
-            parse_markdown(CaptureKind::Slack, md.as_bytes()).unwrap(),
+            parse_markdown(CaptureKind::Web, md.as_bytes()).unwrap(),
             Overrides::default(),
         )
         .await
@@ -783,7 +740,7 @@ mod tests {
         let c = ingest(
             &db,
             &app_data,
-            parse_markdown(CaptureKind::Slack, b"plain").unwrap(),
+            parse_markdown(CaptureKind::Web, b"plain").unwrap(),
             Overrides::default(),
         )
         .await
@@ -791,7 +748,7 @@ mod tests {
         let d = ingest(
             &db,
             &app_data,
-            parse_markdown(CaptureKind::Slack, b"plain").unwrap(),
+            parse_markdown(CaptureKind::Web, b"plain").unwrap(),
             Overrides::default(),
         )
         .await
@@ -813,7 +770,7 @@ mod tests {
         let r = ingest(
             &db,
             &app_data,
-            parse_markdown(CaptureKind::Slack, b"# body title").unwrap(),
+            parse_markdown(CaptureKind::Web, b"# body title").unwrap(),
             Overrides {
                 project_id: Some("p1".into()),
                 title: Some("Header title".into()),
@@ -829,7 +786,7 @@ mod tests {
         let err = ingest(
             &db,
             &app_data,
-            parse_markdown(CaptureKind::Slack, b"x").unwrap(),
+            parse_markdown(CaptureKind::Web, b"x").unwrap(),
             Overrides {
                 project_id: Some("nope".into()),
                 title: None,
@@ -845,7 +802,7 @@ mod tests {
     #[tokio::test]
     async fn renamed_title_survives_reexport_unless_header_overrides() {
         let (db, app_data) = setup("rename").await;
-        let md = || parse_markdown(CaptureKind::Slack, MD_URL.as_bytes()).unwrap();
+        let md = || parse_markdown(CaptureKind::Web, MD_URL.as_bytes()).unwrap();
         let r = ingest(&db, &app_data, md(), Overrides::default())
             .await
             .unwrap();
@@ -866,7 +823,7 @@ mod tests {
         assert_eq!(t.title, "My name");
         assert!(t.title_custom);
 
-        // Re-export of the same thread_url keeps the user's title.
+        // Re-export of the same url keeps the user's title.
         let again = ingest(&db, &app_data, md(), Overrides::default())
             .await
             .unwrap();
@@ -896,7 +853,7 @@ mod tests {
         let n = ingest(
             &db,
             &app_data,
-            parse_markdown(CaptureKind::Slack, b"other").unwrap(),
+            parse_markdown(CaptureKind::Web, b"other").unwrap(),
             o,
         )
         .await
@@ -911,7 +868,7 @@ mod tests {
         let r = ingest(
             &db,
             &app_data,
-            parse_markdown(CaptureKind::Slack, b"# Same").unwrap(),
+            parse_markdown(CaptureKind::Web, b"# Same").unwrap(),
             Overrides::default(),
         )
         .await
@@ -933,7 +890,7 @@ mod tests {
     /// 0040 applied on a DB that already holds 0038/0039 data (incl.
     /// attachments) through the real sqlx runner, exactly like a dev DB.
     #[tokio::test]
-    async fn migration_0040_keeps_existing_slack_data_and_fk() {
+    async fn migration_0040_keeps_existing_data_and_fk() {
         use sqlx::migrate::Migrator;
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -972,20 +929,30 @@ mod tests {
 
         full.run(&pool).await.unwrap();
 
-        let c = get_capture(&pool, "s1").await.unwrap();
-        assert_eq!(c.kind, CaptureKind::Slack);
-        assert_eq!(c.title, "Old");
-        assert!(c.title_custom);
-        assert_eq!(c.channel.as_deref(), Some("#dev"));
-        assert_eq!(c.position, -3);
-        assert_eq!(c.attachment_count, 1);
-        assert!(!c.selection);
-        let d = get_detail(&pool, Path::new("/data"), "s1").await.unwrap();
-        assert_eq!(d.attachments[0].capture_id, "s1");
+        // 0041 moved the Slack row (and its attachment) out of the captures core.
+        assert!(get_capture(&pool, "s1").await.is_err());
+        let row: (String, i64, i64, Option<String>, i64, String) = sqlx::query_as(
+            "SELECT title, title_custom, position, channel, legacy, fetch_status \
+             FROM slack_threads WHERE id = 's1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(
-            d.attachments[0].file_path,
-            "/data/slack-threads/s1/files/a.png"
+            row,
+            ("Old".into(), 1, -3, Some("dev".into()), 1, "pending".into())
         );
+        let file: String =
+            sqlx::query_scalar("SELECT file_path FROM slack_files WHERE thread_id = 's1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(file, "slack-threads/s1/files/a.png");
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM capture_attachments")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 0);
 
         // The attachments FK now references `captures`.
         let fk_table: String = sqlx::query_scalar(
@@ -1007,7 +974,7 @@ mod tests {
         );
         assert!(sql.contains("capture_id"), "{}", sql);
         let old: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('slack_threads', 'slack_thread_attachments')",
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'slack_thread_attachments'",
         )
         .fetch_one(&pool)
         .await
@@ -1123,31 +1090,10 @@ mod tests {
         .unwrap();
         assert_eq!(other.status, IngestStatus::Created);
 
-        // Kinds never dedup against each other: a slack thread with the same
-        // URL as thread_url is a separate row, and lists are per kind.
-        let slack_md = format!("---\nthread_url: \"{}\"\n---\nx", url);
-        let sl = ingest(
-            &db,
-            &app_data,
-            parse_markdown(CaptureKind::Slack, slack_md.as_bytes()).unwrap(),
-            Overrides::default(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(sl.status, IngestStatus::Created);
-        assert_eq!(
-            list(&db, Some(CaptureKind::Slack), None)
-                .await
-                .unwrap()
-                .len(),
-            1
-        );
         let webs = list(&db, Some(CaptureKind::Web), None).await.unwrap();
         assert_eq!(webs.len(), 7);
-        // Per-kind positions: the slack row sits at -1 like a fresh list.
-        assert_eq!(get_capture(&db, &sl.id).await.unwrap().position, -1);
         assert_eq!(webs[0].id, other.id);
-        assert_eq!(list(&db, None, None).await.unwrap().len(), 8);
+        assert_eq!(list(&db, None, None).await.unwrap().len(), 7);
         let _ = std::fs::remove_dir_all(&app_data);
     }
 
@@ -1208,7 +1154,6 @@ mod tests {
             .join("x.png");
         assert_eq!(d.attachments[0].file_path, expected.to_string_lossy());
         assert!(expected.exists());
-        assert!(!app_data.join("slack-threads").join(&r.id).exists());
         let deleted = delete(&db, &app_data, &[r.id.clone(), "missing".into()])
             .await
             .unwrap();
@@ -1224,7 +1169,7 @@ mod tests {
         let r = ingest(
             &db,
             &app_data,
-            parse_zip(CaptureKind::Slack, &z).unwrap(),
+            parse_zip(CaptureKind::Web, &z).unwrap(),
             Overrides::default(),
         )
         .await
@@ -1238,9 +1183,11 @@ mod tests {
             .await
             .is_err());
 
-        let dir = app_data.join("slack-threads").join(&r.id);
+        let dir = app_data.join("web-pages").join(&r.id);
         assert!(dir.exists());
-        delete(&db, &app_data, &[r.id.clone()]).await.unwrap();
+        delete(&db, &app_data, std::slice::from_ref(&r.id))
+            .await
+            .unwrap();
         assert!(!dir.exists());
         assert!(list(&db, None, None).await.unwrap().is_empty());
         let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM capture_attachments")

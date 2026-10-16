@@ -1,0 +1,137 @@
+{
+  "window": {
+    "title": "Thread Slack",
+    "titleWith": "Slack: {name}"
+  },
+  "nav": "Thread Slack",
+  "untitled": "Thread Slack",
+  "sidebar": {
+    "search": "Tìm thread…",
+    "add": "Thêm thread",
+    "other": "Khác",
+    "allProjects": "Tất cả project",
+    "noProject": "Không project",
+    "empty": "Chưa có thread Slack nào.",
+    "emptyHint": "Dán link thread Slack bằng nút “Thêm thread”, hoặc gửi từ Chrome extension.",
+    "noResults": "Không có thread nào khớp.",
+    "newCount": "{count} tin mới",
+    "warning": "Có cảnh báo — mở thread để xem",
+    "collapse": "Thu gọn",
+    "expand": "Mở rộng"
+  },
+  "status": {
+    "pending": "Đang chờ",
+    "fetching": "Đang lấy",
+    "translating": "Đang dịch",
+    "ready": "Sẵn sàng",
+    "error": "Lỗi"
+  },
+  "phase": {
+    "queued": "Đang chờ trong hàng đợi",
+    "auth": "Đang kiểm tra token Slack",
+    "messages": "Đang lấy tin nhắn",
+    "users": "Đang lấy thông tin người dùng",
+    "files": "Đang tải tệp",
+    "translate": "Đang dịch",
+    "done": "Hoàn tất"
+  },
+  "errors": {
+    "invalid_link": "Link không hợp lệ. Cần dạng https://<workspace>.slack.com/archives/<kênh>/p<16 chữ số>.",
+    "dm_unsupported": "Không hỗ trợ thread trong tin nhắn trực tiếp (DM) — token không có quyền đọc DM.",
+    "no_token": "Chưa có token Slack. Hãy thêm MCP server Slack có biến SLACK_MCP_XOXP_TOKEN trong Cài đặt → MCP.",
+    "no_token_for_workspace": "Không có token Slack nào thuộc workspace của link này.",
+    "invalid_auth": "Token Slack không hợp lệ hoặc đã hết hạn. Hãy cập nhật token trong Cài đặt → MCP.",
+    "missing_scope": "Token Slack thiếu quyền ({detail}). Cần channels:history, groups:history.",
+    "channel_not_found": "Không tìm thấy kênh — token không thuộc workspace này hoặc không có quyền vào kênh.",
+    "not_in_channel": "Tài khoản của token chưa tham gia kênh này.",
+    "thread_not_found": "Không tìm thấy thread — tin nhắn có thể đã bị xoá.",
+    "rate_limited": "Slack đang giới hạn tần suất gọi API. Hãy thử lại sau ít phút.",
+    "network": "Lỗi mạng khi gọi Slack. Hãy kiểm tra kết nối rồi thử lại.",
+    "translate_failed": "Không dịch được thread (engine dịch không khởi động hoặc mọi lô đều lỗi). Bản gốc vẫn xem được.",
+    "legacy_no_url": "Bản lưu cũ không có link thread hợp lệ nên không lấy lại được từ Slack.",
+    "slack_error": "Slack trả về lỗi: {detail}",
+    "internal": "Lỗi nội bộ (cơ sở dữ liệu / ổ đĩa): {detail}",
+    "invalid_project": "Project không tồn tại.",
+    "invalid_title": "Tiêu đề phải từ 1 đến 200 ký tự.",
+    "not_found": "Thread này không còn tồn tại.",
+    "unknown": "Lỗi: {detail}"
+  },
+  "warnings": {
+    "files_scope": "Token thiếu quyền files:read nên không tải được tệp; bấm vào tệp để mở trên Slack.",
+    "files_partial": "Một số tệp không tải được; bấm vào tệp để mở trên Slack.",
+    "users_scope": "Token thiếu quyền users:read nên một số tên người dùng hiển thị dạng mã.",
+    "channel_name_unavailable": "Token thiếu quyền channels:read / groups:read nên không lấy được tên kênh.",
+    "translate_partial": "Một số tin nhắn chưa dịch được — đang hiển thị bản gốc.",
+    "truncated": "Thread quá dài: chỉ lấy 1000 tin nhắn đầu tiên."
+  },
+  "header": {
+    "showOriginal": "Xem bản gốc",
+    "refresh": "Làm mới",
+    "openInSlack": "Mở trên Slack",
+    "renameHint": "Nhấp hoặc nhấn F2 để đổi tên",
+    "renamePlaceholder": "Tiêu đề thread…",
+    "renamedHint": "Đã đổi tên — giữ nguyên khi làm mới",
+    "fetchedAt": "Lấy lúc {date}",
+    "notFetched": "Chưa lấy từ Slack"
+  },
+  "banner": {
+    "retry": "Thử lại",
+    "openMcp": "Mở cài đặt MCP"
+  },
+  "message": {
+    "edited": "(đã chỉnh sửa)",
+    "untranslated": "Chưa dịch",
+    "translating": "Đang dịch…",
+    "translateFailed": "Không dịch được",
+    "showOriginal": "Xem bản gốc",
+    "showTranslation": "Xem bản dịch",
+    "copy": "Sao chép",
+    "copied": "Đã sao chép",
+    "app": "APP",
+    "deleted": "Tin nhắn này đã bị xoá.",
+    "newDivider": "Tin mới"
+  },
+  "replies": "{n} phản hồi",
+  "file": {
+    "open": "Mở {name} bằng ứng dụng mặc định",
+    "openInSlack": "Mở trên Slack",
+    "tooLarge": "Tệp quá lớn nên không tải về",
+    "unavailable": "Không tải được tệp này",
+    "error": "Tải tệp thất bại",
+    "pending": "Chưa tải xong",
+    "openFailed": "Không mở được tệp: {error}"
+  },
+  "add": {
+    "title": "Thêm thread Slack",
+    "urlLabel": "Link thread",
+    "urlPlaceholder": "https://<workspace>.slack.com/archives/C…/p…",
+    "urlHint": "Trên Slack: chuột phải tin nhắn → Sao chép liên kết.",
+    "project": "Project",
+    "submit": "Thêm",
+    "noToken": "Chưa có token Slack (MCP server có biến SLACK_MCP_XOXP_TOKEN). Vẫn có thể thêm thread, nhưng chưa lấy được nội dung.",
+    "existing": "Thread đã có — đang làm mới",
+    "added": "Đã thêm thread, đang lấy từ Slack…"
+  },
+  "legacy": {
+    "badge": "Cũ",
+    "banner": "Bản lưu cũ — chưa lấy lại được từ Slack."
+  },
+  "lightbox": {
+    "openDefault": "Mở bằng ứng dụng mặc định",
+    "close": "Đóng (Esc)",
+    "prev": "Ảnh trước (←)",
+    "next": "Ảnh sau (→)"
+  },
+  "picker": {
+    "includeOriginal": "Kèm bản gốc",
+    "truncated": "Thread dài nên đã bị cắt bớt khi chèn.",
+    "failed": "Không chèn được thread Slack: {error}"
+  },
+  "confirm": {
+    "deleteTitle": "Xoá thread Slack",
+    "deleteMessage": "Xoá thread này cùng tin nhắn đã dịch và các tệp đã tải về?"
+  },
+  "renameFailed": "Không đổi tên được: {error}",
+  "noSelection": "Chọn một thread ở bên trái để đọc.",
+  "empty": "Thread chưa có tin nhắn nào."
+}

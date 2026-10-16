@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window and pop-out (file viewer + permission + todo/note item + todo/note list + gantt + mascot) windows",
+  "description": "Capability for the main window and pop-out (file viewer + permission + todo/note item + todo/note list + gantt + mascot + Slack threads) windows",
   "windows": [
     "main",
     "fileviewer-*",
@@ -12,7 +12,8 @@
     "gantt",
     "mascot",
     "session-*",
-    "capture-*"
+    "capture-*",
+    "slack-threads"
   ],
   "permissions": [
     "core:default",

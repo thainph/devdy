@@ -1,23 +1,4 @@
 {
-  "slack": {
-    "tab": "Slack",
-    "nav": "Slack threads",
-    "untitled": "Slack thread",
-    "windowTitle": "Slack: {name}",
-    "missing": "This Slack thread no longer exists.",
-    "importTitle": "Import an exported thread (.zip / .md)",
-    "importFilter": "Slack thread export",
-    "empty": "No Slack threads yet.",
-    "emptyHint": "Send one from the Chrome extension, or import an exported .zip / .md file.",
-    "select": "Select threads",
-    "renamePlaceholder": "Thread title…",
-    "confirm": {
-      "deleteTitle": "Delete Slack thread",
-      "deleteMessage": "Remove this thread and its attachments?",
-      "deleteManyTitle": "Delete Slack threads",
-      "deleteManyMessage": "Remove {count} thread(s) and their attachments?"
-    }
-  },
   "web": {
     "tab": "Web",
     "nav": "Web pages",
@@ -37,12 +18,10 @@
       "deleteManyMessage": "Remove {count} page(s) and their attachments?"
     }
   },
-  "openInSlack": "Open in Slack",
   "openOriginal": "Open original",
   "excerpt": "Excerpt",
   "excerptHint": "Only the selected part of the page was captured",
   "byAuthor": "by {author}",
-  "exportedAt": "Exported {date}",
   "capturedAt": "Captured {date}",
   "publishedAt": "Published {date}",
   "receivedAt": "Received {date}",
@@ -75,7 +54,7 @@
     "all": "All",
     "slack": "Slack",
     "web": "Web",
-    "empty": "Nothing to insert yet: send a Slack thread or web page from the Chrome extension, or write a note or todo.",
+    "empty": "Nothing to insert yet: add a Slack thread by link, send a web page from the Chrome extension, or write a note or todo.",
     "note": "Note",
     "todo": "Todo",
     "showDone": "Show done todos"

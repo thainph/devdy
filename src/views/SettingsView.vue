@@ -1692,7 +1692,7 @@ watch(() => settings.value.language, (v) => {
               <span>🖥️ vps_list / vps_run</span>
               <span>🧩 skills_list / read / create / update / delete</span>
               <span>📏 rules_list / read / create / update / delete</span>
-              <span>💬 slack_threads_list / read / search / rename / update / append / set_project / reorder / delete / read_attachment</span>
+              <span>💬 slack_threads_list / read / search / rename / set_project / delete</span>
               <span>🌐 web_pages_list / read / search / rename / update / append / set_project / reorder / delete / read_attachment</span>
             </div>
           </div>
