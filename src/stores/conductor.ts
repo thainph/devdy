@@ -18,6 +18,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from '@/lib/tauri'
+import type { ImageAttachment } from '@/lib/streamEvents'
 
 export interface ConductorStarted {
   conductor_run_id: string
@@ -68,35 +69,32 @@ export const useConductorStore = defineStore('conductor', () => {
   // by a newer one while awaiting, and bail without clobbering the newer state.
   let selectToken = 0
 
-  /** Promote an existing fetched session run into a conductor and launch it. */
+  /** Launch a fetched run (fresh session, issue or PR) as a conductor on either
+   * engine. Every session is a conductor, so this is the only first-run path.
+   * `goal` is the first message; an issue/PR run may pass '' to use its default
+   * analyze/review prompt. `permissionModeOverride` is required so callers
+   * always pass the session's effective mode (see resolvePermissionMode). */
   async function start(
     runId: string,
     goal: string,
-    opts?: { maxWorkers?: number; modelOverride?: string },
+    opts: {
+      permissionModeOverride: string
+      maxWorkers?: number
+      engineOverride?: string
+      modelOverride?: string
+      images?: ImageAttachment[]
+      overrideBudget?: boolean
+    },
   ): Promise<ConductorStarted> {
     return invoke<ConductorStarted>('start_conductor', {
       runId,
-      goal,
-      maxWorkers: opts?.maxWorkers ?? null,
-      modelOverride: opts?.modelOverride ?? null,
-    })
-  }
-
-  /**
-   * Convert an already-started, now-stopped normal session into a conductor.
-   * This is a pure in-place upgrade: the backend marks the role and creates the
-   * conductor session row + token, and nothing else — it does NOT resume the
-   * session or send any turn, so it consumes no tokens. The conductor tools are
-   * injected the next time the user resumes the session with their own prompt.
-   * Only works on a session that has run before and is not currently running.
-   */
-  async function convertToConductor(
-    runId: string,
-    opts?: { maxWorkers?: number },
-  ): Promise<ConductorStarted> {
-    return invoke<ConductorStarted>('convert_run_to_conductor', {
-      runId,
-      maxWorkers: opts?.maxWorkers ?? null,
+      goal: goal.trim() ? goal : null,
+      maxWorkers: opts.maxWorkers ?? null,
+      engineOverride: opts.engineOverride ?? null,
+      modelOverride: opts.modelOverride ?? null,
+      permissionModeOverride: opts.permissionModeOverride,
+      images: opts.images?.length ? opts.images : null,
+      overrideBudget: opts.overrideBudget ?? false,
     })
   }
 
@@ -185,5 +183,5 @@ export const useConductorStore = defineStore('conductor', () => {
     }
   }
 
-  return { selectedId, detail, start, convertToConductor, select, refreshDetail, setMaxWorkers, stopPolling }
+  return { selectedId, detail, start, select, refreshDetail, setMaxWorkers, stopPolling }
 })

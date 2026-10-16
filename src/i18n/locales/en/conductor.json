@@ -1,5 +1,5 @@
 {
-  "title": "Conductor",
+  "title": "Session",
   "status": {
     "idle": "Idle",
     "running": "Running",
@@ -11,41 +11,42 @@
   "workerCount": "{n}/{max} workers",
   "workerCountShort": "{n} workers",
   "goalLabel": "Goal",
-  "goalPlaceholder": "Describe what you want done. The conductor will split it into roles and spawn workers to do the work.",
+  "goalPlaceholder": "Describe what you want done. The session will split it into roles and spawn workers to do the work.",
   "maxWorkersLabel": "Max workers",
   "editMaxWorkers": "Change the max worker count (1–100). Applies to the next spawn.",
-  "preLaunchHint": "Set the max workers above, then send your goal in the chat box to launch the conductor. Workers will appear here once spawned.",
+  "preLaunchHint": "Set the max workers above, then send your goal in the chat box to launch the session. Workers will appear here once spawned.",
   "setMaxWorkersFailed": "Couldn't update the max worker count: {error}",
-  "errGoalRequired": "Please enter a goal for the conductor.",
-  "conductorStream": "Conductor",
-  "streamEmpty": "Waiting for the conductor to start orchestrating…",
+  "errGoalRequired": "Please enter a goal for the session.",
+  "conductorStream": "Session",
+  "streamEmpty": "Waiting for the session to start orchestrating…",
   "workers": "Workers",
   "noWorkers": "No workers spawned yet.",
   "needsPermission": "Needs permission",
-  "backToConductor": "Back to conductor",
-  "modeToggle": "Conductor",
-  "newConductor": "New conductor",
-  "newConductorHint": "Start an orchestrator session: your first message is the goal, the conductor splits it into roles and spawns workers.",
+  "backToConductor": "Back to session",
+  "modeToggle": "Session",
   "collapse": "Collapse",
   "expand": "Expand",
   "permissionFrom": "Permission request — {label}",
   "timeline": "Timeline",
   "noEvents": "No control-plane events yet.",
-  "emptyState": "Start a new conductor session to orchestrate multiple agents from a single goal.",
+  "emptyState": "Start a new session to orchestrate multiple agents from a single goal.",
   "untitled": "(no goal)",
   "historyTitle": "Sessions",
   "searchPlaceholder": "Search sessions…",
-  "noHistory": "No conductor sessions yet.",
+  "noHistory": "No sessions yet.",
   "noMatching": "No matching sessions.",
   "action": {
     "new": "New",
     "launch": "Launch",
-    "openConductor": "Open conductor"
+    "openConductor": "Open session"
   },
   "event": {
     "spawn": "Spawned {role} ({id})",
     "send": "Follow-up to {id}",
     "cancel": "Cancelled {id}",
     "permission": "Permission {decision}: {tool}"
-  }
+  },
+  "justStarted": "<1m",
+  "runningSince": "Running since {time}",
+  "resizeTimeline": "Drag to resize the timeline"
 }

@@ -7,6 +7,9 @@ import { openUrl } from '@tauri-apps/plugin-opener'
 import { usePrInboxStore, prKey, type PrInboxItem } from '@/stores/prInbox'
 import { useRunsStore } from '@/stores/runs'
 import { useLiveRunsStore } from '@/stores/liveRuns'
+import { useConductorStore } from '@/stores/conductor'
+import { useAppSettingsStore } from '@/stores/appSettings'
+import { resolvePermissionMode } from '@/lib/engineOptions'
 import { Button, Card, Badge, StatusBadge, Skeleton } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import { GitPullRequest, RefreshCw, Sparkles, FolderPlus, ExternalLink, User, Eye, AlertTriangle } from 'lucide-vue-next'
@@ -20,6 +23,8 @@ const router = useRouter()
 const store = usePrInboxStore()
 const runsStore = useRunsStore()
 const live = useLiveRunsStore()
+const conductorStore = useConductorStore()
+const appSettings = useAppSettingsStore()
 const { toast } = useToast()
 
 onMounted(() => {
@@ -67,7 +72,12 @@ async function handleReview(item: PrInboxItem) {
     // Allow reviewing a PR even when no linked issue can be resolved — the PR
     // inbox should run the review regardless of issue linkage.
     const run = await runsStore.fetchPr(item.project_id, item.repo_id, item.number, undefined, true)
-    await runsStore.startRun(run.id)
+    // Every session is a conductor: launch it like RunView's Issue/PR Run button
+    // — empty goal (default review prompt, labelled "PR #N"), default worker cap,
+    // and the effective permission mode (this screen has no per-run pick).
+    await conductorStore.start(run.id, '', {
+      permissionModeOverride: resolvePermissionMode(null, appSettings.settings?.default_permission_mode),
+    })
     // Link immediately so a second click resumes instead of duplicating. The run
     // streams in the background (liveRuns / ActiveRunsDock) — stay on this screen.
     store.linkRun(key, run.id, 'running')

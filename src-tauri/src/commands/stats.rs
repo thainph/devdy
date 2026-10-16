@@ -5,7 +5,7 @@
 //! project, and model. `backfill_usage` reconstructs the ledger from existing
 //! run logs. `reset_usage_stats` wipes all runs and the ledger to start over.
 
-use crate::commands::runs::delete_run_inner;
+use crate::commands::runs::delete_run_tree;
 use crate::db::Db;
 use crate::runs::sidecar::{
     apply_claude_config_dir, augment_command_path, detach_process_group, insert_usage_from_result,
@@ -17,7 +17,7 @@ use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{QueryBuilder, Row, Sqlite};
 use std::collections::{HashMap, HashSet};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::time;
@@ -354,14 +354,20 @@ pub async fn reset_usage_stats(
         .await
         .map_err(|e| e.to_string())?;
 
+    let conductor = app.try_state::<crate::conductor::ConductorState>();
     let mut runs_deleted = 0u32;
     for row in &rows {
         let id: String = row.get("id");
-        if delete_run_inner(db.inner(), registry.inner(), &id)
-            .await
-            .is_ok()
+        // A worker already removed with its session simply fails to load here.
+        if let Ok(n) = delete_run_tree(
+            db.inner(),
+            registry.inner(),
+            conductor.as_ref().map(|c| c.inner()),
+            &id,
+        )
+        .await
         {
-            runs_deleted += 1;
+            runs_deleted += n;
         }
     }
 
