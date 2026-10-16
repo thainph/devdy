@@ -38,6 +38,21 @@ const CODEX_BIN = process.env.DEVDY_CODEX_PATH || 'codex'
 const RESUME_THREAD = process.env.DEVDY_RESUME_SESSION || null
 const PERMISSION_MODE = process.env.DEVDY_PERMISSION_MODE || 'default'
 const MODEL = process.env.DEVDY_CODEX_MODEL || null
+// Extra system framing (session orchestration prompt / a worker's role
+// instruction) for a NEW thread: sent as `developerInstructions` on
+// thread/start, after which it lives in the thread itself.
+const DEVELOPER_INSTRUCTIONS = process.env.DEVDY_CODEX_DEVELOPER_INSTRUCTIONS || null
+// One-time framing seed for a RESUMED thread that never got it at start. Codex
+// ignores developerInstructions on thread/resume, so the broker hands us a
+// ready-made <session-framing> block to prepend to this sidecar's first turn.
+let SEED_FRAMING = process.env.DEVDY_CODEX_SEED_FRAMING || null
+// Per-call MCP tool timeout. The broker sets MCP_TOOL_TIMEOUT (ms) above the
+// conductor's longest `session_wait`; Codex's own default (~60s) would cut a
+// blocking wait short. Applied to every server, matching Claude's global env.
+const MCP_TOOL_TIMEOUT_SEC = (() => {
+  const ms = Number(process.env.MCP_TOOL_TIMEOUT)
+  return Number.isFinite(ms) && ms > 0 ? Math.ceil(ms / 1000) : null
+})()
 
 function out(obj) { process.stdout.write(JSON.stringify(obj) + '\n') }
 function ctrl(type, extra = {}) { out({ type, ...extra }) }
@@ -156,6 +171,8 @@ function buildMcpConfig() {
   // Keep the resolved secret bundle in the Node sidecar only; Codex receives the
   // specific config/env it needs below.
   delete env.DEVDY_CODEX_MCP
+  delete env.DEVDY_CODEX_DEVELOPER_INSTRUCTIONS
+  delete env.DEVDY_CODEX_SEED_FRAMING
   if (!raw) return { args: [], env }
   let servers
   try {
@@ -169,6 +186,16 @@ function buildMcpConfig() {
   for (const [name, cfg] of Object.entries(servers)) {
     const currentServerIndex = serverIndex++
     if (!cfg || typeof cfg !== 'object') continue
+    // Shared per-server knobs (only for transports we forward below).
+    const forwarded = (cfg.type === 'stdio' && cfg.command) ||
+      ((cfg.type === 'http' || cfg.type === 'streamable_http') && cfg.url)
+    if (forwarded) {
+      const timeoutSec = Number(cfg.tool_timeout_sec) > 0 ? Number(cfg.tool_timeout_sec) : MCP_TOOL_TIMEOUT_SEC
+      if (timeoutSec) args.push('-c', `mcp_servers.${name}.tool_timeout_sec=${timeoutSec}`)
+      if (typeof cfg.default_tools_approval_mode === 'string' && cfg.default_tools_approval_mode) {
+        args.push('-c', `mcp_servers.${name}.default_tools_approval_mode=${tomlString(cfg.default_tools_approval_mode)}`)
+      }
+    }
     if (cfg.type === 'stdio' && cfg.command) {
       args.push('-c', `mcp_servers.${name}.command=${tomlString(cfg.command)}`)
       if (Array.isArray(cfg.args) && cfg.args.length) {
@@ -686,6 +713,8 @@ async function bringUp() {
 
   const { approvalPolicy, sandbox } = policyFor(PERMISSION_MODE)
   if (RESUME_THREAD) {
+    // No developerInstructions here: Codex ignores them on resume (framing for a
+    // resumed thread arrives via SEED_FRAMING instead).
     const result = rpcResult(
       await request('thread/resume', { threadId: RESUME_THREAD }),
       'thread/resume',
@@ -695,9 +724,13 @@ async function bringUp() {
   } else {
     const startParams = { cwd: CWD, approvalPolicy, sandbox }
     if (MODEL) startParams.model = MODEL
+    if (DEVELOPER_INSTRUCTIONS) startParams.developerInstructions = DEVELOPER_INSTRUCTIONS
     const result = rpcResult(await request('thread/start', startParams), 'thread/start')
     threadId = result?.thread?.id || null
     modelName = result?.model || null
+    // The new thread carries the framing from now on; the broker persists this
+    // so a later resume doesn't seed it again.
+    if (threadId && DEVELOPER_INSTRUCTIONS) ctrl('_devdy_framing_seeded')
   }
 
   if (!threadId) throw new Error('Codex initialized without a thread id')
@@ -757,6 +790,11 @@ async function startTurn(text, images) {
   if (!threadId) { ctrl('_devdy_error', { error: 'no thread' }); return }
   turnStartedAt = Date.now()
   const input = []
+  // Prepend the one-time framing seed to the first turn of a resumed thread.
+  // Claimed up front so a second turn queued meanwhile can't seed it twice.
+  const seed = SEED_FRAMING
+  SEED_FRAMING = null
+  if (seed) text = text ? `${seed}\n\n${text}` : seed
   if (text) input.push({ type: 'text', text, text_elements: [] })
   if (Array.isArray(images)) {
     for (const img of images) {
@@ -780,6 +818,10 @@ async function startTurn(text, images) {
   })
   if (res?.error) {
     ctrl('_devdy_error', { error: `turn/start failed: ${res.error.message || JSON.stringify(res.error)}` })
+    if (seed) SEED_FRAMING = seed // not delivered — retry on the next turn
+  } else if (seed) {
+    // Accepted: the framing is now in the thread history. Seed only once.
+    ctrl('_devdy_framing_seeded')
   }
 }
 

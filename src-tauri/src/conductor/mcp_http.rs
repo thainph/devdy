@@ -97,7 +97,7 @@ async fn handle_post(
         None => {
             return (
                 StatusCode::UNAUTHORIZED,
-                Json(json!({ "error": "invalid or missing conductor token" })),
+                Json(json!({ "error": "invalid or missing session token" })),
             )
                 .into_response()
         }

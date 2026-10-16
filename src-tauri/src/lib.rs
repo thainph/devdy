@@ -272,6 +272,13 @@ pub fn run() {
                     // Restore ownership of any conductor sessions still running from
                     // before an app restart, then start the loopback MCP server.
                     let db_for_conductor = app_handle.state::<db::Db>().inner().clone();
+                    // Single session type: upgrade any legacy plain top-level run
+                    // to a conductor first (idempotent), so reconnect registers it.
+                    if let Err(e) =
+                        conductor::commands::migrate_legacy_sessions(&db_for_conductor).await
+                    {
+                        tracing::error!(event = "conductor_legacy_migration_failed", error = %e);
+                    }
                     conductor::commands::reconnect_running(&db_for_conductor, &conductor_state)
                         .await;
                     if let Err(e) =

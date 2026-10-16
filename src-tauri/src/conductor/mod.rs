@@ -22,11 +22,23 @@ use std::sync::{Arc, Mutex};
 /// System prompt appended to a conductor run, teaching it the control-plane
 /// tools and the loop to run. Kept deliberately short; the orchestration logic
 /// lives in the model, not in a hardcoded FE state machine.
-pub const CONDUCTOR_SYSTEM_PROMPT: &str = r#"You are the CONDUCTOR of a multi-agent session.
+pub const CONDUCTOR_SYSTEM_PROMPT: &str = r#"You are a normal coding assistant session that can ALSO delegate work to
+WORKER sessions when that genuinely helps.
 
-You do not do the implementation work yourself. Instead you break the goal into
-roles, spawn WORKER sessions to do the work, read their results, and iterate
-until the goal is met — asking the human only at meaningful checkpoints.
+Default: do the work yourself, directly. Answer questions, make small or
+single-step changes, investigate, read and edit code, run commands — exactly as
+you would without workers. Do NOT spawn a worker for a quick task, a question,
+or anything you can finish in a few steps; delegating that only adds latency
+and cost.
+
+Spawn workers only when it clearly pays off:
+- the task is large and splits into independent parts that can run in parallel;
+- you need a separate role with its own fresh context, e.g. an independent
+  reviewer/QA checking work it did not write;
+- a long-running side task should proceed while you keep working with the human.
+When you do delegate, break the work into clear roles, spawn the workers, read
+their results, and iterate until the goal is met — asking the human only at
+meaningful checkpoints. You may keep doing direct work yourself meanwhile.
 
 You control workers with these MCP tools (server `conductor`):
 - session_spawn(role_label, prompt, instruction?, engine?, model?, permission_mode?)
@@ -48,7 +60,7 @@ You control workers with these MCP tools (server `conductor`):
 - session_cancel(worker_id) -> stop a worker.
 
 Permissions: a worker that needs approval for a tool is answered by the human via
-the normal permission drawer (shown in the Conductor tab). You do not handle
+the normal permission drawer (shown in this session). You do not handle
 worker permissions yourself; if a worker is blocked waiting for approval it will
 show as still running until the human responds. session_list / session_poll /
 session_read / session_wait then add an `awaiting_permission` field (tools and
@@ -66,7 +78,7 @@ session_wait or relying on this auto-resume — a plain stop that does neither i
 broken promise. The auto-resume nudge covers every worker that finished, so when
 you are resumed, session_poll / session_list ALL your workers (not just one).
 
-Typical loop:
+Typical loop when you delegate:
 1) Decide the roles you need (e.g. an implementer + a reviewer). Spawn them.
 2) Either session_wait for them, or end your turn and wait for the auto-resume.
 3) On resume (or after session_wait), session_poll/session_list to find the idle
@@ -76,11 +88,91 @@ Typical loop:
 5) When the goal is met, write a concise final summary for the human.
 
 Rules:
+- Prefer doing it yourself; delegate only for the cases listed above.
 - Respect any max-worker limit; never spin up workers without bound.
 - Prefer running independent workers in parallel (spawn several, then wait once).
 - If a worker stalls (session_wait times out) inspect it with session_read and
   decide: send guidance, cancel and respawn, or escalate to the human.
 - Keep the human informed with short status lines between tool calls."#;
+
+/// Default concurrent-worker cap for a conductor that was never given one
+/// (fresh start without `max_workers`, or a legacy session auto-upgraded).
+pub const DEFAULT_MAX_WORKERS: usize = 10;
+
+/// Claude permission-rule pattern matching every tool of the built-in
+/// `conductor` MCP server. Auto-allowed for conductor runs that are NOT in
+/// `bypassPermissions`, so orchestration calls (session_poll, session_wait…)
+/// never raise a permission modal while file work stays gated.
+pub const CONDUCTOR_TOOLS_ALLOW: &str = "mcp__conductor";
+
+/// The full system framing a conductor run gets: the orchestration prompt plus
+/// its worker cap. Injected on first launch AND on every resume (neither the
+/// Claude SDK nor Codex persist an appended system prompt across a resume).
+pub fn conductor_framing(max_workers: usize) -> String {
+    format!(
+        "{}\n\nYour worker cap for this session is {} concurrent workers.",
+        CONDUCTOR_SYSTEM_PROMPT, max_workers
+    )
+}
+
+/// The extra system framing a run launches/resumes with: its persisted role
+/// instruction (workers) and/or the session framing (top-level runs), joined.
+/// `None` when the run has neither.
+pub fn run_framing(instruction: Option<&str>, launch: Option<&ConductorLaunch>) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(i) = instruction.map(str::trim).filter(|i| !i.is_empty()) {
+        parts.push(i.to_string());
+    }
+    if let Some(c) = launch {
+        parts.push(conductor_framing(c.max_workers));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
+}
+
+/// One-time framing seed for a resumed Codex thread that was never started with
+/// it. Codex ignores `developerInstructions` (and `config.developer_instructions`)
+/// on `thread/resume`, so the framing is prepended to that turn's prompt instead;
+/// once it is in the thread history it persists, so this is sent only while
+/// `runs.framing_seeded` is 0. Returns the block to prepend, or `None`.
+pub fn codex_resume_seed(framing: Option<&str>, already_seeded: bool) -> Option<String> {
+    if already_seeded {
+        return None;
+    }
+    let framing = framing.map(str::trim).filter(|f| !f.is_empty())?;
+    Some(format!(
+        "<session-framing>\nThe following are standing instructions for this whole session \
+(they apply to this and every later turn; do not reply to them directly):\n\n{}\n</session-framing>",
+        framing
+    ))
+}
+
+/// Remove a leading framing seed (see [`codex_resume_seed`]) from a user
+/// message read back from a Codex rollout, so a reloaded transcript shows only
+/// what the user typed. Text without a leading seed is returned unchanged.
+pub fn strip_session_framing(text: &str) -> &str {
+    const OPEN: &str = "<session-framing>";
+    const CLOSE: &str = "</session-framing>";
+    let t = text.trim_start();
+    if !t.starts_with(OPEN) {
+        return text;
+    }
+    match t.find(CLOSE) {
+        Some(end) => t[end + CLOSE.len()..].trim_start(),
+        None => text,
+    }
+}
+
+/// What a launch/resume of a conductor run needs: the bearer token for the
+/// loopback `conductor` MCP server and the cap baked into its framing.
+#[derive(Debug, Clone)]
+pub struct ConductorLaunch {
+    pub token: String,
+    pub max_workers: usize,
+}
 
 /// A live conductor session tracked in memory for the lifetime of the app run.
 #[derive(Clone)]
@@ -164,6 +256,7 @@ impl ConductorState {
     }
 
     /// Register a new conductor session and mint its bearer token.
+    #[allow(dead_code)] // launches go through `reregister_session`; kept for tests
     pub fn register_session(
         &self,
         conductor_run_id: &str,
@@ -344,6 +437,22 @@ impl ConductorState {
         token
     }
 
+    /// Forget a deleted run: drop its conductor session and EVERY token minted
+    /// for it (so a still-running sidecar can no longer drive anything), its
+    /// wake bookkeeping, and its id from any conductor's worker list.
+    pub fn unregister_session(&self, run_id: &str) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.sessions.remove(run_id);
+            g.token_index.retain(|_, owner| owner != run_id);
+            g.waking.remove(run_id);
+            g.turn_active.remove(run_id);
+            g.pending_wake.remove(run_id);
+            for s in g.sessions.values_mut() {
+                s.worker_ids.retain(|w| w != run_id);
+            }
+        }
+    }
+
     /// Look up the current bearer token for a conductor (needed to re-inject the
     /// `conductor` MCP server when a conductor run is resumed).
     pub fn token_for(&self, conductor_run_id: &str) -> Option<String> {
@@ -371,6 +480,30 @@ pub fn with_conductor(
         })
     });
     serde_json::Value::Object(map)
+}
+
+/// Codex flavour of [`with_conductor`]: same loopback server, plus
+/// `default_tools_approval_mode = "approve"` so the conductor's own `session_*`
+/// calls never stop on an approval prompt (Codex otherwise asks per MCP call
+/// under the `untrusted`/`on-request` policies). The sidecar maps both keys to
+/// `-c mcp_servers.conductor.*` overrides. Kept out of the Claude map, whose MCP
+/// config schema has no such key.
+pub fn with_conductor_codex(
+    mcp: serde_json::Value,
+    base_url: &str,
+    token: &str,
+) -> serde_json::Value {
+    let mut mcp = with_conductor(mcp, base_url, token);
+    if let Some(cfg) = mcp.get_mut("conductor").and_then(|c| c.as_object_mut()) {
+        // Only tag our own server — a user server named `conductor` wins above
+        // and must keep its configured behavior.
+        let ours = cfg.get("url").and_then(|u| u.as_str()) == Some(base_url);
+        if ours {
+            cfg.entry("default_tools_approval_mode".to_string())
+                .or_insert_with(|| serde_json::Value::String("approve".to_string()));
+        }
+    }
+    mcp
 }
 
 fn mint_token() -> String {
@@ -412,6 +545,109 @@ mod tests {
         // The nudged turn ends → slot released, deferred wake delivered.
         assert!(cst.turn_ended("c1"));
         assert!(cst.begin_wake_turn("c1"));
+    }
+
+    #[test]
+    fn codex_conductor_server_auto_approves_and_carries_token() {
+        let base = "http://127.0.0.1:4242/mcp";
+        let mcp = with_conductor_codex(serde_json::json!({}), base, "tok");
+        let c = &mcp["conductor"];
+        assert_eq!(c["type"], "http");
+        assert_eq!(c["url"], base);
+        assert_eq!(c["headers"]["Authorization"], "Bearer tok");
+        assert_eq!(c["default_tools_approval_mode"], "approve");
+    }
+
+    #[test]
+    fn codex_conductor_keeps_user_server_named_conductor_untouched() {
+        let user = serde_json::json!({ "conductor": { "type": "stdio", "command": "x" } });
+        let mcp = with_conductor_codex(user, "http://127.0.0.1:1/mcp", "tok");
+        assert_eq!(mcp["conductor"]["command"], "x");
+        assert!(mcp["conductor"].get("default_tools_approval_mode").is_none());
+    }
+
+    #[test]
+    fn framing_includes_prompt_and_cap() {
+        let f = conductor_framing(7);
+        assert!(f.starts_with(CONDUCTOR_SYSTEM_PROMPT));
+        assert!(f.contains("7 concurrent workers"));
+    }
+
+    #[test]
+    fn framing_is_hybrid_not_delegate_only() {
+        let p = CONDUCTOR_SYSTEM_PROMPT;
+        // Every session is a conductor: it must work directly by default…
+        assert!(p.contains("do the work yourself, directly"));
+        assert!(!p.contains("You do not do the implementation work yourself"));
+        assert!(!p.contains("CONDUCTOR"));
+        // …while keeping the full control-plane guidance.
+        for needle in [
+            "session_spawn(",
+            "session_wait(",
+            "session_poll(",
+            "session_read(",
+            "session_send(",
+            "session_cancel(",
+            "waited_human",
+            "awaiting_permission",
+            "AUTOMATICALLY RESUMED",
+            "max-worker limit",
+        ] {
+            assert!(p.contains(needle), "framing lost: {needle}");
+        }
+    }
+
+    #[test]
+    fn run_framing_joins_instruction_and_session_framing() {
+        let launch = ConductorLaunch { token: "t".into(), max_workers: 3 };
+        assert_eq!(run_framing(None, None), None);
+        assert_eq!(run_framing(Some("  "), None), None);
+        assert_eq!(run_framing(Some("You are a reviewer."), None).as_deref(), Some("You are a reviewer."));
+        let both = run_framing(Some("Role X"), Some(&launch)).unwrap();
+        assert!(both.starts_with("Role X\n\n"));
+        assert!(both.ends_with(&conductor_framing(3)));
+    }
+
+    #[test]
+    fn codex_resume_seed_only_when_not_yet_seeded() {
+        assert_eq!(codex_resume_seed(Some("F"), true), None);
+        assert_eq!(codex_resume_seed(None, false), None);
+        assert_eq!(codex_resume_seed(Some(" "), false), None);
+        let seed = codex_resume_seed(Some("FRAMING-XYZ"), false).unwrap();
+        assert!(seed.starts_with("<session-framing>\n"));
+        assert!(seed.ends_with("\nFRAMING-XYZ\n</session-framing>"));
+    }
+
+    #[test]
+    fn strip_session_framing_removes_only_a_leading_seed() {
+        let seed = codex_resume_seed(Some("FRAMING"), false).unwrap();
+        assert_eq!(strip_session_framing(&format!("{seed}\n\nhello")), "hello");
+        assert_eq!(strip_session_framing(&seed), "");
+        assert_eq!(strip_session_framing("plain text"), "plain text");
+        // Not leading → user content, kept verbatim.
+        let mid = format!("see this: {seed}");
+        assert_eq!(strip_session_framing(&mid), mid);
+        // Unterminated → kept verbatim rather than swallowing the message.
+        assert_eq!(strip_session_framing("<session-framing> oops"), "<session-framing> oops");
+    }
+
+    #[test]
+    fn unregister_revokes_every_token_and_worker_links() {
+        let cst = ConductorState::new();
+        let t1 = cst.register_session("c1", "p", 4);
+        // A restart-style re-registration mints a second token for the same run.
+        let t2 = cst.reregister_session("c1", "p", 4, vec!["w1".into()]);
+        let other = cst.register_session("c2", "p", 4);
+        assert!(cst.add_worker("c2", "c1-orphan"));
+        cst.turn_started("c1");
+        cst.unregister_session("c1");
+        assert!(cst.session("c1").is_none());
+        assert!(cst.resolve_token(&t1).is_none() && cst.resolve_token(&t2).is_none());
+        assert!(!cst.defer_wake_if_busy("c1"));
+        assert_eq!(cst.resolve_token(&other).as_deref(), Some("c2"));
+        // Deleting a worker detaches it from its conductor.
+        cst.unregister_session("c1-orphan");
+        assert!(!cst.owns_worker("c2", "c1-orphan"));
     }
 
     #[test]
