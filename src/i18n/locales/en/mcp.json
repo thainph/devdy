@@ -68,7 +68,6 @@
     "connection": "Connection",
     "testConnection": "Test connection",
     "testing": "Testing…",
-    "saveFirst": "Save first to enable testing",
     "validation": {
       "nameRequired": "Name is required",
       "nameFormat": "Name may only contain letters, numbers, hyphens, and underscores",
@@ -77,7 +76,6 @@
       "keyEmpty": "Secret key cannot be empty",
       "duplicateKey": "Duplicate key \"{key}\""
     },
-    "saveFirstThenTest": "Save the server first, then test its connection.",
     "toast": {
       "saved": "Saved"
     }
