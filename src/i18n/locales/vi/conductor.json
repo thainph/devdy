@@ -45,5 +45,8 @@
     "send": "Gửi thêm cho {id}",
     "cancel": "Đã hủy {id}",
     "permission": "Quyền {decision}: {tool}"
-  }
+  },
+  "justStarted": "<1m",
+  "runningSince": "Đang chạy từ {time}",
+  "resizeTimeline": "Kéo để chỉnh chiều cao dòng thời gian"
 }
