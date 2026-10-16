@@ -21,7 +21,7 @@ import { useAwsAccountsStore } from '@/stores/awsAccounts'
 import { useClaudeAccountsStore } from '@/stores/claudeAccounts'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useModelCatalogStore } from '@/stores/modelCatalog'
-import { useUILayoutStore, type HistoryDensity } from '@/stores/uiLayout'
+import { useUILayoutStore, type ListDensity } from '@/stores/uiLayout'
 import { IS_MAC, registerMenuAction } from '@/lib/appMenu'
 import { invoke } from '@/lib/tauri'
 import { openUrl } from '@tauri-apps/plugin-opener'
@@ -38,7 +38,7 @@ import {
   Pin, Shield, Pencil, Check, Github, Gitlab, UserCircle,
   HardDrive, Cloud, Radio, Languages, StickyNote, ListTodo, FolderTree, Loader2,
   MoreHorizontal, Search, Network, ChevronLeft, ChevronRight,
-  Plus, AlignJustify, Rows2, Rows3, Rows4, Circle, CircleCheck, CircleDashed, CircleDot, CircleSlash, CircleX
+  Plus, AlignJustify, Rows2, Rows3, Rows4, CircleDashed
 } from 'lucide-vue-next'
 import { onClickOutside } from '@vueuse/core'
 import AppSelect from '@/components/AppSelect.vue'
@@ -55,6 +55,13 @@ import MentionedFiles from '@/components/MentionedFiles.vue'
 import ContextMeter from '@/components/ContextMeter.vue'
 import BudgetBadge from '@/components/BudgetBadge.vue'
 import { mergeContextModel } from '@/lib/contextLimits'
+import {
+  formatRunTimestamp,
+  relativeAge,
+  runStatusColorClass,
+  runStatusIcon,
+  shortModelId,
+} from '@/lib/runDisplay'
 import FileTree from '@/components/FileTree.vue'
 import ConductorWorkerPanel from '@/components/conductor/ConductorWorkerPanel.vue'
 import { useConductorStore } from '@/stores/conductor'
@@ -225,9 +232,9 @@ const fetchPanelEl = ref<HTMLElement | null>(null)
 const fetchTriggerEl = ref<HTMLElement | null>(null)
 onClickOutside(fetchPanelEl, () => { fetchOpen.value = false }, { ignore: [fetchTriggerEl] })
 
-// History row density menu (persisted in the uiLayout store).
-const historyDensity = computed(() => uiLayout.historyDensity)
-const historyDensityOptions: { value: HistoryDensity; icon: typeof Rows2 }[] = [
+// List density menu (persisted in the uiLayout store; shared with the worker panel).
+const historyDensity = computed(() => uiLayout.listDensity)
+const historyDensityOptions: { value: ListDensity; icon: typeof Rows2 }[] = [
   { value: 'comfortable', icon: Rows2 },
   { value: 'compact', icon: Rows3 },
   { value: 'dense', icon: Rows4 },
@@ -730,7 +737,27 @@ const conductorAnchorId = computed<string | null>(() => {
   const meta = runsStore.runMeta.get(id) ?? runsStore.runs.find((r) => r.id === id)
   return meta?.conductor_run_id ?? id
 })
-const workerPanelOpen = ref(true)
+// ── Worker panel open/rail ──────────────────────────────────────────────────
+// Auto: a session with no workers sits as the thin rail; it opens by itself
+// once a worker appears. A manual toggle is remembered per session (anchor id)
+// for this app run and then always wins — it never auto-flips back.
+// The worker count also reads the run list (stable across session switches),
+// so the panel doesn't flash to the rail while the new detail is loading.
+const workerPanelChoice = ref(new Map<string, boolean>())
+const anchorWorkerCount = computed(() => {
+  const id = conductorAnchorId.value
+  const fromRuns = id ? runsStore.runs.filter((r) => r.conductor_run_id === id).length : 0
+  return Math.max(conductorWorkers.value.length, fromRuns)
+})
+const workerPanelOpen = computed(() => {
+  const id = conductorAnchorId.value
+  const manual = id ? workerPanelChoice.value.get(id) : undefined
+  return manual ?? anchorWorkerCount.value > 0
+})
+function setWorkerPanelOpen(open: boolean) {
+  const id = conductorAnchorId.value
+  if (id) workerPanelChoice.value.set(id, open)
+}
 
 // Conductor ids that currently have at least one worker streaming. A conductor's
 // own status can be 'done' (it finished planning) while its workers keep running,
@@ -761,6 +788,11 @@ const savingWorkerCap = ref(false)
 function beginEditWorkerCap() {
   workerCapDraft.value = effectiveWorkerCap.value || 1
   editingWorkerCap.value = true
+}
+// The rail's cap pill: expand the panel (a manual open) and edit the cap there.
+function editWorkerCapFromRail() {
+  setWorkerPanelOpen(true)
+  beginEditWorkerCap()
 }
 function cancelEditWorkerCap() {
   editingWorkerCap.value = false
@@ -814,9 +846,6 @@ const effectiveWorkerCap = computed(() =>
 // run id — means hopping between a conductor's workers keeps the same panel.
 watch(conductorAnchorId, (id) => {
   void conductorStore.select(id ?? null)
-  // Arriving at a new conductor resets the worker sidebar to expanded, so it
-  // always reveals its workers instead of inheriting a previous manual collapse.
-  workerPanelOpen.value = true
 }, { immediate: true })
 // Keep worker permission prompts flowing: listen to each running worker so its
 // queue populates (and the sidebar's ⚠ flag lights up) even before it's opened.
@@ -845,13 +874,7 @@ function runIsRunning(run: RunRecord): boolean {
 function runIcon(run: RunRecord) {
   if (runIsRunning(run)) return Loader2
   if (run.status === 'fetched' && run.run_type === 'session') return CircleDashed
-  switch (run.status) {
-    case 'done': return CircleCheck
-    case 'failed': return CircleX
-    case 'cancelled': return CircleSlash
-    case 'fetched': return CircleDot
-    default: return Circle
-  }
+  return runStatusIcon(run.status)
 }
 
 // Tooltip for the History-row status icon.
@@ -885,7 +908,7 @@ function runRefIcon(run: RunRecord) {
 // Compact model id for dense rows: drop a leading "claude-" (the account badge
 // already implies Claude); the full id stays in the tooltip.
 function runModelShort(run: RunRecord): string {
-  return runModelLabel(run).replace(/^claude-/, '')
+  return shortModelId(runModelLabel(run))
 }
 
 // "account · model" line for compact/dense rows ('' for an unstarted session).
@@ -899,18 +922,7 @@ function runAccountModelLine(run: RunRecord, short = true): string {
 // Relative age for compact/dense rows: "now", "5m", "2h", "3d", "2w", then
 // months/years. The full timestamp lives in the tooltip.
 function runRelativeTime(iso: string): string {
-  const ms = Date.now() - new Date(iso).getTime()
-  if (Number.isNaN(ms)) return ''
-  const min = Math.floor(ms / 60_000)
-  if (min < 1) return t('run.relNow')
-  if (min < 60) return `${min}m`
-  const h = Math.floor(min / 60)
-  if (h < 24) return `${h}h`
-  const d = Math.floor(h / 24)
-  if (d < 7) return `${d}d`
-  if (d < 30) return `${Math.floor(d / 7)}w`
-  if (d < 365) return `${Math.floor(d / 30)}mo`
-  return `${Math.floor(d / 365)}y`
+  return relativeAge(iso, t('run.relNow'))
 }
 
 // Dense rows fold everything not on the single line into the row tooltip.
@@ -928,14 +940,7 @@ function runDenseTooltip(run: RunRecord): string {
 function runIconColorClass(run: RunRecord): string {
   if (runIsRunning(run)) return 'text-blue-500'
   if (run.status === 'fetched' && run.run_type === 'session') return 'text-muted-foreground'
-  switch (run.status) {
-    case 'running': return 'text-blue-500'
-    case 'done': return 'text-emerald-500'
-    case 'failed': return 'text-red-500'
-    case 'cancelled': return 'text-amber-500'
-    case 'fetched': return 'text-violet-500'
-    default: return 'text-muted-foreground'
-  }
+  return runStatusColorClass(run.status)
 }
 
 // History row: which Claude account this run used. Only Claude runs record an
@@ -972,15 +977,7 @@ function runStarted(run: RunRecord): boolean {
 // Fed with `runActivityAt(run)` — the same value the list sorts by, so the
 // printed time always explains the row's position.
 function runTimestamp(iso: string): string {
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return iso
-  return d.toLocaleString(undefined, {
-    year: 'numeric',
-    month: 'numeric',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+  return formatRunTimestamp(iso)
 }
 
 // ── History search ────────────────────────────────────────────────────────
@@ -3572,12 +3569,12 @@ function handleRefInput(val: string) {
               <DropdownItem
                 v-for="opt in historyDensityOptions"
                 :key="opt.value"
-                @click="uiLayout.setHistoryDensity(opt.value)"
+                @click="uiLayout.setListDensity(opt.value)"
               >
                 <component :is="opt.icon" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
                 <span class="flex-1">{{ t(`run.density.${opt.value}`) }}</span>
                 <Check
-                  v-if="uiLayout.historyDensity === opt.value"
+                  v-if="uiLayout.listDensity === opt.value"
                   class="h-3.5 w-3.5 shrink-0 text-primary"
                   :stroke-width="2"
                 />
@@ -3721,7 +3718,7 @@ function handleRefInput(val: string) {
                 v-if="currentRunId === run.id"
                 class="absolute left-0 inset-y-0 w-0.5 bg-primary"
               />
-              <!-- Row layout follows uiLayout.historyDensity:
+              <!-- Row layout follows uiLayout.listDensity:
                    comfortable = title line + badges/timestamp block,
                    compact     = title line (+ relative time) + "account · model",
                    dense       = one line; the rest lives in the row tooltip. -->
@@ -4575,7 +4572,7 @@ function handleRefInput(val: string) {
             type="button"
             class="flex items-center justify-center h-6 w-6 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
             :title="workerPanelOpen ? t('conductor.collapse') : t('conductor.expand')"
-            @click="workerPanelOpen = !workerPanelOpen"
+            @click="setWorkerPanelOpen(!workerPanelOpen)"
           >
             <component :is="workerPanelOpen ? ChevronRight : ChevronLeft" class="h-3.5 w-3.5" :stroke-width="2" />
           </button>
@@ -4625,8 +4622,20 @@ function handleRefInput(val: string) {
               />
             </button>
           </template>
-          <Network v-else class="h-3.5 w-3.5 text-foreground/40 mx-auto" :stroke-width="1.75" />
         </div>
+        <!-- Rail: the worker cap stays reachable (notably before launch, when
+             no worker exists yet) — clicking expands the panel into the editor. -->
+        <button
+          v-if="!workerPanelOpen"
+          type="button"
+          class="mx-auto mt-1.5 flex shrink-0 flex-col items-center gap-0.5 rounded-md px-1 py-1 font-mono text-[10px] leading-none text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+          :title="pendingConductor ? t('conductor.preLaunchHint') : t('conductor.editMaxWorkers')"
+          :aria-label="t('conductor.editMaxWorkers')"
+          @click="editWorkerCapFromRail"
+        >
+          <Cpu class="h-3 w-3" :stroke-width="1.75" />
+          <span><span class="text-foreground/90">{{ conductorWorkers.length }}</span>/{{ effectiveWorkerCap }}</span>
+        </button>
         <!-- Pre-launch: no workers/timeline yet — guide the user to set the limit
              and send the goal, rather than showing an empty worker tree. -->
         <div
@@ -4636,7 +4645,8 @@ function handleRefInput(val: string) {
           {{ t('conductor.preLaunchHint') }}
         </div>
         <ConductorWorkerPanel
-          v-else-if="workerPanelOpen"
+          v-else
+          :collapsed="!workerPanelOpen"
           :workers="conductorWorkers"
           :events="conductorEvents"
           :active-worker-id="currentRunId"

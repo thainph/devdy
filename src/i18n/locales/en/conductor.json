@@ -45,5 +45,8 @@
     "send": "Follow-up to {id}",
     "cancel": "Cancelled {id}",
     "permission": "Permission {decision}: {tool}"
-  }
+  },
+  "justStarted": "<1m",
+  "runningSince": "Running since {time}",
+  "resizeTimeline": "Drag to resize the timeline"
 }
