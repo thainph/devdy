@@ -1,1 +1,1 @@
-Moved to [inbox-api.md](inbox-api.md) (Slack threads + web pages).
+Moved to [inbox-api.md](inbox-api.md) (Slack threads + translation).

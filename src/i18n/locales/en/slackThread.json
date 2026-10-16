@@ -1,0 +1,137 @@
+{
+  "window": {
+    "title": "Slack threads",
+    "titleWith": "Slack: {name}"
+  },
+  "nav": "Slack threads",
+  "untitled": "Slack thread",
+  "sidebar": {
+    "search": "Search threads…",
+    "add": "Add thread",
+    "other": "Other",
+    "allProjects": "All projects",
+    "noProject": "No project",
+    "empty": "No Slack threads yet.",
+    "emptyHint": "Paste a Slack thread link with “Add thread”, or send one from the Chrome extension.",
+    "noResults": "No matching threads.",
+    "newCount": "{count} new",
+    "warning": "Has warnings — open the thread to see them",
+    "collapse": "Collapse",
+    "expand": "Expand"
+  },
+  "status": {
+    "pending": "Queued",
+    "fetching": "Fetching",
+    "translating": "Translating",
+    "ready": "Ready",
+    "error": "Error"
+  },
+  "phase": {
+    "queued": "Waiting in queue",
+    "auth": "Checking the Slack token",
+    "messages": "Fetching messages",
+    "users": "Fetching user info",
+    "files": "Downloading files",
+    "translate": "Translating",
+    "done": "Done"
+  },
+  "errors": {
+    "invalid_link": "Invalid link. Expected https://<workspace>.slack.com/archives/<channel>/p<16 digits>.",
+    "dm_unsupported": "Direct-message (DM) threads are not supported — the token cannot read DMs.",
+    "no_token": "No Slack token. Add a Slack MCP server with SLACK_MCP_XOXP_TOKEN in Settings → MCP.",
+    "no_token_for_workspace": "None of the Slack tokens belongs to this link's workspace.",
+    "invalid_auth": "The Slack token is invalid or expired. Update it in Settings → MCP.",
+    "missing_scope": "The Slack token lacks a scope ({detail}). Needs channels:history, groups:history.",
+    "channel_not_found": "Channel not found — the token belongs to another workspace or has no access to the channel.",
+    "not_in_channel": "The token's account has not joined this channel.",
+    "thread_not_found": "Thread not found — the message may have been deleted.",
+    "rate_limited": "Slack is rate-limiting API calls. Try again in a few minutes.",
+    "network": "Network error while calling Slack. Check the connection and try again.",
+    "translate_failed": "Could not translate the thread (the engine did not start or every batch failed). The original is still readable.",
+    "legacy_no_url": "This old snapshot has no valid thread link, so it cannot be re-fetched from Slack.",
+    "slack_error": "Slack returned an error: {detail}",
+    "internal": "Internal error (database / disk): {detail}",
+    "invalid_project": "The project does not exist.",
+    "invalid_title": "The title must be 1 to 200 characters.",
+    "not_found": "This thread no longer exists.",
+    "unknown": "Error: {detail}"
+  },
+  "warnings": {
+    "files_scope": "The token lacks files:read, so files were not downloaded; click a file to open it in Slack.",
+    "files_partial": "Some files could not be downloaded; click a file to open it in Slack.",
+    "users_scope": "The token lacks users:read, so some user names show as ids.",
+    "channel_name_unavailable": "The token lacks channels:read / groups:read, so the channel name is unavailable.",
+    "translate_partial": "Some messages could not be translated — showing the original.",
+    "truncated": "Thread too long: only the first 1000 messages were fetched."
+  },
+  "header": {
+    "showOriginal": "Show original",
+    "refresh": "Refresh",
+    "openInSlack": "Open in Slack",
+    "renameHint": "Click or press F2 to rename",
+    "renamePlaceholder": "Thread title…",
+    "renamedHint": "Renamed — kept on refresh",
+    "fetchedAt": "Fetched {date}",
+    "notFetched": "Not fetched from Slack yet"
+  },
+  "banner": {
+    "retry": "Retry",
+    "openMcp": "Open MCP settings"
+  },
+  "message": {
+    "edited": "(edited)",
+    "untranslated": "Not translated",
+    "translating": "Translating…",
+    "translateFailed": "Translation failed",
+    "showOriginal": "Show original",
+    "showTranslation": "Show translation",
+    "copy": "Copy",
+    "copied": "Copied",
+    "app": "APP",
+    "deleted": "This message was deleted.",
+    "newDivider": "New"
+  },
+  "replies": "{n} reply | {n} replies",
+  "file": {
+    "open": "Open {name} with the default app",
+    "openInSlack": "Open in Slack",
+    "tooLarge": "File too large, not downloaded",
+    "unavailable": "This file cannot be downloaded",
+    "error": "Download failed",
+    "pending": "Not downloaded yet",
+    "openFailed": "Could not open the file: {error}"
+  },
+  "add": {
+    "title": "Add Slack thread",
+    "urlLabel": "Thread link",
+    "urlPlaceholder": "https://<workspace>.slack.com/archives/C…/p…",
+    "urlHint": "In Slack: right-click a message → Copy link.",
+    "project": "Project",
+    "submit": "Add",
+    "noToken": "No Slack token (an MCP server with SLACK_MCP_XOXP_TOKEN). You can still add the thread, but its content cannot be fetched yet.",
+    "existing": "Thread already added — refreshing",
+    "added": "Thread added, fetching from Slack…"
+  },
+  "legacy": {
+    "badge": "Old",
+    "banner": "Old snapshot — not re-fetched from Slack yet."
+  },
+  "lightbox": {
+    "openDefault": "Open with the default app",
+    "close": "Close (Esc)",
+    "prev": "Previous image (←)",
+    "next": "Next image (→)"
+  },
+  "picker": {
+    "includeOriginal": "Include original",
+    "truncated": "The thread is long, so the inserted text was truncated.",
+    "failed": "Could not insert the Slack thread: {error}"
+  },
+  "confirm": {
+    "deleteTitle": "Delete Slack thread",
+    "deleteMessage": "Delete this thread with its translated messages and downloaded files?"
+  },
+  "renameFailed": "Could not rename: {error}",
+  "noSelection": "Pick a thread on the left to read it.",
+  "empty": "This thread has no messages yet."
+}

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // "Copy markdown" — the reading-mode leading action of the detail windows
-// (note: ItemWindow, Slack thread / web page: CaptureWindow). Copies the body
+// (note: ItemWindow). Copies the body
 // as stored, without the title; the icon turns into a tick for a moment and a
 // toast confirms.
 import { ref } from 'vue'

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // The slim titlebar shared by the detail pop-outs — the note / todo window
-// (views/ItemWindow.vue) and the capture window (views/CaptureWindow.vue):
-// a kind icon, which item this is, an "unsaved" marker, then the optional
-// open-the-source link (Slack / original page), pin and reload.
+// (views/ItemWindow.vue) and the Slack threads window: a kind icon, which item
+// this is, an "unsaved" marker, then the optional open-the-source link (Slack),
+// pin and reload.
 // It only says what the window alone can show; every ACTION lives in the
 // host's action bar.
 import type { Component } from 'vue'

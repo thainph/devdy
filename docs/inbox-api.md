@@ -1,10 +1,13 @@
-# Devdy Inbox API — Slack threads, web pages & translation (contract for the Chrome extension)
+# Devdy Inbox API — Slack threads & translation (contract for the Chrome extension)
 
 API version: `1`. The Devdy desktop app runs a small HTTP server on the user's
-machine; the extension pushes an exported Slack thread or web page to it, and
-can ask Devdy to translate text (§6). Everything below is what the server
-enforces today. Both capture kinds are stored as "captures"
-(`kind = slack | web`).
+machine; the extension sends the link of a Slack thread for Devdy to fetch and
+translate (§3), and can ask Devdy to translate text (§5). Everything below is
+what the server enforces today. Slack threads are fetched by Devdy itself from
+the Slack Web API.
+
+Web page capture (`POST /v1/web-pages`, zip/markdown uploads) has been
+removed: that route now answers `404`.
 
 The whole API can be turned off in Devdy → Settings → Inbox API ("Enable Inbox
 API", setting `inbox_api_enabled`, on by default). When off, nothing listens on
@@ -30,10 +33,11 @@ again (it may differ from the previous one).
   (DNS-rebinding guard).
 - CORS: `OPTIONS` preflight is answered `204` with
   `Access-Control-Allow-Methods: GET, POST, OPTIONS`,
-  `Access-Control-Allow-Headers: Authorization, Content-Type, X-Devdy-Project-Id, X-Devdy-Title, X-Devdy-Mode`,
+  `Access-Control-Allow-Headers: Authorization, Content-Type, X-Devdy-Project-Id, X-Devdy-Title`
+  (the two `X-Devdy-*` headers are accepted for old extensions but ignored, see §3),
   `Access-Control-Allow-Private-Network: true`, `Access-Control-Max-Age: 600`.
   Responses echo the allowed `Origin` in `Access-Control-Allow-Origin`.
-  `Accept` (e.g. `text/event-stream` for §6) is a CORS-safelisted header, so it
+  `Accept` (e.g. `text/event-stream` for §5) is a CORS-safelisted header, so it
   needs no entry in `Access-Control-Allow-Headers`.
   (Adding `http://127.0.0.1/*` to the extension's `host_permissions` avoids CORS
   entirely.)
@@ -42,151 +46,88 @@ again (it may differ from the previous one).
 
 | Method | Path | Auth | Success |
 |---|---|---|---|
-| GET | `/health` | no | `200 {"app":"devdy","version":"0.8.0","api":1,"features":["translate"]}` |
+| GET | `/health` | no | `200 {"app":"devdy","version":"0.8.0","api":1,"features":["translate","slack-thread-link"]}` |
 | GET | `/v1/projects` | yes | `200 [{"id":"…","name":"…"}]` (ordered like the Devdy sidebar) |
-| POST | `/v1/slack-threads` | yes | `201 {"id":"…","status":"created"}` or `200 {"id":"…","status":"updated"}` |
-| POST | `/v1/web-pages` | yes | same as above (see §4) |
-| POST | `/v1/translate` | yes | `200 {"text":"…","targetLang":"vi"}` or an SSE stream (see §6) |
+| POST | `/v1/slack-threads` | yes | `202 {"id":"…","status":"created"\|"existing","fetchStatus":"…"}` (see §3) |
+| POST | `/v1/translate` | yes | `200 {"text":"…","targetLang":"vi"}` or an SSE stream (see §5) |
 
-`features` in `/health` lists optional capabilities; check for `"translate"`
-before calling `/v1/translate`.
+`features` in `/health` lists optional capabilities: check for `"translate"`
+before calling `/v1/translate` and for `"slack-thread-link"` before sending
+Slack links to `/v1/slack-threads` (older Devdy builds expected an exported
+markdown/zip there).
 
-Errors are always JSON `{"error":"<message>"}`:
+Errors are always JSON `{"error":"<message>"}` (plus `"code"` on
+`/v1/slack-threads` 400s):
 
 | Status | When |
 |---|---|
-| 400 | bad payload: invalid zip, zip-slip path, >200 zip entries, no/several candidate `.md`, invalid UTF-8, invalid YAML front matter, empty body, unknown `X-Devdy-Project-Id`; translate: invalid JSON, empty `text` |
+| 400 | slack threads: `invalid_json`, `invalid_link`, `dm_unsupported`, `invalid_project`, `invalid_title`; translate: invalid JSON, empty `text` |
 | 401 | missing / wrong bearer token |
 | 403 | forbidden `Origin` or `Host` |
 | 404 | unknown path |
-| 413 | body > 50 MB, or zip uncompressed content > 200 MB; translate: body > 64 KB or `text` > 8000 characters |
-| 415 | unsupported `Content-Type` |
+| 413 | slack threads: body > 16 KB; translate: body > 64 KB or `text` > 8000 characters |
+| 415 | unsupported `Content-Type` (slack threads: anything but JSON, see §3) |
 | 429 | translate: 4 translations are already in flight (the 5th concurrent request is rejected) — retry later |
 | 500 | storage failure |
 | 502 | translate (JSON mode): the translation engine returned an error |
-| 503 | translate: `"translation engine unavailable: <detail>"` (e.g. sidecar spawn failure). `"server stopping"`: the API was turned off while the request was in flight — only `/v1/translate` (JSON mode; SSE gets an `error` event instead) and capture uploads (`/v1/slack-threads`, `/v1/web-pages`; checked once, after the payload is parsed and before it is stored). `/health` and `/v1/projects` never return it. On switch-off the port is released immediately; requests already in progress may still complete. |
+| 503 | translate: `"translation engine unavailable: <detail>"` (e.g. sidecar spawn failure). `"server stopping"`: the API was turned off while the request was in flight — only `/v1/translate` (JSON mode; SSE gets an `error` event instead), and `/v1/slack-threads` (checked after the body is validated). `/health` and `/v1/projects` never return it. On switch-off the port is released immediately; requests already in progress may still complete. |
 | 504 | translate (JSON mode): no result within 90 s |
 
-## 3. `POST /v1/slack-threads` payload
+## 3. `POST /v1/slack-threads` — add a thread by link
 
-| Case | `Content-Type` | Body |
+The extension only sends the thread's link. Devdy fetches the whole thread
+from the Slack Web API with the user's own Slack token (the
+`SLACK_MCP_XOXP_TOKEN` of a Slack MCP server configured in Devdy), downloads
+its files, translates every message into Vietnamese and keeps the original.
+The request returns right away (`202`); the work runs in the background.
+
+| Item | Value |
+|---|---|
+| Headers | `Authorization: Bearer <token>`, `Content-Type: application/json` (`; charset=utf-8` allowed) |
+| Body | `{ "url": string, "projectId"?: string \| null, "title"?: string }`, ≤ 16 KB |
+| `url` | `https://<workspace>.slack.com/archives/<channel>/p<16 digits>` (the "Copy link" of a message). A reply link with `?thread_ts=…&cid=…` resolves to its thread. `http` is accepted; surrounding `<…>` are stripped. Direct messages (`/archives/D…`) are rejected. |
+| `projectId` | optional Devdy project id (from `/v1/projects`); unknown → 400 `invalid_project` |
+| `title` | optional title, 1–200 characters after trimming, any UTF-8 (replaces the old `X-Devdy-Title` header) |
+
+Old headers `X-Devdy-Project-Id`, `X-Devdy-Title` and `X-Devdy-Mode` are ignored on this
+endpoint.
+
+Responses:
+
+```
+202 {"id":"…","status":"created","fetchStatus":"pending"}
+202 {"id":"…","status":"existing","fetchStatus":"pending"}
+202 {"id":"…","status":"created","fetchStatus":"error","errorCode":"no_token"}
+```
+
+- `status: "existing"`: the same thread (same channel + thread ts) is already
+  in Devdy. It is re-fetched (new / edited replies are translated, deleted ones
+  disappear); its id and list position are kept, a title the user chose is
+  kept (otherwise `title` is applied and becomes the user's title), and
+  `projectId` is only applied when the thread has no project yet.
+  `fetchStatus` may be `fetching` / `translating` when a job is already
+  running — it then runs once more afterwards.
+- `errorCode: "no_token"`: no Slack token is configured in Devdy; the thread is
+  saved in an error state and fetched once the user adds a token and refreshes.
+- When the background job ends, Devdy shows an OS notification ("Đã dịch xong
+  thread Slack: <title>" or "Không lấy được thread Slack: <title>").
+
+Errors (`{"error": "<message>", "code": "<code>"}`):
+
+| Status | `code` | When |
 |---|---|---|
-| Thread has attachments | `application/zip` (also `application/x-zip-compressed`) | zip archive |
-| No attachments | `text/markdown` or `text/plain` (`; charset=utf-8` allowed) | the raw `.md`, UTF-8 |
+| 400 | `invalid_json` | body is not a JSON object |
+| 400 | `invalid_link` | `url` missing / not a Slack thread link (`"invalid Slack thread link (expected https://<workspace>.slack.com/archives/<channel>/p<16 digits>)"`) |
+| 400 | `dm_unsupported` | direct-message link (`"direct-message threads are not supported"`) |
+| 400 | `invalid_project` | unknown or non-string `projectId` |
+| 400 | `invalid_title` | `title` empty / > 200 characters / not a string |
+| 413 | — | body > 16 KB |
+| 415 | — | `Content-Type` is not JSON (zip / markdown included): `"Content-Type must be application/json ({\"url\": \"<slack thread link>\"}); zip/markdown uploads are no longer supported"` |
 
-Optional request headers (override the front matter):
+Errors that happen later (token without access, missing Slack scopes, thread
+deleted on Slack, rate limits …) are shown in Devdy, not returned here.
 
-| Header | Effect |
-|---|---|
-| `X-Devdy-Project-Id` | link the thread to this Devdy project (id from `/v1/projects`; unknown id → 400). On update, omitting it keeps the current link. |
-| `X-Devdy-Title` | title to use instead of front matter / fallback. Only send ASCII titles via this header: browsers' `fetch` cannot send non-Latin-1 header values (it throws `TypeError`). For non-ASCII titles use the front-matter `title` instead; an encoded header form is pending a product decision. |
-
-### Zip layout
-
-- Exactly ONE `.md` is the conversation: the `.md` at the zip root; if none at
-  the root, the only `.md` anywhere; several candidates → 400.
-- Every other regular file (any depth) is an attachment. Its path relative to
-  the zip root (e.g. `attachments/screenshot.png`) is kept as the display name;
-  files are stored flattened with collision-safe names.
-- `__MACOSX/`, `.DS_Store` and directory entries are ignored.
-- Limits: absolute paths or `..` segments → 400; max 200 entries; max 50 MB
-  body; max 200 MB total uncompressed.
-
-Example:
-
-```
-thread.md
-attachments/screenshot.png
-attachments/build.log
-```
-
-### Markdown + front matter
-
-Front matter is optional YAML between leading `---` lines. Known keys (all
-optional, unknown keys ignored):
-
-```yaml
----
-title: "Deploy failed on staging"
-workspace: "malme"            # Slack workspace/team name or domain
-channel: "#dev-backend"
-thread_url: "https://malme.slack.com/archives/C0123/p1700000000123456"
-thread_ts: "1700000000.123456"   # quote it to keep it a string
-exported_at: "2026-10-08T09:00:00Z"
----
-**Alice** 09:00 — staging deploy failed …
-```
-
-- Only the body (after the front matter) is stored as the thread content.
-- Title: `X-Devdy-Title` → `title` → first non-empty body line without leading
-  `#` (max 120 chars) → `"Slack thread"`.
-
-### Dedup / update
-
-If `thread_url` is non-empty and matches an existing thread — or, without a
-`thread_url`, both `channel` and `thread_ts` match — that thread is UPDATED
-(content, metadata and ALL attachments replaced; id, list position and project
-link kept unless `X-Devdy-Project-Id` is sent) and the response is
-`200 status:"updated"`. Otherwise a new thread is created at the top of the list
-(`201 status:"created"`). Always send `thread_url` so re-exports update in place.
-
-Renamed threads: if the user renamed the thread in Devdy, an update KEEPS that
-title (the front-matter / fallback title is ignored). Only an explicit
-`X-Devdy-Title` header replaces it — and a title sent via `X-Devdy-Title`
-(on create or update) is itself treated as user-chosen, so later re-exports
-without the header keep it too.
-
-## 4. `POST /v1/web-pages` payload
-
-Same auth, guards, limits, content types, zip layout and headers
-(`X-Devdy-Project-Id`, `X-Devdy-Title`) as `/v1/slack-threads`. Images of the
-page go in the zip next to the `.md` (e.g. `images/fig1.png`).
-
-Extra optional header:
-
-| Header | Effect |
-|---|---|
-| `X-Devdy-Mode: new` | always create a new capture, never update an existing one. Other values are ignored. (Ignored on `/v1/slack-threads`.) |
-
-Front matter (all optional, unknown keys ignored):
-
-```yaml
----
-title: "How to configure Tauri capabilities"
-url: "https://v2.tauri.app/security/capabilities/"
-site_name: "Tauri"
-author: "…"
-published_at: "2026-09-01"
-captured_at: "2026-10-09T10:00:00Z"
-description: "…"
-selection: false     # true = only the user's selection was captured
----
-```
-
-- Title: `X-Devdy-Title` → `title` → first non-empty body line (max 120 chars)
-  → domain of `url` (without `www.`) → `"Web page"`.
-- `selection` accepts `true`/`false` (also `"true"`, `"yes"`, `1`).
-
-### Dedup (web)
-
-The dedup key is the normalized `url`: lowercase scheme + host, default port
-dropped (`:80` http, `:443` https), `#fragment` dropped, query params `utm_*`,
-`fbclid`, `gclid`, `mc_cid`, `mc_eid`, `ref`, `ref_src` removed, remaining
-params sorted, one trailing `/` stripped from the path (root `/` kept). E.g.
-`HTTPS://Example.com:443/docs/?utm_source=x&b=2&a=1#top` →
-`https://example.com/docs?a=1&b=2`.
-
-| Request | Result |
-|---|---|
-| key matches an existing full-page web capture (`selection: false`) | UPDATE it → `200 updated` (same rules as Slack: content/metadata/attachments replaced; id, position and project kept unless header; a renamed title is kept unless `X-Devdy-Title`). If several full-page captures share the key (e.g. after `X-Devdy-Mode: new`), the one updated most recently is the target. |
-| `selection: true` | always a NEW capture; selection captures are never update targets either |
-| `X-Devdy-Mode: new` | always a NEW capture |
-| no `url` (or not a `scheme://host…` URL) | always a NEW capture |
-| otherwise | NEW capture (`201 created`) at the top of the Web list |
-
-Slack threads and web pages never dedup against each other.
-
-## 5. curl examples
+## 4. curl examples
 
 ```bash
 TOKEN=<token from Devdy settings>
@@ -196,41 +137,19 @@ curl -s http://127.0.0.1:$PORT/health
 
 curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:$PORT/v1/projects
 
-# Markdown only
+# Slack thread by link (optional project + title)
 curl -s -X POST http://127.0.0.1:$PORT/v1/slack-threads \
   -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: text/markdown; charset=utf-8" \
-  --data-binary @thread.md
-
-# Zip with attachments, linked to a project, custom title
-curl -s -X POST http://127.0.0.1:$PORT/v1/slack-threads \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/zip" \
-  -H "X-Devdy-Project-Id: <project-id>" \
-  -H "X-Devdy-Title: Staging deploy incident" \
-  --data-binary @thread.zip
-
-# Web page (md only)
-curl -s -X POST http://127.0.0.1:$PORT/v1/web-pages \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: text/markdown; charset=utf-8" \
-  --data-binary @page.md
-
-# Web page with images, forced as a new capture
-curl -s -X POST http://127.0.0.1:$PORT/v1/web-pages \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/zip" \
-  -H "X-Devdy-Mode: new" \
-  --data-binary @page.zip
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://malme.slack.com/archives/C0B83GHDTFG/p1789877283026359","projectId":"<project-id>","title":"Sự cố deploy staging"}'
 ```
 
-Or use the helpers: `./scripts/send-slack-thread.sh <file.md|file.zip> [token] [port]`
-and `./scripts/send-web-page.sh <file.md|file.zip> [token] [port]`
-(token/port also from `DEVDY_INBOX_TOKEN` / `DEVDY_INBOX_PORT`; port is
-auto-detected when omitted; `DEVDY_INBOX_PROJECT_ID` / `DEVDY_INBOX_TITLE` set the optional
-headers; `DEVDY_INBOX_MODE=new` sends `X-Devdy-Mode: new` for web pages).
+Or use the helper `./scripts/send-slack-thread.sh <slack-link> [token] [port]`
+(JSON body; `DEVDY_INBOX_PROJECT_ID` / `DEVDY_INBOX_TITLE` fill `projectId` /
+`title`). Token/port also come from `DEVDY_INBOX_TOKEN` / `DEVDY_INBOX_PORT`;
+the port is auto-detected when omitted.
 
-## 6. `POST /v1/translate`
+## 5. `POST /v1/translate`
 
 Translates a short text with Devdy's own translation engine — the same warm
 session the in-app "Translate" popover uses, so it bills against the user's
@@ -349,27 +268,27 @@ for (;;) {
 }
 ```
 
-## 7. Extension fetch sketch
+## 6. Extension fetch sketch
 
 ```js
-// endpoint: 'slack-threads' or 'web-pages'
-const res = await fetch(`http://127.0.0.1:${port}/v1/${endpoint}`, {
-  method: 'POST',
-  headers: {
-    Authorization: `Bearer ${token}`,
-    'Content-Type': hasAttachments ? 'application/zip' : 'text/markdown; charset=utf-8',
-  },
-  body: hasAttachments ? zipBlob : markdownString,
-});
-const json = await res.json(); // { id, status } or { error }
+// Slack thread: send the link only.
+const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
+if (health.features?.includes('slack-thread-link')) {
+  const res = await fetch(`http://127.0.0.1:${port}/v1/slack-threads`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: threadLink, projectId, title }),
+  });
+  const json = await res.json(); // 202 { id, status, fetchStatus, errorCode? } or { error, code }
+}
 ```
 
-## 8. What Devdy does on receipt
+## 7. What Devdy does on receipt
 
-The capture appears in Devdy's Slack / Web list immediately (event
-`captures://changed` with `{ id, kind, action }`), an OS notification
-"Slack thread received: <title>" / "Web page received: <title>" is shown, and AI
-sessions can read it via the `mcp__devdy__slack_threads_*` /
-`mcp__devdy__web_pages_*` tools (attachments are exposed as absolute file paths;
-files live under `<app_data>/slack-threads/<id>/files/` or
-`<app_data>/web-pages/<id>/files/`).
+- Slack thread: it appears in Devdy's Slack thread window right away
+  (`slack-threads://changed`), then progresses `pending → fetching →
+  translating → ready` (or `error`) with `slack-threads://progress` events.
+  Messages are stored with the original text and the Vietnamese translation;
+  files are downloaded to `<app_data>/slack-threads/<id>/files/<slack_file_id>/`.
+  The OS notification is shown when the job ends. AI sessions read threads via
+  the `mcp__devdy__slack_threads_*` tools.

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Push an exported Slack thread (.md or .zip) to Devdy's local Inbox API.
+# Send a Slack thread link to Devdy's local Inbox API; Devdy fetches the thread
+# from Slack and translates it in the background (202 Accepted).
 #
-# Usage: ./scripts/send-slack-thread.sh <file.md|file.zip> [token] [port]
+# Usage: ./scripts/send-slack-thread.sh <slack-link> [token] [port]
 #
+# slack-link: https://<workspace>.slack.com/archives/<channel>/p<16 digits>[?thread_ts=…&cid=…]
 # token: arg 2, else $DEVDY_INBOX_TOKEN (copy it from Devdy → Settings → Inbox API)
 # port:  arg 3, else $DEVDY_INBOX_PORT, else auto-detect 47821..47830 via /health
-# Optional env: DEVDY_INBOX_PROJECT_ID (X-Devdy-Project-Id), DEVDY_INBOX_TITLE (X-Devdy-Title),
-#   DEVDY_INBOX_MODE (X-Devdy-Mode, web pages only),
-#   DEVDY_INBOX_ENDPOINT (slack-threads | web-pages; default slack-threads)
+# Optional env: DEVDY_INBOX_PROJECT_ID (body "projectId"), DEVDY_INBOX_TITLE (body "title", any UTF-8)
 set -euo pipefail
 
 if [[ $# -lt 1 || "$1" == "-h" || "$1" == "--help" ]]; then
@@ -15,12 +15,12 @@ if [[ $# -lt 1 || "$1" == "-h" || "$1" == "--help" ]]; then
   exit 1
 fi
 
-file="$1"
+url="$1"
 token="${2:-${DEVDY_INBOX_TOKEN:-}}"
 port="${3:-${DEVDY_INBOX_PORT:-}}"
 
-if [[ ! -f "$file" ]]; then
-  echo "error: file not found: $file" >&2
+if [[ -f "$url" ]]; then
+  echo "error: expected a Slack thread link, not a file (zip/markdown uploads are no longer supported)" >&2
   exit 1
 fi
 if [[ -z "$token" ]]; then
@@ -50,24 +50,24 @@ if [[ -z "$port" ]]; then
 fi
 echo "→ sending to 127.0.0.1:$port" >&2
 
-case "$(printf '%s' "${file##*.}" | tr '[:upper:]' '[:lower:]')" in
-  zip) content_type="application/zip" ;;
-  md | markdown) content_type="text/markdown; charset=utf-8" ;;
-  *)
-    echo "error: expected a .md or .zip file" >&2
-    exit 1
-    ;;
-esac
+# JSON string literal: escape backslash, quote and control characters.
+json_str() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/\\r}"
+  s="${s//$'\t'/\\t}"
+  printf '"%s"' "$s"
+}
 
-extra=()
-[[ -n "${DEVDY_INBOX_PROJECT_ID:-}" ]] && extra+=(-H "X-Devdy-Project-Id: $DEVDY_INBOX_PROJECT_ID")
-[[ -n "${DEVDY_INBOX_TITLE:-}" ]] && extra+=(-H "X-Devdy-Title: $DEVDY_INBOX_TITLE")
-[[ -n "${DEVDY_INBOX_MODE:-}" ]] && extra+=(-H "X-Devdy-Mode: $DEVDY_INBOX_MODE")
-endpoint="${DEVDY_INBOX_ENDPOINT:-slack-threads}"
+body="{\"url\":$(json_str "$url")"
+[[ -n "${DEVDY_INBOX_PROJECT_ID:-}" ]] && body+=",\"projectId\":$(json_str "$DEVDY_INBOX_PROJECT_ID")"
+[[ -n "${DEVDY_INBOX_TITLE:-}" ]] && body+=",\"title\":$(json_str "$DEVDY_INBOX_TITLE")"
+body+="}"
 
 curl -sS -w '\nHTTP %{http_code}\n' \
-  -X POST "http://127.0.0.1:$port/v1/$endpoint" \
+  -X POST "http://127.0.0.1:$port/v1/slack-threads" \
   -H "Authorization: Bearer $token" \
-  -H "Content-Type: $content_type" \
-  ${extra[@]+"${extra[@]}"} \
-  --data-binary "@$file"
+  -H "Content-Type: application/json; charset=utf-8" \
+  --data-binary "$body"

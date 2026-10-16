@@ -1,4 +1,4 @@
-// Opens THE todo / note / capture LIST window — a standalone OS window docked against the
+// Opens THE todo / note LIST window — a standalone OS window docked against the
 // right edge of the monitor the user is working on (same as the permission
 // window), so it reads like a side panel beside the main window WITHOUT ever
 // resizing it (resizing the main window was janky).
@@ -11,14 +11,13 @@ import { emit } from '@tauri-apps/api/event'
 import { trackWindowForTray } from '@/lib/tray'
 import { dockRightOnCurrentMonitor } from '@/lib/windowCascade'
 import type { ItemKind } from '@/lib/itemWindow'
-import type { CaptureKind } from '@/stores/captures'
+import { openSlackWindow } from '@/lib/slackWindow'
 
 /**
- * The list window's tabs: the two hand-written kinds plus the two capture kinds
- * (Slack threads, web pages), which arrive from the Inbox API and open in their
- * own detail window (lib/captureWindow) instead of the item window.
+ * The list window's tabs: todos and notes. Slack threads have their own window
+ * (lib/slackWindow); `'slack'` here is only accepted to redirect there.
  */
-export type ItemListKind = ItemKind | CaptureKind
+export type ItemListKind = ItemKind | 'slack'
 
 const LIST_WINDOW_LABEL = 'item-list'
 const LIST_WINDOW_WIDTH = 460
@@ -50,6 +49,8 @@ export async function openItemListWindow(
   opts: { projectId?: string | null } = {},
 ): Promise<WebviewWindow | null> {
   const projectId = opts.projectId ?? null
+  // Slack threads moved out of this list into their own window.
+  if (kind === 'slack') return openSlackWindow({ projectId })
 
   const existing = await WebviewWindow.getByLabel(LIST_WINDOW_LABEL)
   if (existing) {

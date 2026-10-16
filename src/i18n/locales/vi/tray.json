@@ -11,6 +11,5 @@
   "runningSessions": "Phiên đang chạy ({count})",
   "noRunningSessions": "Không có phiên nào đang chạy",
   "todoItem": "Việc: {name}",
-  "noteItem": "Ghi chú: {name}",
-  "captureWindow": "Nội dung đã lưu"
+  "noteItem": "Ghi chú: {name}"
 }
