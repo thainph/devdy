@@ -15,7 +15,7 @@
 //            thoughts can be captured in a row.
 //   edit   — ItemDetail, with a preview/edit toggle, delete and save.
 //
-// Edit mode shares the capture window's chrome (views/CaptureWindow.vue): the
+// Edit mode uses the shared detail-window chrome (DetailWindowTitlebar / Footer): the
 // same titlebar, the same action bar — reading: the project on the left, Mark
 // done (todo) / Copy markdown (note) + Edit + the ⋯ menu (Copy ID, Delete) on
 // the right; writing: Cancel + Save — and the same shortcuts: E edits, F2 renames a note's title,
