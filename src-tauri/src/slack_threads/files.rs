@@ -4,9 +4,7 @@
 use super::api::{SlackClient, SlackError};
 use super::store::{self, avatar_rel_path};
 use super::SlackCtx;
-use crate::inbox_api::ingest::safe_file_name;
 use serde_json::Value;
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -89,6 +87,37 @@ pub fn remove_file_dir(app_data: &Path, thread_id: &str, slack_file_id: &str) {
         if dir.exists() {
             let _ = std::fs::remove_dir_all(dir);
         }
+    }
+}
+
+/// Flat, filesystem-safe file name (each Slack file has its own dir, so no
+/// uniqueness is needed): unsafe chars → `_`, no leading dots, ≤ 100 chars
+/// (extension kept), never empty.
+pub fn safe_file_name(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let mut cleaned: String = base
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    cleaned = cleaned.trim_start_matches('.').to_string();
+    if cleaned.chars().count() > 100 {
+        let (stem, ext) = match cleaned.rfind('.') {
+            Some(i) if i > 0 => (&cleaned[..i], &cleaned[i..]),
+            _ => (cleaned.as_str(), ""),
+        };
+        let stem: String = stem.chars().take(90).collect();
+        cleaned = format!("{}{}", stem, ext.chars().take(10).collect::<String>());
+    }
+    if cleaned.is_empty() {
+        "file".to_string()
+    } else {
+        cleaned
     }
 }
 
@@ -365,7 +394,7 @@ pub async fn sync_files(
             if guard.cancelled.load(Ordering::SeqCst) {
                 return (f, String::new(), Err(DlError::Cancelled));
             }
-            let name = safe_file_name(&f.name, &mut HashSet::new());
+            let name = safe_file_name(&f.name);
             let html = f.filetype.as_deref() == Some("html")
                 || f.mime
                     .as_deref()
@@ -496,6 +525,11 @@ mod tests {
             Some("slack-threads/t1/files/F1")
         );
         assert_eq!(file_dir_rel("../t1", "F1"), None);
+        assert_eq!(safe_file_name("a/b/shot one.png"), "shot_one.png");
+        assert_eq!(safe_file_name("..\\..\\x.txt"), "x.txt");
+        assert_eq!(safe_file_name("..."), "file");
+        let long = format!("{}.pdf", "x".repeat(200));
+        assert_eq!(safe_file_name(&long), format!("{}.pdf", "x".repeat(90)));
         assert_eq!(file_dir_rel("t1", "F/1"), None);
     }
 }

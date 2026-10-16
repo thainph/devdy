@@ -41,7 +41,7 @@ use translate::{EngineError, TranslateEngine};
 
 pub const CHANGED_EVENT: &str = "slack-threads://changed";
 pub const PROGRESS_EVENT: &str = "slack-threads://progress";
-/// Existing event (also used by web captures); payload `{ id, kind: 'slack' }`.
+/// Emitted when an OS notification is clicked; payload `{ id, kind: 'slack' }`.
 pub const NOTIFICATION_CLICKED_EVENT: &str = "capture-notification-clicked";
 
 const MAX_PARALLEL_JOBS: usize = 2;

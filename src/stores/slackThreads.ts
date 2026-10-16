@@ -5,8 +5,8 @@ import { invoke } from '@/lib/tauri'
 /**
  * Slack threads fetched by Devdy from a thread link (Slack Web API) and
  * translated message by message into Vietnamese. They live in their own tables
- * (slack_threads / slack_messages / slack_files / slack_users), apart from the
- * web-page captures. Shapes are the backend contract (serde camelCase) — see
+ * (slack_threads / slack_messages / slack_files / slack_users). Shapes are the
+ * backend contract (serde camelCase) — see
  * docs/srs-slack-thread-translate.md §10.
  */
 export type SlackFetchStatus = 'pending' | 'fetching' | 'translating' | 'ready' | 'error'

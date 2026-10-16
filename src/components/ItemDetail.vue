@@ -9,7 +9,7 @@
 // protecting: "title + body + project, ⌘⏎ saves, then update() and maybe
 // setProject()" used to exist in three places and drifted between them.
 //
-// The read view follows the capture window's layout (views/CaptureWindow.vue):
+// The read view follows the detail windows' shared layout:
 // a note's title as a large heading — renamed in place (click or F2 → inline
 // field) —, one compact metadata line (age; full dates in its tooltip), the
 // session backlink when offered, a divider, then the body as markdown. The

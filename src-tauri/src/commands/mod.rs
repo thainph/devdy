@@ -1,6 +1,5 @@
 pub mod agents_block;
 pub mod app_menu;
-pub mod captures;
 pub mod aws_accounts;
 pub mod aws_sso;
 pub mod claude_accounts;
@@ -14,6 +13,7 @@ pub mod gitlab_accounts;
 pub mod google;
 pub mod groups;
 pub mod health;
+pub mod inbox_api;
 pub mod mascot_speak;
 pub mod mcp;
 pub mod models;

@@ -114,7 +114,6 @@ function buildSpec(state: MenuState): MenuSpec {
         accelerator: 'CmdOrCtrl+Shift+K',
       },
       { kind: 'item', id: 'view.slackThreads', label: t('menu.slackThreads') },
-      { kind: 'item', id: 'view.webPages', label: t('menu.webPages') },
       {
         kind: 'item',
         id: 'view.toggleFocus',

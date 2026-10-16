@@ -12,7 +12,6 @@
     "gantt",
     "mascot",
     "session-*",
-    "capture-*",
     "slack-threads"
   ],
   "permissions": [

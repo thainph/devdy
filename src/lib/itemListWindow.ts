@@ -1,4 +1,4 @@
-// Opens THE todo / note / web page LIST window — a standalone OS window docked against the
+// Opens THE todo / note LIST window — a standalone OS window docked against the
 // right edge of the monitor the user is working on (same as the permission
 // window), so it reads like a side panel beside the main window WITHOUT ever
 // resizing it (resizing the main window was janky).
@@ -12,15 +12,12 @@ import { trackWindowForTray } from '@/lib/tray'
 import { dockRightOnCurrentMonitor } from '@/lib/windowCascade'
 import type { ItemKind } from '@/lib/itemWindow'
 import { openSlackWindow } from '@/lib/slackWindow'
-import type { CaptureKind } from '@/stores/captures'
 
 /**
- * The list window's tabs: the two hand-written kinds plus web pages, which arrive
- * from the Inbox API and open in their own detail window (lib/captureWindow)
- * instead of the item window. Slack threads have their own window
+ * The list window's tabs: todos and notes. Slack threads have their own window
  * (lib/slackWindow); `'slack'` here is only accepted to redirect there.
  */
-export type ItemListKind = ItemKind | CaptureKind | 'slack'
+export type ItemListKind = ItemKind | 'slack'
 
 const LIST_WINDOW_LABEL = 'item-list'
 const LIST_WINDOW_WIDTH = 460
