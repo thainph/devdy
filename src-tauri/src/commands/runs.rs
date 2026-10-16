@@ -122,7 +122,7 @@ pub(crate) async fn start_run_inner(
     // Load run + project info
     let run_row = sqlx::query(
         "SELECT r.id, r.project_id, r.type, r.ref_number, r.input_path, r.output_path, r.engine, r.status, r.claude_account_id,
-                p.path as project_path
+                r.system_instruction, p.path as project_path
          FROM runs r
          JOIN projects p ON p.id = r.project_id
          WHERE r.id = ?",
@@ -139,6 +139,7 @@ pub(crate) async fn start_run_inner(
     let status: String = run_row.get("status");
     let project_path: String = run_row.get("project_path");
     let existing_claude_account_id: Option<String> = run_row.get("claude_account_id");
+    let stored_instruction: Option<String> = run_row.get("system_instruction");
 
     let is_session = run_type == "session";
 
@@ -262,6 +263,37 @@ pub(crate) async fn start_run_inner(
             }
         });
 
+    // Every top-level run launches as a conductor (any engine, any run type);
+    // workers get `None`. Resolved here — not only by `start_conductor` — so
+    // every start path (desktop, Remote Control, rerun/handoff) is covered.
+    let conductor_launch = match app.try_state::<crate::conductor::ConductorState>() {
+        Some(cst) => {
+            crate::conductor::commands::ensure_conductor_launch(db, cst.inner(), &payload.run_id)
+                .await?
+        }
+        None => None,
+    };
+    let conductor_token: Option<String> = payload
+        .conductor_token
+        .clone()
+        .or_else(|| conductor_launch.as_ref().map(|c| c.token.clone()));
+    // Role instruction (the caller's, else the one persisted for a worker) + the
+    // session framing. Both engines get it: Claude as an appended system prompt,
+    // Codex as thread developer instructions (which seeds the new thread).
+    let instruction = payload
+        .append_system_prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or(stored_instruction);
+    let extra_system_prompt: Option<String> =
+        crate::conductor::run_framing(instruction.as_deref(), conductor_launch.as_ref());
+    // A conductor outside bypass mode still runs its own orchestration tools
+    // without a modal; only real work stays permission-gated.
+    let auto_allow_conductor_tools =
+        conductor_token.is_some() && permission_mode != "bypassPermissions";
+
     // Resolve the model: per-run override wins, else the per-engine default
     // setting. An empty result means "let the engine pick its default".
     let engine_default_model = if engine == "codex" {
@@ -318,7 +350,9 @@ pub(crate) async fn start_run_inner(
     // (NULL means the engine's own default was used).
     let started_at = chrono::Utc::now().to_rfc3339();
     sqlx::query(
-        "UPDATE runs SET status = 'running', engine = ?, model = ?, started_at = ?, last_activity_at = ? WHERE id = ?",
+        // A fresh start is a fresh Codex thread, re-seeded by its own thread/start
+        // developer instructions (the sidecar reports `_devdy_framing_seeded`).
+        "UPDATE runs SET status = 'running', engine = ?, model = ?, started_at = ?, last_activity_at = ?, framing_seeded = 0 WHERE id = ?",
     )
     .bind(&engine)
     .bind(&model)
@@ -409,17 +443,16 @@ pub(crate) async fn start_run_inner(
             if let Some(ctx) = &account_context {
                 append_parts.push(ctx.clone());
             }
-            if let Some(extra) = payload
-                .append_system_prompt
-                .as_ref()
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-            {
-                append_parts.push(extra.to_string());
+            if let Some(extra) = &extra_system_prompt {
+                append_parts.push(extra.clone());
             }
             if !append_parts.is_empty() {
                 options["appendSystemPrompt"] =
                     serde_json::Value::String(append_parts.join("\n\n"));
+            }
+            if auto_allow_conductor_tools {
+                options["allowedTools"] =
+                    serde_json::json!([crate::conductor::CONDUCTOR_TOOLS_ALLOW]);
             }
             // Inject the project's enabled MCP servers for the ACTUAL run engine
             // (QĐ-2). Claude gets the full 3-transport map via options.mcpServers;
@@ -452,7 +485,7 @@ pub(crate) async fn start_run_inner(
             .await;
             // Conductor runs additionally get the loopback `conductor` MCP server
             // (session_* control tools), scoped by their bearer token.
-            let mcp = if let Some(token) = payload.conductor_token.as_deref() {
+            let mcp = if let Some(token) = conductor_token.as_deref() {
                 if let Some(cst) = app.try_state::<crate::conductor::ConductorState>() {
                     crate::conductor::with_conductor(mcp, &cst.base_url(), token)
                 } else {
@@ -568,8 +601,22 @@ pub(crate) async fn start_run_inner(
         &crate::runs::sidecar::resolve_mcp_script(&app, "google.mjs"),
     )
     .await;
+    // Conductor runs get the loopback `conductor` MCP server on Codex too.
+    let codex_mcp = match (
+        conductor_token.as_deref(),
+        app.try_state::<crate::conductor::ConductorState>(),
+    ) {
+        (Some(token), Some(cst)) => {
+            crate::conductor::with_conductor_codex(codex_mcp, &cst.base_url(), token)
+        }
+        _ => codex_mcp,
+    };
     if !codex_mcp.is_null() {
         cmd.env("DEVDY_CODEX_MCP", codex_mcp.to_string());
+    }
+    // Conductor framing / worker instruction → Codex developer instructions.
+    if let Some(extra) = &extra_system_prompt {
+        cmd.env("DEVDY_CODEX_DEVELOPER_INSTRUCTIONS", extra);
     }
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -2437,10 +2484,92 @@ pub async fn create_session_run(
     })
 }
 
+/// Delete a run and, for a session, every worker it spawned (runs whose
+/// `conductor_run_id` is this run) — each exactly like a normal run delete (DB
+/// row, log, transcript, links). All-or-nothing up front: refuses, deleting
+/// nothing, while the run or any of its workers is still active. When
+/// `conductor` is given, the deleted runs' in-memory sessions and bearer tokens
+/// are revoked too. Returns how many runs were deleted.
+pub(crate) async fn delete_run_tree(
+    db: &sqlx::SqlitePool,
+    registry: &RunRegistry,
+    conductor: Option<&crate::conductor::ConductorState>,
+    run_id: &str,
+) -> Result<u32, String> {
+    let worker_ids: Vec<String> =
+        sqlx::query_scalar("SELECT id FROM runs WHERE conductor_run_id = ? AND id != ?")
+            .bind(run_id)
+            .bind(run_id)
+            .fetch_all(db)
+            .await
+            .map_err(|e| e.to_string())?;
+
+    // All-or-nothing: validate the session AND every worker (live handle or a
+    // DB status still 'running', e.g. left stuck by a crash) before deleting
+    // anything, so a refusal never leaves a half-deleted tree.
+    let parent_status: Option<String> = sqlx::query_scalar("SELECT status FROM runs WHERE id = ?")
+        .bind(run_id)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    let parent_status = parent_status.ok_or_else(|| "run not found".to_string())?;
+    let (parent_live, worker_live) = {
+        let reg = registry.lock().await;
+        (
+            reg.contains_key(run_id),
+            worker_ids.iter().any(|w| reg.contains_key(w)),
+        )
+    };
+    if parent_live {
+        return Err("Run is still active — cancel it before deleting".to_string());
+    }
+    if parent_status == "running" {
+        return Err("Run is still running — cancel it before deleting".to_string());
+    }
+    let workers_running: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM runs WHERE conductor_run_id = ? AND id != ? AND status = 'running'",
+    )
+    .bind(run_id)
+    .bind(run_id)
+    .fetch_one(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    if worker_live || workers_running > 0 {
+        return Err(
+            "A worker of this session is still running — cancel it before deleting".to_string(),
+        );
+    }
+
+    let mut deleted = 0u32;
+    for worker_id in &worker_ids {
+        delete_single_run(db, registry, worker_id).await?;
+        if let Some(c) = conductor {
+            c.unregister_session(worker_id);
+        }
+        deleted += 1;
+    }
+    delete_single_run(db, registry, run_id).await?;
+    if let Some(c) = conductor {
+        c.unregister_session(run_id);
+    }
+    Ok(deleted + 1)
+}
+
+/// [`delete_run_tree`] without in-memory token revocation (tests and callers
+/// without app state).
+#[cfg(test)]
+pub(crate) async fn delete_run_inner(
+    db: &sqlx::SqlitePool,
+    registry: &RunRegistry,
+    run_id: &str,
+) -> Result<(), String> {
+    delete_run_tree(db, registry, None, run_id).await.map(|_| ())
+}
+
 /// Core logic for deleting a single run. Removes the DB row, per-run log file,
 /// and cached input markdown when no sibling run still references it. Empty
 /// task folder is removed. Refuses to delete runs currently in the registry.
-pub(crate) async fn delete_run_inner(
+async fn delete_single_run(
     db: &sqlx::SqlitePool,
     registry: &RunRegistry,
     run_id: &str,
@@ -2480,6 +2609,13 @@ pub(crate) async fn delete_run_inner(
         .execute(db)
         .await
         .map_err(|e| e.to_string())?;
+
+    // Every top-level run owns a conductor session row (events cascade). Drop it
+    // so a deleted run is not re-registered on every startup.
+    let _ = sqlx::query("DELETE FROM conductor_sessions WHERE id = ?")
+        .bind(run_id)
+        .execute(db)
+        .await;
 
     // Slack threads linked to this session (no FK to runs in this DB).
     let _ = crate::slack_threads::run_links::delete_for_run(db, run_id).await;
@@ -2561,7 +2697,14 @@ pub async fn delete_run(
     registry: State<'_, RunRegistry>,
     run_id: String,
 ) -> Result<(), String> {
-    delete_run_inner(db.inner(), registry.inner(), &run_id).await?;
+    let conductor = app.try_state::<crate::conductor::ConductorState>();
+    delete_run_tree(
+        db.inner(),
+        registry.inner(),
+        conductor.as_ref().map(|c| c.inner()),
+        &run_id,
+    )
+    .await?;
     crate::slack_threads::emit_all_changed(&app);
     crate::item_links::emit_changed(&app, None);
     Ok(())
@@ -2822,14 +2965,20 @@ pub async fn delete_all_runs(
         .await
         .map_err(|e| e.to_string())?;
 
+    let conductor = app.try_state::<crate::conductor::ConductorState>();
     let mut deleted = 0u32;
     for row in &rows {
         let id: String = row.get("id");
-        if delete_run_inner(db.inner(), registry.inner(), &id)
-            .await
-            .is_ok()
+        // A worker already removed with its session simply fails to load here.
+        if let Ok(n) = delete_run_tree(
+            db.inner(),
+            registry.inner(),
+            conductor.as_ref().map(|c| c.inner()),
+            &id,
+        )
+        .await
         {
-            deleted += 1;
+            deleted += n;
         }
     }
     if deleted > 0 {
@@ -2872,7 +3021,7 @@ pub async fn resume_run(
     use sqlx::Row;
 
     let row = sqlx::query(
-        "SELECT r.engine, r.status, r.session_id, r.project_id, r.claude_account_id, r.role, p.path as project_path
+        "SELECT r.engine, r.status, r.session_id, r.project_id, r.claude_account_id, p.path as project_path
          FROM runs r JOIN projects p ON p.id = r.project_id
          WHERE r.id = ?",
     )
@@ -2886,7 +3035,6 @@ pub async fn resume_run(
     let session_id: Option<String> = row.get("session_id");
     let project_id: String = row.get("project_id");
     let claude_account_id: Option<String> = row.get("claude_account_id");
-    let run_role: Option<String> = row.get("role");
     let project_path: String = row.get("project_path");
 
     // Same budget guardrail as start_run — resuming a finished run starts a new
@@ -2916,6 +3064,17 @@ pub async fn resume_run(
             return Err("Run already has an active subprocess".to_string());
         }
     }
+
+    // A resumed top-level run is (or becomes) a conductor: re-inject its
+    // `conductor` MCP server + framing on BOTH engines — neither the Claude SDK
+    // nor Codex keeps an appended system prompt across a resume. Workers get None.
+    let cst = app.try_state::<crate::conductor::ConductorState>();
+    let crate::conductor::commands::ResumeFraming {
+        launch: conductor_launch,
+        framing,
+        seeded: framing_seeded,
+    } = crate::conductor::commands::resume_framing(db.inner(), cst.as_ref().map(|c| c.inner()), &run_id)
+        .await?;
 
     // Load engine settings (path, extra_args, default permission mode).
     let settings_rows = sqlx::query("SELECT key, value FROM settings")
@@ -3060,8 +3219,25 @@ pub async fn resume_run(
             &crate::runs::sidecar::resolve_mcp_script(&app, "google.mjs"),
         )
         .await;
+        let codex_mcp = match (
+            conductor_launch.as_ref(),
+            app.try_state::<crate::conductor::ConductorState>(),
+        ) {
+            (Some(c), Some(cst)) => {
+                crate::conductor::with_conductor_codex(codex_mcp, &cst.base_url(), &c.token)
+            }
+            _ => codex_mcp,
+        };
         if !codex_mcp.is_null() {
             cmd.env("DEVDY_CODEX_MCP", codex_mcp.to_string());
+        }
+        // Codex ignores developerInstructions on thread/resume (verified against a
+        // real Codex), so a thread never started with this framing (e.g. a legacy
+        // plain session) is seeded ONCE by prepending it to the next turn's prompt.
+        // The sidecar reports `_devdy_framing_seeded`, which sets
+        // runs.framing_seeded so later resumes don't repeat it.
+        if let Some(seed) = crate::conductor::codex_resume_seed(framing.as_deref(), framing_seeded) {
+            cmd.env("DEVDY_CODEX_SEED_FRAMING", seed);
         }
     } else {
         cmd.env(
@@ -3106,21 +3282,28 @@ pub async fn resume_run(
         // A resumed conductor must keep its `session_*` control tools. Re-inject
         // the loopback conductor MCP server with the session's current token
         // (restored on startup for pre-restart sessions).
-        let mcp = if run_role.as_deref() == Some("conductor") {
-            if let Some(cst) = app.try_state::<crate::conductor::ConductorState>() {
-                if let Some(token) = cst.token_for(&run_id) {
-                    crate::conductor::with_conductor(mcp, &cst.base_url(), &token)
-                } else {
-                    mcp
-                }
-            } else {
-                mcp
-            }
-        } else {
-            mcp
+        let mcp = match (
+            conductor_launch.as_ref(),
+            app.try_state::<crate::conductor::ConductorState>(),
+        ) {
+            (Some(c), Some(cst)) => crate::conductor::with_conductor(mcp, &cst.base_url(), &c.token),
+            _ => mcp,
         };
         if !mcp.is_null() {
             cmd.env("DEVDY_MCP_SERVERS", mcp.to_string());
+        }
+        // Sidecar fallbacks for a resumed first prompt that carries no options:
+        // the Claude SDK does not persist an appended system prompt, so the
+        // framing (session framing and/or a worker's instruction) is re-sent on
+        // every resume.
+        if let Some(framing) = &framing {
+            cmd.env("DEVDY_APPEND_SYSTEM_PROMPT", framing);
+        }
+        if conductor_launch.is_some() && sdk_permission_mode(&permission_mode) != "bypassPermissions" {
+            cmd.env(
+                "DEVDY_ALLOWED_TOOLS",
+                serde_json::json!([crate::conductor::CONDUCTOR_TOOLS_ALLOW]).to_string(),
+            );
         }
         // Reuse the original run's Claude account profile (clears inherited auth
         // env overrides). No-op for legacy runs → keeps the global profile.
