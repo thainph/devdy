@@ -116,7 +116,6 @@ use commands::vps_servers::{
 use commands::work_digest::get_work_digest;
 use commands::models::{get_model_caches, refresh_codex_models, validate_claude_models};
 use commands::translate::{cancel_translate, prewarm_translate, translate_text, TranslateState};
-use commands::work_summary::{cancel_work_summary, summarize_work_digest, WorkSummaryState};
 use remote::commands::{
     remote_clear_audit, remote_create_session_link, remote_disable, remote_enable,
     remote_end_session, remote_get_audit, remote_reveal_otp, remote_set_config,
@@ -232,7 +231,6 @@ pub fn run() {
 
             app.manage(db);
             app.manage(FileTreeWatchers::default());
-            app.manage(WorkSummaryState::default());
             // One warm translation sidecar, shared by the UI and the Inbox API.
             let translate_state = TranslateState::default();
             app.manage(translate_state.clone());
@@ -546,8 +544,6 @@ pub fn run() {
             conductor::commands::set_conductor_max_workers,
             get_usage_stats,
             get_work_digest,
-            summarize_work_digest,
-            cancel_work_summary,
             translate_text,
             cancel_translate,
             prewarm_translate,

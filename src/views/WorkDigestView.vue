@@ -1,17 +1,14 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useActivatedRefresh } from '@/composables/useActivatedRefresh'
 import {
   CalendarClock, Clock, Activity, DollarSign, ListChecks, Loader2, FolderOpen,
-  Sparkles,
+  ChevronLeft, ChevronRight,
 } from 'lucide-vue-next'
 import { Button, Card, Input, Badge, StatusBadge, AppSelect } from '@/components/ui'
 import { useProjectsStore } from '@/stores/projects'
-import { useWorkSummaryStore } from '@/stores/workSummary'
-import { useMarkdown } from '@/lib/markdown'
-import StreamLog from '@/components/StreamLog.vue'
 import {
   getWorkDigest,
   type WorkDigestResult,
@@ -28,14 +25,15 @@ const projectsStore = useProjectsStore()
 const { t } = useI18n()
 
 // ── date range presets ──────────────────────────────────────────────────────
+// `day` = any single local calendar day (date picker + prev/next), defaulting
+// to today; the others are multi-day ranges.
 const PRESET_OPTIONS = computed(() => [
-  { value: 'today', label: t('workDigest.preset.today') },
-  { value: 'yesterday', label: t('workDigest.preset.yesterday') },
+  { value: 'day', label: t('workDigest.preset.day') },
   { value: '7d', label: t('workDigest.preset.last7d') },
   { value: 'month', label: t('workDigest.preset.thisMonth') },
   { value: 'custom', label: t('workDigest.preset.custom') },
 ])
-const preset = ref('today')
+const preset = ref('day')
 
 // Local-time YYYY-MM-DD (NOT toISOString, which shifts to UTC).
 function fmtLocal(d: Date): string {
@@ -48,15 +46,50 @@ function fmtLocal(d: Date): string {
 const customFrom = ref(fmtLocal(new Date()))
 const customTo = ref(fmtLocal(new Date()))
 
+// Selected day for the `day` preset (local YYYY-MM-DD).
+const day = ref(fmtLocal(new Date()))
+const todayYmd = ref(fmtLocal(new Date()))
+// Next-day / Today are disabled once the selected day reaches today.
+const isToday = computed(() => day.value >= todayYmd.value)
+
+// Shift a local YYYY-MM-DD by `delta` days (parsed as local midnight).
+function shiftDay(ymd: string, delta: number): string {
+  const [y, m, d] = ymd.split('-').map(Number)
+  return fmtLocal(new Date(y, m - 1, d + delta))
+}
+function prevDay() {
+  day.value = shiftDay(day.value || todayYmd.value, -1)
+}
+function nextDay() {
+  refreshToday()
+  if (isToday.value) return
+  day.value = shiftDay(day.value || todayYmd.value, 1)
+}
+function goToday() {
+  refreshToday()
+  day.value = todayYmd.value
+}
+// The view can stay open (or cached by <KeepAlive>) across midnight. Roll
+// `todayYmd` forward, and keep a selection that was "today" following along.
+function refreshToday() {
+  const now = fmtLocal(new Date())
+  if (now === todayYmd.value) return
+  if (day.value === todayYmd.value) day.value = now
+  todayYmd.value = now
+}
+const todayTimer = setInterval(refreshToday, 60_000)
+onBeforeUnmount(() => clearInterval(todayTimer))
+// Clearing the native date input yields '' — fall back to today.
+watch(day, (v) => {
+  if (!v) day.value = todayYmd.value
+})
+
 function presetToRange(p: string): { from: string; to: string } {
   const now = new Date()
   const today = fmtLocal(now)
-  if (p === 'today') return { from: today, to: today }
-  if (p === 'yesterday') {
-    const y = new Date(now)
-    y.setDate(now.getDate() - 1)
-    const yd = fmtLocal(y)
-    return { from: yd, to: yd }
+  if (p === 'day') {
+    const d = day.value || today
+    return { from: d, to: d }
   }
   if (p === '7d') {
     const start = new Date(now)
@@ -138,37 +171,7 @@ async function load() {
 
 watch(currentFilter, load, { deep: true })
 
-// ── AI work summary (on-demand, streamed, survives navigation) ────────────────
-// State lives in a Pinia store so leaving and re-entering this view keeps a
-// running summary and its streamed text. The store is keyed by the filter it
-// ran for, so a summary is only shown for the matching selection.
-const summaryStore = useWorkSummaryStore()
-const { renderText, loadMarkdown } = useMarkdown()
-
-const summaryForCurrent = computed(() => summaryStore.isFor(currentFilter.value))
-const summarizing = computed(
-  () => summaryForCurrent.value && summaryStore.status === 'running',
-)
-const summaryEntries = computed(() =>
-  summaryForCurrent.value ? summaryStore.entries : [],
-)
-const showSummaryCard = computed(
-  () => summaryForCurrent.value && summaryStore.status !== 'idle',
-)
-
-function generateSummary() {
-  if (!hasData.value || summarizing.value) return
-  summaryStore.start(currentFilter.value)
-}
-function stopSummary() {
-  summaryStore.cancel()
-}
-
 onMounted(async () => {
-  loadMarkdown()
-  // Re-attach event listeners in case a summary is still streaming from a
-  // previous visit.
-  summaryStore.bind()
   if (projectsStore.projects.length === 0) await projectsStore.fetchProjects()
   // Default: select all projects.
   selectAll()
@@ -179,7 +182,10 @@ onMounted(async () => {
 // that is a first-run default, and re-applying it on every visit would silently
 // throw away the project filter the user picked last time (which <KeepAlive> is
 // now preserving for them).
-useActivatedRefresh(() => load())
+useActivatedRefresh(() => {
+  refreshToday()
+  load()
+})
 
 // ── formatting ──────────────────────────────────────────────────────────────
 function fmtDuration(secs: number | null): string {
@@ -242,22 +248,6 @@ function openItem(item: WorkItem) {
         <span v-if="loading" class="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Loader2 class="h-3.5 w-3.5 animate-spin" /> {{ t('workDigest.loading') }}
         </span>
-        <template v-if="summarizing">
-          <span class="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <Loader2 class="h-3.5 w-3.5 animate-spin" /> {{ t('workDigest.summarizing') }}
-          </span>
-          <Button variant="ghost" size="sm" @click="stopSummary">{{ t('workDigest.stop') }}</Button>
-        </template>
-        <Button
-          v-else
-          variant="outline"
-          size="sm"
-          :disabled="!hasData"
-          @click="generateSummary"
-        >
-          <Sparkles class="h-3.5 w-3.5" />
-          {{ t('workDigest.generateSummary') }}
-        </Button>
       </div>
     </div>
 
@@ -266,7 +256,25 @@ function openItem(item: WorkItem) {
       <!-- Filters -->
       <div class="flex flex-wrap items-center gap-2">
         <AppSelect v-model="preset" :options="PRESET_OPTIONS" size="sm" class="w-40" />
-        <template v-if="preset === 'custom'">
+        <template v-if="preset === 'day'">
+          <Button variant="ghost" size="icon-sm" :title="t('workDigest.prevDay')" @click="prevDay">
+            <ChevronLeft class="h-4 w-4" />
+          </Button>
+          <Input v-model="day" type="date" size="sm" class="w-40" :max="todayYmd" />
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            :title="t('workDigest.nextDay')"
+            :disabled="isToday"
+            @click="nextDay"
+          >
+            <ChevronRight class="h-4 w-4" />
+          </Button>
+          <Button variant="outline" size="sm" :disabled="isToday" @click="goToday">
+            {{ t('workDigest.preset.today') }}
+          </Button>
+        </template>
+        <template v-else-if="preset === 'custom'">
           <Input v-model="customFrom" type="date" size="sm" class="w-40" />
           <span class="text-xs text-muted-foreground">→</span>
           <Input v-model="customTo" type="date" size="sm" class="w-40" />
@@ -330,28 +338,6 @@ function openItem(item: WorkItem) {
       </div>
 
       <template v-if="hasData && digest && !rangeError && !noProjectSelected">
-        <!-- AI work summary (on-demand, streamed — same view as project AI result) -->
-        <Card
-          v-if="showSummaryCard"
-          class="border-border/60"
-          body-class="p-4"
-        >
-          <div class="flex items-center gap-1.5 text-xs font-medium text-muted-foreground mb-3">
-            <Sparkles class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('workDigest.aiSummary') }}
-          </div>
-          <StreamLog
-            :entries="summaryEntries"
-            :running="summarizing"
-            :render-text="renderText"
-          />
-          <div
-            v-if="summarizing && summaryEntries.length === 0"
-            class="flex items-center gap-1.5 text-xs text-muted-foreground mt-2"
-          >
-            <Loader2 class="h-3.5 w-3.5 animate-spin" /> {{ t('workDigest.starting') }}
-          </div>
-        </Card>
-
         <!-- Summary cards -->
         <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <Card class="border-border/60" body-class="p-4">
