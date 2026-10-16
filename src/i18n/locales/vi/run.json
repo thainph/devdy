@@ -63,7 +63,7 @@
   "focus": "Focus",
   "session": "Session",
   "files": "Files",
-  "conductor": "Conductor",
+  "conductor": "Session",
   "creating": "Đang tạo…",
   "newSession": "New session",
   "fetchIssuePr": "Fetch Issue / PR",
@@ -86,7 +86,7 @@
   "noMatchingSessions": "Không có session nào khớp",
   "pinned": "Đã ghim",
   "protected": "Đã bảo vệ",
-  "protectedByConductor": "Được bảo vệ theo conductor",
+  "protectedByConductor": "Được bảo vệ theo session",
   "lastActivity": "Hoạt động gần nhất",
   "waitingForAnswer": "Đang chờ bạn trả lời",
   "waitingForPermission": "Đang chờ bạn cấp quyền",
@@ -104,11 +104,6 @@
   "pinToTop": "Ghim lên đầu",
   "protect": "Bảo vệ",
   "unprotect": "Bỏ bảo vệ",
-  "convertToConductor": "Chuyển sang conductor",
-  "convertToConductorTitle": "Chuyển sang conductor",
-  "convertToConductorMessage": "Chuyển {label} thành phiên conductor? Thao tác này chỉ nâng cấp phiên trong cơ sở dữ liệu để có thể tạo worker — không tiếp tục/chạy gì và không tốn token. Bộ công cụ điều phối sẽ sẵn sàng ở lần bạn tự tiếp tục phiên với prompt của mình.",
-  "convertToConductorConfirm": "Chuyển đổi",
-  "convertedToConductor": "Đã chuyển sang conductor",
   "deleteThisRun": "Xóa run này",
   "runNamePlaceholder": "Tên run",
   "saveName": "Lưu tên",
@@ -189,5 +184,13 @@
   "quickCapture": "Ghi chú",
   "quickCaptureTitle": "Ghi chú / thêm việc nhanh mà không rời phiên đang chạy — ⌘/Ctrl+K",
   "focusMode": "Chế độ tập trung",
-  "projectSettings": "Cài đặt dự án"
+  "projectSettings": "Cài đặt dự án",
+  "relNow": "vừa xong",
+  "notRunSessionHint": "gõ mục tiêu ở khung chat phía dưới để khởi chạy session",
+  "density": {
+    "title": "Mật độ dòng",
+    "comfortable": "Thoáng",
+    "compact": "Gọn",
+    "dense": "Dày"
+  }
 }
