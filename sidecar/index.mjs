@@ -41,6 +41,15 @@ import { query } from '@anthropic-ai/claude-agent-sdk'
 import { randomUUID } from 'node:crypto'
 import readline from 'node:readline'
 
+// Broker → sidecar inputs consumed by this process only. Captured once and
+// removed from process.env so they never reach the Claude CLI child (or the MCP
+// servers it spawns) — DEVDY_MCP_SERVERS carries the session's bearer token.
+const SIDECAR_ENV = {}
+for (const k of ['DEVDY_MCP_SERVERS', 'DEVDY_ALLOWED_TOOLS', 'DEVDY_APPEND_SYSTEM_PROMPT']) {
+  SIDECAR_ENV[k] = process.env[k]
+  delete process.env[k]
+}
+
 function send(obj) {
   process.stdout.write(JSON.stringify(obj) + '\n')
 }
@@ -222,26 +231,38 @@ function startQuery(firstText, opts = {}, firstImages) {
   // without this fallback a resumed session loses all its MCP servers).
   if (opts.mcpServers && typeof opts.mcpServers === 'object') {
     options.mcpServers = opts.mcpServers
-  } else if (process.env.DEVDY_MCP_SERVERS) {
+  } else if (SIDECAR_ENV.DEVDY_MCP_SERVERS) {
     try {
-      const parsed = JSON.parse(process.env.DEVDY_MCP_SERVERS)
+      const parsed = JSON.parse(SIDECAR_ENV.DEVDY_MCP_SERVERS)
       if (parsed && typeof parsed === 'object') options.mcpServers = parsed
     } catch { /* ignore malformed env; run without MCP rather than crash */ }
   }
   const resume = opts.resume || process.env.DEVDY_RESUME_SESSION
   if (resume) options.resume = resume
   if (Array.isArray(opts.allowedTools)) options.allowedTools = opts.allowedTools
+  else if (SIDECAR_ENV.DEVDY_ALLOWED_TOOLS) {
+    // Resume fallback (like DEVDY_MCP_SERVERS): a conductor's own `mcp__conductor`
+    // tools stay auto-allowed in gated permission modes.
+    try {
+      const parsed = JSON.parse(SIDECAR_ENV.DEVDY_ALLOWED_TOOLS)
+      if (Array.isArray(parsed)) options.allowedTools = parsed
+    } catch { /* ignore malformed env */ }
+  }
   // Pin to a specific claude binary when the broker provides one; otherwise the
   // SDK uses its bundled CLI (both read the same macOS Keychain login).
   if (process.env.DEVDY_CLAUDE_PATH) options.pathToClaudeCodeExecutable = process.env.DEVDY_CLAUDE_PATH
   // GĐ6 (AC1): per-project git account context. Keep the default Claude Code
   // preset system prompt and APPEND our context (a plain string would replace
   // the whole prompt and lose tool guidance).
-  if (opts.appendSystemPrompt) {
+  // Resume fallback: a resumed first prompt carries no options, so the broker
+  // passes the conductor framing via DEVDY_APPEND_SYSTEM_PROMPT (the SDK does not
+  // persist an appended system prompt across a resume).
+  const appendSystemPrompt = opts.appendSystemPrompt || SIDECAR_ENV.DEVDY_APPEND_SYSTEM_PROMPT
+  if (appendSystemPrompt) {
     options.systemPrompt = {
       type: 'preset',
       preset: 'claude_code',
-      append: String(opts.appendSystemPrompt),
+      append: String(appendSystemPrompt),
     }
   }
   // 'warning' mode additionally polls /usage on an interval WHILE a run streams

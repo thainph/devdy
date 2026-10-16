@@ -592,6 +592,13 @@ pub async fn drain_sidecar(
                                     }
                                 }
                             }
+                            // ---- control: Codex thread now carries its framing ----
+                            // (thread/start developer instructions, or a one-time
+                            // <session-framing> seed on a resumed turn). Persisted so
+                            // later resumes don't seed it again.
+                            (Some(_), "_devdy_framing_seeded") => {
+                                crate::conductor::commands::mark_framing_seeded(&db_pool, &run_id).await;
+                            }
                             // ---- control: lifecycle (swallow) -------------------
                             (Some(_), "_devdy_ready") | (Some(_), "_devdy_done") | (Some(_), "_devdy_closed") => {}
                             // ---- raw stream-json SDK message --------------------

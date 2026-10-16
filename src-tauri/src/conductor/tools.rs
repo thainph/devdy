@@ -112,7 +112,7 @@ async fn session_spawn(
     let session = state
         .conductor
         .session(conductor_run_id)
-        .ok_or_else(|| "unknown conductor session".to_string())?;
+        .ok_or_else(|| "unknown session".to_string())?;
 
     let prompt = arg_str(&args, "prompt")
         .ok_or_else(|| "`prompt` is required".to_string())?;
@@ -138,8 +138,8 @@ async fn session_spawn(
     let title = truncate(&format!("[{}] {}", role_label, prompt), 80);
 
     sqlx::query(
-        "INSERT INTO runs (id, project_id, type, status, engine, created_at, title, role, conductor_run_id)
-         VALUES (?, ?, 'session', 'fetched', ?, ?, ?, 'worker', ?)",
+        "INSERT INTO runs (id, project_id, type, status, engine, created_at, title, role, conductor_run_id, system_instruction)
+         VALUES (?, ?, 'session', 'fetched', ?, ?, ?, 'worker', ?, ?)",
     )
     .bind(&worker_id)
     .bind(&session.project_id)
@@ -147,6 +147,8 @@ async fn session_spawn(
     .bind(&now)
     .bind(&title)
     .bind(conductor_run_id)
+    // Persisted so a resume (session_send to a stopped worker) re-applies it.
+    .bind(&instruction)
     .execute(&db)
     .await
     .map_err(|e| e.to_string())?;
@@ -465,7 +467,7 @@ fn ensure_owned(
     if state.conductor.owns_worker(conductor_run_id, worker_id) {
         Ok(())
     } else {
-        Err(format!("worker {} is not owned by this conductor", worker_id))
+        Err(format!("worker {} is not owned by this session", worker_id))
     }
 }
 
@@ -640,7 +642,7 @@ async fn wake_conductor(
         return;
     }
 
-    let nudge = "[conductor] A worker you spawned has finished its turn. \
+    let nudge = "[session] A worker you spawned has finished its turn. \
 Call session_poll() or session_list() to see which of your workers are now idle, \
 session_read() each finished worker's result, then continue toward the goal \
 (send follow-ups, spawn a specialist, or conclude). If the goal is now met, give \

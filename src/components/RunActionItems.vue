@@ -5,8 +5,7 @@
 // renders and emits.
 //
 //   section 'actions'  Pop out · Open on GitHub · Refetch · Copy log path ·
-//                      Copy session ID · View log file | Rename · Pin · Protect ·
-//                      Convert to conductor
+//                      Copy session ID · View log file | Rename · Pin · Protect
 //   section 'delete'   | Delete (hidden while the run is running)
 import { useI18n } from 'vue-i18n'
 import {
@@ -14,7 +13,6 @@ import {
   ClipboardCopy,
   ExternalLink,
   Hash,
-  Network,
   Pencil,
   Pin,
   PinOff,
@@ -35,7 +33,7 @@ defineProps<{
   /** The run's issue / PR on GitHub, when any. */
   githubUrl: string | null
   /** An action for this run is in flight (its item is disabled meanwhile). */
-  busy: { refetching: boolean; pinning: boolean; protecting: boolean; converting: boolean; deleting: boolean }
+  busy: { refetching: boolean; pinning: boolean; protecting: boolean; deleting: boolean }
 }>()
 
 const emit = defineEmits<{
@@ -48,7 +46,6 @@ const emit = defineEmits<{
   rename: []
   togglePin: []
   toggleProtect: []
-  convert: []
   delete: []
 }>()
 
@@ -99,14 +96,6 @@ const { t } = useI18n()
     <DropdownItem :disabled="busy.protecting" @click="emit('toggleProtect')">
       <component :is="run.protected ? ShieldOff : Shield" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
       {{ run.protected ? t('run.unprotect') : t('run.protect') }}
-    </DropdownItem>
-    <DropdownItem
-      v-if="run.run_type === 'session' && run.role !== 'conductor' && run.role !== 'worker' && run.status !== 'running' && run.status !== 'fetched'"
-      :disabled="busy.converting"
-      @click="emit('convert')"
-    >
-      <Network class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-      {{ t('run.convertToConductor') }}
     </DropdownItem>
   </template>
 

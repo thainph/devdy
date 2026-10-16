@@ -174,7 +174,9 @@ pub(crate) fn parse_codex_rollout(file: &Path, project_path: &str) -> Option<Par
                 match p.get("type").and_then(|x| x.as_str()).unwrap_or("") {
                     "user_message" => {
                         if let Some(text) = p.get("message").and_then(|x| x.as_str()) {
-                            let text = text.trim();
+                            // Drop a one-time <session-framing> seed Devdy prepended
+                            // on resume — it is system framing, not the user's words.
+                            let text = crate::conductor::strip_session_framing(text).trim();
                             if !text.is_empty() {
                                 if first_user.is_none() {
                                     first_user = Some(text.to_string());
@@ -524,6 +526,24 @@ mod tests {
         assert!(p.title.contains("Build"));
         // user + agent text + tool_use + tool_result = 4 log lines.
         assert_eq!(p.log.lines().count(), 4);
+        let _ = fs::remove_file(&f);
+    }
+
+    #[test]
+    fn parse_codex_rollout_hides_session_framing_seed() {
+        let rollout = concat!(
+            r#"{"type":"session_meta","payload":{"cwd":"/proj","id":"thread-2"}}"#,
+            "\n",
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"<session-framing>\nYou are a normal coding assistant session...\n</session-framing>\n\nFix the login bug"}}"#,
+            "\n",
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"Done"}}"#,
+            "\n",
+        );
+        let f = temp_file("framing", rollout);
+        let p = parse_codex_rollout(&f, "/proj").expect("should parse");
+        assert!(!p.log.contains("session-framing"), "seed leaked: {}", p.log);
+        assert!(p.log.contains("Fix the login bug"));
+        assert_eq!(p.title, "Fix the login bug");
         let _ = fs::remove_file(&f);
     }
 
