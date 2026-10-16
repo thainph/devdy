@@ -294,8 +294,9 @@ impl LocalDayBounds {
         })
     }
 
-    /// Whether an RFC3339 timestamp falls inside the window. Unparseable
-    /// timestamps fall back to comparing their date prefix with the bounds.
+    /// Whether an RFC3339 timestamp falls inside the window. Every writer
+    /// stores RFC3339, so the date-prefix comparison below is a defensive
+    /// fallback only (e.g. a hand-edited or legacy row), not an expected path.
     fn contains(&self, ts: &str) -> bool {
         if let Some(epoch) = parse_epoch_secs(ts) {
             return self.start.map_or(true, |s| epoch >= s) && self.end.map_or(true, |e| epoch < e);

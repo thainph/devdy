@@ -13,7 +13,6 @@
   "rangeError": "Start date must be on or before the end date.",
   "projects": "Projects",
   "selectAll": "Select all",
-  "clear": "Clear",
   "noProjects": "No projects yet.",
   "emptyNoProject": "No work to show — select at least one project.",
   "emptyNoWork": "No work recorded in this time range.",
