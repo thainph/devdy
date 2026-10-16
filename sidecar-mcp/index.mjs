@@ -45,7 +45,7 @@ const titleOf = (run) => run.title || `${run.engine} ${run.type}`.trim();
 const tools = {
   notes_list: {
     description:
-      'List Devdy quick notes (markdown scratchpad). Defaults to the current project; pass scope="all" for every project. Returns id, title and a short preview.',
+      'List Devdy quick notes (markdown scratchpad). Defaults to the current project; pass scope="all" for every project. Returns id, title, a short preview and the linked session (run) ids.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -60,14 +60,15 @@ const tools = {
         .map((n) => {
           const title = n.title || firstLine(n.content) || '(untitled)';
           const preview = firstLine(n.content).slice(0, 120);
-          return `- [${n.id}] ${title}${preview && preview !== title ? ` — ${preview}` : ''} (updated ${n.updated_at})`;
+          const sessions = n.linked_runs ? ` · sessions: ${n.linked_runs}` : '';
+          return `- [${n.id}] ${title}${preview && preview !== title ? ` — ${preview}` : ''} (updated ${n.updated_at})${sessions}`;
         })
         .join('\n');
     },
   },
 
   notes_read: {
-    description: 'Read the full markdown body of one note by id.',
+    description: 'Read the full markdown body of one note by id (plus the linked session (run) ids, when any).',
     inputSchema: {
       type: 'object',
       properties: { id: { type: 'string' } },
@@ -76,7 +77,8 @@ const tools = {
     handler: (a) => {
       const n = store.readNote(a.id);
       if (!n) return `Note not found: ${a.id}`;
-      return `# ${n.title || '(untitled)'}\n\n${n.content || '(empty)'}`;
+      const sessions = n.linked_runs ? `\n- linked_sessions: ${n.linked_runs}` : '';
+      return `# ${n.title || '(untitled)'}${sessions}\n\n${n.content || '(empty)'}`;
     },
   },
 
@@ -292,7 +294,7 @@ const tools = {
 
   todos_list: {
     description:
-      'List Devdy todos (quick task list), top priority first. Set include_done=false to hide completed items, or scope="project" to only show the current project\'s todos.',
+      'List Devdy todos (quick task list), top priority first. Set include_done=false to hide completed items, or scope="project" to only show the current project\'s todos. Each line shows the linked session (run) ids, when any.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -304,7 +306,10 @@ const tools = {
       const rows = store.listTodos({ includeDone: a.include_done !== false, scope: a.scope });
       if (!rows.length) return 'No todos.';
       return rows
-        .map((t) => `- [${t.done ? 'x' : ' '}] ${t.text}${t.project_name ? ` · ${t.project_name}` : ''}  (${t.id})`)
+        .map(
+          (t) =>
+            `- [${t.done ? 'x' : ' '}] ${t.text}${t.project_name ? ` · ${t.project_name}` : ''}${t.linked_runs ? ` · sessions: ${t.linked_runs}` : ''}  (${t.id})`,
+        )
         .join('\n');
     },
   },

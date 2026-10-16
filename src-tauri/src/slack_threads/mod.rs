@@ -9,6 +9,7 @@
 //! - `translate`: batching + prompt + output parsing, `run_translation`
 //! - `files`: file downloads + avatar cache
 //! - `store`: SQL for the commands
+//! - `run_links`: thread ↔ session (run) links
 //! - `job`: one fetch + translate job
 //!
 //! A background worker (≤ 2 jobs in parallel, 1 per thread) drains an
@@ -20,6 +21,7 @@ pub mod files;
 pub mod job;
 pub mod link;
 pub mod mrkdwn;
+pub mod run_links;
 pub mod store;
 pub mod token;
 pub mod translate;
@@ -105,6 +107,19 @@ pub struct SlackThreadProgress {
 struct ChangedPayload<'a> {
     id: &'a str,
     action: &'a str,
+}
+
+/// `changed` for every thread (empty id) from code without a `SlackCtx` —
+/// e.g. a run delete dropped session links. Listeners reload the list and
+/// the open thread.
+pub fn emit_all_changed(app: &AppHandle) {
+    let _ = app.emit(
+        CHANGED_EVENT,
+        ChangedPayload {
+            id: "",
+            action: "updated",
+        },
+    );
 }
 
 /// Outbound notifications (Tauri events / OS notification); a no-op double in

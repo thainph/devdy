@@ -10,7 +10,7 @@
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { currentMonitor } from '@tauri-apps/api/window'
 
-const POP_OUT_PREFIXES = ['item-create', 'item-edit-', 'fileviewer-']
+const POP_OUT_PREFIXES = ['item-create', 'fileviewer-']
 const STEP = 32 // logical px between successive windows
 const WRAP = 8 // restart the cascade after this many so it stays on-screen
 const BASE_X = 160

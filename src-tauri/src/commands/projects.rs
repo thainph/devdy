@@ -712,11 +712,25 @@ pub async fn remove_project(
     db: State<'_, Db>,
     id: String,
 ) -> Result<(), String> {
+    // Session links of Slack threads / notes / todos: the project's runs cascade
+    // away below and the link tables have no FK to runs.
+    let unlinked = crate::slack_threads::run_links::delete_for_project(db.inner(), &id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let items_unlinked = crate::item_links::delete_for_project(db.inner(), &id)
+        .await
+        .map_err(|e| e.to_string())?;
     sqlx::query("DELETE FROM projects WHERE id = ?")
         .bind(&id)
         .execute(db.inner())
         .await
         .map_err(|e| e.to_string())?;
+    if unlinked > 0 {
+        crate::slack_threads::emit_all_changed(&app);
+    }
+    if items_unlinked > 0 {
+        crate::item_links::emit_changed(&app, None);
+    }
     if let Ok(app_data_dir) = app.path().app_data_dir() {
         crate::aws_sandbox::remove_project_aws_config(&app_data_dir, &id);
     }

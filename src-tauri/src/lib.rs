@@ -5,6 +5,7 @@ mod db;
 mod github;
 mod gitlab;
 mod inbox_api;
+mod item_links;
 mod remote;
 mod runs;
 mod secrets;
@@ -96,9 +97,11 @@ use commands::storage::{clean_storage, get_storage_stats};
 use commands::inbox_api::{get_inbox_api_info, regenerate_inbox_api_token, set_inbox_api_enabled};
 use commands::slack_threads::{
     add_slack_thread, delete_slack_threads, get_slack_thread, get_slack_thread_prompt_text,
-    get_slack_token_status, list_slack_threads, mark_slack_thread_seen, refresh_slack_thread,
-    rename_slack_thread, reorder_slack_threads, set_slack_thread_project,
+    get_slack_token_status, link_slack_thread_run, list_run_slack_threads, list_slack_thread_runs,
+    list_slack_threads, mark_slack_thread_seen, refresh_slack_thread, rename_slack_thread,
+    reorder_slack_threads, set_slack_thread_project, unlink_slack_thread_run,
 };
+use commands::item_links::{link_item_run, list_item_runs, list_run_items, unlink_item_run};
 use commands::notes::{
     add_note, delete_note, delete_notes, list_notes, reorder_notes, set_note_project, update_note,
 };
@@ -590,6 +593,14 @@ pub fn run() {
             delete_slack_threads,
             get_slack_token_status,
             get_slack_thread_prompt_text,
+            link_slack_thread_run,
+            unlink_slack_thread_run,
+            list_slack_thread_runs,
+            list_run_slack_threads,
+            link_item_run,
+            unlink_item_run,
+            list_item_runs,
+            list_run_items,
             show_permission_notification,
             show_calendar_reminder,
             remote_set_config,

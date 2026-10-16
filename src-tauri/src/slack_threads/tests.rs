@@ -1845,3 +1845,201 @@ async fn migration_0041_moves_slack_captures() {
         .unwrap();
     assert_eq!(n, 2);
 }
+
+// ---- session (run) links ----------------------------------------------------
+
+async fn insert_run(db: &Db, id: &str, project_id: &str, title: Option<&str>, activity: &str) {
+    sqlx::query(
+        "INSERT INTO runs (id, project_id, type, status, engine, created_at, title, \
+         last_activity_at) VALUES (?, ?, 'session', 'done', 'claude', ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(project_id)
+    .bind(activity)
+    .bind(title)
+    .bind(activity)
+    .execute(db)
+    .await
+    .unwrap();
+}
+
+/// A thread row (no token → straight to `error`, no job).
+async fn offline_thread(state: &SlackThreadsState, url: &str, project_id: Option<&str>) -> String {
+    state
+        .add_thread(url, project_id, None, false)
+        .await
+        .unwrap()
+        .id
+}
+
+#[tokio::test]
+async fn run_links_are_idempotent_and_adopt_the_run_project() {
+    let db = memory_db().await;
+    let app_data = temp_dir("links");
+    let state = offline_state(&db, &app_data, &Tokens::default());
+    let id = offline_thread(&state, LINK, None).await;
+    insert_run(&db, "r1", "p2", Some("Fix login"), "2026-02-01T00:00:00Z").await;
+    insert_run(&db, "r2", "p2", None, "2026-03-01T00:00:00Z").await;
+
+    let r = run_links::link(&db, &id, "r1", "picker").await.unwrap();
+    assert_eq!(
+        r,
+        run_links::LinkRunResult {
+            created: true,
+            project_set: true
+        }
+    );
+    let s = store::get_summary(&db, &id).await.unwrap();
+    assert_eq!(s.project_id.as_deref(), Some("p2"));
+    assert_eq!(s.linked_run_count, 1);
+
+    // Re-link: no-op, the first source is kept.
+    let r = run_links::link(&db, &id, "r1", "manual").await.unwrap();
+    assert!(!r.created && !r.project_set);
+    let links = run_links::runs_of_thread(&db, &id).await.unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].source, "picker");
+    assert_eq!(links[0].title.as_deref(), Some("Fix login"));
+    assert_eq!(links[0].project_id, "p2");
+    assert_eq!(links[0].status, "done");
+
+    // Most recently active first.
+    run_links::link(&db, &id, "r2", "created_from_thread")
+        .await
+        .unwrap();
+    let ids: Vec<String> = run_links::runs_of_thread(&db, &id)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|l| l.run_id)
+        .collect();
+    assert_eq!(ids, ["r2", "r1"]);
+
+    // A thread that already has a project keeps it.
+    let other = offline_thread(&state, &b_url(), Some("p1")).await;
+    let r = run_links::link(&db, &other, "r1", "manual").await.unwrap();
+    assert!(r.created && !r.project_set);
+    let s = store::get_summary(&db, &other).await.unwrap();
+    assert_eq!(s.project_id.as_deref(), Some("p1"));
+    let threads: Vec<String> = run_links::threads_of_run(&db, "r1")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|t| t.id)
+        .collect();
+    assert_eq!(threads.len(), 2);
+    assert!(threads.contains(&id) && threads.contains(&other));
+
+    // Errors.
+    let e = run_links::link(&db, &id, "r1", "bogus").await.unwrap_err();
+    assert_eq!(e.code, "invalid_source");
+    let e = run_links::link(&db, &id, "nope", "manual")
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, "run_not_found");
+    let e = run_links::link(&db, "nope", "r1", "manual")
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, "not_found");
+}
+
+#[tokio::test]
+async fn run_links_hide_missing_runs_and_are_cleaned_up() {
+    let db = memory_db().await;
+    let app_data = temp_dir("links-clean");
+    let state = offline_state(&db, &app_data, &Tokens::default());
+    let id = offline_thread(&state, LINK, Some("p1")).await;
+    insert_run(&db, "r1", "p1", None, "2026-02-01T00:00:00Z").await;
+    insert_run(&db, "r2", "p1", None, "2026-02-02T00:00:00Z").await;
+    insert_run(&db, "r3", "p1", None, "2026-02-03T00:00:00Z").await;
+    for r in ["r1", "r2", "r3"] {
+        run_links::link(&db, &id, r, "manual").await.unwrap();
+    }
+    let count = |db: Db| async move {
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM slack_thread_runs")
+            .fetch_one(&db)
+            .await
+            .unwrap()
+    };
+
+    // A run removed behind our back: hidden, not counted.
+    sqlx::query("DELETE FROM runs WHERE id = 'r1'")
+        .execute(&db)
+        .await
+        .unwrap();
+    assert_eq!(run_links::runs_of_thread(&db, &id).await.unwrap().len(), 2);
+    assert_eq!(
+        store::get_summary(&db, &id).await.unwrap().linked_run_count,
+        2
+    );
+
+    // The run-delete path drops the links.
+    let registry = crate::runs::RunRegistry::default();
+    crate::commands::runs::delete_run_inner(&db, &registry, "r2")
+        .await
+        .unwrap();
+    assert_eq!(count(db.clone()).await, 2);
+    assert_eq!(
+        run_links::delete_for_run(&db, "r1").await.unwrap(),
+        vec![id.clone()]
+    );
+    assert_eq!(count(db.clone()).await, 1);
+
+    // Unlink.
+    assert!(run_links::unlink(&db, &id, "r3").await.unwrap());
+    assert!(!run_links::unlink(&db, &id, "r3").await.unwrap());
+    assert_eq!(count(db.clone()).await, 0);
+
+    // Deleting the thread drops its links.
+    run_links::link(&db, &id, "r3", "manual").await.unwrap();
+    state.delete(std::slice::from_ref(&id)).await.unwrap();
+    assert_eq!(count(db.clone()).await, 0);
+    assert!(run_links::threads_of_run(&db, "r3")
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn merged_thread_hands_its_links_over() {
+    let db = memory_db().await;
+    let app_data = temp_dir("links-merge");
+    let state = offline_state(&db, &app_data, &Tokens::default());
+    let a = offline_thread(&state, LINK, None).await;
+    let b = offline_thread(&state, &b_url(), None).await;
+    insert_run(&db, "r1", "p1", None, "2026-02-01T00:00:00Z").await;
+    insert_run(&db, "r2", "p1", None, "2026-02-02T00:00:00Z").await;
+    run_links::link(&db, &a, "r1", "picker").await.unwrap();
+    run_links::link(&db, &a, "r2", "manual").await.unwrap();
+    run_links::link(&db, &b, "r2", "created_from_thread")
+        .await
+        .unwrap();
+    run_links::move_links(&db, &a, &b).await.unwrap();
+    let links = run_links::runs_of_thread(&db, &b).await.unwrap();
+    let got: Vec<(&str, &str)> = links
+        .iter()
+        .map(|l| (l.run_id.as_str(), l.source.as_str()))
+        .collect();
+    assert_eq!(got, [("r2", "created_from_thread"), ("r1", "picker")]);
+    assert!(run_links::runs_of_thread(&db, &a).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn project_removal_drops_its_run_links() {
+    let db = memory_db().await;
+    let app_data = temp_dir("links-project");
+    let state = offline_state(&db, &app_data, &Tokens::default());
+    let id = offline_thread(&state, LINK, None).await;
+    insert_run(&db, "r1", "p1", None, "2026-02-01T00:00:00Z").await;
+    insert_run(&db, "r2", "p2", None, "2026-02-02T00:00:00Z").await;
+    run_links::link(&db, &id, "r1", "manual").await.unwrap();
+    run_links::link(&db, &id, "r2", "manual").await.unwrap();
+    assert_eq!(run_links::delete_for_project(&db, "p1").await.unwrap(), 1);
+    let left: Vec<String> = run_links::runs_of_thread(&db, &id)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|l| l.run_id)
+        .collect();
+    assert_eq!(left, ["r2"]);
+}

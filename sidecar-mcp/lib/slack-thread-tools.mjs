@@ -169,13 +169,14 @@ export function slackThreadTools({ snippetAround }) {
     if (last) parts.push(`last reply ${last}`);
     if (t.fetch_error_code) parts.push(`error: ${t.fetch_error_code}`);
     if (t.legacy) parts.push('legacy');
+    if (t.linked_runs) parts.push(`sessions: ${t.linked_runs}`);
     return `- [${t.id}] ${parts.join(' · ')}`;
   };
 
   return {
     slack_threads_list: {
       description:
-        'List Slack threads saved in Devdy (fetched from Slack by link and translated to Vietnamese by the app). Defaults to the current project; pass scope="all" for every project. Each line: id, title, #channel, workspace, fetch status (pending|fetching|translating|ready|error), reply count, last reply time, plus error code / legacy marker when relevant.',
+        'List Slack threads saved in Devdy (fetched from Slack by link and translated to Vietnamese by the app). Defaults to the current project; pass scope="all" for every project. Each line: id, title, #channel, workspace, fetch status (pending|fetching|translating|ready|error), reply count, last reply time, plus error code / legacy marker / linked session (run) ids when relevant.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -191,7 +192,7 @@ export function slackThreadTools({ snippetAround }) {
     },
 
     slack_threads_read: {
-      description: `Read one Slack thread by id as a transcript: metadata (workspace, channel, thread_url, fetch_status, fetched_at, project, warnings, error), then every message as "### <name> · <UTC time> · ts=<ts>" followed by its text. Text is Vietnamese by default (untranslated messages fall back to the original, marked [untranslated]); original="both" adds a "> Original:" block per message, original="only" shows only the original. Mentions are resolved to @Name, links become [label](url), code is kept verbatim. Files are listed under their message with ABSOLUTE paths (open them with your own file reader) or "not downloaded (<status>): <permalink>". Threads not yet re-fetched from Slack (legacy) return the old markdown snapshot and files. Long transcripts are sliced: max_chars (default ${READ_MAX_DEFAULT}) + offset; a "Continue with offset=N" hint is printed when truncated.`,
+      description: `Read one Slack thread by id as a transcript: metadata (workspace, channel, thread_url, fetch_status, fetched_at, project, linked session (run) ids, warnings, error), then every message as "### <name> · <UTC time> · ts=<ts>" followed by its text. Text is Vietnamese by default (untranslated messages fall back to the original, marked [untranslated]); original="both" adds a "> Original:" block per message, original="only" shows only the original. Mentions are resolved to @Name, links become [label](url), code is kept verbatim. Files are listed under their message with ABSOLUTE paths (open them with your own file reader) or "not downloaded (<status>): <permalink>". Threads not yet re-fetched from Slack (legacy) return the old markdown snapshot and files. Long transcripts are sliced: max_chars (default ${READ_MAX_DEFAULT}) + offset; a "Continue with offset=N" hint is printed when truncated.`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -240,6 +241,7 @@ export function slackThreadTools({ snippetAround }) {
           ['fetch_status', t.fetch_status],
           ['fetched_at', t.fetched_at],
           ['project_id', t.project_id],
+          ['linked_sessions', t.linked_runs],
           ['replies', String(t.reply_count)],
           ['warnings', t.warnings.length ? t.warnings.join(', ') : null],
           ['error', err],

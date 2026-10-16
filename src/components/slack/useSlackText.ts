@@ -1,5 +1,6 @@
 // Wording shared by the Slack threads window and the composer picker: error
 // codes (spec §4 / §8.3 + command codes), warnings (§8.4), job status / phase.
+// Linked-session labels are composables/useSessionText.
 import { useI18n } from 'vue-i18n'
 import type {
   SlackFetchStatus,
