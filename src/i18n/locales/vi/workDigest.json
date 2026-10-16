@@ -1,16 +1,15 @@
 {
   "title": "Work Digest",
   "loading": "Đang tải…",
-  "summarizing": "Đang tóm tắt…",
-  "stop": "Dừng",
-  "generateSummary": "Tạo tóm tắt",
   "preset": {
+    "day": "Theo ngày",
     "today": "Hôm nay",
-    "yesterday": "Hôm qua",
     "last7d": "7 ngày qua",
     "thisMonth": "Tháng này",
     "custom": "Tùy chỉnh"
   },
+  "prevDay": "Ngày trước",
+  "nextDay": "Ngày sau",
   "rangeError": "Ngày bắt đầu phải bằng hoặc trước ngày kết thúc.",
   "projects": "Dự án",
   "selectAll": "Chọn tất cả",
@@ -18,8 +17,6 @@
   "noProjects": "Chưa có dự án nào.",
   "emptyNoProject": "Không có dữ liệu — hãy chọn ít nhất một dự án.",
   "emptyNoWork": "Không có công việc nào trong khoảng thời gian này.",
-  "aiSummary": "Tóm tắt AI",
-  "starting": "Đang bắt đầu…",
   "workItems": "Số công việc",
   "totalDuration": "Tổng thời lượng",
   "activeTime": "Thời gian hoạt động",
