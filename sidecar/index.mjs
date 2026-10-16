@@ -177,7 +177,29 @@ function startQuery(firstText, opts = {}, firstImages) {
   inputQueue = new MessageQueue()
   inputQueue.push(userMessage(firstText, firstImages))
 
+  // Auto-allowed tools (e.g. a conductor's own `mcp__conductor`). Bare names are
+  // matched here inside canUseTool rather than passed to the SDK as
+  // allowedTools: bare allowedTools entries shadow the callback and make the SDK
+  // warn (CLAUDE_SDK_CAN_USE_TOOL_SHADOWED). Scoped rules like `Bash(git:*)`
+  // still go to the SDK as allowedTools.
+  let allowedTools = null
+  if (Array.isArray(opts.allowedTools)) allowedTools = opts.allowedTools
+  else if (SIDECAR_ENV.DEVDY_ALLOWED_TOOLS) {
+    // Resume fallback (like DEVDY_MCP_SERVERS): a conductor's own `mcp__conductor`
+    // tools stay auto-allowed in gated permission modes.
+    try {
+      const parsed = JSON.parse(SIDECAR_ENV.DEVDY_ALLOWED_TOOLS)
+      if (Array.isArray(parsed)) allowedTools = parsed
+    } catch { /* ignore malformed env */ }
+  }
+  const autoAllowNames = (allowedTools || []).filter((t) => typeof t === 'string' && !t.includes('('))
+  const scopedAllowRules = (allowedTools || []).filter((t) => typeof t === 'string' && t.includes('('))
+  // `mcp__server` covers every tool of that server (`mcp__server__tool`).
+  const isAutoAllowed = (toolName) =>
+    autoAllowNames.some((n) => toolName === n || (n.startsWith('mcp__') && toolName.startsWith(n + '__')))
+
   const canUseTool = async (toolName, input, options) => {
+    if (isAutoAllowed(toolName)) return { behavior: 'allow', updatedInput: input }
     const requestId = randomUUID()
     send({
       type: '_devdy_permission_request',
@@ -239,14 +261,10 @@ function startQuery(firstText, opts = {}, firstImages) {
   }
   const resume = opts.resume || process.env.DEVDY_RESUME_SESSION
   if (resume) options.resume = resume
-  if (Array.isArray(opts.allowedTools)) options.allowedTools = opts.allowedTools
-  else if (SIDECAR_ENV.DEVDY_ALLOWED_TOOLS) {
-    // Resume fallback (like DEVDY_MCP_SERVERS): a conductor's own `mcp__conductor`
-    // tools stay auto-allowed in gated permission modes.
-    try {
-      const parsed = JSON.parse(SIDECAR_ENV.DEVDY_ALLOWED_TOOLS)
-      if (Array.isArray(parsed)) options.allowedTools = parsed
-    } catch { /* ignore malformed env */ }
+  // Bare names are handled by canUseTool (see isAutoAllowed); only scoped rules
+  // reach the SDK. An explicit empty list is kept as-is.
+  if (allowedTools && (scopedAllowRules.length || !allowedTools.length)) {
+    options.allowedTools = scopedAllowRules
   }
   // Pin to a specific claude binary when the broker provides one; otherwise the
   // SDK uses its bundled CLI (both read the same macOS Keychain login).
