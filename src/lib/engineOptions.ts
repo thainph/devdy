@@ -97,6 +97,23 @@ export const PERMISSION_MODE_OPTIONS: SelectOption[] = [
   { value: 'bypassPermissions', label: 'Bypass all' },
 ]
 
+// Permission modes the backend accepts (mirrors is_valid_permission_mode).
+const VALID_PERMISSION_MODES = ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'auto', 'dontAsk']
+
+/**
+ * Effective permission mode for a launch, resolved exactly like start_run does
+ * for a plain run: the per-run pick, else the global settings default, else
+ * "default" (ask via UI). Conductor launches pass it explicitly so the mode
+ * shown in the UI is exactly the one the run gets.
+ */
+export function resolvePermissionMode(
+  runChoice: string | null | undefined,
+  settingsDefault: string | null | undefined,
+): string {
+  if (runChoice && VALID_PERMISSION_MODES.includes(runChoice)) return runChoice
+  return settingsDefault && VALID_PERMISSION_MODES.includes(settingsDefault) ? settingsDefault : 'default'
+}
+
 /** Model options for an engine, falling back to Claude's list. */
 export function modelOptionsFor(engine: string): SelectOption[] {
   return MODEL_OPTIONS[engine] ?? MODEL_OPTIONS.claude

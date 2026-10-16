@@ -16,6 +16,27 @@ import { ref } from 'vue'
  */
 const SIDEBAR_STORAGE_KEY = 'devdy.sidebarHidden'
 
+/**
+ * Row density of the session History list (RunView's left rail). Persisted like
+ * `sidebarHidden`, since it is a lasting reading preference.
+ *  - comfortable: the full multi-line row (badges + timestamp line)
+ *  - compact:     two lines — title row + "account · model"
+ *  - dense:       one line; the rest lives in the row tooltip
+ */
+export type HistoryDensity = 'comfortable' | 'compact' | 'dense'
+const HISTORY_DENSITY_KEY = 'devdy.historyDensity'
+const HISTORY_DENSITIES: readonly HistoryDensity[] = ['comfortable', 'compact', 'dense']
+
+function loadHistoryDensity(): HistoryDensity {
+  try {
+    const v = localStorage.getItem(HISTORY_DENSITY_KEY)
+    if (v && (HISTORY_DENSITIES as readonly string[]).includes(v)) return v as HistoryDensity
+  } catch {
+    /* storage unavailable — fall through to the default */
+  }
+  return 'compact'
+}
+
 function loadSidebarHidden(): boolean {
   try {
     return localStorage.getItem(SIDEBAR_STORAGE_KEY) === '1'
@@ -46,5 +67,24 @@ export const useUILayoutStore = defineStore('uiLayout', () => {
     setSidebarHidden(!sidebarHidden.value)
   }
 
-  return { focusMode, toggleFocus, sidebarHidden, setSidebarHidden, toggleSidebar }
+  const historyDensity = ref<HistoryDensity>(loadHistoryDensity())
+
+  function setHistoryDensity(density: HistoryDensity) {
+    historyDensity.value = density
+    try {
+      localStorage.setItem(HISTORY_DENSITY_KEY, density)
+    } catch {
+      /* storage unavailable — the in-memory value still works for this session */
+    }
+  }
+
+  return {
+    focusMode,
+    toggleFocus,
+    sidebarHidden,
+    setSidebarHidden,
+    toggleSidebar,
+    historyDensity,
+    setHistoryDensity,
+  }
 })

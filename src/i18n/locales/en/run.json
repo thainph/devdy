@@ -63,7 +63,7 @@
   "focus": "Focus",
   "session": "Session",
   "files": "Files",
-  "conductor": "Conductor",
+  "conductor": "Session",
   "creating": "Creating…",
   "newSession": "New session",
   "fetchIssuePr": "Fetch Issue / PR",
@@ -86,7 +86,7 @@
   "noMatchingSessions": "No matching sessions",
   "pinned": "Pinned",
   "protected": "Protected",
-  "protectedByConductor": "Protected by its conductor",
+  "protectedByConductor": "Protected by its session",
   "lastActivity": "Last activity",
   "waitingForAnswer": "Waiting for your answer",
   "waitingForPermission": "Waiting for your permission",
@@ -104,11 +104,6 @@
   "pinToTop": "Pin to top",
   "protect": "Protect",
   "unprotect": "Remove protection",
-  "convertToConductor": "Convert to conductor",
-  "convertToConductorTitle": "Convert to conductor",
-  "convertToConductorMessage": "Convert {label} into a conductor session? This only upgrades the session in the database so it can spawn workers — it does not resume or run anything and consumes no tokens. The orchestration tools come online the next time you resume it with your own prompt.",
-  "convertToConductorConfirm": "Convert",
-  "convertedToConductor": "Converted to conductor",
   "deleteThisRun": "Delete this run",
   "runNamePlaceholder": "Run name",
   "saveName": "Save name",
@@ -189,5 +184,13 @@
   "quickCapture": "Note",
   "quickCaptureTitle": "Quick capture a note / todo without leaving this session — ⌘/Ctrl+K",
   "focusMode": "Focus mode",
-  "projectSettings": "Project settings"
+  "projectSettings": "Project settings",
+  "relNow": "now",
+  "notRunSessionHint": "type your goal in the chat box below to launch the session",
+  "density": {
+    "title": "Row density",
+    "comfortable": "Comfortable",
+    "compact": "Compact",
+    "dense": "Dense"
+  }
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, shallowRef, computed, onMounted, onUnmounted, watch, nextTick, type ComponentPublicInstance } from 'vue'
+import { ref, shallowRef, computed, onMounted, onUnmounted, watch, nextTick, type ComponentPublicInstance } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectsStore, type Repo } from '@/stores/projects'
@@ -21,7 +21,7 @@ import { useAwsAccountsStore } from '@/stores/awsAccounts'
 import { useClaudeAccountsStore } from '@/stores/claudeAccounts'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useModelCatalogStore } from '@/stores/modelCatalog'
-import { useUILayoutStore } from '@/stores/uiLayout'
+import { useUILayoutStore, type HistoryDensity } from '@/stores/uiLayout'
 import { IS_MAC, registerMenuAction } from '@/lib/appMenu'
 import { invoke } from '@/lib/tauri'
 import { openUrl } from '@tauri-apps/plugin-opener'
@@ -37,8 +37,10 @@ import {
   ShieldQuestion, MessageCircleQuestion,
   Pin, Shield, Pencil, Check, Github, Gitlab, UserCircle,
   HardDrive, Cloud, Radio, Languages, StickyNote, ListTodo, FolderTree, Loader2,
-  MoreHorizontal, Search, Network, ChevronLeft, ChevronRight
+  MoreHorizontal, Search, Network, ChevronLeft, ChevronRight,
+  Plus, AlignJustify, Rows2, Rows3, Rows4, Circle, CircleCheck, CircleDashed, CircleDot, CircleSlash, CircleX
 } from 'lucide-vue-next'
+import { onClickOutside } from '@vueuse/core'
 import AppSelect from '@/components/AppSelect.vue'
 import { type SavedPrompt, parseSavedPrompts } from '@/lib/savedPrompts'
 import CapturePicker from '@/components/CapturePicker.vue'
@@ -79,7 +81,7 @@ import {
   type StreamEntry,
   type ImageAttachment,
 } from '@/lib/streamEvents'
-import { MODEL_OPTIONS, PERMISSION_MODE_OPTIONS, withCurrentModel, combinedModelOptions, engineForModel } from '@/lib/engineOptions'
+import { MODEL_OPTIONS, PERMISSION_MODE_OPTIONS, resolvePermissionMode, withCurrentModel, combinedModelOptions, engineForModel } from '@/lib/engineOptions'
 import RemoteSessionModal from '@/components/remote/RemoteSessionModal.vue'
 import { useRemoteControlStore } from '@/stores/remoteControl'
 
@@ -215,8 +217,21 @@ const detectedRef = ref<
   { kind: 'issue' | 'pr'; number: number; repoId: string; repoName: string } | null
 >(null)
 const fetching = ref(false)
-// The fetch form is collapsed by default so the run History gets the space.
+// The fetch form lives in a popover off the rail toolbar's Fetch icon, so the
+// run History gets the space. Closes on outside click (the trigger is ignored
+// so its own click can toggle) and after a successful fetch.
 const fetchOpen = ref(false)
+const fetchPanelEl = ref<HTMLElement | null>(null)
+const fetchTriggerEl = ref<HTMLElement | null>(null)
+onClickOutside(fetchPanelEl, () => { fetchOpen.value = false }, { ignore: [fetchTriggerEl] })
+
+// History row density menu (persisted in the uiLayout store).
+const historyDensity = computed(() => uiLayout.historyDensity)
+const historyDensityOptions: { value: HistoryDensity; icon: typeof Rows2 }[] = [
+  { value: 'comfortable', icon: Rows2 },
+  { value: 'compact', icon: Rows3 },
+  { value: 'dense', icon: Rows4 },
+]
 // Left rail view: session controls/history, or the project file tree.
 const leftTab = ref<'session' | 'files'>('session')
 
@@ -702,7 +717,7 @@ const conductorWorkers = computed(() =>
 // The conductor's concurrent-worker cap (set at launch, editable live from the
 // sidebar header). Shown next to the live worker count so the user sees headroom
 // at a glance. (Distinct from `conductorMaxWorkers`, the launch default applied
-// when a "New conductor" session sends its first message.)
+// when a fresh session sends its first message.)
 const conductorWorkerCap = computed(() => conductorStore.detail?.session?.max_workers ?? 0)
 const conductorEvents = computed(() => conductorStore.detail?.events ?? [])
 // The conductor the worker panel is anchored to for the open run: the run itself
@@ -734,7 +749,7 @@ const conductorIdsWithRunningWorker = computed(() => {
 
 // ── Worker-cap editing (sidebar header) ─────────────────────────────────────
 // Two states share one editor:
-//  • pre-launch (a "New conductor" session not yet started) — the cap edits the
+//  • pre-launch (a fresh session / issue / PR not yet started) — the cap edits the
 //    local `conductorMaxWorkers` ref that seeds the launch; no backend row exists.
 //  • running/finished conductor — the cap is raised/lowered live: the backend
 //    clamps to [1,100], persists it, and the next session_spawn enforces it.
@@ -774,23 +789,16 @@ async function commitWorkerCap() {
   }
 }
 
-// Run ids created via "New conductor" whose goal has NOT been sent yet (so they
-// have no role/conductor row in the DB). Tracked by id — not a single global
-// bool — so the intent survives switching to another session: the History icon
-// keeps flagging the run as a conductor, and returning to it still launches as a
-// conductor. An id is dropped when its goal is sent (it becomes a real
-// conductor) or the run is deleted. `conductorMaxWorkers` is the launch-time cap,
-// editable from the sidebar before the goal is sent.
-const pendingConductorIds = reactive(new Set<string>())
+// Every session is a conductor: any fetched (never-started) run — a fresh
+// session or a fetched issue/PR — launches through conductorStore.start on its
+// first message. `conductorMaxWorkers` is the launch-time cap, editable from the
+// worker sidebar before the goal is sent.
 const conductorMaxWorkers = ref(10)
-function isPendingConductor(runId: string | null | undefined): boolean {
-  return !!runId && pendingConductorIds.has(runId)
-}
 
-// The OPEN run is a pending (pre-launch) conductor. We surface the worker sidebar
-// in this state too so the user can set the worker limit BEFORE sending the goal.
+// The OPEN run is a pre-launch conductor. We surface the worker sidebar in this
+// state too so the user can set the worker limit BEFORE sending the goal.
 const pendingConductor = computed(
-  () => isPendingConductor(currentRunId.value) && !isConductor.value && currentStatus.value === 'fetched',
+  () => !!currentRunId.value && !isConductor.value && currentStatus.value === 'fetched',
 )
 // Show the worker sidebar for a live conductor OR a pending (pre-launch) one.
 const showWorkerPanel = computed(() => isConductor.value || pendingConductor.value)
@@ -824,32 +832,94 @@ function runLabel(run: RunRecord): string {
   return `${run.run_type === 'analyze_issue' ? t('run.labelIssue') : t('run.labelPr')} #${run.ref_number}`
 }
 
-// A conductor is an ordinary session run tagged with role='conductor' (see
-// start_conductor). The History list uses this to give it a distinct icon/tone.
-// A freshly created "New conductor" session has no role in the DB until its goal
-// is sent, so we also treat the open, pending-conductor run as a conductor — the
-// History row then flags it the moment it is created, before launch.
-function isConductorRun(run: RunRecord): boolean {
-  if (run.run_type === 'session' && run.role === 'conductor') return true
-  return isPendingConductor(run.id)
-}
-
-// History-row icon: conductor (Network) → plain session (MessageSquare) →
-// issue (Bug) → PR (GitPullRequest). Kept as a function so the conductor case
-// short-circuits before the plain-session one.
-// A run is "running" for display when it is streaming itself, or — for a
-// conductor — when any of its workers is still streaming.
+// A run is "running" for display when it is streaming itself, or when any of
+// its workers is still streaming.
 function runIsRunning(run: RunRecord): boolean {
   if (run.status === 'running') return true
   return conductorIdsWithRunningWorker.value.has(run.id)
 }
 
+// History-row icon shows STATUS only (every session is a conductor, so there is
+// no type icon): a spinner while running, otherwise a status glyph tinted by
+// runIconColorClass. Issue/PR identity is a separate badge (runRefBadge).
 function runIcon(run: RunRecord) {
   if (runIsRunning(run)) return Loader2
-  if (isConductorRun(run)) return Network
-  if (run.run_type === 'session') return MessageSquare
-  if (run.run_type === 'analyze_issue') return Bug
-  return GitPullRequest
+  if (run.status === 'fetched' && run.run_type === 'session') return CircleDashed
+  switch (run.status) {
+    case 'done': return CircleCheck
+    case 'failed': return CircleX
+    case 'cancelled': return CircleSlash
+    case 'fetched': return CircleDot
+    default: return Circle
+  }
+}
+
+// Tooltip for the History-row status icon.
+function runStatusTitle(run: RunRecord): string {
+  if (runIsRunning(run)) return t('common.status.running')
+  if (run.status === 'fetched' && run.run_type === 'session') return t('common.status.draft')
+  return t(`common.status.${run.status}`)
+}
+
+// Worker count per conductor, from the flat run list (workers carry
+// conductor_run_id). Drives the "⎇N" badge on History rows; 0 hides it.
+const workerCountByConductor = computed(() => {
+  const counts = new Map<string, number>()
+  for (const r of runsStore.runs) {
+    if (!r.conductor_run_id) continue
+    counts.set(r.conductor_run_id, (counts.get(r.conductor_run_id) ?? 0) + 1)
+  }
+  return counts
+})
+function runWorkerCount(run: RunRecord): number {
+  return workerCountByConductor.value.get(run.id) ?? 0
+}
+
+// Issue/PR rows keep their identity as a small Bug / PR glyph before the title
+// (whose label already reads "Issue #N" / "PR #N"); fresh sessions have none.
+function runRefIcon(run: RunRecord) {
+  if (run.run_type === 'session') return null
+  return run.run_type === 'analyze_issue' ? Bug : GitPullRequest
+}
+
+// Compact model id for dense rows: drop a leading "claude-" (the account badge
+// already implies Claude); the full id stays in the tooltip.
+function runModelShort(run: RunRecord): string {
+  return runModelLabel(run).replace(/^claude-/, '')
+}
+
+// "account · model" line for compact/dense rows ('' for an unstarted session).
+function runAccountModelLine(run: RunRecord, short = true): string {
+  if (!runStarted(run)) return ''
+  const model = short ? runModelShort(run) : runModelLabel(run)
+  const acc = runClaudeAccountLabel(run)
+  return acc ? `${acc} · ${model}` : model
+}
+
+// Relative age for compact/dense rows: "now", "5m", "2h", "3d", "2w", then
+// months/years. The full timestamp lives in the tooltip.
+function runRelativeTime(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime()
+  if (Number.isNaN(ms)) return ''
+  const min = Math.floor(ms / 60_000)
+  if (min < 1) return t('run.relNow')
+  if (min < 60) return `${min}m`
+  const h = Math.floor(min / 60)
+  if (h < 24) return `${h}h`
+  const d = Math.floor(h / 24)
+  if (d < 7) return `${d}d`
+  if (d < 30) return `${Math.floor(d / 7)}w`
+  if (d < 365) return `${Math.floor(d / 30)}mo`
+  return `${Math.floor(d / 365)}y`
+}
+
+// Dense rows fold everything not on the single line into the row tooltip.
+function runDenseTooltip(run: RunRecord): string {
+  const parts = [runLabel(run)]
+  const meta = runAccountModelLine(run, false)
+  if (meta) parts.push(meta)
+  parts.push(runTimestamp(runActivityAt(run)))
+  return parts.join('\n')
 }
 
 // History row: tint the session icon by run status so the list conveys state
@@ -1779,6 +1849,7 @@ async function handleFetch(linkedIssueOverride?: number) {
     clearHistoryView()
     needsLinkedIssue.value = false
     linkedIssueInput.value = ''
+    fetchOpen.value = false
     await loadInputContent(run.id)
   } catch (e) {
     const msg = String(e)
@@ -1842,6 +1913,14 @@ async function handleStartRun() {
   const override = await preflightBudget(engine)
   if (override === null) return // over budget and declined — start nothing
 
+  // A never-started issue/PR run launches as a conductor on its default
+  // issue/PR prompt (empty goal). A fresh session can't get here without a goal
+  // — primaryDisabled blocks the empty Run.
+  if (currentStatus.value === 'fetched') {
+    await launchConductor(id, '', [], override)
+    return
+  }
+
   clearHistoryView()
   live.reset(id, projectId.value)
   syncLoadedRunEngine(engine)
@@ -1883,43 +1962,66 @@ async function createSessionWithEngine(engine?: string) {
   }
 }
 
+// The single creation path: a fresh session is a pre-launch conductor (the
+// worker sidebar opens so the cap can be set); its first message becomes the
+// goal and launches it via conductorStore.start (see launchConductor).
 async function handleNewSession() {
   await createSessionWithEngine(engineOverride.value || undefined)
-}
-
-// Create a fresh session already primed as a conductor: mark the new run id as a
-// pending conductor so the History icon flags it and the worker sidebar opens.
-// Its first message becomes the goal and launches it as a conductor (see the send
-// path, which promotes the run via conductorStore.start and clears the mark).
-async function handleNewConductor() {
-  await createSessionWithEngine(engineOverride.value || undefined)
-  if (currentRunId.value) pendingConductorIds.add(currentRunId.value)
 }
 
 // Unbound on unmount so the menu item stops firing into a dead screen.
 let unbindNewSessionMenu: (() => void) | null = null
 
-// Start a brand-new turn on `runId` with `text` as the prompt. Shared by the
-// "fetched" first-run path and by engine handoffs.
-// Callers MUST preflight the budget (see `preflightBudget`) and pass the
-// resulting `overrideBudget` — this executor echoes the message immediately.
-async function launchFreshRun(
+// Launch a fetched run (fresh session, issue/PR or engine handoff) as a
+// conductor with `goal` as its first message — the only first-run path, since
+// every session is a conductor. It then streams here like any session; the
+// worker sidebar follows once its tree is selected. Callers MUST preflight the
+// budget (see `preflightBudget`) — this echoes the goal immediately.
+async function launchConductor(
   runId: string,
-  engine: string | undefined,
-  text: string,
+  goal: string,
   images: ImageAttachment[] = [],
   overrideBudget = false,
+  engineChoice?: string,
 ) {
-  const selectedEngine = engine || effectiveEngine.value
+  const engine = engineChoice || effectiveEngine.value
   currentRunId.value = runId
   clearHistoryView()
   live.reset(runId, projectId.value)
-  live.pushUser(runId, projectId.value, text, images)
+  if (goal) live.pushUser(runId, projectId.value, goal, images)
   stickToBottom.value = true // re-pin: the user just sent a message
-  syncLoadedRunEngine(selectedEngine)
-  setLocalRunStatus(runId, 'running', selectedEngine)
+  syncLoadedRunEngine(engine)
+  setLocalRunStatus(runId, 'running', engine)
   await live.startListening(runId, projectId.value)
-  await runsStore.startRun(runId, selectedEngine, permissionMode.value || undefined, text, modelOverride.value || undefined, images, overrideBudget)
+  try {
+    await conductorStore.start(runId, goal, {
+      maxWorkers: conductorMaxWorkers.value,
+      engineOverride: engine,
+      modelOverride: modelOverride.value || undefined,
+      permissionModeOverride: resolvePermissionMode(
+        permissionMode.value,
+        appSettings.settings?.default_permission_mode,
+      ),
+      images,
+      overrideBudget,
+    })
+  } catch (e) {
+    // The launch never happened, so the DB row is still 'fetched'. Re-sync the
+    // local status from the DB (not a guessed 'failed') so the next send takes
+    // the launch path again instead of trying to resume a run that never ran.
+    live.appendOutput(runId, `Error: ${String(e)}`)
+    try {
+      await runsStore.refreshMeta(projectId.value)
+    } catch { /* keep the local row; fall back to 'fetched' below */ }
+    const dbStatus = runsStore.runs.find((r) => r.id === runId)?.status ?? 'fetched'
+    live.setStatus(runId, dbStatus)
+    setLocalRunStatus(runId, dbStatus)
+    return
+  }
+  // start_conductor marked role='conductor' and derived the title from the goal.
+  // Refresh in place (no `loading` flash) so History shows both immediately.
+  await runsStore.refreshMeta(projectId.value)
+  void conductorStore.select(runId)
 }
 
 // ── Cross-engine handoff (Claude ↔ Codex) ────────────────────────────────
@@ -1954,7 +2056,7 @@ async function doHandoff(targetEngine: string) {
     // Carry the model the user picked when they triggered the switch.
     if (pendingEngineModel.value !== null) modelOverride.value = pendingEngineModel.value
     const seed = t('run.handoffSeed', { engine: sourceEngine, path: context_path })
-    await launchFreshRun(run.id, targetEngine, seed, [], override)
+    await launchConductor(run.id, seed, [], override, targetEngine)
   } catch (e) {
     toast.error(t('run.handoffFailed', { error: String(e) }))
   } finally {
@@ -2266,6 +2368,10 @@ const composerVisible = computed(() => !!currentRunId.value)
 // sending a follow-up / resuming does.
 const primaryDisabled = computed(() => {
   if (sendingFollowUp.value) return true
+  // A fresh session launches as a conductor, which needs a goal to start.
+  if (currentStatus.value === 'fetched' && currentRun.value?.run_type === 'session') {
+    return !followUpInput.value.trim() && !pendingImages.value.length && !pendingFiles.value.length
+  }
   if (currentStatus.value === 'fetched' || !chatEligible.value) return false
   return !followUpInput.value.trim() && !pendingImages.value.length && !pendingFiles.value.length
 })
@@ -2688,30 +2794,9 @@ async function handleSendFollowUp() {
     const prompt = composePrompt(text, takePendingFilePaths())
 
     if (isFetched) {
-      // Conductor mode: promote this fresh session into a conductor and launch
-      // it with the typed text as its goal. It then streams here like any
-      // session, and the worker sidebar appears once its tree is polled.
-      if (isPendingConductor(id)) {
-        await conductorStore.start(id, prompt, { maxWorkers: conductorMaxWorkers.value })
-        // start_conductor has marked the run role='conductor' in the DB. Refresh
-        // the list so that role is present locally BEFORE dropping the pending
-        // mark — otherwise the History icon flickers back to a plain session.
-        await runsStore.fetchRuns(projectId.value)
-        pendingConductorIds.delete(id)
-        live.setStatus(id, 'running')
-        setLocalRunStatus(id, 'running')
-        await live.startListening(id, projectId.value)
-        live.pushUser(id, projectId.value, prompt, images)
-        void conductorStore.select(id)
-        followUpInput.value = ''
-        return
-      }
-      // First run on this fetched record — use the typed text as the prompt.
-      await launchFreshRun(id, engineOverride.value || undefined, prompt, images, override)
-      // start_run has derived the sidebar title from this first prompt. Refresh in
-      // place (no `loading` flash) so History shows that title immediately instead
-      // of the "Session" placeholder until a later `sessions:changed` arrives.
-      await runsStore.refreshMeta(projectId.value)
+      // First message of a fetched run (fresh session or issue/PR): it becomes
+      // the conductor goal.
+      await launchConductor(id, prompt, images, override)
       followUpInput.value = ''
       return
     }
@@ -2810,7 +2895,6 @@ const refetchingRunId = ref<string | null>(null)
 const clearingAll = ref(false)
 const pinningRunId = ref<string | null>(null)
 const protectingRunId = ref<string | null>(null)
-const convertingRunId = ref<string | null>(null)
 // Which History row currently has its actions (⋯) menu open. Kept so the
 // trigger stays visible even when the pointer leaves the row while open.
 const actionsMenuRunId = ref<string | null>(null)
@@ -2924,7 +3008,6 @@ function runActionProps(run: RunRecord) {
       refetching: refetchingRunId.value === run.id,
       pinning: pinningRunId.value === run.id,
       protecting: protectingRunId.value === run.id,
-      converting: convertingRunId.value === run.id,
       deleting: deletingRunId.value === run.id,
     },
   }
@@ -2942,7 +3025,6 @@ function runActionHandlers(run: RunRecord, rename: (run: RunRecord) => void = st
     rename: () => rename(run),
     togglePin: () => handleTogglePin(run),
     toggleProtect: () => handleToggleProtect(run),
-    convert: () => handleConvertToConductor(run),
     delete: () => handleDeleteRun(run.id),
   }
 }
@@ -2985,33 +3067,6 @@ function clearActiveRunState() {
   inputContentError.value = null
 }
 
-// Convert a stopped normal session into a conductor: the backend marks the role,
-// creates the conductor session, then resumes the existing conversation with the
-// conductor tools + framing injected. We then open it live and start polling its
-// worker tree, seeding the viewer from the on-disk transcript so the prior
-// conversation stays visible while new conductor turns stream in.
-async function handleConvertToConductor(run: RunRecord) {
-  const label = runLabel(run)
-  if (!(await confirm({
-    title: t('run.convertToConductorTitle'),
-    message: t('run.convertToConductorMessage', { label }),
-    confirmLabel: t('run.convertToConductorConfirm'),
-  }))) return
-  convertingRunId.value = run.id
-  try {
-    await conductorStore.convertToConductor(run.id)
-    // Pure DB upgrade: the session is NOT resumed and stays stopped. Just refresh
-    // History so the new 'conductor' role shows. The conductor tools come online
-    // the next time the user resumes the session with their own prompt.
-    await runsStore.fetchRuns(projectId.value)
-    toast.success(t('run.convertedToConductor'))
-  } catch (e) {
-    toast.error(String(e))
-  } finally {
-    convertingRunId.value = null
-  }
-}
-
 async function handleDeleteRun(runId: string) {
   const run = runsStore.runs.find(r => r.id === runId)
   const label = run ? runLabel(run) : t('run.thisRun')
@@ -3023,8 +3078,6 @@ async function handleDeleteRun(runId: string) {
   deletingRunId.value = runId
   try {
     await runsStore.deleteRun(runId)
-    // Drop any pending-conductor mark for the removed run.
-    pendingConductorIds.delete(runId)
     if (currentRunId.value === runId || viewingLogRunId.value === runId) {
       clearActiveRunState()
     } else {
@@ -3484,45 +3537,61 @@ function handleRefInput(val: string) {
           </button>
         </div>
 
-        <!-- Compact top toolbar: New session, then a collapsible Fetch -->
-        <div v-show="leftTab === 'session'" class="p-3 border-b border-border/60 space-y-2">
-          <!-- Session type is chosen right here at the entry point: a plain
-               conversation, or a conductor that orchestrates worker sessions.
-               Both create a fresh session; "New conductor" pre-arms the composer's
-               conductor toggle so the first message becomes the goal. -->
-          <div class="flex gap-1.5">
+        <!-- Compact top toolbar: one New session button (every session is a
+             conductor), the Fetch issue/PR popover, and the History density menu. -->
+        <div v-show="leftTab === 'session'" class="p-3 border-b border-border/60">
+          <div class="relative flex items-center gap-1.5">
             <Button class="flex-1" :disabled="creatingSession" @click="handleNewSession">
-              <MessageSquare class="h-3.5 w-3.5" :stroke-width="2" />
+              <Plus class="h-3.5 w-3.5" :stroke-width="2" />
               {{ creatingSession ? t('run.creating') : t('run.newSession') }}
             </Button>
-            <Button
-              variant="outline"
-              class="flex-1"
-              :disabled="creatingSession"
-              :title="t('conductor.newConductorHint')"
-              @click="handleNewConductor"
-            >
-              <Network class="h-3.5 w-3.5" :stroke-width="2" />
-              {{ t('conductor.newConductor') }}
-            </Button>
-          </div>
-
-          <!-- Fetch toggle -->
-          <Button
-            variant="outline"
-            class="w-full justify-between"
-            :class="{ 'bg-accent/50': fetchOpen }"
-            @click="fetchOpen = !fetchOpen"
-          >
-            <span class="flex items-center gap-1.5">
-              <GitPullRequest class="h-3.5 w-3.5" :stroke-width="1.75" />
-              {{ t('run.fetchIssuePr') }}
+            <span ref="fetchTriggerEl" class="inline-flex">
+              <Button
+                variant="outline"
+                size="icon"
+                :class="{ 'bg-accent text-foreground': fetchOpen }"
+                :title="t('run.fetchIssuePr')"
+                :aria-label="t('run.fetchIssuePr')"
+                :aria-expanded="fetchOpen"
+                @click="fetchOpen = !fetchOpen"
+              >
+                <GitPullRequest class="h-3.5 w-3.5" :stroke-width="1.75" />
+              </Button>
             </span>
-            <ChevronDown class="h-3.5 w-3.5 transition-transform" :class="{ 'rotate-180': fetchOpen }" :stroke-width="1.75" />
-          </Button>
+            <DropdownMenu align="right">
+              <template #trigger>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  :title="t('run.density.title')"
+                  :aria-label="t('run.density.title')"
+                >
+                  <AlignJustify class="h-3.5 w-3.5" :stroke-width="1.75" />
+                </Button>
+              </template>
+              <DropdownItem
+                v-for="opt in historyDensityOptions"
+                :key="opt.value"
+                @click="uiLayout.setHistoryDensity(opt.value)"
+              >
+                <component :is="opt.icon" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+                <span class="flex-1">{{ t(`run.density.${opt.value}`) }}</span>
+                <Check
+                  v-if="uiLayout.historyDensity === opt.value"
+                  class="h-3.5 w-3.5 shrink-0 text-primary"
+                  :stroke-width="2"
+                />
+              </DropdownItem>
+            </DropdownMenu>
 
-          <!-- Fetch form (collapsible) -->
-          <div v-if="fetchOpen" class="space-y-3 pt-1">
+          <!-- Fetch popover: spans the toolbar row (the rail clips overflow, so
+               it can't hang off the icon itself). -->
+          <div
+            v-if="fetchOpen"
+            ref="fetchPanelEl"
+            class="absolute left-0 right-0 top-full z-30 mt-1.5 space-y-3 rounded-md border border-border bg-popover p-3 shadow-lg shadow-black/20"
+          >
+          <p class="text-[11px] font-medium text-foreground/80">{{ t('run.fetchIssuePr') }}</p>
 
           <div v-if="repos.length === 0" class="text-[10px] text-amber-500/80 leading-relaxed">
             {{ t('run.noReposConfigured') }}
@@ -3587,28 +3656,16 @@ function handleRefInput(val: string) {
             </Button>
           </div>
           </div>
+          </div>
         </div>
 
         <!-- Run history -->
-        <!-- The header (title + Clear all + search) is pinned: only the rows
-             below it scroll, so the filter and the bulk action stay reachable
-             no matter how far down the list the user is. -->
+        <!-- The header (search + title/count + Clear all) is pinned: only the
+             rows below it scroll, so the filter and the bulk action stay
+             reachable no matter how far down the list the user is. -->
         <div v-show="leftTab === 'session'" class="flex-1 min-h-0 flex flex-col">
           <div class="shrink-0 border-b border-border/40">
-            <div class="flex items-center justify-between px-4 py-2.5">
-              <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">{{ t('run.history') }}</p>
-              <button
-                v-if="runsStore.runs.length > 0"
-                class="flex items-center gap-1 text-[10px] text-muted-foreground/70 hover:text-destructive transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                :disabled="clearingAll"
-                :title="clearingAll ? t('run.clearing') : t('run.clearAllRunsTitle')"
-                @click="handleClearAllRuns"
-              >
-                <Trash2 class="h-3 w-3" :stroke-width="1.75" />
-                {{ clearingAll ? t('run.clearing') : t('run.clearAll') }}
-              </button>
-            </div>
-            <div v-if="runsStore.runs.length > 0" class="px-3 pb-2.5">
+            <div v-if="runsStore.runs.length > 0" class="px-3 pt-2.5">
               <div class="relative">
                 <Search class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.75" />
                 <Input
@@ -3626,6 +3683,21 @@ function handleRefInput(val: string) {
                   <X class="h-3.5 w-3.5" :stroke-width="2" />
                 </button>
               </div>
+            </div>
+            <div class="flex items-center justify-between px-4 py-1.5">
+              <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                {{ t('run.history') }}<span v-if="displayRuns.length" class="font-normal"> · {{ displayRuns.length }}</span>
+              </p>
+              <button
+                v-if="runsStore.runs.length > 0"
+                class="flex items-center gap-1 text-[10px] text-muted-foreground/70 hover:text-destructive transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                :disabled="clearingAll"
+                :title="clearingAll ? t('run.clearing') : t('run.clearAllRunsTitle')"
+                @click="handleClearAllRuns"
+              >
+                <Trash2 class="h-2.5 w-2.5" :stroke-width="1.75" />
+                {{ clearingAll ? t('run.clearing') : t('run.clearAll') }}
+              </button>
             </div>
           </div>
           <div ref="sessionListEl" class="flex-1 min-h-0 overflow-auto">
@@ -3649,25 +3721,31 @@ function handleRefInput(val: string) {
                 v-if="currentRunId === run.id"
                 class="absolute left-0 inset-y-0 w-0.5 bg-primary"
               />
+              <!-- Row layout follows uiLayout.historyDensity:
+                   comfortable = title line + badges/timestamp block,
+                   compact     = title line (+ relative time) + "account · model",
+                   dense       = one line; the rest lives in the row tooltip. -->
               <button
-                class="w-full text-left px-3 py-3 cursor-pointer rounded-sm focus:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+                class="w-full text-left px-3 cursor-pointer rounded-sm focus:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+                :class="historyDensity === 'comfortable' ? 'py-3' : historyDensity === 'compact' ? 'py-2' : 'py-1.5'"
+                :title="historyDensity === 'dense' ? runDenseTooltip(run) : undefined"
                 @click="loadRunLog(run.id)"
               >
-                <!-- Title + status -->
-                <div class="flex items-center gap-2">
+                <!-- Title line: status · badges · title · workers · markers · time -->
+                <div class="flex items-center" :class="historyDensity === 'comfortable' ? 'gap-2' : 'gap-1.5'">
                   <component
                     :is="runIcon(run)"
-                    class="h-4 w-4 shrink-0"
-                    :class="[runIconColorClass(run), { 'animate-spin': runIsRunning(run) }]"
+                    class="shrink-0"
+                    :class="[
+                      historyDensity === 'comfortable' ? 'h-4 w-4' : 'h-3.5 w-3.5',
+                      runIconColorClass(run),
+                      { 'animate-spin': runIsRunning(run) },
+                    ]"
                     :stroke-width="1.75"
-                    :title="isConductorRun(run)
-                      ? t('conductor.modeToggle')
-                      : (run.status === 'fetched' && run.run_type === 'session'
-                        ? t('common.status.draft')
-                        : t(`common.status.${run.status}`))"
+                    :title="runStatusTitle(run)"
                   />
                   <!-- Pin / protect badges grouped so they stay tightly aligned
-                       when both are shown (own gap, not the row's gap-2). -->
+                       when both are shown (own gap, not the row's gap). -->
                   <span
                     v-if="run.pinned || run.protected || isProtectedByConductor(run)"
                     class="flex shrink-0 items-center gap-1"
@@ -3692,7 +3770,26 @@ function handleRefInput(val: string) {
                       :title="t('run.protectedByConductor')"
                     />
                   </span>
-                  <span class="flex-1 min-w-0 truncate text-[13px] font-medium leading-tight" :title="runLabel(run)">{{ runLabel(run) }}</span>
+                  <!-- Issue / PR identity (the title already reads "Issue #N"). -->
+                  <component
+                    :is="runRefIcon(run)"
+                    v-if="runRefIcon(run)"
+                    class="h-3 w-3 shrink-0 text-muted-foreground"
+                    :stroke-width="1.75"
+                  />
+                  <span
+                    class="flex-1 min-w-0 truncate font-medium leading-tight"
+                    :class="historyDensity === 'dense' ? 'text-xs' : 'text-[13px]'"
+                    :title="historyDensity === 'dense' ? undefined : runLabel(run)"
+                  >{{ runLabel(run) }}</span>
+                  <!-- Worker count (its workers never get rows of their own). -->
+                  <span
+                    v-if="runWorkerCount(run) > 0"
+                    class="flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground"
+                    :title="t('conductor.workerCountShort', { n: runWorkerCount(run) })"
+                  >
+                    <Network class="h-3 w-3" :stroke-width="1.75" />{{ runWorkerCount(run) }}
+                  </span>
                   <!-- Remote-control marker: a phone is driving (green, pulsing) or
                        a link is waiting for one (amber) on THIS session. Lets the
                        user spot the remotely-controlled session in the list. -->
@@ -3726,12 +3823,34 @@ function handleRefInput(val: string) {
                       :stroke-width="2"
                     />
                   </span>
+                  <!-- Relative age (compact/dense). In dense mode the ⋯ trigger
+                       takes this slot on hover, so the time steps aside. -->
+                  <span
+                    v-if="historyDensity !== 'comfortable'"
+                    class="shrink-0 min-w-[1.25rem] text-right font-mono text-[10px] text-muted-foreground/70"
+                    :class="historyDensity === 'dense'
+                      ? ['group-hover:invisible group-focus-within:invisible', { invisible: actionsMenuRunId === run.id }]
+                      : ''"
+                    :title="historyDensity === 'dense' ? undefined : runTimestamp(runActivityAt(run))"
+                  >{{ runRelativeTime(runActivityAt(run)) }}</span>
                 </div>
-                <!-- Meta: the AI badges (account + model) on top so a long model
-                     id gets the full row width, with the timestamp on its own line
-                     underneath. Always visible so hovering never hides the session
-                     info. -->
+                <!-- Compact: "account · model" (model without its "claude-"
+                     prefix; full value in the tooltip). Kept in the layout but
+                     invisible for an unstarted session so rows share one height.
+                     `pr-6` keeps it clear of the hover actions (⋯). -->
+                <p
+                  v-if="historyDensity === 'compact'"
+                  class="mt-0.5 pl-5 pr-6 truncate text-[10px] leading-tight text-muted-foreground/70"
+                  :class="{ invisible: !runStarted(run) }"
+                  :title="runAccountModelLine(run, false)"
+                >
+                  {{ runAccountModelLine(run) || '\u00a0' }}
+                </p>
+                <!-- Comfortable meta: the AI badges (account + model) on top so a
+                     long model id gets the full row width, with the timestamp on
+                     its own line underneath. -->
                 <div
+                  v-else-if="historyDensity === 'comfortable'"
                   class="mt-2 pl-6 pr-3 text-[10px] text-muted-foreground/70"
                   :class="{ invisible: !runStarted(run) }"
                 >
@@ -3766,8 +3885,13 @@ function handleRefInput(val: string) {
                    put while its menu is open (actionsMenuRunId). Running sessions
                    get a safe subset — delete/refetch are hidden while live. -->
               <div
-                class="absolute right-2 bottom-2 flex items-center opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto"
-                :class="{ '!opacity-100 !pointer-events-auto': actionsMenuRunId === run.id }"
+                class="absolute flex items-center opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto"
+                :class="[
+                  historyDensity === 'comfortable' ? 'right-2 bottom-2'
+                  : historyDensity === 'compact' ? 'right-2 bottom-1'
+                  : 'right-2 top-1/2 -translate-y-1/2',
+                  { '!opacity-100 !pointer-events-auto': actionsMenuRunId === run.id },
+                ]"
               >
                 <DropdownMenu
                   align="right"
@@ -3776,7 +3900,8 @@ function handleRefInput(val: string) {
                   <template #trigger>
                     <button
                       type="button"
-                      class="flex items-center justify-center h-6 w-6 rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+                      class="flex items-center justify-center rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+                      :class="historyDensity === 'comfortable' ? 'h-6 w-6' : 'h-5 w-5'"
                       :aria-label="t('run.moreActions')"
                       :title="t('run.moreActions')"
                     >
@@ -3839,21 +3964,10 @@ function handleRefInput(val: string) {
             <p class="text-xs text-foreground/40 leading-relaxed mb-4">
               {{ t('run.createNewSessionHint') }}
             </p>
-            <div class="flex items-center justify-center gap-1.5">
-              <Button :disabled="creatingSession" @click="handleNewSession">
-                <MessageSquare class="h-3.5 w-3.5" :stroke-width="2" />
-                {{ creatingSession ? t('run.creating') : t('run.newSession') }}
-              </Button>
-              <Button
-                variant="outline"
-                :disabled="creatingSession"
-                :title="t('conductor.newConductorHint')"
-                @click="handleNewConductor"
-              >
-                <Network class="h-3.5 w-3.5" :stroke-width="2" />
-                {{ t('conductor.newConductor') }}
-              </Button>
-            </div>
+            <Button :disabled="creatingSession" @click="handleNewSession">
+              <Plus class="h-3.5 w-3.5" :stroke-width="2" />
+              {{ creatingSession ? t('run.creating') : t('run.newSession') }}
+            </Button>
           </div>
         </div>
 
@@ -4122,8 +4236,10 @@ function handleRefInput(val: string) {
                 <Terminal class="h-8 w-8 text-foreground/20 mx-auto mb-3" :stroke-width="1" />
                 <template v-if="currentRunId && currentStatus === 'fetched'">
                   <p class="text-xs font-medium text-amber-500/80 font-mono mb-1">{{ t('run.notRun') }}</p>
+                  <!-- A fresh session needs a typed goal; an issue/PR can Run on its
+                       default prompt. -->
                   <p class="text-[11px] text-foreground/40 leading-relaxed">
-                    {{ t('run.notRunHint') }}
+                    {{ currentIsSession ? t('run.notRunSessionHint') : t('run.notRunHint') }}
                   </p>
                 </template>
                 <p v-else class="text-xs text-foreground/30 font-mono">
@@ -4445,7 +4561,7 @@ function handleRefInput(val: string) {
       </div>
 
       <!-- Conductor worker sidebar: for a live conductor, and also for a
-           "New conductor" session not yet launched (so its worker limit can be
+           fresh session / issue / PR not yet launched (so its worker limit can be
            set before the goal is sent). The conductor itself is just this
            session; this panel adds its worker tree + control-plane timeline,
            collapsible to a thin rail. -->
