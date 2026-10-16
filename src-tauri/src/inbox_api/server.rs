@@ -1,18 +1,15 @@
-//! Loopback HTTP server for the capture inbox (axum, 127.0.0.1 only): web
-//! pages, Slack thread links and translation.
+//! Loopback HTTP server for the Devdy inbox (axum, 127.0.0.1 only): Slack
+//! thread links and translation.
 //!
 //! Security layers, in order: `Host` must be `127.0.0.1:<port>` /
 //! `localhost:<port>` (DNS-rebinding guard); an `Origin`, when present, must be
 //! a browser-extension origin; every `/v1/*` route needs the bearer token. The
-//! body is only buffered after auth passes, capped at `MAX_BODY_BYTES`
-//! (`MAX_TRANSLATE_BODY_BYTES` for `/v1/translate`, `MAX_SLACK_BODY_BYTES`
-//! for `/v1/slack-threads`).
+//! body is only buffered after auth passes, capped at `MAX_SLACK_BODY_BYTES`
+//! (`/v1/slack-threads`) / `MAX_TRANSLATE_BODY_BYTES` (`/v1/translate`).
 //!
 //! The server can be switched off (`inbox_api_enabled`): `start_server` /
 //! `stop_server` bind and release the port at runtime.
 
-use super::ingest::{self, CaptureKind, IngestError, PayloadKind, MAX_BODY_BYTES};
-use super::store::{self, IngestResult, Overrides};
 use super::InboxApiState;
 use crate::commands::translate::{self, TranslateState, TurnEvent, MAX_INPUT_CHARS};
 use crate::db::Db;
@@ -34,19 +31,20 @@ use sqlx::Row;
 use std::convert::Infallible;
 use std::future::Future;
 use std::ops::RangeInclusive;
-use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
 
 /// Ports tried in order; the first free one wins.
 pub const PORT_RANGE: RangeInclusive<u16> = 47821..=47830;
 const API_VERSION: u32 = 1;
-const ALLOWED_HEADERS: &str =
-    "Authorization, Content-Type, X-Devdy-Project-Id, X-Devdy-Title, X-Devdy-Mode";
+/// `X-Devdy-Project-Id` / `X-Devdy-Title` are ignored by every route but stay
+/// allowed, so an old extension still sending them gets a real response (e.g.
+/// 415 with a hint) instead of an opaque CORS failure.
+const ALLOWED_HEADERS: &str = "Authorization, Content-Type, X-Devdy-Project-Id, X-Devdy-Title";
 
 /// `/v1/slack-threads` request body cap.
 pub const MAX_SLACK_BODY_BYTES: usize = 16 * 1024;
@@ -60,9 +58,6 @@ pub const MAX_TRANSLATE_IN_FLIGHT: usize = 4;
 pub const TRANSLATE_TIMEOUT: Duration = Duration::from_secs(90);
 /// How long `stop_server` waits for a graceful shutdown before aborting.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
-
-/// Called after every successful upsert (emit event + OS notification).
-pub type OnIngest = Arc<dyn Fn(&IngestResult) + Send + Sync>;
 
 /// A submitted translation turn: its id, event channel and the resolved
 /// target language code.
@@ -89,12 +84,10 @@ pub type AbandonTurn = Arc<dyn Fn(u64) + Send + Sync>;
 #[derive(Clone)]
 pub struct HttpState {
     pub db: Db,
-    pub app_data: PathBuf,
     pub api: InboxApiState,
     pub version: String,
     /// Port this server is bound to (for the `Host` check).
     pub port: u16,
-    pub on_ingest: OnIngest,
     pub translator: Translator,
     pub abandon: AbandonTurn,
     /// Permits for in-flight `/v1/translate` requests.
@@ -130,23 +123,13 @@ async fn stopped(mut rx: watch::Receiver<bool>) {
 pub async fn start_server(
     app: AppHandle,
     db: Db,
-    app_data: PathBuf,
     api: InboxApiState,
     translate_state: TranslateState,
     slack: SlackThreadsState,
 ) {
     let mut slot = api.server.lock().await;
     start_locked(&mut slot, &api, PORT_RANGE, |port, shutdown| {
-        app_state(
-            app,
-            db,
-            app_data,
-            &api,
-            translate_state,
-            slack,
-            port,
-            shutdown,
-        )
+        app_state(app, db, &api, translate_state, slack, port, shutdown)
     })
     .await;
 }
@@ -157,7 +140,6 @@ pub async fn start_server(
 pub async fn set_enabled(
     app: AppHandle,
     db: Db,
-    app_data: PathBuf,
     api: InboxApiState,
     translate_state: TranslateState,
     slack: SlackThreadsState,
@@ -170,37 +152,21 @@ pub async fn set_enabled(
             .map_err(|e| e.to_string())
     };
     toggle(&api, enabled, persist, PORT_RANGE, |port, shutdown| {
-        app_state(
-            app,
-            db,
-            app_data,
-            &api,
-            translate_state,
-            slack,
-            port,
-            shutdown,
-        )
+        app_state(app, db, &api, translate_state, slack, port, shutdown)
     })
     .await
 }
 
-/// `HttpState` wired to the real app: notifications + the shared translator.
-#[allow(clippy::too_many_arguments)]
+/// `HttpState` wired to the real app: the shared translator + Slack queue.
 fn app_state(
     app: AppHandle,
     db: Db,
-    app_data: PathBuf,
     api: &InboxApiState,
     translate_state: TranslateState,
     slack: SlackThreadsState,
     port: u16,
     shutdown: watch::Receiver<bool>,
 ) -> HttpState {
-    let notify_app = app.clone();
-    let on_ingest: OnIngest = Arc::new(move |r: &IngestResult| {
-        super::emit_changed(&notify_app, &r.id, r.kind, r.status.as_str());
-        super::notify_received(&notify_app, &r.id, r.kind, &r.title);
-    });
     let (translate_app, translate_db, submit_state) =
         (app.clone(), db.clone(), translate_state.clone());
     let translator: Translator = Arc::new(move |text, target_lang| {
@@ -228,11 +194,9 @@ fn app_state(
     });
     HttpState {
         db,
-        app_data,
         api: api.clone(),
         version: app.package_info().version.to_string(),
         port,
-        on_ingest,
         translator,
         abandon,
         translate_slots: Arc::new(Semaphore::new(MAX_TRANSLATE_IN_FLIGHT)),
@@ -348,17 +312,11 @@ async fn stop_locked(slot: &mut Option<ServerHandle>, api: &InboxApiState) {
     tracing::info!(event = "inbox_api_stopped");
 }
 
-/// Resolve `<app_data>` the same way `lib.rs` does for `data.db`.
-pub fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    app.path().app_data_dir().map_err(|e| e.to_string())
-}
-
 pub fn router(state: HttpState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/v1/projects", get(list_projects))
         .route("/v1/slack-threads", post(post_slack_thread))
-        .route("/v1/web-pages", post(post_web_page))
         .route("/v1/translate", post(post_translate))
         .fallback(not_found)
         .layer(middleware::from_fn_with_state(state.clone(), guard))
@@ -426,7 +384,10 @@ fn check_auth(state: &HttpState, headers: &HeaderMap) -> Option<Response> {
     let token = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer ")))
+        .and_then(|v| {
+            v.strip_prefix("Bearer ")
+                .or_else(|| v.strip_prefix("bearer "))
+        })
         .map(str::trim);
     match token {
         Some(t) if state.api.check_token(t) => None,
@@ -467,14 +428,6 @@ async fn list_projects(State(state): State<HttpState>, headers: HeaderMap) -> Re
         }
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     }
-}
-
-/// Header value as UTF-8 (raw non-ASCII bytes are accepted as UTF-8).
-fn header_string(headers: &HeaderMap, name: &str) -> Option<String> {
-    headers
-        .get(name)
-        .map(|v| String::from_utf8_lossy(v.as_bytes()).trim().to_string())
-        .filter(|s| !s.is_empty())
 }
 
 fn coded_error(status: StatusCode, code: &str, msg: &str) -> Response {
@@ -572,91 +525,6 @@ async fn post_slack_thread(State(state): State<HttpState>, req: Request) -> Resp
             }
         },
     }
-}
-
-async fn post_web_page(State(state): State<HttpState>, req: Request) -> Response {
-    post_capture(state, CaptureKind::Web, req).await
-}
-
-/// Shared POST handler: auth → content type → body (≤ 50 MB) → parse → upsert.
-async fn post_capture(state: HttpState, capture_kind: CaptureKind, req: Request) -> Response {
-    let headers = req.headers().clone();
-    if let Some(r) = check_auth(&state, &headers) {
-        return r;
-    }
-    let kind = match headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(PayloadKind::from_content_type)
-    {
-        Some(k) => k,
-        None => {
-            return error(
-                StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                "Content-Type must be application/zip, text/markdown or text/plain",
-            )
-        }
-    };
-    let too_large = || {
-        error(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            &format!("payload exceeds {} MB", MAX_BODY_BYTES / 1024 / 1024),
-        )
-    };
-    let declared = headers
-        .get(header::CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<usize>().ok());
-    if declared.is_some_and(|n| n > MAX_BODY_BYTES) {
-        return too_large();
-    }
-    let body = match axum::body::to_bytes(req.into_body(), MAX_BODY_BYTES).await {
-        Ok(b) => b,
-        Err(_) => return too_large(),
-    };
-    if body.is_empty() {
-        return error(StatusCode::BAD_REQUEST, "empty body");
-    }
-
-    // `X-Devdy-Mode: new` forces a new row.
-    let force_new =
-        header_string(&headers, "x-devdy-mode").is_some_and(|m| m.eq_ignore_ascii_case("new"));
-    let overrides = Overrides {
-        project_id: header_string(&headers, "x-devdy-project-id"),
-        title: header_string(&headers, "x-devdy-title"),
-        force_new,
-    };
-    let parsed = match ingest::parse_payload(capture_kind, kind, &body) {
-        Ok(p) => p,
-        Err(e) => return ingest_error(e),
-    };
-    // The server may have been switched off while this upload was in flight.
-    if *state.shutdown.borrow() {
-        return error(StatusCode::SERVICE_UNAVAILABLE, SERVER_STOPPING);
-    }
-    match store::ingest(&state.db, &state.app_data, parsed, overrides).await {
-        Ok(result) => {
-            (state.on_ingest)(&result);
-            let status = match result.status {
-                store::IngestStatus::Created => StatusCode::CREATED,
-                store::IngestStatus::Updated => StatusCode::OK,
-            };
-            (status, Json(json!({ "id": result.id, "status": result.status }))).into_response()
-        }
-        Err(e) => ingest_error(e),
-    }
-}
-
-fn ingest_error(e: IngestError) -> Response {
-    let status = match &e {
-        IngestError::BadRequest(_) => StatusCode::BAD_REQUEST,
-        IngestError::TooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
-        IngestError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
-    };
-    if status == StatusCode::INTERNAL_SERVER_ERROR {
-        tracing::error!(event = "inbox_api_ingest_failed", error = %e);
-    }
-    error(status, e.message())
 }
 
 #[derive(Deserialize)]
@@ -884,10 +752,9 @@ fn translate_sse(
 
 #[cfg(test)]
 mod tests {
-    use super::super::ingest::tests::make_zip;
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::Ordering;
     use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
     struct Harness {
@@ -895,8 +762,7 @@ mod tests {
         port: u16,
         token: String,
         api: InboxApiState,
-        app_data: PathBuf,
-        ingested: Arc<AtomicUsize>,
+        app_data: std::path::PathBuf,
         client: reqwest::Client,
         db: Db,
         fakes: Fakes,
@@ -907,7 +773,6 @@ mod tests {
     /// Test doubles shared by an `HttpState` and the test body.
     #[derive(Clone)]
     struct Fakes {
-        ingested: Arc<AtomicUsize>,
         /// Senders of "hang" translations, kept so their turns never finish.
         held: Arc<std::sync::Mutex<Vec<UnboundedSender<TurnEvent>>>>,
         /// Turn ids passed to `abandon`.
@@ -923,7 +788,6 @@ mod tests {
         fn new(db: &Db, app_data: &std::path::Path) -> Self {
             let slack_tokens = crate::slack_threads::tests::Tokens::default();
             Fakes {
-                ingested: Arc::default(),
                 held: Arc::default(),
                 abandoned: Arc::default(),
                 turn_seq: Arc::default(),
@@ -974,24 +838,18 @@ mod tests {
 
     fn test_state(
         db: &Db,
-        app_data: &std::path::Path,
         api: &InboxApiState,
         fakes: &Fakes,
         translate_timeout: Duration,
         port: u16,
         shutdown: watch::Receiver<bool>,
     ) -> HttpState {
-        let counter = fakes.ingested.clone();
         let abandoned = fakes.abandoned.clone();
         HttpState {
             db: db.clone(),
-            app_data: app_data.to_path_buf(),
             api: api.clone(),
             version: "test".into(),
             port,
-            on_ingest: Arc::new(move |_| {
-                counter.fetch_add(1, Ordering::SeqCst);
-            }),
             translator: fake_translator(fakes.clone()),
             abandon: Arc::new(move |turn| abandoned.lock().unwrap().push(turn)),
             translate_slots: fakes.slots.clone(),
@@ -1039,7 +897,6 @@ mod tests {
         let (shutdown, shutdown_rx) = watch::channel(false);
         let state = test_state(
             &db,
-            &app_data,
             &api,
             &fakes,
             translate_timeout,
@@ -1058,7 +915,6 @@ mod tests {
             token,
             api,
             app_data,
-            ingested: fakes.ingested.clone(),
             client: reqwest::Client::new(),
             db,
             fakes,
@@ -1068,14 +924,6 @@ mod tests {
     }
 
     impl Harness {
-        fn post(&self, ct: &str, body: Vec<u8>) -> reqwest::RequestBuilder {
-            self.client
-                .post(format!("{}/v1/web-pages", self.base))
-                .bearer_auth(&self.token)
-                .header("Content-Type", ct)
-                .body(body)
-        }
-
         fn translate(&self, body: serde_json::Value) -> reqwest::RequestBuilder {
             self.client
                 .post(format!("{}/v1/translate", self.base))
@@ -1088,73 +936,6 @@ mod tests {
             self.translate(json!({ "text": text }))
                 .header("Accept", "text/event-stream")
         }
-
-        fn post_web(&self, body: &str) -> reqwest::RequestBuilder {
-            self.client
-                .post(format!("{}/v1/web-pages", self.base))
-                .bearer_auth(&self.token)
-                .header("Content-Type", "text/markdown")
-                .body(body.to_string())
-        }
-    }
-
-    async fn status_and_id(r: reqwest::RequestBuilder) -> (u16, String, String) {
-        let r = r.send().await.unwrap();
-        let code = r.status().as_u16();
-        let v: serde_json::Value = r.json().await.unwrap();
-        (
-            code,
-            v["id"].as_str().unwrap_or("").to_string(),
-            v["status"].as_str().unwrap_or("").to_string(),
-        )
-    }
-
-    #[tokio::test]
-    async fn web_pages_endpoint() {
-        let h = spawn().await;
-        let page = |url: &str, extra: &str| format!("---\nurl: \"{}\"\n{}---\n# P\n", url, extra);
-        let url = "https://example.com/docs/";
-
-        let (code, id, status) = status_and_id(h.post_web(&page(url, ""))).await;
-        assert_eq!((code, status.as_str()), (201, "created"));
-        let (code, id2, status) =
-            status_and_id(h.post_web(&page("https://Example.com/docs?utm_source=x#frag", ""))).await;
-        assert_eq!((code, status.as_str(), id2.as_str()), (200, "updated", id.as_str()));
-        let (code, id3, _) =
-            status_and_id(h.post_web(&page(url, "")).header("X-Devdy-Mode", "new")).await;
-        assert_eq!(code, 201);
-        assert_ne!(id3, id);
-        let (code, id4, _) = status_and_id(h.post_web(&page(url, "selection: true\n"))).await;
-        assert_eq!(code, 201);
-        assert_ne!(id4, id);
-        assert_eq!(h.ingested.load(Ordering::SeqCst), 4);
-
-        // Auth + CORS apply to the new route too.
-        let r = h
-            .client
-            .post(format!("{}/v1/web-pages", h.base))
-            .header("Content-Type", "text/markdown")
-            .body("x")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(r.status(), 401);
-        let r = h
-            .client
-            .request(Method::OPTIONS, format!("{}/v1/web-pages", h.base))
-            .header("Origin", "chrome-extension://abc")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(r.status(), 204);
-        assert!(r
-            .headers()
-            .get("access-control-allow-headers")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .contains("X-Devdy-Mode"));
-        let _ = std::fs::remove_dir_all(&h.app_data);
     }
 
     #[tokio::test]
@@ -1232,73 +1013,61 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r.status(), 204);
-        assert!(r
+        let allowed = r
             .headers()
             .get("access-control-allow-headers")
             .unwrap()
             .to_str()
             .unwrap()
-            .contains("X-Devdy-Project-Id"));
-
-        // Markdown create, then same url → update.
-        let md = "---\nurl: \"https://example.com/p1\"\n---\n# Hi\n";
+            .to_string();
+        for h in [
+            "Authorization",
+            "Content-Type",
+            "X-Devdy-Project-Id",
+            "X-Devdy-Title",
+        ] {
+            assert!(allowed.contains(h), "{allowed}");
+        }
+        // An old extension's zip upload (with the legacy headers) passes CORS
+        // and gets the 415 hint.
         let r = h
-            .post("text/markdown; charset=utf-8", md.as_bytes().to_vec())
+            .client
+            .post(format!("{}/v1/slack-threads", h.base))
+            .bearer_auth(&h.token)
+            .header("Origin", "chrome-extension://abc")
+            .header("Content-Type", "application/zip")
             .header("X-Devdy-Project-Id", "p1")
+            .header("X-Devdy-Title", "Old")
+            .body("zip")
             .send()
             .await
             .unwrap();
-        assert_eq!(r.status(), 201);
-        let v: serde_json::Value = r.json().await.unwrap();
-        assert_eq!(v["status"], "created");
-        let id = v["id"].as_str().unwrap().to_string();
-        let z = make_zip(&[("t.md", md.as_bytes()), ("a.png", b"png"), ("b.txt", b"txt")]);
-        let r = h.post("application/zip", z).send().await.unwrap();
-        assert_eq!(r.status(), 200);
-        let v: serde_json::Value = r.json().await.unwrap();
-        assert_eq!(v, json!({ "id": id, "status": "updated" }));
-        assert_eq!(h.ingested.load(Ordering::SeqCst), 2);
-        assert!(h.app_data.join("web-pages").join(&id).join("files/a.png").exists());
-
-        // Bad payloads.
-        let r = h.post("application/json", b"{}".to_vec()).send().await.unwrap();
         assert_eq!(r.status(), 415);
-        let slip = make_zip(&[("t.md", b"t"), ("../x", b"x")]);
-        let r = h.post("application/zip", slip).send().await.unwrap();
-        assert_eq!(r.status(), 400);
-        let two = make_zip(&[("a.md", b"a"), ("b.md", b"b")]);
-        let r = h.post("application/zip", two).send().await.unwrap();
-        assert_eq!(r.status(), 400);
-        let v: serde_json::Value = r.json().await.unwrap();
-        assert!(v["error"].is_string());
-        let r = h
-            .post("text/markdown", b"x".to_vec())
-            .header("X-Devdy-Project-Id", "nope")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(r.status(), 400);
-        // Oversized body: announce Content-Length > 50 MB but send only the
+        assert_eq!(
+            r.headers().get("access-control-allow-origin").unwrap(),
+            "chrome-extension://abc"
+        );
+
+        // Oversized body: announce Content-Length > 16 KB but send only the
         // headers over a raw socket. The server must answer 413 from the header
-        // alone (before reading the body), so this is deterministic — streaming
-        // the real 50 MB could race with the server closing the connection.
+        // alone (before reading the body), so this is deterministic.
         {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             let mut sock = tokio::net::TcpStream::connect(("127.0.0.1", h.port)).await.unwrap();
             let req = format!(
-                "POST /v1/web-pages HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\
-                 Authorization: Bearer {}\r\nContent-Type: application/zip\r\n\
+                "POST /v1/slack-threads HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\
+                 Authorization: Bearer {}\r\nContent-Type: application/json\r\n\
                  Content-Length: {}\r\n\r\n",
                 h.port,
                 h.token,
-                MAX_BODY_BYTES + 1
+                MAX_SLACK_BODY_BYTES + 1
             );
             sock.write_all(req.as_bytes()).await.unwrap();
             let mut buf = vec![0u8; 1024];
             let n = sock.read(&mut buf).await.unwrap();
             let head = String::from_utf8_lossy(&buf[..n]);
             assert!(head.starts_with("HTTP/1.1 413"), "{}", head);
-            assert!(head.contains("payload exceeds 50 MB"), "{}", head);
+            assert!(head.contains("payload exceeds 16 KB"), "{}", head);
         }
 
         // Token regeneration takes effect immediately.
@@ -1612,16 +1381,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn capture_upload_in_flight_during_shutdown_is_rejected() {
+    async fn slack_post_in_flight_during_shutdown_is_rejected() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let h = spawn().await;
-        let body = "---\nurl: \"https://example.com/p5\"\n---\nx";
+        let body = json!({ "url": LINK }).to_string();
         let mut sock = tokio::net::TcpStream::connect(("127.0.0.1", h.port))
             .await
             .unwrap();
         let head = format!(
-            "POST /v1/web-pages HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\
-             Authorization: Bearer {}\r\nContent-Type: text/markdown\r\n\
+            "POST /v1/slack-threads HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\
+             Authorization: Bearer {}\r\nContent-Type: application/json\r\n\
              Content-Length: {}\r\n\r\n",
             h.port,
             h.token,
@@ -1637,7 +1406,11 @@ mod tests {
         sock.read_to_string(&mut resp).await.unwrap();
         assert!(resp.starts_with("HTTP/1.1 503"), "{}", resp);
         assert!(resp.contains("server stopping"), "{}", resp);
-        assert_eq!(h.ingested.load(Ordering::SeqCst), 0);
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM slack_threads")
+            .fetch_one(&h.db)
+            .await
+            .unwrap();
+        assert_eq!(n, 0);
         let _ = std::fs::remove_dir_all(&h.app_data);
     }
 
@@ -1764,12 +1537,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r.status(), 401);
-        // Nothing went to the captures core.
-        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM captures")
-            .fetch_one(&h.db)
-            .await
-            .unwrap();
-        assert_eq!(n, 0);
         let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM slack_threads")
             .fetch_one(&h.db)
             .await
@@ -1783,7 +1550,6 @@ mod tests {
         db: Db,
         api: InboxApiState,
         fakes: Fakes,
-        app_data: PathBuf,
     }
 
     impl Lifecycle {
@@ -1796,7 +1562,6 @@ mod tests {
                 fakes: Fakes::new(&db, &app_data),
                 db,
                 api,
-                app_data,
             }
         }
 
@@ -1804,7 +1569,6 @@ mod tests {
             move |port, shutdown| {
                 test_state(
                     &self.db,
-                    &self.app_data,
                     &self.api,
                     &self.fakes,
                     TRANSLATE_TIMEOUT,

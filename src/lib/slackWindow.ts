@@ -23,6 +23,18 @@ export const SLACK_WINDOW_ADD = 'slack-window:add'
  */
 export const SLACK_WINDOW_OPEN_ROUTE = 'slack-window:open-route'
 
+/**
+ * Emitted by the backend when the user clicks the OS notification of a Slack
+ * thread job started over the Inbox API (it also focuses the main window).
+ * Only the main window listens (App.vue), so the Slack window opens once.
+ */
+export const SLACK_NOTIFICATION_CLICKED = 'capture-notification-clicked'
+
+export interface SlackNotificationClicked {
+  id: string
+  kind: 'slack'
+}
+
 export interface SlackWindowOpenRoute {
   path: string
 }

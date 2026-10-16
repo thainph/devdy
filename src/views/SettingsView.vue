@@ -1693,7 +1693,6 @@ watch(() => settings.value.language, (v) => {
               <span>🧩 skills_list / read / create / update / delete</span>
               <span>📏 rules_list / read / create / update / delete</span>
               <span>💬 slack_threads_list / read / search / rename / set_project / delete</span>
-              <span>🌐 web_pages_list / read / search / rename / update / append / set_project / reorder / delete / read_attachment</span>
             </div>
           </div>
         </Card>
@@ -2855,7 +2854,7 @@ watch(() => settings.value.language, (v) => {
           <RemoteControlSettings />
         </div>
 
-        <!-- Inbox API for the Chrome extension (Slack threads + web pages). Mounted only while
+        <!-- Inbox API for the Chrome extension (Slack thread links + translation). Mounted only while
              shown, so opening the section always reads the live port / status. -->
         <div v-if="!loading && activeSection === 'inbox'" class="max-w-lg">
           <InboxApiSettings />

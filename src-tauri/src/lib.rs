@@ -93,12 +93,7 @@ use commands::stats::{
     refresh_codex_plan_usage, refresh_plan_usage, reset_usage_stats,
 };
 use commands::storage::{clean_storage, get_storage_stats};
-use commands::captures::{
-    delete_captures, get_capture, get_inbox_api_info, import_capture_file, list_captures,
-    regenerate_inbox_api_token, rename_capture, reorder_captures, set_capture_project,
-    set_inbox_api_enabled,
-    update_capture,
-};
+use commands::inbox_api::{get_inbox_api_info, regenerate_inbox_api_token, set_inbox_api_enabled};
 use commands::slack_threads::{
     add_slack_thread, delete_slack_threads, get_slack_thread, get_slack_thread_prompt_text,
     get_slack_token_status, list_slack_threads, mark_slack_thread_seen, refresh_slack_thread,
@@ -283,8 +278,11 @@ pub fn run() {
                     }
                 });
             }
-            // Capture inbox: loopback HTTP API (127.0.0.1:47821..47830) the
-            // Chrome extension pushes web pages / Slack links to. The token is loaded
+            // Web page captures were removed: drop their leftover files (the
+            // tables are dropped by migration 0042).
+            inbox_api::remove_legacy_web_pages(&app_data_dir);
+            // Inbox API: loopback HTTP API (127.0.0.1:47821..47830) the
+            // Chrome extension sends Slack links to. The token is loaded
             // (or generated) synchronously so commands never see an empty one.
             // Only started when enabled (`inbox_api_enabled`, default on).
             {
@@ -302,12 +300,10 @@ pub fn run() {
                 app.manage(inbox_state.clone());
                 if enabled {
                     let app_handle = app.handle().clone();
-                    let inbox_app_data = app_data_dir.clone();
                     tauri::async_runtime::spawn(async move {
                         inbox_api::server::start_server(
                             app_handle,
                             db_for_inbox,
-                            inbox_app_data,
                             inbox_state,
                             translate_state,
                             slack_state,
@@ -580,14 +576,6 @@ pub fn run() {
             delete_note,
             delete_notes,
             reorder_notes,
-            list_captures,
-            get_capture,
-            rename_capture,
-            update_capture,
-            set_capture_project,
-            delete_captures,
-            reorder_captures,
-            import_capture_file,
             get_inbox_api_info,
             regenerate_inbox_api_token,
             set_inbox_api_enabled,

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // The action bar shared by the detail pop-outs — note / todo (views/ItemWindow.vue)
-// and Slack thread / web page (views/CaptureWindow.vue) — so all four read alike:
+// and the Slack threads window — so they all read alike:
 //
 //   reading  [left: project] ··········· [actions: the kind's own] [Edit] [⋯]
 //   editing  ················································ [Cancel] [Save]

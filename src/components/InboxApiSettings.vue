@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Settings → "Inbox API (Chrome extension)": the local HTTP endpoint the Chrome
-// extension pushes captures to (Slack threads and web pages). Shows whether it is listening, the base URL and the
+// extension sends Slack thread links (and translation requests) to. Shows whether it is listening, the base URL and the
 // bearer token (masked; copy / reveal / regenerate). Regenerating invalidates the
 // old token immediately, so it asks first. A master switch turns the whole server
 // off (nothing listens on the port).
@@ -10,12 +10,12 @@ import { Check, Copy, Eye, EyeOff, Inbox, Loader2, RefreshCw } from 'lucide-vue-
 import { Button, Card } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
-import { useCapturesStore, type InboxApiInfo } from '@/stores/captures'
+import { useInboxApiStore, type InboxApiInfo } from '@/stores/inboxApi'
 
 const { t } = useI18n()
 const { confirm } = useConfirm()
 const { toast } = useToast()
-const store = useCapturesStore()
+const store = useInboxApiStore()
 
 const info = ref<InboxApiInfo | null>(null)
 const loading = ref(true)
@@ -34,7 +34,7 @@ const maskedToken = computed(() => {
 
 const endpoints = computed(() => {
   const base = info.value?.baseUrl || 'http://127.0.0.1:<port>'
-  return `POST ${base}/v1/slack-threads\nPOST ${base}/v1/web-pages\nPOST ${base}/v1/translate`
+  return `POST ${base}/v1/slack-threads\nPOST ${base}/v1/translate`
 })
 
 async function load() {
@@ -240,7 +240,8 @@ onMounted(load)
           <div class="font-medium uppercase tracking-wider">{{ t('settings.inboxApi.usage') }}</div>
           <code class="block whitespace-pre-wrap break-all font-mono">{{ endpoints }}
 Authorization: Bearer &lt;token&gt;
-Content-Type: application/zip | text/markdown | application/json</code>
+Content-Type: application/json
+{"url": "&lt;slack thread link&gt;"}</code>
         </div>
       </template>
     </template>

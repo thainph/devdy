@@ -9,7 +9,7 @@ import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useUILayoutStore } from '@/stores/uiLayout'
 import { useI18n } from 'vue-i18n'
 import { setLocale } from '@/i18n'
-import { Globe, ListTodo, PanelLeftClose, PanelLeftOpen, Slack, StickyNote } from 'lucide-vue-next'
+import { ListTodo, PanelLeftClose, PanelLeftOpen, Slack, StickyNote } from 'lucide-vue-next'
 import PermissionNotifier from '@/components/PermissionNotifier.vue'
 import PermissionWindowManager from '@/components/PermissionWindowManager.vue'
 import CalendarReminder from '@/components/CalendarReminder.vue'
@@ -25,14 +25,10 @@ import CyberFoxHost from '@/components/CyberFoxHost.vue'
 import MascotWindow from '@/views/MascotWindow.vue'
 import ItemWindow from '@/views/ItemWindow.vue'
 import ItemListWindow from '@/views/ItemListWindow.vue'
-import CaptureWindow from '@/views/CaptureWindow.vue'
 import SlackThreadsWindow from '@/views/SlackThreadsWindow.vue'
 import {
-  CAPTURE_NOTIFICATION_CLICKED,
-  openCaptureWindow,
-  type CaptureNotificationClicked,
-} from '@/lib/captureWindow'
-import {
+  SLACK_NOTIFICATION_CLICKED,
+  type SlackNotificationClicked,
   openSlackWindow,
   SLACK_WINDOW_OPEN_ROUTE,
   type SlackWindowOpenRoute,
@@ -57,7 +53,6 @@ const isPermissionWindow = new URLSearchParams(window.location.search).get('perm
 const isItemWindow = new URLSearchParams(window.location.search).get('itemWindow') === '1'
 const isItemListWindow = new URLSearchParams(window.location.search).get('itemListWindow') === '1'
 const isGanttWindow = new URLSearchParams(window.location.search).get('ganttWindow') === '1'
-const isCaptureWindow = new URLSearchParams(window.location.search).get('captureWindow') === '1'
 const isSlackWindow = new URLSearchParams(window.location.search).get('slackWindow') === '1'
 const isMascotWindow = new URLSearchParams(window.location.search).get('mascotWindow') === '1'
 // A session pop-out is different from the bare pop-outs above: it reuses the full
@@ -73,7 +68,6 @@ const isPopoutWindow =
   isItemWindow ||
   isItemListWindow ||
   isGanttWindow ||
-  isCaptureWindow ||
   isSlackWindow ||
   isMascotWindow
 
@@ -256,7 +250,7 @@ let unlistenItemListRun: UnlistenFn | null = null
 // Listener for a session row clicked in the menu-bar switcher (see lib/tray.ts).
 let unlistenTrayRun: UnlistenFn | null = null
 
-// Listener for a clicked "capture received" OS notification (see lib/captureWindow.ts).
+// Listener for a clicked Slack thread OS notification (see lib/slackWindow.ts).
 let unlistenCaptureNotification: UnlistenFn | null = null
 
 // Listener for the Slack threads window asking to navigate (e.g. to the MCP settings).
@@ -337,9 +331,6 @@ function bindGlobalMenuActions() {
     ),
     registerMenuAction('view.slackThreads', () =>
       openSlackWindow({ projectId: routeCaptureContext().projectId }),
-    ),
-    registerMenuAction('view.webPages', () =>
-      openItemListWindow('web', { projectId: routeCaptureContext().projectId }),
     ),
     registerMenuAction('view.toggleSidebar', () => uiLayout.toggleSidebar()),
     registerMenuAction('view.toggleFocus', () => uiLayout.toggleFocus()),
@@ -562,18 +553,15 @@ onMounted(async () => {
     // Ignore (e.g. running outside the Tauri shell during dev in a browser).
   }
 
-  // A clicked "Slack thread translated / Web page received" notification opens the
-  // Slack threads window on that thread, or the web page's detail window (or
-  // focuses the one already showing it). Registered here, past the pop-out /
-  // session early returns, so only the main window handles it.
+  // A clicked "Slack thread translated / failed" notification opens the Slack
+  // threads window on that thread. Registered here, past the pop-out / session
+  // early returns, so only the main window handles it.
   try {
-    unlistenCaptureNotification = await listen<CaptureNotificationClicked>(
-      CAPTURE_NOTIFICATION_CLICKED,
+    unlistenCaptureNotification = await listen<SlackNotificationClicked>(
+      SLACK_NOTIFICATION_CLICKED,
       (e) => {
         const { id, kind } = e.payload ?? {}
-        if (!id) return
-        if (kind === 'slack') void openSlackWindow({ id })
-        else void openCaptureWindow(id)
+        if (id && kind === 'slack') void openSlackWindow({ id })
       },
     )
   } catch {
@@ -625,9 +613,6 @@ onMounted(async () => {
 
   <!-- THE todo / note LIST window: stands beside the main window, replacing the drawer. -->
   <ItemListWindow v-else-if="isItemListWindow" />
-
-  <!-- One web page capture (from the Inbox API): metadata, markdown, attachments. -->
-  <CaptureWindow v-else-if="isCaptureWindow" />
 
   <!-- THE Slack threads window: Slack-like reader of the fetched + translated threads. -->
   <SlackThreadsWindow v-else-if="isSlackWindow" />
@@ -741,8 +726,7 @@ onMounted(async () => {
                   <span class="flex-1 truncate text-left">{{ t('item.navNotes') }}</span>
                 </button>
 
-                <!-- Slack threads have their own window; web pages pushed in by
-                     the Chrome extension sit on the list window's Web tab. -->
+                <!-- Slack threads have their own window. -->
                 <button
                   type="button"
                   class="relative flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors cursor-pointer select-none text-muted-foreground hover:text-foreground hover:bg-accent/50"
@@ -751,16 +735,6 @@ onMounted(async () => {
                 >
                   <Slack class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
                   <span class="flex-1 truncate text-left">{{ t('slackThread.nav') }}</span>
-                </button>
-
-                <button
-                  type="button"
-                  class="relative flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors cursor-pointer select-none text-muted-foreground hover:text-foreground hover:bg-accent/50"
-                  :title="t('capture.web.nav')"
-                  @click="openItemListWindow('web', { projectId: routeCaptureContext().projectId })"
-                >
-                  <Globe class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
-                  <span class="flex-1 truncate text-left">{{ t('capture.web.nav') }}</span>
                 </button>
               </template>
 

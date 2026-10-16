@@ -1720,7 +1720,19 @@ async fn migration_0041_moves_slack_captures() {
         .await
         .unwrap();
     }
-    full.run(&pool).await.unwrap();
+    let upto_0041 = Migrator {
+        migrations: std::borrow::Cow::Owned(
+            full.migrations
+                .iter()
+                .filter(|m| m.version <= 41)
+                .cloned()
+                .collect(),
+        ),
+        ignore_missing: false,
+        locking: full.locking,
+        no_tx: full.no_tx,
+    };
+    upto_0041.run(&pool).await.unwrap();
 
     let rows: Vec<(String, String, i64, Option<String>, i64, String, Option<String>, Option<String>, i64, String, Option<String>, Option<String>)> =
         sqlx::query_as(
@@ -1811,4 +1823,25 @@ async fn migration_0041_moves_slack_captures() {
             .await
             .unwrap();
     assert_eq!(temp, 0);
+
+    // 0042 drops the captures core; Slack data is untouched.
+    full.run(&pool).await.unwrap();
+    let gone: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('captures', 'capture_attachments') \
+         OR name LIKE 'idx_captures%'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(gone, 0);
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM slack_threads")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 2);
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM slack_files")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 2);
 }

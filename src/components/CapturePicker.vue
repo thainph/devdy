@@ -1,8 +1,8 @@
 <script setup lang="ts">
-// "Insert Slack thread / web page / note / todo" picker for the chat composer —
-// the sibling of the saved-prompt dropdown (RunView, BookMarked icon), built on
-// the same DropdownMenu. Picking a web page / note / todo does NOT paste its
-// content: it emits a one-line reference — `[Web|Note] <title> (id: …)`, or
+// "Insert Slack thread / note / todo" picker for the chat composer — the
+// sibling of the saved-prompt dropdown (RunView, BookMarked icon), built on the
+// same DropdownMenu. Picking a note / todo does NOT paste its content: it emits
+// a one-line reference — `[Note] <title> (id: …)`, or
 // `[Todo] (id: …)` — and the AI resolves the id through the devdy MCP tools when
 // it needs more. Picking a Slack thread inserts its translated transcript, built
 // by the backend (`get_slack_thread_prompt_text`), optionally with the original
@@ -11,28 +11,20 @@
 // The host inserts the emitted text at the caret (same contract as a saved
 // prompt: own line, focus, never sends).
 //
-// A segmented All | Slack | Web | Note | Todo filter (remembered in
+// A segmented All | Slack | Note | Todo filter (remembered in
 // localStorage) narrows the kind; todos show open ones unless "Show done" is on.
 // Rows: the run's project first, then the rest; newest first. The search box
-// filters title / channel / workspace / thread preview / domain / site / note
-// body / todo text; ↑ ↓ move, Enter inserts. Slack rows not yet `ready` carry
+// filters title / channel / workspace / thread preview / note body / todo text; ↑ ↓ move, Enter inserts. Slack rows not yet `ready` carry
 // their status mark (spinner / error).
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { Check, Globe, Inbox, ListTodo, Search, Slack, StickyNote } from 'lucide-vue-next'
+import { Check, Inbox, ListTodo, Search, Slack, StickyNote } from 'lucide-vue-next'
 import { DropdownMenu } from '@/components/ui'
 import SlackStatusIcon from '@/components/slack/SlackStatusIcon.vue'
 import { useSlackText } from '@/components/slack/useSlackText'
 import { useToast } from '@/composables/useToast'
 import { firstLine, relativeAge } from '@/lib/itemText'
-import {
-  CAPTURES_CHANGED,
-  captureDomain,
-  useCapturesStore,
-  type Capture,
-  type CaptureKind,
-} from '@/stores/captures'
 import {
   SLACK_THREADS_CHANGED,
   errorCode,
@@ -53,12 +45,12 @@ const emit = defineEmits<{
   insert: [text: string]
 }>()
 
-type PickKind = CaptureKind | 'slack' | 'note' | 'todo'
+type PickKind = 'slack' | 'note' | 'todo'
 type Filter = 'all' | PickKind
 const FILTER_STORAGE_KEY = 'devdy.capturePicker.filter'
 const SLACK_ORIGINAL_STORAGE_KEY = 'devdy.capturePicker.slackOriginal'
-const FILTERS: Filter[] = ['all', 'slack', 'web', 'note', 'todo']
-const KIND_ICON = { slack: Slack, web: Globe, note: StickyNote, todo: ListTodo } as const
+const FILTERS: Filter[] = ['all', 'slack', 'note', 'todo']
+const KIND_ICON = { slack: Slack, note: StickyNote, todo: ListTodo } as const
 
 function loadFilter(): Filter {
   try {
@@ -81,7 +73,7 @@ interface PickItem {
   /** Lower-cased text the search box matches. */
   hay: string
   done: boolean
-  /** Inserted as-is (web / note / todo); Slack builds its text on pick. */
+  /** Inserted as-is (note / todo); Slack builds its text on pick. */
   reference: string
   /** Slack only: the thread, for its status mark and the transcript request. */
   thread?: SlackThreadSummary
@@ -90,7 +82,6 @@ interface PickItem {
 const { t } = useI18n()
 const { toast } = useToast()
 const { errorText } = useSlackText()
-const captures = useCapturesStore()
 const slack = useSlackThreadsStore()
 const notes = useNotesStore()
 const todos = useTodosStore()
@@ -116,25 +107,6 @@ function loadSlackOriginal(): boolean {
 }
 
 // ── Rows per kind ───────────────────────────────────────────────────────────
-
-function captureItem(c: Capture): PickItem {
-  const title = c.title.trim() || t(`capture.${c.kind}.untitled`)
-  const meta = [captureDomain(c) || c.siteName?.trim() || '']
-  if (c.attachmentCount > 0) meta.push(`📎${c.attachmentCount}`)
-  meta.push(relativeAge(c.updatedAt))
-  const hay = `${c.title}\n${captureDomain(c)}\n${c.siteName ?? ''}`
-  return {
-    key: `capture:${c.id}`,
-    kind: c.kind,
-    title,
-    meta: meta.filter(Boolean).join(' · '),
-    projectId: c.projectId,
-    sortAt: c.updatedAt,
-    hay: hay.toLowerCase(),
-    done: false,
-    reference: reference(c.kind, c.id, title),
-  }
-}
 
 function slackItem(th: SlackThreadSummary): PickItem {
   const title = th.title.trim() || t('slackThread.untitled')
@@ -188,7 +160,7 @@ function todoItem(x: Todo): PickItem {
   }
 }
 
-const REF_TAG: Record<PickKind, string> = { slack: 'Slack', web: 'Web', note: 'Note', todo: 'Todo' }
+const REF_TAG: Record<PickKind, string> = { slack: 'Slack', note: 'Note', todo: 'Todo' }
 
 /** The one-line reference the AI gets: kind, title (none for a todo), id. */
 function reference(kind: PickKind, id: string, title?: string): string {
@@ -199,7 +171,6 @@ function reference(kind: PickKind, id: string, title?: string): string {
 
 const allItems = computed<PickItem[]>(() => [
   ...slack.threads.map(slackItem),
-  ...captures.captures.filter((c) => c.kind === 'web').map(captureItem),
   ...notes.notes.map(noteItem),
   ...todos.todos.map(todoItem),
 ])
@@ -246,8 +217,6 @@ const emptyText = computed(() => {
   switch (filter.value) {
     case 'slack':
       return t('slackThread.sidebar.empty')
-    case 'web':
-      return t(`capture.${filter.value}.empty`)
     case 'note':
       return t('item.emptyNote')
     case 'todo':
@@ -303,7 +272,6 @@ function toggleShowDone() {
 
 function refresh() {
   void slack.fetchList(null)
-  void captures.fetchCaptures()
   void notes.fetchNotes()
   void todos.fetchTodos()
 }
@@ -344,9 +312,6 @@ watch(active, (i) => {
 onMounted(async () => {
   try {
     unlisten.push(
-      await listen(CAPTURES_CHANGED, () => {
-        if (open.value) void captures.fetchCaptures()
-      }),
       await listen(SLACK_THREADS_CHANGED, () => {
         if (open.value) void slack.fetchList(null)
       }),
