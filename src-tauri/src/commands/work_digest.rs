@@ -1,7 +1,8 @@
 //! Work Digest — aggregate runs into a per-day / per-range work summary.
 //!
 //! `get_work_digest` lists runs (all statuses, including `fetched`) filtered by
-//! a local date range and an optional project multi-select, groups them by
+//! a local date range (a single day when `from == to`; each bound covers the
+//! full local day 00:00–23:59:59) and an optional project multi-select, groups them by
 //! project, and computes two independent durations per BR-001/BR-005/BR-007:
 //!
 //! * wall-clock — finished_at − started_at (or now − started_at while running).
@@ -14,7 +15,7 @@
 //! / run type that already live in the DB.
 
 use crate::db::Db;
-use chrono::Utc;
+use chrono::{Duration, Local, NaiveDate, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{QueryBuilder, Row, Sqlite};
 use std::collections::HashMap;
@@ -271,6 +272,70 @@ fn collect_timestamps(path: Option<&str>) -> Vec<i64> {
     out
 }
 
+/// Inclusive local-date bounds resolved to an exact epoch window:
+/// `[from 00:00 local, (to + 1 day) 00:00 local)`, i.e. each bound covers the
+/// full local day.
+struct LocalDayBounds {
+    from_date: Option<NaiveDate>,
+    to_date: Option<NaiveDate>,
+    start: Option<i64>,
+    end: Option<i64>,
+}
+
+impl LocalDayBounds {
+    fn new<Tz: TimeZone>(from: Option<&str>, to: Option<&str>, tz: &Tz) -> Result<Self, String> {
+        let from_date = parse_date(from)?;
+        let to_date = parse_date(to)?;
+        Ok(Self {
+            from_date,
+            to_date,
+            start: from_date.map(|d| local_midnight_epoch(d, tz)),
+            end: to_date.map(|d| local_midnight_epoch(d + Duration::days(1), tz)),
+        })
+    }
+
+    /// Whether an RFC3339 timestamp falls inside the window. Every writer
+    /// stores RFC3339, so the date-prefix comparison below is a defensive
+    /// fallback only (e.g. a hand-edited or legacy row), not an expected path.
+    fn contains(&self, ts: &str) -> bool {
+        if let Some(epoch) = parse_epoch_secs(ts) {
+            return self.start.map_or(true, |s| epoch >= s) && self.end.map_or(true, |e| epoch < e);
+        }
+        let prefix = ts.get(..10).unwrap_or(ts);
+        let Ok(date) = NaiveDate::parse_from_str(prefix, "%Y-%m-%d") else {
+            return false;
+        };
+        self.from_date.map_or(true, |f| date >= f) && self.to_date.map_or(true, |t| date <= t)
+    }
+}
+
+/// Parse an optional `YYYY-MM-DD` bound; empty → no bound.
+fn parse_date(s: Option<&str>) -> Result<Option<NaiveDate>, String> {
+    match s.map(str::trim).filter(|s| !s.is_empty()) {
+        None => Ok(None),
+        Some(s) => NaiveDate::parse_from_str(s, "%Y-%m-%d")
+            .map(Some)
+            .map_err(|_| format!("Invalid date: {s}")),
+    }
+}
+
+/// Epoch seconds of 00:00 on `date` in `tz`. If midnight doesn't exist (DST
+/// gap), use the earliest valid instant; fall back to UTC midnight.
+fn local_midnight_epoch<Tz: TimeZone>(date: NaiveDate, tz: &Tz) -> i64 {
+    let naive = date.and_hms_opt(0, 0, 0).expect("midnight is valid");
+    tz.from_local_datetime(&naive)
+        .earliest()
+        .map(|dt| dt.timestamp())
+        .or_else(|| {
+            (1..=3).find_map(|h| {
+                tz.from_local_datetime(&(naive + Duration::hours(h)))
+                    .earliest()
+                    .map(|dt| dt.timestamp())
+            })
+        })
+        .unwrap_or_else(|| naive.and_utc().timestamp())
+}
+
 #[tauri::command]
 pub async fn get_work_digest(
     db: State<'_, Db>,
@@ -292,13 +357,18 @@ pub async fn get_work_digest(
          r.session_id, r.started_at, r.finished_at, r.created_at, p.path AS project_path \
          FROM runs r JOIN projects p ON p.id = r.project_id WHERE 1 = 1",
     );
-    if let Some(f) = filter.from.as_ref().filter(|s| !s.is_empty()) {
+    // Timestamps are stored in UTC, but the bounds are LOCAL dates. The SQL
+    // filter is only a coarse prefilter on the UTC date prefix, widened by one
+    // day each side to cover any timezone offset; the exact local-day check
+    // happens per row below.
+    let bounds = LocalDayBounds::new(filter.from.as_deref(), filter.to.as_deref(), &Local)?;
+    if let Some(f) = bounds.from_date {
         qb.push(" AND substr(COALESCE(r.started_at, r.created_at), 1, 10) >= ")
-            .push_bind(f.clone());
+            .push_bind((f - Duration::days(1)).format("%Y-%m-%d").to_string());
     }
-    if let Some(t) = filter.to.as_ref().filter(|s| !s.is_empty()) {
+    if let Some(t) = bounds.to_date {
         qb.push(" AND substr(COALESCE(r.started_at, r.created_at), 1, 10) <= ")
-            .push_bind(t.clone());
+            .push_bind((t + Duration::days(1)).format("%Y-%m-%d").to_string());
     }
     if let Some(ids) = filter.project_ids.as_ref().filter(|v| !v.is_empty()) {
         qb.push(" AND r.project_id IN (");
@@ -362,6 +432,10 @@ pub async fn get_work_digest(
         let started_at: Option<String> = row.get("started_at");
         let finished_at: Option<String> = row.get("finished_at");
         let created_at: String = row.get("created_at");
+
+        if !bounds.contains(started_at.as_deref().unwrap_or(&created_at)) {
+            continue;
+        }
 
         let wall_secs = wall_secs_for(
             &status,
@@ -527,6 +601,29 @@ mod tests {
         let start_epoch = parse_epoch_secs(start).unwrap();
         let now = start_epoch + 600;
         assert_eq!(wall_secs_for("running", Some(start), None, now), 600);
+    }
+
+    #[test]
+    fn local_day_bounds_use_timezone() {
+        // UTC+7: the local day 2026-10-16 spans 2026-10-15T17:00Z..2026-10-16T17:00Z.
+        let tz = chrono::FixedOffset::east_opt(7 * 3600).unwrap();
+        let b = LocalDayBounds::new(Some("2026-10-16"), Some("2026-10-16"), &tz).unwrap();
+        assert!(!b.contains("2026-10-15T16:59:59+00:00"));
+        assert!(b.contains("2026-10-15T17:00:00+00:00"));
+        assert!(b.contains("2026-10-16T16:59:59.999+00:00"));
+        assert!(!b.contains("2026-10-16T17:00:00+00:00"));
+    }
+
+    #[test]
+    fn local_day_bounds_open_and_invalid() {
+        let tz = chrono::FixedOffset::east_opt(0).unwrap();
+        let b = LocalDayBounds::new(None, None, &tz).unwrap();
+        assert!(b.contains("2000-01-01T00:00:00Z"));
+        assert!(LocalDayBounds::new(Some("16/10/2026"), None, &tz).is_err());
+        // Unparseable timestamp → date-prefix fallback.
+        let b = LocalDayBounds::new(Some("2026-10-16"), Some("2026-10-16"), &tz).unwrap();
+        assert!(b.contains("2026-10-16 10:00:00"));
+        assert!(!b.contains("2026-10-17 10:00:00"));
     }
 
     #[test]
