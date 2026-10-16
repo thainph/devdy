@@ -8,6 +8,8 @@
 
 /** Horizontal/vertical padding + font per control size. */
 export const controlSize = {
+  /** Same height / font as Button `xs` (compact controls in a row of xs buttons). */
+  xs: 'h-7 px-2.5 py-1 text-[10px]',
   sm: 'px-3 py-1.5 text-xs',
   md: 'px-3 py-2 text-sm',
 } as const

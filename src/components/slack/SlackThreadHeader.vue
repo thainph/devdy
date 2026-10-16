@@ -1,20 +1,36 @@
 <script setup lang="ts">
-// Header of the thread pane: the title (click / F2 → inline rename), then
-// `#channel · workspace`, and the thread actions — whole-thread "Show original"
-// toggle, Refresh (spinner + disabled while a job runs) and Open in Slack.
+// Header of the thread pane: the title (click / F2 → inline rename) over
+// `#channel · workspace`; on the right the thread's project + its "Sessions"
+// menu (linked sessions, link one — LinkedSessionsMenu), both bordered xs
+// controls, then the icon-only thread actions (label in tooltip + aria-label) —
+// whole-thread "Show original" toggle (primary while on), Refresh (spinner +
+// disabled while a job runs), Open in Slack and the ⋯ menu (New session from
+// this thread — disabled without a project · Copy ID · Delete). The host
+// confirms deletes and shows the toasts.
+//
+// Narrow pane: the title gives way first (down to 6rem), then the project name
+// truncates.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ExternalLink, Languages, PencilLine, RotateCw } from 'lucide-vue-next'
 import { Button } from '@/components/ui'
 import InlineRenameInput from '@/components/InlineRenameInput.vue'
+import ProjectSelect from '@/components/ProjectSelect.vue'
 import { formatFullDate } from '@/lib/slackThreadUtils'
-import { isBusy, type SlackThreadSummary } from '@/stores/slackThreads'
+import { isBusy, type SlackThreadRunLink, type SlackThreadSummary } from '@/stores/slackThreads'
+import LinkedSessionsMenu from '@/components/sessions/LinkedSessionsMenu.vue'
+import DetailActionsMenu from '@/components/sessions/DetailActionsMenu.vue'
+import type { SessionLink } from '@/lib/sessionLinks'
 
 const props = defineProps<{
   thread: SlackThreadSummary
+  /** Sessions linked to the thread. */
+  links: SlackThreadRunLink[]
   renaming: boolean
   showOriginal: boolean
   refreshing: boolean
+  /** Copy ID just fired: its icon becomes a tick. */
+  copiedId: boolean
 }>()
 
 const emit = defineEmits<{
@@ -24,6 +40,13 @@ const emit = defineEmits<{
   toggleOriginal: []
   refresh: []
   openInSlack: []
+  setProject: [projectId: string | null]
+  openRun: [link: SessionLink]
+  unlinkRun: [link: SessionLink]
+  linkRun: [runId: string]
+  newSession: []
+  copyId: []
+  delete: []
 }>()
 
 const { t } = useI18n()
@@ -45,7 +68,7 @@ const metaTitle = computed(() =>
 
 <template>
   <div class="flex shrink-0 items-center gap-3 border-b border-border/60 px-5 py-2.5">
-    <div class="min-w-0 flex-1">
+    <div class="min-w-[6rem] flex-1">
       <div class="flex min-w-0 items-center gap-1.5">
         <InlineRenameInput
           v-if="renaming"
@@ -76,24 +99,67 @@ const metaTitle = computed(() =>
       <p v-if="meta" class="mt-0.5 truncate text-xs text-muted-foreground" :title="metaTitle">{{ meta }}</p>
     </div>
 
-    <div class="flex shrink-0 items-center gap-1.5">
+    <div class="flex min-w-0 items-center gap-1.5">
+      <!-- The thread's project and its sessions: linking depends on the project. -->
+      <div class="w-[11rem] min-w-[5.5rem] shrink">
+        <ProjectSelect
+          :model-value="thread.projectId"
+          variant="outline"
+          size="xs"
+          @update:model-value="emit('setProject', $event)"
+        />
+      </div>
+      <LinkedSessionsMenu
+        class="shrink-0"
+        :project-id="thread.projectId"
+        :links="links"
+        @open-run="emit('openRun', $event)"
+        @unlink-run="emit('unlinkRun', $event)"
+        @link="emit('linkRun', $event)"
+      />
+      <div class="mx-0.5 h-4 w-px shrink-0 bg-border" aria-hidden="true" />
       <Button
         :variant="showOriginal ? 'primary' : 'outline'"
-        size="xs"
+        size="icon-sm"
+        class="shrink-0"
         :aria-pressed="showOriginal"
+        :title="t('slackThread.header.showOriginal')"
+        :aria-label="t('slackThread.header.showOriginal')"
         @click="emit('toggleOriginal')"
       >
-        <Languages class="h-3 w-3" :stroke-width="1.75" />
-        {{ t('slackThread.header.showOriginal') }}
+        <Languages class="h-3.5 w-3.5" :stroke-width="1.75" />
       </Button>
-      <Button variant="outline" size="xs" :disabled="busy" @click="emit('refresh')">
-        <RotateCw class="h-3 w-3" :class="{ 'animate-spin': busy }" :stroke-width="1.75" />
-        {{ t('slackThread.header.refresh') }}
+      <Button
+        variant="outline"
+        size="icon-sm"
+        class="shrink-0"
+        :disabled="busy"
+        :title="t('slackThread.header.refresh')"
+        :aria-label="t('slackThread.header.refresh')"
+        @click="emit('refresh')"
+      >
+        <RotateCw class="h-3.5 w-3.5" :class="{ 'animate-spin': busy }" :stroke-width="1.75" />
       </Button>
-      <Button v-if="thread.threadUrl" variant="outline" size="xs" @click="emit('openInSlack')">
-        <ExternalLink class="h-3 w-3" :stroke-width="1.75" />
-        {{ t('slackThread.header.openInSlack') }}
+      <Button
+        v-if="thread.threadUrl"
+        variant="outline"
+        size="icon-sm"
+        class="shrink-0"
+        :title="t('slackThread.header.openInSlack')"
+        :aria-label="t('slackThread.header.openInSlack')"
+        @click="emit('openInSlack')"
+      >
+        <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
       </Button>
+      <DetailActionsMenu
+        :new-session-label="t('slackThread.links.newSession')"
+        :new-session-hint="thread.projectId ? t('slackThread.links.newSessionHint') : t('slackThread.links.needProject')"
+        :can-new-session="!!thread.projectId"
+        :copied-id="copiedId"
+        @new-session="emit('newSession')"
+        @copy-id="emit('copyId')"
+        @delete="emit('delete')"
+      />
     </div>
   </div>
 </template>

@@ -6,7 +6,9 @@
 // translation; the sidecar only reads, renames, re-links and deletes.
 // File paths are stored RELATIVE to <app_data> and returned ABSOLUTE. The
 // sidecar connection does not enable `foreign_keys`, so deletes remove child
-// rows explicitly instead of relying on ON DELETE CASCADE.
+// rows explicitly instead of relying on ON DELETE CASCADE. Sessions (runs)
+// linked to a thread (`slack_thread_runs`, migration 0043) come back as
+// `linked_runs`, the run ids that still exist, comma-separated in link order.
 
 import { existsSync, rmSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
@@ -17,7 +19,9 @@ const THREAD_COLS = `t.id, t.title, t.title_custom, t.project_id, t.position, t.
   t.workspace_domain, t.team_id, t.workspace, t.channel_id, t.channel, t.thread_ts, t.thread_url,
   t.fetch_status, t.fetch_error_code, t.fetch_error, t.fetched_at, t.reply_count, t.last_reply_ts,
   t.warnings, t.legacy, t.legacy_content,
-  (SELECT COUNT(*) FROM slack_files f WHERE f.thread_id = t.id) AS file_count`;
+  (SELECT COUNT(*) FROM slack_files f WHERE f.thread_id = t.id) AS file_count,
+  (SELECT group_concat(run_id, ', ') FROM (SELECT l.run_id FROM slack_thread_runs l
+    JOIN runs r ON r.id = l.run_id WHERE l.thread_id = t.id ORDER BY l.linked_at, l.run_id)) AS linked_runs`;
 const ORDER = 'ORDER BY t.position ASC, t.updated_at DESC';
 const MESSAGE_COLS = `ts, seq, user_id, bot_id, author_name, author_icon_url, subtype, text_raw, text_vi,
   translate_status, translate_error, edited_ts, reactions, file_ids`;
@@ -169,22 +173,24 @@ export function setThreadProject({ id, scope = 'project' } = {}) {
 }
 
 /**
- * Delete threads: slack_messages and slack_files rows explicitly, then the
- * thread row, all in one transaction; afterwards each deleted thread's
- * <app_data>/slack-threads/<id>/ dir is removed (only for safe ids). The shared
- * avatar cache (slack-cache/) is never touched.
+ * Delete threads: slack_messages, slack_files and slack_thread_runs rows
+ * explicitly, then the thread row, all in one transaction; afterwards each
+ * deleted thread's <app_data>/slack-threads/<id>/ dir is removed (only for safe
+ * ids). The shared avatar cache (slack-cache/) is never touched.
  */
 export function deleteThreads({ ids } = {}) {
   const list = normIds(ids);
   const deleted = tx((d) => {
     const delMsgs = d.prepare('DELETE FROM slack_messages WHERE thread_id = ?');
     const delFiles = d.prepare('DELETE FROM slack_files WHERE thread_id = ?');
+    const delLinks = d.prepare('DELETE FROM slack_thread_runs WHERE thread_id = ?');
     const delRow = d.prepare('DELETE FROM slack_threads WHERE id = ?');
     const exists = d.prepare('SELECT 1 FROM slack_threads WHERE id = ?');
     return list.filter((id) => {
       if (!exists.get(id)) return false;
       delMsgs.run(id);
       delFiles.run(id);
+      delLinks.run(id);
       return delRow.run(id).changes > 0;
     });
   });

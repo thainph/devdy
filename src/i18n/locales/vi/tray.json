@@ -5,11 +5,9 @@
   "fileWindow": "Trình xem tệp",
   "ganttWindow": "Gantt",
   "newItem": "Tạo mới",
-  "editItem": "Trình sửa mục",
-  "itemListWindow": "Việc & Ghi chú",
+  "todoListWindow": "Việc cần làm",
+  "noteListWindow": "Ghi chú",
   "windows": "Cửa sổ",
   "runningSessions": "Phiên đang chạy ({count})",
-  "noRunningSessions": "Không có phiên nào đang chạy",
-  "todoItem": "Việc: {name}",
-  "noteItem": "Ghi chú: {name}"
+  "noRunningSessions": "Không có phiên nào đang chạy"
 }

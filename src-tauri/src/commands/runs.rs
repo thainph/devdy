@@ -2481,6 +2481,10 @@ pub(crate) async fn delete_run_inner(
         .await
         .map_err(|e| e.to_string())?;
 
+    // Slack threads linked to this session (no FK to runs in this DB).
+    let _ = crate::slack_threads::run_links::delete_for_run(db, run_id).await;
+    let _ = crate::item_links::delete_for_run(db, run_id).await;
+
     // Tombstone the session so the reconcile/watcher can't re-import it from the
     // still-present shared transcript on the next launch. Only session runs are
     // mirrored, so only they can come back — but recording any run with a
@@ -2552,11 +2556,15 @@ pub(crate) async fn delete_run_inner(
 /// refused — cancel first.
 #[tauri::command]
 pub async fn delete_run(
+    app: AppHandle,
     db: State<'_, Db>,
     registry: State<'_, RunRegistry>,
     run_id: String,
 ) -> Result<(), String> {
-    delete_run_inner(db.inner(), registry.inner(), &run_id).await
+    delete_run_inner(db.inner(), registry.inner(), &run_id).await?;
+    crate::slack_threads::emit_all_changed(&app);
+    crate::item_links::emit_changed(&app, None);
+    Ok(())
 }
 
 /// Rename a run's title (shown in the History list). An empty/whitespace title
@@ -2795,6 +2803,7 @@ pub async fn set_run_protected(
 /// can still delete such a worker individually via `delete_run`).
 #[tauri::command]
 pub async fn delete_all_runs(
+    app: AppHandle,
     db: State<'_, Db>,
     registry: State<'_, RunRegistry>,
     project_id: String,
@@ -2822,6 +2831,10 @@ pub async fn delete_all_runs(
         {
             deleted += 1;
         }
+    }
+    if deleted > 0 {
+        crate::slack_threads::emit_all_changed(&app);
+        crate::item_links::emit_changed(&app, None);
     }
     Ok(deleted)
 }

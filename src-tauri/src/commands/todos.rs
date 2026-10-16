@@ -1,4 +1,5 @@
 use crate::db::Db;
+use crate::item_links::{self, ItemKind};
 use serde::Serialize;
 use sqlx::Row;
 use tauri::State;
@@ -7,10 +8,10 @@ use uuid::Uuid;
 /// A single quick-note todo. `position` orders the list (ascending: lower value
 /// sits higher / higher priority). Drag-and-drop reorder rewrites positions.
 ///
-/// `project_id` / `run_id` are the capture context: set when the todo was jotted
-/// down from inside a project's run workspace, so the list can filter by project
-/// and link back to the conversation it came from. Both are nullable and
-/// unenforced — a globally captured todo has neither.
+/// `project_id` is the capture context (nullable, unenforced): set when the todo
+/// was jotted down inside a project, so the list can filter by project. Sessions
+/// (runs) are linked through `todo_runs` (see `item_links`); `linked_run_count`
+/// counts those whose run still exists.
 #[derive(Debug, Serialize, Clone)]
 pub struct Todo {
     pub id: String,
@@ -19,7 +20,7 @@ pub struct Todo {
     pub position: i64,
     pub created_at: String,
     pub project_id: Option<String>,
-    pub run_id: Option<String>,
+    pub linked_run_count: i64,
 }
 
 fn row_to_todo(row: &sqlx::sqlite::SqliteRow) -> Todo {
@@ -30,16 +31,17 @@ fn row_to_todo(row: &sqlx::sqlite::SqliteRow) -> Todo {
         position: row.get("position"),
         created_at: row.get("created_at"),
         project_id: row.get("project_id"),
-        run_id: row.get("run_id"),
+        linked_run_count: row.get("linked_run_count"),
     }
 }
 
 #[tauri::command]
 pub async fn list_todos(db: State<'_, Db>) -> Result<Vec<Todo>, String> {
-    let rows = sqlx::query(
-        "SELECT id, text, done, position, created_at, project_id, run_id FROM todos \
-         ORDER BY position ASC, created_at DESC",
-    )
+    let rows = sqlx::query(&format!(
+        "SELECT t.id, t.text, t.done, t.position, t.created_at, t.project_id, {} FROM todos t \
+         ORDER BY t.position ASC, t.created_at DESC",
+        item_links::linked_count_sql(ItemKind::Todo, "t")
+    ))
     .fetch_all(db.inner())
     .await
     .map_err(|e| e.to_string())?;
@@ -69,18 +71,25 @@ pub async fn add_todo(
     let position = min_pos.unwrap_or(0) - 1;
 
     sqlx::query(
-        "INSERT INTO todos (id, text, done, position, created_at, project_id, run_id) \
-         VALUES (?, ?, 0, ?, ?, ?, ?)",
+        "INSERT INTO todos (id, text, done, position, created_at, project_id) \
+         VALUES (?, ?, 0, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&text)
     .bind(position)
     .bind(&created_at)
     .bind(&project_id)
-    .bind(&run_id)
     .execute(db.inner())
     .await
     .map_err(|e| e.to_string())?;
+    // The run it was captured from becomes a `captured` session link.
+    let linked =
+        item_links::link_captured(db.inner(), ItemKind::Todo, &id, run_id.as_deref()).await;
+    // A project-less capture took the run's project with the link.
+    let project_id = match project_id {
+        None if linked => item_links::project_of(db.inner(), ItemKind::Todo, &id).await,
+        other => other,
+    };
 
     Ok(Todo {
         id,
@@ -89,26 +98,18 @@ pub async fn add_todo(
         position,
         created_at,
         project_id,
-        run_id,
+        linked_run_count: linked as i64,
     })
 }
 
-/// Link or unlink a todo from a project. Pass `None` to clear the link; the run
-/// backlink is cleared with it, since a run only makes sense inside its project.
+/// Link or unlink a todo from a project. Pass `None` to clear the link. Session
+/// links are independent of it (a session may live in another project).
 #[tauri::command]
 pub async fn set_todo_project(
     db: State<'_, Db>,
     id: String,
     project_id: Option<String>,
 ) -> Result<(), String> {
-    if project_id.is_none() {
-        sqlx::query("UPDATE todos SET project_id = NULL, run_id = NULL WHERE id = ?")
-            .bind(&id)
-            .execute(db.inner())
-            .await
-            .map_err(|e| e.to_string())?;
-        return Ok(());
-    }
     sqlx::query("UPDATE todos SET project_id = ? WHERE id = ?")
         .bind(&project_id)
         .bind(&id)
@@ -145,6 +146,9 @@ pub async fn update_todo(db: State<'_, Db>, id: String, text: String) -> Result<
 
 #[tauri::command]
 pub async fn delete_todo(db: State<'_, Db>, id: String) -> Result<(), String> {
+    item_links::delete_for_items(db.inner(), ItemKind::Todo, &id)
+        .await
+        .map_err(|e| e.to_string())?;
     sqlx::query("DELETE FROM todos WHERE id = ?")
         .bind(&id)
         .execute(db.inner())
@@ -162,6 +166,9 @@ pub async fn delete_todos(db: State<'_, Db>, ids: Vec<String>) -> Result<(), Str
     }
     let mut tx = db.inner().begin().await.map_err(|e| e.to_string())?;
     for id in &ids {
+        item_links::delete_for_items(&mut *tx, ItemKind::Todo, id)
+            .await
+            .map_err(|e| e.to_string())?;
         sqlx::query("DELETE FROM todos WHERE id = ?")
             .bind(id)
             .execute(&mut *tx)
@@ -174,6 +181,10 @@ pub async fn delete_todos(db: State<'_, Db>, ids: Vec<String>) -> Result<(), Str
 
 #[tauri::command]
 pub async fn clear_completed_todos(db: State<'_, Db>) -> Result<(), String> {
+    sqlx::query("DELETE FROM todo_runs WHERE todo_id IN (SELECT id FROM todos WHERE done = 1)")
+        .execute(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
     sqlx::query("DELETE FROM todos WHERE done = 1")
         .execute(db.inner())
         .await

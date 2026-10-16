@@ -5,11 +5,9 @@
   "fileWindow": "File Viewer",
   "ganttWindow": "Gantt",
   "newItem": "New Item",
-  "editItem": "Item Editor",
-  "itemListWindow": "Todos & Notes",
+  "todoListWindow": "Todos",
+  "noteListWindow": "Notes",
   "windows": "Windows",
   "runningSessions": "Running Sessions ({count})",
-  "noRunningSessions": "No running sessions",
-  "todoItem": "Task: {name}",
-  "noteItem": "Note: {name}"
+  "noRunningSessions": "No running sessions"
 }

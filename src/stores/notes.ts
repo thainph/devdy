@@ -5,7 +5,8 @@ import { ref } from 'vue'
 /**
  * Global quick-notes scratchpad, persisted in the app SQLite DB (notes table)
  * via Tauri commands. Each note has a short title + markdown content and may
- * optionally be linked to a project (`project_id`). Array order mirrors the
+ * optionally be linked to a project (`project_id`). Sessions (runs) are linked
+ * many-to-many (`note_runs`, see lib/sessionLinks). Array order mirrors the
  * `position` column — drag-and-drop in the view reorders locally then persists
  * the new id order.
  *
@@ -16,11 +17,11 @@ export interface Note {
   title: string
   content: string
   project_id: string | null
-  /** Capture context: the AI run it came from, for the backlink. */
-  run_id: string | null
   position: number
   created_at: string
   updated_at: string
+  /** Linked sessions whose run still exists. */
+  linked_run_count: number
 }
 
 export const useNotesStore = defineStore('notes', () => {
@@ -54,8 +55,8 @@ export const useNotesStore = defineStore('notes', () => {
         title: t,
         content: c,
         projectId: projectId ?? null,
-        // A run backlink only means anything alongside its project.
-        runId: projectId ? runId ?? null : null,
+        // The session it was written in becomes a `captured` link.
+        runId: runId ?? null,
       })
       notes.value.unshift(note)
       return note
@@ -89,19 +90,13 @@ export const useNotesStore = defineStore('notes', () => {
 
   async function setProject(id: string, projectId: string | null) {
     const n = notes.value.find(n => n.id === id)
-    const prev = n ? { projectId: n.project_id, runId: n.run_id } : null
-    if (n) {
-      n.project_id = projectId // optimistic
-      if (!projectId) n.run_id = null // a run backlink can't outlive its project link
-    }
+    const prev = n ? n.project_id : null
+    if (n) n.project_id = projectId // optimistic
     try {
       await invoke('set_note_project', { id, projectId })
     } catch (e) {
       error.value = String(e)
-      if (n && prev) {
-        n.project_id = prev.projectId
-        n.run_id = prev.runId
-      }
+      if (n) n.project_id = prev
     }
   }
 

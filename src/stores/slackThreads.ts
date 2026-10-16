@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { invoke } from '@/lib/tauri'
+import { linkTargetRun, type SessionLink, type SessionLinkSource } from '@/lib/sessionLinks'
 
 /**
  * Slack threads fetched by Devdy from a thread link (Slack Web API) and
@@ -44,6 +45,8 @@ export interface SlackThreadSummary {
   fileCount: number
   /** Parent first line (vi, plain), ≤ 140 chars. */
   preview: string
+  /** Linked sessions whose run still exists. */
+  linkedRunCount: number
 }
 
 export interface SlackUser {
@@ -148,15 +151,19 @@ export interface AddSlackThreadResult {
   fetchStatus: SlackFetchStatus
 }
 
+/** A session (run) linked to a thread. */
+export interface SlackThreadRunLink extends SessionLink {
+  threadId: string
+}
+
+/** Threads linked to a session, most recently linked first. */
+export function listRunSlackThreads(runId: string): Promise<SlackThreadSummary[]> {
+  return invoke<SlackThreadSummary[]>('list_run_slack_threads', { runId })
+}
+
 export interface SlackTokenStatus {
   state: 'ok' | 'none' | 'multiple'
   sources: { serverId: string; serverName: string }[]
-}
-
-export interface SlackPromptText {
-  text: string
-  truncated: boolean
-  chars: number
 }
 
 /** Data changes: create / update / delete / status / messages / mark seen. */
@@ -184,6 +191,8 @@ export const useSlackThreadsStore = defineStore('slackThreads', () => {
   const selectedId = ref<string | null>(null)
   /** The open thread (full view), or null. */
   const view = ref<SlackThreadView | null>(null)
+  /** Sessions linked to the open thread. */
+  const links = ref<SlackThreadRunLink[]>([])
   const progress = ref<Record<string, SlackThreadProgress>>({})
   const loading = ref(false)
   /** Last list load failure (cleared by the next successful load). */
@@ -222,9 +231,13 @@ export const useSlackThreadsStore = defineStore('slackThreads', () => {
     viewError.value = null
     if (!id) {
       view.value = null
+      links.value = []
       return
     }
-    if (view.value?.id !== id) view.value = null
+    if (view.value?.id !== id) {
+      view.value = null
+      links.value = []
+    }
     await reloadView()
   }
 
@@ -234,15 +247,21 @@ export const useSlackThreadsStore = defineStore('slackThreads', () => {
     if (!id) return
     const seq = ++viewSeq
     try {
-      const v = await invoke<SlackThreadView>('get_slack_thread', { id })
+      const [v, l] = await Promise.all([
+        invoke<SlackThreadView>('get_slack_thread', { id }),
+        // Links are an extra: a failure leaves the chips as they were.
+        invoke<SlackThreadRunLink[]>('list_slack_thread_runs', { threadId: id }).catch(() => null),
+      ])
       if (seq === viewSeq && selectedId.value === id) {
         view.value = v
+        if (l) links.value = l
         viewError.value = null
       }
     } catch (e) {
       if (seq !== viewSeq || selectedId.value !== id) return
       if (errorCode(e).code === 'not_found') {
         view.value = null
+        links.value = []
         selectedId.value = null
       } else {
         viewError.value = String(e)
@@ -336,13 +355,30 @@ export const useSlackThreadsStore = defineStore('slackThreads', () => {
     }
   }
 
-  async function tokenStatus(): Promise<SlackTokenStatus> {
-    return invoke<SlackTokenStatus>('get_slack_token_status')
+  /** Link the thread to a session, then reload the open thread / list. */
+  async function linkRun(threadId: string, runId: string, source: SessionLinkSource) {
+    const res = await linkTargetRun({ kind: 'slack', id: threadId }, runId, source)
+    if (view.value?.id === threadId) await reloadView()
+    return res
   }
 
-  /** The thread as composer text (§13.9), built by the backend. */
-  async function promptText(id: string, includeOriginal: boolean): Promise<SlackPromptText> {
-    return invoke<SlackPromptText>('get_slack_thread_prompt_text', { id, includeOriginal })
+  /** Optimistic; restored on failure. */
+  async function unlinkRun(threadId: string, runId: string) {
+    const snapshot = links.value.slice()
+    if (view.value?.id === threadId) links.value = links.value.filter((l) => l.runId !== runId)
+    const row = threads.value.find((x) => x.id === threadId)
+    if (row) row.linkedRunCount = Math.max(0, row.linkedRunCount - 1)
+    try {
+      await invoke('unlink_slack_thread_run', { threadId, runId })
+    } catch (e) {
+      if (view.value?.id === threadId) links.value = snapshot
+      if (row) row.linkedRunCount += 1
+      throw e
+    }
+  }
+
+  async function tokenStatus(): Promise<SlackTokenStatus> {
+    return invoke<SlackTokenStatus>('get_slack_token_status')
   }
 
   function applyProgress(p: SlackThreadProgress) {
@@ -363,6 +399,7 @@ export const useSlackThreadsStore = defineStore('slackThreads', () => {
     if (selectedId.value === id) {
       selectedId.value = null
       view.value = null
+      links.value = []
     }
   }
 
@@ -370,6 +407,7 @@ export const useSlackThreadsStore = defineStore('slackThreads', () => {
     threads,
     selectedId,
     view,
+    links,
     progress,
     loading,
     error,
@@ -385,8 +423,9 @@ export const useSlackThreadsStore = defineStore('slackThreads', () => {
     setProject,
     reorder,
     remove,
+    linkRun,
+    unlinkRun,
     tokenStatus,
-    promptText,
     applyProgress,
     onDeleted,
   }

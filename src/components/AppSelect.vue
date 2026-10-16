@@ -18,8 +18,9 @@ const props = withDefaults(defineProps<{
   options: Option[]
   placeholder?: string
   // Mirrors Input's sizing (see controlStyles). Default 'sm' so a bare
-  // <AppSelect> matches a bare <Input> on every screen.
-  size?: 'sm' | 'md'
+  // <AppSelect> matches a bare <Input> on every screen. 'xs' sits in a row of
+  // xs buttons: its menu keeps the 'sm' rows and is at least 12rem wide.
+  size?: 'xs' | 'sm' | 'md'
   // 'outline' matches Button's outline variant, for a select sitting in a row
   // of chips (the detail windows' project chip): bordered, raised, clearly a control.
   variant?: 'default' | 'ghost' | 'outline'
@@ -65,6 +66,7 @@ function updatePosition() {
         bottom: `${window.innerHeight - rect.top + 4}px`,
         left: `${rect.left}px`,
         width: `${rect.width}px`,
+        ...(props.size === 'xs' ? { minWidth: '12rem' } : {}),
         maxHeight: `${Math.min(MAX_DROPDOWN_HEIGHT, available)}px`,
       }
     : {
@@ -72,6 +74,7 @@ function updatePosition() {
         top: `${rect.bottom + 4}px`,
         left: `${rect.left}px`,
         width: `${rect.width}px`,
+        ...(props.size === 'xs' ? { minWidth: '12rem' } : {}),
         maxHeight: `${Math.min(MAX_DROPDOWN_HEIGHT, available)}px`,
       }
 }
@@ -205,9 +208,11 @@ watch(isOpen, (val) => {
       :aria-haspopup="'listbox'"
       :aria-expanded="isOpen"
       :aria-label="displayLabel"
-      class="flex w-full h-full items-center gap-2 rounded-md border transition-colors cursor-pointer select-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
+      class="flex w-full items-center gap-2 rounded-md border transition-colors cursor-pointer select-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
       :class="[
-        size === 'sm' ? controlSize.sm : controlSize.md,
+        controlSize[size],
+        // xs carries its own fixed height (h-7, same as Button xs).
+        size !== 'xs' && 'h-full',
         variant === 'ghost'
           ? 'border-transparent bg-transparent hover:bg-accent hover:text-accent-foreground'
           : variant === 'outline'
@@ -230,7 +235,7 @@ watch(isOpen, (val) => {
         class="shrink-0 text-muted-foreground transition-transform duration-200"
         :class="[
           isOpen && 'rotate-180',
-          size === 'sm' ? 'h-3 w-3' : 'h-3.5 w-3.5',
+          size === 'md' ? 'h-3.5 w-3.5' : 'h-3 w-3',
         ]"
         :stroke-width="2"
       />
@@ -269,7 +274,7 @@ watch(isOpen, (val) => {
             :aria-selected="option.value === modelValue"
             class="relative flex items-start gap-2 cursor-pointer select-none transition-colors"
             :class="[
-              size === 'sm' ? controlSize.sm : controlSize.md,
+              size === 'md' ? controlSize.md : controlSize.sm,
               highlightedIndex === i
                 ? 'bg-accent text-accent-foreground'
                 : 'text-foreground',
@@ -282,7 +287,7 @@ watch(isOpen, (val) => {
               class="shrink-0 text-primary mt-0.5"
               :class="[
                 option.value === modelValue ? 'opacity-100' : 'opacity-0',
-                size === 'sm' ? 'h-3 w-3' : 'h-3.5 w-3.5',
+                size === 'md' ? 'h-3.5 w-3.5' : 'h-3 w-3',
               ]"
               :stroke-width="2.5"
             />

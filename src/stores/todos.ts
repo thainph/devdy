@@ -4,7 +4,8 @@ import { ref } from 'vue'
 
 /**
  * Global "quick note" todo list, persisted in the app SQLite DB (todos table)
- * via Tauri commands. Array order mirrors the `position` column — drag-and-drop
+ * via Tauri commands. Sessions (runs) are linked many-to-many (`todo_runs`, see
+ * lib/sessionLinks). Array order mirrors the `position` column — drag-and-drop
  * in the view reorders locally then persists the new id order.
  *
  * Mutations apply optimistically for a snappy UI and refetch on error to resync.
@@ -17,8 +18,8 @@ export interface Todo {
   created_at: string
   /** Capture context: the project this was jotted down in, when any. */
   project_id: string | null
-  /** Capture context: the AI run it came from, for the backlink. */
-  run_id: string | null
+  /** Linked sessions whose run still exists. */
+  linked_run_count: number
 }
 
 export const useTodosStore = defineStore('todos', () => {
@@ -45,8 +46,8 @@ export const useTodosStore = defineStore('todos', () => {
       const todo = await invoke<Todo>('add_todo', {
         text: trimmed,
         projectId: projectId ?? null,
-        // A run backlink only means anything alongside its project.
-        runId: projectId ? runId ?? null : null,
+        // The session it was written in becomes a `captured` link.
+        runId: runId ?? null,
       })
       todos.value.unshift(todo)
       return todo
@@ -56,22 +57,16 @@ export const useTodosStore = defineStore('todos', () => {
     }
   }
 
-  /** Link or unlink a todo from a project (clearing it drops the run backlink). */
+  /** Link or unlink a todo from a project (session links are independent of it). */
   async function setProject(id: string, projectId: string | null) {
     const todo = todos.value.find(t => t.id === id)
-    const prev = todo ? { projectId: todo.project_id, runId: todo.run_id } : null
-    if (todo) {
-      todo.project_id = projectId // optimistic
-      if (!projectId) todo.run_id = null
-    }
+    const prev = todo ? todo.project_id : null
+    if (todo) todo.project_id = projectId // optimistic
     try {
       await invoke('set_todo_project', { id, projectId })
     } catch (e) {
       error.value = String(e)
-      if (todo && prev) {
-        todo.project_id = prev.projectId
-        todo.run_id = prev.runId
-      }
+      if (todo) todo.project_id = prev
     }
   }
 
