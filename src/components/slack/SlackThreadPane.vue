@@ -5,10 +5,10 @@
 // replies that arrived since the thread was last seen. A legacy snapshot that
 // has no fetched messages yet renders its old markdown + files instead.
 //
-// Refetches keep the scroll position; when the reader is at the bottom, new
-// messages scroll into view. The image lightbox lives here (it steps through
-// every image of the thread).
-import { computed, nextTick, ref, watch } from 'vue'
+// A thread opens scrolled to its newest message. Refetches keep the scroll
+// position; when the reader is at the bottom, new messages scroll into view.
+// The image lightbox lives here (it steps through every image of the thread).
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { openPath, openUrl } from '@tauri-apps/plugin-opener'
@@ -159,14 +159,38 @@ const lightboxId = ref<string | null>(null)
 // ── Scroll ──────────────────────────────────────────────────────────────────
 
 let stickToBottom = false
+/** The reader is at the bottom: images that load later keep it there. */
+let followBottom = true
+
+function isAtBottom(el: HTMLElement): boolean {
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 24
+}
+
+function scrollToBottom() {
+  const el = scroller.value
+  if (el) el.scrollTop = el.scrollHeight
+}
+
+function onScroll() {
+  if (scroller.value) followBottom = isAtBottom(scroller.value)
+}
+
+// Images (inline files, avatars) grow the thread after it rendered.
+function onMediaLoad() {
+  if (followBottom) scrollToBottom()
+}
+
+// A thread opens on its newest message.
+onMounted(scrollToBottom)
 
 watch(
   () => props.view.id,
   async () => {
     flipped.value = new Set()
     lightboxId.value = null
+    followBottom = true
     await nextTick()
-    if (scroller.value) scroller.value.scrollTop = 0
+    scrollToBottom()
   },
 )
 
@@ -175,7 +199,7 @@ watch(
   () => props.view.messages.length,
   () => {
     const el = scroller.value
-    stickToBottom = !!el && el.scrollHeight - el.scrollTop - el.clientHeight < 24
+    stickToBottom = !!el && isAtBottom(el)
   },
   { flush: 'pre' },
 )
@@ -219,7 +243,12 @@ watch(
       @open-mcp="emit('openMcp')"
     />
 
-    <div ref="scroller" class="min-h-0 flex-1 overflow-y-auto py-3">
+    <div
+      ref="scroller"
+      class="min-h-0 flex-1 overflow-y-auto py-3"
+      @scroll.passive="onScroll"
+      @load.capture="onMediaLoad"
+    >
       <!-- Legacy snapshot: the old markdown + its files until a re-fetch succeeds. -->
       <div v-if="showLegacy" class="px-5">
         <div class="markdown-output text-sm" @click="onLegacyClick" v-html="legacyHtml" />
