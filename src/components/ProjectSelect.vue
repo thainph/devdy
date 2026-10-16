@@ -1,7 +1,7 @@
 <script setup lang="ts">
-// The project picker of the detail windows: "No project" + every project, with
-// a folder icon. `outline` (default) is the footer control of the read view;
-// the note / todo edit form uses the plain field look.
+// The project picker: "No project" + every project, with a folder icon.
+// `outline` at `xs` is the header control of the Slack / Notes / Todos windows'
+// detail pane; `default` is the plain field look of forms (Add thread dialog).
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { FolderOpen } from 'lucide-vue-next'
@@ -13,8 +13,9 @@ const props = withDefaults(
     /** Project id, or null for none. */
     modelValue: string | null
     variant?: 'default' | 'outline'
+    size?: 'xs' | 'sm'
   }>(),
-  { variant: 'outline' },
+  { variant: 'outline', size: 'sm' },
 )
 
 const emit = defineEmits<{ 'update:modelValue': [value: string | null] }>()
@@ -34,12 +35,17 @@ const options = computed(() => [
   <AppSelect
     :model-value="props.modelValue ?? NO_PROJECT"
     :variant="variant"
+    :size="size"
     :options="options"
     :placeholder="t('item.noProject')"
     @update:model-value="emit('update:modelValue', $event || null)"
   >
     <template #leading>
-      <FolderOpen class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.75" />
+      <FolderOpen
+        class="shrink-0 text-muted-foreground"
+        :class="size === 'xs' ? 'h-3 w-3' : 'h-3.5 w-3.5'"
+        :stroke-width="1.75"
+      />
     </template>
   </AppSelect>
 </template>

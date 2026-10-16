@@ -345,6 +345,7 @@ pub struct ResetResult {
 /// runs that are still active (those are simply skipped).
 #[tauri::command]
 pub async fn reset_usage_stats(
+    app: AppHandle,
     db: State<'_, Db>,
     registry: State<'_, RunRegistry>,
 ) -> Result<ResetResult, String> {
@@ -369,6 +370,10 @@ pub async fn reset_usage_stats(
         .await
         .map_err(|e| e.to_string())?;
 
+    if runs_deleted > 0 {
+        crate::slack_threads::emit_all_changed(&app);
+        crate::item_links::emit_changed(&app, None);
+    }
     Ok(ResetResult {
         runs_deleted,
         usage_cleared: res.rows_affected(),

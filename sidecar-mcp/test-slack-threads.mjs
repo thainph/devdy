@@ -189,6 +189,14 @@ insMsg.run('th-qa', '1789900001.000000', 1, 'U1', null, null, null, '空の翻�
 insFile.run('sf-evil', 'th-qa', 'F009', '1789900000.000000', 'evil.txt', 'text/plain', 'text', 6, `../${outsideName}`,
   'https://malme.slack.com/files/U1/F009/evil.txt', 'done', null, T0);
 
+// Session links (0043): one live run, one whose run row is gone (hidden).
+db.prepare("INSERT OR IGNORE INTO projects (id, name, path, created_at) VALUES (?, 'proj', '/tmp/proj-1', ?)").run(PROJECT, T0);
+db.prepare("INSERT INTO runs (id, project_id, type, status, engine, created_at) VALUES ('r-live', ?, 'session', 'done', 'claude', ?)")
+  .run(PROJECT, T0);
+const insLink = db.prepare("INSERT INTO slack_thread_runs (thread_id, run_id, project_id, source, linked_at) VALUES (?, ?, ?, 'manual', ?)");
+insLink.run('th-v2', 'r-live', PROJECT, T0);
+insLink.run('th-v2', 'r-gone', PROJECT, T0);
+
 // ---- Drive the server ---------------------------------------------------------
 
 function drive(frames) {
@@ -288,6 +296,8 @@ check(S['list-project'].text.includes('[th-v2]') && S['list-project'].text.inclu
 check(S['list-project'].text.includes('- [th-v2] Deploy failed on staging · #dev-backend · malme · ready · 4 replies · last reply 2026-09-20T'),
   'list: line format title · #channel · workspace · status · N replies · last reply <ISO>');
 check(/\[lg-a\][^\n]*· pending · 0 replies · legacy/.test(S['list-project'].text), 'list: legacy marker');
+check(/\[th-v2\][^\n]*· sessions: r-live$/m.test(S['list-project'].text) && !S['list-project'].text.includes('r-gone') &&
+  !/\[lg-a\][^\n]*sessions:/.test(S['list-project'].text), 'list: linked session ids (existing runs only)');
 check(S['list-project'].text.indexOf('[th-v2]') < S['list-project'].text.indexOf('[lg-a]'), 'list: ordered by position');
 show(S, 'list-all');
 check(/\[th-err\][^\n]*· error · 0 replies · error: missing_scope/.test(S['list-all'].text), 'list: error code shown');
@@ -299,6 +309,7 @@ const R = S.read.text;
 check(R.includes('- workspace: malme (malme.slack.com)') && R.includes('- channel: #dev-backend') &&
   R.includes('- thread_url: https://malme.slack.com/archives/C0B8TESTAA1/p1789877000000100') && R.includes('- fetch_status: ready') &&
   R.includes(`- fetched_at: ${T1}`) && R.includes(`- project_id: ${PROJECT}`) && R.includes('- warnings: files_scope'), 'read: metadata header');
+check(R.includes('- linked_sessions: r-live\n'), 'read: linked session ids');
 check(R.includes('### Alice · 2026-09-20 ') && R.includes(' UTC · ts=1789877000.000100'), 'read: message header with name, UTC time, ts');
 check(R.includes('@Alice Triển khai staging bị lỗi :fire:') && !R.includes('WrongAlice') && !R.includes('<@U1>'), 'read: Vietnamese by default, mention → @Name of the thread workspace');
 check(R.includes('```\nif a < b && c { run(); }\n```'), 'read: code block kept (entities decoded)');
@@ -393,7 +404,8 @@ check(existsSync(join(appData, 'keep-me')) && existsSync(outsidePath) && /^Delet
 show(M, 'delete');
 const countIn = (table, col, id) => sl(`SELECT COUNT(*) AS n FROM ${table} WHERE ${col} = ?`, id)[0].n;
 check(/^Deleted 1\/1 Slack thread\(s\) \(1 file folder/.test(M.delete.text) && countIn('slack_threads', 'id', 'th-v2') === 0 &&
-  countIn('slack_messages', 'thread_id', 'th-v2') === 0 && countIn('slack_files', 'thread_id', 'th-v2') === 0, 'delete: thread, messages and file rows removed');
+  countIn('slack_messages', 'thread_id', 'th-v2') === 0 && countIn('slack_files', 'thread_id', 'th-v2') === 0 && countIn('slack_thread_runs', 'thread_id', 'th-v2') === 0,
+  'delete: thread, messages, file rows and session links removed');
 check(!existsSync(join(appData, 'slack-threads/th-v2')), 'delete: <app_data>/slack-threads/<id> removed');
 check(existsSync(join(appData, 'slack-cache/avatars/T1/U1-abcd1234.png')) && countIn('slack_users', 'team_id', 'T1') === 2, 'delete: avatar cache + slack_users kept');
 check(/^Deleted 2\/3/.test(M['delete-bulk'].text) && !existsSync(join(appData, 'slack-threads/lg-a')) && !existsSync(join(appData, 'slack-threads/th-err')) &&

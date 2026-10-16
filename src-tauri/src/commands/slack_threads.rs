@@ -1,6 +1,7 @@
 //! Tauri commands of the Slack thread window (SRS §10.2). Errors are
 //! `"<code>: <detail>"` strings.
 
+use crate::slack_threads::run_links::{self, LinkRunResult, SlackThreadRunLink};
 use crate::slack_threads::store::{
     self, AddSlackThreadResult, SlackPromptText, SlackThreadSummary, SlackThreadView,
 };
@@ -134,6 +135,61 @@ pub async fn get_slack_thread_prompt_text(
 ) -> CmdResult<SlackPromptText> {
     let ctx = state.ctx();
     store::prompt_text(&ctx.db, &ctx.app_data, &id, include_original)
+        .await
+        .map_err(err)
+}
+
+/// Link a thread to a session (idempotent). A thread without a project takes
+/// the run's.
+#[tauri::command]
+pub async fn link_slack_thread_run(
+    state: State<'_, SlackThreadsState>,
+    thread_id: String,
+    run_id: String,
+    source: String,
+) -> CmdResult<LinkRunResult> {
+    let r = run_links::link(&state.ctx().db, &thread_id, &run_id, &source)
+        .await
+        .map_err(err)?;
+    if r.created || r.project_set {
+        state.ctx().emit_changed(&thread_id, "updated");
+    }
+    Ok(r)
+}
+
+#[tauri::command]
+pub async fn unlink_slack_thread_run(
+    state: State<'_, SlackThreadsState>,
+    thread_id: String,
+    run_id: String,
+) -> CmdResult<()> {
+    if run_links::unlink(&state.ctx().db, &thread_id, &run_id)
+        .await
+        .map_err(err)?
+    {
+        state.ctx().emit_changed(&thread_id, "updated");
+    }
+    Ok(())
+}
+
+/// Sessions linked to a thread (runs that still exist).
+#[tauri::command]
+pub async fn list_slack_thread_runs(
+    state: State<'_, SlackThreadsState>,
+    thread_id: String,
+) -> CmdResult<Vec<SlackThreadRunLink>> {
+    run_links::runs_of_thread(&state.ctx().db, &thread_id)
+        .await
+        .map_err(err)
+}
+
+/// Threads linked to a session.
+#[tauri::command]
+pub async fn list_run_slack_threads(
+    state: State<'_, SlackThreadsState>,
+    run_id: String,
+) -> CmdResult<Vec<SlackThreadSummary>> {
+    run_links::threads_of_run(&state.ctx().db, &run_id)
         .await
         .map_err(err)
 }

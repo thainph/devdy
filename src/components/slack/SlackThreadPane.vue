@@ -15,15 +15,24 @@ import { openPath, openUrl } from '@tauri-apps/plugin-opener'
 import { useMarkdown } from '@/lib/markdown'
 import type { MrkdwnContext } from '@/lib/slackMrkdwn'
 import { groupMessages } from '@/lib/slackThreadUtils'
-import { isBusy, type SlackFile, type SlackThreadProgress, type SlackThreadView } from '@/stores/slackThreads'
+import {
+  isBusy,
+  type SlackFile,
+  type SlackThreadProgress,
+  type SlackThreadRunLink,
+  type SlackThreadView,
+} from '@/stores/slackThreads'
 import SlackThreadHeader from './SlackThreadHeader.vue'
 import SlackThreadBanner from './SlackThreadBanner.vue'
 import SlackMessage from './SlackMessage.vue'
 import SlackMessageFiles from './SlackMessageFiles.vue'
 import SlackImageLightbox from './SlackImageLightbox.vue'
+import type { SessionLink } from '@/lib/sessionLinks'
 
 const props = defineProps<{
   view: SlackThreadView
+  /** Sessions linked to the thread (header chips). */
+  links: SlackThreadRunLink[]
   progress: SlackThreadProgress | null
   /** Window-wide "Show original" toggle. */
   showOriginal: boolean
@@ -31,6 +40,8 @@ const props = defineProps<{
   newCount: number
   renaming: boolean
   refreshing: boolean
+  /** Copy ID just fired (header ⋯ menu tick). */
+  copiedId: boolean
 }>()
 
 const emit = defineEmits<{
@@ -41,6 +52,13 @@ const emit = defineEmits<{
   refresh: []
   openInSlack: []
   openMcp: []
+  setProject: [projectId: string | null]
+  openRun: [link: SessionLink]
+  unlinkRun: [link: SessionLink]
+  linkRun: [runId: string]
+  newSession: []
+  copyId: []
+  delete: []
 }>()
 
 const { t } = useI18n()
@@ -175,15 +193,24 @@ watch(
   <section class="flex min-w-0 flex-1 flex-col">
     <SlackThreadHeader
       :thread="view"
+      :links="links"
       :renaming="renaming"
       :show-original="showOriginal"
       :refreshing="refreshing || isBusy(view.fetchStatus)"
+      :copied-id="copiedId"
       @start-rename="emit('startRename')"
       @commit-rename="emit('commitRename', $event)"
       @cancel-rename="emit('cancelRename')"
       @toggle-original="emit('toggleOriginal')"
       @refresh="emit('refresh')"
       @open-in-slack="emit('openInSlack')"
+      @set-project="emit('setProject', $event)"
+      @open-run="emit('openRun', $event)"
+      @unlink-run="emit('unlinkRun', $event)"
+      @link-run="emit('linkRun', $event)"
+      @new-session="emit('newSession')"
+      @copy-id="emit('copyId')"
+      @delete="emit('delete')"
     />
     <SlackThreadBanner
       :thread="view"

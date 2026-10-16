@@ -33,8 +33,18 @@ import {
   SLACK_WINDOW_OPEN_ROUTE,
   type SlackWindowOpenRoute,
 } from '@/lib/slackWindow'
+import {
+  WINDOW_NEW_SESSION,
+  WINDOW_OPEN_RUN,
+  createdFromSource,
+  linkTargetRun,
+  type WindowNewSession,
+  type WindowOpenRun,
+} from '@/lib/sessionLinks'
+import { useChatDraftsStore } from '@/stores/chatDrafts'
+import { useToast } from '@/composables/useToast'
 import { openItemCreateWindow } from '@/lib/itemWindow'
-import { openItemListWindow, ITEM_LIST_OPEN_RUN, type ItemListOpenRun } from '@/lib/itemListWindow'
+import { openItemListWindow } from '@/lib/itemListWindow'
 import { applyAppMenu, IS_MAC, listenMenuActions, registerMenuAction, runMenuAction } from '@/lib/appMenu'
 import { NAV_ROUTES } from '@/lib/navigation'
 import { IS_SESSION_WINDOW, SESSION_WINDOW_PROJECT_ID, SESSION_WINDOW_RUN_ID } from '@/lib/windowMode'
@@ -80,6 +90,8 @@ const uiLayout = useUILayoutStore()
 const live = useLiveRunsStore()
 const runsStore = useRunsStore()
 const conductorStore = useConductorStore()
+const draftsStore = useChatDraftsStore()
+const { toast } = useToast()
 const { t, locale } = useI18n()
 
 // Session pop-out: drive the router to the run as early as possible (in setup,
@@ -152,12 +164,14 @@ if (!isPopoutWindow && !isSessionWindow) {
   )
 }
 
-// A session row in the menu-bar switcher was clicked: show the run where it
-// lives — its own pop-out if it has one, otherwise this window.
-async function openRunFromTray(runId: string) {
+// A session row in the menu-bar switcher (or a linked session in the Slack /
+// Notes / Todos windows) was clicked: show the run where it lives — its own
+// pop-out if it has one, otherwise this window. `projectHint` covers runs this
+// window never loaded.
+async function openRunFromTray(runId: string, projectHint?: string) {
   if (await focusSessionWindow(runId)) return
   const projectId =
-    live.sessions.get(runId)?.projectId ?? runsStore.runMeta.get(runId)?.project_id
+    live.sessions.get(runId)?.projectId ?? runsStore.runMeta.get(runId)?.project_id ?? projectHint
   if (!projectId) return
   try {
     const win = getCurrentWebviewWindow()
@@ -174,6 +188,37 @@ async function openRunFromTray(runId: string) {
   router
     .push({ name: 'project-run-detail', params: { projectId, runId } })
     .catch(() => {})
+}
+
+// "New session from this thread / note / todo" in a pop-out: the session is
+// created here, where the drafts store lives, its composer is prefilled with
+// the target's reference (not sent), the target is linked to it, then it opens.
+// One request per target at a time: a double click must not create two sessions.
+const newSessionPending = new Set<string>()
+async function newSessionFromWindow({ projectId, text, target }: WindowNewSession) {
+  const key = `${target.kind}:${target.id}`
+  if (newSessionPending.has(key)) return
+  newSessionPending.add(key)
+  try {
+    let runId: string
+    try {
+      runId = (await runsStore.createSessionRun(projectId)).id
+    } catch (e) {
+      toast.error(t('run.createSessionFailed', { error: String(e) }))
+      return
+    }
+    draftsStore.set(runId, { text, images: [], files: [] })
+    try {
+      await linkTargetRun(target, runId, createdFromSource(target.kind))
+    } catch (e) {
+      // Best-effort: the session and its prefilled composer still open.
+      console.warn('[links] linking the new session failed', e)
+    }
+    await runsStore.refreshMeta(projectId).catch(() => {})
+    await openRunFromTray(runId, projectId)
+  } finally {
+    newSessionPending.delete(key)
+  }
 }
 
 const isRunRoute = computed(
@@ -244,9 +289,6 @@ watch(
 // store (see onMounted). Torn down on unmount to avoid a dangling subscription.
 let unlistenActivated: UnlistenFn | null = null
 
-// Listener for the todo/note list window asking to open a captured run's session.
-let unlistenItemListRun: UnlistenFn | null = null
-
 // Listener for a session row clicked in the menu-bar switcher (see lib/tray.ts).
 let unlistenTrayRun: UnlistenFn | null = null
 
@@ -255,6 +297,11 @@ let unlistenCaptureNotification: UnlistenFn | null = null
 
 // Listener for the Slack threads window asking to navigate (e.g. to the MCP settings).
 let unlistenSlackRoute: UnlistenFn | null = null
+
+// Listeners for the Slack / Notes / Todos windows opening a linked session or
+// starting a new one (lib/sessionLinks).
+let unlistenWindowRun: UnlistenFn | null = null
+let unlistenWindowNewSession: UnlistenFn | null = null
 
 // True when the event target is a text-entry surface where Backspace/navigation
 // keys are legitimately used to edit text.
@@ -318,8 +365,9 @@ const sidebarVisible = computed(
 // a session needs a project, which only that screen has.
 function bindGlobalMenuActions() {
   const unbinds = [
-    // Writing a todo / note ALWAYS happens in the standalone item window, from
-    // every entry point — menu, shortcut, mascot, run screen.
+    // A NEW todo / note is ALWAYS captured in the standalone capture window, from
+    // every entry point — menu, shortcut, mascot, run screen (existing ones are
+    // read and edited in the Notes / Todos windows).
     registerMenuAction('file.newTodo', () =>
       openItemCreateWindow('todo', routeCaptureContext()),
     ),
@@ -374,14 +422,16 @@ function routeCaptureContext() {
 onBeforeUnmount(() => {
   unlistenActivated?.()
   unlistenActivated = null
-  unlistenItemListRun?.()
-  unlistenItemListRun = null
   unlistenTrayRun?.()
   unlistenTrayRun = null
   unlistenCaptureNotification?.()
   unlistenCaptureNotification = null
   unlistenSlackRoute?.()
   unlistenSlackRoute = null
+  unlistenWindowRun?.()
+  unlistenWindowRun = null
+  unlistenWindowNewSession?.()
+  unlistenWindowNewSession = null
   unbindMenuActions?.()
   unbindMenuActions = null
   unlistenMenu?.()
@@ -525,26 +575,6 @@ onMounted(async () => {
     // Ignore (e.g. running outside the Tauri shell during dev in a browser).
   }
 
-  // The todo/note list lives in its own window with no router of this app, so it
-  // asks the main window to focus itself and open the run a captured item came
-  // from (the one action in that list that IS a navigation).
-  try {
-    unlistenItemListRun = await listen<ItemListOpenRun>(ITEM_LIST_OPEN_RUN, async (e) => {
-      const { projectId, runId } = e.payload ?? {}
-      if (!projectId || !runId) return
-      try {
-        await getCurrentWebviewWindow().setFocus()
-      } catch {
-        /* best-effort focus */
-      }
-      router
-        .push({ name: 'project-run-detail', params: { projectId, runId } })
-        .catch(() => {})
-    })
-  } catch {
-    // Ignore (e.g. running outside the Tauri shell during dev in a browser).
-  }
-
   try {
     unlistenTrayRun = await listen<TrayOpenRun>(TRAY_OPEN_RUN, (e) => {
       if (e.payload?.runId) void openRunFromTray(e.payload.runId)
@@ -580,6 +610,21 @@ onMounted(async () => {
         /* best-effort focus */
       }
       router.push(path).catch(() => {})
+    })
+  } catch {
+    // Ignore (e.g. running outside the Tauri shell during dev in a browser).
+  }
+
+  // Linked sessions / "New session from this …" of the Slack, Notes and Todos
+  // windows (no router of this app there).
+  try {
+    unlistenWindowRun = await listen<WindowOpenRun>(WINDOW_OPEN_RUN, (e) => {
+      const { projectId, runId } = e.payload ?? {}
+      if (projectId && runId) void openRunFromTray(runId, projectId)
+    })
+    unlistenWindowNewSession = await listen<WindowNewSession>(WINDOW_NEW_SESSION, (e) => {
+      const p = e.payload
+      if (p?.projectId && p.target?.id) void newSessionFromWindow(p)
     })
   } catch {
     // Ignore (e.g. running outside the Tauri shell during dev in a browser).

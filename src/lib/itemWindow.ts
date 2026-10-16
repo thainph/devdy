@@ -1,17 +1,8 @@
-// Opens THE todo / note window — the one and only place an item is written.
-//
-// Creating and editing both happen in a standalone, always-on-top OS window:
-// never a drawer, never a modal, never a screen. That is what makes the app
-// consistent about these two objects — wherever a todo or a note is touched, it
-// is the same window, and the main window never has to give up what it was
-// showing to let one be written.
-//
-// Two modes, one window component (views/ItemWindow.vue):
-//   • create — one shared window (fixed label), Todo/Note tabs, keeps taking
-//     captures until it's closed. Opening it again focuses it and switches tab.
-//   • edit   — one window PER item (deterministic label), so popping the same
-//     note twice focuses the window already editing it rather than opening a
-//     rival editor for the same row.
+// Opens THE capture window — "New todo / note" (views/ItemWindow.vue): one
+// shared, always-on-top OS window (fixed label) with Todo / Note tabs that keeps
+// taking captures until it's closed. Opening it again focuses it and switches
+// tab. Reading and editing an existing item happen in the Notes / Todos windows
+// (lib/itemListWindow).
 //
 // A pre-filled capture ("save this selection as a note") has to travel to a
 // window that may not exist yet, so it goes as an event behind a ready
@@ -23,7 +14,6 @@ import { trackWindowForTray } from '@/lib/tray'
 import { nextCascadePosition } from '@/lib/windowCascade'
 
 export type ItemKind = 'todo' | 'note'
-export type ItemWindowMode = 'create' | 'edit'
 
 /** Project / run the capture should be filed under, when opened from one. */
 export interface ItemContext {
@@ -49,22 +39,16 @@ export const ITEM_WINDOW_SET_TAB = 'item:window-set-tab'
 export const ITEM_WINDOW_PREFILL = 'item:window-prefill'
 
 /**
- * Broadcast after the window writes anything (create, save, delete, toggle), so
- * the list window — a different webview, with its own store — refetches instead of
- * showing stale rows. Payload: `{ kind }`.
+ * Broadcast after any write to a todo / note (create, save, delete, toggle,
+ * session links — the backend emits it too), so every window showing them — a
+ * different webview, with its own store — refetches instead of showing stale
+ * rows. Payload: `{ kind }`; no kind = both.
  */
 export const ITEM_CHANGED = 'item:changed'
 
 // Generous: the window has to boot the SPA before it can listen. On timeout we
 // send the prefill anyway; losing it is better than hanging the caller.
 const READY_TIMEOUT_MS = 6000
-
-// Small deterministic string hash (djb2) → safe, stable window label per item.
-function hashLabel(s: string): string {
-  let h = 5381
-  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0
-  return `item-edit-${h.toString(36)}`
-}
 
 function hasPrefill(prefill?: ItemPrefill): boolean {
   return !!(prefill?.title?.trim() || prefill?.content?.trim())
@@ -157,39 +141,5 @@ export async function openItemCreateWindow(
     await awaitReady()
     await emit(ITEM_WINDOW_PREFILL, prefill)
   }
-  return win
-}
-
-/** Open (or focus) the editor window for one existing todo / note. */
-export async function openItemEditWindow(
-  kind: ItemKind,
-  itemId: string,
-): Promise<WebviewWindow | null> {
-  if (!itemId) return null
-  const label = hashLabel(`${kind}|${itemId}`)
-
-  const existing = await WebviewWindow.getByLabel(label)
-  if (existing) {
-    await focusWindow(existing)
-    return existing
-  }
-
-  const params = new URLSearchParams({ itemWindow: '1', mode: 'edit', kind, id: itemId })
-  const win = new WebviewWindow(label, {
-    url: `index.html?${params.toString()}`,
-    title: kind === 'note' ? 'Note — Devdy' : 'Task — Devdy',
-    width: 680,
-    height: 780,
-    minWidth: 420,
-    minHeight: 420,
-    // Opens focused, so start on top; the window lowers itself on blur unless
-    // pinned (see useFloatingWindow).
-    alwaysOnTop: true,
-    ...(await nextCascadePosition()),
-  })
-  win.once('tauri://error', (e) => {
-    console.error('[itemWindow] failed to open edit window', e)
-  })
-  trackWindowForTray(win)
   return win
 }

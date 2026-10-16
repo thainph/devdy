@@ -14,6 +14,7 @@ pub mod google;
 pub mod groups;
 pub mod health;
 pub mod inbox_api;
+pub mod item_links;
 pub mod mascot_speak;
 pub mod mcp;
 pub mod models;
