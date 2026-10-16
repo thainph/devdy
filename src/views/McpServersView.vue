@@ -100,11 +100,13 @@ interface CatalogEntry {
   env?: string[]
 }
 const CATALOG: CatalogEntry[] = [
-  { name: 'filesystem', description: 'Read/write files in an allow-listed directory.', transport: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '<ALLOWED_DIR>'] },
   { name: 'sequential-thinking', description: 'Structured step-by-step reasoning scratchpad.', transport: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-sequential-thinking'] },
-  { name: 'memory', description: 'Persistent knowledge-graph memory across turns.', transport: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-memory'] },
-  { name: 'github', description: 'Query & manage GitHub repos, issues and PRs.', transport: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'], env: ['GITHUB_PERSONAL_ACCESS_TOKEN'] },
   { name: 'context7', description: 'Up-to-date library docs to reduce hallucinated APIs.', transport: 'http', url: 'https://mcp.context7.com/mcp' },
+  { name: 'slack', description: 'Read Slack channels & threads (user token, xoxp-).', transport: 'stdio', command: 'npx', args: ['-y', 'slack-mcp-server@latest', '--transport', 'stdio'], env: ['SLACK_MCP_XOXP_TOKEN'] },
+  { name: 'notion', description: 'Search & edit Notion pages and databases (integration secret).', transport: 'stdio', command: 'npx', args: ['-y', '@notionhq/notion-mcp-server'], env: ['NOTION_TOKEN'] },
+  { name: 'atlassian', description: 'Jira issues & Confluence pages. Requires uv (uvx).', transport: 'stdio', command: 'uvx', args: ['mcp-atlassian'], env: ['JIRA_URL', 'JIRA_USERNAME', 'JIRA_API_TOKEN', 'CONFLUENCE_URL', 'CONFLUENCE_USERNAME', 'CONFLUENCE_API_TOKEN'] },
+  { name: 'figma', description: 'Design context from Figma Desktop (enable the MCP server in Dev Mode).', transport: 'http', url: 'http://127.0.0.1:3845/mcp' },
+  { name: 'chrome-devtools', description: 'Inspect console, network & performance in a live Chrome.', transport: 'stdio', command: 'npx', args: ['-y', 'chrome-devtools-mcp@latest'] },
   { name: 'playwright', description: 'Drive a real browser for testing & scraping.', transport: 'stdio', command: 'npx', args: ['-y', '@playwright/mcp@latest'] },
 ]
 const catalogAvailable = computed(() => CATALOG.filter(c => !store.items.some(s => s.name === c.name)))
