@@ -17,7 +17,11 @@
     "newCount": "{count} tin mới",
     "warning": "Có cảnh báo — mở thread để xem",
     "collapse": "Thu gọn",
-    "expand": "Mở rộng"
+    "expand": "Mở rộng",
+    "linkFilter": "Lọc theo phiên đã liên kết",
+    "linkAll": "Tất cả",
+    "linked": "Đã liên kết",
+    "unlinked": "Chưa liên kết"
   },
   "status": {
     "pending": "Đang chờ",
@@ -74,6 +78,11 @@
     "fetchedAt": "Lấy lúc {date}",
     "notFetched": "Chưa lấy từ Slack"
   },
+  "links": {
+    "newSession": "Tạo phiên mới từ thread này",
+    "newSessionHint": "Mở một phiên mới trong dự án của thread, ô soạn tin đã chèn sẵn tham chiếu tới thread",
+    "needProject": "Hãy chọn dự án cho thread này trước"
+  },
   "banner": {
     "retry": "Thử lại",
     "openMcp": "Mở cài đặt MCP"
@@ -121,11 +130,6 @@
     "close": "Đóng (Esc)",
     "prev": "Ảnh trước (←)",
     "next": "Ảnh sau (→)"
-  },
-  "picker": {
-    "includeOriginal": "Kèm bản gốc",
-    "truncated": "Thread dài nên đã bị cắt bớt khi chèn.",
-    "failed": "Không chèn được thread Slack: {error}"
   },
   "confirm": {
     "deleteTitle": "Xoá thread Slack",

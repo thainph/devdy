@@ -17,7 +17,11 @@
     "newCount": "{count} new",
     "warning": "Has warnings — open the thread to see them",
     "collapse": "Collapse",
-    "expand": "Expand"
+    "expand": "Expand",
+    "linkFilter": "Filter by linked session",
+    "linkAll": "All",
+    "linked": "Linked",
+    "unlinked": "Not linked"
   },
   "status": {
     "pending": "Queued",
@@ -74,6 +78,11 @@
     "fetchedAt": "Fetched {date}",
     "notFetched": "Not fetched from Slack yet"
   },
+  "links": {
+    "newSession": "New session from this thread",
+    "newSessionHint": "Open a new session in the thread's project with this thread referenced in the composer",
+    "needProject": "Pick a project for this thread first"
+  },
   "banner": {
     "retry": "Retry",
     "openMcp": "Open MCP settings"
@@ -121,11 +130,6 @@
     "close": "Close (Esc)",
     "prev": "Previous image (←)",
     "next": "Next image (→)"
-  },
-  "picker": {
-    "includeOriginal": "Include original",
-    "truncated": "The thread is long, so the inserted text was truncated.",
-    "failed": "Could not insert the Slack thread: {error}"
   },
   "confirm": {
     "deleteTitle": "Delete Slack thread",

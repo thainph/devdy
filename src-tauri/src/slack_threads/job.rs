@@ -345,6 +345,7 @@ impl Job<'_> {
             let mine = updated_at(self.db(), &self.id).await?;
             let theirs = updated_at(self.db(), &other).await?;
             if keep_other(&mine, &self.id, &theirs, &other) {
+                super::run_links::move_links(self.db(), &self.id, &other).await?;
                 store::delete(
                     self.db(),
                     &self.ctx.app_data,
@@ -355,6 +356,7 @@ impl Job<'_> {
                 tracing::info!(event = "slack_thread_merged", from = %self.id, into = %other);
                 return Err(Fail::Merged(other));
             }
+            super::run_links::move_links(self.db(), &other, &self.id).await?;
             store::delete(self.db(), &self.ctx.app_data, std::slice::from_ref(&other)).await?;
             self.ctx.emit_changed(&other, "deleted");
             tracing::info!(event = "slack_thread_merged", from = %other, into = %self.id);

@@ -3,15 +3,29 @@
 // [&add=1][&projectId=]`): a Slack-like reader of the threads Devdy fetched from
 // Slack and translated into Vietnamese.
 //
-//   ┌ titlebar (Slack · "Slack threads" · pin · reload) ─────────────────────┐
-//   ├ sidebar: search, project filter, + Add │ thread pane: header, banners, │
-//   │ workspace → #channel → threads         │ parent · N replies · replies  │
-//   ├────────────────────────────────────────┴───────────────────────────────┤
-//   └ footer: project of the open thread · ⋯ (Copy ID · Delete)              ┘
+//   ┌ (native OS titlebar only — no custom titlebar row, to stay compact) ───┐
+//   ├ sidebar: search · pin · reload,         │ thread pane header: title /   │
+//   │ project filter + Add, link filter,      │ #channel · [project][Sessions]│
+//   │ workspace → #channel → threads          │                               │
+//   │                                         │ | Original · Refresh · Slack ·  │
+//   │                                         │ ⋯ (New session from this      │
+//   │                                         │ thread · Copy ID · Delete)    │
+//   │                                         │ banners, parent · N replies · │
+//   │                                         │ replies                       │
+//   └─────────────────────────────────────────┴───────────────────────────────┘
+//
+// No footer: both panes run to the bottom of the window.
+//
+// The thread's project sits next to its "Sessions" menu (linked sessions +
+// "Link a session"), since what can be linked depends on the project.
 //
 // It is its own webview, so it reads straight from the DB and resyncs on the
 // backend's `slack-threads://changed` (debounced) and `slack-threads://progress`
 // events, and on focus (the MCP sidecar writes the DB without emitting events).
+//
+// Sessions (runs) live in the main window: opening a linked session or starting
+// a new one from the thread is a request to it (WINDOW_OPEN_RUN /
+// WINDOW_NEW_SESSION of lib/sessionLinks, handled in App.vue).
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -19,9 +33,6 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { AlertCircle, RotateCw, Slack } from 'lucide-vue-next'
 import { Button, ConfirmModal, ToastHost } from '@/components/ui'
-import DetailWindowTitlebar from '@/components/DetailWindowTitlebar.vue'
-import DetailWindowFooter from '@/components/DetailWindowFooter.vue'
-import ProjectSelect from '@/components/ProjectSelect.vue'
 import SlackSidebar from '@/components/slack/SlackSidebar.vue'
 import SlackThreadPane from '@/components/slack/SlackThreadPane.vue'
 import SlackAddDialog from '@/components/slack/SlackAddDialog.vue'
@@ -39,6 +50,14 @@ import {
   type SlackWindowOpenRoute,
   type SlackWindowSelect,
 } from '@/lib/slackWindow'
+import {
+  WINDOW_NEW_SESSION,
+  WINDOW_OPEN_RUN,
+  linkReference,
+  type SessionLink,
+  type WindowNewSession,
+  type WindowOpenRun,
+} from '@/lib/sessionLinks'
 import { useProjectsStore } from '@/stores/projects'
 import {
   SLACK_THREADS_CHANGED,
@@ -62,12 +81,14 @@ const params = new URLSearchParams(window.location.search)
 const initialId = params.get('id') || null
 const initialProject = params.get('projectId') || null
 
-// ── Sidebar: search (server-side) + project filter (client-side) ────────────
+// ── Sidebar: search (server-side) + project / link filters (client-side) ────
 
 const NO_PROJECT = '__none__'
 const search = ref('')
 /** '' = all projects, NO_PROJECT = threads without one, else a project id. */
 const projectFilter = ref<string>(initialProject ?? '')
+/** '' = all, else only threads linked / not linked to a session. */
+const linkFilter = ref<'' | 'linked' | 'unlinked'>('')
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 watch(search, (q) => {
@@ -77,6 +98,8 @@ watch(search, (q) => {
 
 const visibleThreads = computed(() =>
   store.threads.filter((th) => {
+    if (linkFilter.value === 'linked' && th.linkedRunCount === 0) return false
+    if (linkFilter.value === 'unlinked' && th.linkedRunCount > 0) return false
     if (projectFilter.value === NO_PROJECT) return !th.projectId
     if (projectFilter.value) return th.projectId === projectFilter.value
     return true
@@ -245,6 +268,56 @@ async function copyId() {
   }
 }
 
+// ── Linked sessions ─────────────────────────────────────────────────────────
+
+/** Show a linked session: its pop-out if it has one, else the main window. */
+function openRun(link: SessionLink) {
+  emit(WINDOW_OPEN_RUN, {
+    projectId: link.projectId,
+    runId: link.runId,
+  } satisfies WindowOpenRun).catch(() => {})
+}
+
+async function unlinkRun(link: SessionLink) {
+  const v = view.value
+  if (!v) return
+  try {
+    await store.unlinkRun(v.id, link.runId)
+  } catch (e) {
+    const { code, detail } = errorCode(e)
+    toast.error(t('sessionLink.unlinkFailed', { error: errorText(code, detail) }))
+  }
+}
+
+async function linkSession(runId: string) {
+  const v = view.value
+  if (!v) return
+  try {
+    await store.linkRun(v.id, runId, 'manual')
+  } catch (e) {
+    const { code, detail } = errorCode(e)
+    toast.error(t('sessionLink.linkFailed', { error: errorText(code, detail) }))
+  }
+}
+
+/**
+ * Ask the main window for a new session in the thread's project, its composer
+ * prefilled with the thread reference; it links the thread once the run exists.
+ */
+function newSession() {
+  const v = view.value
+  if (!v) return
+  if (!v.projectId) {
+    toast.info(t('slackThread.links.needProject'))
+    return
+  }
+  emit(WINDOW_NEW_SESSION, {
+    projectId: v.projectId,
+    text: linkReference('slack', v.id, v.title.trim() || t('slackThread.untitled')),
+    target: { kind: 'slack', id: v.id },
+  } satisfies WindowNewSession).catch((e) => toast.error(String(e)))
+}
+
 /** The pop-out has no router: ask the main window to show the MCP settings. */
 function openMcp() {
   emit(SLACK_WINDOW_OPEN_ROUTE, { path: '/mcp' } satisfies SlackWindowOpenRoute).catch(() => {})
@@ -271,7 +344,10 @@ async function onAdded(res: AddSlackThreadResult) {
   else toast.success(t('slackThread.add.added'))
   // Make sure the new row is visible under the current filters.
   const row = store.threads.find((x) => x.id === res.id)
-  if (row && !visibleThreads.value.some((x) => x.id === res.id)) projectFilter.value = ''
+  if (row && !visibleThreads.value.some((x) => x.id === res.id)) {
+    projectFilter.value = ''
+    linkFilter.value = ''
+  }
   await select(res.id)
 }
 
@@ -390,15 +466,6 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground">
-    <DetailWindowTitlebar
-      :icon="Slack"
-      :title="t('slackThread.window.title')"
-      :pinned="pinned"
-      :reloading="reloading"
-      @toggle-pin="togglePin"
-      @reload="reloadAll"
-    />
-
     <!-- Reloading the open thread failed: its last good copy stays on screen. -->
     <div
       v-if="view && store.viewError"
@@ -416,25 +483,32 @@ onBeforeUnmount(() => {
       <SlackSidebar
         v-model:search="search"
         v-model:project="projectFilter"
+        v-model:link="linkFilter"
         :threads="visibleThreads"
         :empty-store="emptyStore"
         :selected-id="store.selectedId"
         :progress="store.progress"
         :project-options="projectOptions"
         :error="store.error ? errorLine(store.error) : null"
+        :pinned="pinned"
+        :reloading="reloading"
         @select="select"
         @add="openAdd()"
         @retry="store.fetchList()"
+        @toggle-pin="togglePin"
+        @reload="reloadAll"
       />
 
       <SlackThreadPane
         v-if="view"
         :view="view"
+        :links="store.links"
         :progress="progress"
         :show-original="showOriginal"
         :new-count="openedNewCount"
         :renaming="renaming"
         :refreshing="refreshing"
+        :copied-id="copiedId"
         @start-rename="renaming = true"
         @commit-rename="commitRename"
         @cancel-rename="renaming = false"
@@ -442,6 +516,13 @@ onBeforeUnmount(() => {
         @refresh="refreshThread"
         @open-in-slack="openInSlack"
         @open-mcp="openMcp"
+        @open-run="openRun"
+        @unlink-run="unlinkRun"
+        @link-run="linkSession"
+        @new-session="newSession"
+        @copy-id="copyId"
+        @delete="removeThread"
+        @set-project="onProjectChange"
       />
       <div v-else class="flex min-w-0 flex-1 items-center justify-center p-6">
         <div class="text-center">
@@ -461,18 +542,6 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </div>
-
-    <DetailWindowFooter
-      v-if="view"
-      :editable="false"
-      :copied-id="copiedId"
-      @copy-id="copyId"
-      @delete="removeThread"
-    >
-      <template #left>
-        <ProjectSelect :model-value="view.projectId" @update:model-value="onProjectChange" />
-      </template>
-    </DetailWindowFooter>
 
     <SlackAddDialog
       :open="addOpen"

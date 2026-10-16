@@ -1,12 +1,28 @@
 <script setup lang="ts">
-// Left pane of the Slack threads window, laid out like Slack's sidebar: search,
-// project filter + "Add thread", then a workspace → #channel tree (each header
-// collapsible, remembered in localStorage) of thread rows. A row shows the
-// title, the last reply's age (full date in the tooltip), a new-message badge,
-// a status mark (spinner / error / warning) and an "Old" badge for legacy rows.
+// Left pane of the Slack threads window, laid out like Slack's sidebar: search
+// + the window's pin / reload (the window has no custom titlebar), project
+// filter + "Add thread", an All | Linked | Not linked session filter,
+// then a workspace → #channel tree (each header collapsible, remembered in
+// localStorage) of thread rows. A row shows the title, the last reply's age
+// (full date in the tooltip), a new-message badge, a status mark (spinner /
+// error / warning), a link mark with the linked-session count and an "Old"
+// badge for legacy rows.
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { AlertCircle, ChevronDown, ChevronRight, Folder, Hash, Plus, RotateCw, Search, X } from 'lucide-vue-next'
+import {
+  AlertCircle,
+  ChevronDown,
+  ChevronRight,
+  Folder,
+  Hash,
+  Link2,
+  Pin,
+  PinOff,
+  Plus,
+  RotateCw,
+  Search,
+  X,
+} from 'lucide-vue-next'
 import { AppSelect, Button, Input } from '@/components/ui'
 import { relativeAge } from '@/lib/itemText'
 import { formatFullDate, groupThreads } from '@/lib/slackThreadUtils'
@@ -23,12 +39,30 @@ const props = defineProps<{
   projectOptions: { value: string; label: string }[]
   /** The list failed to load (shown above the tree with a retry). */
   error: string | null
+  /** Window pinned above other apps (useFloatingWindow). */
+  pinned: boolean
+  /** A full reload is in flight. */
+  reloading: boolean
 }>()
 
 const search = defineModel<string>('search', { required: true })
 const projectFilter = defineModel<string>('project', { required: true })
+/** '' = all, else only threads linked / not linked to a session. */
+const linkFilter = defineModel<'' | 'linked' | 'unlinked'>('link', { required: true })
 
-const emit = defineEmits<{ select: [id: string]; add: []; retry: [] }>()
+const LINK_FILTERS = [
+  { value: '', label: 'slackThread.sidebar.linkAll' },
+  { value: 'linked', label: 'slackThread.sidebar.linked' },
+  { value: 'unlinked', label: 'slackThread.sidebar.unlinked' },
+] as const
+
+const emit = defineEmits<{
+  select: [id: string]
+  add: []
+  retry: []
+  togglePin: []
+  reload: []
+}>()
 
 const { t } = useI18n()
 
@@ -70,23 +104,48 @@ function rowAgeTitle(th: SlackThreadSummary): string {
 
 <template>
   <aside class="flex w-[260px] shrink-0 flex-col border-r border-border/60 bg-sidebar">
-    <!-- Search + filter + add -->
+    <!-- Search + pin / reload, filter + add -->
     <div class="shrink-0 space-y-2 border-b border-border/60 px-3 py-3">
-      <div class="relative">
-        <Search
-          class="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
-          :stroke-width="1.75"
-        />
-        <Input v-model="search" class="pl-8 pr-7" :placeholder="t('slackThread.sidebar.search')" />
-        <button
-          v-if="search"
-          type="button"
-          class="absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer text-muted-foreground hover:text-foreground"
-          :title="t('item.clearSearch')"
-          @click="search = ''"
+      <div class="flex items-center gap-1.5">
+        <div class="relative min-w-0 flex-1">
+          <Search
+            class="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
+            :stroke-width="1.75"
+          />
+          <Input v-model="search" class="pl-8 pr-7" :placeholder="t('slackThread.sidebar.search')" />
+          <button
+            v-if="search"
+            type="button"
+            class="absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer text-muted-foreground hover:text-foreground"
+            :title="t('item.clearSearch')"
+            @click="search = ''"
+          >
+            <X class="h-3.5 w-3.5" :stroke-width="2" />
+          </button>
+        </div>
+        <Button
+          :variant="pinned ? 'primary' : 'outline'"
+          size="icon-sm"
+          class="shrink-0"
+          :aria-pressed="pinned"
+          :title="pinned ? t('item.unpin') : t('item.pin')"
+          :aria-label="pinned ? t('item.unpin') : t('item.pin')"
+          @click="emit('togglePin')"
         >
-          <X class="h-3.5 w-3.5" :stroke-width="2" />
-        </button>
+          <component :is="pinned ? Pin : PinOff" class="h-3.5 w-3.5" :stroke-width="1.75" />
+        </Button>
+        <!-- Reload the list + open thread from the DB (the MCP sidecar writes without events). -->
+        <Button
+          variant="outline"
+          size="icon-sm"
+          class="shrink-0"
+          :disabled="reloading"
+          :title="t('item.reload')"
+          :aria-label="t('item.reload')"
+          @click="emit('reload')"
+        >
+          <RotateCw class="h-3.5 w-3.5" :class="{ 'animate-spin': reloading }" :stroke-width="1.75" />
+        </Button>
       </div>
       <div class="flex items-center gap-1.5">
         <div class="min-w-0 flex-1">
@@ -100,6 +159,25 @@ function rowAgeTitle(th: SlackThreadSummary): string {
           <Plus class="h-3.5 w-3.5" :stroke-width="2" />
           {{ t('slackThread.sidebar.add') }}
         </Button>
+      </div>
+      <div
+        class="flex rounded-md bg-muted p-0.5 text-[11px] font-medium"
+        role="group"
+        :aria-label="t('slackThread.sidebar.linkFilter')"
+      >
+        <button
+          v-for="f in LINK_FILTERS"
+          :key="f.value"
+          type="button"
+          class="flex flex-1 cursor-pointer items-center justify-center rounded px-2 py-1 transition-colors"
+          :class="linkFilter === f.value
+            ? 'bg-background text-foreground shadow-sm'
+            : 'text-muted-foreground hover:text-foreground'"
+          :aria-pressed="linkFilter === f.value"
+          @click="linkFilter = f.value"
+        >
+          {{ t(f.label) }}
+        </button>
       </div>
     </div>
 
@@ -188,6 +266,14 @@ function rowAgeTitle(th: SlackThreadSummary): string {
                     {{ t('slackThread.legacy.badge') }}
                   </span>
                   <SlackStatusIcon :thread="th" :progress="progress[th.id]" />
+                  <span
+                    v-if="th.linkedRunCount > 0"
+                    class="flex shrink-0 items-center gap-0.5 text-[10px] tabular-nums text-muted-foreground"
+                    :title="t('sessionLink.linkedCount', th.linkedRunCount)"
+                  >
+                    <Link2 class="h-3 w-3" :stroke-width="2" />
+                    <template v-if="th.linkedRunCount > 1">{{ th.linkedRunCount }}</template>
+                  </span>
                   <span
                     v-if="th.newCount > 0"
                     class="flex h-4 min-w-[16px] shrink-0 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold leading-none text-primary-foreground"

@@ -22,7 +22,7 @@ import { useClaudeAccountsStore } from '@/stores/claudeAccounts'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useModelCatalogStore } from '@/stores/modelCatalog'
 import { useUILayoutStore } from '@/stores/uiLayout'
-import { registerMenuAction } from '@/lib/appMenu'
+import { IS_MAC, registerMenuAction } from '@/lib/appMenu'
 import { invoke } from '@/lib/tauri'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -30,18 +30,22 @@ import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
 import {
   Play, Square, GitPullRequest, Bug,
-  Clock, Cpu, Terminal, FileText, RotateCcw, RefreshCw,
-  Send, MessageSquare, Trash2, Settings, Code2, FolderClosed, FolderOpen, Sparkles, ExternalLink,
-  ChevronDown, ChevronUp, Maximize2, Minimize2, AppWindow,
+  Clock, Cpu, Terminal, FileText, RotateCcw,
+  Send, MessageSquare, Trash2, Settings, Code2, FolderClosed, FolderOpen, Sparkles,
+  ChevronDown, ChevronUp, Maximize2, Minimize2,
   X, Paperclip,
   ShieldQuestion, MessageCircleQuestion,
-  Pin, PinOff, Shield, ShieldOff, Pencil, Check, Github, Gitlab, UserCircle,
-  ClipboardCopy, ScrollText, HardDrive, Cloud, Radio, Languages, StickyNote, ListTodo, FolderTree, Loader2,
-  MoreHorizontal, Search, Network, ChevronLeft, ChevronRight, Hash
+  Pin, Shield, Pencil, Check, Github, Gitlab, UserCircle,
+  HardDrive, Cloud, Radio, Languages, StickyNote, ListTodo, FolderTree, Loader2,
+  MoreHorizontal, Search, Network, ChevronLeft, ChevronRight
 } from 'lucide-vue-next'
 import AppSelect from '@/components/AppSelect.vue'
 import { type SavedPrompt, parseSavedPrompts } from '@/lib/savedPrompts'
 import CapturePicker from '@/components/CapturePicker.vue'
+import RunActionItems from '@/components/RunActionItems.vue'
+import RunLinkedKindMenu from '@/components/sessions/RunLinkedKindMenu.vue'
+import { useRunLinkedItems } from '@/composables/useRunLinkedItems'
+import { linkTargetRun, type LinkTarget } from '@/lib/sessionLinks'
 import SavedPromptPicker from '@/components/SavedPromptPicker.vue'
 import StreamLog from '@/components/StreamLog.vue'
 import TranslatePopover from '@/components/TranslatePopover.vue'
@@ -55,6 +59,7 @@ import { useConductorStore } from '@/stores/conductor'
 import { Button, Input, Badge, Modal, DropdownMenu, DropdownItem, DropdownSeparator } from '@/components/ui'
 import { useTurnNavigator, turnLabel } from '@/composables/useTurnNavigator'
 import { useConfirm } from '@/composables/useConfirm'
+import { usePrompt } from '@/composables/usePrompt'
 import { useToast } from '@/composables/useToast'
 import { openItemCreateWindow, type ItemKind } from '@/lib/itemWindow'
 import { vMermaid } from '@/lib/mermaid'
@@ -97,6 +102,7 @@ const appSettings = useAppSettingsStore()
 const modelCatalog = useModelCatalogStore()
 const uiLayout = useUILayoutStore()
 const { confirm } = useConfirm()
+const { prompt } = usePrompt()
 const { toast } = useToast()
 
 const projectId = computed(() => route.params.projectId as string)
@@ -1464,6 +1470,9 @@ function openQuickCapture(kind: ItemKind) {
   openItemCreateWindow(kind, captureContext())
 }
 
+// Slack threads / todos / notes linked to this session, for the header menus.
+const linked = useRunLinkedItems(currentRunId)
+
 /** Turn the current output selection into a pre-filled note. */
 function captureSelectionAsNote() {
   const trigger = translateTrigger.value
@@ -2593,6 +2602,18 @@ function insertCaptureRef(text: string) {
   insertSavedPrompt({ id: '', title: '', body: text })
 }
 
+// A Slack thread / note / todo picked into this session's composer gets linked
+// to the session (best-effort: the reference is already inserted, a failure only
+// warns). Every session is a run from the moment it is created, so there is
+// always an id here.
+function linkPicked(target: LinkTarget) {
+  const runId = currentRunId.value
+  if (!runId) return
+  linkTargetRun(target, runId, 'picker').catch((e) =>
+    toast.error(t('sessionLink.pickerLinkFailed', { error: String(e) })),
+  )
+}
+
 function onComposerKeydown(e: KeyboardEvent) {
   if (slashOpen.value && slashItems.value.length) {
     if (e.key === 'ArrowDown') {
@@ -2856,20 +2877,73 @@ function cancelRename() {
 
 async function commitRename(runId: string) {
   if (renamingRunId.value !== runId) return
-  const title = renameDraft.value.trim()
-  const run = runsStore.runs.find(r => r.id === runId)
-  // No change (or empty for a run that already has no custom title) → just close.
-  if (run && title === (run.title ?? '')) {
+  try {
+    await applyRename(runId, renameDraft.value)
+  } finally {
     cancelRename()
-    return
   }
+}
+
+/** Save a run's title; no change (or empty for a run without one) is a no-op. */
+async function applyRename(runId: string, value: string) {
+  const title = value.trim()
+  const run = runsStore.runs.find(r => r.id === runId)
+  if (run && title === (run.title ?? '')) return
   try {
     await runsStore.renameRun(runId, title)
     toast.success(t('run.runRenamed'))
   } catch (err) {
     toast.error(String(err))
-  } finally {
-    cancelRename()
+  }
+}
+
+// The header's ⋯ → Rename: the History row (and its inline field) may be off
+// screen — focus mode, scrolled away — so ask in a dialog instead.
+async function renameViaPrompt(run: RunRecord) {
+  const value = await prompt({
+    title: t('run.rename'),
+    initialValue: run.title ?? runLabel(run),
+    confirmLabel: t('common.save'),
+    cancelLabel: t('common.cancel'),
+    selectAll: true,
+  })
+  if (value !== null) await applyRename(run.id, value)
+}
+
+// ── Run actions (RunActionItems: History row ⋯ and header ⋯) ──────────────
+
+/** Focus mode's app-menu accelerator (CmdOrCtrl+Shift+F, lib/appMenu). */
+const focusShortcut = IS_MAC ? '⌘⇧F' : 'Ctrl+Shift+F'
+
+function runActionProps(run: RunRecord) {
+  return {
+    run,
+    isSessionWindow,
+    githubUrl: runGithubUrl(run),
+    busy: {
+      refetching: refetchingRunId.value === run.id,
+      pinning: pinningRunId.value === run.id,
+      protecting: protectingRunId.value === run.id,
+      converting: convertingRunId.value === run.id,
+      deleting: deletingRunId.value === run.id,
+    },
+  }
+}
+
+/** `rename` defaults to the History row's inline field. */
+function runActionHandlers(run: RunRecord, rename: (run: RunRecord) => void = startRename) {
+  return {
+    popout: () => popoutSession(run.id),
+    openGithub: () => openRunInBrowser(run),
+    refetch: () => handleRefetch(run.id),
+    copyLogPath: () => copyLogPath(run),
+    copyId: () => copySessionId(run),
+    viewLog: () => viewLogFile(run),
+    rename: () => rename(run),
+    togglePin: () => handleTogglePin(run),
+    toggleProtect: () => handleToggleProtect(run),
+    convert: () => handleConvertToConductor(run),
+    delete: () => handleDeleteRun(run.id),
   }
 }
 
@@ -3280,103 +3354,108 @@ function handleRefInput(val: string) {
           <span class="opacity-90 font-mono">{{ awsChip.region }}</span>
         </Badge>
       </div>
-      <!-- Icon-only actions, split into three clusters: capture, open-elsewhere,
-           then the session/project controls. Labels live in the tooltips so the
-           header stays short no matter how narrow the pane gets.
+      <!-- Icon-only actions: the linked Slack / todo / note menus, then one ⋯
+           menu for the rest. Labels live in the tooltips so the header stays
+           short no matter how narrow the pane gets.
            Hidden entirely in a session pop-out for now — that window is a bare
            conversation view. -->
       <div v-if="!isSessionWindow" class="flex items-center gap-1 shrink-0">
-        <!-- Capture a thought without leaving the run (⌘K / ⌘⇧N do the same).
-             A todo and a note sit side by side so either is one click away. -->
-        <Button
-          variant="outline"
-          size="icon"
-          :title="t('run.quickCaptureTodoTitle')"
-          @click="openQuickCapture('todo')"
-        >
-          <ListTodo class="h-4 w-4" :stroke-width="2" />
-        </Button>
-        <Button
-          variant="outline"
-          size="icon"
-          :title="t('run.quickCaptureNoteTitle')"
-          @click="openQuickCapture('note')"
-        >
-          <StickyNote class="h-4 w-4" :stroke-width="2" />
-        </Button>
+        <!-- What this session is linked to: Slack threads (only when there are
+             some), todos, notes. The todo / note menus end with "+ New …", the
+             capture filed under this run (⌘K / ⌘⇧N do the same). -->
+        <RunLinkedKindMenu kind="slack" :threads="linked.threads.value" />
+        <RunLinkedKindMenu kind="todo" :items="linked.todos.value" @create="openQuickCapture('todo')" />
+        <RunLinkedKindMenu kind="note" :items="linked.notes.value" @create="openQuickCapture('note')" />
 
-        <div class="h-4 w-px bg-border shrink-0 mx-1" aria-hidden="true" />
-
-        <!-- VS Code / Finder / terminal are the same intent — open this project
-             somewhere else — so they collapse into one trigger. -->
+        <!-- Everything else lives in one ⋯ menu: open the project elsewhere ·
+             this session's actions (the History row's, RunActionItems) ·
+             remote / focus mode / project settings · delete. -->
         <DropdownMenu align="right">
           <template #trigger>
             <Button
               variant="outline"
               size="icon"
-              :disabled="!project"
-              :title="t('run.openProjectIn')"
+              class="relative"
+              :title="t('run.moreActions')"
+              :aria-label="t('run.moreActions')"
             >
-              <ExternalLink class="h-4 w-4" :stroke-width="2" />
+              <MoreHorizontal class="h-4 w-4" :stroke-width="2" />
+              <!-- The phone is looking at THIS run: keep that visible from the header. -->
+              <span
+                v-if="remoteActive"
+                class="absolute -right-0.5 -top-0.5 flex h-2.5 w-2.5"
+                :aria-label="t('run.remoteConnecting')"
+              >
+                <span class="absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-75 animate-ping" />
+                <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-background" />
+              </span>
             </Button>
           </template>
-          <DropdownItem :disabled="!project" @click="handleOpenInVscode">
-            <Code2 class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-            VS Code
-          </DropdownItem>
-          <DropdownItem :disabled="!project" @click="handleOpenInFolder">
-            <FolderOpen class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-            {{ t('run.folder') }}
-          </DropdownItem>
-          <DropdownItem :disabled="!project" @click="handleOpenInTerminal">
-            <Terminal class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-            {{ t('run.terminal') }}
-          </DropdownItem>
+          <div class="min-w-[15rem]">
+            <!-- Open the project elsewhere -->
+            <div class="px-2.5 pb-0.5 pt-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
+              {{ t('run.openProjectIn') }}
+            </div>
+            <DropdownItem :disabled="!project" @click="handleOpenInVscode">
+              <Code2 class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+              VS Code
+            </DropdownItem>
+            <DropdownItem :disabled="!project" @click="handleOpenInFolder">
+              <FolderOpen class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+              {{ t('run.folder') }}
+            </DropdownItem>
+            <DropdownItem :disabled="!project" @click="handleOpenInTerminal">
+              <Terminal class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+              {{ t('run.terminal') }}
+            </DropdownItem>
+
+            <!-- This session (same list as its History row) -->
+            <template v-if="currentRun">
+              <DropdownSeparator />
+              <RunActionItems
+                v-bind="runActionProps(currentRun)"
+                section="actions"
+                v-on="runActionHandlers(currentRun, renameViaPrompt)"
+              />
+            </template>
+
+            <DropdownSeparator />
+            <DropdownItem :disabled="!currentRunId" :title="remoteButtonTitle" @click="remoteModalOpen = true">
+              <Radio
+                class="h-3.5 w-3.5 shrink-0"
+                :class="remoteActive ? 'text-emerald-500' : remotePaired ? 'text-emerald-500/50' : ''"
+                :stroke-width="1.75"
+              />
+              <span class="flex-1">{{ t('run.remote') }}</span>
+              <span
+                v-if="remoteActive || remotePaired"
+                class="h-1.5 w-1.5 shrink-0 rounded-full"
+                :class="remoteActive ? 'bg-emerald-500' : 'bg-emerald-500/50'"
+                :aria-label="remoteButtonTitle"
+              />
+            </DropdownItem>
+            <DropdownItem
+              :title="uiLayout.focusMode ? t('run.exitFocusMode') : t('run.enterFocusMode')"
+              @click="uiLayout.toggleFocus()"
+            >
+              <component :is="uiLayout.focusMode ? Minimize2 : Maximize2" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+              <span class="flex-1">{{ t('run.focusMode') }}</span>
+              <Check v-if="uiLayout.focusMode" class="h-3.5 w-3.5 shrink-0 text-primary" :stroke-width="2" />
+              <kbd class="shrink-0 text-[10px] text-muted-foreground">{{ focusShortcut }}</kbd>
+            </DropdownItem>
+            <DropdownItem :title="t('run.projectSettingsTitle')" @click="router.push(`/projects/${projectId}/settings`)">
+              <Settings class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+              {{ t('run.projectSettings') }}
+            </DropdownItem>
+
+            <RunActionItems
+              v-if="currentRun"
+              v-bind="runActionProps(currentRun)"
+              section="delete"
+              v-on="runActionHandlers(currentRun)"
+            />
+          </div>
         </DropdownMenu>
-
-        <div class="h-4 w-px bg-border shrink-0 mx-1" aria-hidden="true" />
-
-        <Button
-          variant="outline"
-          size="icon"
-          :disabled="!currentRunId"
-          :title="remoteButtonTitle"
-          class="relative"
-          @click="remoteModalOpen = true"
-        >
-          <Radio
-            class="h-4 w-4"
-            :class="remoteActive ? 'text-emerald-500' : remotePaired ? 'text-emerald-500/50' : ''"
-            :stroke-width="2"
-          />
-          <!-- Live pulse ONLY when the phone is looking at THIS run. -->
-          <span
-            v-if="remoteActive"
-            class="absolute -right-0.5 -top-0.5 flex h-2.5 w-2.5"
-            :aria-label="t('run.remoteConnecting')"
-          >
-            <span class="absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-75 animate-ping" />
-            <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-background" />
-          </span>
-        </Button>
-        <Button
-          v-if="!isSessionWindow"
-          variant="outline"
-          size="icon"
-          :title="t('run.projectSettingsTitle')"
-          @click="router.push(`/projects/${projectId}/settings`)"
-        >
-          <Settings class="h-4 w-4" :stroke-width="2" />
-        </Button>
-        <Button
-          v-if="!isSessionWindow"
-          variant="outline"
-          size="icon"
-          :title="uiLayout.focusMode ? t('run.exitFocusMode') : t('run.enterFocusMode')"
-          @click="uiLayout.toggleFocus()"
-        >
-          <component :is="uiLayout.focusMode ? Minimize2 : Maximize2" class="h-4 w-4" :stroke-width="2" />
-        </Button>
       </div>
     </div>
 
@@ -3705,68 +3784,8 @@ function handleRefInput(val: string) {
                     </button>
                   </template>
 
-                  <!-- Pop this session out into its own OS window (one per run).
-                       Hidden inside a session window — can't re-pop what's popped. -->
-                  <DropdownItem v-if="!isSessionWindow" @click="popoutSession(run.id)">
-                    <AppWindow class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-                    {{ t('run.popOutSession') }}
-                  </DropdownItem>
-                  <DropdownItem v-if="runGithubUrl(run)" @click="openRunInBrowser(run)">
-                    <ExternalLink class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-                    {{ run.run_type === 'analyze_issue' ? t('run.openIssueOnGithub') : t('run.openPrOnGithub') }}
-                  </DropdownItem>
-                  <DropdownItem
-                    v-if="run.run_type !== 'session' && run.status !== 'running'"
-                    :disabled="refetchingRunId === run.id"
-                    @click="handleRefetch(run.id)"
-                  >
-                    <RefreshCw class="h-3.5 w-3.5 shrink-0" :class="{ 'animate-spin': refetchingRunId === run.id }" :stroke-width="1.75" />
-                    {{ run.run_type === 'analyze_issue' ? t('run.refetchIssue') : t('run.refetchPr') }}
-                  </DropdownItem>
-                  <DropdownItem @click="copyLogPath(run)">
-                    <ClipboardCopy class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-                    {{ t('run.copyLogPath') }}
-                  </DropdownItem>
-                  <DropdownItem @click="copySessionId(run)">
-                    <Hash class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-                    {{ t('run.copySessionId') }}
-                  </DropdownItem>
-                  <DropdownItem @click="viewLogFile(run)">
-                    <ScrollText class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-                    {{ t('run.viewLogFile') }}
-                  </DropdownItem>
-                  <DropdownSeparator />
-                  <DropdownItem @click="startRename(run)">
-                    <Pencil class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-                    {{ t('run.rename') }}
-                  </DropdownItem>
-                  <DropdownItem :disabled="pinningRunId === run.id" @click="handleTogglePin(run)">
-                    <component :is="run.pinned ? PinOff : Pin" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-                    {{ run.pinned ? t('run.unpinFromTop') : t('run.pinToTop') }}
-                  </DropdownItem>
-                  <DropdownItem :disabled="protectingRunId === run.id" @click="handleToggleProtect(run)">
-                    <component :is="run.protected ? ShieldOff : Shield" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-                    {{ run.protected ? t('run.unprotect') : t('run.protect') }}
-                  </DropdownItem>
-                  <DropdownItem
-                    v-if="run.run_type === 'session' && run.role !== 'conductor' && run.role !== 'worker' && run.status !== 'running' && run.status !== 'fetched'"
-                    :disabled="convertingRunId === run.id"
-                    @click="handleConvertToConductor(run)"
-                  >
-                    <Network class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-                    {{ t('run.convertToConductor') }}
-                  </DropdownItem>
-                  <template v-if="run.status !== 'running'">
-                    <DropdownSeparator />
-                    <DropdownItem
-                      variant="destructive"
-                      :disabled="deletingRunId === run.id"
-                      @click="handleDeleteRun(run.id)"
-                    >
-                      <Trash2 class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-                      {{ t('run.deleteThisRun') }}
-                    </DropdownItem>
-                  </template>
+                  <RunActionItems v-bind="runActionProps(run)" section="actions" v-on="runActionHandlers(run)" />
+                  <RunActionItems v-bind="runActionProps(run)" section="delete" v-on="runActionHandlers(run)" />
                 </DropdownMenu>
               </div>
 
@@ -4274,7 +4293,12 @@ function handleRefInput(val: string) {
                   :disabled="sendingFollowUp"
                   @insert="insertSavedPrompt"
                 />
-                <CapturePicker :project-id="projectId" :disabled="sendingFollowUp" @insert="insertCaptureRef" />
+                <CapturePicker
+                  :project-id="projectId"
+                  :disabled="sendingFollowUp"
+                  @insert="insertCaptureRef"
+                  @picked="linkPicked"
+                />
                 <button
                   class="inline-flex items-center justify-center h-8 w-8 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 shrink-0"
                   :title="composerExpanded ? t('run.collapseComposer') : t('run.expandComposer')"

@@ -1,5 +1,6 @@
 //! SQL over the `slack_*` tables: add / re-import (dedup by channel + thread
 //! ts), list, view, rename, project, reorder, delete, composer prompt text.
+//! Session links live in `run_links`.
 //! Takes plain `&Db` + `app_data` so it is testable against an in-memory DB.
 
 use super::link::{parse_thread_link, ThreadLink};
@@ -48,6 +49,8 @@ pub struct SlackThreadSummary {
     pub legacy: bool,
     pub file_count: i64,
     pub preview: String,
+    /// Linked sessions whose run still exists.
+    pub linked_run_count: i64,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -371,6 +374,8 @@ pub async fn set_requested_status(
 
 const SUMMARY_SQL: &str = "SELECT t.*, \
      (SELECT COUNT(*) FROM slack_files f WHERE f.thread_id = t.id) AS file_count, \
+     (SELECT COUNT(*) FROM slack_thread_runs l JOIN runs r ON r.id = l.run_id \
+        WHERE l.thread_id = t.id) AS linked_run_count, \
      (SELECT COUNT(*) FROM slack_messages m WHERE m.thread_id = t.id \
         AND t.last_seen_ts IS NOT NULL AND m.ts > t.last_seen_ts) AS new_count, \
      (SELECT COALESCE(m.text_vi, m.text_raw) FROM slack_messages m \
@@ -460,6 +465,7 @@ fn row_to_summary(row: &SqliteRow, names: &HashMap<String, Names>) -> SlackThrea
         legacy: row.get::<i64, _>("legacy") != 0,
         file_count: row.get("file_count"),
         preview,
+        linked_run_count: row.get("linked_run_count"),
     }
 }
 
@@ -794,9 +800,9 @@ pub async fn reorder(db: &Db, ids: &[String]) -> Result<(), CodedError> {
     tx.commit().await.map_err(internal)
 }
 
-/// Delete threads: children explicitly, then the rows (one transaction), then
-/// each thread dir. The avatar cache is shared and kept. Returns the ids that
-/// existed.
+/// Delete threads: children (incl. session links) explicitly, then the rows
+/// (one transaction), then each thread dir. The avatar cache is shared and
+/// kept. Returns the ids that existed.
 pub async fn delete(db: &Db, app_data: &Path, ids: &[String]) -> Result<Vec<String>, CodedError> {
     let mut existed = Vec::new();
     let mut tx = db.begin().await.map_err(internal)?;
@@ -807,6 +813,11 @@ pub async fn delete(db: &Db, app_data: &Path, ids: &[String]) -> Result<Vec<Stri
             .await
             .map_err(internal)?;
         sqlx::query("DELETE FROM slack_files WHERE thread_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(internal)?;
+        sqlx::query("DELETE FROM slack_thread_runs WHERE thread_id = ?")
             .bind(id)
             .execute(&mut *tx)
             .await

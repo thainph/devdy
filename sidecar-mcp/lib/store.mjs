@@ -112,22 +112,34 @@ function reorderRows(table, ids, orderBy, { where = '', params = [], label = tab
 
 // ---- Notes -----------------------------------------------------------------
 
+/**
+ * Session (run) ids linked to a note / todo (`note_runs` / `todo_runs`,
+ * migration 0044) whose run still exists, comma-separated in link order, as
+ * column `linked_runs`. `alias` is the items table alias.
+ */
+function linkedRunsCol(links, col, alias) {
+  return `(SELECT group_concat(run_id, ', ') FROM (SELECT l.run_id FROM ${links} l
+    JOIN runs r ON r.id = l.run_id WHERE l.${col} = ${alias}.id ORDER BY l.linked_at, l.run_id)) AS linked_runs`;
+}
+const NOTE_LINKS = linkedRunsCol('note_runs', 'note_id', 'n');
+const TODO_LINKS = linkedRunsCol('todo_runs', 'todo_id', 't');
+
 export function listNotes({ scope = 'project', limit = 50 } = {}) {
   const projectId = process.env.DEVDY_PROJECT_ID || null;
   const lim = Math.max(1, Math.min(200, Number(limit) || 50));
   if (scope === 'project' && projectId) {
     return db()
       .prepare(
-        `SELECT id, title, content, project_id, updated_at
-         FROM notes WHERE project_id = ?
-         ORDER BY position ASC, updated_at DESC LIMIT ?`,
+        `SELECT n.id, n.title, n.content, n.project_id, n.updated_at, ${NOTE_LINKS}
+         FROM notes n WHERE n.project_id = ?
+         ORDER BY n.position ASC, n.updated_at DESC LIMIT ?`,
       )
       .all(projectId, lim);
   }
   return db()
     .prepare(
-      `SELECT id, title, content, project_id, updated_at
-       FROM notes ORDER BY position ASC, updated_at DESC LIMIT ?`,
+      `SELECT n.id, n.title, n.content, n.project_id, n.updated_at, ${NOTE_LINKS}
+       FROM notes n ORDER BY n.position ASC, n.updated_at DESC LIMIT ?`,
     )
     .all(lim);
 }
@@ -135,7 +147,10 @@ export function listNotes({ scope = 'project', limit = 50 } = {}) {
 export function readNote(id) {
   if (!id) throw new Error('note id is required');
   return db()
-    .prepare(`SELECT id, title, content, project_id, created_at, updated_at FROM notes WHERE id = ?`)
+    .prepare(
+      `SELECT n.id, n.title, n.content, n.project_id, n.created_at, n.updated_at, ${NOTE_LINKS}
+       FROM notes n WHERE n.id = ?`,
+    )
     .get(id);
 }
 
@@ -229,8 +244,13 @@ export function searchNotes({ query, scope = 'project', limit = 20 } = {}) {
 export function deleteNotes({ ids } = {}) {
   const list = normIds(ids);
   return tx((d) => {
+    // No `foreign_keys` on this connection: drop the session links explicitly.
+    const links = d.prepare('DELETE FROM note_runs WHERE note_id = ?');
     const stmt = d.prepare('DELETE FROM notes WHERE id = ?');
-    const deleted = list.filter((id) => stmt.run(id).changes > 0);
+    const deleted = list.filter((id) => {
+      links.run(id);
+      return stmt.run(id).changes > 0;
+    });
     return { deleted: deleted.length, requested: list.length };
   });
 }
@@ -240,10 +260,7 @@ export function setNoteProject({ id, scope = 'project' } = {}) {
   if (!readNote(id)) throw new Error(`note not found: ${id}`);
   const now = nowIso();
   if (scope === 'global') {
-    // The run backlink only means anything alongside its project.
-    db()
-      .prepare('UPDATE notes SET project_id = NULL, run_id = NULL, updated_at = ? WHERE id = ?')
-      .run(now, id);
+    db().prepare('UPDATE notes SET project_id = NULL, updated_at = ? WHERE id = ?').run(now, id);
     return { id, project_id: null };
   }
   const projectId = requireProject();
@@ -315,7 +332,7 @@ export function listTodos({ includeDone = true, scope = 'all' } = {}) {
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
   return db()
     .prepare(
-      `SELECT t.id, t.text, t.done, t.position, t.created_at, t.project_id, t.run_id,
+      `SELECT t.id, t.text, t.done, t.position, t.created_at, t.project_id, ${TODO_LINKS},
               p.name AS project_name
        FROM todos t LEFT JOIN projects p ON p.id = t.project_id
        ${where} ORDER BY t.position ASC, t.created_at DESC`,
@@ -344,7 +361,7 @@ export function readTodo(id) {
   if (!id) throw new Error('id is required');
   return db()
     .prepare(
-      `SELECT t.id, t.text, t.done, t.position, t.created_at, t.project_id, t.run_id,
+      `SELECT t.id, t.text, t.done, t.position, t.created_at, t.project_id, ${TODO_LINKS},
               p.name AS project_name
        FROM todos t LEFT JOIN projects p ON p.id = t.project_id WHERE t.id = ?`,
     )
@@ -382,15 +399,23 @@ export function updateTodo({ id, text } = {}) {
 export function deleteTodos({ ids } = {}) {
   const list = normIds(ids);
   return tx((d) => {
+    // No `foreign_keys` on this connection: drop the session links explicitly.
+    const links = d.prepare('DELETE FROM todo_runs WHERE todo_id = ?');
     const stmt = d.prepare('DELETE FROM todos WHERE id = ?');
-    const deleted = list.filter((id) => stmt.run(id).changes > 0);
+    const deleted = list.filter((id) => {
+      links.run(id);
+      return stmt.run(id).changes > 0;
+    });
     return { deleted: deleted.length, requested: list.length };
   });
 }
 
 export function clearDoneTodos() {
-  const r = db().prepare('DELETE FROM todos WHERE done = 1').run();
-  return { deleted: Number(r.changes) };
+  return tx((d) => {
+    d.prepare('DELETE FROM todo_runs WHERE todo_id IN (SELECT id FROM todos WHERE done = 1)').run();
+    const r = d.prepare('DELETE FROM todos WHERE done = 1').run();
+    return { deleted: Number(r.changes) };
+  });
 }
 
 /** Link a todo to the current project, or detach it with scope="global". */
@@ -400,8 +425,7 @@ export function setTodoProject({ id, scope = 'project' } = {}) {
     throw new Error(`todo not found: ${id}`);
   }
   if (scope === 'global') {
-    // The run backlink only means anything alongside its project.
-    db().prepare('UPDATE todos SET project_id = NULL, run_id = NULL WHERE id = ?').run(id);
+    db().prepare('UPDATE todos SET project_id = NULL WHERE id = ?').run(id);
     return { id, project_id: null };
   }
   const projectId = requireProject();
