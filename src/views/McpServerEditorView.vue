@@ -135,15 +135,29 @@ function validate(): string | null {
   return null
 }
 
+// Tests the form as currently filled in — no save needed, new or existing.
 async function handleTest() {
-  if (isNew.value || !serverId.value) {
-    testResult.value = { ok: false, message: t('mcp.editor.saveFirstThenTest') }
+  if (transport.value === 'stdio' ? !command.value.trim() : !url.value.trim()) {
+    testResult.value = {
+      ok: false,
+      message: transport.value === 'stdio'
+        ? t('mcp.editor.validation.commandRequired')
+        : t('mcp.editor.validation.urlRequired', { transport: transport.value }),
+    }
     return
   }
   testing.value = true
   testResult.value = null
   try {
-    testResult.value = await store.testConnection(serverId.value)
+    testResult.value = await store.testConnection({
+      id: isNew.value ? undefined : serverId.value,
+      transport: transport.value,
+      command: transport.value === 'stdio' ? command.value.trim() : null,
+      args: transport.value === 'stdio' ? parsedArgs() : [],
+      url: isRemote.value ? url.value.trim() : null,
+      env: transport.value === 'stdio' ? toSecretEntries(envRows.value) : [],
+      headers: isRemote.value ? toSecretEntries(headerRows.value) : [],
+    })
   } catch (e) {
     testResult.value = { ok: false, message: String(e) }
   } finally {
@@ -383,7 +397,6 @@ async function handleSave() {
               <Plug class="h-3.5 w-3.5" :stroke-width="1.75" />
               {{ testing ? t('mcp.editor.testing') : t('mcp.editor.testConnection') }}
             </Button>
-            <span v-if="isNew" class="text-[11px] text-muted-foreground">{{ t('mcp.editor.saveFirst') }}</span>
           </div>
           <div
             v-if="testResult"
