@@ -68,7 +68,6 @@
     "connection": "Kết nối",
     "testConnection": "Kiểm tra kết nối",
     "testing": "Đang kiểm tra…",
-    "saveFirst": "Lưu trước để bật kiểm tra",
     "validation": {
       "nameRequired": "Tên là bắt buộc",
       "nameFormat": "Tên chỉ được chứa chữ cái, số, dấu gạch ngang và gạch dưới",
@@ -77,7 +76,6 @@
       "keyEmpty": "Khóa secret không được để trống",
       "duplicateKey": "Khóa trùng \"{key}\""
     },
-    "saveFirstThenTest": "Lưu server trước, sau đó kiểm tra kết nối.",
     "toast": {
       "saved": "Đã lưu"
     }

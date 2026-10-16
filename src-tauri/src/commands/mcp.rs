@@ -653,24 +653,40 @@ fn initialize_request() -> serde_json::Value {
     })
 }
 
+/// The editor's current (possibly unsaved) form. `id` is set when editing an
+/// existing server so untouched secret rows (`value: None`) reuse stored VALUEs.
+#[derive(Debug, Deserialize)]
+pub struct TestMcpConnectionPayload {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub transport: String,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub env: Vec<SecretEntry>,
+    #[serde(default)]
+    pub headers: Vec<SecretEntry>,
+}
+
 #[tauri::command]
 pub async fn test_mcp_connection(
-    db: State<'_, Db>,
-    id: String,
+    payload: TestMcpConnectionPayload,
 ) -> Result<TestConnectionResult, String> {
-    let server = get_mcp_server(db, id.clone()).await?;
-    let secret = secrets::get_mcp_secrets(&id);
+    let prev = match payload.id.as_deref() {
+        Some(id) => secrets::get_mcp_secrets(id),
+        None => secrets::McpSecrets::default(),
+    };
+    let env = merge_secrets(&payload.env, &prev.env);
+    let headers = merge_secrets(&payload.headers, &prev.headers);
+    let (command, url) = normalized_fields(&payload.transport, payload.command, payload.url);
 
-    let result = match server.transport.as_str() {
-        "stdio" => {
-            test_stdio(
-                server.command.as_deref().unwrap_or(""),
-                &server.args,
-                &secret.env,
-            )
-            .await
-        }
-        "http" | "sse" => test_http(server.url.as_deref().unwrap_or(""), &secret.headers).await,
+    let result = match payload.transport.as_str() {
+        "stdio" => test_stdio(command.as_deref().unwrap_or(""), &payload.args, &env).await,
+        "http" | "sse" => test_http(url.as_deref().unwrap_or(""), &headers).await,
         other => TestConnectionResult {
             ok: false,
             message: format!("Unknown transport '{}'", other),
@@ -698,6 +714,9 @@ async fn test_stdio(
 
     let mut cmd = Command::new(command);
     cmd.args(args);
+    // GUI launches don't inherit the login-shell PATH (nvm/Homebrew), so bare
+    // `npx`/`uvx` wouldn't resolve. Applied before user env so it can override.
+    crate::runs::sidecar::augment_command_path(&mut cmd);
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -717,6 +736,21 @@ async fn test_stdio(
 
     let mut stdin = child.stdin.take();
     let stdout = child.stdout.take();
+
+    // Drain stderr in the background: servers that exit before the handshake
+    // (bad token, missing scope…) only explain why there.
+    let stderr_task = child.stderr.take().map(|stderr| {
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            let mut collected: Vec<String> = Vec::new();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if collected.len() < 200 {
+                    collected.push(line);
+                }
+            }
+            collected
+        })
+    });
 
     let work = async {
         if let Some(stdin) = stdin.as_mut() {
@@ -748,25 +782,61 @@ async fn test_stdio(
         Err("No initialize response received".to_string())
     };
 
-    let outcome = match tokio::time::timeout(HANDSHAKE_TIMEOUT, work).await {
-        Ok(Ok(msg)) => TestConnectionResult {
-            ok: true,
-            message: msg,
-        },
-        Ok(Err(msg)) => TestConnectionResult {
-            ok: false,
-            message: msg,
-        },
-        Err(_) => TestConnectionResult {
-            ok: false,
-            message: format!("Timed out after {}s", HANDSHAKE_TIMEOUT.as_secs()),
-        },
+    let result = match tokio::time::timeout(HANDSHAKE_TIMEOUT, work).await {
+        Ok(r) => r,
+        Err(_) => Err(format!("Timed out after {}s", HANDSHAKE_TIMEOUT.as_secs())),
     };
 
     // Kill regardless of outcome.
     let _ = child.start_kill();
     let _ = child.wait().await;
-    outcome
+
+    match result {
+        Ok(message) => TestConnectionResult { ok: true, message },
+        Err(mut message) => {
+            // Bounded: a grandchild (e.g. the binary `npx` execs) may outlive
+            // the kill and keep the pipe open.
+            let stderr = match stderr_task {
+                Some(task) => tokio::time::timeout(std::time::Duration::from_secs(2), task)
+                    .await
+                    .ok()
+                    .and_then(|r| r.ok())
+                    .unwrap_or_default(),
+                None => Vec::new(),
+            };
+            if let Some(reason) = stderr_reason(&stderr) {
+                message = format!("{}: {}", message, reason);
+            }
+            TestConnectionResult { ok: false, message }
+        }
+    }
+}
+
+/// Pick the most useful line from a failed server's stderr: the first one that
+/// looks like an error (wrapper stack traces tend to follow it), else the last
+/// non-empty line. Structured JSON logs are condensed to `message (error)`.
+fn stderr_reason(lines: &[String]) -> Option<String> {
+    let non_empty: Vec<&str> = lines.iter().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+    let line = non_empty
+        .iter()
+        .find(|l| {
+            let lower = l.to_lowercase();
+            lower.contains("error") || lower.contains("fatal")
+        })
+        .or_else(|| non_empty.last())?;
+
+    let condensed = serde_json::from_str::<serde_json::Value>(line)
+        .ok()
+        .and_then(|v| {
+            let msg = v.get("message").or_else(|| v.get("msg"))?.as_str()?.to_string();
+            Some(match v.get("error").and_then(|e| e.as_str()) {
+                Some(err) => format!("{} ({})", msg, err),
+                None => msg,
+            })
+        })
+        .unwrap_or_else(|| line.to_string());
+
+    Some(condensed.chars().take(400).collect())
 }
 
 /// http/sse: POST an `initialize` JSON-RPC to the URL with headers. Accepts
@@ -1090,4 +1160,37 @@ pub async fn with_builtin_google(
     }
 
     serde_json::Value::Object(map)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stderr_reason;
+
+    fn lines(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn stderr_reason_condenses_structured_fatal_over_wrapper_trace() {
+        let input = lines(&[
+            r#"{"level":"fatal","message":"Authentication failed - check your Slack tokens","error":"invalid_auth"}"#,
+            "node:child_process:954",
+            "Error: Command failed: slack-mcp-server --transport stdio",
+        ]);
+        assert_eq!(
+            stderr_reason(&input).as_deref(),
+            Some("Authentication failed - check your Slack tokens (invalid_auth)")
+        );
+    }
+
+    #[test]
+    fn stderr_reason_falls_back_to_last_line() {
+        let input = lines(&["starting", "", "missing DATABASE_URI", "  "]);
+        assert_eq!(stderr_reason(&input).as_deref(), Some("missing DATABASE_URI"));
+    }
+
+    #[test]
+    fn stderr_reason_none_when_empty() {
+        assert_eq!(stderr_reason(&lines(&["", "  "])), None);
+    }
 }

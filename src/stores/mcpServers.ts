@@ -47,6 +47,17 @@ export interface UpdateMcpServerPayload extends CreateMcpServerPayload {
   id: string
 }
 
+/** Unsaved form config; `id` (when editing) lets omitted secret VALUEs fall back to stored ones. */
+export interface TestMcpConnectionPayload {
+  id?: string
+  transport: McpTransport
+  command?: string | null
+  args: string[]
+  url?: string | null
+  env: SecretEntry[]
+  headers: SecretEntry[]
+}
+
 export interface TestConnectionResult {
   ok: boolean
   message: string
@@ -98,8 +109,9 @@ export const useMcpServersStore = defineStore('mcpServers', () => {
     await invoke('set_project_mcp_servers', { projectId, serverIds })
   }
 
-  async function testConnection(id: string): Promise<TestConnectionResult> {
-    return invoke<TestConnectionResult>('test_mcp_connection', { id })
+  /** Test the editor's current (possibly unsaved) config. */
+  async function testConnection(payload: TestMcpConnectionPayload): Promise<TestConnectionResult> {
+    return invoke<TestConnectionResult>('test_mcp_connection', { payload })
   }
 
   async function exportServer(id: string, path: string): Promise<void> {
