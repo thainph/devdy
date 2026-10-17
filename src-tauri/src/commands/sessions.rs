@@ -308,6 +308,9 @@ async fn sync_run_usage(
         .bind(run_id)
         .execute(db)
         .await;
+    // The synthetic lump replaces every earlier turn, so the next live turn
+    // can't be differenced against the old baseline.
+    crate::runs::model_usage::clear_baseline(db, run_id).await;
     let synthetic = serde_json::json!({
         "type": "result",
         "usage": {

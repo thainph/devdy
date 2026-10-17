@@ -2643,6 +2643,7 @@ async fn delete_single_run(
         .bind(run_id)
         .execute(db)
         .await;
+    crate::runs::model_usage::clear_baseline(db, run_id).await;
 
     let runs_dir = Path::new(&project_path).join(".devdy").join("runs");
     let _ = fs::remove_file(runs_dir.join(format!("{}.log", run_id)));

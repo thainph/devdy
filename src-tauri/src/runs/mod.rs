@@ -1,4 +1,5 @@
 pub mod broker;
+pub mod model_usage;
 pub mod permission;
 pub mod pricing;
 pub mod session_watcher;

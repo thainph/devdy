@@ -1,4 +1,5 @@
 import { estimateCost } from './pricing'
+import { carriesOver, parseModelUsage, turnTotals, type ModelUsageMap } from './modelUsage'
 
 /** A pasted/attached image carried on a user message. `data` is raw base64. */
 export interface ImageAttachment {
@@ -132,7 +133,16 @@ function handleCommandMessage(state: Pick<StreamState, 'entries'>, text: string)
 }
 
 export type StreamEntry =
-  | { kind: 'system'; model?: string; tools?: string[]; cwd?: string; sessionId?: string; slashCommands?: string[] }
+  | {
+      kind: 'system'
+      model?: string
+      tools?: string[]
+      cwd?: string
+      sessionId?: string
+      slashCommands?: string[]
+      /** `claude_code_version` — decides whether usage totals carry over resumes. */
+      cliVersion?: string
+    }
   | { kind: 'text'; text: string }
   | { kind: 'thinking'; text: string }
   | { kind: 'user'; text: string; images?: ImageAttachment[]; ideContext?: IdeContextItem[] }
@@ -151,9 +161,14 @@ export type StreamEntry =
   | {
       kind: 'result'
       text: string
+      /** This turn's cost (for Claude: differenced from the SDK running totals). */
       cost_usd?: number
       cost_estimated?: boolean
+      /** This turn's tokens, subagents included when `modelUsage` is present. */
       total_tokens?: number
+      /** Raw SDK `modelUsage` running totals + the CLI that produced them. */
+      model_usage?: ModelUsageMap
+      cli_version?: string
       duration_ms?: number
       num_turns?: number
       is_error: boolean
@@ -221,6 +236,7 @@ export function applyStreamEvent(
       cwd: typeof e.cwd === 'string' ? e.cwd : undefined,
       sessionId: typeof e.session_id === 'string' ? e.session_id : undefined,
       slashCommands: Array.isArray(e.slash_commands) ? (e.slash_commands as unknown[]).map(String) : undefined,
+      cliVersion: typeof e.claude_code_version === 'string' ? e.claude_code_version : undefined,
     })
     return
   }
@@ -348,8 +364,30 @@ export function applyStreamEvent(
     const cacheRead = tok('cache_read_input_tokens')
     const totalTokens = inputTokens + outputTokens + cacheCreate + cacheRead
 
+    // Claude's `modelUsage` holds running totals of every call (subagents
+    // included), so this turn is the difference from the previous result when
+    // both share a total: same CLI process, or both CLIs carry totals across
+    // resumes (see ./modelUsage). Otherwise the figures already are per-turn.
+    let lastSystem: StreamEntry | undefined
+    let prevResult: StreamEntry | undefined
+    for (let i = state.entries.length - 1; i >= 0 && !prevResult; i--) {
+      const x = state.entries[i]
+      if (x.kind === 'system' && !lastSystem) lastSystem = x
+      if (x.kind === 'result') prevResult = x
+    }
+    const cliVersion = lastSystem?.kind === 'system' ? lastSystem.cliVersion : undefined
+    const sameProcess = !!prevResult && !lastSystem
+    const prev = prevResult?.kind === 'result' ? prevResult : undefined
+    const modelUsage = parseModelUsage(e)
     const reportedCost = typeof e.total_cost_usd === 'number' ? e.total_cost_usd : undefined
     let costUsd = reportedCost
+    let turnTokens = totalTokens
+    if (modelUsage) {
+      const cumulative = sameProcess || (carriesOver(cliVersion) && carriesOver(prev?.cli_version))
+      const t = turnTotals(modelUsage, cumulative ? prev?.model_usage : undefined)
+      costUsd = t.cost
+      turnTokens = t.tokens
+    }
     let costEstimated = false
     if (costUsd === undefined && totalTokens > 0) {
       const model = [...state.entries].reverse().find((x) => x.kind === 'system')
@@ -363,7 +401,9 @@ export function applyStreamEvent(
       text: isDuplicate ? '' : resultText,
       cost_usd: costUsd,
       cost_estimated: costEstimated,
-      total_tokens: totalTokens > 0 ? totalTokens : undefined,
+      total_tokens: turnTokens > 0 ? turnTokens : undefined,
+      model_usage: modelUsage ?? (prev?.model_usage && sameProcess ? prev.model_usage : undefined),
+      cli_version: cliVersion ?? (sameProcess ? prev?.cli_version : undefined),
       duration_ms: typeof e.duration_ms === 'number' ? e.duration_ms : undefined,
       num_turns: typeof e.num_turns === 'number' ? e.num_turns : undefined,
       is_error: !!e.is_error,
