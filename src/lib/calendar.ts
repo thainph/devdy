@@ -1,6 +1,5 @@
 // Small date helpers for the unified Google Calendar screen. Uses the native
-// Date API only (no external date lib), mirroring the local-time formatting
-// convention used elsewhere (see WorkDigestView `fmtLocal`).
+// Date API only (no external date lib).
 
 /** Local-time YYYY-MM-DD (NOT toISOString, which shifts to UTC). */
 export function fmtLocal(d: Date): string {

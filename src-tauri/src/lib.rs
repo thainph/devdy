@@ -113,7 +113,6 @@ use commands::vps_servers::{
     create_vps_server, delete_vps_server, list_project_servers, list_vps_servers,
     map_server_to_project, test_vps_connection, unmap_server, update_vps_server,
 };
-use commands::work_digest::get_work_digest;
 use commands::models::{get_model_caches, refresh_codex_models, validate_claude_models};
 use commands::translate::{cancel_translate, prewarm_translate, translate_text, TranslateState};
 use remote::commands::{
@@ -543,7 +542,6 @@ pub fn run() {
             conductor::commands::get_conductor_detail,
             conductor::commands::set_conductor_max_workers,
             get_usage_stats,
-            get_work_digest,
             translate_text,
             cancel_translate,
             prewarm_translate,
