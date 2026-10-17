@@ -3074,7 +3074,7 @@ async function handleDeleteRun(runId: string) {
   }))) return
   deletingRunId.value = runId
   try {
-    await runsStore.deleteRun(runId)
+    const leftover = await runsStore.deleteRun(runId)
     if (currentRunId.value === runId || viewingLogRunId.value === runId) {
       clearActiveRunState()
     } else {
@@ -3086,7 +3086,11 @@ async function handleDeleteRun(runId: string) {
     if (activeRunId.value === runId) {
       router.replace(`/projects/${projectId.value}`)
     }
-    toast.success(t('run.runDeleted'))
+    if (leftover.length) {
+      toast.error(t('run.runDeletedWithLeftovers', { count: leftover.length, paths: leftover.join('\n') }))
+    } else {
+      toast.success(t('run.runDeleted'))
+    }
   } catch (err) {
     toast.error(String(err))
   } finally {

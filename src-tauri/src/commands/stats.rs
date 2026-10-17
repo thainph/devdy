@@ -404,7 +404,7 @@ pub async fn reset_usage_stats(
     for row in &rows {
         let id: String = row.get("id");
         // A worker already removed with its session simply fails to load here.
-        if let Ok(n) = delete_run_tree(
+        if let Ok(outcome) = delete_run_tree(
             db.inner(),
             registry.inner(),
             conductor.as_ref().map(|c| c.inner()),
@@ -412,7 +412,10 @@ pub async fn reset_usage_stats(
         )
         .await
         {
-            runs_deleted += n;
+            runs_deleted += outcome.deleted;
+            for path in outcome.leftover_files {
+                eprintln!("[reset_usage_stats] could not remove transcript {path}");
+            }
         }
     }
 

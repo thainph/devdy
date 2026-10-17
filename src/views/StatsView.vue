@@ -26,8 +26,8 @@ import { Button, Input, Card, AppSelect } from '@/components/ui'
 import { useProjectsStore } from '@/stores/projects'
 import {
   getUsageStats, backfillUsage, resetUsageStats,
-  getStorageStats, cleanStorage,
-  type StatsResult, type StatsFilter, type StorageStats, type StorageCategory,
+  getStorageStats,
+  type StatsResult, type StatsFilter, type StorageStats,
 } from '@/stores/stats'
 
 // Register controllers explicitly. The mixed bar/line daily chart needs both
@@ -336,11 +336,9 @@ async function doReset() {
   }
 }
 
-// ── storage: disk usage + log cleanup ──────────────────────────────────────────
+// ── storage: disk usage (read-only; space is freed by deleting sessions) ───────
 const storage = ref<StorageStats | null>(null)
 const storageLoading = ref(false)
-const cleaningId = ref<string | null>(null)
-const cleanTarget = ref<StorageCategory | null>(null)
 
 function fmtBytes(n: number): string {
   if (n <= 0) return '0 B'
@@ -358,22 +356,6 @@ async function loadStorage() {
     actionMsg.value = t('stats.action.storageReadFailed', { error: String(e) })
   } finally {
     storageLoading.value = false
-  }
-}
-
-async function doClean() {
-  const cat = cleanTarget.value
-  if (!cat) return
-  cleaningId.value = cat.id
-  try {
-    const r = await cleanStorage(cat.id)
-    actionMsg.value = t('stats.action.cleaned', { label: cat.label, files: fmtNum(r.deleted_files), bytes: fmtBytes(r.freed_bytes) })
-    cleanTarget.value = null
-    await loadStorage()
-  } catch (e) {
-    actionMsg.value = t('stats.action.cleanupFailed', { error: String(e) })
-  } finally {
-    cleaningId.value = null
   }
 }
 </script>
@@ -626,7 +608,7 @@ async function doClean() {
         </Card>
       </template>
 
-      <!-- Storage: disk usage + session/run log cleanup (independent of token data) -->
+      <!-- Storage: disk usage of session/run logs (read-only, independent of token data) -->
       <Card class="border-border/60" body-class="p-4">
         <div class="flex items-center justify-between mb-3">
           <h2 class="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
@@ -653,7 +635,6 @@ async function doClean() {
               <th class="font-normal pb-2 text-right">{{ t('stats.storage.files') }}</th>
               <th class="font-normal pb-2 text-right">{{ t('stats.storage.size') }}</th>
               <th class="font-normal pb-2 text-right">{{ t('stats.storage.percent') }}</th>
-              <th class="font-normal pb-2 text-right"></th>
             </tr>
           </thead>
           <tbody>
@@ -661,10 +642,7 @@ async function doClean() {
               <td class="py-2">
                 <div class="flex items-center gap-1.5">
                   <span>{{ c.label }}</span>
-                  <span v-if="c.destructive" :title="c.description">
-                    <AlertTriangle class="h-3 w-3 text-amber-500" />
-                  </span>
-                  <span v-else :title="c.description">
+                  <span :title="c.description">
                     <Info class="h-3 w-3 text-muted-foreground/50" />
                   </span>
                 </div>
@@ -675,21 +653,6 @@ async function doClean() {
               <td class="py-2 text-right tabular-nums text-muted-foreground">
                 {{ pct(c.size_bytes, storage.total_bytes) }}
               </td>
-              <td class="py-2 text-right">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  :disabled="!c.deletable || cleaningId === c.id"
-                  :title="c.deletable
-                    ? t('stats.storage.cleanRowTitle')
-                    : (c.file_count > 0 ? c.description : t('stats.storage.nothingToClean'))"
-                  @click="cleanTarget = c"
-                >
-                  <Loader2 v-if="cleaningId === c.id" class="h-3.5 w-3.5 animate-spin" />
-                  <Trash2 v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-                  {{ t('stats.storage.clean') }}
-                </Button>
-              </td>
             </tr>
           </tbody>
         </table>
@@ -697,38 +660,6 @@ async function doClean() {
           {{ t('stats.storage.note') }}
         </p>
       </Card>
-    </div>
-
-    <!-- Clean confirm modal -->
-    <div
-      v-if="cleanTarget"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      @click.self="cleanTarget = null"
-    >
-      <div class="w-[440px] rounded-lg border border-border bg-card p-5 shadow-xl">
-        <div class="flex items-center gap-2 mb-3" :class="cleanTarget.destructive ? 'text-amber-500' : 'text-foreground'">
-          <AlertTriangle v-if="cleanTarget.destructive" class="h-5 w-5" />
-          <Trash2 v-else class="h-5 w-5" />
-          <h2 class="text-sm font-semibold">{{ t('stats.cleanModal.title', { label: cleanTarget.label }) }}</h2>
-        </div>
-        <p class="text-xs text-muted-foreground leading-relaxed mb-2">{{ cleanTarget.description }}</p>
-        <p class="text-xs mb-4">
-          {{ t('stats.cleanModal.willDelete', { files: fmtNum(cleanTarget.file_count), bytes: fmtBytes(cleanTarget.size_bytes) }) }}
-          <span v-if="cleanTarget.destructive" class="text-amber-500/90">{{ t('stats.cleanModal.irreversible') }}</span>
-        </p>
-        <div class="flex justify-end gap-2">
-          <Button variant="outline" @click="cleanTarget = null">{{ t('common.cancel') }}</Button>
-          <Button
-            variant="destructive"
-            :disabled="cleaningId !== null"
-            @click="doClean"
-          >
-            <Loader2 v-if="cleaningId !== null" class="h-3.5 w-3.5 animate-spin" />
-            <Trash2 v-else class="h-3.5 w-3.5" />
-            {{ t('stats.cleanModal.cleanNow') }}
-          </Button>
-        </div>
-      </div>
     </div>
 
     <!-- Reset confirm modal -->

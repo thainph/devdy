@@ -93,7 +93,7 @@ use commands::stats::{
     get_plan_usage, get_plan_usage_codex, get_run_budget, get_usage_stats,
     refresh_codex_plan_usage, refresh_plan_usage, reset_usage_stats,
 };
-use commands::storage::{clean_storage, get_storage_stats};
+use commands::storage::get_storage_stats;
 use commands::inbox_api::{get_inbox_api_info, regenerate_inbox_api_token, set_inbox_api_enabled};
 use commands::slack_threads::{
     add_slack_thread, delete_slack_threads, get_slack_thread, get_slack_thread_prompt_text,
@@ -573,7 +573,6 @@ pub fn run() {
             reconcile_claude_sessions,
             reconcile_codex_sessions,
             get_storage_stats,
-            clean_storage,
             list_todos,
             add_todo,
             toggle_todo,

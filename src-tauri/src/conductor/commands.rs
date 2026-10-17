@@ -825,7 +825,7 @@ mod tests {
         let n = crate::commands::runs::delete_run_tree(&db, &registry, Some(&cst), "s")
             .await
             .unwrap();
-        assert_eq!(n, 3);
+        assert_eq!(n.deleted, 3);
         let left: Vec<String> = sqlx::query_scalar("SELECT id FROM runs ORDER BY id")
             .fetch_all(&db)
             .await
