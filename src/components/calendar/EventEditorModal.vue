@@ -8,7 +8,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Plus, X, Video, CalendarClock } from 'lucide-vue-next'
-import { Modal, Button, Input, Textarea, Badge, AppSelect } from '@/components/ui'
+import { Modal, Button, Input, Textarea, Badge, AppSelect, DatePicker } from '@/components/ui'
 import {
   useGoogleCalendarStore,
   isAuthError,
@@ -396,14 +396,14 @@ const isEdit = computed(() => props.mode === 'edit')
         <div class="flex flex-col gap-1.5">
           <label class="text-xs font-medium text-muted-foreground">{{ t('calendar.editor.start') }}</label>
           <div class="flex gap-2">
-            <Input v-model="form.startDate" type="date" size="sm" class="flex-1" />
+            <DatePicker v-model="form.startDate" class="min-w-0 flex-1" />
             <Input v-if="!form.allDay" v-model="form.startTime" type="time" size="sm" class="w-28" />
           </div>
         </div>
         <div class="flex flex-col gap-1.5">
           <label class="text-xs font-medium text-muted-foreground">{{ t('calendar.editor.end') }}</label>
           <div class="flex gap-2">
-            <Input v-model="form.endDate" type="date" size="sm" class="flex-1" />
+            <DatePicker v-model="form.endDate" :min="form.startDate" class="min-w-0 flex-1" />
             <Input v-if="!form.allDay" v-model="form.endTime" type="time" size="sm" class="w-28" />
           </div>
         </div>
