@@ -4131,7 +4131,6 @@ function handleRefInput(val: string) {
                     {{ t('run.content') }}
                   </button>
                   <MentionedFiles :entries="mentionedFileEntries" @open-file="openFile" />
-                  <span v-if="currentStatus === 'running'" class="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
                 </div>
               </div>
             </div>
