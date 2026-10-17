@@ -1,7 +1,7 @@
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from '@/lib/tauri'
 import { i18n } from '@/i18n'
-import { NAV_ROUTES } from '@/lib/navigation'
+import { NAV_ROUTES, startsNavGroup } from '@/lib/navigation'
 
 /**
  * Native menu bar (File / Edit / View / Go / Window / Help).
@@ -128,14 +128,18 @@ function buildSpec(state: MenuState): MenuSpec {
 
   submenus.push({
     label: t('menu.go'),
-    items: NAV_ROUTES.map((route, index) => ({
-      kind: 'item' as const,
-      id: `go.${route.path}`,
-      label: t(route.labelKey),
-      // ⌘1…⌘9 for the first nine destinations; the rest stay click-only rather
-      // than inventing awkward two-key bindings.
-      accelerator: index < 9 ? `CmdOrCtrl+${index + 1}` : undefined,
-    })),
+    items: NAV_ROUTES.flatMap((route, index): ItemSpec[] => [
+      // Same grouping as the sidebar dividers.
+      ...(startsNavGroup(index) ? [{ kind: 'separator' as const }] : []),
+      {
+        kind: 'item',
+        id: `go.${route.path}`,
+        label: t(route.labelKey),
+        // ⌘1…⌘9 for the first nine destinations; the rest stay click-only rather
+        // than inventing awkward two-key bindings.
+        accelerator: index < 9 ? `CmdOrCtrl+${index + 1}` : undefined,
+      },
+    ]),
   })
 
   submenus.push({

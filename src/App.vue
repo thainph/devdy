@@ -46,7 +46,7 @@ import { useToast } from '@/composables/useToast'
 import { openItemCreateWindow } from '@/lib/itemWindow'
 import { openItemListWindow } from '@/lib/itemListWindow'
 import { applyAppMenu, IS_MAC, listenMenuActions, registerMenuAction, runMenuAction } from '@/lib/appMenu'
-import { NAV_ROUTES } from '@/lib/navigation'
+import { NAV_ROUTES, startsNavGroup } from '@/lib/navigation'
 import { IS_SESSION_WINDOW, SESSION_WINDOW_PROJECT_ID, SESSION_WINDOW_RUN_ID } from '@/lib/windowMode'
 import IssuesGanttView from '@/views/IssuesGanttView.vue'
 import { getVersion } from '@tauri-apps/api/app'
@@ -453,7 +453,7 @@ onMounted(async () => {
 
 // Same source of truth as the native "Go" menu (see lib/navigation.ts).
 const navItems = computed(() =>
-  NAV_ROUTES.map((r) => ({ path: r.path, label: t(r.labelKey), icon: r.icon })),
+  NAV_ROUTES.map((r) => ({ path: r.path, label: t(r.labelKey), icon: r.icon, group: r.group })),
 )
 
 const isDark = ref(false)
@@ -743,13 +743,13 @@ onMounted(async () => {
           <!-- No brand header: the logo moved to the title bar, so the nav starts
                at the very top and a view's header owns the first line alone. -->
           <nav class="flex-1 px-2 py-2.5 space-y-0.5">
-            <template v-for="item in navItems" :key="item.path">
-              <!-- Todos and Notes are two overlays, not destinations: each opens
-                   the app-wide drawer on its own tab instead of navigating, so
-                   whatever screen (or running session) is underneath survives
-                   untouched. They ride just above Settings, so the
-                   settings/about pair stays last. -->
-              <template v-if="item.path === '/settings'">
+            <template v-for="(item, index) in navItems" :key="item.path">
+              <!-- Todos, Notes and Slack threads are overlays, not destinations:
+                   each opens its own window instead of navigating, so whatever
+                   screen (or running session) is underneath survives untouched.
+                   They close out the daily-work group, right before the config
+                   screens. -->
+              <template v-if="startsNavGroup(index) && item.group === 'config'">
                 <button
                   type="button"
                   class="relative flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors cursor-pointer select-none text-muted-foreground hover:text-foreground hover:bg-accent/50"
@@ -781,6 +781,9 @@ onMounted(async () => {
                   <span class="flex-1 truncate text-left">{{ t('slackThread.nav') }}</span>
                 </button>
               </template>
+
+              <!-- Divider between nav groups (daily work / agent config / app). -->
+              <div v-if="startsNavGroup(index)" class="mx-3 !my-2 border-t border-border/50" />
 
               <RouterLink
                 :to="item.path"
