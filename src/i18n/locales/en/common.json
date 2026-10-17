@@ -13,6 +13,12 @@
   "remove": "Remove",
   "active": "Active",
   "back": "Back",
+  "date": {
+    "pick": "Pick a date",
+    "pickRange": "Pick a date range",
+    "today": "Today",
+    "yesterday": "Yesterday"
+  },
   "status": {
     "running": "Running",
     "done": "Done",
