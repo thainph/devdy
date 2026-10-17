@@ -151,7 +151,12 @@ pub fn build_batch_prompt(blocks: &[Block], style_instruction: &str) -> String {
          - Output exactly the same blocks with the same ids in the same order; each block contains only the Vietnamese translation of its own content. Output nothing outside the blocks.\n\
          - Tokens like ⟦3⟧ are placeholders for mentions, links, code and emoji: copy every placeholder unchanged, exactly once, at the natural position.\n\
          - Keep Slack formatting markers (*bold*, _italic_, ~strike~, leading \"> \" quotes, bullets, numbering, line breaks) and HTML entities (&lt; &gt; &amp;) unchanged.\n\
-         - Keep person names, product names, file names, identifiers and URLs unchanged. If a block is already Vietnamese, copy it unchanged.\n",
+         - Keep file names, identifiers and URLs unchanged. Keep names already written in Latin script unchanged.\n\
+         - The reader cannot read Japanese: no Japanese characters (kanji, hiragana, katakana) may remain in the output except inside a parenthesized gloss.\n\
+         - Romanize Japanese person, company and place names (Hepburn) and write honorifics as -san / -sama (竹内さん → Takeuchi-san, 矢作 → Yahagi); katakana renderings of foreign names go back to the original name (フーンさん → Hung-san).\n\
+         - Translate Japanese business and domain terms into Vietnamese, even when they appear inside English or Vietnamese text. When a term looks like a screen, feature or document name, add the original once in parentheses: 実行予算 → ngân sách thực hiện (実行予算), 146案件 → dự án 146.\n\
+         - If a block is already Vietnamese and contains no Japanese, copy it unchanged.\n\
+         - These rules take precedence over the style below.\n",
     );
     p.push_str(style_instruction);
     p.push_str("\n\n");
