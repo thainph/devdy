@@ -266,7 +266,6 @@ const CACHED_VIEWS = [
   'RulesView',
   'McpServersView',
   'CalendarView',
-  'WorkDigestView',
   'PrInboxView',
   'ServersView',
 ]

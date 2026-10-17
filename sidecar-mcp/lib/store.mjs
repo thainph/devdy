@@ -286,25 +286,95 @@ export function attachmentAbsPath(filePath) {
 
 // ---- Sessions / runs --------------------------------------------------------
 
-export function recentRuns({ scope = 'project', limit = 20 } = {}) {
+const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Local `YYYY-MM-DD` → UTC ISO instant of that local day's start (+`dayOffset` days). */
+function localDayStartIso(ymd, dayOffset = 0) {
+  const [y, m, d] = ymd.split('-').map(Number);
+  return new Date(y, m - 1, d + dayOffset).toISOString();
+}
+
+/**
+ * Recent runs, newest first, with tokens + cost. Optional `from` / `to` are
+ * inclusive LOCAL dates (`YYYY-MM-DD`). With a range, a run is included when it
+ * started in the range OR has usage (a turn) in it — long-lived sessions reset
+ * `started_at` on every turn, so start time alone misses earlier days — and
+ * tokens / cost / `agent_ms` count only the usage that happened in the range.
+ */
+export function recentRuns({ scope = 'project', limit, from, to } = {}) {
   const projectId = process.env.DEVDY_PROJECT_ID || null;
-  const lim = Math.max(1, Math.min(200, Number(limit) || 20));
-  const cols = `r.id, r.title, r.type, r.engine, r.status, r.session_id,
-                r.transcript_path, r.created_at, p.name AS project_name, p.path AS project_path`;
-  if (scope === 'project' && projectId) {
-    return db()
-      .prepare(
-        `SELECT ${cols} FROM runs r JOIN projects p ON p.id = r.project_id
-         WHERE r.project_id = ? ORDER BY r.created_at DESC LIMIT ?`,
-      )
-      .all(projectId, lim);
+  for (const [name, v] of [['from', from], ['to', to]]) {
+    if (v && !YMD_RE.test(String(v))) throw new Error(`${name} must be YYYY-MM-DD`);
   }
-  return db()
-    .prepare(
-      `SELECT ${cols} FROM runs r JOIN projects p ON p.id = r.project_id
-       ORDER BY r.created_at DESC LIMIT ?`,
-    )
-    .all(lim);
+  if (from && to && from > to) throw new Error('from must be on or before to');
+  const ranged = Boolean(from || to);
+  // A date range is the real bound, so allow the full cap by default there.
+  const lim = Math.max(1, Math.min(200, Number(limit) || (ranged ? 200 : 20)));
+  // Stored timestamps are UTC RFC3339; julianday() compares them as instants.
+  const lo = from ? localDayStartIso(from) : '0001-01-01T00:00:00Z';
+  const hi = to ? localDayStartIso(to, 1) : '9999-12-31T00:00:00Z';
+  const inRange = (col) => `julianday(${col}) >= julianday(?) AND julianday(${col}) < julianday(?)`;
+
+  const where = [];
+  const params = [];
+  if (ranged) params.push(lo, hi); // usage subquery
+  if (scope === 'project' && projectId) {
+    where.push('r.project_id = ?');
+    params.push(projectId);
+  }
+  if (ranged) {
+    where.push(`((${inRange('COALESCE(r.started_at, r.created_at)')}) OR u.run_id IS NOT NULL)`);
+    params.push(lo, hi);
+  }
+  const sql = `SELECT r.id, r.title, r.type, r.ref_number, r.engine, r.status, r.session_id,
+                      r.transcript_path, r.created_at, r.started_at, r.finished_at,
+                      p.name AS project_name, p.path AS project_path,
+                      COALESCE(u.tokens, 0) AS tokens, COALESCE(u.cost, 0) AS cost,
+                      COALESCE(u.agent_ms, 0) AS agent_ms
+               FROM runs r JOIN projects p ON p.id = r.project_id
+               LEFT JOIN (
+                 SELECT run_id, SUM(total_tokens) AS tokens, SUM(cost_usd) AS cost,
+                        SUM(duration_ms) AS agent_ms
+                 FROM run_usage WHERE run_id IS NOT NULL ${ranged ? `AND ${inRange('created_at')}` : ''}
+                 GROUP BY run_id
+               ) u ON u.run_id = r.id
+               ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+               ORDER BY r.created_at DESC
+               LIMIT ?`;
+  return db().prepare(sql).all(...params, lim);
+}
+
+/** Wall-clock seconds of a run (running runs count up to now); null if unknown. */
+export function runWallSecs(run, now = Date.now()) {
+  const start = Date.parse(run.started_at || '');
+  if (Number.isNaN(start)) return null;
+  const end = run.finished_at ? Date.parse(run.finished_at) : run.status === 'running' ? now : NaN;
+  if (Number.isNaN(end)) return null;
+  return Math.max(0, Math.round((end - start) / 1000));
+}
+
+/** Total wall-clock of several runs, union-merging overlaps so parallel runs aren't double counted. */
+export function mergedWallSecs(runs, now = Date.now()) {
+  const spans = runs
+    .map((r) => {
+      const secs = runWallSecs(r, now);
+      if (!secs) return null;
+      const s = Date.parse(r.started_at);
+      return [s, s + secs * 1000];
+    })
+    .filter(Boolean)
+    .sort((a, b) => a[0] - b[0]);
+  let total = 0;
+  let cur = null;
+  for (const [s, e] of spans) {
+    if (cur && s <= cur[1]) cur[1] = Math.max(cur[1], e);
+    else {
+      if (cur) total += cur[1] - cur[0];
+      cur = [s, e];
+    }
+  }
+  if (cur) total += cur[1] - cur[0];
+  return Math.round(total / 1000);
 }
 
 export function getRun(runId) {

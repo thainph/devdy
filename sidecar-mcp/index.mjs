@@ -38,6 +38,12 @@ const snippetAround = (text = '', query = '', width = 120) => {
 // `runs.title` is normally set (Devdy derives it from the first user message);
 // fall back to an engine/type label when it's empty.
 const titleOf = (run) => run.title || `${run.engine} ${run.type}`.trim();
+const fmtDuration = (secs) => {
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  return h ? `${h}h${String(m).padStart(2, '0')}m` : m ? `${m}m` : `${secs}s`;
+};
+const fmtTokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n));
 
 // ---- Tool registry ---------------------------------------------------------
 // Each: { description, inputSchema (JSON Schema), handler(args) -> string }.
@@ -211,23 +217,44 @@ const tools = {
 
   sessions_recent: {
     description:
-      'List recent Devdy runs/sessions (chat history). Defaults to the current project; scope="all" spans every project. Use the returned run ids with session_read.',
+      'List recent Devdy runs/sessions (chat history) with duration, tokens and cost. Defaults to the current project; scope="all" spans every project. Pass from/to (local YYYY-MM-DD, inclusive) to list a day or date range — e.g. for a daily work summary — and get totals. Use the returned run ids with session_read.',
     inputSchema: {
       type: 'object',
       properties: {
         scope: { type: 'string', enum: ['project', 'all'] },
-        limit: { type: 'integer', minimum: 1, maximum: 200 },
+        limit: { type: 'integer', minimum: 1, maximum: 200, description: 'default 20, or 200 when from/to is set' },
+        from: { type: 'string', description: 'inclusive local start date, YYYY-MM-DD' },
+        to: { type: 'string', description: 'inclusive local end date, YYYY-MM-DD' },
       },
     },
     handler: (a) => {
       const rows = store.recentRuns(a);
       if (!rows.length) return 'No sessions found.';
-      return rows
-        .map(
-          (r) =>
-            `- [${r.id}] ${titleOf(r)} · ${r.engine}/${r.status}${a.scope === 'all' ? ` · ${r.project_name}` : ''} (${r.created_at})`,
-        )
-        .join('\n');
+      const now = Date.now();
+      const ranged = Boolean(a.from || a.to);
+      const lines = rows.map((r) => {
+        const wall = store.runWallSecs(r, now);
+        const ref = r.ref_number != null ? ` #${r.ref_number}` : '';
+        const usage = [
+          wall != null ? `wall ${fmtDuration(wall)}` : null,
+          ranged && r.agent_ms ? `agent ${fmtDuration(Math.round(r.agent_ms / 1000))}` : null,
+          r.tokens ? `${fmtTokens(r.tokens)} tok` : null,
+          r.cost ? `$${r.cost.toFixed(2)}` : null,
+        ].filter(Boolean);
+        return (
+          `- [${r.id}] ${titleOf(r)}${ref} · ${r.type} · ${r.engine}/${r.status}` +
+          `${a.scope === 'all' ? ` · ${r.project_name}` : ''}` +
+          `${usage.length ? ` · ${usage.join(' · ')}` : ''} (${r.started_at || r.created_at})`
+        );
+      });
+      if (!ranged) return lines.join('\n');
+      const sum = (k) => rows.reduce((n, r) => n + (r[k] || 0), 0);
+      const total =
+        `Total: ${rows.length} run(s) · agent ${fmtDuration(Math.round(sum('agent_ms') / 1000))}` +
+        ` · wall ${fmtDuration(store.mergedWallSecs(rows, now))} (overlaps merged)` +
+        ` · ${fmtTokens(sum('tokens'))} tok · $${sum('cost').toFixed(2)}` +
+        `\n(tokens/cost/agent count only turns inside the range; wall = run start→finish)`;
+      return `${total}\n${lines.join('\n')}`;
     },
   },
 

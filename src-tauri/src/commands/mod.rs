@@ -33,4 +33,3 @@ pub mod todos;
 pub mod translate;
 pub mod tray;
 pub mod vps_servers;
-pub mod work_digest;
