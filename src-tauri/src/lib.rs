@@ -101,7 +101,8 @@ use commands::slack_threads::{
     add_slack_thread, delete_slack_threads, get_slack_thread, get_slack_thread_prompt_text,
     get_slack_token_status, link_slack_thread_run, list_run_slack_threads, list_slack_thread_runs,
     list_slack_threads, mark_slack_thread_seen, refresh_slack_thread, rename_slack_thread,
-    reorder_slack_threads, set_slack_thread_project, unlink_slack_thread_run,
+    reorder_slack_threads, retranslate_slack_thread, set_slack_thread_project,
+    unlink_slack_thread_run,
 };
 use commands::item_links::{link_item_run, list_item_runs, list_run_items, unlink_item_run};
 use commands::notes::{
@@ -598,6 +599,7 @@ pub fn run() {
             list_slack_threads,
             get_slack_thread,
             refresh_slack_thread,
+            retranslate_slack_thread,
             mark_slack_thread_seen,
             rename_slack_thread,
             set_slack_thread_project,

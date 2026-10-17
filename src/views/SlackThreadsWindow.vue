@@ -189,12 +189,12 @@ function toggleShowOriginal() {
 }
 
 const refreshing = ref(false)
-async function refreshThread() {
+async function refreshThread(retranslate = false) {
   const id = store.selectedId
   if (!id || refreshing.value) return
   refreshing.value = true
   try {
-    await store.refresh(id)
+    await (retranslate ? store.retranslate(id) : store.refresh(id))
   } catch (e) {
     const { code, detail } = errorCode(e)
     toast.error(errorText(code, detail))
@@ -513,7 +513,8 @@ onBeforeUnmount(() => {
         @commit-rename="commitRename"
         @cancel-rename="renaming = false"
         @toggle-original="toggleShowOriginal"
-        @refresh="refreshThread"
+        @refresh="refreshThread()"
+        @retranslate="refreshThread(true)"
         @open-in-slack="openInSlack"
         @open-mcp="openMcp"
         @open-run="openRun"

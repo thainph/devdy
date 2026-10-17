@@ -50,6 +50,7 @@ const emit = defineEmits<{
   cancelRename: []
   toggleOriginal: []
   refresh: []
+  retranslate: []
   openInSlack: []
   openMcp: []
   setProject: [projectId: string | null]
@@ -227,6 +228,7 @@ watch(
       @cancel-rename="emit('cancelRename')"
       @toggle-original="emit('toggleOriginal')"
       @refresh="emit('refresh')"
+      @retranslate="emit('retranslate')"
       @open-in-slack="emit('openInSlack')"
       @set-project="emit('setProject', $event)"
       @open-run="emit('openRun', $event)"

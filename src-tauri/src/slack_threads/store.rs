@@ -372,6 +372,19 @@ pub async fn set_requested_status(
     .rows_affected())
 }
 
+/// Send every translated (or failed) message back to `pending` so the next
+/// job translates the whole thread again. `text_vi` is kept until replaced.
+pub async fn reset_translations(db: &Db, id: &str) -> Result<u64, sqlx::Error> {
+    Ok(sqlx::query(
+        "UPDATE slack_messages SET translate_status = 'pending', translate_error = NULL \
+         WHERE thread_id = ? AND translate_status IN ('done', 'error')",
+    )
+    .bind(id)
+    .execute(db)
+    .await?
+    .rows_affected())
+}
+
 const SUMMARY_SQL: &str = "SELECT t.*, \
      (SELECT COUNT(*) FROM slack_files f WHERE f.thread_id = t.id) AS file_count, \
      (SELECT COUNT(*) FROM slack_thread_runs l JOIN runs r ON r.id = l.run_id \
