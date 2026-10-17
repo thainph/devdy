@@ -1261,8 +1261,9 @@ async fn capture_usage(
 }
 
 /// Persist one usage row from a `result` stream event. Prefers the SDK-reported
-/// `total_cost_usd` (Claude); otherwise estimates the cost from token counts
-/// (Codex) and flags it. Empty results (no tokens, no cost) are skipped and
+/// `total_cost_usd` (Claude) — a session running total, so the row stores its
+/// difference from the run's previous total (see `usage_cost`); otherwise
+/// estimates the cost from token counts (Codex) and flags it. Empty results (no tokens, no cost) are skipped and
 /// return `false`. Shared by live capture and the log backfill command.
 pub(crate) async fn insert_usage_from_result(
     db_pool: &sqlx::SqlitePool,
@@ -1299,18 +1300,21 @@ pub(crate) async fn insert_usage_from_result(
         .map(str::to_string)
         .or_else(|| model.map(str::to_string));
 
-    let (cost, estimated) = match value.get("total_cost_usd").and_then(|v| v.as_f64()) {
-        Some(c) => (c, 0_i64),
-        None => (
-            crate::runs::pricing::estimate_cost(
-                eff_model.as_deref().unwrap_or(""),
-                input,
-                output,
-                cache_creation,
-                cache_read,
-            ),
-            1_i64,
-        ),
+    let turn_estimate = crate::runs::pricing::estimate_cost(
+        eff_model.as_deref().unwrap_or(""),
+        input,
+        output,
+        cache_creation,
+        cache_read,
+    );
+    let reported = value.get("total_cost_usd").and_then(|v| v.as_f64());
+    let (cost, estimated) = match reported {
+        Some(total) => {
+            let prev = crate::runs::usage_cost::previous_total(db_pool, run_id).await;
+            let (c, est) = crate::runs::usage_cost::turn_cost(prev, total, turn_estimate);
+            (c, est as i64)
+        }
+        None => (turn_estimate, 1_i64),
     };
 
     if total == 0 && cost == 0.0 {
@@ -1325,8 +1329,9 @@ pub(crate) async fn insert_usage_from_result(
         "INSERT INTO run_usage (
             id, run_id, project_id, project_name, engine, model,
             input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-            total_tokens, cost_usd, cost_estimated, num_turns, duration_ms, created_at, deleted_run
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            total_tokens, cost_usd, cost_cumulative_usd, cost_estimated, num_turns, duration_ms,
+            created_at, deleted_run
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
     )
     .bind(id)
     .bind(run_id)
@@ -1340,6 +1345,7 @@ pub(crate) async fn insert_usage_from_result(
     .bind(cache_read)
     .bind(total)
     .bind(cost)
+    .bind(reported)
     .bind(estimated)
     .bind(num_turns)
     .bind(duration_ms)

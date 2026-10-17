@@ -1,0 +1,13 @@
+-- Raw SDK running cost total, so per-turn cost can be differenced.
+--
+-- Since @anthropic-ai/claude-agent-sdk 0.3.288 a `result` event's
+-- `total_cost_usd` is the session's CUMULATIVE cost (and a resumed session
+-- continues from the total its transcript saved), not the turn's cost. The
+-- ledger keeps `cost_usd` as the per-turn amount (every consumer SUMs it) and
+-- stores the raw running total here; the next row of the same run subtracts it.
+-- NULL for estimated rows, legacy per-turn rows and synthetic rebuild rows.
+--
+-- Existing rows written as cumulative are repaired once at startup
+-- (runs::usage_cost::repair_cumulative_costs) — that needs the pricing table,
+-- so it can't be plain SQL.
+ALTER TABLE run_usage ADD COLUMN cost_cumulative_usd REAL;
