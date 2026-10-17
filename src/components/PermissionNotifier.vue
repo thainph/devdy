@@ -5,8 +5,10 @@ import { isPermissionGranted, requestPermission } from '@tauri-apps/plugin-notif
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { getAllWebviewWindows } from '@tauri-apps/api/webviewWindow'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useProjectsStore } from '@/stores/projects'
+import { useRunsStore } from '@/stores/runs'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useMascotState } from '@/composables/useMascotState'
@@ -19,6 +21,10 @@ import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
  * only job here is firing a native OS notification when the app is in the
  * background. Clicking it focuses the window and routes to the waiting run, where
  * the in-place permission / question modal is shown.
+ *
+ * It also fires a native "session finished" notification when a main run (not a
+ * conductor worker) completes a turn while the app window is unfocused; clicking
+ * it opens that run the same way.
  */
 
 interface PendingRun {
@@ -31,6 +37,7 @@ const route = useRoute()
 const router = useRouter()
 const live = useLiveRunsStore()
 const projectsStore = useProjectsStore()
+const runsStore = useRunsStore()
 const tabsStore = useWorkspaceTabsStore()
 const appSettings = useAppSettingsStore()
 // When the Cyber Fox mascot is on, it already surfaces pending permissions in
@@ -81,7 +88,39 @@ function navigateToRun(projectId: string, runId: string) {
 
 let permissionGranted = false
 let unlistenClick: UnlistenFn | null = null
+let unsubscribeDone: (() => void) | null = null
 const notified = new Set<string>()
+
+// Native "session finished" notification. Skipped when the window is focused
+// (the Active runs dock already shows it), when the mascot is on, for cancelled
+// runs (the user stopped it), and for conductor workers (only the main run).
+async function notifyRunFinished(runId: string, projectId: string, status: string) {
+  if (!permissionGranted || mascotEnabled.value || status === 'cancelled') return
+  try {
+    // Any app window counts (a popped-out session window, the mascot, …).
+    const wins = await getAllWebviewWindows()
+    const focused = await Promise.all(wins.map((w) => w.isFocused().catch(() => false)))
+    if (focused.some(Boolean)) return
+  } catch {
+    // Can't tell — fall through and notify.
+  }
+  let meta = runsStore.runMeta.get(runId)
+  if (!meta) {
+    // A freshly-spawned worker may not be in `runMeta` yet — `list_runs` is the
+    // only source of `conductor_run_id`.
+    await runsStore.refreshMeta(projectId).catch(() => {})
+    meta = runsStore.runMeta.get(runId)
+  }
+  if (meta?.conductor_run_id) return
+  invoke('show_run_finished_notification', {
+    title: `${projectName(projectId)} — ${status === 'failed' ? 'session failed' : 'session finished'}`,
+    body: meta?.title || 'Claude finished responding',
+    projectId,
+    runId,
+  }).catch(() => {
+    // ignore — the Active runs dock still shows it in-app
+  })
+}
 
 onMounted(async () => {
   // Make sure the mascot-enabled flag is populated before we start gating.
@@ -94,6 +133,10 @@ onMounted(async () => {
   } catch {
     permissionGranted = false
   }
+
+  unsubscribeDone = live.onAnyDone((runId, projectId, status) => {
+    void notifyRunFinished(runId, projectId, status)
+  })
 
   // Click handling is done natively (see src-tauri notifications.rs): the plugin's
   // `onAction` never fires on desktop, so the Rust side emits this event carrying
@@ -119,6 +162,8 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   unlistenClick?.()
   unlistenClick = null
+  unsubscribeDone?.()
+  unsubscribeDone = null
 })
 
 // Fire a native notification once per new pending request (not on the run the

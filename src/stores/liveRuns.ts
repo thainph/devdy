@@ -130,6 +130,9 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
   // purpose — a persistent run fires this on EVERY finished turn, and a
   // subscriber can re-arm its listeners before the next turn.
   const doneCallbacks = new Map<string, Set<(status: string) => void>>()
+  // App-wide subscribers notified on EVERY run's `run:done` (e.g. the native
+  // "session finished" notifier), regardless of which run it is.
+  const anyDoneCallbacks = new Set<(runId: string, projectId: string, status: string) => void>()
   // Runs the backend has announced as live (`run:activated`) and that haven't
   // emitted `run:done` since. This is the backend's view, independent of
   // `s.status`, so a session can never be evicted — and lose its permission
@@ -452,6 +455,9 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
         if (cbs) for (const cb of cbs) {
           try { cb(event.payload.status) } catch { /* subscriber error must not break teardown */ }
         }
+        for (const cb of anyDoneCallbacks) {
+          try { cb(runId, projectId, event.payload.status) } catch { /* subscriber error must not break teardown */ }
+        }
         stopListening(runId)
       }),
     )
@@ -629,6 +635,17 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
   }
 
   /**
+   * Subscribe to `run:done` of ANY run (every finished turn). Returns an
+   * unsubscribe function.
+   */
+  function onAnyDone(cb: (runId: string, projectId: string, status: string) => void): () => void {
+    anyDoneCallbacks.add(cb)
+    return () => {
+      anyDoneCallbacks.delete(cb)
+    }
+  }
+
+  /**
    * Append a line to a run's raw output view, honouring the cap. Callers outside
    * the store (RunView's failure paths) must use this rather than pushing to
    * `outputLines` directly, so the cap has no back door.
@@ -734,6 +751,7 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
     syncToolPermissions,
     shiftPermission,
     onDone,
+    onAnyDone,
     markSeen,
     appendOutput,
     discard,
