@@ -10,7 +10,7 @@
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-/// Event emitted when the user clicks a permission notification. The payload
+/// Event emitted when the user clicks a permission or run-finished notification. The payload
 /// tells the frontend which run to open. Serialized camelCase for JS.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -115,6 +115,26 @@ pub async fn show_permission_notification(
     run_id: String,
 ) -> Result<(), String> {
     show_clickable(app, title, body, "permission notification", move |app| {
+        let _ = app.emit(
+            NOTIFICATION_CLICKED_EVENT,
+            NotificationClick { project_id, run_id },
+        );
+    });
+    Ok(())
+}
+
+/// Show a native notification that a run finished while the app was in the
+/// background. A click emits `NOTIFICATION_CLICKED_EVENT` with the finished
+/// project/run, so the frontend opens it exactly like a permission click.
+#[tauri::command]
+pub async fn show_run_finished_notification(
+    app: AppHandle,
+    title: String,
+    body: String,
+    project_id: String,
+    run_id: String,
+) -> Result<(), String> {
+    show_clickable(app, title, body, "run finished notification", move |app| {
         let _ = app.emit(
             NOTIFICATION_CLICKED_EVENT,
             NotificationClick { project_id, run_id },

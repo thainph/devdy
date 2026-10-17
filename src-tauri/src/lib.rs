@@ -64,7 +64,9 @@ use commands::groups::{
     enable_group_for_project, get_group_members, get_item_groups, get_project_groups, list_groups,
     set_group_members, update_group,
 };
-use commands::notifications::{show_calendar_reminder, show_permission_notification};
+use commands::notifications::{
+    show_calendar_reminder, show_permission_notification, show_run_finished_notification,
+};
 use commands::projects::{
     add_project, add_repo, apply_skill, apply_skill_to_all_projects, detect_project_info,
     get_applied_skills, list_projects, list_repos, list_sync_conflicts, open_in_chrome,
@@ -612,6 +614,7 @@ pub fn run() {
             list_item_runs,
             list_run_items,
             show_permission_notification,
+            show_run_finished_notification,
             show_calendar_reminder,
             remote_set_config,
             remote_enable,
