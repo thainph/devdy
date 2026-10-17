@@ -290,6 +290,17 @@ pub async fn backfill_usage(db: State<'_, Db>) -> Result<BackfillResult, String>
         let finished_at: Option<String> = row.get("finished_at");
         let created_at = finished_at.unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
 
+        // Claude logs carry `modelUsage`: record complete per-model turns.
+        if engine == "claude" {
+            match backfill_claude_run(db.inner(), &run_id, &project_id, &project_name, &created_at, &content)
+                .await
+            {
+                Ok(n) => inserted += n,
+                Err(e) => eprintln!("[usage] backfill of run {run_id} failed: {e}"),
+            }
+            continue;
+        }
+
         let mut last_model: Option<String> = None;
         for line in content.lines() {
             let line = line.trim();
@@ -334,6 +345,40 @@ pub async fn backfill_usage(db: State<'_, Db>) -> Result<BackfillResult, String>
     })
 }
 
+/// Backfill one Claude run from its log as per-model rows, plus the baseline
+/// the next live turn differences against. All rows take `created_at` (the
+/// log carries no per-turn time).
+async fn backfill_claude_run(
+    db: &sqlx::SqlitePool,
+    run_id: &str,
+    project_id: &str,
+    project_name: &str,
+    created_at: &str,
+    content: &str,
+) -> anyhow::Result<usize> {
+    use crate::runs::model_usage as mu;
+    let (turns, baseline) = mu::turns_from_log(content);
+    let meta = mu::RowMeta {
+        run_id,
+        project_id,
+        project_name,
+        engine: "claude",
+        created_at,
+        deleted_run: false,
+    };
+    let mut tx = db.begin().await?;
+    let mut n = 0;
+    for t in &turns {
+        n += mu::insert_turn_rows(&mut tx, &meta, &t.per_model, t.total_cost, t.num_turns, t.duration_ms)
+            .await?;
+    }
+    if let Some(b) = &baseline {
+        mu::save_baseline(&mut tx, run_id, b).await?;
+    }
+    tx.commit().await?;
+    Ok(n)
+}
+
 #[derive(Debug, Serialize)]
 pub struct ResetResult {
     pub runs_deleted: u32,
@@ -375,6 +420,9 @@ pub async fn reset_usage_stats(
         .execute(db.inner())
         .await
         .map_err(|e| e.to_string())?;
+    let _ = sqlx::query("DELETE FROM run_usage_baseline")
+        .execute(db.inner())
+        .await;
 
     if runs_deleted > 0 {
         crate::slack_threads::emit_all_changed(&app);

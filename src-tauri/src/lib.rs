@@ -191,6 +191,16 @@ pub fn run() {
             let db_path = app_data_dir.join("data.db");
             let db = tauri::async_runtime::block_on(db::init_db(&db_path))
                 .expect("Failed to initialize database");
+            // One-time, off the startup path: re-derive the usage ledger from
+            // run logs (reads every log, so it can take a while).
+            {
+                let db = db.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = runs::model_usage::rebuild_from_logs(&db).await {
+                        eprintln!("[usage] ledger rebuild from logs failed: {e}");
+                    }
+                });
+            }
             // Watch the shared Claude transcript store so sessions created or
             // continued outside Devdy (claude CLI / VS Code) mirror in live.
             runs::session_watcher::start(db.clone(), app.handle().clone());

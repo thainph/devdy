@@ -402,6 +402,10 @@ pub async fn drain_sidecar(
 
     // Most-recent model id seen on a `system.init` event; attached to usage rows.
     let mut last_model: Option<String> = None;
+    // CLI version + results seen in this process: decide whether `modelUsage`
+    // continues the previous turn's running totals (see `model_usage`).
+    let mut cli_version: Option<String> = None;
+    let mut results_in_process: usize = 0;
 
     // How many background tasks (backgrounded Bash, Monitor watchers…) the CLI
     // currently has alive, taken from the authoritative `background_tasks_changed`
@@ -613,6 +617,11 @@ pub async fn drain_sidecar(
                                     if let Some(m) = v.get("model").and_then(|x| x.as_str()) {
                                         last_model = Some(m.to_string());
                                     }
+                                    cli_version = v
+                                        .get("claude_code_version")
+                                        .and_then(|x| x.as_str())
+                                        .map(str::to_string);
+                                    results_in_process = 0;
                                     // A conductor's turn is live: a worker finishing now
                                     // defers its wake until this turn's `result`.
                                     if let Some(cst) = app.try_state::<crate::conductor::ConductorState>() {
@@ -687,9 +696,11 @@ pub async fn drain_sidecar(
                                 if v.get("type").and_then(|x| x.as_str()) == Some("result") {
                                     let usage_recorded = capture_usage(
                                         &db_pool, &run_id, &project_id, &project_name,
-                                        &engine, last_model.as_deref(), v,
+                                        &engine, last_model.as_deref(), cli_version.as_deref(),
+                                        results_in_process, v,
                                     )
                                     .await;
+                                    results_in_process += 1;
                                     if usage_recorded {
                                         let _ = app.emit(
                                             "budget_status_updated",
@@ -1243,7 +1254,11 @@ fn plan_reset_to_string(value: &Value) -> Option<String> {
     chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms).map(|dt| dt.to_rfc3339())
 }
 
-/// Live-capture a usage row at turn end, stamped with the current time.
+/// Live-capture usage at turn end, stamped with the current time. Claude
+/// results carry `modelUsage` — complete (subagents included) and per model —
+/// so the turn is recorded from it as one row per model; results without it
+/// (Codex) or runs without a baseline take the single-row legacy path.
+#[allow(clippy::too_many_arguments)]
 async fn capture_usage(
     db_pool: &sqlx::SqlitePool,
     run_id: &str,
@@ -1251,13 +1266,42 @@ async fn capture_usage(
     project_name: &str,
     engine: &str,
     model: Option<&str>,
+    cli_version: Option<&str>,
+    results_in_process: usize,
     value: &Value,
 ) -> bool {
+    use crate::runs::model_usage as mu;
     let created_at = chrono::Utc::now().to_rfc3339();
-    insert_usage_from_result(
-        db_pool, run_id, project_id, project_name, engine, model, value, &created_at,
-    )
-    .await
+    let Some(cur) = mu::parse_model_usage(value) else {
+        return insert_usage_from_result(
+            db_pool, run_id, project_id, project_name, engine, model, value, &created_at,
+        )
+        .await;
+    };
+    let per_model = mu::live_turn_usage(db_pool, run_id, &cur, cli_version, results_in_process).await;
+    let mut recorded = false;
+    if per_model.is_none() {
+        recorded = insert_usage_from_result(
+            db_pool, run_id, project_id, project_name, engine, model, value, &created_at,
+        )
+        .await;
+    }
+    let meta = mu::RowMeta {
+        run_id,
+        project_id,
+        project_name,
+        engine,
+        created_at: &created_at,
+        deleted_run: false,
+    };
+    let baseline = mu::Baseline { usage: cur, carries_over: mu::carries_over(cli_version) };
+    match mu::commit_live_turn(db_pool, &meta, per_model.as_ref(), value, &baseline).await {
+        Ok(n) => recorded || n > 0,
+        Err(e) => {
+            eprintln!("[usage] recording turn of run {run_id} failed: {e}");
+            recorded
+        }
+    }
 }
 
 /// Persist one usage row from a `result` stream event. Prefers the SDK-reported
