@@ -456,10 +456,12 @@ export const useRunsStore = defineStore('runs', () => {
     })
   }
 
-  async function deleteRun(run_id: string): Promise<void> {
-    await invoke('delete_run', { runId: run_id })
+  /** Returns the engine transcript paths the backend could not remove. */
+  async function deleteRun(run_id: string): Promise<string[]> {
+    const leftover = await invoke<string[]>('delete_run', { runId: run_id })
     runs.value = runs.value.filter(r => r.id !== run_id)
     runMeta.delete(run_id)
+    return leftover
   }
 
   async function deleteAllRuns(project_id: string): Promise<number> {

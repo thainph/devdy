@@ -77,9 +77,7 @@
     "backfillFailed": "Backfill failed: {error}",
     "resetDone": "Reset done — deleted {runs} run(s), cleared {usage} usage record(s).",
     "resetFailed": "Reset failed: {error}",
-    "storageReadFailed": "Failed to read storage: {error}",
-    "cleaned": "Cleaned {label} — removed {files} file(s), freed {bytes}.",
-    "cleanupFailed": "Cleanup failed: {error}"
+    "storageReadFailed": "Failed to read storage: {error}"
   },
   "storage": {
     "title": "Storage — session/run logs",
@@ -90,20 +88,11 @@
     "files": "Files",
     "size": "Size",
     "percent": "%",
-    "clean": "Clean",
-    "cleanRowTitle": "Delete the log files in this category",
-    "nothingToClean": "Nothing to clean",
-    "note": "Clean logs to free up disk space. Devdy logs are safe to delete — run history & token stats are kept, only transcript content is lost. Claude/Codex logs belong to the CLI, so deleting them removes the CLI-side history."
-  },
-  "cleanModal": {
-    "title": "Clean {label}",
-    "willDelete": "Will delete {files} file(s) (~{bytes}).",
-    "irreversible": "This cannot be undone.",
-    "cleanNow": "Clean now"
+    "note": "Read-only overview. To free up space, delete sessions in History — that removes each session's Devdy log, fetched issue/PR files and Claude/Codex CLI transcripts together. Token stats are kept."
   },
   "resetModal": {
     "title": "Reset usage statistics",
-    "line1": "This will delete all old runs (including log files) and reset every statistic to 0.",
+    "line1": "This will delete all old runs (including their logs and Claude/Codex CLI transcripts) and reset every statistic to 0.",
     "irreversible": "This cannot be undone.",
     "typeToConfirm": "Type {word} to confirm:",
     "resetEverything": "Reset everything"

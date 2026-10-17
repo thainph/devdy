@@ -42,17 +42,7 @@ pub(crate) fn codex_sessions_root() -> Option<PathBuf> {
 /// after a restart. Devdy only ever spawns top-level threads (`thread/start`,
 /// `thread_source: "user"`), so skipping subagent/fork rollouts is safe.
 pub(crate) fn rollout_meta(file: &Path) -> Option<(String, String)> {
-    // Only the first non-empty line is needed, so stream it rather than reading
-    // the whole rollout (which can be large) into memory.
-    let reader = BufReader::new(fs::File::open(file).ok()?);
-    let first = reader
-        .lines()
-        .map_while(Result::ok)
-        .find(|l| !l.trim().is_empty())?;
-    let v: Value = serde_json::from_str(&first).ok()?;
-    if v.get("type").and_then(|x| x.as_str()) != Some("session_meta") {
-        return None;
-    }
+    let v = read_session_meta(file)?;
     let p = v.get("payload")?;
     // Skip subagent spawns / forks — they belong to their parent thread, not a
     // standalone session.
@@ -65,6 +55,65 @@ pub(crate) fn rollout_meta(file: &Path) -> Option<(String, String)> {
     let cwd = p.get("cwd").and_then(|x| x.as_str())?.to_string();
     let id = p.get("id").and_then(|x| x.as_str())?.to_string();
     Some((cwd, id))
+}
+
+/// The rollout's first line when it is a `session_meta` record. Only that line
+/// is needed, so stream it rather than reading the whole (possibly large) file.
+fn read_session_meta(file: &Path) -> Option<Value> {
+    let reader = BufReader::new(fs::File::open(file).ok()?);
+    let first = reader
+        .lines()
+        .map_while(Result::ok)
+        .find(|l| !l.trim().is_empty())?;
+    let v: Value = serde_json::from_str(&first).ok()?;
+    (v.get("type").and_then(|x| x.as_str()) == Some("session_meta")).then_some(v)
+}
+
+/// Every rollout belonging to a thread under `root`: its own rollout plus the
+/// subagent/fork rollouts spawned from it, transitively (a subagent can spawn
+/// its own). Used when a session is deleted so no child rollout is left behind.
+pub(crate) fn codex_thread_files(root: &Path, session_id: &str) -> Vec<PathBuf> {
+    let suffix = format!("-{}.jsonl", session_id);
+    let mut owned = Vec::new();
+    // (file, own id, parent id) for every child rollout.
+    let mut children: Vec<(PathBuf, String, String)> = Vec::new();
+    for file in all_rollout_files(root) {
+        if file
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(&suffix))
+        {
+            owned.push(file);
+            continue;
+        }
+        let Some(p) = read_session_meta(&file).and_then(|v| v.get("payload").cloned()) else {
+            continue;
+        };
+        let parent = p
+            .get("parent_thread_id")
+            .or_else(|| p.get("forked_from_id"))
+            .and_then(|x| x.as_str());
+        let id = p.get("id").and_then(|x| x.as_str());
+        if let (Some(parent), Some(id)) = (parent, id) {
+            children.push((file, id.to_string(), parent.to_string()));
+        }
+    }
+
+    let mut ids = std::collections::HashSet::from([session_id.to_string()]);
+    loop {
+        let before = children.len();
+        let (hit, rest): (Vec<_>, Vec<_>) =
+            children.into_iter().partition(|(_, _, parent)| ids.contains(parent));
+        children = rest;
+        for (file, id, _) in hit {
+            ids.insert(id);
+            owned.push(file);
+        }
+        if children.len() == before {
+            break;
+        }
+    }
+    owned
 }
 
 /// Walk the date-organized rollout tree and return every `rollout-*.jsonl` path.
@@ -622,5 +671,46 @@ mod tests {
         let f = temp_file("fork", fork);
         assert!(rollout_meta(&f).is_none());
         let _ = fs::remove_file(&f);
+    }
+
+    #[test]
+    fn codex_thread_files_collects_subagents_transitively() {
+        let root = std::env::temp_dir().join(format!("devdy_codex_thread_{}", std::process::id()));
+        let day = root.join("2026").join("10").join("17");
+        fs::create_dir_all(&day).unwrap();
+        let write = |name: &str, meta: &str| {
+            let p = day.join(name);
+            fs::write(&p, format!("{meta}\n")).unwrap();
+            p
+        };
+        let main = write(
+            "rollout-1-thread-1.jsonl",
+            r#"{"type":"session_meta","payload":{"cwd":"/proj","id":"thread-1"}}"#,
+        );
+        let sub = write(
+            "rollout-2-thread-2.jsonl",
+            r#"{"type":"session_meta","payload":{"cwd":"/proj","id":"thread-2","thread_source":"subagent","parent_thread_id":"thread-1"}}"#,
+        );
+        // A subagent of the subagent, and a fork of the main thread.
+        let nested = write(
+            "rollout-3-thread-3.jsonl",
+            r#"{"type":"session_meta","payload":{"cwd":"/proj","id":"thread-3","parent_thread_id":"thread-2"}}"#,
+        );
+        let fork = write(
+            "rollout-4-thread-4.jsonl",
+            r#"{"type":"session_meta","payload":{"cwd":"/proj","id":"thread-4","forked_from_id":"thread-1"}}"#,
+        );
+        let other = write(
+            "rollout-5-thread-9.jsonl",
+            r#"{"type":"session_meta","payload":{"cwd":"/proj","id":"thread-9"}}"#,
+        );
+
+        let mut got = codex_thread_files(&root, "thread-1");
+        got.sort();
+        let mut want = vec![main, sub, nested, fork];
+        want.sort();
+        assert_eq!(got, want);
+        assert!(!got.contains(&other));
+        let _ = fs::remove_dir_all(&root);
     }
 }

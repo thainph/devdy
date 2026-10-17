@@ -72,8 +72,6 @@ export interface StorageCategory {
   path: string
   size_bytes: number
   file_count: number
-  deletable: boolean
-  destructive: boolean
 }
 
 export interface StorageStats {
@@ -82,18 +80,8 @@ export interface StorageStats {
   total_files: number
 }
 
-export interface CleanResult {
-  category: string
-  deleted_files: number
-  freed_bytes: number
-}
-
 export function getStorageStats(): Promise<StorageStats> {
   return invoke<StorageStats>('get_storage_stats')
-}
-
-export function cleanStorage(category: string): Promise<CleanResult> {
-  return invoke<CleanResult>('clean_storage', { category })
 }
 
 export function getUsageStats(filter: StatsFilter): Promise<StatsResult> {

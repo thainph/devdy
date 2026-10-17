@@ -77,9 +77,7 @@
     "backfillFailed": "Nạp lại thất bại: {error}",
     "resetDone": "Đặt lại xong — đã xóa {runs} run, xóa {usage} bản ghi sử dụng.",
     "resetFailed": "Đặt lại thất bại: {error}",
-    "storageReadFailed": "Không đọc được dung lượng: {error}",
-    "cleaned": "Đã dọn {label} — xóa {files} file, giải phóng {bytes}.",
-    "cleanupFailed": "Dọn dẹp thất bại: {error}"
+    "storageReadFailed": "Không đọc được dung lượng: {error}"
   },
   "storage": {
     "title": "Dung lượng — log session/run",
@@ -90,20 +88,11 @@
     "files": "File",
     "size": "Kích thước",
     "percent": "%",
-    "clean": "Dọn",
-    "cleanRowTitle": "Xóa các file log trong nhóm này",
-    "nothingToClean": "Không có gì để dọn",
-    "note": "Dọn log để giải phóng dung lượng. Log của Devdy xóa an toàn — lịch sử run & token vẫn giữ, chỉ mất nội dung transcript. Log Claude/Codex là của CLI nên xóa sẽ mất lịch sử phía CLI."
-  },
-  "cleanModal": {
-    "title": "Dọn {label}",
-    "willDelete": "Sẽ xóa {files} file (~{bytes}).",
-    "irreversible": "Không thể hoàn tác.",
-    "cleanNow": "Dọn ngay"
+    "note": "Chỉ để xem. Muốn giải phóng dung lượng, hãy xóa session trong History — thao tác đó xóa cùng lúc log Devdy, file issue/PR đã fetch và transcript Claude/Codex CLI của session. Thống kê token vẫn được giữ."
   },
   "resetModal": {
     "title": "Đặt lại thống kê sử dụng",
-    "line1": "Thao tác này sẽ xóa toàn bộ run cũ (kèm file log) và đưa mọi số liệu thống kê về 0.",
+    "line1": "Thao tác này sẽ xóa toàn bộ run cũ (kèm log và transcript Claude/Codex CLI) và đưa mọi số liệu thống kê về 0.",
     "irreversible": "Không thể hoàn tác.",
     "typeToConfirm": "Gõ {word} để xác nhận:",
     "resetEverything": "Đặt lại toàn bộ"

@@ -2,10 +2,10 @@
 //!
 //! During normal operation the audit table is append-only: command handling only
 //! ever INSERTs (BR-013 / SEC-007) — it never UPDATEs, and never DELETEs on its
-//! own. The single exception is an explicit, owner-initiated purge via
-//! [`clear_audit`] (surfaced as the "Clear" action in Settings): the local owner
-//! may wipe their own history on demand. This is a deliberate manual action, not
-//! part of automated flow. The device registry was removed in the single-session
+//! own. The exceptions are explicit, owner-initiated purges: [`clear_audit`]
+//! (surfaced as the "Clear" action in Settings), and [`delete_for_run`] when the
+//! owner deletes a session — its audit entries go with it. These are deliberate
+//! manual actions, not part of automated flow. The device registry was removed in the single-session
 //! redesign; the `device_id` column remains in the schema but is unused (NULL).
 
 use crate::db::Db;
@@ -94,9 +94,20 @@ pub async fn list_audit(db: &Db, limit: i64) -> Result<Vec<AuditEntry>, String> 
         .collect())
 }
 
+/// Delete the audit entries of one run, as part of the owner deleting that
+/// session. Returns the number of rows removed.
+pub async fn delete_for_run(db: &Db, run_id: &str) -> Result<u64, String> {
+    let res = sqlx::query("DELETE FROM remote_audit WHERE run_id = ?")
+        .bind(run_id)
+        .execute(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(res.rows_affected())
+}
+
 /// Delete every audit entry (owner-initiated purge). Returns the number of rows
-/// removed. This is the ONE place the audit table is mutated destructively — it
-/// is driven only by an explicit user action in Settings, never by command flow.
+/// removed. Driven only by an explicit user action in Settings, never by
+/// command flow.
 pub async fn clear_audit(db: &Db) -> Result<u64, String> {
     let res = sqlx::query("DELETE FROM remote_audit")
         .execute(db)

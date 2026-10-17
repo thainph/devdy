@@ -2489,13 +2489,13 @@ pub async fn create_session_run(
 /// row, log, transcript, links). All-or-nothing up front: refuses, deleting
 /// nothing, while the run or any of its workers is still active. When
 /// `conductor` is given, the deleted runs' in-memory sessions and bearer tokens
-/// are revoked too. Returns how many runs were deleted.
+/// are revoked too.
 pub(crate) async fn delete_run_tree(
     db: &sqlx::SqlitePool,
     registry: &RunRegistry,
     conductor: Option<&crate::conductor::ConductorState>,
     run_id: &str,
-) -> Result<u32, String> {
+) -> Result<DeleteOutcome, String> {
     let worker_ids: Vec<String> =
         sqlx::query_scalar("SELECT id FROM runs WHERE conductor_run_id = ? AND id != ?")
             .bind(run_id)
@@ -2540,19 +2540,29 @@ pub(crate) async fn delete_run_tree(
         );
     }
 
-    let mut deleted = 0u32;
+    let mut outcome = DeleteOutcome::default();
     for worker_id in &worker_ids {
-        delete_single_run(db, registry, worker_id).await?;
+        outcome.leftover_files.extend(delete_single_run(db, registry, worker_id).await?);
         if let Some(c) = conductor {
             c.unregister_session(worker_id);
         }
-        deleted += 1;
+        outcome.deleted += 1;
     }
-    delete_single_run(db, registry, run_id).await?;
+    outcome.leftover_files.extend(delete_single_run(db, registry, run_id).await?);
     if let Some(c) = conductor {
         c.unregister_session(run_id);
     }
-    Ok(deleted + 1)
+    outcome.deleted += 1;
+    Ok(outcome)
+}
+
+/// Result of [`delete_run_tree`].
+#[derive(Debug, Default)]
+pub(crate) struct DeleteOutcome {
+    /// Runs deleted (the session plus its workers).
+    pub deleted: u32,
+    /// Engine transcript paths that could not be removed from disk.
+    pub leftover_files: Vec<String>,
 }
 
 /// [`delete_run_tree`] without in-memory token revocation (tests and callers
@@ -2566,14 +2576,16 @@ pub(crate) async fn delete_run_inner(
     delete_run_tree(db, registry, None, run_id).await.map(|_| ())
 }
 
-/// Core logic for deleting a single run. Removes the DB row, per-run log file,
-/// and cached input markdown when no sibling run still references it. Empty
-/// task folder is removed. Refuses to delete runs currently in the registry.
+/// Core logic for deleting a single run. Removes the DB row and its linked rows,
+/// the per-run log file, every engine transcript of the session, and cached
+/// input markdown when no sibling run still references it. Empty task folder is
+/// removed. Usage rows are kept for statistics. Refuses to delete runs currently
+/// in the registry. Returns the transcript paths that could not be removed.
 async fn delete_single_run(
     db: &sqlx::SqlitePool,
     registry: &RunRegistry,
     run_id: &str,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     use sqlx::Row;
 
     {
@@ -2649,24 +2661,30 @@ async fn delete_single_run(
     let _ = fs::remove_file(runs_dir.join(format!("{}.log", run_id)));
     let _ = fs::remove_dir_all(runs_dir.join(run_id));
 
-    // Also delete the shared engine transcript so the session can't be
-    // re-mirrored back into history (and disappears from the CLI/VS Code resume
-    // list too). Prefer the exact path we mirrored from; otherwise reconstruct it
-    // from the engine + session id. The tombstone above still guards the window
-    // in case this file can't be removed.
+    // Remote Control audit entries about this run go with it.
+    let _ = crate::remote::audit::delete_for_run(db, run_id).await;
+
+    // Also delete every engine transcript of the session — in every Claude
+    // account store (a switched account holds its own copy) plus subagent data —
+    // so the session can't be re-mirrored back into history and disappears from
+    // the CLI/VS Code resume list too. The tombstone above still guards the
+    // window in case a file can't be removed; those are reported to the caller.
+    let mut leftover = Vec::new();
     if let Some(sid) = session_id.as_deref() {
-        let transcript_file: Option<PathBuf> = match transcript_path.as_deref() {
-            Some(p) => Some(PathBuf::from(p)),
-            None => match engine.as_str() {
-                "claude" => crate::commands::sessions::claude_sessions_dir(&project_path)
-                    .map(|dir| dir.join(format!("{}.jsonl", sid))),
-                "codex" => crate::commands::codex_sessions::codex_session_file(sid),
-                _ => None,
-            },
+        let claude_dirs = if engine == "claude" {
+            crate::commands::sessions::claude_sessions_dirs(db, &project_path).await
+        } else {
+            Vec::new()
         };
-        if let Some(file) = transcript_file {
-            let _ = fs::remove_file(file);
-        }
+        let codex_root = crate::commands::codex_sessions::codex_sessions_root();
+        let targets = engine_transcript_targets(
+            &engine,
+            sid,
+            transcript_path.as_deref(),
+            &claude_dirs,
+            codex_root.as_deref(),
+        );
+        leftover = remove_paths(&targets);
     }
 
     if let Some(path) = input_path.as_deref() {
@@ -2686,20 +2704,86 @@ async fn delete_single_run(
         }
     }
 
-    Ok(())
+    Ok(leftover)
 }
 
-/// Delete a fetched run together with its cached files. Running runs are
-/// refused — cancel first.
+/// Session ids come from the CLI but are joined into paths that are removed
+/// recursively, so anything other than a plain id is refused.
+fn is_plain_session_id(sid: &str) -> bool {
+    !sid.is_empty()
+        && sid
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// Everything on disk holding a session's engine transcript. Claude: the cached
+/// `transcript_path`, plus `<sid>.jsonl` and the `<sid>/` folder (subagent
+/// transcripts, tool results) in every account store in `claude_dirs`. Codex:
+/// the cached path plus the thread's rollout and its subagent/fork rollouts.
+fn engine_transcript_targets(
+    engine: &str,
+    session_id: &str,
+    transcript_path: Option<&str>,
+    claude_dirs: &[PathBuf],
+    codex_root: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut targets: Vec<PathBuf> = transcript_path.map(PathBuf::from).into_iter().collect();
+    if !is_plain_session_id(session_id) {
+        return targets;
+    }
+    match engine {
+        "claude" => {
+            for dir in claude_dirs {
+                targets.push(dir.join(format!("{session_id}.jsonl")));
+                targets.push(dir.join(session_id));
+            }
+        }
+        "codex" => {
+            if let Some(root) = codex_root {
+                targets.extend(crate::commands::codex_sessions::codex_thread_files(
+                    root, session_id,
+                ));
+            }
+        }
+        _ => {}
+    }
+    targets.sort();
+    targets.dedup();
+    targets
+}
+
+/// Remove each path (file or directory tree) that exists, returning the ones
+/// that could not be removed.
+fn remove_paths(paths: &[PathBuf]) -> Vec<String> {
+    let mut failed = Vec::new();
+    for path in paths {
+        let Ok(meta) = fs::symlink_metadata(path) else {
+            continue;
+        };
+        let res = if meta.is_dir() {
+            fs::remove_dir_all(path)
+        } else {
+            fs::remove_file(path)
+        };
+        if res.is_err() {
+            failed.push(path.to_string_lossy().into_owned());
+        }
+    }
+    failed
+}
+
+/// Delete a run together with everything belonging to it (see
+/// [`delete_single_run`]). Running runs are refused — cancel first. Returns the
+/// transcript paths that could not be removed, so the UI can warn about them.
 #[tauri::command]
 pub async fn delete_run(
     app: AppHandle,
     db: State<'_, Db>,
     registry: State<'_, RunRegistry>,
     run_id: String,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     let conductor = app.try_state::<crate::conductor::ConductorState>();
-    delete_run_tree(
+    let outcome = delete_run_tree(
         db.inner(),
         registry.inner(),
         conductor.as_ref().map(|c| c.inner()),
@@ -2708,7 +2792,7 @@ pub async fn delete_run(
     .await?;
     crate::slack_threads::emit_all_changed(&app);
     crate::item_links::emit_changed(&app, None);
-    Ok(())
+    Ok(outcome.leftover_files)
 }
 
 /// Rename a run's title (shown in the History list). An empty/whitespace title
@@ -2971,7 +3055,7 @@ pub async fn delete_all_runs(
     for row in &rows {
         let id: String = row.get("id");
         // A worker already removed with its session simply fails to load here.
-        if let Ok(n) = delete_run_tree(
+        if let Ok(outcome) = delete_run_tree(
             db.inner(),
             registry.inner(),
             conductor.as_ref().map(|c| c.inner()),
@@ -2979,7 +3063,10 @@ pub async fn delete_all_runs(
         )
         .await
         {
-            deleted += n;
+            deleted += outcome.deleted;
+            for path in outcome.leftover_files {
+                eprintln!("[delete_all_runs] could not remove transcript {path}");
+            }
         }
     }
     if deleted > 0 {
@@ -3022,7 +3109,7 @@ pub async fn resume_run(
     use sqlx::Row;
 
     let row = sqlx::query(
-        "SELECT r.engine, r.status, r.session_id, r.project_id, r.claude_account_id, p.path as project_path
+        "SELECT r.engine, r.status, r.session_id, r.transcript_path, r.project_id, r.claude_account_id, p.path as project_path
          FROM runs r JOIN projects p ON p.id = r.project_id
          WHERE r.id = ?",
     )
@@ -3034,6 +3121,7 @@ pub async fn resume_run(
     let engine: String = row.get("engine");
     let status: String = row.get("status");
     let session_id: Option<String> = row.get("session_id");
+    let transcript_path: Option<String> = row.get("transcript_path");
     let project_id: String = row.get("project_id");
     let claude_account_id: Option<String> = row.get("claude_account_id");
     let project_path: String = row.get("project_path");
@@ -3128,21 +3216,6 @@ pub async fn resume_run(
     fs::create_dir_all(&runs_dir).map_err(|e| e.to_string())?;
     let log_path = runs_dir.join(format!("{}.log", run_id));
 
-    // Mark running; finished_at cleared so the UI reflects the active state.
-    // Resuming is the clearest signal of "I'm working on this one again", so it
-    // also stamps last_activity_at and floats the session to the top of History.
-    let started_at = chrono::Utc::now().to_rfc3339();
-    sqlx::query(
-        "UPDATE runs SET status = 'running', model = ?, started_at = ?, finished_at = NULL, last_activity_at = ? WHERE id = ?",
-    )
-    .bind(&model)
-    .bind(&started_at)
-    .bind(&started_at)
-    .bind(&run_id)
-    .execute(db.inner())
-    .await
-    .map_err(|e| e.to_string())?;
-
     // Resume uses the account currently assigned to the run. A legacy/global run
     // without an assigned account (`claude_account_id = NULL`) keeps the global
     // `~/.claude` profile instead of silently switching to the current default.
@@ -3163,16 +3236,55 @@ pub async fn resume_run(
         None
     };
 
+    // The CLI transcript behind `session_id` can be gone (e.g. the Stats screen's
+    // storage cleanup wiped ~/.claude/projects or ~/.codex/sessions). Resuming a
+    // missing session hard-fails in the CLI ("No conversation found"), so start a
+    // fresh session in the same run instead; the earlier context is lost.
+    let transcript_available = if engine == "codex" {
+        crate::commands::codex_sessions::codex_session_file(&session_id).is_some()
+    } else {
+        mirror_claude_transcript_for_account(
+            db.inner(),
+            &project_path,
+            &session_id,
+            transcript_path.as_deref(),
+            claude_account.as_ref().map(|a| a.config_dir.as_str()),
+        )
+        .await?
+        .is_some()
+    };
+
+    // Mark running; finished_at cleared so the UI reflects the active state.
+    // Resuming is the clearest signal of "I'm working on this one again", so it
+    // also stamps last_activity_at and floats the session to the top of History.
+    // A fresh fallback session also drops the stale transcript pointer.
+    let started_at = chrono::Utc::now().to_rfc3339();
+    let mark_running = if transcript_available {
+        "UPDATE runs SET status = 'running', model = ?, started_at = ?, finished_at = NULL, last_activity_at = ? WHERE id = ?"
+    } else {
+        "UPDATE runs SET status = 'running', model = ?, started_at = ?, finished_at = NULL, last_activity_at = ?, \
+         transcript_path = NULL, transcript_synced_size = NULL, framing_seeded = 0 WHERE id = ?"
+    };
+    sqlx::query(mark_running)
+        .bind(&model)
+        .bind(&started_at)
+        .bind(&started_at)
+        .bind(&run_id)
+        .execute(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+
     let (node_bin, sidecar_script) = if engine == "codex" {
         resolve_codex_sidecar(&app, &node_path, &codex_sidecar_path)?
     } else {
         resolve_sidecar(&app, &node_path, &sidecar_path)?
     };
     let mut cmd = Command::new(&node_bin);
-    cmd.current_dir(&project_path)
-        .arg(&sidecar_script)
+    cmd.current_dir(&project_path).arg(&sidecar_script);
+    if transcript_available {
         // The sidecar resumes this session/thread on its first prompt.
-        .env("DEVDY_RESUME_SESSION", &session_id);
+        cmd.env("DEVDY_RESUME_SESSION", &session_id);
+    }
     augment_command_path(&mut cmd);
     apply_mcp_tool_timeout(&mut cmd);
     // Wire the broker + shims for both Claude and Codex resumes so resumed
@@ -3237,7 +3349,14 @@ pub async fn resume_run(
         // plain session) is seeded ONCE by prepending it to the next turn's prompt.
         // The sidecar reports `_devdy_framing_seeded`, which sets
         // runs.framing_seeded so later resumes don't repeat it.
-        if let Some(seed) = crate::conductor::codex_resume_seed(framing.as_deref(), framing_seeded) {
+        if !transcript_available {
+            // Fresh thread: the framing goes in as developer instructions, as on start.
+            if let Some(framing) = &framing {
+                cmd.env("DEVDY_CODEX_DEVELOPER_INSTRUCTIONS", framing);
+            }
+        } else if let Some(seed) =
+            crate::conductor::codex_resume_seed(framing.as_deref(), framing_seeded)
+        {
             cmd.env("DEVDY_CODEX_SEED_FRAMING", seed);
         }
     } else {
@@ -3332,10 +3451,17 @@ pub async fn resume_run(
     // follow-up text arrives via send_user_message, which kicks off the turn.
     {
         let mut buf = log_buf.lock().await;
-        buf.push_str(&format!(
-            "[stderr] --- resumed session {} at {} ---\n",
-            session_id, started_at
-        ));
+        if transcript_available {
+            buf.push_str(&format!(
+                "[stderr] --- resumed session {} at {} ---\n",
+                session_id, started_at
+            ));
+        } else {
+            buf.push_str(&format!(
+                "[stderr] --- transcript for session {} no longer exists; started a new session at {} (earlier context is not available to the agent) ---\n",
+                session_id, started_at
+            ));
+        }
     }
 
     {
@@ -3371,6 +3497,51 @@ pub async fn resume_run(
     ));
 
     Ok(())
+}
+
+#[cfg(test)]
+mod transcript_purge_tests {
+    use super::{engine_transcript_targets, remove_paths};
+    use std::fs;
+    use std::path::PathBuf;
+
+    #[test]
+    fn claude_purge_covers_every_account_and_subagent_folder() {
+        let root = std::env::temp_dir().join(format!("devdy_purge_{}", std::process::id()));
+        let global = root.join("global").join("projects").join("-proj");
+        let account = root.join("acct").join("projects").join("-proj");
+        for dir in [&global, &account] {
+            fs::create_dir_all(dir.join("sid-1").join("subagents")).unwrap();
+            fs::write(dir.join("sid-1.jsonl"), "{}").unwrap();
+            fs::write(dir.join("sid-1").join("subagents").join("a.jsonl"), "{}").unwrap();
+            fs::write(dir.join("other.jsonl"), "{}").unwrap();
+        }
+
+        let targets = engine_transcript_targets(
+            "claude",
+            "sid-1",
+            None,
+            &[global.clone(), account.clone()],
+            None,
+        );
+        assert!(remove_paths(&targets).is_empty());
+        for dir in [&global, &account] {
+            assert!(!dir.join("sid-1.jsonl").exists());
+            assert!(!dir.join("sid-1").exists());
+            // Another session in the same store is untouched.
+            assert!(dir.join("other.jsonl").exists());
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unsafe_session_id_only_targets_cached_path() {
+        let dirs = [PathBuf::from("/tmp/x")];
+        let targets =
+            engine_transcript_targets("claude", "../..", Some("/tmp/x/t.jsonl"), &dirs, None);
+        assert_eq!(targets, vec![PathBuf::from("/tmp/x/t.jsonl")]);
+        assert!(engine_transcript_targets("claude", "", None, &dirs, None).is_empty());
+    }
 }
 
 #[cfg(test)]
