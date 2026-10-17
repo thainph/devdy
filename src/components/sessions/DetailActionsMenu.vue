@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // The ⋯ menu that ends the header of the Slack / Notes / Todos windows' detail
 // pane: New session from this … (disabled without a project) · Copy ID ·
-// Delete. The host confirms deletes and shows the toasts.
+// host-specific items (default slot) · Delete. The host confirms deletes and
+// shows the toasts.
 import { useI18n } from 'vue-i18n'
 import { Check, Copy, MoreHorizontal, Plus, Trash2 } from 'lucide-vue-next'
 import { Button, DropdownItem, DropdownMenu, DropdownSeparator } from '@/components/ui'
@@ -43,6 +44,7 @@ const { t } = useI18n()
       <component :is="copiedId ? Check : Copy" class="h-3.5 w-3.5" :stroke-width="1.75" />
       {{ t('item.copyId') }}
     </DropdownItem>
+    <slot />
     <DropdownSeparator />
     <DropdownItem variant="destructive" @click="emit('delete')">
       <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />

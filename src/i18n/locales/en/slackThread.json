@@ -71,6 +71,8 @@
   "header": {
     "showOriginal": "Show original",
     "refresh": "Refresh",
+    "retranslate": "Re-translate thread",
+    "retranslateHint": "Translate every message again with the current translation settings; old translations stay until replaced",
     "openInSlack": "Open in Slack",
     "renameHint": "Click or press F2 to rename",
     "renamePlaceholder": "Thread title…",

@@ -584,6 +584,16 @@ impl SlackThreadsState {
         store::get_summary(&self.ctx.db, id).await
     }
 
+    /// Re-translate the whole thread: every message back to `pending`, then a
+    /// normal refresh (a job in flight gets one re-run).
+    pub async fn retranslate(&self, id: &str) -> Result<SlackThreadSummary, CodedError> {
+        store::get_summary(&self.ctx.db, id).await?;
+        store::reset_translations(&self.ctx.db, id)
+            .await
+            .map_err(store::internal)?;
+        self.refresh(id).await
+    }
+
     pub async fn delete(&self, ids: &[String]) -> Result<(), CodedError> {
         if let Ok(mut q) = self.queue.lock() {
             q.pending.retain(|x| !ids.contains(x));

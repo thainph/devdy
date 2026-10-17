@@ -287,6 +287,12 @@ export const useSlackThreadsStore = defineStore('slackThreads', () => {
     return row
   }
 
+  async function retranslate(id: string): Promise<SlackThreadSummary> {
+    const row = await invoke<SlackThreadSummary>('retranslate_slack_thread', { id })
+    patchSummary(row)
+    return row
+  }
+
   async function markSeen(id: string) {
     await invoke('mark_slack_thread_seen', { id })
     const row = threads.value.find((x) => x.id === id)
@@ -418,6 +424,7 @@ export const useSlackThreadsStore = defineStore('slackThreads', () => {
     reloadView,
     add,
     refresh,
+    retranslate,
     markSeen,
     rename,
     setProject,

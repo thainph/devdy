@@ -1160,6 +1160,46 @@ async fn translation_partial_and_total_failure() {
     assert_eq!(detail.as_deref(), Some("no engine"));
 }
 
+#[tokio::test]
+async fn retranslate_redoes_every_message_and_keeps_old_text_on_failure() {
+    let env = Env::new("retr").await;
+    env.seed_thread();
+    let id = env.add(LINK).await;
+    env.run(&id).await;
+    let calls = env.engine.calls();
+    let before = env.view(&id).await;
+    let translated = before
+        .messages
+        .iter()
+        .filter(|m| m.translate_status == "done")
+        .count();
+    assert!(translated > 0);
+
+    // Fail one message in both the batch and its retry.
+    *env.engine.drop_once.lock().unwrap() = vec!["Looking".into(), "Looking".into()];
+    env.state.retranslate(&id).await.unwrap();
+    env.run(&id).await;
+    assert!(env.engine.calls() > calls);
+    let first = env.engine.prompts.lock().unwrap()[calls].clone();
+    assert_eq!(first.matches("\n</m>\n").count(), translated);
+    let after = env.view(&id).await;
+    for (b, a) in before.messages.iter().zip(&after.messages) {
+        assert_eq!(a.text_vi, b.text_vi);
+    }
+    let failed = after
+        .messages
+        .iter()
+        .find(|m| m.text_raw.contains("Looking"))
+        .unwrap();
+    assert_eq!(failed.translate_status, "error");
+    assert!(failed.text_vi.is_some());
+
+    assert_eq!(
+        env.state.retranslate("nope").await.unwrap_err().code,
+        "not_found"
+    );
+}
+
 #[test]
 fn engine_errors_are_english() {
     use crate::commands::translate as t;

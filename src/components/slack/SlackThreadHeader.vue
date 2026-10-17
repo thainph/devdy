@@ -5,15 +5,16 @@
 // controls, then the icon-only thread actions (label in tooltip + aria-label) —
 // whole-thread "Show original" toggle (primary while on), Refresh (spinner +
 // disabled while a job runs), Open in Slack and the ⋯ menu (New session from
-// this thread — disabled without a project · Copy ID · Delete). The host
+// this thread — disabled without a project · Copy ID · Re-translate — disabled
+// while a job runs · Delete). The host
 // confirms deletes and shows the toasts.
 //
 // Narrow pane: the title gives way first (down to 6rem), then the project name
 // truncates.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ExternalLink, Languages, PencilLine, RotateCw } from 'lucide-vue-next'
-import { Button } from '@/components/ui'
+import { ExternalLink, Languages, PencilLine, RefreshCcw, RotateCw } from 'lucide-vue-next'
+import { Button, DropdownItem } from '@/components/ui'
 import InlineRenameInput from '@/components/InlineRenameInput.vue'
 import ProjectSelect from '@/components/ProjectSelect.vue'
 import { formatFullDate } from '@/lib/slackThreadUtils'
@@ -39,6 +40,7 @@ const emit = defineEmits<{
   cancelRename: []
   toggleOriginal: []
   refresh: []
+  retranslate: []
   openInSlack: []
   setProject: [projectId: string | null]
   openRun: [link: SessionLink]
@@ -159,7 +161,16 @@ const metaTitle = computed(() =>
         @new-session="emit('newSession')"
         @copy-id="emit('copyId')"
         @delete="emit('delete')"
-      />
+      >
+        <DropdownItem
+          :disabled="busy"
+          :title="t('slackThread.header.retranslateHint')"
+          @click="emit('retranslate')"
+        >
+          <RefreshCcw class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ t('slackThread.header.retranslate') }}
+        </DropdownItem>
+      </DetailActionsMenu>
     </div>
   </div>
 </template>

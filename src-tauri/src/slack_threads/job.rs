@@ -1163,9 +1163,11 @@ impl TranslateSink for DbSink<'_, '_> {
                 MsgOutcome::Skipped(t) => (Some(t.as_str()), "skipped", None),
                 MsgOutcome::Error(e) => (None, "error", Some(e.as_str())),
             };
+            // A failed re-translation keeps the previous text_vi (edited text
+            // already had it cleared by the upsert).
             sqlx::query(
-                "UPDATE slack_messages SET text_vi = ?, translate_status = ?, translate_error = ? \
-                 WHERE thread_id = ? AND ts = ?",
+                "UPDATE slack_messages SET text_vi = COALESCE(?1, text_vi), \
+                 translate_status = ?2, translate_error = ?3 WHERE thread_id = ?4 AND ts = ?5",
             )
             .bind(vi)
             .bind(status)

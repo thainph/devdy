@@ -58,6 +58,15 @@ pub async fn refresh_slack_thread(
     state.refresh(&id).await.map_err(err)
 }
 
+/// Re-translate every message of the thread (and refresh it from Slack).
+#[tauri::command]
+pub async fn retranslate_slack_thread(
+    state: State<'_, SlackThreadsState>,
+    id: String,
+) -> CmdResult<SlackThreadSummary> {
+    state.retranslate(&id).await.map_err(err)
+}
+
 #[tauri::command]
 pub async fn mark_slack_thread_seen(
     state: State<'_, SlackThreadsState>,
