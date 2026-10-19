@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, shallowRef, computed, onMounted, onUnmounted, watch, nextTick, type ComponentPublicInstance } from 'vue'
+import { ref, shallowRef, computed, onMounted, onBeforeUnmount, onUnmounted, watch, nextTick, type ComponentPublicInstance } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectsStore, type Repo } from '@/stores/projects'
@@ -67,6 +67,7 @@ import ConductorWorkerPanel from '@/components/conductor/ConductorWorkerPanel.vu
 import { useConductorStore } from '@/stores/conductor'
 import { Button, Input, Badge, Modal, DropdownMenu, DropdownItem, DropdownSeparator } from '@/components/ui'
 import { useTurnNavigator, turnLabel } from '@/composables/useTurnNavigator'
+import { useScrollMemory } from '@/composables/useScrollMemory'
 import { useConfirm } from '@/composables/useConfirm'
 import { usePrompt } from '@/composables/usePrompt'
 import { useToast } from '@/composables/useToast'
@@ -1169,6 +1170,7 @@ function onOutputScroll() {
   // invalidates — hide it (the popover, once open, dismisses on its own).
   clearTranslateTrigger()
   scheduleScrollSettle()
+  scrollMemory.schedule()
 }
 
 // --- Scroll anchoring across layout resizes ---------------------------------
@@ -1330,6 +1332,29 @@ const loadedTurnOffset = computed(() =>
     : Math.max(0, navTurns.value.length - promptTurns.value.length),
 )
 
+// Remember where the reader was in each session (anchored on these same prompt
+// landmarks) so reopening it — from its project tab, the History list or after
+// a reload — lands back on that spot instead of the end of the log.
+const scrollMemory = useScrollMemory({
+  runId: currentRunId,
+  projectId,
+  scrollEl: turnScrollEl,
+  turns: promptTurns,
+  loadedTurnOffset,
+  navTurns,
+  activeEntryIndex,
+  isNearBottom,
+  isReady: () =>
+    isViewingHistory.value
+      ? !historyLoading.value && (historyEntries.value.length > 0 || !!viewingLog.value)
+      : liveEntries.value.length > 0 || liveOutputLines.value.length > 0,
+  jumpTo: async (seq, offset) => {
+    if (!isViewingHistory.value || !historyHasStream.value) return
+    firstLoadedSeq.value = seq
+    await jumpToHistoryOffset(offset)
+  },
+})
+
 // One landmark is nothing to navigate between, and the legacy (non-stream)
 // renderer has no turn markers to walk.
 const showTurnNav = computed(
@@ -1476,8 +1501,37 @@ function clearTranslateTrigger() {
 // records when near the top, newer ones when near the bottom. Held off briefly
 // right after a jump (the programmatic scroll would otherwise instantly prepend).
 const HISTORY_SCROLL_MARGIN = 400
+// Whether the history pane is scrolled up from the end of the log — shows the
+// jump-to-latest button (a reopened session may land mid-way). One layout read
+// per frame, like the live pane's pin.
+const historyAwayFromBottom = ref(false)
+let historyBottomFrame = 0
+function scheduleHistoryBottomCheck() {
+  if (historyBottomFrame) return
+  historyBottomFrame = requestAnimationFrame(() => {
+    historyBottomFrame = 0
+    const el = historyEl.value
+    historyAwayFromBottom.value = !!el && !isNearBottom(el)
+  })
+}
+
+// Jump-to-latest for the history pane. A window loaded mid-file (after a jump
+// or a restored position) doesn't reach the end, so reload the tail instead.
+function scrollHistoryToLatest() {
+  const id = viewingLogRunId.value
+  if (!id) return
+  scrollMemory.forget(id)
+  if (historyHasMoreBelow.value) {
+    void loadRunLog(id)
+    return
+  }
+  if (historyEl.value) historyEl.value.scrollTop = historyEl.value.scrollHeight
+}
+
 function onHistoryScroll() {
   clearTranslateTrigger()
+  scrollMemory.schedule()
+  scheduleHistoryBottomCheck()
   const el = historyEl.value
   if (!el || historyLoadingMore.value || Date.now() < historyAutoLoadBlockedUntil) return
   if (el.scrollTop < HISTORY_SCROLL_MARGIN && historyHasMore.value) {
@@ -1597,8 +1651,11 @@ watch(
 
 // When switching to another run's live output, jump to its latest output.
 watch(currentRunId, (id) => {
-  stickToBottom.value = true
-  scrollOutputToBottom()
+  // A run the reader left mid-way is restored by `loadRunLog` instead; pinning
+  // here would let the next streamed chunk drag them away from it.
+  const memo = scrollMemory.peek(id)
+  stickToBottom.value = !memo
+  if (!memo) scrollOutputToBottom()
   scrollActiveSessionIntoView()
   closeRunSettingsMenu()
   clearTranslateTrigger()
@@ -1758,6 +1815,10 @@ function onAppFocus() {
   if (conductorStore.selectedId) void conductorStore.refreshDetail()
 }
 
+// Leaving the screen (e.g. switching project tabs remounts RunView): save the
+// reading position while the output is still in the DOM.
+onBeforeUnmount(() => scrollMemory.dispose())
+
 onUnmounted(() => {
   // Run event listeners live in the liveRuns store, so they intentionally
   // survive this component unmounting — that's what lets runs keep streaming
@@ -1771,6 +1832,10 @@ onUnmounted(() => {
   if (scrollSettleFrame) {
     cancelAnimationFrame(scrollSettleFrame)
     scrollSettleFrame = 0
+  }
+  if (historyBottomFrame) {
+    cancelAnimationFrame(historyBottomFrame)
+    historyBottomFrame = 0
   }
   window.removeEventListener('focus', onAppFocus)
   document.removeEventListener('mousedown', onRunSettingsPointerDown)
@@ -1822,6 +1887,7 @@ function clearHistoryView() {
   historyPreambleModel.value = null
   historyRevision.value = null
   historyToolEntries.value = []
+  historyAwayFromBottom.value = false
 }
 
 async function handleFetch(linkedIssueOverride?: number) {
@@ -1842,6 +1908,7 @@ async function handleFetch(linkedIssueOverride?: number) {
       run = await runsStore.fetchPr(projectId.value, target.repoId, target.number, linkedIssueOverride)
     }
     await runsStore.fetchRuns(projectId.value)
+    scrollMemory.flush()
     currentRunId.value = run.id
     clearHistoryView()
     needsLinkedIssue.value = false
@@ -1982,11 +2049,13 @@ async function launchConductor(
   engineChoice?: string,
 ) {
   const engine = engineChoice || effectiveEngine.value
+  scrollMemory.flush()
   currentRunId.value = runId
   clearHistoryView()
   live.reset(runId, projectId.value)
   if (goal) live.pushUser(runId, projectId.value, goal, images)
   stickToBottom.value = true // re-pin: the user just sent a message
+  scrollMemory.forget(runId)
   syncLoadedRunEngine(engine)
   setLocalRunStatus(runId, 'running', engine)
   await live.startListening(runId, projectId.value)
@@ -2815,6 +2884,7 @@ async function handleSendFollowUp() {
     // Show the user message right away in the timeline (running / resume paths).
     live.pushUser(id, projectId.value, prompt, images)
     stickToBottom.value = true // re-pin: the user just sent a message
+    scrollMemory.forget(id)
     scrollOutputToBottom()
 
     if (!wasRunning) {
@@ -3083,6 +3153,7 @@ async function handleDeleteRun(runId: string) {
     // Forget the deleted run so its project tab won't resume onto it, and
     // navigate away from a deep-linked deleted run so the URL stays consistent.
     tabsStore.forgetRun(runId)
+    scrollMemory.forget(runId)
     if (activeRunId.value === runId) {
       router.replace(`/projects/${projectId.value}`)
     }
@@ -3121,6 +3192,8 @@ async function handleClearAllRuns() {
 }
 
 async function loadRunLog(runId: string, opts: { preferDisk?: boolean; force?: boolean } = {}) {
+  // Save where the reader was in the outgoing run while its DOM is still up.
+  if (currentRunId.value !== runId) scrollMemory.flush()
   currentRunId.value = runId
   // Reflect this run's metadata so the chat composer can decide eligibility.
   const meta = runsStore.runs.find(r => r.id === runId)
@@ -3143,6 +3216,10 @@ async function loadRunLog(runId: string, opts: { preferDisk?: boolean; force?: b
     clearHistoryView()
     if (liveSession.status === 'running' && !live.isListening(runId)) {
       await live.startListening(runId, projectId.value)
+    }
+    if (!opts.preferDisk && !(await scrollMemory.restore(runId)) && currentRunId.value === runId) {
+      stickToBottom.value = true
+      scrollOutputToBottom()
     }
     return
   }
@@ -3180,6 +3257,7 @@ async function loadRunLog(runId: string, opts: { preferDisk?: boolean; force?: b
     historyPreambleModel.value = null
     historyRevision.value = null
     historyToolEntries.value = []
+    historyAwayFromBottom.value = false
     viewingLog.value = ''
     historyLoading.value = true
   }
@@ -3218,13 +3296,18 @@ async function loadRunLog(runId: string, opts: { preferDisk?: boolean; force?: b
       viewingLog.value = ''
       // Whole-run scan for the "files changed" list, off the critical path.
       void loadHistoryToolEntries(runId)
-      nextTick(() => {
+      const logSize = page.revision.size
+      nextTick(async () => {
         if (!historyEl.value) return
         if (isFocusRefresh && !wasNearBottom) {
           // Keep the user where they were reading — don't jump on refocus.
           historyEl.value.scrollTop = prevScrollTop
-        } else {
-          // Fresh load / switch run: jump to the end so the latest AI result is visible.
+          return
+        }
+        // Fresh load / switch run: back to where the reader left off, else the
+        // end so the latest AI result is visible.
+        if (!isFocusRefresh && (await scrollMemory.restore(runId, logSize))) return
+        if (historyEl.value && viewingLogRunId.value === runId) {
           historyEl.value.scrollTop = historyEl.value.scrollHeight
         }
       })
@@ -3238,6 +3321,7 @@ async function loadRunLog(runId: string, opts: { preferDisk?: boolean; force?: b
         historyHasStream.value = false
         historyRevision.value = page.revision
         viewingLog.value = content
+        if (!isFocusRefresh) void scrollMemory.restore(runId)
       } else {
         viewingLog.value = ''
         viewingLogRunId.value = null
@@ -4256,6 +4340,15 @@ function handleRefInput(val: string) {
               class="absolute bottom-4 right-4 z-10 flex items-center gap-1 rounded-full border border-border bg-card px-3 py-1.5 text-[11px] font-mono text-foreground/80 shadow-md transition-colors hover:bg-card hover:text-foreground cursor-pointer"
               :title="t('run.scrollToLatest')"
               @click="stickToBottom = true; scrollOutputToBottom()"
+            >
+              <ChevronDown class="h-3.5 w-3.5" :stroke-width="2" />
+              {{ t('run.latest') }}
+            </button>
+            <button
+              v-else-if="isViewingHistory && historyHasStream && !historyLoading && (historyAwayFromBottom || historyHasMoreBelow)"
+              class="absolute bottom-4 right-4 z-10 flex items-center gap-1 rounded-full border border-border bg-card px-3 py-1.5 text-[11px] font-mono text-foreground/80 shadow-md transition-colors hover:bg-card hover:text-foreground cursor-pointer"
+              :title="t('run.scrollToLatest')"
+              @click="scrollHistoryToLatest"
             >
               <ChevronDown class="h-3.5 w-3.5" :stroke-width="2" />
               {{ t('run.latest') }}
