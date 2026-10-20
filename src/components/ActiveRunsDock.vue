@@ -44,14 +44,16 @@ const rows = computed<DockRow[]>(() => {
     const pending = s.permissionQueue.length
     // Keep a row while running, while blocked on a permission, OR while a
     // finished run still has an unseen "done" notification.
-    if (s.status === 'running' || pending > 0 || s.notifyDone) {
-      const meta = runsStore.runMeta.get(s.runId)
+    // Workers never keep a "done" row — only their conductor notifies.
+    const meta = runsStore.runMeta.get(s.runId)
+    const notifyDone = s.notifyDone && !meta?.conductor_run_id
+    if (s.status === 'running' || pending > 0 || notifyDone) {
       out.push({
         runId: s.runId,
         projectId: s.projectId,
         status: s.status,
         pending,
-        done: s.notifyDone && s.status !== 'running',
+        done: notifyDone && s.status !== 'running',
         role: meta?.role ?? null,
         conductorRunId: meta?.conductor_run_id ?? null,
       })
@@ -71,7 +73,8 @@ const doneCount = computed(() => rows.value.filter((r) => r.done).length)
 // unit the user tracks here. Every worker spawned by a conductor is folded into
 // that conductor's row, which aggregates the workers' state (a running worker
 // keeps the conductor "running"; a worker awaiting permission floats the
-// conductor and lights its Review badge; finished workers show as a count).
+// conductor and lights its Review badge). A finished worker raises no "done"
+// notification of its own — the conductor's finish is the one that counts.
 // Clicking the conductor opens its session, where the worker sidebar lists the
 // individual workers. Grouping is purely a display concern: the row opens the
 // conductor's own run.id.
@@ -81,8 +84,6 @@ interface DisplayRow {
   isGroup: boolean
   /** Active workers owned by this conductor (badge on the row). */
   workerCount: number
-  /** Finished workers, surfaced as a row badge. */
-  groupDone: number
 }
 
 // Flattened view of `rows`: normal sessions and conductors only. A conductor's
@@ -145,31 +146,30 @@ const displayRows = computed<DisplayRow[]>(() => {
   const urgency = (t: Top): [number, number] => {
     if (t.kind === 'single') return [t.row.pending > 0 ? 1 : 0, t.row.done ? 1 : 0]
     const pending = t.header.pending + t.workers.reduce((s, w) => s + w.pending, 0)
-    const done = (t.header.done ? 1 : 0) + t.workers.filter((w) => w.done).length
-    return [pending > 0 ? 1 : 0, done > 0 ? 1 : 0]
+    return [pending > 0 ? 1 : 0, t.header.done ? 1 : 0]
   }
   tops.sort((a, b) => urgency(b)[0] - urgency(a)[0] || urgency(b)[1] - urgency(a)[1])
 
   const out: DisplayRow[] = []
   for (const top of tops) {
     if (top.kind === 'single') {
-      out.push({ row: top.row, isGroup: false, workerCount: 0, groupDone: 0 })
+      out.push({ row: top.row, isGroup: false, workerCount: 0 })
       continue
     }
     // Merge the workers' state onto the conductor row so one row conveys the
     // whole group: pending = any worker needs permission; running = the
-    // conductor or any worker is still streaming; done = everything settled.
+    // conductor or any worker is still streaming; done = the conductor itself
+    // finished and every worker settled.
     const groupPending = top.header.pending + top.workers.reduce((s, w) => s + w.pending, 0)
-    const groupDone = (top.header.done ? 1 : 0) + top.workers.filter((w) => w.done).length
     const anyRunning =
       top.header.status === 'running' || top.workers.some((w) => w.status === 'running')
     const merged: DockRow = {
       ...top.header,
       status: anyRunning ? 'running' : top.header.status,
       pending: groupPending,
-      done: !anyRunning && groupPending === 0 && groupDone > 0,
+      done: !anyRunning && groupPending === 0 && top.header.done,
     }
-    out.push({ row: merged, isGroup: true, workerCount: top.workers.length, groupDone })
+    out.push({ row: merged, isGroup: true, workerCount: top.workers.length })
   }
   return out
 })
@@ -242,7 +242,7 @@ function open(row: DockRow) {
 
     <div class="space-y-0.5 max-h-[210px] overflow-y-auto">
       <div
-        v-for="{ row, isGroup, workerCount, groupDone } in displayRows"
+        v-for="{ row, isGroup, workerCount } in displayRows"
         :key="row.runId"
         class="relative"
       >
@@ -284,14 +284,6 @@ function open(row: DockRow) {
             <Network class="h-2.5 w-2.5" :stroke-width="2" />
             {{ workerCount }}
           </span>
-          <!-- Finished workers of a conductor, surfaced as a count. -->
-          <span
-            v-if="isGroup && groupDone > 0"
-            class="flex items-center gap-0.5 rounded bg-emerald-500/15 px-1 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 shrink-0"
-          >
-            <CheckCircle2 class="h-3 w-3" :stroke-width="2" />
-            {{ groupDone }}
-          </span>
           <span
             v-if="row.pending > 0"
             class="flex items-center gap-0.5 rounded bg-amber-500/15 px-1 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400 shrink-0"
@@ -300,14 +292,14 @@ function open(row: DockRow) {
             Review
           </span>
           <span
-            v-else-if="!isGroup && row.done && isFailure(row.status)"
+            v-else-if="row.done && isFailure(row.status)"
             class="flex items-center gap-0.5 rounded bg-red-500/15 px-1 py-0.5 text-[10px] font-medium text-red-600 dark:text-red-400 shrink-0"
           >
             <XCircle class="h-3 w-3" :stroke-width="2" />
             {{ row.status === 'cancelled' ? 'Stopped' : 'Failed' }}
           </span>
           <span
-            v-else-if="!isGroup && row.done"
+            v-else-if="row.done"
             class="flex items-center gap-0.5 rounded bg-emerald-500/15 px-1 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 shrink-0"
           >
             <CheckCircle2 class="h-3 w-3" :stroke-width="2" />

@@ -437,7 +437,9 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
         // Flag a "run finished" notification for the Active runs dock. It stays
         // until the user opens this run (markSeen). If the run is already on
         // screen, RunView acknowledges it immediately so nothing shows.
-        s.notifyDone = true
+        // Conductor workers never flag one: their conductor relays the result,
+        // so only the conductor's own finish is worth surfacing.
+        s.notifyDone = !runsStore.runMeta.get(runId)?.conductor_run_id
         const r = runsStore.runs.find((x) => x.id === runId)
         if (r) r.status = event.payload.status as typeof r.status
         // Only refresh the shared run list when it actually belongs to this
