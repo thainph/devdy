@@ -388,9 +388,7 @@ fn stderr_is_sso_login_required(stderr: &str) -> bool {
     s.contains("error loading sso token")
         || s.contains("token has expired")
         || (s.contains("sso")
-            && (s.contains("login")
-                || s.contains("expired")
-                || s.contains("does not exist")))
+            && (s.contains("login") || s.contains("expired") || s.contains("does not exist")))
 }
 
 /// Parse `aws configure export-credentials --format process` output (credential
@@ -652,16 +650,25 @@ async fn resolve_github(
         Some(r) => r.get("github_account_id"),
         None => return Ok(None),
     };
-    let account_id = match account_id {
-        Some(id) => id,
-        None => return Ok(None), // not linked → fail-closed
-    };
+    match account_id {
+        Some(id) => resolve_github_account(provider, db, &id).await,
+        None => Ok(None), // not linked → fail-closed
+    }
+}
+
+/// Token + metadata for one GitHub account. Fail-closed `Ok(None)` when the PAT
+/// is missing.
+async fn resolve_github_account(
+    provider: &dyn TokenProvider,
+    db: &Db,
+    account_id: &str,
+) -> Result<Option<ResolvedToken>, String> {
     // Missing PAT → Ok(None) (fail-closed, per OQ#2). Do not leak the error.
     // Delegated to the provider seam; PatTokenProvider preserves this exactly
     // (`Err(_)`/`None`/`Unsupported` all collapse to fail-closed `Ok(None)`).
     let scope = TokenScope {
         provider_kind: "github".to_string(),
-        account_id: account_id.clone(),
+        account_id: account_id.to_string(),
         host: "github.com".to_string(),
     };
     let pt = match provider.fetch(&scope) {
@@ -669,16 +676,134 @@ async fn resolve_github(
         Ok(None) | Err(_) => return Ok(None),
     };
     // Label/username are best-effort; default label to the account id if absent.
-    let (label, username) = fetch_github_meta(db, &account_id).await;
+    let (label, username) = fetch_github_meta(db, account_id).await;
     // Prefer the account row username (unchanged); provider PAT supplies None.
     let username = username.or(pt.username);
     Ok(Some(ResolvedToken {
         token: pt.token,
         host: "github.com".to_string(),
-        account_label: label.unwrap_or(account_id),
+        account_label: label.unwrap_or_else(|| account_id.to_string()),
         username,
         expires_at: pt.expires_at,
     }))
+}
+
+/// GitHub accounts a run's `gh` calls resolve to. Ids only — no secret.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct GithubRunAccounts {
+    /// Account for ordinary `gh` calls (also git/commit identity when the run is
+    /// not pinned): the project's default account.
+    pub default: Option<String>,
+    /// Account for review work (`gh pr review`/`comment`, review API calls).
+    pub review: Option<String>,
+    /// Account `gh` uses for everything else in this run. Differs from `default`
+    /// only for pinned runs and `review_pr` runs.
+    pub general: Option<String>,
+}
+
+/// Decide which GitHub account a run's `gh` calls use:
+/// - run pinned to an account (`runs.github_account_id`, e.g. a review started
+///   from the PR inbox) → that account for every `gh` call;
+/// - `review_pr` run → the project's reviewer account for every `gh` call;
+/// - otherwise → default account, except review actions use the reviewer.
+/// The reviewer falls back to the default account when unset. A `run_id` that
+/// does not belong to `project_id` is ignored (a run can't borrow another
+/// project's account).
+pub async fn resolve_github_run_accounts(
+    db: &Db,
+    project_id: &str,
+    run_id: Option<&str>,
+) -> Result<GithubRunAccounts, String> {
+    let row = sqlx::query(
+        "SELECT github_account_id, github_reviewer_account_id FROM projects WHERE id = ?",
+    )
+    .bind(project_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some(row) = row else {
+        return Ok(GithubRunAccounts {
+            default: None,
+            review: None,
+            general: None,
+        });
+    };
+    let default: Option<String> = row.get("github_account_id");
+    let reviewer: Option<String> = row.get("github_reviewer_account_id");
+    let review = reviewer.or_else(|| default.clone());
+
+    // A Conductor worker inherits its conductor's pin / review type, so workers
+    // of an inbox review keep reviewing as the requested account.
+    let run = match run_id {
+        Some(id) => sqlx::query(
+            "SELECT r.type, r.github_account_id, c.type AS conductor_type, \
+                    c.github_account_id AS conductor_github_account_id \
+             FROM runs r \
+             LEFT JOIN runs c ON c.id = r.conductor_run_id AND c.project_id = r.project_id \
+             WHERE r.id = ? AND r.project_id = ?",
+        )
+        .bind(id)
+        .bind(project_id)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| e.to_string())?,
+        None => None,
+    };
+    let (is_review_run, pinned) = match run {
+        Some(r) => {
+            let run_type: Option<String> = r.get("type");
+            let conductor_type: Option<String> = r.get("conductor_type");
+            let pinned: Option<String> = r.get("github_account_id");
+            let conductor_pinned: Option<String> = r.get("conductor_github_account_id");
+            (
+                run_type.as_deref() == Some("review_pr")
+                    || conductor_type.as_deref() == Some("review_pr"),
+                pinned.or(conductor_pinned),
+            )
+        }
+        None => (false, None),
+    };
+
+    Ok(if let Some(pinned) = pinned {
+        GithubRunAccounts {
+            default,
+            review: Some(pinned.clone()),
+            general: Some(pinned),
+        }
+    } else if is_review_run {
+        GithubRunAccounts {
+            default,
+            general: review.clone(),
+            review,
+        }
+    } else {
+        GithubRunAccounts {
+            general: default.clone(),
+            default,
+            review,
+        }
+    })
+}
+
+/// Resolve the token for one `gh` call of a run, picking the account with
+/// [`resolve_github_run_accounts`]. Fail-closed `Ok(None)` when no account
+/// applies or its PAT is missing.
+pub async fn resolve_gh_token_for_run(
+    db: &Db,
+    project_id: &str,
+    run_id: Option<&str>,
+    review_action: bool,
+) -> Result<Option<ResolvedToken>, String> {
+    let accounts = resolve_github_run_accounts(db, project_id, run_id).await?;
+    let account = if review_action {
+        accounts.review
+    } else {
+        accounts.general
+    };
+    match account {
+        Some(id) => resolve_github_account(&PatTokenProvider, db, &id).await,
+        None => Ok(None),
+    }
 }
 
 async fn fetch_github_meta(db: &Db, account_id: &str) -> (Option<String>, Option<String>) {
@@ -905,26 +1030,47 @@ pub async fn resolve_commit_identity(db: &Db, project_id: &str) -> CommitIdentit
 /// (AC6). NEVER includes a token/PAT — only label / username / host metadata.
 ///
 /// When both GitHub and GitLab are linked, both provider lines are listed.
-pub async fn build_account_context(db: &Db, project_id: &str) -> Option<String> {
-    let row = sqlx::query("SELECT github_account_id, gitlab_account_id FROM projects WHERE id = ?")
+pub async fn build_account_context(
+    db: &Db,
+    project_id: &str,
+    run_id: Option<&str>,
+) -> Option<String> {
+    let row = sqlx::query("SELECT gitlab_account_id FROM projects WHERE id = ?")
         .bind(project_id)
         .fetch_optional(db)
         .await
         .ok()
         .flatten()?;
-    let github_id: Option<String> = row.get("github_account_id");
     let gitlab_id: Option<String> = row.get("gitlab_account_id");
+    let github = resolve_github_run_accounts(db, project_id, run_id)
+        .await
+        .ok()?;
 
     let mut lines: Vec<String> = Vec::new();
 
-    if let Some(id) = github_id {
-        let (label, username) = fetch_github_meta(db, &id).await;
-        let label = label.unwrap_or(id);
-        lines.push(account_line(
-            "GitHub",
-            &label,
-            username.as_deref(),
-            "github.com",
+    if let Some(id) = &github.general {
+        lines.push(github_account_line(db, "GitHub", id).await);
+    }
+    if let Some(id) = github
+        .review
+        .as_ref()
+        .filter(|r| Some(*r) != github.general.as_ref())
+    {
+        let line = github_account_line(db, "GitHub reviewer", id).await;
+        lines.push(format!(
+            "{line} — used automatically for review work: `gh pr review`, `gh pr comment` \
+             and PR review/comment API calls (`gh api repos/<o>/<r>/pulls/<n>/reviews|comments`). \
+             Review and comment on PRs through those commands; other gh calls run as the GitHub account above."
+        ));
+    }
+    if let Some(id) = github
+        .default
+        .as_ref()
+        .filter(|d| Some(*d) != github.general.as_ref())
+    {
+        let line = github_account_line(db, "Git", id).await;
+        lines.push(format!(
+            "{line} — used for git fetch/push and commit identity."
         ));
     }
     if let Some(id) = gitlab_id {
@@ -982,6 +1128,13 @@ pub async fn build_account_context(db: &Db, project_id: &str) -> Option<String> 
         // Cumulative: account context first, ssh context appended after.
         Some(format!("{account_block}\n\n{ssh_block}"))
     }
+}
+
+/// One GitHub account line for the account context (label/username only).
+async fn github_account_line(db: &Db, provider: &str, account_id: &str) -> String {
+    let (label, username) = fetch_github_meta(db, account_id).await;
+    let label = label.unwrap_or_else(|| account_id.to_string());
+    account_line(provider, &label, username.as_deref(), "github.com")
 }
 
 /// Format one provider line for the account context. Drops the `(@username)`
@@ -1069,7 +1222,11 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .expect("mem db");
-        sqlx::query("CREATE TABLE projects (id TEXT PRIMARY KEY, github_account_id TEXT, gitlab_account_id TEXT)")
+        sqlx::query("CREATE TABLE projects (id TEXT PRIMARY KEY, github_account_id TEXT, github_reviewer_account_id TEXT, gitlab_account_id TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE runs (id TEXT PRIMARY KEY, project_id TEXT, type TEXT, github_account_id TEXT, conductor_run_id TEXT)")
             .execute(&pool)
             .await
             .unwrap();
@@ -1612,7 +1769,9 @@ mod tests {
         assert!(stderr_is_sso_login_required(
             "The SSO session associated with this profile has expired"
         ));
-        assert!(stderr_is_sso_login_required("Token has expired and refresh failed"));
+        assert!(stderr_is_sso_login_required(
+            "Token has expired and refresh failed"
+        ));
         // A generic non-SSO failure must NOT be classified as login-required.
         assert!(!stderr_is_sso_login_required(
             "The config profile (foo) could not be found"
@@ -1636,5 +1795,200 @@ mod tests {
         assert!(get_cached_aws_secret(profile, now).is_some());
         // Within the skew window of expiry → treated as stale (re-mint).
         assert!(get_cached_aws_secret(profile, now + 3600 - AWS_CREDS_SKEW_SECS + 1).is_none());
+    }
+
+    // ---- reviewer account / per-run GitHub account ----
+
+    async fn seed_reviewer_project(db: &Db, reviewer: Option<&str>) {
+        for (id, label, user) in [
+            ("gh1", "main", "author"),
+            ("gh2", "rev", "reviewer"),
+            ("gh3", "inbox", "asked"),
+        ] {
+            sqlx::query("INSERT INTO github_accounts (id, label, username) VALUES (?, ?, ?)")
+                .bind(id)
+                .bind(label)
+                .bind(user)
+                .execute(db)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO projects (id, github_account_id, github_reviewer_account_id) VALUES ('p1', 'gh1', ?)")
+            .bind(reviewer)
+            .execute(db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO projects (id, github_account_id) VALUES ('p2', 'gh1')")
+            .execute(db)
+            .await
+            .unwrap();
+        for (id, project, ty, pinned) in [
+            ("run-task", "p1", "task", None),
+            ("run-review", "p1", "review_pr", None),
+            ("run-inbox", "p1", "review_pr", Some("gh3")),
+            ("run-other", "p2", "review_pr", Some("gh3")),
+        ] {
+            sqlx::query(
+                "INSERT INTO runs (id, project_id, type, github_account_id) VALUES (?, ?, ?, ?)",
+            )
+            .bind(id)
+            .bind(project)
+            .bind(ty)
+            .bind(pinned)
+            .execute(db)
+            .await
+            .unwrap();
+        }
+    }
+
+    fn accounts(default: &str, review: &str, general: &str) -> GithubRunAccounts {
+        GithubRunAccounts {
+            default: Some(default.to_string()),
+            review: Some(review.to_string()),
+            general: Some(general.to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn github_run_accounts_default_run_routes_reviews_to_reviewer() {
+        let db = mem_db().await;
+        seed_reviewer_project(&db, Some("gh2")).await;
+        let a = resolve_github_run_accounts(&db, "p1", Some("run-task"))
+            .await
+            .unwrap();
+        assert_eq!(a, accounts("gh1", "gh2", "gh1"));
+        // No run id (e.g. legacy shim) behaves like an ordinary run.
+        let a = resolve_github_run_accounts(&db, "p1", None).await.unwrap();
+        assert_eq!(a, accounts("gh1", "gh2", "gh1"));
+    }
+
+    #[tokio::test]
+    async fn github_run_accounts_reviewer_falls_back_to_default() {
+        let db = mem_db().await;
+        seed_reviewer_project(&db, None).await;
+        let a = resolve_github_run_accounts(&db, "p1", Some("run-task"))
+            .await
+            .unwrap();
+        assert_eq!(a, accounts("gh1", "gh1", "gh1"));
+        let a = resolve_github_run_accounts(&db, "p1", Some("run-review"))
+            .await
+            .unwrap();
+        assert_eq!(a, accounts("gh1", "gh1", "gh1"));
+    }
+
+    #[tokio::test]
+    async fn github_run_accounts_review_run_uses_reviewer_for_everything() {
+        let db = mem_db().await;
+        seed_reviewer_project(&db, Some("gh2")).await;
+        let a = resolve_github_run_accounts(&db, "p1", Some("run-review"))
+            .await
+            .unwrap();
+        assert_eq!(a, accounts("gh1", "gh2", "gh2"));
+    }
+
+    #[tokio::test]
+    async fn github_run_accounts_pinned_run_wins() {
+        let db = mem_db().await;
+        seed_reviewer_project(&db, Some("gh2")).await;
+        let a = resolve_github_run_accounts(&db, "p1", Some("run-inbox"))
+            .await
+            .unwrap();
+        assert_eq!(a, accounts("gh1", "gh3", "gh3"));
+    }
+
+    #[tokio::test]
+    async fn github_run_accounts_ignores_run_of_another_project() {
+        let db = mem_db().await;
+        seed_reviewer_project(&db, Some("gh2")).await;
+        // run-other is pinned to gh3 but belongs to p2: p1 must not borrow it.
+        let a = resolve_github_run_accounts(&db, "p1", Some("run-other"))
+            .await
+            .unwrap();
+        assert_eq!(a, accounts("gh1", "gh2", "gh1"));
+    }
+
+    #[tokio::test]
+    async fn account_context_lists_reviewer_line() {
+        let db = mem_db().await;
+        seed_reviewer_project(&db, Some("gh2")).await;
+        let ctx = build_account_context(&db, "p1", Some("run-task"))
+            .await
+            .unwrap();
+        assert!(
+            ctx.contains("- GitHub: account \"main\" (@author) on github.com"),
+            "{ctx}"
+        );
+        assert!(
+            ctx.contains("- GitHub reviewer: account \"rev\" (@reviewer)"),
+            "{ctx}"
+        );
+        assert!(ctx.contains("`gh pr review`"), "{ctx}");
+        assert!(!ctx.contains("- Git: "), "{ctx}");
+    }
+
+    #[tokio::test]
+    async fn account_context_pinned_run_names_git_account() {
+        let db = mem_db().await;
+        seed_reviewer_project(&db, Some("gh2")).await;
+        let ctx = build_account_context(&db, "p1", Some("run-inbox"))
+            .await
+            .unwrap();
+        assert!(
+            ctx.contains("- GitHub: account \"inbox\" (@asked)"),
+            "{ctx}"
+        );
+        assert!(!ctx.contains("GitHub reviewer"), "{ctx}");
+        assert!(ctx.contains("- Git: account \"main\" (@author)"), "{ctx}");
+    }
+
+    #[tokio::test]
+    async fn account_context_without_reviewer_is_unchanged() {
+        let db = mem_db().await;
+        seed_reviewer_project(&db, None).await;
+        let ctx = build_account_context(&db, "p1", Some("run-task"))
+            .await
+            .unwrap();
+        assert!(
+            ctx.contains("- GitHub: account \"main\" (@author)"),
+            "{ctx}"
+        );
+        assert!(!ctx.contains("GitHub reviewer"), "{ctx}");
+        assert!(!ctx.contains("- Git: "), "{ctx}");
+    }
+
+    #[tokio::test]
+    async fn github_run_accounts_worker_inherits_conductor() {
+        let db = mem_db().await;
+        seed_reviewer_project(&db, Some("gh2")).await;
+        for (id, parent) in [
+            ("w-inbox", "run-inbox"),
+            ("w-review", "run-review"),
+            ("w-task", "run-task"),
+            ("w-other", "run-other"),
+        ] {
+            sqlx::query("INSERT INTO runs (id, project_id, type, conductor_run_id) VALUES (?, 'p1', 'task', ?)")
+                .bind(id)
+                .bind(parent)
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+        let a = resolve_github_run_accounts(&db, "p1", Some("w-inbox"))
+            .await
+            .unwrap();
+        assert_eq!(a, accounts("gh1", "gh3", "gh3"));
+        let a = resolve_github_run_accounts(&db, "p1", Some("w-review"))
+            .await
+            .unwrap();
+        assert_eq!(a, accounts("gh1", "gh2", "gh2"));
+        let a = resolve_github_run_accounts(&db, "p1", Some("w-task"))
+            .await
+            .unwrap();
+        assert_eq!(a, accounts("gh1", "gh2", "gh1"));
+        // A conductor from another project never lends its pin.
+        let a = resolve_github_run_accounts(&db, "p1", Some("w-other"))
+            .await
+            .unwrap();
+        assert_eq!(a, accounts("gh1", "gh2", "gh1"));
     }
 }

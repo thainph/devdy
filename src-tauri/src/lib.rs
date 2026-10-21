@@ -43,6 +43,7 @@ use commands::github::{
 };
 use commands::github_accounts::{
     create_github_account, delete_github_account, list_github_accounts, set_project_github_account,
+    set_project_github_reviewer_account, get_run_github_accounts,
     update_github_account, validate_github_account,
 };
 use commands::gitlab_accounts::{
@@ -484,6 +485,8 @@ pub fn run() {
             delete_github_account,
             validate_github_account,
             set_project_github_account,
+            set_project_github_reviewer_account,
+            get_run_github_accounts,
             list_gitlab_accounts,
             create_gitlab_account,
             update_gitlab_account,

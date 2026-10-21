@@ -131,11 +131,27 @@ const isSessionWindow = IS_SESSION_WINDOW
 
 // GĐ6 (AC3): the project's active git account(s). Shows one badge per linked
 // provider (GitHub first, then GitLab) so both attached accounts are visible.
+// GitHub accounts the open session actually uses: `general` for ordinary gh
+// calls, `review` for review/comment actions (a pinned PR-inbox review or a
+// review session differs from the project default). Null until resolved.
+interface RunGithubAccounts { default: string | null; review: string | null; general: string | null }
+const runGithubAccounts = ref<RunGithubAccounts | null>(null)
+async function loadRunGithubAccounts() {
+  try {
+    runGithubAccounts.value = await invoke<RunGithubAccounts>('get_run_github_accounts', {
+      projectId: projectId.value,
+      runId: currentRunId.value,
+    })
+  } catch {
+    runGithubAccounts.value = null
+  }
+}
+
 const activeAccounts = computed(() => {
   // Tone per provider is kept in sync with the Projects list: GitHub=info,
   // GitLab=warning (server chips use status tones, AWS uses primary).
   const badges: { key: string; icon: typeof Github; tone: 'info' | 'warning'; username: string; title: string }[] = []
-  const ghId = project.value?.github_account_id
+  const ghId = runGithubAccounts.value?.general ?? project.value?.github_account_id
   if (ghId) {
     const acc = ghStore.accounts.find(a => a.id === ghId)
     if (acc) {
@@ -145,6 +161,19 @@ const activeAccounts = computed(() => {
         tone: 'info',
         username: acc.username ? `@${acc.username}` : acc.label,
         title: `GitHub account: ${acc.label}${acc.username ? ` (@${acc.username})` : ''}`,
+      })
+    }
+  }
+  const reviewId = runGithubAccounts.value?.review
+  if (reviewId && reviewId !== ghId) {
+    const acc = ghStore.accounts.find(a => a.id === reviewId)
+    if (acc) {
+      badges.push({
+        key: 'github-review',
+        icon: Github,
+        tone: 'info',
+        username: `review ${acc.username ? `@${acc.username}` : acc.label}`,
+        title: `GitHub reviewer account (PR reviews/comments): ${acc.label}${acc.username ? ` (@${acc.username})` : ''}`,
       })
     }
   }
@@ -1706,6 +1735,14 @@ watch(activeRunId, (id) => {
 watch(projectId, () => {
   loadProjectServers()
 })
+
+// Re-resolve the session's GitHub accounts when the project, the open session,
+// or the project's account links change.
+watch(
+  [projectId, currentRunId, () => project.value?.github_account_id, () => project.value?.github_reviewer_account_id],
+  () => { void loadRunGithubAccounts() },
+  { immediate: true },
+)
 
 onMounted(async () => {
   loadMarkdown()
