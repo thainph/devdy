@@ -76,7 +76,16 @@ async function handleReview(item: PrInboxItem) {
     const title = [`PR #${item.number}`, item.author_login && `@${item.author_login}`, item.title?.trim()]
       .filter(Boolean)
       .join(' · ')
-    const run = await runsStore.fetchPr(item.project_id, item.repo_id, item.number, undefined, true, title)
+    const run = await runsStore.fetchPr(
+      item.project_id,
+      item.repo_id,
+      item.number,
+      undefined,
+      true,
+      title,
+      // Review as the account that was asked to review, not the project default.
+      item.account_id,
+    )
     // Every session is a conductor: launch it like RunView's Issue/PR Run button
     // — empty goal (default review prompt, labelled "PR #N"), default worker cap,
     // and the effective permission mode (this screen has no per-run pick).

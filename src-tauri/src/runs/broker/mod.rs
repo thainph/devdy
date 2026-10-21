@@ -433,10 +433,21 @@ async fn process_line(
             .map(|a| a.eq_ignore_ascii_case("credential"))
             .unwrap_or(false);
 
-    // 4. Token resolution (fail-closed).
-    match token::resolve_token_for_project(db, &req.project_id, &req.tool, req.host.as_deref())
+    // 4. Token resolution (fail-closed). `gh` is run-aware: a pinned/review run
+    // or a review action (`gh pr review`/`comment`, review API calls) resolves to
+    // the reviewer account; git keeps the project's default account.
+    let resolved = if req.tool == "gh" || req.tool == "github" {
+        token::resolve_gh_token_for_run(
+            db,
+            &req.project_id,
+            req.run_id.as_deref(),
+            policy::is_github_review_action(&req.argv),
+        )
         .await
-    {
+    } else {
+        token::resolve_token_for_project(db, &req.project_id, &req.tool, req.host.as_deref()).await
+    };
+    match resolved {
         Ok(Some(resolved)) => {
             audit::audit_request(run_id, &req.tool, &req.argv, "allow", None);
             if is_credential {
@@ -650,7 +661,11 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        sqlx::query("CREATE TABLE projects (id TEXT PRIMARY KEY, github_account_id TEXT, gitlab_account_id TEXT, aws_account_id TEXT, azure_account_id TEXT)")
+        sqlx::query("CREATE TABLE projects (id TEXT PRIMARY KEY, github_account_id TEXT, github_reviewer_account_id TEXT, gitlab_account_id TEXT, aws_account_id TEXT, azure_account_id TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE runs (id TEXT PRIMARY KEY, project_id TEXT, type TEXT, github_account_id TEXT, conductor_run_id TEXT)")
             .execute(&pool)
             .await
             .unwrap();

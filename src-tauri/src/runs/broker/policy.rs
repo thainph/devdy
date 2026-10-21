@@ -546,6 +546,52 @@ fn evaluate_az(argv: &[String]) -> PolicyDecision {
     ask("Azure write or unlisted az command — needs confirmation")
 }
 
+/// Is this `gh` invocation review work (reviewing / commenting on a PR)? Such
+/// calls run as the project's reviewer account instead of the default one.
+/// Pure, no I/O. Covers `gh pr review`, `gh pr comment`, REST calls to a PR's
+/// reviews/review comments (`gh api repos/o/r/pulls/<n>/reviews|comments`,
+/// `.../pulls/comments/<id>`), and GraphQL review mutations.
+pub fn is_github_review_action(argv: &[String]) -> bool {
+    let (pos, _flags) = split_argv(argv);
+    match (
+        pos.first().map(|s| s.as_str()),
+        pos.get(1).map(|s| s.as_str()),
+    ) {
+        (Some("pr"), Some("review")) | (Some("pr"), Some("comment")) => true,
+        (Some("api"), _) => argv.iter().any(|a| {
+            let a = a.to_ascii_lowercase();
+            is_pull_review_path(&a)
+                || [
+                    "addpullrequestreview",
+                    "submitpullrequestreview",
+                    "addpullrequestreviewthread",
+                    "addpullrequestreviewcomment",
+                ]
+                .iter()
+                .any(|m| a.contains(m))
+        }),
+        _ => false,
+    }
+}
+
+/// `.../pulls/<n>/reviews...`, `.../pulls/<n>/comments...` or
+/// `.../pulls/comments/...` (edit/reply to a review comment).
+fn is_pull_review_path(arg: &str) -> bool {
+    let Some(idx) = arg.find("pulls/") else {
+        return false;
+    };
+    let mut segs = arg[idx + "pulls/".len()..]
+        .split(['/', '?'])
+        .filter(|s| !s.is_empty());
+    match (segs.next(), segs.next()) {
+        (Some("comments"), _) => true,
+        (Some(n), Some(kind)) => {
+            n.chars().all(|c| c.is_ascii_digit()) && matches!(kind, "reviews" | "comments")
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1095,5 +1141,64 @@ mod tests {
             evaluate_policy("gh", &argv(&["PR", "List"])),
             PolicyDecision::Allow
         );
+    }
+
+    // ---- reviewer account routing ----
+    #[test]
+    fn review_action_pr_review_and_comment() {
+        assert!(is_github_review_action(&argv(&[
+            "pr",
+            "review",
+            "12",
+            "--approve"
+        ])));
+        assert!(is_github_review_action(&argv(&[
+            "PR", "Comment", "12", "--body", "x"
+        ])));
+        assert!(!is_github_review_action(&argv(&[
+            "pr", "create", "--title", "x"
+        ])));
+        assert!(!is_github_review_action(&argv(&["pr", "view", "12"])));
+        assert!(!is_github_review_action(&argv(&["issue", "comment", "3"])));
+    }
+
+    #[test]
+    fn review_action_api_paths() {
+        for path in [
+            "repos/o/r/pulls/12/reviews",
+            "/repos/o/r/pulls/12/reviews/99/events",
+            "repos/o/r/pulls/12/comments",
+            "repos/o/r/pulls/12/comments?per_page=100",
+            "repos/o/r/pulls/comments/55/replies",
+        ] {
+            assert!(
+                is_github_review_action(&argv(&["api", "-X", "POST", path])),
+                "{path}"
+            );
+        }
+        for path in [
+            "repos/o/r/pulls/12",
+            "repos/o/r/pulls/12/files",
+            "repos/o/r/pulls/12/requested_reviewers",
+            "repos/o/r/issues/12/comments",
+        ] {
+            assert!(!is_github_review_action(&argv(&["api", path])), "{path}");
+        }
+    }
+
+    #[test]
+    fn review_action_graphql_mutation() {
+        assert!(is_github_review_action(&argv(&[
+            "api",
+            "graphql",
+            "-f",
+            "query=mutation { addPullRequestReview(input: {}) { clientMutationId } }",
+        ])));
+        assert!(!is_github_review_action(&argv(&[
+            "api",
+            "graphql",
+            "-f",
+            "query={ viewer { login } }",
+        ])));
     }
 }

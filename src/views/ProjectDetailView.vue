@@ -309,6 +309,22 @@ const accountOptions = computed(() => [
   })),
 ])
 
+const reviewerAccountId = computed(() => project.value?.github_reviewer_account_id ?? null)
+const reviewerAccount = computed(() => ghStore.accounts.find(a => a.id === reviewerAccountId.value) ?? null)
+const reviewerAccountOptions = computed(() => [
+  { value: '', label: t('projectDetail.reviewerSameAsDefault') },
+  ...accountOptions.value.slice(1),
+])
+
+async function handleSelectReviewerAccount(accountId: string) {
+  try {
+    await projectStore.setProjectReviewerAccount(projectId.value, accountId || null)
+    toast.success(t('projectDetail.toastReviewerAccountLinked'))
+  } catch (e) {
+    toast.error(String(e))
+  }
+}
+
 async function handleSelectAccount(accountId: string) {
   try {
     await projectStore.setProjectAccount(projectId.value, accountId || null)
@@ -1357,19 +1373,44 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
               <RouterLink to="/settings" class="text-primary hover:underline">{{ t('projectDetail.addInSettings') }}</RouterLink>
               {{ t('projectDetail.toLinkHere') }}
             </div>
-            <AppSelect
-              size="sm"
-              v-else
-              :model-value="linkedAccountId ?? ''"
-              :options="accountOptions"
-              :placeholder="t('projectDetail.selectAccountPlaceholder')"
-              @update:model-value="handleSelectAccount"
-            />
+            <template v-else>
+              <div class="space-y-1.5">
+                <label class="text-[11px] font-medium text-muted-foreground">{{ t('projectDetail.defaultGithubAccount') }}</label>
+                <AppSelect
+                  size="sm"
+                  :model-value="linkedAccountId ?? ''"
+                  :options="accountOptions"
+                  :placeholder="t('projectDetail.selectAccountPlaceholder')"
+                  @update:model-value="handleSelectAccount"
+                />
+                <p class="text-[11px] text-muted-foreground">{{ t('projectDetail.defaultGithubAccountHint') }}</p>
+                <div v-if="linkedAccount" class="text-[11px] text-muted-foreground">
+                  <span v-if="linkedAccount.username">@{{ linkedAccount.username }}</span>
+                  <span v-if="linkedAccount.scopes.length"> · {{ linkedAccount.scopes.join(', ') }}</span>
+                </div>
+              </div>
 
-            <div v-if="linkedAccount" class="text-[11px] text-muted-foreground">
-              <span v-if="linkedAccount.username">@{{ linkedAccount.username }}</span>
-              <span v-if="linkedAccount.scopes.length"> · {{ linkedAccount.scopes.join(', ') }}</span>
-            </div>
+              <div class="space-y-1.5">
+                <label class="text-[11px] font-medium text-muted-foreground">{{ t('projectDetail.reviewerGithubAccount') }}</label>
+                <AppSelect
+                  size="sm"
+                  :model-value="reviewerAccountId ?? ''"
+                  :options="reviewerAccountOptions"
+                  @update:model-value="handleSelectReviewerAccount"
+                />
+                <p class="text-[11px] text-muted-foreground">{{ t('projectDetail.reviewerGithubAccountHint') }}</p>
+                <div v-if="reviewerAccount" class="text-[11px] text-muted-foreground">
+                  <span v-if="reviewerAccount.username">@{{ reviewerAccount.username }}</span>
+                  <span v-if="reviewerAccount.scopes.length"> · {{ reviewerAccount.scopes.join(', ') }}</span>
+                </div>
+                <div
+                  v-if="reviewerAccountId && reviewerAccountId === linkedAccountId"
+                  class="text-[11px] text-amber-500 bg-amber-500/10 border border-amber-500/20 rounded p-2.5"
+                >
+                  {{ t('projectDetail.reviewerSameAccountWarning') }}
+                </div>
+              </div>
+            </template>
           </Card>
         </div>
 

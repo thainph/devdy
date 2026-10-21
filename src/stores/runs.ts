@@ -250,6 +250,7 @@ export const useRunsStore = defineStore('runs', () => {
     linked_issue?: number,
     allow_missing_issue?: boolean,
     title?: string,
+    github_account_id?: string,
   ): Promise<RunRecord> {
     return invoke<RunRecord>('fetch_pr', {
       projectId: project_id,
@@ -258,6 +259,7 @@ export const useRunsStore = defineStore('runs', () => {
       linkedIssue: linked_issue ?? null,
       allowMissingIssue: allow_missing_issue ?? false,
       title: title ?? null,
+      githubAccountId: github_account_id ?? null,
     })
   }
 

@@ -76,13 +76,17 @@ async fn validate_token(pat: &str) -> Result<PatValidation, String> {
     let username = json["login"].as_str().unwrap_or("unknown").to_string();
     let has_repo_scope = scopes.iter().any(|s| s == "repo" || s == "public_repo");
 
-    Ok(PatValidation { username, scopes, has_repo_scope })
+    Ok(PatValidation {
+        username,
+        scopes,
+        has_repo_scope,
+    })
 }
 
 #[tauri::command]
 pub async fn list_github_accounts(db: State<'_, Db>) -> Result<Vec<GithubAccount>, String> {
     let rows = sqlx::query(
-        "SELECT id, label, username, scopes, created_at FROM github_accounts ORDER BY label"
+        "SELECT id, label, username, scopes, created_at FROM github_accounts ORDER BY label",
     )
     .fetch_all(db.inner())
     .await
@@ -158,7 +162,7 @@ pub async fn update_github_account(
     }
 
     let row = sqlx::query(
-        "SELECT id, label, username, scopes, created_at FROM github_accounts WHERE id = ?"
+        "SELECT id, label, username, scopes, created_at FROM github_accounts WHERE id = ?",
     )
     .bind(&id)
     .fetch_one(db.inner())
@@ -213,4 +217,38 @@ pub async fn set_project_github_account(
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Link (or clear with `None`) the project's optional reviewer account — used for
+/// PR reviews/comments; when unset, review work falls back to the default account.
+#[tauri::command]
+pub async fn set_project_github_reviewer_account(
+    db: State<'_, Db>,
+    project_id: String,
+    account_id: Option<String>,
+) -> Result<(), String> {
+    sqlx::query("UPDATE projects SET github_reviewer_account_id = ? WHERE id = ?")
+        .bind(&account_id)
+        .bind(&project_id)
+        .execute(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Which GitHub accounts a session uses (`general` for ordinary gh calls,
+/// `review` for review/comment actions, `default` for git). Ids only — lets the
+/// session view badge the account a pinned/review run actually runs as.
+#[tauri::command]
+pub async fn get_run_github_accounts(
+    db: State<'_, Db>,
+    project_id: String,
+    run_id: Option<String>,
+) -> Result<crate::runs::broker::token::GithubRunAccounts, String> {
+    crate::runs::broker::token::resolve_github_run_accounts(
+        db.inner(),
+        &project_id,
+        run_id.as_deref(),
+    )
+    .await
 }
