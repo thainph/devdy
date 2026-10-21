@@ -15,7 +15,8 @@
     "usage": "Usage & Budget",
     "remote": "Remote Control",
     "prompts": "Prompt Templates",
-    "inbox": "Inbox API"
+    "inbox": "Inbox API",
+    "azure": "Azure Accounts"
   },
   "general": {
     "theme": "Theme",
@@ -378,5 +379,35 @@
     "regenerated": "New token generated",
     "regenerateHint": "Invalidates the old token immediately.",
     "usage": "Request format"
+  },
+  "azure": {
+    "title": "Azure Accounts",
+    "intro": "Add Azure accounts and link one to each project. Each account is its own az login, isolated and managed by Devdy, so several tenants and identities can coexist. az and terraform in runs of a linked project use that account.",
+    "isolationWarning": "Avoid relying on a global az login for agent work. Devdy keeps each account's Azure CLI session in its own directory and points runs at the linked one.",
+    "validate": "Validate",
+    "valid": "Valid",
+    "login": "Sign in",
+    "loginExpired": "Not signed in or the Azure session expired. Click \"Sign in\" to sign in again.",
+    "loggingIn": "Complete sign-in in your browser…",
+    "lastValidated": "Validated {time}",
+    "neverValidated": "Never validated",
+    "noSubscription": "No subscription selected",
+    "labelPlaceholder": "Label",
+    "addLabelPlaceholder": "Label (e.g. Work Azure, Production)",
+    "tenantPlaceholder": "Tenant ID or domain (optional)",
+    "subscriptionPlaceholder": "Subscription ID or name (optional)",
+    "subscriptionLabel": "Subscription",
+    "subscriptionSelectPlaceholder": "Select a subscription…",
+    "subscriptionsLoading": "Loading subscriptions…",
+    "subscriptionDefault": "default",
+    "tagsPlaceholder": "Tags (optional)",
+    "saving": "Saving…",
+    "addAccount": "Add account",
+    "addHint": "Adding an account opens your browser for az login. Leave tenant empty to use your home tenant, and subscription empty to use its default subscription.",
+    "addWaiting": "Complete sign-in in your browser. This waits up to about 5 minutes.",
+    "addLoginFailed": "Azure sign-in did not complete. If the account now appears in the list, click \"Sign in\" on it; otherwise add it again.",
+    "accountAdded": "Azure account added",
+    "deleteTitle": "Delete Azure account",
+    "deleteMessage": "Delete this Azure account and its sign-in session? Projects linked to it will be unlinked."
   }
 }

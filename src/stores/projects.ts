@@ -13,6 +13,7 @@ export interface Project {
   github_account_id: string | null
   gitlab_account_id: string | null
   aws_account_id: string | null
+  azure_account_id: string | null
   claude_account_id: string | null
   github_project_board_url: string | null
   github_project_field_mappings: string | null
@@ -280,6 +281,11 @@ export const useProjectsStore = defineStore('projects', () => {
     await fetchProjects()
   }
 
+  async function setProjectAzureAccount(project_id: string, account_id: string | null): Promise<void> {
+    await invoke('set_project_azure_account', { projectId: project_id, accountId: account_id })
+    await fetchProjects()
+  }
+
   async function setProjectClaudeAccount(project_id: string, account_id: string | null): Promise<void> {
     await invoke('set_project_claude_account', { projectId: project_id, accountId: account_id })
     await fetchProjects()
@@ -346,7 +352,7 @@ export const useProjectsStore = defineStore('projects', () => {
     fetchProjects, reorder, detectProjectInfo, addProject, removeProject, updateProject,
     resolveProjectBoard, listRepos, addRepo, updateRepo, removeRepo,
     getAppliedSkills, applySkill, removeSkillFromProject,
-    setProjectAccount, setProjectGitlabAccount, setProjectAwsAccount, setProjectClaudeAccount, fetchConflicts, resolveConflict,
+    setProjectAccount, setProjectGitlabAccount, setProjectAwsAccount, setProjectAzureAccount, setProjectClaudeAccount, fetchConflicts, resolveConflict,
     openInVscode, openInFolder, openInTerminal,
     getAppliedRules, applyRule, removeRuleFromProject,
     fetchRuleConflicts, resolveRuleConflict,

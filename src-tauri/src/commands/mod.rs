@@ -2,6 +2,7 @@ pub mod agents_block;
 pub mod app_menu;
 pub mod aws_accounts;
 pub mod aws_sso;
+pub mod azure_accounts;
 pub mod claude_accounts;
 pub mod codex_sessions;
 pub mod file_tree_watcher;

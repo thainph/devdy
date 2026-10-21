@@ -552,6 +552,92 @@ pub async fn resolve_aws_runtime_metadata(
     }))
 }
 
+// ============================================================================
+// Azure: isolated per-account AZURE_CONFIG_DIR.
+//
+// An Azure account is an Azure CLI config dir managed by Devdy (see
+// `azure_sandbox`). There is no secret to mint here: the broker hands the shim
+// the dir path plus tenant/subscription ids, gated per call by the policy engine
+// exactly like the AWS path. HONEST LIMITATION: the dir holds az's plaintext
+// MSAL token cache (refresh tokens), readable by any process of the same OS
+// user that learns the path — the same exposure as AWS profile mode's ~/.aws
+// SSO cache. Per-call gating protects the `az` path, not the files.
+// ============================================================================
+
+/// Deny-reason marker: the linked Azure account dir has no signed-in session.
+/// The UI matches this prefix to offer an in-app `az login`. Carries no secret.
+pub const AZURE_LOGIN_REQUIRED: &str = "azure_login_required";
+
+/// Non-secret metadata for a project's linked Azure account.
+pub struct AzureRuntimeMetadata {
+    pub account_id: String,
+    pub account_label: String,
+    pub tenant_id: Option<String>,
+    pub subscription_id: Option<String>,
+    pub subscription_name: Option<String>,
+}
+
+/// What the shim needs to run `az` / azurerm as the linked account.
+pub struct ResolvedAzureAccount {
+    pub config_dir: String,
+    pub tenant_id: Option<String>,
+    pub subscription_id: Option<String>,
+}
+
+/// Resolve non-secret Azure metadata for prompt context. `Ok(None)` when no
+/// Azure account is linked or the linked row is gone.
+pub async fn resolve_azure_runtime_metadata(
+    db: &Db,
+    project_id: &str,
+) -> Result<Option<AzureRuntimeMetadata>, String> {
+    let row = sqlx::query(
+        "SELECT a.id, a.label, a.tenant_id, a.subscription_id, a.subscription_name \
+         FROM projects p \
+         JOIN azure_accounts a ON a.id = p.azure_account_id \
+         WHERE p.id = ?",
+    )
+    .bind(project_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let non_empty = |v: Option<String>| v.filter(|s| !s.trim().is_empty());
+    Ok(Some(AzureRuntimeMetadata {
+        account_id: row.get("id"),
+        account_label: row.get("label"),
+        tenant_id: non_empty(row.get("tenant_id")),
+        subscription_id: non_empty(row.get("subscription_id")),
+        subscription_name: non_empty(row.get("subscription_name")),
+    }))
+}
+
+/// Resolve the linked Azure account for a project. `Ok(None)` when none is
+/// linked; `Err(AZURE_LOGIN_REQUIRED)` when the account dir holds no signed-in
+/// session (never created, or wiped); `Err(_)` (generic) on other failures.
+pub async fn resolve_azure_for_project(
+    db: &Db,
+    project_id: &str,
+) -> Result<Option<ResolvedAzureAccount>, String> {
+    let Some(meta) = resolve_azure_runtime_metadata(db, project_id).await? else {
+        return Ok(None);
+    };
+    let root = crate::azure_sandbox::registered_accounts_root()
+        .ok_or_else(|| "Azure account root not initialized".to_string())?;
+    let dir = crate::azure_sandbox::account_dir_in(root, &meta.account_id)
+        .ok_or_else(|| "invalid Azure account id".to_string())?;
+    if !crate::azure_sandbox::is_logged_in(&dir) {
+        return Err(AZURE_LOGIN_REQUIRED.to_string());
+    }
+    Ok(Some(ResolvedAzureAccount {
+        config_dir: dir.to_string_lossy().into_owned(),
+        tenant_id: meta.tenant_id,
+        subscription_id: meta.subscription_id,
+    }))
+}
+
 async fn resolve_github(
     provider: &dyn TokenProvider,
     db: &Db,
@@ -859,6 +945,9 @@ pub async fn build_account_context(db: &Db, project_id: &str) -> Option<String> 
     if let Ok(Some(meta)) = resolve_aws_runtime_metadata(db, project_id).await {
         lines.push(aws_account_line(&meta));
     }
+    if let Ok(Some(meta)) = resolve_azure_runtime_metadata(db, project_id).await {
+        lines.push(azure_account_line(&meta));
+    }
 
     // ssh-transparent-connect (AC-308): append the project's mapped-VPS block so
     // Claude knows the ssh aliases. Empty string when no server is mapped
@@ -878,9 +967,10 @@ pub async fn build_account_context(db: &Db, project_id: &str) -> Option<String> 
     let account_block = format!(
         "This project is configured with pre-attached credentials managed by Devdy:\n\
          {}\n\n\
-         Use gh / glab / git / aws as normal — the correct project account is already wired, \
+         Use gh / glab / git / aws / az / terraform as normal — the correct project account is already wired, \
          you do NOT need to login or provide a token/credential. Some credential-touching \
-         commands are blocked by policy (e.g. `gh auth token`, `gh auth login`, `aws configure`). \
+         commands are blocked by policy (e.g. `gh auth token`, `gh auth login`, `aws configure`, \
+         `az login`, `az account get-access-token`). \
          This machine should not rely on global credentials for these tools; outside this wiring \
          calls may fail (fail-closed).",
         lines.join("\n")
@@ -923,6 +1013,28 @@ fn aws_account_line(meta: &AwsRuntimeMetadata) -> String {
          `--profile` flag — the linked account is selected automatically; a \
          `--profile` argument is ignored.",
         meta.account_label, meta.region
+    )
+}
+
+fn azure_account_line(meta: &AzureRuntimeMetadata) -> String {
+    let subscription = match (&meta.subscription_name, &meta.subscription_id) {
+        (Some(name), Some(id)) => format!("subscription \"{name}\" ({id})"),
+        (None, Some(id)) => format!("subscription {id}"),
+        (Some(name), None) => format!("subscription \"{name}\""),
+        (None, None) => "subscription (as selected at sign-in)".to_string(),
+    };
+    let tenant = meta
+        .tenant_id
+        .as_deref()
+        .map(|t| format!(" in tenant {t}"))
+        .unwrap_or_default();
+    format!(
+        "- Azure: account \"{}\" with default {subscription}{tenant}. Run `az` (and \
+         terraform's azurerm provider via Azure CLI auth) without logging in. `az login` / \
+         `az account set` are blocked; `az --subscription <other>` needs user confirmation. \
+         terraform receives the default subscription (ARM_SUBSCRIPTION_ID), but a provider \
+         block may still set its own.",
+        meta.account_label
     )
 }
 

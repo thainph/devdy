@@ -1,0 +1,7 @@
+#!/usr/bin/env node
+// Devdy az shim — see shim.mjs. Named exactly `az` so it intercepts Azure CLI
+// calls when this directory is prepended to the sidecar PATH; the real `az`
+// then runs against the project's linked, Devdy-managed AZURE_CONFIG_DIR.
+import { run } from './shim.mjs'
+
+run('az')

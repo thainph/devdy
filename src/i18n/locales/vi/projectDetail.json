@@ -16,7 +16,8 @@
     "gitlab": "GitLab",
     "aws": "AWS",
     "claude": "Claude",
-    "tools": "Quyền tool"
+    "tools": "Quyền tool",
+    "azure": "Azure"
   },
   "targetBoth": "Cả hai",
   "toastSaved": "Đã lưu",
@@ -117,5 +118,10 @@
   "conflictRuleBadge": "Rule · {path}",
   "localChangesDetected": "Phát hiện thay đổi cục bộ · {date}",
   "overwriteWithCentral": "Ghi đè bằng bản trung tâm",
-  "keepLocal": "Giữ bản cục bộ"
+  "keepLocal": "Giữ bản cục bộ",
+  "toastAzureLinked": "Đã liên kết tài khoản Azure",
+  "linkedAzureAccount": "Tài khoản Azure đã liên kết",
+  "azureAccountHint": "Chọn tài khoản Azure cho dự án này: lệnh az và terraform trong các run sẽ dùng tài khoản đó. Quản lý tài khoản trong",
+  "noAzureAccounts": "Chưa có tài khoản Azure nào.",
+  "azureNotSignedIn": "chưa đăng nhập"
 }
