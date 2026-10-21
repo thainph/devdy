@@ -7,10 +7,11 @@ import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import { useGitlabAccountsStore } from '@/stores/gitlabAccounts'
 import { useServersStore, type ProjectServer } from '@/stores/servers'
 import { useAwsAccountsStore } from '@/stores/awsAccounts'
+import { useAzureAccountsStore } from '@/stores/azureAccounts'
 import { open } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@/lib/tauri'
 import { parseRepoUrl, repoKey } from '@/lib/repoUrl'
-import { Plus, FolderOpen, GitBranch, Github, Gitlab, Trash2, AlertTriangle, SquareTerminal, Code2, Settings, HardDrive, Cloud, GanttChartSquare, GripVertical } from 'lucide-vue-next'
+import { Plus, FolderOpen, GitBranch, Github, Gitlab, Trash2, AlertTriangle, SquareTerminal, Code2, Settings, HardDrive, Cloud, CloudCog, GanttChartSquare, GripVertical } from 'lucide-vue-next'
 import { Button, Input, Badge, Modal, Card } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
@@ -23,6 +24,7 @@ const ghStore = useGithubAccountsStore()
 const glStore = useGitlabAccountsStore()
 const serversStore = useServersStore()
 const awsStore = useAwsAccountsStore()
+const azureStore = useAzureAccountsStore()
 const { confirm } = useConfirm()
 const { toast } = useToast()
 const adding = ref(false)
@@ -42,6 +44,12 @@ function gitlabAccountLabel(accountId: string | null): string | null {
 function awsAccount(accountId: string | null) {
   if (!accountId) return null
   return awsStore.accounts.find(a => a.id === accountId) ?? null
+}
+
+// The Azure account linked to a project (label + subscription in its chip tooltip).
+function azureAccount(accountId: string | null) {
+  if (!accountId) return null
+  return azureStore.accounts.find(a => a.id === accountId) ?? null
 }
 
 // Mapped VPS servers per project (project_servers has no bulk endpoint, so we
@@ -148,6 +156,7 @@ onMounted(async () => {
   if (ghStore.accounts.length === 0) ghStore.fetch()
   if (glStore.accounts.length === 0) glStore.fetch()
   if (awsStore.accounts.length === 0) awsStore.fetch()
+  if (azureStore.accounts.length === 0) azureStore.fetch()
   loadProjectServers()
 })
 
@@ -395,6 +404,20 @@ async function handleOpenInFolder(project: { path: string }) {
               >
                 <Cloud class="h-2.5 w-2.5 shrink-0" :stroke-width="2" />
                 <span class="truncate">{{ awsAccount(project.aws_account_id)!.label }}</span>
+              </Badge>
+              <!-- Linked Azure account. -->
+              <Badge
+                v-if="azureAccount(project.azure_account_id)"
+                tone="primary"
+                class="max-w-[9rem]"
+                :title="t('projects.azureChipTitle', {
+                  label: azureAccount(project.azure_account_id)!.label,
+                  subscription: azureAccount(project.azure_account_id)!.subscription_name
+                    ?? azureAccount(project.azure_account_id)!.subscription_id ?? '—',
+                })"
+              >
+                <CloudCog class="h-2.5 w-2.5 shrink-0" :stroke-width="2" />
+                <span class="truncate">{{ azureAccount(project.azure_account_id)!.label }}</span>
               </Badge>
             </div>
             <!-- Actions on hover: grouped into a segmented toolbar for a crisper, cohesive look -->

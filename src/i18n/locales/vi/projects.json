@@ -29,5 +29,6 @@
   "repoUrlHint": "Nhập link repo GitHub hoặc GitLab, ví dụ github.com/owner/repo",
   "alreadyAdded": "Đã thêm",
   "removeRepo": "Gỡ repository",
-  "noReposHint": "Chưa có repository — dán link repo ở trên để thêm"
+  "noReposHint": "Chưa có repository — dán link repo ở trên để thêm",
+  "azureChipTitle": "Azure: {label} · subscription {subscription}"
 }

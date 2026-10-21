@@ -1,0 +1,7 @@
+#!/usr/bin/env node
+// Devdy terraform shim — see shim.mjs. Named exactly `terraform` so it
+// intercepts Terraform calls when this directory is prepended to the sidecar
+// PATH; the AWS provider then picks up the broker-minted credentials from env.
+import { run } from './shim.mjs'
+
+run('terraform')

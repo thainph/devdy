@@ -29,5 +29,6 @@
   "repoUrlHint": "Enter a GitHub or GitLab repo link, e.g. github.com/owner/repo",
   "alreadyAdded": "Already added",
   "removeRepo": "Remove repository",
-  "noReposHint": "No repositories — paste a repo link above to add one"
+  "noReposHint": "No repositories — paste a repo link above to add one",
+  "azureChipTitle": "Azure: {label} · subscription {subscription}"
 }

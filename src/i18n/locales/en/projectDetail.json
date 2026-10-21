@@ -16,7 +16,8 @@
     "gitlab": "GitLab",
     "aws": "AWS",
     "claude": "Claude",
-    "tools": "Tool Permissions"
+    "tools": "Tool Permissions",
+    "azure": "Azure"
   },
   "targetBoth": "Both",
   "toastSaved": "Saved",
@@ -117,5 +118,10 @@
   "conflictRuleBadge": "Rule · {path}",
   "localChangesDetected": "Local changes detected · {date}",
   "overwriteWithCentral": "Overwrite with central",
-  "keepLocal": "Keep local"
+  "keepLocal": "Keep local",
+  "toastAzureLinked": "Azure account linked",
+  "linkedAzureAccount": "Linked Azure Account",
+  "azureAccountHint": "Choose which Azure account this project uses: az and terraform in its runs sign in with it. Manage accounts in",
+  "noAzureAccounts": "No Azure accounts yet.",
+  "azureNotSignedIn": "not signed in"
 }

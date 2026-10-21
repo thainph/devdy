@@ -890,6 +890,11 @@ async fn wire_broker(
     // the PATH shim, which injects broker-minted credentials.
     wire_aws_config(app, db, cmd, project_id).await;
 
+    // Azure: never let a bare `az`/SDK in the run see `~/.azure` or an inherited
+    // credential env; the `az` / `terraform` shims hand the linked account's
+    // config dir to their child per call.
+    wire_azure_config(app, cmd);
+
     // ssh-transparent-connect: wire per-run transparent SSH for this project's
     // mapped VPS servers. No mapping → Ok(None) (no env set, no agent — AC-305).
     // The shim dir is already on PATH (prepend_shim_path above), so the ssh/scp
@@ -981,13 +986,42 @@ async fn wire_aws_config(app: &AppHandle, db: &Db, cmd: &mut Command, project_id
     cmd.env("AWS_REGION", &meta.region);
     cmd.env("AWS_DEFAULT_REGION", &meta.region);
 
-    // The `aws` CLI shim injects broker-minted credentials into the real CLI
-    // child. SDK credential_process cannot emit a profile name, so the per-project
+    // The `aws` / `terraform` shims inject broker-minted credentials into the
+    // real child. SDK credential_process cannot emit a profile name, so the per-project
     // sandbox only pins a region; AWS_PROFILE is never set on the sidecar parent.
     let project_dir = crate::aws_sandbox::project_aws_dir(&app_data_dir, project_id);
     cmd.env("AWS_CONFIG_FILE", project_dir.join("config"));
     cmd.env("AWS_SHARED_CREDENTIALS_FILE", project_dir.join("credentials"));
     cmd.env("AWS_SDK_LOAD_CONFIG", "1");
+}
+
+/// Strip inherited Azure / azurerm credential env from the sidecar and point
+/// `AZURE_CONFIG_DIR` at the shared EMPTY sandbox, so nothing in the run
+/// authenticates to Azure except through the broker-gated shims.
+fn wire_azure_config(app: &AppHandle, cmd: &mut Command) {
+    for key in crate::commands::azure_accounts::AZURE_CREDENTIAL_ENV {
+        cmd.env_remove(key);
+    }
+    // Also any other inherited AZURE_*/ARM_* (az config overrides, azurerm
+    // endpoint/environment overrides).
+    for (key, _) in std::env::vars_os() {
+        if key
+            .to_str()
+            .map(crate::commands::azure_accounts::is_azure_env)
+            .unwrap_or(false)
+        {
+            cmd.env_remove(key);
+        }
+    }
+    // Never leave AZURE_CONFIG_DIR unset (that means `~/.azure`), even if the
+    // app data dir cannot be resolved.
+    let empty_dir = match app.path().app_data_dir() {
+        Ok(app_data_dir) => crate::azure_sandbox::empty_azure_dir(&app_data_dir),
+        Err(_) => std::env::temp_dir().join("devdy-azure-empty"),
+    };
+    // Normally created at startup; recreate if something removed it.
+    let _ = std::fs::create_dir_all(&empty_dir);
+    cmd.env("AZURE_CONFIG_DIR", empty_dir);
 }
 
 /// Set `GIT_AUTHOR_*`/`GIT_COMMITTER_*` from the project's linked account so
