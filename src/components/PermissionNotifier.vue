@@ -89,6 +89,7 @@ function navigateToRun(projectId: string, runId: string) {
 let permissionGranted = false
 let unlistenClick: UnlistenFn | null = null
 let unsubscribeDone: (() => void) | null = null
+let unsubscribeReminder: (() => void) | null = null
 const notified = new Set<string>()
 
 // Native "session finished" notification. Skipped when the window is focused
@@ -122,6 +123,28 @@ async function notifyRunFinished(runId: string, projectId: string, status: strin
   })
 }
 
+// The backend watchdog says a prompt has been waiting a long time: re-fire the
+// native notification (unless the app is in front of the user — the in-app
+// banner and window already show it). The prompt itself is never auto-answered.
+async function remindPermission(projectId: string, runId: string, req: PermissionRequest) {
+  if (!permissionGranted || mascotEnabled.value) return
+  try {
+    const wins = await getAllWebviewWindows()
+    const focused = await Promise.all(wins.map((w) => w.isFocused().catch(() => false)))
+    if (focused.some(Boolean)) return
+  } catch {
+    // Can't tell — fall through and notify.
+  }
+  invoke('show_permission_notification', {
+    title: `${projectName(projectId)} is still waiting for permission`,
+    body: label(req),
+    projectId,
+    runId,
+  }).catch(() => {
+    // ignore — the in-app banner still covers it
+  })
+}
+
 onMounted(async () => {
   // Make sure the mascot-enabled flag is populated before we start gating.
   appSettings.ensureLoaded().catch(() => {})
@@ -136,6 +159,9 @@ onMounted(async () => {
 
   unsubscribeDone = live.onAnyDone((runId, projectId, status) => {
     void notifyRunFinished(runId, projectId, status)
+  })
+  unsubscribeReminder = live.onPermissionReminder((runId, projectId, req) => {
+    void remindPermission(projectId, runId, req)
   })
 
   // Click handling is done natively (see src-tauri notifications.rs): the plugin's
@@ -164,6 +190,8 @@ onBeforeUnmount(() => {
   unlistenClick = null
   unsubscribeDone?.()
   unsubscribeDone = null
+  unsubscribeReminder?.()
+  unsubscribeReminder = null
 })
 
 // Fire a native notification once per new pending request (not on the run the

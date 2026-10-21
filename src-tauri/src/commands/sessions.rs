@@ -381,7 +381,7 @@ pub(crate) async fn upsert_session_run_core(
 
     // Existing run for this session?
     if let Some(row) =
-        sqlx::query("SELECT id, status, transcript_synced_size FROM runs WHERE project_id = ? AND session_id = ?")
+        sqlx::query("SELECT id, status, transcript_synced_size, finished_at FROM runs WHERE project_id = ? AND session_id = ?")
             .bind(project_id)
             .bind(session_id)
             .fetch_optional(db)
@@ -391,6 +391,7 @@ pub(crate) async fn upsert_session_run_core(
         let id: String = row.get("id");
         let status: String = row.get("status");
         let synced_size: Option<i64> = row.get("transcript_synced_size");
+        let finished_at: Option<String> = row.get("finished_at");
         // A live run streams its own updates; never touch its log from here.
         if status == "running" {
             return Ok(SyncOutcome::Skipped);
@@ -438,7 +439,23 @@ pub(crate) async fn upsert_session_run_core(
         // `claude`/`codex` at a terminal. Stamp last_activity_at with the
         // transcript mtime; without it those turns are invisible to the History
         // order and the session stays buried at its original created_at.
-        let _ = sqlx::query("UPDATE runs SET transcript_path = ?, transcript_synced_size = ?, last_activity_at = ? WHERE id = ?")
+        // Only when the transcript was written after Devdy's own last turn ended,
+        // though: the tail a Devdy turn flushes right before its sidecar exits is
+        // not user activity and must not reorder History.
+        let external_work = finished_at
+            .as_deref()
+            .and_then(|f| chrono::DateTime::parse_from_rfc3339(f).ok())
+            .zip(fs::metadata(file).and_then(|m| m.modified()).ok())
+            .is_none_or(|(fin, mtime)| {
+                mtime > std::time::SystemTime::from(fin) + std::time::Duration::from_secs(5)
+            });
+        let sql = if external_work {
+            "UPDATE runs SET transcript_path = ?, transcript_synced_size = ?, last_activity_at = ? WHERE id = ?"
+        } else {
+            "UPDATE runs SET transcript_path = ?, transcript_synced_size = ?, \
+             last_activity_at = COALESCE(last_activity_at, finished_at, started_at, created_at, ?) WHERE id = ?"
+        };
+        let _ = sqlx::query(sql)
             .bind(file.to_string_lossy().as_ref())
             .bind(cur_size)
             .bind(&created_at)

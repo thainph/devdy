@@ -102,31 +102,62 @@ impl Approver for ModalApprover {
             display_name: Some(format!("{} command", req.tool)),
         };
         let topic = format!("run:permission_request:{}", self.run_id);
+        // Track it like a sidecar request: the emit is lost when no webview
+        // listener is attached yet, and a (re)attached listener recovers it from
+        // the pending store instead of the prompt never showing up. It also puts
+        // the prompt under the run watchdog's "still waiting" reminders.
+        crate::runs::permission::track_pending(evt.clone());
+        // From here on, however this future ends — answered, expired, or DROPPED
+        // because the shim hung up (e.g. its Bash call timed out) — the prompt is
+        // withdrawn everywhere. Never leave a prompt nobody can act on.
+        let _guard = PendingPromptGuard {
+            app: self.app.clone(),
+            run_id: self.run_id.clone(),
+            request_id: request_id.clone(),
+            approvals: self.approvals.clone(),
+        };
         if self.app.emit(&topic, evt).is_err() {
-            // Emit failed → clean up and fail-closed deny.
-            self.approvals.lock().await.remove(&request_id);
+            // Emit failed → fail-closed deny (the guard cleans up).
             return false;
         }
 
-        // 3. Await the user's decision, bounded so a never-answered modal cannot
-        //    pin the connection forever. Symmetric with the shim's socket timeout
-        //    (shim.mjs, 300s). On timeout / dropped sender (run ended) → deny, and
-        //    clean up the pending entry so respond_permission can't leak it.
-        match tokio::time::timeout(APPROVAL_TIMEOUT, rx).await {
-            Ok(Ok(allow)) => allow,
-            Ok(Err(_)) => false,
-            Err(_) => {
-                self.approvals.lock().await.remove(&request_id);
-                false
-            }
-        }
+        // 3. Await the user's decision — with no deadline. The prompt stays
+        //    visible (the run watchdog re-alerts the user while it waits) until
+        //    the user answers, the run ends (sender dropped → deny), or the shim
+        //    disconnects (the broker drops this future; the guard withdraws the
+        //    prompt). The shim's own lifetime is bounded by its caller (e.g. the
+        //    Bash tool timeout), so nothing waits forever unseen.
+        rx.await.unwrap_or(false)
     }
 }
 
-/// Upper bound on how long an `Ask` waits for the user's modal decision. Kept in
-/// lock-step with the shim's socket inactivity timeout (`shim.mjs`, 300s) so both
-/// sides give up together instead of one hanging past the other.
-const APPROVAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+/// Withdraws a broker prompt when its `approve` future ends for any reason,
+/// including being dropped mid-await (the shim's connection closed). Drop must
+/// be synchronous, so the async approvals map is cleaned up on a spawned task.
+struct PendingPromptGuard {
+    app: AppHandle,
+    run_id: String,
+    request_id: String,
+    approvals: BrokerApprovals,
+}
+
+impl Drop for PendingPromptGuard {
+    fn drop(&mut self) {
+        // Only while it is still pending: once the run has ended its teardown
+        // cleared the store, and nothing may be emitted for it after `run:done`.
+        if crate::runs::permission::resolve_pending(&self.run_id, &self.request_id) {
+            let _ = self.app.emit(
+                &format!("run:permission_resolved:{}", self.run_id),
+                serde_json::json!({ "request_id": self.request_id }),
+            );
+        }
+        let approvals = self.approvals.clone();
+        let request_id = std::mem::take(&mut self.request_id);
+        tauri::async_runtime::spawn(async move {
+            approvals.lock().await.remove(&request_id);
+        });
+    }
+}
 
 /// GĐ7 resolver for the app-wide singleton broker. Given a request's `run_id`,
 /// it looks the run up in `BrokerRuns`; if the run is alive it builds a

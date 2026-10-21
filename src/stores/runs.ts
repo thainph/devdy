@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@/lib/tauri'
-import { ref, reactive } from 'vue'
+import { ref, reactive, computed } from 'vue'
 import type { ImageAttachment } from '@/lib/streamEvents'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
 
@@ -108,6 +108,12 @@ export function runActivityAt(run: RunRecord): string {
   return run.last_activity_at ?? run.finished_at ?? run.started_at ?? run.created_at
 }
 
+/** History order, same as the backend: pinned first, then last activity desc. */
+function compareRuns(a: RunRecord, b: RunRecord): number {
+  if (a.pinned !== b.pinned) return a.pinned ? -1 : 1
+  return runActivityAt(b).localeCompare(runActivityAt(a))
+}
+
 export interface RunOutput {
   run_id: string
   line: string
@@ -162,16 +168,56 @@ export const useRunsStore = defineStore('runs', () => {
     for (const r of list) runMeta.set(r.id, r)
   }
 
-  async function fetchRuns(project_id: string) {
-    loading.value = true
+  /**
+   * Fold a fresh `list_runs` result into the on-screen list WITHOUT reordering
+   * rows the user can already see: background refetches (a run finishing, the
+   * transcript watcher, a worker spawn) only update each row's data in place,
+   * so the History list doesn't jump around while sessions are running. Rows
+   * new to the list are slotted in at their sorted position. The order is only
+   * re-sorted by user actions (`touchRun`, pin toggle, `sortRuns`) or a fresh
+   * load of the project.
+   */
+  function mergeKeepingOrder(list: RunRecord[]): RunRecord[] {
+    const byId = new Map(list.map(r => [r.id, r]))
+    const merged = runs.value.flatMap(r => byId.get(r.id) ?? [])
+    const known = new Set(merged.map(r => r.id))
+    for (const r of list) {
+      if (known.has(r.id)) continue
+      const at = merged.findIndex(x => compareRuns(r, x) < 0)
+      merged.splice(at === -1 ? merged.length : at, 0, r)
+    }
+    return merged
+  }
+
+  /**
+   * `keepOrder` (default): when this project's list is already loaded, keep the
+   * current row order (see `mergeKeepingOrder`). Pass false to take the
+   * backend's freshly sorted order, e.g. when the History view (re)opens.
+   */
+  async function fetchRuns(project_id: string, opts: { keepOrder?: boolean } = {}) {
+    const keepOrder = (opts.keepOrder ?? true) && loadedProjectId.value === project_id
+    // A same-project refresh keeps the rows on screen, so skip the "Loading…"
+    // swap that would blank the list on every background refetch.
+    if (!keepOrder) loading.value = true
     try {
-      runs.value = await invoke<RunRecord[]>('list_runs', { projectId: project_id })
+      const list = await invoke<RunRecord[]>('list_runs', { projectId: project_id })
+      runs.value = keepOrder && loadedProjectId.value === project_id ? mergeKeepingOrder(list) : list
       loadedProjectId.value = project_id
       rememberRuns(runs.value)
     } finally {
       loading.value = false
     }
   }
+
+  /**
+   * True when the frozen on-screen order no longer matches the activity order
+   * (e.g. a session was continued from the CLI or Remote Control). Only
+   * top-level rows count — workers render nested under their conductor.
+   */
+  const orderStale = computed(() => {
+    const top = runs.value.filter(r => !r.conductor_run_id)
+    return top.some((r, i) => i > 0 && compareRuns(top[i - 1], r) > 0)
+  })
 
   /**
    * Refresh `runMeta` for a project. `list_runs` is the only endpoint that fills
@@ -190,7 +236,7 @@ export const useRunsStore = defineStore('runs', () => {
   async function refreshMeta(project_id: string) {
     const list = await invoke<RunRecord[]>('list_runs', { projectId: project_id })
     rememberRuns(list)
-    if (project_id === loadedProjectId.value) runs.value = list
+    if (project_id === loadedProjectId.value) runs.value = mergeKeepingOrder(list)
   }
 
   async function fetchIssue(project_id: string, repo_id: string, issue_number: number): Promise<RunRecord> {
@@ -203,6 +249,7 @@ export const useRunsStore = defineStore('runs', () => {
     pr_number: number,
     linked_issue?: number,
     allow_missing_issue?: boolean,
+    title?: string,
   ): Promise<RunRecord> {
     return invoke<RunRecord>('fetch_pr', {
       projectId: project_id,
@@ -210,6 +257,7 @@ export const useRunsStore = defineStore('runs', () => {
       prNumber: pr_number,
       linkedIssue: linked_issue ?? null,
       allowMissingIssue: allow_missing_issue ?? false,
+      title: title ?? null,
     })
   }
 
@@ -484,10 +532,7 @@ export const useRunsStore = defineStore('runs', () => {
   // first, then by last activity descending. Called after pin toggles and after
   // `touchRun` so the row jumps without a round-trip refetch.
   function sortRuns() {
-    runs.value.sort((a, b) => {
-      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1
-      return runActivityAt(b).localeCompare(runActivityAt(a))
-    })
+    runs.value.sort(compareRuns)
   }
 
   /**
@@ -542,8 +587,8 @@ export const useRunsStore = defineStore('runs', () => {
   }
 
   return {
-    runs, loading, loadedProjectId, runMeta,
-    fetchRuns, refreshMeta, fetchIssue, fetchPr,
+    runs, loading, loadedProjectId, runMeta, orderStale,
+    fetchRuns, sortRuns, refreshMeta, fetchIssue, fetchPr,
     startRun, rerunRun, refetchRun, cancelRun, resumeRun,
     getRunLog, getRunLogRevision, getRunLogPage, getRunLogForward, getRunLogPath, getRunToolRecords, getRunUserRecords, readRunInput,
     respondPermission, listPendingPermissions, listLiveRuns, sendUserMessage, endRunInput,

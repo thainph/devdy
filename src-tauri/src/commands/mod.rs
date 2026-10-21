@@ -11,6 +11,7 @@ pub mod github;
 pub mod github_accounts;
 pub mod gitlab_accounts;
 pub mod google;
+pub mod grammar;
 pub mod groups;
 pub mod health;
 pub mod inbox_api;

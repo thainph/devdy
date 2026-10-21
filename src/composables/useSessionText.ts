@@ -8,8 +8,9 @@ export function useSessionText() {
 
   /** A session's name: its title, else "Untitled session" / "Issue #N" / "PR #N". */
   function runLabel(run: Pick<SessionLink, 'title' | 'runType' | 'refNumber'>): string {
+    if (run.title?.trim()) return run.title.trim()
     if (run.runType === 'session' || run.refNumber == null) {
-      return run.title?.trim() || t('sessionLink.untitledSession')
+      return t('sessionLink.untitledSession')
     }
     const kind = run.runType === 'analyze_issue' ? t('run.labelIssue') : t('run.labelPr')
     return `${kind} #${run.refNumber}`

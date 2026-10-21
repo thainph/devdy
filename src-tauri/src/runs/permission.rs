@@ -56,14 +56,19 @@ pub fn track_pending(event: PermissionRequestEvent) {
 }
 
 /// Forget a request once its answer has been delivered to the sidecar.
-pub fn resolve_pending(run_id: &str, request_id: &str) {
+/// Returns whether it was still pending.
+pub fn resolve_pending(run_id: &str, request_id: &str) -> bool {
     let mut map = pending_store().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(list) = map.get_mut(run_id) {
-        list.retain(|p| p.event.request_id != request_id);
-        if list.is_empty() {
-            map.remove(run_id);
-        }
+    let Some(list) = map.get_mut(run_id) else {
+        return false;
+    };
+    let before = list.len();
+    list.retain(|p| p.event.request_id != request_id);
+    let removed = list.len() != before;
+    if list.is_empty() {
+        map.remove(run_id);
     }
+    removed
 }
 
 /// Drop every open request of a run whose sidecar has exited.

@@ -188,10 +188,9 @@ function label(row: DockRow): string {
   // switch, so a background project's active run would otherwise fall back to
   // the project name (the "title changes on tab switch" bug).
   const run = runsStore.runMeta.get(row.runId)
-  if (run && run.run_type !== 'session') {
-    if (run.ref_number != null) return `${run.run_type === 'analyze_issue' ? 'Issue' : 'PR'} #${run.ref_number}`
-  } else if (run?.title) {
-    return run.title
+  if (run?.title?.trim()) return run.title.trim()
+  if (run && run.run_type !== 'session' && run.ref_number != null) {
+    return `${run.run_type === 'analyze_issue' ? 'Issue' : 'PR'} #${run.ref_number}`
   }
   return projectsStore.projects.find((p) => p.id === row.projectId)?.name ?? 'Run'
 }

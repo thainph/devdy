@@ -389,7 +389,7 @@ async fn session_send(
     // A worker's turn ends by exiting its sidecar, so a follow-up first resumes
     // the session, then delivers the message — mirroring the desktop composer.
     if status != "running" {
-        crate::commands::runs::resume_run(
+        crate::commands::runs::resume_run_with(
             state.app.clone(),
             state.app.state::<Db>(),
             state.app.state::<RunRegistry>(),
@@ -397,6 +397,7 @@ async fn session_send(
             None,
             None,
             Some(false),
+            false,
         )
         .await?;
     }
@@ -410,6 +411,7 @@ async fn session_send(
             images: Vec::new(),
             override_budget: false,
         },
+        false,
     )
     .await?;
 
@@ -427,7 +429,7 @@ async fn session_cancel(
     ensure_owned(state, conductor_run_id, &worker_id)?;
 
     let db = db(state);
-    crate::commands::runs::cancel_run_inner(&registry(state), &db, &worker_id).await?;
+    crate::commands::runs::cancel_run_inner(&registry(state), &db, &worker_id, false).await?;
     log_event(state, conductor_run_id, "cancel", json!({ "worker_id": worker_id })).await;
     Ok(json!({ "worker_id": worker_id, "status": "cancelled" }))
 }
@@ -650,7 +652,7 @@ the human your final summary.";
 
     let outcome = async {
         if !alive {
-            crate::commands::runs::resume_run(
+            crate::commands::runs::resume_run_with(
                 app.clone(),
                 app.state::<Db>(),
                 app.state::<RunRegistry>(),
@@ -658,6 +660,7 @@ the human your final summary.";
                 None,
                 None,
                 Some(false),
+                false,
             )
             .await?;
         }
@@ -670,6 +673,7 @@ the human your final summary.";
                 images: Vec::new(),
                 override_budget: false,
             },
+            false,
         )
         .await
     }

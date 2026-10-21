@@ -45,6 +45,9 @@ pub const CHANGED_EVENT: &str = "slack-threads://changed";
 pub const PROGRESS_EVENT: &str = "slack-threads://progress";
 /// Emitted when an OS notification is clicked; payload `{ id, kind: 'slack' }`.
 pub const NOTIFICATION_CLICKED_EVENT: &str = "capture-notification-clicked";
+/// Emitted when a thread arrives over the Inbox API; payload `{ id }`. The
+/// main window opens the Slack threads window on it.
+pub const API_RECEIVED_EVENT: &str = "slack-threads://api-received";
 
 const MAX_PARALLEL_JOBS: usize = 2;
 /// Warm translate session recycled after this many batches.
@@ -127,6 +130,8 @@ pub fn emit_all_changed(app: &AppHandle) {
 pub trait SlackEvents: Send + Sync {
     fn changed(&self, id: &str, action: &str);
     fn progress(&self, p: &SlackThreadProgress);
+    /// A thread was added / re-requested over the Inbox API.
+    fn api_thread_received(&self, id: &str);
     /// An Inbox-API job ended (`ready` or `error`).
     fn api_job_finished(&self, id: &str, title: &str, ready: bool);
 }
@@ -134,6 +139,11 @@ pub trait SlackEvents: Send + Sync {
 /// Real events: Tauri emits + clickable OS notification.
 pub struct AppEvents {
     pub app: AppHandle,
+}
+
+#[derive(Clone, Serialize)]
+struct ApiReceived<'a> {
+    id: &'a str,
 }
 
 #[derive(Clone, Serialize)]
@@ -149,6 +159,10 @@ impl SlackEvents for AppEvents {
 
     fn progress(&self, p: &SlackThreadProgress) {
         let _ = self.app.emit(PROGRESS_EVENT, p);
+    }
+
+    fn api_thread_received(&self, id: &str) {
+        let _ = self.app.emit(API_RECEIVED_EVENT, ApiReceived { id });
     }
 
     fn api_job_finished(&self, id: &str, title: &str, ready: bool) {
@@ -557,6 +571,9 @@ impl SlackThreadsState {
             "updated"
         };
         self.ctx.emit_changed(&out.result.id, action);
+        if from_api {
+            self.ctx.events.api_thread_received(&out.result.id);
+        }
         Ok(out.result)
     }
 

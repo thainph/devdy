@@ -346,6 +346,7 @@
     "libraryHint": "Chọn lại từ dropdown trong khung chat để khỏi gõ lại.",
     "libraryEmpty": "Chưa có prompt nào được lưu.",
     "addPrompt": "Thêm prompt",
+    "dragToReorder": "Kéo để sắp xếp",
     "deleteTitle": "Xóa prompt này?",
     "deleteMessage": "Prompt sẽ bị xóa khỏi thư viện và không thể khôi phục.",
     "untitled": "Prompt {n} (chưa đặt tên)",

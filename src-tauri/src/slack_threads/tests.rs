@@ -54,6 +54,7 @@ pub struct RecEvents {
     pub changed: Mutex<Vec<(String, String)>>,
     pub progress: Mutex<Vec<SlackThreadProgress>>,
     pub finished: Mutex<Vec<(String, bool)>>,
+    pub received: Mutex<Vec<String>>,
 }
 
 impl SlackEvents for RecEvents {
@@ -65,6 +66,9 @@ impl SlackEvents for RecEvents {
     }
     fn progress(&self, p: &SlackThreadProgress) {
         self.progress.lock().unwrap().push(p.clone());
+    }
+    fn api_thread_received(&self, id: &str) {
+        self.received.lock().unwrap().push(id.to_string());
     }
     fn api_job_finished(&self, id: &str, _title: &str, ready: bool) {
         self.finished.lock().unwrap().push((id.to_string(), ready));
@@ -1387,6 +1391,8 @@ async fn api_jobs_notify_ui_jobs_do_not() {
         .await
         .unwrap()
         .id;
+    // Receiving over the API asks the UI to open the thread right away.
+    assert_eq!(*env.events.received.lock().unwrap(), vec![id.clone()]);
     env.run(&id).await;
     assert_eq!(
         *env.events.finished.lock().unwrap(),
@@ -1395,6 +1401,12 @@ async fn api_jobs_notify_ui_jobs_do_not() {
     env.state.refresh(&id).await.unwrap();
     env.run(&id).await;
     assert_eq!(env.events.finished.lock().unwrap().len(), 1);
+    // UI adds / refreshes never open it.
+    env.state.add_thread(LINK, None, None, false).await.unwrap();
+    assert_eq!(env.events.received.lock().unwrap().len(), 1);
+    // Sending the same thread again over the API opens it again.
+    env.state.add_thread(LINK, None, None, true).await.unwrap();
+    assert_eq!(*env.events.received.lock().unwrap(), vec![id.clone(), id]);
 }
 
 /// Insert a legacy row like migration 0041 produces.

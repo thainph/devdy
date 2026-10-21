@@ -642,8 +642,8 @@ pub fn run() {
                 tauri::async_runtime::block_on(async move {
                     let mut reg = registry.lock().await;
                     for (_, handles) in reg.iter_mut() {
-                        if let Some(pid) = handles.child.id() {
-                            kill_process_group(pid);
+                        if let Some(pgid) = handles.pgid {
+                            kill_process_group(pgid);
                         }
                         let _ = handles.child.start_kill();
                     }

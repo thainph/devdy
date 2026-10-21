@@ -1,21 +1,31 @@
 pub mod broker;
+pub mod liveness;
 pub mod model_usage;
 pub mod permission;
 pub mod pricing;
 pub mod session_watcher;
 pub mod sidecar;
 pub mod ssh_access;
+pub mod stdin_writer;
 pub mod usage_cost;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
-use tokio::process::{Child, ChildStdin};
+use tokio::process::Child;
 use tokio::sync::{oneshot, Mutex};
 
 pub struct RunHandles {
+    /// Process-group id of the sidecar (its pid at spawn; it leads its own
+    /// group, see `detach_process_group`). Kept separately because
+    /// `child.id()` turns None once the child is reaped, while descendants (the
+    /// CLI, MCP servers) may still be alive and holding its stdout open.
+    pub pgid: Option<u32>,
     pub child: Child,
-    /// Live stdin writer for stream-json (Claude) runs. None for one-shot codex runs.
-    pub stdin: Option<ChildStdin>,
+    /// The sidecar's input: a per-run writer task (see `stdin_writer`) that
+    /// writes queued lines whole and in order. None once input is closed —
+    /// dropping it (`take`) closes the pipe after already-queued lines. No lock
+    /// is ever held across a write, and a timeout never closes it.
+    pub stdin: Option<stdin_writer::SidecarInput>,
     /// Claude session id captured from the first `system.init` event. Held here
     /// so the drain task can update it in place; `resume_run` reads from the DB.
     #[allow(dead_code)]

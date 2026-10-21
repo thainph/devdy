@@ -556,7 +556,7 @@ async fn handle_start_run(ctx: &HandlerCtx, cmd: &CmdPayload) {
             images,
             override_budget: false,
         };
-        match crate::commands::runs::send_user_message_inner(&ctx.db, &ctx.registry, payload).await {
+        match crate::commands::runs::send_user_message_inner(&ctx.db, &ctx.registry, payload, true).await {
             Ok(()) => {
                 accept(ctx, action, Some(&run_id), None).await;
                 command_ack(ctx, cmd, true, None).await;
@@ -683,7 +683,7 @@ async fn handle_cancel_run(ctx: &HandlerCtx, cmd: &CmdPayload) {
         reject(ctx, action, None, RejectReason::Malformed).await;
         return;
     };
-    match crate::commands::runs::cancel_run_inner(&ctx.registry, &ctx.db, &run_id).await {
+    match crate::commands::runs::cancel_run_inner(&ctx.registry, &ctx.db, &run_id, true).await {
         Ok(()) => accept(ctx, action, Some(&run_id), None).await,
         Err(e) => {
             tracing::debug!(event = "remote_cancel_run_failed", error = %e);
@@ -711,7 +711,7 @@ async fn handle_send_chat(ctx: &HandlerCtx, cmd: &CmdPayload) {
         images,
         override_budget: false,
     };
-    match crate::commands::runs::send_user_message_inner(&ctx.db, &ctx.registry, payload).await {
+    match crate::commands::runs::send_user_message_inner(&ctx.db, &ctx.registry, payload, true).await {
         Ok(()) => {
             accept(ctx, action, Some(&run_id), None).await;
             command_ack(ctx, cmd, true, None).await;

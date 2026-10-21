@@ -38,7 +38,7 @@ import {
   Pin, Shield, Pencil, Check, Github, Gitlab, UserCircle,
   HardDrive, Cloud, Radio, Languages, StickyNote, ListTodo, FolderTree, Loader2,
   MoreHorizontal, Search, Network, ChevronLeft, ChevronRight,
-  Plus, AlignJustify, Rows2, Rows3, Rows4, CircleDashed
+  Plus, AlignJustify, Rows2, Rows3, Rows4, CircleDashed, ArrowUpDown
 } from 'lucide-vue-next'
 import { onClickOutside } from '@vueuse/core'
 import AppSelect from '@/components/AppSelect.vue'
@@ -54,6 +54,7 @@ import TranslatePopover from '@/components/TranslatePopover.vue'
 import MentionedFiles from '@/components/MentionedFiles.vue'
 import ContextMeter from '@/components/ContextMeter.vue'
 import BudgetBadge from '@/components/BudgetBadge.vue'
+import RunAttentionBanner from '@/components/RunAttentionBanner.vue'
 import { mergeContextModel } from '@/lib/contextLimits'
 import {
   formatRunTimestamp,
@@ -856,9 +857,11 @@ watch(conductorWorkers, (ws) => {
   }
 }, { immediate: true })
 
-// Sidebar/label text for a run: sessions show their title; issue/PR show "#N".
+// Sidebar/label text for a run: its title when set (sessions, or a PR inbox
+// review titled with its author); otherwise issue/PR show "#N".
 function runLabel(run: RunRecord): string {
-  if (run.run_type === 'session') return run.title || t('run.labelSession')
+  if (run.title?.trim()) return run.title.trim()
+  if (run.run_type === 'session') return t('run.labelSession')
   return `${run.run_type === 'analyze_issue' ? t('run.labelIssue') : t('run.labelPr')} #${run.ref_number}`
 }
 
@@ -1712,7 +1715,9 @@ onMounted(async () => {
   if (awsStore.accounts.length === 0) awsStore.fetch().catch(() => {})
   loadProjectServers()
   repos.value = await projectStore.listRepos(projectId.value)
-  await runsStore.fetchRuns(projectId.value)
+  // Opening the view is the one point where History takes the fresh activity
+  // order; later background refetches keep the rows where they are.
+  await runsStore.fetchRuns(projectId.value, { keepOrder: false })
   // Preload the project file list so inline-code mentions resolve to links.
   ensureProjectFiles().catch(() => {})
   if (activeRunId.value) {
@@ -3774,6 +3779,15 @@ function handleRefInput(val: string) {
                 {{ t('run.history') }}<span v-if="displayRuns.length" class="font-normal"> · {{ displayRuns.length }}</span>
               </p>
               <button
+                v-if="runsStore.orderStale"
+                class="ml-auto mr-3 flex items-center gap-1 text-[10px] text-primary/80 hover:text-primary transition-colors cursor-pointer"
+                :title="t('run.resortSessionsTitle')"
+                @click="runsStore.sortRuns()"
+              >
+                <ArrowUpDown class="h-2.5 w-2.5" :stroke-width="1.75" />
+                {{ t('run.resortSessions') }}
+              </button>
+              <button
                 v-if="runsStore.runs.length > 0"
                 class="flex items-center gap-1 text-[10px] text-muted-foreground/70 hover:text-destructive transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                 :disabled="clearingAll"
@@ -4367,6 +4381,11 @@ function handleRefInput(val: string) {
           v-if="composerVisible"
           class="border-t border-border bg-card/40 px-3 py-2 shrink-0"
         >
+          <RunAttentionBanner
+            v-if="currentStatus === 'running' && session?.attention.length"
+            :notices="session.attention"
+            @stop="handleCancel"
+          />
           <div class="relative">
             <!-- Slash-command palette (anchored above the textarea) -->
             <div

@@ -67,12 +67,11 @@ export function ask(sockPath, req) {
     conn.on('close', () => {
       if (!settled) done(reject, new Error('broker closed connection'))
     })
-    // Inactivity timeout. A write op that needs approval keeps the socket idle
-    // while the broker awaits the user's modal decision, so this MUST be at least
-    // as long as the broker's approval window (approver.rs APPROVAL_TIMEOUT).
-    // 15s was shorter than a human's reaction time and turned "slow to approve"
-    // into a spurious "broker timeout" fail-closed deny mid-session.
-    conn.setTimeout(300000, () => done(reject, new Error('broker timeout')))
+    // No inactivity timeout: a write op that needs approval keeps the socket
+    // idle while the user decides, and a visible prompt must never be silently
+    // denied (the broker re-alerts the user instead). This process's lifetime is
+    // bounded by its caller (e.g. the Bash tool timeout); when it dies, the
+    // broker sees the disconnect and withdraws the prompt.
   })
 }
 

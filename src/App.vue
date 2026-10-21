@@ -27,6 +27,8 @@ import ItemWindow from '@/views/ItemWindow.vue'
 import ItemListWindow from '@/views/ItemListWindow.vue'
 import SlackThreadsWindow from '@/views/SlackThreadsWindow.vue'
 import {
+  SLACK_API_RECEIVED,
+  type SlackApiReceived,
   SLACK_NOTIFICATION_CLICKED,
   type SlackNotificationClicked,
   openSlackWindow,
@@ -294,6 +296,9 @@ let unlistenTrayRun: UnlistenFn | null = null
 // Listener for a clicked Slack thread OS notification (see lib/slackWindow.ts).
 let unlistenCaptureNotification: UnlistenFn | null = null
 
+// Listener for a Slack thread received over the Inbox API (see lib/slackWindow.ts).
+let unlistenSlackApiReceived: UnlistenFn | null = null
+
 // Listener for the Slack threads window asking to navigate (e.g. to the MCP settings).
 let unlistenSlackRoute: UnlistenFn | null = null
 
@@ -425,6 +430,8 @@ onBeforeUnmount(() => {
   unlistenTrayRun = null
   unlistenCaptureNotification?.()
   unlistenCaptureNotification = null
+  unlistenSlackApiReceived?.()
+  unlistenSlackApiReceived = null
   unlistenSlackRoute?.()
   unlistenSlackRoute = null
   unlistenWindowRun?.()
@@ -593,6 +600,16 @@ onMounted(async () => {
         if (id && kind === 'slack') void openSlackWindow({ id })
       },
     )
+  } catch {
+    // Ignore (e.g. running outside the Tauri shell during dev in a browser).
+  }
+
+  // A Slack thread sent from the browser extension opens the Slack threads
+  // window on it right away (it fills in as the background job progresses).
+  try {
+    unlistenSlackApiReceived = await listen<SlackApiReceived>(SLACK_API_RECEIVED, (e) => {
+      if (e.payload?.id) void openSlackWindow({ id: e.payload.id })
+    })
   } catch {
     // Ignore (e.g. running outside the Tauri shell during dev in a browser).
   }

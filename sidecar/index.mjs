@@ -20,7 +20,7 @@
 //   <raw SDKMessage>           // emitted verbatim (type: system|assistant|user|
 //                              // result|stream_event…) so the Rust drain's
 //                              // existing stream-json parsing works unchanged.
-//   { "type": "_devdy_ready" }
+//   { "type": "_devdy_ready", "capabilities": { "heartbeat_ms": 30000 } }
 //   { "type": "_devdy_permission_request", requestId, tool_name, tool_input,
 //        tool_use_id, title, description, display_name }
 //   { "type": "_devdy_stderr", "text": "..." }
@@ -28,8 +28,13 @@
 //                                      // utilization + reset windows), captured at
 //                                      // turn end and on the get_usage command
 //   { "type": "_devdy_done" }          // query iterator finished
-//   { "type": "_devdy_closed" }        // session fully torn down
+//   { "type": "_devdy_closed", "code": 0|1 }  // session fully torn down (the
+//                                      // process exits right after, with `code`)
 //   { "type": "_devdy_error", "error": "..." }
+//   { "type": "_devdy_heartbeat" }     // every 30s: proves this bridge is alive
+//   { "type": "_devdy_permission_cancelled", requestId, level, text }
+//                                      // a request settled here (CLI cancelled
+//                                      // it, or no answer can arrive any more)
 //
 // Control messages are namespaced with a `_devdy_` prefix so they never collide
 // with real stream-json message types.
@@ -65,6 +70,15 @@ function reportFatal(err, context) {
 }
 process.on('uncaughtException', (err) => { reportFatal(err, 'Uncaught exception'); setTimeout(() => process.exit(1), 50) })
 process.on('unhandledRejection', (err) => { reportFatal(err, 'Unhandled rejection'); setTimeout(() => process.exit(1), 50) })
+
+// Liveness heartbeat. Driven by a plain timer — independent of the model or any
+// tool — so the broker can tell a quiet-but-working session (heartbeats keep
+// coming) from a dead or frozen bridge (they stop). unref: never keeps the
+// process alive on its own.
+// The interval is declared to the broker in `_devdy_ready.capabilities`;
+// DEVDY_SIDECAR_HEARTBEAT_MS exists only so tests can run fast.
+const HEARTBEAT_MS = Math.max(50, Number(process.env.DEVDY_SIDECAR_HEARTBEAT_MS) || 30_000)
+setInterval(() => send({ type: '_devdy_heartbeat' }), HEARTBEAT_MS).unref()
 
 // Pull the structured data behind the `/usage` command (session cost + claude.ai
 // plan rate-limit utilization windows with real per-account reset times) off the
@@ -166,7 +180,24 @@ function userMessage(text, images) {
 }
 
 const pendingPermissions = new Map() // requestId -> resolve fn
+// Set once the broker closed our stdin: no permission answer can ever arrive
+// after that, so waiting on one would hang the turn forever.
+let inputClosed = false
 let inputQueue = null
+
+const INPUT_CLOSED_REASON =
+  'Devdy can no longer show permission prompts for this session (its input channel closed). ' +
+  'Do not retry; finish the turn and tell the user to send a follow-up message to continue.'
+
+// Settle a pending request here (not via the broker) and tell the broker to drop
+// the prompt it is showing.
+function cancelPermission(requestId, reason, level, text) {
+  const resolve = pendingPermissions.get(requestId)
+  if (!resolve) return
+  pendingPermissions.delete(requestId)
+  resolve({ decision: 'deny', reason })
+  send({ type: '_devdy_permission_cancelled', requestId, level, text })
+}
 let currentQuery = null
 let started = false
 let usageCaptureInFlight = false
@@ -200,6 +231,10 @@ function startQuery(firstText, opts = {}, firstImages) {
 
   const canUseTool = async (toolName, input, options) => {
     if (isAutoAllowed(toolName)) return { behavior: 'allow', updatedInput: input }
+    if (inputClosed) {
+      send({ type: '_devdy_log', level: 'warn', text: `⚠ ${toolName} was denied: the session can no longer receive permission answers.` })
+      return { behavior: 'deny', message: INPUT_CLOSED_REASON }
+    }
     const requestId = randomUUID()
     send({
       type: '_devdy_permission_request',
@@ -211,7 +246,17 @@ function startQuery(firstText, opts = {}, firstImages) {
       description: options?.description ?? null,
       display_name: options?.displayName ?? null,
     })
-    const decision = await new Promise((resolve) => pendingPermissions.set(requestId, resolve))
+    const decision = await new Promise((resolve) => {
+      pendingPermissions.set(requestId, resolve)
+      // The CLI withdrew the request (turn interrupted, tool aborted): nobody
+      // will act on an answer any more, so settle it and drop the prompt.
+      const signal = options?.signal
+      if (signal) {
+        const onAbort = () => cancelPermission(requestId, 'Request cancelled', 'info', `Permission request for ${toolName} was withdrawn.`)
+        if (signal.aborted) onAbort()
+        else signal.addEventListener('abort', onAbort, { once: true })
+      }
+    })
     // canUseTool can only allow or deny; anything other than an explicit
     // "allow" (including the legacy "ask") is treated as deny.
     if (decision.decision === 'allow') {
@@ -296,6 +341,7 @@ function startQuery(firstText, opts = {}, firstImages) {
     : 60_000
 
   ;(async () => {
+    let failed = false
     try {
       currentQuery = query({ prompt: inputQueue, options })
       if (pollWhileRunning) startUsagePolling(usagePollMs)
@@ -318,13 +364,28 @@ function startQuery(firstText, opts = {}, firstImages) {
       await flushUsageCaptures()
       send({ type: '_devdy_done' })
     } catch (err) {
+      failed = true
       send({ type: '_devdy_error', error: String(err && err.stack ? err.stack : err) })
     } finally {
       stopUsagePolling()
       await flushUsageCaptures()
-      send({ type: '_devdy_closed' })
+      // `code` mirrors the process exit code: non-zero = the session failed.
+      send({ type: '_devdy_closed', code: failed ? 1 : 0 })
+      exitAfterSession(failed ? 1 : 0)
     }
   })()
+}
+
+// The session is over (finished, or the CLI died): nothing more can happen in
+// this process, and a follow-up prompt pushed into the dead queue would vanish
+// silently. Stop reading stdin so Node exits once stdout drains; the broker sees
+// EOF and finishes the run (a follow-up then resumes in a fresh sidecar). The
+// unref'd timer only fires if some stray handle still holds the loop open.
+function exitAfterSession(code = 0) {
+  process.exitCode = code
+  rl.close()
+  process.stdin.destroy()
+  setTimeout(() => process.exit(code), 2000).unref()
 }
 
 function startUsageProbe(opts = {}) {
@@ -507,8 +568,15 @@ rl.on('line', (raw) => {
 })
 
 rl.on('close', () => {
-  // stdin closed by the broker → end the session input.
+  // stdin closed by the broker → end the session input. The SDK keeps the CLI
+  // running until its turn ends, so a tool may still ask for permission — but no
+  // answer can reach us any more: settle every open request now (and deny new
+  // ones in canUseTool) instead of leaving the turn blocked forever.
+  inputClosed = true
   if (inputQueue) inputQueue.close()
+  for (const requestId of [...pendingPermissions.keys()]) {
+    cancelPermission(requestId, INPUT_CLOSED_REASON, 'warn', '⚠ An open permission request was denied: the session can no longer receive answers.')
+  }
 })
 
-send({ type: '_devdy_ready' })
+send({ type: '_devdy_ready', capabilities: { heartbeat_ms: HEARTBEAT_MS } })
