@@ -438,7 +438,12 @@ pub(crate) async fn start_run_inner(
             // field is added and the run behaves exactly as before (AC6). Never
             // contains a token — label/username/host metadata only.
             let account_context =
-                crate::runs::broker::token::build_account_context(&db_pool, &project_id).await;
+                crate::runs::broker::token::build_account_context(
+                &db_pool,
+                &project_id,
+                Some(&payload.run_id),
+            )
+            .await;
             let mut options = serde_json::json!({
                 "cwd": project_path,
                 "permissionMode": sdk_permission_mode(&permission_mode),
@@ -646,7 +651,12 @@ pub(crate) async fn start_run_inner(
     let mut first_line: Option<String> = None;
     if input.is_some() {
         let account_context =
-            crate::runs::broker::token::build_account_context(&db_pool, &project_id).await;
+            crate::runs::broker::token::build_account_context(
+                &db_pool,
+                &project_id,
+                Some(&payload.run_id),
+            )
+            .await;
         let prompt_text = account_context
             .as_ref()
             .map(|ctx| format!("{ctx}\n\nUser request:\n{prompt}"))

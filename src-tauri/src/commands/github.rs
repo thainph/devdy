@@ -591,8 +591,26 @@ pub async fn fetch_pr(
     linked_issue: Option<u64>,
     allow_missing_issue: Option<bool>,
     title: Option<String>,
+    github_account_id: Option<String>,
 ) -> Result<RunRecord, String> {
     use sqlx::Row;
+
+    // Optional GitHub account to pin this review run to (the PR inbox passes the
+    // account that was asked to review). Must be a configured account; blank =
+    // no pin, so the run resolves the project's reviewer/default account.
+    let github_account_id = github_account_id
+        .map(|a| a.trim().to_string())
+        .filter(|a| !a.is_empty());
+    if let Some(account_id) = &github_account_id {
+        let exists = sqlx::query("SELECT 1 FROM github_accounts WHERE id = ?")
+            .bind(account_id)
+            .fetch_optional(db.inner())
+            .await
+            .map_err(|e| e.to_string())?;
+        if exists.is_none() {
+            return Err("GitHub account not found".to_string());
+        }
+    }
 
     let project_row = sqlx::query("SELECT path FROM projects WHERE id = ?")
         .bind(&project_id)
@@ -634,9 +652,11 @@ pub async fn fetch_pr(
                 .github_repo
                 .clone()
                 .ok_or("Repo has no GitHub repo configured")?;
-            let client = github::client_for_project(db.inner(), &project_id)
-                .await
-                .map_err(|e| e.to_string())?;
+            let client = match &github_account_id {
+                Some(account_id) => github::client_for_account(account_id),
+                None => github::client_for_review(db.inner(), &project_id).await,
+            }
+            .map_err(|e| e.to_string())?;
             build_pr_markdown(
                 &client,
                 &owner,
@@ -662,7 +682,7 @@ pub async fn fetch_pr(
     let now = chrono::Utc::now().to_rfc3339();
     let file_path_str = file_path.to_string_lossy().to_string();
     sqlx::query(
-        "INSERT INTO runs (id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, created_at, title) VALUES (?, ?, ?, 'review_pr', ?, 'fetched', ?, ?, ?, ?, ?)"
+        "INSERT INTO runs (id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, created_at, title, github_account_id) VALUES (?, ?, ?, 'review_pr', ?, 'fetched', ?, ?, ?, ?, ?, ?)"
     )
     .bind(&run_id)
     .bind(&project_id)
@@ -673,6 +693,7 @@ pub async fn fetch_pr(
     .bind(&file_path_str)
     .bind(&now)
     .bind(&title)
+    .bind(&github_account_id)
     .execute(db.inner())
     .await
     .map_err(|e| e.to_string())?;
