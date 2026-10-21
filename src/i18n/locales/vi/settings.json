@@ -15,7 +15,8 @@
     "usage": "Sử dụng & Ngân sách",
     "remote": "Điều khiển từ xa",
     "prompts": "Mẫu Prompt",
-    "inbox": "Inbox API"
+    "inbox": "Inbox API",
+    "azure": "Tài khoản Azure"
   },
   "general": {
     "theme": "Giao diện",
@@ -378,5 +379,35 @@
     "regenerated": "Đã tạo token mới",
     "regenerateHint": "Token cũ mất hiệu lực ngay.",
     "usage": "Định dạng request"
+  },
+  "azure": {
+    "title": "Tài khoản Azure",
+    "intro": "Thêm tài khoản Azure và liên kết một tài khoản cho mỗi dự án. Mỗi tài khoản là một phiên az login riêng do Devdy quản lý và tách biệt, nên nhiều tenant và danh tính có thể dùng song song. Lệnh az và terraform trong các run của dự án được liên kết sẽ dùng tài khoản đó.",
+    "isolationWarning": "Tránh phụ thuộc vào az login toàn cục khi để agent làm việc. Devdy lưu phiên Azure CLI của từng tài khoản trong thư mục riêng và trỏ các run tới tài khoản được liên kết.",
+    "validate": "Kiểm tra",
+    "valid": "Hợp lệ",
+    "login": "Đăng nhập",
+    "loginExpired": "Chưa đăng nhập hoặc phiên Azure đã hết hạn. Bấm \"Đăng nhập\" để đăng nhập lại.",
+    "loggingIn": "Hãy hoàn tất đăng nhập trên trình duyệt…",
+    "lastValidated": "Đã kiểm tra lúc {time}",
+    "neverValidated": "Chưa kiểm tra lần nào",
+    "noSubscription": "Chưa chọn subscription",
+    "labelPlaceholder": "Tên hiển thị",
+    "addLabelPlaceholder": "Tên hiển thị (vd: Azure công ty, Production)",
+    "tenantPlaceholder": "Tenant ID hoặc domain (không bắt buộc)",
+    "subscriptionPlaceholder": "Subscription ID hoặc tên (không bắt buộc)",
+    "subscriptionLabel": "Subscription",
+    "subscriptionSelectPlaceholder": "Chọn subscription…",
+    "subscriptionsLoading": "Đang tải danh sách subscription…",
+    "subscriptionDefault": "mặc định",
+    "tagsPlaceholder": "Thẻ (không bắt buộc)",
+    "saving": "Đang lưu…",
+    "addAccount": "Thêm tài khoản",
+    "addHint": "Khi thêm tài khoản, Devdy sẽ mở trình duyệt để chạy az login. Để trống tenant để dùng tenant mặc định của bạn, để trống subscription để dùng subscription mặc định.",
+    "addWaiting": "Hãy hoàn tất đăng nhập trên trình duyệt. Quá trình này chờ tối đa khoảng 5 phút.",
+    "addLoginFailed": "Đăng nhập Azure chưa hoàn tất. Nếu tài khoản đã xuất hiện trong danh sách, hãy bấm \"Đăng nhập\" ở tài khoản đó; nếu chưa, hãy thêm lại.",
+    "accountAdded": "Đã thêm tài khoản Azure",
+    "deleteTitle": "Xoá tài khoản Azure",
+    "deleteMessage": "Xoá tài khoản Azure này cùng phiên đăng nhập của nó? Các dự án đang liên kết sẽ bị gỡ liên kết."
   }
 }

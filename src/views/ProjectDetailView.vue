@@ -12,11 +12,12 @@ import { useAppSettingsStore } from '@/stores/appSettings'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import { useGitlabAccountsStore } from '@/stores/gitlabAccounts'
 import { useAwsAccountsStore } from '@/stores/awsAccounts'
+import { useAzureAccountsStore } from '@/stores/azureAccounts'
 import { useClaudeAccountsStore } from '@/stores/claudeAccounts'
 import { useToolPermissionsStore } from '@/stores/toolPermissions'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import {
-  AlertTriangle, Puzzle, ScrollText, Server, Github, Gitlab, Cloud,
+  AlertTriangle, Puzzle, ScrollText, Server, Github, Gitlab, Cloud, CloudCog,
   GitMerge, CheckCircle2, XCircle, Trash2, Plus, GitBranch, Settings,
   Rocket, ShieldCheck, Loader2, KanbanSquare, ExternalLink, UserCircle
 } from 'lucide-vue-next'
@@ -39,6 +40,7 @@ const appSettings = useAppSettingsStore()
 const ghStore = useGithubAccountsStore()
 const glStore = useGitlabAccountsStore()
 const awsStore = useAwsAccountsStore()
+const azureStore = useAzureAccountsStore()
 const claudeStore = useClaudeAccountsStore()
 const toolPerms = useToolPermissionsStore()
 const live = useLiveRunsStore()
@@ -49,7 +51,7 @@ const { toast } = useToast()
 const projectId = computed(() => route.params.projectId as string)
 const project = computed(() => projectStore.projects.find(p => p.id === projectId.value))
 
-const activeTab = ref<'overview' | 'skills' | 'rules' | 'mcp' | 'deploy' | 'github' | 'board' | 'gitlab' | 'aws' | 'claude' | 'tools' | 'conflicts'>('overview')
+const activeTab = ref<'overview' | 'skills' | 'rules' | 'mcp' | 'deploy' | 'github' | 'board' | 'gitlab' | 'aws' | 'azure' | 'claude' | 'tools' | 'conflicts'>('overview')
 
 // ── Tool permissions (allow/deny always) for this project ──────────────────
 const allowTools = computed(() => toolPerms.getAllow(projectId.value))
@@ -89,6 +91,7 @@ const SECTIONS = [
   { id: 'board', icon: KanbanSquare },
   { id: 'gitlab', icon: Gitlab },
   { id: 'aws', icon: Cloud },
+  { id: 'azure', icon: CloudCog },
   { id: 'claude', icon: UserCircle },
   { id: 'tools', icon: ShieldCheck },
 ] as const
@@ -472,6 +475,28 @@ async function handleSelectAwsAccount(accountId: string) {
   }
 }
 
+// --- Azure account linking (one account per project, mirroring AWS) ---
+const linkedAzureAccountId = computed(() => project.value?.azure_account_id ?? null)
+const linkedAzureAccount = computed(
+  () => azureStore.accounts.find(a => a.id === linkedAzureAccountId.value) ?? null,
+)
+const azureAccountOptions = computed(() => [
+  { value: '', label: 'None' },
+  ...azureStore.accounts.map(a => ({
+    value: a.id,
+    label: a.subscription_name ? `${a.label} (${a.subscription_name})` : a.label,
+  })),
+])
+
+async function handleSelectAzureAccount(accountId: string) {
+  try {
+    await projectStore.setProjectAzureAccount(projectId.value, accountId || null)
+    toast.success(t('projectDetail.toastAzureLinked'))
+  } catch (e) {
+    toast.error(String(e))
+  }
+}
+
 // --- Claude account linking (one account per project; falls back to default) ---
 const linkedClaudeAccountId = computed(() => project.value?.claude_account_id ?? null)
 const linkedClaudeAccount = computed(
@@ -590,6 +615,9 @@ onMounted(async () => {
   }
   if (awsStore.accounts.length === 0) {
     await awsStore.fetch()
+  }
+  if (azureStore.accounts.length === 0) {
+    await azureStore.fetch()
   }
   if (claudeStore.accounts.length === 0) {
     await claudeStore.fetch()
@@ -1485,6 +1513,41 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
               <span> · {{ linkedAwsAccount.region }}</span>
               <span v-if="linkedAwsAccount.account_id"> · {{ linkedAwsAccount.account_id }}</span>
               <span v-if="linkedAwsAccount.profile_name"> · {{ linkedAwsAccount.profile_name }}</span>
+            </div>
+          </Card>
+        </div>
+
+        <!-- Azure tab -->
+        <div v-if="activeTab === 'azure'" class="max-w-lg space-y-4">
+          <Card body-class="p-4 space-y-4">
+            <template #header>
+              <CloudCog class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
+              <span class="text-xs font-semibold">{{ t('projectDetail.linkedAzureAccount') }}</span>
+            </template>
+            <p class="text-[11px] text-muted-foreground leading-relaxed">
+              {{ t('projectDetail.azureAccountHint') }}
+              <RouterLink to="/settings?section=azure" class="text-primary hover:underline">{{ t('projectDetail.settings') }}</RouterLink>.
+            </p>
+
+            <div v-if="azureStore.accounts.length === 0" class="text-[11px] text-muted-foreground">
+              {{ t('projectDetail.noAzureAccounts') }}
+              <RouterLink to="/settings?section=azure" class="text-primary hover:underline">{{ t('projectDetail.addInSettings') }}</RouterLink>
+              {{ t('projectDetail.toLinkHere') }}
+            </div>
+            <AppSelect
+              size="sm"
+              v-else
+              :model-value="linkedAzureAccountId ?? ''"
+              :options="azureAccountOptions"
+              :placeholder="t('projectDetail.selectAccountPlaceholder')"
+              @update:model-value="handleSelectAzureAccount"
+            />
+
+            <div v-if="linkedAzureAccount" class="text-[11px] text-muted-foreground">
+              <span v-if="linkedAzureAccount.subscription_name">{{ linkedAzureAccount.subscription_name }}</span>
+              <span v-if="linkedAzureAccount.subscription_id" class="font-mono"> · {{ linkedAzureAccount.subscription_id }}</span>
+              <span v-if="linkedAzureAccount.tenant_id" class="font-mono"> · {{ linkedAzureAccount.tenant_id }}</span>
+              <span v-if="!linkedAzureAccount.logged_in" class="text-amber-500"> · {{ t('projectDetail.azureNotSignedIn') }}</span>
             </div>
           </Card>
         </div>

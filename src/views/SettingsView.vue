@@ -3,7 +3,7 @@ import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from '@/lib/tauri'
 import {
-  Cpu, Palette, FileText, ShieldAlert, Sparkles, Github, Gitlab, Cloud,
+  Cpu, Palette, FileText, ShieldAlert, Sparkles, Github, Gitlab, Cloud, CloudCog,
   CheckCircle2, AlertTriangle, Trash2, Plus, Pencil, Gauge, Radio,
   RefreshCw, Loader2, BadgeCheck, Server, HardDrive, Bot, RotateCcw, UserCircle,
   LogIn, Star, ChevronDown, ArrowRightLeft, Inbox, GripVertical,
@@ -24,6 +24,8 @@ import { useGithubAccountsStore, type PatValidation } from '@/stores/githubAccou
 import { useGitlabAccountsStore, type GitlabPatValidation } from '@/stores/gitlabAccounts'
 import { useAwsAccountsStore, isSsoLoginRequired, type AwsAccountPayload, type AwsProfileInfo, type AwsValidation } from '@/stores/awsAccounts'
 import AwsProfilePicker from '@/components/AwsProfilePicker.vue'
+import AzureAccountsSettings from '@/components/AzureAccountsSettings.vue'
+import { useAzureAccountsStore } from '@/stores/azureAccounts'
 import { useClaudeAccountsStore, type ClaudeValidation } from '@/stores/claudeAccounts'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useMascotLevelStore } from '@/stores/mascotLevel'
@@ -437,6 +439,7 @@ const SECTIONS = [
   { id: 'github', labelKey: 'settings.sections.github', icon: Github },
   { id: 'gitlab', labelKey: 'settings.sections.gitlab', icon: Gitlab },
   { id: 'aws', labelKey: 'settings.sections.aws', icon: Cloud },
+  { id: 'azure', labelKey: 'settings.sections.azure', icon: CloudCog },
   { id: 'claude', labelKey: 'settings.sections.claude', icon: UserCircle },
   { id: 'engine', labelKey: 'settings.sections.engine', icon: Cpu },
   { id: 'ai', labelKey: 'settings.sections.ai', icon: Sparkles },
@@ -594,6 +597,9 @@ async function handleGoogleReauth(id: string) {
 const ghCount = computed(() => ghStore.accounts.length)
 const glCount = computed(() => glStore.accounts.length)
 const awsCount = computed(() => awsStore.accounts.length)
+// The Azure section component owns its own fetch; the store is shared for the badge.
+const azureStore = useAzureAccountsStore()
+const azureCount = computed(() => azureStore.accounts.length)
 
 // --- GitHub accounts ---
 const ghStore = useGithubAccountsStore()
@@ -1263,6 +1269,10 @@ watch(() => settings.value.language, (v) => {
             v-if="s.id === 'aws' && awsCount"
             class="ml-auto text-[10px] tabular-nums text-muted-foreground"
           >{{ awsCount }}</span>
+          <span
+            v-if="s.id === 'azure' && azureCount"
+            class="ml-auto text-[10px] tabular-nums text-muted-foreground"
+          >{{ azureCount }}</span>
         </button>
       </nav>
 
@@ -2339,6 +2349,9 @@ watch(() => settings.value.language, (v) => {
               <p v-if="awsAddError" class="text-[11px] text-destructive">{{ awsAddError }}</p>
             </div>
         </Card>
+
+        <!-- Azure Accounts section -->
+        <AzureAccountsSettings v-show="activeSection === 'azure'" />
 
         <!-- Claude Accounts section -->
         <Card v-show="activeSection === 'claude'" body-class="p-4 space-y-4">

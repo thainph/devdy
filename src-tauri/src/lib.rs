@@ -1,4 +1,5 @@
 mod aws_sandbox;
+mod azure_sandbox;
 mod commands;
 mod conductor;
 mod db;
@@ -18,6 +19,11 @@ use commands::aws_accounts::{
     set_project_aws_account, update_aws_account, validate_aws_account,
 };
 use commands::aws_sso::{aws_sso_login_profile, list_aws_profiles};
+use commands::azure_accounts::{
+    azure_login, create_azure_account, delete_azure_account, list_azure_accounts,
+    list_azure_subscriptions, set_project_azure_account, update_azure_account,
+    validate_azure_account,
+};
 use commands::claude_accounts::{
     create_claude_account, delete_claude_account, get_claude_balance, list_claude_accounts,
     open_claude_account_login, rename_claude_account, set_default_claude_account,
@@ -213,6 +219,9 @@ pub fn run() {
             // files; they are written here and when AWS config changes, never by
             // a run.
             tauri::async_runtime::block_on(aws_sandbox::sync_all(&db, &app_data_dir));
+            // Azure: record the account-dir root for the broker and reset the
+            // shared empty AZURE_CONFIG_DIR every run's sidecar points at.
+            azure_sandbox::sync_all(&app_data_dir);
 
             // App-wide singleton credential broker (GĐ7). One Unix socket serves
             // every run for the whole app lifetime, so runs never race a per-run
@@ -490,6 +499,14 @@ pub fn run() {
             list_aws_profiles,
             aws_sso_login_profile,
             set_project_aws_account,
+            list_azure_accounts,
+            create_azure_account,
+            update_azure_account,
+            delete_azure_account,
+            validate_azure_account,
+            azure_login,
+            list_azure_subscriptions,
+            set_project_azure_account,
             get_applied_skills,
             apply_skill,
             apply_skill_to_all_projects,
