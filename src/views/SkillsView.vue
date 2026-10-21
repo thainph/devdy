@@ -11,7 +11,7 @@ import { Button, Card, Badge } from '@/components/ui'
 import GroupManagerModal from '@/components/GroupManagerModal.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
-import { Plus, Upload, Download, Pencil, Trash2, Puzzle, CalendarDays, FolderCheck, Layers } from 'lucide-vue-next'
+import { Plus, Upload, Download, Pencil, Trash2, Puzzle, CalendarDays, FolderCheck, Layers, RefreshCw } from 'lucide-vue-next'
 
 // Named explicitly: <KeepAlive :include> in App.vue matches on component name,
 // and an inferred name is a build detail that minification can change.
@@ -26,6 +26,8 @@ const { confirm } = useConfirm()
 const { toast } = useToast()
 const deletingId = ref<string | null>(null)
 const applyingId = ref<string | null>(null)
+/** Item id being re-applied, 'all' for the header action, null when idle. */
+const reapplyingId = ref<string | null>(null)
 const importingZip = ref(false)
 const groupsOpen = ref(false)
 /** Group id, or 'ungrouped' / null for the two catch-all chips. */
@@ -85,6 +87,32 @@ async function handleApplyToAll(skill: Skill) {
     toast.error(String(e))
   } finally {
     applyingId.value = null
+  }
+}
+
+/** Re-write one skill (or all of them) into the projects it is already applied to. */
+async function handleReapply(skill?: Skill) {
+  if (!(await confirm({
+    title: skill ? t('skills.list.confirmReapplyTitle') : t('skills.list.confirmReapplyAllTitle'),
+    message: skill ? t('skills.list.confirmReapplyMessage', { name: skill.name }) : t('skills.list.confirmReapplyAllMessage'),
+    confirmLabel: t('skills.list.confirmReapplyConfirm'),
+    variant: 'primary',
+  }))) return
+  reapplyingId.value = skill?.id ?? 'all'
+  try {
+    const result = await store.reapplySkills(skill?.id)
+    if (result.applied === 0 && result.failures.length === 0) {
+      toast.info(t('skills.list.toastNothingToReapply'))
+    } else if (result.failures.length === 0) {
+      toast.success(t('skills.list.toastReapplied', { count: result.applied }))
+    } else {
+      const details = result.failures.map(f => `• ${f.project_name}: ${f.error}`).join('\n')
+      toast.error(t('skills.list.toastReappliedPartial', { applied: result.applied, failed: result.failures.length, details }))
+    }
+  } catch (e) {
+    toast.error(String(e))
+  } finally {
+    reapplyingId.value = null
   }
 }
 
@@ -161,6 +189,16 @@ function formatDate(iso: string) {
         >
           <Layers class="h-3.5 w-3.5" :stroke-width="1.75" />
           {{ t('groups.manageSkillGroups') }}
+        </Button>
+        <Button
+          v-if="store.skills.length > 0"
+          variant="outline"
+          :disabled="reapplyingId !== null"
+          :title="t('skills.list.reapplyAllHint')"
+          @click="handleReapply()"
+        >
+          <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" :class="{ 'animate-spin': reapplyingId === 'all' }" />
+          {{ reapplyingId === 'all' ? t('skills.list.reapplying') : t('skills.list.reapplyAll') }}
         </Button>
         <Button
           variant="outline"
@@ -280,6 +318,14 @@ function formatDate(iso: string) {
                 @click="handleApplyToAll(skill)"
               >
                 <FolderCheck class="h-3.5 w-3.5" :stroke-width="1.75" />
+              </button>
+              <button
+                class="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-default"
+                :title="t('skills.list.reapply')"
+                :disabled="reapplyingId !== null"
+                @click="handleReapply(skill)"
+              >
+                <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" :class="{ 'animate-spin': reapplyingId === skill.id }" />
               </button>
               <button
                 class="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"

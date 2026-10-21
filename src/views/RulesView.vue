@@ -11,7 +11,7 @@ import { Button, Card, Badge } from '@/components/ui'
 import GroupManagerModal from '@/components/GroupManagerModal.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
-import { Plus, Upload, Download, Pencil, Trash2, ScrollText, CalendarDays, FolderCheck, Layers } from 'lucide-vue-next'
+import { Plus, Upload, Download, Pencil, Trash2, ScrollText, CalendarDays, FolderCheck, Layers, RefreshCw } from 'lucide-vue-next'
 
 // Named explicitly: <KeepAlive :include> in App.vue matches on component name,
 // and an inferred name is a build detail that minification can change.
@@ -25,6 +25,8 @@ const { confirm } = useConfirm()
 const { toast } = useToast()
 const deletingId = ref<string | null>(null)
 const applyingId = ref<string | null>(null)
+/** Item id being re-applied, 'all' for the header action, null when idle. */
+const reapplyingId = ref<string | null>(null)
 const importing = ref(false)
 const groupsStore = useRuleGroupsStore()
 const groupsOpen = ref(false)
@@ -88,6 +90,32 @@ async function handleApplyToAll(rule: Rule) {
 }
 
 const targetLabel: Record<string, string> = { claude: t('rules.editor.targetClaude'), codex: t('rules.editor.targetCodex'), both: t('rules.editor.targetBoth') }
+
+/** Re-write one rule (or all of them) into the projects it is already applied to. */
+async function handleReapply(rule?: Rule) {
+  if (!(await confirm({
+    title: rule ? t('rules.list.confirmReapplyTitle') : t('rules.list.confirmReapplyAllTitle'),
+    message: rule ? t('rules.list.confirmReapplyMessage', { name: rule.name }) : t('rules.list.confirmReapplyAllMessage'),
+    confirmLabel: t('rules.list.confirmReapplyConfirm'),
+    variant: 'primary',
+  }))) return
+  reapplyingId.value = rule?.id ?? 'all'
+  try {
+    const result = await store.reapplyRules(rule?.id)
+    if (result.applied === 0 && result.failures.length === 0) {
+      toast.info(t('rules.list.toastNothingToReapply'))
+    } else if (result.failures.length === 0) {
+      toast.success(t('rules.list.toastReapplied', { count: result.applied }))
+    } else {
+      const details = result.failures.map(f => `• ${f.project_name}: ${f.error}`).join('\n')
+      toast.error(t('rules.list.toastReappliedPartial', { applied: result.applied, failed: result.failures.length, details }))
+    }
+  } catch (e) {
+    toast.error(String(e))
+  } finally {
+    reapplyingId.value = null
+  }
+}
 
 async function handleDelete(rule: Rule) {
   if (!(await confirm({
@@ -162,6 +190,16 @@ function formatDate(iso: string) {
         >
           <Layers class="h-3.5 w-3.5" :stroke-width="1.75" />
           {{ t('groups.manageRuleGroups') }}
+        </Button>
+        <Button
+          v-if="store.rules.length > 0"
+          variant="outline"
+          :disabled="reapplyingId !== null"
+          :title="t('rules.list.reapplyAllHint')"
+          @click="handleReapply()"
+        >
+          <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" :class="{ 'animate-spin': reapplyingId === 'all' }" />
+          {{ reapplyingId === 'all' ? t('rules.list.reapplying') : t('rules.list.reapplyAll') }}
         </Button>
         <Button
           variant="outline"
@@ -282,6 +320,15 @@ function formatDate(iso: string) {
                 @click="handleApplyToAll(rule)"
               >
                 <FolderCheck class="h-3.5 w-3.5" :stroke-width="1.75" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                :title="t('rules.list.reapply')"
+                :disabled="reapplyingId !== null"
+                @click="handleReapply(rule)"
+              >
+                <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" :class="{ 'animate-spin': reapplyingId === rule.id }" />
               </Button>
               <Button
                 variant="ghost"

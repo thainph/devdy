@@ -73,5 +73,10 @@ export const useSkillsStore = defineStore('skills', () => {
     return invoke<ApplyAllOutcome>('apply_skill_to_all_projects', { skillId: id })
   }
 
-  return { skills, loading, error, fetchSkills, getSkill, createSkill, updateSkill, deleteSkill, importSkillZip, exportSkillZip, applySkillToAllProjects }
+  /** Re-write one skill (or every skill when `id` is omitted) into the projects it is applied to. */
+  async function reapplySkills(id?: string): Promise<ApplyAllOutcome> {
+    return invoke<ApplyAllOutcome>('reapply_skills', { skillId: id ?? null })
+  }
+
+  return { skills, loading, error, fetchSkills, getSkill, createSkill, updateSkill, deleteSkill, importSkillZip, exportSkillZip, applySkillToAllProjects, reapplySkills }
 })
