@@ -1046,6 +1046,63 @@ pub async fn apply_skill_to_all_projects(
     Ok(ApplyAllOutcome { applied, failures })
 }
 
+/// Re-write a skill (or every skill when `skill_id` is None) into each project that already has it
+/// applied. Unlike auto-sync this overwrites local edits, so any open conflicts for the re-applied
+/// pairs are marked resolved. `manual` / group flags are left untouched.
+#[tauri::command]
+pub async fn reapply_skills(
+    db: State<'_, Db>,
+    skill_id: Option<String>,
+) -> Result<ApplyAllOutcome, String> {
+    use sqlx::Row;
+    let rows = sqlx::query(
+        "SELECT ps.project_id, ps.skill_id, p.name as project_name, p.path, s.name as skill_name
+         FROM project_skills ps
+         JOIN projects p ON p.id = ps.project_id
+         JOIN skills s ON s.id = ps.skill_id
+         WHERE ?1 IS NULL OR ps.skill_id = ?1
+         ORDER BY p.name, s.name",
+    )
+    .bind(&skill_id)
+    .fetch_all(db.inner())
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut applied = 0;
+    let mut failures = Vec::new();
+    for row in &rows {
+        let project_id: String = row.get("project_id");
+        let sid: String = row.get("skill_id");
+        let project_name: String = row.get("project_name");
+        let project_path: String = row.get("path");
+        let skill_name: String = row.get("skill_name");
+        // Don't recreate a project folder that was moved or deleted on disk.
+        let result = if !std::path::Path::new(&project_path).is_dir() {
+            Err(format!("Project folder not found: {}", project_path))
+        } else {
+            apply_skill_to_project(db.inner(), &project_id, &sid, false).await
+        };
+        match result {
+            Ok(()) => {
+                applied += 1;
+                let _ = sqlx::query(
+                    "UPDATE sync_conflicts SET resolved = 1 WHERE project_id = ? AND skill_id = ? AND resolved = 0",
+                )
+                .bind(&project_id)
+                .bind(&sid)
+                .execute(db.inner())
+                .await;
+            }
+            Err(error) => failures.push(ApplyFailure {
+                project_id,
+                project_name,
+                error: format!("{}: {}", skill_name, error),
+            }),
+        }
+    }
+    Ok(ApplyAllOutcome { applied, failures })
+}
+
 /// Core apply logic shared by `apply_skill`, `apply_skill_to_all_projects` and group enablement.
 ///
 /// `manual` marks who asked for it: `true` when the user flipped the skill on directly, `false`

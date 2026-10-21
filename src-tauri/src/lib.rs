@@ -78,13 +78,14 @@ use commands::projects::{
     add_project, add_repo, apply_skill, apply_skill_to_all_projects, detect_project_info,
     get_applied_skills, list_projects, list_repos, list_sync_conflicts, open_in_chrome,
     open_in_folder, open_in_terminal, open_in_vscode, remove_project, remove_repo,
-    remove_skill_from_project, reorder_projects,
+    reapply_skills, remove_skill_from_project, reorder_projects,
     resolve_sync_conflict, update_project, update_repo,
 };
 use commands::rules::{
     apply_rule, apply_rule_to_all_projects, create_rule, delete_rule, export_rule,
     get_applied_rules, get_rule, import_rule, list_rule_sync_conflicts, list_rules,
-    open_rules_folder, remove_rule_from_project, resolve_rule_sync_conflict, update_rule,
+    open_rules_folder, reapply_rules, remove_rule_from_project, resolve_rule_sync_conflict,
+    update_rule,
 };
 use commands::runs::{
     cancel_run, create_handoff_run, create_session_run, delete_all_runs, delete_run, end_run_input,
@@ -418,6 +419,7 @@ pub fn run() {
             get_applied_rules,
             apply_rule,
             apply_rule_to_all_projects,
+            reapply_rules,
             remove_rule_from_project,
             list_rule_sync_conflicts,
             resolve_rule_sync_conflict,
@@ -513,6 +515,7 @@ pub fn run() {
             get_applied_skills,
             apply_skill,
             apply_skill_to_all_projects,
+            reapply_skills,
             remove_skill_from_project,
             list_sync_conflicts,
             resolve_sync_conflict,

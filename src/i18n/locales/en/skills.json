@@ -20,7 +20,19 @@
     "toastImported": "Imported",
     "toastExported": "Exported",
     "project": "project",
-    "projects": "projects"
+    "projects": "projects",
+    "reapply": "Re-apply to projects using it",
+    "reapplyAll": "Re-apply all",
+    "reapplyAllHint": "Re-write every skill into the projects it is applied to",
+    "reapplying": "Re-applying…",
+    "confirmReapplyTitle": "Re-apply skill",
+    "confirmReapplyMessage": "Re-apply skill \"{name}\" to every project it is applied to? Local edits to it in those projects will be overwritten.",
+    "confirmReapplyAllTitle": "Re-apply all skills",
+    "confirmReapplyAllMessage": "Re-apply every skill to the projects it is applied to? Local edits in those projects will be overwritten.",
+    "confirmReapplyConfirm": "Re-apply",
+    "toastNothingToReapply": "Not applied to any project yet.",
+    "toastReapplied": "Re-applied {count} project link(s).",
+    "toastReappliedPartial": "Re-applied {applied} project link(s).\n\nFailed for {failed}:\n{details}"
   },
   "editor": {
     "backToSkills": "Back to Skills",

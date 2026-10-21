@@ -20,7 +20,19 @@
     "toastImported": "Đã nhập",
     "toastExported": "Đã xuất",
     "project": "dự án",
-    "projects": "dự án"
+    "projects": "dự án",
+    "reapply": "Áp dụng lại cho các dự án đang dùng",
+    "reapplyAll": "Áp dụng lại tất cả",
+    "reapplyAllHint": "Ghi lại mọi skill vào các dự án đang áp dụng",
+    "reapplying": "Đang áp dụng lại…",
+    "confirmReapplyTitle": "Áp dụng lại skill",
+    "confirmReapplyMessage": "Áp dụng lại skill \"{name}\" cho mọi dự án đang dùng? Các chỉnh sửa cục bộ của nó trong những dự án đó sẽ bị ghi đè.",
+    "confirmReapplyAllTitle": "Áp dụng lại tất cả skills",
+    "confirmReapplyAllMessage": "Áp dụng lại mọi skill cho các dự án đang dùng? Các chỉnh sửa cục bộ trong những dự án đó sẽ bị ghi đè.",
+    "confirmReapplyConfirm": "Áp dụng lại",
+    "toastNothingToReapply": "Chưa được áp dụng cho dự án nào.",
+    "toastReapplied": "Đã áp dụng lại {count} lượt dự án.",
+    "toastReappliedPartial": "Đã áp dụng lại {applied} lượt dự án.\n\nThất bại {failed}:\n{details}"
   },
   "editor": {
     "backToSkills": "Quay lại Skills",

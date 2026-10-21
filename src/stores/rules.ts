@@ -81,9 +81,14 @@ export const useRulesStore = defineStore('rules', () => {
     return invoke<ApplyAllOutcome>('apply_rule_to_all_projects', { ruleId: id })
   }
 
+  /** Re-write one rule (or every rule when `id` is omitted) into the projects it is applied to. */
+  async function reapplyRules(id?: string): Promise<ApplyAllOutcome> {
+    return invoke<ApplyAllOutcome>('reapply_rules', { ruleId: id ?? null })
+  }
+
   async function openRulesFolder(): Promise<void> {
     await invoke('open_rules_folder')
   }
 
-  return { rules, loading, error, fetchRules, getRule, createRule, updateRule, deleteRule, importRule, exportRule, applyRuleToAllProjects, openRulesFolder }
+  return { rules, loading, error, fetchRules, getRule, createRule, updateRule, deleteRule, importRule, exportRule, applyRuleToAllProjects, reapplyRules, openRulesFolder }
 })

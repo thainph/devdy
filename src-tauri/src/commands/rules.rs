@@ -539,6 +539,63 @@ pub async fn apply_rule_to_all_projects(
     Ok(ApplyAllOutcome { applied, failures })
 }
 
+/// Re-write a rule (or every rule when `rule_id` is None) into each project that already has it
+/// applied. Unlike auto-sync this overwrites local edits, so any open conflicts for the re-applied
+/// pairs are marked resolved. `manual` / group flags are left untouched.
+#[tauri::command]
+pub async fn reapply_rules(
+    db: State<'_, Db>,
+    rule_id: Option<String>,
+) -> Result<ApplyAllOutcome, String> {
+    use sqlx::Row;
+    let rows = sqlx::query(
+        "SELECT pr.project_id, pr.rule_id, p.name as project_name, p.path, r.name as rule_name
+         FROM project_rules pr
+         JOIN projects p ON p.id = pr.project_id
+         JOIN rules r ON r.id = pr.rule_id
+         WHERE ?1 IS NULL OR pr.rule_id = ?1
+         ORDER BY p.name, r.name"
+    )
+    .bind(&rule_id)
+    .fetch_all(db.inner())
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut applied = 0;
+    let mut failures = Vec::new();
+    for row in &rows {
+        let project_id: String = row.get("project_id");
+        let rid: String = row.get("rule_id");
+        let project_name: String = row.get("project_name");
+        let project_path: String = row.get("path");
+        let rule_name: String = row.get("rule_name");
+        // Don't recreate a project folder that was moved or deleted on disk.
+        let result = if !Path::new(&project_path).is_dir() {
+            Err(format!("Project folder not found: {}", project_path))
+        } else {
+            apply_rule_to_project(db.inner(), &project_id, &rid, false).await
+        };
+        match result {
+            Ok(()) => {
+                applied += 1;
+                let _ = sqlx::query(
+                    "UPDATE rule_sync_conflicts SET resolved = 1 WHERE project_id = ? AND rule_id = ? AND resolved = 0"
+                )
+                .bind(&project_id)
+                .bind(&rid)
+                .execute(db.inner())
+                .await;
+            }
+            Err(error) => failures.push(ApplyFailure {
+                project_id,
+                project_name,
+                error: format!("{}: {}", rule_name, error),
+            }),
+        }
+    }
+    Ok(ApplyAllOutcome { applied, failures })
+}
+
 /// Core apply logic shared by `apply_rule`, `apply_rule_to_all_projects` and group enablement.
 ///
 /// See `apply_skill_to_project` for what `manual` means: hand-picked rules (`true`) survive a
