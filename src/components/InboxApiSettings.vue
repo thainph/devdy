@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Settings → "Inbox API (Chrome extension)": the local HTTP endpoint the Chrome
-// extension sends Slack thread links (and translation requests) to. Shows whether it is listening, the base URL and the
+// extension sends Slack thread links (and translation / grammar-check requests) to. Shows whether it is listening, the base URL and the
 // bearer token (masked; copy / reveal / regenerate). Regenerating invalidates the
 // old token immediately, so it asks first. A master switch turns the whole server
 // off (nothing listens on the port).
@@ -34,7 +34,7 @@ const maskedToken = computed(() => {
 
 const endpoints = computed(() => {
   const base = info.value?.baseUrl || 'http://127.0.0.1:<port>'
-  return `POST ${base}/v1/slack-threads\nPOST ${base}/v1/translate`
+  return `POST ${base}/v1/slack-threads\nPOST ${base}/v1/translate\nPOST ${base}/v1/grammar`
 })
 
 async function load() {

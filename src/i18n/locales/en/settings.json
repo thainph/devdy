@@ -346,6 +346,7 @@
     "libraryHint": "Pick these from the dropdown in the chat box to reuse them without retyping.",
     "libraryEmpty": "No saved prompts yet.",
     "addPrompt": "Add prompt",
+    "dragToReorder": "Drag to reorder",
     "deleteTitle": "Delete this prompt?",
     "deleteMessage": "The prompt will be removed from your library and cannot be recovered.",
     "untitled": "Prompt {n} (untitled)",

@@ -16,6 +16,9 @@
 //! Auth: the SDK uses its bundled CLI, which reads the same macOS Keychain login
 //! as `claude` — so runs bill against the user's subscription, no API key.
 
+use crate::runs::liveness::{
+    Action as LivenessAction, Liveness, SIDECAR_EXIT_GRACE, WATCHDOG_TICK,
+};
 use crate::runs::permission::PermissionRequestEvent;
 use crate::runs::RunRegistry;
 use serde_json::Value;
@@ -307,18 +310,18 @@ pub fn detach_process_group(cmd: &mut tokio::process::Command) {
 
 /// Best-effort SIGKILL of the entire process group led by `pid` (Unix). Used on
 /// run cancellation and app exit so no `claude` / `codex` process lingers after
-/// its run is gone. Pair with [`detach_process_group`] at spawn time.
-pub fn kill_process_group(pid: u32) {
+/// its run is gone. Pair with [`detach_process_group`] at spawn time. Returns
+/// whether the signal was delivered (false: no such group any more).
+pub fn kill_process_group(pid: u32) -> bool {
     #[cfg(unix)]
     {
         // Negative pgid targets every process in the group.
-        unsafe {
-            libc::killpg(pid as libc::pid_t, libc::SIGKILL);
-        }
+        unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) == 0 }
     }
     #[cfg(not(unix))]
     {
         let _ = pid;
+        false
     }
 }
 
@@ -438,6 +441,100 @@ pub async fn drain_sidecar(
     // activity; fires (closes) only if the session stays idle through the window.
     let mut drain_close_deadline: Option<tokio::time::Instant> = None;
 
+    // True while a MAIN-thread turn is streaming (main-thread content since the
+    // last `result`). A drain landing mid-turn must not arm the close — see
+    // `drain_should_close_stdin`. Background subagents keep streaming after the
+    // parent's `result`; they must not count (see `is_main_turn_activity`).
+    let mut turn_active = false;
+
+    // Watchdog: nothing may wait forever silently, and nothing is stopped or
+    // answered on suspicion. Policy lives in `runs::liveness` (notices only);
+    // the drain itself only tears down on definitive evidence (process exited,
+    // stdout EOF, `_devdy_closed`).
+    let mut liveness = Liveness::new(tokio::time::Instant::now());
+    let mut watchdog_tick = tokio::time::interval(WATCHDOG_TICK);
+    watchdog_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Armed once the session is provably over (`_devdy_closed`, or the sidecar
+    // process exited). If stdout hasn't reached EOF by then, a descendant holds
+    // it: we stop waiting and finish the run (descendants are left running —
+    // they may be legitimate — and reported), instead of waiting forever.
+    let mut exit_deadline: Option<tokio::time::Instant> = None;
+    // The exit code the sidecar reported with `_devdy_closed` (codex: the
+    // app-server's code; claude: whether the session loop failed).
+    let mut closed_code: Option<i64> = None;
+    // …and the signal, when the engine was killed by one (codex: `code` is
+    // then null). Any signal the sidecar reports is a crash: it never reports
+    // the one it sends itself on a normal shutdown.
+    let mut closed_signal: Option<String> = None;
+    // We stopped reading because the session was over but its output pipes were
+    // still held open by descendants.
+    let mut detached = false;
+    // The sidecar reported a fatal `_devdy_error` that no later successful turn
+    // superseded → the run ends `failed`.
+    let mut unresolved_error = false;
+
+    // Surface a watchdog message as a log line in the run (live + log + remote).
+    async fn watchdog_line(
+        app: &AppHandle,
+        buf: &Arc<TokioMutex<String>>,
+        bus: &Option<crate::remote::RemoteBus>,
+        run_id: &str,
+        level: &str,
+        msg: &str,
+    ) {
+        let is_err = level == "error";
+        append_log(buf, &format!("[log:{}] {}\n", level, msg)).await;
+        if let Some(bus) = bus {
+            bus.publish(crate::remote::RemoteRunEvent::Output {
+                run_id: run_id.to_string(),
+                line: msg.to_string(),
+                is_stderr: is_err,
+            });
+        }
+        let _ = app.emit(
+            &format!("run:output:{}", run_id),
+            serde_json::json!({ "run_id": run_id, "line": msg, "is_stderr": is_err, "level": level }),
+        );
+    }
+
+    // Carry out the liveness decisions: notices go to the UI as a banner with a
+    // stop action (plus a log line); reminders re-alert about an open prompt.
+    async fn apply_liveness(
+        actions: Vec<LivenessAction>,
+        app: &AppHandle,
+        buf: &Arc<TokioMutex<String>>,
+        bus: &Option<crate::remote::RemoteBus>,
+        run_id: &str,
+    ) {
+        for action in actions {
+            match action {
+                LivenessAction::Notice(notice) => {
+                    let msg = notice.message();
+                    watchdog_line(app, buf, bus, run_id, "warn", &format!("⚠ {}", msg)).await;
+                    let _ = app.emit(
+                        &format!("run:attention:{}", run_id),
+                        serde_json::json!({
+                            "run_id": run_id, "key": notice.key(), "kind": notice.kind(),
+                            "message": msg, "params": notice.params(), "active": true,
+                        }),
+                    );
+                }
+                LivenessAction::Clear { key } => {
+                    let _ = app.emit(
+                        &format!("run:attention:{}", run_id),
+                        serde_json::json!({ "run_id": run_id, "key": key, "active": false }),
+                    );
+                }
+                LivenessAction::RemindPermission { request_id } => {
+                    let _ = app.emit(
+                        &format!("run:permission_reminder:{}", run_id),
+                        serde_json::json!({ "run_id": run_id, "request_id": request_id }),
+                    );
+                }
+            }
+        }
+    }
+
     // Incremental persistence: snapshot any pre-existing on-disk log once (for
     // resumes), then periodically flush `prefix + buf` to disk while the run
     // streams. This lets the frontend recover partial output after an app
@@ -466,6 +563,36 @@ pub async fn drain_sidecar(
                 let buf = log_buf.lock().await;
                 flush_to_disk(&buf);
             }
+            // Watchdog: surface long waits (notices only), and detect the one
+            // definitive hang the drain can see itself — the sidecar process has
+            // exited but stdout never reached EOF (an orphan still holds the pipe).
+            _ = watchdog_tick.tick() => {
+                let pending: Vec<(String, String)> = crate::runs::permission::pending_for(&run_id)
+                    .into_iter()
+                    .map(|p| (p.event.request_id, p.event.tool_name))
+                    .collect();
+                // Quiet notices are Claude only: codex emits nothing while a long
+                // command runs.
+                let actions = liveness.tick(
+                    tokio::time::Instant::now(),
+                    turn_active,
+                    &pending,
+                    engine == "claude",
+                );
+                apply_liveness(actions, &app, &log_buf, &remote_bus, &run_id).await;
+
+                if exit_deadline.is_none() {
+                    let exited = {
+                        let mut reg = registry.lock().await;
+                        reg.get_mut(&run_id)
+                            .map(|h| matches!(h.child.try_wait(), Ok(Some(_))))
+                            .unwrap_or(false)
+                    };
+                    if exited {
+                        exit_deadline = Some(tokio::time::Instant::now() + SIDECAR_EXIT_GRACE);
+                    }
+                }
+            }
             // Deferred drain-close safety net: a background task drained to 0 and no
             // wake turn started within the grace window, so the session is genuinely
             // idle — close stdin now so the process exits and the run isn't stuck
@@ -477,12 +604,28 @@ pub async fn drain_sidecar(
                 }
             } => {
                 drain_close_deadline = None;
-                if drain_should_close_stdin(live_bg_tasks, user_turn_ended_once) {
+                if drain_should_close_stdin(live_bg_tasks, user_turn_ended_once, turn_active) {
                     let mut reg = registry.lock().await;
                     if let Some(handles) = reg.get_mut(&run_id) {
                         handles.stdin.take();
                     }
                 }
+            }
+            // The session is provably over (`_devdy_closed`, or the sidecar process
+            // exited) yet stdout is still open: something it started inherited
+            // the pipe. Nothing more can come from the session, so stop waiting
+            // and finish the run. The descendants are NOT killed (they may be
+            // legitimate, e.g. a dev server); they are reported with their group.
+            _ = async {
+                match exit_deadline {
+                    Some(dl) => tokio::time::sleep_until(dl).await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
+                let pgid = registry.lock().await.get(&run_id).and_then(|h| h.pgid);
+                watchdog_line(&app, &log_buf, &remote_bus, &run_id, "warn", &detach_notice(pgid)).await;
+                detached = true;
+                break;
             }
             line = stdout_reader.next_line() => {
                 match line {
@@ -494,7 +637,54 @@ pub async fn drain_sidecar(
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
 
+                        // Liveness bookkeeping: `_devdy_*` lines prove the sidecar
+                        // alive; anything else is the engine making progress.
+                        let now = tokio::time::Instant::now();
+                        let actions = match (parsed.as_ref(), kind) {
+                            (Some(_), "_devdy_heartbeat") => liveness.on_heartbeat(now),
+                            (Some(v), "_devdy_ready") => {
+                                let heartbeat = ready_declares_heartbeat(v);
+                                if !heartbeat {
+                                    watchdog_line(
+                                        &app, &log_buf, &remote_bus, &run_id, "info",
+                                        "This session bridge doesn't report liveness; only long silences during a turn will be flagged.",
+                                    )
+                                    .await;
+                                }
+                                liveness.on_ready(now, heartbeat)
+                            }
+                            (Some(_), k) if k.starts_with("_devdy_") => liveness.on_output(now),
+                            (Some(v), _) => liveness.on_engine_event(now, v),
+                            (None, _) => liveness.on_output(now),
+                        };
+                        apply_liveness(actions, &app, &log_buf, &remote_bus, &run_id).await;
                         match (parsed.as_ref(), kind) {
+                            (Some(_), "_devdy_error") => unresolved_error = true,
+                            (Some(v), "result") if v.get("subtype").and_then(|x| x.as_str()) == Some("success") => {
+                                unresolved_error = false;
+                            }
+                            _ => {}
+                        }
+
+                        match (parsed.as_ref(), kind) {
+                            // ---- control: sidecar heartbeat (liveness only) -----
+                            (Some(_), "_devdy_heartbeat") => {}
+                            // ---- control: permission request withdrawn ----------
+                            // The sidecar settled a request itself (the CLI cancelled
+                            // the tool, or its input channel closed so no answer could
+                            // ever arrive). Drop the prompt everywhere.
+                            (Some(v), "_devdy_permission_cancelled") => {
+                                let request_id = v.get("requestId").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+                                crate::runs::permission::resolve_pending(&run_id, &request_id);
+                                let _ = app.emit(
+                                    &format!("run:permission_resolved:{}", run_id),
+                                    serde_json::json!({ "request_id": request_id }),
+                                );
+                                if let Some(text) = v.get("text").and_then(|x| x.as_str()) {
+                                    let level = v.get("level").and_then(|x| x.as_str()).unwrap_or("info");
+                                    watchdog_line(&app, &log_buf, &remote_bus, &run_id, level, text).await;
+                                }
+                            }
                             // ---- control: permission request --------------------
                             (Some(v), "_devdy_permission_request") => {
                                 let session_id = session_id_arc.lock().await.clone();
@@ -604,7 +794,24 @@ pub async fn drain_sidecar(
                                 crate::conductor::commands::mark_framing_seeded(&db_pool, &run_id).await;
                             }
                             // ---- control: lifecycle (swallow) -------------------
-                            (Some(_), "_devdy_ready") | (Some(_), "_devdy_done") | (Some(_), "_devdy_closed") => {}
+                            (Some(_), "_devdy_ready") | (Some(_), "_devdy_done") => {}
+                            // The session is torn down for good (finished, or the
+                            // engine died). Release stdin so the sidecar can exit,
+                            // and make sure it does: a sidecar lingering here would
+                            // keep the run "running" and silently swallow follow-ups.
+                            (Some(v), "_devdy_closed") => {
+                                closed_code = v.get("code").and_then(|c| c.as_i64());
+                                closed_signal = v
+                                    .get("signal")
+                                    .and_then(|c| c.as_str())
+                                    .map(str::to_string);
+                                let mut reg = registry.lock().await;
+                                if let Some(handles) = reg.get_mut(&run_id) {
+                                    handles.stdin.take();
+                                }
+                                drop(reg);
+                                exit_deadline.get_or_insert(tokio::time::Instant::now() + SIDECAR_EXIT_GRACE);
+                            }
                             // ---- raw stream-json SDK message --------------------
                             (Some(v), _) => {
                                 append_log(&log_buf, &format!("{}\n", l)).await;
@@ -672,7 +879,7 @@ pub async fn drain_sidecar(
                                     // `result_should_close_stdin`. If nothing comes (the
                                     // session is genuinely idle — the drain arrived after
                                     // the wake turn's result), the timer fires and closes.
-                                    if drain_should_close_stdin(live_bg_tasks, user_turn_ended_once) {
+                                    if drain_should_close_stdin(live_bg_tasks, user_turn_ended_once, turn_active) {
                                         drain_close_deadline =
                                             Some(tokio::time::Instant::now() + DRAIN_CLOSE_GRACE);
                                     } else {
@@ -686,8 +893,11 @@ pub async fn drain_sidecar(
                                 // drain-close: the turn is live, so its own `result` will
                                 // close stdin once its tasks drain. Closing mid-turn here
                                 // is exactly what caused "AbortError: Stream closed".
-                                if drain_close_deadline.is_some() && is_wake_activity(v) {
+                                if is_wake_activity(v) {
                                     drain_close_deadline = None;
+                                }
+                                if is_main_turn_activity(v) {
+                                    turn_active = true;
                                 }
                                 // End the turn: closing stdin makes the sidecar's
                                 // input stream close, the query finish, and the
@@ -721,6 +931,7 @@ pub async fn drain_sidecar(
                                     // The run stays "running" until the last task
                                     // drains; follow-ups then go to this same live
                                     // sidecar rather than a resume.
+                                    turn_active = false;
                                     if result_ends_user_turn(v) {
                                         user_turn_ended_once = true;
                                     }
@@ -789,6 +1000,8 @@ pub async fn drain_sidecar(
             }
             line = stderr_reader.next_line() => {
                 if let Ok(Some(l)) = line {
+                    let actions = liveness.on_output(tokio::time::Instant::now());
+                    apply_liveness(actions, &app, &log_buf, &remote_bus, &run_id).await;
                     append_log(&log_buf, &format!("[stderr] {}\n", l)).await;
                     if let Some(bus) = &remote_bus {
                         bus.publish(crate::remote::RemoteRunEvent::Output {
@@ -806,8 +1019,31 @@ pub async fn drain_sidecar(
         }
     }
 
-    // Drain any trailing stderr after stdout closed.
-    while let Ok(Some(l)) = stderr_reader.next_line().await {
+    // Drain any trailing stderr after stdout closed — bounded: a descendant may
+    // hold stderr open long after the session ended. (Skipped when we already
+    // stopped waiting on the pipes.)
+    let (trailing, stderr_complete) = if detached {
+        (Vec::new(), true)
+    } else {
+        drain_trailing_lines(&mut stderr_reader, SIDECAR_EXIT_GRACE).await
+    };
+    if !stderr_complete {
+        let pgid = registry.lock().await.get(&run_id).and_then(|h| h.pgid);
+        watchdog_line(
+            &app,
+            &log_buf,
+            &remote_bus,
+            &run_id,
+            "warn",
+            &detach_notice(pgid),
+        )
+        .await;
+    }
+    // Stop reading for good: from here on nothing is emitted for this run except
+    // its `run:done` below.
+    drop(stdout_reader);
+    drop(stderr_reader);
+    for l in trailing {
         append_log(&log_buf, &format!("[stderr] {}\n", l)).await;
         if let Some(bus) = &remote_bus {
             bus.publish(crate::remote::RemoteRunEvent::Output {
@@ -833,6 +1069,24 @@ pub async fn drain_sidecar(
     // The sidecar is gone, so any request it was blocked on can never be answered.
     crate::runs::permission::clear_pending(&run_id);
 
+    // How the sidecar process ended. stdout EOF usually lands just before the
+    // exit, so poll briefly — without holding the registry lock across the wait.
+    let mut exit_status: Option<std::process::ExitStatus> = None;
+    for _ in 0..60 {
+        let polled = {
+            let mut reg = registry.lock().await;
+            match reg.get_mut(&run_id) {
+                Some(h) => h.child.try_wait().ok().flatten().map(Some),
+                None => Some(None), // cancelled: removed by cancel_run
+            }
+        };
+        if let Some(status) = polled {
+            exit_status = status;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
     // Hold the registry lock until `run:done` is emitted. A resume (e.g. a
     // conductor `session_send` that sees the DB status flip) needs this lock to
     // register the next turn, so its `run:activated` can never overtake this
@@ -841,10 +1095,21 @@ pub async fn drain_sidecar(
     let mut reg = registry.lock().await;
     // Cancelled iff the entry was already removed by cancel_run.
     let was_cancelled = reg.remove(&run_id).is_none();
-    let final_status = if was_cancelled { "cancelled" } else { "done" };
+    let final_status = final_run_status(
+        was_cancelled,
+        unresolved_error,
+        closed_code,
+        closed_signal.as_deref(),
+        exit_status,
+    );
     let finished_at = chrono::Utc::now().to_rfc3339();
+    // A turn finishing is not user activity, so it must not float the run in
+    // History. last_activity_at is only pinned to the run's existing sort key
+    // (old row values) so the new finished_at can't take over the COALESCE.
     let _ = sqlx::query(
-        "UPDATE runs SET status = ?, finished_at = ?, last_activity_at = ?, output_path = ? WHERE id = ?",
+        "UPDATE runs SET status = ?, finished_at = ?, \
+         last_activity_at = COALESCE(last_activity_at, finished_at, started_at, created_at, ?), \
+         output_path = ? WHERE id = ?",
     )
     .bind(final_status)
     .bind(&finished_at)
@@ -884,6 +1149,100 @@ pub async fn drain_sidecar(
 /// still finishes promptly. Biased generous: closing late only delays `run:done`
 /// by this much, while closing early reintroduces "AbortError: Stream closed".
 const DRAIN_CLOSE_GRACE: std::time::Duration = std::time::Duration::from_millis(3000);
+
+/// Read whatever is left on a pipe after the session ended, but give up after
+/// `grace`: a descendant that inherited the pipe can hold it open indefinitely.
+/// Returns the lines read and whether EOF was reached.
+async fn drain_trailing_lines<R>(
+    reader: &mut tokio::io::Lines<R>,
+    grace: std::time::Duration,
+) -> (Vec<String>, bool)
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    let mut lines = Vec::new();
+    let deadline = tokio::time::Instant::now() + grace;
+    loop {
+        match tokio::time::timeout_at(deadline, reader.next_line()).await {
+            Ok(Ok(Some(l))) => lines.push(l),
+            Ok(_) => return (lines, true),
+            Err(_) => return (lines, false),
+        }
+    }
+}
+
+/// Is any process of group `pgid` still alive (signal 0 = existence check)?
+fn process_group_alive(pgid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        unsafe { libc::killpg(pgid as libc::pid_t, 0) == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pgid;
+        false
+    }
+}
+
+/// Visible notice, always emitted when we stop waiting on pipes some process
+/// still holds open after the session ended. Those processes are left running
+/// (never killed on this path). When the session's original process group is
+/// still alive the notice names it so the user can stop it; otherwise the holder
+/// left the group (e.g. `setsid()`) and can't be addressed by it.
+fn detach_notice(pgid: Option<u32>) -> String {
+    match pgid.filter(|g| process_group_alive(*g)) {
+        Some(pgid) => format!(
+            "⚠ The session has ended, but process(es) it started are still running (process group {pgid}) and kept its output open. They were left running; stop them with `kill -TERM -{pgid}` if they shouldn't be."
+        ),
+        None => "⚠ The session has ended, but a process it started (outside its process group) is still holding its output open. Devdy stopped waiting for it and left it running.".to_string(),
+    }
+}
+
+/// Final status of a run whose sidecar is gone. `cancelled` wins (the user
+/// stopped it); otherwise `failed` when the session ended on an unresolved
+/// `_devdy_error`, reported a non-zero code or a signal with `_devdy_closed`, or
+/// the process exited unsuccessfully. An unknown exit status (not reaped yet,
+/// or left running when we stopped waiting) counts as success.
+fn final_run_status(
+    was_cancelled: bool,
+    unresolved_error: bool,
+    closed_code: Option<i64>,
+    closed_signal: Option<&str>,
+    exit_status: Option<std::process::ExitStatus>,
+) -> &'static str {
+    if was_cancelled {
+        return "cancelled";
+    }
+    let bad_close = closed_code.is_some_and(|c| c != 0) || closed_signal.is_some();
+    let bad_exit = exit_status.is_some_and(|s| !s.success());
+    if unresolved_error || bad_close || bad_exit {
+        "failed"
+    } else {
+        "done"
+    }
+}
+
+/// Does this `_devdy_ready` declare the sidecar's liveness heartbeat?
+fn ready_declares_heartbeat(ready: &Value) -> bool {
+    ready
+        .pointer("/capabilities/heartbeat_ms")
+        .and_then(|v| v.as_u64())
+        .is_some_and(|ms| ms > 0)
+}
+
+/// Is this raw SDK message the MAIN thread's turn making progress? Unlike
+/// [`is_wake_activity`], messages of subagents (`parent_tool_use_id` set) don't
+/// count: background subagents keep streaming after the parent turn's `result`
+/// (seen in real logs), and treating that as an active turn would block the
+/// drain-close forever and flag a finished turn as "quiet".
+fn is_main_turn_activity(value: &Value) -> bool {
+    let main_thread = matches!(value.get("parent_tool_use_id"), None | Some(Value::Null));
+    match value.get("type").and_then(|t| t.as_str()) {
+        Some("assistant") | Some("user") | Some("stream_event") => main_thread,
+        Some("system") => value.get("subtype").and_then(|s| s.as_str()) == Some("init"),
+        _ => false,
+    }
+}
 
 /// Does this raw SDK stream message mean a (wake-up) turn is actively running?
 /// Used to disarm a pending deferred drain-close: once the CLI has started a turn,
@@ -949,8 +1308,19 @@ fn result_should_close_stdin(value: &Value, live_bg_tasks: usize, user_turn_ende
 /// disarmed by [`is_wake_activity`] if a wake turn starts, and only fires (closes)
 /// if the session stays idle. The `user_turn_ended` guard still stops a spurious
 /// leftover task draining on resume (before the real turn runs) from arming at all.
-fn drain_should_close_stdin(live_bg_tasks: usize, user_turn_ended: bool) -> bool {
-    live_bg_tasks == 0 && user_turn_ended
+///
+/// `turn_active` (a turn has streamed content since the last `result`) also
+/// blocks it: `user_turn_ended` stays true for the sidecar's whole life, so a
+/// task draining in the MIDDLE of a later follow-up turn — e.g. a backgrounded
+/// apply finishing while a foreground poll loop is still running — would
+/// otherwise close stdin mid-turn. The next tool needing approval then hangs
+/// with no prompt ever shown. That turn's own `result` closes instead.
+fn drain_should_close_stdin(
+    live_bg_tasks: usize,
+    user_turn_ended: bool,
+    turn_active: bool,
+) -> bool {
+    live_bg_tasks == 0 && user_turn_ended && !turn_active
 }
 
 async fn capture_session_id(
@@ -1547,12 +1917,205 @@ mod turn_end_tests {
         assert!(!result_should_close_stdin(&wake, 1, user_turn_ended));
 
         // The delayed `background_tasks_changed` drains the last task → close now.
-        assert!(drain_should_close_stdin(0, user_turn_ended));
+        assert!(drain_should_close_stdin(0, user_turn_ended, false));
 
         // A leftover task draining BEFORE the user's turn (resume) must NOT close.
-        assert!(!drain_should_close_stdin(0, /* user_turn_ended */ false));
+        assert!(!drain_should_close_stdin(
+            0, /* user_turn_ended */ false, false
+        ));
         // Tasks still live never close on drain.
-        assert!(!drain_should_close_stdin(2, user_turn_ended));
+        assert!(!drain_should_close_stdin(2, user_turn_ended, false));
+    }
+
+    // Regression: a follow-up turn on a live sidecar (an earlier turn already
+    // ended, so `user_turn_ended` is true) whose background task drains while the
+    // turn is still running (foreground tool in flight). Arming the close here
+    // shut stdin mid-turn and the next tool needing approval hung with no prompt.
+    #[test]
+    fn drain_mid_turn_does_not_close() {
+        assert!(!drain_should_close_stdin(0, true, /* turn_active */ true));
+    }
+
+    // Regression: the sidecar exits (and is reaped, so `child.id()` is None) while
+    // a descendant that inherited its stdout/stderr keeps the pipes open. The
+    // drain must reach teardown anyway — bounded reads, then a detach notice
+    // naming the group — WITHOUT killing the descendant.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn teardown_detaches_from_descendant_holding_pipes() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c")
+            .arg("echo last-line >&2; sleep 30 & exit 0")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        detach_process_group(&mut cmd);
+        let mut child = cmd.spawn().unwrap();
+        let pgid = child.id();
+        let mut stdout = BufReader::new(child.stdout.take().unwrap()).lines();
+        let mut stderr = BufReader::new(child.stderr.take().unwrap()).lines();
+        assert!(child.wait().await.unwrap().success());
+        assert_eq!(child.id(), None, "reaped child has no id any more");
+
+        let grace = std::time::Duration::from_millis(300);
+        let started = std::time::Instant::now();
+        let (out, out_eof) = drain_trailing_lines(&mut stdout, grace).await;
+        let (err, err_eof) = drain_trailing_lines(&mut stderr, grace).await;
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "reads are bounded"
+        );
+        assert!(
+            out.is_empty() && !out_eof,
+            "stdout still held → no EOF, but we returned"
+        );
+        assert_eq!(
+            err,
+            vec!["last-line".to_string()],
+            "trailing output is kept"
+        );
+        assert!(!err_eof);
+
+        let notice = detach_notice(pgid);
+        assert!(
+            notice.contains(&format!("kill -TERM -{}", pgid.unwrap())),
+            "{notice}"
+        );
+        // Nothing was killed: the descendant is still running.
+        assert!(process_group_alive(pgid.unwrap()));
+
+        // Test cleanup only (the drain never does this).
+        kill_process_group(pgid.unwrap());
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!process_group_alive(pgid.unwrap()));
+        // Original group gone (e.g. the holder did setsid()): still a visible
+        // notice, just without a group to kill.
+        let gone = detach_notice(pgid);
+        assert!(
+            gone.starts_with("⚠") && !gone.contains("kill -TERM"),
+            "{gone}"
+        );
+        assert!(!detach_notice(None).contains("kill -TERM"));
+    }
+
+    // The holder escaped the session's process group (setsid): the original
+    // group is gone, yet the pipe is still held. Detaching must still notify.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn detach_notice_when_holder_left_the_group() {
+        let pid_file = std::env::temp_dir().join(format!("devdy-setsid-{}", uuid::Uuid::new_v4()));
+        let mut cmd = tokio::process::Command::new("sh");
+        // The holder starts a new session, so it is no longer in our process
+        // group (perl's POSIX::setsid is a portable setsid), records its pid,
+        // then becomes `sleep` while still holding our stdout.
+        cmd.arg("-c")
+            .arg("perl -e 'use POSIX qw(setsid); setsid(); open(F, \">$ENV{PIDF}\"); print F $$; close F; exec @ARGV' sleep 30 & exit 0")
+            .env("PIDF", &pid_file)
+            .stdout(std::process::Stdio::piped());
+        detach_process_group(&mut cmd);
+        let mut child = cmd.spawn().unwrap();
+        let pgid = child.id();
+        let mut stdout = BufReader::new(child.stdout.take().unwrap()).lines();
+        assert!(child.wait().await.unwrap().success());
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let holder: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+
+        let (_, eof) =
+            drain_trailing_lines(&mut stdout, std::time::Duration::from_millis(300)).await;
+        assert!(!eof, "the escaped holder keeps stdout open");
+        assert!(
+            !process_group_alive(pgid.unwrap()),
+            "original group is gone"
+        );
+        let notice = detach_notice(pgid);
+        assert!(
+            notice.starts_with("⚠") && !notice.contains("kill -TERM"),
+            "{notice}"
+        );
+        // Detaching killed nothing: the holder is still alive.
+        assert_eq!(unsafe { libc::kill(holder, 0) }, 0);
+
+        // Test cleanup only.
+        unsafe {
+            libc::kill(holder, libc::SIGKILL);
+        }
+        let _ = std::fs::remove_file(&pid_file);
+        drop(stdout);
+    }
+
+    #[test]
+    fn final_status_rules() {
+        use std::os::unix::process::ExitStatusExt;
+        let ok = Some(std::process::ExitStatus::from_raw(0));
+        let exit1 = Some(std::process::ExitStatus::from_raw(1 << 8));
+        let sigkill = Some(std::process::ExitStatus::from_raw(9));
+        assert_eq!(final_run_status(false, false, None, None, ok), "done");
+        assert_eq!(final_run_status(false, false, None, None, None), "done");
+        assert_eq!(final_run_status(false, false, Some(0), None, ok), "done");
+        assert_eq!(final_run_status(false, true, None, None, ok), "failed");
+        assert_eq!(final_run_status(false, false, None, None, exit1), "failed");
+        assert_eq!(
+            final_run_status(false, false, None, None, sigkill),
+            "failed"
+        );
+        // `_devdy_closed { code: 1 }` (e.g. codex app-server exited 1): failed even
+        // when the process itself exited cleanly or was left running (detached).
+        assert_eq!(final_run_status(false, false, Some(1), None, ok), "failed");
+        assert_eq!(
+            final_run_status(false, false, Some(1), None, None),
+            "failed"
+        );
+        // `_devdy_closed { code: null, signal: "SIGTERM" }` (codex killed by a
+        // signal): failed, even if the process exit itself looked clean.
+        assert_eq!(
+            final_run_status(false, false, None, Some("SIGTERM"), ok),
+            "failed"
+        );
+        assert_eq!(
+            final_run_status(false, false, None, Some("SIGTERM"), None),
+            "failed"
+        );
+        // A user cancel is never relabelled.
+        assert_eq!(
+            final_run_status(true, true, Some(1), Some("SIGKILL"), exit1),
+            "cancelled"
+        );
+    }
+
+    #[test]
+    fn ready_capability_detection() {
+        let ready = serde_json::json!({ "type": "_devdy_ready", "capabilities": { "heartbeat_ms": 30000 } });
+        assert!(ready_declares_heartbeat(&ready));
+        assert!(!ready_declares_heartbeat(
+            &serde_json::json!({ "type": "_devdy_ready" })
+        ));
+    }
+
+    // Background subagents stream after the parent's `result`; only main-thread
+    // content (or a fresh init) marks the parent turn active.
+    #[test]
+    fn subagent_messages_are_not_main_turn_activity() {
+        let sub = serde_json::json!({
+            "type": "assistant", "parent_tool_use_id": "toolu_01CDnJDdZrRyPtWw6Eb3ujjS",
+            "message": { "content": [] },
+        });
+        assert!(is_wake_activity(&sub));
+        assert!(!is_main_turn_activity(&sub));
+
+        let main =
+            serde_json::json!({ "type": "assistant", "parent_tool_use_id": null, "message": {} });
+        assert!(is_main_turn_activity(&main));
+        let main_no_field = serde_json::json!({ "type": "user", "message": {} });
+        assert!(is_main_turn_activity(&main_no_field));
+        let init = serde_json::json!({ "type": "system", "subtype": "init" });
+        assert!(is_main_turn_activity(&init));
+        let progress = serde_json::json!({ "type": "system", "subtype": "task_progress" });
+        assert!(!is_main_turn_activity(&progress));
+        let drain = serde_json::json!({ "type": "system", "subtype": "background_tasks_changed", "tasks": [] });
+        assert!(!is_main_turn_activity(&drain));
     }
 
     // Deferred drain-close (fix for "AbortError: Stream closed"): when a background

@@ -1,16 +1,18 @@
 //! Loopback HTTP server for the Devdy inbox (axum, 127.0.0.1 only): Slack
-//! thread links and translation.
+//! thread links, translation and grammar check.
 //!
 //! Security layers, in order: `Host` must be `127.0.0.1:<port>` /
 //! `localhost:<port>` (DNS-rebinding guard); an `Origin`, when present, must be
 //! a browser-extension origin; every `/v1/*` route needs the bearer token. The
 //! body is only buffered after auth passes, capped at `MAX_SLACK_BODY_BYTES`
-//! (`/v1/slack-threads`) / `MAX_TRANSLATE_BODY_BYTES` (`/v1/translate`).
+//! (`/v1/slack-threads`) / `MAX_TRANSLATE_BODY_BYTES` (`/v1/translate`,
+//! `/v1/grammar`).
 //!
 //! The server can be switched off (`inbox_api_enabled`): `start_server` /
 //! `stop_server` bind and release the port at runtime.
 
 use super::InboxApiState;
+use crate::commands::grammar;
 use crate::commands::translate::{self, TranslateState, TurnEvent, MAX_INPUT_CHARS};
 use crate::db::Db;
 use crate::slack_threads::SlackThreadsState;
@@ -50,17 +52,18 @@ const ALLOWED_HEADERS: &str = "Authorization, Content-Type, X-Devdy-Project-Id, 
 pub const MAX_SLACK_BODY_BYTES: usize = 16 * 1024;
 const SLACK_JSON_ONLY: &str = "Content-Type must be application/json ({\"url\": \"<slack thread link>\"}); zip/markdown uploads are no longer supported";
 
-/// `/v1/translate` request body cap.
+/// `/v1/translate` / `/v1/grammar` request body cap.
 pub const MAX_TRANSLATE_BODY_BYTES: usize = 64 * 1024;
-/// Concurrent `/v1/translate` requests allowed before answering 429.
+/// Concurrent `/v1/translate` + `/v1/grammar` requests allowed (they share the
+/// warm sidecar) before answering 429.
 pub const MAX_TRANSLATE_IN_FLIGHT: usize = 4;
 /// JSON mode: max wait for the result. SSE mode: max gap between events.
 pub const TRANSLATE_TIMEOUT: Duration = Duration::from_secs(90);
 /// How long `stop_server` waits for a graceful shutdown before aborting.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
-/// A submitted translation turn: its id, event channel and the resolved
-/// target language code.
+/// A submitted engine turn: its id, event channel and the resolved language
+/// code (translation target / grammar explanation language).
 pub struct SubmittedTurn {
     pub turn: u64,
     pub rx: UnboundedReceiver<TurnEvent>,
@@ -69,8 +72,8 @@ pub struct SubmittedTurn {
 
 pub type TranslateSubmit = Result<SubmittedTurn, String>;
 
-/// Starts a translation of `(text, target_lang)` (injected so tests need no
-/// `AppHandle` / sidecar).
+/// Starts an engine turn for `(text, lang)` — a translation, or a grammar
+/// check (injected so tests need no `AppHandle` / sidecar).
 pub type Translator = Arc<
     dyn Fn(String, Option<String>) -> Pin<Box<dyn Future<Output = TranslateSubmit> + Send>>
         + Send
@@ -89,8 +92,10 @@ pub struct HttpState {
     /// Port this server is bound to (for the `Host` check).
     pub port: u16,
     pub translator: Translator,
+    /// Grammar check of `(text, explain_lang)`; `Done` carries the raw answer.
+    pub grammar: Translator,
     pub abandon: AbandonTurn,
-    /// Permits for in-flight `/v1/translate` requests.
+    /// Permits for in-flight `/v1/translate` + `/v1/grammar` requests.
     pub translate_slots: Arc<Semaphore>,
     /// See `TRANSLATE_TIMEOUT` (shortened in tests).
     pub translate_timeout: Duration,
@@ -157,7 +162,8 @@ pub async fn set_enabled(
     .await
 }
 
-/// `HttpState` wired to the real app: the shared translator + Slack queue.
+/// `HttpState` wired to the real app: the shared translator (also used for
+/// grammar checks) + Slack queue.
 fn app_state(
     app: AppHandle,
     db: Db,
@@ -188,6 +194,25 @@ fn app_state(
             Ok(SubmittedTurn { turn, rx, target })
         })
     });
+    let (grammar_app, grammar_db, grammar_state) =
+        (app.clone(), db.clone(), translate_state.clone());
+    let grammar: Translator = Arc::new(move |text, explain_lang| {
+        let (app, db, ts) = (
+            grammar_app.clone(),
+            grammar_db.clone(),
+            grammar_state.clone(),
+        );
+        Box::pin(async move {
+            // Detached for the same reason as the translator above.
+            let (turn, rx, target) = tokio::spawn(async move {
+                grammar::submit(&app, &db, &ts, text, explain_lang, true).await
+            })
+            .await
+            .map_err(|e| e.to_string())??;
+            let rx = rx.ok_or("grammar channel unavailable")?;
+            Ok(SubmittedTurn { turn, rx, target })
+        })
+    });
     let abandon: AbandonTurn = Arc::new(move |turn| {
         let ts = translate_state.clone();
         tokio::spawn(async move { ts.abandon_turn(turn).await });
@@ -198,6 +223,7 @@ fn app_state(
         version: app.package_info().version.to_string(),
         port,
         translator,
+        grammar,
         abandon,
         translate_slots: Arc::new(Semaphore::new(MAX_TRANSLATE_IN_FLIGHT)),
         translate_timeout: TRANSLATE_TIMEOUT,
@@ -318,6 +344,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/v1/projects", get(list_projects))
         .route("/v1/slack-threads", post(post_slack_thread))
         .route("/v1/translate", post(post_translate))
+        .route("/v1/grammar", post(post_grammar))
         .fallback(not_found)
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
@@ -404,7 +431,7 @@ async fn health(State(state): State<HttpState>) -> Response {
         "app": "devdy",
         "version": state.version,
         "api": API_VERSION,
-        "features": ["translate", "slack-thread-link"],
+        "features": ["translate", "grammar", "slack-thread-link"],
     }))
     .into_response()
 }
@@ -576,13 +603,15 @@ fn english_error(msg: &str) -> String {
     }
 }
 
-/// `POST /v1/translate`: auth → content type → body (≤ 64 KB) → validate →
-/// in-flight limit → submit to the shared warm translation sidecar, answering
-/// as JSON or as an SSE stream (`Accept: text/event-stream`).
-async fn post_translate(State(state): State<HttpState>, req: Request) -> Response {
+/// Shared front half of `/v1/translate` and `/v1/grammar`: auth → content
+/// type → body (≤ 64 KB). Returns the request headers and the raw body.
+async fn read_engine_body(
+    state: &HttpState,
+    req: Request,
+) -> Result<(HeaderMap, axum::body::Bytes), Response> {
     let headers = req.headers().clone();
-    if let Some(r) = check_auth(&state, &headers) {
-        return r;
+    if let Some(r) = check_auth(state, &headers) {
+        return Err(r);
     }
     let is_json = headers
         .get(header::CONTENT_TYPE)
@@ -590,10 +619,10 @@ async fn post_translate(State(state): State<HttpState>, req: Request) -> Respons
         .and_then(|v| v.split(';').next())
         .is_some_and(|m| m.trim().eq_ignore_ascii_case("application/json"));
     if !is_json {
-        return error(
+        return Err(error(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
             "Content-Type must be application/json",
-        );
+        ));
     }
     let too_large = || {
         error(
@@ -606,25 +635,72 @@ async fn post_translate(State(state): State<HttpState>, req: Request) -> Respons
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<usize>().ok());
     if declared.is_some_and(|n| n > MAX_TRANSLATE_BODY_BYTES) {
-        return too_large();
+        return Err(too_large());
     }
-    let body = match axum::body::to_bytes(req.into_body(), MAX_TRANSLATE_BODY_BYTES).await {
-        Ok(b) => b,
-        Err(_) => return too_large(),
+    match axum::body::to_bytes(req.into_body(), MAX_TRANSLATE_BODY_BYTES).await {
+        Ok(b) => Ok((headers, b)),
+        Err(_) => Err(too_large()),
+    }
+}
+
+/// Trimmed `text`, or the 400 / 413 status + message when empty / too long.
+fn validate_text(text: &str) -> Result<String, (StatusCode, String)> {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "text is empty".into()));
+    }
+    if text.chars().count() > MAX_INPUT_CHARS {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("text exceeds {} characters", MAX_INPUT_CHARS),
+        ));
+    }
+    Ok(text)
+}
+
+/// JSON mode: wait (one overall deadline) for the turn's final text, mapping
+/// engine errors / timeout / shutdown to their responses.
+async fn wait_done(
+    state: &HttpState,
+    turn: u64,
+    rx: &mut UnboundedReceiver<TurnEvent>,
+) -> Result<String, Response> {
+    let deadline = tokio::time::Instant::now() + state.translate_timeout;
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match next_event(rx, left, &state.shutdown).await {
+            Waited::Event(TurnEvent::Chunk(_)) => {}
+            Waited::Event(TurnEvent::Done(text)) => return Ok(text),
+            Waited::Event(TurnEvent::Error(e)) => {
+                return Err(error(StatusCode::BAD_GATEWAY, &english_error(&e)))
+            }
+            Waited::Closed => return Err(error(StatusCode::BAD_GATEWAY, ENDED_UNEXPECTEDLY)),
+            Waited::Timeout => {
+                (state.abandon)(turn);
+                return Err(error(StatusCode::GATEWAY_TIMEOUT, "timeout"));
+            }
+            Waited::Stopping => {
+                return Err(error(StatusCode::SERVICE_UNAVAILABLE, SERVER_STOPPING))
+            }
+        }
+    }
+}
+
+/// `POST /v1/translate`: auth → content type → body (≤ 64 KB) → validate →
+/// in-flight limit → submit to the shared warm translation sidecar, answering
+/// as JSON or as an SSE stream (`Accept: text/event-stream`).
+async fn post_translate(State(state): State<HttpState>, req: Request) -> Response {
+    let (headers, body) = match read_engine_body(&state, req).await {
+        Ok(r) => r,
+        Err(r) => return r,
     };
     let Ok(parsed) = serde_json::from_slice::<TranslateRequest>(&body) else {
         return error(StatusCode::BAD_REQUEST, "invalid JSON body");
     };
-    let text = parsed.text.trim().to_string();
-    if text.is_empty() {
-        return error(StatusCode::BAD_REQUEST, "text is empty");
-    }
-    if text.chars().count() > MAX_INPUT_CHARS {
-        return error(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            &format!("text exceeds {} characters", MAX_INPUT_CHARS),
-        );
-    }
+    let text = match validate_text(&parsed.text) {
+        Ok(t) => t,
+        Err((status, msg)) => return error(status, &msg),
+    };
     let Ok(permit) = state.translate_slots.clone().try_acquire_owned() else {
         return error(
             StatusCode::TOO_MANY_REQUESTS,
@@ -654,25 +730,65 @@ async fn post_translate(State(state): State<HttpState>, req: Request) -> Respons
     if wants_sse {
         return translate_sse(state, turn, rx, target, permit);
     }
+    match wait_done(&state, turn, &mut rx).await {
+        Ok(text) => Json(json!({ "text": text, "targetLang": target })).into_response(),
+        Err(r) => r,
+    }
+}
 
-    // JSON mode: one overall deadline for the whole answer.
-    let deadline = tokio::time::Instant::now() + state.translate_timeout;
-    loop {
-        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
-        match next_event(&mut rx, left, &state.shutdown).await {
-            Waited::Event(TurnEvent::Chunk(_)) => {}
-            Waited::Event(TurnEvent::Done(text)) => {
-                return Json(json!({ "text": text, "targetLang": target })).into_response()
-            }
-            Waited::Event(TurnEvent::Error(e)) => {
-                return error(StatusCode::BAD_GATEWAY, &english_error(&e))
-            }
-            Waited::Closed => return error(StatusCode::BAD_GATEWAY, ENDED_UNEXPECTEDLY),
-            Waited::Timeout => {
-                (state.abandon)(turn);
-                return error(StatusCode::GATEWAY_TIMEOUT, "timeout");
-            }
-            Waited::Stopping => return error(StatusCode::SERVICE_UNAVAILABLE, SERVER_STOPPING),
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GrammarRequest {
+    text: String,
+    explain_lang: Option<String>,
+}
+
+/// `POST /v1/grammar`: same pipeline and limits as `/v1/translate` (shared
+/// in-flight slots and warm sidecar), JSON response only:
+/// `{corrected, issues: [{original, suggestion, explanation}], explainLang}`.
+async fn post_grammar(State(state): State<HttpState>, req: Request) -> Response {
+    let body = match read_engine_body(&state, req).await {
+        Ok((_, b)) => b,
+        Err(r) => return r,
+    };
+    let Ok(parsed) = serde_json::from_slice::<GrammarRequest>(&body) else {
+        return error(StatusCode::BAD_REQUEST, "invalid JSON body");
+    };
+    let text = match validate_text(&parsed.text) {
+        Ok(t) => t,
+        Err((status, msg)) => return error(status, &msg),
+    };
+    let Ok(_permit) = state.translate_slots.clone().try_acquire_owned() else {
+        return error(StatusCode::TOO_MANY_REQUESTS, "too many requests in flight");
+    };
+    let SubmittedTurn {
+        turn,
+        mut rx,
+        target,
+    } = match (state.grammar)(text, parsed.explain_lang).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(event = "inbox_api_grammar_submit_failed", error = %e);
+            return error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &format!("grammar engine unavailable: {}", english_error(&e)),
+            );
+        }
+    };
+    let raw = match wait_done(&state, turn, &mut rx).await {
+        Ok(raw) => raw,
+        Err(r) => return r,
+    };
+    match grammar::parse_result(&raw) {
+        Some(r) => Json(json!({
+            "corrected": r.corrected,
+            "issues": r.issues,
+            "explainLang": target,
+        }))
+        .into_response(),
+        None => {
+            tracing::warn!(event = "inbox_api_grammar_unparseable", len = raw.len());
+            error(StatusCode::BAD_GATEWAY, "invalid grammar result")
         }
     }
 }
@@ -836,6 +952,40 @@ mod tests {
         })
     }
 
+    /// Fake grammar engine: `bad-json` → an answer that is not JSON, `He go`
+    /// → one issue; the other keywords behave like `fake_translator`.
+    fn fake_grammar(fakes: Fakes) -> Translator {
+        let translator = fake_translator(fakes.clone());
+        Arc::new(move |text: String, lang: Option<String>| {
+            let answer = match text.as_str() {
+                "bad-json" => Some("Sorry, I cannot help.".to_string()),
+                "He go" => Some(
+                    json!({
+                        "corrected": "He goes",
+                        "issues": [{ "original": "go", "suggestion": "goes", "explanation": "ngôi thứ ba số ít" }]
+                    })
+                    .to_string(),
+                ),
+                _ => None,
+            };
+            let Some(answer) = answer else {
+                return translator(text, lang);
+            };
+            let fakes = fakes.clone();
+            Box::pin(async move {
+                let turn = fakes.turn_seq.fetch_add(1, Ordering::SeqCst) + 1;
+                let (tx, rx) = unbounded_channel();
+                tx.send(TurnEvent::Done(format!("```json\n{answer}\n```")))
+                    .unwrap();
+                Ok(SubmittedTurn {
+                    turn,
+                    rx,
+                    target: lang.unwrap_or_else(|| "vi".to_string()),
+                })
+            }) as Pin<Box<dyn Future<Output = TranslateSubmit> + Send>>
+        })
+    }
+
     fn test_state(
         db: &Db,
         api: &InboxApiState,
@@ -851,6 +1001,7 @@ mod tests {
             version: "test".into(),
             port,
             translator: fake_translator(fakes.clone()),
+            grammar: fake_grammar(fakes.clone()),
             abandon: Arc::new(move |turn| abandoned.lock().unwrap().push(turn)),
             translate_slots: fakes.slots.clone(),
             translate_timeout,
@@ -932,6 +1083,14 @@ mod tests {
                 .body(body.to_string())
         }
 
+        fn grammar(&self, body: serde_json::Value) -> reqwest::RequestBuilder {
+            self.client
+                .post(format!("{}/v1/grammar", self.base))
+                .bearer_auth(&self.token)
+                .header("Content-Type", "application/json")
+                .body(body.to_string())
+        }
+
         fn translate_sse(&self, text: &str) -> reqwest::RequestBuilder {
             self.translate(json!({ "text": text }))
                 .header("Accept", "text/event-stream")
@@ -948,7 +1107,10 @@ mod tests {
         let v: serde_json::Value = r.json().await.unwrap();
         assert_eq!(v["app"], "devdy");
         assert_eq!(v["api"], 1);
-        assert_eq!(v["features"], json!(["translate", "slack-thread-link"]));
+        assert_eq!(
+            v["features"],
+            json!(["translate", "grammar", "slack-thread-link"])
+        );
 
         // Auth.
         let r = h.client.get(format!("{}/v1/projects", h.base)).send().await.unwrap();
@@ -1252,6 +1414,75 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r.status(), 200);
+        let _ = std::fs::remove_dir_all(&h.app_data);
+    }
+
+    #[tokio::test]
+    async fn grammar_endpoint() {
+        let h = spawn_with(Duration::from_millis(200)).await;
+        let r = h
+            .client
+            .post(format!("{}/v1/grammar", h.base))
+            .header("Content-Type", "application/json")
+            .body(r#"{"text":"hi"}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 401);
+
+        // Happy path: fenced JSON answer is parsed; explainLang echoes back.
+        let r = h
+            .grammar(json!({ "text": "He go", "explainLang": "en" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let v: serde_json::Value = r.json().await.unwrap();
+        assert_eq!(
+            v,
+            json!({
+                "corrected": "He goes",
+                "issues": [{ "original": "go", "suggestion": "goes", "explanation": "ngôi thứ ba số ít" }],
+                "explainLang": "en"
+            })
+        );
+        let v: serde_json::Value = h
+            .grammar(json!({ "text": "He go" }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(v["explainLang"], "vi");
+
+        // Errors.
+        let (code, err) = code_and_error(h.grammar(json!({ "text": " " }))).await;
+        assert_eq!((code, err.as_str()), (400, "text is empty"));
+        let long = "a".repeat(MAX_INPUT_CHARS + 1);
+        let (code, _) = code_and_error(h.grammar(json!({ "text": long }))).await;
+        assert_eq!(code, 413);
+        let (code, err) = code_and_error(h.grammar(json!({ "text": "bad-json" }))).await;
+        assert_eq!((code, err.as_str()), (502, "invalid grammar result"));
+        let (code, err) = code_and_error(h.grammar(json!({ "text": "engine-error" }))).await;
+        assert_eq!((code, err.as_str()), (502, "boom"));
+        let (code, err) = code_and_error(h.grammar(json!({ "text": "fail-submit" }))).await;
+        assert_eq!(
+            (code, err.as_str()),
+            (503, "grammar engine unavailable: Failed to spawn sidecar")
+        );
+        let (code, err) = code_and_error(h.grammar(json!({ "text": "hang" }))).await;
+        assert_eq!((code, err.as_str()), (504, "timeout"));
+        assert_eq!(h.fakes.abandoned().len(), 1);
+
+        // Shares the in-flight slots with /v1/translate.
+        let mut open = Vec::new();
+        for _ in 0..MAX_TRANSLATE_IN_FLIGHT {
+            open.push(h.translate_sse("hang").send().await.unwrap());
+        }
+        let (code, err) = code_and_error(h.grammar(json!({ "text": "He go" }))).await;
+        assert_eq!((code, err.as_str()), (429, "too many requests in flight"));
+        drop(open);
         let _ = std::fs::remove_dir_all(&h.app_data);
     }
 

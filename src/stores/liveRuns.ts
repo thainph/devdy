@@ -59,6 +59,21 @@ export interface LiveSession {
    * itself lives in `status` (done / failed / cancelled).
    */
   notifyDone: boolean
+  /**
+   * Non-destructive liveness notices from the backend watchdog (`run:attention`):
+   * the turn has been quiet for long, or a tool has been running for long. Shown
+   * as a banner with a stop action; never acted on automatically.
+   */
+  attention: RunAttention[]
+}
+
+/** One liveness notice, keyed so the backend can clear it when it resolves. */
+export interface RunAttention {
+  key: string
+  kind: string
+  /** English fallback text; the UI localizes by `kind` + `params` when it can. */
+  message: string
+  params: { mins?: number; secs?: number; tool?: string }
 }
 
 /** A single rate-limit window: percent used (0-100) and ISO reset time. */
@@ -141,6 +156,17 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
   // Permission request ids already handled per run, so a request delivered both
   // live and through `list_pending_permissions` recovery is processed once.
   const seenPermissionIds = new Map<string, Set<string>>()
+  // Per-run handler for an incoming request (set while the run is listened), so
+  // a re-sync from the backend can feed recovered prompts through the same path.
+  const permissionHandlers = new Map<string, (req: PermissionRequest) => void>()
+  // Requests whose answer is in flight / was delivered. A request leaves the
+  // queue only once its answer reached the backend; these ids keep a re-sync
+  // from resurrecting a prompt the backend hasn't dropped yet.
+  const respondingIds = new Set<string>()
+  const answeredIds = new Set<string>()
+  // App-wide subscribers for "this prompt is still waiting" reminders (native
+  // notification re-fire, see PermissionNotifier).
+  const reminderCallbacks = new Set<(runId: string, projectId: string, request: PermissionRequest) => void>()
 
   // Slash commands advertised by each engine on `system.init`, cached (and
   // persisted) per engine so a brand-new session — which hasn't produced an
@@ -230,6 +256,7 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
         rateLimit: null as RateLimitWindows | null,
         budgetBlocked: false,
         notifyDone: false,
+        attention: [] as RunAttention[],
       }) as LiveSession
       // Seed the per-run allow/deny lists with the standing choices the user
       // made for this project in earlier runs, so they apply again here.
@@ -434,6 +461,8 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
         seenPermissionIds.delete(runId)
         s.status = event.payload.status
         s.permissionQueue = []
+        s.attention = []
+        for (const id of answeredIds) if (id.startsWith(`${runId}:`)) answeredIds.delete(id)
         // Flag a "run finished" notification for the Active runs dock. It stays
         // until the user opens this run (markSeen). If the run is already on
         // screen, RunView acknowledges it immediately so nothing shows.
@@ -480,6 +509,25 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
       ),
     )
 
+    fns.push(
+      await listen<{
+        key: string
+        kind?: string
+        message?: string
+        params?: RunAttention['params']
+        active: boolean
+      }>(
+        `run:attention:${runId}`,
+        (event) => {
+          const { key, kind, message, params, active } = event.payload
+          const rest = s.attention.filter((a) => a.key !== key)
+          s.attention = active
+            ? [...rest, { key, kind: kind ?? '', message: message ?? '', params: params ?? {} }]
+            : rest
+        },
+      ),
+    )
+
     const handlePermissionRequest = (req: PermissionRequest) => {
       let seen = seenPermissionIds.get(runId)
       if (!seen) {
@@ -508,30 +556,44 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
       // submit empty answers. Other tools honor the project's standing
       // deny/allow choices (deny wins if both somehow apply).
       if (!remoteDriven && req.tool_name !== 'AskUserQuestion') {
+        // A failed auto-answer falls back to a visible prompt (see respond).
         if (s.deniedTools.includes(req.tool_name)) {
-          runsStore
-            .respondPermission(req.run_id, req.request_id, 'deny', 'Auto-denied for this project')
-            .catch(() => {})
+          void respondPermission(runId, req, 'deny', { reason: 'Auto-denied for this project' })
           return
         }
         if (s.allowedTools.includes(req.tool_name)) {
-          runsStore
-            .respondPermission(req.run_id, req.request_id, 'allow', 'Auto-allowed for this session', {
-              // The tool is already on the project's standing allow list, so
-              // let the engine cache it too (codex `acceptForSession`) rather
-              // than prompting through this path again for every call.
-              remember: true,
-            })
-            .catch(() => {})
+          void respondPermission(runId, req, 'allow', {
+            reason: 'Auto-allowed for this session',
+            // The tool is already on the project's standing allow list, so
+            // let the engine cache it too (codex `acceptForSession`) rather
+            // than prompting through this path again for every call.
+            remember: true,
+          })
           return
         }
       }
       s.permissionQueue.push(req)
     }
 
+    permissionHandlers.set(runId, handlePermissionRequest)
+
     fns.push(
       await listen<PermissionRequest>(`run:permission_request:${runId}`, (event) => {
         handlePermissionRequest(event.payload)
+      }),
+    )
+
+    fns.push(
+      // The backend watchdog: a prompt has been waiting a long time. Make sure it
+      // is actually on screen (re-sync from the backend — the window may have
+      // been lost, e.g. across sleep) and let subscribers re-alert the user.
+      await listen<{ request_id: string }>(`run:permission_reminder:${runId}`, async (event) => {
+        await resyncPermissions(runId)
+        const req = s.permissionQueue.find((p) => p.request_id === event.payload.request_id)
+        if (!req) return
+        for (const cb of reminderCallbacks) {
+          try { cb(runId, projectId, req) } catch { /* subscriber error must not break others */ }
+        }
       }),
     )
 
@@ -567,7 +629,94 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
     }
   }
 
+  /**
+   * Re-sync a run's open prompts from the backend: anything the backend is still
+   * waiting on but the queue lost (a dropped window, a missed event, a failed
+   * answer) is shown again. Never re-adds a prompt whose answer is in flight.
+   */
+  async function resyncPermissions(runId: string) {
+    const handler = permissionHandlers.get(runId)
+    const s = sessions.get(runId)
+    if (!handler || !s) return
+    let pending: PermissionRequest[]
+    try {
+      pending = await useRunsStore().listPendingPermissions(runId)
+    } catch {
+      return
+    }
+    for (const req of pending) {
+      if (s.permissionQueue.some((p) => p.request_id === req.request_id)) continue
+      if (respondingIds.has(req.request_id) || answeredIds.has(`${runId}:${req.request_id}`)) continue
+      seenPermissionIds.get(runId)?.delete(req.request_id)
+      handler(req)
+    }
+  }
+
+  /** Re-sync every listened run (e.g. after the machine wakes up). */
+  function resyncAllPermissions() {
+    for (const runId of permissionHandlers.keys()) void resyncPermissions(runId)
+  }
+
+  /**
+   * Deliver the user's (or a standing rule's) answer to a prompt. The prompt
+   * leaves the queue only once the backend accepted the answer; on failure it
+   * stays (or, for an auto-answer, is shown) so the user can answer again.
+   */
+  async function respondPermission(
+    runId: string,
+    req: PermissionRequest,
+    decision: 'allow' | 'deny' | 'ask',
+    opts: { reason?: string; remember?: boolean; answers?: Record<string, string> } = {},
+  ): Promise<boolean> {
+    if (respondingIds.has(req.request_id)) return false
+    respondingIds.add(req.request_id)
+    try {
+      await useRunsStore().respondPermission(req.run_id, req.request_id, decision, opts.reason, {
+        remember: opts.remember,
+        answers: opts.answers,
+      })
+      answeredIds.add(`${runId}:${req.request_id}`)
+      const s = sessions.get(runId)
+      if (s) {
+        const i = s.permissionQueue.findIndex((p) => p.request_id === req.request_id)
+        if (i !== -1) s.permissionQueue.splice(i, 1)
+      }
+      return true
+    } catch (e) {
+      const s = sessions.get(runId)
+      if (s && !s.permissionQueue.some((p) => p.request_id === req.request_id)) s.permissionQueue.push(req)
+      const line = `⚠ Couldn't send the permission answer for ${req.tool_name}: ${String(e)}. The request is still open — answer it again to retry, or stop the session.`
+      if (s) {
+        pushOutputLine(s, line, true)
+        if (s.hasStreamEvents) s.entries.push({ kind: 'error', text: line })
+      }
+      return false
+    } finally {
+      respondingIds.delete(req.request_id)
+    }
+  }
+
+  /** Subscribe to "prompt still waiting" reminders. Returns an unsubscribe fn. */
+  function onPermissionReminder(
+    cb: (runId: string, projectId: string, request: PermissionRequest) => void,
+  ): () => void {
+    reminderCallbacks.add(cb)
+    return () => {
+      reminderCallbacks.delete(cb)
+    }
+  }
+
+  // A machine waking from sleep (or the app returning to the foreground) is
+  // exactly when a prompt window may have gone missing: re-sync them all.
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) resyncAllPermissions()
+    })
+  }
+  if (typeof window !== 'undefined') window.addEventListener('focus', resyncAllPermissions)
+
   function stopListening(runId: string) {
+    permissionHandlers.delete(runId)
     const fns = unlisteners.get(runId)
     if (fns) {
       fns.forEach((f) => f())
@@ -752,6 +901,9 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
     rememberDeniedTool,
     syncToolPermissions,
     shiftPermission,
+    respondPermission,
+    resyncPermissions,
+    onPermissionReminder,
     onDone,
     onAnyDone,
     markSeen,

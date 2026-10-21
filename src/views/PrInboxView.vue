@@ -71,7 +71,12 @@ async function handleReview(item: PrInboxItem) {
   try {
     // Allow reviewing a PR even when no linked issue can be resolved — the PR
     // inbox should run the review regardless of issue linkage.
-    const run = await runsStore.fetchPr(item.project_id, item.repo_id, item.number, undefined, true)
+    // Title the session with the PR's author and original title so inbox reviews
+    // are told apart at a glance.
+    const title = [`PR #${item.number}`, item.author_login && `@${item.author_login}`, item.title?.trim()]
+      .filter(Boolean)
+      .join(' · ')
+    const run = await runsStore.fetchPr(item.project_id, item.repo_id, item.number, undefined, true, title)
     // Every session is a conductor: launch it like RunView's Issue/PR Run button
     // — empty goal (default review prompt, labelled "PR #N"), default worker cap,
     // and the effective permission mode (this screen has no per-run pick).

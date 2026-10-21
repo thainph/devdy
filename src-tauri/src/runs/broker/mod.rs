@@ -243,12 +243,40 @@ async fn handle_connection(
 ) -> Result<(), String> {
     let (read_half, mut write_half) = stream.into_split();
     let mut lines = BufReader::new(read_half).lines();
+    // Lines that arrived while a previous request was still being processed.
+    let mut queued: std::collections::VecDeque<String> = std::collections::VecDeque::new();
 
-    while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
+    loop {
+        let line = match queued.pop_front() {
+            Some(l) => l,
+            None => match lines.next_line().await.map_err(|e| e.to_string())? {
+                Some(l) => l,
+                None => break,
+            },
+        };
         if line.trim().is_empty() {
             continue;
         }
-        let resp = process_line(&line, db, resolver.as_ref(), app.as_ref()).await;
+        // Keep watching the peer while the request is processed: an `Ask` can
+        // wait a long time on the user, and if the shim goes away meanwhile (its
+        // Bash call timed out, the command was killed) nobody can use the answer.
+        // Dropping the processing future then withdraws its prompt (see
+        // `approver::PendingPromptGuard`). `next_line` is cancel-safe.
+        let processing = process_line(&line, db, resolver.as_ref(), app.as_ref());
+        tokio::pin!(processing);
+        let resp = loop {
+            tokio::select! {
+                resp = &mut processing => break Some(resp),
+                next = lines.next_line() => match next {
+                    Ok(Some(l)) => queued.push_back(l),
+                    // EOF or read error: the requester is gone.
+                    _ => break None,
+                },
+            }
+        };
+        let Some(resp) = resp else {
+            return Ok(());
+        };
         let mut out = serde_json::to_string(&resp).map_err(|e| e.to_string())?;
         out.push('\n');
         write_half
@@ -575,6 +603,61 @@ mod tests {
         .await;
         assert_eq!(resp.decision, "deny");
         assert!(resp.token.is_none());
+    }
+
+    // The shim hangs up while its `Ask` is still waiting on the user (e.g. the
+    // Bash call running it timed out): the pending approval must be abandoned
+    // (its future dropped → prompt withdrawn), not left waiting for hours.
+    #[tokio::test]
+    async fn ask_is_abandoned_when_requester_disconnects() {
+        struct Dropped(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        struct WaitForever(Arc<std::sync::atomic::AtomicBool>);
+        #[async_trait]
+        impl Approver for WaitForever {
+            async fn approve(&self, _req: &BrokerRequest, _reason: &str) -> bool {
+                let _flag = Dropped(self.0.clone());
+                std::future::pending::<()>().await;
+                true
+            }
+        }
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let db = mem_db().await;
+        let resolver: Arc<dyn ApproverResolver> =
+            Arc::new(StaticResolver(Arc::new(WaitForever(dropped.clone()))));
+        let handle = start_broker(
+            db,
+            BrokerConfig {
+                socket_label: uuid::Uuid::new_v4().to_string(),
+                resolver,
+                app: None,
+            },
+        )
+        .await
+        .unwrap();
+        let mut stream = UnixStream::connect(&handle.path).await.unwrap();
+        stream
+            .write_all(b"{\"project_id\":\"p1\",\"tool\":\"gh\",\"argv\":[\"pr\",\"create\"]}\n")
+            .await
+            .unwrap();
+        stream.flush().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !dropped.load(std::sync::atomic::Ordering::SeqCst),
+            "still waiting while connected"
+        );
+        drop(stream);
+        for _ in 0..50 {
+            if dropped.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("approval was not abandoned after the requester disconnected");
     }
 
     #[tokio::test]

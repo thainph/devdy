@@ -133,10 +133,10 @@ export function runDisplayName(runId: string, projectId: string): { name: string
   const project = useProjectsStore().projects.find((p) => p.id === projectId)?.name ?? ''
   const meta = runs.runMeta.get(runId)
   let name = ''
-  if (meta && meta.run_type !== 'session' && meta.ref_number != null) {
-    name = `${meta.run_type === 'analyze_issue' ? 'Issue' : 'PR'} #${meta.ref_number}`
-  } else if (meta?.title?.trim()) {
+  if (meta?.title?.trim()) {
     name = meta.title.trim()
+  } else if (meta && meta.run_type !== 'session' && meta.ref_number != null) {
+    name = `${meta.run_type === 'analyze_issue' ? 'Issue' : 'PR'} #${meta.ref_number}`
   } else {
     name = project || t('tray.untitledSession')
   }

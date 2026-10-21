@@ -12,6 +12,7 @@
 //         {type:"result",subtype:"success"}            ← ends the turn
 //     - control, namespaced `_devdy_*`:
 //         {type:"_devdy_ready"} / {type:"_devdy_done"} / {type:"_devdy_error",error}
+//         {type:"_devdy_closed",code,signal}   ← session over (signal ⇒ crash)
 //         {type:"_devdy_permission_request",requestId,tool_name,tool_input,title,description}
 //
 //   stdin (from broker): one JSON command per line
@@ -68,6 +69,13 @@ function reportFatal(err, context) {
 }
 process.on('uncaughtException', (err) => { reportFatal(err, 'Uncaught exception'); setTimeout(() => process.exit(1), 50) })
 process.on('unhandledRejection', (err) => { reportFatal(err, 'Unhandled rejection'); setTimeout(() => process.exit(1), 50) })
+
+// Liveness heartbeat ({type:"_devdy_heartbeat"} every 30s, declared in
+// `_devdy_ready.capabilities`), independent of any
+// codex work, so the broker can tell a long silent command (heartbeats keep
+// coming) from a dead or frozen bridge (they stop). unref: never keeps us alive.
+const HEARTBEAT_MS = Math.max(50, Number(process.env.DEVDY_SIDECAR_HEARTBEAT_MS) || 30_000)
+setInterval(() => ctrl('_devdy_heartbeat'), HEARTBEAT_MS).unref()
 
 // Reading the working directory can throw EPERM on macOS when the project folder
 // is in a TCC-protected location (Desktop/Documents/Downloads/iCloud), on a
@@ -295,7 +303,49 @@ const cmdKey = (c) => (Array.isArray(c) ? c.join(' ') : String(c ?? '')).trim()
 function emitPermission(rpcReqId, { tool_name, tool_input, title, description, display_name }, waiter = {}) {
   const requestId = `codex-${PROC_NONCE}-${rpcReqId}`
   permWaiters.set(requestId, { rpcId: rpcReqId, command: tool_input?.command, kind: 'approval', ...waiter })
+  if (inputClosed) {
+    // No answer can reach us any more: decline now instead of raising a prompt
+    // nobody could ever answer (the turn then winds down on its own).
+    settleWaiter(requestId, false)
+    ctrl('_devdy_log', { level: 'warn', text: `⚠ ${tool_name} was denied: the session can no longer receive permission answers.` })
+    return
+  }
   ctrl('_devdy_permission_request', { requestId, tool_name, tool_input, title, description, display_name })
+}
+
+// Answer a pending codex approval / elicitation (from the user's response, or
+// declined by us when the input channel closed).
+function settleWaiter(requestId, accept, { answers, remember } = {}) {
+  const w = permWaiters.get(requestId)
+  if (!w) return false
+  permWaiters.delete(requestId)
+  if (!accept && w.command != null) declinedCommands.add(cmdKey(w.command))
+  if (w.kind === 'mcp_elicitation_form') {
+    const content = accept ? elicitationContentFromAnswers(answers, w.answerKeys) : null
+    emitMcpToolResult(w.toolUseId, accept)
+    rpcRespond(w.rpcId, { action: accept ? 'accept' : 'decline', content, _meta: null })
+    return true
+  }
+  if (w.kind === 'mcp_elicitation') {
+    emitMcpToolResult(w.toolUseId, accept)
+    rpcRespond(w.rpcId, { action: accept ? 'accept' : 'decline', content: null, _meta: null })
+    return true
+  }
+  // Fail closed on a deny. `cancel` both rejects the pending operation and
+  // interrupts the turn, preventing a command from racing ahead while the
+  // approval response propagates through the remote controller/host path.
+  // A later prompt can resume the same conversation normally.
+  //
+  // An "always" allow additionally opts into codex's OWN session-scoped
+  // approval cache (`acceptForSession`), so matching commands / file changes
+  // later in the session never come back as a prompt at all — Devdy's
+  // per-project list would auto-answer them, but only after a full
+  // sidecar → host → UI → sidecar round trip.
+  const allowDecision = remember
+    ? (w.legacy ? 'approved_for_session' : 'acceptForSession')
+    : (w.legacy ? 'approved' : 'accept')
+  rpcRespond(w.rpcId, { decision: accept ? allowDecision : 'cancel' })
+  return true
 }
 
 function enumOptions(schema) {
@@ -663,6 +713,8 @@ function onServerMessage(msg) {
         if (turnStartedAt != null) result.duration_ms = Date.now() - turnStartedAt
         out(result)
         ctrl('_devdy_done')
+        turnActive = false
+        turnCompleted = true
         shutdown(0)
         break
       }
@@ -697,11 +749,30 @@ codex.stderr.on('data', (d) => {
     estderrBuf = estderrBuf.slice(nl + 1)
   }
 })
-codex.on('exit', (code) => { ctrl('_devdy_closed', { code }); process.exit(code ?? 0) })
+// Report how the session ended. Node gives `code: null` when codex died by a
+// signal; that is a failure (exit non-zero). The one exception is OUR kill in
+// shutdown() (SIGTERM, or codex exiting on it) after a clean end — the turn
+// completed, or no turn was running — which is how a session normally ends.
+// Anything else (our kill mid-turn, another signal) reports what happened.
+codex.on('exit', (code, signal) => {
+  const ourKill = shutdownCode !== null && (signal === 'SIGTERM' || signal == null)
+  if (ourKill && (shutdownCode !== 0 || turnCompleted || !turnActive)) {
+    ctrl('_devdy_closed', { code: shutdownCode, signal: null })
+    process.exit(shutdownCode)
+  }
+  ctrl('_devdy_closed', { code, signal: signal ?? null })
+  process.exit(code ?? (signal ? 1 : 0))
+})
 
 // ── session bring-up ──────────────────────────────────────────────────────
 let ready = false
 let turnStartedAt = null
+// A turn was started and hasn't completed (turn/completed) yet.
+let turnActive = false
+// A turn/completed was observed: the session reached its terminal state.
+let turnCompleted = false
+// The broker closed our stdin: no prompt or permission answer can arrive.
+let inputClosed = false
 const promptQueue = []
 
 async function bringUp() {
@@ -737,7 +808,7 @@ async function bringUp() {
 
   // system.init lets the broker capture session_id (= threadId) for resume.
   out({ type: 'system', subtype: 'init', session_id: threadId, model: modelName, cwd: CWD, tools: ['Bash', 'Edit'] })
-  ctrl('_devdy_ready', { threadId })
+  ctrl('_devdy_ready', { threadId, capabilities: { heartbeat_ms: HEARTBEAT_MS } })
 
   // Snapshot plan usage right away (cheap, no turn) so the badge is fresh from
   // the start of the run. Fire-and-forget; failures are non-fatal.
@@ -788,6 +859,7 @@ function sandboxPolicyObject(sandbox) {
 
 async function startTurn(text, images) {
   if (!threadId) { ctrl('_devdy_error', { error: 'no thread' }); return }
+  turnActive = true
   turnStartedAt = Date.now()
   const input = []
   // Prepend the one-time framing seed to the first turn of a resumed thread.
@@ -817,7 +889,9 @@ async function startTurn(text, images) {
     sandboxPolicy: sandboxPolicyObject(sandbox),
   })
   if (res?.error) {
+    turnActive = false
     ctrl('_devdy_error', { error: `turn/start failed: ${res.error.message || JSON.stringify(res.error)}` })
+    if (inputClosed) shutdown(1)
     if (seed) SEED_FRAMING = seed // not delivered — retry on the next turn
   } else if (seed) {
     // Accepted: the framing is now in the thread history. Seed only once.
@@ -839,7 +913,22 @@ process.stdin.on('data', (chunk) => {
     handleCommand(cmd)
   }
 })
-process.stdin.on('end', () => shutdown(0))
+// stdin closed by the broker = no more input. That must NOT kill a turn in
+// flight (mirrors the Claude sidecar): decline the prompts nobody can answer
+// any more, let the turn finish, and shut down once it completed.
+process.stdin.on('end', () => {
+  inputClosed = true
+  for (const requestId of [...permWaiters.keys()]) {
+    if (settleWaiter(requestId, false)) {
+      ctrl('_devdy_permission_cancelled', {
+        requestId,
+        level: 'warn',
+        text: '⚠ An open permission request was denied: the session can no longer receive answers.',
+      })
+    }
+  }
+  if (!turnActive && !promptQueue.length) shutdown(0)
+})
 
 function handleCommand(cmd) {
   switch (cmd.type) {
@@ -847,39 +936,9 @@ function handleCommand(cmd) {
       if (!ready) promptQueue.push({ text: cmd.text, images: cmd.images })
       else startTurn(cmd.text, cmd.images)
       break
-    case 'permission_response': {
-      const w = permWaiters.get(cmd.requestId)
-      if (!w) return
-      permWaiters.delete(cmd.requestId)
-      const accept = cmd.decision === 'allow'
-      if (!accept && w.command != null) declinedCommands.add(cmdKey(w.command))
-      if (w.kind === 'mcp_elicitation_form') {
-        const content = accept ? elicitationContentFromAnswers(cmd.answers, w.answerKeys) : null
-        emitMcpToolResult(w.toolUseId, accept)
-        rpcRespond(w.rpcId, { action: accept ? 'accept' : 'decline', content, _meta: null })
-        break
-      }
-      if (w.kind === 'mcp_elicitation') {
-        emitMcpToolResult(w.toolUseId, accept)
-        rpcRespond(w.rpcId, { action: accept ? 'accept' : 'decline', content: null, _meta: null })
-        break
-      }
-      // Fail closed on a deny. `cancel` both rejects the pending operation and
-      // interrupts the turn, preventing a command from racing ahead while the
-      // approval response propagates through the remote controller/host path.
-      // A later prompt can resume the same conversation normally.
-      //
-      // An "always" allow additionally opts into codex's OWN session-scoped
-      // approval cache (`acceptForSession`), so matching commands / file changes
-      // later in the session never come back as a prompt at all — Devdy's
-      // per-project list would auto-answer them, but only after a full
-      // sidecar → host → UI → sidecar round trip.
-      const allowDecision = cmd.remember
-        ? (w.legacy ? 'approved_for_session' : 'acceptForSession')
-        : (w.legacy ? 'approved' : 'accept')
-      rpcRespond(w.rpcId, { decision: accept ? allowDecision : 'cancel' })
+    case 'permission_response':
+      settleWaiter(cmd.requestId, cmd.decision === 'allow', { answers: cmd.answers, remember: cmd.remember })
       break
-    }
     case 'interrupt':
       if (threadId) rpcNotify('turn/interrupt', { threadId }).catch?.(() => {})
       break
@@ -890,7 +949,13 @@ function handleCommand(cmd) {
   }
 }
 
+// Set once we are tearing the session down ourselves (the exit code we chose).
+// Whether codex dying from our kill() is "expected" also depends on the turn
+// state below (see the codex 'exit' handler).
+let shutdownCode = null
+
 function shutdown(code) {
+  if (shutdownCode === null) shutdownCode = code
   if (estderrBuf.trim()) { classifyStderrLine(estderrBuf); estderrBuf = '' }
   try { codex.kill() } catch {}
   setTimeout(() => process.exit(code), 50)

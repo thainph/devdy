@@ -590,6 +590,7 @@ pub async fn fetch_pr(
     pr_number: u64,
     linked_issue: Option<u64>,
     allow_missing_issue: Option<bool>,
+    title: Option<String>,
 ) -> Result<RunRecord, String> {
     use sqlx::Row;
 
@@ -604,6 +605,11 @@ pub async fn fetch_pr(
     let repo_slug = repo.slug();
 
     let allow_missing_issue = allow_missing_issue.unwrap_or(false);
+    // Optional initial title (e.g. the PR inbox labels a review with its author);
+    // blank means "no title", letting the UI fall back to "PR #N".
+    let title = title
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty());
 
     let loc = gitlab::TaskLocation {
         project_path: &project_path,
@@ -656,7 +662,7 @@ pub async fn fetch_pr(
     let now = chrono::Utc::now().to_rfc3339();
     let file_path_str = file_path.to_string_lossy().to_string();
     sqlx::query(
-        "INSERT INTO runs (id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, created_at) VALUES (?, ?, ?, 'review_pr', ?, 'fetched', ?, ?, ?, ?)"
+        "INSERT INTO runs (id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, created_at, title) VALUES (?, ?, ?, 'review_pr', ?, 'fetched', ?, ?, ?, ?, ?)"
     )
     .bind(&run_id)
     .bind(&project_id)
@@ -666,6 +672,7 @@ pub async fn fetch_pr(
     .bind(&file_path_str)
     .bind(&file_path_str)
     .bind(&now)
+    .bind(&title)
     .execute(db.inner())
     .await
     .map_err(|e| e.to_string())?;
@@ -687,7 +694,7 @@ pub async fn fetch_pr(
         finished_at: None,
         created_at: now,
         last_activity_at: None,
-        title: None,
+        title,
         pinned: false,
         protected: false,
         role: None,

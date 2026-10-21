@@ -6,7 +6,7 @@ import {
   Cpu, Palette, FileText, ShieldAlert, Sparkles, Github, Gitlab, Cloud,
   CheckCircle2, AlertTriangle, Trash2, Plus, Pencil, Gauge, Radio,
   RefreshCw, Loader2, BadgeCheck, Server, HardDrive, Bot, RotateCcw, UserCircle,
-  LogIn, Star, ChevronDown, ArrowRightLeft, Inbox,
+  LogIn, Star, ChevronDown, ArrowRightLeft, Inbox, GripVertical,
 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
@@ -19,6 +19,7 @@ import RemoteControlSettings from '@/components/remote/RemoteControlSettings.vue
 import InboxApiSettings from '@/components/InboxApiSettings.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
+import { useDragSort } from '@/composables/useDragSort'
 import { useGithubAccountsStore, type PatValidation } from '@/stores/githubAccounts'
 import { useGitlabAccountsStore, type GitlabPatValidation } from '@/stores/gitlabAccounts'
 import { useAwsAccountsStore, isSsoLoginRequired, type AwsAccountPayload, type AwsProfileInfo, type AwsValidation } from '@/stores/awsAccounts'
@@ -1160,6 +1161,18 @@ const expandedPromptId = ref<string | null>(null)
 function togglePrompt(id: string) {
   expandedPromptId.value = expandedPromptId.value === id ? null : id
 }
+
+// Drag a row's grip to reorder; the array order is the order the composer
+// picker lists them in.
+const savedPromptsListRef = ref<HTMLElement | null>(null)
+const { dragFrom: promptDragFrom, start: startPromptDrag, itemStyle: promptRowStyle } = useDragSort({
+  container: savedPromptsListRef,
+  onDrop: (from, to) => {
+    const list = savedPrompts.value
+    const [moved] = list.splice(from, 1)
+    if (moved) list.splice(to, 0, moved)
+  },
+})
 
 function addSavedPrompt() {
   const id = newPromptId()
@@ -2782,17 +2795,29 @@ watch(() => settings.value.language, (v) => {
                 {{ t('settings.prompts.libraryEmpty') }}
               </p>
 
-              <div class="space-y-1.5">
+              <div ref="savedPromptsListRef" class="space-y-1.5">
                 <div
                   v-for="(p, i) in savedPrompts"
                   :key="p.id"
-                  class="overflow-hidden rounded-md border border-border/70 bg-muted/20"
+                  :data-drag-index="i"
+                  class="relative overflow-hidden rounded-md border border-border/70"
+                  :class="promptDragFrom === i ? 'bg-background shadow-xl ring-1 ring-primary/40' : 'bg-muted/20'"
+                  :style="promptRowStyle(i)"
                 >
-                  <!-- Collapsed row: toggle on the left, edit + delete actions on the right -->
+                  <!-- Collapsed row: grip + toggle on the left, edit + delete actions on the right -->
                   <div class="flex items-center gap-1 pr-1.5 transition-colors hover:bg-muted/40">
                     <button
                       type="button"
-                      class="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left"
+                      class="ml-1 flex h-6 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/60 hover:text-foreground hover:bg-accent cursor-grab active:cursor-grabbing touch-none"
+                      :title="t('settings.prompts.dragToReorder')"
+                      :aria-label="t('settings.prompts.dragToReorder')"
+                      @pointerdown="startPromptDrag(i, $event)"
+                    >
+                      <GripVertical class="h-3.5 w-3.5" :stroke-width="2" />
+                    </button>
+                    <button
+                      type="button"
+                      class="flex min-w-0 flex-1 items-center gap-2 py-2 pl-1 pr-3 text-left"
                       :aria-expanded="expandedPromptId === p.id"
                       @click="togglePrompt(p.id)"
                     >

@@ -46,13 +46,14 @@ again (it may differ from the previous one).
 
 | Method | Path | Auth | Success |
 |---|---|---|---|
-| GET | `/health` | no | `200 {"app":"devdy","version":"0.8.0","api":1,"features":["translate","slack-thread-link"]}` |
+| GET | `/health` | no | `200 {"app":"devdy","version":"0.8.0","api":1,"features":["translate","grammar","slack-thread-link"]}` |
 | GET | `/v1/projects` | yes | `200 [{"id":"…","name":"…"}]` (ordered like the Devdy sidebar) |
 | POST | `/v1/slack-threads` | yes | `202 {"id":"…","status":"created"\|"existing","fetchStatus":"…"}` (see §3) |
 | POST | `/v1/translate` | yes | `200 {"text":"…","targetLang":"vi"}` or an SSE stream (see §5) |
+| POST | `/v1/grammar` | yes | `200 {"corrected":"…","issues":[…],"explainLang":"vi"}` (see §5b) |
 
 `features` in `/health` lists optional capabilities: check for `"translate"`
-before calling `/v1/translate` and for `"slack-thread-link"` before sending
+before calling `/v1/translate`, for `"grammar"` before calling `/v1/grammar`, and for `"slack-thread-link"` before sending
 Slack links to `/v1/slack-threads` (older Devdy builds expected an exported
 markdown/zip there).
 
@@ -61,17 +62,17 @@ Errors are always JSON `{"error":"<message>"}` (plus `"code"` on
 
 | Status | When |
 |---|---|
-| 400 | slack threads: `invalid_json`, `invalid_link`, `dm_unsupported`, `invalid_project`, `invalid_title`; translate: invalid JSON, empty `text` |
+| 400 | slack threads: `invalid_json`, `invalid_link`, `dm_unsupported`, `invalid_project`, `invalid_title`; translate / grammar: invalid JSON, empty `text` |
 | 401 | missing / wrong bearer token |
 | 403 | forbidden `Origin` or `Host` |
 | 404 | unknown path |
-| 413 | slack threads: body > 16 KB; translate: body > 64 KB or `text` > 8000 characters |
+| 413 | slack threads: body > 16 KB; translate / grammar: body > 64 KB or `text` > 8000 characters |
 | 415 | unsupported `Content-Type` (slack threads: anything but JSON, see §3) |
-| 429 | translate: 4 translations are already in flight (the 5th concurrent request is rejected) — retry later |
+| 429 | translate / grammar: 4 requests (translate + grammar combined) are already in flight (the 5th concurrent request is rejected) — retry later |
 | 500 | storage failure |
-| 502 | translate (JSON mode): the translation engine returned an error |
-| 503 | translate: `"translation engine unavailable: <detail>"` (e.g. sidecar spawn failure). `"server stopping"`: the API was turned off while the request was in flight — only `/v1/translate` (JSON mode; SSE gets an `error` event instead), and `/v1/slack-threads` (checked after the body is validated). `/health` and `/v1/projects` never return it. On switch-off the port is released immediately; requests already in progress may still complete. |
-| 504 | translate (JSON mode): no result within 90 s |
+| 502 | translate (JSON mode) / grammar: the engine returned an error; grammar also when the engine's answer is not usable JSON (`"invalid grammar result"`) |
+| 503 | translate: `"translation engine unavailable: <detail>"`, grammar: `"grammar engine unavailable: <detail>"` (e.g. sidecar spawn failure). `"server stopping"`: the API was turned off while the request was in flight — only `/v1/translate` (JSON mode; SSE gets an `error` event instead), `/v1/grammar`, and `/v1/slack-threads` (checked after the body is validated). `/health` and `/v1/projects` never return it. On switch-off the port is released immediately; requests already in progress may still complete. |
+| 504 | translate (JSON mode) / grammar: no result within 90 s |
 
 ## 3. `POST /v1/slack-threads` — add a thread by link
 
@@ -268,6 +269,43 @@ for (;;) {
 }
 ```
 
+## 5b. `POST /v1/grammar`
+
+Proofreads a short text (grammar, spelling, punctuation, word choice) in
+whatever language it is written, without translating it. Runs on the same warm
+engine session as `/v1/translate` (engine / model / account from Devdy →
+Settings → Translate) and shares its limits: same headers, body ≤ 64 KB,
+`text` ≤ 8000 characters, at most 4 translate + grammar requests in flight,
+90 s timeout. JSON response only (`Accept` is ignored).
+
+Request body: `{ "text": string, "explainLang"?: string }` — `explainLang` is
+the language of the `explanation` fields (same codes as `targetLang` in §5);
+defaults to the target language in Devdy settings.
+
+```
+200 {
+  "corrected": "He goes to school every day.",
+  "issues": [
+    { "original": "go", "suggestion": "goes", "explanation": "Chủ ngữ ngôi thứ ba số ít nên động từ thêm -es." }
+  ],
+  "explainLang": "vi"
+}
+```
+
+- `corrected` is the full text with every fix applied (identical to the input
+  when there are no errors); `issues` is `[]` then.
+- `original` is the fragment as written in the input, `suggestion` its
+  replacement — use them to highlight; `corrected` is the authoritative result.
+- Errors are the same as §5 JSON mode, plus `502 {"error":"invalid grammar result"}`
+  when the engine's answer could not be parsed.
+
+```bash
+curl -s -X POST http://127.0.0.1:$PORT/v1/grammar \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"text":"He go to school every day.","explainLang":"vi"}'
+```
+
 ## 6. Extension fetch sketch
 
 ```js
@@ -285,8 +323,9 @@ if (health.features?.includes('slack-thread-link')) {
 
 ## 7. What Devdy does on receipt
 
-- Slack thread: it appears in Devdy's Slack thread window right away
-  (`slack-threads://changed`), then progresses `pending → fetching →
+- Slack thread: Devdy opens (or focuses) its Slack thread window on that
+  thread right away (`slack-threads://api-received`) — also when the thread
+  already existed and is re-sent — then it progresses `pending → fetching →
   translating → ready` (or `error`) with `slack-threads://progress` events.
   Messages are stored with the original text and the Vietnamese translation;
   files are downloaded to `<app_data>/slack-threads/<id>/files/<slack_file_id>/`.

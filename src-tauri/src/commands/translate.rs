@@ -327,7 +327,7 @@ fn signature(s: &TranslateSettings) -> String {
 }
 
 /// Map a language code/name to a human-readable target name for the prompt.
-fn target_language_name(code: &str) -> String {
+pub fn target_language_name(code: &str) -> String {
     match code.trim().to_lowercase().as_str() {
         "vi" | "vietnamese" | "tiếng việt" => "Vietnamese".to_string(),
         "en" | "english" => "English".to_string(),
@@ -358,6 +358,11 @@ pub fn style_instruction(style: &str) -> &'static str {
 /// The user's `translate_style` setting (`natural` when unset).
 pub async fn load_style(db: &Db) -> Result<String, String> {
     Ok(load_settings(db).await?.style)
+}
+
+/// The user's `translate_target_lang` setting (`vi` when unset).
+pub async fn load_default_target(db: &Db) -> Result<String, String> {
+    Ok(load_settings(db).await?.default_target)
 }
 
 fn build_prompt(source: &str, target_name: &str, style: &str) -> String {

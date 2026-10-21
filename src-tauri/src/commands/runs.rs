@@ -6,13 +6,13 @@ use crate::runs::sidecar::{
     drain_sidecar, kill_process_group, resolve_codex_sidecar, resolve_sidecar, sdk_permission_mode,
 };
 use crate::runs::ssh_access::{self, SshAccessGuard};
+use crate::runs::stdin_writer::SidecarInput;
 use crate::runs::{BrokerRunCtx, BrokerRunGuard, BrokerRuns, RunHandles, RunRegistry};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Manager, State};
-use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::Mutex as TokioMutex;
 use uuid::Uuid;
@@ -422,10 +422,17 @@ pub(crate) async fn start_run_inner(
             .map_err(|e| format!("Failed to spawn sidecar ({}): {}", node_bin, e))?;
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
-        let mut stdin_handle = child.stdin.take();
+        // The sidecar's input writer exists from the start: no write to the pipe
+        // ever happens on this task (a large first prompt or a sidecar stuck at
+        // startup must not block start_run before the run is even registered).
+        let input = child
+            .stdin
+            .take()
+            .map(|w| SidecarInput::spawn(w, input_stall_hook(&app, &payload.run_id)));
 
-        // Kick off the first turn.
-        if let Some(stdin) = stdin_handle.as_mut() {
+        // Build the first turn (queued below, once the run is registered).
+        let mut first_line: Option<String> = None;
+        if input.is_some() {
             // GĐ6 (AC1): describe the project's pre-wired git account(s) to Claude
             // via an appended system prompt. `None` when nothing is linked → no
             // field is added and the run behaves exactly as before (AC6). Never
@@ -503,11 +510,7 @@ pub(crate) async fn start_run_inner(
                 "images": images_payload(&payload.images),
                 "options": options,
             });
-            stdin
-                .write_all(format!("{}\n", first).as_bytes())
-                .await
-                .ok();
-            stdin.flush().await.ok();
+            first_line = Some(format!("{}\n", first));
         }
 
         // Record the initial user message in the log (the SDK doesn't echo it).
@@ -526,8 +529,9 @@ pub(crate) async fn start_run_inner(
             reg.insert(
                 payload.run_id.clone(),
                 RunHandles {
+                    pgid: child.id(),
                     child,
-                    stdin: stdin_handle,
+                    stdin: input.clone(),
                     session_id: session_id.clone(),
                     log_buf: log_buf.clone(),
                     broker_run: Some(broker_run),
@@ -549,6 +553,8 @@ pub(crate) async fn start_run_inner(
             log_path,
             false,
         ));
+        // Registered and drained: now hand the first turn to the writer.
+        queue_first_prompt(input.as_ref(), first_line);
         return Ok(());
     }
 
@@ -629,10 +635,16 @@ pub(crate) async fn start_run_inner(
         .map_err(|e| format!("Failed to spawn codex sidecar ({}): {}", node_bin, e))?;
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
-    let mut stdin_handle = child.stdin.take();
+    // Input writer from the start; nothing writes the pipe on this task (see
+    // the Claude path above).
+    let input = child
+        .stdin
+        .take()
+        .map(|w| SidecarInput::spawn(w, input_stall_hook(&app, &payload.run_id)));
 
-    // Kick off the first turn.
-    if let Some(stdin) = stdin_handle.as_mut() {
+    // Build the first turn (queued below, once the run is registered).
+    let mut first_line: Option<String> = None;
+    if input.is_some() {
         let account_context =
             crate::runs::broker::token::build_account_context(&db_pool, &project_id).await;
         let prompt_text = account_context
@@ -644,11 +656,7 @@ pub(crate) async fn start_run_inner(
             "text": prompt_text,
             "images": images_payload(&payload.images),
         });
-        stdin
-            .write_all(format!("{}\n", first).as_bytes())
-            .await
-            .ok();
-        stdin.flush().await.ok();
+        first_line = Some(format!("{}\n", first));
     }
 
     // Record the initial user message in the log (the sidecar doesn't echo it).
@@ -683,8 +691,9 @@ pub(crate) async fn start_run_inner(
         reg.insert(
             payload.run_id.clone(),
             RunHandles {
+                pgid: child.id(),
                 child,
-                stdin: stdin_handle,
+                stdin: input.clone(),
                 session_id: session_id.clone(),
                 log_buf: log_buf.clone(),
                 broker_run: Some(broker_run),
@@ -706,6 +715,8 @@ pub(crate) async fn start_run_inner(
         log_path,
         false,
     ));
+    // Registered and drained: now hand the first turn to the writer.
+    queue_first_prompt(input.as_ref(), first_line);
     Ok(())
 }
 
@@ -1001,15 +1012,19 @@ pub async fn cancel_run(
     db: State<'_, Db>,
     run_id: String,
 ) -> Result<(), String> {
-    cancel_run_inner(registry.inner(), db.inner(), &run_id).await
+    cancel_run_inner(registry.inner(), db.inner(), &run_id, true).await
 }
 
 /// Core of [`cancel_run`] over concrete refs so the Remote Control host agent
 /// (FR-009 `cancel_run`) can reuse it without a Tauri `State`.
+///
+/// `stamp_activity`: whether this cancel counts as user activity and floats the
+/// run in History. False when an agent (Conductor) cancels its own worker.
 pub(crate) async fn cancel_run_inner(
     registry: &RunRegistry,
     db: &sqlx::SqlitePool,
     run_id: &str,
+    stamp_activity: bool,
 ) -> Result<(), String> {
     let run_id = run_id.to_string();
     let handle = {
@@ -1020,14 +1035,21 @@ pub(crate) async fn cancel_run_inner(
     if let Some(mut handles) = handle {
         // Kill the whole process group (node sidecar + claude/codex CLI), then
         // reap the node handle. Group kill prevents an orphaned CLI lingering.
-        if let Some(pid) = handles.child.id() {
-            kill_process_group(pid);
+        // The stored group id, not `child.id()`: once the drain has reaped the
+        // sidecar, `id()` is None while its CLI/MCP descendants may live on.
+        if let Some(pgid) = handles.pgid {
+            kill_process_group(pgid);
         }
         let _ = handles.child.kill().await;
     }
 
     let cancelled_at = chrono::Utc::now().to_rfc3339();
-    sqlx::query("UPDATE runs SET status = 'cancelled', finished_at = ?, last_activity_at = ? WHERE id = ?")
+    let sql = if stamp_activity {
+        "UPDATE runs SET status = 'cancelled', finished_at = ?, last_activity_at = ? WHERE id = ?"
+    } else {
+        "UPDATE runs SET status = 'cancelled', finished_at = ?, last_activity_at = COALESCE(last_activity_at, ?) WHERE id = ?"
+    };
+    sqlx::query(sql)
         .bind(&cancelled_at)
         .bind(&cancelled_at)
         .bind(&run_id)
@@ -1056,15 +1078,20 @@ pub async fn send_user_message(
     registry: State<'_, RunRegistry>,
     payload: SendUserMessagePayload,
 ) -> Result<(), String> {
-    send_user_message_inner(db.inner(), registry.inner(), payload).await
+    send_user_message_inner(db.inner(), registry.inner(), payload, true).await
 }
 
 /// Core of [`send_user_message`] over concrete refs so the Remote Control host
 /// agent (FR-009 `send_chat_message`) can reuse it without a Tauri `State`.
+///
+/// `stamp_activity`: whether this turn counts as user activity and floats the
+/// run in History. False for agent-sent turns (Conductor follow-ups and wakes),
+/// so sessions don't reshuffle while the user isn't touching them.
 pub(crate) async fn send_user_message_inner(
     db: &sqlx::SqlitePool,
     registry: &RunRegistry,
     payload: SendUserMessagePayload,
+    stamp_activity: bool,
 ) -> Result<(), String> {
     use sqlx::Row;
     // A follow-up turn consumes tokens like any other, so gate it too — against
@@ -1101,38 +1128,34 @@ pub(crate) async fn send_user_message_inner(
         serde_json::json!({ "type": "user", "message": { "role": "user", "content": log_user_content(text, &payload.images) } })
     );
 
-    let mut reg = registry.lock().await;
-    let handle = reg
-        .get_mut(&payload.run_id)
-        .ok_or_else(|| "run not active".to_string())?;
-    let log_buf = handle.log_buf.clone();
-    let stdin = handle
-        .stdin
-        .as_mut()
-        .ok_or_else(|| "run does not accept follow-up input".to_string())?;
-    stdin
-        .write_all(send_line.as_bytes())
-        .await
-        .map_err(|e| format!("write stdin: {}", e))?;
-    stdin
-        .flush()
-        .await
-        .map_err(|e| format!("flush stdin: {}", e))?;
+    let log_buf = {
+        let reg = registry.lock().await;
+        let handle = reg
+            .get(&payload.run_id)
+            .ok_or_else(|| "run not active".to_string())?;
+        handle.log_buf.clone()
+    };
+    write_run_stdin(
+        registry,
+        &payload.run_id,
+        &send_line,
+        "run does not accept follow-up input",
+    )
+    .await?;
     {
         let mut buf = log_buf.lock().await;
         buf.push_str(&log_line);
     }
-    // Registry lock released before the DB write — nothing below needs the
-    // handle, and the sidecar registry must not be held across IO.
-    drop(reg);
     // The turn is now the run's newest activity. Stamped here rather than only on
     // `run:done` so the History row moves the moment the user hits send, even for
     // a turn that then runs for minutes.
-    let _ = sqlx::query("UPDATE runs SET last_activity_at = ? WHERE id = ?")
-        .bind(chrono::Utc::now().to_rfc3339())
-        .bind(&payload.run_id)
-        .execute(db)
-        .await;
+    if stamp_activity {
+        let _ = sqlx::query("UPDATE runs SET last_activity_at = ? WHERE id = ?")
+            .bind(chrono::Utc::now().to_rfc3339())
+            .bind(&payload.run_id)
+            .execute(db)
+            .await;
+    }
     Ok(())
 }
 
@@ -1142,8 +1165,8 @@ pub async fn end_run_input(registry: State<'_, RunRegistry>, run_id: String) -> 
     let handle = reg
         .get_mut(&run_id)
         .ok_or_else(|| "run not active".to_string())?;
-    // Dropping the ChildStdin closes the pipe, which tells Claude to exit after
-    // finishing the current turn.
+    // Dropping the run's input handle closes the pipe (after any queued lines),
+    // which tells the sidecar to exit after finishing the current turn.
     handle.stdin.take();
     Ok(())
 }
@@ -1215,24 +1238,78 @@ pub(crate) async fn respond_permission_inner(
             "remember": payload.remember,
         })
     );
-    let mut reg = registry.lock().await;
-    let handle = reg
-        .get_mut(&payload.run_id)
-        .ok_or_else(|| "run not active".to_string())?;
-    let stdin = handle
-        .stdin
-        .as_mut()
-        .ok_or_else(|| "run is not accepting input".to_string())?;
-    stdin
-        .write_all(line.as_bytes())
-        .await
-        .map_err(|e| format!("write stdin: {}", e))?;
-    stdin
-        .flush()
-        .await
-        .map_err(|e| format!("flush stdin: {}", e))?;
+    write_run_stdin(
+        registry,
+        &payload.run_id,
+        &line,
+        "run is not accepting input",
+    )
+    .await?;
     crate::runs::permission::resolve_pending(&payload.run_id, &payload.request_id);
     Ok(())
+}
+
+/// Queue one NDJSON line for a live run's sidecar and wait (bounded) for it to
+/// be written. The registry lock is held only to clone the run's input handle.
+/// A timeout never cancels the write or closes the input: the error says the
+/// line is still queued (see `stdin_writer`).
+pub(crate) async fn write_run_stdin(
+    registry: &RunRegistry,
+    run_id: &str,
+    line: &str,
+    not_accepting: &str,
+) -> Result<(), String> {
+    let input = {
+        let reg = registry.lock().await;
+        let handle = reg
+            .get(run_id)
+            .ok_or_else(|| "run not active".to_string())?;
+        handle
+            .stdin
+            .clone()
+            .ok_or_else(|| not_accepting.to_string())?
+    };
+    input
+        .send(line.to_string(), crate::runs::stdin_writer::ACK_TIMEOUT)
+        .await
+}
+
+/// Hand a freshly started run's first turn to its input writer. Never waits
+/// for the write: the run is already registered (cancellable) and drained, and
+/// a sidecar that doesn't read raises the input-stalled notice instead.
+fn queue_first_prompt(input: Option<&SidecarInput>, first_line: Option<String>) {
+    if let (Some(input), Some(line)) = (input, first_line) {
+        // Only fails when the input is already closed (the sidecar died at
+        // startup); the drain reports that run's end. Logged for diagnosis.
+        if let Err(e) = input.queue(line) {
+            tracing::warn!("failed to queue first prompt for sidecar: {}", e);
+        }
+    }
+}
+
+/// Surface a sidecar that stopped reading its input (a write blocked for long)
+/// as a liveness notice with a stop action, and clear it once the write lands.
+fn input_stall_hook(app: &AppHandle, run_id: &str) -> crate::runs::stdin_writer::StallHook {
+    use tauri::Emitter;
+    let app = app.clone();
+    let run_id = run_id.to_string();
+    Box::new(move |stalled| {
+        let topic = format!("run:attention:{}", run_id);
+        let payload = if stalled {
+            let message = "The session is not reading its input (a message to it has been waiting). It may be busy or stuck — stop the session if it doesn't recover.";
+            let _ = app.emit(
+                &format!("run:output:{}", run_id),
+                serde_json::json!({ "run_id": run_id, "line": format!("⚠ {}", message), "is_stderr": false, "level": "warn" }),
+            );
+            serde_json::json!({
+                "run_id": run_id, "key": "input_stalled", "kind": "input_stalled",
+                "message": message, "params": {}, "active": true,
+            })
+        } else {
+            serde_json::json!({ "run_id": run_id, "key": "input_stalled", "active": false })
+        };
+        let _ = app.emit(&topic, payload);
+    })
 }
 
 /// Permission requests a live run is still blocked on. Lets a webview listener
@@ -3106,6 +3183,33 @@ pub async fn resume_run(
     model_override: Option<String>,
     override_budget: Option<bool>,
 ) -> Result<(), String> {
+    resume_run_with(
+        app,
+        db,
+        registry,
+        run_id,
+        permission_mode_override,
+        model_override,
+        override_budget,
+        true,
+    )
+    .await
+}
+
+/// [`resume_run`] with control over whether the resume counts as user activity.
+/// The Conductor passes `stamp_activity = false` when it resumes a worker or
+/// wakes itself, so agent-driven turns don't reorder History.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn resume_run_with(
+    app: AppHandle,
+    db: State<'_, Db>,
+    registry: State<'_, RunRegistry>,
+    run_id: String,
+    permission_mode_override: Option<String>,
+    model_override: Option<String>,
+    override_budget: Option<bool>,
+    stamp_activity: bool,
+) -> Result<(), String> {
     use sqlx::Row;
 
     let row = sqlx::query(
@@ -3258,14 +3362,27 @@ pub async fn resume_run(
     // Resuming is the clearest signal of "I'm working on this one again", so it
     // also stamps last_activity_at and floats the session to the top of History.
     // A fresh fallback session also drops the stale transcript pointer.
+    // An agent-driven resume (stamp_activity = false) instead pins
+    // last_activity_at to the run's current sort key — the old row values, since
+    // SQLite evaluates SET expressions against them — so overwriting started_at /
+    // finished_at here can't move it either.
     let started_at = chrono::Utc::now().to_rfc3339();
-    let mark_running = if transcript_available {
-        "UPDATE runs SET status = 'running', model = ?, started_at = ?, finished_at = NULL, last_activity_at = ? WHERE id = ?"
+    let activity = if stamp_activity {
+        "?"
     } else {
-        "UPDATE runs SET status = 'running', model = ?, started_at = ?, finished_at = NULL, last_activity_at = ?, \
-         transcript_path = NULL, transcript_synced_size = NULL, framing_seeded = 0 WHERE id = ?"
+        "COALESCE(last_activity_at, finished_at, started_at, created_at, ?)"
     };
-    sqlx::query(mark_running)
+    let mark_running = if transcript_available {
+        format!(
+            "UPDATE runs SET status = 'running', model = ?, started_at = ?, finished_at = NULL, last_activity_at = {activity} WHERE id = ?"
+        )
+    } else {
+        format!(
+            "UPDATE runs SET status = 'running', model = ?, started_at = ?, finished_at = NULL, last_activity_at = {activity}, \
+             transcript_path = NULL, transcript_synced_size = NULL, framing_seeded = 0 WHERE id = ?"
+        )
+    };
+    sqlx::query(&mark_running)
         .bind(&model)
         .bind(&started_at)
         .bind(&started_at)
@@ -3441,6 +3558,8 @@ pub async fn resume_run(
 
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
+    // The first prompt of a resume arrives later via send_user_message (through
+    // the writer); nothing writes the pipe here.
     let stdin_handle = child.stdin.take();
 
     let session_id_state = Arc::new(TokioMutex::new(Some(session_id.clone())));
@@ -3469,8 +3588,10 @@ pub async fn resume_run(
         reg.insert(
             run_id.clone(),
             RunHandles {
+                pgid: child.id(),
                 child,
-                stdin: stdin_handle,
+                stdin: stdin_handle
+                    .map(|w| SidecarInput::spawn(w, input_stall_hook(&app, &run_id))),
                 session_id: session_id_state.clone(),
                 log_buf: log_buf.clone(),
                 broker_run,
@@ -3890,5 +4011,77 @@ mod tool_record_tests {
         })
         .to_string();
         assert!(reduce(&line).is_none());
+    }
+}
+
+#[cfg(test)]
+mod startup_input_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    // Startup path: the sidecar doesn't read its stdin (stuck at startup) and the
+    // first prompt is far larger than the pipe buffer (e.g. base64 images). Start
+    // must still return at once with the run registered — and Stop must work.
+    #[tokio::test]
+    async fn large_first_prompt_to_non_reading_sidecar_never_blocks_start() {
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30").stdin(std::process::Stdio::piped());
+        detach_process_group(&mut cmd);
+        let mut child = cmd.spawn().unwrap();
+        let pgid = child.id().unwrap();
+        let input = child
+            .stdin
+            .take()
+            .map(|w| SidecarInput::spawn(w, Box::new(|_| {})));
+        let first_line = Some(format!(
+            "{{\"type\":\"prompt\",\"text\":\"{}\"}}\n",
+            "x".repeat(8 * 1024 * 1024)
+        ));
+
+        // Same sequence as start_run_inner: register, then queue the first turn.
+        let registry = crate::runs::new_registry();
+        let started = Instant::now();
+        registry.lock().await.insert(
+            "r1".to_string(),
+            RunHandles {
+                pgid: Some(pgid),
+                child,
+                stdin: input.clone(),
+                session_id: Arc::new(TokioMutex::new(None)),
+                log_buf: Arc::new(TokioMutex::new(String::new())),
+                broker_run: None,
+                ssh_access: None,
+            },
+        );
+        queue_first_prompt(input.as_ref(), first_line);
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "start must not wait on the pipe"
+        );
+        assert!(registry.lock().await.contains_key("r1"));
+
+        // Stop works while the first prompt is still stuck in the pipe.
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE runs (id TEXT PRIMARY KEY, status TEXT, finished_at TEXT, last_activity_at TEXT)")
+            .execute(&db)
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            cancel_run_inner(&registry, &db, "r1", true),
+        )
+        .await
+        .expect("cancel must not block on the stuck write")
+        .unwrap();
+        assert!(!registry.lock().await.contains_key("r1"));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !crate::runs::sidecar::kill_process_group(pgid),
+            "the sidecar group was killed"
+        );
     }
 }

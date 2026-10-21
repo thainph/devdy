@@ -50,10 +50,9 @@ const activeRunId = computed(() =>
 
 function runLabel(runId: string): string {
   const run = runsStore.runMeta.get(runId)
-  if (run && run.run_type !== 'session') {
-    if (run.ref_number != null) return `${run.run_type === 'analyze_issue' ? 'Issue' : 'PR'} #${run.ref_number}`
-  } else if (run?.title) {
-    return run.title
+  if (run?.title?.trim()) return run.title.trim()
+  if (run && run.run_type !== 'session' && run.ref_number != null) {
+    return `${run.run_type === 'analyze_issue' ? 'Issue' : 'PR'} #${run.ref_number}`
   }
   const pid = run?.project_id
   return projectsStore.projects.find((p) => p.id === pid)?.name ?? 'Run'
