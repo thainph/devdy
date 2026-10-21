@@ -52,7 +52,7 @@ fn ask(reason: &str) -> PolicyDecision {
 
 /// Evaluate the broker policy for a tool + argv. Pure, synchronous, no I/O.
 ///
-/// `tool` is one of `gh`, `glab`, `git`, `aws` (also accepts provider aliases
+/// `tool` is one of `gh`, `glab`, `git`, `aws`, `terraform`, `az` (also accepts provider aliases
 /// for defensiveness). `argv` is the argument vector AFTER the tool name.
 pub fn evaluate_policy(tool: &str, argv: &[String]) -> PolicyDecision {
     match tool {
@@ -60,6 +60,8 @@ pub fn evaluate_policy(tool: &str, argv: &[String]) -> PolicyDecision {
         "gh" | "github" => evaluate_gh_like(argv, false),
         "glab" | "gitlab" => evaluate_gh_like(argv, true),
         "aws" => evaluate_aws(argv),
+        "terraform" => evaluate_terraform(argv),
+        "az" => evaluate_az(argv),
         _ => ask("unknown tool — needs confirmation"),
     }
 }
@@ -283,6 +285,267 @@ fn evaluate_aws(argv: &[String]) -> PolicyDecision {
     ask("unknown or unlisted aws command — needs confirmation")
 }
 
+/// Terraform policy. Shape is `terraform [global flags] <command> [sub] ...`;
+/// global flags such as `-chdir=...` are dropped by `split_argv`. Anything that
+/// can change real infrastructure or remote state asks; read/plan commands
+/// allow so an agent can iterate on `plan` without a modal per call.
+fn evaluate_terraform(argv: &[String]) -> PolicyDecision {
+    let (pos, flags) = split_argv(argv);
+    let command = match pos.first() {
+        Some(c) => c.as_str(),
+        // Bare `terraform` / `terraform -help` / `terraform -version`.
+        None => return PolicyDecision::Allow,
+    };
+    let sub = pos.get(1).map(|s| s.as_str()).unwrap_or("");
+
+    match command {
+        // `init -migrate-state` / `-force-copy` rewrite the remote state backend.
+        "init" => {
+            if flags
+                .iter()
+                .any(|f| f.starts_with("-migrate-state") || f.starts_with("-force-copy"))
+            {
+                ask("terraform init state migration rewrites remote state — needs confirmation")
+            } else {
+                PolicyDecision::Allow
+            }
+        }
+        // `output -json/-raw` and `show -json` print sensitive values in clear
+        // (the human format redacts them as `<sensitive>`).
+        "output" if flags.iter().any(|f| tf_flag_is(f, "json") || tf_flag_is(f, "raw")) => {
+            ask("terraform output -json/-raw prints sensitive values — needs confirmation")
+        }
+        "show" if flags.iter().any(|f| tf_flag_is(f, "json")) => {
+            ask("terraform show -json prints sensitive values — needs confirmation")
+        }
+        // `test` run blocks default to `command = apply` (real resources).
+        "test" => ask("terraform test may apply real infrastructure — needs confirmation"),
+        "plan" | "validate" | "fmt" | "show" | "output" | "providers" | "version" | "graph"
+        | "get" | "modules" | "metadata" => PolicyDecision::Allow,
+        "state" => match sub {
+            "list" | "show" => PolicyDecision::Allow,
+            // `state pull` dumps the raw state, secrets included.
+            "pull" => ask("terraform state pull prints the raw state (secrets) — needs confirmation"),
+            _ => ask("terraform state mutation — needs confirmation"),
+        },
+        "workspace" => match sub {
+            "list" | "show" | "select" => PolicyDecision::Allow,
+            _ => ask("terraform workspace change — needs confirmation"),
+        },
+        "apply" | "destroy" | "import" | "refresh" | "taint" | "untaint" | "force-unlock" => {
+            ask("terraform operation changes infrastructure or state — needs confirmation")
+        }
+        _ => ask("unknown or unlisted terraform command — needs confirmation"),
+    }
+}
+
+/// Escalate an `Allow` for a config-evaluating terraform command (`plan`,
+/// `validate`, `console`) to `Ask` when the shim found code in the config that
+/// runs outside Terraform (`data "external"`, `local-exec`, `data "http"`): it
+/// would execute with the linked cloud credentials. Pure; `hits` are short
+/// `file:kind` labels from the shim, used only in the reason.
+pub fn escalate_terraform_external_code(
+    decision: PolicyDecision,
+    argv: &[String],
+    external_code: bool,
+    hits: &[String],
+) -> PolicyDecision {
+    if !external_code || decision != PolicyDecision::Allow {
+        return decision;
+    }
+    let (pos, _flags) = split_argv(argv);
+    if !matches!(
+        pos.first().map(String::as_str),
+        Some("plan" | "validate" | "console")
+    ) {
+        return decision;
+    }
+    let detail: Vec<String> = hits
+        .iter()
+        .take(5)
+        .map(|h| {
+            // `file:kind` → `kind in file`; keep labels short and printable.
+            let h: String = h.chars().filter(|c| !c.is_control()).take(120).collect();
+            match h.rsplit_once(':') {
+                Some((file, kind)) if !file.is_empty() => format!("{kind} in {file}"),
+                _ => h,
+            }
+        })
+        .collect();
+    let detail = if detail.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", detail.join(", "))
+    };
+    ask(&format!(
+        "terraform config runs external code{detail} with the linked cloud credentials — needs confirmation"
+    ))
+}
+
+/// `-name`, `--name`, or `-name=...` (terraform accepts single or double dash).
+fn tf_flag_is(flag: &str, name: &str) -> bool {
+    let f = flag.trim_start_matches('-');
+    f == name || f.starts_with(&format!("{name}="))
+}
+
+/// az global flags that take a value (`--output json`).
+const AZ_GLOBAL_VALUE_FLAGS: &[&str] = &["--output", "-o", "--query", "--subscription"];
+/// az global flags without a value.
+const AZ_GLOBAL_BOOL_FLAGS: &[&str] = &["--debug", "--verbose", "--only-show-errors", "--help", "-h"];
+
+/// Extract the az command path: positionals from the start of argv, skipping
+/// global flags (and the VALUE of value-taking ones, incl. `--flag=value`), up
+/// to the first command-specific flag. Flag values after the command therefore
+/// never count as commands. Returns `(path, interleaved)` where `interleaved`
+/// means a positional followed a global flag (e.g. `az -o json account show`).
+fn az_command_path(argv: &[String]) -> (Vec<String>, bool) {
+    let mut path = Vec::new();
+    let mut seen_global = false;
+    let mut interleaved = false;
+    let mut i = 0;
+    while i < argv.len() {
+        let a = argv[i].as_str();
+        if a.starts_with('-') {
+            let name = a.split('=').next().unwrap_or(a);
+            if AZ_GLOBAL_VALUE_FLAGS.contains(&name) {
+                seen_global = true;
+                // `--flag value` consumes the next token; `--flag=value` does not.
+                i += if a.contains('=') { 1 } else { 2 };
+                continue;
+            }
+            if AZ_GLOBAL_BOOL_FLAGS.contains(&name) {
+                seen_global = true;
+                i += 1;
+                continue;
+            }
+            // First command-specific flag ends the command path.
+            break;
+        }
+        if seen_global {
+            interleaved = true;
+        }
+        path.push(a.to_ascii_lowercase());
+        i += 1;
+    }
+    (path, interleaved)
+}
+
+/// The `--subscription` value of an az invocation (`--subscription X` or
+/// `--subscription=X`), if any. Used by the broker to compare against the
+/// linked account's subscription.
+pub fn az_subscription_arg(argv: &[String]) -> Option<String> {
+    let mut it = argv.iter();
+    while let Some(a) = it.next() {
+        if a == "--subscription" {
+            return it.next().cloned();
+        }
+        if let Some(v) = a.strip_prefix("--subscription=") {
+            return Some(v.to_string());
+        }
+    }
+    None
+}
+
+/// Azure CLI policy. Shape is `az <group> [subgroup...] <command> --flag value`.
+/// The command path is ONLY the leading positionals before the first
+/// `-`-prefixed token, so a flag value (`--resource-group show`) can never be
+/// mistaken for a command. Credential/session mutation denies, secret-revealing
+/// reads ask, plain reads allow, everything else asks (never silent-allow).
+fn evaluate_az(argv: &[String]) -> PolicyDecision {
+    let (path, interleaved) = az_command_path(argv);
+    let p: Vec<&str> = path.iter().map(String::as_str).collect();
+
+    // ---- 1. DENYLIST: session/credential mutation or credential printing ----
+    // Checked first so no flag placement can soften a Deny into an Ask/Allow.
+    match p.as_slice() {
+        ["login", ..] | ["logout", ..] => {
+            return deny("`az login`/`az logout` — the Azure session is managed by Devdy")
+        }
+        ["account", "get-access-token", ..] => {
+            return deny("`az account get-access-token` prints a credential")
+        }
+        ["account", "set", ..] | ["account", "clear", ..] => {
+            return deny("the Azure default subscription is managed by Devdy for this project")
+        }
+        ["ad", "sp", "credential", "reset", ..] | ["ad", "app", "credential", "reset", ..] => {
+            return deny("Azure AD credential reset mints a secret and is blocked")
+        }
+        ["ad", "sp", "create-for-rbac", ..] => {
+            return deny(
+                "`az ad sp create-for-rbac` mints a service principal secret and is blocked",
+            )
+        }
+        ["keyvault", "secret", "show", ..] | ["keyvault", "secret", "download", ..] => {
+            return deny("reading Key Vault secret values is blocked")
+        }
+        _ => {}
+    }
+
+    // Help never executes the command.
+    if argv.iter().any(|a| a == "--help" || a == "-h") {
+        return PolicyDecision::Allow;
+    }
+    if p.is_empty() {
+        // Bare `az` / `az --version`; any other leading flag is not a valid az
+        // invocation — do not guess.
+        return if argv.is_empty() || argv.iter().all(|a| a == "--version") {
+            PolicyDecision::Allow
+        } else {
+            ask("unrecognized az invocation — needs confirmation")
+        };
+    }
+    // Global flags in front of / between command words: az itself rejects most
+    // of these shapes, and the trailing word could be a disguised verb
+    // (`az vm delete -o json list`), so never auto-allow them.
+    if interleaved {
+        return ask("az global flags before the command — needs confirmation");
+    }
+
+    // ---- 2. ASK: unrestricted backdoor / secret-revealing reads ----
+    if p[0] == "rest" {
+        return ask("`az rest` is an unrestricted backdoor — needs confirmation");
+    }
+    let command = *p.last().unwrap_or(&"");
+    // Key Vault key/certificate metadata and secret NAMES carry no secret value.
+    let keyvault_meta = p[0] == "keyvault"
+        && matches!(p.get(1).copied(), Some("key" | "certificate" | "secret"))
+        && p.len() == 3
+        && matches!(command, "list" | "show" | "list-versions" | "list-deleted");
+    if !keyvault_meta {
+        const SECRET_WORDS: &[&str] = &[
+            "key", "secret", "credential", "password", "token", "connection", "sas", "policy",
+        ];
+        let secret_path = p.iter().any(|seg| {
+            // The `keyvault` group name itself is not a secret read.
+            *seg != "keyvault" && SECRET_WORDS.iter().any(|w| seg.contains(w))
+        });
+        let secret_command = matches!(command, "list-publishing-profiles" | "get-credentials")
+            || p.contains(&"appsettings")
+            || p.contains(&"kubeconfig");
+        // Application Insights `component show` includes the connection string.
+        let app_insights = p.contains(&"app-insights") && command == "show";
+        if secret_path || secret_command || app_insights {
+            return ask("command may reveal a secret (keys/credentials) — needs confirmation");
+        }
+    }
+
+    // ---- 3. READ ALLOWLIST ----
+    if matches!(p.as_slice(), ["version"] | ["account", "show"] | ["account", "list"]) {
+        return PolicyDecision::Allow;
+    }
+    if p.len() >= 2
+        && (matches!(command, "list" | "show" | "exists" | "version" | "query")
+            || command.starts_with("list-")
+            || command.starts_with("show-"))
+    {
+        return PolicyDecision::Allow;
+    }
+
+    // ---- 4. DEFAULT: writes (create/update/delete/set/start/deploy/...) and
+    // anything unknown ask.
+    ask("Azure write or unlisted az command — needs confirmation")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -485,6 +748,258 @@ mod tests {
         assert!(matches!(
             evaluate_policy("aws", &argv(&["sts", "get-session-token"])),
             PolicyDecision::Deny { .. }
+        ));
+    }
+
+    #[test]
+    fn allow_terraform_read_and_plan() {
+        for a in [
+            &[][..],
+            &["-version"][..],
+            &["init"][..],
+            &["init", "-reconfigure"][..],
+            &["-chdir=envs/dev", "plan", "-out=tfplan"][..],
+            &["plan", "-destroy"][..],
+            &["validate"][..],
+            &["fmt", "-check"][..],
+            &["show", "tfplan"][..],
+            &["output"][..],
+            &["output", "vpc_id"][..],
+            &["show"][..],
+            &["state", "list"][..],
+            &["state", "show", "aws_s3_bucket.this"][..],
+            &["workspace", "select", "dev"][..],
+        ] {
+            assert_eq!(
+                evaluate_policy("terraform", &argv(a)),
+                PolicyDecision::Allow,
+                "argv={a:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ask_terraform_mutations() {
+        for a in [
+            &["apply", "tfplan"][..],
+            &["apply", "-auto-approve"][..],
+            &["-chdir=envs/dev", "destroy"][..],
+            &["import", "aws_s3_bucket.this", "bucket"][..],
+            &["refresh"][..],
+            &["taint", "aws_instance.web"][..],
+            &["force-unlock", "abc"][..],
+            &["state", "rm", "aws_s3_bucket.this"][..],
+            &["state", "mv", "a", "b"][..],
+            &["state", "push", "x.tfstate"][..],
+            &["workspace", "delete", "dev"][..],
+            &["init", "-migrate-state"][..],
+            &["init", "-force-copy"][..],
+            &["login"][..],
+            &["test"][..],
+            &["test", "-filter=tests/a.tftest.hcl"][..],
+            &["state", "pull"][..],
+            &["output", "-json"][..],
+            &["output", "-raw", "db_password"][..],
+            &["output", "--json"][..],
+            &["show", "-json"][..],
+            &["show", "-json", "tfplan"][..],
+        ] {
+            assert!(
+                matches!(
+                    evaluate_policy("terraform", &argv(a)),
+                    PolicyDecision::Ask { .. }
+                ),
+                "argv={a:?} must Ask"
+            );
+        }
+    }
+
+    // ---- az ----
+
+    #[test]
+    fn allow_az_reads() {
+        for a in [
+            &[][..],
+            &["--version"][..],
+            &["version"][..],
+            &["account", "show"][..],
+            &["account", "list", "-o", "table"][..],
+            &["group", "list"][..],
+            &["vm", "list", "--resource-group", "show"][..],
+            &["vm", "list", "--resource-group", "create"][..],
+            &["vm", "show", "-g", "rg", "-n", "delete"][..],
+            &["storage", "account", "show", "-n", "x"][..],
+            &["group", "exists", "-n", "rg"][..],
+            &["vm", "list-sizes", "-l", "japaneast"][..],
+            &["webapp", "show-something"][..],
+            &["keyvault", "secret", "list", "--vault-name", "kv"][..],
+            &["keyvault", "key", "show", "--vault-name", "kv", "-n", "k"][..],
+            &["keyvault", "list"][..],
+            &["keyvault", "show", "-n", "kv"][..],
+            &["vm", "list", "-o", "json", "--query", "[].name"][..],
+            &["vm", "list", "--subscription", "sub-1"][..],
+            &["graph", "query", "-q", "Resources"][..],
+            &["vm", "create", "--help"][..],
+            &["ACCOUNT", "SHOW"][..],
+        ] {
+            assert_eq!(
+                evaluate_policy("az", &argv(a)),
+                PolicyDecision::Allow,
+                "argv={a:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn deny_az_credential_and_session() {
+        for a in [
+            &["login"][..],
+            &["login", "--tenant", "contoso.onmicrosoft.com"][..],
+            &["logout"][..],
+            &["account", "get-access-token"][..],
+            &["account", "get-access-token", "--resource", "https://management.azure.com"][..],
+            &["Account", "Get-Access-Token"][..],
+            &["--only-show-errors", "account", "get-access-token"][..],
+            &["-o", "json", "account", "get-access-token"][..],
+            &["--output=json", "account", "get-access-token"][..],
+            &["--query", "accessToken", "account", "get-access-token"][..],
+            &["account", "--debug", "get-access-token"][..],
+            &["--subscription", "x", "login"][..],
+            &["account", "get-access-token", "--help"][..],
+            &["account", "set", "--subscription", "other"][..],
+            &["account", "clear"][..],
+            &["ad", "sp", "credential", "reset", "--id", "x"][..],
+            &["ad", "app", "credential", "reset", "--id", "x"][..],
+            &["ad", "sp", "create-for-rbac", "-n", "x"][..],
+            &["keyvault", "secret", "show", "--vault-name", "kv", "-n", "s"][..],
+            &["keyvault", "secret", "download", "--vault-name", "kv", "-n", "s", "-f", "o"][..],
+        ] {
+            assert!(
+                matches!(evaluate_policy("az", &argv(a)), PolicyDecision::Deny { .. }),
+                "argv={a:?} must Deny"
+            );
+        }
+    }
+
+    #[test]
+    fn ask_az_secret_reads_writes_and_unknown() {
+        for a in [
+            &["storage", "account", "keys", "list", "-n", "x"][..],
+            &["cosmosdb", "keys", "list", "-n", "x", "-g", "rg"][..],
+            &["redis", "list-keys", "-n", "x", "-g", "rg"][..],
+            &["storage", "account", "show-connection-string", "-n", "x"][..],
+            &["acr", "credential", "show", "-n", "x"][..],
+            &["webapp", "deployment", "list-publishing-profiles", "-n", "x"][..],
+            &["webapp", "config", "appsettings", "list", "-n", "x", "-g", "rg"][..],
+            &["aks", "get-credentials", "-n", "x", "-g", "rg"][..],
+            &["storage", "container", "generate-sas", "-n", "c"][..],
+            &["rest", "--method", "get", "--url", "https://x"][..],
+            &["group", "create", "-n", "rg", "-l", "japaneast"][..],
+            &["vm", "delete", "-g", "rg", "-n", "list"][..],
+            &["vm", "start", "-g", "rg", "-n", "x"][..],
+            &["role", "assignment", "create"][..],
+            &["deployment", "group", "create", "-g", "rg"][..],
+            &["keyvault", "purge", "-n", "kv"][..],
+            &["config", "set", "core.output=table"][..],
+            &["extension", "add", "-n", "x"][..],
+            &["find", "vm"][..],
+            &["--only-show-errors", "account", "show"][..],
+            &["vm", "delete", "-o", "json", "list"][..],
+            &["list"][..],
+            &["staticwebapp", "secrets", "list", "-n", "x"][..],
+            &["communication", "list-key", "-n", "x"][..],
+            &["iot", "hub", "policy", "list", "-n", "x"][..],
+            &["keyvault", "secret", "show-deleted", "--vault-name", "kv", "-n", "s"][..],
+            &["monitor", "app-insights", "component", "show", "-a", "x"][..],
+            &["sql", "server", "show-connection-string", "-n", "x"][..],
+            &["aks", "get-credentials", "-n", "x"][..],
+            &["webapp", "config", "connection-string", "list", "-n", "x"][..],
+            &["storage", "account", "generate-sas"][..],
+            &["identity", "federated-credential", "list"][..],
+        ] {
+            assert!(
+                matches!(evaluate_policy("az", &argv(a)), PolicyDecision::Ask { .. }),
+                "argv={a:?} must Ask"
+            );
+        }
+    }
+
+    #[test]
+    fn az_command_path_skips_global_flags_and_values() {
+        let (p, inter) = az_command_path(&argv(&["vm", "list", "--resource-group", "show"]));
+        assert_eq!(p, vec!["vm", "list"]);
+        assert!(!inter);
+        let (p, inter) = az_command_path(&argv(&["-o", "json", "account", "show"]));
+        assert_eq!(p, vec!["account", "show"]);
+        assert!(inter);
+        let (p, _) = az_command_path(&argv(&["--query=[0]", "group", "list", "-g", "x"]));
+        assert_eq!(p, vec!["group", "list"]);
+    }
+
+    #[test]
+    fn az_subscription_arg_forms() {
+        assert_eq!(
+            az_subscription_arg(&argv(&["vm", "list", "--subscription", "Prod"])).as_deref(),
+            Some("Prod")
+        );
+        assert_eq!(
+            az_subscription_arg(&argv(&["vm", "list", "--subscription=abc"])).as_deref(),
+            Some("abc")
+        );
+        assert!(az_subscription_arg(&argv(&["vm", "list"])).is_none());
+    }
+
+    #[test]
+    fn terraform_external_code_escalates_evaluating_commands() {
+        let hits = vec!["main.tf:data.external".to_string(), "modules/x/a.tf:local-exec".to_string()];
+        for a in [&["plan"][..], &["-chdir=env", "validate"][..], &["plan", "-out=p"][..]] {
+            let d = escalate_terraform_external_code(
+                evaluate_policy("terraform", &argv(a)),
+                &argv(a),
+                true,
+                &hits,
+            );
+            match d {
+                PolicyDecision::Ask { reason } => {
+                    assert!(reason.contains("data.external in main.tf"), "{reason}");
+                    assert!(reason.contains("local-exec in modules/x/a.tf"), "{reason}");
+                }
+                other => panic!("argv={a:?} must Ask, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn terraform_external_code_leaves_other_cases() {
+        // No external code → unchanged Allow.
+        let a = argv(&["plan"]);
+        assert_eq!(
+            escalate_terraform_external_code(PolicyDecision::Allow, &a, false, &[]),
+            PolicyDecision::Allow
+        );
+        // Non-evaluating commands stay Allow even with external code.
+        for c in [&["init"][..], &["fmt"][..], &["state", "list"][..], &["version"][..]] {
+            assert_eq!(
+                escalate_terraform_external_code(PolicyDecision::Allow, &argv(c), true, &[]),
+                PolicyDecision::Allow,
+                "argv={c:?}"
+            );
+        }
+        // Deny/Ask are never softened or rewritten.
+        let deny = PolicyDecision::Deny { reason: "x".into() };
+        assert_eq!(
+            escalate_terraform_external_code(deny.clone(), &a, true, &[]),
+            deny
+        );
+        let ask_d = PolicyDecision::Ask { reason: "y".into() };
+        assert_eq!(
+            escalate_terraform_external_code(ask_d.clone(), &argv(&["apply"]), true, &[]),
+            ask_d
+        );
+        // Flag without hits still asks, with a generic reason.
+        assert!(matches!(
+            escalate_terraform_external_code(PolicyDecision::Allow, &a, true, &[]),
+            PolicyDecision::Ask { .. }
         ));
     }
 

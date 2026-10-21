@@ -18,6 +18,7 @@ import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import { useGitlabAccountsStore } from '@/stores/gitlabAccounts'
 import { useServersStore, type ProjectServer } from '@/stores/servers'
 import { useAwsAccountsStore } from '@/stores/awsAccounts'
+import { useAzureAccountsStore } from '@/stores/azureAccounts'
 import { useClaudeAccountsStore } from '@/stores/claudeAccounts'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useModelCatalogStore } from '@/stores/modelCatalog'
@@ -36,7 +37,7 @@ import {
   X, Paperclip,
   ShieldQuestion, MessageCircleQuestion,
   Pin, Shield, Pencil, Check, Github, Gitlab, UserCircle,
-  HardDrive, Cloud, Radio, Languages, StickyNote, ListTodo, FolderTree, Loader2,
+  HardDrive, Cloud, CloudCog, Radio, Languages, StickyNote, ListTodo, FolderTree, Loader2,
   MoreHorizontal, Search, Network, ChevronLeft, ChevronRight,
   Plus, AlignJustify, Rows2, Rows3, Rows4, CircleDashed, ArrowUpDown
 } from 'lucide-vue-next'
@@ -108,6 +109,7 @@ const ghStore = useGithubAccountsStore()
 const glStore = useGitlabAccountsStore()
 const serversStore = useServersStore()
 const awsStore = useAwsAccountsStore()
+const azureStore = useAzureAccountsStore()
 const claudeStore = useClaudeAccountsStore()
 const appSettings = useAppSettingsStore()
 const modelCatalog = useModelCatalogStore()
@@ -211,6 +213,21 @@ const awsChip = computed(() => {
   parts.push(`region ${acc.region}`)
   const title = parts.join(' · ') + (acc.arn ? `\n${acc.arn}` : '')
   return { label: acc.label, region: acc.region, title }
+})
+
+// The project's linked Azure account (isolated az login per account). Label +
+// subscription name on the chip; subscription/tenant ids + user in the tooltip.
+const azureChip = computed(() => {
+  const id = project.value?.azure_account_id
+  if (!id) return null
+  const acc = azureStore.accounts.find((a) => a.id === id)
+  if (!acc) return null
+  const parts = [`Azure: ${acc.label}`]
+  if (acc.subscription_name) parts.push(`subscription ${acc.subscription_name}`)
+  if (acc.subscription_id) parts.push(acc.subscription_id)
+  if (acc.tenant_id) parts.push(`tenant ${acc.tenant_id}`)
+  const title = parts.join(' · ') + (acc.user_name ? `\n${acc.user_name}` : '')
+  return { label: acc.label, subscription: acc.subscription_name ?? '', title }
 })
 
 const activeRunId = computed(() => route.params.runId as string | undefined)
@@ -1713,6 +1730,7 @@ onMounted(async () => {
   if (claudeStore.accounts.length === 0) claudeStore.fetch().catch(() => {})
   // Header chips: which VPS servers + AWS account this project is wired to.
   if (awsStore.accounts.length === 0) awsStore.fetch().catch(() => {})
+  if (azureStore.accounts.length === 0) azureStore.fetch().catch(() => {})
   loadProjectServers()
   repos.value = await projectStore.listRepos(projectId.value)
   // Opening the view is the one point where History takes the fresh activity
@@ -3495,6 +3513,18 @@ function handleRefInput(val: string) {
           <Cloud class="h-3 w-3" :stroke-width="2" />
           {{ awsChip.label }}
           <span class="opacity-90 font-mono">{{ awsChip.region }}</span>
+        </Badge>
+        <!-- Linked Azure account (az login isolated per account). -->
+        <Badge
+          v-if="azureChip"
+          tone="primary"
+          size="sm"
+          class="shrink-0 inline-flex items-center gap-1"
+          :title="azureChip.title"
+        >
+          <CloudCog class="h-3 w-3" :stroke-width="2" />
+          {{ azureChip.label }}
+          <span v-if="azureChip.subscription" class="opacity-90">{{ azureChip.subscription }}</span>
         </Badge>
       </div>
       <!-- Icon-only actions: the linked Slack / todo / note menus, then one ⋯
