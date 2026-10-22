@@ -1,15 +1,16 @@
 <script setup lang="ts">
-// Project Pulse screen (docs/project-pulse-spec.md §6.1): one card per project
-// with watched sources, in BR-09 order (red → yellow → green → none, then the
-// nearest milestone, then name). Opening it shows the stored digests at once —
+// Project Pulse screen (docs/project-pulse-spec.md §6.1), master–detail: the
+// project list on the left in BR-09 order (red → yellow → green → none, then the
+// nearest milestone, then name), the selected project's sources on the right. Opening it shows the stored digests at once —
 // it never refreshes by itself (G2); the header / card / drawer buttons do.
 // While mounted it keeps MCP requests polled (`pulse_set_screen_open`, BR-11).
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Activity, Loader2, RefreshCw, Search } from 'lucide-vue-next'
-import { Button, Card, Input, Skeleton } from '@/components/ui'
+import { Activity, Loader2, RefreshCw } from 'lucide-vue-next'
+import { Button, Card, Skeleton } from '@/components/ui'
 import PulseAddWatch from '@/components/pulse/PulseAddWatch.vue'
 import PulseProjectCard from '@/components/pulse/PulseProjectCard.vue'
+import PulseProjectList from '@/components/pulse/PulseProjectList.vue'
 import PulseWatchDrawer from '@/components/pulse/PulseWatchDrawer.vue'
 import { usePulseText } from '@/components/pulse/usePulseText'
 import { usePulseWatch } from '@/composables/usePulseWatch'
@@ -28,6 +29,15 @@ const openWatchId = ref<string | null>(null)
 const refreshingScopes = ref(new Set<string>())
 
 const visible = computed(() => filterProjects(store.projects, query.value, attentionOnly.value))
+
+// Master–detail: the remembered project, else the first (most urgent) visible one.
+const SELECTED_KEY = 'devdy:pulseProjectId'
+const selectedId = ref<string | null>(localStorage.getItem(SELECTED_KEY))
+const selected = computed(() => visible.value.find((p) => p.projectId === selectedId.value) ?? visible.value[0] ?? null)
+function select(projectId: string) {
+  selectedId.value = projectId
+  localStorage.setItem(SELECTED_KEY, projectId)
+}
 const totalWatches = computed(() => store.projects.reduce((n, p) => n + p.watches.length, 0))
 const openWatch = computed<PulseWatchItem | null>(() => {
   for (const p of store.projects) {
@@ -126,78 +136,57 @@ async function onMove(projectId: string) {
       </div>
     </div>
 
-    <!-- Filters -->
-    <div v-if="store.loaded && store.projects.length > 0" class="flex items-center gap-3 px-6 pt-4 shrink-0">
-      <div class="relative w-64">
-        <Search class="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" :stroke-width="1.75" />
-        <Input v-model="query" class="pl-8" :placeholder="t('pulse.search')" />
+    <!-- First load -->
+    <div v-if="!store.loaded && store.loading" class="flex flex-1 min-h-0">
+      <div class="w-[260px] shrink-0 space-y-2 border-r border-border/60 bg-sidebar p-3">
+        <Skeleton class="h-8 w-full rounded" />
+        <Skeleton v-for="i in 6" :key="i" class="h-9 w-full rounded" />
       </div>
-      <button
-        type="button"
-        role="switch"
-        :aria-checked="attentionOnly"
-        class="flex items-center gap-2 text-xs cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-md px-1 py-1"
-        @click="attentionOnly = !attentionOnly"
-      >
-        <span
-          class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors"
-          :class="attentionOnly ? 'bg-primary' : 'bg-muted'"
-        >
-          <span
-            class="inline-block h-4 w-4 rounded-full bg-white shadow transition-transform"
-            :class="attentionOnly ? 'translate-x-4' : 'translate-x-0.5'"
-          />
-        </span>
-        <span :class="attentionOnly ? 'text-foreground' : 'text-muted-foreground'">{{ t('pulse.attentionOnly') }}</span>
-      </button>
+      <div class="flex-1 space-y-3 p-6">
+        <Skeleton class="h-5 w-48 rounded" />
+        <Skeleton class="h-3 w-64 rounded" />
+        <Skeleton v-for="r in 4" :key="r" class="h-10 w-full rounded" />
+      </div>
     </div>
 
-    <!-- Content -->
-    <div class="flex-1 overflow-auto p-6">
-      <!-- First load -->
-      <div v-if="!store.loaded && store.loading" class="grid grid-cols-1 gap-3 lg:grid-cols-2 2xl:grid-cols-3">
-        <Card v-for="i in 6" :key="i" class="border-border/60" body-class="space-y-3 p-4">
-          <div class="flex items-center gap-2">
-            <Skeleton class="h-2.5 w-2.5 rounded-full" />
-            <Skeleton class="h-4 w-32 rounded" />
-          </div>
-          <Skeleton class="h-3 w-48 rounded" />
-          <div class="flex gap-1.5">
-            <Skeleton class="h-4 w-20 rounded-full" />
-            <Skeleton class="h-4 w-24 rounded-full" />
-          </div>
-          <Skeleton v-for="r in 3" :key="r" class="h-8 w-full rounded" />
-        </Card>
-      </div>
-
-      <!-- Global error -->
-      <Card v-else-if="store.error && !store.loaded" class="border-destructive/30" body-class="flex items-center gap-3 p-4">
+    <!-- Global error -->
+    <div v-else-if="store.error && !store.loaded" class="p-6">
+      <Card class="border-destructive/30" body-class="flex items-center gap-3 p-4">
         <p class="flex-1 text-sm text-destructive">{{ t('pulse.loadError') }}: {{ store.error }}</p>
         <Button variant="outline" size="sm" @click="store.load()">{{ t('pulse.retry') }}</Button>
       </Card>
+    </div>
 
-      <!-- Empty -->
-      <div v-else-if="store.projects.length === 0" class="flex flex-col items-center justify-center h-full min-h-80 text-center">
-        <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-muted mb-4">
-          <Activity class="h-6 w-6 text-muted-foreground" :stroke-width="1.5" />
-        </div>
-        <p class="text-sm font-medium">{{ t('pulse.empty.title') }}</p>
-        <p class="text-xs text-muted-foreground mt-1 max-w-96">{{ t('pulse.empty.hint') }}</p>
+    <!-- Empty -->
+    <div v-else-if="store.projects.length === 0" class="flex flex-1 flex-col items-center justify-center min-h-80 text-center">
+      <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-muted mb-4">
+        <Activity class="h-6 w-6 text-muted-foreground" :stroke-width="1.5" />
       </div>
+      <p class="text-sm font-medium">{{ t('pulse.empty.title') }}</p>
+      <p class="text-xs text-muted-foreground mt-1 max-w-96">{{ t('pulse.empty.hint') }}</p>
+    </div>
 
-      <p v-else-if="visible.length === 0" class="py-12 text-center text-sm text-muted-foreground">
-        {{ t('pulse.empty.filtered') }}
-      </p>
-
-      <div v-else class="grid grid-cols-1 gap-3 lg:grid-cols-2 2xl:grid-cols-3 items-start">
+    <!-- Master–detail -->
+    <div v-else class="flex flex-1 min-h-0">
+      <PulseProjectList
+        v-model:query="query"
+        v-model:attention-only="attentionOnly"
+        :projects="visible"
+        :selected-id="selected?.projectId ?? null"
+        :total="store.projects.length"
+        @select="select"
+      />
+      <div class="flex-1 min-w-0 overflow-y-auto p-6">
         <PulseProjectCard
-          v-for="p in visible"
-          :key="p.projectId"
-          :project="p"
-          :refreshing="busy(`project:${p.projectId}`)"
-          @refresh="refresh({ projectId: p.projectId }, `project:${p.projectId}`)"
+          v-if="selected"
+          :key="selected.projectId"
+          :project="selected"
+          full
+          :refreshing="busy(`project:${selected.projectId}`)"
+          @refresh="refresh({ projectId: selected.projectId }, `project:${selected.projectId}`)"
           @open="openWatchId = $event.id"
         />
+        <p v-else class="py-12 text-center text-sm text-muted-foreground">{{ t('pulse.empty.filtered') }}</p>
       </div>
     </div>
 

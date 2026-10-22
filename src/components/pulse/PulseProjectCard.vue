@@ -11,7 +11,8 @@ import { HEALTH_DOT, splitRows, type ProjectPulse, type PulseWatchItem } from '@
 import { usePulseText } from './usePulseText'
 import PulseWatchRow from './PulseWatchRow.vue'
 
-const props = defineProps<{ project: ProjectPulse; refreshing: boolean }>()
+/** `full`: detail pane of the master–detail layout — every open source is listed. */
+const props = defineProps<{ project: ProjectPulse; refreshing: boolean; full?: boolean }>()
 const emit = defineEmits<{ refresh: []; open: [watch: PulseWatchItem] }>()
 
 const { t } = useI18n()
@@ -20,7 +21,7 @@ const { dueText } = usePulseText()
 const expanded = ref(false)
 const showFinished = ref(false)
 
-const rows = computed(() => splitRows(props.project.watches, expanded.value ? Infinity : undefined))
+const rows = computed(() => splitRows(props.project.watches, props.full || expanded.value ? Infinity : undefined))
 
 const chips = computed(() => {
   const c = props.project.counts
@@ -34,7 +35,7 @@ const chips = computed(() => {
 </script>
 
 <template>
-  <Card class="flex flex-col border-border/60" body-class="flex flex-col flex-1 gap-2.5 p-4">
+  <Card class="flex min-w-0 flex-col border-border/60" body-class="flex min-w-0 flex-col flex-1 gap-2.5 p-4">
     <!-- Name + refresh -->
     <div class="flex items-center gap-2">
       <span
@@ -44,7 +45,7 @@ const chips = computed(() => {
         :aria-label="t(`pulse.health.${project.health}`)"
         :title="t(`pulse.health.${project.health}`)"
       />
-      <h2 class="min-w-0 flex-1 truncate text-sm font-semibold">{{ project.projectName }}</h2>
+      <h2 class="min-w-0 flex-1 truncate font-semibold" :class="full ? 'text-base' : 'text-sm'">{{ project.projectName }}</h2>
       <Button
         variant="ghost"
         size="icon-sm"
@@ -95,7 +96,7 @@ const chips = computed(() => {
     <p v-else-if="!rows.finished.length" class="text-xs text-muted-foreground">{{ t('pulse.card.noWatches') }}</p>
 
     <!-- Done group (collapsed) -->
-    <div v-if="rows.finished.length" class="border-t border-border/50 pt-2">
+    <div v-if="rows.finished.length" class="mt-auto border-t border-border/50 pt-2">
       <button
         type="button"
         class="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground cursor-pointer"
