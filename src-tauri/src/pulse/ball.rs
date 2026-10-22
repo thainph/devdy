@@ -9,8 +9,9 @@ use super::content::SlackMsg;
 use crate::slack_threads::mrkdwn;
 
 /// Subtypes that are noise, not conversation.
-const NOISE_SUBTYPES: [&str; 12] = [
+const NOISE_SUBTYPES: [&str; 13] = [
     "bot_message",
+    "tombstone",
     "channel_join",
     "channel_leave",
     "group_join",
@@ -24,30 +25,70 @@ const NOISE_SUBTYPES: [&str; 12] = [
     "reminder_add",
 ];
 
-/// Text made only of `:emoji:` codes (incl. `::skin-tone-2`) and whitespace.
+/// Pictographic code points (approximating `Extended_Pictographic`) plus
+/// regional indicators (flags), skin tones and tag characters.
+fn is_pictographic(c: char) -> bool {
+    matches!(c as u32,
+        0x00A9 | 0x00AE | 0x203C | 0x2049 | 0x2122 | 0x2139 | 0x2194..=0x21AA
+        | 0x231A..=0x23FF | 0x24C2 | 0x25AA..=0x25FE | 0x2600..=0x27BF
+        | 0x2934 | 0x2935 | 0x2B05..=0x2B55 | 0x3030 | 0x303D | 0x3297 | 0x3299
+        | 0x1F000..=0x1FAFF | 0xE0020..=0xE007F)
+}
+
+/// Joiners and modifiers that only glue pictographs together.
+fn is_emoji_glue(c: char) -> bool {
+    matches!(c as u32, 0x200D | 0xFE0E | 0xFE0F | 0x20E3)
+}
+
+/// Text made only of emoji — `:emoji:` codes (incl. `::skin-tone-2`) and
+/// Unicode emoji (ZWJ sequences, skin tones, flags, keycaps like 1️⃣) — and
+/// whitespace.
 pub fn is_emoji_only(text: &str) -> bool {
     let mut rest = text.trim();
     if rest.is_empty() {
         return false;
     }
-    while !rest.is_empty() {
-        let Some(after) = rest.strip_prefix(':') else {
-            return false;
-        };
-        let Some(end) = after.find(':') else {
-            return false;
-        };
-        let name = &after[..end];
-        if name.is_empty()
-            || !name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '+' | '\''))
-        {
+    let mut any = false;
+    while let Some(c) = rest.chars().next() {
+        if c.is_whitespace() || is_emoji_glue(c) {
+            rest = &rest[c.len_utf8()..];
+            continue;
+        }
+        if is_pictographic(c) {
+            any = true;
+            rest = &rest[c.len_utf8()..];
+            continue;
+        }
+        // Keycap: [0-9#*] followed by FE0F and/or 20E3.
+        if c.is_ascii_digit() || c == '#' || c == '*' {
+            let next = rest[1..].chars().next();
+            if next.is_some_and(is_emoji_glue) {
+                any = true;
+                rest = &rest[1..];
+                continue;
+            }
             return false;
         }
-        rest = after[end + 1..].trim_start();
+        if c == ':' {
+            let after = &rest[1..];
+            let Some(end) = after.find(':') else {
+                return false;
+            };
+            let name = &after[..end];
+            if name.is_empty()
+                || !name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '+' | '\''))
+            {
+                return false;
+            }
+            any = true;
+            rest = &after[end + 1..];
+            continue;
+        }
+        return false;
     }
-    true
+    any
 }
 
 fn is_meaningful(m: &SlackMsg) -> bool {
@@ -174,5 +215,34 @@ mod tests {
         assert!(!is_emoji_only("10:30"));
         assert!(!is_emoji_only(""));
         assert!(!is_emoji_only("::"));
+    }
+
+    #[test]
+    fn unicode_emoji_replies_are_noise() {
+        for text in [
+            "🙏",
+            "👍🏻",
+            "🙇‍♂️",
+            "🇻🇳",
+            "1️⃣",
+            "#️⃣",
+            "❤️",
+            "👨‍👩‍👧‍👦",
+            "🎉 :tada: 👍",
+            " 🙏🙏 ",
+            "✅",
+        ] {
+            assert!(is_emoji_only(text), "{text}");
+        }
+        for text in ["ok 👍", "👍 ok", "1", "10:30", "ありがとう🙏", "₫", "‍"] {
+            assert!(!is_emoji_only(text), "{text}");
+        }
+        // A thumbs-up after the customer's question does not take the ball back.
+        let msgs = [m("1.1", "UCUST", "Khi nào demo?"), m("2.1", "UCUST", "🙏")];
+        assert_eq!(ball_mine_since(&msgs, ME), Some("1.1".into()));
+        let mut gone = m("3.1", "UCUST", "This message was deleted.");
+        gone.subtype = Some("tombstone".into());
+        let msgs = [m("1.1", ME, "Done"), gone];
+        assert_eq!(ball_mine_since(&msgs, ME), None);
     }
 }
