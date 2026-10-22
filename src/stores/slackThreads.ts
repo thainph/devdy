@@ -293,6 +293,18 @@ export const useSlackThreadsStore = defineStore('slackThreads', () => {
     return row
   }
 
+  /** Vietnamese reply draft → English (popover translate sidecar). */
+  async function translateReply(text: string): Promise<string> {
+    return invoke<string>('translate_slack_reply', { text })
+  }
+
+  /** Post a reply to the thread as the token's user; the thread then refreshes. */
+  async function postReply(id: string, text: string): Promise<SlackThreadSummary> {
+    const row = await invoke<SlackThreadSummary>('post_slack_thread_reply', { id, text })
+    patchSummary(row)
+    return row
+  }
+
   async function markSeen(id: string) {
     await invoke('mark_slack_thread_seen', { id })
     const row = threads.value.find((x) => x.id === id)
@@ -425,6 +437,8 @@ export const useSlackThreadsStore = defineStore('slackThreads', () => {
     add,
     refresh,
     retranslate,
+    translateReply,
+    postReply,
     markSeen,
     rename,
     setProject,

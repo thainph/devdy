@@ -8,6 +8,7 @@
 // A thread opens scrolled to its newest message. Refetches keep the scroll
 // position; when the reader is at the bottom, new messages scroll into view.
 // The image lightbox lives here (it steps through every image of the thread).
+// The reply composer (Vietnamese → English, then post) sits under the thread.
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { convertFileSrc } from '@tauri-apps/api/core'
@@ -27,6 +28,7 @@ import SlackThreadBanner from './SlackThreadBanner.vue'
 import SlackMessage from './SlackMessage.vue'
 import SlackMessageFiles from './SlackMessageFiles.vue'
 import SlackImageLightbox from './SlackImageLightbox.vue'
+import SlackReplyComposer from './SlackReplyComposer.vue'
 import type { SessionLink } from '@/lib/sessionLinks'
 
 const props = defineProps<{
@@ -289,6 +291,8 @@ watch(
         </div>
       </template>
     </div>
+
+    <SlackReplyComposer v-if="view.threadUrl" :thread-id="view.id" />
 
     <SlackImageLightbox
       v-if="lightboxId"

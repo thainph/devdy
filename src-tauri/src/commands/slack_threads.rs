@@ -1,13 +1,19 @@
 //! Tauri commands of the Slack thread window (SRS §10.2). Errors are
 //! `"<code>: <detail>"` strings.
 
+use crate::commands::translate::{submit_prompt, TranslateState, TurnEvent};
+use crate::db::Db;
 use crate::slack_threads::run_links::{self, LinkRunResult, SlackThreadRunLink};
 use crate::slack_threads::store::{
     self, AddSlackThreadResult, SlackPromptText, SlackThreadSummary, SlackThreadView,
 };
 use crate::slack_threads::token::{self, SlackTokenStatus};
-use crate::slack_threads::{CodedError, SlackThreadsState};
-use tauri::State;
+use crate::slack_threads::translate::build_reply_prompt;
+use crate::slack_threads::{CodedError, SlackThreadsState, MAX_REPLY_CHARS};
+use std::time::Duration;
+use tauri::{AppHandle, State};
+
+const REPLY_TRANSLATE_TIMEOUT: Duration = Duration::from_secs(90);
 
 type CmdResult<T> = Result<T, String>;
 
@@ -122,6 +128,61 @@ pub async fn delete_slack_threads(
     ids: Vec<String>,
 ) -> CmdResult<()> {
     state.delete(&ids).await.map_err(err)
+}
+
+/// Translate a reply draft (Vietnamese) into English on the popover's warm
+/// translate sidecar (the Slack one may be busy with long thread jobs).
+#[tauri::command]
+pub async fn translate_slack_reply(
+    app: AppHandle,
+    db: State<'_, Db>,
+    state: State<'_, TranslateState>,
+    text: String,
+) -> CmdResult<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(err(CodedError::new("empty_reply", "reply text is empty")));
+    }
+    if text.chars().count() > MAX_REPLY_CHARS {
+        return Err(err(CodedError::new(
+            "reply_too_long",
+            format!("reply exceeds {MAX_REPLY_CHARS} characters"),
+        )));
+    }
+    let fail = |d: String| err(CodedError::new("reply_translate_failed", d));
+    let prompt = build_reply_prompt(text);
+    let (turn, rx) = submit_prompt(&app, &db, &state, prompt, true)
+        .await
+        .map_err(fail)?;
+    let mut rx = rx.ok_or_else(|| fail("no result channel".into()))?;
+    let wait = async {
+        loop {
+            match rx.recv().await {
+                Some(TurnEvent::Chunk(_)) => continue,
+                Some(TurnEvent::Done(t)) => return Ok(t),
+                Some(TurnEvent::Error(e)) => return Err(e),
+                None => return Err("translation ended unexpectedly".to_string()),
+            }
+        }
+    };
+    match tokio::time::timeout(REPLY_TRANSLATE_TIMEOUT, wait).await {
+        Ok(Ok(t)) => Ok(t.trim().to_string()),
+        Ok(Err(e)) => Err(fail(e)),
+        Err(_) => {
+            state.abandon_turn(turn).await;
+            Err(fail("timeout".into()))
+        }
+    }
+}
+
+/// Post an (already translated) reply to the thread, then refresh it.
+#[tauri::command]
+pub async fn post_slack_thread_reply(
+    state: State<'_, SlackThreadsState>,
+    id: String,
+    text: String,
+) -> CmdResult<SlackThreadSummary> {
+    state.post_reply(&id, &text).await.map_err(err)
 }
 
 /// Which MCP servers provide a Slack token (no network call).
