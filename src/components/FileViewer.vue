@@ -150,10 +150,65 @@ let panStartY = 0
 let panOriginX = 0
 let panOriginY = 0
 
-const imageTransform = computed(() => ({
-  transform: `translate(${panX.value}px, ${panY.value}px) scale(${zoom.value})`,
-  cursor: zoom.value > 1 ? (panning.value ? 'grabbing' : 'grab') : 'default',
-}))
+// Zoom resizes the <img> layout box (fit size × zoom) instead of using CSS
+// scale(): scale() stretches the bitmap rasterized at fit size (blurry when
+// zoomed, SVGs never re-rasterize), while a real box makes the browser resample
+// from the source at every level. No permanent transform / will-change either:
+// a GPU layer makes WebKit downsample large images with low quality, so the
+// fit-to-view preview looks blurry. Pan uses translate only while non-zero.
+const IMAGE_PAD = 16 // matches the container's p-4
+const imageBoxEl = ref<HTMLElement | null>(null)
+const imageNatural = ref<{ w: number; h: number } | null>(null)
+const imageBoxWidth = ref(0)
+const viewportHeight = ref(window.innerHeight)
+
+// Largest size that fits the box without upscaling (like max-w/max-h-full).
+const imageFit = computed(() => {
+  const n = imageNatural.value
+  if (!n || !imageBoxWidth.value) return null
+  const availW = Math.max(1, imageBoxWidth.value - IMAGE_PAD * 2)
+  const availH = Math.max(1, viewportHeight.value * 0.85 - IMAGE_PAD * 2)
+  const s = Math.min(1, availW / n.w, availH / n.h)
+  return { w: n.w * s, h: n.h * s }
+})
+
+// The box keeps its fit height while zoomed so the page layout doesn't jump.
+const imageBoxStyle = computed(() =>
+  imageFit.value ? { height: `${Math.max(200, imageFit.value.h + IMAGE_PAD * 2)}px` } : {},
+)
+
+const imageTransform = computed(() => {
+  const fit = imageFit.value
+  const panned = panX.value !== 0 || panY.value !== 0
+  return {
+    // Until the natural size is known, fall back to CSS fit.
+    ...(fit
+      ? { width: `${fit.w * zoom.value}px`, height: `${fit.h * zoom.value}px`, maxWidth: 'none', maxHeight: 'none' }
+      : { maxWidth: '100%', maxHeight: '100%' }),
+    transform: panned ? `translate(${panX.value}px, ${panY.value}px)` : 'none',
+    willChange: panning.value ? 'transform' : 'auto',
+    cursor: zoom.value > 1 ? (panning.value ? 'grabbing' : 'grab') : 'default',
+  }
+})
+
+function onImageLoad(e: Event) {
+  const img = e.target as HTMLImageElement
+  // SVGs without intrinsic size report 0 — keep the CSS fit fallback for them.
+  imageNatural.value = img.naturalWidth && img.naturalHeight
+    ? { w: img.naturalWidth, h: img.naturalHeight }
+    : null
+}
+
+let imageBoxObserver: ResizeObserver | null = null
+watch(imageBoxEl, (el) => {
+  imageBoxObserver?.disconnect()
+  imageBoxObserver = null
+  if (!el) return
+  imageBoxWidth.value = el.clientWidth
+  imageBoxObserver = new ResizeObserver(() => { imageBoxWidth.value = el.clientWidth })
+  imageBoxObserver.observe(el)
+})
+function onWindowResize() { viewportHeight.value = window.innerHeight }
 
 // ── PDF (pdf.js → canvas) ────────────────────────────────────────────────────
 // PDFs render page-by-page into <canvas> elements so the app owns the zoom: the
@@ -297,10 +352,30 @@ function setZoom(next: number) {
 function zoomIn() { setZoom(zoom.value * 1.25) }
 function zoomOut() { setZoom(zoom.value / 1.25) }
 
+// Zoom keeping the image point under (clientX, clientY) fixed on screen. The
+// image is centred in its box, offset by the pan.
+function zoomAt(next: number, clientX: number, clientY: number) {
+  const box = imageBoxEl.value
+  const prev = zoom.value
+  setZoom(next)
+  if (!box || zoom.value === prev || zoom.value <= 1) return
+  const r = box.getBoundingClientRect()
+  const px = clientX - (r.left + r.width / 2)
+  const py = clientY - (r.top + r.height / 2)
+  const k = zoom.value / prev
+  panX.value = px - (px - panX.value) * k
+  panY.value = py - (py - panY.value) * k
+}
+
 function onImageWheel(e: WheelEvent) {
   if (!(e.ctrlKey || e.metaKey)) return
   e.preventDefault()
-  setZoom(zoom.value * (e.deltaY < 0 ? 1.1 : 1 / 1.1))
+  zoomAt(zoom.value * (e.deltaY < 0 ? 1.1 : 1 / 1.1), e.clientX, e.clientY)
+}
+
+function onImageDblClick(e: MouseEvent) {
+  if (zoom.value > 1) resetZoom()
+  else zoomAt(2, e.clientX, e.clientY)
 }
 
 function onPanStart(e: PointerEvent) {
@@ -593,6 +668,7 @@ async function load() {
   content.value = ''
   truncated.value = false
   assetUrl.value = ''
+  imageNatural.value = null
   resetZoom()
   editing.value = false
   saveError.value = null
@@ -866,10 +942,13 @@ onMounted(() => {
   load()
   window.addEventListener('mouseup', onSelectionMouseUp)
   window.addEventListener('keydown', onSearchKeydown)
+  window.addEventListener('resize', onWindowResize)
 })
 onUnmounted(() => {
   window.removeEventListener('mouseup', onSelectionMouseUp)
   window.removeEventListener('keydown', onSearchKeydown)
+  window.removeEventListener('resize', onWindowResize)
+  imageBoxObserver?.disconnect()
   clearHighlights()
   destroyPdf()
 })
@@ -1095,21 +1174,25 @@ defineExpose({ onRevealInFolder, onOpenInApp })
       <!-- Image -->
       <div
         v-else-if="kind === 'image'"
+        ref="imageBoxEl"
         class="relative flex items-center justify-center p-4 bg-foreground/5 min-h-[200px] max-h-[85vh] overflow-hidden select-none"
+        :style="imageBoxStyle"
         @wheel="onImageWheel"
       >
         <img
           :src="assetUrl"
           :alt="curPath"
-          class="max-w-full max-h-full object-contain will-change-transform"
+          class="shrink-0 object-contain"
           :class="{ 'transition-transform duration-75': !panning }"
           :style="imageTransform"
+          decoding="async"
           draggable="false"
+          @load="onImageLoad"
           @pointerdown="onPanStart"
           @pointermove="onPanMove"
           @pointerup="onPanEnd"
           @pointercancel="onPanEnd"
-          @dblclick="zoom > 1 ? resetZoom() : zoomIn()"
+          @dblclick="onImageDblClick"
         />
       </div>
       <!-- Video -->

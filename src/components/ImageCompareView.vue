@@ -52,7 +52,10 @@ let panOriginY = 0
 const imageStyle = computed(() => ({
   width: `${zoom.value * 100}%`,
   height: `${zoom.value * 100}%`,
-  transform: `translate(${panX.value}px, ${panY.value}px)`,
+  // No permanent transform / will-change: a GPU layer makes WebKit downsample
+  // large images with low quality, so fit-size previews look blurry.
+  transform: panX.value || panY.value ? `translate(${panX.value}px, ${panY.value}px)` : 'none',
+  willChange: panning.value ? 'transform' : 'auto',
   cursor: zoom.value > 1 ? (panning.value ? 'grabbing' : 'grab') : 'default',
 }))
 
@@ -162,7 +165,7 @@ function onDblClick() {
         <img
           :src="leftUrl"
           :alt="left"
-          class="object-contain will-change-transform"
+          class="object-contain"
           :class="{ 'transition-transform duration-75': !panning }"
           :style="imageStyle"
           draggable="false"
@@ -180,7 +183,7 @@ function onDblClick() {
         <img
           :src="rightUrl"
           :alt="right"
-          class="object-contain will-change-transform"
+          class="object-contain"
           :class="{ 'transition-transform duration-75': !panning }"
           :style="imageStyle"
           draggable="false"
