@@ -349,27 +349,42 @@ pub fn apply_hard_facts(d: &mut DigestDraft, f: &HardFacts, tz: FixedOffset) {
     }
 }
 
-/// Collapse whitespace runs to one space (for evidence matching).
+/// Normalise for evidence matching: NFC, curly quotes → straight ones,
+/// whitespace runs → one space.
 fn squash(s: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let s: String = s
+        .nfc()
+        .map(|c| match c {
+            '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' => '\'',
+            '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{201F}' => '"',
+            c => c,
+        })
+        .collect();
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Evidence must be quoted from the source: deadlines and decisions whose
-/// evidence is not a substring of `content` (whitespace-insensitive) are
-/// dropped; an open question keeps its text but loses the bad quote.
-pub fn keep_quoted(d: &mut DigestDraft, content: &str) {
+/// evidence is not a substring of `content` (after `squash`) are dropped; an
+/// open question keeps its text but loses the bad quote. Returns how many
+/// items / quotes were dropped.
+pub fn keep_quoted(d: &mut DigestDraft, content: &str) -> usize {
     let hay = squash(content);
     let found = |e: &str| {
         let e = squash(e);
         !e.is_empty() && hay.contains(&e)
     };
+    let before = d.deadlines.len() + d.decisions.len();
     d.deadlines.retain(|x| found(&x.evidence));
     d.decisions.retain(|x| found(&x.evidence));
+    let mut dropped = before - d.deadlines.len() - d.decisions.len();
     for q in &mut d.open_questions {
         if q.evidence.as_deref().is_some_and(|e| !found(e)) {
             q.evidence = None;
+            dropped += 1;
         }
     }
+    dropped
 }
 
 #[cfg(test)]
@@ -591,7 +606,7 @@ mod tests {
             "decisions":[{"text":"ok","evidence":"dùng staging mới"},{"text":"no","evidence":"invented"}],
             "open_questions":[{"text":"q","evidence":"not there"},{"text":"q2","evidence":"SSO?"}]}"#;
         let mut d = parse_digest(raw, tz()).unwrap();
-        keep_quoted(
+        let dropped = keep_quoted(
             &mut d,
             "[t] Khach(other): Demo chốt thứ 6\n  ngày 30/10\n[t] Thai(me): ok dùng staging mới\nSSO?",
         );
@@ -606,6 +621,19 @@ mod tests {
         assert_eq!(d.open_questions.len(), 2);
         assert_eq!(d.open_questions[0].evidence, None);
         assert_eq!(d.open_questions[1].evidence.as_deref(), Some("SSO?"));
+        assert_eq!(dropped, 3);
+    }
+
+    #[test]
+    fn evidence_matching_ignores_unicode_form_and_quote_style() {
+        // The source has decomposed Vietnamese and straight quotes; the AI
+        // quotes it precomposed with curly quotes.
+        let source = "Khach: \"De\u{301}mo\" cho\u{302}\u{301}t thứ 6\nok";
+        let raw = r#"{"status":"on_track","ball":"none","summary":"x",
+            "decisions":[{"text":"d","evidence":"“Démo” chốt thứ 6"}]}"#;
+        let mut d = parse_digest(raw, tz()).unwrap();
+        assert_eq!(keep_quoted(&mut d, source), 0);
+        assert_eq!(d.decisions.len(), 1);
     }
 
     #[test]

@@ -120,7 +120,10 @@ impl PulseState {
         };
         match self.summarize(&ctx, *now.offset()).await {
             Ok(mut d) => {
-                keep_quoted(&mut d, &f.content.text);
+                let dropped = keep_quoted(&mut d, &f.content.text);
+                if dropped > 0 {
+                    tracing::info!(event = "pulse_evidence_dropped", watch = %w.id, dropped);
+                }
                 apply_hard_facts(&mut d, &f.facts, *now.offset());
                 let model = self.inner.svc.engine.model().await;
                 let stored = store::insert_digest(
