@@ -133,6 +133,10 @@ async fn session_spawn(
         None => crate::commands::settings::resolve_default_engine(&db).await,
     };
 
+    // Held until the worker is running, so parallel spawns see each other.
+    let _start_guard = state.conductor.lock_worker_start().await;
+    let running = count_running_workers(&db, conductor_run_id).await?;
+
     let worker_id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let title = truncate(&format!("[{}] {}", role_label, prompt), 80);
@@ -153,16 +157,13 @@ async fn session_spawn(
     .await
     .map_err(|e| e.to_string())?;
 
-    // Reserve the worker slot (enforces the per-conductor cap).
-    if !state.conductor.add_worker(conductor_run_id, &worker_id) {
+    // Reserve the worker slot (enforces the per-conductor concurrency cap).
+    if !state.conductor.add_worker(conductor_run_id, &worker_id, running) {
         let _ = sqlx::query("DELETE FROM runs WHERE id = ?")
             .bind(&worker_id)
             .execute(&db)
             .await;
-        return Err(format!(
-            "worker cap reached ({} max) — read/cancel existing workers first",
-            session.max_workers
-        ));
+        return Err(cap_reached(session.max_workers));
     }
 
     let payload = StartRunPayload {
@@ -388,7 +389,17 @@ async fn session_send(
 
     // A worker's turn ends by exiting its sidecar, so a follow-up first resumes
     // the session, then delivers the message — mirroring the desktop composer.
+    // Resuming makes it running again, so it must fit under the cap too.
     if status != "running" {
+        let _start_guard = state.conductor.lock_worker_start().await;
+        let max_workers = state
+            .conductor
+            .session(conductor_run_id)
+            .map(|s| s.max_workers)
+            .ok_or_else(|| "unknown session".to_string())?;
+        if count_running_workers(&db, conductor_run_id).await? >= max_workers {
+            return Err(cap_reached(max_workers));
+        }
         crate::commands::runs::resume_run_with(
             state.app.clone(),
             state.app.state::<Db>(),
@@ -471,6 +482,25 @@ fn ensure_owned(
     } else {
         Err(format!("worker {} is not owned by this session", worker_id))
     }
+}
+
+/// Workers of this conductor whose turn is in progress. Finished, failed and
+/// cancelled workers don't occupy a slot under the cap.
+async fn count_running_workers(db: &Db, conductor_run_id: &str) -> Result<usize, String> {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM runs WHERE conductor_run_id = ? AND role = 'worker' AND status = 'running'",
+    )
+    .bind(conductor_run_id)
+    .fetch_one(db)
+    .await
+    .map(|n| n.max(0) as usize)
+    .map_err(|e| e.to_string())
+}
+
+fn cap_reached(max_workers: usize) -> String {
+    format!(
+        "worker cap reached ({max_workers} running max) — wait for or cancel a running worker first"
+    )
 }
 
 async fn worker_status(db: &Db, worker_id: &str) -> Result<String, String> {
