@@ -719,7 +719,16 @@ onMounted(async () => {
   <PrInboxWindow v-else-if="isPrInboxWindow" />
 
   <!-- Pop-out Gantt window: bare Gantt chart on its own OS window. -->
-  <IssuesGanttView v-else-if="isGanttWindow" />
+  <!-- Gantt pop-out: the board plus the dialog / toast hosts its row menu
+       (watch in Pulse) needs, like PrInboxWindow. -->
+  <div
+    v-else-if="isGanttWindow"
+    class="flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground"
+  >
+    <IssuesGanttView class="min-h-0 flex-1" />
+    <ConfirmModal />
+    <ToastHost />
+  </div>
 
   <!-- Desktop-pet window: transparent, frameless host that floats only the fox. -->
   <MascotWindow v-else-if="isMascotWindow" />
