@@ -1076,6 +1076,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "trash",
+ "unicode-normalization",
  "uuid",
  "walkdir",
  "zip",

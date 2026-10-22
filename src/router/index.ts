@@ -16,6 +16,7 @@ import RunView from '../views/RunView.vue'
 import SettingsView from '../views/SettingsView.vue'
 import StatsView from '../views/StatsView.vue'
 import CalendarView from '../views/CalendarView.vue'
+import PulseView from '../views/PulseView.vue'
 import AboutView from '../views/AboutView.vue'
 
 const router = createRouter({
@@ -49,6 +50,7 @@ const router = createRouter({
       },
     },
     { path: '/gantt', name: 'gantt', component: IssuesGanttView },
+    { path: '/pulse', name: 'pulse', component: PulseView },
     { path: '/projects/:projectId', name: 'project-run', component: RunView },
     { path: '/projects/:projectId/run/:runId', name: 'project-run-detail', component: RunView },
     { path: '/projects/:projectId/settings', name: 'project-settings', component: ProjectDetailView },

@@ -38,7 +38,7 @@ use crate::runs::sidecar::{
 };
 use serde_json::Value;
 use sqlx::Row;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -137,12 +137,18 @@ pub struct TranslateState {
     /// Emit `translate:*` Tauri events (the popover listens to them). Off for
     /// instances whose turn ids would otherwise collide with the popover's.
     emit_events: bool,
+    /// Process groups of replaced sidecars still finishing their turns
+    /// (`retire`), so `shutdown` can kill them too.
+    retiring: Retiring,
 }
+
+type Retiring = Arc<std::sync::Mutex<HashSet<u32>>>;
 
 impl Default for TranslateState {
     fn default() -> Self {
         TranslateState {
             inner: Arc::default(),
+            retiring: Arc::default(),
             turn_seq: Arc::default(),
             recycle_after: MAX_TURNS_BEFORE_RECYCLE,
             emit_events: true,
@@ -196,23 +202,39 @@ fn should_retire(alive: bool, pending: usize) -> bool {
 
 /// Take a replaced sidecar out of service without breaking other callers'
 /// turns: a busy, live one is retired (see `retire`), anything else is killed.
-async fn replace_out(old: WarmSidecar) {
+async fn replace_out(old: WarmSidecar, retiring: &Retiring) {
     let pending = old.routing.lock().await.queue.len();
     if should_retire(old.alive.load(Ordering::SeqCst), pending) {
-        retire(old);
+        retire(old, retiring.clone());
     } else {
         teardown(old);
     }
 }
 
 /// Let a replaced sidecar finish its queued turns (its drain task keeps routing
-/// them), then tear it down — after `RETIRE_CAP` at the latest.
-fn retire(w: WarmSidecar) {
+/// them), then tear it down — after `RETIRE_CAP` at the latest. Its process
+/// group stays in `retiring` meanwhile, for `TranslateState::shutdown`.
+fn retire(w: WarmSidecar, retiring: Retiring) {
     tracing::debug!(event = "translate_sidecar_retired");
+    let pid = w.child.id();
+    if let Some(pid) = pid {
+        retiring.lock().unwrap().insert(pid);
+    }
     tokio::spawn(async move {
         wait_drained(&w.routing, &w.alive, RETIRE_CAP).await;
         teardown(w);
+        if let Some(pid) = pid {
+            retiring.lock().unwrap().remove(&pid);
+        }
     });
+}
+
+/// Kill every retiring sidecar's process group (app exit).
+fn kill_retiring(retiring: &Retiring) {
+    let pids: Vec<u32> = retiring.lock().unwrap().drain().collect();
+    for pid in pids {
+        kill_process_group(pid);
+    }
 }
 
 /// Wait until `routing` has no queued turns or the sidecar died. Returns
@@ -241,6 +263,15 @@ fn is_front(routing: &TurnRouting, turn: u64) -> bool {
 }
 
 impl TranslateState {
+    /// Kill the warm sidecar (if any) and its CLI process group — app exit,
+    /// so no warm session outlives the app.
+    pub async fn shutdown(&self) {
+        if let Some(w) = self.inner.lock().await.take() {
+            teardown(w);
+        }
+        kill_retiring(&self.retiring);
+    }
+
     /// A caller gave up waiting for `turn` (timeout). If it is at the front of
     /// the current sidecar's queue it is considered hung: the sidecar is taken
     /// out of service and torn down right away (its drain then fails the turns
@@ -360,6 +391,19 @@ pub async fn load_style(db: &Db) -> Result<String, String> {
     Ok(load_settings(db).await?.style)
 }
 
+/// `engine:model` the warm sidecar runs with (claude without a model uses
+/// haiku), recorded with what it produced (e.g. Pulse digests).
+pub async fn load_engine_model(db: &Db) -> Result<String, String> {
+    let s = load_settings(db).await?;
+    let engine = s.engine.trim().to_ascii_lowercase();
+    let model = match s.model.trim() {
+        "" if engine != "codex" => "haiku",
+        "" => "default",
+        m => m,
+    };
+    Ok(format!("{engine}:{model}"))
+}
+
 /// The user's `translate_target_lang` setting (`vi` when unset).
 pub async fn load_default_target(db: &Db) -> Result<String, String> {
     Ok(load_settings(db).await?.default_target)
@@ -377,6 +421,27 @@ fn build_prompt(source: &str, target_name: &str, style: &str) -> String {
         style = style_instruction(style),
         source = source,
     )
+}
+
+/// Options that open the warm claude session. Every caller of this engine (UI
+/// translate, Inbox API, Slack thread translate, Project Pulse digests) feeds it
+/// UNTRUSTED text, so the session is tool-less: `noTools` makes the sidecar
+/// strip every tool/MCP source and deny any call — a prompt injection in a Slack
+/// message or GitHub comment must not reach Bash/Write/WebFetch. Never pair it
+/// with `bypassPermissions`, which would auto-approve before any check runs.
+fn session_options(model: &str, cwd: &str) -> serde_json::Value {
+    let model = match model.trim() {
+        "" => "haiku",
+        m => m,
+    };
+    serde_json::json!({
+        "cwd": cwd,
+        "noTools": true,
+        "permissionMode": "dontAsk",
+        "allowedTools": [],
+        "includePartialMessages": true,
+        "model": model,
+    })
 }
 
 /// Spawn a fresh sidecar for the chosen engine and start its drain task. The
@@ -401,7 +466,10 @@ async fn spawn_warm(
         if s.codex_path != "codex" && !s.codex_path.trim().is_empty() {
             cmd.env("DEVDY_CODEX_PATH", &s.codex_path);
         }
-        cmd.env("DEVDY_PERMISSION_MODE", "bypassPermissions");
+        // Tool-less like the claude session (see `session_options`): read-only
+        // sandbox, no exec/MCP, every approval declined.
+        cmd.env("DEVDY_CODEX_NO_TOOLS", "1");
+        cmd.env("DEVDY_PERMISSION_MODE", "plan");
         if !s.model.trim().is_empty() {
             cmd.env("DEVDY_CODEX_MODEL", s.model.trim());
         }
@@ -638,7 +706,7 @@ pub async fn prewarm_translate(
     );
     if !reusable {
         if let Some(old) = guard.take() {
-            replace_out(old).await;
+            replace_out(old, &state.retiring).await;
         }
         let w = spawn_warm(&app, &settings, is_codex, state.emit_events).await?;
         *guard = Some(w);
@@ -741,7 +809,7 @@ async fn submit_with(
     };
     if recycle {
         if let Some(old) = guard.take() {
-            replace_out(old).await;
+            replace_out(old, &state.retiring).await;
         }
         let w = spawn_warm(app, settings, is_codex, state.emit_events).await?;
         *guard = Some(w);
@@ -765,18 +833,7 @@ async fn submit_with(
 
     // First prompt carries the session options; follow-ups are bare user turns.
     let line = if !w.started && !is_codex {
-        let m = if settings.model.trim().is_empty() {
-            "haiku".to_string()
-        } else {
-            settings.model.trim().to_string()
-        };
-        let options = serde_json::json!({
-            "cwd": std::env::temp_dir().to_string_lossy(),
-            "permissionMode": "bypassPermissions",
-            "allowedTools": [],
-            "includePartialMessages": true,
-            "model": m,
-        });
+        let options = session_options(&settings.model, &std::env::temp_dir().to_string_lossy());
         serde_json::json!({ "type": "prompt", "text": prompt, "options": options }).to_string()
     } else {
         serde_json::json!({ "type": "prompt", "text": prompt }).to_string()
@@ -811,6 +868,20 @@ pub async fn cancel_translate(_state: State<'_, TranslateState>) -> Result<(), S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_options_are_tool_less() {
+        let o = session_options("  ", "/tmp");
+        assert_eq!(o["noTools"], true);
+        assert_eq!(o["permissionMode"], "dontAsk");
+        assert_eq!(o["allowedTools"], serde_json::json!([]));
+        assert!(o.get("mcpServers").is_none());
+        assert_eq!(o["model"], "haiku");
+        assert_eq!(o["cwd"], "/tmp");
+        assert_eq!(session_options(" sonnet ", "/tmp")["model"], "sonnet");
+        // Never auto-approve: bypass would skip every permission check.
+        assert!(!o.to_string().contains("bypassPermissions"));
+    }
 
     fn delta(text: &str) -> String {
         serde_json::json!({
@@ -1020,6 +1091,23 @@ mod tests {
         // Dead sidecars are killed even with turns queued (their drain has
         // already failed them, or teardown will).
         assert!(!should_retire(false, 3));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_kills_retiring_sidecars() {
+        use std::os::unix::process::CommandExt;
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let state = TranslateState::default();
+        state.retiring.lock().unwrap().insert(child.id());
+        state.shutdown().await;
+        let status = child.wait().unwrap();
+        assert!(!status.success(), "killed, not finished");
+        assert!(state.retiring.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

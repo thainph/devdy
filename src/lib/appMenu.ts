@@ -135,9 +135,9 @@ function buildSpec(state: MenuState): MenuSpec {
         kind: 'item',
         id: `go.${route.path}`,
         label: t(route.labelKey),
-        // ⌘1…⌘9 for the first nine destinations; the rest stay click-only rather
-        // than inventing awkward two-key bindings.
-        accelerator: index < 9 ? `CmdOrCtrl+${index + 1}` : undefined,
+        // ⌘1…⌘9 are pinned per destination (NavRoute.shortcut); the rest stay
+        // click-only rather than inventing awkward two-key bindings.
+        accelerator: route.shortcut ? `CmdOrCtrl+${route.shortcut}` : undefined,
       },
     ]),
   })

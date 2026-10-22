@@ -23,6 +23,7 @@ pub mod models;
 pub mod notes;
 pub mod notifications;
 pub mod projects;
+pub mod pulse;
 pub mod rules;
 pub mod runs;
 pub mod sessions;
