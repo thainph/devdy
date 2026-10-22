@@ -415,6 +415,10 @@ impl Job<'_> {
             &self.ctx.auth_cache,
         )
         .await?;
+        // Remember whose token this is (Project Pulse "ball in my court").
+        if let Err(e) = store::upsert_identity(self.db(), &auth).await {
+            tracing::warn!(event = "slack_identity_upsert_failed", error = %e);
+        }
 
         // 2. Channel name + DM guard.
         let channel_name = self.channel_info(&client, &auth, &link.channel_id).await?;
