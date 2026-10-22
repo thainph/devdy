@@ -1,0 +1,133 @@
+{
+  "title": "Pulse",
+  "add": {
+    "button": "Watch",
+    "placeholder": "Paste a Slack thread link, a GitHub issue link or owner/repo#number",
+    "submit": "Watch",
+    "project": "Project",
+    "done": "Now watching this source"
+  },
+  "refreshAll": "Refresh",
+  "refreshAllHint": "Fetch new data and re-summarise every watched source",
+  "refreshing": "Refreshing {done}/{total}",
+  "updatedAt": "Updated at {time}",
+  "search": "Search projects…",
+  "attentionOnly": "Needs attention only",
+  "health": {
+    "red": "Urgent",
+    "yellow": "Needs attention",
+    "green": "On track",
+    "done": "Done",
+    "pending": "Waiting for summary",
+    "none": "No open sources"
+  },
+  "card": {
+    "nextMilestone": "Next: {title} — {date}",
+    "noMilestone": "No milestone",
+    "untitled": "(untitled)",
+    "refresh": "Refresh this project",
+    "more": "+{n} more",
+    "finished": "Done ({n})",
+    "noWatches": "No open watched sources in this project"
+  },
+  "due": {
+    "today": "today",
+    "left": "{n} days left",
+    "late": "{n} days late",
+    "lateToday": "late today"
+  },
+  "counts": {
+    "needsMe": "Needs me {n}",
+    "waitingCustomer": "Waiting on customer {n}",
+    "overdue": "Overdue {n}",
+    "watching": "Watching {n}"
+  },
+  "ball": {
+    "me": "You need to reply · {age}",
+    "customer": "Waiting on customer · {age}",
+    "team": "Waiting on team · {age}",
+    "meNoAge": "You need to reply",
+    "customerNoAge": "Waiting on customer",
+    "teamNoAge": "Waiting on team"
+  },
+  "age": {
+    "h": "{n}h",
+    "d": "{n}d"
+  },
+  "status": {
+    "on_track": "On track",
+    "at_risk": "At risk",
+    "blocked": "Blocked",
+    "waiting": "Waiting",
+    "done": "Done"
+  },
+  "row": {
+    "noDigest": "Not summarised yet",
+    "resolving": "Fetching…",
+    "error": "error",
+    "slack": "Slack thread",
+    "github": "GitHub issue"
+  },
+  "drawer": {
+    "summary": "Summary",
+    "nextAction": "Next action",
+    "deadlines": "Agreed deadlines",
+    "decisions": "Decisions",
+    "openQuestions": "Open questions",
+    "askedByMe": "Asked by you",
+    "askedByOther": "Asked by others",
+    "evidenceHint": "Open the source",
+    "none": "None",
+    "summarizedAt": "Summarised at {time}",
+    "checkedAt": "Checked at {time}",
+    "notSummarized": "No summary yet — use Refresh this source.",
+    "truncated": "The source is long; the AI read the start and the newest messages only.",
+    "openSource": "Open source",
+    "refreshSource": "Refresh this source",
+    "moveProject": "Move to project",
+    "unwatch": "Unwatch",
+    "lastError": "Last error",
+    "model": "Model"
+  },
+  "empty": {
+    "title": "Nothing is watched yet.",
+    "hint": "Click \"Watch\" on a Slack thread / issue, or tell the AI: watch thread <link>.",
+    "filtered": "No project matches the filters."
+  },
+  "loadError": "Could not load Pulse",
+  "retry": "Retry",
+  "watch": {
+    "watch": "Watch",
+    "watching": "Watching",
+    "watchHint": "Watch in Pulse",
+    "watchingHint": "Watched in Pulse — click to unwatch",
+    "inPulse": "Watch in Pulse",
+    "unwatchInPulse": "Unwatch in Pulse",
+    "watchIssue": "Watch issue",
+    "unwatchIssue": "Watching this issue — click to unwatch",
+    "confirmTitle": "Unwatch",
+    "confirm": "Stop watching this source?",
+    "confirmButton": "Unwatch",
+    "chooseProjectTitle": "Choose a project",
+    "chooseProjectHint": "This thread has no project. Choose one to watch it in (the thread is linked to it too).",
+    "watched": "Watching in Pulse",
+    "unwatched": "Unwatched",
+    "moved": "Moved to {project}",
+    "needProject": "Choose a project first"
+  },
+  "errors": {
+    "invalid_source": "Only Slack thread or GitHub issue links are supported",
+    "project_required": "Choose a project for this source",
+    "project_not_found": "Project not found",
+    "project_ambiguous": "Several projects have this name; use the id",
+    "repo_ambiguous": "Write it as owner/repo#number",
+    "watched_in_other_project": "This source is watched in project {project}",
+    "github_not_found": "Cannot access the issue",
+    "github_auth": "Cannot access the issue",
+    "github_fetch_failed": "Could not fetch the issue from GitHub",
+    "slack_fetch_failed": "Could not fetch the Slack thread",
+    "summarize_failed": "The AI could not summarise — keeping the previous summary",
+    "not_found": "Watched source not found",
+    "unknown": "Error: {detail}"
+  }
+}

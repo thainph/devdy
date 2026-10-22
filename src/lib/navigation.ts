@@ -9,6 +9,7 @@ import {
   GanttChartSquare,
   BarChart3,
   CalendarDays,
+  Activity,
   Settings,
   Info,
 } from 'lucide-vue-next'
@@ -44,6 +45,7 @@ export const NAV_ROUTES: NavRoute[] = [
   { path: '/pr-inbox', labelKey: 'nav.prInbox', icon: GitPullRequest, group: 'work', openWindow: openPrInboxWindow },
   { path: '/calendar', labelKey: 'nav.calendar', icon: CalendarDays, group: 'work' },
   { path: '/gantt', labelKey: 'nav.gantt', icon: GanttChartSquare, group: 'work' },
+  { path: '/pulse', labelKey: 'nav.pulse', icon: Activity, group: 'work' },
   { path: '/skills', labelKey: 'nav.skills', icon: Puzzle, group: 'config' },
   { path: '/rules', labelKey: 'nav.rules', icon: ScrollText, group: 'config' },
   { path: '/mcp', labelKey: 'nav.mcp', icon: Server, group: 'config' },
