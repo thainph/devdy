@@ -6,6 +6,7 @@ use super::store::{self, WatchRequest};
 use super::*;
 use sqlx::sqlite::SqlitePoolOptions;
 use std::sync::Mutex;
+use uuid::Uuid;
 
 async fn mem_db() -> Db {
     let db = SqlitePoolOptions::new()
@@ -561,4 +562,150 @@ async fn slack_capture_adds_missing_threads_and_moves_existing_ones() {
         .unwrap();
     assert_eq!(n, 1);
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Two pools on one file DB stand in for the app and the MCP sidecar.
+async fn file_db_pair() -> (Db, Db, std::path::PathBuf) {
+    let path = std::env::temp_dir().join(format!("devdy-pulse-race-{}.db", Uuid::new_v4()));
+    let url = format!("sqlite://{}?mode=rwc", path.display());
+    let a = SqlitePoolOptions::new()
+        .max_connections(4)
+        .connect(&url)
+        .await
+        .unwrap();
+    sqlx::migrate!("./migrations").run(&a).await.unwrap();
+    sqlx::query(
+        "INSERT INTO projects (id, name, path, created_at) VALUES \
+         ('p1', 'Alpha', '/tmp/p1', '2026-01-01'), ('p2', 'Beta', '/tmp/p2', '2026-01-01')",
+    )
+    .execute(&a)
+    .await
+    .unwrap();
+    let b = SqlitePoolOptions::new()
+        .max_connections(4)
+        .connect(&url)
+        .await
+        .unwrap();
+    (a, b, path)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_watches_from_two_connections_are_serialised() {
+    let (a, b, path) = file_db_pair().await;
+    for n in 1..=20u64 {
+        let s = parse_source(&format!("org/app#{n}"), &[]).unwrap();
+        let (sa, sb) = (s.clone(), s.clone());
+        let (a2, b2) = (a.clone(), b.clone());
+        // Different projects, no move: exactly one wins, the other is refused.
+        let ta = tokio::spawn(async move { store::watch(&a2, req("p1", &sa, false)).await });
+        let tb = tokio::spawn(async move { store::watch(&b2, req("p2", &sb, false)).await });
+        let (ra, rb) = (ta.await.unwrap(), tb.await.unwrap());
+        let ok = [&ra, &rb].iter().filter(|r| r.is_ok()).count();
+        assert_eq!(ok, 1, "#{n}: {ra:?} / {rb:?}");
+        let refused = [&ra, &rb]
+            .into_iter()
+            .find_map(|r| r.as_ref().err())
+            .unwrap();
+        assert_eq!(refused.code, "watched_in_other_project");
+
+        // Same project from both sides: one row, one `already_watching`.
+        let s = parse_source(&format!("org/api#{n}"), &[]).unwrap();
+        let (sa, sb) = (s.clone(), s.clone());
+        let (a2, b2) = (a.clone(), b.clone());
+        let ta = tokio::spawn(async move { store::watch(&a2, req("p1", &sa, false)).await });
+        let tb = tokio::spawn(async move { store::watch(&b2, req("p1", &sb, false)).await });
+        let (ra, rb) = (ta.await.unwrap().unwrap(), tb.await.unwrap().unwrap());
+        assert_eq!(ra.watch.id, rb.watch.id);
+        assert!(ra.already_watching ^ rb.already_watching, "#{n}");
+    }
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pulse_watches")
+        .fetch_one(&a)
+        .await
+        .unwrap();
+    assert_eq!(rows, 40);
+
+    // Concurrent movers: both serialise; the row ends in one of the targets, active.
+    let s = parse_source("org/app#1", &[]).unwrap();
+    let w = store::find_by_source(&a, "github_issue", &s.source_ref)
+        .await
+        .unwrap()
+        .unwrap();
+    let (a2, b2, id1, id2) = (a.clone(), b.clone(), w.id.clone(), w.id.clone());
+    let ta = tokio::spawn(async move { store::move_watch(&a2, &id1, "p1").await });
+    let tb = tokio::spawn(async move { store::move_watch(&b2, &id2, "p2").await });
+    let (ra, rb) = (ta.await.unwrap().unwrap(), tb.await.unwrap().unwrap());
+    let end = store::get(&a, &w.id).await.unwrap().unwrap();
+    assert!(end.project_id == ra.project_id || end.project_id == rb.project_id);
+    assert!(end.active);
+    a.close().await;
+    b.close().await;
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn poller_tick_respects_the_gate_and_recovers_leftovers() {
+    let db = mem_db().await;
+    let state = PulseState::new(
+        db.clone(),
+        Arc::new(FakeSlack::default()),
+        Arc::new(RecEvents::default()),
+    );
+    // Left over from before a restart: a pending watch and an open request.
+    let w = store::watch(&db, req("p1", &src(ISSUE), false))
+        .await
+        .unwrap()
+        .watch;
+    sqlx::query(
+        "INSERT INTO pulse_requests (id, kind, watch_id, created_at) \
+         VALUES ('q1', 'resolve', ?, '2026-01-01')",
+    )
+    .bind(&w.id)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    // Gate closed (no running session, screen closed): nothing happens.
+    assert!(!state.tick(false).await);
+    assert_eq!(
+        store::get(&db, &w.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .resolve_status,
+        "pending"
+    );
+
+    // A session starts running → the next tick processes the leftovers.
+    sqlx::query(
+        "INSERT INTO runs (id, project_id, type, status, engine, created_at) \
+         VALUES ('r1', 'p1', 'session', 'running', 'claude', '2026-01-01')",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    assert!(state.tick(false).await);
+    assert_eq!(
+        store::get(&db, &w.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .resolve_status,
+        "ready"
+    );
+    let open: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pulse_requests WHERE done_at IS NULL")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(open, 0);
+
+    // Screen open or a kick also opens the gate.
+    sqlx::query("UPDATE runs SET status = 'done'")
+        .execute(&db)
+        .await
+        .unwrap();
+    assert!(!state.tick(false).await);
+    state.set_screen_open(true);
+    assert!(state.tick(false).await);
+    state.set_screen_open(false);
+    assert!(state.tick(true).await);
 }

@@ -6,7 +6,7 @@
 // network here. The watch rules mirror src-tauri/src/pulse/store.rs.
 
 import { randomUUID } from 'node:crypto';
-import { db, tx, nowRfc3339 } from './store.mjs';
+import { db, nowRfc3339 } from './store.mjs';
 import { parseSource, PulseError } from './pulse-source.mjs';
 
 export { PulseError };
@@ -17,6 +17,47 @@ const WATCH_COLS = `w.id, w.project_id, p.name AS project_name, w.source_type, w
 const WATCH_FROM = 'pulse_watches w JOIN projects p ON p.id = w.project_id';
 const DIGEST_COLS = `d.id, d.watch_id, d.content_hash, d.status, d.ball, d.ball_since, d.summary, d.next_action,
   d.deadlines, d.decisions, d.open_questions, d.truncated, d.model, d.created_at`;
+
+const BUSY_ATTEMPTS = 5;
+const isBusy = (e) => /SQLITE_BUSY|database is locked/i.test(String(e?.message ?? e)) || e?.errcode === 5;
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+/**
+ * Run `fn` in a `BEGIN IMMEDIATE` transaction: the write lock is taken up
+ * front, so the read-check-write of the watch rules cannot interleave with the
+ * app or another session. Retries with backoff while the database stays busy
+ * past busy_timeout.
+ */
+function writeTx(fn) {
+  for (let attempt = 1; ; attempt += 1) {
+    const d = db();
+    try {
+      d.exec('BEGIN IMMEDIATE');
+    } catch (e) {
+      if (isBusy(e) && attempt < BUSY_ATTEMPTS) {
+        sleepSync(50 << attempt);
+        continue;
+      }
+      throw e;
+    }
+    try {
+      const out = fn(d);
+      d.exec('COMMIT');
+      return out;
+    } catch (e) {
+      try {
+        d.exec('ROLLBACK');
+      } catch {
+        /* the transaction is already gone — surface the original error */
+      }
+      if (isBusy(e) && attempt < BUSY_ATTEMPTS) {
+        sleepSync(50 << attempt);
+        continue;
+      }
+      throw e;
+    }
+  }
+}
 
 const parseList = (s) => {
   try {
@@ -108,18 +149,8 @@ function addRequest(d, kind, { watchId = null, projectId = null } = {}) {
  * - other project, inactive → taken over by this project.
  * Every new / re-activated / moved watch gets a `resolve` request.
  */
-export function watchSource(args, retried = false) {
-  try {
-    return watchOnce(args);
-  } catch (e) {
-    // Lost an insert race with the app / another session: apply the rules to its row.
-    if (!retried && /UNIQUE constraint failed: pulse_watches/.test(String(e?.message))) return watchSource(args, true);
-    throw e;
-  }
-}
-
-function watchOnce({ source, projectId, move = false, runId = null }) {
-  return tx((d) => {
+export function watchSource({ source, projectId, move = false, runId = null }) {
+  return writeTx((d) => {
     const w = findBySource(source.source_type, source.source_ref);
     if (w) {
       if (w.project_id === projectId) {
@@ -127,9 +158,13 @@ function watchOnce({ source, projectId, move = false, runId = null }) {
       } else if (w.active && !move) {
         throw new PulseError('watched_in_other_project', `this source is already watched in project ${w.project_name}`);
       }
-      d.prepare(
-        "UPDATE pulse_watches SET project_id = ?, active = 1, resolve_status = 'pending', updated_at = ? WHERE id = ?",
-      ).run(projectId, nowRfc3339(), w.id);
+      const r = d
+        .prepare(
+          `UPDATE pulse_watches SET project_id = ?, active = 1, resolve_status = 'pending', updated_at = ?
+           WHERE id = ? AND project_id = ? AND active = ?`,
+        )
+        .run(projectId, nowRfc3339(), w.id, w.project_id, w.active ? 1 : 0);
+      if (!r.changes) throw new Error('watch changed concurrently; try again');
       addRequest(d, 'resolve', { watchId: w.id });
       return { watch: getWatch(w.id), already_watching: false };
     }
@@ -183,7 +218,7 @@ export function listWatches(projectId) {
 
 /** Queue a refresh for one project (or everything when null); returns the request id. */
 export function requestRefresh(projectId) {
-  return tx((d) => addRequest(d, 'refresh', { projectId }));
+  return writeTx((d) => addRequest(d, 'refresh', { projectId }));
 }
 
 export function requestDone(id) {

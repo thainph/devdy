@@ -238,6 +238,36 @@ const req2 = db.prepare("SELECT * FROM pulse_requests WHERE kind = 'refresh' ORD
 check(!out.fresh.text.includes('stale') && out.fresh.text.includes('## Beta') && Date.now() - started < 10_000, 'pulse_status refresh: answers once the app marks the request done');
 check(req2?.project_id === null && req2.done_at === T0, 'pulse_status refresh all=true: request without project');
 
+// ---- 6. Two sessions racing on the same sources ------------------------------------------
+
+const RACE = Array.from({ length: 30 }, (_, i) => `org/race#${i + 1}`);
+const [ra, rb] = await Promise.all([
+  run([['w', 'pulse_watch', { urls: RACE, project: 'proj-1' }]]),
+  run([['w', 'pulse_watch', { urls: RACE, project: 'proj-2' }]]),
+]);
+const resA = json(ra.w) ?? [];
+const resB = json(rb.w) ?? [];
+let raceOk = resA.length === RACE.length && resB.length === RACE.length;
+for (let i = 0; raceOk && i < RACE.length; i += 1) {
+  const wins = [resA[i], resB[i]].filter((r) => r.id && !r.error).length;
+  const refused = [resA[i], resB[i]].filter((r) => r.error === 'watched_in_other_project').length;
+  raceOk = wins === 1 && refused === 1;
+}
+check(raceOk, 'two processes, two projects: each source won by exactly one, the other refused');
+check(count("SELECT COUNT(*) AS n FROM pulse_watches WHERE source_ref LIKE 'org/race#%'") === RACE.length, 'race: one row per source');
+const SAME = Array.from({ length: 30 }, (_, i) => `org/same#${i + 1}`);
+const [sa, sb] = await Promise.all([
+  run([['w', 'pulse_watch', { urls: SAME, project: 'proj-1' }]]),
+  run([['w', 'pulse_watch', { urls: SAME, project: 'proj-1' }]]),
+]);
+const sameA = json(sa.w) ?? [];
+const sameB = json(sb.w) ?? [];
+check(
+  sameA.length === SAME.length &&
+    sameA.every((r, i) => r.id && r.id === sameB[i]?.id && r.already_watching !== sameB[i].already_watching),
+  'two processes, same project: one creates, the other gets already_watching',
+);
+
 db.close();
 rmSync(appData, { recursive: true, force: true });
 if (failures.length) {
