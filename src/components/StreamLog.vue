@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import {
   ChevronRight, Wrench, Sparkles, CheckCircle2, XCircle, Cpu, Brain, AlertTriangle, Info,
   Terminal, FilePen, FilePlus2, FileText, Search, Globe, ListTodo, User, Archive, Copy, Check,
-  Bot, MessageCircleQuestion, Circle, CircleDot, ClipboardList, Server,
+  Bot, MessageCircleQuestion, Circle, CircleDot, ClipboardList, Server, BookOpen, BellRing,
 } from 'lucide-vue-next'
 import type { StreamEntry } from '@/lib/streamEvents'
 import { vMermaid } from '@/lib/mermaid'
@@ -784,6 +784,32 @@ function toolResult(e: StreamEntry): unknown {
           <span v-if="entry.args" class="font-mono text-foreground/55">{{ entry.args }}</span>
         </div>
         <div v-if="entry.stdout" class="text-[11px] font-mono text-foreground/45">{{ entry.stdout }}</div>
+      </div>
+
+      <!-- Harness-injected message (skill body, conductor nudge, meta) — a slim
+           marker the user can expand; it isn't something they typed. -->
+      <div v-else-if="entry.kind === 'injected'" class="my-1.5 flex flex-col items-start gap-1">
+        <button
+          class="inline-flex items-center gap-1.5 rounded-full bg-muted/60 border border-border px-2.5 py-1 text-[11px] text-foreground/60 hover:text-foreground/80 transition-colors"
+          :title="expandedCompacts.has(i) ? t('streamLog.hideInjected') : t('streamLog.showInjected')"
+          @click="toggleCompact(i)"
+        >
+          <BookOpen v-if="entry.source === 'skill'" class="h-3 w-3" :stroke-width="1.75" />
+          <BellRing v-else-if="entry.source === 'session'" class="h-3 w-3" :stroke-width="1.75" />
+          <Info v-else class="h-3 w-3" :stroke-width="1.75" />
+          <span>{{ t(`streamLog.injected.${entry.source}`) }}</span>
+          <span v-if="entry.label" class="font-mono font-medium text-foreground/75">{{ entry.label }}</span>
+          <ChevronRight class="h-3 w-3 transition-transform" :class="expandedCompacts.has(i) ? 'rotate-90' : ''" :stroke-width="2" />
+        </button>
+        <div
+          v-if="expandedCompacts.has(i)"
+          v-file-links
+          v-mermaid
+          v-copy-code
+          v-html="renderText(entry.text)"
+          class="markdown-output w-full mt-1 text-xs leading-relaxed text-foreground/70 bg-muted/40 border border-border rounded-lg px-3 py-2.5"
+          @click="onProseClick"
+        />
       </div>
 
       <!-- Assistant text — always rendered in full, never collapsed.
