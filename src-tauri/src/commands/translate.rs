@@ -392,6 +392,27 @@ fn build_prompt(source: &str, target_name: &str, style: &str) -> String {
     )
 }
 
+/// Options that open the warm claude session. Every caller of this engine (UI
+/// translate, Inbox API, Slack thread translate, Project Pulse digests) feeds it
+/// UNTRUSTED text, so the session is tool-less: `noTools` makes the sidecar
+/// strip every tool/MCP source and deny any call — a prompt injection in a Slack
+/// message or GitHub comment must not reach Bash/Write/WebFetch. Never pair it
+/// with `bypassPermissions`, which would auto-approve before any check runs.
+fn session_options(model: &str, cwd: &str) -> serde_json::Value {
+    let model = match model.trim() {
+        "" => "haiku",
+        m => m,
+    };
+    serde_json::json!({
+        "cwd": cwd,
+        "noTools": true,
+        "permissionMode": "dontAsk",
+        "allowedTools": [],
+        "includePartialMessages": true,
+        "model": model,
+    })
+}
+
 /// Spawn a fresh sidecar for the chosen engine and start its drain task. The
 /// returned handle has `started = false`: the caller sends the first prompt
 /// (with session options) to actually open the claude query.
@@ -414,7 +435,10 @@ async fn spawn_warm(
         if s.codex_path != "codex" && !s.codex_path.trim().is_empty() {
             cmd.env("DEVDY_CODEX_PATH", &s.codex_path);
         }
-        cmd.env("DEVDY_PERMISSION_MODE", "bypassPermissions");
+        // Tool-less like the claude session (see `session_options`): read-only
+        // sandbox, no exec/MCP, every approval declined.
+        cmd.env("DEVDY_CODEX_NO_TOOLS", "1");
+        cmd.env("DEVDY_PERMISSION_MODE", "plan");
         if !s.model.trim().is_empty() {
             cmd.env("DEVDY_CODEX_MODEL", s.model.trim());
         }
@@ -778,18 +802,7 @@ async fn submit_with(
 
     // First prompt carries the session options; follow-ups are bare user turns.
     let line = if !w.started && !is_codex {
-        let m = if settings.model.trim().is_empty() {
-            "haiku".to_string()
-        } else {
-            settings.model.trim().to_string()
-        };
-        let options = serde_json::json!({
-            "cwd": std::env::temp_dir().to_string_lossy(),
-            "permissionMode": "bypassPermissions",
-            "allowedTools": [],
-            "includePartialMessages": true,
-            "model": m,
-        });
+        let options = session_options(&settings.model, &std::env::temp_dir().to_string_lossy());
         serde_json::json!({ "type": "prompt", "text": prompt, "options": options }).to_string()
     } else {
         serde_json::json!({ "type": "prompt", "text": prompt }).to_string()
@@ -824,6 +837,20 @@ pub async fn cancel_translate(_state: State<'_, TranslateState>) -> Result<(), S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_options_are_tool_less() {
+        let o = session_options("  ", "/tmp");
+        assert_eq!(o["noTools"], true);
+        assert_eq!(o["permissionMode"], "dontAsk");
+        assert_eq!(o["allowedTools"], serde_json::json!([]));
+        assert!(o.get("mcpServers").is_none());
+        assert_eq!(o["model"], "haiku");
+        assert_eq!(o["cwd"], "/tmp");
+        assert_eq!(session_options(" sonnet ", "/tmp")["model"], "sonnet");
+        // Never auto-approve: bypass would skip every permission check.
+        assert!(!o.to_string().contains("bypassPermissions"));
+    }
 
     fn delta(text: &str) -> String {
         serde_json::json!({

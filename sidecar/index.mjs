@@ -7,7 +7,8 @@
 //
 // Protocol — IN (stdin, one JSON object per line):
 //   { "type": "prompt", "text": "...", "options": { model?, cwd?, resume?,
-//        permissionMode?, allowedTools?, includePartialMessages? } }
+//        permissionMode?, allowedTools?, includePartialMessages?, noTools? } }
+//     noTools: true starts a session with NO tools at all (see applyNoTools).
 //     First prompt starts the session; later prompts are follow-up user turns.
 //   { "type": "permission_response", "requestId": "...", "decision": "allow"|"deny",
 //        "reason"?: "...", "always"?: bool }
@@ -198,6 +199,28 @@ function cancelPermission(requestId, reason, level, text) {
   resolve({ decision: 'deny', reason })
   send({ type: '_devdy_permission_cancelled', requestId, level, text })
 }
+const NO_TOOLS_REASON = 'This session has no tool access.'
+
+// Lock a session's options down to text-only: no built-in tools, no MCP servers
+// (passed or from settings/plugins), no skills, and any tool call that still
+// reaches the permission layer is denied — never auto-approved. Used for the
+// translation engine, whose prompts carry UNTRUSTED text (Slack messages, GitHub
+// comments) that could otherwise prompt-inject a Bash/Write/WebFetch call.
+// Overrides whatever the caller or env fallbacks set.
+function applyNoTools(options) {
+  options.tools = []
+  options.allowedTools = []
+  options.mcpServers = {}
+  options.strictMcpConfig = true
+  options.skills = []
+  // 'dontAsk' denies anything not pre-approved instead of prompting; the
+  // callback is a second wall in case a call still asks.
+  options.permissionMode = 'dontAsk'
+  options.canUseTool = async () => ({ behavior: 'deny', message: NO_TOOLS_REASON })
+  delete options.allowDangerouslySkipPermissions
+  return options
+}
+
 let currentQuery = null
 let started = false
 let usageCaptureInFlight = false
@@ -328,6 +351,7 @@ function startQuery(firstText, opts = {}, firstImages) {
       append: String(appendSystemPrompt),
     }
   }
+  if (opts.noTools === true) applyNoTools(options)
   // 'warning' mode additionally polls /usage on an interval WHILE a run streams
   // (used when already near the plan limit). In every mode we still capture once
   // at `init` and once at `result` — piggybacking on this run's already-open
