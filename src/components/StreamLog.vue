@@ -639,7 +639,48 @@ onMounted(() => {
   widthObserver.observe(el)
 })
 
+// ── Typewriter smoothing ────────────────────────────────────────────────────
+// Partial deltas land in bursts (a frame's flush can carry several), so the text
+// entry being streamed reveals its text at an adaptive pace instead of in
+// chunks: each frame shows a share of what is still hidden, so it never trails
+// far behind. Settled entries always render in full.
+const streamingTextIndex = computed(() => {
+  const list = props.entries
+  for (let i = list.length - 1; i >= Math.max(0, list.length - 50); i--) {
+    const e = list[i]
+    if (e.kind === 'text' && e.streaming) return i
+  }
+  return -1
+})
+const streamingTextLength = computed(() => {
+  const e = props.entries[streamingTextIndex.value]
+  return e?.kind === 'text' ? e.text.length : 0
+})
+const shownLength = ref(0)
+const reduceMotion = typeof window !== 'undefined'
+  && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+let smoothFrame = 0
+
+function revealTick() {
+  smoothFrame = 0
+  const hidden = streamingTextLength.value - shownLength.value
+  if (hidden <= 0) return
+  shownLength.value += Math.max(2, Math.ceil(hidden / 8))
+  if (shownLength.value < streamingTextLength.value) smoothFrame = requestAnimationFrame(revealTick)
+}
+
+watch(streamingTextIndex, () => { shownLength.value = 0 })
+watch(streamingTextLength, (len) => {
+  if (reduceMotion || len < shownLength.value) shownLength.value = len
+  else if (!smoothFrame) smoothFrame = requestAnimationFrame(revealTick)
+})
+
+function displayText(e: { text: string }, i: number): string {
+  return i === streamingTextIndex.value ? e.text.slice(0, shownLength.value) : e.text
+}
+
 onBeforeUnmount(() => {
+  cancelAnimationFrame(smoothFrame)
   widthObserver?.disconnect()
   widthObserver = null
   clearTimeout(invalidateTimer)
@@ -682,7 +723,7 @@ function toolResult(e: StreamEntry): unknown {
         v-entry-size
         :data-user-turn="entry.kind === 'user' ? i : undefined"
         :class="{ 'stream-entry': running && i !== entries.length - 1 }"
-        v-memo="[entry, toolResult(entry), expanded[i], expandedCompacts.has(i), copiedCmd[i], expandedMessageIndices.has(i), running && i === entries.length - 1]"
+        v-memo="[entry, toolResult(entry), expanded[i], expandedCompacts.has(i), copiedCmd[i], expandedMessageIndices.has(i), running && i === entries.length - 1, i === streamingTextIndex ? shownLength : -1]"
       >
       <!-- System init banner -->
       <div
@@ -822,7 +863,7 @@ function toolResult(e: StreamEntry): unknown {
           v-file-links
           v-mermaid
           v-copy-code
-          v-html="renderText(entry.text, running && i === entries.length - 1)"
+          v-html="renderText(displayText(entry, i), (running && i === entries.length - 1) || !!entry.streaming)"
           class="markdown-output text-sm leading-relaxed text-foreground"
           @click="onProseClick"
         />

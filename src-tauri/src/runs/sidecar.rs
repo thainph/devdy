@@ -814,7 +814,14 @@ pub async fn drain_sidecar(
                             }
                             // ---- raw stream-json SDK message --------------------
                             (Some(v), _) => {
-                                append_log(&log_buf, &format!("{}\n", l)).await;
+                                // Partial-message deltas are UI-only: the complete
+                                // `assistant` message that follows carries the same
+                                // text, so persisting (or forwarding) every delta would
+                                // only bloat the log and the remote stream.
+                                let is_delta = is_partial_delta(v);
+                                if !is_delta {
+                                    append_log(&log_buf, &format!("{}\n", l)).await;
+                                }
                                 capture_session_id(&session_id_arc, &db_pool, &run_id, v).await;
                                 // Track the active model from the init event so it
                                 // can be stamped onto the usage row at turn end.
@@ -970,7 +977,7 @@ pub async fn drain_sidecar(
                                         }
                                     }
                                 }
-                                if let Some(bus) = &remote_bus {
+                                if let Some(bus) = remote_bus.as_ref().filter(|_| !is_delta) {
                                     bus.publish(crate::remote::RemoteRunEvent::Event {
                                         run_id: run_id.clone(),
                                         event: v.clone(),
@@ -1242,6 +1249,11 @@ fn is_main_turn_activity(value: &Value) -> bool {
         Some("system") => value.get("subtype").and_then(|s| s.as_str()) == Some("init"),
         _ => false,
     }
+}
+
+/// Is this raw SDK message a partial-message delta (`includePartialMessages`)?
+fn is_partial_delta(value: &Value) -> bool {
+    value.get("type").and_then(|t| t.as_str()) == Some("stream_event")
 }
 
 /// Does this raw SDK stream message mean a (wake-up) turn is actively running?
@@ -2125,6 +2137,13 @@ mod turn_end_tests {
     // activity disarms it (the wake turn's own `result` closes instead), and the
     // timer closes only if the session stays idle. `is_wake_activity` is the disarm
     // signal — it must fire for turn content but NOT for the drain event itself.
+    #[test]
+    fn only_stream_events_are_partial_deltas() {
+        assert!(is_partial_delta(&serde_json::json!({ "type": "stream_event" })));
+        assert!(!is_partial_delta(&serde_json::json!({ "type": "assistant" })));
+        assert!(!is_partial_delta(&serde_json::json!({ "type": "result" })));
+    }
+
     #[test]
     fn wake_activity_disarms_but_drain_signal_does_not() {
         // Wake-turn content → disarm.
