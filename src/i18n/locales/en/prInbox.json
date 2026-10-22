@@ -7,7 +7,6 @@
   "viewReview": "View review",
   "opening": "Opening…",
   "aiReview": "AI Review",
-  "notInDevdy": "Not in devdy yet",
   "addToDevdy": "Add to devdy",
   "partialFailTitle": "{count} account failed to load review requests | {count} accounts failed to load review requests",
   "partialFailBody": "some PRs may be missing. Try refreshing.",
@@ -74,9 +73,7 @@
   "detectedBot": "Marked as bot by GitHub",
   "openOnGitHub": "Open on GitHub",
   "moreActions": "More actions",
-  "stale": "Stale",
   "staleTitle": "No updates for more than {days} days",
-  "alsoRequested": "also:",
   "bulk": {
     "action": "AI review all ({count})",
     "progress": "Reviewing {done}/{total}…",
@@ -92,5 +89,12 @@
     "button": "Display",
     "hideBotsHint": "Collapse bot PRs into one summary row"
   },
-  "clearSearch": "Clear search"
+  "clearSearch": "Clear search",
+  "reviewAs": "Review as {account}",
+  "reviewAsMulti": "Review as {account} · also requested from {others}",
+  "labelsTitle": "Labels: {list}",
+  "reviewersTitle": "Also requested: {list}",
+  "window": {
+    "title": "PR Inbox"
+  }
 }

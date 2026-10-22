@@ -155,6 +155,10 @@ export const usePrInboxStore = defineStore('prInbox', () => {
   // read as "no PRs".
   const warnings = ref<PrInboxAccountError[]>([])
   const lastRefreshedAt = ref<string | null>(null)
+  // Epoch ms of the last refresh ATTEMPT (success or not) — what throttles
+  // automatic refreshes, so a failing one (rate limit, network, bad PAT)
+  // doesn't re-fire every search on each trigger.
+  const lastAttemptAt = ref(0)
   // Keys of PRs currently being turned into a review run (button disabled state).
   const reviewingKeys = ref<Set<string>>(new Set())
   const groupBy = ref<PrGroupBy>(loadGroupBy())
@@ -169,6 +173,7 @@ export const usePrInboxStore = defineStore('prInbox', () => {
 
   async function refresh() {
     loading.value = true
+    lastAttemptAt.value = Date.now()
     error.value = null
     try {
       const result = await invoke<PrInboxResult>('list_review_requested_prs')
@@ -255,7 +260,7 @@ export const usePrInboxStore = defineStore('prInbox', () => {
   }
 
   return {
-    items, loading, error, warnings, lastRefreshedAt, reviewingKeys,
+    items, loading, error, warnings, lastRefreshedAt, lastAttemptAt, reviewingKeys,
     groupBy, hideBots, collapsedGroups, filters, density, botLogins,
     refresh, setReviewing, linkRun, setGroupBy, setHideBots, setGroupCollapsed,
     setFilters, clearFilters, setDensity, setBotLogins, addBotLogin, removeBotLogin,

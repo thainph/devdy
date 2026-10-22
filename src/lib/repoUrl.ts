@@ -5,10 +5,12 @@
 // Supported shapes:
 //   https://github.com/owner/repo            → github
 //   https://github.com/owner/repo.git        → github
+//   https://github.com/owner/repo/pull/72    → github (sub-page path ignored)
 //   git@github.com:owner/repo.git            → github
 //   github.com/owner/repo                    → github
 //   owner/repo                               → github (shorthand)
 //   https://gitlab.com/group/sub/repo        → gitlab (nested groups kept in path)
+//   https://gitlab.com/group/repo/-/merge_requests/3 → gitlab (cut at "/-/")
 //   git@gitlab.example.com:group/repo.git    → gitlab (self-hosted by host name)
 
 export interface ParsedRepo {
@@ -89,28 +91,33 @@ export function parseRepoUrl(raw: string): ParsedRepo | null {
   // Normalise the path: drop query/hash, trailing slash and .git suffix.
   let path = split.path.split(/[?#]/)[0].replace(/\/+$/, '')
   path = path.replace(/\.git$/i, '')
-  const segments = path.split('/').filter(Boolean)
-  if (segments.length < 2) return null
+  let segments = path.split('/').filter(Boolean)
 
   const host = split.host
   const isGitlab = host.includes('gitlab')
-  const name = segments[segments.length - 1]
 
   if (isGitlab) {
+    // GitLab sub-pages live after a "-" segment (…/repo/-/merge_requests/1).
+    const dash = segments.indexOf('-')
+    if (dash !== -1) segments = segments.slice(0, dash)
+    if (segments.length < 2) return null
     return {
       provider: 'gitlab',
-      name,
+      name: segments[segments.length - 1],
       github_owner: '',
       github_repo: '',
       gitlab_project_path: segments.join('/'),
     }
   }
 
-  // Default to GitHub (github.com, unknown hosts, and bare shorthand).
+  // Default to GitHub (github.com, unknown hosts, and bare shorthand). Only the
+  // first two segments matter; the rest is a sub-page (pull/72, tree/main, …).
+  if (segments.length < 2) return null
+  const [owner, name] = segments
   return {
     provider: 'github',
     name,
-    github_owner: segments[0],
+    github_owner: owner,
     github_repo: name,
     gitlab_project_path: '',
   }
