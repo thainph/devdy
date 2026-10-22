@@ -25,6 +25,7 @@
 
 import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { writeSync } from 'node:fs'
 
 // A per-process nonce so permission `requestId`s are globally unique. Each Devdy
 // prompt spawns a FRESH sidecar (a new `codex app-server` whose JSON-RPC id
@@ -244,21 +245,26 @@ const NO_TOOLS_FEATURES = [
   'shell_tool', 'unified_exec', 'apps', 'plugins', 'remote_plugin', 'browser_use',
   'browser_use_external', 'in_app_browser', 'computer_use', 'multi_agent',
   'multi_agent_v2', 'image_generation', 'tool_suggest', 'skill_mcp_dependency_install',
-  'code_mode_host', 'in_app_local_automation', 'worktrees',
+  'code_mode_host', 'in_app_local_automation', 'worktrees', 'view_image', 'guardian_approval',
 ]
 
 // Names of the MCP servers configured in the user's codex config (they would
-// otherwise load into a tool-less session). Best-effort; empty on failure.
+// otherwise load into a tool-less session). Fail-closed: throws when the list
+// cannot be read, so the session never starts with servers left enabled.
 function configuredMcpServerNames() {
+  const r = spawnSync(CODEX_BIN, ['mcp', 'list', '--json'], {
+    cwd: CWD, encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'],
+  })
+  if (r.error) throw new Error(`codex mcp list failed: ${r.error.message}`)
+  if (r.status !== 0) throw new Error(`codex mcp list exited with ${r.status ?? r.signal}`)
+  let list
   try {
-    const r = spawnSync(CODEX_BIN, ['mcp', 'list', '--json'], {
-      cwd: CWD, encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'],
-    })
-    const list = JSON.parse(r.stdout || '[]')
-    return Array.isArray(list) ? list.map((s) => s?.name).filter((n) => typeof n === 'string' && n) : []
+    list = JSON.parse(r.stdout || '')
   } catch {
-    return []
+    throw new Error('codex mcp list printed no JSON')
   }
+  if (!Array.isArray(list)) throw new Error('codex mcp list did not return a list')
+  return list.map((s) => s?.name).filter((n) => typeof n === 'string' && n)
 }
 
 // `-c` overrides that strip every tool source from a tool-less session.
@@ -285,7 +291,18 @@ function noToolsEnv() {
 
 // ── codex app-server JSON-RPC plumbing ────────────────────────────────────
 // A tool-less session never gets the broker's MCP servers either.
-const mcpConfig = NO_TOOLS ? { args: noToolsArgs(), env: noToolsEnv() } : buildMcpConfig()
+let mcpConfig
+try {
+  mcpConfig = NO_TOOLS ? { args: noToolsArgs(), env: noToolsEnv() } : buildMcpConfig()
+} catch (e) {
+  // Never start a tool-less session we could not strip: report and stop.
+  // Written synchronously so the error is not lost on exit.
+  writeSync(1, JSON.stringify({
+    type: '_devdy_error',
+    error: `Refusing to start a tool-less codex session: ${e?.message || e}`,
+  }) + '\n')
+  process.exit(1)
+}
 const codex = spawn(CODEX_BIN, [...mcpConfig.args, 'app-server'], { cwd: CWD, stdio: ['pipe', 'pipe', 'pipe'], env: mcpConfig.env })
 let rpcId = 1
 const pending = new Map() // request id → resolve

@@ -69,6 +69,8 @@ const turnStart = entries.find((e) => e.method === 'turn/start').params
 assert.ok(argv.includes('features.shell_tool=false'), `shell tool not disabled: ${argv}`)
 assert.ok(argv.includes('features.unified_exec=false'))
 assert.ok(argv.includes('web_search="disabled"'))
+assert.ok(argv.includes('features.view_image=false'), 'view_image not disabled')
+assert.ok(argv.includes('features.guardian_approval=false'), 'guardian_approval not disabled')
 assert.ok(argv.includes('mcp_servers.user_server.enabled=false'), 'user MCP server not disabled')
 assert.ok(!argv.some((a) => a.includes('evil-mcp') || a.startsWith('mcp_servers.broker')), 'broker MCP leaked')
 assert.equal(argv[argv.length - 1], 'app-server')
