@@ -241,6 +241,14 @@ fn is_front(routing: &TurnRouting, turn: u64) -> bool {
 }
 
 impl TranslateState {
+    /// Kill the warm sidecar (if any) and its CLI process group — app exit,
+    /// so no warm session outlives the app.
+    pub async fn shutdown(&self) {
+        if let Some(w) = self.inner.lock().await.take() {
+            teardown(w);
+        }
+    }
+
     /// A caller gave up waiting for `turn` (timeout). If it is at the front of
     /// the current sidecar's queue it is considered hung: the sidecar is taken
     /// out of service and torn down right away (its drain then fails the turns
