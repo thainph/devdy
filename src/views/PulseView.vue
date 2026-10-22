@@ -42,10 +42,13 @@ onMounted(async () => {
   store.setScreenOpen(true)
   await store.start()
   // §3.3 exception: a source that was never summarised is summarised on open
-  // (pending ones are still being resolved, which summarises them anyway).
+  // Pending ones are still being resolved (which summarises them anyway);
+  // failed ones wait for an explicit Refresh instead of retrying on every open.
   for (const p of store.projects) {
     for (const w of p.watches) {
-      if (!w.digest && w.resolveStatus !== 'pending') void store.refresh({ watchId: w.id }).catch(() => {})
+      if (!w.digest && w.resolveStatus === 'ready' && !w.lastError) {
+        void store.refresh({ watchId: w.id }).catch(() => {})
+      }
     }
   }
 })

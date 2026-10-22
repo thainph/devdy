@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@/lib/tauri'
 import {
   redProjectCount,
@@ -16,6 +16,20 @@ import {
  * `pulse:changed`; `pulse:refresh-progress` drives the "Refreshing 4/12" chip.
  * Opening the screen never refreshes sources (G2) — only the Refresh buttons do.
  */
+const RELOAD_EVERY_MS = 5 * 60_000
+
+/** Newest `checkedAt` across all watches (ms), or null. */
+function lastChecked(projects: ProjectPulse[]): number | null {
+  let best: number | null = null
+  for (const p of projects) {
+    for (const w of p.watches) {
+      const t = w.checkedAt ? Date.parse(w.checkedAt) : NaN
+      if (Number.isFinite(t) && (best == null || t > best)) best = t
+    }
+  }
+  return best
+}
+
 export const usePulseStore = defineStore('pulse', () => {
   const projects = ref<ProjectPulse[]>([])
   const loading = ref(false)
@@ -28,20 +42,26 @@ export const usePulseStore = defineStore('pulse', () => {
   const redCount = computed(() => redProjectCount(projects.value))
   const watched = computed(() => watchIndex(projects.value))
 
-  let unlisten: UnlistenFn[] = []
-  let started = false
+  let starting: Promise<void> | null = null
   let reloadTimer: ReturnType<typeof setTimeout> | null = null
+  /** Sequence of `load()` calls: an older response never overwrites a newer one. */
+  let loadSeq = 0
 
   async function load() {
+    const seq = ++loadSeq
     loading.value = true
     try {
-      projects.value = await invoke<ProjectPulse[]>('pulse_overview', { projectIds: null })
+      const data = await invoke<ProjectPulse[]>('pulse_overview', { projectIds: null })
+      if (seq !== loadSeq) return
+      projects.value = data
       error.value = null
       loaded.value = true
+      // "Updated at" starts from the newest check on record.
+      if (updatedAt.value == null) updatedAt.value = lastChecked(data)
     } catch (e) {
-      error.value = String(e)
+      if (seq === loadSeq) error.value = String(e)
     } finally {
-      loading.value = false
+      if (seq === loadSeq) loading.value = false
     }
   }
 
@@ -54,11 +74,22 @@ export const usePulseStore = defineStore('pulse', () => {
     }, 150)
   }
 
-  /** Load once and keep in sync with backend events (idempotent). */
-  async function start() {
-    if (started) return
-    started = true
-    const offs = await Promise.all([
+  /**
+   * Load once and keep in sync (idempotent: every caller gets the same
+   * promise). Besides backend events, the overview is re-read every 5 minutes
+   * and when the window regains focus — stored data only, no network — so
+   * time-based health (a ball held > 24h, a deadline passing) stays current.
+   * Lives as long as the window; there is no stop.
+   */
+  function start(): Promise<void> {
+    starting ??= doStart()
+    return starting
+  }
+
+  async function doStart() {
+    setInterval(() => void load(), RELOAD_EVERY_MS)
+    window.addEventListener('focus', onFocus)
+    await Promise.all([
       listen('pulse:changed', scheduleReload),
       listen<PulseProgress>('pulse:refresh-progress', (e) => {
         const p = e.payload
@@ -70,14 +101,11 @@ export const usePulseStore = defineStore('pulse', () => {
         }
       }),
     ])
-    unlisten = offs
     await load()
   }
 
-  function stop() {
-    unlisten.forEach((f) => f())
-    unlisten = []
-    started = false
+  function onFocus() {
+    scheduleReload()
   }
 
   /** Refresh one watch / project / everything; progress arrives as events. */
@@ -123,7 +151,6 @@ export const usePulseStore = defineStore('pulse', () => {
     watched,
     load,
     start,
-    stop,
     refresh,
     watch,
     unwatch,
