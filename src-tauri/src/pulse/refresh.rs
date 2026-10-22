@@ -101,13 +101,13 @@ impl PulseState {
             resolve_status: Some("ready"),
             resolving,
         };
-        // BR-05: unchanged content → keep the digest, no AI call. A board
-        // query that failed this time is not a change either (D3).
+        // A failed board query reused the last known board fields (so it is
+        // no content change by itself) and is reported as a soft error.
+        let soft = f.board_unavailable.then_some("board_unavailable");
+        // BR-05: unchanged content → keep the digest, no AI call.
         let last_hash = store::latest_digest_hash(db, &w.id).await?;
-        if last_hash.as_deref() == Some(&f.content.hash)
-            || (f.board_unavailable && last_hash.is_some())
-        {
-            return store::finish_refresh(db, w, done(None)).await.map(|_| ());
+        if last_hash.as_deref() == Some(&f.content.hash) {
+            return store::finish_refresh(db, w, done(soft)).await.map(|_| ());
         }
         let now = now_local();
         let ctx = PromptCtx {
@@ -137,7 +137,7 @@ impl PulseState {
                     tracing::info!(event = "pulse_refresh_stale", watch = %w.id);
                     return Ok(());
                 }
-                store::finish_refresh(db, w, done(None)).await.map(|_| ())
+                store::finish_refresh(db, w, done(soft)).await.map(|_| ())
             }
             Err(e) => {
                 tracing::info!(event = "pulse_summarize_failed", watch = %w.id, error = %e);
@@ -200,7 +200,13 @@ impl PulseState {
         let gh = &self.inner.svc.github;
         let (owner, repo, number) = split_github_ref(&w.source_ref)
             .ok_or_else(|| CodedError::new("invalid_source", "bad GitHub source ref"))?;
-        let issue: IssueData = gh.fetch_issue(&w.project_id, owner, repo, number).await?;
+        let mut issue: IssueData = gh.fetch_issue(&w.project_id, owner, repo, number).await?;
+        // D3: a failed board query reuses the last known board fields.
+        if issue.board_unavailable {
+            issue.board = store::last_board(self.db(), &w.id).await?;
+        } else {
+            store::save_board(self.db(), &w.id, issue.board.as_ref()).await?;
+        }
         if issue.is_pull_request {
             return Err(CodedError::new(
                 "invalid_source",

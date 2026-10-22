@@ -1,7 +1,7 @@
 //! SQL for Project Pulse: watch rules (BR-01/03/04), project lookup, the
 //! overview read and the BR-11 request queue. Errors are `CodedError`s.
 
-use super::content::SlackMsg;
+use super::content::{BoardFields, SlackMsg};
 use super::digest::DigestDraft;
 use super::health::{self, DigestFacts, DueItem, ProjectHealth, WatchFacts, WatchHealth};
 use super::source::{parse_source, Source, SourceError};
@@ -590,7 +590,10 @@ pub async fn overview_at(
         })
         .collect();
     out.sort_by(|a, b| {
-        health::project_order((&a.health, &a.project_name), (&b.health, &b.project_name))
+        health::project_order(
+            (&a.health, &a.project_name, &a.project_id),
+            (&b.health, &b.project_name, &b.project_id),
+        )
     });
     Ok(out)
 }
@@ -920,6 +923,34 @@ pub async fn update_source(
     .await
     .map_err(internal)?;
     Ok((r.rows_affected() == 1).then_some(ts))
+}
+
+/// The issue's last known board fields (`board_json`).
+pub async fn last_board(db: &Db, watch_id: &str) -> Result<Option<BoardFields>, CodedError> {
+    let raw: Option<Option<String>> =
+        sqlx::query_scalar("SELECT board_json FROM pulse_watches WHERE id = ?")
+            .bind(watch_id)
+            .fetch_optional(db)
+            .await
+            .map_err(internal)?;
+    Ok(raw
+        .flatten()
+        .and_then(|j| serde_json::from_str::<BoardFields>(&j).ok()))
+}
+
+/// Remember the board fields just read (None = the issue is not on the board).
+pub async fn save_board(
+    db: &Db,
+    watch_id: &str,
+    board: Option<&BoardFields>,
+) -> Result<(), CodedError> {
+    sqlx::query("UPDATE pulse_watches SET board_json = ? WHERE id = ?")
+        .bind(board.map(json))
+        .bind(watch_id)
+        .execute(db)
+        .await
+        .map_err(internal)?;
+    Ok(())
 }
 
 /// Active watches in a refresh scope (both None = all).

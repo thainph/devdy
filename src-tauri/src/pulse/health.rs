@@ -86,6 +86,12 @@ pub struct ProjectHealth {
     pub counts: ProjectCounts,
 }
 
+/// `board_unavailable` is a soft error (last known board fields were used):
+/// shown, but no reason for 🟡.
+fn counts_as_error(code: &str) -> bool {
+    code != "board_unavailable"
+}
+
 fn parse(s: &str) -> Option<DateTime<FixedOffset>> {
     DateTime::parse_from_rfc3339(s.trim()).ok()
 }
@@ -110,7 +116,7 @@ fn done_settled(history: &[DigestFacts], now: DateTime<FixedOffset>) -> bool {
 pub fn watch_health(w: &WatchFacts, now: DateTime<FixedOffset>) -> WatchHealth {
     let Some(d) = w.history.first() else {
         return WatchHealth {
-            health: if w.last_error.is_some() {
+            health: if w.last_error.as_deref().is_some_and(counts_as_error) {
                 "yellow"
             } else {
                 "pending"
@@ -150,7 +156,7 @@ pub fn watch_health(w: &WatchFacts, now: DateTime<FixedOffset>) -> WatchHealth {
     } else if due_soon
         || d.status == "at_risk"
         || (d.ball == "customer" && held(CUSTOMER_SLOW))
-        || w.last_error.is_some()
+        || w.last_error.as_deref().is_some_and(counts_as_error)
     {
         "yellow"
     } else {
@@ -221,8 +227,27 @@ fn next_end(n: &Option<NextDue>) -> Option<DateTime<FixedOffset>> {
     })
 }
 
-/// Order key of a project card: health, nearest milestone (none last), name.
-pub fn project_order(a: (&ProjectHealth, &str), b: (&ProjectHealth, &str)) -> std::cmp::Ordering {
+/// Name sort key shared with `pulse-health.mjs`: NFD, combining marks
+/// (U+0300–U+036F) removed, `đ` → `d`, lowercase; compared by code point.
+pub fn name_key(name: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    name.nfd()
+        .filter(|c| !('\u{300}'..='\u{36f}').contains(c))
+        .map(|c| match c {
+            'đ' => 'd',
+            'Đ' => 'D',
+            c => c,
+        })
+        .collect::<String>()
+        .to_lowercase()
+}
+
+/// Order of project cards: health, nearest milestone (none last), name
+/// (`name_key`), then id. `a` / `b` are `(health, name, id)`.
+pub fn project_order(
+    a: (&ProjectHealth, &str, &str),
+    b: (&ProjectHealth, &str, &str),
+) -> std::cmp::Ordering {
     rank(&a.0.health)
         .cmp(&rank(&b.0.health))
         .then_with(
@@ -233,7 +258,8 @@ pub fn project_order(a: (&ProjectHealth, &str), b: (&ProjectHealth, &str)) -> st
                 (None, None) => std::cmp::Ordering::Equal,
             },
         )
-        .then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase()))
+        .then_with(|| name_key(a.1).cmp(&name_key(b.1)))
+        .then_with(|| a.2.cmp(b.2))
 }
 
 /// Order of watch rows in a card: red, yellow, green / pending, done; then the
@@ -257,6 +283,55 @@ pub fn watch_order(a: &WatchHealth, b: &WatchHealth) -> std::cmp::Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Deserialize)]
+    struct Vectors {
+        health: Vec<Case>,
+        sort: Vec<SortCase>,
+    }
+
+    #[derive(Deserialize)]
+    struct SortCase {
+        name: String,
+        projects: Vec<SortProject>,
+        expect: Vec<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct SortProject {
+        id: String,
+        name: String,
+        health: String,
+        next: Option<String>,
+    }
+
+    /// Card order shared with `sidecar-mcp/test-pulse.mjs`.
+    #[test]
+    fn shared_sort_vectors() {
+        let v: Vectors = serde_json::from_str(include_str!("health_vectors.json")).unwrap();
+        assert!(v.sort.len() >= 3);
+        for c in v.sort {
+            let mut ps: Vec<(ProjectHealth, &str, &str)> = c
+                .projects
+                .iter()
+                .map(|p| {
+                    let h = ProjectHealth {
+                        health: p.health.clone(),
+                        next_milestone: p.next.as_ref().map(|d| NextDue {
+                            title: String::new(),
+                            due_at: d.clone(),
+                            all_day: false,
+                        }),
+                        counts: ProjectCounts::default(),
+                    };
+                    (h, p.name.as_str(), p.id.as_str())
+                })
+                .collect();
+            ps.sort_by(|a, b| project_order((&a.0, a.1, a.2), (&b.0, b.1, b.2)));
+            let ids: Vec<&str> = ps.iter().map(|p| p.2).collect();
+            assert_eq!(ids, c.expect, "{}", c.name);
+        }
+    }
 
     #[derive(Deserialize)]
     struct Case {
@@ -283,7 +358,8 @@ mod tests {
     /// Shared with `sidecar-mcp/test-pulse.mjs`.
     #[test]
     fn shared_vectors() {
-        let cases: Vec<Case> = serde_json::from_str(include_str!("health_vectors.json")).unwrap();
+        let v: Vectors = serde_json::from_str(include_str!("health_vectors.json")).unwrap();
+        let cases = v.health;
         assert!(cases.len() >= 15);
         for c in cases {
             let now = parse(&c.now).unwrap();
@@ -337,7 +413,7 @@ mod tests {
             (ph("red", Some("2026-10-30T00:00:00+07:00")), "Delta"),
             (ph("green", None), "Eta"),
         ];
-        v.sort_by(|a, b| project_order((&a.0, a.1), (&b.0, b.1)));
+        v.sort_by(|a, b| project_order((&a.0, a.1, a.1), (&b.0, b.1, b.1)));
         let names: Vec<&str> = v.iter().map(|x| x.1).collect();
         assert_eq!(
             names,

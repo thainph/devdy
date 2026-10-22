@@ -72,7 +72,7 @@ function watchLine(w) {
 function groupByProject(items) {
   const groups = new Map();
   for (const w of items) {
-    if (!groups.has(w.project_id)) groups.set(w.project_id, { name: w.project_name, items: [] });
+    if (!groups.has(w.project_id)) groups.set(w.project_id, { id: w.project_id, name: w.project_name, items: [] });
     groups.get(w.project_id).items.push(w);
   }
   return [...groups.values()]

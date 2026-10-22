@@ -1194,7 +1194,7 @@ async fn transfer_onto_an_already_watched_issue_is_an_error() {
 }
 
 #[tokio::test]
-async fn a_failed_board_query_does_not_count_as_a_change() {
+async fn a_failed_board_query_reuses_the_last_board_fields() {
     let db = mem_db().await;
     let h = harness(&db);
     let mut i = issue("T", "x");
@@ -1207,19 +1207,40 @@ async fn a_failed_board_query_does_not_count_as_a_change() {
     let w = h.watch(ISSUE).await;
     h.run().await;
     assert_eq!(h.engine.calls(), 1);
-    // Board query fails this time: no board fields → different text, but no
-    // new digest and no AI call.
-    let mut flaky = i.clone();
-    flaky.board = None;
-    flaky.board_unavailable = true;
-    h.github.set(ISSUE, Ok(flaky));
+    let flaky = |body: &str| {
+        let mut f = i.clone();
+        f.body = body.into();
+        f.board = None;
+        f.board_unavailable = true;
+        f
+    };
+    // Board query fails, nothing else changed: same content, no AI call,
+    // soft error recorded, health unaffected.
+    h.github.set(ISSUE, Ok(flaky("x")));
     h.refresh(&w.id).await;
     assert_eq!(h.engine.calls(), 1);
-    assert_eq!(h.digests(&w.id).await.len(), 1);
-    // Back to normal: same hash as before, still no call.
-    h.github.set(ISSUE, Ok(i));
+    assert_eq!(
+        h.get(&w.id).await.last_error.as_deref(),
+        Some("board_unavailable")
+    );
+    let p = store::overview(&db, None).await.unwrap();
+    assert_eq!(p[0].watches[0].health.health, "green");
+    // Board still failing but the issue changed: a new digest, built with the
+    // last known board deadline.
+    h.github.set(ISSUE, Ok(flaky("new comment-worthy body")));
     h.refresh(&w.id).await;
-    assert_eq!(h.engine.calls(), 1);
+    assert_eq!(h.engine.calls(), 2);
+    let d = h.digests(&w.id).await;
+    assert_eq!(d.len(), 2);
+    assert!(d[0].2.contains("Deadline (board)"), "{}", d[0].2);
+    assert!(h.engine.prompts.lock().unwrap()[1].contains("Board: Start=- Deadline=2026-11-05"));
+    // Board back: the soft error clears.
+    let mut back = i.clone();
+    back.body = "new comment-worthy body".into();
+    h.github.set(ISSUE, Ok(back));
+    h.refresh(&w.id).await;
+    assert_eq!(h.engine.calls(), 2);
+    assert_eq!(h.get(&w.id).await.last_error, None);
 }
 
 #[tokio::test]

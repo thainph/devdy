@@ -18,7 +18,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { parseSource } from './lib/pulse-source.mjs';
-import { watchHealth, projectHealth } from './lib/pulse-health.mjs';
+import { watchHealth, projectHealth, compareProjects } from './lib/pulse-health.mjs';
 import { ageOf } from './lib/pulse-tools.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -58,7 +58,8 @@ for (const v of vectors) {
 check(vectors.length > 20 && vectorFails === 0, `shared vectors: ${vectors.length - vectorFails}/${vectors.length} match the Rust expectations`);
 
 // Shared health vectors (also run by src-tauri/src/pulse/health.rs).
-const healthCases = JSON.parse(readFileSync(HEALTH_VECTORS, 'utf8'));
+const healthVectors = JSON.parse(readFileSync(HEALTH_VECTORS, 'utf8'));
+const healthCases = healthVectors.health;
 let healthFails = 0;
 for (const c of healthCases) {
   const now = Date.parse(c.now);
@@ -76,6 +77,18 @@ for (const c of healthCases) {
   }
 }
 check(healthCases.length >= 15 && healthFails === 0, `shared health vectors: ${healthCases.length - healthFails}/${healthCases.length} match the Rust expectations`);
+let sortFails = 0;
+for (const c of healthVectors.sort) {
+  const ids = c.projects
+    .map((p) => ({ id: p.id, name: p.name, health: p.health, next_milestone: p.next ? { due_at: p.next } : null }))
+    .sort(compareProjects)
+    .map((p) => p.id);
+  if (JSON.stringify(ids) !== JSON.stringify(c.expect)) {
+    sortFails += 1;
+    process.stdout.write(`        sort vector "${c.name}" → ${JSON.stringify(ids)}\n`);
+  }
+}
+check(healthVectors.sort.length >= 3 && sortFails === 0, `shared sort vectors: ${healthVectors.sort.length - sortFails}/${healthVectors.sort.length} match the Rust order`);
 const H = 3600_000;
 check(ageOf(new Date(Date.now() - 30 * H).toISOString()) === '30h' && ageOf(new Date(Date.now() - 6 * 24 * H).toISOString()) === '6d' && ageOf('x') === null, 'ball age: hours under two days, then days');
 

@@ -129,6 +129,7 @@
     "summarize_failed": "AI không tổng hợp được — đang giữ bản cũ",
     "not_found": "Không tìm thấy nguồn đang theo dõi",
     "duplicate_source": "Issue đã chuyển sang một issue khác đang được theo dõi",
+    "board_unavailable": "Không đọc được board GitHub lần này — dùng dữ liệu board lần trước",
     "unknown": "Lỗi: {detail}"
   }
 }
