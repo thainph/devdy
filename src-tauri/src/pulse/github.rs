@@ -369,7 +369,10 @@ mod tests {
         assert_eq!(bodies, vec!["1a", "1b", "3a", "3b", "4a"]);
         // Budget full before reaching page 1: only the newest pages.
         let merged = merge_comment_pages(None, vec![vec![c("9")], vec![c("8")]]);
-        assert_eq!(merged.iter().map(|x| x.body.as_str()).collect::<Vec<_>>(), vec!["8", "9"]);
+        assert_eq!(
+            merged.iter().map(|x| x.body.as_str()).collect::<Vec<_>>(),
+            vec!["8", "9"]
+        );
         assert_eq!(comment_chars(&[c("ab")]), 2 + 1 + 40);
     }
 
