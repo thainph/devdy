@@ -43,7 +43,13 @@ function onMove(pid: string | null) {
   <Drawer :open="!!watch" size="lg" @close="emit('close')">
     <template #header>
       <div v-if="watch" class="flex min-w-0 flex-1 items-center gap-2">
-        <span class="h-2.5 w-2.5 shrink-0 rounded-full" :class="HEALTH_DOT[watch.health]" />
+        <span
+          class="h-2.5 w-2.5 shrink-0 rounded-full"
+          :class="HEALTH_DOT[watch.health]"
+          role="img"
+          :aria-label="t(`pulse.health.${watch.health}`)"
+          :title="t(`pulse.health.${watch.health}`)"
+        />
         <component
           :is="watch.sourceType === 'slack' ? Slack : Github"
           class="h-4 w-4 shrink-0 text-muted-foreground"
@@ -92,7 +98,7 @@ function onMove(pid: string | null) {
           <h4 class="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{{ t('pulse.drawer.deadlines') }}</h4>
           <p v-if="!d.deadlines.length" class="text-xs text-muted-foreground">{{ t('pulse.drawer.none') }}</p>
           <div v-for="(x, i) in d.deadlines" :key="`dl-${i}`" class="rounded-md border border-border/60 bg-muted/20 px-3 py-2">
-            <p class="text-xs font-medium">{{ x.title }} — {{ dueText({ dueAt: x.due_at }) }}</p>
+            <p class="text-xs font-medium">{{ x.title }} — {{ dueText({ dueAt: x.due_at, allDay: x.all_day }) }}</p>
             <button
               type="button"
               class="mt-1 block text-left text-[11px] italic text-muted-foreground hover:text-foreground cursor-pointer"

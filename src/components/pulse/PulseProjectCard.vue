@@ -40,6 +40,8 @@ const chips = computed(() => {
       <span
         class="h-2.5 w-2.5 shrink-0 rounded-full"
         :class="HEALTH_DOT[project.health]"
+        role="img"
+        :aria-label="t(`pulse.health.${project.health}`)"
         :title="t(`pulse.health.${project.health}`)"
       />
       <h2 class="min-w-0 flex-1 truncate text-sm font-semibold">{{ project.projectName }}</h2>
