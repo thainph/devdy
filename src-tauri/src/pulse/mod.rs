@@ -20,6 +20,7 @@ pub mod ball;
 pub mod content;
 pub mod digest;
 pub mod github;
+pub mod health;
 pub mod refresh;
 pub mod source;
 pub mod store;

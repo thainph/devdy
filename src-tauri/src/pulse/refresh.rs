@@ -108,6 +108,7 @@ impl PulseState {
                     &f.content.hash,
                     &d,
                     f.content.truncated,
+                    f.facts.issue_closed,
                     model.as_deref(),
                 )
                 .await?;

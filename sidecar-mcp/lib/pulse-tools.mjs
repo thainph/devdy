@@ -8,6 +8,7 @@
 // on timeout).
 
 import * as store from './pulse-store.mjs';
+import { projectHealth, compareProjects, compareWatches, HEALTH_ICON } from './pulse-health.mjs';
 
 const WHEN = 'Use when the user asks to watch / stop watching a Slack thread or GitHub issue, or asks how a project is progressing.';
 const REFRESH_TIMEOUT_MS = 90_000;
@@ -36,25 +37,28 @@ function scopeOf(a) {
   return { project: store.resolveProject(a.project) };
 }
 
-/** Earliest deadline ≥ now among digests not done (BR-10). */
-function nextMilestone(items, now = Date.now()) {
-  let best = null;
-  for (const w of items) {
-    if (!w.digest || w.digest.status === 'done') continue;
-    for (const d of w.digest.deadlines) {
-      const t = Date.parse(d?.due_at);
-      if (Number.isFinite(t) && t >= now && (!best || t < best.t)) best = { t, title: d.title, due_at: d.due_at, watch: w };
-    }
-  }
-  return best;
+/** How long since `iso`: `30h` under two days, else `6d`. */
+export function ageOf(iso, now = Date.now()) {
+  const t = Date.parse(iso ?? '');
+  if (!Number.isFinite(t)) return null;
+  const h = Math.max(0, Math.floor((now - t) / 3600_000));
+  return h < 48 ? `${h}h` : `${Math.floor(h / 24)}d`;
 }
 
+const since = (iso) => {
+  const a = ageOf(iso);
+  return a ? ` · ${a}` : '';
+};
+
 function watchLine(w) {
-  const parts = [`[${w.id}] ${sourceIcon(w)} · ${label(w)} (${w.source_ref})`];
+  const h = w.health;
+  const parts = [`${HEALTH_ICON[h.health] ?? ''} [${w.id}] ${sourceIcon(w)} · ${label(w)} (${w.source_ref})`];
+  if (h.finished) parts.push('finished');
   if (w.resolve_status !== 'ready') parts.push(`resolve: ${w.resolve_status}`);
   if (w.last_error) parts.push(`error: ${w.last_error}`);
   if (w.digest) {
-    parts.push(`status: ${w.digest.status}`, `ball: ${w.digest.ball}${w.digest.ball_since ? ` since ${w.digest.ball_since}` : ''}`);
+    parts.push(`status: ${w.digest.status}`, `ball: ${w.digest.ball}${since(w.digest.ball_since)}`);
+    if (h.next_due) parts.push(`next deadline: ${h.next_due.title || '(untitled)'} — ${h.next_due.due_at}`);
     if (w.digest.summary) parts.push(oneLine(w.digest.summary));
     parts.push(`summarised ${w.digest.created_at}`);
   } else {
@@ -64,31 +68,40 @@ function watchLine(w) {
   return `- ${parts.join(' · ')}`;
 }
 
+/** Watches grouped per project with BR-09 health, cards in BR-09 order. */
 function groupByProject(items) {
   const groups = new Map();
   for (const w of items) {
     if (!groups.has(w.project_id)) groups.set(w.project_id, { name: w.project_name, items: [] });
     groups.get(w.project_id).items.push(w);
   }
-  return groups;
+  return [...groups.values()]
+    .map((g) => {
+      g.items.sort((a, b) => compareWatches(a.health, b.health));
+      return { ...g, ...projectHealth(g.items.map((w) => w.health)) };
+    })
+    .sort(compareProjects);
 }
 
 function renderStatus(items, { stale }) {
   const out = [];
   if (stale) out.push('stale: true — the app did not finish refreshing within 90 s; showing the stored digests.\n');
   const groups = groupByProject(items);
-  if (!groups.size) return `${out.join('')}No watched sources. Watch a Slack thread or GitHub issue with pulse_watch.`;
-  for (const [, g] of groups) {
-    out.push(`## ${g.name}`);
-    out.push('- health: not computed yet');
-    const m = nextMilestone(g.items);
-    out.push(`- next milestone: ${m ? `${m.title || '(untitled)'} — ${m.due_at} (${label(m.watch)})` : 'none'}`);
-    const mine = g.items.filter((w) => w.digest?.ball === 'me');
-    const customer = g.items.filter((w) => w.digest?.ball === 'customer');
+  if (!groups.length) return `${out.join('')}No watched sources. Watch a Slack thread or GitHub issue with pulse_watch.`;
+  for (const g of groups) {
+    const c = g.counts;
+    out.push(`## ${HEALTH_ICON[g.health]} ${g.name}`);
+    out.push(`- health: ${g.health}`);
+    const m = g.next_milestone;
+    out.push(`- next milestone: ${m ? `${m.title || '(untitled)'} — ${m.due_at}` : 'none'}`);
+    out.push(`- needs me: ${c.needs_me} · waiting on customer: ${c.waiting_customer} · overdue: ${c.overdue} · watching: ${c.watching}`);
+    const open = g.items.filter((w) => !w.health.finished);
+    const mine = open.filter((w) => w.health.needs_me);
+    const customer = open.filter((w) => w.health.waiting_customer);
     out.push('', '### Needs me');
-    out.push(...(mine.length ? mine.map((w) => `- ${label(w)}: ${oneLine(w.digest.next_action || w.digest.summary)}${w.digest.ball_since ? ` (since ${w.digest.ball_since})` : ''}`) : ['- none']));
+    out.push(...(mine.length ? mine.map((w) => `- ${label(w)}${since(w.digest.ball_since)}: ${oneLine(w.digest.next_action || w.digest.summary)}`) : ['- none']));
     out.push('', '### Waiting on customer');
-    out.push(...(customer.length ? customer.map((w) => `- ${label(w)}${w.digest.ball_since ? ` (since ${w.digest.ball_since})` : ''}: ${oneLine(w.digest.summary)}`) : ['- none']));
+    out.push(...(customer.length ? customer.map((w) => `- ${label(w)}${since(w.digest.ball_since)}: ${oneLine(w.digest.summary)}`) : ['- none']));
     const decisions = g.items
       .flatMap((w) => (w.digest?.decisions ?? []).map((d) => ({ ...d, w })))
       .sort((a, b) => String(b.decided_at ?? '').localeCompare(String(a.decided_at ?? '')))
@@ -96,11 +109,16 @@ function renderStatus(items, { stale }) {
     out.push('', '### Recent decisions');
     out.push(...(decisions.length ? decisions.map((d) => `- ${d.decided_at ? `${d.decided_at}: ` : ''}${oneLine(d.text)} (${label(d.w)})`) : ['- none']));
     out.push('', '### Sources');
-    for (const w of g.items) {
+    for (const w of open) {
       out.push(watchLine(w));
       if (w.digest?.next_action) out.push(`  - next: ${oneLine(w.digest.next_action, 200)}`);
       for (const d of w.digest?.deadlines ?? []) out.push(`  - deadline: ${d.title || '(untitled)'} — ${d.due_at}`);
       for (const q of w.digest?.open_questions ?? []) out.push(`  - open question (${q.asked_by || '?'}): ${oneLine(q.text)}`);
+    }
+    const finished = g.items.filter((w) => w.health.finished);
+    if (finished.length) {
+      out.push('', '### Done');
+      out.push(...finished.map((w) => watchLine(w)));
     }
     out.push('');
   }
@@ -169,7 +187,7 @@ export function pulseTools() {
     },
 
     pulse_list: {
-      description: `List the sources watched in Project Pulse with their resolve state, latest digest status / ball and a one-line summary. ${WHEN} Defaults to the current project; all=true lists every project.`,
+      description: `List the sources watched in Project Pulse grouped by project with health (🔴 🟡 🟢 ✅ ⚪), resolve state, latest digest status / ball and a one-line summary. ${WHEN} Defaults to the current project; all=true lists every project.`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -182,13 +200,13 @@ export function pulseTools() {
         const items = store.listWatches(project?.id ?? null);
         if (!items.length) return project ? `No watched sources in project ${project.name}.` : 'No watched sources.';
         const out = [];
-        for (const [, g] of groupByProject(items)) out.push(`## ${g.name}`, ...g.items.map(watchLine), '');
+        for (const g of groupByProject(items)) out.push(`## ${HEALTH_ICON[g.health]} ${g.name} (health: ${g.health})`, ...g.items.map(watchLine), '');
         return out.join('\n').trimEnd();
       },
     },
 
     pulse_status: {
-      description: `Progress report from Project Pulse as markdown: next milestone, what needs the user, what waits on the customer, recent decisions and every watched source with its summary, deadlines and open questions. ${WHEN} Answers from the stored digests (no refresh) by default; refresh=true asks the Devdy app to re-fetch and re-summarise first and waits up to 90 s (on timeout the stored data comes back marked stale: true). Defaults to the current project; all=true covers every project.`,
+      description: `Progress report from Project Pulse as markdown: project health (🔴 🟡 🟢 ⚪), next milestone, what needs the user, what waits on the customer, recent decisions and every watched source with its summary, deadlines and open questions. ${WHEN} Answers from the stored digests (no refresh) by default; refresh=true asks the Devdy app to re-fetch and re-summarise first and waits up to 90 s (on timeout the stored data comes back marked stale: true). Defaults to the current project; all=true covers every project.`,
       inputSchema: {
         type: 'object',
         properties: {

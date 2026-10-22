@@ -529,7 +529,7 @@ async fn overview_groups_active_watches_with_latest_digest() {
         (p.project_id.as_str(), p.project_name.as_str()),
         ("p1", "Alpha")
     );
-    assert_eq!(p.health, None);
+    assert_eq!(p.health.health, "yellow"); // b: never summarised → pending; a: at_risk
     let ids: Vec<&str> = p.watches.iter().map(|w| w.watch.id.as_str()).collect();
     assert_eq!(ids, vec![a.id.as_str(), b.id.as_str()]);
     let d = p.watches[0].digest.as_ref().unwrap();
@@ -1225,4 +1225,118 @@ async fn external_watch_edits_emit_a_reload_event() {
         .unwrap();
     h.state.process_pending().await;
     assert_eq!(h.events.changed.lock().unwrap().last(), Some(&Vec::new()));
+}
+
+// ---- Health in the overview (stage C) -------------------------------------------
+
+async fn digest_row(
+    db: &Db,
+    id: &str,
+    watch: &str,
+    status: &str,
+    ball: &str,
+    since: Option<&str>,
+    closed: bool,
+    created: &str,
+) {
+    sqlx::query(
+        "INSERT INTO pulse_digests (id, watch_id, content_hash, status, ball, ball_since, summary, \
+         source_closed, created_at) VALUES (?, ?, 'h', ?, ?, ?, 's', ?, ?)",
+    )
+    .bind(id)
+    .bind(watch)
+    .bind(status)
+    .bind(ball)
+    .bind(since)
+    .bind(closed)
+    .bind(created)
+    .execute(db)
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn overview_orders_cards_by_health_and_groups_finished_watches() {
+    let db = mem_db().await;
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-22T09:00:00+07:00").unwrap();
+    // Alpha: one green watch. Beta: my ball for 30h (red) + a closed issue.
+    let a = store::watch(&db, req("p1", &src("org/app#1"), false))
+        .await
+        .unwrap()
+        .watch;
+    let b1 = store::watch(&db, req("p2", &src("org/app#2"), false))
+        .await
+        .unwrap()
+        .watch;
+    let b2 = store::watch(&db, req("p2", &src("org/app#3"), false))
+        .await
+        .unwrap()
+        .watch;
+    digest_row(
+        &db,
+        "da",
+        &a.id,
+        "on_track",
+        "none",
+        None,
+        false,
+        "2026-10-22T08:00:00+07:00",
+    )
+    .await;
+    digest_row(
+        &db,
+        "db1",
+        &b1.id,
+        "waiting",
+        "me",
+        Some("2026-10-21T03:00:00+07:00"),
+        false,
+        "2026-10-22T08:00:00+07:00",
+    )
+    .await;
+    digest_row(
+        &db,
+        "db2",
+        &b2.id,
+        "done",
+        "none",
+        None,
+        true,
+        "2026-10-22T08:00:00+07:00",
+    )
+    .await;
+
+    let out = store::overview_at(&db, None, now).await.unwrap();
+    let names: Vec<&str> = out.iter().map(|p| p.project_name.as_str()).collect();
+    assert_eq!(names, vec!["Beta", "Alpha"], "red before green");
+    let beta = &out[0];
+    assert_eq!(beta.health.health, "red");
+    assert_eq!(
+        (beta.health.counts.needs_me, beta.health.counts.watching),
+        (1, 2)
+    );
+    let rows: Vec<(&str, &str, bool)> = beta
+        .watches
+        .iter()
+        .map(|w| {
+            (
+                w.watch.id.as_str(),
+                w.health.health.as_str(),
+                w.health.finished,
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            (b1.id.as_str(), "red", false),
+            (b2.id.as_str(), "done", true)
+        ]
+    );
+    let v = serde_json::to_value(&out[0]).unwrap();
+    assert_eq!(v["health"], "red");
+    assert_eq!(v["counts"]["needsMe"], 1);
+    assert_eq!(v["watches"][1]["finished"], true);
+    assert_eq!(v["watches"][1]["digest"]["sourceClosed"], true);
+    assert_eq!(out[1].health.health, "green");
 }
