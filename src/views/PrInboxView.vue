@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useActivatedRefresh } from '@/composables/useActivatedRefresh'
 import { useRouter } from 'vue-router'
@@ -10,9 +10,38 @@ import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useConductorStore } from '@/stores/conductor'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { resolvePermissionMode } from '@/lib/engineOptions'
-import { Button, Card, Badge, StatusBadge, Skeleton } from '@/components/ui'
+import {
+  Button, Skeleton, Input, ContextMenu, DropdownItem, DropdownSeparator,
+} from '@/components/ui'
+import PrInboxCard from '@/components/prInbox/PrInboxCard.vue'
+import PrInboxFiltersPopover, { type PrFilterDimension } from '@/components/prInbox/PrInboxFiltersPopover.vue'
+import PrInboxDisplayPopover from '@/components/prInbox/PrInboxDisplayPopover.vue'
+import PrInboxBotAccountsModal from '@/components/prInbox/PrInboxBotAccountsModal.vue'
+import {
+  groupPrInbox,
+  isGroupCollapsedByDefault,
+  type PrGroup,
+} from '@/lib/prInboxGrouping'
+import {
+  applyFilters,
+  buildFilterOptions,
+  bulkReviewCandidates,
+  canStartReview,
+  effectiveFilters,
+  hasActiveFilters,
+  makeBotPredicate,
+  normalizeLogin,
+  reviewStatusOf,
+  BULK_REVIEW_CAP,
+  UNMAPPED_PROJECT_VALUE,
+  type PrFilterOption,
+} from '@/lib/prInboxFilters'
 import { useToast } from '@/composables/useToast'
-import { GitPullRequest, RefreshCw, Sparkles, FolderPlus, ExternalLink, User, Eye, AlertTriangle } from 'lucide-vue-next'
+import { useConfirm } from '@/composables/useConfirm'
+import {
+  GitPullRequest, RefreshCw, Sparkles, User, AlertTriangle, Bot, ChevronRight, Folder, BookMarked,
+  CircleDashed, EyeOff, KeyRound, ExternalLink, SearchX, Search, X,
+} from 'lucide-vue-next'
 
 // Named explicitly: <KeepAlive :include> in App.vue matches on component name,
 // and an inferred name is a build detail that minification can change.
@@ -26,10 +55,33 @@ const live = useLiveRunsStore()
 const conductorStore = useConductorStore()
 const appSettings = useAppSettingsStore()
 const { toast } = useToast()
+const { confirm } = useConfirm()
+
+// Shared clock for relative times + the stale badge, ticking once a minute so
+// a long-open inbox doesn't freeze at "just now". Runs only while the screen is
+// shown: <KeepAlive> deactivates rather than unmounts it, and the guard keeps
+// mount + first activation from starting two intervals.
+const now = ref(Date.now())
+let clock: ReturnType<typeof setInterval> | null = null
+
+function startClock() {
+  now.value = Date.now()
+  if (clock) return
+  clock = setInterval(() => { now.value = Date.now() }, 60_000)
+}
+
+function stopClock() {
+  if (clock) clearInterval(clock)
+  clock = null
+}
 
 onMounted(() => {
   if (store.items.length === 0) store.refresh()
+  startClock()
 })
+onActivated(startClock)
+onDeactivated(stopClock)
+onBeforeUnmount(stopClock)
 
 // Cached by <KeepAlive> (App.vue): onMounted fires once for the app's whole
 // lifetime, so re-show the screen with fresh data instead of whatever it read
@@ -38,10 +90,6 @@ useActivatedRefresh(() => {
   if (store.items.length === 0) store.refresh()
 })
 
-function openPr(item: PrInboxItem) {
-  openUrl(item.html_url).catch(() => { /* opener unavailable */ })
-}
-
 // Effective status for a PR's linked review run: a live streaming status (from
 // the liveRuns store) wins over the DB snapshot taken at refresh time.
 function runStatus(item: PrInboxItem): string | null {
@@ -49,10 +97,111 @@ function runStatus(item: PrInboxItem): string | null {
   return live.get(item.existing_run_id)?.status ?? item.existing_run_status
 }
 
-function isRunning(item: PrInboxItem): boolean {
-  const s = runStatus(item)
-  return s === 'running' || s === 'fetched'
+// --- Filtering + grouping ---------------------------------------------------
+// Pure logic lives in lib/prInboxFilters + lib/prInboxGrouping (unit-tested);
+// this only wires it to the store and the live run status.
+
+const isBot = computed(() => makeBotPredicate(store.botLogins))
+const statusOf = (item: PrInboxItem) => reviewStatusOf(item, runStatus(item))
+// Not persisted: a search is a one-off lookup, not a reading preference.
+const search = ref('')
+
+// Filter options come from what the user can see — hidden bots don't add
+// options or inflate counts.
+const filterOptions = computed(() => buildFilterOptions(
+  store.hideBots ? store.items.filter(i => !isBot.value(i)) : store.items,
+  statusOf,
+))
+const activeFilters = computed(() => effectiveFilters(store.filters, filterOptions.value))
+const filtering = computed(() => hasActiveFilters(activeFilters.value) || search.value.trim() !== '')
+const filtered = computed(() => applyFilters(store.items, activeFilters.value, search.value, statusOf))
+const grouped = computed(() => groupPrInbox(filtered.value, {
+  groupBy: store.groupBy,
+  hideBots: store.hideBots,
+  isBot: isBot.value,
+}))
+
+function setFilter(dimension: PrFilterDimension, values: string[]) {
+  store.setFilters({ ...store.filters, [dimension]: values })
 }
+
+function clearAllFilters() {
+  store.clearFilters()
+  search.value = ''
+}
+
+function filterOptionLabel(dimension: PrFilterDimension, o: PrFilterOption): string {
+  if (dimension === 'statuses') return t(`prInbox.status.${o.value}`)
+  if (dimension === 'projects' && o.value === UNMAPPED_PROJECT_VALUE) return t('prInbox.notInDevdyGroup')
+  return o.label
+}
+
+const FILTER_TITLE_KEYS: Record<PrFilterDimension, string> = {
+  projects: 'prInbox.filters.project',
+  authors: 'prInbox.filters.author',
+  accounts: 'prInbox.filters.account',
+  statuses: 'prInbox.filters.status',
+}
+
+// Removable chips for every filter value that currently applies.
+const activeFilterChips = computed(() => (Object.keys(FILTER_TITLE_KEYS) as PrFilterDimension[]).flatMap(dimension =>
+  (activeFilters.value[dimension] as string[]).map(value => {
+    const option = filterOptions.value[dimension].find(o => o.value === value)
+    return {
+      key: `${dimension}:${value}`,
+      dimension,
+      value,
+      title: t(FILTER_TITLE_KEYS[dimension]),
+      label: option ? filterOptionLabel(dimension, option) : value,
+    }
+  }),
+))
+
+function removeFilterValue(dimension: PrFilterDimension, value: string) {
+  setFilter(dimension, (store.filters[dimension] as string[]).filter(v => v !== value))
+}
+
+function isCollapsed(group: PrGroup): boolean {
+  return store.collapsedGroups[group.key] ?? isGroupCollapsedByDefault(group)
+}
+
+function toggleGroup(group: PrGroup) {
+  store.setGroupCollapsed(group.key, !isCollapsed(group))
+}
+
+function groupLabel(group: PrGroup): string {
+  if (group.kind === 'unmapped') return t('prInbox.notInDevdyGroup')
+  if (group.kind === 'bots') return t('prInbox.botsGroup')
+  return group.label || t('prInbox.unknownGroup')
+}
+
+// --- Bots ---------------------------------------------------------------------
+
+const botAccountsOpen = ref(false)
+
+function isCustomBot(login: string): boolean {
+  return store.botLogins.includes(normalizeLogin(login))
+}
+
+// Card menu (⋯ button / right-click). Teleported ContextMenu, since the card's
+// overflow-hidden would clip an anchored dropdown.
+const menu = ref<{ open: boolean; x: number; y: number; item: PrInboxItem | null }>({
+  open: false, x: 0, y: 0, item: null,
+})
+
+function openMenu(item: PrInboxItem, x: number, y: number) {
+  menu.value = { open: true, x, y, item }
+}
+
+function closeMenu() {
+  menu.value = { ...menu.value, open: false }
+}
+
+function openPr(item: PrInboxItem) {
+  openUrl(item.html_url).catch(() => { /* opener unavailable */ })
+}
+
+// --- Review actions -------------------------------------------------------
 
 // Open the review session already linked to this PR.
 function openRun(item: PrInboxItem) {
@@ -60,13 +209,13 @@ function openRun(item: PrInboxItem) {
   router.push(`/projects/${item.project_id}/run/${item.existing_run_id}`)
 }
 
-// Start a review, or resume the linked one. A PR that already has a review run
-// (in DB or just created) never spawns a second session — we navigate to it.
-async function handleReview(item: PrInboxItem) {
-  if (!item.mapped || !item.project_id || !item.repo_id) return
-  if (item.existing_run_id) { openRun(item); return }
+// Create + launch a review run for a mapped PR with no linked run. Throws on
+// failure; returns false when there was nothing to start (unmapped, already
+// linked, or already being started).
+async function startReview(item: PrInboxItem): Promise<boolean> {
+  if (!item.mapped || !item.project_id || !item.repo_id || item.existing_run_id) return false
   const key = prKey(item)
-  if (store.reviewingKeys.has(key)) return
+  if (store.reviewingKeys.has(key)) return false
   store.setReviewing(key, true)
   try {
     // Allow reviewing a PR even when no linked issue can be resolved — the PR
@@ -95,25 +244,77 @@ async function handleReview(item: PrInboxItem) {
     // Link immediately so a second click resumes instead of duplicating. The run
     // streams in the background (liveRuns / ActiveRunsDock) — stay on this screen.
     store.linkRun(key, run.id, 'running')
-    toast.success(t('prInbox.reviewing', { repo: item.repo, number: item.number }))
-  } catch (e) {
-    toast.error(String(e))
+    return true
   } finally {
     store.setReviewing(key, false)
   }
 }
 
-function relativeTime(iso: string): string {
-  const then = new Date(iso).getTime()
-  const diff = Date.now() - then
-  const mins = Math.round(diff / 60000)
-  if (mins < 1) return t('prInbox.justNow')
-  if (mins < 60) return t('prInbox.minsAgo', { mins })
-  const hours = Math.round(mins / 60)
-  if (hours < 24) return t('prInbox.hoursAgo', { hours })
-  const days = Math.round(hours / 24)
-  if (days < 30) return t('prInbox.daysAgo', { days })
-  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+// Start a review, or resume the linked one. A PR that already has a review run
+// (in DB or just created) never spawns a second session — we navigate to it.
+async function handleReview(item: PrInboxItem) {
+  if (item.existing_run_id) { openRun(item); return }
+  try {
+    if (await startReview(item)) {
+      toast.success(t('prInbox.reviewing', { repo: item.repo, number: item.number }))
+    }
+  } catch (e) {
+    toast.error(String(e))
+  }
+}
+
+// "AI review all" on a group header: confirm, then start the group's eligible
+// PRs one at a time (sequential keeps the conductor + GitHub load sane), capped
+// per click. One failure is reported and skipped, never stops the batch.
+// Only PR keys are snapshotted: each item is re-resolved from the store right
+// before it starts, so a refresh (which replaces store.items) can't feed a
+// stale `existing_run_id = null` object back in and spawn a duplicate run.
+// Refresh is also disabled while a batch runs.
+const bulk = ref<{ groupKey: string; done: number; total: number } | null>(null)
+
+function bulkCandidates(group: PrGroup) {
+  return bulkReviewCandidates(group.items, item => store.reviewingKeys.has(prKey(item)))
+}
+
+async function reviewAll(group: PrGroup) {
+  if (bulk.value) return
+  const { items, total } = bulkCandidates(group)
+  if (items.length === 0) return
+  const keys = items.map(prKey)
+  let message = t('prInbox.bulk.confirmBody', { count: items.length, group: groupLabel(group) }, items.length)
+  if (total > items.length) message += `\n${t('prInbox.bulk.capped', { cap: BULK_REVIEW_CAP, total })}`
+  const ok = await confirm({
+    title: t('prInbox.bulk.confirmTitle'),
+    message,
+    confirmLabel: t('prInbox.bulk.confirmAction', items.length),
+    cancelLabel: t('common.cancel'),
+    variant: 'primary',
+  })
+  if (!ok) return
+  const progress = { groupKey: group.key, done: 0, total: keys.length }
+  bulk.value = { ...progress }
+  let started = 0
+  let failed = 0
+  try {
+    for (const key of keys) {
+      const item = store.items.find(i => prKey(i) === key)
+      // Gone, already linked to a run, or being started elsewhere → skip.
+      if (canStartReview(item, store.reviewingKeys.has(key))) {
+        try {
+          if (await startReview(item)) started += 1
+        } catch (e) {
+          failed += 1
+          toast.error(t('prInbox.bulk.itemFailed', { repo: item.repo, number: item.number, error: String(e) }))
+        }
+      }
+      progress.done += 1
+      bulk.value = { ...progress }
+    }
+  } finally {
+    bulk.value = null
+  }
+  if (started > 0) toast.success(t('prInbox.bulk.started', { count: started }, started))
+  if (failed > 0 && started === 0) toast.error(t('prInbox.bulk.allFailed', { count: failed }, failed))
 }
 </script>
 
@@ -126,16 +327,98 @@ function relativeTime(iso: string): string {
         <span
           v-if="!store.loading && store.items.length > 0"
           class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-medium text-muted-foreground"
+          :title="grouped.visibleCount < store.items.length ? t('prInbox.visibleOfTotal', { visible: grouped.visibleCount, total: store.items.length }) : undefined"
         >
-          {{ store.items.length }}
+          {{ grouped.visibleCount < store.items.length ? `${grouped.visibleCount} / ${store.items.length}` : store.items.length }}
         </span>
       </div>
       <div class="flex items-center gap-2">
-        <Button variant="ghost" :disabled="store.loading" @click="store.refresh()">
+        <Button variant="ghost" :disabled="store.loading || bulk !== null" @click="store.refresh()">
           <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': store.loading }" :stroke-width="2" />
           {{ t('common.refresh') }}
         </Button>
       </div>
+    </div>
+
+    <!-- Toolbar: search + Filters / Display popovers (patterned on
+         CalendarView's display-options popover). A size container so the
+         buttons drop to icon-only when the content pane — not the window — is
+         narrow (the sidebar eats into it). `relative z-10`: the size container
+         is its own stacking context, so lift it above the (positioned) cards
+         its popovers overlap. Everything but the search is persisted.
+         The @[30rem]/toolbar icon-only fallback rarely triggers: the window's
+         minWidth is 900px, leaving the content pane at roughly ≥ 680px; it
+         covers a wide sidebar or a future smaller minimum. -->
+    <div v-if="store.items.length > 0" class="@container/toolbar relative z-10 px-6 py-2 border-b border-border/60 shrink-0">
+      <div class="flex min-w-0 items-center gap-2">
+        <!-- Search: same icon + clear pattern as ItemSidebar / SlackSidebar -->
+        <div class="relative min-w-32 max-w-md flex-1">
+          <Search
+            class="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
+            :stroke-width="1.75"
+          />
+          <Input
+            v-model="search"
+            class="pl-8 pr-7"
+            :placeholder="t('prInbox.searchPlaceholder')"
+            :aria-label="t('prInbox.searchPlaceholder')"
+            @keydown.esc="search = ''"
+          />
+          <button
+            v-if="search"
+            type="button"
+            class="absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer text-muted-foreground hover:text-foreground"
+            :title="t('prInbox.clearSearch')"
+            :aria-label="t('prInbox.clearSearch')"
+            @click="search = ''"
+          >
+            <X class="h-3.5 w-3.5" :stroke-width="2" />
+          </button>
+        </div>
+        <div class="ml-auto flex shrink-0 items-center gap-2">
+          <PrInboxFiltersPopover
+            :options="filterOptions"
+            :model-value="store.filters"
+            :active-count="activeFilterChips.length"
+            :option-label="filterOptionLabel"
+            @update="setFilter"
+            @clear="store.clearFilters()"
+          />
+          <PrInboxDisplayPopover @manage-bots="botAccountsOpen = true" />
+        </div>
+      </div>
+    </div>
+
+    <!-- Active filters: one removable chip per applied value (chip look of
+         SkillsView's group filter chips). -->
+    <div
+      v-if="activeFilterChips.length > 0"
+      class="flex flex-wrap items-center gap-1.5 px-6 py-2 border-b border-border/60 shrink-0"
+    >
+      <span
+        v-for="chip in activeFilterChips"
+        :key="chip.key"
+        class="inline-flex max-w-full items-center gap-1 rounded-md bg-muted py-1 pl-2 pr-1 text-[11px] text-foreground"
+      >
+        <span class="shrink-0 text-muted-foreground">{{ chip.title }}:</span>
+        <span class="min-w-0 truncate max-w-40" :title="chip.label">{{ chip.label }}</span>
+        <button
+          type="button"
+          class="shrink-0 rounded p-0.5 cursor-pointer text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+          :title="t('prInbox.filters.remove', { filter: `${chip.title}: ${chip.label}` })"
+          :aria-label="t('prInbox.filters.remove', { filter: `${chip.title}: ${chip.label}` })"
+          @click="removeFilterValue(chip.dimension, chip.value)"
+        >
+          <X class="h-3 w-3" :stroke-width="2" />
+        </button>
+      </span>
+      <button
+        type="button"
+        class="ml-1 text-[11px] font-medium text-primary hover:underline cursor-pointer"
+        @click="store.clearFilters()"
+      >
+        {{ t('prInbox.filters.clearAll') }}
+      </button>
     </div>
 
     <!-- Content -->
@@ -149,12 +432,12 @@ function relativeTime(iso: string): string {
       >
         <AlertTriangle class="h-4 w-4 shrink-0 mt-px" :stroke-width="2" />
         <div class="min-w-0 flex-1">
-          <p class="font-medium">{{ t('prInbox.partialFailTitle', { count: store.warnings.length }) }}</p>
+          <p class="font-medium">{{ t('prInbox.partialFailTitle', store.warnings.length) }}</p>
           <p class="mt-0.5 text-amber-600/80 dark:text-amber-400/80">
             {{ store.warnings.map(w => w.account_label).join(', ') }} — {{ t('prInbox.partialFailBody') }}
           </p>
         </div>
-        <Button variant="ghost" size="xs" :disabled="store.loading" @click="store.refresh()">
+        <Button variant="ghost" size="xs" :disabled="store.loading || bulk !== null" @click="store.refresh()">
           <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': store.loading }" :stroke-width="2" />
           {{ t('common.refresh') }}
         </Button>
@@ -201,78 +484,181 @@ function relativeTime(iso: string): string {
         </Button>
       </div>
 
-      <!-- PR list -->
-      <div v-else class="flex flex-col gap-3">
-        <Card
-          v-for="(item, i) in store.items"
-          :key="`${item.account_id}:${prKey(item)}`"
-          class="group relative flex flex-row items-center gap-4 animate-fade-rise transition-all duration-150 hover:border-primary/40 hover:shadow-[0_1px_3px_0_rgb(0_0_0/0.08)]"
-          :style="{ animationDelay: `${Math.min(i, 12) * 40}ms` }"
-          body-class="flex flex-row items-center gap-4 flex-1 p-4"
+      <!-- PR list, grouped per the toolbar. `none` mode is one headerless
+           group. When every PR is a hidden bot PR there are no groups, only
+           the summary row below — not the "no PRs" empty state. -->
+      <!-- `@container/list`: group headers and PrInboxCard size themselves
+           against the list width (36rem / 44rem / 52rem steps). -->
+      <div v-else class="@container/list flex flex-col gap-5">
+        <!-- Filters / search matched nothing (hidden bots aside). Clears the
+             search too, hence its own label (the chip row's "Clear filters"
+             leaves the search alone). -->
+        <div
+          v-if="grouped.groups.length === 0 && filtering"
+          class="flex items-center gap-2 rounded-lg border border-dashed border-border/60 px-3 py-3 text-xs text-muted-foreground"
         >
-          <!-- Icon -->
-          <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 border border-primary/15 text-primary">
-            <GitPullRequest class="h-4.5 w-4.5" :stroke-width="1.75" />
-          </div>
+          <SearchX class="h-4 w-4 shrink-0" :stroke-width="1.75" />
+          <span>{{ t('prInbox.filters.noMatch') }}</span>
+          <span class="text-muted-foreground/50">·</span>
+          <button type="button" class="font-medium text-primary hover:underline cursor-pointer" @click="clearAllFilters">
+            {{ t('prInbox.filters.clearSearchAndFilters') }}
+          </button>
+        </div>
 
-          <!-- Main info -->
-          <div class="min-w-0 flex-1">
-            <div class="flex items-center gap-1.5 min-w-0">
-              <button
-                class="text-sm font-semibold truncate leading-tight hover:text-primary transition-colors cursor-pointer text-left"
-                :title="item.title"
-                @click="openPr(item)"
+        <section v-for="group in grouped.groups" :key="group.key" class="flex flex-col gap-2">
+          <!-- Header: the name truncates first (counts stay); "N unreviewed"
+               drops below 36rem, "AI review all" goes icon-only below 44rem,
+               "Mark as bot" takes no space until hover / keyboard focus. -->
+          <div v-if="group.kind !== 'all'" class="group/header flex items-center gap-2 min-w-0">
+            <button
+              type="button"
+              class="flex min-w-0 flex-1 items-center gap-2 text-left cursor-pointer"
+              :aria-expanded="!isCollapsed(group)"
+              @click="toggleGroup(group)"
+            >
+              <ChevronRight
+                class="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform"
+                :class="{ 'rotate-90': !isCollapsed(group) }"
+                :stroke-width="2"
+              />
+              <img
+                v-if="group.avatarUrl"
+                :src="group.avatarUrl"
+                alt=""
+                class="h-4 w-4 shrink-0 rounded-full bg-muted"
+              />
+              <Bot v-else-if="group.kind === 'bots'" class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
+              <CircleDashed v-else-if="group.kind === 'unmapped'" class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
+              <Folder v-else-if="store.groupBy === 'project'" class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
+              <BookMarked v-else-if="store.groupBy === 'repo'" class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
+              <KeyRound v-else-if="store.groupBy === 'reviewer_account'" class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
+              <User v-else class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
+              <span
+                class="min-w-0 text-xs font-semibold truncate group-hover/header:text-primary transition-colors"
+                :class="{ 'font-mono': store.groupBy === 'repo' && group.kind === 'normal' }"
               >
-                {{ item.title }}
-              </button>
-              <ExternalLink class="h-3 w-3 shrink-0 text-muted-foreground/50 opacity-0 group-hover:opacity-100 transition-opacity" :stroke-width="2" />
-            </div>
-            <div class="flex items-center gap-2 flex-wrap mt-1 text-[11px] text-muted-foreground">
-              <span class="font-mono truncate">{{ item.owner }}/{{ item.repo }} <span class="text-muted-foreground/70">#{{ item.number }}</span></span>
-              <span class="flex items-center gap-1">
-                <User class="h-3 w-3" :stroke-width="1.75" />
-                {{ item.author_login }}
+                {{ groupLabel(group) }}
               </span>
-              <span class="text-muted-foreground/60">{{ relativeTime(item.updated_at) }}</span>
-              <Badge tone="neutral" size="xs" class="shrink-0">{{ item.account_label }}</Badge>
-            </div>
-          </div>
+              <span class="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-medium text-muted-foreground">
+                {{ group.items.length }}
+              </span>
+              <span v-if="group.unreviewedCount > 0" class="hidden @[36rem]/list:inline shrink-0 text-[10px] text-amber-600 dark:text-amber-400">
+                {{ t('prInbox.unreviewed', group.unreviewedCount) }}
+              </span>
+            </button>
 
-          <!-- Mapping + action -->
-          <div class="flex items-center gap-2 shrink-0">
-            <template v-if="item.mapped">
-              <Badge tone="primary" size="xs" class="shrink-0 max-w-40 truncate" :title="item.project_name ?? ''">
-                {{ item.project_name }}
-              </Badge>
-              <!-- Linked review session already exists → show its status + open it -->
-              <template v-if="item.existing_run_id">
-                <StatusBadge v-if="runStatus(item)" :status="runStatus(item)!" size="xs" />
-                <Button variant="outline" @click="openRun(item)">
-                  <RefreshCw v-if="isRunning(item)" class="h-3.5 w-3.5 animate-spin" :stroke-width="2" />
-                  <Eye v-else class="h-3.5 w-3.5" :stroke-width="2" />
-                  {{ isRunning(item) ? t('prInbox.reviewingShort') : t('prInbox.viewReview') }}
-                </Button>
-              </template>
-              <!-- No session yet → start one -->
+            <div class="flex items-center gap-1 shrink-0">
+              <!-- Author group: treat this login as a bot from now on. Space is
+                   reserved (visibility, not display) so the group name doesn't
+                   shift on hover; revealed on hover or when the header holds
+                   keyboard focus. The card ⋯ menu offers the same action. -->
               <Button
-                v-else
-                :disabled="store.reviewingKeys.has(prKey(item))"
-                @click="handleReview(item)"
+                v-if="store.groupBy === 'author' && group.kind === 'normal' && group.label"
+                variant="ghost"
+                size="icon-sm"
+                class="invisible group-hover/header:visible group-focus-within/header:visible"
+                :title="t('prInbox.markAsBot')"
+                :aria-label="t('prInbox.markAsBot')"
+                @click="store.addBotLogin(group.label)"
+              >
+                <Bot class="h-3.5 w-3.5" :stroke-width="1.75" />
+              </Button>
+              <!-- Bulk review: eligible = mapped, no linked run, not starting -->
+              <Button
+                v-if="bulk?.groupKey === group.key"
+                variant="outline"
+                size="xs"
+                disabled
+                :title="t('prInbox.bulk.progress', { done: bulk.done, total: bulk.total })"
+              >
+                <RefreshCw class="h-3.5 w-3.5 animate-spin" :stroke-width="2" />
+                <span class="hidden @[44rem]/list:inline">{{ t('prInbox.bulk.progress', { done: bulk.done, total: bulk.total }) }}</span>
+                <span class="tabular-nums @[44rem]/list:hidden">{{ bulk.done }}/{{ bulk.total }}</span>
+              </Button>
+              <Button
+                v-else-if="bulkCandidates(group).total > 0"
+                variant="outline"
+                size="xs"
+                :disabled="bulk !== null"
+                :title="t('prInbox.bulk.action', { count: Math.min(bulkCandidates(group).total, BULK_REVIEW_CAP) })"
+                :aria-label="t('prInbox.bulk.action', { count: Math.min(bulkCandidates(group).total, BULK_REVIEW_CAP) })"
+                @click="reviewAll(group)"
               >
                 <Sparkles class="h-3.5 w-3.5" :stroke-width="2" />
-                {{ store.reviewingKeys.has(prKey(item)) ? t('prInbox.opening') : t('prInbox.aiReview') }}
+                <span class="hidden @[44rem]/list:inline">
+                  {{ t('prInbox.bulk.action', { count: Math.min(bulkCandidates(group).total, BULK_REVIEW_CAP) }) }}
+                </span>
               </Button>
-            </template>
-            <template v-else>
-              <Badge tone="neutral" size="xs" class="shrink-0">{{ t('prInbox.notInDevdy') }}</Badge>
-              <Button variant="ghost" @click="router.push('/projects')">
-                <FolderPlus class="h-3.5 w-3.5" :stroke-width="2" />
-                {{ t('prInbox.addToDevdy') }}
-              </Button>
-            </template>
+            </div>
           </div>
-        </Card>
+
+          <div
+            v-if="group.kind === 'all' || !isCollapsed(group)"
+            class="flex flex-col"
+            :class="store.density === 'compact' ? 'gap-1.5' : group.kind === 'all' ? 'gap-3' : 'gap-2'"
+          >
+            <!-- Keyed per group: in reviewer-account mode one PR can sit in
+                 two groups, but never twice in the same one. -->
+            <PrInboxCard
+              v-for="(item, i) in group.items"
+              :key="`${group.key}:${prKey(item)}`"
+              :item="item"
+              :density="store.density"
+              :grouped="group.kind !== 'all'"
+              :is-bot="isBot(item)"
+              :run-status="runStatus(item)"
+              :reviewing="store.reviewingKeys.has(prKey(item))"
+              :now="now"
+              :index="i"
+              @review="handleReview"
+              @open-run="openRun"
+              @menu="openMenu"
+            />
+          </div>
+        </section>
+
+        <!-- Hidden bot PRs: one summary row instead of the noise. -->
+        <div
+          v-if="grouped.hiddenBotCount > 0"
+          class="flex items-center gap-2 rounded-lg border border-dashed border-border/60 px-3 py-2 text-[11px] text-muted-foreground"
+        >
+          <EyeOff class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+          <span>{{ t('prInbox.botsHidden', grouped.hiddenBotCount) }}</span>
+          <span class="text-muted-foreground/50">·</span>
+          <button
+            type="button"
+            class="font-medium text-primary hover:underline cursor-pointer"
+            @click="store.setHideBots(false)"
+          >
+            {{ t('prInbox.showBots') }}
+          </button>
+        </div>
       </div>
     </div>
+
+    <!-- Card menu (⋯ / right-click) -->
+    <ContextMenu :open="menu.open" :x="menu.x" :y="menu.y" @close="closeMenu">
+      <template v-if="menu.item">
+        <DropdownItem @click="openPr(menu.item)">
+          <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ t('prInbox.openOnGitHub') }}
+        </DropdownItem>
+        <DropdownSeparator />
+        <DropdownItem v-if="isCustomBot(menu.item.author_login)" @click="store.removeBotLogin(menu.item.author_login)">
+          <User class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ t('prInbox.unmarkBot', { login: menu.item.author_login }) }}
+        </DropdownItem>
+        <DropdownItem v-else-if="!menu.item.author_is_bot" @click="store.addBotLogin(menu.item.author_login)">
+          <Bot class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ t('prInbox.markLoginAsBot', { login: menu.item.author_login }) }}
+        </DropdownItem>
+        <DropdownItem v-else disabled>
+          <Bot class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ t('prInbox.detectedBot') }}
+        </DropdownItem>
+      </template>
+    </ContextMenu>
+
+    <PrInboxBotAccountsModal :open="botAccountsOpen" @close="botAccountsOpen = false" />
   </div>
 </template>

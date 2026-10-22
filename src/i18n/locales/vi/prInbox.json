@@ -14,5 +14,83 @@
   "justNow": "vừa xong",
   "minsAgo": "{mins} phút trước",
   "hoursAgo": "{hours} giờ trước",
-  "daysAgo": "{days} ngày trước"
+  "daysAgo": "{days} ngày trước",
+  "groupByLabel": "Nhóm theo",
+  "groupBy": {
+    "none": "Không nhóm",
+    "project": "Dự án",
+    "repo": "Repository",
+    "author": "Tác giả",
+    "reviewer_account": "Tài khoản review"
+  },
+  "hideBots": "Ẩn bot",
+  "notInDevdyGroup": "Chưa có trong devdy",
+  "botsGroup": "Bot",
+  "botsHidden": "Đã ẩn {count} PR từ bot",
+  "showBots": "Hiện",
+  "unreviewed": "{count} chưa review",
+  "draft": "Nháp",
+  "bot": "bot",
+  "unknownGroup": "Không rõ",
+  "visibleOfTotal": "Đang hiện {visible}/{total} PR",
+  "searchPlaceholder": "Tìm theo tiêu đề, #số, repo, tác giả…",
+  "filters": {
+    "project": "Dự án",
+    "author": "Tác giả",
+    "account": "Tài khoản",
+    "status": "Trạng thái review",
+    "clearAll": "Xoá bộ lọc",
+    "noMatch": "Không có PR nào khớp bộ lọc hiện tại",
+    "button": "Bộ lọc",
+    "noOptions": "Chưa có gì để lọc",
+    "searchSection": "Tìm {section}…",
+    "noMatchSection": "Không có kết quả",
+    "remove": "Bỏ bộ lọc {filter}",
+    "clearSearchAndFilters": "Xoá tìm kiếm và bộ lọc"
+  },
+  "status": {
+    "not_reviewed": "Chưa review",
+    "running": "Đang review",
+    "reviewed": "Đã review",
+    "unmapped": "Chưa có trong devdy"
+  },
+  "density": {
+    "label": "Mật độ",
+    "comfortable": "Thoáng",
+    "compact": "Gọn"
+  },
+  "botAccounts": {
+    "button": "Tài khoản bot",
+    "title": "Tài khoản bot",
+    "hint": "PR từ các login GitHub này được coi là PR của bot, ngoài các tài khoản GitHub tự đánh dấu là bot. Không phân biệt hoa thường.",
+    "placeholder": "Login GitHub, vd: ci-service",
+    "add": "Thêm",
+    "empty": "Chưa có tài khoản bot tuỳ chỉnh.",
+    "remove": "Xoá"
+  },
+  "markAsBot": "Đánh dấu là bot",
+  "markLoginAsBot": "Coi {login} là bot",
+  "unmarkBot": "Không coi {login} là bot nữa",
+  "detectedBot": "GitHub đã đánh dấu là bot",
+  "openOnGitHub": "Mở trên GitHub",
+  "moreActions": "Thao tác khác",
+  "stale": "Cũ",
+  "staleTitle": "Không có cập nhật hơn {days} ngày",
+  "alsoRequested": "cùng:",
+  "bulk": {
+    "action": "AI review tất cả ({count})",
+    "progress": "Đang review {done}/{total}…",
+    "confirmTitle": "AI review tất cả",
+    "confirmBody": "Bắt đầu AI review cho {count} PR trong “{group}”? Các review sẽ được chạy lần lượt.",
+    "capped": "Chỉ lấy {cap} PR đầu tiên trong {total} PR đủ điều kiện — chạy lại để review phần còn lại.",
+    "confirmAction": "Bắt đầu {count} review",
+    "itemFailed": "Không thể bắt đầu review {repo}#{number}: {error}",
+    "started": "Đã bắt đầu {count} review",
+    "allFailed": "{count} review không bắt đầu được"
+  },
+  "display": {
+    "button": "Hiển thị",
+    "hideBotsHint": "Gộp PR của bot vào một dòng tóm tắt"
+  },
+  "clearSearch": "Xoá tìm kiếm"
 }
