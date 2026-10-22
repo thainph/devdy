@@ -140,6 +140,10 @@ struct MockData {
     slow: HashMap<String, (usize, Duration)>,
     /// (path, authorization header) of every request
     log: Vec<(String, Option<String>)>,
+    /// JSON bodies received by `chat.postMessage`
+    posted: Vec<Value>,
+    /// `chat.postMessage` answer override (e.g. a missing scope)
+    post_error: Option<Value>,
 }
 
 #[derive(Clone, Default)]
@@ -256,6 +260,35 @@ async fn api(
     }
 }
 
+/// `chat.postMessage`: records the body and appends the reply to its thread.
+async fn post_api(
+    AxState(mock): AxState<Mock>,
+    AxPath(method): AxPath<String>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    let auth = mock.record(format!("/api/{method}"), &headers);
+    if mock.with(|d| !d.teams.contains_key(&token_of(&auth))) {
+        return Json(json!({ "ok": false, "error": "invalid_auth" })).into_response();
+    }
+    if method != "chat.postMessage" {
+        return Json(json!({ "ok": false, "error": "unknown_method" })).into_response();
+    }
+    if let Some(e) = mock.with(|d| d.post_error.clone()) {
+        return Json(e).into_response();
+    }
+    let root = body["thread_ts"].as_str().unwrap_or_default().to_string();
+    let ts = "1789877300.000300";
+    let msg = json!({ "type": "message", "ts": ts, "thread_ts": root, "user": "U1", "text": body["text"] });
+    mock.with(|d| {
+        d.posted.push(body.clone());
+        if let Some(last) = d.replies.get_mut(&root).and_then(|p| p.last_mut()) {
+            last.push(msg);
+        }
+    });
+    Json(json!({ "ok": true, "channel": body["channel"], "ts": ts })).into_response()
+}
+
 async fn file(
     AxState(mock): AxState<Mock>,
     AxPath(id): AxPath<String>,
@@ -338,7 +371,7 @@ impl Env {
             .unwrap();
         let port = listener.local_addr().unwrap().port();
         let router = Router::new()
-            .route("/api/:method", get(api))
+            .route("/api/:method", get(api).post(post_api))
             .route("/files/:id", get(file))
             .route("/avatars/:name", get(avatar))
             .with_state(mock.clone());
@@ -2094,4 +2127,58 @@ async fn project_removal_drops_its_run_links() {
         .map(|l| l.run_id)
         .collect();
     assert_eq!(left, ["r2"]);
+}
+
+#[tokio::test]
+async fn post_reply_posts_to_the_thread_and_refreshes() {
+    let env = Env::new("post-reply").await;
+    env.seed_thread();
+    let id = env.add(LINK).await;
+    env.run(&id).await;
+
+    let err = env.state.post_reply(&id, "   ").await.unwrap_err();
+    assert_eq!(err.code, "empty_reply");
+    assert!(env.mock.with(|d| d.posted.is_empty()));
+
+    let s = env
+        .state
+        .post_reply(&id, "  Thanks, I will check it.  ")
+        .await
+        .unwrap();
+    assert_eq!(s.fetch_status, "pending");
+    let posted = env.mock.with(|d| d.posted.clone());
+    assert_eq!(
+        posted,
+        vec![json!({ "channel": CH, "thread_ts": ROOT, "text": "Thanks, I will check it." })]
+    );
+    let calls = env.mock.requests("/api/chat.postMessage");
+    assert_eq!(calls[0].1.as_deref(), Some("Bearer xoxp-secret-1"));
+
+    env.run(&id).await;
+    let v = env.view(&id).await;
+    assert_eq!(v.messages.len(), 4);
+    assert_eq!(v.messages[3].text_raw, "Thanks, I will check it.");
+}
+
+#[tokio::test]
+async fn post_reply_maps_slack_errors() {
+    let env = Env::new("post-reply-err").await;
+    env.seed_thread();
+    let id = env.add(LINK).await;
+    env.run(&id).await;
+    env.mock.with(|d| {
+        d.post_error =
+            Some(json!({ "ok": false, "error": "missing_scope", "needed": "chat:write" }))
+    });
+    let err = env.state.post_reply(&id, "hi").await.unwrap_err();
+    assert_eq!(
+        (err.code.as_str(), err.detail.as_str()),
+        ("post_missing_scope", "chat:write")
+    );
+    env.mock
+        .with(|d| d.post_error = Some(json!({ "ok": false, "error": "not_in_channel" })));
+    let err = env.state.post_reply(&id, "hi").await.unwrap_err();
+    assert_eq!(err.code, "not_in_channel");
+    // Nothing was refreshed: the thread stays ready.
+    assert_eq!(env.status(&id).await.0, "ready");
 }

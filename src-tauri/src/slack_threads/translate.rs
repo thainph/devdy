@@ -166,6 +166,21 @@ pub fn build_batch_prompt(blocks: &[Block], style_instruction: &str) -> String {
     p
 }
 
+/// Prompt turning the user's (usually Vietnamese) reply into English before it
+/// is posted to the thread.
+pub fn build_reply_prompt(text: &str) -> String {
+    format!(
+        "You translate a Slack thread reply written by a Vietnamese software engineer into English for colleagues and customers.\n\
+         Rules:\n\
+         - Output ONLY the English reply text — no preamble, no notes, no quotes, no delimiters.\n\
+         - Use clear, polite, concise business English; keep the meaning and every detail, do not add content.\n\
+         - Keep Slack formatting (*bold*, _italic_, ~strike~, \"> \" quotes, bullets, numbering, line breaks), mentions like <@U123> / <#C123>, :emoji: codes, `inline code`, code blocks, URLs, file names and identifiers unchanged.\n\
+         - Keep person names as written (e.g. Takeuchi-san stays Takeuchi-san).\n\
+         - If the text is already English, return it unchanged.\n\n\
+         <<<\n{text}\n>>>"
+    )
+}
+
 fn is_block_id(id: &str) -> bool {
     let (a, b) = match id.split_once('.') {
         Some((a, b)) => (a, Some(b)),

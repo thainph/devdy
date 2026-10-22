@@ -58,6 +58,14 @@
     "invalid_project": "The project does not exist.",
     "invalid_title": "The title must be 1 to 200 characters.",
     "not_found": "This thread no longer exists.",
+    "post_missing_scope": "The Slack token cannot post messages ({detail}). Add the chat:write scope to the Slack app and reinstall the token.",
+    "post_network": "Network error while posting — the reply may have reached Slack. Refresh the thread to check before sending again.",
+    "empty_reply": "The reply is empty.",
+    "reply_too_long": "The reply is too long (max 8000 characters).",
+    "reply_translate_failed": "Could not translate into English: {detail}",
+    "is_archived": "The channel is archived, so the reply cannot be posted.",
+    "restricted_action": "The workspace does not allow this account to post in the channel.",
+    "msg_too_long": "The message exceeds Slack's length limit.",
     "unknown": "Error: {detail}"
   },
   "warnings": {
@@ -139,5 +147,17 @@
   },
   "renameFailed": "Could not rename: {error}",
   "noSelection": "Pick a thread on the left to read it.",
-  "empty": "This thread has no messages yet."
+  "empty": "This thread has no messages yet.",
+  "reply": {
+    "placeholder": "Write a reply in Vietnamese…",
+    "englishLabel": "English text to send",
+    "englishPlaceholder": "English translation (editable before sending)",
+    "translating": "Translating…",
+    "stale": "Source changed — waiting for a new translation",
+    "retry": "Translate again",
+    "hint": "Translated into English when you stop typing · ⌘↵ to send",
+    "send": "Send",
+    "sent": "Reply posted to Slack",
+    "sendFailed": "Could not post the reply: {error}"
+  }
 }

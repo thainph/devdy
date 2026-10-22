@@ -65,6 +65,30 @@ const TRANSIENT_CODES: [&str; 5] = [
     "rate_limited",
 ];
 
+/// Longest reply accepted by `post_reply` (Slack truncates `text` at 40k).
+pub const MAX_REPLY_CHARS: usize = 8_000;
+
+/// `chat.postMessage` failures as coded errors.
+fn post_error(e: api::SlackError) -> CodedError {
+    use api::SlackError;
+    match e {
+        SlackError::Api { code, needed } => match code.as_str() {
+            "missing_scope" => CodedError::new(
+                "post_missing_scope",
+                needed.unwrap_or_else(|| "chat:write".into()),
+            ),
+            "not_in_channel" | "channel_not_found" | "is_archived" | "thread_not_found"
+            | "restricted_action" | "msg_too_long" | "rate_limited" => {
+                CodedError::new(code.clone(), code)
+            }
+            _ => token::auth_error(SlackError::Api { code, needed }),
+        },
+        // The request may have reached Slack: never retried automatically.
+        SlackError::Network(d) => CodedError::new("post_network", d),
+        other => token::auth_error(other),
+    }
+}
+
 /// Error carried to the FE / API as `"<code>: <detail>"`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodedError {
@@ -608,6 +632,47 @@ impl SlackThreadsState {
         store::reset_translations(&self.ctx.db, id)
             .await
             .map_err(store::internal)?;
+        self.refresh(id).await
+    }
+
+    /// Post `text` as a reply in the thread (as the token's user), then refresh
+    /// the thread so the new message shows up.
+    pub async fn post_reply(&self, id: &str, text: &str) -> Result<SlackThreadSummary, CodedError> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err(CodedError::new("empty_reply", "reply text is empty"));
+        }
+        if text.chars().count() > MAX_REPLY_CHARS {
+            return Err(CodedError::new(
+                "reply_too_long",
+                format!("reply exceeds {MAX_REPLY_CHARS} characters"),
+            ));
+        }
+        let summary = store::get_summary(&self.ctx.db, id).await?;
+        let link = summary
+            .thread_url
+            .as_deref()
+            .and_then(|u| link::parse_thread_link(u).ok())
+            .ok_or_else(|| {
+                CodedError::new("invalid_link", "thread has no parsable Slack thread_url")
+            })?;
+        let found = token::sources(&self.ctx.db, &self.ctx.lookup)
+            .await
+            .map_err(store::internal)?;
+        let (client, _) = token::resolve(
+            &found,
+            &link.host,
+            &self.ctx.http,
+            &self.ctx.token_http,
+            &self.ctx.auth_cache,
+        )
+        .await?;
+        // A fetched thread knows its root ts even when the link was a reply.
+        let thread_ts = summary.thread_ts.as_deref().unwrap_or(&link.thread_ts);
+        client
+            .post_thread_reply(&link.channel_id, thread_ts, text)
+            .await
+            .map_err(post_error)?;
         self.refresh(id).await
     }
 

@@ -58,6 +58,14 @@
     "invalid_project": "Project không tồn tại.",
     "invalid_title": "Tiêu đề phải từ 1 đến 200 ký tự.",
     "not_found": "Thread này không còn tồn tại.",
+    "post_missing_scope": "Token Slack thiếu quyền gửi tin ({detail}). Hãy thêm scope chat:write cho Slack app rồi cài lại token.",
+    "post_network": "Lỗi mạng khi gửi phản hồi — tin có thể đã lên Slack. Hãy làm mới thread để kiểm tra trước khi gửi lại.",
+    "empty_reply": "Nội dung phản hồi đang trống.",
+    "reply_too_long": "Phản hồi quá dài (tối đa 8000 ký tự).",
+    "reply_translate_failed": "Không dịch được sang tiếng Anh: {detail}",
+    "is_archived": "Kênh đã được lưu trữ (archived) nên không gửi được.",
+    "restricted_action": "Workspace không cho phép tài khoản này gửi tin vào kênh.",
+    "msg_too_long": "Tin nhắn quá dài so với giới hạn của Slack.",
     "unknown": "Lỗi: {detail}"
   },
   "warnings": {
@@ -139,5 +147,17 @@
   },
   "renameFailed": "Không đổi tên được: {error}",
   "noSelection": "Chọn một thread ở bên trái để đọc.",
-  "empty": "Thread chưa có tin nhắn nào."
+  "empty": "Thread chưa có tin nhắn nào.",
+  "reply": {
+    "placeholder": "Viết phản hồi bằng tiếng Việt…",
+    "englishLabel": "Bản tiếng Anh sẽ gửi",
+    "englishPlaceholder": "Bản dịch tiếng Anh (có thể sửa trước khi gửi)",
+    "translating": "Đang dịch…",
+    "stale": "Bản gốc đã đổi — chờ dịch lại",
+    "retry": "Dịch lại",
+    "hint": "Tự dịch sang tiếng Anh khi bạn ngừng gõ · ⌘↵ để gửi",
+    "send": "Gửi",
+    "sent": "Đã gửi phản hồi lên Slack",
+    "sendFailed": "Không gửi được phản hồi: {error}"
+  }
 }

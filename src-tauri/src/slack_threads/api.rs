@@ -355,6 +355,80 @@ impl SlackClient {
         Ok((body, headers))
     }
 
+    /// POST a Web API method with a JSON body. Only HTTP 429 is retried (the
+    /// message was not accepted); network errors / 5xx are NOT retried, since
+    /// the call may have gone through and a retry could post twice.
+    async fn post_json(&self, method: &str, body: &Value) -> Result<Value, SlackError> {
+        let url = reqwest::Url::parse(&self.cfg.api_base)
+            .and_then(|b| b.join(method))
+            .map_err(|_| SlackError::Http("invalid API base URL".into()))?;
+        if !self.cfg.token_allowed(url.as_str()) {
+            return Err(SlackError::Http(
+                "refusing to send the token to this host".into(),
+            ));
+        }
+        let mut rate_retries = 0;
+        let resp = loop {
+            let r = self
+                .http
+                .post(url.clone())
+                .timeout(self.cfg.timeout)
+                .header(AUTHORIZATION, format!("Bearer {}", self.token))
+                .json(body)
+                .send()
+                .await
+                .map_err(|e| SlackError::Network(net_error(&e)))?;
+            if r.status() != StatusCode::TOO_MANY_REQUESTS {
+                break r;
+            }
+            if rate_retries >= RATE_LIMIT_RETRIES {
+                return Err(SlackError::RateLimited);
+            }
+            rate_retries += 1;
+            let secs = r
+                .headers()
+                .get(RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .unwrap_or(DEFAULT_RETRY_AFTER)
+                .min(MAX_RETRY_AFTER);
+            tokio::time::sleep(self.wait(secs)).await;
+        };
+        let status = resp.status();
+        let v: Value = resp.json().await.map_err(|_| {
+            SlackError::Http(format!(
+                "{method}: invalid response (HTTP {})",
+                status.as_u16()
+            ))
+        })?;
+        if v.get("ok").and_then(Value::as_bool) != Some(true) {
+            let code = v
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown_error")
+                .to_string();
+            let needed = non_empty(v.get("needed"));
+            return Err(SlackError::Api { code, needed });
+        }
+        Ok(v)
+    }
+
+    /// `chat.postMessage` as a thread reply; returns the new message `ts`.
+    pub async fn post_thread_reply(
+        &self,
+        channel: &str,
+        thread_ts: &str,
+        text: &str,
+    ) -> Result<String, SlackError> {
+        let body = serde_json::json!({
+            "channel": channel,
+            "thread_ts": thread_ts,
+            "text": text,
+        });
+        let v = self.post_json("chat.postMessage", &body).await?;
+        Ok(non_empty(v.get("ts")).unwrap_or_default())
+    }
+
     pub async fn auth_test(&self) -> Result<AuthInfo, SlackError> {
         let (v, headers) = self.call("auth.test", &[]).await?;
         let url = non_empty(v.get("url")).unwrap_or_default();
