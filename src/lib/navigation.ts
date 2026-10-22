@@ -20,8 +20,9 @@ import { openPrInboxWindow } from '@/lib/prInboxWindow'
  * the native "Go" menu so the two can never drift — adding a screen in one
  * place adds it to both.
  *
- * Ordered by how often they're used: daily work first (so it gets ⌘1…⌘4),
- * then the agent configuration library, then app-level screens. A divider is
+ * Ordered by how often they're used: daily work first, then the agent
+ * configuration library, then app-level screens. ⌘1…⌘9 are fixed per route
+ * (`shortcut`), not by position. A divider is
  * drawn wherever `group` changes.
  */
 export type NavGroup = 'work' | 'config' | 'app'
@@ -38,19 +39,24 @@ export interface NavRoute {
    * this instead of routing, and the route itself diverts to it.
    */
   openWindow?: () => unknown
+  /**
+   * ⌘/Ctrl + this digit in the Go menu. Fixed per destination so adding a
+   * screen never moves the shortcuts people already know.
+   */
+  shortcut?: number
 }
 
 export const NAV_ROUTES: NavRoute[] = [
-  { path: '/projects', labelKey: 'nav.projects', icon: FolderOpen, group: 'work' },
-  { path: '/pr-inbox', labelKey: 'nav.prInbox', icon: GitPullRequest, group: 'work', openWindow: openPrInboxWindow },
-  { path: '/calendar', labelKey: 'nav.calendar', icon: CalendarDays, group: 'work' },
-  { path: '/gantt', labelKey: 'nav.gantt', icon: GanttChartSquare, group: 'work' },
+  { path: '/projects', labelKey: 'nav.projects', icon: FolderOpen, group: 'work', shortcut: 1 },
+  { path: '/pr-inbox', labelKey: 'nav.prInbox', icon: GitPullRequest, group: 'work', openWindow: openPrInboxWindow, shortcut: 2 },
+  { path: '/calendar', labelKey: 'nav.calendar', icon: CalendarDays, group: 'work', shortcut: 3 },
+  { path: '/gantt', labelKey: 'nav.gantt', icon: GanttChartSquare, group: 'work', shortcut: 4 },
   { path: '/pulse', labelKey: 'nav.pulse', icon: Activity, group: 'work' },
-  { path: '/skills', labelKey: 'nav.skills', icon: Puzzle, group: 'config' },
-  { path: '/rules', labelKey: 'nav.rules', icon: ScrollText, group: 'config' },
-  { path: '/mcp', labelKey: 'nav.mcp', icon: Server, group: 'config' },
-  { path: '/servers', labelKey: 'nav.servers', icon: HardDrive, group: 'config' },
-  { path: '/stats', labelKey: 'nav.stats', icon: BarChart3, group: 'app' },
+  { path: '/skills', labelKey: 'nav.skills', icon: Puzzle, group: 'config', shortcut: 5 },
+  { path: '/rules', labelKey: 'nav.rules', icon: ScrollText, group: 'config', shortcut: 6 },
+  { path: '/mcp', labelKey: 'nav.mcp', icon: Server, group: 'config', shortcut: 7 },
+  { path: '/servers', labelKey: 'nav.servers', icon: HardDrive, group: 'config', shortcut: 8 },
+  { path: '/stats', labelKey: 'nav.stats', icon: BarChart3, group: 'app', shortcut: 9 },
   { path: '/settings', labelKey: 'nav.settings', icon: Settings, group: 'app' },
   { path: '/about', labelKey: 'nav.about', icon: Info, group: 'app' },
 ]
