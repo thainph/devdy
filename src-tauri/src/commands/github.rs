@@ -937,6 +937,13 @@ pub struct PrInboxItem {
     pub title: String,
     pub html_url: String,
     pub author_login: String,
+    pub author_avatar_url: Option<String>,
+    /// True for bot authors (dependabot, renovate, GitHub Apps) — the UI hides
+    /// or groups them separately so they don't drown out human PRs.
+    pub author_is_bot: bool,
+    pub draft: bool,
+    /// Label names, in GitHub's order.
+    pub labels: Vec<String>,
     pub updated_at: String,
     /// True when a devdy repo row matches owner/repo — enables the Review action.
     pub mapped: bool,
@@ -947,6 +954,28 @@ pub struct PrInboxItem {
     /// (if any) — lets the UI link to it and avoid spawning a duplicate session.
     pub existing_run_id: Option<String>,
     pub existing_run_status: Option<String>,
+    /// Every one of the user's accounts that was asked to review this PR, in
+    /// account order. `account_id`/`account_label` above stay the first hit —
+    /// that is the account the Review action runs as.
+    pub reviewer_accounts: Vec<PrInboxReviewerAccount>,
+    /// Other pending reviewers (users and teams), excluding the user's own
+    /// accounts. Best-effort: empty when the GraphQL lookup failed.
+    pub requested_reviewers: Vec<PrRequestedReviewer>,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct PrInboxReviewerAccount {
+    pub account_id: String,
+    pub account_label: String,
+}
+
+/// A pending review request on a PR: a user (`kind = "user"`, login) or a team
+/// (`kind = "team"`, `org/slug` — GitHub's `combinedSlug` — or the bare slug).
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct PrRequestedReviewer {
+    pub login_or_slug: String,
+    pub kind: String,
+    pub avatar_url: Option<String>,
 }
 
 /// An account whose review-request fetch failed (after retries) while building
@@ -982,6 +1011,130 @@ fn parse_owner_repo(repository_url: &str) -> Option<(String, String)> {
     }
 }
 
+/// True when a GitHub author is a bot: either the API reports `type: "Bot"`
+/// (GitHub Apps such as dependabot/renovate) or the login carries the
+/// `[bot]` suffix GitHub gives app accounts.
+fn is_bot_author(user_type: &str, login: &str) -> bool {
+    user_type.eq_ignore_ascii_case("bot") || login.to_ascii_lowercase().ends_with("[bot]")
+}
+
+/// A search hit from `/search/issues`. octocrab's `Issue` model drops the
+/// `draft` flag the search API returns for PRs, so read it alongside the
+/// flattened issue instead of using `search().issues_and_pull_requests()`.
+#[derive(Debug, serde::Deserialize)]
+struct SearchPrItem {
+    #[serde(flatten)]
+    issue: octocrab::models::issues::Issue,
+    #[serde(default)]
+    draft: bool,
+}
+
+/// `owner/repo#number`, lowercased — joins GraphQL results onto search hits.
+fn pr_map_key(owner: &str, repo: &str, number: u64) -> String {
+    format!("{}/{}#{}", owner.to_lowercase(), repo.to_lowercase(), number)
+}
+
+/// Parse one page of the review-requests GraphQL search (see
+/// `fetch_requested_reviewers`) into `pr_map_key -> reviewers`, plus the cursor
+/// of the next page (None when this was the last one). Reviewers whose login
+/// is in `exclude_logins` (lowercased — the user's own accounts) are dropped.
+/// Returns Err when the response carries no search data (GraphQL errors).
+fn parse_review_requests_page(
+    resp: &serde_json::Value,
+    exclude_logins: &std::collections::HashSet<String>,
+) -> Result<(std::collections::HashMap<String, Vec<PrRequestedReviewer>>, Option<String>), String> {
+    let Some(search) = resp.pointer("/data/search").filter(|v| v.is_object()) else {
+        let msg = resp
+            .pointer("/errors/0/message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("missing search data");
+        return Err(msg.to_string());
+    };
+    let mut map = std::collections::HashMap::new();
+    for node in search.pointer("/nodes").and_then(|n| n.as_array()).into_iter().flatten() {
+        let number = node.get("number").and_then(|n| n.as_u64());
+        let name_with_owner = node.pointer("/repository/nameWithOwner").and_then(|s| s.as_str());
+        let (Some(number), Some((owner, repo))) = (number, name_with_owner.and_then(|s| s.split_once('/'))) else {
+            continue;
+        };
+        let mut reviewers = Vec::new();
+        for req in node.pointer("/reviewRequests/nodes").and_then(|n| n.as_array()).into_iter().flatten() {
+            let Some(r) = req.get("requestedReviewer").filter(|v| v.is_object()) else { continue };
+            let avatar = r.get("avatarUrl").and_then(|s| s.as_str()).map(str::to_string);
+            let reviewer = match r.get("__typename").and_then(|t| t.as_str()) {
+                // Org teams and enterprise teams; prefer `org/slug` for display.
+                Some("Team") | Some("EnterpriseTeam") => r
+                    .get("combinedSlug")
+                    .or_else(|| r.get("slug"))
+                    .and_then(|s| s.as_str())
+                    .map(|slug| PrRequestedReviewer {
+                        login_or_slug: slug.to_string(),
+                        kind: "team".to_string(),
+                        avatar_url: avatar,
+                    }),
+                // User, Bot and Mannequin all expose `login`.
+                _ => r
+                    .get("login")
+                    .and_then(|s| s.as_str())
+                    .filter(|login| !exclude_logins.contains(&login.to_lowercase()))
+                    .map(|login| PrRequestedReviewer {
+                        login_or_slug: login.to_string(),
+                        kind: "user".to_string(),
+                        avatar_url: avatar,
+                    }),
+            };
+            if let Some(reviewer) = reviewer {
+                reviewers.push(reviewer);
+            }
+        }
+        map.insert(pr_map_key(owner, repo, number), reviewers);
+    }
+    let has_next = search.pointer("/pageInfo/hasNextPage").and_then(|b| b.as_bool()) == Some(true);
+    let cursor = search
+        .pointer("/pageInfo/endCursor")
+        .and_then(|c| c.as_str())
+        .filter(|_| has_next)
+        .map(str::to_string);
+    Ok((map, cursor))
+}
+
+/// Pending reviewers for every PR matched by `query`, via GraphQL search — one
+/// call per 100 PRs (capped at 5 pages), not one per PR. Best-effort: on any
+/// failure the pages fetched so far are kept and the rest is skipped.
+async fn fetch_requested_reviewers(
+    client: &octocrab::Octocrab,
+    query: &str,
+    exclude_logins: &std::collections::HashSet<String>,
+) -> std::collections::HashMap<String, Vec<PrRequestedReviewer>> {
+    const GQL: &str = "query($q:String!,$cursor:String){ search(type:ISSUE, query:$q, first:100, after:$cursor){ pageInfo{ hasNextPage endCursor } nodes{ ... on PullRequest{ number repository{ nameWithOwner } reviewRequests(first:20){ nodes{ requestedReviewer{ __typename ... on User{ login avatarUrl } ... on Bot{ login avatarUrl } ... on Mannequin{ login avatarUrl } ... on Team{ slug combinedSlug avatarUrl } ... on EnterpriseTeam{ slug combinedSlug } } } } } } } }";
+    let mut map = std::collections::HashMap::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..5 {
+        let payload = serde_json::json!({ "query": GQL, "variables": { "q": query, "cursor": cursor } });
+        let resp: serde_json::Value = match client.graphql(&payload).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("PR inbox: requested-reviewers lookup failed: {e}");
+                break;
+            }
+        };
+        match parse_review_requests_page(&resp, exclude_logins) {
+            Ok((page, next)) => {
+                map.extend(page);
+                match next {
+                    Some(c) => cursor = Some(c),
+                    None => break,
+                }
+            }
+            Err(e) => {
+                tracing::warn!("PR inbox: requested-reviewers lookup failed: {e}");
+                break;
+            }
+        }
+    }
+    map
+}
+
 /// List every open PR where the signed-in user is a requested reviewer, gathered
 /// across all validated GitHub accounts and mapped to devdy projects when the
 /// repo is already tracked. Read-only; a failing account is skipped, not fatal.
@@ -998,8 +1151,17 @@ pub async fn list_review_requested_prs(db: State<'_, Db>) -> Result<PrInboxResul
     .await
     .map_err(|e| e.to_string())?;
 
-    // Dedup a PR that multiple accounts are asked to review onto its first hit.
-    let mut seen: std::collections::HashSet<(String, String, u64)> = std::collections::HashSet::new();
+    // Dedup a PR that multiple accounts are asked to review onto its first hit,
+    // recording the later accounts in `reviewer_accounts` (key -> items index).
+    let mut seen: std::collections::HashMap<(String, String, u64), usize> = std::collections::HashMap::new();
+    // The user's own logins — excluded from `requested_reviewers`.
+    let own_logins: std::collections::HashSet<String> = account_rows
+        .iter()
+        .map(|r| r.get::<String, _>("username").to_lowercase())
+        .collect();
+    // pr_map_key -> other pending reviewers, merged across accounts.
+    let mut reviewers_by_pr: std::collections::HashMap<String, Vec<PrRequestedReviewer>> =
+        std::collections::HashMap::new();
     let mut items: Vec<PrInboxItem> = Vec::new();
     // Accounts whose fetch failed after retries — surfaced to the UI so a
     // transiently-missing PR reads as "try again" instead of "no PRs".
@@ -1039,10 +1201,10 @@ pub async fn list_review_requested_prs(db: State<'_, Db>) -> Result<PrInboxResul
         let mut first_page = None;
         for attempt in 0u32..3 {
             match client
-                .search()
-                .issues_and_pull_requests(query)
-                .per_page(100u8)
-                .send()
+                .get::<octocrab::Page<SearchPrItem>, _, _>(
+                    "/search/issues",
+                    Some(&[("q", query), ("per_page", "100")]),
+                )
                 .await
             {
                 Ok(p) => {
@@ -1075,17 +1237,32 @@ pub async fn list_review_requested_prs(db: State<'_, Db>) -> Result<PrInboxResul
             }
         };
         let issues = client.all_pages(first_page).await.unwrap_or_default();
+        // Non-fatal: a failed lookup only leaves `requested_reviewers` empty.
+        // Skipped when the account has nothing to review — saves a GraphQL call.
+        if !issues.is_empty() {
+            for (key, reviewers) in fetch_requested_reviewers(&client, query, &own_logins).await {
+                reviewers_by_pr.entry(key).or_insert(reviewers);
+            }
+        }
 
-        for issue in issues {
+        for SearchPrItem { issue, draft } in issues {
             let (owner, repo) = match parse_owner_repo(issue.repository_url.as_str()) {
                 Some(pair) => pair,
                 None => continue,
             };
             let number = issue.number;
             let key = (owner.clone(), repo.clone(), number);
-            if !seen.insert(key) {
+            if let Some(&idx) = seen.get(&key) {
+                let accounts = &mut items[idx].reviewer_accounts;
+                if !accounts.iter().any(|a| a.account_id == account_id) {
+                    accounts.push(PrInboxReviewerAccount {
+                        account_id: account_id.clone(),
+                        account_label: account_label.clone(),
+                    });
+                }
                 continue;
             }
+            seen.insert(key, items.len());
 
             // Map to a devdy project via a tracked repo row (case-insensitive).
             let mapping = sqlx::query(
@@ -1143,7 +1320,11 @@ pub async fn list_review_requested_prs(db: State<'_, Db>) -> Result<PrInboxResul
                 number,
                 title: issue.title,
                 html_url: issue.html_url.to_string(),
+                author_is_bot: is_bot_author(&issue.user.r#type, &issue.user.login),
+                author_avatar_url: Some(issue.user.avatar_url.to_string()),
                 author_login: issue.user.login,
+                draft,
+                labels: issue.labels.into_iter().map(|l| l.name).collect(),
                 updated_at: issue.updated_at.to_rfc3339(),
                 mapped,
                 project_id,
@@ -1151,7 +1332,18 @@ pub async fn list_review_requested_prs(db: State<'_, Db>) -> Result<PrInboxResul
                 project_name,
                 existing_run_id,
                 existing_run_status,
+                reviewer_accounts: vec![PrInboxReviewerAccount {
+                    account_id: account_id.clone(),
+                    account_label: account_label.clone(),
+                }],
+                requested_reviewers: Vec::new(),
             });
+        }
+    }
+
+    for item in &mut items {
+        if let Some(reviewers) = reviewers_by_pr.remove(&pr_map_key(&item.owner, &item.repo, item.number)) {
+            item.requested_reviewers = reviewers;
         }
     }
 
@@ -2034,4 +2226,102 @@ pub async fn list_milestone_issues(
     }
 
     Ok(all_issues)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_bot_author, parse_review_requests_page, pr_map_key, SearchPrItem};
+
+    #[test]
+    fn is_bot_author_detects_bot_type_and_login_suffix() {
+        assert!(is_bot_author("Bot", "dependabot[bot]"));
+        assert!(is_bot_author("Bot", "some-app"));
+        assert!(is_bot_author("bot", "x"));
+        assert!(is_bot_author("User", "renovate[bot]"));
+        assert!(is_bot_author("User", "Renovate[BOT]"));
+        assert!(!is_bot_author("User", "octocat"));
+        assert!(!is_bot_author("User", "robot"));
+        assert!(!is_bot_author("Organization", "bot-lovers"));
+    }
+
+    #[test]
+    fn search_pr_item_reads_draft_next_to_issue() {
+        let user = serde_json::json!({
+            "login": "dependabot[bot]", "id": 1, "node_id": "n",
+            "avatar_url": "https://avatars.githubusercontent.com/u/1",
+            "gravatar_id": "", "url": "https://api.github.com/users/x",
+            "html_url": "https://github.com/x", "followers_url": "https://api.github.com/x",
+            "following_url": "https://api.github.com/x", "gists_url": "https://api.github.com/x",
+            "starred_url": "https://api.github.com/x", "subscriptions_url": "https://api.github.com/x",
+            "organizations_url": "https://api.github.com/x", "repos_url": "https://api.github.com/x",
+            "events_url": "https://api.github.com/x", "received_events_url": "https://api.github.com/x",
+            "type": "Bot", "site_admin": false
+        });
+        let mut item = serde_json::json!({
+            "id": 1, "node_id": "n", "url": "https://api.github.com/repos/a/b/issues/1",
+            "repository_url": "https://api.github.com/repos/a/b",
+            "labels_url": "https://api.github.com/x", "comments_url": "https://api.github.com/x",
+            "events_url": "https://api.github.com/x", "html_url": "https://github.com/a/b/pull/1",
+            "number": 1, "state": "open", "title": "Bump x", "body": null,
+            "user": user, "labels": [], "assignees": [], "author_association": "NONE",
+            "locked": false, "comments": 0,
+            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z",
+            "draft": true
+        });
+        let parsed: SearchPrItem = serde_json::from_value(item.clone()).unwrap();
+        assert!(parsed.draft);
+        assert_eq!(parsed.issue.user.r#type, "Bot");
+
+        // Older responses / plain issues omit `draft` — default to false.
+        item.as_object_mut().unwrap().remove("draft");
+        let parsed: SearchPrItem = serde_json::from_value(item).unwrap();
+        assert!(!parsed.draft);
+    }
+
+    #[test]
+    fn parse_review_requests_page_maps_users_and_teams() {
+        let resp = serde_json::json!({ "data": { "search": {
+            "pageInfo": { "hasNextPage": true, "endCursor": "Y3Vyc29y" },
+            "nodes": [
+                { "number": 7, "repository": { "nameWithOwner": "Acme/Web" },
+                  "reviewRequests": { "nodes": [
+                      { "requestedReviewer": { "__typename": "User", "login": "Me", "avatarUrl": "https://a/me" } },
+                      { "requestedReviewer": { "__typename": "User", "login": "bob", "avatarUrl": "https://a/bob" } },
+                      { "requestedReviewer": { "__typename": "Team", "slug": "core", "combinedSlug": "acme/core", "avatarUrl": null } },
+                      { "requestedReviewer": { "__typename": "EnterpriseTeam", "slug": "sec", "combinedSlug": "ent/sec" } },
+                      { "requestedReviewer": { "__typename": "Team", "slug": "legacy" } },
+                      { "requestedReviewer": null }
+                  ] } },
+                // Non-PR hits come back as empty objects — skipped.
+                {}
+            ]
+        } } });
+        let own: std::collections::HashSet<String> = ["me".to_string()].into_iter().collect();
+        let (map, cursor) = parse_review_requests_page(&resp, &own).unwrap();
+        assert_eq!(cursor.as_deref(), Some("Y3Vyc29y"));
+        assert_eq!(map.len(), 1);
+        let reviewers = &map[&pr_map_key("acme", "web", 7)];
+        let names: Vec<(&str, &str)> =
+            reviewers.iter().map(|r| (r.login_or_slug.as_str(), r.kind.as_str())).collect();
+        assert_eq!(
+            names,
+            vec![("bob", "user"), ("acme/core", "team"), ("ent/sec", "team"), ("legacy", "team")]
+        );
+        assert_eq!(reviewers[0].avatar_url.as_deref(), Some("https://a/bob"));
+        assert_eq!(reviewers[1].avatar_url, None);
+    }
+
+    #[test]
+    fn parse_review_requests_page_last_page_and_errors() {
+        let own = std::collections::HashSet::new();
+        let last = serde_json::json!({ "data": { "search": {
+            "pageInfo": { "hasNextPage": false, "endCursor": "Zm9v" }, "nodes": []
+        } } });
+        let (map, cursor) = parse_review_requests_page(&last, &own).unwrap();
+        assert!(map.is_empty());
+        assert_eq!(cursor, None);
+
+        let failed = serde_json::json!({ "data": null, "errors": [{ "message": "rate limited" }] });
+        assert_eq!(parse_review_requests_page(&failed, &own).unwrap_err(), "rate limited");
+    }
 }
