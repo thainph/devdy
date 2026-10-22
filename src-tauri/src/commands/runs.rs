@@ -405,6 +405,8 @@ pub(crate) async fn start_run_inner(
             claude_usage_capture_mode(db, claude_account.as_ref().map(|a| a.id.as_str())).await,
         );
         cmd.env("DEVDY_USAGE_POLL_MS", "60000");
+        // Stream text/thinking deltas so the chat renders as the model writes.
+        cmd.env("DEVDY_PARTIAL_MESSAGES", "1");
         if let Some(m) = &model {
             cmd.env("DEVDY_MODEL", m);
         }
@@ -3576,6 +3578,7 @@ pub(crate) async fn resume_run_with(
             claude_usage_capture_mode(db.inner(), claude_account.as_ref().map(|a| a.id.as_str())).await,
         );
         cmd.env("DEVDY_USAGE_POLL_MS", "60000");
+        cmd.env("DEVDY_PARTIAL_MESSAGES", "1");
         if let Some(m) = &model {
             cmd.env("DEVDY_MODEL", m);
         }

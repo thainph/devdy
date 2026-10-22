@@ -301,7 +301,10 @@ function startQuery(firstText, opts = {}, firstImages) {
   const permissionMode = opts.permissionMode || process.env.DEVDY_PERMISSION_MODE || 'default'
   const options = {
     permissionMode,
-    includePartialMessages: !!opts.includePartialMessages,
+    // Per-turn option wins; else the broker's env default (session runs stream
+    // deltas, also on resume where the first prompt carries no options).
+    includePartialMessages:
+      opts.includePartialMessages ?? process.env.DEVDY_PARTIAL_MESSAGES === '1',
     stderr: (data) => send({ type: '_devdy_stderr', text: data }),
   }
   // 'bypassPermissions' auto-approves every tool call before canUseTool is ever
