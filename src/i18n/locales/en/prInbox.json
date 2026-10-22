@@ -9,10 +9,88 @@
   "aiReview": "AI Review",
   "notInDevdy": "Not in devdy yet",
   "addToDevdy": "Add to devdy",
-  "partialFailTitle": "{count} account failed to load review requests",
+  "partialFailTitle": "{count} account failed to load review requests | {count} accounts failed to load review requests",
   "partialFailBody": "some PRs may be missing. Try refreshing.",
   "justNow": "just now",
   "minsAgo": "{mins} min ago",
   "hoursAgo": "{hours} hr ago",
-  "daysAgo": "{days} days ago"
+  "daysAgo": "{days} days ago",
+  "groupByLabel": "Group by",
+  "groupBy": {
+    "none": "None",
+    "project": "Project",
+    "repo": "Repository",
+    "author": "Author",
+    "reviewer_account": "Reviewer account"
+  },
+  "hideBots": "Hide bots",
+  "notInDevdyGroup": "Not in devdy",
+  "botsGroup": "Bots",
+  "botsHidden": "{count} PR from bots hidden | {count} PRs from bots hidden",
+  "showBots": "Show",
+  "unreviewed": "{count} not reviewed",
+  "draft": "Draft",
+  "bot": "bot",
+  "unknownGroup": "Unknown",
+  "visibleOfTotal": "{visible} of {total} PRs shown",
+  "searchPlaceholder": "Search title, #number, repo, author…",
+  "filters": {
+    "project": "Project",
+    "author": "Author",
+    "account": "Account",
+    "status": "Review status",
+    "clearAll": "Clear filters",
+    "noMatch": "No PRs match the current filters",
+    "button": "Filters",
+    "noOptions": "Nothing to filter yet",
+    "searchSection": "Search {section}…",
+    "noMatchSection": "No matches",
+    "remove": "Remove filter {filter}",
+    "clearSearchAndFilters": "Clear search & filters"
+  },
+  "status": {
+    "not_reviewed": "Not reviewed",
+    "running": "Reviewing",
+    "reviewed": "Reviewed",
+    "unmapped": "Not in devdy"
+  },
+  "density": {
+    "label": "Density",
+    "comfortable": "Comfortable",
+    "compact": "Compact"
+  },
+  "botAccounts": {
+    "button": "Bot accounts",
+    "title": "Bot accounts",
+    "hint": "PRs from these GitHub logins are treated as bot PRs, in addition to accounts GitHub itself marks as bots. Matching is case-insensitive.",
+    "placeholder": "GitHub login, e.g. ci-service",
+    "add": "Add",
+    "empty": "No custom bot accounts yet.",
+    "remove": "Remove"
+  },
+  "markAsBot": "Mark as bot",
+  "markLoginAsBot": "Treat {login} as a bot",
+  "unmarkBot": "Stop treating {login} as a bot",
+  "detectedBot": "Marked as bot by GitHub",
+  "openOnGitHub": "Open on GitHub",
+  "moreActions": "More actions",
+  "stale": "Stale",
+  "staleTitle": "No updates for more than {days} days",
+  "alsoRequested": "also:",
+  "bulk": {
+    "action": "AI review all ({count})",
+    "progress": "Reviewing {done}/{total}…",
+    "confirmTitle": "AI review all",
+    "confirmBody": "Start an AI review for {count} PR in “{group}”? They will be started one after another. | Start AI reviews for {count} PRs in “{group}”? They will be started one after another.",
+    "capped": "Only the first {cap} of {total} eligible PRs are included — run it again for the rest.",
+    "confirmAction": "Start {count} review | Start {count} reviews",
+    "itemFailed": "Could not start review for {repo}#{number}: {error}",
+    "started": "Started {count} review | Started {count} reviews",
+    "allFailed": "{count} review failed to start | {count} reviews failed to start"
+  },
+  "display": {
+    "button": "Display",
+    "hideBotsHint": "Collapse bot PRs into one summary row"
+  },
+  "clearSearch": "Clear search"
 }
