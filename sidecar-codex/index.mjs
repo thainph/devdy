@@ -23,7 +23,7 @@
 // Auth: `codex app-server` reads the same ChatGPT login as the codex CLI, so
 // runs bill against the user's subscription — no API key.
 
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 
 // A per-process nonce so permission `requestId`s are globally unique. Each Devdy
@@ -39,6 +39,11 @@ const CODEX_BIN = process.env.DEVDY_CODEX_PATH || 'codex'
 const RESUME_THREAD = process.env.DEVDY_RESUME_SESSION || null
 const PERMISSION_MODE = process.env.DEVDY_PERMISSION_MODE || 'default'
 const MODEL = process.env.DEVDY_CODEX_MODEL || null
+// Tool-less session (translation engine): the prompt carries UNTRUSTED text
+// (Slack messages, GitHub comments), so a prompt injection must not be able to
+// run anything. Forces a read-only sandbox, turns off codex's exec/app/plugin
+// features, disables every MCP server, and declines any approval request.
+const NO_TOOLS = process.env.DEVDY_CODEX_NO_TOOLS === '1'
 // Extra system framing (session orchestration prompt / a worker's role
 // instruction) for a NEW thread: sent as `developerInstructions` on
 // thread/start, after which it lives in the thread itself.
@@ -232,8 +237,55 @@ function buildMcpConfig() {
   return { args, env }
 }
 
+// codex features that hand the model a way to act (exec, apps, plugins,
+// browser/computer use, sub-agents…). Unknown keys are ignored by codex, so
+// keys removed in a later version are harmless.
+const NO_TOOLS_FEATURES = [
+  'shell_tool', 'unified_exec', 'apps', 'plugins', 'remote_plugin', 'browser_use',
+  'browser_use_external', 'in_app_browser', 'computer_use', 'multi_agent',
+  'multi_agent_v2', 'image_generation', 'tool_suggest', 'skill_mcp_dependency_install',
+  'code_mode_host', 'in_app_local_automation', 'worktrees',
+]
+
+// Names of the MCP servers configured in the user's codex config (they would
+// otherwise load into a tool-less session). Best-effort; empty on failure.
+function configuredMcpServerNames() {
+  try {
+    const r = spawnSync(CODEX_BIN, ['mcp', 'list', '--json'], {
+      cwd: CWD, encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    const list = JSON.parse(r.stdout || '[]')
+    return Array.isArray(list) ? list.map((s) => s?.name).filter((n) => typeof n === 'string' && n) : []
+  } catch {
+    return []
+  }
+}
+
+// `-c` overrides that strip every tool source from a tool-less session.
+function noToolsArgs() {
+  const args = []
+  for (const f of NO_TOOLS_FEATURES) args.push('-c', `features.${f}=false`)
+  args.push('-c', 'web_search="disabled"')
+  // `-c` key paths split on dots and do not accept quoted segments; codex
+  // itself only allows [A-Za-z0-9_-] in server names.
+  for (const name of configuredMcpServerNames()) {
+    if (/^[A-Za-z0-9_-]+$/.test(name)) args.push('-c', `mcp_servers.${name}.enabled=false`)
+  }
+  return args
+}
+
+// The child env without the broker's MCP bundle / framing inputs.
+function noToolsEnv() {
+  const env = { ...process.env }
+  delete env.DEVDY_CODEX_MCP
+  delete env.DEVDY_CODEX_DEVELOPER_INSTRUCTIONS
+  delete env.DEVDY_CODEX_SEED_FRAMING
+  return env
+}
+
 // ── codex app-server JSON-RPC plumbing ────────────────────────────────────
-const mcpConfig = buildMcpConfig()
+// A tool-less session never gets the broker's MCP servers either.
+const mcpConfig = NO_TOOLS ? { args: noToolsArgs(), env: noToolsEnv() } : buildMcpConfig()
 const codex = spawn(CODEX_BIN, [...mcpConfig.args, 'app-server'], { cwd: CWD, stdio: ['pipe', 'pipe', 'pipe'], env: mcpConfig.env })
 let rpcId = 1
 const pending = new Map() // request id → resolve
@@ -268,6 +320,10 @@ function rpcError(id, message) {
 
 // ── permission mode → codex policy/sandbox ────────────────────────────────
 function policyFor(mode) {
+  // Tool-less: read-only sandbox, and every command outside codex's safe
+  // allow-list asks — which emitPermission then declines. Env overrides are
+  // ignored so a stray tuning knob can't loosen it.
+  if (NO_TOOLS) return { approvalPolicy: 'untrusted', sandbox: 'read-only' }
   let base
   switch (mode) {
     case 'plan':              base = { approvalPolicy: 'never',      sandbox: 'read-only' }; break
@@ -303,6 +359,11 @@ const cmdKey = (c) => (Array.isArray(c) ? c.join(' ') : String(c ?? '')).trim()
 function emitPermission(rpcReqId, { tool_name, tool_input, title, description, display_name }, waiter = {}) {
   const requestId = `codex-${PROC_NONCE}-${rpcReqId}`
   permWaiters.set(requestId, { rpcId: rpcReqId, command: tool_input?.command, kind: 'approval', ...waiter })
+  if (NO_TOOLS) {
+    settleWaiter(requestId, false)
+    ctrl('_devdy_log', { level: 'warn', text: `⚠ ${tool_name} was denied: this session has no tool access.` })
+    return
+  }
   if (inputClosed) {
     // No answer can reach us any more: decline now instead of raising a prompt
     // nobody could ever answer (the turn then winds down on its own).
@@ -807,7 +868,7 @@ async function bringUp() {
   if (!threadId) throw new Error('Codex initialized without a thread id')
 
   // system.init lets the broker capture session_id (= threadId) for resume.
-  out({ type: 'system', subtype: 'init', session_id: threadId, model: modelName, cwd: CWD, tools: ['Bash', 'Edit'] })
+  out({ type: 'system', subtype: 'init', session_id: threadId, model: modelName, cwd: CWD, tools: NO_TOOLS ? [] : ['Bash', 'Edit'] })
   ctrl('_devdy_ready', { threadId, capabilities: { heartbeat_ms: HEARTBEAT_MS } })
 
   // Snapshot plan usage right away (cheap, no turn) so the badge is fresh from

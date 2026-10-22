@@ -14,14 +14,14 @@ const here = dirname(fileURLToPath(import.meta.url))
 
 // Spawn the sidecar under `scenario`; `onMessage(msg, ctl)` drives it. Resolves
 // with every message once the process exits (or rejects on timeout = a hang).
-function runSidecar(scenario, onMessage, timeoutMs = 10_000) {
+function runSidecar(scenario, onMessage, timeoutMs = 10_000, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(
       process.execPath,
       ['--import', join(here, 'test-fixtures', 'mock-sdk-register.mjs'), join(here, 'index.mjs')],
       {
         cwd: here,
-        env: { ...process.env, MOCK_SCENARIO: scenario, DEVDY_SIDECAR_HEARTBEAT_MS: '100' },
+        env: { ...process.env, MOCK_SCENARIO: scenario, DEVDY_SIDECAR_HEARTBEAT_MS: '100', ...extraEnv },
         stdio: ['pipe', 'pipe', 'inherit'],
       },
     )
@@ -161,6 +161,56 @@ const tests = {
     assert.equal(cancelled[0].requestId, requestId)
     assert.equal(cancelled[0].level, 'info')
     assert.equal(of(messages, 'result')[0].mock_behavior, 'deny')
+  },
+
+  // Translation engine: a no-tools session strips every tool source and denies
+  // any call without a prompt — even with looser options and MCP env fallbacks.
+  async 'noTools session has no tools and denies every call without a prompt'() {
+    const { messages, code } = await runSidecar('permission', (msg, ctl) => {
+      if (msg.type === '_devdy_ready') {
+        ctl.send({
+          type: 'prompt',
+          text: 'go',
+          options: {
+            noTools: true,
+            permissionMode: 'bypassPermissions',
+            allowedTools: ['Bash', 'mcp__devdy'],
+            mcpServers: { devdy: { type: 'http', url: 'http://127.0.0.1:1/mcp' } },
+          },
+        })
+      }
+      if (msg.type === 'result') ctl.closeInput()
+    }, 10_000, { DEVDY_MCP_SERVERS: JSON.stringify({ env: { type: 'stdio', command: 'x' } }), DEVDY_ALLOWED_TOOLS: '["Bash"]' })
+    const init = messages.find((m) => m.type === 'system' && m.subtype === 'init')
+    const o = init.mock_options
+    assert.deepEqual(o.tools, [])
+    assert.deepEqual(o.allowedTools, [])
+    assert.deepEqual(o.mcpServers, {})
+    assert.deepEqual(o.skills, [])
+    assert.equal(o.strictMcpConfig, true)
+    assert.equal(o.permissionMode, 'dontAsk')
+    assert.equal(init.mock_has_can_use_tool, true)
+    assert.equal(of(messages, '_devdy_permission_request').length, 0)
+    const result = of(messages, 'result')[0]
+    assert.equal(result.mock_tool, 'Write')
+    assert.equal(result.mock_behavior, 'deny')
+    assert.match(result.mock_message, /no tool access/)
+    assert.equal(code, 0)
+  },
+
+  // Control: a regular session keeps the default tool set.
+  async 'regular session does not restrict tools'() {
+    const { messages } = await runSidecar('permission', (msg, ctl) => {
+      if (msg.type === '_devdy_ready') startPrompt(ctl)
+      if (msg.type === '_devdy_permission_request') {
+        ctl.send({ type: 'permission_response', requestId: msg.requestId, decision: 'allow' })
+        ctl.closeInput()
+      }
+    })
+    const o = messages.find((m) => m.type === 'system' && m.subtype === 'init').mock_options
+    assert.equal(o.tools, undefined)
+    assert.equal(o.strictMcpConfig, undefined)
+    assert.equal(o.permissionMode, 'default')
   },
 }
 
