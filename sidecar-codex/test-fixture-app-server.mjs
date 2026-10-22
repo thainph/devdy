@@ -2,9 +2,17 @@
 // Deterministic JSON-RPC fixture for test-deny.mjs.
 import { writeFileSync, appendFileSync } from 'node:fs'
 
-// `codex mcp list --json` (asked by a tool-less sidecar): one configured server.
+// `codex mcp list --json` (asked by a tool-less sidecar): one configured server,
+// or — DEVDY_FIXTURE_MCP_LIST=fail|garbage|object — a failing / unparsable answer.
 if (process.argv.includes('mcp')) {
-  process.stdout.write(JSON.stringify([{ name: 'user_server', enabled: true }]))
+  const mode = process.env.DEVDY_FIXTURE_MCP_LIST
+  if (mode === 'fail') {
+    process.stderr.write('boom')
+    process.exit(2)
+  }
+  if (mode === 'garbage') process.stdout.write('not json')
+  else if (mode === 'object') process.stdout.write('{"servers":[]}')
+  else process.stdout.write(JSON.stringify([{ name: 'user_server', enabled: true }]))
   process.exit(0)
 }
 // When set, record argv and every client request as JSON lines.
