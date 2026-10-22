@@ -36,6 +36,7 @@ sha2 = "0.10"
 hex = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
+unicode-normalization = "0.1"
 notify = "6"
 notify-rust = "4"
 zip = "2"

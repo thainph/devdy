@@ -129,6 +129,7 @@
     "summarize_failed": "The AI could not summarise — keeping the previous summary",
     "not_found": "Watched source not found",
     "duplicate_source": "The issue moved to another issue that is already watched",
+    "board_unavailable": "Could not read the GitHub board this time — using the last known board data",
     "unknown": "Error: {detail}"
   }
 }

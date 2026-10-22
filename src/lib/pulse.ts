@@ -221,5 +221,6 @@ export const KNOWN_ERRORS = [
   'slack_fetch_failed',
   'summarize_failed',
   'duplicate_source',
+  'board_unavailable',
   'not_found',
 ] as const

@@ -12,6 +12,9 @@ const MY_BALL_LATE = 24 * HOUR;
 const CUSTOMER_SLOW = 5 * DAY;
 const DONE_SETTLED = 7 * DAY;
 
+/** `board_unavailable` is a soft error (last known board fields were used): shown, but no reason for 🟡. */
+const countsAsError = (code) => !!code && code !== 'board_unavailable';
+
 /** RFC3339 → epoch ms, or null. */
 const parse = (s) => {
   if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}T/.test(s.trim())) return null;
@@ -36,7 +39,7 @@ export function watchHealth(w, now) {
   const d = w.history?.[0];
   if (!d) {
     return {
-      health: w.last_error ? 'yellow' : 'pending',
+      health: countsAsError(w.last_error) ? 'yellow' : 'pending',
       finished: false,
       overdue: false,
       needs_me: false,
@@ -55,7 +58,7 @@ export function watchHealth(w, now) {
   let health;
   if (done) health = 'done';
   else if (d.status === 'blocked' || overdue || myLate) health = 'red';
-  else if (dueSoon || d.status === 'at_risk' || customerSlow || w.last_error) health = 'yellow';
+  else if (dueSoon || d.status === 'at_risk' || customerSlow || countsAsError(w.last_error)) health = 'yellow';
   else health = 'green';
   return {
     health,
@@ -93,7 +96,22 @@ export function projectHealth(watches) {
 
 const RANK = { red: 0, yellow: 1, green: 2, pending: 2, done: 3, none: 3 };
 
-/** Card order: health, nearest milestone (none last), name A→Z. */
+/**
+ * Name sort key shared with health.rs: NFD, combining marks (U+0300–U+036F)
+ * removed, đ → d, lowercase; compared by code point.
+ */
+export function nameKey(name) {
+  return String(name ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .toLowerCase();
+}
+
+const byCodePoint = (x, y) => (x < y ? -1 : x > y ? 1 : 0);
+
+/** Card order: health, nearest milestone (none last), name (`nameKey`), then id. */
 export function compareProjects(a, b) {
   const r = RANK[a.health] - RANK[b.health];
   if (r) return r;
@@ -101,7 +119,7 @@ export function compareProjects(a, b) {
   const tb = parse(b.next_milestone?.due_at);
   if (ta != null && tb != null && ta !== tb) return ta - tb;
   if ((ta == null) !== (tb == null)) return ta == null ? 1 : -1;
-  return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+  return byCodePoint(nameKey(a.name), nameKey(b.name)) || byCodePoint(String(a.id ?? ''), String(b.id ?? ''));
 }
 
 /** Row order inside a card: red, yellow, green / pending, done; then nearest deadline. */

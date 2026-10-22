@@ -136,8 +136,10 @@ async fn fetch_board(
     };
     let gql = |payload: Value| async move {
         let resp: Value = client.graphql(&payload).await.map_err(|e| e.to_string())?;
+        // Any error makes the answer unreliable: partial data with a null
+        // `projectItems` must not read as "not on the board".
         match resp.get("errors") {
-            Some(errs) if resp.get("data").is_none_or(Value::is_null) => Err(errs.to_string()),
+            Some(errs) if !errs.is_null() => Err(errs.to_string()),
             _ => Ok(resp),
         }
     };

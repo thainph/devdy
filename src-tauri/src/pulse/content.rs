@@ -46,7 +46,7 @@ pub struct IssueComment {
 }
 
 /// Board fields of the issue on the project's GitHub Project board.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BoardFields {
     /// `YYYY-MM-DD`.
     pub start: Option<String>,
