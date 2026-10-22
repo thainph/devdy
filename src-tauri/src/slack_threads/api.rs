@@ -165,6 +165,8 @@ fn net_error(e: &reqwest::Error) -> String {
 pub struct AuthInfo {
     pub team_id: String,
     pub team: String,
+    /// The token's own Slack user (`auth.test` `user_id`); empty for bot tokens.
+    pub user_id: String,
     /// Lowercased host of the workspace URL.
     pub host: String,
     /// From the `x-oauth-scopes` header; `None` when the header is absent.
@@ -443,6 +445,7 @@ impl SlackClient {
         Ok(AuthInfo {
             team_id: non_empty(v.get("team_id")).unwrap_or_default(),
             team: non_empty(v.get("team")).unwrap_or_default(),
+            user_id: non_empty(v.get("user_id")).unwrap_or_default(),
             host,
             scopes,
         })
@@ -550,6 +553,7 @@ mod tests {
         let a = AuthInfo {
             team_id: "T".into(),
             team: "t".into(),
+            user_id: "U1".into(),
             host: String::new(),
             scopes: Some(s),
         };

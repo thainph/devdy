@@ -1,6 +1,23 @@
 #!/usr/bin/env node
 // Deterministic JSON-RPC fixture for test-deny.mjs.
-import { writeFileSync } from 'node:fs'
+import { writeFileSync, appendFileSync } from 'node:fs'
+
+// `codex mcp list --json` (asked by a tool-less sidecar): one configured server,
+// or — DEVDY_FIXTURE_MCP_LIST=fail|garbage|object — a failing / unparsable answer.
+if (process.argv.includes('mcp')) {
+  const mode = process.env.DEVDY_FIXTURE_MCP_LIST
+  if (mode === 'fail') {
+    process.stderr.write('boom')
+    process.exit(2)
+  }
+  if (mode === 'garbage') process.stdout.write('not json')
+  else if (mode === 'object') process.stdout.write('{"servers":[]}')
+  else process.stdout.write(JSON.stringify([{ name: 'user_server', enabled: true }]))
+  process.exit(0)
+}
+// When set, record argv and every client request as JSON lines.
+const fixtureLog = process.env.DEVDY_FIXTURE_LOG
+if (fixtureLog) appendFileSync(fixtureLog, JSON.stringify({ argv: process.argv.slice(2) }) + '\n')
 
 const marker = process.env.DEVDY_DENY_TEST_MARKER
 const mcpMode = process.env.DEVDY_MCP_PERMISSION_KEY_TEST === '1'
@@ -25,6 +42,7 @@ process.stdin.on('data', (chunk) => {
     if (!line) continue
     let message
     try { message = JSON.parse(line) } catch { continue }
+    if (fixtureLog && message.method) appendFileSync(fixtureLog, JSON.stringify({ method: message.method, params: message.params }) + '\n')
 
     if (message.method === 'initialize') {
       send({ jsonrpc: '2.0', id: message.id, result: {} })

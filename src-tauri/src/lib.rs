@@ -7,6 +7,7 @@ mod github;
 mod gitlab;
 mod inbox_api;
 mod item_links;
+mod pulse;
 mod remote;
 mod runs;
 mod secrets;
@@ -111,6 +112,10 @@ use commands::slack_threads::{
     list_slack_threads, mark_slack_thread_seen, post_slack_thread_reply, refresh_slack_thread,
     rename_slack_thread, reorder_slack_threads, retranslate_slack_thread, set_slack_thread_project,
     translate_slack_reply, unlink_slack_thread_run,
+};
+use commands::pulse::{
+    pulse_is_watched, pulse_move_watch, pulse_overview, pulse_refresh, pulse_set_screen_open,
+    pulse_unwatch, pulse_watch,
 };
 use commands::item_links::{link_item_run, list_item_runs, list_run_items, unlink_item_run};
 use commands::notes::{
@@ -276,6 +281,15 @@ pub fn run() {
                     slack_state.start_worker();
                 });
             }
+            // Project Pulse: resolves watches / requests written by the MCP
+            // sidecar (and kicked by the pulse commands).
+            let pulse_state = pulse::PulseState::for_app(
+                app.handle(),
+                app.state::<db::Db>().inner().clone(),
+                slack_state.clone(),
+            );
+            pulse_state.start_poller();
+            app.manage(pulse_state);
             app.manage(MascotSpeakState::default());
             app.manage(BalanceGuard::default());
             app.manage(new_registry());
@@ -636,6 +650,13 @@ pub fn run() {
             unlink_slack_thread_run,
             list_slack_thread_runs,
             list_run_slack_threads,
+            pulse_watch,
+            pulse_unwatch,
+            pulse_move_watch,
+            pulse_is_watched,
+            pulse_overview,
+            pulse_refresh,
+            pulse_set_screen_open,
             link_item_run,
             unlink_item_run,
             list_item_runs,
@@ -673,6 +694,18 @@ pub fn run() {
                         let _ = handles.child.start_kill();
                     }
                     reg.clear();
+                });
+                // The warm translate / Slack / Pulse digest sessions too.
+                let translate = app_handle.state::<TranslateState>().inner().clone();
+                let slack = app_handle
+                    .state::<slack_threads::SlackTranslateState>()
+                    .inner()
+                    .clone();
+                let pulse = app_handle.state::<pulse::PulseState>().inner().clone();
+                tauri::async_runtime::block_on(async move {
+                    translate.shutdown().await;
+                    slack.0.shutdown().await;
+                    pulse.shutdown().await;
                 });
             };
 

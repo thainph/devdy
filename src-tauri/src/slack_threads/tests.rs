@@ -212,7 +212,7 @@ async fn api(
     };
     match method.as_str() {
         "auth.test" => {
-            let body = Json(json!({ "ok": true, "team_id": team_id, "team": team, "url": url }));
+            let body = Json(json!({ "ok": true, "team_id": team_id, "team": team, "url": url, "user_id": format!("U-{team_id}") }));
             match mock.with(|d| d.scopes.clone()) {
                 Some(s) => ([("x-oauth-scopes", s)], body).into_response(),
                 None => body.into_response(),
@@ -536,6 +536,13 @@ async fn full_fetch_translate_and_view() {
     );
     assert_eq!(v.summary.team_id.as_deref(), Some("T1"));
     assert_eq!(v.summary.channel.as_deref(), Some("ch-c0b83ghdtfg"));
+    // auth.test's user_id is remembered per workspace (Project Pulse).
+    let me: Option<String> =
+        sqlx::query_scalar("SELECT user_id FROM slack_identities WHERE team_id = 'T1'")
+            .fetch_optional(&env.db)
+            .await
+            .unwrap();
+    assert_eq!(me.as_deref(), Some("U-T1"));
     let parent = &v.messages[0];
     assert_eq!(parent.seq, 0);
     assert_eq!(parent.author_name, "Alice");

@@ -68,6 +68,8 @@ import FileTree from '@/components/FileTree.vue'
 import ConductorWorkerPanel from '@/components/conductor/ConductorWorkerPanel.vue'
 import { useConductorStore } from '@/stores/conductor'
 import { Button, Input, Badge, Modal, DropdownMenu, DropdownItem, DropdownSeparator } from '@/components/ui'
+import PulseWatchButton from '@/components/pulse/PulseWatchButton.vue'
+import { githubIssueRef } from '@/lib/pulse'
 import { useTurnNavigator, turnLabel } from '@/composables/useTurnNavigator'
 import { useScrollMemory } from '@/composables/useScrollMemory'
 import { useConfirm } from '@/composables/useConfirm'
@@ -3588,6 +3590,16 @@ function handleRefInput(val: string) {
         <RunLinkedKindMenu kind="slack" :threads="linked.threads.value" />
         <RunLinkedKindMenu kind="todo" :items="linked.todos.value" @create="openQuickCapture('todo')" />
         <RunLinkedKindMenu kind="note" :items="linked.notes.value" @create="openQuickCapture('note')" />
+
+        <!-- A run made from an issue: watch that issue in Project Pulse (§3.2). -->
+        <PulseWatchButton
+          v-if="currentRun?.run_type === 'analyze_issue' && runGithubUrl(currentRun)"
+          :source="{ type: 'github_issue', ref: githubIssueRef(runGithubUrl(currentRun)), url: runGithubUrl(currentRun) }"
+          :project-id="currentRun.project_id"
+          variant="icon"
+          :watch-label="t('pulse.watch.watchIssue')"
+          :watching-label="t('pulse.watch.unwatchIssue')"
+        />
 
         <!-- Everything else lives in one ⋯ menu: open the project elsewhere ·
              this session's actions (the History row's, RunActionItems) ·

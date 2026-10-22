@@ -204,6 +204,25 @@ fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
+/// Record the Slack user behind a workspace token (`slack_identities`).
+/// No-op for tokens without a user (bot tokens).
+pub async fn upsert_identity(db: &Db, auth: &super::api::AuthInfo) -> Result<(), sqlx::Error> {
+    if auth.team_id.is_empty() || auth.user_id.is_empty() {
+        return Ok(());
+    }
+    sqlx::query(
+        "INSERT INTO slack_identities (team_id, user_id, fetched_at) VALUES (?, ?, ?) \
+         ON CONFLICT(team_id) DO UPDATE SET user_id = excluded.user_id, \
+         fetched_at = excluded.fetched_at",
+    )
+    .bind(&auth.team_id)
+    .bind(&auth.user_id)
+    .bind(now())
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
 /// Row with the same `(channel_id, thread_ts)`, or a legacy row without a key
 /// whose `thread_url` parses to it.
 pub async fn find_by_key(
