@@ -56,9 +56,11 @@ function watchLine(w) {
   if (w.digest) {
     parts.push(`status: ${w.digest.status}`, `ball: ${w.digest.ball}${w.digest.ball_since ? ` since ${w.digest.ball_since}` : ''}`);
     if (w.digest.summary) parts.push(oneLine(w.digest.summary));
+    parts.push(`summarised ${w.digest.created_at}`);
   } else {
     parts.push('no digest yet');
   }
+  if (w.checked_at) parts.push(`checked ${w.checked_at}`);
   return `- ${parts.join(' · ')}`;
 }
 
