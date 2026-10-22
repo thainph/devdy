@@ -356,13 +356,51 @@ export async function run(tool) {
     }
   }
 
-  const child = spawn(realBin, execArgv, { stdio: 'inherit', env: childEnv })
+  // az / terraform(azurerm): tee stderr so an Azure "MFA required" rejection
+  // can be explained — the real CLI's advice (`az logout`/`az login`) does not
+  // apply inside a run, whose login lives in Devdy's managed account dir.
+  const watchMfa = hasAzure && (tool === 'az' || tool === 'terraform')
+  const child = spawn(realBin, execArgv, {
+    stdio: watchMfa ? ['inherit', 'inherit', 'pipe'] : 'inherit',
+    env: childEnv,
+  })
+  let mfaRequired = false
+  if (watchMfa) {
+    let tail = ''
+    child.stderr.on('data', (chunk) => {
+      process.stderr.write(chunk)
+      // Keep a short rolling tail so a marker split across chunks still matches.
+      tail = (tail + chunk.toString('utf8')).slice(-4096)
+      if (!mfaRequired && azureMfaRequired(tail)) mfaRequired = true
+    })
+  }
   child.on('error', () => {
     process.stderr.write(`devdy: failed to exec ${tool}\n`)
     process.exit(EXIT_EXEC_FAILED)
   })
-  child.on('exit', (code, signal) => {
+  // 'close' (not 'exit') so the piped stderr is fully drained first.
+  child.on('close', (code, signal) => {
+    if (mfaRequired) process.stderr.write(AZURE_MFA_HINT)
     // Propagate the real binary's exit code; a signal maps to a generic non-zero.
     process.exit(signal ? 1 : code ?? 1)
   })
+}
+
+export const AZURE_MFA_HINT =
+  'devdy: az — Azure requires multi-factor authentication (MFA) for this operation, ' +
+  'but the linked Azure account session was signed in without MFA. Do NOT run ' +
+  '`az logout`/`az login` here: ask the user to open Devdy → Settings → Azure and ' +
+  'click "Sign in" on the linked account (it now forces MFA), then retry.\n'
+
+/**
+ * Does Azure CLI / azurerm stderr say the token lacks MFA? AADSTS50076 /
+ * AADSTS50079 come from Entra ID; RequestDisallowedByAzure is ARM's mandatory
+ * MFA enforcement for create/update/delete.
+ * @param {string} text
+ */
+export function azureMfaRequired(text) {
+  return (
+    /AADSTS5007[69]\b/.test(text) ||
+    (/RequestDisallowedByAzure/.test(text) && /\bMFA\b/.test(text))
+  )
 }

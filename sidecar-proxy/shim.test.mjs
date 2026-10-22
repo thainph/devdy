@@ -2,7 +2,7 @@
 // Run with: node --test sidecar-proxy/shim.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { scrubCloudEnv, pathWithoutDir } from './shim.mjs'
+import { scrubCloudEnv, pathWithoutDir, azureMfaRequired } from './shim.mjs'
 
 const inherited = () => ({
   PATH: '/usr/bin',
@@ -50,4 +50,13 @@ test('other tools are untouched', () => {
 
 test('pathWithoutDir removes only the given dir', () => {
   assert.equal(pathWithoutDir('/shim:/usr/bin:/shim/:/bin', '/shim'), '/usr/bin:/bin')
+})
+
+test('azureMfaRequired spots Entra / ARM MFA rejections only', () => {
+  assert.ok(azureMfaRequired('ERROR: AADSTS50076: Due to a configuration change made by your administrator, you must use multi-factor authentication'))
+  assert.ok(azureMfaRequired('AADSTS50079: The user is required to use multi-factor authentication.'))
+  assert.ok(azureMfaRequired("ERROR: (RequestDisallowedByAzure) Resource 'vm' was disallowed by Azure: ... without authenticating through MFA."))
+  assert.ok(!azureMfaRequired('ERROR: (RequestDisallowedByAzure) Resource was disallowed by policy.'))
+  assert.ok(!azureMfaRequired('AADSTS700082: The refresh token has expired due to inactivity.'))
+  assert.ok(!azureMfaRequired('ERROR: (ResourceNotFound) not found'))
 })

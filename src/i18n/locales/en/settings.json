@@ -387,7 +387,7 @@
     "validate": "Validate",
     "valid": "Valid",
     "login": "Sign in",
-    "loginExpired": "Not signed in or the Azure session expired. Click \"Sign in\" to sign in again.",
+    "loginExpired": "Not signed in, the Azure session expired, or it was signed in without MFA (Azure blocks all write operations). Click \"Sign in\" to sign in again and complete MFA.",
     "loggingIn": "Complete sign-in in your browser…",
     "lastValidated": "Validated {time}",
     "neverValidated": "Never validated",

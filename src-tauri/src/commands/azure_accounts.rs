@@ -297,8 +297,27 @@ async fn run_az_with(
     Ok(output.stdout)
 }
 
+/// ARM resource scope the MFA claims challenge is requested for.
+const ARM_SCOPE: &str = "https://management.core.windows.net//.default";
+/// Base64 of `{"access_token":{"acrs":{"essential":true,"values":["p1"]}}}` —
+/// the claims challenge ARM returns with AADSTS50076 under Azure's mandatory
+/// MFA. Sending it up front makes Entra ID step up to MFA even when the browser
+/// already holds a password-only SSO session; without it a re-login silently
+/// reuses that session and every write stays rejected.
+const MFA_CLAIMS_CHALLENGE: &str =
+    "eyJhY2Nlc3NfdG9rZW4iOnsiYWNycyI6eyJlc3NlbnRpYWwiOnRydWUsInZhbHVlcyI6WyJwMSJdfX19";
+
 async fn az_login(dir: &Path, tenant: Option<&str>) -> Result<(), String> {
-    let mut args = vec!["login", "--only-show-errors", "-o", "none"];
+    let mut args = vec![
+        "login",
+        "--only-show-errors",
+        "-o",
+        "none",
+        "--scope",
+        ARM_SCOPE,
+        "--claims-challenge",
+        MFA_CLAIMS_CHALLENGE,
+    ];
     if let Some(t) = tenant {
         args.push("--tenant");
         args.push(t);
@@ -364,6 +383,47 @@ async fn az_check_session(dir: &Path) -> Result<(), String> {
     )
     .await
     .map(|_| ())
+}
+
+/// Was the newest cached ARM access token issued with MFA? `None` when it can't
+/// be told (no plaintext MSAL cache, no ARM token, undecodable). Only the `amr`
+/// / `acrs` claims are read; the token never leaves this function.
+fn arm_token_has_mfa(dir: &Path) -> Option<bool> {
+    let raw = std::fs::read(dir.join("msal_token_cache.json")).ok()?;
+    let cache: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+    let newest = cache
+        .get("AccessToken")?
+        .as_object()?
+        .values()
+        .filter(|t| {
+            t.get("target")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s.contains("management.core.windows.net"))
+        })
+        .max_by_key(|t| {
+            t.get("cached_at")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0)
+        })?;
+    let jwt = newest.get("secret")?.as_str()?;
+    token_claims_have_mfa(jwt)
+}
+
+fn token_claims_have_mfa(jwt: &str) -> Option<bool> {
+    use base64::Engine as _;
+    let payload = jwt.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload.trim_end_matches('='))
+        .ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let has = |claim: &str, want: &str| {
+        claims
+            .get(claim)
+            .and_then(|v| v.as_array())
+            .is_some_and(|a| a.iter().any(|x| x.as_str() == Some(want)))
+    };
+    Some(has("amr", "mfa") || has("acrs", "p1"))
 }
 
 async fn store_validation(db: &Db, id: &str, v: &AzureValidation) -> Result<(), String> {
@@ -550,6 +610,13 @@ pub async fn validate_azure_account(
     }
     let validation = az_account_show(&dir).await?;
     az_check_session(&dir).await?;
+    // A password-only session still reads fine, but Azure's mandatory MFA
+    // rejects every create/update/delete (AADSTS50076) — don't report green.
+    if arm_token_has_mfa(&dir) == Some(false) {
+        return Err(format!(
+            "{AZURE_LOGIN_REQUIRED}: signed in without MFA — Azure blocks write operations. Sign in again to complete MFA."
+        ));
+    }
     store_validation(db.inner(), &id, &validation).await?;
     Ok(validation)
 }
@@ -672,6 +739,54 @@ mod tests {
             "ERROR: The subscription 'x' doesn't exist in cloud 'AzureCloud'."
         );
         assert_eq!(stderr_detail("  plain failure \n"), "plain failure");
+    }
+
+    #[test]
+    fn reads_mfa_from_token_claims() {
+        use base64::Engine as _;
+        let jwt = |claims: &str| {
+            let b = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims);
+            format!("h.{b}.s")
+        };
+        assert_eq!(
+            token_claims_have_mfa(&jwt(r#"{"amr":["pwd"]}"#)),
+            Some(false)
+        );
+        assert_eq!(
+            token_claims_have_mfa(&jwt(r#"{"amr":["pwd","mfa"]}"#)),
+            Some(true)
+        );
+        assert_eq!(
+            token_claims_have_mfa(&jwt(r#"{"amr":["pwd"],"acrs":["p1"]}"#)),
+            Some(true)
+        );
+        assert_eq!(
+            token_claims_have_mfa(&jwt(r#"{"acrs":["pfdr"]}"#)),
+            Some(false)
+        );
+        assert_eq!(token_claims_have_mfa("not-a-jwt"), None);
+    }
+
+    #[test]
+    fn arm_mfa_uses_newest_management_token() {
+        use base64::Engine as _;
+        let enc = |c: &str| {
+            format!(
+                "h.{}.s",
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(c)
+            )
+        };
+        let dir = std::env::temp_dir().join(format!("devdy-az-mfa-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = serde_json::json!({ "AccessToken": {
+            "old": { "target": "https://management.core.windows.net//.default", "cached_at": "100", "secret": enc(r#"{"amr":["mfa"]}"#) },
+            "new": { "target": "https://management.core.windows.net//.default", "cached_at": "200", "secret": enc(r#"{"amr":["pwd"]}"#) },
+            "graph": { "target": "https://graph.microsoft.com//.default", "cached_at": "300", "secret": enc(r#"{"amr":["mfa"]}"#) }
+        }});
+        std::fs::write(dir.join("msal_token_cache.json"), cache.to_string()).unwrap();
+        assert_eq!(arm_token_has_mfa(&dir), Some(false));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(arm_token_has_mfa(&dir), None);
     }
 
     #[test]
