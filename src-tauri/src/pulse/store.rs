@@ -3,6 +3,7 @@
 
 use super::content::SlackMsg;
 use super::digest::DigestDraft;
+use super::health::{self, DigestFacts, DueItem, ProjectHealth, WatchFacts, WatchHealth};
 use super::source::{parse_source, Source, SourceError};
 use crate::db::Db;
 use crate::slack_threads::mrkdwn::Names;
@@ -56,6 +57,8 @@ pub struct Digest {
     pub decisions: serde_json::Value,
     pub open_questions: serde_json::Value,
     pub truncated: bool,
+    /// The GitHub issue was closed when this digest was made (BR-12).
+    pub source_closed: bool,
     pub model: Option<String>,
     pub created_at: String,
 }
@@ -74,6 +77,7 @@ struct DigestRow {
     decisions: String,
     open_questions: String,
     truncated: bool,
+    source_closed: bool,
     model: Option<String>,
     created_at: String,
 }
@@ -100,6 +104,7 @@ impl From<DigestRow> for Digest {
             summary: r.summary,
             next_action: r.next_action,
             truncated: r.truncated,
+            source_closed: r.source_closed,
             model: r.model,
             created_at: r.created_at,
         }
@@ -113,6 +118,9 @@ pub struct WatchItem {
     pub watch: Watch,
     /// Newest digest, if any.
     pub digest: Option<Digest>,
+    /// BR-08 / BR-12 (`health`, `finished`, `overdue`, `nextDue`…).
+    #[serde(flatten)]
+    pub health: WatchHealth,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -120,8 +128,10 @@ pub struct WatchItem {
 pub struct ProjectPulse {
     pub project_id: String,
     pub project_name: String,
-    /// BR-09 project health; filled in by the health stage (None for now).
-    pub health: Option<String>,
+    /// BR-09 / BR-10 (`health`, `nextMilestone`, `counts`).
+    #[serde(flatten)]
+    pub health: ProjectHealth,
+    /// BR-08 order: red, yellow, green / pending, done.
     pub watches: Vec<WatchItem>,
 }
 
@@ -487,11 +497,20 @@ pub async fn move_watch(db: &Db, id: &str, project_id: &str) -> Result<Watch, Co
     .await
 }
 
-/// Active watches (+ newest digest) grouped per project. `project_ids` keeps
-/// only those projects and lists them even without watches.
+/// Active watches (+ newest digest, health) grouped per project, cards in
+/// BR-09 order. `project_ids` keeps only those projects and lists them even
+/// without watches.
 pub async fn overview(
     db: &Db,
     project_ids: Option<&[String]>,
+) -> Result<Vec<ProjectPulse>, CodedError> {
+    overview_at(db, project_ids, chrono::Local::now().fixed_offset()).await
+}
+
+pub async fn overview_at(
+    db: &Db,
+    project_ids: Option<&[String]>,
+    now: chrono::DateTime<chrono::FixedOffset>,
 ) -> Result<Vec<ProjectPulse>, CodedError> {
     let watches: Vec<Watch> = sqlx::query_as(&format!(
         "SELECT {WATCH_COLS} FROM {WATCH_FROM} WHERE w.active = 1 \
@@ -500,22 +519,27 @@ pub async fn overview(
     .fetch_all(db)
     .await
     .map_err(internal)?;
+    // Every kept digest (≤ 5 per watch), newest first: the first is shown,
+    // all of them feed BR-12's "done for 7 days".
     let digests: Vec<DigestRow> = sqlx::query_as(
         "SELECT d.id, d.watch_id, d.content_hash, d.status, d.ball, d.ball_since, d.summary, \
-         d.next_action, d.deadlines, d.decisions, d.open_questions, d.truncated, d.model, \
-         d.created_at FROM pulse_digests d JOIN pulse_watches w ON w.id = d.watch_id \
-         WHERE w.active = 1 AND d.id = (SELECT d2.id FROM pulse_digests d2 \
-           WHERE d2.watch_id = d.watch_id ORDER BY d2.created_at DESC, d2.id DESC LIMIT 1)",
+         d.next_action, d.deadlines, d.decisions, d.open_questions, d.truncated, \
+         d.source_closed, d.model, d.created_at \
+         FROM pulse_digests d JOIN pulse_watches w ON w.id = d.watch_id \
+         WHERE w.active = 1 ORDER BY d.watch_id, d.created_at DESC, d.id DESC",
     )
     .fetch_all(db)
     .await
     .map_err(internal)?;
-    let mut latest: HashMap<String, Digest> = digests
-        .into_iter()
-        .map(|d| (d.watch_id.clone(), Digest::from(d)))
-        .collect();
+    let mut history: HashMap<String, Vec<Digest>> = HashMap::new();
+    for d in digests {
+        history
+            .entry(d.watch_id.clone())
+            .or_default()
+            .push(Digest::from(d));
+    }
 
-    let mut out: Vec<ProjectPulse> = Vec::new();
+    let mut groups: Vec<(String, String, Vec<WatchItem>)> = Vec::new();
     if let Some(ids) = project_ids {
         for id in ids {
             let name: Option<String> = sqlx::query_scalar("SELECT name FROM projects WHERE id = ?")
@@ -524,35 +548,62 @@ pub async fn overview(
                 .await
                 .map_err(internal)?;
             if let Some(name) = name {
-                if !out.iter().any(|p| &p.project_id == id) {
-                    out.push(ProjectPulse {
-                        project_id: id.clone(),
-                        project_name: name,
-                        health: None,
-                        watches: Vec::new(),
-                    });
+                if !groups.iter().any(|g| &g.0 == id) {
+                    groups.push((id.clone(), name, Vec::new()));
                 }
             }
         }
     }
     for w in watches {
-        let idx = match out.iter().position(|p| p.project_id == w.project_id) {
+        let idx = match groups.iter().position(|g| g.0 == w.project_id) {
             Some(i) => i,
             None if project_ids.is_some() => continue,
             None => {
-                out.push(ProjectPulse {
-                    project_id: w.project_id.clone(),
-                    project_name: w.project_name.clone(),
-                    health: None,
-                    watches: Vec::new(),
-                });
-                out.len() - 1
+                groups.push((w.project_id.clone(), w.project_name.clone(), Vec::new()));
+                groups.len() - 1
             }
         };
-        let digest = latest.remove(&w.id);
-        out[idx].watches.push(WatchItem { watch: w, digest });
+        let hist = history.remove(&w.id).unwrap_or_default();
+        let facts = WatchFacts {
+            last_error: w.last_error.clone(),
+            history: hist.iter().map(digest_facts).collect(),
+        };
+        let health = health::watch_health(&facts, now);
+        let digest = hist.into_iter().next();
+        groups[idx].2.push(WatchItem {
+            watch: w,
+            digest,
+            health,
+        });
     }
+    let mut out: Vec<ProjectPulse> = groups
+        .into_iter()
+        .map(|(project_id, project_name, mut watches)| {
+            watches.sort_by(|a, b| health::watch_order(&a.health, &b.health));
+            let hs: Vec<WatchHealth> = watches.iter().map(|w| w.health.clone()).collect();
+            ProjectPulse {
+                project_id,
+                project_name,
+                health: health::project_health(&hs),
+                watches,
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        health::project_order((&a.health, &a.project_name), (&b.health, &b.project_name))
+    });
     Ok(out)
+}
+
+fn digest_facts(d: &Digest) -> DigestFacts {
+    DigestFacts {
+        status: d.status.clone(),
+        ball: d.ball.clone(),
+        ball_since: d.ball_since.clone(),
+        deadlines: serde_json::from_value::<Vec<DueItem>>(d.deadlines.clone()).unwrap_or_default(),
+        source_closed: d.source_closed,
+        created_at: d.created_at.clone(),
+    }
 }
 
 // ---- BR-11 queue ------------------------------------------------------------
@@ -732,14 +783,15 @@ pub async fn insert_digest(
     content_hash: &str,
     d: &DigestDraft,
     truncated: bool,
+    source_closed: bool,
     model: Option<&str>,
 ) -> Result<String, CodedError> {
     let id = Uuid::new_v4().to_string();
     let mut tx = db.begin().await.map_err(internal)?;
     sqlx::query(
         "INSERT INTO pulse_digests (id, watch_id, content_hash, status, ball, ball_since, \
-         summary, next_action, deadlines, decisions, open_questions, truncated, model, created_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         summary, next_action, deadlines, decisions, open_questions, truncated, source_closed, \
+         model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(watch_id)
@@ -753,6 +805,7 @@ pub async fn insert_digest(
     .bind(json(&d.decisions))
     .bind(json(&d.open_questions))
     .bind(truncated)
+    .bind(source_closed)
     .bind(model)
     .bind(now())
     .execute(&mut *tx)

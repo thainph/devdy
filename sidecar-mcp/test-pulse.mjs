@@ -18,11 +18,14 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { parseSource } from './lib/pulse-source.mjs';
+import { watchHealth, projectHealth } from './lib/pulse-health.mjs';
+import { ageOf } from './lib/pulse-tools.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SERVER = join(HERE, 'index.mjs');
 const MIGRATIONS = join(HERE, '..', 'src-tauri', 'migrations');
 const VECTORS = join(HERE, '..', 'src-tauri', 'src', 'pulse', 'source_vectors.json');
+const HEALTH_VECTORS = join(HERE, '..', 'src-tauri', 'src', 'pulse', 'health_vectors.json');
 const T0 = '2026-01-01T00:00:00+00:00';
 const SLACK = 'https://malme.slack.com/archives/C0B83GHDTFG/p1789877283026359';
 const SLACK_REPLY = 'https://malme.slack.com/archives/C0B83GHDTFG/p1789877300000100?thread_ts=1789877283.026359&cid=C0B83GHDTFG';
@@ -53,6 +56,28 @@ for (const v of vectors) {
   }
 }
 check(vectors.length > 20 && vectorFails === 0, `shared vectors: ${vectors.length - vectorFails}/${vectors.length} match the Rust expectations`);
+
+// Shared health vectors (also run by src-tauri/src/pulse/health.rs).
+const healthCases = JSON.parse(readFileSync(HEALTH_VECTORS, 'utf8'));
+let healthFails = 0;
+for (const c of healthCases) {
+  const now = Date.parse(c.now);
+  const hs = c.watches.map((w) => watchHealth(w, now));
+  const p = projectHealth(hs);
+  const got = {
+    watches: hs.map((h) => ({ health: h.health, finished: h.finished })),
+    project: p.health,
+    next: p.next_milestone?.title ?? null,
+    counts: [p.counts.needs_me, p.counts.waiting_customer, p.counts.overdue, p.counts.watching],
+  };
+  if (JSON.stringify(got) !== JSON.stringify(c.expect)) {
+    healthFails += 1;
+    process.stdout.write(`        health vector "${c.name}" → ${JSON.stringify(got)}\n`);
+  }
+}
+check(healthCases.length >= 15 && healthFails === 0, `shared health vectors: ${healthCases.length - healthFails}/${healthCases.length} match the Rust expectations`);
+const H = 3600_000;
+check(ageOf(new Date(Date.now() - 30 * H).toISOString()) === '30h' && ageOf(new Date(Date.now() - 6 * 24 * H).toISOString()) === '6d' && ageOf('x') === null, 'ball age: hours under two days, then days');
 
 // ---- 2. Fixture ------------------------------------------------------------------------
 
@@ -208,25 +233,30 @@ out = await run([
   ['status-beta', 'pulse_status', { project: 'proj-2' }],
 ]);
 check(
-  out.list.text.startsWith('## Alpha') && out.list.text.includes(`[${slackId}] slack · ${SLACK_REF}`) && out.list.text.includes('status: at_risk') &&
+  out.list.text.startsWith('## 🔴 Alpha') && out.list.text.includes(`[${slackId}] slack · ${SLACK_REF}`) && out.list.text.includes('status: at_risk') &&
     out.list.text.includes('Khách hỏi lịch demo') && !out.list.text.includes('org/app#12'),
   'pulse_list: current project only, newest digest summary',
 );
-check(out['list-all'].text.includes('## Alpha') && out['list-all'].text.includes('## Beta') && out['list-all'].text.includes('org/app#12'), 'pulse_list all=true: every project');
+check(out['list-all'].text.includes('## 🔴 Alpha') && out['list-all'].text.includes('## 🟢 Beta') && out['list-all'].text.includes('org/app#12'), 'pulse_list all=true: every project');
 check(
-  out.status.text.includes('## Alpha') && out.status.text.includes('next milestone: Demo — 2099-10-30T00:00:00+00:00') &&
+  out.status.text.includes('## 🔴 Alpha') && out.status.text.includes('next milestone: Demo — 2099-10-30T00:00:00+00:00') &&
     /### Needs me\n- .*Trả lời khách về lịch demo/.test(out.status.text) &&
     out.status.text.includes('Dùng staging mới') && out.status.text.includes('open question (other): Có cần SSO không?') &&
     !out.status.text.includes('stale'),
   'pulse_status: milestone, needs-me, decisions, open questions from the stored digest',
 );
-check(out['status-beta'].text.includes('## Beta') && out['status-beta'].text.includes('no digest yet'), 'pulse_status: source without digest');
+check(
+  out.status.text.includes('- health: red') && out.status.text.includes('needs me: 1 · waiting on customer: 0 · overdue: 0 · watching: ') &&
+    /ball: me · \d+(h|d)/.test(out.status.text),
+  'pulse_status: real BR-09 health, counts and ball age',
+);
+check(out['status-beta'].text.includes('## 🟢 Beta') && out['status-beta'].text.includes('no digest yet'), 'pulse_status: source without digest');
 
 // ---- 5. Refresh round trip ---------------------------------------------------------------
 
 out = await run([['stale', 'pulse_status', { refresh: true }]], { DEVDY_PULSE_REFRESH_TIMEOUT_MS: '600' });
 const req1 = db.prepare("SELECT * FROM pulse_requests WHERE kind = 'refresh' ORDER BY created_at DESC LIMIT 1").get();
-check(out.stale.text.startsWith('stale: true') && out.stale.text.includes('## Alpha'), 'pulse_status refresh: timeout → stored data marked stale');
+check(out.stale.text.startsWith('stale: true') && out.stale.text.includes('## 🔴 Alpha'), 'pulse_status refresh: timeout → stored data marked stale');
 check(req1?.project_id === 'proj-1' && req1.watch_id === null && req1.done_at === null, 'pulse_status refresh: request row for the current project');
 
 // Fake app with the real lifecycle: it picks up the open refresh request,

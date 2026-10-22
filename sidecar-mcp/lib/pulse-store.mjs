@@ -8,6 +8,7 @@
 import { randomUUID } from 'node:crypto';
 import { db, nowRfc3339 } from './store.mjs';
 import { parseSource, PulseError } from './pulse-source.mjs';
+import { watchHealth } from './pulse-health.mjs';
 
 export { PulseError };
 
@@ -16,7 +17,7 @@ const WATCH_COLS = `w.id, w.project_id, p.name AS project_name, w.source_type, w
   w.checked_at, w.created_at, w.updated_at`;
 const WATCH_FROM = 'pulse_watches w JOIN projects p ON p.id = w.project_id';
 const DIGEST_COLS = `d.id, d.watch_id, d.content_hash, d.status, d.ball, d.ball_since, d.summary, d.next_action,
-  d.deadlines, d.decisions, d.open_questions, d.truncated, d.model, d.created_at`;
+  d.deadlines, d.decisions, d.open_questions, d.truncated, d.source_closed, d.model, d.created_at`;
 
 const BUSY_ATTEMPTS = 5;
 const isBusy = (e) => /SQLITE_BUSY|database is locked/i.test(String(e?.message ?? e)) || e?.errcode === 5;
@@ -186,34 +187,43 @@ export function unwatch(id) {
   if (!r.changes) throw new PulseError('not_found', `watch not found: ${id}`);
 }
 
-/** Active watches (+ newest digest) of one project, or every project when `projectId` is null. */
-export function listWatches(projectId) {
+/**
+ * Active watches of one project (every project when `projectId` is null), each
+ * with its newest digest and BR-08 health (`health`: { health, finished,
+ * overdue, needs_me, waiting_customer, next_due }).
+ */
+export function listWatches(projectId, now = Date.now()) {
   const where = projectId ? 'w.active = 1 AND w.project_id = ?' : 'w.active = 1';
   const params = projectId ? [projectId] : [];
   const watches = db()
     .prepare(`SELECT ${WATCH_COLS} FROM ${WATCH_FROM} WHERE ${where} ORDER BY p.name COLLATE NOCASE, w.created_at, w.id`)
     .all(...params)
     .map(decorateWatch);
+  // Every kept digest (≤ 5 per watch), newest first: BR-12 looks at the history.
   const digests = db()
     .prepare(
       `SELECT ${DIGEST_COLS} FROM pulse_digests d JOIN pulse_watches w ON w.id = d.watch_id
-       WHERE ${where} AND d.id = (SELECT d2.id FROM pulse_digests d2
-         WHERE d2.watch_id = d.watch_id ORDER BY d2.created_at DESC, d2.id DESC LIMIT 1)`,
+       WHERE ${where} ORDER BY d.watch_id, d.created_at DESC, d.id DESC`,
     )
     .all(...params);
-  const byWatch = new Map(
-    digests.map((d) => [
-      d.watch_id,
-      {
-        ...d,
-        truncated: !!d.truncated,
-        deadlines: parseList(d.deadlines),
-        decisions: parseList(d.decisions),
-        open_questions: parseList(d.open_questions),
-      },
-    ]),
-  );
-  return watches.map((w) => ({ ...w, digest: byWatch.get(w.id) ?? null }));
+  const history = new Map();
+  for (const d of digests) {
+    const list = history.get(d.watch_id) ?? [];
+    list.push({
+      ...d,
+      truncated: !!d.truncated,
+      source_closed: !!d.source_closed,
+      deadlines: parseList(d.deadlines),
+      decisions: parseList(d.decisions),
+      open_questions: parseList(d.open_questions),
+    });
+    history.set(d.watch_id, list);
+  }
+  return watches
+    .map((w) => {
+      const hist = history.get(w.id) ?? [];
+      return { ...w, digest: hist[0] ?? null, health: watchHealth({ last_error: w.last_error, history: hist }, now) };
+    });
 }
 
 /** Queue a refresh for one project (or everything when null); returns the request id. */
