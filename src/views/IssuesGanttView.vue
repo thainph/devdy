@@ -501,6 +501,7 @@ function relativeTime(iso: string | null): string {
           :sort-by="sortMode"
           :expanded="expandedMilestones"
           :loading="loadingMilestones"
+          :project-id="selectedProjectId || null"
           class="flex-1 min-h-0 animate-fade-rise"
           @toggle-closed="toggleClosed"
         />

@@ -3,6 +3,7 @@ import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useProjectsStore } from '@/stores/projects'
+import { usePulseStore } from '@/stores/pulse'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
@@ -90,6 +91,8 @@ const isPopoutWindow =
 const route = useRoute()
 const router = useRouter()
 const projectsStore = useProjectsStore()
+// Pulse overview for the sidebar badge (number of 🔴 projects); stored data only.
+const pulseStore = usePulseStore()
 const appSettings = useAppSettingsStore()
 const tabsStore = useWorkspaceTabsStore()
 const uiLayout = useUILayoutStore()
@@ -552,6 +555,7 @@ onMounted(async () => {
     return
   }
   window.addEventListener('keydown', onQuickCaptureKey)
+  void pulseStore.start()
 
   // Native menu bar: bind the actions first, then install the menu, so an
   // impatient click on a freshly drawn item can't land on nothing.
@@ -867,6 +871,13 @@ onMounted(async () => {
                 />
                 <component :is="item.icon" class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
                 <span class="flex-1 truncate">{{ item.label }}</span>
+                <span
+                  v-if="item.path === '/pulse' && pulseStore.redCount > 0"
+                  class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-medium text-white leading-none"
+                  :title="t('pulse.health.red')"
+                >
+                  {{ pulseStore.redCount }}
+                </span>
                 <span
                   v-if="item.path === '/projects' && (projectsStore.conflicts.length + projectsStore.ruleConflicts.length) > 0"
                   class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-medium text-white leading-none"
