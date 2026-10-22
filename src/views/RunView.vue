@@ -136,46 +136,57 @@ const isSessionWindow = IS_SESSION_WINDOW
 // review session differs from the project default). Null until resolved.
 interface RunGithubAccounts { default: string | null; review: string | null; general: string | null }
 const runGithubAccounts = ref<RunGithubAccounts | null>(null)
+let runGithubAccountsSeq = 0
 async function loadRunGithubAccounts() {
+  // Drop late replies so a fast session/project switch never shows the old
+  // session's account.
+  const seq = ++runGithubAccountsSeq
+  let next: RunGithubAccounts | null = null
   try {
-    runGithubAccounts.value = await invoke<RunGithubAccounts>('get_run_github_accounts', {
+    next = await invoke<RunGithubAccounts>('get_run_github_accounts', {
       projectId: projectId.value,
       runId: currentRunId.value,
     })
   } catch {
-    runGithubAccounts.value = null
+    next = null
   }
+  if (seq === runGithubAccountsSeq) runGithubAccounts.value = next
 }
 
 const activeAccounts = computed(() => {
   // Tone per provider is kept in sync with the Projects list: GitHub=info,
   // GitLab=warning (server chips use status tones, AWS uses primary).
-  const badges: { key: string; icon: typeof Github; tone: 'info' | 'warning'; username: string; title: string }[] = []
-  const ghId = runGithubAccounts.value?.general ?? project.value?.github_account_id
-  if (ghId) {
-    const acc = ghStore.accounts.find(a => a.id === ghId)
-    if (acc) {
-      badges.push({
-        key: 'github',
-        icon: Github,
-        tone: 'info',
-        username: acc.username ? `@${acc.username}` : acc.label,
-        title: `GitHub account: ${acc.label}${acc.username ? ` (@${acc.username})` : ''}`,
-      })
-    }
+  const badges: { key: string; icon: typeof Github; tone: 'info' | 'warning'; username: string; title: string; tag?: string }[] = []
+  // One GitHub chip: the account this session's gh calls run as. The reviewer
+  // account only shows in the tooltip, unless the session itself runs as it
+  // (review session / PR-inbox review) — then the chip is tagged "review".
+  const ghLabel = (id: string | null | undefined) => {
+    const acc = id ? ghStore.accounts.find(a => a.id === id) : undefined
+    return acc ? (acc.username ? `@${acc.username}` : acc.label) : null
   }
+  const defaultId = runGithubAccounts.value?.default ?? project.value?.github_account_id
+  const ghId = runGithubAccounts.value?.general ?? defaultId
   const reviewId = runGithubAccounts.value?.review
-  if (reviewId && reviewId !== ghId) {
-    const acc = ghStore.accounts.find(a => a.id === reviewId)
-    if (acc) {
-      badges.push({
-        key: 'github-review',
-        icon: Github,
-        tone: 'info',
-        username: `review ${acc.username ? `@${acc.username}` : acc.label}`,
-        title: `GitHub reviewer account (PR reviews/comments): ${acc.label}${acc.username ? ` (@${acc.username})` : ''}`,
-      })
+  const ghName = ghLabel(ghId)
+  if (ghId && ghName) {
+    const reviewMode = !!defaultId && ghId !== defaultId
+    const lines = [`GitHub account: ${ghName}`]
+    if (reviewMode) {
+      lines[0] = `Review session — gh runs as ${ghName}`
+      const defName = ghLabel(defaultId)
+      if (defName) lines.push(`git fetch/push & commits: ${defName}`)
+    } else if (reviewId && reviewId !== ghId) {
+      const revName = ghLabel(reviewId)
+      if (revName) lines.push(`PR reviews/comments: ${revName}`)
     }
+    badges.push({
+      key: 'github',
+      icon: Github,
+      tone: 'info',
+      username: ghName,
+      title: lines.join('\n'),
+      tag: reviewMode ? 'review' : undefined,
+    })
   }
   const glId = project.value?.gitlab_account_id
   if (glId) {
@@ -3516,6 +3527,7 @@ function handleRefInput(val: string) {
         >
           <component :is="acc.icon" class="h-3 w-3" :stroke-width="1.75" />
           {{ acc.username }}
+          <span v-if="acc.tag" class="font-sans text-[10px] uppercase tracking-wide opacity-70">{{ acc.tag }}</span>
         </Badge>
         <!-- VPS servers wired to this project (transparent SSH per run). -->
         <Badge
