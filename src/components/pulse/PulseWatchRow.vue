@@ -29,6 +29,8 @@ const resolving = computed(() => props.watch.resolveStatus === 'pending')
     <span
       class="mt-1.5 h-2 w-2 shrink-0 rounded-full"
       :class="HEALTH_DOT[watch.health]"
+      role="img"
+      :aria-label="t(`pulse.health.${watch.health}`)"
       :title="t(`pulse.health.${watch.health}`)"
     />
     <component

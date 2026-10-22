@@ -6,10 +6,11 @@ import { ballAge, dueRelative, shortDate, KNOWN_ERRORS, type PulseDigest, type P
 export function usePulseText() {
   const { t, te } = useI18n()
 
-  function dueText(due: PulseNextDue | { dueAt: string } | null): string {
+  /** `dd/MM` (+ `HH:mm` for a timed deadline) and how far away it is. */
+  function dueText(due: PulseNextDue | { dueAt: string; allDay?: boolean } | null): string {
     if (!due) return ''
     const r = dueRelative(due.dueAt)
-    const date = shortDate(due.dueAt)
+    const date = due.allDay === false ? `${shortDate(due.dueAt)} ${clock(due.dueAt)}` : shortDate(due.dueAt)
     if (!r) return date
     if (r.kind === 'today') return `${date} (${t('pulse.due.today')})`
     if (r.kind === 'left') return `${date} (${t('pulse.due.left', { n: r.days })})`
