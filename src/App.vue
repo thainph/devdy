@@ -9,7 +9,7 @@ import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useUILayoutStore } from '@/stores/uiLayout'
 import { useI18n } from 'vue-i18n'
 import { setLocale } from '@/i18n'
-import { ListTodo, PanelLeftClose, PanelLeftOpen, Slack, StickyNote } from 'lucide-vue-next'
+import { AppWindow, ListTodo, PanelLeftClose, PanelLeftOpen, Slack, StickyNote } from 'lucide-vue-next'
 import PermissionNotifier from '@/components/PermissionNotifier.vue'
 import PermissionWindowManager from '@/components/PermissionWindowManager.vue'
 import CalendarReminder from '@/components/CalendarReminder.vue'
@@ -26,6 +26,8 @@ import MascotWindow from '@/views/MascotWindow.vue'
 import ItemWindow from '@/views/ItemWindow.vue'
 import ItemListWindow from '@/views/ItemListWindow.vue'
 import SlackThreadsWindow from '@/views/SlackThreadsWindow.vue'
+import PrInboxWindow from '@/views/PrInboxWindow.vue'
+import { PR_INBOX_WINDOW_OPEN_ROUTE, type PrInboxWindowOpenRoute } from '@/lib/prInboxWindow'
 import {
   SLACK_API_RECEIVED,
   type SlackApiReceived,
@@ -66,6 +68,7 @@ const isItemWindow = new URLSearchParams(window.location.search).get('itemWindow
 const isItemListWindow = new URLSearchParams(window.location.search).get('itemListWindow') === '1'
 const isGanttWindow = new URLSearchParams(window.location.search).get('ganttWindow') === '1'
 const isSlackWindow = new URLSearchParams(window.location.search).get('slackWindow') === '1'
+const isPrInboxWindow = new URLSearchParams(window.location.search).get('prInboxWindow') === '1'
 const isMascotWindow = new URLSearchParams(window.location.search).get('mascotWindow') === '1'
 // A session pop-out is different from the bare pop-outs above: it reuses the full
 // RunView (routed to one run) with the app chrome hidden, so it still needs the
@@ -81,6 +84,7 @@ const isPopoutWindow =
   isItemListWindow ||
   isGanttWindow ||
   isSlackWindow ||
+  isPrInboxWindow ||
   isMascotWindow
 
 const route = useRoute()
@@ -192,6 +196,21 @@ async function openRunFromTray(runId: string, projectHint?: string) {
     .catch(() => {})
 }
 
+// A router-less pop-out (Slack threads / PR Inbox window) asked to show an app
+// screen: bring this window forward and navigate. Only in-app paths.
+async function openRouteFromWindow(path: string | undefined) {
+  if (!path || !path.startsWith('/')) return
+  try {
+    const win = getCurrentWebviewWindow()
+    await win.unminimize()
+    await win.show()
+    await win.setFocus()
+  } catch {
+    /* best-effort focus */
+  }
+  router.push(path).catch(() => {})
+}
+
 // "New session from this thread / note / todo" in a pop-out: the session is
 // created here, where the drafts store lives, its composer is prefilled with
 // the target's reference (not sent), the target is linked to it, then it opens.
@@ -268,7 +287,6 @@ const CACHED_VIEWS = [
   'RulesView',
   'McpServersView',
   'CalendarView',
-  'PrInboxView',
   'ServersView',
 ]
 
@@ -301,6 +319,9 @@ let unlistenSlackApiReceived: UnlistenFn | null = null
 
 // Listener for the Slack threads window asking to navigate (e.g. to the MCP settings).
 let unlistenSlackRoute: UnlistenFn | null = null
+
+// Listener for the PR Inbox window asking to navigate (e.g. "Add to devdy").
+let unlistenPrInboxRoute: UnlistenFn | null = null
 
 // Listeners for the Slack / Notes / Todos windows opening a linked session or
 // starting a new one (lib/sessionLinks).
@@ -387,7 +408,9 @@ function bindGlobalMenuActions() {
     registerMenuAction('view.toggleSidebar', () => uiLayout.toggleSidebar()),
     registerMenuAction('view.toggleFocus', () => uiLayout.toggleFocus()),
     registerMenuAction('view.reload', () => window.location.reload()),
-    ...NAV_ROUTES.map((r) => registerMenuAction(`go.${r.path}`, () => router.push(r.path))),
+    ...NAV_ROUTES.map((r) =>
+      registerMenuAction(`go.${r.path}`, () => (r.openWindow ? r.openWindow() : router.push(r.path))),
+    ),
   ]
   return () => unbinds.forEach((off) => off())
 }
@@ -434,6 +457,8 @@ onBeforeUnmount(() => {
   unlistenSlackApiReceived = null
   unlistenSlackRoute?.()
   unlistenSlackRoute = null
+  unlistenPrInboxRoute?.()
+  unlistenPrInboxRoute = null
   unlistenWindowRun?.()
   unlistenWindowRun = null
   unlistenWindowNewSession?.()
@@ -460,7 +485,13 @@ onMounted(async () => {
 
 // Same source of truth as the native "Go" menu (see lib/navigation.ts).
 const navItems = computed(() =>
-  NAV_ROUTES.map((r) => ({ path: r.path, label: t(r.labelKey), icon: r.icon, group: r.group })),
+  NAV_ROUTES.map((r) => ({
+    path: r.path,
+    label: t(r.labelKey),
+    icon: r.icon,
+    group: r.group,
+    openWindow: r.openWindow,
+  })),
 )
 
 const isDark = ref(false)
@@ -617,15 +648,17 @@ onMounted(async () => {
   // The Slack threads window has no router of this app: it asks the main window
   // to focus itself and navigate (e.g. to the MCP settings when no token is set).
   try {
-    unlistenSlackRoute = await listen<SlackWindowOpenRoute>(SLACK_WINDOW_OPEN_ROUTE, async (e) => {
-      const path = e.payload?.path
-      if (!path || !path.startsWith('/')) return
-      try {
-        await getCurrentWebviewWindow().setFocus()
-      } catch {
-        /* best-effort focus */
-      }
-      router.push(path).catch(() => {})
+    unlistenSlackRoute = await listen<SlackWindowOpenRoute>(SLACK_WINDOW_OPEN_ROUTE, (e) => {
+      void openRouteFromWindow(e.payload?.path)
+    })
+  } catch {
+    // Ignore (e.g. running outside the Tauri shell during dev in a browser).
+  }
+
+  // Same for the PR Inbox window (e.g. "Add to devdy" → the Projects screen).
+  try {
+    unlistenPrInboxRoute = await listen<PrInboxWindowOpenRoute>(PR_INBOX_WINDOW_OPEN_ROUTE, (e) => {
+      void openRouteFromWindow(e.payload?.path)
     })
   } catch {
     // Ignore (e.g. running outside the Tauri shell during dev in a browser).
@@ -677,6 +710,9 @@ onMounted(async () => {
 
   <!-- THE Slack threads window: Slack-like reader of the fetched + translated threads. -->
   <SlackThreadsWindow v-else-if="isSlackWindow" />
+
+  <!-- THE PR Inbox window: the PR Inbox screen on its own OS window. -->
+  <PrInboxWindow v-else-if="isPrInboxWindow" />
 
   <!-- Pop-out Gantt window: bare Gantt chart on its own OS window. -->
   <IssuesGanttView v-else-if="isGanttWindow" />
@@ -802,7 +838,23 @@ onMounted(async () => {
               <!-- Divider between nav groups (daily work / agent config / app). -->
               <div v-if="startsNavGroup(index)" class="mx-3 !my-2 border-t border-border/50" />
 
+              <!-- Destinations with their own window (PR Inbox) open it, like
+                   the Slack button above, instead of routing. -->
+              <button
+                v-if="item.openWindow"
+                type="button"
+                class="relative flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors cursor-pointer select-none text-muted-foreground hover:text-foreground hover:bg-accent/50"
+                :title="`${item.label} — ${t('nav.opensInWindow')}`"
+                @click="item.openWindow()"
+              >
+                <component :is="item.icon" class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
+                <span class="flex-1 truncate text-left">{{ item.label }}</span>
+                <!-- Hint: opens a separate window rather than a screen here -->
+                <AppWindow class="h-3 w-3 shrink-0 text-muted-foreground/50" :stroke-width="1.75" aria-hidden="true" />
+                <span class="sr-only">({{ t('nav.opensInWindow') }})</span>
+              </button>
               <RouterLink
+                v-else
                 :to="item.path"
                 class="relative flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors cursor-pointer select-none"
                 :class="route.path.startsWith(item.path)

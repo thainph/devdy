@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { emit as emitEvent } from '@tauri-apps/api/event'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useI18n } from 'vue-i18n'
-import { useActivatedRefresh } from '@/composables/useActivatedRefresh'
 import { useRouter } from 'vue-router'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { usePrInboxStore, prKey, type PrInboxItem } from '@/stores/prInbox'
@@ -9,6 +10,7 @@ import { useRunsStore } from '@/stores/runs'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useConductorStore } from '@/stores/conductor'
 import { useAppSettingsStore } from '@/stores/appSettings'
+import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import { resolvePermissionMode } from '@/lib/engineOptions'
 import {
   Button, Skeleton, Input, ContextMenu, DropdownItem, DropdownSeparator,
@@ -23,11 +25,14 @@ import {
   type PrGroup,
 } from '@/lib/prInboxGrouping'
 import {
+  ambiguousRepoNames,
   applyFilters,
   buildFilterOptions,
   bulkReviewCandidates,
   canStartReview,
+  effectiveAccountCount,
   effectiveFilters,
+  makeAccountTone,
   hasActiveFilters,
   makeBotPredicate,
   normalizeLogin,
@@ -38,14 +43,25 @@ import {
 } from '@/lib/prInboxFilters'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
+import { useFloatingWindow } from '@/composables/useFloatingWindow'
+import { useRunStatusEvents } from '@/composables/useRunStatusEvents'
+import { WINDOW_OPEN_RUN, type WindowOpenRun } from '@/lib/sessionLinks'
+import { PR_INBOX_WINDOW_OPEN_ROUTE, type PrInboxWindowOpenRoute } from '@/lib/prInboxWindow'
 import {
   GitPullRequest, RefreshCw, Sparkles, User, AlertTriangle, Bot, ChevronRight, Folder, BookMarked,
-  CircleDashed, EyeOff, KeyRound, ExternalLink, SearchX, Search, X,
+  CircleDashed, EyeOff, KeyRound, ExternalLink, SearchX, Search, X, Pin, PinOff,
 } from 'lucide-vue-next'
 
-// Named explicitly: <KeepAlive :include> in App.vue matches on component name,
-// and an inferred name is a build detail that minification can change.
+// Named explicitly (devtools / warnings): an inferred name is a build detail
+// that minification can change.
 defineOptions({ name: 'PrInboxView' })
+
+const props = withDefaults(defineProps<{
+  /** Rendered in its own OS window (PrInboxWindow): no router of the app and
+   * no liveRuns stream there, so navigation becomes a request to the main
+   * window (App.vue) and run status comes from useRunStatusEvents. */
+  standalone?: boolean
+}>(), { standalone: false })
 
 const { t } = useI18n()
 const router = useRouter()
@@ -54,47 +70,70 @@ const runsStore = useRunsStore()
 const live = useLiveRunsStore()
 const conductorStore = useConductorStore()
 const appSettings = useAppSettingsStore()
+const githubAccounts = useGithubAccountsStore()
 const { toast } = useToast()
 const { confirm } = useConfirm()
 
 // Shared clock for relative times + the stale badge, ticking once a minute so
-// a long-open inbox doesn't freeze at "just now". Runs only while the screen is
-// shown: <KeepAlive> deactivates rather than unmounts it, and the guard keeps
-// mount + first activation from starting two intervals.
+// a long-open inbox doesn't freeze at "just now". The screen now lives in its
+// own window (no <KeepAlive>), so plain mount / unmount bound it.
 const now = ref(Date.now())
 let clock: ReturnType<typeof setInterval> | null = null
 
-function startClock() {
-  now.value = Date.now()
-  if (clock) return
-  clock = setInterval(() => { now.value = Date.now() }, 60_000)
-}
-
-function stopClock() {
-  if (clock) clearInterval(clock)
-  clock = null
-}
-
 onMounted(() => {
   if (store.items.length === 0) store.refresh()
-  startClock()
+  // The configured account list decides whether cards show the "review as"
+  // account chip. This window has its own Pinia, so Settings edits made in the
+  // main window only arrive on a re-fetch (see the focus resync below).
+  if (githubAccounts.accounts.length === 0) githubAccounts.fetch()
+  clock = setInterval(() => { now.value = Date.now() }, 60_000)
 })
-onActivated(startClock)
-onDeactivated(stopClock)
-onBeforeUnmount(stopClock)
-
-// Cached by <KeepAlive> (App.vue): onMounted fires once for the app's whole
-// lifetime, so re-show the screen with fresh data instead of whatever it read
-// the very first time.
-useActivatedRefresh(() => {
-  if (store.items.length === 0) store.refresh()
+onBeforeUnmount(() => {
+  if (clock) clearInterval(clock)
+  clock = null
 })
 
-// Effective status for a PR's linked review run: a live streaming status (from
-// the liveRuns store) wins over the DB snapshot taken at refresh time.
+// Standalone window: a light status feed (run:activated / run:done:<id>) for
+// the PRs' linked review runs, instead of the main window's liveRuns.
+const windowRuns = props.standalone
+  ? useRunStatusEvents(() => store.items
+    .filter(i => i.existing_run_id)
+    .map(i => ({ id: i.existing_run_id!, status: i.existing_run_status })))
+  : null
+
+// Effective status for a PR's linked review run: a live streaming status (the
+// liveRuns store, or the window's status feed) wins over the DB snapshot taken
+// at refresh time.
 function runStatus(item: PrInboxItem): string | null {
   if (!item.existing_run_id) return null
-  return live.get(item.existing_run_id)?.status ?? item.existing_run_status
+  const liveStatus = windowRuns
+    ? windowRuns.status(item.existing_run_id)
+    : live.get(item.existing_run_id)?.status
+  return liveStatus ?? item.existing_run_status
+}
+
+// Standalone window: same window-priority behaviour as the other pop-outs
+// (on top while focused, or pinned), and resync on focus — the inbox plus the
+// GitHub account list (its own Pinia here). Throttled on the last ATTEMPT, not
+// the last success: a refresh is a GitHub search per account, and a failing
+// one must not re-fire on every focus.
+const floating = props.standalone ? useFloatingWindow() : null
+const FOCUS_REFRESH_MS = 60_000
+let unlistenFocus: (() => void) | null = null
+if (props.standalone) {
+  onMounted(async () => {
+    try {
+      unlistenFocus = await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+        if (!focused || store.loading || bulk.value !== null) return
+        if (Date.now() - store.lastAttemptAt <= FOCUS_REFRESH_MS) return
+        void store.refresh()
+        void githubAccounts.fetch()
+      })
+    } catch {
+      /* outside the Tauri shell */
+    }
+  })
+  onBeforeUnmount(() => unlistenFocus?.())
 }
 
 // --- Filtering + grouping ---------------------------------------------------
@@ -120,6 +159,12 @@ const grouped = computed(() => groupPrInbox(filtered.value, {
   hideBots: store.hideBots,
   isBot: isBot.value,
 }))
+
+// Card context: bare `repo #num` unless the repo name is ambiguous across
+// owners, and the "review as" account chip only when there is a choice.
+const ambiguousRepos = computed(() => ambiguousRepoNames(store.items))
+const showAccountChip = computed(() => effectiveAccountCount(githubAccounts.accounts, store.items) > 1)
+const accountTone = computed(() => makeAccountTone(githubAccounts.accounts))
 
 function setFilter(dimension: PrFilterDimension, values: string[]) {
   store.setFilters({ ...store.filters, [dimension]: values })
@@ -204,9 +249,28 @@ function openPr(item: PrInboxItem) {
 // --- Review actions -------------------------------------------------------
 
 // Open the review session already linked to this PR.
+// From the standalone window this asks the main window to show the run — its
+// session pop-out if it has one, else the main window (WINDOW_OPEN_RUN, the
+// Slack / Notes / Todos windows' mechanism, handled in App.vue).
 function openRun(item: PrInboxItem) {
   if (!item.project_id || !item.existing_run_id) return
+  if (props.standalone) {
+    emitEvent(WINDOW_OPEN_RUN, {
+      projectId: item.project_id,
+      runId: item.existing_run_id,
+    } satisfies WindowOpenRun).catch(() => {})
+    return
+  }
   router.push(`/projects/${item.project_id}/run/${item.existing_run_id}`)
+}
+
+// "Add to devdy": the project screen lives in the main window.
+function openProjects() {
+  if (props.standalone) {
+    emitEvent(PR_INBOX_WINDOW_OPEN_ROUTE, { path: '/projects' } satisfies PrInboxWindowOpenRoute).catch(() => {})
+    return
+  }
+  router.push('/projects')
 }
 
 // Create + launch a review run for a mapped PR with no linked run. Throws on
@@ -256,6 +320,8 @@ async function handleReview(item: PrInboxItem) {
   if (item.existing_run_id) { openRun(item); return }
   try {
     if (await startReview(item)) {
+      // Stay on this screen (no focus jump — the window is for multitasking):
+      // the button turns into "Reviewing" / "View review", which opens it.
       toast.success(t('prInbox.reviewing', { repo: item.repo, number: item.number }))
     }
   } catch (e) {
@@ -333,6 +399,18 @@ async function reviewAll(group: PrGroup) {
         </span>
       </div>
       <div class="flex items-center gap-2">
+        <!-- Standalone window: pin on top (same control as the Slack window) -->
+        <Button
+          v-if="floating"
+          :variant="floating.pinned.value ? 'primary' : 'outline'"
+          size="icon-sm"
+          :aria-pressed="floating.pinned.value"
+          :title="floating.pinned.value ? t('item.unpin') : t('item.pin')"
+          :aria-label="floating.pinned.value ? t('item.unpin') : t('item.pin')"
+          @click="floating.togglePin()"
+        >
+          <component :is="floating.pinned.value ? Pin : PinOff" class="h-3.5 w-3.5" :stroke-width="1.75" />
+        </Button>
         <Button variant="ghost" :disabled="store.loading || bulk !== null" @click="store.refresh()">
           <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': store.loading }" :stroke-width="2" />
           {{ t('common.refresh') }}
@@ -604,6 +682,10 @@ async function reviewAll(group: PrGroup) {
               :key="`${group.key}:${prKey(item)}`"
               :item="item"
               :density="store.density"
+              :group-by="group.kind === 'normal' ? store.groupBy : 'none'"
+              :show-owner="ambiguousRepos.has(item.repo.toLowerCase())"
+              :show-account="showAccountChip"
+              :account-tone="accountTone"
               :grouped="group.kind !== 'all'"
               :is-bot="isBot(item)"
               :run-status="runStatus(item)"
@@ -612,6 +694,7 @@ async function reviewAll(group: PrGroup) {
               :index="i"
               @review="handleReview"
               @open-run="openRun"
+              @add-to-devdy="openProjects"
               @menu="openMenu"
             />
           </div>

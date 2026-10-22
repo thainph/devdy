@@ -12,6 +12,7 @@ import {
   Settings,
   Info,
 } from 'lucide-vue-next'
+import { openPrInboxWindow } from '@/lib/prInboxWindow'
 
 /**
  * The app's top-level destinations, in sidebar order. Shared by the sidebar and
@@ -30,11 +31,17 @@ export interface NavRoute {
   labelKey: string
   icon: Component
   group: NavGroup
+  /**
+   * Set for destinations that live in their own OS window (like the Slack
+   * threads window): the sidebar entry, the Go menu item and its shortcut call
+   * this instead of routing, and the route itself diverts to it.
+   */
+  openWindow?: () => unknown
 }
 
 export const NAV_ROUTES: NavRoute[] = [
   { path: '/projects', labelKey: 'nav.projects', icon: FolderOpen, group: 'work' },
-  { path: '/pr-inbox', labelKey: 'nav.prInbox', icon: GitPullRequest, group: 'work' },
+  { path: '/pr-inbox', labelKey: 'nav.prInbox', icon: GitPullRequest, group: 'work', openWindow: openPrInboxWindow },
   { path: '/calendar', labelKey: 'nav.calendar', icon: CalendarDays, group: 'work' },
   { path: '/gantt', labelKey: 'nav.gantt', icon: GanttChartSquare, group: 'work' },
   { path: '/skills', labelKey: 'nav.skills', icon: Puzzle, group: 'config' },

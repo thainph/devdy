@@ -9,6 +9,7 @@ import ServersView from '../views/ServersView.vue'
 import ServerEditorView from '../views/ServerEditorView.vue'
 import ProjectsView from '../views/ProjectsView.vue'
 import PrInboxView from '../views/PrInboxView.vue'
+import { openPrInboxWindow } from '../lib/prInboxWindow'
 import IssuesGanttView from '../views/IssuesGanttView.vue'
 import ProjectDetailView from '../views/ProjectDetailView.vue'
 import RunView from '../views/RunView.vue'
@@ -34,7 +35,19 @@ const router = createRouter({
     { path: '/servers/new', name: 'server-new', component: ServerEditorView },
     { path: '/servers/:id/edit', name: 'server-edit', component: ServerEditorView },
     { path: '/projects', name: 'projects', component: ProjectsView },
-    { path: '/pr-inbox', name: 'pr-inbox', component: PrInboxView },
+    // The PR Inbox lives in its own window (lib/prInboxWindow), like the Slack
+    // threads window; the route only stays so old links / navigation open it.
+    // PrInboxView is never rendered here — the guard always diverts.
+    {
+      path: '/pr-inbox',
+      name: 'pr-inbox',
+      component: PrInboxView,
+      beforeEnter: (_to, from) => {
+        void openPrInboxWindow()
+        // Stay where we are; on a cold start (nothing matched yet) land on the default screen.
+        return from.matched.length > 0 ? false : '/projects'
+      },
+    },
     { path: '/gantt', name: 'gantt', component: IssuesGanttView },
     { path: '/projects/:projectId', name: 'project-run', component: RunView },
     { path: '/projects/:projectId/run/:runId', name: 'project-run-detail', component: RunView },

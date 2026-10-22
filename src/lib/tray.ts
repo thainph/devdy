@@ -100,6 +100,7 @@ function rawLabelFor(windowLabel: string, osTitle: string): string {
   if (windowLabel === 'item-list-todo') return meaningful || t('tray.todoListWindow')
   if (windowLabel === 'item-list-note') return meaningful || t('tray.noteListWindow')
   if (windowLabel === 'slack-threads') return meaningful || t('slackThread.window.title')
+  if (windowLabel === 'pr-inbox') return meaningful || t('prInbox.window.title')
   // Unknown / future window kind: best effort — its title, else the raw label.
   return meaningful || windowLabel
 }

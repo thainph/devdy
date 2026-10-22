@@ -7,7 +7,6 @@
   "viewReview": "Xem review",
   "opening": "Đang mở…",
   "aiReview": "AI Review",
-  "notInDevdy": "Chưa có trong devdy",
   "addToDevdy": "Thêm vào devdy",
   "partialFailTitle": "{count} account tải review request thất bại",
   "partialFailBody": "một số PR có thể bị thiếu. Thử refresh lại.",
@@ -74,9 +73,7 @@
   "detectedBot": "GitHub đã đánh dấu là bot",
   "openOnGitHub": "Mở trên GitHub",
   "moreActions": "Thao tác khác",
-  "stale": "Cũ",
   "staleTitle": "Không có cập nhật hơn {days} ngày",
-  "alsoRequested": "cùng:",
   "bulk": {
     "action": "AI review tất cả ({count})",
     "progress": "Đang review {done}/{total}…",
@@ -92,5 +89,12 @@
     "button": "Hiển thị",
     "hideBotsHint": "Gộp PR của bot vào một dòng tóm tắt"
   },
-  "clearSearch": "Xoá tìm kiếm"
+  "clearSearch": "Xoá tìm kiếm",
+  "reviewAs": "Review bằng {account}",
+  "reviewAsMulti": "Review bằng {account} · cũng được mời qua {others}",
+  "labelsTitle": "Nhãn: {list}",
+  "reviewersTitle": "Cũng được mời: {list}",
+  "window": {
+    "title": "PR Inbox"
+  }
 }

@@ -4,10 +4,13 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   UNMAPPED_PROJECT_VALUE,
+  ambiguousRepoNames,
   applyFilters,
   buildFilterOptions,
   bulkReviewCandidates,
   canStartReview,
+  effectiveAccountCount,
+  makeAccountTone,
   effectiveFilters,
   emptyFilters,
   hasActiveFilters,
@@ -19,6 +22,7 @@ import {
   sanitizeFilters,
   splitLabels,
 } from '../prInboxFilters.ts'
+import { AVATAR_TONES, avatarTone } from '../slackThreadUtils.ts'
 
 let seq = 0
 function pr(extra = {}) {
@@ -176,4 +180,53 @@ test('canStartReview re-checks the current store entry', () => {
   assert.equal(canStartReview({ ...item, existing_run_id: 'run-1' }, false), false) // refreshed: now linked
   assert.equal(canStartReview(pr(unmapped), false), false)
   assert.equal(canStartReview({ ...item, repo_id: null }, false), false)
+})
+
+test('ambiguousRepoNames flags repo names shared by several owners', () => {
+  const items = [
+    pr({ owner: 'Acme', repo: 'Web' }),
+    pr({ owner: 'globex', repo: 'web' }),
+    pr({ owner: 'acme', repo: 'api' }),
+    pr({ owner: 'acme', repo: 'api' }),
+  ]
+  assert.deepEqual([...ambiguousRepoNames(items)], ['web'])
+  assert.equal(ambiguousRepoNames([]).size, 0)
+})
+
+test('effectiveAccountCount prefers the configured list, else inbox accounts', () => {
+  const configured = [
+    { username: 'me', has_pat: true },
+    { username: 'me-work', has_pat: true },
+    { username: null, has_pat: true }, // not validated
+    { username: 'old', has_pat: false }, // no PAT
+  ]
+  assert.equal(effectiveAccountCount(configured, []), 2)
+  const items = [
+    pr({ reviewer_accounts: [{ account_id: 'a', account_label: 'A' }, { account_id: 'b', account_label: 'B' }] }),
+    pr({ reviewer_accounts: [{ account_id: 'a', account_label: 'A' }] }),
+  ]
+  assert.equal(effectiveAccountCount(null, items), 2)
+  assert.equal(effectiveAccountCount([], items), 2) // list not loaded yet
+  assert.equal(effectiveAccountCount(null, [pr()]), 1)
+})
+
+test('makeAccountTone: distinct tones by creation order, hash fallback', () => {
+  const configured = [
+    { id: 'c', created_at: '2026-03-01T00:00:00Z' },
+    { id: 'a', created_at: '2026-01-01T00:00:00Z' },
+    { id: 'b', created_at: '2026-02-01T00:00:00Z' },
+    { id: 'd', created_at: '2026-04-01T00:00:00Z' },
+    { id: 'e', created_at: '2026-05-01T00:00:00Z' },
+    { id: 'f', created_at: '2026-06-01T00:00:00Z' },
+  ]
+  const tone = makeAccountTone(configured)
+  const tones = ['a', 'b', 'c', 'd', 'e', 'f'].map(tone)
+  assert.equal(new Set(tones).size, 6) // no collisions for 6 accounts
+  assert.equal(tone('a'), AVATAR_TONES[0]) // oldest first
+  assert.equal(tone('c'), AVATAR_TONES[2])
+  // Input order (e.g. sorted by label) doesn't matter
+  assert.equal(makeAccountTone([...configured].reverse())('b'), tone('b'))
+  // Unknown account → stable hash tone
+  assert.equal(tone('zzz'), avatarTone('zzz'))
+  assert.equal(makeAccountTone([])('a'), avatarTone('a'))
 })

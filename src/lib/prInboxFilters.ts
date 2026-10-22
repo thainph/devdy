@@ -2,6 +2,7 @@
 // (PrInboxView). Sibling of prInboxGrouping.ts — same rules: no Vue, no i18n,
 // unit-tested with `node --test src/lib/__tests__/prInboxFilters.test.mjs`.
 import type { PrInboxItem } from '@/stores/prInbox'
+import { AVATAR_TONES, avatarTone } from './slackThreadUtils.ts'
 
 /**
  * Review state of a PR from the inbox's point of view:
@@ -242,6 +243,57 @@ export function applyFilters(
 // ---------------------------------------------------------------------------
 
 export const STALE_AFTER_DAYS = 7
+
+/**
+ * Repo names (lowercased) that occur under two or more owners in the inbox —
+ * e.g. `acme/web` and `globex/web`. Cards show a bare `repo #num` and only add
+ * the `owner/` prefix for these, where the short form would be ambiguous.
+ */
+export function ambiguousRepoNames(items: readonly PrInboxItem[]): Set<string> {
+  const owners = new Map<string, Set<string>>()
+  for (const item of items) {
+    const repo = item.repo.toLowerCase()
+    const set = owners.get(repo) ?? new Set<string>()
+    set.add(item.owner.toLowerCase())
+    owners.set(repo, set)
+  }
+  return new Set([...owners].filter(([, set]) => set.size > 1).map(([repo]) => repo))
+}
+
+/**
+ * Dot colour per reviewer account. Configured accounts get tones by position
+ * (oldest first — creation order, so renaming an account doesn't recolour it),
+ * which keeps up to AVATAR_TONES.length accounts collision-free; anything not
+ * in the list falls back to the id hash. Returns a `bg-*` class.
+ */
+export function makeAccountTone(
+  configured: readonly { id: string; created_at: string }[],
+): (accountId: string) => string {
+  const ordered = [...configured].sort((a, b) =>
+    a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
+  )
+  const index = new Map(ordered.map((a, i) => [a.id, i]))
+  return accountId => {
+    const i = index.get(accountId)
+    return i === undefined ? avatarTone(accountId) : AVATAR_TONES[i % AVATAR_TONES.length]
+  }
+}
+
+/** Number of distinct GitHub accounts behind the inbox: the configured
+ * accounts that can actually fetch (validated login + PAT) when that list is
+ * loaded, else the accounts seen in the inbox as a fallback. Drives whether
+ * the per-card "review as" account chip is worth showing. */
+export function effectiveAccountCount(
+  configured: readonly { username: string | null; has_pat: boolean }[] | null,
+  items: readonly PrInboxItem[],
+): number {
+  if (configured && configured.length > 0) {
+    return configured.filter(a => a.username && a.has_pat).length
+  }
+  const seen = new Set<string>()
+  for (const item of items) for (const a of reviewerAccountsOf(item)) seen.add(a.account_id)
+  return seen.size
+}
 
 /** True when the PR hasn't been updated for more than `days` days. */
 export function isStale(updatedAt: string, now: number, days: number = STALE_AFTER_DAYS): boolean {
