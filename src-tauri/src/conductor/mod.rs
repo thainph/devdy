@@ -217,6 +217,9 @@ struct Inner {
 #[derive(Clone)]
 pub struct ConductorState {
     inner: Arc<Mutex<Inner>>,
+    /// Serializes "count running workers → start one" so parallel
+    /// `session_spawn` / resuming `session_send` calls can't both pass the cap.
+    start_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Default for ConductorState {
@@ -237,7 +240,14 @@ impl ConductorState {
                 pending_wake: HashSet::new(),
                 wake_tx: None,
             })),
+            start_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+
+    /// Hold while counting running workers and starting/resuming one, so the
+    /// concurrent-worker cap check and the start are atomic.
+    pub async fn lock_worker_start(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.start_lock.lock().await
     }
 
     pub fn set_port(&self, port: u16) {
@@ -296,12 +306,14 @@ impl ConductorState {
             .and_then(|g| g.sessions.get(conductor_run_id).cloned())
     }
 
-    /// Record a newly spawned worker under its conductor. Returns false when the
+    /// Record a newly spawned worker under its conductor. `running` is how many
+    /// of its workers are currently running — the cap limits concurrency only,
+    /// so finished/cancelled workers don't count. Returns false when the
     /// conductor is unknown or already at its worker cap.
-    pub fn add_worker(&self, conductor_run_id: &str, worker_id: &str) -> bool {
+    pub fn add_worker(&self, conductor_run_id: &str, worker_id: &str, running: usize) -> bool {
         if let Ok(mut g) = self.inner.lock() {
             if let Some(s) = g.sessions.get_mut(conductor_run_id) {
-                if s.worker_ids.len() >= s.max_workers {
+                if running >= s.max_workers {
                     return false;
                 }
                 s.worker_ids.push(worker_id.to_string());
@@ -638,7 +650,7 @@ mod tests {
         // A restart-style re-registration mints a second token for the same run.
         let t2 = cst.reregister_session("c1", "p", 4, vec!["w1".into()]);
         let other = cst.register_session("c2", "p", 4);
-        assert!(cst.add_worker("c2", "c1-orphan"));
+        assert!(cst.add_worker("c2", "c1-orphan", 0));
         cst.turn_started("c1");
         cst.unregister_session("c1");
         assert!(cst.session("c1").is_none());
@@ -648,6 +660,19 @@ mod tests {
         // Deleting a worker detaches it from its conductor.
         cst.unregister_session("c1-orphan");
         assert!(!cst.owns_worker("c2", "c1-orphan"));
+    }
+
+    #[test]
+    fn worker_cap_counts_only_running_workers() {
+        let cst = ConductorState::new();
+        cst.register_session("c", "p", 2);
+        assert!(cst.add_worker("c", "w1", 0));
+        assert!(cst.add_worker("c", "w2", 1));
+        assert!(!cst.add_worker("c", "w3", 2));
+        // w1/w2 finished → 0 running: a third (and fourth) spawn fits.
+        assert!(cst.add_worker("c", "w3", 0));
+        assert!(cst.add_worker("c", "w4", 1));
+        assert!(cst.owns_worker("c", "w1") && cst.owns_worker("c", "w4"));
     }
 
     #[test]
