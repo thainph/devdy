@@ -4,6 +4,7 @@
 use crate::pulse::store::{self, ProjectPulse, Watch, WatchRequest};
 use crate::pulse::PulseState;
 use crate::slack_threads::CodedError;
+use serde::Serialize;
 use tauri::State;
 
 type CmdResult<T> = Result<T, String>;
@@ -96,6 +97,36 @@ pub async fn pulse_overview(
     store::overview(state.db(), project_ids.as_deref())
         .await
         .map_err(err)
+}
+
+#[derive(Serialize)]
+pub struct RefreshQueued {
+    pub queued: usize,
+}
+
+/// Refresh the active watches of one watch / project / everything (none
+/// given). Runs in the background: `pulse:refresh-progress { done, total }`
+/// while it goes, `pulse:changed` per finished source.
+#[tauri::command]
+pub async fn pulse_refresh(
+    state: State<'_, PulseState>,
+    project_id: Option<String>,
+    watch_id: Option<String>,
+) -> CmdResult<RefreshQueued> {
+    let watches = store::scope_watches(state.db(), project_id.as_deref(), watch_id.as_deref())
+        .await
+        .map_err(err)?;
+    if let Some(id) = watch_id.as_deref() {
+        if watches.is_empty() {
+            return Err(err(CodedError::new(
+                "not_found",
+                format!("no active watch {id}"),
+            )));
+        }
+    }
+    let queued = watches.len();
+    state.schedule(watches);
+    Ok(RefreshQueued { queued })
 }
 
 /// The Pulse screen reports when it is open so MCP requests are polled (BR-11).

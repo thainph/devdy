@@ -1,8 +1,11 @@
 //! SQL for Project Pulse: watch rules (BR-01/03/04), project lookup, the
 //! overview read and the BR-11 request queue. Errors are `CodedError`s.
 
+use super::content::SlackMsg;
+use super::digest::DigestDraft;
 use super::source::{parse_source, Source, SourceError};
 use crate::db::Db;
+use crate::slack_threads::mrkdwn::Names;
 use crate::slack_threads::store::{internal, is_safe_id};
 use crate::slack_threads::CodedError;
 use serde::Serialize;
@@ -234,7 +237,6 @@ pub async fn normalize(db: &Db, input: &str, project_id: &str) -> Result<Source,
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub async fn get(db: &Db, id: &str) -> Result<Option<Watch>, CodedError> {
     sqlx::query_as(&format!(
         "SELECT {WATCH_COLS} FROM {WATCH_FROM} WHERE w.id = ?"
@@ -566,34 +568,6 @@ pub async fn pending_watches(db: &Db) -> Result<Vec<Watch>, CodedError> {
     .map_err(internal)
 }
 
-/// Resolve result of a watch. Only applies while the watch is still `pending`
-/// with the same project (a concurrent move re-queues it).
-pub async fn set_resolved(
-    db: &Db,
-    w: &Watch,
-    slack_thread_id: Option<&str>,
-    title: Option<&str>,
-    error: Option<&str>,
-) -> Result<bool, CodedError> {
-    let status = if error.is_some() { "error" } else { "ready" };
-    let r = sqlx::query(
-        "UPDATE pulse_watches SET resolve_status = ?, last_error = ?, \
-         slack_thread_id = COALESCE(?, slack_thread_id), title = COALESCE(?, title), \
-         updated_at = ? WHERE id = ? AND resolve_status = 'pending' AND project_id = ?",
-    )
-    .bind(status)
-    .bind(error)
-    .bind(slack_thread_id)
-    .bind(title)
-    .bind(now())
-    .bind(&w.id)
-    .bind(&w.project_id)
-    .execute(db)
-    .await
-    .map_err(internal)?;
-    Ok(r.rows_affected() == 1)
-}
-
 #[derive(Debug, Clone, sqlx::FromRow, PartialEq, Eq)]
 pub struct PulseRequest {
     pub id: String,
@@ -636,4 +610,248 @@ pub async fn any_run_running(db: &Db) -> Result<bool, CodedError> {
         .fetch_one(db)
         .await
         .map_err(internal)
+}
+
+// ---- Refresh pipeline (T3) ---------------------------------------------------
+
+/// Digests kept per watch (§5.2).
+pub const DIGESTS_KEPT: i64 = 5;
+
+/// A stored Slack thread ready for BR-05 / BR-07.
+pub struct SlackThreadData {
+    pub title: String,
+    pub msgs: Vec<SlackMsg>,
+    pub names: Names,
+    /// The token user of the thread's workspace (`slack_identities`).
+    pub me: Option<String>,
+    pub me_name: Option<String>,
+}
+
+pub async fn slack_thread_exists(db: &Db, id: &str) -> Result<bool, CodedError> {
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM slack_threads WHERE id = ?)")
+        .bind(id)
+        .fetch_one(db)
+        .await
+        .map_err(internal)
+}
+
+pub async fn load_slack_thread(db: &Db, id: &str) -> Result<Option<SlackThreadData>, CodedError> {
+    let head: Option<(String, Option<String>)> =
+        sqlx::query_as("SELECT title, team_id FROM slack_threads WHERE id = ?")
+            .bind(id)
+            .fetch_optional(db)
+            .await
+            .map_err(internal)?;
+    let Some((title, team_id)) = head else {
+        return Ok(None);
+    };
+    let mut all_names = crate::slack_threads::store::load_names(db)
+        .await
+        .map_err(internal)?;
+    let names = team_id
+        .as_deref()
+        .and_then(|t| all_names.remove(t))
+        .unwrap_or_default();
+    let me: Option<String> = match team_id.as_deref() {
+        Some(t) => sqlx::query_scalar("SELECT user_id FROM slack_identities WHERE team_id = ?")
+            .bind(t)
+            .fetch_optional(db)
+            .await
+            .map_err(internal)?,
+        None => None,
+    };
+    type Row = (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        String,
+        Option<String>,
+    );
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT ts, user_id, bot_id, author_name, subtype, text_raw, text_vi \
+         FROM slack_messages WHERE thread_id = ? ORDER BY seq ASC, ts ASC",
+    )
+    .bind(id)
+    .fetch_all(db)
+    .await
+    .map_err(internal)?;
+    let msgs = rows
+        .into_iter()
+        .map(
+            |(ts, user_id, bot_id, author_name, subtype, text_raw, text_vi)| {
+                let author = user_id
+                    .as_deref()
+                    .and_then(|u| names.user(u))
+                    .map(str::to_string)
+                    .or(author_name)
+                    .or_else(|| user_id.clone())
+                    .or_else(|| bot_id.clone())
+                    .unwrap_or_else(|| "unknown".to_string());
+                SlackMsg {
+                    ts,
+                    user_id,
+                    bot_id,
+                    subtype,
+                    author,
+                    text_raw,
+                    text_vi,
+                }
+            },
+        )
+        .collect();
+    let me_name = me
+        .as_deref()
+        .and_then(|u| names.user(u))
+        .map(str::to_string);
+    Ok(Some(SlackThreadData {
+        title,
+        msgs,
+        names,
+        me,
+        me_name,
+    }))
+}
+
+pub async fn latest_digest_hash(db: &Db, watch_id: &str) -> Result<Option<String>, CodedError> {
+    sqlx::query_scalar(
+        "SELECT content_hash FROM pulse_digests WHERE watch_id = ? \
+         ORDER BY created_at DESC, id DESC LIMIT 1",
+    )
+    .bind(watch_id)
+    .fetch_optional(db)
+    .await
+    .map_err(internal)
+}
+
+/// Store a digest and keep only the newest `DIGESTS_KEPT` of the watch.
+pub async fn insert_digest(
+    db: &Db,
+    watch_id: &str,
+    content_hash: &str,
+    d: &DigestDraft,
+    truncated: bool,
+    model: Option<&str>,
+) -> Result<String, CodedError> {
+    let id = Uuid::new_v4().to_string();
+    let mut tx = db.begin().await.map_err(internal)?;
+    sqlx::query(
+        "INSERT INTO pulse_digests (id, watch_id, content_hash, status, ball, ball_since, \
+         summary, next_action, deadlines, decisions, open_questions, truncated, model, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(watch_id)
+    .bind(content_hash)
+    .bind(&d.status)
+    .bind(&d.ball)
+    .bind(&d.ball_since)
+    .bind(&d.summary)
+    .bind(&d.next_action)
+    .bind(json(&d.deadlines))
+    .bind(json(&d.decisions))
+    .bind(json(&d.open_questions))
+    .bind(truncated)
+    .bind(model)
+    .bind(now())
+    .execute(&mut *tx)
+    .await
+    .map_err(internal)?;
+    sqlx::query(
+        "DELETE FROM pulse_digests WHERE watch_id = ?1 AND id NOT IN \
+         (SELECT id FROM pulse_digests WHERE watch_id = ?1 \
+          ORDER BY created_at DESC, id DESC LIMIT ?2)",
+    )
+    .bind(watch_id)
+    .bind(DIGESTS_KEPT)
+    .execute(&mut *tx)
+    .await
+    .map_err(internal)?;
+    tx.commit().await.map_err(internal)?;
+    Ok(id)
+}
+
+fn json<T: Serialize>(v: &T) -> String {
+    serde_json::to_string(v).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// End of one refresh of a watch.
+#[derive(Debug, Default)]
+pub struct Finish<'a> {
+    pub title: Option<&'a str>,
+    pub slack_thread_id: Option<&'a str>,
+    /// Source fetched (changed or not): `checked_at = now`.
+    pub checked: bool,
+    /// New `last_error` (None clears it).
+    pub error: Option<&'a str>,
+    /// New `resolve_status`. While resolving it only applies to a watch that
+    /// is still `pending` in the same project (a move re-queues it); otherwise
+    /// only to a non-pending watch.
+    pub resolve_status: Option<&'a str>,
+    pub resolving: bool,
+}
+
+/// Leaves `updated_at` alone: it signals edits of the watch itself (BR-11),
+/// and the app emits `pulse:changed` for its own refreshes.
+pub async fn finish_refresh(db: &Db, w: &Watch, f: Finish<'_>) -> Result<(), CodedError> {
+    let ts = now();
+    sqlx::query(
+        "UPDATE pulse_watches SET title = COALESCE(?1, title), \
+         slack_thread_id = COALESCE(?2, slack_thread_id), \
+         checked_at = CASE WHEN ?3 THEN ?4 ELSE checked_at END, last_error = ?5, \
+         resolve_status = CASE WHEN ?6 IS NOT NULL AND project_id = ?7 AND \
+           (CASE WHEN ?8 THEN resolve_status = 'pending' ELSE resolve_status <> 'pending' END) \
+           THEN ?6 ELSE resolve_status END \
+         WHERE id = ?9",
+    )
+    .bind(f.title)
+    .bind(f.slack_thread_id)
+    .bind(f.checked)
+    .bind(&ts)
+    .bind(f.error)
+    .bind(f.resolve_status)
+    .bind(&w.project_id)
+    .bind(f.resolving)
+    .bind(&w.id)
+    .execute(db)
+    .await
+    .map_err(internal)?;
+    Ok(())
+}
+
+/// §9: a transferred issue follows its new repo unless another watch has it.
+pub async fn update_source(db: &Db, w: &Watch, source: &Source) -> Result<bool, CodedError> {
+    let r = sqlx::query(
+        "UPDATE pulse_watches SET source_ref = ?1, source_url = ?2, updated_at = ?3 \
+         WHERE id = ?4 AND NOT EXISTS (SELECT 1 FROM pulse_watches \
+           WHERE source_type = ?5 AND source_ref = ?1 AND id <> ?4)",
+    )
+    .bind(&source.source_ref)
+    .bind(&source.source_url)
+    .bind(now())
+    .bind(&w.id)
+    .bind(source.source_type.as_str())
+    .execute(db)
+    .await
+    .map_err(internal)?;
+    Ok(r.rows_affected() == 1)
+}
+
+/// Active watches in a refresh scope (both None = all).
+pub async fn scope_watches(
+    db: &Db,
+    project_id: Option<&str>,
+    watch_id: Option<&str>,
+) -> Result<Vec<Watch>, CodedError> {
+    sqlx::query_as(&format!(
+        "SELECT {WATCH_COLS} FROM {WATCH_FROM} WHERE w.active = 1 \
+         AND (?1 IS NULL OR w.project_id = ?1) AND (?2 IS NULL OR w.id = ?2) \
+         ORDER BY w.created_at, w.id"
+    ))
+    .bind(project_id)
+    .bind(watch_id)
+    .fetch_all(db)
+    .await
+    .map_err(internal)
 }

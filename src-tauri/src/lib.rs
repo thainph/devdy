@@ -114,8 +114,8 @@ use commands::slack_threads::{
     translate_slack_reply, unlink_slack_thread_run,
 };
 use commands::pulse::{
-    pulse_is_watched, pulse_move_watch, pulse_overview, pulse_set_screen_open, pulse_unwatch,
-    pulse_watch,
+    pulse_is_watched, pulse_move_watch, pulse_overview, pulse_refresh, pulse_set_screen_open,
+    pulse_unwatch, pulse_watch,
 };
 use commands::item_links::{link_item_run, list_item_runs, list_run_items, unlink_item_run};
 use commands::notes::{
@@ -655,6 +655,7 @@ pub fn run() {
             pulse_move_watch,
             pulse_is_watched,
             pulse_overview,
+            pulse_refresh,
             pulse_set_screen_open,
             link_item_run,
             unlink_item_run,
