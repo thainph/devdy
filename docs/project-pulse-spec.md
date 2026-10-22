@@ -267,6 +267,14 @@ Mô tả tool phải nói rõ: "Dùng khi người dùng bảo theo dõi / bỏ 
 ## 13. Câu hỏi mở
 Không còn. Đã chốt: mở màn Pulse **không** tự refresh (chỉ nút Làm mới — G2); **không** cho sửa tay kết quả AI (G4).
 
+## 13b. Điều chỉnh sau review (2026-10-22)
+- **D1:** hạn "cả ngày" lưu `all_day=true`, `due_at = 23:59:59` giờ local của ngày đó (áp dụng cả hạn từ AI lẫn board).
+- **D2:** hạn từ board GitHub là chuẩn; giữ thêm các hạn AI trích được **sớm hơn** hạn board (mốc trung gian), bỏ hạn AI muộn hơn/bằng.
+- **D3:** hash Slack tính trên `ts|user_id|subtype|text_raw` (AI vẫn đọc `text_vi ?? text_raw`); board query lỗi thì dùng lại board lần trước (`board_json`, migration 0052) và báo lỗi mềm `board_unavailable`.
+- Engine AI tổng hợp/dịch chạy **không có tool** (Claude `tools: []` + `dontAsk`; Codex read-only, tắt exec/MCP, fail-closed) vì xử lý nội dung không tin cậy; mỗi digest dùng một session mới.
+- Evidence phải là trích nguyên văn có trong nguồn (sau chuẩn hoá NFC/ngoặc/khoảng trắng).
+- Migration: 0050 (bảng chính), 0051 (`source_closed`), 0052 (`board_json`).
+
 ## 14. Phụ thuộc
 - Slack: `slack_threads/{link.rs,job.rs,api.rs,token.rs}`, `add_slack_thread`, `refresh_slack_thread`, SlackThreadsWindow.
 - GitHub: `build_issue_markdown`, `list_milestone_board` (`commands/github.rs`), IssuesGanttView, RunView.
