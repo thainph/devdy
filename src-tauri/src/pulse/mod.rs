@@ -180,22 +180,30 @@ impl PulseState {
                 .unwrap_or(false)
     }
 
-    /// Background loop: one pass at startup, then on every kick and every 3 s
-    /// while a session is running or the Pulse screen is open.
+    /// Background loop: a pass on every kick, and every 3 s while the BR-11
+    /// gate is open. Rows left over from before a restart are picked up by
+    /// the first pass after the gate opens.
     pub fn start_poller(&self) {
         let this = self.clone();
         tauri::async_runtime::spawn(async move {
-            this.process_pending().await;
             loop {
                 let kicked = tokio::select! {
                     _ = this.inner.kick.notified() => true,
                     _ = tokio::time::sleep(POLL_INTERVAL) => false,
                 };
-                if kicked || this.should_poll().await {
-                    this.process_pending().await;
-                }
+                this.tick(kicked).await;
             }
         });
+    }
+
+    /// One poller step: process the queue when kicked or when a session is
+    /// running / the Pulse screen is open. Returns whether it processed.
+    pub async fn tick(&self, kicked: bool) -> bool {
+        if !kicked && !self.should_poll().await {
+            return false;
+        }
+        self.process_pending().await;
+        true
     }
 
     /// Resolve pending watches, then close open requests. Returns the ids of

@@ -234,6 +234,7 @@ pub async fn normalize(db: &Db, input: &str, project_id: &str) -> Result<Source,
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub async fn get(db: &Db, id: &str) -> Result<Option<Watch>, CodedError> {
     sqlx::query_as(&format!(
         "SELECT {WATCH_COLS} FROM {WATCH_FROM} WHERE w.id = ?"
@@ -242,10 +243,6 @@ pub async fn get(db: &Db, id: &str) -> Result<Option<Watch>, CodedError> {
     .fetch_optional(db)
     .await
     .map_err(internal)
-}
-
-async fn get_required(db: &Db, id: &str) -> Result<Watch, CodedError> {
-    get(db, id).await?.ok_or_else(|| watch_not_found(id))
 }
 
 /// The watch of a source (active or not).
@@ -275,20 +272,100 @@ pub async fn is_watched(
         .filter(|w| w.active))
 }
 
+/// Attempts of a write transaction that keeps hitting `SQLITE_BUSY` (another
+/// process — e.g. the MCP sidecar — holds the write lock past busy_timeout).
+const BUSY_ATTEMPTS: u32 = 5;
+
+fn is_busy(e: &sqlx::Error) -> bool {
+    match e {
+        sqlx::Error::Database(d) => {
+            // SQLITE_BUSY (5) and its extended codes (BUSY_RECOVERY 261, BUSY_SNAPSHOT 517…).
+            d.code()
+                .and_then(|c| c.parse::<i32>().ok())
+                .is_some_and(|c| c & 0xff == 5)
+                || d.message().contains("database is locked")
+        }
+        _ => false,
+    }
+}
+
+/// Retry `attempt` (one `BEGIN IMMEDIATE` transaction, see `begin_write`)
+/// with backoff while the database is busy.
+async fn with_busy_retry<T, F, Fut>(mut attempt: F) -> Result<T, CodedError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, TxError>>,
+{
+    let mut n = 0;
+    loop {
+        n += 1;
+        match attempt().await {
+            Err(TxError::Sql(e)) if is_busy(&e) && n < BUSY_ATTEMPTS => {
+                tokio::time::sleep(std::time::Duration::from_millis(50 << n)).await;
+            }
+            Err(TxError::Sql(e)) => return Err(internal(e)),
+            Err(TxError::Coded(e)) => return Err(e),
+            Ok(v) => return Ok(v),
+        }
+    }
+}
+
+/// The write lock is taken up front, so the read-check-write of the watch
+/// rules cannot interleave with another connection or process.
+async fn begin_write(db: &Db) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>, sqlx::Error> {
+    db.begin_with("BEGIN IMMEDIATE").await
+}
+
+/// Error inside a write transaction: SQL errors may be retried, rule errors may not.
+enum TxError {
+    Sql(sqlx::Error),
+    Coded(CodedError),
+}
+
+impl From<sqlx::Error> for TxError {
+    fn from(e: sqlx::Error) -> Self {
+        TxError::Sql(e)
+    }
+}
+
+async fn find_in(
+    conn: &mut sqlx::SqliteConnection,
+    where_sql: &str,
+    a: &str,
+    b: Option<&str>,
+) -> Result<Option<Watch>, sqlx::Error> {
+    let sql = format!("SELECT {WATCH_COLS} FROM {WATCH_FROM} WHERE {where_sql}");
+    let mut q = sqlx::query_as::<_, Watch>(&sql).bind(a);
+    if let Some(b) = b {
+        q = q.bind(b);
+    }
+    q.fetch_optional(conn).await
+}
+
 /// Re-activate / move a watch; it goes back to `pending` so the app resolves
-/// it again (e.g. re-links the Slack thread to the new project).
-async fn reactivate(db: &Db, id: &str, project_id: &str) -> Result<(), CodedError> {
-    sqlx::query(
+/// it again (e.g. re-links the Slack thread to the new project). Conditional
+/// on the row still being what the caller read.
+async fn reactivate_in(
+    conn: &mut sqlx::SqliteConnection,
+    w: &Watch,
+    project_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let r = sqlx::query(
         "UPDATE pulse_watches SET project_id = ?, active = 1, resolve_status = 'pending', \
-         updated_at = ? WHERE id = ?",
+         updated_at = ? WHERE id = ? AND project_id = ? AND active = ?",
     )
     .bind(project_id)
     .bind(now())
-    .bind(id)
-    .execute(db)
-    .await
-    .map_err(internal)?;
-    Ok(())
+    .bind(&w.id)
+    .bind(&w.project_id)
+    .bind(w.active)
+    .execute(conn)
+    .await?;
+    Ok(r.rows_affected() == 1)
+}
+
+fn changed_concurrently() -> TxError {
+    TxError::Coded(internal("watch changed concurrently; try again"))
 }
 
 /// BR-01: one watch per source app-wide.
@@ -296,6 +373,9 @@ async fn reactivate(db: &Db, id: &str, project_id: &str) -> Result<(), CodedErro
 /// - same project, inactive → re-activated;
 /// - other project, active → `watched_in_other_project` unless `move_project`;
 /// - other project, inactive → taken over by this project (not watched anywhere).
+///
+/// The check and the write run in one `BEGIN IMMEDIATE` transaction, so two
+/// writers (app and MCP sidecar, or two sessions) are serialised.
 pub async fn watch(db: &Db, req: WatchRequest<'_>) -> Result<WatchOutcome, CodedError> {
     if !VIAS.contains(&req.via) {
         return Err(CodedError::new(
@@ -303,12 +383,22 @@ pub async fn watch(db: &Db, req: WatchRequest<'_>) -> Result<WatchOutcome, Coded
             format!("unknown added_via: {}", req.via),
         ));
     }
+    with_busy_retry(|| watch_once(db, &req)).await
+}
+
+async fn watch_once(db: &Db, req: &WatchRequest<'_>) -> Result<WatchOutcome, TxError> {
+    let mut tx = begin_write(db).await?;
     let src = req.source;
     let ty = src.source_type.as_str();
-    // Two passes: an insert racing another writer (e.g. the MCP sidecar) falls
-    // back to the existing-row rules.
-    for _ in 0..2 {
-        if let Some(w) = find_by_source(db, ty, &src.source_ref).await? {
+    let existing = find_in(
+        &mut tx,
+        "w.source_type = ? AND w.source_ref = ?",
+        ty,
+        Some(&src.source_ref),
+    )
+    .await?;
+    let id = match existing {
+        Some(w) => {
             if w.project_id == req.project_id {
                 if w.active {
                     return Ok(WatchOutcome {
@@ -317,48 +407,49 @@ pub async fn watch(db: &Db, req: WatchRequest<'_>) -> Result<WatchOutcome, Coded
                     });
                 }
             } else if w.active && !req.move_project {
-                return Err(CodedError::new(
+                return Err(TxError::Coded(CodedError::new(
                     "watched_in_other_project",
                     format!(
                         "this source is already watched in project {}",
                         w.project_name
                     ),
-                ));
+                )));
             }
-            reactivate(db, &w.id, req.project_id).await?;
-            return Ok(WatchOutcome {
-                watch: get_required(db, &w.id).await?,
-                already_watching: false,
-            });
+            if !reactivate_in(&mut tx, &w, req.project_id).await? {
+                return Err(changed_concurrently());
+            }
+            w.id
         }
-        let id = Uuid::new_v4().to_string();
-        let ts = now();
-        let r = sqlx::query(
-            "INSERT INTO pulse_watches (id, project_id, source_type, source_ref, source_url, \
-             active, added_via, added_run_id, resolve_status, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, 1, ?, ?, 'pending', ?, ?) \
-             ON CONFLICT(source_type, source_ref) DO NOTHING",
-        )
-        .bind(&id)
-        .bind(req.project_id)
-        .bind(ty)
-        .bind(&src.source_ref)
-        .bind(&src.source_url)
-        .bind(req.via)
-        .bind(req.run_id)
-        .bind(&ts)
-        .bind(&ts)
-        .execute(db)
-        .await
-        .map_err(internal)?;
-        if r.rows_affected() == 1 {
-            return Ok(WatchOutcome {
-                watch: get_required(db, &id).await?,
-                already_watching: false,
-            });
+        None => {
+            let id = Uuid::new_v4().to_string();
+            let ts = now();
+            sqlx::query(
+                "INSERT INTO pulse_watches (id, project_id, source_type, source_ref, source_url, \
+                 active, added_via, added_run_id, resolve_status, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, 1, ?, ?, 'pending', ?, ?)",
+            )
+            .bind(&id)
+            .bind(req.project_id)
+            .bind(ty)
+            .bind(&src.source_ref)
+            .bind(&src.source_url)
+            .bind(req.via)
+            .bind(req.run_id)
+            .bind(&ts)
+            .bind(&ts)
+            .execute(&mut *tx)
+            .await?;
+            id
         }
-    }
-    Err(internal("pulse watch insert kept conflicting"))
+    };
+    let watch = find_in(&mut tx, "w.id = ?", &id, None)
+        .await?
+        .ok_or_else(changed_concurrently)?;
+    tx.commit().await?;
+    Ok(WatchOutcome {
+        watch,
+        already_watching: false,
+    })
 }
 
 /// BR-04: `active = 0`, digests and the Slack thread are kept.
@@ -377,9 +468,21 @@ pub async fn unwatch(db: &Db, id: &str) -> Result<(), CodedError> {
 
 /// "Move to project": keeps the digests, re-resolves the source.
 pub async fn move_watch(db: &Db, id: &str, project_id: &str) -> Result<Watch, CodedError> {
-    get_required(db, id).await?;
-    reactivate(db, id, project_id).await?;
-    get_required(db, id).await
+    with_busy_retry(|| async {
+        let mut tx = begin_write(db).await?;
+        let w = find_in(&mut tx, "w.id = ?", id, None)
+            .await?
+            .ok_or_else(|| TxError::Coded(watch_not_found(id)))?;
+        if !reactivate_in(&mut tx, &w, project_id).await? {
+            return Err(changed_concurrently());
+        }
+        let w = find_in(&mut tx, "w.id = ?", id, None)
+            .await?
+            .ok_or_else(changed_concurrently)?;
+        tx.commit().await?;
+        Ok(w)
+    })
+    .await
 }
 
 /// Active watches (+ newest digest) grouped per project. `project_ids` keeps
