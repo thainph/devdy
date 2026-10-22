@@ -229,14 +229,46 @@ const req1 = db.prepare("SELECT * FROM pulse_requests WHERE kind = 'refresh' ORD
 check(out.stale.text.startsWith('stale: true') && out.stale.text.includes('## Alpha'), 'pulse_status refresh: timeout → stored data marked stale');
 check(req1?.project_id === 'proj-1' && req1.watch_id === null && req1.done_at === null, 'pulse_status refresh: request row for the current project');
 
-// Fake app: marks every open request done shortly after it appears.
-const app = setInterval(() => db.prepare('UPDATE pulse_requests SET done_at = ? WHERE done_at IS NULL').run(T0), 200);
+// Fake app with the real lifecycle: it picks up the open refresh request,
+// "refreshes" for a while (new digest for one source, an error on another,
+// checked_at), and only then sets done_at. pulse_status must wait for that and
+// answer from the fresh rows.
+// The timed-out request above was served by the app meanwhile.
+db.prepare('UPDATE pulse_requests SET done_at = ? WHERE id = ?').run(T0, req1.id);
+let appSaw = null;
+let digestWrittenAt = 0;
+const app = setInterval(() => {
+  const open = db.prepare("SELECT * FROM pulse_requests WHERE kind = 'refresh' AND done_at IS NULL").get();
+  if (!open) return;
+  if (!appSaw) {
+    appSaw = { id: open.id, at: Date.now(), project_id: open.project_id };
+    return;
+  }
+  if (Date.now() - appSaw.at < 400) return;
+  insDigest.run(
+    'd-fresh', slackId, 'blocked', 'customer', '2026-10-21T02:00:00+00:00', 'Khách đã chốt demo ngày 30/10, chờ môi trường staging.', null,
+    '[]', JSON.stringify([{ text: 'Chốt demo 30/10', decided_at: '2026-10-21', evidence: 'chốt demo 30/10 nhé' }]), '[]',
+    '2026-10-22T00:00:00+00:00',
+  );
+  db.prepare("UPDATE pulse_watches SET checked_at = '2026-10-22T00:00:00+00:00', last_error = NULL WHERE id = ?").run(slackId);
+  db.prepare("UPDATE pulse_watches SET last_error = 'github_not_found' WHERE id = ?").run(issueId);
+  digestWrittenAt = Date.now();
+  db.prepare('UPDATE pulse_requests SET done_at = ? WHERE id = ?').run('2026-10-22T00:00:01+00:00', open.id);
+}, 50);
 const started = Date.now();
 out = await run([['fresh', 'pulse_status', { refresh: true, all: true }]]);
+const answeredAt = Date.now();
 clearInterval(app);
-const req2 = db.prepare("SELECT * FROM pulse_requests WHERE kind = 'refresh' ORDER BY created_at DESC LIMIT 1").get();
-check(!out.fresh.text.includes('stale') && out.fresh.text.includes('## Beta') && Date.now() - started < 10_000, 'pulse_status refresh: answers once the app marks the request done');
-check(req2?.project_id === null && req2.done_at === T0, 'pulse_status refresh all=true: request without project');
+const req2 = db.prepare('SELECT * FROM pulse_requests WHERE id = ?').get(appSaw?.id ?? '');
+check(appSaw?.project_id === null && req2?.done_at === '2026-10-22T00:00:01+00:00', 'pulse_status refresh all=true: one request without project, closed by the app');
+check(digestWrittenAt > 0 && answeredAt >= digestWrittenAt && answeredAt - started < 10_000, 'pulse_status refresh: waits until the app finished the refresh');
+check(
+  !out.fresh.text.includes('stale') && out.fresh.text.includes('Khách đã chốt demo ngày 30/10') &&
+    out.fresh.text.includes('status: blocked') && out.fresh.text.includes('Chốt demo 30/10') &&
+    !out.fresh.text.includes('Khách hỏi lịch demo'),
+  'pulse_status refresh: answers from the fresh digest',
+);
+check(out.fresh.text.includes('error: github_not_found') && out.fresh.text.includes('checked 2026-10-22T00:00:00+00:00'), 'pulse_status refresh: per-source errors and checked time shown');
 
 // ---- 6. Two sessions racing on the same sources ------------------------------------------
 
