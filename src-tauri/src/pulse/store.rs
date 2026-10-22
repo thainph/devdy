@@ -519,6 +519,14 @@ pub async fn mark_request_done(db: &Db, id: &str) -> Result<(), CodedError> {
     Ok(())
 }
 
+/// Newest `updated_at` of any watch (None when there are none).
+pub async fn max_updated_at(db: &Db) -> Result<Option<String>, CodedError> {
+    sqlx::query_scalar("SELECT MAX(updated_at) FROM pulse_watches")
+        .fetch_one(db)
+        .await
+        .map_err(internal)
+}
+
 /// The poller only runs while a session is running (or the Pulse screen is open).
 pub async fn any_run_running(db: &Db) -> Result<bool, CodedError> {
     sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runs WHERE status = 'running')")

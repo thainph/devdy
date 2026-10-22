@@ -23,6 +23,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_pulse_watches_source ON pulse_watches(sour
 CREATE INDEX IF NOT EXISTS idx_pulse_watches_project ON pulse_watches(project_id, active);
 CREATE INDEX IF NOT EXISTS idx_pulse_watches_pending
   ON pulse_watches(resolve_status) WHERE resolve_status = 'pending';
+-- BR-11: the app notices MCP edits (e.g. an unwatch) through MAX(updated_at).
+CREATE INDEX IF NOT EXISTS idx_pulse_watches_updated ON pulse_watches(updated_at);
 
 -- AI digest of one watch; the 5 newest per watch are kept.
 CREATE TABLE IF NOT EXISTS pulse_digests (

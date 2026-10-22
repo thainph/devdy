@@ -6,6 +6,7 @@
 //   • Quick notes  — full CRUD over Devdy's markdown scratchpad (per-project or global)
 //   • Slack threads (slack_threads_*) fetched + translated to Vietnamese by the app:
 //     list/read (Vietnamese, original on request)/search/rename/set_project/delete
+//   • Project Pulse (pulse_*) — watch Slack threads / GitHub issues, read progress digests
 //   • Session recall — search & read past run transcripts across sessions
 //   • Todos / project context / VPS — full CRUD on quick tasks, git, managed servers
 //   • Skills & Rules library — CRUD the reusable skill/rule definitions (source-only)
@@ -20,6 +21,7 @@ import { readRunTranscript, renderTranscript, findSnippet } from './lib/transcri
 import { fileTree, gitStatus, gitDiff } from './lib/project.mjs';
 import { runOnServer } from './lib/ssh.mjs';
 import { slackThreadTools } from './lib/slack-thread-tools.mjs';
+import { pulseTools } from './lib/pulse-tools.mjs';
 
 const SERVER_INFO = { name: 'devdy', version: '0.1.0' };
 const DEFAULT_PROTOCOL = '2025-06-18';
@@ -214,6 +216,11 @@ const tools = {
   // Own tables (migration 0041), fetched from Slack and translated by the app;
   // read-mostly tools (see lib/slack-thread-tools.mjs).
   ...slackThreadTools({ snippetAround }),
+
+  // ---- Project Pulse -----------------------------------------------------------
+  // Watch list + AI progress digests (migration 0050); writes SQLite only and
+  // the app resolves / refreshes (see lib/pulse-tools.mjs).
+  ...pulseTools(),
 
   sessions_recent: {
     description:
@@ -908,13 +915,26 @@ function handle(msg) {
         replyError(id, -32602, `Unknown tool: ${name}`);
         return;
       }
+      const ok = (text) => reply(id, { content: [{ type: 'text', text: String(text) }] });
+      // Surface errors as tool results (isError) so the model can react,
+      // rather than as protocol errors that abort the call.
+      const fail = (e) =>
+        reply(id, { content: [{ type: 'text', text: `Error: ${e && e.message ? e.message : e}` }], isError: true });
       try {
         const text = tool.handler((params && params.arguments) || {});
-        reply(id, { content: [{ type: 'text', text: String(text) }] });
+        if (text && typeof text.then === 'function') {
+          // Async tool (e.g. pulse_status waiting on the app): keep the process
+          // alive until it answers, even if stdin closes meanwhile.
+          inflight += 1;
+          text.then(ok, fail).finally(() => {
+            inflight -= 1;
+            if (stdinEnded && inflight === 0) process.exit(0);
+          });
+        } else {
+          ok(text);
+        }
       } catch (e) {
-        // Surface errors as tool results (isError) so the model can react,
-        // rather than as protocol errors that abort the call.
-        reply(id, { content: [{ type: 'text', text: `Error: ${e && e.message ? e.message : e}` }], isError: true });
+        fail(e);
       }
       return;
     }
@@ -930,6 +950,8 @@ function handle(msg) {
 }
 
 let buffer = '';
+let inflight = 0;
+let stdinEnded = false;
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => {
   buffer += chunk;
@@ -953,7 +975,10 @@ process.stdin.on('data', (chunk) => {
     }
   }
 });
-process.stdin.on('end', () => process.exit(0));
+process.stdin.on('end', () => {
+  stdinEnded = true;
+  if (inflight === 0) process.exit(0);
+});
 process.on('SIGTERM', () => process.exit(0));
 process.on('SIGINT', () => process.exit(0));
 
