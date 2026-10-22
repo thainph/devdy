@@ -10,9 +10,12 @@ use crate::slack_threads::CodedError;
 use async_trait::async_trait;
 use serde_json::Value;
 
-/// Comments are fetched 100 per page until exhausted; this only guards
-/// against a misbehaving API (the content cap keeps header + newest anyway).
-const MAX_COMMENT_PAGES: u32 = 1_000;
+/// Comments come 100 per page. Page 1 tells the page count (Link rel=last);
+/// the rest are read newest-first until `COMMENT_BUDGET` characters are in
+/// hand — the content keeps header + body + the newest comments within 60k
+/// anyway, so older pages would only be cut again.
+const COMMENTS_PER_PAGE: u8 = 100;
+const COMMENT_BUDGET: usize = super::content::MAX_CONTENT_CHARS;
 /// Pages of `projectItems` / `fieldValues` looked through on the board query.
 const MAX_BOARD_PAGES: usize = 50;
 
@@ -121,6 +124,39 @@ pub fn board_fields_of(item: &Value, mappings_json: &str) -> BoardFields {
     }
 }
 
+fn human_comments(items: Vec<octocrab::models::issues::Comment>) -> Vec<IssueComment> {
+    items
+        .into_iter()
+        .filter(|c| !is_bot_user(c.user.login.as_str(), c.user.r#type.as_str()))
+        .map(|c| IssueComment {
+            author: c.user.login.clone(),
+            created_at: c.created_at.to_rfc3339(),
+            body: c.body.unwrap_or_default(),
+        })
+        .collect()
+}
+
+/// Characters a batch of comments takes in the content.
+pub fn comment_chars(items: &[IssueComment]) -> usize {
+    items
+        .iter()
+        .map(|c| c.body.chars().count() + c.author.len() + 40)
+        .sum()
+}
+
+/// Oldest-first comments from page 1 (None when the budget was already full
+/// without it) and later pages collected newest-first.
+pub fn merge_comment_pages(
+    first: Option<Vec<IssueComment>>,
+    newer_desc: Vec<Vec<IssueComment>>,
+) -> Vec<IssueComment> {
+    let mut out = first.unwrap_or_default();
+    for page in newer_desc.into_iter().rev() {
+        out.extend(page);
+    }
+    out
+}
+
 /// The issue's Start / Deadline / Status on the project's board: pages
 /// through the issue's board items until the configured board is found, then
 /// through that item's field values. `Ok(None)` = not on the board / no board.
@@ -211,29 +247,35 @@ impl GithubFetch for OctoGithub {
         let mut comments = Vec::new();
         if issue.comments > 0 {
             let issues = client.issues(&owner, &repo);
-            for page in 1..=MAX_COMMENT_PAGES {
+            let first = issues
+                .list_comments(number)
+                .per_page(COMMENTS_PER_PAGE)
+                .page(1u32)
+                .send()
+                .await
+                .map_err(octo_error)?;
+            let pages = first.number_of_pages().unwrap_or(1);
+            let mut newer: Vec<Vec<IssueComment>> = Vec::new();
+            let mut held = 0;
+            for page in (2..=pages).rev() {
+                if held >= COMMENT_BUDGET {
+                    break;
+                }
                 let batch = issues
                     .list_comments(number)
-                    .per_page(100)
+                    .per_page(COMMENTS_PER_PAGE)
                     .page(page)
                     .send()
                     .await
                     .map_err(octo_error)?;
-                let n = batch.items.len();
-                for c in batch.items {
-                    if is_bot_user(c.user.login.as_str(), c.user.r#type.as_str()) {
-                        continue;
-                    }
-                    comments.push(IssueComment {
-                        author: c.user.login.clone(),
-                        created_at: c.created_at.to_rfc3339(),
-                        body: c.body.unwrap_or_default(),
-                    });
-                }
-                if n < 100 {
-                    break;
-                }
+                let items = human_comments(batch.items);
+                held += comment_chars(&items);
+                newer.push(items);
             }
+            comments = merge_comment_pages(
+                (held < COMMENT_BUDGET).then(|| human_comments(first.items)),
+                newer,
+            );
         }
 
         let mappings: Option<String> =
@@ -310,6 +352,26 @@ impl GithubFetch for OctoGithub {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn comment_pages_merge_oldest_first() {
+        let c = |b: &str| IssueComment {
+            author: "a".into(),
+            created_at: String::new(),
+            body: b.into(),
+        };
+        // Pages 4, 3 were read (newest first); page 1 still fit the budget.
+        let merged = merge_comment_pages(
+            Some(vec![c("1a"), c("1b")]),
+            vec![vec![c("4a")], vec![c("3a"), c("3b")]],
+        );
+        let bodies: Vec<&str> = merged.iter().map(|x| x.body.as_str()).collect();
+        assert_eq!(bodies, vec!["1a", "1b", "3a", "3b", "4a"]);
+        // Budget full before reaching page 1: only the newest pages.
+        let merged = merge_comment_pages(None, vec![vec![c("9")], vec![c("8")]]);
+        assert_eq!(merged.iter().map(|x| x.body.as_str()).collect::<Vec<_>>(), vec!["8", "9"]);
+        assert_eq!(comment_chars(&[c("ab")]), 2 + 1 + 40);
+    }
 
     #[test]
     fn status_codes_map_to_watch_errors() {
