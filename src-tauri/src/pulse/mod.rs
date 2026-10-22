@@ -118,6 +118,10 @@ struct Inner {
     screen_open: AtomicBool,
     /// One `process_pending` at a time.
     busy: tokio::sync::Mutex<()>,
+    /// `MAX(pulse_watches.updated_at)` seen by the last pass (outer None =
+    /// not read yet): a change nobody emitted (an MCP unwatch) still reaches
+    /// the UI.
+    last_updated: std::sync::Mutex<Option<Option<String>>>,
 }
 
 #[derive(Clone)]
@@ -135,6 +139,7 @@ impl PulseState {
                 kick: Notify::new(),
                 screen_open: AtomicBool::new(false),
                 busy: tokio::sync::Mutex::new(()),
+                last_updated: std::sync::Mutex::new(None),
             }),
         }
     }
@@ -194,7 +199,9 @@ impl PulseState {
     }
 
     /// Resolve pending watches, then close open requests. Returns the ids of
-    /// the watches that changed (also emitted as `pulse:changed`).
+    /// the watches that changed (also emitted as `pulse:changed`); other
+    /// writes to `pulse_watches` since the last pass emit `pulse:changed`
+    /// with no ids (reload everything).
     pub async fn process_pending(&self) -> Vec<String> {
         let _guard = self.inner.busy.lock().await;
         let db = &self.inner.db;
@@ -224,8 +231,20 @@ impl PulseState {
             }
             Err(e) => eprintln!("[pulse] open requests: {e}"),
         }
+        let external = match store::max_updated_at(db).await {
+            Ok(max) => {
+                let prev = self.inner.last_updated.lock().unwrap().replace(max.clone());
+                prev.is_some_and(|p| p != max)
+            }
+            Err(e) => {
+                eprintln!("[pulse] max updated_at: {e}");
+                false
+            }
+        };
         if !changed.is_empty() {
             self.emit_changed(&changed);
+        } else if external {
+            self.emit_changed(&[]);
         }
         changed
     }

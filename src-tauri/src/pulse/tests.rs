@@ -443,6 +443,17 @@ async fn process_pending_resolves_watches_and_closes_requests() {
     assert!(state.process_pending().await.is_empty());
     assert_eq!(events.0.lock().unwrap().len(), 1);
 
+    // A write the app did not make (an MCP unwatch) → reload-all event.
+    sqlx::query("UPDATE pulse_watches SET active = 0, updated_at = '2099-01-01T00:00:00+00:00' WHERE id = ?")
+        .bind(&wg.id)
+        .execute(&db)
+        .await
+        .unwrap();
+    assert!(state.process_pending().await.is_empty());
+    assert_eq!(events.0.lock().unwrap().last(), Some(&Vec::new()));
+    state.process_pending().await;
+    assert_eq!(events.0.lock().unwrap().len(), 2);
+
     // Capture failure → error with the Slack code.
     *slack.fail.lock().unwrap() = Some("no_token".into());
     store::move_watch(&db, &ws.id, "p2").await.unwrap();
