@@ -2998,7 +2998,22 @@ async fn mirror_claude_transcript_for_account(
     else {
         return Ok(None);
     };
+    // The target profile may already hold an older copy (the run used this
+    // account before and continued elsewhere since). The run's recorded
+    // transcript is the live one, so refresh the copy when it is newer —
+    // resuming the stale copy would silently drop the later turns.
     if dest.is_file() {
+        if let Some(live) = transcript_path.map(PathBuf::from).filter(|p| p.is_file()) {
+            if live != dest && is_newer_file(&live, &dest) {
+                fs::copy(&live, &dest).map_err(|e| {
+                    format!(
+                        "Failed to refresh Claude transcript from {} to {}: {e}",
+                        live.display(),
+                        dest.display()
+                    )
+                })?;
+            }
+        }
         return Ok(Some(dest));
     }
 
@@ -3021,6 +3036,29 @@ async fn mirror_claude_transcript_for_account(
         )
     })?;
     Ok(Some(dest))
+}
+
+/// `a` was modified strictly after `b` (false when either mtime is unreadable).
+fn is_newer_file(a: &Path, b: &Path) -> bool {
+    let mtime = |p: &Path| fs::metadata(p).and_then(|m| m.modified()).ok();
+    match (mtime(a), mtime(b)) {
+        (Some(a), Some(b)) => a > b,
+        _ => false,
+    }
+}
+
+/// The Claude account a run actually executes under. A run-level pick wins;
+/// with none (`claude_account_id = NULL`, shown as "Default" in the UI) the run
+/// follows project → default account, exactly like a fresh start — only when no
+/// managed account exists at all does it fall back to the global `~/.claude`.
+async fn effective_run_claude_account(
+    db: &Db,
+    project_id: &str,
+    run_account_id: Option<&str>,
+) -> Result<Option<crate::commands::claude_accounts::ClaudeRuntimeAccount>, String> {
+    let explicit = run_account_id.map(str::trim).filter(|v| !v.is_empty());
+    crate::commands::claude_accounts::resolve_runtime_account(db, Some(project_id), explicit)
+        .await
 }
 
 /// Change the Claude account assigned to a run/session. Applies to the next
@@ -3054,7 +3092,7 @@ pub async fn set_run_claude_account_inner(
     });
 
     let row = sqlx::query(
-        "SELECT r.engine, r.status, r.session_id, r.transcript_path, p.path as project_path
+        "SELECT r.engine, r.status, r.session_id, r.transcript_path, r.project_id, p.path as project_path
          FROM runs r JOIN projects p ON p.id = r.project_id
          WHERE r.id = ?",
     )
@@ -3073,13 +3111,10 @@ pub async fn set_run_claude_account_inner(
         return Err("Cannot change Claude account while the run is running".to_string());
     }
 
-    let account = match account_id.as_deref() {
-        Some(id) => {
-            crate::commands::claude_accounts::resolve_runtime_account(db, None, Some(id))
-                .await?
-        }
-        None => None,
-    };
+    // `None` = the "Default" tier: mirror into the profile the next resume will
+    // really use (project → default account), not the global `~/.claude`.
+    let project_id: String = row.get("project_id");
+    let account = effective_run_claude_account(db, &project_id, account_id.as_deref()).await?;
 
     let session_id: Option<String> = row.get("session_id");
     let transcript_path: Option<String> = row.get("transcript_path");
@@ -3274,13 +3309,26 @@ pub(crate) async fn resume_run_with(
     let claude_account_id: Option<String> = row.get("claude_account_id");
     let project_path: String = row.get("project_path");
 
+    // Resume uses the run-level account, else (NULL = "Default" in the UI) the
+    // project → default account — the same profile a fresh start would pick and
+    // the one the UI names. Only with no managed account at all does it stay on
+    // the global `~/.claude`. The transcript is mirrored into that profile below,
+    // so switching profiles keeps the conversation. Errors if the assigned
+    // account was deleted.
+    let claude_account = if engine == "claude" {
+        effective_run_claude_account(db.inner(), &project_id, claude_account_id.as_deref())
+            .await?
+    } else {
+        None
+    };
+
     // Same budget guardrail as start_run — resuming a finished run starts a new
     // turn and consumes tokens, so it must be gated too. Checked against the
-    // run's assigned Claude account, not the current default.
+    // account the resume will actually run under.
     crate::commands::stats::enforce_budget(
         db.inner(),
         &engine,
-        claude_account_id.as_deref(),
+        claude_account.as_ref().map(|a| a.id.as_str()),
         override_budget.unwrap_or(false),
     )
     .await?;
@@ -3364,43 +3412,38 @@ pub(crate) async fn resume_run_with(
     fs::create_dir_all(&runs_dir).map_err(|e| e.to_string())?;
     let log_path = runs_dir.join(format!("{}.log", run_id));
 
-    // Resume uses the account currently assigned to the run. A legacy/global run
-    // without an assigned account (`claude_account_id = NULL`) keeps the global
-    // `~/.claude` profile instead of silently switching to the current default.
-    // Errors if the assigned account was deleted.
-    let claude_account = if engine == "claude" {
-        match claude_account_id.as_deref().map(str::trim) {
-            Some(id) if !id.is_empty() => {
-                crate::commands::claude_accounts::resolve_runtime_account(
-                    db.inner(),
-                    None,
-                    Some(id),
-                )
-                .await?
-            }
-            _ => None,
-        }
-    } else {
-        None
-    };
-
     // The CLI transcript behind `session_id` can be gone (e.g. the Stats screen's
     // storage cleanup wiped ~/.claude/projects or ~/.codex/sessions). Resuming a
     // missing session hard-fails in the CLI ("No conversation found"), so start a
     // fresh session in the same run instead; the earlier context is lost.
-    let transcript_available = if engine == "codex" {
-        crate::commands::codex_sessions::codex_session_file(&session_id).is_some()
+    let (transcript_available, mirrored_transcript) = if engine == "codex" {
+        (crate::commands::codex_sessions::codex_session_file(&session_id).is_some(), None)
     } else {
-        mirror_claude_transcript_for_account(
+        let mirrored = mirror_claude_transcript_for_account(
             db.inner(),
             &project_path,
             &session_id,
             transcript_path.as_deref(),
             claude_account.as_ref().map(|a| a.config_dir.as_str()),
         )
-        .await?
-        .is_some()
+        .await?;
+        (mirrored.is_some(), mirrored)
     };
+    // The resumed CLI appends to the copy inside the resolved profile; point the
+    // run at it so transcript readers follow the live file, not the old one.
+    if let Some(path) = mirrored_transcript
+        .as_ref()
+        .map(|p| p.to_string_lossy().into_owned())
+        .filter(|p| transcript_path.as_deref() != Some(p.as_str()))
+    {
+        let _ = sqlx::query(
+            "UPDATE runs SET transcript_path = ?, transcript_synced_size = NULL WHERE id = ?",
+        )
+        .bind(&path)
+        .bind(&run_id)
+        .execute(db.inner())
+        .await;
+    }
 
     // Mark running; finished_at cleared so the UI reflects the active state.
     // Resuming is the clearest signal of "I'm working on this one again", so it
@@ -4127,5 +4170,93 @@ mod startup_input_tests {
             !crate::runs::sidecar::kill_process_group(pgid),
             "the sidecar group was killed"
         );
+    }
+}
+
+#[cfg(test)]
+mod claude_account_resume_tests {
+    use super::*;
+
+    async fn db_with_accounts(default_dir: &str) -> Db {
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE projects (id TEXT PRIMARY KEY, claude_account_id TEXT)")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE claude_accounts (id TEXT PRIMARY KEY, label TEXT, config_dir TEXT, is_default INTEGER, created_at TEXT)",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO projects (id, claude_account_id) VALUES ('p1', NULL)")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO claude_accounts VALUES ('acc-default', 'Claude 1', ?, 1, '2026-01-01')",
+        )
+        .bind(default_dir)
+        .execute(&db)
+        .await
+        .unwrap();
+        db
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("devdy-{tag}-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[tokio::test]
+    async fn default_tier_run_resumes_under_default_account_not_global() {
+        let dir = temp_dir("claude-default");
+        let db = db_with_accounts(dir.to_str().unwrap()).await;
+        // NULL run account ("Default" in the UI) must resolve to the default
+        // profile, so the sidecar gets CLAUDE_CONFIG_DIR instead of ~/.claude.
+        let acct = effective_run_claude_account(&db, "p1", None).await.unwrap();
+        assert_eq!(acct.map(|a| a.id).as_deref(), Some("acc-default"));
+        let acct = effective_run_claude_account(&db, "p1", Some("  ")).await.unwrap();
+        assert_eq!(acct.map(|a| a.id).as_deref(), Some("acc-default"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn mirror_refreshes_a_stale_copy_from_the_live_transcript() {
+        let dir = temp_dir("claude-mirror");
+        let db = db_with_accounts(dir.to_str().unwrap()).await;
+        let project_path = "/tmp/devdy-mirror-project";
+        let dest = claude_transcript_path_for_account(dir.to_str(), project_path, "s1").unwrap();
+        fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        fs::write(&dest, "old\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let live = dir.join("live.jsonl");
+        fs::write(&live, "old\nnew turn\n").unwrap();
+
+        let got = mirror_claude_transcript_for_account(
+            &db,
+            project_path,
+            "s1",
+            live.to_str(),
+            dir.to_str(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(got.as_deref(), Some(dest.as_path()));
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "old\nnew turn\n");
+
+        // A copy newer than the recorded transcript is never overwritten.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&dest, "old\nnew turn\nnewest\n").unwrap();
+        mirror_claude_transcript_for_account(&db, project_path, "s1", live.to_str(), dir.to_str())
+            .await
+            .unwrap();
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "old\nnew turn\nnewest\n");
+        let _ = fs::remove_dir_all(dir);
     }
 }
