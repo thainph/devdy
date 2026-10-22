@@ -10,8 +10,11 @@ use crate::slack_threads::CodedError;
 use async_trait::async_trait;
 use serde_json::Value;
 
-/// Comments are fetched 100 per page, at most this many pages.
-const MAX_COMMENT_PAGES: u32 = 10;
+/// Comments are fetched 100 per page until exhausted; this only guards
+/// against a misbehaving API (the content cap keeps header + newest anyway).
+const MAX_COMMENT_PAGES: u32 = 1_000;
+/// Pages of `projectItems` / `fieldValues` looked through on the board query.
+const MAX_BOARD_PAGES: usize = 50;
 
 #[async_trait]
 pub trait GithubFetch: Send + Sync {
@@ -58,25 +61,124 @@ pub fn owner_repo_of(html_url: &str) -> Option<(String, String)> {
     Some((owner.to_string(), repo.to_string()))
 }
 
-pub const BOARD_QUERY: &str = "query($owner:String!,$repo:String!,$number:Int!){ repository(owner:$owner,name:$repo){ issue(number:$number){ projectItems(first:20){ nodes{ project{ id } fieldValues(first:30){ nodes{ __typename ... on ProjectV2ItemFieldDateValue{ date field{ ... on ProjectV2FieldCommon{ id } } } ... on ProjectV2ItemFieldSingleSelectValue{ name field{ ... on ProjectV2FieldCommon{ id } } } ... on ProjectV2ItemFieldIterationValue{ startDate duration field{ ... on ProjectV2FieldCommon{ id } } } } } } } } } }";
+const FIELD_VALUE_NODES: &str = "nodes{ __typename ... on ProjectV2ItemFieldDateValue{ date field{ ... on ProjectV2FieldCommon{ id } } } ... on ProjectV2ItemFieldSingleSelectValue{ name field{ ... on ProjectV2FieldCommon{ id } } } ... on ProjectV2ItemFieldIterationValue{ startDate duration field{ ... on ProjectV2FieldCommon{ id } } } }";
 
-/// The issue's fields on the board described by `mappings_json`
-/// (`projects.github_project_field_mappings`) from a `BOARD_QUERY` response.
-pub fn parse_issue_board(resp: &Value, mappings_json: &str) -> Option<BoardFields> {
-    let m = parse_board_mappings(mappings_json);
-    let board_id = m.board_id.as_deref()?;
-    let items = resp
-        .pointer("/data/repository/issue/projectItems/nodes")?
-        .as_array()?;
+/// One page of the issue's board items (each with its first field values).
+pub fn board_items_query() -> String {
+    format!(
+        "query($owner:String!,$repo:String!,$number:Int!,$cursor:String){{ repository(owner:$owner,name:$repo){{ issue(number:$number){{ projectItems(first:50, after:$cursor){{ pageInfo{{ hasNextPage endCursor }} nodes{{ id project{{ id }} fieldValues(first:50){{ pageInfo{{ hasNextPage endCursor }} {FIELD_VALUE_NODES} }} }} }} }} }} }}"
+    )
+}
+
+/// Further pages of one board item's field values.
+pub fn field_values_query() -> String {
+    format!(
+        "query($id:ID!,$cursor:String){{ node(id:$id){{ ... on ProjectV2Item{{ fieldValues(first:50, after:$cursor){{ pageInfo{{ hasNextPage endCursor }} {FIELD_VALUE_NODES} }} }} }} }}"
+    )
+}
+
+/// `(nodes, next cursor)` of a GraphQL connection.
+fn page(conn: Option<&Value>) -> (Vec<Value>, Option<String>) {
+    let Some(conn) = conn else {
+        return (Vec::new(), None);
+    };
+    let nodes = conn
+        .get("nodes")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let next = conn
+        .pointer("/pageInfo/hasNextPage")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        .then(|| {
+            conn.pointer("/pageInfo/endCursor")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .flatten();
+    (nodes, next)
+}
+
+/// The item of `board_id` in one `board_items_query` page, else the cursor of
+/// the next page.
+pub fn find_board_item(resp: &Value, board_id: &str) -> (Option<Value>, Option<String>) {
+    let (items, next) = page(resp.pointer("/data/repository/issue/projectItems"));
     let item = items
-        .iter()
-        .find(|i| i.pointer("/project/id").and_then(Value::as_str) == Some(board_id))?;
+        .into_iter()
+        .find(|i| i.pointer("/project/id").and_then(Value::as_str) == Some(board_id));
+    (item, next)
+}
+
+/// Board fields of a fully paged item (`fieldValues.nodes` = every value).
+pub fn board_fields_of(item: &Value, mappings_json: &str) -> BoardFields {
+    let m = parse_board_mappings(mappings_json);
     let f = board_item_fields(item, &m, &Default::default());
-    Some(BoardFields {
+    BoardFields {
         start: f.start,
         deadline: f.deadline,
         status: f.status,
-    })
+    }
+}
+
+/// The issue's Start / Deadline / Status on the project's board: pages
+/// through the issue's board items until the configured board is found, then
+/// through that item's field values. `Ok(None)` = not on the board / no board.
+async fn fetch_board(
+    client: &octocrab::Octocrab,
+    owner: &str,
+    repo: &str,
+    number: u64,
+    mappings_json: &str,
+) -> Result<Option<BoardFields>, String> {
+    let Some(board_id) = parse_board_mappings(mappings_json).board_id else {
+        return Ok(None);
+    };
+    let gql = |payload: Value| async move {
+        let resp: Value = client.graphql(&payload).await.map_err(|e| e.to_string())?;
+        match resp.get("errors") {
+            Some(errs) if resp.get("data").is_none_or(Value::is_null) => Err(errs.to_string()),
+            _ => Ok(resp),
+        }
+    };
+    let mut cursor: Option<String> = None;
+    let mut item = None;
+    for _ in 0..MAX_BOARD_PAGES {
+        let resp = gql(serde_json::json!({
+            "query": board_items_query(),
+            "variables": { "owner": owner, "repo": repo, "number": number, "cursor": cursor },
+        }))
+        .await?;
+        let (found, next) = find_board_item(&resp, &board_id);
+        if found.is_some() {
+            item = found;
+            break;
+        }
+        match next {
+            Some(c) => cursor = Some(c),
+            None => return Ok(None),
+        }
+    }
+    let Some(mut item) = item else {
+        return Ok(None);
+    };
+    let (mut values, mut next) = page(item.get("fieldValues"));
+    let item_id = item.get("id").and_then(Value::as_str).map(str::to_string);
+    for _ in 0..MAX_BOARD_PAGES {
+        let (Some(c), Some(id)) = (next.take(), item_id.as_deref()) else {
+            break;
+        };
+        let resp = gql(serde_json::json!({
+            "query": field_values_query(),
+            "variables": { "id": id, "cursor": c },
+        }))
+        .await?;
+        let (more, n) = page(resp.pointer("/data/node/fieldValues"));
+        values.extend(more);
+        next = n;
+    }
+    item["fieldValues"] = serde_json::json!({ "nodes": values });
+    Ok(Some(board_fields_of(&item, mappings_json)))
 }
 
 /// Octocrab with the project's GitHub account (`github::client_for_project`).
@@ -98,9 +200,11 @@ impl GithubFetch for OctoGithub {
             .map_err(|e| CodedError::new("github_auth", e.to_string()))?;
         let issues = client.issues(owner, repo);
         let issue = issues.get(number).await.map_err(octo_error)?;
-        // A transferred issue is served (via redirect) from its new repo.
+        // A transferred issue is served (via redirect) from its new repo,
+        // under its new number.
         let (owner, repo) = owner_repo_of(issue.html_url.as_str())
             .unwrap_or_else(|| (owner.to_string(), repo.to_string()));
+        let number = issue.number;
 
         let mut comments = Vec::new();
         if issue.comments > 0 {
@@ -137,21 +241,18 @@ impl GithubFetch for OctoGithub {
                 .await
                 .ok()
                 .flatten();
+        // Board data is optional: a failing query only drops it, flagged so
+        // the refresh does not mistake the gap for a content change.
+        let mut board_unavailable = false;
         let board = match mappings.filter(|m| !m.trim().is_empty()) {
-            Some(m) => {
-                let payload = serde_json::json!({
-                    "query": BOARD_QUERY,
-                    "variables": { "owner": owner, "repo": repo, "number": number },
-                });
-                // Board data is optional: a failing query only drops it.
-                match client.graphql::<Value>(&payload).await {
-                    Ok(resp) => parse_issue_board(&resp, &m),
-                    Err(e) => {
-                        tracing::warn!(event = "pulse_board_query_failed", error = %e);
-                        None
-                    }
+            Some(m) => match fetch_board(&client, &owner, &repo, number, &m).await {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(event = "pulse_board_query_failed", error = %e);
+                    board_unavailable = true;
+                    None
                 }
-            }
+            },
             None => None,
         };
 
@@ -185,6 +286,7 @@ impl GithubFetch for OctoGithub {
             comments,
             is_pull_request: issue.pull_request.is_some(),
             board,
+            board_unavailable,
         })
     }
 
@@ -226,29 +328,50 @@ mod tests {
     }
 
     #[test]
-    fn board_fields_of_the_project_board_only() {
+    fn board_item_is_found_across_pages_and_fields_are_read() {
         let mappings = r#"{"boardId":"PVT_1","startFieldId":"F_S","deadlineFieldId":"F_D","statusFieldId":"F_ST"}"#;
-        let resp = json!({ "data": { "repository": { "issue": { "projectItems": { "nodes": [
-            { "project": { "id": "PVT_other" }, "fieldValues": { "nodes": [
-                { "__typename": "ProjectV2ItemFieldDateValue", "date": "2030-01-01", "field": { "id": "F_D" } }
-            ] } },
-            { "project": { "id": "PVT_1" }, "fieldValues": { "nodes": [
-                { "__typename": "ProjectV2ItemFieldDateValue", "date": "2026-10-20", "field": { "id": "F_S" } },
+        let page1 = json!({ "data": { "repository": { "issue": { "projectItems": {
+            "pageInfo": { "hasNextPage": true, "endCursor": "c1" },
+            "nodes": [{ "id": "I_0", "project": { "id": "PVT_other" }, "fieldValues": { "nodes": [] } }]
+        } } } } });
+        assert_eq!(find_board_item(&page1, "PVT_1"), (None, Some("c1".into())));
+        let page2 = json!({ "data": { "repository": { "issue": { "projectItems": {
+            "pageInfo": { "hasNextPage": false, "endCursor": null },
+            "nodes": [{ "id": "I_1", "project": { "id": "PVT_1" }, "fieldValues": {
+                "pageInfo": { "hasNextPage": true, "endCursor": "f1" },
+                "nodes": [{ "__typename": "ProjectV2ItemFieldDateValue", "date": "2026-10-20", "field": { "id": "F_S" } }]
+            } }]
+        } } } } });
+        let (item, next) = find_board_item(&page2, "PVT_1");
+        assert_eq!(next, None);
+        let mut item = item.unwrap();
+        let (mut values, cursor) = page(item.get("fieldValues"));
+        assert_eq!(cursor.as_deref(), Some("f1"));
+        // Second field-values page carries the deadline and status.
+        let more = json!({ "data": { "node": { "fieldValues": {
+            "pageInfo": { "hasNextPage": false, "endCursor": null },
+            "nodes": [
                 { "__typename": "ProjectV2ItemFieldDateValue", "date": "2026-10-30", "field": { "id": "F_D" } },
                 { "__typename": "ProjectV2ItemFieldSingleSelectValue", "name": "In progress", "field": { "id": "F_ST" } }
-            ] } }
-        ] } } } } });
+            ]
+        } } } });
+        let (extra, end) = page(more.pointer("/data/node/fieldValues"));
+        assert_eq!(end, None);
+        values.extend(extra);
+        item["fieldValues"] = json!({ "nodes": values });
         assert_eq!(
-            parse_issue_board(&resp, mappings),
-            Some(BoardFields {
+            board_fields_of(&item, mappings),
+            BoardFields {
                 start: Some("2026-10-20".into()),
                 deadline: Some("2026-10-30".into()),
                 status: Some("In progress".into()),
-            })
+            }
         );
-        // Not on the board / no board configured.
-        assert_eq!(parse_issue_board(&resp, r#"{"boardId":"PVT_9"}"#), None);
-        assert_eq!(parse_issue_board(&resp, "{}"), None);
-        assert_eq!(parse_issue_board(&json!({}), mappings), None);
+        // Not on the board at all.
+        let none = json!({ "data": { "repository": { "issue": { "projectItems": {
+            "pageInfo": { "hasNextPage": false }, "nodes": [] } } } } });
+        assert_eq!(find_board_item(&none, "PVT_1"), (None, None));
+        assert!(board_items_query().contains("after:$cursor"));
+        assert!(field_values_query().contains("fieldValues(first:50, after:$cursor)"));
     }
 }

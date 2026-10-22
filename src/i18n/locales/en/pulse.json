@@ -128,6 +128,7 @@
     "slack_fetch_failed": "Could not fetch the Slack thread",
     "summarize_failed": "The AI could not summarise — keeping the previous summary",
     "not_found": "Watched source not found",
+    "duplicate_source": "The issue moved to another issue that is already watched",
     "unknown": "Error: {detail}"
   }
 }

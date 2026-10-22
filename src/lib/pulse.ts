@@ -220,5 +220,6 @@ export const KNOWN_ERRORS = [
   'github_fetch_failed',
   'slack_fetch_failed',
   'summarize_failed',
+  'duplicate_source',
   'not_found',
 ] as const

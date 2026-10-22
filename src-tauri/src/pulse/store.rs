@@ -777,17 +777,33 @@ pub async fn latest_digest_hash(db: &Db, watch_id: &str) -> Result<Option<String
 }
 
 /// Store a digest and keep only the newest `DIGESTS_KEPT` of the watch.
+///
+/// Only while `w` is still the current version of the watch (active, same
+/// `updated_at`): a refresh that started before a move / unwatch / re-watch
+/// is discarded (`Ok(None)`).
 pub async fn insert_digest(
     db: &Db,
-    watch_id: &str,
+    w: &Watch,
     content_hash: &str,
     d: &DigestDraft,
     truncated: bool,
     source_closed: bool,
     model: Option<&str>,
-) -> Result<String, CodedError> {
+) -> Result<Option<String>, CodedError> {
+    let watch_id = w.id.as_str();
     let id = Uuid::new_v4().to_string();
-    let mut tx = db.begin().await.map_err(internal)?;
+    let mut tx = begin_write(db).await.map_err(internal)?;
+    let current: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM pulse_watches WHERE id = ? AND active = 1 AND updated_at = ?)",
+    )
+    .bind(watch_id)
+    .bind(&w.updated_at)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(internal)?;
+    if !current {
+        return Ok(None);
+    }
     sqlx::query(
         "INSERT INTO pulse_digests (id, watch_id, content_hash, status, ball, ball_since, \
          summary, next_action, deadlines, decisions, open_questions, truncated, source_closed, \
@@ -822,7 +838,7 @@ pub async fn insert_digest(
     .await
     .map_err(internal)?;
     tx.commit().await.map_err(internal)?;
-    Ok(id)
+    Ok(Some(id))
 }
 
 fn json<T: Serialize>(v: &T) -> String {
@@ -846,17 +862,19 @@ pub struct Finish<'a> {
 }
 
 /// Leaves `updated_at` alone: it signals edits of the watch itself (BR-11),
-/// and the app emits `pulse:changed` for its own refreshes.
-pub async fn finish_refresh(db: &Db, w: &Watch, f: Finish<'_>) -> Result<(), CodedError> {
+/// and the app emits `pulse:changed` for its own refreshes. Applies only while
+/// `w` is still the current version of the watch (active, same `updated_at`);
+/// returns whether it did.
+pub async fn finish_refresh(db: &Db, w: &Watch, f: Finish<'_>) -> Result<bool, CodedError> {
     let ts = now();
-    sqlx::query(
+    let r = sqlx::query(
         "UPDATE pulse_watches SET title = COALESCE(?1, title), \
          slack_thread_id = COALESCE(?2, slack_thread_id), \
          checked_at = CASE WHEN ?3 THEN ?4 ELSE checked_at END, last_error = ?5, \
          resolve_status = CASE WHEN ?6 IS NOT NULL AND project_id = ?7 AND \
            (CASE WHEN ?8 THEN resolve_status = 'pending' ELSE resolve_status <> 'pending' END) \
            THEN ?6 ELSE resolve_status END \
-         WHERE id = ?9",
+         WHERE id = ?9 AND active = 1 AND updated_at = ?10",
     )
     .bind(f.title)
     .bind(f.slack_thread_id)
@@ -867,28 +885,41 @@ pub async fn finish_refresh(db: &Db, w: &Watch, f: Finish<'_>) -> Result<(), Cod
     .bind(&w.project_id)
     .bind(f.resolving)
     .bind(&w.id)
+    .bind(&w.updated_at)
     .execute(db)
     .await
     .map_err(internal)?;
-    Ok(())
+    Ok(r_affected(r))
 }
 
-/// §9: a transferred issue follows its new repo unless another watch has it.
-pub async fn update_source(db: &Db, w: &Watch, source: &Source) -> Result<bool, CodedError> {
+fn r_affected(r: sqlx::sqlite::SqliteQueryResult) -> bool {
+    r.rows_affected() == 1
+}
+
+/// §9: a transferred issue follows its new repo unless another watch has it
+/// (or `w` is no longer the current version). Returns the watch's new
+/// `updated_at` when it moved.
+pub async fn update_source(
+    db: &Db,
+    w: &Watch,
+    source: &Source,
+) -> Result<Option<String>, CodedError> {
+    let ts = now();
     let r = sqlx::query(
         "UPDATE pulse_watches SET source_ref = ?1, source_url = ?2, updated_at = ?3 \
-         WHERE id = ?4 AND NOT EXISTS (SELECT 1 FROM pulse_watches \
-           WHERE source_type = ?5 AND source_ref = ?1 AND id <> ?4)",
+         WHERE id = ?4 AND active = 1 AND updated_at = ?6 AND NOT EXISTS (SELECT 1 \
+           FROM pulse_watches WHERE source_type = ?5 AND source_ref = ?1 AND id <> ?4)",
     )
     .bind(&source.source_ref)
     .bind(&source.source_url)
-    .bind(now())
+    .bind(&ts)
     .bind(&w.id)
     .bind(source.source_type.as_str())
+    .bind(&w.updated_at)
     .execute(db)
     .await
     .map_err(internal)?;
-    Ok(r.rows_affected() == 1)
+    Ok((r.rows_affected() == 1).then_some(ts))
 }
 
 /// Active watches in a refresh scope (both None = all).

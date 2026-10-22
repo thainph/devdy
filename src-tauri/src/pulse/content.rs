@@ -7,7 +7,9 @@
 //!
 //! Both are capped at 60,000 characters: the first block (parent message /
 //! issue header + body) is kept, then as many of the newest blocks as fit;
-//! `truncated` records the cut. `hash` is the sha256 of the text.
+//! `truncated` records the cut. GitHub's `hash` is the sha256 of the text;
+//! Slack's is over the original messages (`ts|user_id|subtype|text_raw` per
+//! line), so a re-translation alone never triggers a new digest.
 
 use crate::slack_threads::mrkdwn::{self, Links, Names};
 use sha2::{Digest as _, Sha256};
@@ -77,6 +79,8 @@ pub struct IssueData {
     pub comments: Vec<IssueComment>,
     pub is_pull_request: bool,
     pub board: Option<BoardFields>,
+    /// The board query failed this time (board fields unknown, not absent).
+    pub board_unavailable: bool,
 }
 
 impl IssueData {
@@ -164,7 +168,22 @@ pub fn slack_content(msgs: &[SlackMsg], me: Option<&str>, names: &Names) -> Cont
             format!("[{when}] {}({who}): {}", m.author, text.trim())
         })
         .collect();
-    finish(blocks)
+    let raw: Vec<String> = msgs
+        .iter()
+        .map(|m| {
+            format!(
+                "{}|{}|{}|{}",
+                m.ts,
+                m.user_id.as_deref().unwrap_or(""),
+                m.subtype.as_deref().unwrap_or(""),
+                m.text_raw
+            )
+        })
+        .collect();
+    Content {
+        hash: sha256_hex(&raw.join("\n")),
+        ..finish(blocks)
+    }
 }
 
 fn or_none(v: &[String]) -> String {
@@ -253,21 +272,59 @@ mod tests {
              [2026-09-20T04:08:20.000Z] name-U2(other): ok & thanks"
         );
         assert!(!c.truncated);
-        assert_eq!(c.hash, sha256_hex(&c.text));
-        assert_eq!(c.hash.len(), 64);
+        assert_eq!(
+            c.hash,
+            sha256_hex("1789877283.026359|U1||Hello <@U2>\n1789877300.000100|U2||ok &amp; thanks")
+        );
         // Without my id everyone is "other".
         let c2 = slack_content(&[msg("1789877283.026359", "U1", "x", None)], None, &names);
         assert!(c2.text.contains("(other)"));
     }
 
     #[test]
-    fn hash_changes_with_content_only() {
+    fn slack_hash_follows_the_original_messages_only() {
         let names = Names::default();
         let a = slack_content(&[msg("1.000001", "U1", "a", None)], None, &names);
         let b = slack_content(&[msg("1.000001", "U1", "a", None)], None, &names);
         let c = slack_content(&[msg("1.000001", "U1", "b", None)], None, &names);
         assert_eq!(a.hash, b.hash);
         assert_ne!(a.hash, c.hash);
+        // A new / changed translation alone keeps the hash (and the digest).
+        let vi = slack_content(
+            &[msg("1.000001", "U1", "a", Some("bản dịch"))],
+            None,
+            &names,
+        );
+        assert_eq!(vi.hash, a.hash);
+        assert_ne!(vi.text, a.text);
+        // Knowing my id changes the labels, not the hash.
+        let me = slack_content(&[msg("1.000001", "U1", "a", None)], Some("U1"), &names);
+        assert_eq!(me.hash, a.hash);
+        let mut sub = msg("1.000001", "U1", "a", None);
+        sub.subtype = Some("thread_broadcast".into());
+        assert_ne!(slack_content(&[sub], None, &names).hash, a.hash);
+    }
+
+    #[test]
+    fn japanese_text_is_capped_by_characters() {
+        let names = Names::default();
+        let line = "デプロイが失敗しました。ロールバックをお願いします。".repeat(40);
+        let msgs: Vec<SlackMsg> = (0..120)
+            .map(|i| msg(&format!("{}.000000", 1_700_000_000 + i), "U1", &line, None))
+            .collect();
+        let c = slack_content(&msgs, None, &names);
+        assert!(c.truncated);
+        let n = c.text.chars().count();
+        assert!(
+            n <= MAX_CONTENT_CHARS && n > MAX_CONTENT_CHARS - 2_000,
+            "{n}"
+        );
+        assert!(c.text.contains("earlier entries omitted"));
+        assert!(c.text.ends_with(&line));
+        // A first block larger than the cap is cut on a character boundary.
+        let huge = msg("1.000000", "U1", &"日本語".repeat(30_000), None);
+        let c = slack_content(&[huge, msg("2.000000", "U2", "tail", None)], None, &names);
+        assert!(c.text.chars().count() <= MAX_CONTENT_CHARS);
     }
 
     #[test]
