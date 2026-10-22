@@ -204,8 +204,6 @@ fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-/// Row with the same `(channel_id, thread_ts)`, or a legacy row without a key
-/// whose `thread_url` parses to it.
 /// Record the Slack user behind a workspace token (`slack_identities`).
 /// No-op for tokens without a user (bot tokens).
 pub async fn upsert_identity(db: &Db, auth: &super::api::AuthInfo) -> Result<(), sqlx::Error> {
@@ -225,6 +223,8 @@ pub async fn upsert_identity(db: &Db, auth: &super::api::AuthInfo) -> Result<(),
     Ok(())
 }
 
+/// Row with the same `(channel_id, thread_ts)`, or a legacy row without a key
+/// whose `thread_url` parses to it.
 pub async fn find_by_key(
     db: &Db,
     channel_id: &str,

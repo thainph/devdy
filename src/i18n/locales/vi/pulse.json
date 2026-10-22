@@ -128,6 +128,7 @@
     "slack_fetch_failed": "Không lấy được thread Slack",
     "summarize_failed": "AI không tổng hợp được — đang giữ bản cũ",
     "not_found": "Không tìm thấy nguồn đang theo dõi",
+    "duplicate_source": "Issue đã chuyển sang một issue khác đang được theo dõi",
     "unknown": "Lỗi: {detail}"
   }
 }

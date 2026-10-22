@@ -7,7 +7,8 @@
 use super::ball::ball_mine_since;
 use super::content::{github_content, slack_content, Content, IssueData};
 use super::digest::{
-    apply_hard_facts, build_prompt, parse_digest, retry_prompt, DigestDraft, HardFacts, PromptCtx,
+    apply_hard_facts, build_prompt, keep_quoted, parse_digest, retry_prompt, DigestDraft,
+    HardFacts, PromptCtx,
 };
 use super::source::{github_ref, github_url, Source, SourceType};
 use super::store::{self, Finish, Watch};
@@ -23,6 +24,10 @@ struct Fetched {
     /// The user as the prompt should name them.
     me: String,
     slack_thread_id: Option<String>,
+    /// The board query failed this time (GitHub): its fields are unknown.
+    board_unavailable: bool,
+    /// The issue was transferred: the watch now has this ref / version.
+    moved: Option<(Source, String)>,
 }
 
 fn now_local() -> DateTime<FixedOffset> {
@@ -48,13 +53,17 @@ impl PulseState {
                 return;
             }
         };
-        if let Err(e) = self.refresh_loaded(&w).await {
+        if let Err(e) = self.refresh_loaded(w).await {
             eprintln!("[pulse] refresh {id}: {e}");
         }
     }
 
-    async fn refresh_loaded(&self, w: &Watch) -> Result<(), CodedError> {
+    /// Every write after the fetch is conditional on `w` still being the
+    /// current version of the watch (`updated_at`), so a refresh overtaken by
+    /// a move / unwatch / re-watch writes nothing.
+    async fn refresh_loaded(&self, mut w: Watch) -> Result<(), CodedError> {
         let db = self.db();
+        let w = &mut w;
         let resolving = w.resolve_status == "pending";
         let fetched = match w.source_type.as_str() {
             "slack" => self.fetch_slack(w).await,
@@ -74,9 +83,16 @@ impl PulseState {
                         ..Default::default()
                     },
                 )
-                .await;
+                .await
+                .map(|_| ());
             }
         };
+        if let Some((src, version)) = &f.moved {
+            w.source_ref = src.source_ref.clone();
+            w.source_url = src.source_url.clone();
+            w.updated_at = version.clone();
+        }
+        let w: &Watch = w;
         let done = |error: Option<&'static str>| Finish {
             title: Some(&f.title),
             slack_thread_id: f.slack_thread_id.as_deref(),
@@ -85,9 +101,13 @@ impl PulseState {
             resolve_status: Some("ready"),
             resolving,
         };
-        // BR-05: unchanged content → keep the digest, no AI call.
-        if store::latest_digest_hash(db, &w.id).await?.as_deref() == Some(&f.content.hash) {
-            return store::finish_refresh(db, w, done(None)).await;
+        // BR-05: unchanged content → keep the digest, no AI call. A board
+        // query that failed this time is not a change either (D3).
+        let last_hash = store::latest_digest_hash(db, &w.id).await?;
+        if last_hash.as_deref() == Some(&f.content.hash)
+            || (f.board_unavailable && last_hash.is_some())
+        {
+            return store::finish_refresh(db, w, done(None)).await.map(|_| ());
         }
         let now = now_local();
         let ctx = PromptCtx {
@@ -100,11 +120,12 @@ impl PulseState {
         };
         match self.summarize(&ctx, *now.offset()).await {
             Ok(mut d) => {
+                keep_quoted(&mut d, &f.content.text);
                 apply_hard_facts(&mut d, &f.facts, *now.offset());
                 let model = self.inner.svc.engine.model().await;
-                store::insert_digest(
+                let stored = store::insert_digest(
                     db,
-                    &w.id,
+                    w,
                     &f.content.hash,
                     &d,
                     f.content.truncated,
@@ -112,11 +133,17 @@ impl PulseState {
                     model.as_deref(),
                 )
                 .await?;
-                store::finish_refresh(db, w, done(None)).await
+                if stored.is_none() {
+                    tracing::info!(event = "pulse_refresh_stale", watch = %w.id);
+                    return Ok(());
+                }
+                store::finish_refresh(db, w, done(None)).await.map(|_| ())
             }
             Err(e) => {
                 tracing::info!(event = "pulse_summarize_failed", watch = %w.id, error = %e);
-                store::finish_refresh(db, w, done(Some("summarize_failed"))).await
+                store::finish_refresh(db, w, done(Some("summarize_failed")))
+                    .await
+                    .map(|_| ())
             }
         }
     }
@@ -164,6 +191,8 @@ impl PulseState {
             title: t.title,
             me,
             slack_thread_id: Some(thread_id),
+            board_unavailable: false,
+            moved: None,
         })
     }
 
@@ -178,15 +207,32 @@ impl PulseState {
                 "this number is a pull request, not an issue",
             ));
         }
-        // §9: follow a transferred issue to its new repo.
+        // §9: follow a transferred issue to its new repo / number.
         let new_ref = github_ref(&issue.owner, &issue.repo, issue.number);
+        let mut moved = None;
         if new_ref != w.source_ref {
             let src = Source {
                 source_type: SourceType::GithubIssue,
                 source_ref: new_ref,
                 source_url: github_url(&issue.owner, &issue.repo, issue.number),
             };
-            store::update_source(self.db(), w, &src).await?;
+            match store::update_source(self.db(), w, &src).await? {
+                Some(version) => moved = Some((src, version)),
+                None => {
+                    tracing::warn!(
+                        event = "pulse_duplicate_source",
+                        watch = %w.id,
+                        to = %src.source_ref
+                    );
+                    return Err(CodedError::new(
+                        "duplicate_source",
+                        format!(
+                            "the issue moved to {}, which another watch has",
+                            src.source_ref
+                        ),
+                    ));
+                }
+            }
         }
         let me = gh
             .my_login(&w.project_id)
@@ -203,6 +249,8 @@ impl PulseState {
             title: issue.title.clone(),
             me,
             slack_thread_id: None,
+            board_unavailable: issue.board_unavailable,
+            moved,
         })
     }
 }

@@ -101,7 +101,7 @@ fn issue(title: &str, body: &str) -> content::IssueData {
     content::IssueData {
         owner: "org".into(),
         repo: "app".into(),
-        number: 12,
+        number: 0,
         title: title.into(),
         state: "open".into(),
         author: "alice".into(),
@@ -124,7 +124,10 @@ impl github::GithubFetch for FakeGithub {
         let key = format!("{owner}/{repo}#{number}");
         match self.issues.lock().unwrap().get(&key).cloned() {
             Some(Ok(mut i)) => {
-                i.number = number;
+                // 0 = "the number asked for"; a transfer fixture sets its own.
+                if i.number == 0 {
+                    i.number = number;
+                }
                 Ok(i)
             }
             Some(Err(status)) => Err(github::status_error(status, "fake")),
@@ -152,6 +155,7 @@ struct FakeEngine {
     gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
     current: AtomicUsize,
     max: AtomicUsize,
+    shut: AtomicUsize,
 }
 
 impl FakeEngine {
@@ -187,6 +191,10 @@ impl DigestEngine for FakeEngine {
 
     async fn model(&self) -> Option<String> {
         Some("claude:haiku".into())
+    }
+
+    async fn shutdown(&self) {
+        self.shut.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -941,7 +949,7 @@ async fn closed_issue_and_board_deadline_override_the_ai() {
     assert!(deadlines[0]["due_at"]
         .as_str()
         .unwrap()
-        .starts_with("2026-11-05T00:00:00"));
+        .starts_with("2026-11-05T23:59:59"));
 }
 
 #[tokio::test]
@@ -1140,21 +1148,110 @@ async fn slack_capture_failure_on_resolve_is_an_error() {
 }
 
 #[tokio::test]
-async fn transferred_issue_follows_its_new_repo() {
+async fn transferred_issue_follows_its_new_repo_and_number() {
     let db = mem_db().await;
     let h = harness(&db);
     let mut i = issue("Moved", "x");
     i.owner = "NewOrg".into();
     i.repo = "New-App".into();
+    i.number = 77;
     h.github.set(ISSUE, Ok(i));
     let w = h.watch(ISSUE).await;
     h.run().await;
     let got = h.get(&w.id).await;
-    assert_eq!(got.source_ref, "neworg/new-app#12");
+    assert_eq!(got.source_ref, "neworg/new-app#77");
     assert_eq!(
         got.source_url,
-        "https://github.com/neworg/new-app/issues/12"
+        "https://github.com/neworg/new-app/issues/77"
     );
+    // The refresh went on under the new version of the watch.
+    assert_eq!(got.resolve_status, "ready");
+    assert_eq!(h.digests(&w.id).await.len(), 1);
+    assert!(h.engine.prompts.lock().unwrap()[0].contains("Issue: NewOrg/New-App#77"));
+}
+
+#[tokio::test]
+async fn transfer_onto_an_already_watched_issue_is_an_error() {
+    let db = mem_db().await;
+    let h = harness(&db);
+    let mut i = issue("Moved", "x");
+    i.owner = "neworg".into();
+    i.repo = "new-app".into();
+    i.number = 77;
+    h.github.set(ISSUE, Ok(i));
+    let mut target = issue("Target", "y");
+    target.owner = "neworg".into();
+    target.repo = "new-app".into();
+    h.github.set("neworg/new-app#77", Ok(target));
+    let other = h.watch("neworg/new-app#77").await;
+    let w = h.watch(ISSUE).await;
+    h.run().await;
+    let got = h.get(&w.id).await;
+    assert_eq!(got.source_ref, ISSUE);
+    assert_eq!(got.last_error.as_deref(), Some("duplicate_source"));
+    assert_eq!(got.resolve_status, "error");
+    assert_eq!(h.get(&other.id).await.resolve_status, "ready");
+}
+
+#[tokio::test]
+async fn a_failed_board_query_does_not_count_as_a_change() {
+    let db = mem_db().await;
+    let h = harness(&db);
+    let mut i = issue("T", "x");
+    i.board = Some(content::BoardFields {
+        start: None,
+        deadline: Some("2026-11-05".into()),
+        status: Some("Todo".into()),
+    });
+    h.github.set(ISSUE, Ok(i.clone()));
+    let w = h.watch(ISSUE).await;
+    h.run().await;
+    assert_eq!(h.engine.calls(), 1);
+    // Board query fails this time: no board fields → different text, but no
+    // new digest and no AI call.
+    let mut flaky = i.clone();
+    flaky.board = None;
+    flaky.board_unavailable = true;
+    h.github.set(ISSUE, Ok(flaky));
+    h.refresh(&w.id).await;
+    assert_eq!(h.engine.calls(), 1);
+    assert_eq!(h.digests(&w.id).await.len(), 1);
+    // Back to normal: same hash as before, still no call.
+    h.github.set(ISSUE, Ok(i));
+    h.refresh(&w.id).await;
+    assert_eq!(h.engine.calls(), 1);
+}
+
+#[tokio::test]
+async fn a_refresh_overtaken_by_a_move_or_rewatch_writes_nothing() {
+    for change in ["move", "rewatch"] {
+        let db = mem_db().await;
+        let h = harness(&db);
+        h.github.set(ISSUE, Ok(issue("Title", "x")));
+        let w = h.watch(ISSUE).await;
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        *h.engine.gate.lock().unwrap() = Some(gate.clone());
+        let (_, waits) = h.state.schedule(vec![w.clone()]);
+        // Wait until the AI call is in flight, then change the watch.
+        while h.engine.calls() == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        if change == "move" {
+            store::move_watch(&db, &w.id, "p2").await.unwrap();
+        } else {
+            store::unwatch(&db, &w.id).await.unwrap();
+            store::watch(&db, req("p1", &src(ISSUE), false))
+                .await
+                .unwrap();
+        }
+        gate.add_permits(10);
+        PulseState::wait_all(waits).await;
+        h.state.idle().await;
+        let got = h.get(&w.id).await;
+        assert!(h.digests(&w.id).await.is_empty(), "{change}");
+        assert_eq!((got.title, got.checked_at), (None, None), "{change}");
+        assert_eq!(got.resolve_status, "pending", "{change}");
+    }
 }
 
 #[tokio::test]
@@ -1339,4 +1436,16 @@ async fn overview_orders_cards_by_health_and_groups_finished_watches() {
     assert_eq!(v["watches"][1]["finished"], true);
     assert_eq!(v["watches"][1]["digest"]["sourceClosed"], true);
     assert_eq!(out[1].health.health, "green");
+}
+
+#[tokio::test]
+async fn shutdown_stops_the_digest_engine() {
+    let db = mem_db().await;
+    let h = harness(&db);
+    h.state.shutdown().await;
+    assert_eq!(h.engine.shut.load(Ordering::SeqCst), 1);
+    // A translate state without a warm sidecar shuts down as a no-op.
+    crate::commands::translate::TranslateState::default()
+        .shutdown()
+        .await;
 }
