@@ -9,7 +9,7 @@ import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useUILayoutStore } from '@/stores/uiLayout'
 import { useI18n } from 'vue-i18n'
 import { setLocale } from '@/i18n'
-import { AppWindow, ListTodo, PanelLeftClose, PanelLeftOpen, Slack, StickyNote } from 'lucide-vue-next'
+import { ListTodo, PanelLeftClose, PanelLeftOpen, Slack, StickyNote } from 'lucide-vue-next'
 import PermissionNotifier from '@/components/PermissionNotifier.vue'
 import PermissionWindowManager from '@/components/PermissionWindowManager.vue'
 import CalendarReminder from '@/components/CalendarReminder.vue'
@@ -849,8 +849,6 @@ onMounted(async () => {
               >
                 <component :is="item.icon" class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
                 <span class="flex-1 truncate text-left">{{ item.label }}</span>
-                <!-- Hint: opens a separate window rather than a screen here -->
-                <AppWindow class="h-3 w-3 shrink-0 text-muted-foreground/50" :stroke-width="1.75" aria-hidden="true" />
                 <span class="sr-only">({{ t('nav.opensInWindow') }})</span>
               </button>
               <RouterLink
