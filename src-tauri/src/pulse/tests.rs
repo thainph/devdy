@@ -1,10 +1,13 @@
-//! Watch rules, project lookup, overview and the BR-11 queue on an in-memory
-//! DB with a fake Slack capture. No network.
+//! Watch rules, project lookup, overview, the BR-11 queue and the refresh
+//! pipeline on an in-memory DB with fake Slack / GitHub / AI services. No
+//! network.
 
 use super::source::{parse_source, Source};
 use super::store::{self, WatchRequest};
 use super::*;
 use sqlx::sqlite::SqlitePoolOptions;
+use std::collections::HashMap;
+use std::sync::atomic::AtomicUsize;
 use std::sync::Mutex;
 use uuid::Uuid;
 
@@ -47,6 +50,8 @@ const ISSUE: &str = "org/app#12";
 struct FakeSlack {
     calls: Mutex<Vec<(String, String)>>,
     fail: Mutex<Option<String>>,
+    refreshed: Mutex<Vec<String>>,
+    refresh_fail: Mutex<Option<String>>,
 }
 
 #[async_trait]
@@ -69,14 +74,196 @@ impl SlackCapture for FakeSlack {
             error_code: None,
         })
     }
+
+    async fn refresh_and_wait(&self, thread_id: &str) -> Result<(), CodedError> {
+        self.refreshed.lock().unwrap().push(thread_id.to_string());
+        match self.refresh_fail.lock().unwrap().clone() {
+            Some(code) => Err(CodedError::new(code, "fake")),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Issues by `o/r#n`: `Ok` data or `Err` HTTP status.
+#[derive(Default)]
+struct FakeGithub {
+    issues: Mutex<HashMap<String, Result<content::IssueData, u16>>>,
+    calls: AtomicUsize,
+}
+
+impl FakeGithub {
+    fn set(&self, r: &str, v: Result<content::IssueData, u16>) {
+        self.issues.lock().unwrap().insert(r.to_string(), v);
+    }
+}
+
+fn issue(title: &str, body: &str) -> content::IssueData {
+    content::IssueData {
+        owner: "org".into(),
+        repo: "app".into(),
+        number: 12,
+        title: title.into(),
+        state: "open".into(),
+        author: "alice".into(),
+        created_at: "2026-10-01T00:00:00+00:00".into(),
+        body: body.into(),
+        ..Default::default()
+    }
+}
+
+#[async_trait]
+impl github::GithubFetch for FakeGithub {
+    async fn fetch_issue(
+        &self,
+        _project_id: &str,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<content::IssueData, CodedError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let key = format!("{owner}/{repo}#{number}");
+        match self.issues.lock().unwrap().get(&key).cloned() {
+            Some(Ok(mut i)) => {
+                i.number = number;
+                Ok(i)
+            }
+            Some(Err(status)) => Err(github::status_error(status, "fake")),
+            None => Err(github::status_error(404, "fake")),
+        }
+    }
+
+    async fn my_login(&self, _project_id: &str) -> Option<String> {
+        Some("thai".into())
+    }
+}
+
+const ANSWER: &str = r#"{"status":"on_track","ball":"customer","ball_since":null,
+  "summary":"Đang chờ khách.","next_action":"Nhắc khách",
+  "deadlines":[{"title":"Demo","due_at":"2026-10-30T10:00:00+07:00","all_day":false,"evidence":"Demo 30/10"}],
+  "decisions":[],"open_questions":[]}"#;
+
+/// Scripted answers (then `ANSWER`), optional per-call delay / gate, and a
+/// record of prompts and concurrency.
+#[derive(Default)]
+struct FakeEngine {
+    answers: Mutex<std::collections::VecDeque<Result<String, String>>>,
+    prompts: Mutex<Vec<String>>,
+    delay_ms: AtomicUsize,
+    gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
+    current: AtomicUsize,
+    max: AtomicUsize,
+}
+
+impl FakeEngine {
+    fn push(&self, a: Result<&str, &str>) {
+        self.answers
+            .lock()
+            .unwrap()
+            .push_back(a.map(str::to_string).map_err(str::to_string));
+    }
+    fn calls(&self) -> usize {
+        self.prompts.lock().unwrap().len()
+    }
+}
+
+#[async_trait]
+impl DigestEngine for FakeEngine {
+    async fn complete(&self, prompt: String) -> Result<String, String> {
+        let now = self.current.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max.fetch_max(now, Ordering::SeqCst);
+        self.prompts.lock().unwrap().push(prompt);
+        let gate = self.gate.lock().unwrap().clone();
+        if let Some(g) = gate {
+            let _ = g.acquire().await.map(|p| p.forget());
+        }
+        let ms = self.delay_ms.load(Ordering::SeqCst);
+        if ms > 0 {
+            tokio::time::sleep(Duration::from_millis(ms as u64)).await;
+        }
+        self.current.fetch_sub(1, Ordering::SeqCst);
+        let next = self.answers.lock().unwrap().pop_front();
+        next.unwrap_or_else(|| Ok(ANSWER.to_string()))
+    }
+
+    async fn model(&self) -> Option<String> {
+        Some("claude:haiku".into())
+    }
 }
 
 #[derive(Default)]
-struct RecEvents(Mutex<Vec<Vec<String>>>);
+struct RecEvents {
+    changed: Mutex<Vec<Vec<String>>>,
+    progress: Mutex<Vec<(usize, usize)>>,
+}
 
 impl PulseEvents for RecEvents {
     fn changed(&self, watch_ids: &[String]) {
-        self.0.lock().unwrap().push(watch_ids.to_vec());
+        self.changed.lock().unwrap().push(watch_ids.to_vec());
+    }
+    fn progress(&self, done: usize, total: usize) {
+        self.progress.lock().unwrap().push((done, total));
+    }
+}
+
+struct Harness {
+    db: Db,
+    state: PulseState,
+    slack: Arc<FakeSlack>,
+    github: Arc<FakeGithub>,
+    engine: Arc<FakeEngine>,
+    events: Arc<RecEvents>,
+}
+
+fn harness(db: &Db) -> Harness {
+    let slack = Arc::new(FakeSlack::default());
+    let github = Arc::new(FakeGithub::default());
+    let engine = Arc::new(FakeEngine::default());
+    let events = Arc::new(RecEvents::default());
+    let state = PulseState::new(
+        db.clone(),
+        Services {
+            slack: slack.clone(),
+            github: github.clone(),
+            engine: engine.clone(),
+            events: events.clone(),
+        },
+    );
+    Harness {
+        db: db.clone(),
+        state,
+        slack,
+        github,
+        engine,
+        events,
+    }
+}
+
+impl Harness {
+    async fn watch(&self, input: &str) -> store::Watch {
+        store::watch(&self.db, req("p1", &src(input), false))
+            .await
+            .unwrap()
+            .watch
+    }
+    async fn get(&self, id: &str) -> store::Watch {
+        store::get(&self.db, id).await.unwrap().unwrap()
+    }
+    async fn digests(&self, id: &str) -> Vec<(String, String, String)> {
+        sqlx::query_as(
+            "SELECT content_hash, status, deadlines FROM pulse_digests WHERE watch_id = ? \
+             ORDER BY created_at DESC, id DESC",
+        )
+        .bind(id)
+        .fetch_all(&self.db)
+        .await
+        .unwrap()
+    }
+    async fn run(&self) {
+        self.state.process_pending().await;
+        self.state.idle().await;
+    }
+    async fn refresh(&self, id: &str) {
+        self.state.refresh_scope(None, Some(id)).await.unwrap();
     }
 }
 
@@ -365,159 +552,6 @@ async fn overview_groups_active_watches_with_latest_digest() {
     assert_eq!(v["digest"]["openQuestions"], serde_json::json!([]));
 }
 
-async fn insert_thread_1(db: &Db) {
-    sqlx::query(
-        "INSERT INTO slack_threads (id, title, created_at, updated_at) \
-         VALUES ('thread-1', 't', '2026-01-01', '2026-01-01')",
-    )
-    .execute(db)
-    .await
-    .unwrap();
-}
-
-#[tokio::test]
-async fn process_pending_resolves_watches_and_closes_requests() {
-    let db = mem_db().await;
-    insert_thread_1(&db).await;
-    let slack = Arc::new(FakeSlack::default());
-    let events = Arc::new(RecEvents::default());
-    let state = PulseState::new(db.clone(), slack.clone(), events.clone());
-
-    let ws = store::watch(&db, req("p1", &src(SLACK), false))
-        .await
-        .unwrap()
-        .watch;
-    let wg = store::watch(&db, req("p1", &src(ISSUE), false))
-        .await
-        .unwrap()
-        .watch;
-    let wi = store::watch(&db, req("p1", &src("org/app#99"), false))
-        .await
-        .unwrap()
-        .watch;
-    store::unwatch(&db, &wi.id).await.unwrap(); // inactive: left alone
-    sqlx::query(
-        "INSERT INTO pulse_requests (id, kind, watch_id, created_at) VALUES \
-         ('q1', 'resolve', ?, '2026-01-01'), ('q2', 'refresh', NULL, '2026-01-01')",
-    )
-    .bind(&ws.id)
-    .execute(&db)
-    .await
-    .unwrap();
-
-    let changed = state.process_pending().await;
-    assert_eq!(changed, vec![ws.id.clone(), wg.id.clone()]);
-    assert_eq!(
-        *slack.calls.lock().unwrap(),
-        vec![(SLACK.to_string(), "p1".to_string())]
-    );
-    let s = store::get(&db, &ws.id).await.unwrap().unwrap();
-    assert_eq!(
-        (
-            s.resolve_status.as_str(),
-            s.slack_thread_id.as_deref(),
-            s.title.as_deref()
-        ),
-        ("ready", Some("thread-1"), Some("Deploy thread"))
-    );
-    let g = store::get(&db, &wg.id).await.unwrap().unwrap();
-    assert_eq!(g.resolve_status, "ready");
-    assert_eq!(
-        store::get(&db, &wi.id)
-            .await
-            .unwrap()
-            .unwrap()
-            .resolve_status,
-        "pending"
-    );
-    let open: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pulse_requests WHERE done_at IS NULL")
-        .fetch_one(&db)
-        .await
-        .unwrap();
-    assert_eq!(open, 0);
-    assert_eq!(
-        *events.0.lock().unwrap(),
-        vec![vec![ws.id.clone(), wg.id.clone()]]
-    );
-
-    // Nothing pending → no event.
-    assert!(state.process_pending().await.is_empty());
-    assert_eq!(events.0.lock().unwrap().len(), 1);
-
-    // A write the app did not make (an MCP unwatch) → reload-all event.
-    sqlx::query("UPDATE pulse_watches SET active = 0, updated_at = '2099-01-01T00:00:00+00:00' WHERE id = ?")
-        .bind(&wg.id)
-        .execute(&db)
-        .await
-        .unwrap();
-    assert!(state.process_pending().await.is_empty());
-    assert_eq!(events.0.lock().unwrap().last(), Some(&Vec::new()));
-    state.process_pending().await;
-    assert_eq!(events.0.lock().unwrap().len(), 2);
-
-    // Capture failure → error with the Slack code.
-    *slack.fail.lock().unwrap() = Some("no_token".into());
-    store::move_watch(&db, &ws.id, "p2").await.unwrap();
-    state.process_pending().await;
-    let s = store::get(&db, &ws.id).await.unwrap().unwrap();
-    assert_eq!(
-        (
-            s.resolve_status.as_str(),
-            s.last_error.as_deref(),
-            s.project_id.as_str()
-        ),
-        ("error", Some("no_token"), "p2")
-    );
-    assert_eq!(slack.calls.lock().unwrap()[1].1, "p2");
-}
-
-#[tokio::test]
-async fn resolve_links_slack_thread_and_ignores_stale_results() {
-    let db = mem_db().await;
-    insert_thread_1(&db).await;
-    let slack = Arc::new(FakeSlack::default());
-    let state = PulseState::new(db.clone(), slack, Arc::new(RecEvents::default()));
-    let w = store::watch(&db, req("p1", &src(SLACK), false))
-        .await
-        .unwrap()
-        .watch;
-    state.process_pending().await;
-    let s = store::get(&db, &w.id).await.unwrap().unwrap();
-    assert_eq!(s.slack_thread_id.as_deref(), Some("thread-1"));
-
-    // Deleting the thread keeps the watch (ON DELETE SET NULL).
-    sqlx::query("DELETE FROM slack_threads WHERE id = 'thread-1'")
-        .execute(&db)
-        .await
-        .unwrap();
-    assert_eq!(
-        store::get(&db, &w.id)
-            .await
-            .unwrap()
-            .unwrap()
-            .slack_thread_id,
-        None
-    );
-
-    // A result computed for the old project is dropped after a move.
-    let w = store::move_watch(&db, &w.id, "p2").await.unwrap();
-    let stale = store::Watch {
-        project_id: "p1".into(),
-        ..w.clone()
-    };
-    assert!(!store::set_resolved(&db, &stale, None, None, None)
-        .await
-        .unwrap());
-    assert_eq!(
-        store::get(&db, &w.id)
-            .await
-            .unwrap()
-            .unwrap()
-            .resolve_status,
-        "pending"
-    );
-}
-
 #[tokio::test]
 async fn slack_capture_adds_missing_threads_and_moves_existing_ones() {
     use crate::slack_threads::tests::{memory_db, offline_state, Tokens};
@@ -645,11 +679,9 @@ async fn concurrent_watches_from_two_connections_are_serialised() {
 #[tokio::test]
 async fn poller_tick_respects_the_gate_and_recovers_leftovers() {
     let db = mem_db().await;
-    let state = PulseState::new(
-        db.clone(),
-        Arc::new(FakeSlack::default()),
-        Arc::new(RecEvents::default()),
-    );
+    let h = harness(&db);
+    h.github.set(ISSUE, Ok(issue("Login", "body")));
+    let state = h.state.clone();
     // Left over from before a restart: a pending watch and an open request.
     let w = store::watch(&db, req("p1", &src(ISSUE), false))
         .await
@@ -684,6 +716,7 @@ async fn poller_tick_respects_the_gate_and_recovers_leftovers() {
     .await
     .unwrap();
     assert!(state.tick(false).await);
+    state.idle().await;
     assert_eq!(
         store::get(&db, &w.id)
             .await
@@ -692,6 +725,8 @@ async fn poller_tick_respects_the_gate_and_recovers_leftovers() {
             .resolve_status,
         "ready"
     );
+    // The resolve request closes on the pass after its watch is resolved.
+    assert!(state.tick(false).await);
     let open: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pulse_requests WHERE done_at IS NULL")
         .fetch_one(&db)
         .await
@@ -708,4 +743,486 @@ async fn poller_tick_respects_the_gate_and_recovers_leftovers() {
     assert!(state.tick(false).await);
     state.set_screen_open(false);
     assert!(state.tick(true).await);
+}
+
+// ---- Refresh pipeline (T3) ----------------------------------------------------
+
+async fn open_requests(db: &Db) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM pulse_requests WHERE done_at IS NULL")
+        .fetch_one(db)
+        .await
+        .unwrap()
+}
+
+async fn add_request(db: &Db, id: &str, kind: &str, watch_id: Option<&str>, project: Option<&str>) {
+    sqlx::query(
+        "INSERT INTO pulse_requests (id, kind, watch_id, project_id, created_at) \
+         VALUES (?, ?, ?, ?, '2026-01-01')",
+    )
+    .bind(id)
+    .bind(kind)
+    .bind(watch_id)
+    .bind(project)
+    .execute(db)
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn github_watch_is_validated_and_digested_on_resolve() {
+    let db = mem_db().await;
+    let h = harness(&db);
+    h.github
+        .set(ISSUE, Ok(issue("Login fails", "Steps to reproduce")));
+    let w = h.watch(ISSUE).await;
+    add_request(&db, "q1", "resolve", Some(&w.id), None).await;
+
+    assert_eq!(h.state.process_pending().await, vec![w.id.clone()]);
+    h.state.idle().await;
+    let got = h.get(&w.id).await;
+    assert_eq!(got.resolve_status, "ready");
+    assert_eq!(got.title.as_deref(), Some("Login fails"));
+    assert_eq!(got.last_error, None);
+    assert!(got.checked_at.is_some());
+    let d = h.digests(&w.id).await;
+    assert_eq!(d.len(), 1);
+    assert_eq!(d[0].1, "on_track");
+    let model: Option<String> = sqlx::query_scalar("SELECT model FROM pulse_digests")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(model.as_deref(), Some("claude:haiku"));
+    let prompt = h.engine.prompts.lock().unwrap()[0].clone();
+    assert!(prompt.contains("The user is: GitHub user thai"));
+    assert!(prompt.contains("Title: Login fails"));
+    assert!(prompt.contains("Steps to reproduce"));
+
+    // The resolve request closes once its watch left `pending`.
+    assert_eq!(open_requests(&db).await, 1);
+    h.state.process_pending().await;
+    assert_eq!(open_requests(&db).await, 0);
+    // Events: progress 0/1 → 1/1, then the watch changed.
+    assert_eq!(*h.events.progress.lock().unwrap(), vec![(0, 1), (1, 1)]);
+    assert!(h
+        .events
+        .changed
+        .lock()
+        .unwrap()
+        .contains(&vec![w.id.clone()]));
+}
+
+#[tokio::test]
+async fn github_404_and_401_are_recorded_and_keep_old_digests() {
+    let db = mem_db().await;
+    let h = harness(&db);
+    h.github.set("org/app#1", Err(404));
+    h.github.set("org/app#2", Err(401));
+    let missing = h.watch("org/app#1").await;
+    let denied = h.watch("org/app#2").await;
+    h.run().await;
+    let m = h.get(&missing.id).await;
+    assert_eq!(
+        (m.resolve_status.as_str(), m.last_error.as_deref()),
+        ("error", Some("github_not_found"))
+    );
+    let d = h.get(&denied.id).await;
+    assert_eq!(
+        (d.resolve_status.as_str(), d.last_error.as_deref()),
+        ("error", Some("github_auth"))
+    );
+    assert_eq!(h.engine.calls(), 0);
+    assert!(h.digests(&missing.id).await.is_empty());
+
+    // "Retry": the issue is reachable now → ready + digest.
+    h.github.set("org/app#1", Ok(issue("Back", "x")));
+    h.refresh(&missing.id).await;
+    let m = h.get(&missing.id).await;
+    assert_eq!((m.resolve_status.as_str(), m.last_error), ("ready", None));
+    assert_eq!(h.digests(&missing.id).await.len(), 1);
+
+    // A later 404 on a ready watch: error recorded, still ready, digest kept.
+    h.github.set("org/app#1", Err(404));
+    h.refresh(&missing.id).await;
+    let m = h.get(&missing.id).await;
+    assert_eq!(
+        (m.resolve_status.as_str(), m.last_error.as_deref()),
+        ("ready", Some("github_not_found"))
+    );
+    assert_eq!(h.digests(&missing.id).await.len(), 1);
+}
+
+#[tokio::test]
+async fn unchanged_content_skips_the_ai_but_updates_checked_at() {
+    let db = mem_db().await;
+    let h = harness(&db);
+    h.github.set(ISSUE, Ok(issue("T", "same")));
+    let w = h.watch(ISSUE).await;
+    h.run().await;
+    assert_eq!(h.engine.calls(), 1);
+    sqlx::query(
+        "UPDATE pulse_watches SET checked_at = '2000-01-01', last_error = 'x' WHERE id = ?",
+    )
+    .bind(&w.id)
+    .execute(&db)
+    .await
+    .unwrap();
+    h.refresh(&w.id).await;
+    assert_eq!(h.engine.calls(), 1, "no AI call for the same hash");
+    let got = h.get(&w.id).await;
+    assert_ne!(got.checked_at.as_deref(), Some("2000-01-01"));
+    assert_eq!(got.last_error, None);
+    assert_eq!(h.digests(&w.id).await.len(), 1);
+
+    h.github.set(ISSUE, Ok(issue("T", "changed")));
+    h.refresh(&w.id).await;
+    assert_eq!(h.engine.calls(), 2);
+    assert_eq!(h.digests(&w.id).await.len(), 2);
+}
+
+#[tokio::test]
+async fn invalid_answers_are_retried_once_then_fail() {
+    let db = mem_db().await;
+    let h = harness(&db);
+    h.github.set(ISSUE, Ok(issue("T", "v1")));
+    let w = h.watch(ISSUE).await;
+    h.engine.push(Ok("not json at all"));
+    h.run().await;
+    let prompts = h.engine.prompts.lock().unwrap().clone();
+    assert_eq!(prompts.len(), 2);
+    assert!(prompts[1].contains("Your previous answer was rejected: no JSON object"));
+    assert_eq!(h.digests(&w.id).await.len(), 1);
+    assert_eq!(h.get(&w.id).await.last_error, None);
+
+    // Two bad answers → summarize_failed, the old digest stays.
+    h.github.set(ISSUE, Ok(issue("T", "v2")));
+    h.engine
+        .push(Ok(r#"{"status":"late","ball":"me","summary":"x"}"#));
+    h.engine
+        .push(Ok(r#"{"status":"late","ball":"me","summary":"x"}"#));
+    h.refresh(&w.id).await;
+    let got = h.get(&w.id).await;
+    assert_eq!(
+        (got.resolve_status.as_str(), got.last_error.as_deref()),
+        ("ready", Some("summarize_failed"))
+    );
+    assert_eq!(h.digests(&w.id).await.len(), 1);
+
+    // Engine unavailable also → summarize_failed (no retry needed).
+    h.github.set(ISSUE, Ok(issue("T", "v3")));
+    h.engine.push(Err("sidecar down"));
+    let before = h.engine.calls();
+    h.refresh(&w.id).await;
+    assert_eq!(h.engine.calls(), before + 1);
+    assert_eq!(
+        h.get(&w.id).await.last_error.as_deref(),
+        Some("summarize_failed")
+    );
+}
+
+#[tokio::test]
+async fn closed_issue_and_board_deadline_override_the_ai() {
+    let db = mem_db().await;
+    let h = harness(&db);
+    let mut i = issue("Ship it", "x");
+    i.state = "closed".into();
+    i.board = Some(content::BoardFields {
+        start: None,
+        deadline: Some("2026-11-05".into()),
+        status: Some("Done".into()),
+    });
+    h.github.set(ISSUE, Ok(i));
+    let w = h.watch(ISSUE).await;
+    h.run().await;
+    let d = h.digests(&w.id).await;
+    assert_eq!(d[0].1, "done");
+    let deadlines: serde_json::Value = serde_json::from_str(&d[0].2).unwrap();
+    assert_eq!(deadlines.as_array().unwrap().len(), 1);
+    assert_eq!(deadlines[0]["title"], "Deadline (board)");
+    assert!(deadlines[0]["due_at"]
+        .as_str()
+        .unwrap()
+        .starts_with("2026-11-05T00:00:00"));
+}
+
+#[tokio::test]
+async fn only_five_digests_are_kept() {
+    let db = mem_db().await;
+    let h = harness(&db);
+    let w = h.watch(ISSUE).await;
+    for n in 0..7 {
+        h.github.set(ISSUE, Ok(issue("T", &format!("v{n}"))));
+        if n == 0 {
+            h.run().await;
+        } else {
+            h.refresh(&w.id).await;
+        }
+    }
+    assert_eq!(h.engine.calls(), 7);
+    let d = h.digests(&w.id).await;
+    assert_eq!(d.len(), 5);
+    let newest = content::github_content(&content::IssueData {
+        number: 12,
+        ..issue("T", "v6")
+    })
+    .hash;
+    assert_eq!(d[0].0, newest);
+}
+
+#[tokio::test]
+async fn refresh_request_is_done_only_after_its_scope_finished() {
+    let db = mem_db().await;
+    let h = harness(&db);
+    h.github.set("org/app#1", Ok(issue("A", "a")));
+    h.github.set("org/app#2", Err(404));
+    let a = h.watch("org/app#1").await;
+    let b = h.watch("org/app#2").await;
+    let other = store::watch(&db, req("p2", &src("org/app#3"), false))
+        .await
+        .unwrap()
+        .watch;
+    h.run().await; // resolve all
+    let calls = h.engine.calls();
+    h.github.set("org/app#1", Ok(issue("A", "a2")));
+
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *h.engine.gate.lock().unwrap() = Some(gate.clone());
+    add_request(&db, "r1", "refresh", None, Some("p1")).await;
+    h.state.process_pending().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    // The AI call of watch a is blocked: the request must still be open.
+    assert_eq!(open_requests(&db).await, 1);
+    // A second pass does not start a duplicate refresh.
+    h.state.process_pending().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(h.engine.calls(), calls + 1);
+
+    gate.add_permits(10);
+    h.state.idle().await;
+    assert_eq!(open_requests(&db).await, 0);
+    // Failures are on the watch; the other project's watch was not touched.
+    assert_eq!(
+        h.get(&b.id).await.last_error.as_deref(),
+        Some("github_not_found")
+    );
+    assert_eq!(h.digests(&a.id).await.len(), 2);
+    let checked_other = h.get(&other.id).await.checked_at;
+    add_request(&db, "r2", "refresh", Some(&a.id), None).await;
+    h.run().await;
+    assert_eq!(h.get(&other.id).await.checked_at, checked_other);
+    assert_eq!(open_requests(&db).await, 0);
+}
+
+#[tokio::test]
+async fn at_most_three_refreshes_run_at_once_and_duplicates_wait() {
+    let db = mem_db().await;
+    let h = harness(&db);
+    let mut ids = Vec::new();
+    for n in 1..=6 {
+        let r = format!("org/app#{n}");
+        h.github.set(&r, Ok(issue("T", &format!("body {n}"))));
+        ids.push(h.watch(&r).await.id);
+    }
+    h.engine.delay_ms.store(80, Ordering::SeqCst);
+    let watches = store::scope_watches(&db, Some("p1"), None).await.unwrap();
+    let (started, _) = h.state.schedule(watches.clone());
+    assert_eq!(started, 6);
+    // Asking again while they run starts nothing new.
+    let (again, waits) = h.state.schedule(watches);
+    assert_eq!(again, 0);
+    PulseState::wait_all(waits).await;
+    h.state.idle().await;
+    assert_eq!(h.engine.max.load(Ordering::SeqCst), 3);
+    assert_eq!(h.engine.calls(), 6);
+    for id in &ids {
+        assert_eq!(h.get(id).await.resolve_status, "ready");
+    }
+    let p = h.events.progress.lock().unwrap().clone();
+    assert_eq!(p.first(), Some(&(0, 6)));
+    assert_eq!(p.last(), Some(&(6, 6)));
+}
+
+async fn seed_slack_thread(db: &Db, msgs: &[(&str, &str, &str)]) {
+    sqlx::query(
+        "INSERT INTO slack_threads (id, title, created_at, updated_at, team_id, channel_id, \
+         thread_ts, thread_url, fetch_status) VALUES ('thread-1', 'Deploy', '2026-01-01', \
+         '2026-01-01', 'T1', 'C0B83GHDTFG', '1789877283.026359', ?, 'ready')",
+    )
+    .bind(SLACK)
+    .execute(db)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO slack_identities (team_id, user_id, fetched_at) VALUES ('T1', 'UME', '2026-01-01')")
+        .execute(db)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO slack_users (team_id, user_id, display_name, fetched_at) VALUES \
+         ('T1', 'UME', 'Thai', '2026-01-01'), ('T1', 'UCUST', 'Khach', '2026-01-01')",
+    )
+    .execute(db)
+    .await
+    .unwrap();
+    for (seq, (ts, user, text)) in msgs.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO slack_messages (thread_id, ts, seq, user_id, text_raw, src_hash) \
+             VALUES ('thread-1', ?, ?, ?, ?, 'h')",
+        )
+        .bind(ts)
+        .bind(seq as i64)
+        .bind(user)
+        .bind(text)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn slack_watch_uses_the_ball_rule_over_the_ai() {
+    let db = mem_db().await;
+    seed_slack_thread(
+        &db,
+        &[
+            ("1789877283.026359", "UME", "Báo giá đây"),
+            ("1789877300.000100", "UCUST", "Khi nào demo được?"),
+        ],
+    )
+    .await;
+    let h = harness(&db);
+    let w = h.watch(SLACK).await;
+    h.run().await;
+    assert_eq!(
+        *h.slack.refreshed.lock().unwrap(),
+        vec!["thread-1".to_string()]
+    );
+    let got = h.get(&w.id).await;
+    assert_eq!(got.resolve_status, "ready");
+    assert_eq!(got.slack_thread_id.as_deref(), Some("thread-1"));
+    assert_eq!(got.title.as_deref(), Some("Deploy"));
+    let (ball, since): (String, Option<String>) =
+        sqlx::query_as("SELECT ball, ball_since FROM pulse_digests WHERE watch_id = ?")
+            .bind(&w.id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    // The AI said "customer"; the last message is the customer's → mine.
+    assert_eq!(ball, "me");
+    assert_eq!(since.as_deref(), Some("2026-09-20T04:08:20.000Z"));
+    let prompt = h.engine.prompts.lock().unwrap()[0].clone();
+    assert!(prompt.contains("The user is: Thai (their lines are marked (me))"));
+    assert!(prompt.contains("Thai(me): Báo giá đây"));
+    assert!(prompt.contains("Khach(other): Khi nào demo được?"));
+
+    // Slack fetch failure → last_error with the Slack code, digest kept.
+    *h.slack.refresh_fail.lock().unwrap() = Some("no_token".into());
+    h.refresh(&w.id).await;
+    let got = h.get(&w.id).await;
+    assert_eq!(
+        (got.resolve_status.as_str(), got.last_error.as_deref()),
+        ("ready", Some("no_token"))
+    );
+    assert_eq!(h.digests(&w.id).await.len(), 1);
+}
+
+#[tokio::test]
+async fn slack_capture_failure_on_resolve_is_an_error() {
+    let db = mem_db().await;
+    let h = harness(&db);
+    *h.slack.fail.lock().unwrap() = Some("no_token".into());
+    let w = h.watch(SLACK).await;
+    h.run().await;
+    let got = h.get(&w.id).await;
+    assert_eq!(
+        (got.resolve_status.as_str(), got.last_error.as_deref()),
+        ("error", Some("no_token"))
+    );
+    assert!(h.slack.refreshed.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn transferred_issue_follows_its_new_repo() {
+    let db = mem_db().await;
+    let h = harness(&db);
+    let mut i = issue("Moved", "x");
+    i.owner = "NewOrg".into();
+    i.repo = "New-App".into();
+    h.github.set(ISSUE, Ok(i));
+    let w = h.watch(ISSUE).await;
+    h.run().await;
+    let got = h.get(&w.id).await;
+    assert_eq!(got.source_ref, "neworg/new-app#12");
+    assert_eq!(
+        got.source_url,
+        "https://github.com/neworg/new-app/issues/12"
+    );
+}
+
+#[tokio::test]
+async fn pull_request_number_is_refused_on_resolve() {
+    let db = mem_db().await;
+    let h = harness(&db);
+    let mut i = issue("A PR", "x");
+    i.is_pull_request = true;
+    h.github.set(ISSUE, Ok(i));
+    let w = h.watch(ISSUE).await;
+    h.run().await;
+    let got = h.get(&w.id).await;
+    assert_eq!(
+        (got.resolve_status.as_str(), got.last_error.as_deref()),
+        ("error", Some("invalid_source"))
+    );
+}
+
+#[tokio::test]
+async fn moved_while_resolving_keeps_the_watch_pending_and_unwatched_is_skipped() {
+    let db = mem_db().await;
+    let h = harness(&db);
+    h.github.set(ISSUE, Ok(issue("T", "x")));
+    let w = h.watch(ISSUE).await;
+    // A result computed for the old project does not resolve the moved watch.
+    let moved = store::move_watch(&db, &w.id, "p2").await.unwrap();
+    let stale = store::Watch {
+        project_id: "p1".into(),
+        ..moved.clone()
+    };
+    store::finish_refresh(
+        &db,
+        &stale,
+        store::Finish {
+            resolve_status: Some("ready"),
+            resolving: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(h.get(&w.id).await.resolve_status, "pending");
+
+    // An unwatched watch is not refreshed.
+    store::unwatch(&db, &w.id).await.unwrap();
+    h.refresh(&w.id).await;
+    assert_eq!(h.github.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn external_watch_edits_emit_a_reload_event() {
+    let db = mem_db().await;
+    let h = harness(&db);
+    h.github.set(ISSUE, Ok(issue("T", "x")));
+    let w = h.watch(ISSUE).await;
+    h.run().await;
+    let before = h.events.changed.lock().unwrap().len();
+    h.state.process_pending().await;
+    assert_eq!(
+        h.events.changed.lock().unwrap().len(),
+        before,
+        "nothing new"
+    );
+    sqlx::query("UPDATE pulse_watches SET active = 0, updated_at = '2099-01-01T00:00:00+00:00' WHERE id = ?")
+        .bind(&w.id)
+        .execute(&db)
+        .await
+        .unwrap();
+    h.state.process_pending().await;
+    assert_eq!(h.events.changed.lock().unwrap().last(), Some(&Vec::new()));
 }

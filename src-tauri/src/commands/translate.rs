@@ -360,6 +360,19 @@ pub async fn load_style(db: &Db) -> Result<String, String> {
     Ok(load_settings(db).await?.style)
 }
 
+/// `engine:model` the warm sidecar runs with (claude without a model uses
+/// haiku), recorded with what it produced (e.g. Pulse digests).
+pub async fn load_engine_model(db: &Db) -> Result<String, String> {
+    let s = load_settings(db).await?;
+    let engine = s.engine.trim().to_ascii_lowercase();
+    let model = match s.model.trim() {
+        "" if engine != "codex" => "haiku",
+        "" => "default",
+        m => m,
+    };
+    Ok(format!("{engine}:{model}"))
+}
+
 /// The user's `translate_target_lang` setting (`vi` when unset).
 pub async fn load_default_target(db: &Db) -> Result<String, String> {
     Ok(load_settings(db).await?.default_target)

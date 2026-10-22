@@ -160,7 +160,7 @@ async fn gitlab_client_for(
 /// - accounts GitHub itself marks with `type == "Bot"` (GitHub Apps)
 /// - login suffix `[bot]` (e.g. `dependabot[bot]`, `coderabbitai[bot]`)
 /// - well-known review bots that post via PAT under a normal user account
-fn is_bot_user(login: &str, user_type: &str) -> bool {
+pub(crate) fn is_bot_user(login: &str, user_type: &str) -> bool {
     if user_type.eq_ignore_ascii_case("Bot") {
         return true;
     }
@@ -1553,14 +1553,14 @@ pub async fn resolve_project_board(
 }
 
 #[derive(Default)]
-struct BoardMappings {
-    board_id: Option<String>,
+pub(crate) struct BoardMappings {
+    pub(crate) board_id: Option<String>,
     start_field_id: Option<String>,
     deadline_field_id: Option<String>,
     status_field_id: Option<String>,
 }
 
-fn parse_board_mappings(json: &str) -> BoardMappings {
+pub(crate) fn parse_board_mappings(json: &str) -> BoardMappings {
     let v: serde_json::Value = serde_json::from_str(json).unwrap_or(serde_json::Value::Null);
     let get = |k: &str| v.get(k).and_then(|x| x.as_str()).map(|s| s.to_string());
     BoardMappings {
@@ -1573,10 +1573,10 @@ fn parse_board_mappings(json: &str) -> BoardMappings {
 
 /// Board enrichment value keyed by `owner/repo#number` (lowercased).
 #[derive(Default, Clone)]
-struct BoardItemFields {
-    start: Option<String>,
-    deadline: Option<String>,
-    status: Option<String>,
+pub(crate) struct BoardItemFields {
+    pub(crate) start: Option<String>,
+    pub(crate) deadline: Option<String>,
+    pub(crate) status: Option<String>,
     status_color: Option<String>,
 }
 
@@ -1620,6 +1620,62 @@ async fn fetch_status_colors(
     map
 }
 
+/// Start / Deadline / Status of one board item (`fieldValues` of a
+/// `ProjectV2Item` node) per the project's field mappings.
+pub(crate) fn board_item_fields(
+    item: &serde_json::Value,
+    m: &BoardMappings,
+    status_colors: &std::collections::HashMap<String, String>,
+) -> BoardItemFields {
+    let mut fields = BoardItemFields::default();
+    if let Some(fv_nodes) = item.pointer("/fieldValues/nodes").and_then(|n| n.as_array()) {
+        for fv in fv_nodes {
+            let field_id = fv.pointer("/field/id").and_then(|v| v.as_str());
+            let Some(field_id) = field_id else { continue };
+            let typename = fv.get("__typename").and_then(|t| t.as_str()).unwrap_or("");
+            match typename {
+                "ProjectV2ItemFieldDateValue" => {
+                    let date = fv.get("date").and_then(|d| d.as_str()).map(|s| {
+                        // Date scalar is YYYY-MM-DD; keep only the date part.
+                        s.split('T').next().unwrap_or(s).to_string()
+                    });
+                    if Some(field_id) == m.start_field_id.as_deref() {
+                        fields.start = date.clone();
+                    }
+                    if Some(field_id) == m.deadline_field_id.as_deref() {
+                        fields.deadline = date;
+                    }
+                }
+                "ProjectV2ItemFieldSingleSelectValue" => {
+                    if Some(field_id) == m.status_field_id.as_deref() {
+                        let name = fv.get("name").and_then(|n| n.as_str()).map(|s| s.to_string());
+                        fields.status_color = name
+                            .as_ref()
+                            .and_then(|n| status_colors.get(&n.to_lowercase()).cloned());
+                        fields.status = name;
+                    }
+                }
+                "ProjectV2ItemFieldIterationValue" => {
+                    let start = fv.get("startDate").and_then(|d| d.as_str());
+                    let duration = fv.get("duration").and_then(|d| d.as_i64());
+                    if let Some(start) = start {
+                        if Some(field_id) == m.start_field_id.as_deref() {
+                            fields.start = Some(start.to_string());
+                        }
+                        if Some(field_id) == m.deadline_field_id.as_deref() {
+                            fields.deadline = duration
+                                .and_then(|d| add_days(start, d))
+                                .or_else(|| Some(start.to_string()));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    fields
+}
+
 /// Fetch all board items and build a map of field values keyed by issue.
 async fn fetch_board_item_map(
     client: &octocrab::Octocrab,
@@ -1657,52 +1713,7 @@ async fn fetch_board_item_map(
                     .and_then(|s| s.as_str());
                 let (Some(number), Some(repo), Some(owner)) = (number, repo, owner) else { continue };
                 let key = format!("{}/{}#{}", owner.to_lowercase(), repo.to_lowercase(), number);
-                let mut fields = BoardItemFields::default();
-                if let Some(fv_nodes) = item.pointer("/fieldValues/nodes").and_then(|n| n.as_array()) {
-                    for fv in fv_nodes {
-                        let field_id = fv.pointer("/field/id").and_then(|v| v.as_str());
-                        let Some(field_id) = field_id else { continue };
-                        let typename = fv.get("__typename").and_then(|t| t.as_str()).unwrap_or("");
-                        match typename {
-                            "ProjectV2ItemFieldDateValue" => {
-                                let date = fv.get("date").and_then(|d| d.as_str()).map(|s| {
-                                    // Date scalar is YYYY-MM-DD; keep only the date part.
-                                    s.split('T').next().unwrap_or(s).to_string()
-                                });
-                                if Some(field_id) == m.start_field_id.as_deref() {
-                                    fields.start = date.clone();
-                                }
-                                if Some(field_id) == m.deadline_field_id.as_deref() {
-                                    fields.deadline = date;
-                                }
-                            }
-                            "ProjectV2ItemFieldSingleSelectValue" => {
-                                if Some(field_id) == m.status_field_id.as_deref() {
-                                    let name = fv.get("name").and_then(|n| n.as_str()).map(|s| s.to_string());
-                                    fields.status_color = name
-                                        .as_ref()
-                                        .and_then(|n| status_colors.get(&n.to_lowercase()).cloned());
-                                    fields.status = name;
-                                }
-                            }
-                            "ProjectV2ItemFieldIterationValue" => {
-                                let start = fv.get("startDate").and_then(|d| d.as_str());
-                                let duration = fv.get("duration").and_then(|d| d.as_i64());
-                                if let Some(start) = start {
-                                    if Some(field_id) == m.start_field_id.as_deref() {
-                                        fields.start = Some(start.to_string());
-                                    }
-                                    if Some(field_id) == m.deadline_field_id.as_deref() {
-                                        fields.deadline = duration
-                                            .and_then(|d| add_days(start, d))
-                                            .or_else(|| Some(start.to_string()));
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
+                let fields = board_item_fields(item, m, status_colors);
                 map.insert(key, fields);
             }
         }
