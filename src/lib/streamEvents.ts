@@ -170,8 +170,9 @@ export type StreamEntry =
       /** `claude_code_version` — decides whether usage totals carry over resumes. */
       cliVersion?: string
     }
-  | { kind: 'text'; text: string }
-  | { kind: 'thinking'; text: string }
+  /** `streaming`: still being assembled from partial deltas (live only). */
+  | { kind: 'text'; text: string; streaming?: boolean }
+  | { kind: 'thinking'; text: string; streaming?: boolean }
   | { kind: 'user'; text: string; images?: ImageAttachment[]; ideContext?: IdeContextItem[] }
   | { kind: 'ide-context'; items: IdeContextItem[] }
   | { kind: 'compact'; summary: string }
@@ -249,6 +250,74 @@ function parseImageBlock(b: Record<string, unknown>): ImageAttachment | null {
   return null
 }
 
+// ── Partial messages (`includePartialMessages`) ──────────────────────────────
+// Live runs receive `stream_event`s wrapping the Anthropic streaming events.
+// A text/thinking `content_block_start` opens a `streaming` entry, its deltas
+// grow it, and the complete `assistant` message that follows replaces it in
+// place (see `partialSlot`). Deltas are never persisted, so a saved log parses
+// exactly as before. Only the main thread streams: subagent blocks interleave
+// with it and keep arriving whole.
+
+type PartialKind = 'text' | 'thinking'
+
+function applyPartialEvent(entries: StreamEntry[], e: Record<string, unknown>): void {
+  if (e.parent_tool_use_id != null) return
+  const ev = e.event as Record<string, unknown> | undefined
+  if (!ev) return
+  if (ev.type === 'content_block_start') {
+    const cb = ev.content_block as Record<string, unknown> | undefined
+    if (cb?.type === 'text') entries.push({ kind: 'text', text: String(cb.text ?? ''), streaming: true })
+    else if (cb?.type === 'thinking') entries.push({ kind: 'thinking', text: String(cb.thinking ?? ''), streaming: true })
+    return
+  }
+  if (ev.type !== 'content_block_delta') return
+  const d = ev.delta as Record<string, unknown> | undefined
+  const [kind, chunk]: [PartialKind, unknown] | [null, null] =
+    d?.type === 'text_delta' ? ['text', d.text]
+      : d?.type === 'thinking_delta' ? ['thinking', d.thinking]
+        : [null, null]
+  if (!kind || typeof chunk !== 'string' || !chunk) return
+  // Deltas belong to the block opened last. If there is none (the view
+  // attached mid-block), drop them: the complete message still arrives.
+  const open = streamingIndices(entries)
+  const i = open[open.length - 1]
+  const target = i === undefined ? undefined : entries[i]
+  if (target?.kind !== kind) return
+  // New object, not a mutation: StreamLog's v-memo keys on entry identity.
+  entries[i] = { ...target, text: target.text + chunk }
+}
+
+/** How far back streaming entries are looked for: a turn's open blocks sit at
+ *  the tail, give or take a few entries pushed meanwhile (a follow-up, logs). */
+const PARTIAL_LOOKBACK = 50
+
+/** Indices (ascending) of the entries still being streamed. */
+function streamingIndices(entries: StreamEntry[]): number[] {
+  const out: number[] = []
+  for (let i = entries.length - 1; i >= Math.max(0, entries.length - PARTIAL_LOOKBACK); i--) {
+    const en = entries[i]
+    if ((en.kind === 'text' || en.kind === 'thinking') && en.streaming) out.unshift(i)
+  }
+  return out
+}
+
+/**
+ * Index of the streaming entry a complete `kind` block should replace: the
+ * earliest open one of that kind (a message's blocks stream in order, then
+ * arrive whole in the same order). -1 when the block wasn't streamed.
+ */
+function partialSlot(entries: StreamEntry[], kind: PartialKind): number {
+  return streamingIndices(entries).find(i => entries[i].kind === kind) ?? -1
+}
+
+/** Settle entries left open by a turn that ended without its complete block. */
+export function settlePartials(entries: StreamEntry[]): void {
+  for (const i of streamingIndices(entries)) {
+    const en = entries[i] as { kind: PartialKind; text: string }
+    entries[i] = { kind: en.kind, text: en.text }
+  }
+}
+
 export function applyStreamEvent(
   state: Pick<StreamState, 'entries' | 'toolIndex'>,
   evt: unknown,
@@ -270,6 +339,11 @@ export function applyStreamEvent(
     return
   }
 
+  if (type === 'stream_event') {
+    applyPartialEvent(state.entries, e)
+    return
+  }
+
   if (type === 'assistant') {
     const message = e.message as Record<string, unknown> | undefined
     const content = (message?.content ?? []) as unknown[]
@@ -287,13 +361,18 @@ export function applyStreamEvent(
         })
       }
     }
+    const mainThread = e.parent_tool_use_id == null
     for (const block of content) {
       if (!block || typeof block !== 'object') continue
       const b = block as Record<string, unknown>
-      if (b.type === 'text') {
-        state.entries.push({ kind: 'text', text: String(b.text ?? '') })
-      } else if (b.type === 'thinking') {
-        state.entries.push({ kind: 'thinking', text: String(b.thinking ?? '') })
+      if (b.type === 'text' || b.type === 'thinking') {
+        const entry: StreamEntry = b.type === 'text'
+          ? { kind: 'text', text: String(b.text ?? '') }
+          : { kind: 'thinking', text: String(b.thinking ?? '') }
+        // The complete block replaces the entry its deltas built, in place.
+        const slot = mainThread ? partialSlot(state.entries, entry.kind) : -1
+        if (slot >= 0) state.entries[slot] = entry
+        else state.entries.push(entry)
       } else if (b.type === 'tool_use') {
         const id = String(b.id ?? '')
         const idx = state.entries.length
@@ -385,6 +464,9 @@ export function applyStreamEvent(
   }
 
   if (type === 'result') {
+    // A turn cut short (interrupt, error) never sends the complete block: keep
+    // what was streamed, but as a settled entry.
+    settlePartials(state.entries)
     // Claude's SDK echoes the final assistant message in `result`, which we
     // already rendered as a `text` entry — drop it here so the "Completed"
     // summary doesn't duplicate that content. (Codex sends no result text.)
