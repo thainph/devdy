@@ -132,6 +132,33 @@ function handleCommandMessage(state: Pick<StreamState, 'entries'>, text: string)
     .trim()
 }
 
+const SKILL_BODY_RE = /^Base directory for this skill:\s*(\S+)/
+const SESSION_NUDGE_PREFIX = '[session] '
+
+/**
+ * Classify a `type: 'user'` message that the harness injected rather than the
+ * user typing it: a loaded skill body (`isSynthetic` on the live stream,
+ * `isMeta` in transcripts), the conductor's worker-finished nudge, or any other
+ * meta message. Returns null for a real user turn. Command wrappers are left to
+ * `handleCommandMessage`, which already renders them as slim markers.
+ */
+function classifyInjected(
+  e: Record<string, unknown>,
+  text: string,
+): Extract<StreamEntry, { kind: 'injected' }> | null {
+  if (text.startsWith(SESSION_NUDGE_PREFIX)) {
+    return { kind: 'injected', source: 'session', text: text.slice(SESSION_NUDGE_PREFIX.length).trim() }
+  }
+  if (e.isSynthetic !== true && e.isMeta !== true) return null
+  if (text.includes('<command-name>') || text.includes('<local-command-')) return null
+  const skill = SKILL_BODY_RE.exec(text)
+  if (skill) {
+    const name = skill[1].replace(/\/+$/, '').split('/').pop() || skill[1]
+    return { kind: 'injected', source: 'skill', label: name, text }
+  }
+  return { kind: 'injected', source: 'system', text }
+}
+
 export type StreamEntry =
   | {
       kind: 'system'
@@ -149,6 +176,8 @@ export type StreamEntry =
   | { kind: 'ide-context'; items: IdeContextItem[] }
   | { kind: 'compact'; summary: string }
   | { kind: 'command'; name: string; args?: string; stdout?: string }
+  /** Harness-injected user message (skill body, conductor nudge, meta) — collapsed by default. */
+  | { kind: 'injected'; source: 'skill' | 'session' | 'system'; label?: string; text: string }
   | {
       kind: 'tool'
       id: string
@@ -299,6 +328,11 @@ export function applyStreamEvent(
     if (typeof rawContent === 'string') {
       const text = rawContent.trim()
       if (!text) return
+      const injected = classifyInjected(e, text)
+      if (injected) {
+        state.entries.push(injected)
+        return
+      }
       const rest = handleCommandMessage(state, text)
       if (rest !== null) {
         if (rest) finalizeUserEntry(state, rest)
@@ -336,6 +370,11 @@ export function applyStreamEvent(
       }
     }
     if (userText) {
+      const injected = classifyInjected(e, userText)
+      if (injected) {
+        state.entries.push(injected)
+        return
+      }
       const rest = handleCommandMessage(state, userText)
       if (rest !== null) userText = rest
     }
@@ -616,6 +655,9 @@ export function entriesToPlainText(entries: StreamEntry[]): string {
         parts.push(e.stdout ? `${head}\n  → ${e.stdout}` : head)
         break
       }
+      case 'injected':
+        parts.push(`⋯ ${e.source}${e.label ? `: ${e.label}` : ''}`)
+        break
       case 'thinking':
         parts.push(`(thinking) ${e.text}`)
         break

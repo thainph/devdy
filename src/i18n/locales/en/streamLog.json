@@ -5,6 +5,13 @@
   "hideSummary": "Hide summary",
   "showSummary": "Show summary",
   "contextCompacted": "Context compacted",
+  "showInjected": "Show content",
+  "hideInjected": "Hide content",
+  "injected": {
+    "skill": "Skill loaded",
+    "session": "Worker finished a turn",
+    "system": "System message"
+  },
   "thinking": "thinking",
   "openFile": "Open {path}",
   "moreFiles": "+{count} more",

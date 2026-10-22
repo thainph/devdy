@@ -5,6 +5,13 @@
   "hideSummary": "Ẩn tóm tắt",
   "showSummary": "Hiện tóm tắt",
   "contextCompacted": "Đã nén ngữ cảnh",
+  "showInjected": "Xem nội dung",
+  "hideInjected": "Ẩn nội dung",
+  "injected": {
+    "skill": "Đã nạp skill",
+    "session": "Worker đã xong lượt",
+    "system": "Tin nhắn hệ thống"
+  },
   "thinking": "đang nghĩ",
   "openFile": "Mở {path}",
   "moreFiles": "+{count} file khác",
