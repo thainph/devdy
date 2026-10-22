@@ -695,6 +695,18 @@ pub fn run() {
                     }
                     reg.clear();
                 });
+                // The warm translate / Slack / Pulse digest sessions too.
+                let translate = app_handle.state::<TranslateState>().inner().clone();
+                let slack = app_handle
+                    .state::<slack_threads::SlackTranslateState>()
+                    .inner()
+                    .clone();
+                let pulse = app_handle.state::<pulse::PulseState>().inner().clone();
+                tauri::async_runtime::block_on(async move {
+                    translate.shutdown().await;
+                    slack.0.shutdown().await;
+                    pulse.shutdown().await;
+                });
             };
 
             match event {

@@ -147,6 +147,8 @@ pub trait DigestEngine: Send + Sync {
     async fn complete(&self, prompt: String) -> Result<String, String>;
     /// `engine:model`, stored with the digest.
     async fn model(&self) -> Option<String>;
+    /// Stop the engine's warm session (app exit).
+    async fn shutdown(&self) {}
 }
 
 /// The warm sidecar engine Slack translation uses (`translate::submit_prompt`),
@@ -166,6 +168,10 @@ impl DigestEngine for SidecarDigestEngine {
         crate::commands::translate::load_engine_model(&self.0.db)
             .await
             .ok()
+    }
+
+    async fn shutdown(&self) {
+        self.0.state.0.shutdown().await;
     }
 }
 
@@ -276,6 +282,11 @@ impl PulseState {
 
     pub fn db(&self) -> &Db {
         &self.inner.db
+    }
+
+    /// Kill the digest engine's warm session (app exit).
+    pub async fn shutdown(&self) {
+        self.inner.svc.engine.shutdown().await;
     }
 
     pub fn emit_changed(&self, watch_ids: &[String]) {
@@ -498,5 +509,6 @@ impl PulseState {
     }
 }
 
-/// Warm digest session recycled after this many digests.
-const DIGEST_RECYCLE_AFTER: u32 = 4;
+/// A fresh engine session per digest: one source's content must never leak
+/// into another's summary through a shared conversation.
+const DIGEST_RECYCLE_AFTER: u32 = 1;
