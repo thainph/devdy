@@ -6,6 +6,7 @@ import {
   extractContextTokens,
   extractTurnTotalTokens,
   isCompactBoundary,
+  settlePartials,
   type StreamEntry,
   type ImageAttachment,
 } from '@/lib/streamEvents'
@@ -457,6 +458,7 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
     fns.push(
       await listen<{ run_id: string; status: string }>(`run:done:${runId}`, (event) => {
         flushEvents() // drain any events still buffered this frame before stopping
+        settlePartials(s.entries) // a sidecar that died mid-block sent no `result`
         activeRunIds.delete(runId)
         seenPermissionIds.delete(runId)
         s.status = event.payload.status
