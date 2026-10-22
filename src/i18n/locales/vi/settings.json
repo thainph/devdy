@@ -387,7 +387,7 @@
     "validate": "Kiểm tra",
     "valid": "Hợp lệ",
     "login": "Đăng nhập",
-    "loginExpired": "Chưa đăng nhập hoặc phiên Azure đã hết hạn. Bấm \"Đăng nhập\" để đăng nhập lại.",
+    "loginExpired": "Chưa đăng nhập, phiên Azure đã hết hạn, hoặc phiên chưa qua MFA (Azure chặn mọi thao tác ghi). Bấm \"Đăng nhập\" để đăng nhập lại và hoàn tất MFA.",
     "loggingIn": "Hãy hoàn tất đăng nhập trên trình duyệt…",
     "lastValidated": "Đã kiểm tra lúc {time}",
     "neverValidated": "Chưa kiểm tra lần nào",
