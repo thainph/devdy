@@ -155,7 +155,10 @@
     "translating": "Translating…",
     "stale": "Source changed — waiting for a new translation",
     "retry": "Translate again",
+    "placeholderRaw": "Write a reply (sent as-is)…",
+    "autoTranslate": "Auto-translate",
     "hint": "Translated into English when you stop typing · ⌘↵ to send",
+    "hintRaw": "Sent as-is, no translation · ⌘↵ to send",
     "send": "Send",
     "sent": "Reply posted to Slack",
     "sendFailed": "Could not post the reply: {error}"
