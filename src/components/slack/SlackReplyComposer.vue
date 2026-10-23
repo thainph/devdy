@@ -16,6 +16,9 @@ const drafts = new Map<string, Draft>()
 // and only that English text is posted when the user presses Send. A draft
 // whose translation is stale (source edited since) cannot be sent.
 //
+// Auto-translate can be switched off (remembered in localStorage); the source
+// text is then posted verbatim.
+//
 // Drafts are kept per thread for the lifetime of the window.
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -29,6 +32,7 @@ const props = defineProps<{ threadId: string }>()
 
 /** Typing pause before the draft is translated. */
 const TRANSLATE_DELAY_MS = 900
+const AUTO_TRANSLATE_KEY = 'devdy.slackReply.autoTranslate'
 
 const { t } = useI18n()
 const { toast } = useToast()
@@ -41,6 +45,7 @@ const translatedFrom = ref<string | null>(null)
 const translating = ref(false)
 const translateError = ref<string | null>(null)
 const sending = ref(false)
+const autoTranslate = ref(localStorage.getItem(AUTO_TRANSLATE_KEY) !== '0')
 
 let timer: ReturnType<typeof setTimeout> | null = null
 /** Bumped per request so a late answer for an older draft is dropped. */
@@ -48,9 +53,25 @@ let requestSeq = 0
 
 const trimmed = computed(() => source.value.trim())
 const stale = computed(() => !!trimmed.value && translatedFrom.value !== trimmed.value)
-const canSend = computed(
-  () => !!english.value.trim() && !stale.value && !translating.value && !sending.value,
+const canSend = computed(() =>
+  autoTranslate.value
+    ? !!english.value.trim() && !stale.value && !translating.value && !sending.value
+    : !!trimmed.value && !sending.value,
 )
+
+function toggleAutoTranslate() {
+  autoTranslate.value = !autoTranslate.value
+  localStorage.setItem(AUTO_TRANSLATE_KEY, autoTranslate.value ? '1' : '0')
+  if (autoTranslate.value) {
+    translate()
+  } else {
+    // Drop any pending/in-flight translation.
+    if (timer) clearTimeout(timer)
+    requestSeq++
+    translating.value = false
+    translateError.value = null
+  }
+}
 
 function save(id: string) {
   if (source.value || english.value) {
@@ -91,6 +112,7 @@ onBeforeUnmount(() => {
 
 async function translate() {
   if (timer) clearTimeout(timer)
+  if (!autoTranslate.value) return
   const text = trimmed.value
   if (!text) {
     english.value = ''
@@ -119,7 +141,7 @@ async function translate() {
 function onSourceInput(value: string) {
   source.value = value
   if (timer) clearTimeout(timer)
-  timer = setTimeout(translate, TRANSLATE_DELAY_MS)
+  if (autoTranslate.value) timer = setTimeout(translate, TRANSLATE_DELAY_MS)
 }
 
 async function send() {
@@ -127,7 +149,7 @@ async function send() {
   const id = props.threadId
   sending.value = true
   try {
-    await store.postReply(id, english.value.trim())
+    await store.postReply(id, autoTranslate.value ? english.value.trim() : trimmed.value)
     toast.success(t('slackThread.reply.sent'))
     drafts.delete(id)
     if (id === props.threadId) load(id)
@@ -142,7 +164,7 @@ async function send() {
 function onKeydown(e: KeyboardEvent) {
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
     e.preventDefault()
-    if (stale.value) translate()
+    if (autoTranslate.value && stale.value) translate()
     else send()
   }
 }
@@ -154,13 +176,15 @@ function onKeydown(e: KeyboardEvent) {
       :model-value="source"
       rows="2"
       class="max-h-40 min-h-[3.25rem]"
-      :placeholder="t('slackThread.reply.placeholder')"
+      :placeholder="
+        autoTranslate ? t('slackThread.reply.placeholder') : t('slackThread.reply.placeholderRaw')
+      "
       :disabled="sending"
       @update:model-value="onSourceInput"
       @blur="translate"
     />
 
-    <div v-if="trimmed || english" class="mt-2 space-y-1">
+    <div v-if="autoTranslate && (trimmed || english)" class="mt-2 space-y-1">
       <div class="flex items-center gap-1.5 text-[11px] text-muted-foreground">
         <Languages class="h-3.5 w-3.5" />
         <span class="font-medium">{{ t('slackThread.reply.englishLabel') }}</span>
@@ -184,7 +208,30 @@ function onKeydown(e: KeyboardEvent) {
     </div>
 
     <div class="mt-2 flex items-center justify-between gap-2">
-      <span class="text-[11px] text-muted-foreground">{{ t('slackThread.reply.hint') }}</span>
+      <div class="flex min-w-0 items-center gap-3">
+        <button
+          type="button"
+          role="switch"
+          :aria-checked="autoTranslate"
+          class="flex shrink-0 items-center gap-1.5 rounded-md text-[11px] text-muted-foreground cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          :disabled="sending"
+          @click="toggleAutoTranslate"
+        >
+          <span
+            class="relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors"
+            :class="autoTranslate ? 'bg-primary' : 'bg-muted'"
+          >
+            <span
+              class="inline-block h-3 w-3 rounded-full bg-white shadow transition-transform"
+              :class="autoTranslate ? 'translate-x-3.5' : 'translate-x-0.5'"
+            />
+          </span>
+          {{ t('slackThread.reply.autoTranslate') }}
+        </button>
+        <span class="truncate text-[11px] text-muted-foreground">
+          {{ autoTranslate ? t('slackThread.reply.hint') : t('slackThread.reply.hintRaw') }}
+        </span>
+      </div>
       <Button size="sm" :disabled="!canSend" @click="send">
         <Loader2 v-if="sending" class="h-3.5 w-3.5 animate-spin" />
         <SendHorizontal v-else class="h-3.5 w-3.5" />

@@ -155,7 +155,10 @@
     "translating": "Đang dịch…",
     "stale": "Bản gốc đã đổi — chờ dịch lại",
     "retry": "Dịch lại",
+    "placeholderRaw": "Viết phản hồi (gửi nguyên văn)…",
+    "autoTranslate": "Tự dịch",
     "hint": "Tự dịch sang tiếng Anh khi bạn ngừng gõ · ⌘↵ để gửi",
+    "hintRaw": "Gửi nguyên văn, không dịch · ⌘↵ để gửi",
     "send": "Gửi",
     "sent": "Đã gửi phản hồi lên Slack",
     "sendFailed": "Không gửi được phản hồi: {error}"
