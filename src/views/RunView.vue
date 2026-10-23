@@ -1302,12 +1302,31 @@ function restoreScrollAnchor() {
 // width/height change restores the reading position. The output appears and
 // disappears via v-if, so we track the ref rather than observing once at mount.
 let outputRO: ResizeObserver | null = null
+// Streaming text grows the last entry in place (and StreamLog reveals it over
+// several frames), so the entry count the watcher below keys on stays flat.
+// Follow the content's actual height instead; the child list is re-observed
+// when the output switches between StreamLog and the legacy markdown view.
+let contentRO: ResizeObserver | null = null
+let contentMO: MutationObserver | null = null
 watch(outputEl, (el) => {
   outputRO?.disconnect()
   outputRO = null
+  contentRO?.disconnect()
+  contentRO = null
+  contentMO?.disconnect()
+  contentMO = null
   if (el) {
     outputRO = new ResizeObserver(() => restoreScrollAnchor())
     outputRO.observe(el)
+    const ro = new ResizeObserver(() => keepPinnedToBottom())
+    const observeChildren = () => {
+      ro.disconnect()
+      for (const child of Array.from(el.children)) ro.observe(child)
+    }
+    observeChildren()
+    contentRO = ro
+    contentMO = new MutationObserver(observeChildren)
+    contentMO.observe(el, { childList: true })
   }
 })
 
@@ -1902,6 +1921,10 @@ onUnmounted(() => {
   if (isResizing.value) stopResize()
   outputRO?.disconnect()
   outputRO = null
+  contentRO?.disconnect()
+  contentRO = null
+  contentMO?.disconnect()
+  contentMO = null
   if (scrollSettleFrame) {
     cancelAnimationFrame(scrollSettleFrame)
     scrollSettleFrame = 0
