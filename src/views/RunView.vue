@@ -65,6 +65,7 @@ import {
   shortModelId,
 } from '@/lib/runDisplay'
 import FileTree from '@/components/FileTree.vue'
+import { nativeDropPoint, treeDropTargetAt } from '@/lib/fileTreeDnd'
 import ConductorWorkerPanel from '@/components/conductor/ConductorWorkerPanel.vue'
 import { useConductorStore } from '@/stores/conductor'
 import { Button, Input, Badge, Modal, DropdownMenu, DropdownItem, DropdownSeparator } from '@/components/ui'
@@ -1839,16 +1840,22 @@ onMounted(async () => {
   // Drag-and-drop files into the composer. Tauri intercepts OS file drops at the
   // native layer (dragDropEnabled defaults on), so the webview's HTML5 `drop`
   // carries no paths — we must use the native event, which gives absolute paths.
+  // Drops landing on the file explorer belong to it (copied into the folder
+  // under the cursor), so the composer ignores those positions.
   dragDropUnlisten = await getCurrentWebview().onDragDropEvent((event) => {
     if (!composerVisible.value) return
-    const type = event.payload.type
-    if (type === 'enter' || type === 'over') {
-      isDraggingFile.value = true
-    } else if (type === 'leave') {
+    const p = event.payload
+    const overTree = p.type !== 'leave' && (() => {
+      const { x, y } = nativeDropPoint(p.position)
+      return treeDropTargetAt(x, y) !== null
+    })()
+    if (p.type === 'enter' || p.type === 'over') {
+      isDraggingFile.value = !overTree
+    } else if (p.type === 'leave') {
       isDraggingFile.value = false
-    } else if (type === 'drop') {
+    } else if (p.type === 'drop') {
       isDraggingFile.value = false
-      void addDroppedPaths(event.payload.paths)
+      if (!overTree) void addDroppedPaths(p.paths)
     }
   })
 

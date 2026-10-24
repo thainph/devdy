@@ -68,6 +68,7 @@
     "toastFolderCreated": "Folder created",
     "toastMovedToTrash": "Moved to Trash",
     "toastPasted": "Pasted",
+    "toastImported": "Added {count} item(s)",
     "toastDuplicated": "Duplicated",
     "toastPathCopied": "Path copied",
     "toastRelativePathCopied": "Relative path copied",

@@ -35,7 +35,8 @@ use commands::file_tree_watcher::{
     set_file_tree_watch, stop_file_tree_watch, FileTreeWatchers,
 };
 use commands::files::{
-    copy_entry, create_dir, create_file, delete_entry, list_dir, list_project_files, move_entry,
+    copy_entry, create_dir, create_file, delete_entry, import_external_entries, list_dir,
+    list_project_files, move_entry, start_file_drag,
     read_file_base64, read_project_file, rename_entry, write_project_file,
 };
 use commands::github::{
@@ -585,6 +586,8 @@ pub fn run() {
             delete_entry,
             copy_entry,
             move_entry,
+            import_external_entries,
+            start_file_drag,
             create_handoff_run,
             create_session_run,
             conductor::commands::start_conductor,

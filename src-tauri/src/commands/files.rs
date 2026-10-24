@@ -648,6 +648,93 @@ pub async fn move_entry(
     .map_err(|e| format!("join error: {e}"))?
 }
 
+/// Copy entries dropped from outside the app (absolute paths from Finder etc.)
+/// into `dest_dir`, auto-renaming on collision. Returns the new rel paths.
+#[tauri::command]
+pub async fn import_external_entries(
+    project_path: String,
+    src_paths: Vec<String>,
+    dest_dir: String,
+) -> Result<Vec<String>, String> {
+    tokio::task::spawn_blocking(move || {
+        let root = canonical_root(&project_path)?;
+        let dir = resolve_dir(&root, &dest_dir)?;
+        let mut out = Vec::with_capacity(src_paths.len());
+        for raw in &src_paths {
+            let src = Path::new(raw)
+                .canonicalize()
+                .map_err(|_| format!("Not found: {raw}"))?;
+            if src.is_dir() && dir.starts_with(&src) {
+                return Err("Cannot copy a folder into itself".to_string());
+            }
+            let name = src
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .ok_or_else(|| format!("Invalid source name: {raw}"))?;
+            let dest = unique_dest(&dir, &name);
+            copy_recursive(&src, &dest)?;
+            out.push(rel_of(&root, &dest));
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
+}
+
+/// Start a native OS drag of project entries out of the window (to Finder,
+/// Desktop, another app…). Always a copy — the source files stay in place.
+/// Resolves once the drag ends: "dropped" or "cancelled".
+#[tauri::command]
+pub async fn start_file_drag(
+    window: tauri::Window,
+    project_path: String,
+    rel_paths: Vec<String>,
+) -> Result<String, String> {
+    let root = canonical_root(&project_path)?;
+    let paths = rel_paths
+        .iter()
+        .map(|p| resolve_existing(&root, p))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<String, String>>();
+    // The drop callback is `Fn`, the sender is single-use.
+    let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+    let send = move |res: Result<String, String>| {
+        if let Some(tx) = tx.lock().ok().and_then(|mut g| g.take()) {
+            let _ = tx.send(res);
+        }
+    };
+
+    // AppKit/Win32 drag sessions must start on the UI thread.
+    let w = window.clone();
+    window
+        .run_on_main_thread(move || {
+            let on_drop = {
+                let send = send.clone();
+                move |result: drag::DragResult, _pos: drag::CursorPosition| {
+                    let s = match result {
+                        drag::DragResult::Dropped => "dropped",
+                        drag::DragResult::Cancel => "cancelled",
+                    };
+                    send(Ok(s.to_string()));
+                }
+            };
+            let icon = drag::Image::Raw(include_bytes!("../../icons/64x64.png").to_vec());
+            if let Err(e) = drag::start_drag(
+                &w,
+                drag::DragItem::Files(paths),
+                icon,
+                on_drop,
+                drag::Options::default(),
+            ) {
+                send(Err(format!("Drag failed: {e}")));
+            }
+        })
+        .map_err(|e| format!("Drag failed: {e}"))?;
+
+    rx.await.map_err(|_| "Drag ended unexpectedly".to_string())?
+}
+
 /// Read an image at an arbitrary absolute path and return it as base64.
 ///
 /// The frontend `plugin-fs` scope is deliberately narrow (app dirs only), so
