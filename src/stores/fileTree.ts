@@ -198,6 +198,12 @@ export const useFileTreeStore = defineStore('fileTree', () => {
     announceMove(projectPath, srcRel, p)
     return p
   }
+  async function importExternal(projectPath: string, srcPaths: string[], destDir: string): Promise<string[]> {
+    const ps = await runs.importExternalEntries(projectPath, srcPaths, destDir)
+    treeFor(projectPath).expanded.add(destDir)
+    await reloadDir(projectPath, destDir)
+    return ps
+  }
   async function duplicate(projectPath: string, relPath: string): Promise<string> {
     return copyInto(projectPath, relPath, parentOf(relPath))
   }
@@ -218,7 +224,7 @@ export const useFileTreeStore = defineStore('fileTree', () => {
 
   return {
     trees, renaming, refreshing, treeFor, loadDir, toggle, refresh, reloadDir, collapseAll,
-    createDir, createFile, rename, remove, copyInto, moveInto, duplicate,
+    createDir, createFile, rename, remove, copyInto, moveInto, importExternal, duplicate,
     beginRename, cancelRename, commitRename,
   }
 })

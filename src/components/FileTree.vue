@@ -6,9 +6,13 @@
 // shared <ContextMenu> filled with <FileActionsMenu> — the same rows the file
 // window's ⋯ menu shows. Only "new file / new folder" is added here, because
 // only the tree knows which folder to create in.
-import { computed, ref, watch, onBeforeUnmount } from 'vue'
+// Entries can be dragged between folders, and files/folders dropped in from
+// Finder are copied into the folder under the cursor (lib/fileTreeDnd).
+import { computed, ref, watch, onBeforeUnmount, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { RotateCw, ListCollapse } from 'lucide-vue-next'
+import { RotateCw, ListCollapse, FilePlus, FolderPlus, File, Folder } from 'lucide-vue-next'
+import { getCurrentWebview } from '@tauri-apps/api/webview'
+import type { UnlistenFn } from '@tauri-apps/api/event'
 import FileTreeNode from '@/components/FileTreeNode.vue'
 import FileActionsMenu from '@/components/FileActionsMenu.vue'
 import { ContextMenu } from '@/components/ui'
@@ -18,8 +22,7 @@ import { useToast } from '@/composables/useToast'
 import { usePrompt } from '@/composables/usePrompt'
 import { invoke } from '@/lib/tauri'
 import type { DirEntry } from '@/stores/runs'
-
-const DND_MIME = 'application/x-devdy-path'
+import { dropHover, nativeDropPoint, outboundDrag, treeDrag, treeDropTargetAt } from '@/lib/fileTreeDnd'
 
 const props = defineProps<{
   projectPath: string
@@ -173,16 +176,59 @@ function renameEntry(target: FileTarget) {
   store.beginRename(props.projectPath, target.path)
 }
 
-// ── Drop onto empty panel area → move to project root ───────────────────────
-async function onRootDrop(e: DragEvent) {
-  const src = e.dataTransfer?.getData(DND_MIME)
-  if (!src || parentDir(src) === '') return
-  try { await store.moveInto(props.projectPath, src, '') }
-  catch (err) { toast.error(String(err)) }
+// ── Drop from outside (Finder) → copy into the folder under the cursor ──────
+// OS file drops only arrive through Tauri's native event, which reports a
+// window position; hit-test it against the rows. RunView's composer listens to
+// the same event and ignores drops that land on the tree.
+const rootDropActive = computed(() =>
+  dropHover.value?.projectPath === props.projectPath && dropHover.value.dir === '',
+)
+const dragGhost = computed(() => (treeDrag.value?.projectPath === props.projectPath ? treeDrag.value : null))
+let externalDropUnlisten: UnlistenFn | null = null
+
+function ownTargetAt(pos: { x: number; y: number }) {
+  const { x, y } = nativeDropPoint(pos)
+  const target = treeDropTargetAt(x, y)
+  return target && target.projectPath === props.projectPath ? target : null
 }
+
+async function importDropped(paths: string[], dir: string) {
+  if (paths.length === 0) return
+  try {
+    const added = await store.importExternal(props.projectPath, paths, dir)
+    toast.success(t('files.tree.toastImported', { count: added.length }))
+  } catch (err) { toast.error(String(err)) }
+}
+
+onMounted(async () => {
+  try {
+    externalDropUnlisten = await getCurrentWebview().onDragDropEvent((event) => {
+      const p = event.payload
+      // Our own drag-out passing back over the window: not an import.
+      if (outboundDrag.value) {
+        if (dropHover.value?.projectPath === props.projectPath) dropHover.value = null
+        return
+      }
+      if (p.type === 'leave') {
+        if (dropHover.value?.projectPath === props.projectPath) dropHover.value = null
+        return
+      }
+      const target = ownTargetAt(p.position)
+      if (p.type === 'drop') {
+        if (dropHover.value?.projectPath === props.projectPath) dropHover.value = null
+        if (target) void importDropped(p.paths, target.dir)
+        return
+      }
+      // enter / over: highlight our folder, but don't clobber another tree's.
+      if (target) dropHover.value = target
+      else if (dropHover.value?.projectPath === props.projectPath) dropHover.value = null
+    })
+  } catch { /* running outside the Tauri shell */ }
+})
 
 onBeforeUnmount(() => {
   hideTip()
+  externalDropUnlisten?.()
   if (watchedProject) invoke('stop_file_tree_watch', { projectPath: watchedProject }).catch(() => {})
 })
 </script>
@@ -228,9 +274,9 @@ onBeforeUnmount(() => {
     <!-- Body -->
     <div
       class="flex-1 min-h-0 overflow-y-auto py-1"
+      :class="rootDropActive && 'ring-1 ring-inset ring-primary/70 bg-primary/5'"
+      :data-file-tree-root="projectPath"
       @contextmenu.self.prevent="openRootMenu"
-      @dragover.prevent
-      @drop="onRootDrop"
       @scroll="hideTip"
       @mouseleave="hideTip"
     >
@@ -244,6 +290,7 @@ onBeforeUnmount(() => {
         :entry="entry"
         :depth="0"
         :active-path="activePath"
+        :menu-path="menu?.entry?.path ?? null"
         @open-file="(p) => emit('open-file', p)"
         @context-menu="openMenu"
         @hover="onHover"
@@ -265,6 +312,19 @@ onBeforeUnmount(() => {
         <div class="text-xs text-foreground break-all">{{ tip.name }}</div>
         <div v-if="tip.path !== tip.name" class="text-[11px] text-muted-foreground break-all">{{ tip.path }}</div>
         <div v-if="tip.ignored" class="text-[11px] text-muted-foreground/80 italic">{{ t('files.tree.gitIgnored') }}</div>
+      </div>
+    </Teleport>
+
+    <!-- Ghost label following the pointer during an in-tree drag. -->
+    <Teleport to="body">
+      <div
+        v-if="dragGhost"
+        class="fixed z-[95] pointer-events-none flex items-center gap-1.5 rounded-md border border-border bg-popover px-2 py-1 text-xs text-foreground shadow-lg"
+        :style="{ left: `${dragGhost.x + 12}px`, top: `${dragGhost.y + 8}px` }"
+      >
+        <Folder v-if="dragGhost.isDir" class="h-3.5 w-3.5 text-primary/80" :stroke-width="2" />
+        <File v-else class="h-3.5 w-3.5 opacity-70" :stroke-width="2" />
+        <span class="max-w-[240px] truncate">{{ dragGhost.name }}</span>
       </div>
     </Teleport>
 
