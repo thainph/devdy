@@ -2,20 +2,22 @@
 // One node in the file tree (recursive). Folders lazy-load + expand their
 // children on click; files emit `open-file`. Indentation scales with `depth`.
 // Supports inline rename (driven by the fileTree store) and drag-and-drop move
-// (drop an entry onto a folder to move it there).
+// (drag an entry onto a folder to move it there — see lib/fileTreeDnd).
 import { computed, nextTick, ref, watch } from 'vue'
 import { ChevronRight, ChevronDown, Folder, FolderOpen, File, Loader2 } from 'lucide-vue-next'
 import { useFileTreeStore } from '@/stores/fileTree'
 import { useToast } from '@/composables/useToast'
 import type { DirEntry } from '@/stores/runs'
-
-const DND_MIME = 'application/x-devdy-path'
+import { dropHover, outboundDrag, parentDir, startTreeDrag, treeDrag } from '@/lib/fileTreeDnd'
+import { invoke } from '@/lib/tauri'
 
 const props = defineProps<{
   projectPath: string
   entry: DirEntry
   depth: number
   activePath?: string | null
+  /** Entry the right-click menu is open on — highlighted so it's clear what the menu acts on. */
+  menuPath?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -33,12 +35,14 @@ const expanded = computed(() => tree.value.expanded.has(props.entry.path))
 const loading = computed(() => tree.value.loading.has(props.entry.path))
 const children = computed(() => tree.value.children[props.entry.path] ?? [])
 const isActive = computed(() => !props.entry.is_dir && props.entry.path === props.activePath)
+const isMenuTarget = computed(() => props.entry.path === props.menuPath)
 
 // Indent by depth; keep the first level flush-ish with the chevron column.
 const indent = computed(() => `${props.depth * 12 + 6}px`)
 
 function onClick() {
   if (isEditing.value) return
+  if (swallowClick) { swallowClick = false; return }
   if (props.entry.is_dir) store.toggle(props.projectPath, props.entry.path)
   else emit('open-file', props.entry.path)
 }
@@ -92,35 +96,49 @@ async function finish(commit: boolean) {
 }
 
 // ── Drag & drop (move) ───────────────────────────────────────────────────────
-const isDropTarget = ref(false)
+// Pointer-driven (HTML5 DnD never reaches the DOM under Tauri — see
+// lib/fileTreeDnd). The row exposes the folder it drops into via data-drop-dir.
+const dropDir = computed(() => (props.entry.is_dir ? props.entry.path : parentDir(props.entry.path)))
+const isDropTarget = computed(() =>
+  props.entry.is_dir
+  && dropHover.value?.projectPath === props.projectPath
+  && dropHover.value.dir === props.entry.path,
+)
+const isDragSource = computed(() =>
+  treeDrag.value?.projectPath === props.projectPath && treeDrag.value.path === props.entry.path,
+)
+let swallowClick = false
 
-function onDragStart(e: DragEvent) {
-  if (isEditing.value) { e.preventDefault(); return }
+function onPointerDown(e: PointerEvent) {
+  if (e.button !== 0 || isEditing.value) return
+  swallowClick = false
+  const drag = startTreeDrag(
+    e,
+    { projectPath: props.projectPath, path: props.entry.path, name: props.entry.name, isDir: props.entry.is_dir },
+    async (dir) => {
+      try {
+        await store.moveInto(props.projectPath, props.entry.path, dir)
+      } catch (err) {
+        toast.error(String(err))
+      }
+    },
+    () => void dragOut(),
+  )
+  // The click that follows a real drag must not open/toggle the row.
+  window.addEventListener('pointerup', () => { swallowClick = drag.dragged() }, { once: true, capture: true })
   emit('hover', null)
-  e.dataTransfer?.setData(DND_MIME, props.entry.path)
-  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
 }
-function onDragOver(e: DragEvent) {
-  if (!props.entry.is_dir) return
-  if (!e.dataTransfer?.types.includes(DND_MIME)) return
-  e.preventDefault()
-  e.dataTransfer.dropEffect = 'move'
-  isDropTarget.value = true
-}
-function onDragLeave() {
-  isDropTarget.value = false
-}
-async function onDrop(e: DragEvent) {
-  isDropTarget.value = false
-  if (!props.entry.is_dir) return
-  const src = e.dataTransfer?.getData(DND_MIME)
-  if (!src || src === props.entry.path) return
-  e.preventDefault()
-  e.stopPropagation()
+
+// Dragged past the window edge → continue as a native OS drag (copy) so the
+// entry can be dropped into Finder, the Desktop or another app.
+async function dragOut() {
+  outboundDrag.value = true
   try {
-    await store.moveInto(props.projectPath, src, props.entry.path)
+    await invoke('start_file_drag', { projectPath: props.projectPath, relPaths: [props.entry.path] })
   } catch (err) {
     toast.error(String(err))
+  } finally {
+    outboundDrag.value = false
   }
 }
 </script>
@@ -129,20 +147,20 @@ async function onDrop(e: DragEvent) {
   <div
     class="group flex items-center gap-1 py-0.5 pr-2 text-xs rounded cursor-pointer select-none"
     :class="[
-      isActive ? 'bg-primary/15 text-foreground' : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground',
+      isMenuTarget
+        ? 'bg-accent text-foreground font-semibold ring-1 ring-inset ring-primary/60'
+        : isActive ? 'bg-primary/15 text-foreground' : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground',
       isDropTarget && 'ring-1 ring-primary/70 bg-primary/10',
-      entry.ignored && !isActive && 'opacity-50',
+      isDragSource && 'opacity-40',
+      entry.ignored && !isActive && !isMenuTarget && 'opacity-50',
     ]"
     :style="{ paddingLeft: indent }"
-    :draggable="!isEditing"
+    :data-drop-dir="dropDir"
     @click="onClick"
     @contextmenu.prevent.stop="onContextMenu"
     @mouseenter="onEnter"
     @mouseleave="onLeave"
-    @dragstart="onDragStart"
-    @dragover="onDragOver"
-    @dragleave="onDragLeave"
-    @drop="onDrop"
+    @pointerdown="onPointerDown"
   >
     <!-- Chevron column (only for directories) -->
     <span class="w-3.5 shrink-0 flex items-center justify-center">
@@ -184,6 +202,7 @@ async function onDrop(e: DragEvent) {
       :entry="child"
       :depth="depth + 1"
       :active-path="activePath"
+      :menu-path="menuPath"
       @open-file="(p) => emit('open-file', p)"
       @context-menu="(payload) => emit('context-menu', payload)"
       @hover="(payload) => emit('hover', payload)"
