@@ -474,6 +474,9 @@ export const useRunsStore = defineStore('runs', () => {
   async function moveEntry(project_path: string, src_rel: string, dest_dir: string): Promise<string> {
     return invoke<string>('move_entry', { projectPath: project_path, srcRel: src_rel, destDir: dest_dir })
   }
+  async function importExternalEntries(project_path: string, src_paths: string[], dest_dir: string): Promise<string[]> {
+    return invoke<string[]>('import_external_entries', { projectPath: project_path, srcPaths: src_paths, destDir: dest_dir })
+  }
 
   async function createSessionRun(project_id: string, engine_override?: string): Promise<RunRecord> {
     return invoke<RunRecord>('create_session_run', {
@@ -595,7 +598,7 @@ export const useRunsStore = defineStore('runs', () => {
     getRunLog, getRunLogRevision, getRunLogPage, getRunLogForward, getRunLogPath, getRunToolRecords, getRunUserRecords, readRunInput,
     respondPermission, listPendingPermissions, listLiveRuns, sendUserMessage, endRunInput,
     listProjectFiles, readProjectFile, writeProjectFile, listDir,
-    createDir, createFile, renameEntry, deleteEntry, copyEntry, moveEntry,
+    createDir, createFile, renameEntry, deleteEntry, copyEntry, moveEntry, importExternalEntries,
     createHandoffRun, createSessionRun,
     reconcileClaudeSessions, reconcileCodexSessions,
     deleteRun, deleteAllRuns, renameRun, setRunClaudeAccount, setRunPinned, setRunProtected, touchRun,

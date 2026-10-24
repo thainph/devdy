@@ -68,6 +68,7 @@
     "toastFolderCreated": "Đã tạo thư mục",
     "toastMovedToTrash": "Đã chuyển vào Thùng rác",
     "toastPasted": "Đã dán",
+    "toastImported": "Đã thêm {count} mục",
     "toastDuplicated": "Đã nhân bản",
     "toastPathCopied": "Đã sao chép đường dẫn",
     "toastRelativePathCopied": "Đã sao chép đường dẫn tương đối",
