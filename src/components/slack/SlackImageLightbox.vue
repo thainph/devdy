@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// Full-window viewer for the images of a thread: Esc closes, ← / → step through
-// every downloaded image of the thread, and "Open with the default app" hands the
+// Full-window viewer for the images of a thread: Esc closes, the ‹ / › buttons
+// step through every downloaded image of the thread, and "Open with the default app" hands the
 // file to the OS (openPath).
 import { computed, onBeforeUnmount, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -47,12 +47,6 @@ function onKey(e: KeyboardEvent) {
     e.preventDefault()
     e.stopPropagation()
     emit('close')
-  } else if (e.key === 'ArrowLeft') {
-    e.preventDefault()
-    step(-1)
-  } else if (e.key === 'ArrowRight') {
-    e.preventDefault()
-    step(1)
   }
 }
 

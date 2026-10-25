@@ -193,7 +193,7 @@
   "saveSelectionAsTodo": "Todo",
   "saveSelectionAsTodoTitle": "Save the selection as a task on this session",
   "quickCapture": "Note",
-  "quickCaptureTitle": "Quick capture a note / todo without leaving this session — ⌘/Ctrl+K",
+  "quickCaptureTitle": "Quick capture a note / todo without leaving this session",
   "focusMode": "Focus mode",
   "projectSettings": "Project settings",
   "relNow": "now",

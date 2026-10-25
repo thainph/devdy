@@ -22,7 +22,7 @@ export interface PrInboxWindowOpenRoute {
 }
 
 // In-flight creation guard (like lib/mascotWindow.ts): two quick clicks / a
-// click plus the ⌘2 shortcut would otherwise both pass the getByLabel() null
+// click plus the Go menu item would otherwise both pass the getByLabel() null
 // check before either window exists, and create 'pr-inbox' twice.
 let creating: Promise<WebviewWindow> | null = null
 

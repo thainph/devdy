@@ -82,7 +82,7 @@
     "retranslate": "Dịch lại cả thread",
     "retranslateHint": "Dịch lại toàn bộ tin nhắn bằng cài đặt dịch hiện tại; bản dịch cũ vẫn hiển thị tới khi có bản mới",
     "openInSlack": "Mở trên Slack",
-    "renameHint": "Nhấp hoặc nhấn F2 để đổi tên",
+    "renameHint": "Nhấp để đổi tên",
     "renamePlaceholder": "Tiêu đề thread…",
     "renamedHint": "Đã đổi tên — giữ nguyên khi làm mới",
     "fetchedAt": "Lấy lúc {date}",
