@@ -4,17 +4,17 @@
 // laid out like the Slack threads window:
 //
 //   ┌ (native OS titlebar only: "Notes: <title>" / "Todos") ────────────────┐
-//   ├ sidebar: search · pin · reload,        │ detail header: title (F2) /   │
+//   ├ sidebar: search · pin · reload,        │ detail header: title /        │
 //   │ project filter + New, segmented filter │ meta · [project][Sessions] |  │
 //   │ (notes All|Linked, todos Open|Done|All)│ (✓ Done) ✎ (⧉) ⋯              │
 //   │ items grouped by project               │ body: markdown, or the inline │
 //   │                                        │ editor while editing          │
 //   └────────────────────────────────────────┴───────────────────────────────┘
 //
-// Reading and editing both happen here: E / ✎ edits inline, ⌘/Ctrl+Enter saves,
-// Esc cancels, F2 renames a note's title (a todo: edits). Creating stays in the
-// capture window (lib/itemWindow, "+ New"). Every "open this note / todo" in the
-// app lands here with `id` (or SELECT for an open window).
+// Reading and editing both happen here: ✎ edits inline, ⌘/Ctrl+Enter saves,
+// Esc cancels, clicking a note's title renames it (a todo: edits). Creating
+// stays in the capture window (lib/itemWindow, "+ New"). Every "open this
+// note / todo" in the app lands here with `id` (or SELECT for an open window).
 //
 // Its own webview means its own store copy: ITEM_CHANGED (from the capture
 // window, the backend's link commands, the other windows) refetches; the MCP
@@ -56,7 +56,7 @@ import { refreshTray } from '@/lib/tray'
 
 const { t } = useI18n()
 const { toast } = useToast()
-const { confirm, state: confirmState } = useConfirm()
+const { confirm } = useConfirm()
 const notes = useNotesStore()
 const todos = useTodosStore()
 const projects = useProjectsStore()
@@ -401,26 +401,6 @@ watch(
   { immediate: true },
 )
 
-function isTypingTarget(el: EventTarget | null): boolean {
-  const node = el as HTMLElement | null
-  if (!node) return false
-  return node.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(node.tagName)
-}
-
-// E edits, F2 renames (a todo: edits). The fields handle ⌘/Ctrl+Enter / Esc.
-function onKeydown(e: KeyboardEvent) {
-  if (e.isComposing || e.keyCode === 229) return
-  if (!item.value || editing.value || renaming.value || confirmState.open) return
-  if (isTypingTarget(e.target)) return
-  if (e.key === 'F2') {
-    e.preventDefault()
-    startRename()
-  } else if (e.key.toLowerCase() === 'e' && !e.metaKey && !e.ctrlKey && !e.altKey) {
-    e.preventDefault()
-    startEdit()
-  }
-}
-
 let unlisten: UnlistenFn[] = []
 /** The close was confirmed: let the next close request through. */
 let closing = false
@@ -435,7 +415,6 @@ async function selectFresh(id: string) {
 }
 
 onMounted(async () => {
-  document.addEventListener('keydown', onKeydown)
   void projects.fetchProjects()
   try {
     unlisten.push(
@@ -486,7 +465,6 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  document.removeEventListener('keydown', onKeydown)
   if (reloadTimer) clearTimeout(reloadTimer)
   unlisten.forEach((off) => off())
   unlisten = []

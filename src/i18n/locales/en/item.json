@@ -56,7 +56,7 @@
   "emptyNoteHint": "Write one with New Note, or let the AI save it through the notes tools.",
   "createdAt": "Created {date}",
   "updatedAt": "Updated {date}",
-  "renameHint": "Click or press F2 to rename",
+  "renameHint": "Click to rename",
   "editTitle": "Edit (E)",
   "moreActions": "More actions",
   "notesWindowWith": "Notes: {name}",

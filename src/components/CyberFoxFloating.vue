@@ -56,8 +56,7 @@ const dragging = ref(false)
 const position = ref<Position>({ x: 0, y: 0 })
 
 // Right-click context menu: quick-create Todo/Note. The in-app fox opens the
-// in-app capture panel (same window, nothing to reposition); the ⌘K shortcut is
-// bound app-wide in App.vue so it works with the fox turned off too.
+// in-app capture panel (same window, nothing to reposition).
 const menuOpen = ref(false)
 const menuPos = ref({ x: 0, y: 0 })
 
@@ -73,7 +72,7 @@ function openContextMenu(e: MouseEvent) {
 }
 
 function pickQuickCreate(key: string) {
-  // File it under whatever the user is looking at (same rule as ⌘K in App.vue).
+  // File it under whatever the user is looking at (same rule as File → New Todo in App.vue).
   openItemCreateWindow(key as ItemKind, {
     projectId: typeof route.params.projectId === 'string' ? route.params.projectId : null,
     runId: typeof route.params.runId === 'string' ? route.params.runId : null,
@@ -178,23 +177,6 @@ function endDrag(e: PointerEvent) {
   savePosition()
 }
 
-function onKeydown(e: KeyboardEvent) {
-  const step = e.shiftKey ? 24 : 8
-  if (e.key === 'ArrowLeft') {
-    e.preventDefault()
-    moveTo({ x: position.value.x - step, y: position.value.y }, true)
-  } else if (e.key === 'ArrowRight') {
-    e.preventDefault()
-    moveTo({ x: position.value.x + step, y: position.value.y }, true)
-  } else if (e.key === 'ArrowUp') {
-    e.preventDefault()
-    moveTo({ x: position.value.x, y: position.value.y - step }, true)
-  } else if (e.key === 'ArrowDown') {
-    e.preventDefault()
-    moveTo({ x: position.value.x, y: position.value.y + step }, true)
-  }
-}
-
 watch([enabled, mascotSize], async ([isEnabled]) => {
   if (!ready.value || !isEnabled) return
   await nextTick()
@@ -238,7 +220,6 @@ onBeforeUnmount(() => {
     @pointermove="onDrag"
     @pointerup="endDrag"
     @pointercancel="endDrag"
-    @keydown="onKeydown"
     @contextmenu.prevent="openContextMenu"
     @dragstart.prevent
   >
