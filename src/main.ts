@@ -5,6 +5,9 @@ import router from './router'
 import { i18n } from './i18n'
 import './assets/main.css'
 import App from './App.vue'
+import { installHomeEndKeys } from './lib/homeEndKeys'
+
+installHomeEndKeys()
 
 const app = createApp(App)
 app.use(createPinia())

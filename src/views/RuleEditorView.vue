@@ -234,7 +234,6 @@ async function handleSave() {
           :is-dark="true"
           :template="RULE_TEMPLATE"
           class="flex-1"
-          @save="handleSave"
         />
       </div>
 

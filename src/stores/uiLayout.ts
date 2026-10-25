@@ -10,7 +10,7 @@ import { ref } from 'vue'
  * transient, in-memory flag — it resets on reload rather than persisting.
  *
  * `sidebarHidden` is the separate, deliberate "give me the full width on every
- * screen" toggle (⌘/Ctrl+B). Unlike focus mode it applies to ALL routes and IS
+ * screen" toggle. Unlike focus mode it applies to ALL routes and IS
  * persisted, because someone who works with the nav hidden expects it to stay
  * hidden across restarts rather than to reappear on every launch.
  */

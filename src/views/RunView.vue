@@ -23,7 +23,7 @@ import { useClaudeAccountsStore } from '@/stores/claudeAccounts'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useModelCatalogStore } from '@/stores/modelCatalog'
 import { useUILayoutStore, type ListDensity } from '@/stores/uiLayout'
-import { IS_MAC, registerMenuAction } from '@/lib/appMenu'
+import { registerMenuAction } from '@/lib/appMenu'
 import { invoke } from '@/lib/tauri'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -1781,7 +1781,7 @@ onMounted(async () => {
   loadMarkdown()
   nextTick(autoResizeComposer)
   document.addEventListener('mousedown', onRunSettingsPointerDown)
-  // File → New Session (⌘N). Only this screen can serve it: starting a session
+  // File → New Session. Only this screen can serve it: starting a session
   // needs the project the user is currently in.
   unbindNewSessionMenu = registerMenuAction('file.newSession', () => {
     void handleNewSession()
@@ -3166,9 +3166,6 @@ async function renameViaPrompt(run: RunRecord) {
 
 // ── Run actions (RunActionItems: History row ⋯ and header ⋯) ──────────────
 
-/** Focus mode's app-menu accelerator (CmdOrCtrl+Shift+F, lib/appMenu). */
-const focusShortcut = IS_MAC ? '⌘⇧F' : 'Ctrl+Shift+F'
-
 function runActionProps(run: RunRecord) {
   return {
     run,
@@ -3616,7 +3613,7 @@ function handleRefInput(val: string) {
       <div v-if="!isSessionWindow" class="flex items-center gap-1 shrink-0">
         <!-- What this session is linked to: Slack threads (only when there are
              some), todos, notes. The todo / note menus end with "+ New …", the
-             capture filed under this run (⌘K / ⌘⇧N do the same). -->
+             capture filed under this run. -->
         <RunLinkedKindMenu kind="slack" :threads="linked.threads.value" />
         <RunLinkedKindMenu kind="todo" :items="linked.todos.value" @create="openQuickCapture('todo')" />
         <RunLinkedKindMenu kind="note" :items="linked.notes.value" @create="openQuickCapture('note')" />
@@ -3705,7 +3702,6 @@ function handleRefInput(val: string) {
               <component :is="uiLayout.focusMode ? Minimize2 : Maximize2" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
               <span class="flex-1">{{ t('run.focusMode') }}</span>
               <Check v-if="uiLayout.focusMode" class="h-3.5 w-3.5 shrink-0 text-primary" :stroke-width="2" />
-              <kbd class="shrink-0 text-[10px] text-muted-foreground">{{ focusShortcut }}</kbd>
             </DropdownItem>
             <DropdownItem :title="t('run.projectSettingsTitle')" @click="router.push(`/projects/${projectId}/settings`)">
               <Settings class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />

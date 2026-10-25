@@ -306,7 +306,6 @@ async function handleSave() {
           :is-dark="true"
           :template="SKILL_TEMPLATE"
           class="flex-1"
-          @save="handleSave"
         />
       </div>
 

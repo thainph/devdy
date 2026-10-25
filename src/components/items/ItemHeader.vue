@@ -2,8 +2,8 @@
 // Header of the Notes / Todos window's detail pane — the sibling of
 // SlackThreadHeader, same layout and controls:
 //
-//   note  title (click / F2 → inline rename) / updated · N characters
-//   todo  ☐ text's first line (click / F2 → edit) / created · from <session>
+//   note  title (click → inline rename) / updated · N characters
+//   todo  ☐ text's first line (click → edit) / created · from <session>
 //   right [Project ▾][Sessions (n) ▾] | (todo) ✓ Done · ✎ Edit · (note) ⧉ Copy
 //         markdown · ⋯ (New session from this … · Copy ID · Delete)
 //
