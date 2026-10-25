@@ -127,7 +127,7 @@ export function useQuickCapture() {
   }
 
   /**
-   * Take over a draft handed in from another surface (the ⌘K panel popping out).
+   * Take over a draft handed in from another surface (the in-app capture panel popping out).
    *
    * Only fills fields that are still empty here: a draft already being typed in
    * this surface must never be clobbered. Returns the fields actually adopted so

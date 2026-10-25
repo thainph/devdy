@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Header of the thread pane: the title (click / F2 → inline rename) over
+// Header of the thread pane: the title (click → inline rename) over
 // `#channel · workspace`; on the right the thread's project + its "Sessions"
 // menu (linked sessions, link one — LinkedSessionsMenu), both bordered xs
 // controls, then the icon-only thread actions (label in tooltip + aria-label) —

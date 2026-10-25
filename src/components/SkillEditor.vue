@@ -16,7 +16,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'update:modelValue': [value: string]
-  save: []
 }>()
 
 const editorEl = ref<HTMLDivElement | null>(null)
@@ -25,21 +24,10 @@ let view: EditorView | null = null
 function createEditor(value: string) {
   if (!editorEl.value) return
 
-  const saveKeymap = keymap.of([
-    {
-      key: 'Mod-s',
-      run: () => {
-        emit('save')
-        return true
-      },
-    },
-  ])
-
   const extensions = [
     basicSetup,
     markdown({ defaultCodeLanguage: yaml() }),
     keymap.of(defaultKeymap),
-    saveKeymap,
     EditorView.updateListener.of((update) => {
       if (update.docChanged) {
         emit('update:modelValue', update.state.doc.toString())

@@ -56,7 +56,7 @@
   "emptyNoteHint": "Viết bằng nút Ghi chú mới, hoặc để AI lưu qua các tool notes.",
   "createdAt": "Tạo lúc {date}",
   "updatedAt": "Cập nhật lúc {date}",
-  "renameHint": "Bấm hoặc nhấn F2 để đổi tên",
+  "renameHint": "Bấm để đổi tên",
   "editTitle": "Sửa (E)",
   "moreActions": "Thao tác khác",
   "notesWindowWith": "Ghi chú: {name}",

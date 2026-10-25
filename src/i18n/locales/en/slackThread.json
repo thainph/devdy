@@ -82,7 +82,7 @@
     "retranslate": "Re-translate thread",
     "retranslateHint": "Translate every message again with the current translation settings; old translations stay until replaced",
     "openInSlack": "Open in Slack",
-    "renameHint": "Click or press F2 to rename",
+    "renameHint": "Click to rename",
     "renamePlaceholder": "Thread title…",
     "renamedHint": "Renamed — kept on refresh",
     "fetchedAt": "Fetched {date}",

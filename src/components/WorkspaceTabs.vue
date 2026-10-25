@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { X, FolderOpen } from 'lucide-vue-next'
@@ -96,29 +96,6 @@ function onTabClick(projectId: string) {
   if (clickWasDrag()) return
   select(projectId)
 }
-
-// --- keyboard: Cmd/Ctrl+1..9 switch project, Cmd/Ctrl+W close active -------
-function onKeydown(e: KeyboardEvent) {
-  if (!(e.metaKey || e.ctrlKey)) return
-  if (e.key === 'w' || e.key === 'W') {
-    if (activeProjectId.value && tabsStore.has(activeProjectId.value)) {
-      e.preventDefault()
-      closeTab(activeProjectId.value)
-    }
-    return
-  }
-  const n = Number(e.key)
-  if (Number.isInteger(n) && n >= 1 && n <= 9) {
-    const tab = tabsStore.tabs[n - 1]
-    if (tab) {
-      e.preventDefault()
-      select(tab.projectId)
-    }
-  }
-}
-
-onMounted(() => window.addEventListener('keydown', onKeydown))
-onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 </script>
 
 <template>

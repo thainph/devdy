@@ -50,7 +50,7 @@ import { useChatDraftsStore } from '@/stores/chatDrafts'
 import { useToast } from '@/composables/useToast'
 import { openItemCreateWindow } from '@/lib/itemWindow'
 import { openItemListWindow } from '@/lib/itemListWindow'
-import { applyAppMenu, IS_MAC, listenMenuActions, registerMenuAction, runMenuAction } from '@/lib/appMenu'
+import { applyAppMenu, listenMenuActions, registerMenuAction } from '@/lib/appMenu'
 import { NAV_ROUTES, startsNavGroup } from '@/lib/navigation'
 import { IS_SESSION_WINDOW, SESSION_WINDOW_PROJECT_ID, SESSION_WINDOW_RUN_ID } from '@/lib/windowMode'
 import IssuesGanttView from '@/views/IssuesGanttView.vue'
@@ -352,35 +352,6 @@ function onGlobalNavKeyGuard(e: KeyboardEvent) {
   }
 }
 
-// Todo / note shortcuts (⌘/Ctrl+K → new Todo, ⌘/Ctrl+Shift+N → new Note, both
-// opening the item window; ⌘/Ctrl+Shift+K → the list drawer) are bound HERE, at
-// the app root, rather than on the mascot: the mascot only mounts when it's
-// enabled and in in-app mode, which used to leave the shortcut silently dead for
-// anyone who had turned the fox off or moved it to the desktop-pet window.
-//
-// ⌘/Ctrl+B (hide/show the sidebar) rides along here for the same reason: it has
-// to work from every screen, including one where the sidebar is already hidden
-// and its own toggle button is off-screen.
-// Both go through `runMenuAction`, which de-duplicates against the identical
-// menu accelerators (see appMenu.ts) so one press never fires twice.
-function onQuickCaptureKey(e: KeyboardEvent) {
-  if (!(e.metaKey || e.ctrlKey) || e.altKey) return
-  const key = e.key.toLowerCase()
-  if (key === 'k' && !e.shiftKey) {
-    e.preventDefault()
-    runMenuAction('file.newTodo')
-  } else if (key === 'k' && e.shiftKey) {
-    e.preventDefault()
-    runMenuAction('view.itemPanel')
-  } else if (key === 'n' && e.shiftKey) {
-    e.preventDefault()
-    runMenuAction('file.newNote')
-  } else if (key === 'b' && !e.shiftKey) {
-    e.preventDefault()
-    runMenuAction('view.toggleSidebar')
-  }
-}
-
 // The sidebar is gone either because the user hid it (any route, persisted) or
 // because focus mode is collapsing a run down to its conversation.
 const sidebarVisible = computed(
@@ -471,7 +442,6 @@ onBeforeUnmount(() => {
   unlistenMenu?.()
   unlistenMenu = null
   window.removeEventListener('keydown', onGlobalNavKeyGuard, true)
-  window.removeEventListener('keydown', onQuickCaptureKey)
 })
 
 // App version shown in the sidebar footer; read from Tauri so it always matches
@@ -541,7 +511,7 @@ onMounted(async () => {
   if (isSessionWindow) {
     // Chrome-less run window: apply the theme, then let RunView (already routed to
     // the run in setup) fetch its own projects / runs and open its stream. Skip
-    // the main window's app-wide services — native menu, quick-capture keys, the
+    // the main window's app-wide services — native menu, the
     // run:activated mirror and PermissionNotifier — so a popped-out session can't
     // double-fire OS notifications the main window already owns.
     try {
@@ -554,7 +524,6 @@ onMounted(async () => {
     }
     return
   }
-  window.addEventListener('keydown', onQuickCaptureKey)
   void pulseStore.start()
 
   // Native menu bar: bind the actions first, then install the menu, so an
@@ -783,7 +752,7 @@ onMounted(async () => {
         variant="ghost"
         size="icon-sm"
         class="shrink-0 ml-auto"
-        :title="`${uiLayout.sidebarHidden ? t('menu.showSidebar') : t('menu.hideSidebar')} (${IS_MAC ? '⌘B' : 'Ctrl+B'})`"
+        :title="uiLayout.sidebarHidden ? t('menu.showSidebar') : t('menu.hideSidebar')"
         :aria-label="uiLayout.sidebarHidden ? t('menu.showSidebar') : t('menu.hideSidebar')"
         @click="uiLayout.toggleSidebar()"
       >
@@ -792,10 +761,10 @@ onMounted(async () => {
     </header>
 
     <div class="flex flex-1 min-h-0">
-    <!-- Sidebar. Hidden either by the ⌘/Ctrl+B toggle (all routes, persisted) or
+    <!-- Sidebar. Hidden either by the title-bar toggle (all routes, persisted) or
          by focus mode — the latter only while in the run workspace, so other
          routes like project settings keep their navigation. Once hidden it is
-         gone entirely; View → Show Sidebar (⌘B) brings it back.
+         gone entirely; View → Show Sidebar brings it back.
 
          It collapses by animating its own width to zero while the inner column
          keeps a fixed 220px, so the nav slides out of view instead of the labels
@@ -819,7 +788,7 @@ onMounted(async () => {
                 <button
                   type="button"
                   class="relative flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors cursor-pointer select-none text-muted-foreground hover:text-foreground hover:bg-accent/50"
-                  :title="`${t('item.navTodos')} (${IS_MAC ? '⌘⇧K' : 'Ctrl+Shift+K'})`"
+                  :title="t('item.navTodos')"
                   @click="openItemListWindow('todo', { projectId: routeCaptureContext().projectId })"
                 >
                   <ListTodo class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />

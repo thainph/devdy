@@ -52,7 +52,7 @@ function buildSpec(state: MenuState): MenuSpec {
       items: [
         { kind: 'predefined', role: 'about' },
         { kind: 'separator' },
-        { kind: 'item', id: 'go./settings', label: t('menu.settings'), accelerator: 'CmdOrCtrl+,' },
+        { kind: 'item', id: 'go./settings', label: t('menu.settings') },
         { kind: 'separator' },
         { kind: 'predefined', role: 'services' },
         { kind: 'separator' },
@@ -68,9 +68,9 @@ function buildSpec(state: MenuState): MenuSpec {
   submenus.push({
     label: t('menu.file'),
     items: [
-      { kind: 'item', id: 'file.newSession', label: t('menu.newSession'), accelerator: 'CmdOrCtrl+N' },
-      { kind: 'item', id: 'file.newTodo', label: t('menu.newTodo'), accelerator: 'CmdOrCtrl+K' },
-      { kind: 'item', id: 'file.newNote', label: t('menu.newNote'), accelerator: 'CmdOrCtrl+Shift+N' },
+      { kind: 'item', id: 'file.newSession', label: t('menu.newSession') },
+      { kind: 'item', id: 'file.newTodo', label: t('menu.newTodo') },
+      { kind: 'item', id: 'file.newNote', label: t('menu.newNote') },
       { kind: 'separator' },
       ...(IS_MAC
         ? ([{ kind: 'predefined', role: 'closeWindow' }] as ItemSpec[])
@@ -105,23 +105,20 @@ function buildSpec(state: MenuState): MenuSpec {
         kind: 'item',
         id: 'view.toggleSidebar',
         label: state.sidebarHidden ? t('menu.showSidebar') : t('menu.hideSidebar'),
-        accelerator: 'CmdOrCtrl+B',
       },
       {
         kind: 'item',
         id: 'view.itemPanel',
         label: t('menu.itemPanel'),
-        accelerator: 'CmdOrCtrl+Shift+K',
       },
       { kind: 'item', id: 'view.slackThreads', label: t('menu.slackThreads') },
       {
         kind: 'item',
         id: 'view.toggleFocus',
         label: state.focusMode ? t('menu.exitFocusMode') : t('menu.enterFocusMode'),
-        accelerator: 'CmdOrCtrl+Shift+F',
       },
       { kind: 'separator' },
-      { kind: 'item', id: 'view.reload', label: t('menu.reload'), accelerator: 'CmdOrCtrl+R' },
+      { kind: 'item', id: 'view.reload', label: t('menu.reload') },
       { kind: 'predefined', role: 'fullscreen' },
     ],
   })
@@ -135,9 +132,6 @@ function buildSpec(state: MenuState): MenuSpec {
         kind: 'item',
         id: `go.${route.path}`,
         label: t(route.labelKey),
-        // ⌘1…⌘9 are pinned per destination (NavRoute.shortcut); the rest stay
-        // click-only rather than inventing awkward two-key bindings.
-        accelerator: route.shortcut ? `CmdOrCtrl+${route.shortcut}` : undefined,
       },
     ]),
   })
@@ -174,7 +168,6 @@ export async function applyAppMenu(state: MenuState): Promise<void> {
 type MenuHandler = () => void
 
 const handlers = new Map<string, MenuHandler>()
-const lastRun = new Map<string, number>()
 
 /**
  * Bind an action id to a handler for as long as a component is alive. Returns
@@ -188,20 +181,7 @@ export function registerMenuAction(id: string, handler: MenuHandler): () => void
   }
 }
 
-/**
- * Run an action, ignoring a repeat within 250ms.
- *
- * Several of these ids have BOTH a menu accelerator and an in-webview keydown
- * binding (⌘K / ⌘⇧N predate the menu, ⌘B has to keep working in pop-out windows
- * that carry no menu). Whether the OS swallows the key before the webview sees
- * it is platform- and focus-dependent, so the same press can arrive twice —
- * which for a toggle like the sidebar would cancel itself out and look dead.
- */
-export function runMenuAction(id: string): void {
-  const now = Date.now()
-  const previous = lastRun.get(id)
-  if (previous !== undefined && now - previous < 250) return
-  lastRun.set(id, now)
+function runMenuAction(id: string): void {
   handlers.get(id)?.()
 }
 

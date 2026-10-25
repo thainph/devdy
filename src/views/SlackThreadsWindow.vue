@@ -71,7 +71,7 @@ import {
 
 const { t } = useI18n()
 const { toast } = useToast()
-const { confirm, state: confirmState } = useConfirm()
+const { confirm } = useConfirm()
 const { errorText } = useSlackText()
 const store = useSlackThreadsStore()
 const projects = useProjectsStore()
@@ -391,27 +391,9 @@ watch(
   { immediate: true },
 )
 
-function isTypingTarget(el: EventTarget | null): boolean {
-  const node = el as HTMLElement | null
-  if (!node) return false
-  return node.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(node.tagName)
-}
-
-// F2 renames the open thread (the rename field handles its own Enter / Esc).
-function onKeydown(e: KeyboardEvent) {
-  if (e.isComposing || e.keyCode === 229) return
-  if (!view.value || renaming.value || addOpen.value || confirmState.open) return
-  if (isTypingTarget(e.target)) return
-  if (e.key === 'F2') {
-    e.preventDefault()
-    renaming.value = true
-  }
-}
-
 let unlisten: UnlistenFn[] = []
 
 onMounted(async () => {
-  document.addEventListener('keydown', onKeydown)
   void projects.fetchProjects()
   // Listen first, so progress / changes emitted while the first load is in
   // flight (e.g. the startup re-fetch of legacy threads) are not lost.
@@ -457,7 +439,6 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  document.removeEventListener('keydown', onKeydown)
   for (const timer of [searchTimer, listTimer, viewTimer, seenTimer]) if (timer) clearTimeout(timer)
   unlisten.forEach((off) => off())
   unlisten = []
