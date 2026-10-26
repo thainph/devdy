@@ -1400,6 +1400,12 @@ mod tests {
         let legacy = project.join(".codex/skills/review");
         fs::create_dir_all(legacy.join("references")).unwrap();
         fs::copy(source.join("SKILL.md"), legacy.join("SKILL.md")).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(legacy.join("SKILL.md"))
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
+            .unwrap();
         fs::write(legacy.join("references/a.md"), "edited").unwrap();
         let err = apply_skill_to_project(&db, "p1", "review", true).await.unwrap_err();
         assert!(err.contains("local copy"), "{err}");
@@ -1419,8 +1425,9 @@ mod tests {
         let stale = project.join(".claude/skills/review");
         fs::remove_file(&stale).unwrap();
         fs::create_dir_all(stale.join("references")).unwrap();
+        fs::write(stale.join("references/a.md"), "older ref text").unwrap();
+        fs::write(stale.join("references/dropped.md"), "removed from source since").unwrap();
         fs::write(stale.join("SKILL.md"), "old body\n").unwrap();
-        fs::write(stale.join("references/a.md"), "ref").unwrap();
         sqlx::query("UPDATE project_skills SET synced_hash_claude = ? WHERE skill_id = 'review'")
             .bind(crate::commands::skills::skill_hash("old body\n"))
             .execute(&db)
