@@ -149,10 +149,10 @@ pub fn read_skill_md(source_path: &str) -> String {
 /// (claude_hash, codex_hash) — the source SKILL.md hash per engine it is installed for.
 ///
 /// `prev_*` are the SKILL.md hashes recorded at the last sync (None = not installed for that
-/// engine); only an engine Devdy installed before is cleaned up. A copy-era folder is swapped for
-/// a link (or removed) only when it is unedited: SKILL.md matches the source or the last sync, and
-/// every other file matches the source or predates that SKILL.md. An edited one fails the call and
-/// stays on disk.
+/// engine); only an engine Devdy installed before is cleaned up. A copy-era folder is deleted when
+/// swapped for a link (or removed) only if it is unedited: SKILL.md matches the source or the last
+/// sync, and every other file matches the source or was not written after that SKILL.md. Any
+/// other copy is moved to the legacy backups, never deleted.
 pub fn write_skill_artifacts(
     project_path: &str,
     name: &str,
@@ -171,11 +171,11 @@ pub fn write_skill_artifacts(
             let skill_md = copy.join("SKILL.md");
             let Ok(md) = fs::read_to_string(&skill_md) else { return false };
             let md = skill_hash(&md);
-            // Other files: identical to the source, or not touched since the sync that wrote
+            // Other files: identical to the source, or not written since the sync pass that wrote
             // this SKILL.md (a stale copy whose source moved on is still unedited).
             (md == hash || Some(&md) == prev.as_ref())
                 && (project_links::same_tree_except(copy, source, Some(Path::new("SKILL.md")))
-                    || project_links::nothing_newer_than(copy, &skill_md))
+                    || project_links::untouched_since(copy, &skill_md))
         }
     };
     let had_claude = prev_claude.is_some();
@@ -196,14 +196,6 @@ pub fn write_skill_artifacts(
     let legacy = legacy_codex_skill_dir(project_path, name);
     let unedited = unedited_for(prev_codex);
     let hash_codex = if applies_codex(target) {
-        // Check the legacy copy before linking so an edited one stops the switch-over cleanly.
-        if legacy.exists() && !project_links::is_symlink(&legacy) && !unedited(&legacy) {
-            return Err(format!(
-                "{} is a local copy that differs from the Devdy source (edited in the project?) — \
-                 keep or delete it yourself, then try again",
-                legacy.display()
-            ));
-        }
         project_links::ensure_symlink(root, &codex_dest, source, &unedited)?;
         project_links::remove_installed(root, &legacy, source, &unedited)?;
         Some(hash)
@@ -222,7 +214,7 @@ pub fn write_skill_artifacts(
 }
 
 /// Remove a skill's artifacts (legacy layout included) for the engines it was installed for.
-/// Edited legacy copies are kept and reported.
+/// Legacy copies Devdy can't vouch for are moved to the backups.
 pub fn remove_skill_artifacts(
     project_path: &str,
     name: &str,
