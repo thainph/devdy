@@ -1,0 +1,66 @@
+name: build-macos-binary
+description: >-
+  Build the Devdy release binary (frontend embedded) for one macOS target,
+  without bundling. Shared by release-macos.yml and the cache-warming job in
+  ci.yml so both produce the exact same Rust cache key.
+
+inputs:
+  target:
+    description: Rust target triple (aarch64-apple-darwin or x86_64-apple-darwin).
+    required: true
+  save-cache:
+    description: >-
+      Save the Rust cache after the build. Only caches saved on the default
+      branch are visible to tag runs, so tag runs pass 'false'.
+    required: false
+    default: 'false'
+  skip-on-cache-hit:
+    description: Skip the build when the exact cache key already exists (cache warming).
+    required: false
+    default: 'false'
+
+outputs:
+  cache-hit:
+    description: Whether the exact Rust cache key was restored.
+    value: ${{ steps.rust-cache.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up pnpm
+      uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      with:
+        version: 9.15.9
+
+    - name: Set up Node
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: 22
+        cache: pnpm
+
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master @ 2026-10-16
+      with:
+        toolchain: stable
+        targets: ${{ inputs.target }}
+
+    - name: Restore Rust cache
+      id: rust-cache
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      with:
+        workspaces: src-tauri
+        shared-key: release-${{ inputs.target }}
+        save-if: ${{ inputs.save-cache }}
+
+    - name: Install frontend dependencies
+      if: inputs.skip-on-cache-hit != 'true' || steps.rust-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: pnpm install --frozen-lockfile
+
+    # Runs beforeBuildCommand (pnpm build:vite) and embeds dist/ into the binary.
+    - name: Build binary
+      if: inputs.skip-on-cache-hit != 'true' || steps.rust-cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        TARGET: ${{ inputs.target }}
+      run: pnpm tauri build --target "$TARGET" --no-bundle --ci

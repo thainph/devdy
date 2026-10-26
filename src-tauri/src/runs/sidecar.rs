@@ -2037,12 +2037,21 @@ mod turn_end_tests {
         let pgid = child.id();
         let mut stdout = BufReader::new(child.stdout.take().unwrap()).lines();
         assert!(child.wait().await.unwrap().success());
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        let holder: i32 = std::fs::read_to_string(&pid_file)
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
+        // Poll rather than sleep a fixed time: perl may not have written its pid
+        // yet on a slow CI runner (the file can also exist but still be empty).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let holder: i32 = loop {
+            let pid = std::fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|s| s.trim().parse().ok());
+            match pid {
+                Some(pid) => break pid,
+                None if std::time::Instant::now() < deadline => {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await
+                }
+                None => panic!("holder never wrote its pid to {}", pid_file.display()),
+            }
+        };
 
         let (_, eof) =
             drain_trailing_lines(&mut stdout, std::time::Duration::from_millis(300)).await;

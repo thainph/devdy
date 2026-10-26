@@ -1,0 +1,260 @@
+name: ci
+run-name: ${{ github.event_name == 'schedule' && 'ci (weekly cache refresh)' || format('ci {0}', github.ref_name) }}
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  # GitHub evicts caches unused for 7 days and a new stable rustc changes the
+  # cache key; the weekly run keeps the release cache warm between releases.
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('{0}-pr-{1}', github.workflow, github.event.pull_request.number) || format('{0}-{1}', github.workflow, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      frontend: ${{ steps.changes.outputs.frontend }}
+      rust: ${{ steps.changes.outputs.rust }}
+      sidecar: ${{ steps.changes.outputs.sidecar }}
+      crates: ${{ steps.changes.outputs.crates }}
+      release-cache: ${{ steps.changes.outputs.release-cache }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Detect changed components
+        id: changes
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          keys=(frontend rust sidecar crates release-cache)
+          emit_all() { for k in "${keys[@]}"; do echo "$k=true" >> "$GITHUB_OUTPUT"; done; }
+
+          if [[ "$EVENT_NAME" == schedule || "$EVENT_NAME" == workflow_dispatch ]] \
+            || ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            echo "Full run ($EVENT_NAME, base '${BASE_SHA}')"
+            emit_all
+            exit 0
+          fi
+
+          files=$(git diff --name-only "$BASE_SHA" HEAD)
+          printf 'Changed files:\n%s\n' "$files"
+
+          # CI definitions affect every job.
+          if grep -q '^\.github/' <<<"$files"; then emit_all; exit 0; fi
+
+          has() { grep -Eq "$1" <<<"$files" && echo true || echo false; }
+          {
+            # Anything outside the Rust/sidecar/standalone trees and docs counts as frontend.
+            echo "frontend=$(grep -Ev '^(src-tauri/|sidecar[^/]*/|relay/|remote-e2e/|docs/)|\.md$' <<<"$files" | grep -q . && echo true || echo false)"
+            echo "rust=$(has '^(src-tauri/|remote-e2e/)')"
+            # sidecar-mcp tests apply the app's SQLite migrations.
+            echo "sidecar=$(has '^(sidecar[^/]*/|src-tauri/migrations/)')"
+            echo "crates=$(has '^(relay/|remote-e2e/)')"
+            echo "release-cache=$(has '^(src-tauri/Cargo\.(toml|lock)|remote-e2e/Cargo\.toml)$')"
+          } >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
+
+  workflow-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run actionlint
+        run: docker run --rm -v "$PWD:/repo" --workdir /repo rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
+
+      - name: Run zizmor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: pipx run zizmor==1.31.1 --format=github .
+
+  frontend:
+    needs: detect
+    if: needs.detect.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 9.15.9
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # i18n check + vue-tsc + vite build, the same step the release runs.
+      - name: Build frontend
+        run: pnpm build:vite
+
+      - name: Run frontend unit tests
+        run: node --test src/lib/__tests__/*.test.mjs
+
+  sidecar:
+    needs: detect
+    if: needs.detect.outputs.sidecar == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: sidecar/package-lock.json
+
+      - name: Install sidecar dependencies
+        working-directory: sidecar
+        run: npm ci
+
+      # Deterministic tests only. Left out because they make real model turns
+      # and need a logged-in CLI: test-smoke.mjs, sidecar/test-input-closed.mjs,
+      # sidecar/test-askuserquestion.mjs, and codex deny-latency, deny-resume, resume.
+      - name: Run sidecar tests
+        run: |
+          set -euo pipefail
+          node --test sidecar-proxy/*.test.mjs
+          run() { echo "::group::$1/$2"; (cd "$1" && node "$2"); echo "::endgroup::"; }
+          run sidecar test-mocked.mjs
+          for t in always-allow deny exit-signal framing-seed mcp-permission-key \
+                   no-tools-fail-closed no-tools stdin-eof-midturn; do
+            run sidecar-codex "test-$t.mjs"
+          done
+          for t in google-server item-links pulse slack-threads; do
+            run sidecar-mcp "test-$t.mjs"
+          done
+
+  rust:
+    needs: detect
+    if: needs.detect.outputs.rust == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master @ 2026-10-16
+        with:
+          toolchain: stable
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: src-tauri
+          shared-key: test
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Run Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+
+  crates:
+    needs: detect
+    if: needs.detect.outputs.crates == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master @ 2026-10-16
+        with:
+          toolchain: stable
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            relay
+            remote-e2e
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Run relay tests
+        run: cargo test --manifest-path relay/Cargo.toml --locked
+
+      - name: Run remote-e2e tests
+        run: cargo test --manifest-path remote-e2e/Cargo.toml --locked
+
+  # Builds the release binaries on main so release.yml (tag runs cannot share
+  # caches with each other) restores a warm Rust cache. Not part of ci-ok.
+  release-cache:
+    needs: detect
+    if: github.event_name != 'pull_request' && needs.detect.outputs.release-cache == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 45
+    strategy:
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build binary and save cache
+        uses: ./.github/actions/build-macos-binary
+        with:
+          target: ${{ matrix.target }}
+          save-cache: ${{ github.ref == 'refs/heads/main' }}
+          skip-on-cache-hit: 'true'
+
+  ci-ok:
+    if: always()
+    needs: [detect, workflow-lint, frontend, sidecar, rust, crates]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check job results
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          if [[ "$(jq -r '.detect.result' <<<"$NEEDS")" != success ]]; then
+            echo "::error::detect did not succeed"
+            exit 1
+          fi
+          if jq -e 'to_entries | any(.value.result == "failure" or .value.result == "cancelled")' <<<"$NEEDS" >/dev/null; then
+            echo "::error::a CI job failed or was cancelled"
+            exit 1
+          fi
