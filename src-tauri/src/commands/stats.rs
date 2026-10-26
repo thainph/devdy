@@ -8,8 +8,8 @@
 use crate::commands::runs::delete_run_tree;
 use crate::db::Db;
 use crate::runs::sidecar::{
-    apply_claude_config_dir, augment_command_path, detach_process_group, insert_usage_from_result,
-    persist_plan_init_rate_limits, persist_plan_usage, persist_plan_rate_limit_event,
+    apply_claude_config_dir, augment_command_path, detach_sidecar_process_group,
+    insert_usage_from_result, persist_plan_init_rate_limits, persist_plan_usage, persist_plan_rate_limit_event,
     resolve_codex_sidecar, resolve_sidecar,
 };
 use crate::runs::RunRegistry;
@@ -601,12 +601,16 @@ pub async fn refresh_plan_usage(
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    detach_process_group(&mut cmd);
+    detach_sidecar_process_group(&mut cmd);
     cmd.kill_on_drop(true);
 
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn usage probe ({}): {}", node_bin, e))?;
+    let _proc = crate::procs::track(
+        crate::procs::ProcSpec::new(crate::procs::ProcKind::Probe, "Usage check (claude)"),
+        child.id(),
+    );
     let mut stdin = child.stdin.take().ok_or("usage probe stdin unavailable")?;
     let stdout = child.stdout.take().ok_or("usage probe stdout unavailable")?;
     let mut lines = BufReader::new(stdout).lines();
@@ -735,12 +739,16 @@ pub async fn refresh_codex_plan_usage(
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    detach_process_group(&mut cmd);
+    detach_sidecar_process_group(&mut cmd);
     cmd.kill_on_drop(true);
 
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn codex usage probe ({}): {}", node_bin, e))?;
+    let _proc = crate::procs::track(
+        crate::procs::ProcSpec::new(crate::procs::ProcKind::Probe, "Usage check (codex)"),
+        child.id(),
+    );
     let stdout = child.stdout.take().ok_or("codex usage probe stdout unavailable")?;
     let mut lines = BufReader::new(stdout).lines();
 

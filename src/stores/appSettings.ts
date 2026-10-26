@@ -47,6 +47,8 @@ export interface AppSettings {
   cyber_fox_voice_en: string
   cyber_fox_voice_rate: string
   cyber_fox_voice_pitch: string
+  /** What quitting does with running sessions / leftover processes: 'ask' | 'stop_all' | 'keep_leftovers'. */
+  quit_background_policy: string
 }
 
 export const useAppSettingsStore = defineStore('appSettings', () => {

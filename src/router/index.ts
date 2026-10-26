@@ -21,6 +21,7 @@ import StatsView from '../views/StatsView.vue'
 import CalendarView from '../views/CalendarView.vue'
 import PulseView from '../views/PulseView.vue'
 import AboutView from '../views/AboutView.vue'
+import BackgroundProcessesView from '../views/BackgroundProcessesView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -88,6 +89,7 @@ const router = createRouter({
       },
     },
     { path: '/settings', name: 'settings', component: SettingsView },
+    { path: '/processes', name: 'processes', component: BackgroundProcessesView },
     { path: '/about', name: 'about', component: AboutView },
     ...(import.meta.env.DEV
       ? [{

@@ -49,6 +49,11 @@ pub struct RunHandles {
     /// existing registry teardown cleans it up for free.
     #[allow(dead_code)]
     pub ssh_access: Option<ssh_access::SshAccessGuard>,
+    /// Background-process registration of the sidecar's tree. Dropped with the
+    /// handles: from then on whatever the run started that is still alive is
+    /// listed as a leftover until it exits or the user stops it.
+    #[allow(dead_code)]
+    pub proc: Option<crate::procs::ProcGuard>,
 }
 
 pub type RunRegistry = Arc<Mutex<HashMap<String, RunHandles>>>;

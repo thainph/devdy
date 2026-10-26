@@ -40,7 +40,12 @@
     "animatedBackgroundHint": "Thêm khung cảnh động (ví dụ bầu trời đêm Trăng Tròn 🌕) cho các bảng màu cảnh vật. Tự động tạm dừng khi bật giảm chuyển động.",
     "terminalApp": "Ứng dụng Terminal",
     "terminalDefault": "Terminal (mặc định macOS)",
-    "terminalIterm": "iTerm"
+    "terminalIterm": "iTerm",
+    "quitPolicy": "Khi thoát mà còn tiến trình nền",
+    "quitPolicyAsk": "Hỏi",
+    "quitPolicyStopAll": "Dừng tất cả",
+    "quitPolicyKeep": "Giữ tiến trình nền",
+    "quitPolicyHint": "Áp dụng khi còn phiên đang chạy hoặc tiến trình còn sót. \"Giữ\" vẫn dừng các phiên và tiến trình hỗ trợ của Devdy."
   },
   "mascot": {
     "title": "Linh thú DY",

@@ -53,12 +53,16 @@ const MENU_PREFIX: &str = "tray:menu:";
 /// Event sent to the main window when a session row is clicked. The main window
 /// decides where the run is shown (its pop-out, or itself) — see `src/lib/tray.ts`.
 const OPEN_RUN_EVENT: &str = "tray://open-run";
+/// Row id that opens the background-process view in the main window.
+const PROCS_ID: &str = "tray:procs";
+/// Event sent to the main window for [`PROCS_ID`].
+const OPEN_PROCS_EVENT: &str = "tray:open-processes";
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum TrayItem {
     /// A clickable row. `id` is `tray:win:<label>`, `tray:run:<runId>`,
-    /// `tray:menu:<appMenuId>` or `tray:quit`.
+    /// `tray:menu:<appMenuId>`, `tray:procs` or `tray:quit`.
     Item { id: String, label: String },
     /// A greyed-out, non-clickable section title.
     Header { label: String },
@@ -198,6 +202,15 @@ fn on_menu_event<R: Runtime>(app: &AppHandle<R>, event: tauri::menu::MenuEvent) 
         } else {
             app.exit(0);
         }
+        return;
+    }
+    if id == PROCS_ID {
+        if let Some(win) = app.get_webview_window("main") {
+            let _ = win.unminimize();
+            let _ = win.show();
+            let _ = win.set_focus();
+        }
+        let _ = app.emit_to("main", OPEN_PROCS_EVENT, ());
         return;
     }
     if let Some(label) = id.strip_prefix(WIN_PREFIX) {

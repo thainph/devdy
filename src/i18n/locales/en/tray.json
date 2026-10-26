@@ -9,5 +9,6 @@
   "noteListWindow": "Notes",
   "windows": "Windows",
   "runningSessions": "Running Sessions ({count})",
-  "noRunningSessions": "No running sessions"
+  "noRunningSessions": "No running sessions",
+  "backgroundProcesses": "Background Processes ({count})"
 }

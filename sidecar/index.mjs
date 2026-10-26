@@ -47,6 +47,47 @@ import { query } from '@anthropic-ai/claude-agent-sdk'
 import { randomUUID } from 'node:crypto'
 import readline from 'node:readline'
 
+// --- Orphan guard ------------------------------------------------------------
+// Devdy spawns this sidecar as the leader of its own process group and says so
+// with DEVDY_OWN_PROCESS_GROUP=1 (removed here so no child inherits it). If
+// Devdy dies without stopping us (crash, force quit), we are re-parented and
+// nobody reads our output any more: tear the whole group down (CLI, MCP
+// servers, tool processes) rather than letting a turn run on, burning tokens,
+// with nobody listening. Processes that left the group are listed by Devdy's
+// background-process view at its next launch.
+const OWN_GROUP = process.env.DEVDY_OWN_PROCESS_GROUP === '1'
+delete process.env.DEVDY_OWN_PROCESS_GROUP
+const PARENT_PID = process.ppid
+let orphaned = false
+function orphanTeardown() {
+  if (orphaned) return
+  orphaned = true
+  // Survive our own group-wide SIGTERM long enough to follow up with SIGKILL.
+  process.on('SIGTERM', () => {})
+  try { process.kill(-process.pid, 'SIGTERM') } catch {}
+  setTimeout(() => {
+    try { process.kill(-process.pid, 'SIGKILL') } catch {}
+    process.exit(1)
+  }, 2000)
+}
+const parentGone = () => process.ppid !== PARENT_PID
+if (OWN_GROUP && PARENT_PID > 1) {
+  const watch = setInterval(() => {
+    if (parentGone()) { clearInterval(watch); orphanTeardown() }
+  }, Math.max(50, Number(process.env.DEVDY_PARENT_WATCH_MS) || 2000))
+  watch.unref()
+}
+// A write to a closed stdout (EPIPE) is how the death of Devdy usually shows
+// first; the re-parenting follows right after. Re-check then: orphaned → tear
+// down, otherwise stop as before (the reader went away on purpose).
+process.stdout.on('error', (err) => {
+  if (err?.code !== 'EPIPE') throw err
+  setTimeout(() => {
+    if (OWN_GROUP && parentGone()) orphanTeardown()
+    else process.exit(1)
+  }, 300)
+})
+
 // Broker → sidecar inputs consumed by this process only. Captured once and
 // removed from process.env so they never reach the Claude CLI child (or the MCP
 // servers it spawns) — DEVDY_MCP_SERVERS carries the session's bearer token.
