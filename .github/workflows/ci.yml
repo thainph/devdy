@@ -142,16 +142,15 @@ jobs:
         working-directory: sidecar
         run: npm ci
 
-      # Deterministic tests only: test-smoke.mjs and the codex tests that need
-      # a logged-in CLI (deny-latency, deny-resume, resume) are left out.
+      # Deterministic tests only. Left out because they make real model turns
+      # and need a logged-in CLI: test-smoke.mjs, sidecar/test-input-closed.mjs,
+      # sidecar/test-askuserquestion.mjs, and codex deny-latency, deny-resume, resume.
       - name: Run sidecar tests
         run: |
           set -euo pipefail
           node --test sidecar-proxy/*.test.mjs
           run() { echo "::group::$1/$2"; (cd "$1" && node "$2"); echo "::endgroup::"; }
           run sidecar test-mocked.mjs
-          run sidecar test-input-closed.mjs
-          run sidecar test-askuserquestion.mjs
           for t in always-allow deny exit-signal framing-seed mcp-permission-key \
                    no-tools-fail-closed no-tools stdin-eof-midturn; do
             run sidecar-codex "test-$t.mjs"
