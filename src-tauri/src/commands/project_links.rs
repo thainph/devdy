@@ -153,6 +153,11 @@ pub fn is_symlink(dest: &Path) -> bool {
     fs::symlink_metadata(dest).is_ok_and(|m| m.file_type().is_symlink())
 }
 
+/// Finder metadata files, never part of a skill — ignored when comparing copies.
+fn is_os_junk(path: &Path) -> bool {
+    path.file_name().is_some_and(|n| n == ".DS_Store")
+}
+
 /// True when the legacy copy `copy` holds exactly the files of `source` with the same bytes —
 /// nothing edited, added or removed in the project — leaving out the file at relative path `skip`
 /// (checked separately by the caller). Used for skill folders, where a SKILL.md hash alone would
@@ -167,7 +172,7 @@ pub fn same_tree_except(copy: &Path, source: &Path, skip: Option<&Path>) -> bool
             }
             if entry.file_type().is_file() {
                 let rel = entry.path().strip_prefix(dir).ok()?.to_path_buf();
-                if Some(rel.as_path()) != skip {
+                if Some(rel.as_path()) != skip && !is_os_junk(&rel) {
                     out.push(rel);
                 }
             }
@@ -180,6 +185,30 @@ pub fn same_tree_except(copy: &Path, source: &Path, skip: Option<&Path>) -> bool
         (Ok(x), Ok(y)) => x == y,
         _ => false,
     })
+}
+
+/// True when no file in `dir` (other than `reference` itself) was modified after `reference`.
+///
+/// Copy-era syncs rewrote a skill's whole folder, and `fs::copy` keeps each source file's mtime,
+/// so everything Devdy wrote is dated no later than the SKILL.md it wrote in the same pass. A file
+/// changed or added in the project after that sync is newer — that is what this catches, while a
+/// copy that is merely stale (the source moved on without a sync) passes.
+pub fn nothing_newer_than(dir: &Path, reference: &Path) -> bool {
+    let Ok(limit) = fs::metadata(reference).and_then(|m| m.modified()) else { return false };
+    for entry in walkdir::WalkDir::new(dir).follow_links(false) {
+        let Ok(entry) = entry else { return false };
+        if entry.file_type().is_symlink() {
+            return false;
+        }
+        if !entry.file_type().is_file() || entry.path() == reference || is_os_junk(entry.path()) {
+            continue;
+        }
+        match entry.metadata().ok().and_then(|m| m.modified().ok()) {
+            Some(t) if t <= limit => {}
+            _ => return false,
+        }
+    }
+    true
 }
 
 /// True when `a` and `b` resolve to the same existing file — e.g. a rename that only changes
@@ -344,6 +373,31 @@ mod tests {
         fs::write(copy.join("references/a.md"), "ref").unwrap();
         fs::write(copy.join("notes.md"), "added").unwrap();
         assert!(!same_tree_except(&copy, &src, None));
+    }
+
+    #[test]
+    fn nothing_newer_than_catches_later_edits_only() {
+        use std::time::{Duration, SystemTime};
+        let root = tmp("mtime");
+        fs::create_dir_all(root.join("references")).unwrap();
+        let set = |p: &Path, secs_ago: u64| {
+            fs::File::options()
+                .write(true)
+                .open(p)
+                .unwrap()
+                .set_modified(SystemTime::now() - Duration::from_secs(secs_ago))
+                .unwrap();
+        };
+        let md = root.join("SKILL.md");
+        let reference = root.join("references/a.md");
+        fs::write(&md, "s").unwrap();
+        fs::write(&reference, "old ref").unwrap();
+        set(&md, 100);
+        set(&reference, 1000);
+        assert!(nothing_newer_than(&root, &md), "older files from the sync pass are fine");
+
+        fs::write(&reference, "edited ref").unwrap();
+        assert!(!nothing_newer_than(&root, &md), "a later edit is caught");
     }
 
     #[test]
