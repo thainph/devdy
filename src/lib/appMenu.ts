@@ -60,7 +60,7 @@ function buildSpec(state: MenuState): MenuSpec {
         { kind: 'predefined', role: 'hideOthers' },
         { kind: 'predefined', role: 'showAll' },
         { kind: 'separator' },
-        { kind: 'predefined', role: 'quit' },
+        { kind: 'predefined', role: 'quit', label: t('tray.quit') },
       ],
     })
   }
@@ -77,7 +77,7 @@ function buildSpec(state: MenuState): MenuSpec {
         : ([
             { kind: 'predefined', role: 'closeWindow' },
             { kind: 'separator' },
-            { kind: 'predefined', role: 'quit' },
+            { kind: 'predefined', role: 'quit', label: t('tray.quit') },
           ] as ItemSpec[])),
     ],
   })

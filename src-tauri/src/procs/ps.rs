@@ -44,6 +44,9 @@ pub fn snapshot() -> Option<Vec<PsRow>> {
         let out = Command::new(bin)
             .args(["-axww", "-o", PS_FORMAT])
             .env("LC_ALL", "C")
+            // UTC: the start stamp is our identity key and must not change
+            // with a time-zone / DST change during the session.
+            .env("TZ", "UTC")
             .output()
             .ok()?;
         if !out.status.success() {
@@ -98,14 +101,10 @@ fn parse_line(line: &str) -> Option<PsRow> {
     })
 }
 
-/// `lstart` (local time) as RFC 3339, for display.
+/// `lstart` (printed in UTC, see [`snapshot`]) as RFC 3339, for display.
 pub fn start_to_rfc3339(start: &str) -> Option<String> {
-    use chrono::TimeZone;
     let ndt = chrono::NaiveDateTime::parse_from_str(start, "%a %b %e %H:%M:%S %Y").ok()?;
-    chrono::Local
-        .from_local_datetime(&ndt)
-        .earliest()
-        .map(|d| d.to_rfc3339())
+    Some(ndt.and_utc().to_rfc3339())
 }
 
 #[cfg(test)]

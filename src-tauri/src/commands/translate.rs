@@ -33,8 +33,8 @@
 
 use crate::db::Db;
 use crate::runs::sidecar::{
-    apply_claude_config_dir, augment_command_path, detach_process_group, kill_process_group,
-    resolve_codex_sidecar, resolve_sidecar,
+    apply_claude_config_dir, augment_command_path, detach_sidecar_process_group,
+    kill_process_group, resolve_codex_sidecar, resolve_sidecar,
 };
 use serde_json::Value;
 use sqlx::Row;
@@ -494,7 +494,7 @@ async fn spawn_warm(
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    detach_process_group(&mut cmd);
+    detach_sidecar_process_group(&mut cmd);
     cmd.kill_on_drop(true);
 
     let mut child = cmd
@@ -1210,7 +1210,7 @@ mod tests {
         let mut cmd = tokio::process::Command::new("cat");
         cmd.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped());
-        detach_process_group(&mut cmd);
+        crate::runs::sidecar::detach_process_group(&mut cmd);
         cmd.kill_on_drop(true);
         let mut child = cmd.spawn().unwrap();
         let stdout = child.stdout.take().unwrap();

@@ -713,16 +713,18 @@ pub fn run() {
                     }
                     app_handle.exit(0);
                 }
-                // Quit via Cmd+Q / app menu: same question and cleanup.
+                // `app.exit()` and the last window closing: same question and
+                // cleanup. (Cmd+Q is a custom menu item that closes the main
+                // window, see `app_menu::QUIT_ITEM_ID`.)
                 tauri::RunEvent::ExitRequested { api, .. }
                     if !procs::quit::request_quit(app_handle) =>
                 {
                     api.prevent_exit();
                 }
-                // Last resort if an exit bypassed the question: never leave a
-                // run sidecar or warm session behind.
+                // Exits that bypass the question (macOS Dock Quit, logout) still
+                // get the cleanup; a second run after a confirmed quit is cheap.
                 tauri::RunEvent::Exit => {
-                    procs::quit::stop_app_sidecars(app_handle);
+                    procs::quit::on_exit(app_handle);
                 }
                 _ => {}
             }

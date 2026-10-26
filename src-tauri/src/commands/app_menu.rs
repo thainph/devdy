@@ -18,6 +18,11 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 /// Event carrying a clicked item's id to the main window's webview.
 pub const MENU_ACTION_EVENT: &str = "menu://action";
+/// Id of the Quit item. The OS-provided Quit sends `terminate:` straight to
+/// NSApp, which exits without a prevent-able `ExitRequested`, so Quit is a
+/// normal item that closes the main window instead: the same path as tray Quit,
+/// which asks first when work is still running (see `procs::quit`).
+const QUIT_ITEM_ID: &str = "app:quit";
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -71,7 +76,6 @@ fn apply_role<'m, R: Runtime, M: Manager<R>>(
         "maximize" => builder.maximize(),
         "fullscreen" => builder.fullscreen(),
         "closeWindow" => builder.close_window(),
-        "quit" => builder.quit(),
         "about" => builder.about(None),
         #[cfg(target_os = "macos")]
         "services" => builder.services(),
@@ -99,6 +103,16 @@ pub fn set_app_menu<R: Runtime>(app: AppHandle<R>, spec: MenuSpec) -> Result<(),
         for item in &sub.items {
             submenu = match item {
                 ItemSpec::Separator => submenu.separator(),
+                ItemSpec::Predefined { role, label } if role == "quit" => {
+                    let built = MenuItemBuilder::with_id(
+                        QUIT_ITEM_ID,
+                        label.as_deref().unwrap_or("Quit Devdy"),
+                    )
+                    .accelerator("CmdOrCtrl+Q")
+                    .build(&app)
+                    .map_err(|e| e.to_string())?;
+                    submenu.item(&built)
+                }
                 ItemSpec::Predefined { role, label } => {
                     apply_role(submenu, role, label.as_deref())
                 }
@@ -136,6 +150,15 @@ pub fn on_menu_event<R: Runtime>(app: &AppHandle<R>, event: tauri::menu::MenuEve
     // namespaced `tray:` and handled in `tray::on_menu_event`; ignore them here so a
     // tray "focus session" click doesn't also yank focus back to the main window.
     if id.starts_with("tray:") {
+        return;
+    }
+    if id == QUIT_ITEM_ID {
+        match app.get_webview_window("main") {
+            Some(win) => {
+                let _ = win.close();
+            }
+            None => app.exit(0),
+        }
         return;
     }
     if let Some(win) = app.get_webview_window("main") {

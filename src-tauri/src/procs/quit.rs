@@ -15,20 +15,38 @@ use crate::runs::sidecar::kill_process_group;
 use crate::runs::RunRegistry;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 pub const QUIT_REQUESTED_EVENT: &str = "app:quit-requested";
 pub const POLICY_KEY: &str = "quit_background_policy";
 /// Grace between SIGTERM and SIGKILL when quitting (the app is waiting).
 const QUIT_GRACE: Duration = Duration::from_millis(1500);
+/// How long an unanswered question counts as open. A quit request inside this
+/// window force-quits; after it (e.g. the webview reloaded and lost the
+/// dialog) the question is asked again instead.
+const PENDING_TTL: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
 pub struct QuitState {
-    /// The main window was asked and has not answered yet.
-    pending: AtomicBool,
+    /// When the main window was asked, if it has not answered yet.
+    pending: Mutex<Option<Instant>>,
     /// Cleanup done; the next exit request goes through.
     confirmed: AtomicBool,
+}
+
+impl QuitState {
+    fn is_pending(&self) -> bool {
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some_and(|at| at.elapsed() < PENDING_TTL)
+    }
+
+    fn set_pending(&self, on: bool) {
+        *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = on.then(Instant::now);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,7 +82,7 @@ pub fn request_quit(app: &AppHandle) -> bool {
     if qs.confirmed.load(Ordering::SeqCst) {
         return true;
     }
-    if qs.pending.load(Ordering::SeqCst) {
+    if qs.is_pending() {
         // Second quit while the question is open: stop everything and go.
         finish(app, QuitAction::StopAll);
         return true;
@@ -83,10 +101,17 @@ pub fn request_quit(app: &AppHandle) -> bool {
             .flatten();
         (snap, live_runs, policy)
     });
-    let counts = snap.counts.clone();
-    let needs_answer =
-        live_runs > 0 || counts.active > 0 || counts.leftover > 0 || counts.orphan > 0;
-    if !needs_answer {
+    // Only user work warrants a question: live runs, and whatever runs (or a
+    // previous session) left behind. App plumbing is always stopped silently.
+    let entries: Vec<BgEntry> = snap.entries.into_iter().filter(|e| !e.infra).collect();
+    let count = |state: ProcState| entries.iter().filter(|e| e.state == state).count();
+    let counts = Counts {
+        active: count(ProcState::Active).max(live_runs),
+        leftover: count(ProcState::Leftover),
+        orphan: count(ProcState::Orphan),
+        total_processes: entries.iter().map(|e| e.processes.len()).sum(),
+    };
+    if counts.active == 0 && counts.leftover == 0 && counts.orphan == 0 {
         finish(app, QuitAction::KeepLeftovers);
         return true;
     }
@@ -98,12 +123,7 @@ pub fn request_quit(app: &AppHandle) -> bool {
         finish(app, QuitAction::StopAll);
         return true;
     };
-    let entries: Vec<BgEntry> = snap.entries.into_iter().filter(|e| !e.infra).collect();
-    let counts = Counts {
-        active: counts.active.max(live_runs),
-        ..counts
-    };
-    qs.pending.store(true, Ordering::SeqCst);
+    qs.set_pending(true);
     let _ = main.unminimize();
     let _ = main.show();
     let _ = main.set_focus();
@@ -111,7 +131,7 @@ pub fn request_quit(app: &AppHandle) -> bool {
         .emit(QUIT_REQUESTED_EVENT, QuitRequest { counts, entries })
         .is_err()
     {
-        qs.pending.store(false, Ordering::SeqCst);
+        qs.set_pending(false);
         finish(app, QuitAction::StopAll);
         return true;
     }
@@ -128,7 +148,7 @@ pub async fn resolve_quit(
 ) -> Result<(), String> {
     let qs = app.state::<QuitState>();
     if action == "cancel" {
-        qs.pending.store(false, Ordering::SeqCst);
+        qs.set_pending(false);
         return Ok(());
     }
     let parsed =
@@ -160,7 +180,7 @@ fn finish(app: &AppHandle, action: QuitAction) {
     if qs.confirmed.swap(true, Ordering::SeqCst) {
         return;
     }
-    qs.pending.store(false, Ordering::SeqCst);
+    qs.set_pending(false);
 
     let tracker = app.state::<ProcTracker>().inner().clone();
     if let Some(rows) = ps::snapshot() {
@@ -188,6 +208,31 @@ fn finish(app: &AppHandle, action: QuitAction) {
         tracker.apply_sample(&rows);
     }
     tracker.persist_now();
+}
+
+/// `RunEvent::Exit`. The question could not be asked when the exit did not go
+/// through [`request_quit`] — macOS Dock "Quit", logout / shutdown (they send
+/// `terminate:`, which cannot be prevented). Apply the saved policy, stopping
+/// everything when it is "ask": nobody is there to answer.
+pub fn on_exit(app: &AppHandle) {
+    if app.state::<QuitState>().confirmed.load(Ordering::SeqCst) {
+        stop_app_sidecars(app);
+        return;
+    }
+    let db = app.state::<Db>().inner().clone();
+    let policy: Option<String> = tauri::async_runtime::block_on(async move {
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+            .bind(POLICY_KEY)
+            .fetch_optional(&db)
+            .await
+            .ok()
+            .flatten()
+    });
+    let action = policy
+        .as_deref()
+        .and_then(QuitAction::parse)
+        .unwrap_or(QuitAction::StopAll);
+    finish(app, action);
 }
 
 /// Kill every registered run sidecar (and its CLI) and the warm translate /
