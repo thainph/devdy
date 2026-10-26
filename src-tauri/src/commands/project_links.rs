@@ -9,6 +9,10 @@
 //! never deleted: it is moved to `<app data>/legacy-backups/<project>/<timestamp>/` first, so the
 //! switch-over never blocks and never loses a local edit.
 //!
+//! Paths git tracks are never touched: a team that committed its own `.claude/skills/x` keeps it,
+//! and Devdy reports `Linked::TrackedByGit` instead of installing there. A project folder that no
+//! longer exists is an error rather than being recreated by `create_dir_all`.
+//!
 //! Every operation first checks that the folder holding `dest` is a real directory inside the
 //! project. If it is reached through a symlink (say `.agents/skills -> ../.claude/skills`), acting
 //! on `dest` would actually touch another engine's install — or the library itself.
@@ -51,6 +55,42 @@ impl<F: Fn(&Path) -> bool> Known for F {}
 /// Nothing at a destination is ever a known copy (used where Devdy never wrote copies).
 pub fn no_copies(_: &Path) -> bool {
     false
+}
+
+/// Outcome of `ensure_symlink`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Linked {
+    /// `dest` now links to the source.
+    Yes,
+    /// `dest` holds files git tracks; left as is, nothing installed there.
+    TrackedByGit,
+}
+
+/// Whether `path` lies inside a Devdy app data dir (`vn.papay.devdy`, `vn.papay.devdy.dev`, …) —
+/// i.e. a link to it was made by Devdy, possibly from another build or an older location.
+fn in_devdy_library(path: &Path) -> bool {
+    path.ancestors()
+        .any(|a| a.file_name().is_some_and(|n| n.to_string_lossy().starts_with("vn.papay.devdy")))
+}
+
+/// Whether git tracks anything at `dest` (a file, or files under a folder) in the project's repo.
+fn git_tracked(root: &Path, dest: &Path) -> bool {
+    let Ok(rel) = dest.strip_prefix(root) else { return false };
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["ls-files", "-z", "--"])
+        .arg(rel)
+        .output()
+        .is_ok_and(|o| o.status.success() && !o.stdout.is_empty())
+}
+
+fn require_project_dir(root: &Path) -> Result<(), String> {
+    if root.is_dir() {
+        Ok(())
+    } else {
+        Err(format!("Project folder not found: {}", root.display()))
+    }
 }
 
 /// What currently sits at a link destination.
@@ -106,8 +146,20 @@ fn require_real_parent(root: &Path, dest: &Path) -> Result<(), String> {
 /// Move a copy Devdy can't vouch for out of the project, keeping its path relative to `root`.
 fn back_up(root: &Path, dest: &Path) -> Result<PathBuf, String> {
     let rel = dest.strip_prefix(root).unwrap_or(dest);
+    move_to_backup(&project_backup_dir(root), dest, rel)
+}
+
+/// Move a library file/folder the DB doesn't know (left over from an old rename or delete) out of
+/// the way, so a skill/rule can take its name. Kept under `legacy-backups/_library/`.
+pub fn back_up_library_orphan(path: &Path, kind: &str) -> Result<PathBuf, String> {
+    let name = path.file_name().map(PathBuf::from).unwrap_or_default();
+    move_to_backup(&backup_root().join("_library"), path, &Path::new(kind).join(name))
+}
+
+/// Move `src` to `<base>/<timestamp>/<rel>`.
+fn move_to_backup(base: &Path, src: &Path, rel: &Path) -> Result<PathBuf, String> {
+    let dest = src;
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
-    let base = project_backup_dir(root);
     let mut target = base.join(&stamp).join(rel);
     let mut n = 1;
     while target.exists() {
@@ -154,10 +206,12 @@ fn clear_copy(root: &Path, dest: &Path, known: impl Known) -> Result<(), String>
 /// Make `dest` (inside project `root`) a symlink to `target`.
 ///
 /// * nothing there → create the link (parent dirs included);
-/// * already a link to `target` → no-op; a dangling link → replaced;
-///   a link to anything else → error (not ours to repoint);
-/// * a real file/dir (legacy copy) → deleted if `known(dest)`, else moved to the backups.
-pub fn ensure_symlink(root: &Path, dest: &Path, target: &Path, known: impl Known) -> Result<(), String> {
+/// * already a link to `target` → no-op; a dangling link or one into a Devdy library elsewhere →
+///   repointed; a link to anything else → error (not ours to repoint);
+/// * a real file/dir git tracks → left alone (`Linked::TrackedByGit`);
+/// * any other real file/dir (legacy copy) → deleted if `known(dest)`, else moved to the backups.
+pub fn ensure_symlink(root: &Path, dest: &Path, target: &Path, known: impl Known) -> Result<Linked, String> {
+    require_project_dir(root)?;
     if !target.exists() {
         return Err(format!("Source not found: {}", target.display()));
     }
@@ -166,9 +220,9 @@ pub fn ensure_symlink(root: &Path, dest: &Path, target: &Path, known: impl Known
         Existing::Nothing => {}
         Existing::Link(current) => {
             if current == target {
-                return Ok(());
+                return Ok(Linked::Yes);
             }
-            if dest.exists() {
+            if dest.exists() && !in_devdy_library(&current) {
                 return Err(format!(
                     "{} already links to {} — remove it, then apply again",
                     dest.display(),
@@ -177,17 +231,23 @@ pub fn ensure_symlink(root: &Path, dest: &Path, target: &Path, known: impl Known
             }
             remove_link(dest).map_err(|e| format!("{}: {}", dest.display(), e))?;
         }
-        Existing::Dir | Existing::File => clear_copy(root, dest, known)?,
+        Existing::Dir | Existing::File => {
+            if git_tracked(root, dest) {
+                return Ok(Linked::TrackedByGit);
+            }
+            clear_copy(root, dest, known)?;
+        }
     }
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("{}: {}", parent.display(), e))?;
     }
-    create_symlink(target, dest)
+    create_symlink(target, dest).map(|()| Linked::Yes)
 }
 
-/// Remove what Devdy installed at `dest`: a link to `target` (or a dangling one), or a legacy copy
-/// (deleted if `known`, else moved to the backups). A link elsewhere is left alone. Missing is
-/// fine, and so is a symlinked parent folder (then `dest` isn't ours — nothing is touched).
+/// Remove what Devdy installed at `dest`: a link to `target`, a dangling one or one into a Devdy
+/// library, or a legacy copy (deleted if `known`, else moved to the backups). Other links and
+/// anything git tracks are left alone. Missing is fine, and so is a symlinked parent folder (then
+/// `dest` isn't ours — nothing is touched).
 pub fn remove_installed(root: &Path, dest: &Path, target: &Path, known: impl Known) -> Result<(), String> {
     if !parent_is_real(root, dest)? {
         return Ok(());
@@ -195,13 +255,23 @@ pub fn remove_installed(root: &Path, dest: &Path, target: &Path, known: impl Kno
     match inspect(dest)? {
         Existing::Nothing => Ok(()),
         Existing::Link(current) => {
-            if current == target || !dest.exists() {
+            if current == target || !dest.exists() || in_devdy_library(&current) {
                 remove_link(dest).map_err(|e| format!("{}: {}", dest.display(), e))
             } else {
                 Ok(())
             }
         }
+        Existing::Dir | Existing::File if git_tracked(root, dest) => Ok(()),
         Existing::Dir | Existing::File => clear_copy(root, dest, known),
+    }
+}
+
+/// Remove `dest` only if it is Devdy's link (see `remove_installed`); real files and folders are
+/// left alone. For locations Devdy never wrote copies to, such as `.agents/skills`.
+pub fn remove_own_link(root: &Path, dest: &Path, target: &Path) -> Result<(), String> {
+    match inspect(dest)? {
+        Existing::Link(_) => remove_installed(root, dest, target, no_copies),
+        _ => Ok(()),
     }
 }
 
@@ -485,6 +555,66 @@ mod tests {
         fs::write(&reference, "edited ref").unwrap();
         assert!(!untouched_since_within(&root, &md, none), "a later write is caught");
         assert!(untouched_since(&root, &md), "within the sync-pass slack it still counts as one pass");
+    }
+
+    #[test]
+    fn git_tracked_paths_are_left_alone() {
+        let root = tmp("tracked");
+        let src = root.join("lib/skill");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("SKILL.md"), "lib").unwrap();
+        let dest = root.join(".claude/skills/skill");
+        fs::create_dir_all(&dest).unwrap();
+        fs::write(dest.join("SKILL.md"), "team version").unwrap();
+        let git = |args: &[&str]| {
+            assert!(std::process::Command::new("git").arg("-C").arg(&root).args(args).output().unwrap().status.success());
+        };
+        git(&["init", "-q"]);
+        git(&["add", ".claude"]);
+
+        assert_eq!(ensure_symlink(&root, &dest, &src, no_copies).unwrap(), Linked::TrackedByGit);
+        remove_installed(&root, &dest, &src, |_: &Path| true).unwrap();
+        assert_eq!(fs::read_to_string(dest.join("SKILL.md")).unwrap(), "team version");
+        assert!(!is_symlink(&dest));
+    }
+
+    #[test]
+    fn missing_project_folder_is_not_recreated() {
+        let root = tmp("gone").join("project");
+        let src = tmp("gone-lib").join("x.md");
+        fs::write(&src, "x").unwrap();
+        let err = ensure_symlink(&root, &root.join(".claude/rules/x.md"), &src, no_copies).unwrap_err();
+        assert!(err.contains("Project folder not found"), "{err}");
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn links_into_another_devdy_library_are_repointed() {
+        let root = tmp("relink");
+        let old_lib = root.join("Application Support/vn.papay.devdy.dev/skills/skill");
+        let src = root.join("Application Support/vn.papay.devdy/skills/skill");
+        for d in [&old_lib, &src] {
+            fs::create_dir_all(d).unwrap();
+            fs::write(d.join("SKILL.md"), "x").unwrap();
+        }
+        let dest = root.join("proj/.claude/skills/skill");
+        fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&old_lib, &dest).unwrap();
+
+        assert_eq!(ensure_symlink(&root, &dest, &src, no_copies).unwrap(), Linked::Yes);
+        assert_eq!(fs::read_link(&dest).unwrap(), src);
+    }
+
+    #[test]
+    fn remove_own_link_keeps_real_folders() {
+        let root = tmp("own-link");
+        let src = root.join("lib/skill");
+        fs::create_dir_all(&src).unwrap();
+        let dest = root.join(".agents/skills/skill");
+        fs::create_dir_all(&dest).unwrap();
+        fs::write(dest.join("SKILL.md"), "someone else's").unwrap();
+        remove_own_link(&root, &dest, &src).unwrap();
+        assert!(dest.join("SKILL.md").exists());
     }
 
     #[test]

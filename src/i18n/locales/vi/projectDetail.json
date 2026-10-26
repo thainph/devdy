@@ -137,5 +137,6 @@
   "warnClaudeMdImportsAgentsMd": "{path} đang import {'@'}AGENTS.md nên Claude đọc cả rule của Codex và thấy chúng hai lần.",
   "warnCodexReadsClaudeMd": "{config} có CLAUDE.md trong project_doc_fallback_filenames nên Codex có thể đọc chỉ dẫn của Claude.",
   "warnLinksNotIgnored": "{dir} chứa symlink của Devdy nhưng chưa được git ignore. Nếu commit, link trỏ tới đường dẫn trên máy này sẽ hỏng ở máy người khác — thêm vào .gitignore hoặc .git/info/exclude.",
-  "warnLegacyCopiesBackedUp": "Khi chuyển sang symlink, các bản copy skill/rule cũ có thể chứa chỉnh sửa tại dự án đã được chuyển vào {dir} ({count} lượt). Hãy xem lại, giữ phần cần thiết rồi xoá thư mục đó để tắt thông báo này."
+  "warnLegacyCopiesBackedUp": "Khi chuyển sang symlink, các bản copy skill/rule cũ có thể chứa chỉnh sửa tại dự án đã được chuyển vào {dir} ({count} lượt). Hãy xem lại, giữ phần cần thiết rồi xoá thư mục đó để tắt thông báo này.",
+  "warnTrackedByGit": "Repo đã commit file riêng tại {paths}. Devdy không đụng vào và không cài vào đó, nên Claude/Codex sẽ dùng bản trong repo."
 }
