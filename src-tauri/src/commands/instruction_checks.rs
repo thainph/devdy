@@ -37,6 +37,9 @@ pub enum InstructionWarning {
     /// Old copies Devdy couldn't vouch for were moved here instead of being deleted. Shown until
     /// the user reviews and removes the folder.
     LegacyCopiesBackedUp { dir: String, batches: usize },
+    /// The repo commits its own files where Devdy would install these skills/rules; Devdy leaves
+    /// them alone, so the repo's version is what the engines load.
+    TrackedByGit { paths: Vec<String> },
 }
 
 #[tauri::command]
@@ -53,7 +56,64 @@ pub async fn get_instruction_warnings(
     let path: String = row.get("path");
     let codex_home = codex_home();
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    Ok(check_project(Path::new(&path), codex_home.as_deref(), home.as_deref()))
+    let mut warnings = check_project(Path::new(&path), codex_home.as_deref(), home.as_deref());
+
+    // Every place Devdy would install this project's skills/rules.
+    let names = sqlx::query(
+        "SELECT 'skill' AS kind, s.name FROM project_skills ps JOIN skills s ON s.id = ps.skill_id WHERE ps.project_id = ?1
+         UNION ALL
+         SELECT 'rule' AS kind, r.name FROM project_rules pr JOIN rules r ON r.id = pr.rule_id WHERE pr.project_id = ?1",
+    )
+    .bind(&project_id)
+    .fetch_all(db.inner())
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut candidates = Vec::new();
+    for row in &names {
+        let kind: String = row.get("kind");
+        let name: String = row.get("name");
+        if kind == "skill" {
+            candidates.push(format!(".claude/skills/{}", name));
+        } else {
+            candidates.push(format!(".claude/rules/{}.md", name));
+        }
+        candidates.push(format!(".agents/skills/{}", name));
+    }
+    let tracked = tracked_paths(Path::new(&path), &candidates);
+    if !tracked.is_empty() {
+        warnings.push(InstructionWarning::TrackedByGit { paths: tracked });
+    }
+    Ok(warnings)
+}
+
+/// Which of `candidates` (relative paths) git tracks anything at, in one `git ls-files` call.
+fn tracked_paths(project: &Path, candidates: &[String]) -> Vec<String> {
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let Ok(output) = Command::new("git")
+        .arg("-C")
+        .arg(project)
+        .args(["ls-files", "-z", "--"])
+        .args(candidates)
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let files: Vec<String> = output
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|f| !f.is_empty())
+        .map(|f| String::from_utf8_lossy(f).to_string())
+        .collect();
+    candidates
+        .iter()
+        .filter(|c| files.iter().any(|f| f == *c || f.starts_with(&format!("{}/", c))))
+        .cloned()
+        .collect()
 }
 
 fn codex_home() -> Option<PathBuf> {

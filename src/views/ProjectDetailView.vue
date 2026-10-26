@@ -131,6 +131,8 @@ function instructionWarningText(w: InstructionWarning): string {
       return t('projectDetail.warnLinksNotIgnored', { dir: w.dir })
     case 'legacy_copies_backed_up':
       return t('projectDetail.warnLegacyCopiesBackedUp', { dir: w.dir, count: w.batches })
+    case 'tracked_by_git':
+      return t('projectDetail.warnTrackedByGit', { paths: w.paths.join(', ') })
   }
 }
 const togglingRuleId = ref<string | null>(null)
