@@ -130,5 +130,11 @@
   "linkedAzureAccount": "Linked Azure Account",
   "azureAccountHint": "Choose which Azure account this project uses: az and terraform in its runs sign in with it. Manage accounts in",
   "noAzureAccounts": "No Azure accounts yet.",
-  "azureNotSignedIn": "not signed in"
+  "azureNotSignedIn": "not signed in",
+  "instructionWarningsTitle": "Instruction file warnings",
+  "warnAgentsMdTooLarge": "AGENTS.md is {size} KB but Codex only reads the first {limit} KB — the rest is ignored. Move long rules to Codex skills (codex_mode: skill) or raise project_doc_max_bytes in ~/.codex/config.toml.",
+  "warnClaudeReadsAgentsMd": "This project has no CLAUDE.md, so Claude Code also reads AGENTS.md (Codex's file) and sees those rules twice. Add a CLAUDE.md, or switch the AGENTS.md fallback off in Claude Code's /config.",
+  "warnClaudeMdImportsAgentsMd": "{path} imports {'@'}AGENTS.md, so Claude also reads Codex's rules and sees them twice.",
+  "warnCodexReadsClaudeMd": "{config} lists CLAUDE.md in project_doc_fallback_filenames, so Codex may read Claude's instructions.",
+  "warnLinksNotIgnored": "{dir} holds Devdy symlinks that git does not ignore. Committed, they point to a path on this machine and break for everyone else — add it to .gitignore or .git/info/exclude."
 }

@@ -34,6 +34,7 @@ const content = ref(RULE_TEMPLATE)
 const name = ref('')
 const description = ref('')
 const target = ref<RuleTarget>('both')
+const codexMode = ref<'inline' | 'skill'>('inline')
 const saving = ref(false)
 const loading = ref(false)
 const validationError = ref<string | null>(null)
@@ -41,22 +42,24 @@ const editorRef = ref<InstanceType<typeof SkillEditor> | null>(null)
 const previewHtml = ref('')
 
 function parseFrontmatter(raw: string) {
-  if (!raw.startsWith('---')) return { name: '', description: '', target: '' }
+  const empty = { name: '', description: '', target: '', codexMode: '' }
+  if (!raw.startsWith('---')) return empty
   const rest = raw.slice(3)
   const end = rest.indexOf('\n---')
-  if (end === -1) return { name: '', description: '', target: '' }
+  if (end === -1) return empty
   const fm = rest.slice(0, end)
   const pick = (key: string) =>
     fm.match(new RegExp(`^${key}:\\s*(.+)$`, 'm'))?.[1]?.trim().replace(/^["']|["']$/g, '') ?? ''
-  return { name: pick('name'), description: pick('description'), target: pick('target') }
+  return { name: pick('name'), description: pick('description'), target: pick('target'), codexMode: pick('codex_mode') }
 }
 
 function validateFrontmatter(raw: string): string | null {
-  const { name: n, description: d, target: t2 } = parseFrontmatter(raw)
+  const { name: n, description: d, target: t2, codexMode: cm } = parseFrontmatter(raw)
   if (!n) return t('rules.editor.errMissingName')
   if (!/^[a-zA-Z0-9_-]+$/.test(n)) return t('rules.editor.errNameSlug')
   if (!d) return t('rules.editor.errMissingDescription')
   if (t2 && !['claude', 'codex', 'both'].includes(t2)) return t('rules.editor.errTargetInvalid')
+  if (cm && !['inline', 'skill'].includes(cm)) return t('rules.editor.errCodexModeInvalid')
   return null
 }
 
@@ -76,12 +79,13 @@ watch(content, (val) => {
   name.value = fm.name
   description.value = fm.description
   target.value = (fm.target || 'both') as RuleTarget
+  codexMode.value = fm.codexMode === 'skill' ? 'skill' : 'inline'
   validationError.value = validateFrontmatter(val)
   updatePreview(val)
 }, { immediate: true })
 
-// Target select rewrites the frontmatter `target:` line (content stays source of truth).
-function setTarget(t: RuleTarget) {
+// The selects rewrite frontmatter lines (content stays source of truth). `null` drops the line.
+function setFrontmatterField(key: string, value: string | null) {
   const raw = content.value
   if (!raw.startsWith('---')) return
   const rest = raw.slice(3)
@@ -89,12 +93,24 @@ function setTarget(t: RuleTarget) {
   if (end === -1) return
   let fm = rest.slice(0, end)
   const after = rest.slice(end)
-  if (/^target:.*$/m.test(fm)) {
-    fm = fm.replace(/^target:.*$/m, `target: ${t}`)
+  const line = new RegExp(`^${key}:.*$`, 'm')
+  if (value === null) {
+    fm = fm.replace(new RegExp(`\\n${key}:.*$`, 'm'), '')
+  } else if (line.test(fm)) {
+    fm = fm.replace(line, `${key}: ${value}`)
   } else {
-    fm = fm.replace(/\n*$/, '') + `\ntarget: ${t}\n`
+    fm = fm.replace(/\n*$/, '') + `\n${key}: ${value}\n`
   }
   content.value = '---' + fm + after
+}
+
+function setTarget(t: RuleTarget) {
+  setFrontmatterField('target', t)
+}
+
+// Inline is the default, so it is expressed by leaving `codex_mode:` out.
+function setCodexMode(mode: 'inline' | 'skill') {
+  setFrontmatterField('codex_mode', mode === 'skill' ? 'skill' : null)
 }
 
 onMounted(async () => {
@@ -174,6 +190,24 @@ async function handleSave() {
             { value: 'codex', label: t('rules.editor.targetCodex') },
           ]"
           @update:model-value="(v: string) => setTarget(v as RuleTarget)"
+        />
+      </div>
+
+      <div
+        v-if="target !== 'claude'"
+        class="flex items-center gap-1.5"
+        :title="t('rules.editor.codexModeHint')"
+      >
+        <span class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('rules.editor.codexMode') }}</span>
+        <AppSelect
+          :model-value="codexMode"
+          size="sm"
+          class="w-28"
+          :options="[
+            { value: 'inline', label: t('rules.editor.codexModeInline') },
+            { value: 'skill', label: t('rules.editor.codexModeSkill') },
+          ]"
+          @update:model-value="(v: string) => setCodexMode(v as 'inline' | 'skill')"
         />
       </div>
 

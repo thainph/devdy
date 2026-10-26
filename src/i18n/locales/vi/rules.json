@@ -54,6 +54,11 @@
     "errMissingName": "Frontmatter thiếu trường bắt buộc: name",
     "errNameSlug": "name phải là slug (chữ cái, số, gạch ngang, gạch dưới)",
     "errMissingDescription": "Frontmatter thiếu trường bắt buộc: description",
-    "errTargetInvalid": "target phải là một trong: claude, codex, both"
+    "errTargetInvalid": "target phải là một trong: claude, codex, both",
+    "codexMode": "Codex",
+    "codexModeInline": "AGENTS.md",
+    "codexModeSkill": "Skill",
+    "codexModeHint": "Cách Codex nhận rule này: nhúng vào AGENTS.md (luôn được nạp) hoặc thành skill trong .agents/skills (chỉ nạp khi liên quan — hợp với rule dài, theo tình huống).",
+    "errCodexModeInvalid": "codex_mode phải là một trong: inline, skill"
   }
 }

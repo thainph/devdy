@@ -130,5 +130,11 @@
   "linkedAzureAccount": "Tài khoản Azure đã liên kết",
   "azureAccountHint": "Chọn tài khoản Azure cho dự án này: lệnh az và terraform trong các run sẽ dùng tài khoản đó. Quản lý tài khoản trong",
   "noAzureAccounts": "Chưa có tài khoản Azure nào.",
-  "azureNotSignedIn": "chưa đăng nhập"
+  "azureNotSignedIn": "chưa đăng nhập",
+  "instructionWarningsTitle": "Cảnh báo về file chỉ dẫn",
+  "warnAgentsMdTooLarge": "AGENTS.md nặng {size} KB nhưng Codex chỉ đọc {limit} KB đầu — phần sau bị bỏ qua. Chuyển rule dài sang dạng skill cho Codex (codex_mode: skill) hoặc tăng project_doc_max_bytes trong ~/.codex/config.toml.",
+  "warnClaudeReadsAgentsMd": "Dự án chưa có CLAUDE.md nên Claude Code đọc thêm AGENTS.md (file của Codex) và thấy các rule hai lần. Hãy thêm CLAUDE.md, hoặc tắt chế độ đọc AGENTS.md trong /config của Claude Code.",
+  "warnClaudeMdImportsAgentsMd": "{path} đang import {'@'}AGENTS.md nên Claude đọc cả rule của Codex và thấy chúng hai lần.",
+  "warnCodexReadsClaudeMd": "{config} có CLAUDE.md trong project_doc_fallback_filenames nên Codex có thể đọc chỉ dẫn của Claude.",
+  "warnLinksNotIgnored": "{dir} chứa symlink của Devdy nhưng chưa được git ignore. Nếu commit, link trỏ tới đường dẫn trên máy này sẽ hỏng ở máy người khác — thêm vào .gitignore hoặc .git/info/exclude."
 }
