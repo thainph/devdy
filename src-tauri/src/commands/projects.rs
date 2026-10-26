@@ -1,5 +1,7 @@
 use crate::commands::rules::{ApplyAllOutcome, ApplyFailure};
-use crate::commands::skills::{remove_skill_artifacts, write_skill_artifacts};
+use crate::commands::skills::{
+    claude_skill_dir, legacy_codex_skill_dir, remove_skill_artifacts, write_skill_artifacts,
+};
 use crate::db::Db;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -1117,14 +1119,13 @@ pub async fn apply_skill_to_project(
     use sqlx::Row;
 
     let skill_row =
-        sqlx::query("SELECT name, description, target, source_path FROM skills WHERE id = ?")
+        sqlx::query("SELECT name, target, source_path FROM skills WHERE id = ?")
             .bind(skill_id)
             .fetch_one(db)
             .await
             .map_err(|e| format!("Skill not found: {}", e))?;
 
     let skill_name: String = skill_row.get("name");
-    let description: String = skill_row.get("description");
     let target: String = skill_row.get("target");
     let source_path: String = skill_row.get("source_path");
 
@@ -1136,12 +1137,24 @@ pub async fn apply_skill_to_project(
 
     let project_path: String = project_row.get("path");
 
+    let prev = sqlx::query(
+        "SELECT synced_hash_claude, synced_hash_codex FROM project_skills WHERE project_id = ? AND skill_id = ?",
+    )
+    .bind(project_id)
+    .bind(skill_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    let prev_claude: Option<String> = prev.as_ref().and_then(|r| r.get("synced_hash_claude"));
+    let prev_codex: Option<String> = prev.as_ref().and_then(|r| r.get("synced_hash_codex"));
+
     let (hash_claude, hash_codex) = write_skill_artifacts(
         &project_path,
         &skill_name,
-        &description,
         &target,
         &source_path,
+        prev_claude.as_deref(),
+        prev_codex.as_deref(),
     )?;
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -1214,12 +1227,13 @@ pub async fn remove_skill_from_project_inner(
 ) -> Result<(), String> {
     use sqlx::Row;
 
-    let skill_row = sqlx::query("SELECT name FROM skills WHERE id = ?")
+    let skill_row = sqlx::query("SELECT name, source_path FROM skills WHERE id = ?")
         .bind(skill_id)
         .fetch_one(db)
         .await
         .map_err(|e| e.to_string())?;
     let skill_name: String = skill_row.get("name");
+    let source_path: String = skill_row.get("source_path");
 
     let project_row = sqlx::query("SELECT path FROM projects WHERE id = ?")
         .bind(project_id)
@@ -1228,7 +1242,17 @@ pub async fn remove_skill_from_project_inner(
         .map_err(|e| e.to_string())?;
     let project_path: String = project_row.get("path");
 
-    remove_skill_artifacts(&project_path, &skill_name);
+    let installed = sqlx::query(
+        "SELECT synced_hash_claude, synced_hash_codex FROM project_skills WHERE project_id = ? AND skill_id = ?",
+    )
+    .bind(project_id)
+    .bind(skill_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    let prev_claude: Option<String> = installed.as_ref().and_then(|r| r.get("synced_hash_claude"));
+    let prev_codex: Option<String> = installed.as_ref().and_then(|r| r.get("synced_hash_codex"));
+    remove_skill_artifacts(&project_path, &skill_name, &source_path, prev_claude.as_deref(), prev_codex.as_deref())?;
 
     sqlx::query("DELETE FROM project_skills WHERE project_id = ? AND skill_id = ?")
         .bind(project_id)
@@ -1298,53 +1322,68 @@ pub async fn resolve_sync_conflict(
 ) -> Result<(), String> {
     use sqlx::Row;
     if overwrite {
-        // Get conflict details, then re-apply skill from source for the affected engine.
+        // Legacy conflicts (from the copy era). The user chose the central version, so the edited
+        // copy for that engine goes and the skill is re-linked from source. A conflict whose skill
+        // is no longer applied here has nothing left to overwrite.
         let row = sqlx::query(
             "SELECT sc.project_id, sc.skill_id, sc.engine, s.source_path, s.name as skill_name,
-                    s.description as skill_description, p.path as project_path
+                    s.target, p.path as project_path, ps.synced_hash_claude, ps.synced_hash_codex
              FROM sync_conflicts sc
              JOIN skills s ON s.id = sc.skill_id
              JOIN projects p ON p.id = sc.project_id
+             JOIN project_skills ps ON ps.project_id = sc.project_id AND ps.skill_id = sc.skill_id
              WHERE sc.id = ?",
         )
         .bind(&conflict_id)
-        .fetch_one(db.inner())
+        .fetch_optional(db.inner())
         .await
         .map_err(|e| e.to_string())?;
 
-        let project_path: String = row.get("project_path");
-        let source_path: String = row.get("source_path");
-        let skill_name: String = row.get("skill_name");
-        let description: String = row.get("skill_description");
-        let project_id: String = row.get("project_id");
-        let skill_id: String = row.get("skill_id");
-        let engine: String = row.get("engine");
+        if let Some(row) = row {
+            let project_path: String = row.get("project_path");
+            let source_path: String = row.get("source_path");
+            let skill_name: String = row.get("skill_name");
+            let target: String = row.get("target");
+            let project_id: String = row.get("project_id");
+            let skill_id: String = row.get("skill_id");
+            let engine: String = row.get("engine");
+            let prev_claude: Option<String> = row.get("synced_hash_claude");
+            let prev_codex: Option<String> = row.get("synced_hash_codex");
 
-        // Re-apply only the conflicting engine (pass the engine as target).
-        let (hash_claude, hash_codex) = write_skill_artifacts(
-            &project_path,
-            &skill_name,
-            &description,
-            &engine,
-            &source_path,
-        )?;
+            // Only where the copy era wrote (`.codex/skills` for Codex, `.claude/skills` for
+            // Claude), through the same guard as every other removal so a symlinked parent folder
+            // is never followed. `known = true`: the user chose to discard this copy.
+            let copy = if engine == "codex" {
+                legacy_codex_skill_dir(&project_path, &skill_name)
+            } else {
+                claude_skill_dir(&project_path, &skill_name)
+            };
+            crate::commands::project_links::remove_installed(
+                std::path::Path::new(&project_path),
+                &copy,
+                std::path::Path::new(&source_path),
+                |_: &std::path::Path| true,
+            )?;
 
-        if engine == "codex" {
-            sqlx::query("UPDATE project_skills SET synced_hash_codex = ? WHERE project_id = ? AND skill_id = ?")
-                .bind(&hash_codex)
-                .bind(&project_id)
-                .bind(&skill_id)
-                .execute(db.inner())
-                .await
-                .map_err(|e| e.to_string())?;
-        } else {
-            sqlx::query("UPDATE project_skills SET synced_hash_claude = ? WHERE project_id = ? AND skill_id = ?")
-                .bind(&hash_claude)
-                .bind(&project_id)
-                .bind(&skill_id)
-                .execute(db.inner())
-                .await
-                .map_err(|e| e.to_string())?;
+            let (hash_claude, hash_codex) = write_skill_artifacts(
+                &project_path,
+                &skill_name,
+                &target,
+                &source_path,
+                prev_claude.as_deref(),
+                prev_codex.as_deref(),
+            )?;
+
+            sqlx::query(
+                "UPDATE project_skills SET synced_hash_claude = ?, synced_hash_codex = ? WHERE project_id = ? AND skill_id = ?",
+            )
+            .bind(&hash_claude)
+            .bind(&hash_codex)
+            .bind(&project_id)
+            .bind(&skill_id)
+            .execute(db.inner())
+            .await
+            .map_err(|e| e.to_string())?;
         }
     }
 

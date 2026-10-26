@@ -107,6 +107,7 @@ use commands::stats::{
     refresh_codex_plan_usage, refresh_plan_usage, reset_usage_stats,
 };
 use commands::storage::get_storage_stats;
+use commands::instruction_checks::get_instruction_warnings;
 use commands::inbox_api::{get_inbox_api_info, regenerate_inbox_api_token, set_inbox_api_enabled};
 use commands::slack_threads::{
     add_slack_thread, delete_slack_threads, get_slack_thread, get_slack_thread_prompt_text,
@@ -442,6 +443,7 @@ pub fn run() {
             remove_rule_from_project,
             list_rule_sync_conflicts,
             resolve_rule_sync_conflict,
+            get_instruction_warnings,
             list_groups,
             create_group,
             update_group,
