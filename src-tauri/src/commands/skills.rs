@@ -1,4 +1,4 @@
-use crate::commands::agents_block;
+use crate::commands::{agents_block, project_links};
 use crate::db::Db;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -124,9 +124,15 @@ pub fn claude_skill_dir(project_path: &str, name: &str) -> PathBuf {
     Path::new(project_path).join(".claude").join("skills").join(name)
 }
 
-/// Codex has no native skills folder; files live in `<project>/.codex/skills/<name>/`
-/// and a pointer block in AGENTS.md tells Codex the skill exists.
+/// Codex discovers skills natively in `<project>/.agents/skills/<name>/` (Claude never reads
+/// `.agents/`, so the two engines don't see each other's skills).
 pub fn codex_skill_dir(project_path: &str, name: &str) -> PathBuf {
+    Path::new(project_path).join(".agents").join("skills").join(name)
+}
+
+/// Pre-`.agents/skills` location: a copy in `.codex/skills/<name>/` plus a pointer block in
+/// AGENTS.md. Only cleaned up now.
+pub fn legacy_codex_skill_dir(project_path: &str, name: &str) -> PathBuf {
     Path::new(project_path).join(".codex").join("skills").join(name)
 }
 
@@ -134,83 +140,92 @@ pub fn agents_path(project_path: &str) -> PathBuf {
     Path::new(project_path).join("AGENTS.md")
 }
 
-/// Pointer block injected into AGENTS.md for a Codex-targeted skill.
-pub fn codex_pointer_body(name: &str, description: &str) -> String {
-    let desc = description.trim();
-    if desc.is_empty() {
-        format!(
-            "## Skill: {name}\n\nFull instructions: .codex/skills/{name}/SKILL.md",
-            name = name
-        )
-    } else {
-        format!(
-            "## Skill: {name}\n\n{desc}\n\nFull instructions: .codex/skills/{name}/SKILL.md",
-            name = name,
-            desc = desc
-        )
-    }
-}
-
-/// Copy every file from a skill's source directory into `dest_dir`.
-pub fn copy_skill_files(source_path: &str, dest_dir: &Path) -> Result<(), String> {
-    fs::create_dir_all(dest_dir).map_err(|e| e.to_string())?;
-    let source_dir = Path::new(source_path);
-    for entry in WalkDir::new(source_dir) {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        if path.is_file() {
-            let rel = path.strip_prefix(source_dir).map_err(|e| e.to_string())?;
-            let dest = dest_dir.join(rel);
-            if let Some(parent) = dest.parent() {
-                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-            }
-            fs::copy(path, &dest).map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(())
-}
-
 /// Read a skill's source SKILL.md content (empty string if missing).
 pub fn read_skill_md(source_path: &str) -> String {
     fs::read_to_string(Path::new(source_path).join("SKILL.md")).unwrap_or_default()
 }
 
-/// Write a skill to a project for the given `target`, returning (claude_hash, codex_hash).
-/// Each hash is the source SKILL.md hash for the engine it was synced to (None otherwise).
+/// Link a skill into a project for `target` and drop what no longer applies, returning
+/// (claude_hash, codex_hash) — the source SKILL.md hash per engine it is installed for.
+///
+/// `prev_*` are the SKILL.md hashes recorded at the last sync (None = not installed for that
+/// engine); only an engine Devdy installed before is cleaned up. A copy-era folder is swapped for
+/// a link (or removed) only when it is unedited: SKILL.md matches the source or the last sync, and
+/// every other file matches the source. An edited one fails the call and stays on disk.
 pub fn write_skill_artifacts(
     project_path: &str,
     name: &str,
-    description: &str,
     target: &str,
     source_path: &str,
+    prev_claude: Option<&str>,
+    prev_codex: Option<&str>,
 ) -> Result<(Option<String>, Option<String>), String> {
-    let content = read_skill_md(source_path);
-    let hash = skill_hash(&content);
-    let mut hash_claude = None;
-    let mut hash_codex = None;
+    let hash = skill_hash(&read_skill_md(source_path));
+    let root = Path::new(project_path);
+    let source = Path::new(source_path);
+    let unedited_for = |prev: Option<&str>| {
+        let hash = hash.clone();
+        let prev = prev.map(str::to_string);
+        move |copy: &Path| {
+            let Ok(md) = fs::read_to_string(copy.join("SKILL.md")) else { return false };
+            let md = skill_hash(&md);
+            (md == hash || Some(&md) == prev.as_ref())
+                && project_links::same_tree_except(copy, source, Some(Path::new("SKILL.md")))
+        }
+    };
+    let had_claude = prev_claude.is_some();
+    let had_codex = prev_codex.is_some();
 
-    if applies_claude(target) {
-        copy_skill_files(source_path, &claude_skill_dir(project_path, name))?;
-        hash_claude = Some(hash.clone());
-    }
-    if applies_codex(target) {
-        copy_skill_files(source_path, &codex_skill_dir(project_path, name))?;
-        agents_block::upsert(
-            &agents_path(project_path),
-            "skill",
-            name,
-            &codex_pointer_body(name, description),
-        )?;
-        hash_codex = Some(hash);
+    let claude_dest = claude_skill_dir(project_path, name);
+    let hash_claude = if applies_claude(target) {
+        project_links::ensure_symlink(root, &claude_dest, source, unedited_for(prev_claude))?;
+        Some(hash.clone())
+    } else {
+        if had_claude {
+            project_links::remove_installed(root, &claude_dest, source, unedited_for(prev_claude))?;
+        }
+        None
+    };
+
+    let codex_dest = codex_skill_dir(project_path, name);
+    let legacy = legacy_codex_skill_dir(project_path, name);
+    let unedited = unedited_for(prev_codex);
+    let hash_codex = if applies_codex(target) {
+        // Check the legacy copy before linking so an edited one stops the switch-over cleanly.
+        if legacy.exists() && !project_links::is_symlink(&legacy) && !unedited(&legacy) {
+            return Err(format!(
+                "{} is a local copy that differs from the Devdy source (edited in the project?) — \
+                 keep or delete it yourself, then try again",
+                legacy.display()
+            ));
+        }
+        project_links::ensure_symlink(root, &codex_dest, source, &unedited)?;
+        project_links::remove_installed(root, &legacy, source, &unedited)?;
+        Some(hash)
+    } else {
+        if had_codex {
+            project_links::remove_installed(root, &codex_dest, source, &unedited)?;
+            project_links::remove_installed(root, &legacy, source, &unedited)?;
+        }
+        None
+    };
+    // The copy era's AGENTS.md pointer; `.agents/skills` needs none.
+    if applies_codex(target) || had_codex {
+        agents_block::remove(&agents_path(project_path), "skill", name);
     }
     Ok((hash_claude, hash_codex))
 }
 
-/// Remove all of a skill's artifacts (both engines) from a project.
-pub fn remove_skill_artifacts(project_path: &str, name: &str) {
-    let _ = fs::remove_dir_all(claude_skill_dir(project_path, name));
-    let _ = fs::remove_dir_all(codex_skill_dir(project_path, name));
-    agents_block::remove(&agents_path(project_path), "skill", name);
+/// Remove a skill's artifacts (legacy layout included) for the engines it was installed for.
+/// Edited legacy copies are kept and reported.
+pub fn remove_skill_artifacts(
+    project_path: &str,
+    name: &str,
+    source_path: &str,
+    prev_claude: Option<&str>,
+    prev_codex: Option<&str>,
+) -> Result<(), String> {
+    write_skill_artifacts(project_path, name, "none", source_path, prev_claude, prev_codex).map(|_| ())
 }
 
 #[tauri::command]
@@ -331,18 +346,41 @@ pub async fn update_skill(
     let old_name: String = row.get("name");
     let old_path: String = row.get("source_path");
 
+    if old_name != payload.name {
+        let taken = sqlx::query("SELECT id FROM skills WHERE name = ? AND id != ?")
+            .bind(&payload.name)
+            .bind(&payload.id)
+            .fetch_optional(db.inner())
+            .await
+            .map_err(|e| e.to_string())?;
+        let new_dir = skills_dir(&app).join(&payload.name);
+        let case_only = project_links::same_file(&new_dir, Path::new(&old_path));
+        if taken.is_some() || (new_dir.exists() && !case_only) {
+            return Err(format!("Skill '{}' already exists", payload.name));
+        }
+    }
+
     // If renamed, drop old artifacts from every applied project first.
     if old_name != payload.name {
         let projects = sqlx::query(
-            "SELECT p.path FROM project_skills ps JOIN projects p ON p.id = ps.project_id WHERE ps.skill_id = ?"
+            "SELECT p.path, ps.synced_hash_claude, ps.synced_hash_codex
+             FROM project_skills ps JOIN projects p ON p.id = ps.project_id WHERE ps.skill_id = ?"
         )
         .bind(&payload.id)
         .fetch_all(db.inner())
         .await
         .map_err(|e| e.to_string())?;
+        let mut errors = Vec::new();
         for prow in &projects {
             let ppath: String = prow.get("path");
-            remove_skill_artifacts(&ppath, &old_name);
+            let prev_claude: Option<String> = prow.get("synced_hash_claude");
+            let prev_codex: Option<String> = prow.get("synced_hash_codex");
+            if let Err(e) = remove_skill_artifacts(&ppath, &old_name, &old_path, prev_claude.as_deref(), prev_codex.as_deref()) {
+                errors.push(e);
+            }
+        }
+        if !errors.is_empty() {
+            return Err(format!("Not renamed — clean these up first:\n{}", errors.join("\n")));
         }
     }
 
@@ -371,8 +409,14 @@ pub async fn update_skill(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Trigger auto-sync for all projects that have this skill applied
-    let _ = sync_skill_to_projects(&db, &payload.id).await;
+    // Projects link to the source, so content is already live; sync covers target changes and
+    // renames. Failures surface so a broken link is never silent.
+    let failures = sync_skill_to_projects(&db, &payload.id)
+        .await
+        .map_err(|e| e.to_string())?;
+    if !failures.is_empty() {
+        return Err(format!("Saved, but syncing to projects failed:\n{}", failures.join("\n")));
+    }
 
     Ok(Skill {
         id: payload.id,
@@ -397,6 +441,32 @@ pub async fn delete_skill(
         .map_err(|e| format!("Skill not found: {}", e))?;
 
     let source_path: String = row.get("source_path");
+
+    // Drop the project links first — they would dangle once the source is gone.
+    let projects = sqlx::query(
+        "SELECT p.path, s.name, ps.synced_hash_claude, ps.synced_hash_codex FROM project_skills ps
+         JOIN projects p ON p.id = ps.project_id
+         JOIN skills s ON s.id = ps.skill_id
+         WHERE ps.skill_id = ?",
+    )
+    .bind(&id)
+    .fetch_all(db.inner())
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut errors = Vec::new();
+    for prow in &projects {
+        let ppath: String = prow.get("path");
+        let name: String = prow.get("name");
+        let prev_claude: Option<String> = prow.get("synced_hash_claude");
+        let prev_codex: Option<String> = prow.get("synced_hash_codex");
+        if let Err(e) = remove_skill_artifacts(&ppath, &name, &source_path, prev_claude.as_deref(), prev_codex.as_deref()) {
+            errors.push(e);
+        }
+    }
+    if !errors.is_empty() {
+        return Err(format!("Not deleted — clean these up first:\n{}", errors.join("\n")));
+    }
+
     let _ = fs::remove_dir_all(&source_path);
 
     sqlx::query("DELETE FROM skills WHERE id = ?")
@@ -580,23 +650,23 @@ pub async fn open_skill_folder(db: State<'_, Db>, id: String) -> Result<(), Stri
     Ok(())
 }
 
-/// Sync a skill to every project that has it applied. Handles target changes (removing artifacts
-/// for engines no longer targeted) and per-engine conflict detection — mirrors rules' sync.
-pub async fn sync_skill_to_projects(db: &Db, skill_id: &str) -> Result<()> {
+/// Sync a skill to every project that has it applied: (re)create links for the current target
+/// and name, drop the ones no longer targeted. Content needs no copying — projects link to the
+/// source. Returns one message per project that failed.
+pub async fn sync_skill_to_projects(db: &Db, skill_id: &str) -> Result<Vec<String>> {
     use sqlx::Row;
 
-    let skill = sqlx::query("SELECT name, description, target, source_path FROM skills WHERE id = ?")
+    let skill = sqlx::query("SELECT name, target, source_path FROM skills WHERE id = ?")
         .bind(skill_id)
         .fetch_one(db)
         .await?;
     let name: String = skill.get("name");
-    let description: String = skill.get("description");
     let target: String = skill.get("target");
     let source_path: String = skill.get("source_path");
-    let new_hash = skill_hash(&read_skill_md(&source_path));
 
     let rows = sqlx::query(
-        "SELECT ps.project_id, ps.synced_hash_claude, ps.synced_hash_codex, p.path FROM project_skills ps
+        "SELECT ps.project_id, ps.synced_hash_claude, ps.synced_hash_codex, p.path, p.name as project_name
+         FROM project_skills ps
          JOIN projects p ON p.id = ps.project_id
          WHERE ps.skill_id = ?"
     )
@@ -604,56 +674,31 @@ pub async fn sync_skill_to_projects(db: &Db, skill_id: &str) -> Result<()> {
     .fetch_all(db)
     .await?;
 
+    let mut failures = Vec::new();
     for row in rows {
         let project_id: String = row.get("project_id");
+        let project_path: String = row.get("path");
+        let project_name: String = row.get("project_name");
+
         let prev_claude: Option<String> = row.get("synced_hash_claude");
         let prev_codex: Option<String> = row.get("synced_hash_codex");
-        let project_path: String = row.get("path");
-
-        // ---- Claude (.claude/skills/<name>/) ----
-        let mut next_claude = prev_claude.clone();
-        if applies_claude(&target) {
-            let local = local_skill_hash(&claude_skill_dir(&project_path, &name));
-            match (&local, &prev_claude) {
-                (Some(lh), Some(ph)) if lh != ph => {
-                    record_skill_conflict(db, &project_id, skill_id, "claude", lh, &new_hash).await;
-                }
-                _ => {
-                    let _ = copy_skill_files(&source_path, &claude_skill_dir(&project_path, &name));
-                    next_claude = Some(new_hash.clone());
-                }
+        let result = write_skill_artifacts(
+            &project_path,
+            &name,
+            &target,
+            &source_path,
+            prev_claude.as_deref(),
+            prev_codex.as_deref(),
+        );
+        let (next_claude, next_codex) = match result {
+            Ok(hashes) => hashes,
+            Err(e) => {
+                failures.push(format!("{}: {}", project_name, e));
+                continue;
             }
-        } else if prev_claude.is_some() {
-            let _ = fs::remove_dir_all(claude_skill_dir(&project_path, &name));
-            next_claude = None;
-        }
+        };
 
-        // ---- Codex (.codex/skills/<name>/ + AGENTS.md pointer) ----
-        let mut next_codex = prev_codex.clone();
-        if applies_codex(&target) {
-            let local = local_skill_hash(&codex_skill_dir(&project_path, &name));
-            match (&local, &prev_codex) {
-                (Some(lh), Some(ph)) if lh != ph => {
-                    record_skill_conflict(db, &project_id, skill_id, "codex", lh, &new_hash).await;
-                }
-                _ => {
-                    let _ = copy_skill_files(&source_path, &codex_skill_dir(&project_path, &name));
-                    let _ = agents_block::upsert(
-                        &agents_path(&project_path),
-                        "skill",
-                        &name,
-                        &codex_pointer_body(&name, &description),
-                    );
-                    next_codex = Some(new_hash.clone());
-                }
-            }
-        } else if prev_codex.is_some() {
-            let _ = fs::remove_dir_all(codex_skill_dir(&project_path, &name));
-            agents_block::remove(&agents_path(&project_path), "skill", &name);
-            next_codex = None;
-        }
-
-        let _ = sqlx::query(
+        sqlx::query(
             "UPDATE project_skills SET target = ?, synced_hash_claude = ?, synced_hash_codex = ? WHERE project_id = ? AND skill_id = ?"
         )
         .bind(&target)
@@ -662,42 +707,8 @@ pub async fn sync_skill_to_projects(db: &Db, skill_id: &str) -> Result<()> {
         .bind(&project_id)
         .bind(skill_id)
         .execute(db)
-        .await;
+        .await?;
     }
 
-    Ok(())
-}
-
-/// Hash of a destination skill's local SKILL.md, or None if it doesn't exist.
-fn local_skill_hash(dest_dir: &Path) -> Option<String> {
-    let md = dest_dir.join("SKILL.md");
-    if md.exists() {
-        Some(skill_hash(&fs::read_to_string(&md).unwrap_or_default()))
-    } else {
-        None
-    }
-}
-
-async fn record_skill_conflict(
-    db: &Db,
-    project_id: &str,
-    skill_id: &str,
-    engine: &str,
-    local_hash: &str,
-    source_hash: &str,
-) {
-    let id = Uuid::new_v4().to_string();
-    let now = chrono::Utc::now().to_rfc3339();
-    let _ = sqlx::query(
-        "INSERT OR REPLACE INTO sync_conflicts (id, project_id, skill_id, engine, detected_at, local_hash, source_hash, resolved) VALUES (?, ?, ?, ?, ?, ?, ?, 0)"
-    )
-    .bind(&id)
-    .bind(project_id)
-    .bind(skill_id)
-    .bind(engine)
-    .bind(&now)
-    .bind(local_hash)
-    .bind(source_hash)
-    .execute(db)
-    .await;
+    Ok(failures)
 }

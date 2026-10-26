@@ -54,6 +54,11 @@
     "errMissingName": "Frontmatter missing required field: name",
     "errNameSlug": "name must be a slug (letters, numbers, hyphens, underscores)",
     "errMissingDescription": "Frontmatter missing required field: description",
-    "errTargetInvalid": "target must be one of: claude, codex, both"
+    "errTargetInvalid": "target must be one of: claude, codex, both",
+    "codexMode": "Codex",
+    "codexModeInline": "AGENTS.md",
+    "codexModeSkill": "Skill",
+    "codexModeHint": "How Codex gets this rule: inlined into AGENTS.md (always loaded) or as a skill in .agents/skills (loaded when relevant — better for long, situational rules).",
+    "errCodexModeInvalid": "codex_mode must be one of: inline, skill"
   }
 }

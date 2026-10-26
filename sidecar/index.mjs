@@ -46,6 +46,8 @@
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { randomUUID } from 'node:crypto'
 import readline from 'node:readline'
+import { readFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 
 // --- Orphan guard ------------------------------------------------------------
 // Devdy spawns this sidecar as the leader of its own process group and says so
@@ -262,6 +264,36 @@ function applyNoTools(options) {
   return options
 }
 
+// Claude Code reads AGENTS.md (Codex's file) when a project has no CLAUDE.md. Where every
+// AGENTS.md from cwd up to the root holds nothing but Devdy-written blocks, those only duplicate
+// the rules Claude already gets from .claude/rules — so turn the fallback off for that session.
+// The switch drops ALL AGENTS.md files, so any hand-written content keeps it on (the Devdy app
+// warns about the duplication instead).
+const DEVDY_BLOCK = /<!-- devdy:([\w-]+):([\w-]+) START -->[\s\S]*?<!-- devdy:\1:\2 END -->/g
+function devdyManagesAgentsMd(cwd) {
+  let dir = resolve(cwd || process.cwd())
+  let sawDevdyBlocks = false
+  for (;;) {
+    let text = null
+    try {
+      text = readFileSync(join(dir, 'AGENTS.md'), 'utf8')
+    } catch { /* no AGENTS.md here */ }
+    if (text !== null) {
+      const rest = text.replace(DEVDY_BLOCK, '')
+      if (rest.trim() !== '') return false
+      if (rest !== text) sawDevdyBlocks = true
+    }
+    const parent = dirname(dir)
+    if (parent === dir) return sawDevdyBlocks
+    dir = parent
+  }
+}
+function claudeMdOnly(options) {
+  options.settings = {
+    pluginConfigs: { 'agents-md@builtin': { options: { instructionFiles: 'claude-md' } } },
+  }
+}
+
 let currentQuery = null
 let started = false
 let usageCaptureInFlight = false
@@ -358,6 +390,7 @@ function startQuery(firstText, opts = {}, firstImages) {
   if (opts.model) options.model = opts.model
   else if (process.env.DEVDY_MODEL) options.model = process.env.DEVDY_MODEL
   if (opts.cwd) options.cwd = opts.cwd
+  if (devdyManagesAgentsMd(opts.cwd)) claudeMdOnly(options)
   // Centrally-managed MCP servers injected per run (Record<name, config>).
   // MCP tools still flow through canUseTool → the permission modal is unchanged.
   // Per-turn option wins; else fall back to DEVDY_MCP_SERVERS (set by the broker
