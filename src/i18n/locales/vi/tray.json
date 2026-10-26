@@ -9,5 +9,6 @@
   "noteListWindow": "Ghi chú",
   "windows": "Cửa sổ",
   "runningSessions": "Phiên đang chạy ({count})",
-  "noRunningSessions": "Không có phiên nào đang chạy"
+  "noRunningSessions": "Không có phiên nào đang chạy",
+  "backgroundProcesses": "Tiến trình nền ({count})"
 }

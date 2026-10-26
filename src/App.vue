@@ -60,6 +60,11 @@ import { useRunsStore } from '@/stores/runs'
 import { useConductorStore } from '@/stores/conductor'
 import { refreshTray, buildSessionItems, TRAY_OPEN_RUN, type TrayOpenRun } from '@/lib/tray'
 import { focusSessionWindow } from '@/lib/sessionWindow'
+import { useBackgroundProcessesStore } from '@/stores/backgroundProcesses'
+import { EVT_TRAY_OPEN } from '@/lib/backgroundProcesses'
+import BackgroundProcessesDock from '@/components/processes/BackgroundProcessesDock.vue'
+import OrphanProcessesPrompt from '@/components/processes/OrphanProcessesPrompt.vue'
+import QuitProcessesDialog from '@/components/processes/QuitProcessesDialog.vue'
 
 // Pop-out windows load the same SPA with a query flag; render a bare,
 // chrome-less host (no sidebar / nav / background work) in those cases.
@@ -99,6 +104,7 @@ const uiLayout = useUILayoutStore()
 const live = useLiveRunsStore()
 const runsStore = useRunsStore()
 const conductorStore = useConductorStore()
+const bgProcs = useBackgroundProcessesStore()
 const draftsStore = useChatDraftsStore()
 const { toast } = useToast()
 const { t, locale } = useI18n()
@@ -314,6 +320,9 @@ let unlistenActivated: UnlistenFn | null = null
 // Listener for a session row clicked in the menu-bar switcher (see lib/tray.ts).
 let unlistenTrayRun: UnlistenFn | null = null
 
+// Listener for the tray's "Background processes" row (lib/tray.ts).
+let unlistenTrayProcs: UnlistenFn | null = null
+
 // Listener for a clicked Slack thread OS notification (see lib/slackWindow.ts).
 let unlistenCaptureNotification: UnlistenFn | null = null
 
@@ -425,6 +434,8 @@ onBeforeUnmount(() => {
   unlistenActivated = null
   unlistenTrayRun?.()
   unlistenTrayRun = null
+  unlistenTrayProcs?.()
+  unlistenTrayProcs = null
   unlistenCaptureNotification?.()
   unlistenCaptureNotification = null
   unlistenSlackApiReceived?.()
@@ -525,6 +536,9 @@ onMounted(async () => {
     return
   }
   void pulseStore.start()
+  // Tracked background processes: counts for the sidebar row + tray, and the
+  // first snapshot the startup orphan prompt waits on.
+  void bgProcs.start()
 
   // Native menu bar: bind the actions first, then install the menu, so an
   // impatient click on a freshly drawn item can't land on nothing.
@@ -588,6 +602,15 @@ onMounted(async () => {
   try {
     unlistenTrayRun = await listen<TrayOpenRun>(TRAY_OPEN_RUN, (e) => {
       if (e.payload?.runId) void openRunFromTray(e.payload.runId)
+    })
+  } catch {
+    // Ignore (e.g. running outside the Tauri shell during dev in a browser).
+  }
+
+  // The tray's "Background processes" row: show the Processes screen here.
+  try {
+    unlistenTrayProcs = await listen(EVT_TRAY_OPEN, () => {
+      void openRouteFromWindow('/processes')
     })
   } catch {
     // Ignore (e.g. running outside the Tauri shell during dev in a browser).
@@ -867,6 +890,9 @@ onMounted(async () => {
           <!-- App-wide monitor of concurrent runs + permission center -->
           <ActiveRunsDock />
 
+          <!-- Warning row while processes outlive their session -->
+          <BackgroundProcessesDock />
+
           <!-- Active Remote Control session (phone paired to a run) -->
           <ActiveRemoteDock />
 
@@ -907,6 +933,12 @@ onMounted(async () => {
     <!-- Headless: fires native reminders for upcoming calendar events app-wide;
          clicking opens the event's detail drawer on the Calendar screen. -->
     <CalendarReminder />
+
+    <!-- Startup prompt for processes left running by the previous app session -->
+    <OrphanProcessesPrompt />
+
+    <!-- Answers the backend's quit prompt when background processes are running -->
+    <QuitProcessesDialog />
 
     <!-- App-wide confirm dialog host (see useConfirm) -->
     <ConfirmModal />

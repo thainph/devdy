@@ -40,7 +40,12 @@
     "animatedBackgroundHint": "Adds a living scene (e.g. the Full Moon 🌕 night sky) for scenic themes. Automatically paused under reduced-motion.",
     "terminalApp": "Terminal App",
     "terminalDefault": "Terminal (macOS default)",
-    "terminalIterm": "iTerm"
+    "terminalIterm": "iTerm",
+    "quitPolicy": "When quitting with background processes",
+    "quitPolicyAsk": "Ask",
+    "quitPolicyStopAll": "Stop all",
+    "quitPolicyKeep": "Keep background processes",
+    "quitPolicyHint": "Applies when sessions are running or processes are left over. \"Keep\" still stops sessions and Devdy helpers."
   },
   "mascot": {
     "title": "DY Mascot",

@@ -12,5 +12,6 @@
   "calendar": "Calendar",
   "settings": "Settings",
   "about": "About",
-  "opensInWindow": "opens in a separate window"
+  "opensInWindow": "opens in a separate window",
+  "processes": "Processes"
 }

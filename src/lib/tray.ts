@@ -33,6 +33,8 @@ import { i18n } from '@/i18n'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useRunsStore } from '@/stores/runs'
 import { useProjectsStore } from '@/stores/projects'
+import { useBackgroundProcessesStore } from '@/stores/backgroundProcesses'
+import { TRAY_PROCS_ID, trayCount } from '@/lib/backgroundProcesses'
 
 type TrayItem =
   | { kind: 'item'; id: string; label: string }
@@ -57,7 +59,8 @@ export function trackWindowForTray(win: WebviewWindow): void {
 
 // Menu ids share a `tray:` namespace so the Rust app-menu handler ignores them
 // (both handlers see every click — see tray.rs). `tray:win:<label>` focuses a
-// window; `tray:run:<runId>` opens a session; Quit is appended by Rust.
+// window; `tray:run:<runId>` opens a session; `tray:procs` opens the Processes
+// screen; Quit is appended by Rust.
 const winId = (label: string) => `tray:win:${label}`
 const runId = (id: string) => `tray:run:${id}`
 
@@ -153,6 +156,22 @@ const mark = (pending: number) => (pending > 0 ? '⚠ ' : '● ')
  * source to resend the menu whenever the section's contents change.
  */
 export function buildSessionItems(): TrayItem[] {
+  return [...buildRunItems(), ...buildProcessItems()]
+}
+
+// "Background processes (N)": sessions plus processes left behind, so stray dev
+// servers stay reachable from the menu bar. Last in the session section, which
+// Rust renders right before Quit; a click comes back as `tray:open-processes`.
+function buildProcessItems(): TrayItem[] {
+  const n = trayCount(useBackgroundProcessesStore().counts)
+  if (n <= 0) return []
+  return [
+    { kind: 'separator' },
+    { kind: 'item', id: TRAY_PROCS_ID, label: t('tray.backgroundProcesses', { count: n }) },
+  ]
+}
+
+function buildRunItems(): TrayItem[] {
   const live = useLiveRunsStore()
   const runs = useRunsStore()
 

@@ -92,6 +92,7 @@ interface AppSettings {
   cyber_fox_voice_en: string
   cyber_fox_voice_rate: string
   cyber_fox_voice_pitch: string
+  quit_background_policy: string
 }
 
 const settings = ref<AppSettings>({
@@ -132,6 +133,7 @@ const settings = ref<AppSettings>({
   cyber_fox_voice_en: '',
   cyber_fox_voice_rate: '1',
   cyber_fox_voice_pitch: '1.15',
+  quit_background_policy: 'ask',
 })
 
 type CyberFoxPreviewState =
@@ -1073,6 +1075,8 @@ async function handleDeleteClaudeAccount(id: string) {
 onMounted(async () => {
   try {
     settings.value = await invoke<AppSettings>('get_settings')
+    // Older backends don't know this key yet; show the default instead of a blank select.
+    settings.value.quit_background_policy ||= 'ask'
     lastSaved = { ...settings.value }
     savedPrompts.value = parseSavedPrompts(settings.value.saved_prompts)
     await ghStore.fetch()
@@ -1352,6 +1356,19 @@ watch(() => settings.value.language, (v) => {
                   { value: 'iterm', label: t('settings.general.terminalIterm') },
                 ]"
               />
+            </div>
+            <div class="space-y-1.5">
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.general.quitPolicy') }}</label>
+              <AppSelect
+                size="sm"
+                v-model="settings.quit_background_policy"
+                :options="[
+                  { value: 'ask', label: t('settings.general.quitPolicyAsk') },
+                  { value: 'stop_all', label: t('settings.general.quitPolicyStopAll') },
+                  { value: 'keep_leftovers', label: t('settings.general.quitPolicyKeep') },
+                ]"
+              />
+              <p class="text-[11px] text-muted-foreground">{{ t('settings.general.quitPolicyHint') }}</p>
             </div>
         </Card>
 

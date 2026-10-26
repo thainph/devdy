@@ -10,6 +10,7 @@ import {
   BarChart3,
   CalendarDays,
   Activity,
+  Cpu,
   Settings,
   Info,
 } from 'lucide-vue-next'
@@ -51,6 +52,7 @@ export const NAV_ROUTES: NavRoute[] = [
   { path: '/mcp', labelKey: 'nav.mcp', icon: Server, group: 'config' },
   { path: '/servers', labelKey: 'nav.servers', icon: HardDrive, group: 'config' },
   { path: '/stats', labelKey: 'nav.stats', icon: BarChart3, group: 'app' },
+  { path: '/processes', labelKey: 'nav.processes', icon: Cpu, group: 'app' },
   { path: '/settings', labelKey: 'nav.settings', icon: Settings, group: 'app' },
   { path: '/about', labelKey: 'nav.about', icon: Info, group: 'app' },
 ]
