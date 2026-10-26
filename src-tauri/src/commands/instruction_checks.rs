@@ -34,6 +34,9 @@ pub enum InstructionWarning {
     CodexReadsClaudeMd { config: String },
     /// Devdy's symlinks in this directory are not git-ignored; committed, they break elsewhere.
     LinksNotIgnored { dir: String },
+    /// Old copies Devdy couldn't vouch for were moved here instead of being deleted. Shown until
+    /// the user reviews and removes the folder.
+    LegacyCopiesBackedUp { dir: String, batches: usize },
 }
 
 #[tauri::command]
@@ -116,6 +119,15 @@ pub fn check_project(project: &Path, codex_home: Option<&Path>, home: Option<&Pa
                 warnings.push(InstructionWarning::LinksNotIgnored { dir: dir.to_string() });
             }
         }
+    }
+
+    let backups = crate::commands::project_links::project_backup_dir(project);
+    let batches = fs::read_dir(&backups).map(|d| d.flatten().count()).unwrap_or(0);
+    if batches > 0 {
+        warnings.push(InstructionWarning::LegacyCopiesBackedUp {
+            dir: backups.to_string_lossy().to_string(),
+            batches,
+        });
     }
 
     warnings

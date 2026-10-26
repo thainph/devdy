@@ -179,6 +179,7 @@ pub fn run() {
                 .expect("Failed to create skills dir");
             std::fs::create_dir_all(app_data_dir.join("rules"))
                 .expect("Failed to create rules dir");
+            commands::project_links::set_backup_root(app_data_dir.join("legacy-backups"));
 
             // Persist logs so the credential broker's audit trail and its
             // "broker unreachable / accept error" warnings are actually recorded.

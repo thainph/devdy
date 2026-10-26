@@ -129,6 +129,8 @@ function instructionWarningText(w: InstructionWarning): string {
       return t('projectDetail.warnCodexReadsClaudeMd', { config: w.config })
     case 'links_not_ignored':
       return t('projectDetail.warnLinksNotIgnored', { dir: w.dir })
+    case 'legacy_copies_backed_up':
+      return t('projectDetail.warnLegacyCopiesBackedUp', { dir: w.dir, count: w.batches })
   }
 }
 const togglingRuleId = ref<string | null>(null)
