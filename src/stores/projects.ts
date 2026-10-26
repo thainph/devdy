@@ -120,6 +120,7 @@ export type InstructionWarning =
   | { code: 'codex_reads_claude_md'; config: string }
   | { code: 'links_not_ignored'; dir: string }
   | { code: 'legacy_copies_backed_up'; dir: string; batches: number }
+  | { code: 'tracked_by_git'; paths: string[] }
 
 export interface RuleSyncConflict {
   id: string
