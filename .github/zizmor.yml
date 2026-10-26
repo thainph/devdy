@@ -1,0 +1,5 @@
+rules:
+  # `./.github/actions/...` is what actionlint and the docs still use; revisit
+  # once the `$/` self-repository syntax is widely supported.
+  self-repository:
+    disable: true
