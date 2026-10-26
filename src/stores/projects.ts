@@ -108,7 +108,17 @@ export interface AppliedRule {
   manual: boolean
   /** Provided by a group the project has enabled. Either link alone keeps the rule applied. */
   from_group: boolean
+  /** Codex gets this rule as a skill in `.agents/skills` instead of an AGENTS.md block. */
+  codex_skill: boolean
 }
+
+/** Read-only findings about how Claude / Codex load this project's instructions. */
+export type InstructionWarning =
+  | { code: 'agents_md_too_large'; size: number; limit: number }
+  | { code: 'claude_reads_agents_md' }
+  | { code: 'claude_md_imports_agents_md'; path: string }
+  | { code: 'codex_reads_claude_md'; config: string }
+  | { code: 'links_not_ignored'; dir: string }
 
 export interface RuleSyncConflict {
   id: string
@@ -330,6 +340,10 @@ export const useProjectsStore = defineStore('projects', () => {
     await invoke('remove_rule_from_project', { projectId: project_id, ruleId: rule_id })
   }
 
+  async function getInstructionWarnings(project_id: string): Promise<InstructionWarning[]> {
+    return invoke<InstructionWarning[]>('get_instruction_warnings', { projectId: project_id })
+  }
+
   async function fetchRuleConflicts(): Promise<void> {
     ruleConflicts.value = await invoke<RuleSyncConflict[]>('list_rule_sync_conflicts')
   }
@@ -361,7 +375,7 @@ export const useProjectsStore = defineStore('projects', () => {
     setProjectAccount, setProjectReviewerAccount, setProjectGitlabAccount, setProjectAwsAccount, setProjectAzureAccount, setProjectClaudeAccount, fetchConflicts, resolveConflict,
     openInVscode, openInFolder, openInTerminal,
     getAppliedRules, applyRule, removeRuleFromProject,
-    fetchRuleConflicts, resolveRuleConflict,
+    fetchRuleConflicts, resolveRuleConflict, getInstructionWarnings,
     getProjectGroups, enableGroup, disableGroup,
   }
 })

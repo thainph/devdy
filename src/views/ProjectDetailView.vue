@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
-import { useProjectsStore, type AppliedSkill, type AppliedRule, type Repo } from '@/stores/projects'
+import { useProjectsStore, type AppliedSkill, type AppliedRule, type InstructionWarning, type Repo } from '@/stores/projects'
 import { useSkillsStore } from '@/stores/skills'
 import { useRulesStore } from '@/stores/rules'
 import type { GroupKind, ProjectGroupState } from '@/stores/groups'
@@ -108,6 +108,29 @@ const targetLabel = computed<Record<string, string>>(() => ({
 }))
 const appliedRules = ref<AppliedRule[]>([])
 const loadingRules = ref(false)
+// How Claude/Codex will load this project's instruction files — warnings only, never auto-fixed.
+const instructionWarnings = ref<InstructionWarning[]>([])
+async function loadInstructionWarnings() {
+  try {
+    instructionWarnings.value = await projectStore.getInstructionWarnings(projectId.value)
+  } catch {
+    instructionWarnings.value = []
+  }
+}
+function instructionWarningText(w: InstructionWarning): string {
+  switch (w.code) {
+    case 'agents_md_too_large':
+      return t('projectDetail.warnAgentsMdTooLarge', { size: Math.ceil(w.size / 1024), limit: Math.floor(w.limit / 1024) })
+    case 'claude_reads_agents_md':
+      return t('projectDetail.warnClaudeReadsAgentsMd')
+    case 'claude_md_imports_agents_md':
+      return t('projectDetail.warnClaudeMdImportsAgentsMd', { path: w.path })
+    case 'codex_reads_claude_md':
+      return t('projectDetail.warnCodexReadsClaudeMd', { config: w.config })
+    case 'links_not_ignored':
+      return t('projectDetail.warnLinksNotIgnored', { dir: w.dir })
+  }
+}
 const togglingRuleId = ref<string | null>(null)
 // Unified list of every rule with its per-project applied state, mirroring the
 // MCP servers tab (single toggleable list instead of add/applied panels).
@@ -123,6 +146,7 @@ const ruleItems = computed(() =>
       from_group: applied?.from_group ?? false,
       has_claude: applied?.has_claude ?? false,
       has_codex: applied?.has_codex ?? false,
+      codex_skill: applied?.codex_skill ?? false,
     }
   })
 )
@@ -211,6 +235,7 @@ async function loadAppliedRules() {
   } finally {
     loadingRules.value = false
   }
+  await loadInstructionWarnings()
 }
 
 // Direct link only — see `handleToggleSkill`.
@@ -674,6 +699,7 @@ async function loadAppliedSkills() {
   } finally {
     loadingSkills.value = false
   }
+  await loadInstructionWarnings()
 }
 
 async function autoSaveProject() {
@@ -996,6 +1022,20 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
             @toggle="handleToggleGroup('skill', $event)"
             @reapply="handleReapplyGroup('skill', $event)"
           />
+          <div
+            v-if="instructionWarnings.length > 0"
+            class="px-4 py-3 bg-amber-500/10 border border-amber-500/20 rounded-lg space-y-1.5"
+          >
+            <div class="flex items-center gap-2">
+              <AlertTriangle class="h-3.5 w-3.5 text-amber-500 shrink-0" :stroke-width="1.75" />
+              <p class="text-xs font-medium text-amber-600 dark:text-amber-400">{{ t('projectDetail.instructionWarningsTitle') }}</p>
+            </div>
+            <p
+              v-for="(w, i) in instructionWarnings"
+              :key="i"
+              class="text-[11px] text-amber-600/90 dark:text-amber-400/90 leading-relaxed"
+            >{{ instructionWarningText(w) }}</p>
+          </div>
           <Card>
             <template #header>
               <Puzzle class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
@@ -1043,7 +1083,7 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
                     </Badge>
                     <Badge v-if="skill.from_group" tone="info" size="xs" class="shrink-0">{{ t('groups.viaGroup') }}</Badge>
                     <Badge v-if="skill.has_claude" tone="primary" size="xs" class="shrink-0">.claude/skills</Badge>
-                    <Badge v-if="skill.has_codex" tone="neutral" size="xs" class="shrink-0">.codex/skills</Badge>
+                    <Badge v-if="skill.has_codex" tone="neutral" size="xs" class="shrink-0">.agents/skills</Badge>
                   </div>
                   <p v-if="skill.description" class="text-[10px] text-muted-foreground truncate mt-0.5">{{ skill.description }}</p>
                 </div>
@@ -1093,6 +1133,20 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
             @toggle="handleToggleGroup('rule', $event)"
             @reapply="handleReapplyGroup('rule', $event)"
           />
+          <div
+            v-if="instructionWarnings.length > 0"
+            class="px-4 py-3 bg-amber-500/10 border border-amber-500/20 rounded-lg space-y-1.5"
+          >
+            <div class="flex items-center gap-2">
+              <AlertTriangle class="h-3.5 w-3.5 text-amber-500 shrink-0" :stroke-width="1.75" />
+              <p class="text-xs font-medium text-amber-600 dark:text-amber-400">{{ t('projectDetail.instructionWarningsTitle') }}</p>
+            </div>
+            <p
+              v-for="(w, i) in instructionWarnings"
+              :key="i"
+              class="text-[11px] text-amber-600/90 dark:text-amber-400/90 leading-relaxed"
+            >{{ instructionWarningText(w) }}</p>
+          </div>
           <Card>
             <template #header>
               <ScrollText class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
@@ -1140,7 +1194,7 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
                     </Badge>
                     <Badge v-if="rule.from_group" tone="info" size="xs" class="shrink-0">{{ t('groups.viaGroup') }}</Badge>
                     <Badge v-if="rule.has_claude" tone="primary" size="xs" class="shrink-0">.claude/rules</Badge>
-                    <Badge v-if="rule.has_codex" tone="neutral" size="xs" class="shrink-0">AGENTS.md</Badge>
+                    <Badge v-if="rule.has_codex" tone="neutral" size="xs" class="shrink-0">{{ rule.codex_skill ? '.agents/skills' : 'AGENTS.md' }}</Badge>
                   </div>
                   <p v-if="rule.description" class="text-[10px] text-muted-foreground truncate mt-0.5">{{ rule.description }}</p>
                 </div>
