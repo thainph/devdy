@@ -119,6 +119,7 @@ export type InstructionWarning =
   | { code: 'claude_md_imports_agents_md'; path: string }
   | { code: 'codex_reads_claude_md'; config: string }
   | { code: 'links_not_ignored'; dir: string }
+  | { code: 'legacy_copies_backed_up'; dir: string; batches: number }
 
 export interface RuleSyncConflict {
   id: string

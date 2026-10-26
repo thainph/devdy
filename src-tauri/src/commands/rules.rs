@@ -882,7 +882,7 @@ fn remove_codex_rule(project_path: &str, name: &str, source_path: &str) -> Resul
 }
 
 /// Remove a rule's artifacts from a project for the engines it was installed for. An edited
-/// copy-era `.claude/rules` file is kept and reported.
+/// copy-era `.claude/rules` file is moved to the legacy backups.
 fn remove_rule_artifacts(
     project_path: &str,
     name: &str,
@@ -1331,16 +1331,22 @@ mod tests {
         apply_rule_to_project(&db, "p1", "git", true).await.unwrap();
         assert!(is_symlink(&claude));
 
-        // Edited copy → error, file untouched.
+        // Edited copy → moved to the backups, then linked.
         fs::remove_file(&claude).unwrap();
         fs::write(&claude, "my local tweak\n").unwrap();
-        let err = apply_rule_to_project(&db, "p1", "git", true).await.unwrap_err();
-        assert!(err.contains("local copy"), "{err}");
-        assert_eq!(fs::read_to_string(&claude).unwrap(), "my local tweak\n");
+        apply_rule_to_project(&db, "p1", "git", true).await.unwrap();
+        assert!(is_symlink(&claude));
+        assert_eq!(backups_of(&project, ".claude/rules/git.md"), vec!["my local tweak\n".to_string()]);
+    }
+
+    fn backups_of(project: &Path, rel: &str) -> Vec<String> {
+        let dir = crate::commands::project_links::project_backup_dir(project);
+        let Ok(stamps) = fs::read_dir(dir) else { return Vec::new() };
+        stamps.flatten().filter_map(|e| fs::read_to_string(e.path().join(rel)).ok()).collect()
     }
 
     #[tokio::test]
-    async fn edited_legacy_copy_survives_target_change_and_unapply() {
+    async fn edited_legacy_copy_is_backed_up_on_target_change() {
         let (db, project, lib) = setup("legacy-remove").await;
         let content = "Rule body.\n";
         add_rule(&db, &lib, "doc", "both", content).await;
@@ -1358,13 +1364,9 @@ mod tests {
         .unwrap();
 
         set_target(&db, "rules", "doc", "codex").await;
-        let failures = sync_rule_to_projects(&db, "doc").await.unwrap();
-        assert_eq!(failures.len(), 1, "{failures:?}");
-        assert_eq!(fs::read_to_string(&claude).unwrap(), "edited by hand\n");
-
-        let err = remove_rule_from_project_inner(&db, "p1", "doc").await.unwrap_err();
-        assert!(err.contains("local copy"), "{err}");
-        assert!(claude.exists());
+        assert!(sync_rule_to_projects(&db, "doc").await.unwrap().is_empty());
+        assert!(!claude.exists());
+        assert_eq!(backups_of(&project, ".claude/rules/doc.md"), vec!["edited by hand\n".to_string()]);
     }
 
     #[tokio::test]
@@ -1396,21 +1398,15 @@ mod tests {
         .unwrap();
 
         // Copy-era leftovers: .codex/skills copy + AGENTS.md pointer block. An edited reference
-        // file blocks the switch-over even though SKILL.md is untouched.
+        // file means the copy is backed up rather than deleted, even though SKILL.md is untouched.
         let legacy = project.join(".codex/skills/review");
         fs::create_dir_all(legacy.join("references")).unwrap();
         fs::copy(source.join("SKILL.md"), legacy.join("SKILL.md")).unwrap();
-        fs::File::options()
-            .write(true)
-            .open(legacy.join("SKILL.md"))
-            .unwrap()
-            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
-            .unwrap();
+        // Edited after the sync pass (beyond its slack).
+        std::thread::sleep(std::time::Duration::from_millis(2100));
         fs::write(legacy.join("references/a.md"), "edited").unwrap();
-        let err = apply_skill_to_project(&db, "p1", "review", true).await.unwrap_err();
-        assert!(err.contains("local copy"), "{err}");
-        assert_eq!(fs::read_to_string(legacy.join("references/a.md")).unwrap(), "edited");
-        fs::write(legacy.join("references/a.md"), "ref").unwrap();
+        apply_skill_to_project(&db, "p1", "review", true).await.unwrap();
+        assert_eq!(backups_of(&project, ".codex/skills/review/references/a.md"), vec!["edited".to_string()]);
         agents_block::upsert(&project.join("AGENTS.md"), "skill", "review", "## Skill: review").unwrap();
 
         apply_skill_to_project(&db, "p1", "review", true).await.unwrap();
