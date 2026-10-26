@@ -115,5 +115,8 @@
     "sat": "T7",
     "sun": "CN",
     "more": "+{n} nữa"
+  },
+  "window": {
+    "title": "Lịch"
   }
 }

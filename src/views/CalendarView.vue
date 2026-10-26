@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useActivatedRefresh } from '@/composables/useActivatedRefresh'
 import { useRouter } from 'vue-router'
@@ -8,9 +8,13 @@ import {
   ChevronLeft, ChevronRight, Loader2, CalendarDays, AlertTriangle,
   ExternalLink, MapPin, Clock, CalendarRange, User, Timer,
   Video, Paperclip, AlignLeft, Settings2, Check, Languages, Bell, Moon,
-  Plus, Pencil, Trash2,
+  Plus, Pencil, Trash2, Pin, PinOff,
 } from 'lucide-vue-next'
 import { openUrl } from '@tauri-apps/plugin-opener'
+import { emit as emitEvent } from '@tauri-apps/api/event'
+import { getCurrentWindow } from '@tauri-apps/api/window'
+import { useFloatingWindow } from '@/composables/useFloatingWindow'
+import { CALENDAR_WINDOW_OPEN_ROUTE, type CalendarWindowOpenRoute } from '@/lib/calendarWindow'
 import { translateText } from '@/lib/translate'
 import { Button, Badge, Drawer, AppSelect, Modal } from '@/components/ui'
 import { useGoogleCalendarStore, type CalEvent } from '@/stores/googleCalendar'
@@ -27,6 +31,12 @@ import EventEditorModal from '@/components/calendar/EventEditorModal.vue'
 // Named explicitly: <KeepAlive :include> in App.vue matches on component name,
 // and an inferred name is a build detail that minification can change.
 defineOptions({ name: 'CalendarView' })
+
+const props = withDefaults(defineProps<{
+  /** Rendered in its own OS window (CalendarWindow): no router of the app and
+   *  no KeepAlive — routes go to the main window, data resyncs on focus. */
+  standalone?: boolean
+}>(), { standalone: false })
 
 const store = useGoogleCalendarStore()
 const appSettings = useAppSettingsStore()
@@ -57,6 +67,26 @@ useActivatedRefresh(async () => {
   await store.fetchEvents()
   void store.fetchCalendars()
 })
+
+// Standalone window: same window-priority behaviour as the other pop-outs
+// (on top while focused, or pinned), and resync on focus instead of on
+// KeepAlive activation. fetchEvents is TTL-cached, so focusing back and forth
+// costs nothing until the cache goes stale.
+const floating = props.standalone ? useFloatingWindow() : null
+let unlistenFocus: (() => void) | null = null
+if (props.standalone) {
+  onMounted(async () => {
+    try {
+      unlistenFocus = await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+        if (!focused || store.loading || !store.accounts.length) return
+        void store.fetchEvents()
+      })
+    } catch {
+      /* outside the Tauri shell */
+    }
+  })
+  onBeforeUnmount(() => unlistenFocus?.())
+}
 
 // ── Event editor (create / edit) ──
 const editorOpen = ref(false)
@@ -328,7 +358,12 @@ function attachmentName(a: { title: string | null; file_url: string | null }): s
   return a.title || a.file_url || t('calendar.view.attachmentFallback')
 }
 
+// Settings live in the main window.
 function goSettings() {
+  if (props.standalone) {
+    emitEvent(CALENDAR_WINDOW_OPEN_ROUTE, { path: '/settings' } satisfies CalendarWindowOpenRoute).catch(() => {})
+    return
+  }
   router.push('/settings')
 }
 
@@ -394,6 +429,19 @@ function openForAccount(url: string) {
           @click="openCreate()"
         >
           <Plus class="h-4 w-4" :stroke-width="1.75" /> {{ t('calendar.createEvent') }}
+        </Button>
+
+        <!-- Standalone window: pin on top (same control as the PR Inbox window) -->
+        <Button
+          v-if="floating"
+          :variant="floating.pinned.value ? 'primary' : 'outline'"
+          size="icon-sm"
+          :aria-pressed="floating.pinned.value"
+          :title="floating.pinned.value ? t('item.unpin') : t('item.pin')"
+          :aria-label="floating.pinned.value ? t('item.unpin') : t('item.pin')"
+          @click="floating.togglePin()"
+        >
+          <component :is="floating.pinned.value ? Pin : PinOff" class="h-3.5 w-3.5" :stroke-width="1.75" />
         </Button>
 
         <!-- Settings popover -->

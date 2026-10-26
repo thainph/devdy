@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, watch } from 'vue'
-import { useRouter } from 'vue-router'
 import { isPermissionGranted, requestPermission } from '@tauri-apps/plugin-notification'
 import { invoke } from '@/lib/tauri'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { useGoogleCalendarStore, type CalEvent } from '@/stores/googleCalendar'
+import { useGoogleCalendarStore, CALENDAR_EVENTS_CHANGED, type CalEvent } from '@/stores/googleCalendar'
+import { openCalendarWindow } from '@/lib/calendarWindow'
 import { parseEventTime } from '@/lib/calendar'
 import { useMascotBubble } from '@/composables/useMascotBubble'
 import { useMascotState } from '@/composables/useMascotState'
@@ -16,12 +16,10 @@ import { useAppSettingsStore } from '@/stores/appSettings'
  * near-term window of events refreshed (independent of whether the Calendar
  * screen is open) and fires a native OS notification when a timed event is about
  * to start (within the configured lead time). Clicking the notification focuses
- * the window, routes to the Calendar screen, and opens that event's detail
- * drawer (via the store's `requestedEvent`).
+ * the Calendar window and opens that event's detail drawer there.
  */
 
 const store = useGoogleCalendarStore()
-const router = useRouter()
 const { push: pushBubble } = useMascotBubble()
 const appSettings = useAppSettingsStore()
 // When the mascot is on it speaks the reminder in its bubble, so the duplicate
@@ -47,6 +45,7 @@ let fetchTimer: number | null = null
 // next due moment. No periodic wake-ups → negligible idle cost.
 let dueTimer: number | null = null
 let unlistenClick: UnlistenFn | null = null
+let unlistenChanged: UnlistenFn | null = null
 let permissionGranted = false
 // Keyed by `${id}|${start}` so each occurrence alerts at most once per session.
 const notified = new Set<string>()
@@ -156,14 +155,23 @@ onMounted(async () => {
   try {
     unlistenClick = await listen<{ eventId?: string }>('calendar-reminder-clicked', (e) => {
       const id = e.payload?.eventId
-      getCurrentWindow().setFocus().catch(() => {})
-      if (!id) return
+      if (!id) {
+        getCurrentWindow().setFocus().catch(() => {})
+        return
+      }
       const ev: CalEvent | undefined = store.reminderEvents.find(x => x.id === id)
-      router.push('/calendar').catch(() => {})
-      if (ev) store.requestOpenEvent(ev)
+      void openCalendarWindow({ event: ev })
     })
   } catch {
     unlistenClick = null
+  }
+
+  // An event was written in the Calendar window (its own store): re-pull the
+  // reminder window now rather than at the next 15-min refetch.
+  try {
+    unlistenChanged = await listen(CALENDAR_EVENTS_CHANGED, () => void refresh())
+  } catch {
+    unlistenChanged = null
   }
 
   await refresh()
@@ -173,6 +181,7 @@ onBeforeUnmount(() => {
   if (fetchTimer) window.clearTimeout(fetchTimer)
   if (dueTimer) window.clearTimeout(dueTimer)
   unlistenClick?.()
+  unlistenChanged?.()
 })
 
 // Whenever the reminder data is refreshed — by our own fetch OR reused from a

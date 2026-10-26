@@ -14,6 +14,9 @@ import {
   Info,
 } from 'lucide-vue-next'
 import { openPrInboxWindow } from '@/lib/prInboxWindow'
+import { openCalendarWindow } from '@/lib/calendarWindow'
+import { openGanttWindow } from '@/lib/ganttWindow'
+import { openPulseWindow } from '@/lib/pulseWindow'
 
 /**
  * The app's top-level destinations, in sidebar order. Shared by the sidebar and
@@ -43,9 +46,9 @@ export interface NavRoute {
 export const NAV_ROUTES: NavRoute[] = [
   { path: '/projects', labelKey: 'nav.projects', icon: FolderOpen, group: 'work' },
   { path: '/pr-inbox', labelKey: 'nav.prInbox', icon: GitPullRequest, group: 'work', openWindow: openPrInboxWindow },
-  { path: '/calendar', labelKey: 'nav.calendar', icon: CalendarDays, group: 'work' },
-  { path: '/gantt', labelKey: 'nav.gantt', icon: GanttChartSquare, group: 'work' },
-  { path: '/pulse', labelKey: 'nav.pulse', icon: Activity, group: 'work' },
+  { path: '/calendar', labelKey: 'nav.calendar', icon: CalendarDays, group: 'work', openWindow: () => openCalendarWindow() },
+  { path: '/gantt', labelKey: 'nav.gantt', icon: GanttChartSquare, group: 'work', openWindow: () => openGanttWindow() },
+  { path: '/pulse', labelKey: 'nav.pulse', icon: Activity, group: 'work', openWindow: openPulseWindow },
   { path: '/skills', labelKey: 'nav.skills', icon: Puzzle, group: 'config' },
   { path: '/rules', labelKey: 'nav.rules', icon: ScrollText, group: 'config' },
   { path: '/mcp', labelKey: 'nav.mcp', icon: Server, group: 'config' },

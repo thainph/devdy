@@ -29,6 +29,9 @@ import ItemListWindow from '@/views/ItemListWindow.vue'
 import SlackThreadsWindow from '@/views/SlackThreadsWindow.vue'
 import PrInboxWindow from '@/views/PrInboxWindow.vue'
 import { PR_INBOX_WINDOW_OPEN_ROUTE, type PrInboxWindowOpenRoute } from '@/lib/prInboxWindow'
+import CalendarWindow from '@/views/CalendarWindow.vue'
+import { CALENDAR_WINDOW_OPEN_ROUTE, type CalendarWindowOpenRoute } from '@/lib/calendarWindow'
+import PulseWindow from '@/views/PulseWindow.vue'
 import {
   SLACK_API_RECEIVED,
   type SlackApiReceived,
@@ -50,7 +53,9 @@ import { useChatDraftsStore } from '@/stores/chatDrafts'
 import { useToast } from '@/composables/useToast'
 import { openItemCreateWindow } from '@/lib/itemWindow'
 import { openItemListWindow } from '@/lib/itemListWindow'
-import { applyAppMenu, listenMenuActions, registerMenuAction } from '@/lib/appMenu'
+import { applyAppMenu, isMenuActionBound, listenMenuActions, registerMenuAction } from '@/lib/appMenu'
+import { openPath, openUrl } from '@tauri-apps/plugin-opener'
+import { appDataDir, join } from '@tauri-apps/api/path'
 import { NAV_ROUTES, startsNavGroup } from '@/lib/navigation'
 import { IS_SESSION_WINDOW, SESSION_WINDOW_PROJECT_ID, SESSION_WINDOW_RUN_ID } from '@/lib/windowMode'
 import IssuesGanttView from '@/views/IssuesGanttView.vue'
@@ -70,6 +75,8 @@ const isItemListWindow = new URLSearchParams(window.location.search).get('itemLi
 const isGanttWindow = new URLSearchParams(window.location.search).get('ganttWindow') === '1'
 const isSlackWindow = new URLSearchParams(window.location.search).get('slackWindow') === '1'
 const isPrInboxWindow = new URLSearchParams(window.location.search).get('prInboxWindow') === '1'
+const isCalendarWindow = new URLSearchParams(window.location.search).get('calendarWindow') === '1'
+const isPulseWindow = new URLSearchParams(window.location.search).get('pulseWindow') === '1'
 const isMascotWindow = new URLSearchParams(window.location.search).get('mascotWindow') === '1'
 // A session pop-out is different from the bare pop-outs above: it reuses the full
 // RunView (routed to one run) with the app chrome hidden, so it still needs the
@@ -86,6 +93,8 @@ const isPopoutWindow =
   isGanttWindow ||
   isSlackWindow ||
   isPrInboxWindow ||
+  isCalendarWindow ||
+  isPulseWindow ||
   isMascotWindow
 
 const route = useRoute()
@@ -289,7 +298,6 @@ const CACHED_VIEWS = [
   'SkillsView',
   'RulesView',
   'McpServersView',
-  'CalendarView',
   'ServersView',
 ]
 
@@ -325,6 +333,7 @@ let unlistenSlackRoute: UnlistenFn | null = null
 
 // Listener for the PR Inbox window asking to navigate (e.g. "Add to devdy").
 let unlistenPrInboxRoute: UnlistenFn | null = null
+let unlistenCalendarRoute: UnlistenFn | null = null
 
 // Listeners for the Slack / Notes / Todos windows opening a linked session or
 // starting a new one (lib/sessionLinks).
@@ -373,15 +382,33 @@ function bindGlobalMenuActions() {
     registerMenuAction('file.newNote', () =>
       openItemCreateWindow('note', routeCaptureContext()),
     ),
-    registerMenuAction('view.itemPanel', () =>
+    registerMenuAction('window.todoList', () =>
       openItemListWindow('todo', { projectId: routeCaptureContext().projectId }),
     ),
-    registerMenuAction('view.slackThreads', () =>
+    registerMenuAction('window.noteList', () =>
+      openItemListWindow('note', { projectId: routeCaptureContext().projectId }),
+    ),
+    registerMenuAction('window.slackThreads', () =>
       openSlackWindow({ projectId: routeCaptureContext().projectId }),
     ),
     registerMenuAction('view.toggleSidebar', () => uiLayout.toggleSidebar()),
     registerMenuAction('view.toggleFocus', () => uiLayout.toggleFocus()),
-    registerMenuAction('view.reload', () => window.location.reload()),
+    // Windows/Linux only — macOS uses the OS full-screen item (see appMenu.ts).
+    registerMenuAction('view.toggleFullscreen', async () => {
+      const win = getCurrentWebviewWindow()
+      await win.setFullscreen(!(await win.isFullscreen())).catch(() => {})
+    }),
+    registerMenuAction('help.docs', () => void openUrl(DOCS_URL).catch(() => {})),
+    registerMenuAction('help.reportIssue', () => void openUrl(NEW_ISSUE_URL).catch(() => {})),
+    registerMenuAction('help.openLogs', async () => {
+      try {
+        // Same folder lib.rs points the tracing file appender at.
+        await openPath(await join(await appDataDir(), 'logs'))
+      } catch (e) {
+        toast.error(String(e))
+      }
+    }),
+    registerMenuAction('help.reload', () => window.location.reload()),
     ...NAV_ROUTES.map((r) =>
       registerMenuAction(`go.${r.path}`, () => (r.openWindow ? r.openWindow() : router.push(r.path))),
     ),
@@ -389,15 +416,20 @@ function bindGlobalMenuActions() {
   return () => unbinds.forEach((off) => off())
 }
 
+const DOCS_URL = 'https://github.com/thainph/devdy#readme'
+const NEW_ISSUE_URL = 'https://github.com/thainph/devdy/issues/new'
+
 let unbindMenuActions: (() => void) | null = null
 let unlistenMenu: UnlistenFn | null = null
 
 // Labels carry both the language AND the current layout state ("Hide" vs "Show
-// Sidebar"), so the menu is rebuilt whenever either moves. Watching the i18n
+// Sidebar"), and New Session is greyed out unless a project screen is mounted, so
+// the menu is rebuilt whenever any of those moves. Watching the i18n
 // locale rather than the settings row avoids rebuilding with stale labels: the
 // setting is what *drives* the switch, `locale` is what has actually applied.
 watch(
-  () => [locale.value, uiLayout.sidebarHidden, uiLayout.focusMode] as const,
+  () =>
+    [locale.value, uiLayout.sidebarHidden, uiLayout.focusMode, isMenuActionBound('file.newSession')] as const,
   () => {
     if (isPopoutWindow || isSessionWindow) return
     applyAppMenu({ sidebarHidden: uiLayout.sidebarHidden, focusMode: uiLayout.focusMode })
@@ -433,6 +465,8 @@ onBeforeUnmount(() => {
   unlistenSlackRoute = null
   unlistenPrInboxRoute?.()
   unlistenPrInboxRoute = null
+  unlistenCalendarRoute?.()
+  unlistenCalendarRoute = null
   unlistenWindowRun?.()
   unlistenWindowRun = null
   unlistenWindowNewSession?.()
@@ -637,6 +671,15 @@ onMounted(async () => {
     // Ignore (e.g. running outside the Tauri shell during dev in a browser).
   }
 
+  // Same for the Calendar window (e.g. "Reconnect" → the Settings screen).
+  try {
+    unlistenCalendarRoute = await listen<CalendarWindowOpenRoute>(CALENDAR_WINDOW_OPEN_ROUTE, (e) => {
+      void openRouteFromWindow(e.payload?.path)
+    })
+  } catch {
+    // Ignore (e.g. running outside the Tauri shell during dev in a browser).
+  }
+
   // Linked sessions / "New session from this …" of the Slack, Notes and Todos
   // windows (no router of this app there).
   try {
@@ -686,6 +729,12 @@ onMounted(async () => {
 
   <!-- THE PR Inbox window: the PR Inbox screen on its own OS window. -->
   <PrInboxWindow v-else-if="isPrInboxWindow" />
+
+  <!-- THE Calendar window: the Calendar screen on its own OS window. -->
+  <CalendarWindow v-else-if="isCalendarWindow" />
+
+  <!-- THE Pulse window: the Project Pulse screen on its own OS window. -->
+  <PulseWindow v-else-if="isPulseWindow" />
 
   <!-- Pop-out Gantt window: bare Gantt chart on its own OS window. -->
   <!-- Gantt pop-out: the board plus the dialog / toast hosts its row menu

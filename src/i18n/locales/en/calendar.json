@@ -115,5 +115,8 @@
     "sat": "Sat",
     "sun": "Sun",
     "more": "+{n} more"
+  },
+  "window": {
+    "title": "Calendar"
   }
 }

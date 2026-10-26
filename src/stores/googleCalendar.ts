@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { invoke } from '@/lib/tauri'
 import { translateText } from '@/lib/translate'
 import { ref, computed } from 'vue'
+import { emit, listen } from '@tauri-apps/api/event'
 import { startOfWeek, addDays, startOfMonth, endOfMonth, colorForIndex } from '@/lib/calendar'
 
 /**
@@ -13,6 +14,21 @@ import { startOfWeek, addDays, startOfMonth, endOfMonth, colorForIndex } from '@
  * Data is read-only (calendar.readonly scope); accounts connected before that
  * scope existed surface in `errors` so the view can prompt a reconnect.
  */
+
+/**
+ * Cross-window sync. The Calendar screen lives in its own window
+ * (lib/calendarWindow) with its own Pinia, while reminders are scheduled by the
+ * main window (CalendarReminder) — so reminder settings and event writes are
+ * broadcast for the other window's store to pick up.
+ */
+export const CALENDAR_REMINDER_SETTINGS = 'calendar:reminder-settings'
+/** Emitted after an event is created / updated / deleted. */
+export const CALENDAR_EVENTS_CHANGED = 'calendar:events-changed'
+
+export interface CalendarReminderSettings {
+  enabled: boolean
+  leadMin: number
+}
 
 export interface GoogleAccount {
   id: string
@@ -287,11 +303,26 @@ export const useGoogleCalendarStore = defineStore('googleCalendar', () => {
   function setReminderEnabled(v: boolean) {
     reminderEnabled.value = v
     localStorage.setItem(LS_ENABLED, v ? '1' : '0')
+    broadcastReminderSettings()
   }
   function setReminderLeadMin(m: number) {
     reminderLeadMin.value = m
     localStorage.setItem(LS_LEAD, String(m))
+    broadcastReminderSettings()
   }
+  function broadcastReminderSettings() {
+    emit(CALENDAR_REMINDER_SETTINGS, {
+      enabled: reminderEnabled.value,
+      leadMin: reminderLeadMin.value,
+    } satisfies CalendarReminderSettings).catch(() => { /* outside the Tauri shell */ })
+  }
+  // Another window changed them (localStorage is already written there).
+  listen<CalendarReminderSettings>(CALENDAR_REMINDER_SETTINGS, (e) => {
+    const s = e.payload
+    if (!s) return
+    if (reminderEnabled.value !== s.enabled) reminderEnabled.value = s.enabled
+    if (reminderLeadMin.value !== s.leadMin) reminderLeadMin.value = s.leadMin
+  }).catch(() => { /* outside the Tauri shell */ })
 
   /** Fetch the small window of events needed to schedule reminders: from ~1 min
    *  ago (clock-skew buffer) to `now + aheadMs`. The caller sizes `aheadMs` to
@@ -443,6 +474,7 @@ export const useGoogleCalendarStore = defineStore('googleCalendar', () => {
    */
   function invalidateAndRefetch() {
     cache.clear()
+    emit(CALENDAR_EVENTS_CHANGED).catch(() => { /* outside the Tauri shell */ })
     return fetchEvents(true)
   }
 

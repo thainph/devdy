@@ -4,8 +4,6 @@
   "selectProject": "Chọn một dự án…",
   "stalledLabel": "Trì trệ >",
   "days": "ngày",
-  "openInNewWindow": "Mở Gantt trong cửa sổ mới",
-  "newWindow": "Cửa sổ mới",
   "noBoardTitle": "Chưa dự án nào có bảng GitHub Project",
   "noBoardHint": "Liên kết một bảng trong Settings → GitHub Project của dự án để vẽ issue lên Gantt.",
   "noBoardHintSettings": "Settings → GitHub Project",

@@ -4,8 +4,6 @@
   "selectProject": "Select a project…",
   "stalledLabel": "Stalled >",
   "days": "days",
-  "openInNewWindow": "Open Gantt in a new window",
-  "newWindow": "New window",
   "noBoardTitle": "No project has a GitHub Project board",
   "noBoardHint": "Link a board in a project's Settings → GitHub Project to plot its issues on a Gantt.",
   "noBoardHintSettings": "Settings → GitHub Project",

@@ -167,6 +167,7 @@ pub fn run() {
         // The menu itself is installed by the frontend (see `set_app_menu`), so
         // its labels follow the app language; this only routes clicks back.
         .on_menu_event(commands::app_menu::on_menu_event)
+        .manage(commands::app_menu::AppMenuState::default())
         .setup(|app| {
             use tauri::Manager;
             let app_data_dir = app
