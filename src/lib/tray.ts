@@ -5,6 +5,9 @@
 // menu bar works (appMenu.ts). That keeps labels on the app language and lets each
 // session pop-out show its own run title.
 //
+// On top sit two quick actions (New Todo… / New Note…), routed to the same
+// handlers as the app menu's File items.
+//
 // The menu lists every open window: the main window first, then each pop-out
 // (session, gantt, file viewer, item editor). Clicking a row focuses that window;
 // Rust maps the item id (the window label) back to the window. The mascot pet is
@@ -60,6 +63,8 @@ export function trackWindowForTray(win: WebviewWindow): void {
 // window; `tray:run:<runId>` opens a session; Quit is appended by Rust.
 const winId = (label: string) => `tray:win:${label}`
 const runId = (id: string) => `tray:run:${id}`
+// `tray:menu:<id>` runs app-menu action `<id>` in the main window (see tray.rs).
+const menuActionId = (id: string) => `tray:menu:${id}`
 
 /** Emitted by Rust to the main window when a session row is clicked. */
 export const TRAY_OPEN_RUN = 'tray://open-run'
@@ -101,6 +106,8 @@ function rawLabelFor(windowLabel: string, osTitle: string): string {
   if (windowLabel === 'item-list-note') return meaningful || t('tray.noteListWindow')
   if (windowLabel === 'slack-threads') return meaningful || t('slackThread.window.title')
   if (windowLabel === 'pr-inbox') return meaningful || t('prInbox.window.title')
+  if (windowLabel === 'calendar') return meaningful || t('calendar.window.title')
+  if (windowLabel === 'pulse') return meaningful || t('pulse.window.title')
   // Unknown / future window kind: best effort — its title, else the raw label.
   return meaningful || windowLabel
 }
@@ -272,12 +279,19 @@ export async function refreshTray(): Promise<void> {
     // pop-out only tracks its own run. Same for the session section. Other
     // windows omit `title` / `sessions` entirely so they can't clobber what the
     // main window set (see tray.rs).
+    // Quick capture without bringing up the main window first.
+    const actions: TrayItem[] = [
+      { kind: 'item', id: menuActionId('file.newTodo'), label: t('menu.newTodo') },
+      { kind: 'item', id: menuActionId('file.newNote'), label: t('menu.newNote') },
+    ]
+
     const spec: {
+      actions: TrayItem[]
       windows: TrayItem[]
       sessions?: TrayItem[]
       quitLabel: string
       title?: string
-    } = { windows: items, quitLabel: t('tray.quit') }
+    } = { actions, windows: items, quitLabel: t('tray.quit') }
     let isMain = false
     try {
       isMain = getCurrentWebviewWindow().label === 'main'

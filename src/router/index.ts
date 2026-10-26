@@ -10,6 +10,9 @@ import ServerEditorView from '../views/ServerEditorView.vue'
 import ProjectsView from '../views/ProjectsView.vue'
 import PrInboxView from '../views/PrInboxView.vue'
 import { openPrInboxWindow } from '../lib/prInboxWindow'
+import { openCalendarWindow } from '../lib/calendarWindow'
+import { openGanttWindow } from '../lib/ganttWindow'
+import { openPulseWindow } from '../lib/pulseWindow'
 import IssuesGanttView from '../views/IssuesGanttView.vue'
 import ProjectDetailView from '../views/ProjectDetailView.vue'
 import RunView from '../views/RunView.vue'
@@ -49,13 +52,41 @@ const router = createRouter({
         return from.matched.length > 0 ? false : '/projects'
       },
     },
-    { path: '/gantt', name: 'gantt', component: IssuesGanttView },
-    { path: '/pulse', name: 'pulse', component: PulseView },
+    // Gantt and Pulse too (lib/ganttWindow, lib/pulseWindow). `?project=` deep
+    // links (Projects screen) carry over to the Gantt window.
+    {
+      path: '/gantt',
+      name: 'gantt',
+      component: IssuesGanttView,
+      beforeEnter: (to, from) => {
+        void openGanttWindow(typeof to.query.project === 'string' ? to.query.project : undefined)
+        return from.matched.length > 0 ? false : '/projects'
+      },
+    },
+    {
+      path: '/pulse',
+      name: 'pulse',
+      component: PulseView,
+      beforeEnter: (_to, from) => {
+        void openPulseWindow()
+        return from.matched.length > 0 ? false : '/projects'
+      },
+    },
     { path: '/projects/:projectId', name: 'project-run', component: RunView },
     { path: '/projects/:projectId/run/:runId', name: 'project-run-detail', component: RunView },
     { path: '/projects/:projectId/settings', name: 'project-settings', component: ProjectDetailView },
     { path: '/stats', name: 'stats', component: StatsView },
-    { path: '/calendar', name: 'calendar', component: CalendarView },
+    // Same for the Calendar (lib/calendarWindow): CalendarView is rendered only
+    // in that window; the route diverts to it.
+    {
+      path: '/calendar',
+      name: 'calendar',
+      component: CalendarView,
+      beforeEnter: (_to, from) => {
+        void openCalendarWindow()
+        return from.matched.length > 0 ? false : '/projects'
+      },
+    },
     { path: '/settings', name: 'settings', component: SettingsView },
     { path: '/about', name: 'about', component: AboutView },
     ...(import.meta.env.DEV

@@ -7,8 +7,7 @@ import { useProjectsStore } from '@/stores/projects'
 import { useProjectIssuesStore, type MilestoneGroup } from '@/stores/projectIssues'
 import { Button, Card, AppSelect, Skeleton } from '@/components/ui'
 import GanttChart from '@/components/GanttChart.vue'
-import { openGanttWindow } from '@/lib/ganttWindow'
-import { RefreshCw, CircleDot, AlertTriangle, Info, GanttChartSquare, FolderOpen, ExternalLink } from 'lucide-vue-next'
+import { RefreshCw, CircleDot, AlertTriangle, Info, GanttChartSquare, FolderOpen } from 'lucide-vue-next'
 
 const route = useRoute()
 const projectsStore = useProjectsStore()
@@ -16,9 +15,8 @@ const store = useProjectIssuesStore()
 const { t } = useI18n()
 
 // True when this view is rendered as the standalone pop-out window (App.vue
-// renders it directly for `?ganttWindow=1`). Hides the "open in new window"
-// button and lets the window respond to project-switch events instead of the
-// router query.
+// renders it directly for `?ganttWindow=1`) — the only place it renders now:
+// the window responds to project-switch events instead of the router query.
 const isGanttWindow = new URLSearchParams(window.location.search).get('ganttWindow') === '1'
 
 const DAY = 86_400_000
@@ -281,16 +279,6 @@ function relativeTime(iso: string | null): string {
         <Button variant="ghost" :disabled="store.loading || !selectedProjectId" @click="store.refresh(selectedProjectId, { force: true })">
           <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': store.loading }" :stroke-width="2" />
           {{ t('common.refresh') }}
-        </Button>
-        <Button
-          v-if="!isGanttWindow"
-          variant="ghost"
-          :title="t('gantt.openInNewWindow')"
-          :disabled="!selectedProjectId"
-          @click="openGanttWindow(selectedProjectId)"
-        >
-          <ExternalLink class="h-3.5 w-3.5" :stroke-width="2" />
-          {{ t('gantt.newWindow') }}
         </Button>
       </div>
     </div>

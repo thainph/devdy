@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
+import { openGanttWindow } from '@/lib/ganttWindow'
 import { useProjectsStore, type DetectedProjectInfo, type DetectedRepo } from '@/stores/projects'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import { useGitlabAccountsStore } from '@/stores/gitlabAccounts'
@@ -450,7 +451,7 @@ async function handleOpenInFolder(project: { path: string }) {
               <button
                 class="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer active:scale-95"
                 :title="t('projects.gantt')"
-                @click="router.push({ name: 'gantt', query: { project: project.id } })"
+                @click="openGanttWindow(project.id)"
               >
                 <GanttChartSquare class="h-4 w-4" :stroke-width="2" />
               </button>

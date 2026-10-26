@@ -15,6 +15,12 @@
 //! but only the main window knows every running session. So each section is sent
 //! independently and cached here, and the menu is rebuilt from the cached pair —
 //! a pop-out refreshing the window list can't wipe the main window's sessions.
+//!
+//! A third, static section on top holds quick actions (New Todo… / New Note…).
+//! Their ids are app-menu ids wrapped as `tray:menu:<id>`, so they run through the
+//! exact same frontend handlers as the menu bar. The window list is also shown in
+//! the app menu's Window submenu (see `app_menu.rs`), which is rebuilt whenever
+//! that list changes.
 
 use std::sync::Mutex;
 
@@ -42,14 +48,17 @@ const QUIT_ID: &str = "tray:quit";
 const WIN_PREFIX: &str = "tray:win:";
 /// Prefix for "open this running session" ids; the suffix is the run id.
 const RUN_PREFIX: &str = "tray:run:";
+/// Prefix for quick actions; the suffix is an app-menu item id (e.g. `file.newTodo`).
+const MENU_PREFIX: &str = "tray:menu:";
 /// Event sent to the main window when a session row is clicked. The main window
 /// decides where the run is shown (its pop-out, or itself) — see `src/lib/tray.ts`.
 const OPEN_RUN_EVENT: &str = "tray://open-run";
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum TrayItem {
-    /// A clickable row. `id` is `tray:win:<label>`, `tray:run:<runId>` or `tray:quit`.
+    /// A clickable row. `id` is `tray:win:<label>`, `tray:run:<runId>`,
+    /// `tray:menu:<appMenuId>` or `tray:quit`.
     Item { id: String, label: String },
     /// A greyed-out, non-clickable section title.
     Header { label: String },
@@ -66,6 +75,7 @@ struct OpenRunPayload {
 
 /// Last section contents received from the frontend, merged into one menu.
 pub struct TrayState {
+    actions: Mutex<Vec<TrayItem>>,
     windows: Mutex<Vec<TrayItem>>,
     sessions: Mutex<Vec<TrayItem>>,
     quit_label: Mutex<String>,
@@ -74,6 +84,7 @@ pub struct TrayState {
 impl Default for TrayState {
     fn default() -> Self {
         Self {
+            actions: Mutex::default(),
             windows: Mutex::default(),
             sessions: Mutex::default(),
             quit_label: Mutex::new("Quit Devdy".into()),
@@ -83,6 +94,9 @@ impl Default for TrayState {
 
 #[derive(Debug, Deserialize)]
 pub struct TraySpec {
+    /// The quick-action section (New Todo… / New Note…). Absent → keep the cached one.
+    #[serde(default)]
+    actions: Option<Vec<TrayItem>>,
     /// The open-window section. Absent → keep the cached one.
     #[serde(default)]
     windows: Option<Vec<TrayItem>>,
@@ -129,16 +143,17 @@ fn build_submenu<R: Runtime>(
     sub.build().map_err(|e| e.to_string())
 }
 
-/// Build the tray menu: windows, then sessions, then Quit — each non-empty
-/// section separated from the next.
+/// Build the tray menu: quick actions, windows, then sessions, then Quit — each
+/// non-empty section separated from the next.
 fn build_menu<R: Runtime>(
     app: &AppHandle<R>,
+    actions: &[TrayItem],
     windows: &[TrayItem],
     sessions: &[TrayItem],
     quit_label: &str,
 ) -> Result<tauri::menu::Menu<R>, String> {
     let mut menu = MenuBuilder::new(app);
-    for section in [windows, sessions] {
+    for section in [actions, windows, sessions] {
         if section.is_empty() {
             continue;
         }
@@ -172,7 +187,9 @@ fn build_menu<R: Runtime>(
 /// Route a tray-menu click. `tray:quit` closes the main window (which runs the
 /// normal sidecar-cleanup + exit path, see `lib.rs`); `tray:win:<label>` brings
 /// that window to the front; `tray:run:<runId>` is handed to the main window,
-/// which focuses the run's pop-out or navigates itself to the run.
+/// which focuses the run's pop-out or navigates itself to the run;
+/// `tray:menu:<id>` runs app-menu action `<id>` in the main window, without
+/// raising it (the actions open their own window).
 fn on_menu_event<R: Runtime>(app: &AppHandle<R>, event: tauri::menu::MenuEvent) {
     let id = event.id().0.as_str();
     if id == QUIT_ID {
@@ -191,6 +208,10 @@ fn on_menu_event<R: Runtime>(app: &AppHandle<R>, event: tauri::menu::MenuEvent) 
         }
         return;
     }
+    if let Some(action) = id.strip_prefix(MENU_PREFIX) {
+        let _ = app.emit_to("main", super::app_menu::MENU_ACTION_EVENT, action.to_string());
+        return;
+    }
     if let Some(run_id) = id.strip_prefix(RUN_PREFIX) {
         let _ = app.emit_to(
             "main",
@@ -203,13 +224,20 @@ fn on_menu_event<R: Runtime>(app: &AppHandle<R>, event: tauri::menu::MenuEvent) 
     // Anything else is an app-menu id; app_menu::on_menu_event owns it.
 }
 
+/// The cached open-window section, for the app menu's Window submenu.
+pub fn cached_windows<R: Runtime>(app: &AppHandle<R>) -> Vec<TrayItem> {
+    app.try_state::<TrayState>()
+        .and_then(|s| s.windows.lock().ok().map(|w| w.clone()))
+        .unwrap_or_default()
+}
+
 /// Create the tray icon once, at startup. The initial menu only carries Quit; the
 /// frontend fills in the window list via `set_tray_menu` as soon as it mounts.
 pub fn init<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     let state = TrayState::default();
     let menu = {
         let quit_label = state.quit_label.lock().map_err(|e| e.to_string())?;
-        build_menu(app, &[], &[], &quit_label)?
+        build_menu(app, &[], &[], &[], &quit_label)?
     };
     app.manage(state);
 
@@ -243,21 +271,32 @@ pub fn set_tray_menu<R: Runtime>(app: AppHandle<R>, spec: TraySpec) -> Result<()
     let Some(state) = app.try_state::<TrayState>() else {
         return Ok(());
     };
+    let mut windows_changed = false;
     let menu = {
+        let mut actions = state.actions.lock().map_err(|e| e.to_string())?;
         let mut windows = state.windows.lock().map_err(|e| e.to_string())?;
         let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
         let mut quit_label = state.quit_label.lock().map_err(|e| e.to_string())?;
         if let Some(q) = spec.quit_label.filter(|q| !q.is_empty()) {
             *quit_label = q;
         }
+        if let Some(a) = spec.actions {
+            *actions = a;
+        }
         if let Some(w) = spec.windows {
+            windows_changed = *windows != w;
             *windows = w;
         }
         if let Some(s) = spec.sessions {
             *sessions = s;
         }
-        build_menu(&app, &windows, &sessions, &quit_label)?
+        build_menu(&app, &actions, &windows, &sessions, &quit_label)?
     };
+    // The app menu's Window submenu mirrors the window list. Rebuilt only on a
+    // real change: the main window resends the tray on every session update.
+    if windows_changed {
+        super::app_menu::rebuild(&app)?;
+    }
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
         // Only touch the title when the frontend actually sent one (outer Some);

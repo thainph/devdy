@@ -131,5 +131,8 @@
     "duplicate_source": "Issue đã chuyển sang một issue khác đang được theo dõi",
     "board_unavailable": "Không đọc được board GitHub lần này — dùng dữ liệu board lần trước",
     "unknown": "Lỗi: {detail}"
+  },
+  "window": {
+    "title": "Pulse"
   }
 }
