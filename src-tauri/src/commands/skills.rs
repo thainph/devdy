@@ -1,4 +1,5 @@
-use crate::commands::{agents_block, project_links};
+use crate::commands::project_links::{self, Linked};
+use crate::commands::agents_block;
 use crate::db::Db;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -182,9 +183,12 @@ pub fn write_skill_artifacts(
     let had_codex = prev_codex.is_some();
 
     let claude_dest = claude_skill_dir(project_path, name);
+    // A path git tracks is the repo's own skill: left alone and not recorded as installed.
     let hash_claude = if applies_claude(target) {
-        project_links::ensure_symlink(root, &claude_dest, source, unedited_for(prev_claude))?;
-        Some(hash.clone())
+        match project_links::ensure_symlink(root, &claude_dest, source, unedited_for(prev_claude))? {
+            Linked::Yes => Some(hash.clone()),
+            Linked::TrackedByGit => None,
+        }
     } else {
         if had_claude {
             project_links::remove_installed(root, &claude_dest, source, unedited_for(prev_claude))?;
@@ -196,12 +200,16 @@ pub fn write_skill_artifacts(
     let legacy = legacy_codex_skill_dir(project_path, name);
     let unedited = unedited_for(prev_codex);
     let hash_codex = if applies_codex(target) {
-        project_links::ensure_symlink(root, &codex_dest, source, &unedited)?;
+        let linked = project_links::ensure_symlink(root, &codex_dest, source, &unedited)?;
         project_links::remove_installed(root, &legacy, source, &unedited)?;
-        Some(hash)
+        match linked {
+            Linked::Yes => Some(hash),
+            Linked::TrackedByGit => None,
+        }
     } else {
         if had_codex {
-            project_links::remove_installed(root, &codex_dest, source, &unedited)?;
+            // Devdy only ever linked into `.agents/skills`; a real folder there is someone else's.
+            project_links::remove_own_link(root, &codex_dest, source)?;
             project_links::remove_installed(root, &legacy, source, &unedited)?;
         }
         None
@@ -352,8 +360,12 @@ pub async fn update_skill(
             .map_err(|e| e.to_string())?;
         let new_dir = skills_dir(&app).join(&payload.name);
         let case_only = project_links::same_file(&new_dir, Path::new(&old_path));
-        if taken.is_some() || (new_dir.exists() && !case_only) {
+        if taken.is_some() {
             return Err(format!("Skill '{}' already exists", payload.name));
+        }
+        if new_dir.exists() && !case_only {
+            // Not in the DB: a leftover from an old rename/delete. Move it aside, don't overwrite.
+            project_links::back_up_library_orphan(&new_dir, "skills")?;
         }
     }
 

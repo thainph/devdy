@@ -1,4 +1,4 @@
-use crate::commands::project_links;
+use crate::commands::project_links::{self, Linked};
 use crate::db::Db;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -309,8 +309,12 @@ pub async fn update_rule(
             .await
             .map_err(|e| e.to_string())?;
         let case_only = project_links::same_file(&new_path, Path::new(&old_path));
-        if taken.is_some() || (new_path.exists() && !case_only) {
+        if taken.is_some() {
             return Err(format!("Rule '{}' already exists", payload.name));
+        }
+        if new_path.exists() && !case_only {
+            // Not in the DB: a leftover from an old rename/delete. Move it aside, don't overwrite.
+            project_links::back_up_library_orphan(&new_path, "rules")?;
         }
     }
 
@@ -786,7 +790,7 @@ fn write_rule_artifacts(
 ) -> Result<(Option<String>, Option<String>), String> {
     let content = read_rule_source(source_path)?;
     let hash_claude = if applies_claude(target) {
-        Some(link_claude_rule(project_path, name, source_path, &content, prev_claude)?)
+        link_claude_rule(project_path, name, source_path, &content, prev_claude)?
     } else {
         if prev_claude.is_some() {
             unlink_claude_rule(project_path, name, source_path, prev_claude)?;
@@ -794,7 +798,7 @@ fn write_rule_artifacts(
         None
     };
     let hash_codex = if applies_codex(target) {
-        Some(install_codex_rule(project_path, name, description, source_path, &content)?)
+        install_codex_rule(project_path, name, description, source_path, &content)?
     } else {
         if prev_codex.is_some() {
             remove_codex_rule(project_path, name, source_path)?;
@@ -818,21 +822,22 @@ fn claude_copy_known<'a>(source_path: &'a str, prev_claude: Option<&'a str>) -> 
     }
 }
 
-/// Link `.claude/rules/<name>.md` to the source file; returns the source content hash.
+/// Link `.claude/rules/<name>.md` to the source file; returns the source content hash, or None
+/// when git tracks a file there (the repo's own rule — left alone, not installed).
 fn link_claude_rule(
     project_path: &str,
     name: &str,
     source_path: &str,
     content: &str,
     prev_claude: Option<&str>,
-) -> Result<String, String> {
-    project_links::ensure_symlink(
+) -> Result<Option<String>, String> {
+    let linked = project_links::ensure_symlink(
         Path::new(project_path),
         &claude_rule_path(project_path, name),
         Path::new(source_path),
         claude_copy_known(source_path, prev_claude),
     )?;
-    Ok(content_hash(content))
+    Ok((linked == Linked::Yes).then(|| content_hash(content)))
 }
 
 fn unlink_claude_rule(project_path: &str, name: &str, source_path: &str, prev_claude: Option<&str>) -> Result<(), String> {
@@ -845,39 +850,44 @@ fn unlink_claude_rule(project_path: &str, name: &str, source_path: &str, prev_cl
 }
 
 /// Put a rule in front of Codex per its `codex_mode`, clearing the other form; returns the hash
-/// of the body Codex sees.
+/// of the body Codex sees, or None when git tracks `.agents/skills/<name>` (skill mode only).
 fn install_codex_rule(
     project_path: &str,
     name: &str,
     description: &str,
     source_path: &str,
     content: &str,
-) -> Result<String, String> {
+) -> Result<Option<String>, String> {
     let root = Path::new(project_path);
+    if !root.is_dir() {
+        // `upsert_agents_block` would otherwise recreate a moved/deleted project folder.
+        return Err(format!("Project folder not found: {}", project_path));
+    }
     let body = strip_frontmatter(content);
     let agents = agents_path(project_path);
     let dest = codex_skill_dest(project_path, name);
     match parse_codex_mode(content) {
         CodexMode::Inline => {
-            project_links::remove_installed(root, &dest, &codex_skill_source(source_path, name), project_links::no_copies)?;
+            project_links::remove_own_link(root, &dest, &codex_skill_source(source_path, name))?;
             upsert_agents_block(&agents, name, &body)?;
         }
         CodexMode::Skill => {
             let dir = write_codex_skill_source(source_path, name, description, &body)?;
-            project_links::ensure_symlink(root, &dest, &dir, project_links::no_copies)?;
+            if project_links::ensure_symlink(root, &dest, &dir, project_links::no_copies)? == Linked::TrackedByGit {
+                return Ok(None);
+            }
             remove_agents_block(&agents, name);
         }
     }
-    Ok(content_hash(body.trim_end_matches('\n')))
+    Ok(Some(content_hash(body.trim_end_matches('\n'))))
 }
 
 fn remove_codex_rule(project_path: &str, name: &str, source_path: &str) -> Result<(), String> {
     remove_agents_block(&agents_path(project_path), name);
-    project_links::remove_installed(
+    project_links::remove_own_link(
         Path::new(project_path),
         &codex_skill_dest(project_path, name),
         &codex_skill_source(source_path, name),
-        project_links::no_copies,
     )
 }
 
@@ -1128,7 +1138,7 @@ pub async fn sync_rule_to_projects(db: &Db, rule_id: &str) -> Result<Vec<String>
         // ---- Claude ----
         let next_claude = if applies_claude(&target) {
             match link_claude_rule(&project_path, &name, &source_path, &content, prev_claude.as_deref()) {
-                Ok(h) => Some(h),
+                Ok(h) => h,
                 Err(e) => {
                     errors.push(e);
                     prev_claude.clone()
@@ -1156,7 +1166,7 @@ pub async fn sync_rule_to_projects(db: &Db, rule_id: &str) -> Result<Vec<String>
             prev_codex.clone()
         } else if applies_codex(&target) {
             match install_codex_rule(&project_path, &name, &description, &source_path, &content) {
-                Ok(h) => Some(h),
+                Ok(h) => h,
                 Err(e) => {
                     errors.push(e);
                     prev_codex.clone()

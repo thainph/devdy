@@ -137,5 +137,6 @@
   "warnClaudeMdImportsAgentsMd": "{path} imports {'@'}AGENTS.md, so Claude also reads Codex's rules and sees them twice.",
   "warnCodexReadsClaudeMd": "{config} lists CLAUDE.md in project_doc_fallback_filenames, so Codex may read Claude's instructions.",
   "warnLinksNotIgnored": "{dir} holds Devdy symlinks that git does not ignore. Committed, they point to a path on this machine and break for everyone else — add it to .gitignore or .git/info/exclude.",
-  "warnLegacyCopiesBackedUp": "Old skill/rule copies that may hold local edits were moved to {dir} ({count} batch(es)) when switching to symlinks. Check them, keep what you need, then delete that folder to clear this notice."
+  "warnLegacyCopiesBackedUp": "Old skill/rule copies that may hold local edits were moved to {dir} ({count} batch(es)) when switching to symlinks. Check them, keep what you need, then delete that folder to clear this notice.",
+  "warnTrackedByGit": "The repo commits its own files at {paths}. Devdy leaves them alone and does not install there, so the repo's version is what Claude/Codex load."
 }
