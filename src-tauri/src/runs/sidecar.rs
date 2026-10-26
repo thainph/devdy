@@ -301,6 +301,10 @@ pub fn detach_process_group(cmd: &mut tokio::process::Command) {
         // 0 = put the child in a new group whose leader is the child itself,
         // so its pid doubles as the process-group id.
         cmd.process_group(0);
+        // Tells a Devdy sidecar it leads its own group, so it may tear the
+        // group down if Devdy dies (see the orphan guard in sidecar/index.mjs).
+        // The sidecar removes it from its env before spawning anything.
+        cmd.env("DEVDY_OWN_PROCESS_GROUP", "1");
     }
     #[cfg(not(unix))]
     {
@@ -1199,9 +1203,9 @@ fn process_group_alive(pgid: u32) -> bool {
 fn detach_notice(pgid: Option<u32>) -> String {
     match pgid.filter(|g| process_group_alive(*g)) {
         Some(pgid) => format!(
-            "⚠ The session has ended, but process(es) it started are still running (process group {pgid}) and kept its output open. They were left running; stop them with `kill -TERM -{pgid}` if they shouldn't be."
+            "⚠ The session has ended, but process(es) it started are still running (process group {pgid}) and kept its output open. They were left running and are listed under Background processes, where you can stop them (or run `kill -TERM -{pgid}`)."
         ),
-        None => "⚠ The session has ended, but a process it started (outside its process group) is still holding its output open. Devdy stopped waiting for it and left it running.".to_string(),
+        None => "⚠ The session has ended, but a process it started (outside its process group) is still holding its output open. Devdy stopped waiting for it and left it running; it is listed under Background processes.".to_string(),
     }
 }
 

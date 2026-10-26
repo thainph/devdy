@@ -607,6 +607,10 @@ pub async fn refresh_plan_usage(
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn usage probe ({}): {}", node_bin, e))?;
+    let _proc = crate::procs::track(
+        crate::procs::ProcSpec::new(crate::procs::ProcKind::Probe, "Usage check (claude)"),
+        child.id(),
+    );
     let mut stdin = child.stdin.take().ok_or("usage probe stdin unavailable")?;
     let stdout = child.stdout.take().ok_or("usage probe stdout unavailable")?;
     let mut lines = BufReader::new(stdout).lines();
@@ -741,6 +745,10 @@ pub async fn refresh_codex_plan_usage(
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn codex usage probe ({}): {}", node_bin, e))?;
+    let _proc = crate::procs::track(
+        crate::procs::ProcSpec::new(crate::procs::ProcKind::Probe, "Usage check (codex)"),
+        child.id(),
+    );
     let stdout = child.stdout.take().ok_or("codex usage probe stdout unavailable")?;
     let mut lines = BufReader::new(stdout).lines();
 

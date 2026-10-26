@@ -536,6 +536,11 @@ pub(crate) async fn start_run_inner(
             reg.insert(
                 payload.run_id.clone(),
                 RunHandles {
+                    proc: crate::procs::track(
+                        crate::procs::ProcSpec::new(crate::procs::ProcKind::Run, "Session")
+                            .run(&payload.run_id, &project_id),
+                        child.id(),
+                    ),
                     pgid: child.id(),
                     child,
                     stdin: input.clone(),
@@ -703,6 +708,11 @@ pub(crate) async fn start_run_inner(
         reg.insert(
             payload.run_id.clone(),
             RunHandles {
+                proc: crate::procs::track(
+                    crate::procs::ProcSpec::new(crate::procs::ProcKind::Run, "Session")
+                        .run(&payload.run_id, &project_id),
+                    child.id(),
+                ),
                 pgid: child.id(),
                 child,
                 stdin: input.clone(),
@@ -3678,6 +3688,11 @@ pub(crate) async fn resume_run_with(
         reg.insert(
             run_id.clone(),
             RunHandles {
+                proc: crate::procs::track(
+                    crate::procs::ProcSpec::new(crate::procs::ProcKind::Run, "Session")
+                        .run(&run_id, &project_id),
+                    child.id(),
+                ),
                 pgid: child.id(),
                 child,
                 stdin: stdin_handle
@@ -4134,6 +4149,7 @@ mod startup_input_tests {
         registry.lock().await.insert(
             "r1".to_string(),
             RunHandles {
+                proc: None,
                 pgid: Some(pgid),
                 child,
                 stdin: input.clone(),

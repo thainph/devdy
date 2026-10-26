@@ -723,6 +723,10 @@ async fn test_stdio(
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    // Own process group: `npx` / `uvx` launch the real server as a child, which
+    // killing only the launcher would orphan.
+    crate::runs::sidecar::detach_process_group(&mut cmd);
+    cmd.kill_on_drop(true);
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
@@ -733,6 +737,14 @@ async fn test_stdio(
             }
         }
     };
+    let pgid = child.id();
+    let _proc = crate::procs::track(
+        crate::procs::ProcSpec::new(
+            crate::procs::ProcKind::McpTest,
+            format!("MCP test: {command}"),
+        ),
+        pgid,
+    );
 
     let mut stdin = child.stdin.take();
     let stdout = child.stdout.take();
@@ -788,6 +800,9 @@ async fn test_stdio(
     };
 
     // Kill regardless of outcome.
+    if let Some(pgid) = pgid {
+        crate::runs::sidecar::kill_process_group(pgid);
+    }
     let _ = child.start_kill();
     let _ = child.wait().await;
 

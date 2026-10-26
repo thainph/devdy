@@ -266,7 +266,8 @@ impl PulseState {
             state: crate::slack_threads::SlackTranslateState(
                 crate::commands::translate::TranslateState::default()
                     .with_recycle_after(DIGEST_RECYCLE_AFTER)
-                    .silent(),
+                    .silent()
+                    .tracked_as(crate::procs::ProcKind::PulseDigest),
             ),
         };
         Self::new(

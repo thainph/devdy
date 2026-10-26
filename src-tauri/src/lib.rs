@@ -7,6 +7,7 @@ mod github;
 mod gitlab;
 mod inbox_api;
 mod item_links;
+mod procs;
 mod pulse;
 mod remote;
 mod runs;
@@ -140,7 +141,6 @@ use remote::commands::{
 use remote::RemoteState;
 use runs::broker::approver::ModalApproverResolver;
 use runs::broker::{start_broker, ApproverResolver, BrokerConfig};
-use runs::sidecar::kill_process_group;
 use runs::{new_broker_approvals, new_broker_runs, new_registry, RunRegistry};
 use std::sync::Arc;
 
@@ -218,6 +218,9 @@ pub fn run() {
                     }
                 });
             }
+            // Background-process tracker: sweeps what a previous session left
+            // behind, then follows every process Devdy spawns from here on.
+            procs::commands::install(app, &app_data_dir);
             // Watch the shared Claude transcript store so sessions created or
             // continued outside Devdy (claude CLI / VS Code) mirror in live.
             runs::session_watcher::start(db.clone(), app.handle().clone());
@@ -678,62 +681,48 @@ pub fn run() {
             remote_clear_audit,
             remote_status,
             remote::meta::set_run_meta,
+            procs::commands::list_background_processes,
+            procs::commands::stop_background_processes,
+            procs::commands::kill_background_process,
+            procs::quit::resolve_quit,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
-            use tauri::Manager;
-
-            // Kill every still-running sidecar (and its CLI child) so no orphaned
-            // `claude` / `codex` process lingers in the background burning API tokens.
-            let kill_all_sidecars = |app_handle: &tauri::AppHandle| {
-                let registry = app_handle.state::<RunRegistry>().inner().clone();
-                tauri::async_runtime::block_on(async move {
-                    let mut reg = registry.lock().await;
-                    for (_, handles) in reg.iter_mut() {
-                        if let Some(pgid) = handles.pgid {
-                            kill_process_group(pgid);
-                        }
-                        let _ = handles.child.start_kill();
-                    }
-                    reg.clear();
-                });
-                // The warm translate / Slack / Pulse digest sessions too.
-                let translate = app_handle.state::<TranslateState>().inner().clone();
-                let slack = app_handle
-                    .state::<slack_threads::SlackTranslateState>()
-                    .inner()
-                    .clone();
-                let pulse = app_handle.state::<pulse::PulseState>().inner().clone();
-                tauri::async_runtime::block_on(async move {
-                    translate.shutdown().await;
-                    slack.0.shutdown().await;
-                    pulse.shutdown().await;
-                });
-            };
-
             match event {
                 // Closing the MAIN window quits the whole app. On macOS this would
                 // otherwise leave the process alive because the frameless,
                 // always-on-top mascot pet (and any quick-create / gantt / file
                 // pop-outs) keep running — so the hidden sidecars never get killed.
-                // Close every auxiliary window, stop all sidecars, then exit.
+                // Ask first when work is still running (see `procs::quit`), then
+                // close every auxiliary window and exit.
                 tauri::RunEvent::WindowEvent {
                     label,
-                    event: tauri::WindowEvent::CloseRequested { .. },
+                    event: tauri::WindowEvent::CloseRequested { api, .. },
                     ..
                 } if label == "main" => {
+                    use tauri::Manager;
+                    if !procs::quit::request_quit(app_handle) {
+                        api.prevent_close();
+                        return;
+                    }
                     for (lbl, win) in app_handle.webview_windows() {
                         if lbl != "main" {
                             let _ = win.close();
                         }
                     }
-                    kill_all_sidecars(app_handle);
                     app_handle.exit(0);
                 }
-                // Quit via Cmd+Q / app menu: same sidecar cleanup.
-                tauri::RunEvent::ExitRequested { .. } => {
-                    kill_all_sidecars(app_handle);
+                // Quit via Cmd+Q / app menu: same question and cleanup.
+                tauri::RunEvent::ExitRequested { api, .. }
+                    if !procs::quit::request_quit(app_handle) =>
+                {
+                    api.prevent_exit();
+                }
+                // Last resort if an exit bypassed the question: never leave a
+                // run sidecar or warm session behind.
+                tauri::RunEvent::Exit => {
+                    procs::quit::stop_app_sidecars(app_handle);
                 }
                 _ => {}
             }

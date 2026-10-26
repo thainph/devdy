@@ -249,6 +249,9 @@ pub async fn build_project_ssh_context(db: &Db, project_id: &str) -> String {
 pub struct SshAccessGuard {
     agent_pid: Option<u32>,
     dir: PathBuf,
+    /// Background-process registration of the agent; released after the kill
+    /// below, so an agent that survives it is listed as a leftover.
+    _proc: Option<crate::procs::ProcGuard>,
 }
 
 impl Drop for SshAccessGuard {
@@ -358,7 +361,18 @@ pub async fn prepare_ssh_access(
         cmd.env("SSH_AUTH_SOCK", &sock_path);
     }
 
-    Ok(Some(SshAccessGuard { agent_pid, dir }))
+    // ssh-agent daemonizes (its own session), so it is tracked by pid alone.
+    let proc = crate::procs::track(
+        crate::procs::ProcSpec::new(crate::procs::ProcKind::SshAgent, "ssh-agent")
+            .run(run_id, project_id)
+            .no_group(),
+        agent_pid,
+    );
+    Ok(Some(SshAccessGuard {
+        agent_pid,
+        dir,
+        _proc: proc,
+    }))
 }
 
 /// Spawn `ssh-agent -a <sock>` and return its pid. Returns `None` (fail-soft) if

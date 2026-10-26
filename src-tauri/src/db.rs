@@ -20,10 +20,11 @@ pub async fn init_db(db_path: &Path) -> Result<Db> {
 }
 
 /// Runs marked `running` in the DB but with no live process — left behind when a
-/// previous app session exited mid-run — are orphaned: the backend (and its
-/// sidecars) died with the app. On a fresh start there's nothing still running,
-/// so flip any leftover `running` rows to `cancelled` instead of leaving them
-/// stuck forever.
+/// previous app session exited mid-run. Nothing from that session is driving
+/// them any more, so flip any leftover `running` rows to `cancelled` instead of
+/// leaving them stuck forever. Their processes did NOT necessarily die with the
+/// app: the background-process tracker (`procs::startup_sweep`) finds and stops
+/// or lists whatever is still alive.
 async fn reconcile_interrupted_runs(pool: &Db) -> Result<()> {
     sqlx::query(
         "UPDATE runs SET status = 'cancelled', finished_at = ? \
