@@ -1,6 +1,6 @@
 [package]
 name = "devdy"
-version = "0.10.0"
+version = "0.11.0"
 description = "AI coding agent for developers"
 authors = ["thainph"]
 edition = "2021"
