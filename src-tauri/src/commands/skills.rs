@@ -151,7 +151,8 @@ pub fn read_skill_md(source_path: &str) -> String {
 /// `prev_*` are the SKILL.md hashes recorded at the last sync (None = not installed for that
 /// engine); only an engine Devdy installed before is cleaned up. A copy-era folder is swapped for
 /// a link (or removed) only when it is unedited: SKILL.md matches the source or the last sync, and
-/// every other file matches the source. An edited one fails the call and stays on disk.
+/// every other file matches the source or predates that SKILL.md. An edited one fails the call and
+/// stays on disk.
 pub fn write_skill_artifacts(
     project_path: &str,
     name: &str,
@@ -167,10 +168,14 @@ pub fn write_skill_artifacts(
         let hash = hash.clone();
         let prev = prev.map(str::to_string);
         move |copy: &Path| {
-            let Ok(md) = fs::read_to_string(copy.join("SKILL.md")) else { return false };
+            let skill_md = copy.join("SKILL.md");
+            let Ok(md) = fs::read_to_string(&skill_md) else { return false };
             let md = skill_hash(&md);
+            // Other files: identical to the source, or not touched since the sync that wrote
+            // this SKILL.md (a stale copy whose source moved on is still unedited).
             (md == hash || Some(&md) == prev.as_ref())
-                && project_links::same_tree_except(copy, source, Some(Path::new("SKILL.md")))
+                && (project_links::same_tree_except(copy, source, Some(Path::new("SKILL.md")))
+                    || project_links::nothing_newer_than(copy, &skill_md))
         }
     };
     let had_claude = prev_claude.is_some();
