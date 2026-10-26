@@ -4,9 +4,10 @@
 //! so editing the source updates every project at once. There is deliberately no copy fallback:
 //! if a link can't be created the caller gets an error.
 //!
-//! Projects applied before the switch hold plain copies. A copy is only ever deleted — to swap it
-//! for a link, or when the item is removed — if it is provably unedited (`Known` says so); an
-//! edited copy is left untouched and reported as an error.
+//! Projects applied before the switch hold plain copies. A copy that is provably unedited (`Known`
+//! says so) is deleted when it is swapped for a link or the item is removed. Anything else is
+//! never deleted: it is moved to `<app data>/legacy-backups/<project>/<timestamp>/` first, so the
+//! switch-over never blocks and never loses a local edit.
 //!
 //! Every operation first checks that the folder holding `dest` is a real directory inside the
 //! project. If it is reached through a symlink (say `.agents/skills -> ../.claude/skills`), acting
@@ -15,6 +16,33 @@
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+static BACKUP_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+/// Set once at startup to `<app data>/legacy-backups`.
+pub fn set_backup_root(dir: PathBuf) {
+    let _ = BACKUP_ROOT.set(dir);
+}
+
+/// Where legacy copies are moved before being replaced or removed.
+pub fn backup_root() -> PathBuf {
+    BACKUP_ROOT
+        .get()
+        .cloned()
+        .unwrap_or_else(|| std::env::temp_dir().join("devdy-legacy-backups"))
+}
+
+/// Backups for one project live under a folder named after its path.
+pub fn project_backup_dir(project_root: &Path) -> PathBuf {
+    let key: String = project_root
+        .to_string_lossy()
+        .trim_start_matches(['/', '\\'])
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' })
+        .collect();
+    backup_root().join(key)
+}
 
 /// Decides whether a plain file/dir found at a destination is an unedited Devdy copy.
 pub trait Known: Fn(&Path) -> bool {}
@@ -75,12 +103,52 @@ fn require_real_parent(root: &Path, dest: &Path) -> Result<(), String> {
     }
 }
 
-fn edited_copy_error(dest: &Path) -> String {
-    format!(
-        "{} is a local copy that differs from the Devdy source (edited in the project?) — \
-         keep or delete it yourself, then try again",
-        dest.display()
-    )
+/// Move a copy Devdy can't vouch for out of the project, keeping its path relative to `root`.
+fn back_up(root: &Path, dest: &Path) -> Result<PathBuf, String> {
+    let rel = dest.strip_prefix(root).unwrap_or(dest);
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let base = project_backup_dir(root);
+    let mut target = base.join(&stamp).join(rel);
+    let mut n = 1;
+    while target.exists() {
+        target = base.join(format!("{}-{}", stamp, n)).join(rel);
+        n += 1;
+    }
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("{}: {}", parent.display(), e))?;
+    }
+    if fs::rename(dest, &target).is_err() {
+        // Different volume: copy, then delete the original.
+        copy_tree(dest, &target)?;
+        remove_copy(dest)?;
+    }
+    tracing::info!("moved legacy copy {} to {}", dest.display(), target.display());
+    Ok(target)
+}
+
+fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
+    if from.is_file() {
+        return fs::copy(from, to).map(|_| ()).map_err(|e| format!("{}: {}", to.display(), e));
+    }
+    for entry in walkdir::WalkDir::new(from).follow_links(false) {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let out = to.join(entry.path().strip_prefix(from).map_err(|e| e.to_string())?);
+        if entry.file_type().is_dir() {
+            fs::create_dir_all(&out).map_err(|e| format!("{}: {}", out.display(), e))?;
+        } else if entry.file_type().is_file() {
+            fs::copy(entry.path(), &out).map_err(|e| format!("{}: {}", out.display(), e))?;
+        }
+    }
+    Ok(())
+}
+
+/// Clear a legacy copy at `dest`: delete it when `known`, otherwise move it to the backups.
+fn clear_copy(root: &Path, dest: &Path, known: impl Known) -> Result<(), String> {
+    if known(dest) {
+        remove_copy(dest)
+    } else {
+        back_up(root, dest).map(|_| ())
+    }
 }
 
 /// Make `dest` (inside project `root`) a symlink to `target`.
@@ -88,7 +156,7 @@ fn edited_copy_error(dest: &Path) -> String {
 /// * nothing there → create the link (parent dirs included);
 /// * already a link to `target` → no-op; a dangling link → replaced;
 ///   a link to anything else → error (not ours to repoint);
-/// * a real file/dir (legacy copy) → replaced only if `known(dest)`.
+/// * a real file/dir (legacy copy) → deleted if `known(dest)`, else moved to the backups.
 pub fn ensure_symlink(root: &Path, dest: &Path, target: &Path, known: impl Known) -> Result<(), String> {
     if !target.exists() {
         return Err(format!("Source not found: {}", target.display()));
@@ -109,12 +177,7 @@ pub fn ensure_symlink(root: &Path, dest: &Path, target: &Path, known: impl Known
             }
             remove_link(dest).map_err(|e| format!("{}: {}", dest.display(), e))?;
         }
-        Existing::Dir | Existing::File => {
-            if !known(dest) {
-                return Err(edited_copy_error(dest));
-            }
-            remove_copy(dest)?;
-        }
+        Existing::Dir | Existing::File => clear_copy(root, dest, known)?,
     }
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("{}: {}", parent.display(), e))?;
@@ -122,9 +185,9 @@ pub fn ensure_symlink(root: &Path, dest: &Path, target: &Path, known: impl Known
     create_symlink(target, dest)
 }
 
-/// Remove what Devdy installed at `dest`: a link to `target` (or a dangling one), or an unedited
-/// legacy copy. A link elsewhere is left alone; an edited copy is an error. Missing is fine, and
-/// so is a symlinked parent folder (then `dest` isn't ours — nothing is touched).
+/// Remove what Devdy installed at `dest`: a link to `target` (or a dangling one), or a legacy copy
+/// (deleted if `known`, else moved to the backups). A link elsewhere is left alone. Missing is
+/// fine, and so is a symlinked parent folder (then `dest` isn't ours — nothing is touched).
 pub fn remove_installed(root: &Path, dest: &Path, target: &Path, known: impl Known) -> Result<(), String> {
     if !parent_is_real(root, dest)? {
         return Ok(());
@@ -138,17 +201,12 @@ pub fn remove_installed(root: &Path, dest: &Path, target: &Path, known: impl Kno
                 Ok(())
             }
         }
-        Existing::Dir | Existing::File => {
-            if known(dest) {
-                remove_copy(dest)
-            } else {
-                Err(edited_copy_error(dest))
-            }
-        }
+        Existing::Dir | Existing::File => clear_copy(root, dest, known),
     }
 }
 
 /// True when `dest` is a symlink (dangling or not).
+#[cfg(test)]
 pub fn is_symlink(dest: &Path) -> bool {
     fs::symlink_metadata(dest).is_ok_and(|m| m.file_type().is_symlink())
 }
@@ -187,14 +245,23 @@ pub fn same_tree_except(copy: &Path, source: &Path, skip: Option<&Path>) -> bool
     })
 }
 
-/// True when no file in `dir` (other than `reference` itself) was modified after `reference`.
+/// Slack for files written in the same sync pass as the copy's SKILL.md.
+const SYNC_PASS_SLACK: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// True when no file in `dir` (other than `reference` itself) was written after `reference`.
 ///
-/// Copy-era syncs rewrote a skill's whole folder, and `fs::copy` keeps each source file's mtime,
-/// so everything Devdy wrote is dated no later than the SKILL.md it wrote in the same pass. A file
-/// changed or added in the project after that sync is newer — that is what this catches, while a
-/// copy that is merely stale (the source moved on without a sync) passes.
-pub fn nothing_newer_than(dir: &Path, reference: &Path) -> bool {
-    let Ok(limit) = fs::metadata(reference).and_then(|m| m.modified()) else { return false };
+/// Copy-era syncs rewrote a skill's whole folder in one pass, SKILL.md included, so every file
+/// Devdy wrote has a change time (ctime) at or before that pass — leftovers from older syncs are
+/// earlier still. A file edited or added in the project afterwards has a later ctime. ctime is
+/// used, not mtime: `fs::copy` keeps the source's mtime, which says nothing about when the copy
+/// was made. (No ctime on Windows; mtime is the best available there.)
+pub fn untouched_since(dir: &Path, reference: &Path) -> bool {
+    untouched_since_within(dir, reference, SYNC_PASS_SLACK)
+}
+
+fn untouched_since_within(dir: &Path, reference: &Path, slack: std::time::Duration) -> bool {
+    let Some(limit) = fs::metadata(reference).ok().and_then(|m| written_at(&m)) else { return false };
+    let limit = limit + slack;
     for entry in walkdir::WalkDir::new(dir).follow_links(false) {
         let Ok(entry) = entry else { return false };
         if entry.file_type().is_symlink() {
@@ -203,12 +270,25 @@ pub fn nothing_newer_than(dir: &Path, reference: &Path) -> bool {
         if !entry.file_type().is_file() || entry.path() == reference || is_os_junk(entry.path()) {
             continue;
         }
-        match entry.metadata().ok().and_then(|m| m.modified().ok()) {
+        match entry.metadata().ok().and_then(|m| written_at(&m)) {
             Some(t) if t <= limit => {}
             _ => return false,
         }
     }
     true
+}
+
+#[cfg(unix)]
+fn written_at(meta: &fs::Metadata) -> Option<std::time::SystemTime> {
+    use std::os::unix::fs::MetadataExt;
+    let secs = u64::try_from(meta.ctime()).ok()?;
+    let nanos = u32::try_from(meta.ctime_nsec()).ok()?;
+    Some(std::time::UNIX_EPOCH + std::time::Duration::new(secs, nanos))
+}
+
+#[cfg(not(unix))]
+fn written_at(meta: &fs::Metadata) -> Option<std::time::SystemTime> {
+    meta.modified().ok()
 }
 
 /// True when `a` and `b` resolve to the same existing file — e.g. a rename that only changes
@@ -294,15 +374,28 @@ mod tests {
         ensure_symlink(&root, &known, &src, content_is("synced")).unwrap();
         assert!(is_symlink(&known));
 
+        // An unrecognised copy is moved to the backups, then linked.
         let edited = root.join("edited.md");
         fs::write(&edited, "local edit").unwrap();
-        let err = ensure_symlink(&root, &edited, &src, content_is("synced")).unwrap_err();
-        assert!(err.contains("local copy"), "{err}");
-        assert_eq!(fs::read_to_string(&edited).unwrap(), "local edit");
+        ensure_symlink(&root, &edited, &src, content_is("synced")).unwrap();
+        assert!(is_symlink(&edited));
+        assert_eq!(backed_up(&root, "edited.md"), vec!["local edit".to_string()]);
 
         // Removal follows the same rule.
-        assert!(remove_installed(&root, &edited, &src, content_is("synced")).is_err());
-        assert!(edited.exists());
+        let removed = root.join("removed.md");
+        fs::write(&removed, "another edit").unwrap();
+        remove_installed(&root, &removed, &src, content_is("synced")).unwrap();
+        assert!(!removed.exists());
+        assert_eq!(backed_up(&root, "removed.md"), vec!["another edit".to_string()]);
+    }
+
+    /// Contents of every backup of `rel` taken for project `root`.
+    fn backed_up(root: &Path, rel: &str) -> Vec<String> {
+        let Ok(stamps) = fs::read_dir(project_backup_dir(root)) else { return Vec::new() };
+        stamps
+            .flatten()
+            .filter_map(|e| fs::read_to_string(e.path().join(rel)).ok())
+            .collect()
     }
 
     #[test]
@@ -376,28 +469,22 @@ mod tests {
     }
 
     #[test]
-    fn nothing_newer_than_catches_later_edits_only() {
-        use std::time::{Duration, SystemTime};
-        let root = tmp("mtime");
+    fn untouched_since_catches_later_writes_only() {
+        let root = tmp("ctime");
         fs::create_dir_all(root.join("references")).unwrap();
-        let set = |p: &Path, secs_ago: u64| {
-            fs::File::options()
-                .write(true)
-                .open(p)
-                .unwrap()
-                .set_modified(SystemTime::now() - Duration::from_secs(secs_ago))
-                .unwrap();
-        };
         let md = root.join("SKILL.md");
         let reference = root.join("references/a.md");
-        fs::write(&md, "s").unwrap();
+        // A leftover from an older sync, then the pass that wrote SKILL.md.
         fs::write(&reference, "old ref").unwrap();
-        set(&md, 100);
-        set(&reference, 1000);
-        assert!(nothing_newer_than(&root, &md), "older files from the sync pass are fine");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&md, "s").unwrap();
+        let none = std::time::Duration::ZERO;
+        assert!(untouched_since_within(&root, &md, none), "older files are fine");
 
+        std::thread::sleep(std::time::Duration::from_millis(20));
         fs::write(&reference, "edited ref").unwrap();
-        assert!(!nothing_newer_than(&root, &md), "a later edit is caught");
+        assert!(!untouched_since_within(&root, &md, none), "a later write is caught");
+        assert!(untouched_since(&root, &md), "within the sync-pass slack it still counts as one pass");
     }
 
     #[test]

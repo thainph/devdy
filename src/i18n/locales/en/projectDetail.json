@@ -136,5 +136,6 @@
   "warnClaudeReadsAgentsMd": "This project has no CLAUDE.md, so Claude Code also reads AGENTS.md (Codex's file) and sees those rules twice. Add a CLAUDE.md, or switch the AGENTS.md fallback off in Claude Code's /config.",
   "warnClaudeMdImportsAgentsMd": "{path} imports {'@'}AGENTS.md, so Claude also reads Codex's rules and sees them twice.",
   "warnCodexReadsClaudeMd": "{config} lists CLAUDE.md in project_doc_fallback_filenames, so Codex may read Claude's instructions.",
-  "warnLinksNotIgnored": "{dir} holds Devdy symlinks that git does not ignore. Committed, they point to a path on this machine and break for everyone else — add it to .gitignore or .git/info/exclude."
+  "warnLinksNotIgnored": "{dir} holds Devdy symlinks that git does not ignore. Committed, they point to a path on this machine and break for everyone else — add it to .gitignore or .git/info/exclude.",
+  "warnLegacyCopiesBackedUp": "Old skill/rule copies that may hold local edits were moved to {dir} ({count} batch(es)) when switching to symlinks. Check them, keep what you need, then delete that folder to clear this notice."
 }
