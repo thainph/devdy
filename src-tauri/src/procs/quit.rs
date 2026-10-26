@@ -212,8 +212,9 @@ fn finish(app: &AppHandle, action: QuitAction) {
 
 /// `RunEvent::Exit`. The question could not be asked when the exit did not go
 /// through [`request_quit`] — macOS Dock "Quit", logout / shutdown (they send
-/// `terminate:`, which cannot be prevented). Apply the saved policy, stopping
-/// everything when it is "ask": nobody is there to answer.
+/// `terminate:`, which cannot be prevented). Apply the saved policy; for "ask"
+/// keep the leftovers (nobody consented to stopping them) — sessions and app
+/// plumbing are still stopped, and the leftovers show as orphans next launch.
 pub fn on_exit(app: &AppHandle) {
     if app.state::<QuitState>().confirmed.load(Ordering::SeqCst) {
         stop_app_sidecars(app);
@@ -231,7 +232,7 @@ pub fn on_exit(app: &AppHandle) {
     let action = policy
         .as_deref()
         .and_then(QuitAction::parse)
-        .unwrap_or(QuitAction::StopAll);
+        .unwrap_or(QuitAction::KeepLeftovers);
     finish(app, action);
 }
 

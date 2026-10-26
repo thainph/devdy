@@ -104,13 +104,15 @@ pub fn set_app_menu<R: Runtime>(app: AppHandle<R>, spec: MenuSpec) -> Result<(),
             submenu = match item {
                 ItemSpec::Separator => submenu.separator(),
                 ItemSpec::Predefined { role, label } if role == "quit" => {
-                    let built = MenuItemBuilder::with_id(
+                    let builder = MenuItemBuilder::with_id(
                         QUIT_ITEM_ID,
                         label.as_deref().unwrap_or("Quit Devdy"),
-                    )
-                    .accelerator("CmdOrCtrl+Q")
-                    .build(&app)
-                    .map_err(|e| e.to_string())?;
+                    );
+                    // Like the OS-provided item: ⌘Q on macOS, no shortcut
+                    // elsewhere (Ctrl+Q is not a platform convention there).
+                    #[cfg(target_os = "macos")]
+                    let builder = builder.accelerator("Cmd+Q");
+                    let built = builder.build(&app).map_err(|e| e.to_string())?;
                     submenu.item(&built)
                 }
                 ItemSpec::Predefined { role, label } => {
