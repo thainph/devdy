@@ -7,8 +7,8 @@
 
 use crate::db::Db;
 use crate::runs::sidecar::{
-    apply_claude_config_dir, augment_command_path, detach_process_group, resolve_codex_sidecar,
-    resolve_sidecar,
+    apply_claude_config_dir, augment_command_path, detach_sidecar_process_group,
+    kill_process_group, resolve_codex_sidecar, resolve_sidecar,
 };
 use serde_json::Value;
 use sqlx::Row;
@@ -21,18 +21,40 @@ use tokio::sync::Mutex as TokioMutex;
 const MAX_CONTEXT_CHARS: usize = 4_000;
 const MAX_OUTPUT_CHARS: usize = 180;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct MascotSpeakState {
     child: Arc<TokioMutex<Option<tokio::process::Child>>>,
     generation: Arc<AtomicU64>,
+    /// Background-process registration of the current sidecar.
+    proc: Arc<std::sync::Mutex<Option<crate::procs::ProcGuard>>>,
+}
+
+impl MascotSpeakState {
+    /// Kill the current sidecar and its CLI (cancel, app exit).
+    pub async fn shutdown(&self) {
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        if let Some(child) = self.child.lock().await.take() {
+            kill_tree(child);
+        }
+        self.proc.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
+}
+
+/// Kill a mascot sidecar's whole process group (node + claude/codex CLI) and
+/// reap it in the background.
+fn kill_tree(mut child: tokio::process::Child) {
+    if let Some(pid) = child.id() {
+        kill_process_group(pid);
+    }
+    let _ = child.start_kill();
+    tokio::spawn(async move {
+        let _ = child.wait().await;
+    });
 }
 
 #[tauri::command]
 pub async fn cancel_mascot_speak(state: State<'_, MascotSpeakState>) -> Result<(), String> {
-    state.generation.fetch_add(1, Ordering::SeqCst);
-    if let Some(mut child) = state.child.lock().await.take() {
-        let _ = child.start_kill();
-    }
+    state.shutdown().await;
     Ok(())
 }
 
@@ -172,7 +194,7 @@ pub async fn mascot_speak(
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    detach_process_group(&mut cmd);
+    detach_sidecar_process_group(&mut cmd);
     cmd.kill_on_drop(true);
 
     let mut child = cmd
@@ -182,11 +204,13 @@ pub async fn mascot_speak(
     let mut stdin = child.stdin.take().ok_or("no stdin")?;
 
     let my_gen = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
-    if let Some(mut old) = state.child.lock().await.replace(child) {
-        let _ = old.start_kill();
-        tokio::spawn(async move {
-            let _ = old.wait().await;
-        });
+    let guard = crate::procs::track(
+        crate::procs::ProcSpec::new(crate::procs::ProcKind::Mascot, "Mascot speech"),
+        child.id(),
+    );
+    *state.proc.lock().unwrap_or_else(|e| e.into_inner()) = guard;
+    if let Some(old) = state.child.lock().await.replace(child) {
+        kill_tree(old);
     }
 
     if is_codex {
@@ -252,9 +276,13 @@ pub async fn mascot_speak(
 
     if state.generation.load(Ordering::SeqCst) == my_gen {
         if let Some(mut current) = state.child.lock().await.take() {
+            if let Some(pid) = current.id() {
+                kill_process_group(pid);
+            }
             let _ = current.start_kill();
             let _ = current.wait().await;
         }
+        state.proc.lock().unwrap_or_else(|e| e.into_inner()).take();
     }
     drop(stdin);
 

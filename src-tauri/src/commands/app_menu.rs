@@ -31,6 +31,11 @@ use super::tray::{self, TrayItem};
 
 /// Event carrying a clicked item's id to the main window's webview.
 pub const MENU_ACTION_EVENT: &str = "menu://action";
+/// Id of the Quit item. The OS-provided Quit sends `terminate:` straight to
+/// NSApp, which exits without a prevent-able `ExitRequested`, so Quit is a
+/// normal item that closes the main window instead: the same path as tray Quit,
+/// which asks first when work is still running (see `procs::quit`).
+const QUIT_ITEM_ID: &str = "app:quit";
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -105,7 +110,6 @@ fn predefined<R: Runtime>(
         "maximize" => PredefinedMenuItem::maximize(app, label)?,
         "fullscreen" => PredefinedMenuItem::fullscreen(app, label)?,
         "closeWindow" => PredefinedMenuItem::close_window(app, label)?,
-        "quit" => PredefinedMenuItem::quit(app, label)?,
         "about" => PredefinedMenuItem::about(app, label, None)?,
         "services" => PredefinedMenuItem::services(app, label)?,
         "hide" => PredefinedMenuItem::hide(app, label)?,
@@ -127,6 +131,16 @@ fn build_submenu<R: Runtime>(
     for item in items {
         submenu = match item {
             ItemSpec::Separator => submenu.separator(),
+            ItemSpec::Predefined { role, label } if role == "quit" => {
+                let label = label.as_deref().unwrap_or("Quit Devdy");
+                let builder = MenuItemBuilder::with_id(QUIT_ITEM_ID, label);
+                // Like the OS-provided item: ⌘Q on macOS, no shortcut elsewhere
+                // (Ctrl+Q is not a platform convention there).
+                #[cfg(target_os = "macos")]
+                let builder = builder.accelerator("Cmd+Q");
+                let built = builder.build(app).map_err(|e| e.to_string())?;
+                submenu.item(&built)
+            }
             ItemSpec::Predefined { role, label } => {
                 match predefined(app, role, label.as_deref()).map_err(|e| e.to_string())? {
                     Some(p) => submenu.item(&p),
@@ -215,6 +229,15 @@ pub fn on_menu_event<R: Runtime>(app: &AppHandle<R>, event: tauri::menu::MenuEve
     // tray "focus session" click doesn't also yank focus back to the main window.
     // (The Window menu's window rows reuse those ids on purpose.)
     if id.starts_with("tray:") {
+        return;
+    }
+    if id == QUIT_ITEM_ID {
+        match app.get_webview_window("main") {
+            Some(win) => {
+                let _ = win.close();
+            }
+            None => app.exit(0),
+        }
         return;
     }
     if let Some(win) = app.get_webview_window("main") {

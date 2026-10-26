@@ -92,6 +92,10 @@ pub struct AppSettings {
     pub cyber_fox_voice_rate: String,
     /// Mascot TTS voice pitch. "1.15" (default); range ~0–2.0.
     pub cyber_fox_voice_pitch: String,
+    /// What quitting does while sessions or leftover background processes are
+    /// still running: "ask" (default) | "stop_all" | "keep_leftovers". Read by
+    /// `procs::quit`.
+    pub quit_background_policy: String,
 }
 
 #[tauri::command]
@@ -139,6 +143,7 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
         cyber_fox_voice_en: "".to_string(),
         cyber_fox_voice_rate: "1".to_string(),
         cyber_fox_voice_pitch: "1.15".to_string(),
+        quit_background_policy: "ask".to_string(),
     };
 
     for row in rows {
@@ -186,6 +191,7 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
             "cyber_fox_voice_en" => settings.cyber_fox_voice_en = value,
             "cyber_fox_voice_rate" => settings.cyber_fox_voice_rate = value,
             "cyber_fox_voice_pitch" => settings.cyber_fox_voice_pitch = value,
+            "quit_background_policy" => settings.quit_background_policy = value,
             _ => {}
         }
     }

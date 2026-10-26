@@ -2,8 +2,9 @@ use crate::commands::github::RunRecord;
 use crate::db::Db;
 use crate::runs::broker::BrokerHandle;
 use crate::runs::sidecar::{
-    apply_claude_config_dir, apply_mcp_tool_timeout, augment_command_path, detach_process_group,
-    drain_sidecar, kill_process_group, resolve_codex_sidecar, resolve_sidecar, sdk_permission_mode,
+    apply_claude_config_dir, apply_mcp_tool_timeout, augment_command_path,
+    detach_sidecar_process_group, drain_sidecar, kill_process_group, resolve_codex_sidecar,
+    resolve_sidecar, sdk_permission_mode,
 };
 use crate::runs::ssh_access::{self, SshAccessGuard};
 use crate::runs::stdin_writer::SidecarInput;
@@ -416,7 +417,7 @@ pub(crate) async fn start_run_inner(
         cmd.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
-        detach_process_group(&mut cmd);
+        detach_sidecar_process_group(&mut cmd);
         cmd.kill_on_drop(true);
 
         let mut child = cmd
@@ -536,6 +537,11 @@ pub(crate) async fn start_run_inner(
             reg.insert(
                 payload.run_id.clone(),
                 RunHandles {
+                    proc: crate::procs::track(
+                        crate::procs::ProcSpec::new(crate::procs::ProcKind::Run, "Session")
+                            .run(&payload.run_id, &project_id),
+                        child.id(),
+                    ),
                     pgid: child.id(),
                     child,
                     stdin: input.clone(),
@@ -634,7 +640,7 @@ pub(crate) async fn start_run_inner(
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    detach_process_group(&mut cmd);
+    detach_sidecar_process_group(&mut cmd);
     cmd.kill_on_drop(true);
 
     let mut child = cmd
@@ -703,6 +709,11 @@ pub(crate) async fn start_run_inner(
         reg.insert(
             payload.run_id.clone(),
             RunHandles {
+                proc: crate::procs::track(
+                    crate::procs::ProcSpec::new(crate::procs::ProcKind::Run, "Session")
+                        .run(&payload.run_id, &project_id),
+                    child.id(),
+                ),
                 pgid: child.id(),
                 child,
                 stdin: input.clone(),
@@ -3639,7 +3650,7 @@ pub(crate) async fn resume_run_with(
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    detach_process_group(&mut cmd);
+    detach_sidecar_process_group(&mut cmd);
     cmd.kill_on_drop(true);
 
     let mut child = cmd
@@ -3678,6 +3689,11 @@ pub(crate) async fn resume_run_with(
         reg.insert(
             run_id.clone(),
             RunHandles {
+                proc: crate::procs::track(
+                    crate::procs::ProcSpec::new(crate::procs::ProcKind::Run, "Session")
+                        .run(&run_id, &project_id),
+                    child.id(),
+                ),
                 pgid: child.id(),
                 child,
                 stdin: stdin_handle
@@ -4116,7 +4132,7 @@ mod startup_input_tests {
     async fn large_first_prompt_to_non_reading_sidecar_never_blocks_start() {
         let mut cmd = Command::new("sleep");
         cmd.arg("30").stdin(std::process::Stdio::piped());
-        detach_process_group(&mut cmd);
+        crate::runs::sidecar::detach_process_group(&mut cmd);
         let mut child = cmd.spawn().unwrap();
         let pgid = child.id().unwrap();
         let input = child
@@ -4134,6 +4150,7 @@ mod startup_input_tests {
         registry.lock().await.insert(
             "r1".to_string(),
             RunHandles {
+                proc: None,
                 pgid: Some(pgid),
                 child,
                 stdin: input.clone(),

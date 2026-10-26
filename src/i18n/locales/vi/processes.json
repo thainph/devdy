@@ -1,0 +1,86 @@
+{
+  "title": "Tiến trình nền",
+  "subtitle": "Mọi thứ Devdy đã khởi chạy và vẫn đang chạy: phiên làm việc, dịch vụ của ứng dụng và các tiến trình còn sót lại.",
+  "refresh": "Làm mới",
+  "stopAllLeftovers": "Dừng mọi tiến trình sót",
+  "stopAll": "Dừng tất cả",
+  "processCount": "{n} tiến trình | {n} tiến trình",
+  "sections": {
+    "orphan": "Sót lại từ phiên trước",
+    "orphanHint": "Do Devdy khởi chạy trước lần thoát gần nhất. Hiện không còn ai quản lý.",
+    "leftover": "Còn sót lại",
+    "leftoverHint": "Phiên đã kết thúc nhưng các tiến trình nó khởi chạy vẫn còn sống.",
+    "sessions": "Phiên làm việc",
+    "services": "Dịch vụ ứng dụng",
+    "servicesHint": "Các tiến trình hỗ trợ của Devdy (dịch, Pulse, mascot, kiểm tra model, kiểm tra MCP, ssh-agent)."
+  },
+  "kind": {
+    "run": "Phiên",
+    "translate": "Dịch",
+    "slack_translate": "Dịch Slack",
+    "pulse_digest": "Tổng hợp Pulse",
+    "mascot": "Mascot",
+    "probe": "Kiểm tra model",
+    "mcp_test": "Kiểm tra MCP",
+    "ssh_agent": "ssh-agent"
+  },
+  "col": {
+    "pid": "PID",
+    "command": "Lệnh",
+    "cpu": "CPU",
+    "ram": "RAM",
+    "age": "Thời gian"
+  },
+  "noProject": "Không thuộc dự án",
+  "rootProcess": "gốc",
+  "actions": {
+    "stop": "Dừng",
+    "stopTitle": "Dừng nhẹ nhàng (SIGTERM, sau 3 giây thì SIGKILL)",
+    "forceKill": "Buộc dừng",
+    "forceKillTitle": "Dừng ngay lập tức (SIGKILL)",
+    "openSession": "Mở phiên",
+    "stopProcess": "Dừng tiến trình này",
+    "expand": "Xem các tiến trình",
+    "collapse": "Ẩn các tiến trình"
+  },
+  "confirm": {
+    "stopLeftoversTitle": "Dừng mọi tiến trình sót?",
+    "stopLeftoversMessage": "{n} tiến trình còn sót sẽ bị dừng. | {n} tiến trình còn sót sẽ bị dừng.",
+    "stopAllTitle": "Dừng tất cả?",
+    "stopAllMessage": "Thao tác này dừng mọi tiến trình đang theo dõi ({n}), kể cả các phiên đang chạy và dịch vụ của Devdy. Các phiên đang chạy sẽ bị huỷ.",
+    "forceTitle": "Buộc dừng?",
+    "forceMessage": "\"{label}\" sẽ bị dừng ngay, không có cơ hội dọn dẹp.",
+    "stopSessionTitle": "Dừng phiên này?",
+    "stopSessionMessage": "\"{label}\" vẫn đang chạy. Dừng nó cũng sẽ huỷ phiên."
+  },
+  "toast": {
+    "stopped": "Đã dừng {n} tiến trình | Đã dừng {n} tiến trình",
+    "nothingStopped": "Không có tiến trình nào đang chạy",
+    "failed": "Không dừng được: {error}"
+  },
+  "empty": {
+    "title": "Không có gì chạy nền",
+    "hint": "Phiên làm việc, dev server và tiến trình hỗ trợ do Devdy khởi chạy sẽ hiện ở đây khi đang chạy."
+  },
+  "dock": {
+    "label": "{n} tiến trình nền | {n} tiến trình nền",
+    "title": "Tiến trình vẫn chạy sau khi phiên đã kết thúc. Bấm để xem."
+  },
+  "orphanPrompt": {
+    "title": "{n} tiến trình từ phiên trước vẫn đang chạy | {n} tiến trình từ phiên trước vẫn đang chạy",
+    "message": "Devdy đã thoát khi chúng còn chạy. Chúng vẫn chiếm CPU và bộ nhớ cho tới khi bị dừng.",
+    "stopAll": "Dừng tất cả",
+    "viewDetails": "Xem chi tiết",
+    "leaveRunning": "Để chạy tiếp"
+  },
+  "quit": {
+    "title": "Thoát Devdy?",
+    "sessions": "Phiên đang chạy (sẽ bị dừng)",
+    "stray": "Tiến trình nền",
+    "strayHint": "Tiến trình còn sót có thể tiếp tục chạy sau khi Devdy thoát; lần mở sau chúng sẽ hiện là tiến trình sót.",
+    "stopAllQuit": "Dừng tất cả & thoát",
+    "keepQuit": "Thoát, giữ tiến trình nền",
+    "cancel": "Huỷ",
+    "dontAsk": "Không hỏi lại"
+  }
+}

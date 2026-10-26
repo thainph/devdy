@@ -176,7 +176,7 @@ async fn probe_claude_model(env: ProbeEnv, model: String) -> ModelValidation {
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
-    detach_process_group(&mut cmd);
+    crate::runs::sidecar::detach_sidecar_process_group(&mut cmd);
     cmd.kill_on_drop(true);
 
     let fail = |model: String, msg: String| ModelValidation {
@@ -189,6 +189,13 @@ async fn probe_claude_model(env: ProbeEnv, model: String) -> ModelValidation {
         Ok(c) => c,
         Err(e) => return fail(model, format!("Failed to spawn sidecar: {e}")),
     };
+    let _proc = crate::procs::track(
+        crate::procs::ProcSpec::new(
+            crate::procs::ProcKind::Probe,
+            format!("Model check ({model})"),
+        ),
+        child.id(),
+    );
     let Some(stdout) = child.stdout.take() else {
         return fail(model, "sidecar produced no stdout".to_string());
     };
@@ -371,6 +378,10 @@ async fn discover_codex_models(codex_path: &str) -> Result<Vec<ModelOption>, Str
     let child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn `{codex_path} debug models`: {e}"))?;
+    let _proc = crate::procs::track(
+        crate::procs::ProcSpec::new(crate::procs::ProcKind::Probe, "Codex model list"),
+        child.id(),
+    );
 
     // Short timeout: the catalog is a quick local read. `kill_on_drop` reaps the
     // child if we time out and drop the future.
