@@ -122,6 +122,8 @@ struct WarmSidecar {
     /// Cleared by the drain task when the sidecar's stdout closes / the session
     /// ends, so the next call knows to respawn instead of writing to a dead pipe.
     alive: Arc<AtomicBool>,
+    /// Background-process registration; dropped with the sidecar.
+    _proc: Option<crate::procs::ProcGuard>,
 }
 
 /// Holds the single warm translation sidecar (if any) and hands out turn ids.
@@ -140,6 +142,8 @@ pub struct TranslateState {
     /// Process groups of replaced sidecars still finishing their turns
     /// (`retire`), so `shutdown` can kill them too.
     retiring: Retiring,
+    /// How this instance's sidecars show in the background-process list.
+    proc_kind: crate::procs::ProcKind,
 }
 
 type Retiring = Arc<std::sync::Mutex<HashSet<u32>>>;
@@ -152,6 +156,7 @@ impl Default for TranslateState {
             turn_seq: Arc::default(),
             recycle_after: MAX_TURNS_BEFORE_RECYCLE,
             emit_events: true,
+            proc_kind: crate::procs::ProcKind::Translate,
         }
     }
 }
@@ -160,6 +165,12 @@ impl TranslateState {
     /// Recycle the warm claude session after `n` turns (min 1).
     pub fn with_recycle_after(mut self, n: u32) -> Self {
         self.recycle_after = n.max(1);
+        self
+    }
+
+    /// List this instance's sidecars as `kind` in the background-process view.
+    pub fn tracked_as(mut self, kind: crate::procs::ProcKind) -> Self {
+        self.proc_kind = kind;
         self
     }
 
@@ -452,6 +463,7 @@ async fn spawn_warm(
     s: &TranslateSettings,
     is_codex: bool,
     emit_events: bool,
+    proc_kind: crate::procs::ProcKind,
 ) -> Result<WarmSidecar, String> {
     let (node_bin, sidecar_script) = if is_codex {
         resolve_codex_sidecar(app, &s.node_path, &s.codex_sidecar_path)?
@@ -488,6 +500,10 @@ async fn spawn_warm(
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn sidecar ({node_bin}): {e}"))?;
+    let proc_guard = crate::procs::track(
+        crate::procs::ProcSpec::new(proc_kind, proc_label(proc_kind, is_codex)),
+        child.id(),
+    );
     let stdout = child.stdout.take().ok_or("no stdout")?;
     let stdin = child.stdin.take().ok_or("no stdin")?;
 
@@ -511,7 +527,18 @@ async fn spawn_warm(
         last_used: Instant::now(),
         routing,
         alive,
+        _proc: proc_guard,
     })
+}
+
+fn proc_label(kind: crate::procs::ProcKind, is_codex: bool) -> String {
+    use crate::procs::ProcKind;
+    let what = match kind {
+        ProcKind::SlackTranslate => "Slack translation session",
+        ProcKind::PulseDigest => "Pulse digest session",
+        _ => "Translation session",
+    };
+    format!("{what} ({})", if is_codex { "codex" } else { "claude" })
 }
 
 /// Read the sidecar's stdout forever, streaming `translate:chunk` deltas and
@@ -708,7 +735,14 @@ pub async fn prewarm_translate(
         if let Some(old) = guard.take() {
             replace_out(old, &state.retiring).await;
         }
-        let w = spawn_warm(&app, &settings, is_codex, state.emit_events).await?;
+        let w = spawn_warm(
+            &app,
+            &settings,
+            is_codex,
+            state.emit_events,
+            state.proc_kind,
+        )
+        .await?;
         *guard = Some(w);
     }
     Ok(())
@@ -811,7 +845,7 @@ async fn submit_with(
         if let Some(old) = guard.take() {
             replace_out(old, &state.retiring).await;
         }
-        let w = spawn_warm(app, settings, is_codex, state.emit_events).await?;
+        let w = spawn_warm(app, settings, is_codex, state.emit_events, state.proc_kind).await?;
         *guard = Some(w);
     }
 
@@ -1205,6 +1239,7 @@ mod tests {
             last_used: Instant::now(),
             routing,
             alive,
+            _proc: None,
         };
         (w, rxs)
     }

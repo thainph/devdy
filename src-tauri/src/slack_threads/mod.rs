@@ -221,7 +221,8 @@ impl Default for SlackTranslateState {
         SlackTranslateState(
             TranslateState::default()
                 .with_recycle_after(TRANSLATE_RECYCLE_AFTER)
-                .silent(),
+                .silent()
+                .tracked_as(crate::procs::ProcKind::SlackTranslate),
         )
     }
 }
