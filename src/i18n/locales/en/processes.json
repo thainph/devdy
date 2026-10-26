@@ -1,0 +1,86 @@
+{
+  "title": "Background Processes",
+  "subtitle": "Everything Devdy started that is still running: sessions, app services, and processes left behind.",
+  "refresh": "Refresh",
+  "stopAllLeftovers": "Stop all leftovers",
+  "stopAll": "Stop all",
+  "processCount": "{n} process | {n} processes",
+  "sections": {
+    "orphan": "Leftover from previous session",
+    "orphanHint": "Started by Devdy before it last quit. Nothing owns them now.",
+    "leftover": "Leftover",
+    "leftoverHint": "Their session ended, but processes it started are still alive.",
+    "sessions": "Sessions",
+    "services": "App services",
+    "servicesHint": "Devdy's own helpers (translation, Pulse, mascot, probes, MCP tests, ssh-agent)."
+  },
+  "kind": {
+    "run": "Session",
+    "translate": "Translate",
+    "slack_translate": "Slack translate",
+    "pulse_digest": "Pulse digest",
+    "mascot": "Mascot",
+    "probe": "Model probe",
+    "mcp_test": "MCP test",
+    "ssh_agent": "ssh-agent"
+  },
+  "col": {
+    "pid": "PID",
+    "command": "Command",
+    "cpu": "CPU",
+    "ram": "RAM",
+    "age": "Age"
+  },
+  "noProject": "No project",
+  "rootProcess": "root",
+  "actions": {
+    "stop": "Stop",
+    "stopTitle": "Stop gracefully (SIGTERM, then SIGKILL after 3 s)",
+    "forceKill": "Force kill",
+    "forceKillTitle": "Kill immediately (SIGKILL)",
+    "openSession": "Open session",
+    "stopProcess": "Stop this process",
+    "expand": "Show processes",
+    "collapse": "Hide processes"
+  },
+  "confirm": {
+    "stopLeftoversTitle": "Stop all leftovers?",
+    "stopLeftoversMessage": "{n} leftover process will be stopped. | {n} leftover processes will be stopped.",
+    "stopAllTitle": "Stop everything?",
+    "stopAllMessage": "This stops every tracked process ({n}), including running sessions and Devdy's app services. Running sessions are cancelled.",
+    "forceTitle": "Force kill?",
+    "forceMessage": "\"{label}\" will be killed immediately without a chance to clean up.",
+    "stopSessionTitle": "Stop this session?",
+    "stopSessionMessage": "\"{label}\" is still running. Stopping it also cancels the run."
+  },
+  "toast": {
+    "stopped": "Stopped {n} process | Stopped {n} processes",
+    "nothingStopped": "No processes were running",
+    "failed": "Could not stop: {error}"
+  },
+  "empty": {
+    "title": "Nothing is running in the background",
+    "hint": "Sessions, dev servers and helpers started by Devdy show up here while they run."
+  },
+  "dock": {
+    "label": "{n} background process | {n} background processes",
+    "title": "Processes still running after their session ended. Click to review."
+  },
+  "orphanPrompt": {
+    "title": "{n} process is still running from the previous session | {n} processes are still running from the previous session",
+    "message": "Devdy quit while these were running. They keep using CPU and memory until stopped.",
+    "stopAll": "Stop all",
+    "viewDetails": "View details",
+    "leaveRunning": "Leave running"
+  },
+  "quit": {
+    "title": "Quit Devdy?",
+    "sessions": "Running sessions (will be stopped)",
+    "stray": "Background processes",
+    "strayHint": "Leftover processes can keep running after Devdy quits; they show up as leftovers next launch.",
+    "stopAllQuit": "Stop all & quit",
+    "keepQuit": "Quit, keep background processes",
+    "cancel": "Cancel",
+    "dontAsk": "Don't ask again"
+  }
+}
