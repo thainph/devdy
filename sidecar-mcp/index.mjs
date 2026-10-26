@@ -601,9 +601,9 @@ const tools = {
 
   // ---- Skills library ------------------------------------------------------
   // Manage Devdy's reusable skill definitions (the same library shown on the
-  // Skills screen). Source-only: these edit the skill definition + files under
-  // <app_data>/skills; they do NOT push changes into projects that already
-  // applied the skill — re-apply via the Devdy app for that.
+  // Skills screen). These edit the skill definition + files under
+  // <app_data>/skills. Projects symlink to that folder, so content edits are live
+  // everywhere; a rename or target change needs a re-apply in the Devdy app.
 
   skills_list: {
     description:
@@ -653,7 +653,7 @@ const tools = {
 
   skills_update: {
     description:
-      'Update an existing skill by id. Omitted fields are left unchanged; pass `content` to replace the SKILL.md body. Renaming moves the source folder. Source-only — if the skill is already applied to projects, re-apply via the Devdy app to propagate changes.',
+      'Update an existing skill by id. Omitted fields are left unchanged; pass `content` to replace the SKILL.md body. Projects symlink to the skill folder, so content changes are live in every project at once. Renaming moves the source folder and removes the old links from projects — after a rename or target change, re-apply via the Devdy app to install it again.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -669,7 +669,9 @@ const tools = {
       const r = store.updateSkill(a);
       let msg = `Updated skill '${r.skill.name}'.`;
       if (r.applied.length) {
-        msg += `\n⚠ Applied to ${r.applied.length} project(s): ${r.applied.join(', ')}. Re-apply via the Devdy app to sync the new content${r.renamed ? ' (renamed — old artifacts remain under the previous name)' : ''}.`;
+        msg += r.renamed || r.retargeted
+          ? `\n⚠ Applied to ${r.applied.length} project(s): ${r.applied.join(', ')}. ${r.renamed ? 'Renamed — the old links were removed from those projects' : 'Target changed'}; re-apply via the Devdy app to install it again.`
+          : `\nApplied to ${r.applied.length} project(s) via symlink — the change is already live there.`;
       }
       return msg;
     },
@@ -677,7 +679,7 @@ const tools = {
 
   skills_delete: {
     description:
-      'Delete a skill from the library: removes the source folder and its DB record (and project-apply links). Files already copied into projects (.claude/.codex/AGENTS.md) are NOT removed — clean those via the Devdy app.',
+      'Delete a skill from the library: removes the source folder, its DB record, project-apply links and the symlinks projects had to it. Old copies from before Devdy switched to symlinks (.codex/skills, AGENTS.md pointer) are NOT removed.',
     inputSchema: {
       type: 'object',
       properties: { id: { type: 'string' } },
@@ -687,7 +689,7 @@ const tools = {
       const r = store.deleteSkill(a.id);
       let msg = `Deleted skill '${r.name}'.`;
       if (r.applied.length) {
-        msg += `\n⚠ Was applied to ${r.applied.length} project(s): ${r.applied.join(', ')}. Their copied files remain on disk — remove them via the Devdy app.`;
+        msg += `\nWas applied to ${r.applied.length} project(s): ${r.applied.join(', ')}. Their symlinks were removed; any pre-symlink copies stay on disk.`;
       }
       return msg;
     },
@@ -696,7 +698,7 @@ const tools = {
   // ---- Skill reference files -----------------------------------------------
   // Read/write the extra files inside a skill folder (references/, scripts/,
   // assets/, templates…) beyond SKILL.md. Paths are confined to the skill
-  // folder. Source-only, same re-apply caveat as skills_update.
+  // folder. Projects symlink to the folder, so changes are live everywhere.
 
   skills_list_files: {
     description:
@@ -733,7 +735,7 @@ const tools = {
 
   skills_write_file: {
     description:
-      'Create or overwrite a reference file inside a skill folder (e.g. "references/api.md"). Parent directories are created automatically. `content` replaces the whole file. Confined to the skill folder — relative paths only. Source-only: if the skill is already applied to projects, re-apply via the Devdy app to propagate.',
+      'Create or overwrite a reference file inside a skill folder (e.g. "references/api.md"). Parent directories are created automatically. `content` replaces the whole file. Confined to the skill folder — relative paths only. Projects symlink to the skill folder, so the change is live in every project.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -755,7 +757,7 @@ const tools = {
 
   skills_delete_file: {
     description:
-      'Delete a reference file (or subfolder) inside a skill folder by relative path. SKILL.md cannot be deleted. Source-only, same re-apply caveat as skills_write_file.',
+      'Delete a reference file (or subfolder) inside a skill folder by relative path. SKILL.md cannot be deleted. Live in every project (they symlink to the skill folder).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -776,7 +778,8 @@ const tools = {
 
   // ---- Rules library -------------------------------------------------------
   // Manage Devdy's reusable rule/convention definitions (the Rules screen).
-  // Source-only, same caveat as skills.
+  // Claude's .claude/rules/<name>.md symlinks to the source (live); Codex gets an
+  // AGENTS.md block or generated skill that only updates on re-apply in the app.
 
   rules_list: {
     description:
@@ -807,7 +810,7 @@ const tools = {
 
   rules_create: {
     description:
-      'Create a new rule in the library. Writes <app_data>/rules/<name>.md and registers it. `content` is the full markdown (optionally with YAML frontmatter). name must be a slug ([A-Za-z0-9_-]); target defaults to "both".',
+      'Create a new rule in the library. Writes <app_data>/rules/<name>.md and registers it. `content` is the full markdown (optionally with YAML frontmatter). name must be a slug ([A-Za-z0-9_-]); target defaults to "both". For Codex the rule is inlined into AGENTS.md; add `codex_mode: skill` to the frontmatter to ship it to Codex as an on-demand skill instead (good for long, situational rules).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -826,7 +829,7 @@ const tools = {
 
   rules_update: {
     description:
-      'Update an existing rule by id. Omitted fields are left unchanged; pass `content` to replace the body. Renaming moves the source file. Source-only — if the rule is already applied to projects, re-apply via the Devdy app to propagate changes.',
+      'Update an existing rule by id. Omitted fields are left unchanged; pass `content` to replace the body. Claude sees content changes at once (projects symlink the rule file); Codex\'s copy (AGENTS.md block, or generated skill with `codex_mode: skill`) updates only after a re-apply via the Devdy app. Renaming moves the source file and removes the old links/AGENTS.md block from projects — re-apply to install it again.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -842,7 +845,9 @@ const tools = {
       const r = store.updateRule(a);
       let msg = `Updated rule '${r.rule.name}'.`;
       if (r.applied.length) {
-        msg += `\n⚠ Applied to ${r.applied.length} project(s): ${r.applied.join(', ')}. Re-apply via the Devdy app to sync the new content${r.renamed ? ' (renamed — old artifacts remain under the previous name)' : ''}.`;
+        msg += r.renamed || r.retargeted
+          ? `\n⚠ Applied to ${r.applied.length} project(s): ${r.applied.join(', ')}. ${r.renamed ? 'Renamed — the old links and AGENTS.md block were removed from those projects' : 'Target changed'}; re-apply via the Devdy app to install it again.`
+          : `\n⚠ Applied to ${r.applied.length} project(s): ${r.applied.join(', ')}. Claude already sees the change (symlink); re-apply via the Devdy app to update Codex's copy (AGENTS.md block / generated skill).`;
       }
       return msg;
     },
@@ -850,7 +855,7 @@ const tools = {
 
   rules_delete: {
     description:
-      'Delete a rule from the library: removes the source file and its DB record (and project-apply links). Artifacts already written into projects (.claude/rules + AGENTS.md block) are NOT removed — clean those via the Devdy app.',
+      'Delete a rule from the library: removes the source file, its DB record, project-apply links, and from each project its .claude/rules symlink, AGENTS.md block and generated Codex skill.',
     inputSchema: {
       type: 'object',
       properties: { id: { type: 'string' } },
@@ -860,7 +865,7 @@ const tools = {
       const r = store.deleteRule(a.id);
       let msg = `Deleted rule '${r.name}'.`;
       if (r.applied.length) {
-        msg += `\n⚠ Was applied to ${r.applied.length} project(s): ${r.applied.join(', ')}. Their written artifacts remain on disk — remove them via the Devdy app.`;
+        msg += `\nWas applied to ${r.applied.length} project(s): ${r.applied.join(', ')}. Its links and AGENTS.md blocks there were removed.`;
       }
       return msg;
     },

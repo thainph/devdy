@@ -6,7 +6,20 @@
 
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, writeFileSync, readFileSync, rmSync, renameSync, readdirSync, statSync, existsSync } from 'node:fs';
+import {
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+  renameSync,
+  readdirSync,
+  statSync,
+  existsSync,
+  lstatSync,
+  readlinkSync,
+  unlinkSync,
+  realpathSync,
+} from 'node:fs';
 import { dirname, join, resolve, relative, sep } from 'node:path';
 
 let handle = null;
@@ -607,11 +620,13 @@ export function getServer(id) {
 // Source-of-truth mirrors Devdy's own screens (commands/skills.rs, rules.rs):
 //   • skills live in  <app_data>/skills/<name>/SKILL.md  (row in `skills`)
 //   • rules  live in  <app_data>/rules/<name>.md          (row in `rules`)
-// `<app_data>` is derived from DEVDY_DB_PATH (data.db sits at its root). These
-// tools manage the SOURCE only — they never touch per-project artifacts
-// (.claude/.codex/AGENTS.md). When a skill/rule is already applied to projects,
-// callers get a warning to re-apply via the Devdy app so the sync/hash tracking
-// stays correct.
+// `<app_data>` is derived from DEVDY_DB_PATH (data.db sits at its root).
+// Projects symlink to these sources (.claude/skills, .claude/rules, .agents/skills),
+// so content edits here are live in every project. What these tools do NOT do is
+// the rest of the sync (AGENTS.md rule blocks, generated Codex skills of rules,
+// new links after a rename/target change) — callers get a warning to re-apply via
+// the Devdy app. On rename/delete they only drop the project links that would
+// otherwise dangle.
 
 export function appDataDir() {
   const dbPath = process.env.DEVDY_DB_PATH;
@@ -635,6 +650,91 @@ function validateTarget(target) {
     throw new Error('target must be one of: claude, codex, both');
   }
   return t;
+}
+
+/** Paths of projects a skill/rule is applied to. */
+function appliedProjectPaths(kind, id) {
+  const sql =
+    kind === 'skill'
+      ? 'SELECT p.path AS path FROM project_skills ps JOIN projects p ON p.id = ps.project_id WHERE ps.skill_id = ?'
+      : 'SELECT p.path AS path FROM project_rules pr JOIN projects p ON p.id = pr.project_id WHERE pr.rule_id = ?';
+  return db()
+    .prepare(sql)
+    .all(id)
+    .map((r) => r.path);
+}
+
+/** Remove `linkPath` if it is a symlink pointing at `target`; anything else is left alone. */
+function unlinkIfPointsTo(linkPath, target) {
+  try {
+    if (lstatSync(linkPath).isSymbolicLink() && resolve(dirname(linkPath), readlinkSync(linkPath)) === resolve(target)) {
+      unlinkSync(linkPath);
+    }
+  } catch {
+    /* missing or unreadable — nothing to drop */
+  }
+}
+
+/** `to` already exists and is not just `from` under another letter case. */
+function occupied(from, to) {
+  if (!existsSync(to)) return false;
+  try {
+    return realpathSync(to) !== realpathSync(from);
+  } catch {
+    return true;
+  }
+}
+
+/** Where Devdy generates the Codex-skill form of a rule (see rules.rs `codex_skill_source`). */
+const ruleCodexSkillDir = (sourcePath, name) => join(dirname(sourcePath), '.codex-skills', name);
+
+/**
+ * Remove Devdy's managed block `kind`/`name` from a project's AGENTS.md, collapsing the blank
+ * lines around it; an AGENTS.md left empty is deleted. Mirrors agents_block.rs `remove`.
+ */
+function removeAgentsBlock(projectPath, kind, name) {
+  const file = join(projectPath, 'AGENTS.md');
+  let content;
+  try {
+    content = readFileSync(file, 'utf8');
+  } catch {
+    return;
+  }
+  const start = `<!-- devdy:${kind}:${name} START -->`;
+  const end = `<!-- devdy:${kind}:${name} END -->`;
+  const s = content.indexOf(start);
+  if (s === -1) return;
+  const eRel = content.slice(s).indexOf(end);
+  if (eRel === -1) return;
+  const before = content.slice(0, s).trimEnd();
+  const after = content.slice(s + eRel + end.length).trimStart();
+  const merged = before && after ? `${before}\n\n${after}` : before || after;
+  if (!merged) rmSync(file, { force: true });
+  else writeFileSync(file, merged.endsWith('\n') ? merged : `${merged}\n`);
+}
+
+/**
+ * Drop what a skill left in its projects under `name` (after a rename or before a delete):
+ * links to `sourcePath` (dangling ones included) and the copy-era AGENTS.md pointer block.
+ * Copy-era folders (.codex/skills, real dirs) are left for the user.
+ */
+function unlinkSkillFromProjects(id, name, sourcePath) {
+  for (const p of appliedProjectPaths('skill', id)) {
+    unlinkIfPointsTo(join(p, '.claude', 'skills', name), sourcePath);
+    unlinkIfPointsTo(join(p, '.agents', 'skills', name), sourcePath);
+    removeAgentsBlock(p, 'skill', name);
+  }
+}
+
+/** Same for a rule: its links, its AGENTS.md block and its generated Codex skill. */
+function unlinkRuleFromProjects(id, name, sourcePath) {
+  const codexSkill = ruleCodexSkillDir(sourcePath, name);
+  for (const p of appliedProjectPaths('rule', id)) {
+    unlinkIfPointsTo(join(p, '.claude', 'rules', `${name}.md`), sourcePath);
+    unlinkIfPointsTo(join(p, '.agents', 'skills', name), codexSkill);
+    removeAgentsBlock(p, 'rule', name);
+  }
+  rmSync(codexSkill, { recursive: true, force: true });
 }
 
 /** Project names a skill/rule is currently applied to (for stale-artifact warnings). */
@@ -711,7 +811,10 @@ export function updateSkill({ id, name, description, target, content } = {}) {
   let sourcePath = row.source_path;
   if (newName !== row.name) {
     sourcePath = join(skillsDir(), newName);
+    if (occupied(row.source_path, sourcePath)) throw new Error(`skill folder '${newName}' already exists`);
+    // Move first: if it fails the projects keep working links.
     renameSync(row.source_path, sourcePath);
+    unlinkSkillFromProjects(id, row.name, row.source_path);
   }
   if (content != null) writeFileSync(join(sourcePath, 'SKILL.md'), String(content));
   const now = nowIso();
@@ -726,6 +829,7 @@ export function updateSkill({ id, name, description, target, content } = {}) {
   return {
     skill: updated,
     renamed: newName !== row.name,
+    retargeted: updated.target !== row.target,
     applied: appliedProjects('skill', id),
   };
 }
@@ -735,6 +839,7 @@ export function deleteSkill(id) {
   const row = db().prepare('SELECT name, source_path FROM skills WHERE id = ?').get(id);
   if (!row) throw new Error(`skill not found: ${id}`);
   const applied = appliedProjects('skill', id);
+  unlinkSkillFromProjects(id, row.name, row.source_path);
   try {
     rmSync(row.source_path, { recursive: true, force: true });
   } catch {
@@ -900,7 +1005,11 @@ export function updateRule({ id, name, description, target, content } = {}) {
   let sourcePath = row.source_path;
   if (newName !== row.name) {
     sourcePath = join(rulesDir(), `${newName}.md`);
+    // renameSync would silently replace another rule's file — and every project linking to it.
+    if (occupied(row.source_path, sourcePath)) throw new Error(`rule file '${newName}.md' already exists`);
+    // Move first: if it fails the projects keep working links.
     renameSync(row.source_path, sourcePath);
+    unlinkRuleFromProjects(id, row.name, row.source_path);
   }
   if (content != null) writeFileSync(sourcePath, String(content));
   const now = nowIso();
@@ -915,6 +1024,7 @@ export function updateRule({ id, name, description, target, content } = {}) {
   return {
     rule: updated,
     renamed: newName !== row.name,
+    retargeted: updated.target !== row.target,
     applied: appliedProjects('rule', id),
   };
 }
@@ -924,6 +1034,7 @@ export function deleteRule(id) {
   const row = db().prepare('SELECT name, source_path FROM rules WHERE id = ?').get(id);
   if (!row) throw new Error(`rule not found: ${id}`);
   const applied = appliedProjects('rule', id);
+  unlinkRuleFromProjects(id, row.name, row.source_path);
   try {
     rmSync(row.source_path, { force: true });
   } catch {
