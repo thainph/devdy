@@ -176,7 +176,7 @@ async fn probe_claude_model(env: ProbeEnv, model: String) -> ModelValidation {
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
-    detach_process_group(&mut cmd);
+    crate::runs::sidecar::detach_sidecar_process_group(&mut cmd);
     cmd.kill_on_drop(true);
 
     let fail = |model: String, msg: String| ModelValidation {

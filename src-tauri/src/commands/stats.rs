@@ -8,8 +8,8 @@
 use crate::commands::runs::delete_run_tree;
 use crate::db::Db;
 use crate::runs::sidecar::{
-    apply_claude_config_dir, augment_command_path, detach_process_group, insert_usage_from_result,
-    persist_plan_init_rate_limits, persist_plan_usage, persist_plan_rate_limit_event,
+    apply_claude_config_dir, augment_command_path, detach_sidecar_process_group,
+    insert_usage_from_result, persist_plan_init_rate_limits, persist_plan_usage, persist_plan_rate_limit_event,
     resolve_codex_sidecar, resolve_sidecar,
 };
 use crate::runs::RunRegistry;
@@ -601,7 +601,7 @@ pub async fn refresh_plan_usage(
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    detach_process_group(&mut cmd);
+    detach_sidecar_process_group(&mut cmd);
     cmd.kill_on_drop(true);
 
     let mut child = cmd
@@ -739,7 +739,7 @@ pub async fn refresh_codex_plan_usage(
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    detach_process_group(&mut cmd);
+    detach_sidecar_process_group(&mut cmd);
     cmd.kill_on_drop(true);
 
     let mut child = cmd

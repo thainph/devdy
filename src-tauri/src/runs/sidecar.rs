@@ -301,15 +301,20 @@ pub fn detach_process_group(cmd: &mut tokio::process::Command) {
         // 0 = put the child in a new group whose leader is the child itself,
         // so its pid doubles as the process-group id.
         cmd.process_group(0);
-        // Tells a Devdy sidecar it leads its own group, so it may tear the
-        // group down if Devdy dies (see the orphan guard in sidecar/index.mjs).
-        // The sidecar removes it from its env before spawning anything.
-        cmd.env("DEVDY_OWN_PROCESS_GROUP", "1");
     }
     #[cfg(not(unix))]
     {
         let _ = cmd;
     }
+}
+
+/// [`detach_process_group`] for a Devdy Node sidecar (`sidecar/index.mjs`,
+/// `sidecar-codex/index.mjs`): also tells it that it leads its own group, so it
+/// tears the group down if Devdy dies (see the orphan guard there). The sidecar
+/// removes the variable from its env before spawning anything.
+pub fn detach_sidecar_process_group(cmd: &mut tokio::process::Command) {
+    detach_process_group(cmd);
+    cmd.env("DEVDY_OWN_PROCESS_GROUP", "1");
 }
 
 /// Best-effort SIGKILL of the entire process group led by `pid` (Unix). Used on

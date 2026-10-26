@@ -164,6 +164,8 @@ pub struct StopTarget {
 }
 
 struct Inner {
+    /// Wakes the sampler early (a process was registered or released).
+    kick: Arc<tokio::sync::Notify>,
     session: String,
     path: Option<PathBuf>,
     entries: HashMap<String, Entry>,
@@ -197,6 +199,7 @@ impl ProcTracker {
             .collect();
         Self {
             inner: Arc::new(Mutex::new(Inner {
+                kick: Arc::new(tokio::sync::Notify::new()),
                 session: uuid::Uuid::new_v4().to_string(),
                 path,
                 entries,
@@ -231,6 +234,8 @@ impl ProcTracker {
         };
         inner.entries.insert(id.clone(), entry);
         persist(&inner);
+        // Stamp it soon, so a crash right after leaves a verifiable record.
+        inner.kick.notify_one();
         ProcGuard {
             tracker: self.clone(),
             id,
@@ -245,6 +250,8 @@ impl ProcTracker {
                 e.released = Some(Instant::now());
                 e.released_at = Some(chrono::Utc::now().to_rfc3339());
                 persist(&inner);
+                // Catch what the owner started before it gets re-parented.
+                inner.kick.notify_one();
             }
         }
     }
@@ -271,9 +278,16 @@ impl ProcTracker {
         let session = inner.session.clone();
         inner.entries.retain(|id, e| {
             let mut alive: BTreeMap<u32, String> = BTreeMap::new();
+            let current = e.session == session;
             for (pid, start) in &e.members {
+                if *pid == me {
+                    continue;
+                }
                 if let Some(r) = by_pid.get(pid) {
-                    if start.is_empty() || *start == r.start {
+                    // An unstamped pid (registered, not sampled yet) is only
+                    // trusted within the session that registered it: across a
+                    // restart the pid may belong to anything by now.
+                    if (start.is_empty() && current) || *start == r.start {
                         alive.insert(*pid, r.start.clone());
                     }
                 }
@@ -642,10 +656,17 @@ pub fn startup_sweep(tracker: &ProcTracker) {
 /// Periodic sampler: keeps the live view fresh and emits [`CHANGED_EVENT`].
 pub fn start_sampler<R: tauri::Runtime>(app: AppHandle<R>, tracker: ProcTracker) {
     tauri::async_runtime::spawn(async move {
+        let kick = tracker.lock().kick.clone();
         let mut tick = tokio::time::interval(SAMPLE_INTERVAL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            tick.tick().await;
+            tokio::select! {
+                _ = tick.tick() => {}
+                _ = kick.notified() => {
+                    // Coalesce bursts (a run registers its sidecar and agent).
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                }
+            }
             let rows = tokio::task::spawn_blocking(ps::snapshot)
                 .await
                 .ok()
@@ -757,6 +778,33 @@ mod tests {
         assert_eq!(v[0].state, ProcState::Orphan);
         assert_eq!(v[0].run_id.as_deref(), Some("run1"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unstamped_pid_from_a_previous_session_is_not_trusted() {
+        let dir = std::env::temp_dir().join(format!("devdy-procs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("procs.json");
+        {
+            let t = ProcTracker::new(Some(path.clone()));
+            // Registered, never sampled, app died.
+            std::mem::forget(t.register(ProcSpec::new(ProcKind::Probe, "p"), 600));
+        }
+        let t = ProcTracker::new(Some(path));
+        // pid 600 now belongs to some unrelated group leader with a child.
+        t.apply_sample(&[row(600, 1, 600), row(601, 600, 600)]);
+        assert!(t.view().is_empty());
+        assert!(t.targets(None).is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn never_tracks_the_app_itself() {
+        let t = ProcTracker::default();
+        let me = std::process::id();
+        let _g = t.register(ProcSpec::new(ProcKind::Probe, "p"), me);
+        t.apply_sample(&[row(me, 1, me)]);
+        assert!(t.view().is_empty());
     }
 
     #[cfg(unix)]
