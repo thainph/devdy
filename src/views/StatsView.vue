@@ -24,10 +24,11 @@ import {
 } from 'lucide-vue-next'
 import { Button, Input, Card, AppSelect } from '@/components/ui'
 import { useProjectsStore } from '@/stores/projects'
+import { useClaudeAccountsStore } from '@/stores/claudeAccounts'
 import {
   getUsageStats, backfillUsage, resetUsageStats,
-  getStorageStats,
-  type StatsResult, type StatsFilter, type StorageStats,
+  getStorageStats, NO_ACCOUNT,
+  type StatsResult, type StatsFilter, type StorageStats, type AccountStat,
 } from '@/stores/stats'
 
 // Register controllers explicitly. The mixed bar/line daily chart needs both
@@ -45,6 +46,7 @@ ChartJS.register(
 
 const { t } = useI18n()
 const projectsStore = useProjectsStore()
+const accountsStore = useClaudeAccountsStore()
 
 // ── filters ────────────────────────────────────────────────────────────────
 const RANGE_OPTIONS = computed(() => [
@@ -56,6 +58,7 @@ const RANGE_OPTIONS = computed(() => [
 const range = ref('30')
 const engine = ref('') // '' = all
 const projectId = ref('') // '' = all
+const accountId = ref('') // '' = all; NO_ACCOUNT = global ~/.claude
 
 const engineOptions = computed(() => [
   { value: '', label: t('stats.engine.all') },
@@ -66,6 +69,18 @@ const projectOptions = computed(() => [
   { value: '', label: t('stats.project.all') },
   ...projectsStore.projects.map((p) => ({ value: p.id, label: p.name })),
 ])
+
+// Only meaningful once managed Claude accounts exist; picking one implies Claude.
+const hasAccounts = computed(() => accountsStore.accounts.length > 0)
+const accountOptions = computed(() => [
+  { value: '', label: t('stats.account.all') },
+  ...accountsStore.accounts.map((a) => ({ value: a.id, label: a.label })),
+  { value: NO_ACCOUNT, label: t('stats.account.none') },
+])
+function accountName(a: AccountStat): string {
+  if (!a.account_id) return t('stats.account.none')
+  return a.account_label ?? t('stats.account.deleted')
+}
 
 function rangeToDates(r: string): { from: string | null; to: string | null } {
   if (r === 'all') return { from: null, to: null }
@@ -84,6 +99,7 @@ const currentFilter = computed<StatsFilter>(() => {
     to,
     engine: engine.value || null,
     project_id: projectId.value || null,
+    account_id: accountId.value || null,
   }
 })
 
@@ -108,6 +124,7 @@ watch(currentFilter, load, { deep: true })
 
 onMounted(async () => {
   if (projectsStore.projects.length === 0) await projectsStore.fetchProjects()
+  if (accountsStore.accounts.length === 0) await accountsStore.fetch()
   now.value = Date.now()
   clockTimer = setInterval(() => { now.value = Date.now() }, 30_000)
   await Promise.all([load(), loadStorage(), refreshPlanUsage(), refreshPlanUsageCodex()])
@@ -245,13 +262,21 @@ interface PlanUsageData {
   windows: Record<'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day_sonnet', PlanWindowData>
 }
 const planUsage = ref<PlanUsageData | null>(null)
+// With managed accounts each one keeps its own snapshot, keyed by account id.
+const planUsageByAccount = ref<Record<string, PlanUsageData | null>>({})
 const planUsageCodex = ref<PlanUsageData | null>(null)
 const now = ref(Date.now())
 let unlistenPlanUsage: UnlistenFn | null = null
 let clockTimer: ReturnType<typeof setInterval> | null = null
 
 async function refreshPlanUsage() {
-  planUsage.value = await invoke<PlanUsageData | null>('get_plan_usage')
+  if (!hasAccounts.value) {
+    planUsage.value = await invoke<PlanUsageData | null>('get_plan_usage')
+    return
+  }
+  const entries = await Promise.all(accountsStore.accounts.map(async (a) =>
+    [a.id, await invoke<PlanUsageData | null>('get_plan_usage', { accountId: a.id })] as const))
+  planUsageByAccount.value = Object.fromEntries(entries)
 }
 async function refreshPlanUsageCodex() {
   planUsageCodex.value = await invoke<PlanUsageData | null>('get_plan_usage_codex')
@@ -274,7 +299,18 @@ function planRowsFor(u: PlanUsageData | null, windows: typeof PLAN_WINDOWS) {
     }
   }).filter((r) => r.utilization != null)
 }
-const planRows = computed(() => planRowsFor(planUsage.value, PLAN_WINDOWS))
+// One block per managed account (default first); a single unlabeled block otherwise.
+const claudePlanGroups = computed(() => {
+  if (!hasAccounts.value) {
+    return [{ key: 'global', label: null as string | null, isDefault: false, usage: planUsage.value, rows: planRowsFor(planUsage.value, PLAN_WINDOWS) }]
+  }
+  return [...accountsStore.accounts]
+    .sort((a, b) => Number(b.is_default) - Number(a.is_default))
+    .map((a) => {
+      const usage = planUsageByAccount.value[a.id] ?? null
+      return { key: a.id, label: a.label as string | null, isDefault: a.is_default, usage, rows: planRowsFor(usage, PLAN_WINDOWS) }
+    })
+})
 // Codex only reports two windows: rolling 5h + weekly (no per-model split).
 const CODEX_PLAN_WINDOWS: typeof PLAN_WINDOWS = [
   { key: 'five_hour', label: t('stats.plan.windowFiveHour') },
@@ -394,6 +430,7 @@ async function loadStorage() {
         <AppSelect v-model="range" :options="RANGE_OPTIONS" size="sm" class="w-40" />
         <AppSelect v-model="engine" :options="engineOptions" size="sm" class="w-40" />
         <AppSelect v-model="projectId" :options="projectOptions" size="sm" class="w-52" />
+        <AppSelect v-if="hasAccounts" v-model="accountId" :options="accountOptions" size="sm" class="w-52" />
         <span v-if="loading" class="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Loader2 class="h-3.5 w-3.5 animate-spin" /> {{ t('common.loading') }}
         </span>
@@ -415,30 +452,36 @@ async function loadStorage() {
               <code class="font-mono bg-muted px-1 rounded">/usage</code> {{ t('stats.plan.claudeDescEnd') }}
             </p>
           </div>
-          <div v-if="planRows.length" class="space-y-2">
-            <div v-for="row in planRows" :key="row.label" class="space-y-1">
-              <div class="flex items-baseline justify-between text-[11px]">
-                <span class="font-medium">{{ row.label }}</span>
-                <span class="font-mono text-muted-foreground">
-                  {{ Math.round(row.utilization!) }}%
-                  <span v-if="planResetText(row.resets_at)"> · {{ planResetText(row.resets_at) }}</span>
-                </span>
+          <div v-for="g in claudePlanGroups" :key="g.key" class="space-y-2">
+            <p v-if="g.label" class="flex items-center gap-1.5 text-[11px] font-semibold">
+              {{ g.label }}
+              <span v-if="g.isDefault" class="rounded bg-muted px-1 py-px text-[10px] font-normal text-muted-foreground">{{ t('stats.account.default') }}</span>
+            </p>
+            <div v-if="g.rows.length" class="space-y-2">
+              <div v-for="row in g.rows" :key="row.label" class="space-y-1">
+                <div class="flex items-baseline justify-between text-[11px]">
+                  <span class="font-medium">{{ row.label }}</span>
+                  <span class="font-mono text-muted-foreground">
+                    {{ Math.round(row.utilization!) }}%
+                    <span v-if="planResetText(row.resets_at)"> · {{ planResetText(row.resets_at) }}</span>
+                  </span>
+                </div>
+                <div class="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                  <div
+                    class="h-full rounded-full transition-all"
+                    :class="row.utilization! >= 100 ? 'bg-red-500' : row.utilization! >= 80 ? 'bg-amber-500' : 'bg-indigo-500'"
+                    :style="{ width: Math.min(100, Math.round(row.utilization!)) + '%' }"
+                  />
+                </div>
               </div>
-              <div class="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-                <div
-                  class="h-full rounded-full transition-all"
-                  :class="row.utilization! >= 100 ? 'bg-red-500' : row.utilization! >= 80 ? 'bg-amber-500' : 'bg-indigo-500'"
-                  :style="{ width: Math.min(100, Math.round(row.utilization!)) + '%' }"
-                />
-              </div>
+              <p v-if="g.usage?.subscription_type" class="text-[11px] text-muted-foreground">
+                {{ t('stats.plan.label') }} <b class="capitalize">{{ g.usage.subscription_type }}</b>
+              </p>
             </div>
-            <p v-if="planUsage?.subscription_type" class="text-[11px] text-muted-foreground">
-              {{ t('stats.plan.label') }} <b class="capitalize">{{ planUsage.subscription_type }}</b>
+            <p v-else class="text-[11px] text-muted-foreground italic">
+              {{ g.label ? t('stats.plan.emptyAccount') : t('stats.plan.empty') }}
             </p>
           </div>
-          <p v-else class="text-[11px] text-muted-foreground italic">
-            {{ t('stats.plan.empty') }}
-          </p>
         </Card>
 
         <!-- Codex subscription plan usage (from account/rateLimits) -->
@@ -583,6 +626,33 @@ async function loadStorage() {
             </table>
           </Card>
         </div>
+
+        <!-- By Claude account -->
+        <Card v-if="hasAccounts && stats.by_account.length" class="border-border/60" body-class="p-4">
+          <h2 class="text-xs font-medium text-muted-foreground mb-3">{{ t('stats.table.byAccount') }}</h2>
+          <table class="w-full text-xs">
+            <thead>
+              <tr class="text-muted-foreground/70 text-left">
+                <th class="font-normal pb-2">{{ t('stats.table.account') }}</th>
+                <th class="font-normal pb-2 text-right">{{ t('stats.table.tokens') }}</th>
+                <th class="font-normal pb-2 text-right">{{ t('stats.table.cost') }}</th>
+                <th class="font-normal pb-2 text-right">{{ t('stats.table.runs') }}</th>
+                <th class="font-normal pb-2 text-right">{{ t('stats.table.percent') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="a in stats.by_account" :key="a.account_id ?? 'none'" class="border-t border-border/40">
+                <td class="py-1.5 truncate max-w-[200px]">{{ accountName(a) }}</td>
+                <td class="py-1.5 text-right tabular-nums">{{ fmtNum(a.tokens) }}</td>
+                <td class="py-1.5 text-right tabular-nums text-muted-foreground">{{ fmtCost(a.cost) }}</td>
+                <td class="py-1.5 text-right tabular-nums text-muted-foreground">{{ fmtNum(a.runs) }}</td>
+                <td class="py-1.5 text-right tabular-nums text-muted-foreground">
+                  {{ pct(a.tokens, stats.summary.total_tokens) }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </Card>
 
         <!-- By model -->
         <Card class="border-border/60" body-class="p-4">

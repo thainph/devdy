@@ -5,7 +5,12 @@ export interface StatsFilter {
   to?: string | null
   engine?: string | null
   project_id?: string | null
+  /** Claude account id, or `NO_ACCOUNT` for usage without a managed account. */
+  account_id?: string | null
 }
+
+/** Account filter value for Claude usage made without a managed account (global ~/.claude). */
+export const NO_ACCOUNT = '__none'
 
 export interface UsageSummary {
   total_tokens: number
@@ -47,12 +52,21 @@ export interface ModelStat {
   runs: number
 }
 
+export interface AccountStat {
+  account_id: string | null
+  account_label: string | null
+  tokens: number
+  cost: number
+  runs: number
+}
+
 export interface StatsResult {
   summary: UsageSummary
   daily: DailyPoint[]
   by_engine: EngineStat[]
   by_project: ProjectStat[]
   by_model: ModelStat[]
+  by_account: AccountStat[]
 }
 
 export interface BackfillResult {

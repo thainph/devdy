@@ -16,6 +16,12 @@
   "project": {
     "all": "Tất cả dự án"
   },
+  "account": {
+    "all": "Tất cả tài khoản Claude",
+    "none": "Không tài khoản (~/.claude)",
+    "deleted": "(tài khoản đã xoá)",
+    "default": "mặc định"
+  },
   "plan": {
     "claudeTitle": "Sử dụng gói (thuê bao Claude)",
     "claudeDescPrefix": "Mức sử dụng",
@@ -39,7 +45,8 @@
     "resetsInDays": "reset sau {days}d",
     "resetsInHoursMinutes": "reset sau {hours}h {minutes}m",
     "resetsInHours": "reset sau {hours}h",
-    "resetsInMinutes": "reset sau {minutes}m"
+    "resetsInMinutes": "reset sau {minutes}m",
+    "emptyAccount": "Chưa ghi nhận mức sử dụng gói cho tài khoản này — hãy chạy một tác vụ Claude bằng tài khoản này."
   },
   "empty": {
     "title": "Không có dữ liệu sử dụng cho bộ lọc này.",
@@ -70,7 +77,9 @@
     "byModel": "Theo model",
     "model": "Model",
     "runs": "Lần chạy",
-    "unknownModel": "(không rõ)"
+    "unknownModel": "(không rõ)",
+    "byAccount": "Theo tài khoản Claude",
+    "account": "Tài khoản"
   },
   "action": {
     "backfilled": "Đã nạp {inserted} bản ghi từ {scanned} log run.",

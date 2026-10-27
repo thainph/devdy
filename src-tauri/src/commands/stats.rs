@@ -30,7 +30,13 @@ pub struct StatsFilter {
     pub to: Option<String>,
     pub engine: Option<String>,
     pub project_id: Option<String>,
+    /// Claude account id, or [`NO_ACCOUNT`] for Claude usage made without a
+    /// managed account (global `~/.claude`). Implies `engine = claude`.
+    pub account_id: Option<String>,
 }
+
+/// Filter/breakdown key for Claude usage with no managed account.
+const NO_ACCOUNT: &str = "__none";
 
 #[derive(Debug, Default, Serialize)]
 pub struct UsageSummary {
@@ -78,12 +84,25 @@ pub struct ModelStat {
 }
 
 #[derive(Debug, Serialize)]
+pub struct AccountStat {
+    /// None = no managed account (global `~/.claude`).
+    pub account_id: Option<String>,
+    /// None when the account was deleted since (or for `account_id = None`).
+    pub account_label: Option<String>,
+    pub tokens: i64,
+    pub cost: f64,
+    pub runs: i64,
+}
+
+#[derive(Debug, Serialize)]
 pub struct StatsResult {
     pub summary: UsageSummary,
     pub daily: Vec<DailyPoint>,
     pub by_engine: Vec<EngineStat>,
     pub by_project: Vec<ProjectStat>,
     pub by_model: Vec<ModelStat>,
+    /// Claude usage only, split by the account that produced it.
+    pub by_account: Vec<AccountStat>,
 }
 
 /// One accumulator bucket. `runs` tracks distinct run ids so multi-turn runs
@@ -108,28 +127,43 @@ pub async fn get_usage_stats(
     db: State<'_, Db>,
     filter: StatsFilter,
 ) -> Result<StatsResult, String> {
+    usage_stats(db.inner(), &filter).await
+}
+
+async fn usage_stats(db: &Db, filter: &StatsFilter) -> Result<StatsResult, String> {
     let mut qb = QueryBuilder::<Sqlite>::new(
-        "SELECT run_id, project_id, project_name, engine, model, \
-         input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, \
-         total_tokens, cost_usd, cost_estimated, num_turns, created_at \
-         FROM run_usage WHERE 1 = 1",
+        "SELECT u.run_id, u.project_id, u.project_name, u.engine, u.model, \
+         u.input_tokens, u.output_tokens, u.cache_creation_tokens, u.cache_read_tokens, \
+         u.total_tokens, u.cost_usd, u.cost_estimated, u.num_turns, u.created_at, \
+         u.claude_account_id, a.label AS account_label \
+         FROM run_usage u LEFT JOIN claude_accounts a ON a.id = u.claude_account_id \
+         WHERE 1 = 1",
     );
     if let Some(f) = filter.from.as_ref().filter(|s| !s.is_empty()) {
-        qb.push(" AND substr(created_at, 1, 10) >= ").push_bind(f.clone());
+        qb.push(" AND substr(u.created_at, 1, 10) >= ").push_bind(f.clone());
     }
     if let Some(t) = filter.to.as_ref().filter(|s| !s.is_empty()) {
-        qb.push(" AND substr(created_at, 1, 10) <= ").push_bind(t.clone());
+        qb.push(" AND substr(u.created_at, 1, 10) <= ").push_bind(t.clone());
     }
     if let Some(e) = filter.engine.as_ref().filter(|s| !s.is_empty()) {
-        qb.push(" AND engine = ").push_bind(e.clone());
+        qb.push(" AND u.engine = ").push_bind(e.clone());
     }
     if let Some(p) = filter.project_id.as_ref().filter(|s| !s.is_empty()) {
-        qb.push(" AND project_id = ").push_bind(p.clone());
+        qb.push(" AND u.project_id = ").push_bind(p.clone());
+    }
+    match filter.account_id.as_deref().filter(|s| !s.is_empty()) {
+        Some(NO_ACCOUNT) => {
+            qb.push(" AND u.engine = 'claude' AND u.claude_account_id IS NULL");
+        }
+        Some(a) => {
+            qb.push(" AND u.engine = 'claude' AND u.claude_account_id = ").push_bind(a.to_string());
+        }
+        None => {}
     }
 
     let rows = qb
         .build()
-        .fetch_all(db.inner())
+        .fetch_all(db)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -139,6 +173,7 @@ pub async fn get_usage_stats(
     let mut by_engine: HashMap<String, Bucket> = HashMap::new();
     let mut by_project: HashMap<String, (Option<String>, Bucket)> = HashMap::new();
     let mut by_model: HashMap<String, Bucket> = HashMap::new();
+    let mut by_account: HashMap<String, (Option<String>, Bucket)> = HashMap::new();
 
     for (i, row) in rows.iter().enumerate() {
         let run_id: Option<String> = row.get("run_id");
@@ -177,6 +212,7 @@ pub async fn get_usage_stats(
         summary.total_turns += num_turns;
         all_runs.insert(run_key.clone());
 
+        let engine_is_claude = engine == "claude";
         daily.entry(date).or_default().add(total, cost, &run_key);
         by_engine.entry(engine).or_default().add(total, cost, &run_key);
         let proj_key = project_id.clone().unwrap_or_else(|| "__none".to_string());
@@ -186,6 +222,14 @@ pub async fn get_usage_stats(
         proj_entry.1.add(total, cost, &run_key);
         let model_key = model.clone().unwrap_or_else(|| "__unknown".to_string());
         by_model.entry(model_key).or_default().add(total, cost, &run_key);
+        if engine_is_claude {
+            let account_id: Option<String> = row.get("claude_account_id");
+            let account_label: Option<String> = row.get("account_label");
+            let acct_entry = by_account
+                .entry(account_id.unwrap_or_else(|| NO_ACCOUNT.to_string()))
+                .or_insert_with(|| (account_label, Bucket::default()));
+            acct_entry.1.add(total, cost, &run_key);
+        }
     }
 
     summary.total_runs = all_runs.len() as i64;
@@ -235,12 +279,25 @@ pub async fn get_usage_stats(
         .collect();
     by_model.sort_by(|a, b| b.tokens.cmp(&a.tokens));
 
+    let mut by_account: Vec<AccountStat> = by_account
+        .into_iter()
+        .map(|(id, (label, b))| AccountStat {
+            account_id: if id == NO_ACCOUNT { None } else { Some(id) },
+            account_label: label,
+            tokens: b.tokens,
+            cost: b.cost,
+            runs: b.runs.len() as i64,
+        })
+        .collect();
+    by_account.sort_by(|a, b| b.tokens.cmp(&a.tokens));
+
     Ok(StatsResult {
         summary,
         daily,
         by_engine,
         by_project,
         by_model,
+        by_account,
     })
 }
 
@@ -518,9 +575,17 @@ pub struct PlanUsage {
 
 /// Latest known subscription plan-usage snapshot, or None if none captured yet
 /// (no Claude run has executed since install, or the user is on API billing).
+/// `account_id` reads that Claude account's own snapshot; omitted = the
+/// current default account (or the global key without managed accounts).
 #[tauri::command]
-pub async fn get_plan_usage(db: State<'_, Db>) -> Result<Option<PlanUsage>, String> {
-    load_plan_usage(db.inner()).await
+pub async fn get_plan_usage(
+    db: State<'_, Db>,
+    account_id: Option<String>,
+) -> Result<Option<PlanUsage>, String> {
+    match account_id.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(id) => load_plan_usage_key(db.inner(), &claude_plan_usage_key(Some(id))).await,
+        None => load_plan_usage(db.inner()).await,
+    }
 }
 
 async fn load_plan_usage(db: &Db) -> Result<Option<PlanUsage>, String> {
@@ -683,7 +748,8 @@ pub async fn refresh_plan_usage(
     let _ = child.kill().await;
 
     match outcome {
-        Ok(Ok(true)) => load_plan_usage(db.inner()).await,
+        // Return the snapshot of the account actually probed, not the default's.
+        Ok(Ok(true)) => load_plan_usage_key(db.inner(), &plan_usage_key).await,
         Ok(Ok(false)) => Err("usage probe completed without a fresh usage snapshot".to_string()),
         Ok(Err(e)) => Err(e),
         Err(_) => Err("usage probe timed out".to_string()),
@@ -1229,6 +1295,87 @@ pub async fn enforce_budget(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod account_stats_tests {
+    use super::*;
+
+    async fn db() -> Db {
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        for q in [
+            "INSERT INTO projects (id, name, path, created_at) VALUES ('p', 'proj', '/tmp/p', '2026-01-01')",
+            "INSERT INTO claude_accounts (id, label, config_dir, created_at) VALUES ('a1', 'Work', '/tmp/a1', '2026-01-01')",
+            "INSERT INTO claude_accounts (id, label, config_dir, created_at) VALUES ('a2', 'Personal', '/tmp/a2', '2026-01-01')",
+            "INSERT INTO runs (id, project_id, type, engine, claude_account_id, created_at) VALUES ('r1', 'p', 'session', 'claude', 'a1', '2026-01-01')",
+            "INSERT INTO runs (id, project_id, type, engine, claude_account_id, created_at) VALUES ('r2', 'p', 'session', 'claude', 'a2', '2026-01-01')",
+            "INSERT INTO runs (id, project_id, type, engine, claude_account_id, created_at) VALUES ('r3', 'p', 'session', 'claude', NULL, '2026-01-01')",
+            "INSERT INTO runs (id, project_id, type, engine, claude_account_id, created_at) VALUES ('r4', 'p', 'session', 'codex', NULL, '2026-01-01')",
+        ] {
+            sqlx::query(q).execute(&db).await.unwrap();
+        }
+        db
+    }
+
+    async fn usage(db: &Db, id: &str, run: &str, engine: &str, tokens: i64) {
+        sqlx::query(
+            "INSERT INTO run_usage (id, run_id, project_id, project_name, engine, total_tokens, cost_usd, created_at) \
+             VALUES (?, ?, 'p', 'proj', ?, ?, 0, '2026-10-27T00:00:00Z')",
+        )
+        .bind(id)
+        .bind(run)
+        .bind(engine)
+        .bind(tokens)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ledger_rows_are_stamped_and_split_per_account() {
+        let db = db().await;
+        usage(&db, "u1", "r1", "claude", 100).await;
+        usage(&db, "u2", "r1", "claude", 50).await;
+        usage(&db, "u3", "r2", "claude", 30).await;
+        usage(&db, "u4", "r3", "claude", 7).await;
+        usage(&db, "u5", "r4", "codex", 1000).await;
+        // The run moving to another account later must not rewrite history.
+        sqlx::query("UPDATE runs SET claude_account_id = 'a2' WHERE id = 'r1'")
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let all = usage_stats(&db, &StatsFilter::default()).await.unwrap();
+        let split: Vec<(Option<&str>, Option<&str>, i64, i64)> = all
+            .by_account
+            .iter()
+            .map(|a| (a.account_id.as_deref(), a.account_label.as_deref(), a.tokens, a.runs))
+            .collect();
+        assert_eq!(
+            split,
+            vec![
+                (Some("a1"), Some("Work"), 150, 1),
+                (Some("a2"), Some("Personal"), 30, 1),
+                (None, None, 7, 1),
+            ]
+        );
+
+        let a1 = usage_stats(&db, &StatsFilter { account_id: Some("a1".into()), ..Default::default() })
+            .await
+            .unwrap();
+        assert_eq!(a1.summary.total_tokens, 150);
+
+        // "No account" is Claude-only: codex usage never lands there.
+        let none = usage_stats(&db, &StatsFilter { account_id: Some(NO_ACCOUNT.into()), ..Default::default() })
+            .await
+            .unwrap();
+        assert_eq!(none.summary.total_tokens, 7);
+    }
 }
 
 #[cfg(test)]
