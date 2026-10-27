@@ -60,6 +60,11 @@ const MAX_TURNS_BEFORE_RECYCLE: u32 = 12;
 /// resident sidecar and starts the next translation from a clean context.
 const IDLE_RECYCLE: Duration = Duration::from_secs(180);
 
+/// How often the idle reaper checks the warm sidecar. Recycling on the next
+/// call alone would leave a used (or merely prewarmed) sidecar resident until
+/// the app quits.
+const REAP_TICK: Duration = Duration::from_secs(30);
+
 /// A replaced sidecar that still has turns in flight is kept alive this long at
 /// most to finish them, then torn down anyway (its waiters get an error).
 const RETIRE_CAP: Duration = Duration::from_secs(120);
@@ -144,6 +149,8 @@ pub struct TranslateState {
     retiring: Retiring,
     /// How this instance's sidecars show in the background-process list.
     proc_kind: crate::procs::ProcKind,
+    /// Set once the idle reaper task for this instance is running.
+    reaper_started: Arc<AtomicBool>,
 }
 
 type Retiring = Arc<std::sync::Mutex<HashSet<u32>>>;
@@ -157,6 +164,7 @@ impl Default for TranslateState {
             recycle_after: MAX_TURNS_BEFORE_RECYCLE,
             emit_events: true,
             proc_kind: crate::procs::ProcKind::Translate,
+            reaper_started: Arc::default(),
         }
     }
 }
@@ -190,6 +198,52 @@ impl TranslateState {
             self.recycle_after
         }
     }
+
+    /// Start the idle reaper once per instance. It tears the warm sidecar down
+    /// as soon as the next call would recycle it anyway (see `should_reap`), so
+    /// an unused session doesn't stay resident until that call or app exit.
+    /// Holds only a weak ref: it stops when the state is dropped.
+    fn ensure_reaper(&self) {
+        if self.reaper_started.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let inner = Arc::downgrade(&self.inner);
+        let codex_max = self.max_turns(true);
+        let claude_max = self.max_turns(false);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(REAP_TICK);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                let Some(inner) = inner.upgrade() else { return };
+                let mut guard = inner.lock().await;
+                let reap = match guard.as_ref() {
+                    Some(w) => should_reap(
+                        w.alive.load(Ordering::SeqCst),
+                        w.routing.lock().await.queue.len(),
+                        w.turns,
+                        if w.is_codex { codex_max } else { claude_max },
+                        w.last_used.elapsed(),
+                    ),
+                    None => false,
+                };
+                if reap {
+                    if let Some(w) = guard.take() {
+                        tracing::debug!(event = "translate_sidecar_reaped");
+                        teardown(w);
+                    }
+                }
+            }
+        });
+    }
+}
+
+/// Whether the idle reaper should tear a warm sidecar down: never while turns
+/// are queued; otherwise when it is dead, has served its turn budget, or has
+/// been idle past `IDLE_RECYCLE` — the same conditions under which the next
+/// call would replace it.
+fn should_reap(alive: bool, pending: usize, turns: u32, max_turns: u32, idle: Duration) -> bool {
+    pending == 0 && (!alive || turns >= max_turns || idle > IDLE_RECYCLE)
 }
 
 /// Kill a warm sidecar and its CLI grandchild, reaping asynchronously.
@@ -744,6 +798,7 @@ pub async fn prewarm_translate(
         )
         .await?;
         *guard = Some(w);
+        state.ensure_reaper();
     }
     Ok(())
 }
@@ -847,6 +902,7 @@ async fn submit_with(
         }
         let w = spawn_warm(app, settings, is_codex, state.emit_events, state.proc_kind).await?;
         *guard = Some(w);
+        state.ensure_reaper();
     }
 
     let w = guard.as_mut().ok_or("translate sidecar unavailable")?;
@@ -902,6 +958,31 @@ pub async fn cancel_translate(_state: State<'_, TranslateState>) -> Result<(), S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reaper_spares_busy_and_fresh_sidecars() {
+        let fresh = Duration::from_secs(5);
+        let stale = IDLE_RECYCLE + Duration::from_secs(1);
+        // Turns in flight: never reaped, whatever else holds.
+        assert!(!should_reap(true, 1, 12, 12, stale));
+        assert!(!should_reap(false, 1, 0, 12, stale));
+        // Idle, fresh, under budget: kept warm.
+        assert!(!should_reap(true, 0, 0, 12, fresh));
+        assert!(!should_reap(true, 0, 3, 12, fresh));
+    }
+
+    #[test]
+    fn reaper_frees_idle_spent_or_dead_sidecars() {
+        let fresh = Duration::from_secs(5);
+        let stale = IDLE_RECYCLE + Duration::from_secs(1);
+        // Prewarmed but never used, or used and then left alone.
+        assert!(should_reap(true, 0, 0, 12, stale));
+        assert!(should_reap(true, 0, 4, 12, stale));
+        // Codex (budget 1) right after its single turn.
+        assert!(should_reap(true, 0, 1, 1, fresh));
+        // Dead process.
+        assert!(should_reap(false, 0, 0, 12, fresh));
+    }
 
     #[test]
     fn session_options_are_tool_less() {

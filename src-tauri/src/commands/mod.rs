@@ -20,6 +20,7 @@ pub mod instruction_checks;
 pub mod item_links;
 pub mod mascot_speak;
 pub mod mcp;
+pub mod mcp_packages;
 pub mod models;
 pub mod notes;
 pub mod notifications;
