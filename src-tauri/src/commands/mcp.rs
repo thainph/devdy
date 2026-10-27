@@ -998,12 +998,18 @@ pub async fn resolve_project_mcp_servers(
 
         match server.transport.as_str() {
             "stdio" => {
+                let command = server.command.clone().unwrap_or_default();
+                // `npx` servers launch their installed bin directly (no
+                // per-run `npm exec` wrapper) once Devdy has installed them.
+                let (command, args) =
+                    crate::commands::mcp_packages::direct_launch(&command, &server.args)
+                        .unwrap_or((command, server.args.clone()));
                 let mut cfg = serde_json::json!({
                     "type": "stdio",
-                    "command": server.command.clone().unwrap_or_default(),
+                    "command": command,
                 });
-                if !server.args.is_empty() {
-                    cfg["args"] = serde_json::json!(server.args);
+                if !args.is_empty() {
+                    cfg["args"] = serde_json::json!(args);
                 }
                 if !secret.env.is_empty() {
                     cfg["env"] = serde_json::json!(secret.env);

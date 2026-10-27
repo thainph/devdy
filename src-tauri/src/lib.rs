@@ -180,6 +180,7 @@ pub fn run() {
             std::fs::create_dir_all(app_data_dir.join("rules"))
                 .expect("Failed to create rules dir");
             commands::project_links::set_backup_root(app_data_dir.join("legacy-backups"));
+            commands::mcp_packages::set_root(app_data_dir.join("mcp-packages"));
 
             // Persist logs so the credential broker's audit trail and its
             // "broker unreachable / accept error" warnings are actually recorded.
