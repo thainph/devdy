@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.11.0",
   "type": "module",
+  "packageManager": "pnpm@9.15.9",
   "scripts": {
     "dev": "tauri dev --config src-tauri/tauri.dev.conf.json",
     "dev:vite": "vite",
