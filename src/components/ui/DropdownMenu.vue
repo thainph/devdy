@@ -1,48 +1,94 @@
 <script setup lang="ts">
 // Lightweight, on-brand dropdown. Provide the trigger via #trigger slot and
 // menu items (DropdownItem) in the default slot. Closes on outside click,
-// Escape, or after an item is clicked. Flips above the trigger automatically
-// when there isn't enough room below (e.g. rows near the bottom of a scroll
-// list). Emits `update:open` so callers can keep the trigger visible while open.
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+// Escape, or after an item is clicked. Emits `update:open` so callers can keep
+// the trigger visible while open.
+//
+// The panel is teleported to <body> and positioned `fixed` against the trigger,
+// so a scroll container (`overflow-auto`) or a clipping rail around the trigger
+// can't cut it off. It opens below the trigger, flips above when its MEASURED
+// height doesn't fit below, and is clamped to the viewport either way — a tall
+// menu (e.g. a PR session's actions) stays fully visible.
+import { ref, nextTick, onBeforeUnmount } from 'vue'
 
-withDefaults(defineProps<{ align?: 'left' | 'right' }>(), { align: 'right' })
+const props = withDefaults(defineProps<{ align?: 'left' | 'right' }>(), { align: 'right' })
 const emit = defineEmits<{ (e: 'update:open', open: boolean): void }>()
 
+const GAP = 6
+const EDGE_MARGIN = 8
+
 const open = ref(false)
-const flipUp = ref(false)
 const root = ref<HTMLElement | null>(null)
+const panel = ref<HTMLElement | null>(null)
+const pos = ref({ x: 0, y: 0 })
+
+async function place() {
+  const anchor = root.value?.getBoundingClientRect()
+  if (!anchor) return
+  // First paint below the trigger (hidden by the transition's opacity), then
+  // correct from the panel's real size.
+  pos.value = { x: anchor.left, y: anchor.bottom + GAP }
+  await nextTick()
+  const el = panel.value
+  if (!el) return
+  const { width, height } = el.getBoundingClientRect()
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  let x = props.align === 'right' ? anchor.right - width : anchor.left
+  x = Math.max(EDGE_MARGIN, Math.min(x, vw - width - EDGE_MARGIN))
+  const below = anchor.bottom + GAP
+  const above = anchor.top - GAP - height
+  let y = below
+  if (below + height > vh - EDGE_MARGIN) {
+    // Doesn't fit below: go above if it fits there, else whichever side has
+    // more room, clamped so the whole panel stays on-screen.
+    y = above >= EDGE_MARGIN || anchor.top > vh - anchor.bottom ? above : below
+    y = Math.max(EDGE_MARGIN, Math.min(y, vh - height - EDGE_MARGIN))
+  }
+  pos.value = { x, y }
+}
 
 function setOpen(v: boolean) {
   if (open.value === v) return
   open.value = v
+  bind(v)
   emit('update:open', v)
+  if (v) place()
 }
-function toggle() {
-  const next = !open.value
-  // Decide direction before opening: flip up only when there's clearly more
-  // room above than below (keeps the menu on-screen inside scroll containers).
-  if (next && root.value) {
-    const rect = root.value.getBoundingClientRect()
-    const spaceBelow = window.innerHeight - rect.bottom
-    flipUp.value = spaceBelow < 260 && rect.top > spaceBelow
-  }
-  setOpen(next)
-}
+function toggle() { setOpen(!open.value) }
 function close() { setOpen(false) }
-function onDoc(e: MouseEvent) {
-  if (root.value && !root.value.contains(e.target as Node)) close()
+
+function inside(t: EventTarget | null) {
+  return t instanceof Node && (!!root.value?.contains(t) || !!panel.value?.contains(t))
 }
-function onKey(e: KeyboardEvent) {
-  if (e.key === 'Escape') close()
+function onDoc(e: Event) {
+  if (!inside(e.target)) close()
 }
-onMounted(() => {
-  document.addEventListener('mousedown', onDoc)
-  document.addEventListener('keydown', onKey)
-})
+function onKey(e: Event) {
+  if ((e as KeyboardEvent).key === 'Escape') close()
+}
+// Follow the trigger when something around it scrolls (a live run's stream
+// auto-scrolls) or the window resizes, rather than closing under the user.
+let rafId = 0
+function reposition(e?: Event) {
+  if (e && inside(e.target)) return // scrolling the menu's own list
+  if (rafId) return
+  rafId = requestAnimationFrame(() => {
+    rafId = 0
+    if (open.value) place()
+  })
+}
+
+function bind(on: boolean) {
+  const m = on ? 'addEventListener' : 'removeEventListener'
+  document[m]('mousedown', onDoc)
+  document[m]('keydown', onKey)
+  document[m]('scroll', reposition, true)
+  window[m]('resize', reposition)
+}
 onBeforeUnmount(() => {
-  document.removeEventListener('mousedown', onDoc)
-  document.removeEventListener('keydown', onKey)
+  bind(false)
+  cancelAnimationFrame(rafId)
 })
 </script>
 
@@ -51,20 +97,23 @@ onBeforeUnmount(() => {
     <span class="inline-flex" @click="toggle">
       <slot name="trigger" :open="open" />
     </span>
-    <transition
-      enter-active-class="transition duration-150 ease-out"
-      enter-from-class="opacity-0 -translate-y-1"
-      leave-active-class="transition duration-100 ease-in"
-      leave-to-class="opacity-0 -translate-y-1"
-    >
-      <div
-        v-if="open"
-        class="absolute z-30 min-w-44 rounded-md border border-border bg-popover p-1 shadow-lg shadow-black/20"
-        :class="[align === 'right' ? 'right-0' : 'left-0', flipUp ? 'bottom-full mb-1.5' : 'top-full mt-1.5']"
-        @click="close"
+    <Teleport to="body">
+      <transition
+        enter-active-class="transition-opacity duration-150 ease-out"
+        enter-from-class="opacity-0"
+        leave-active-class="transition-opacity duration-100 ease-in"
+        leave-to-class="opacity-0"
       >
-        <slot />
-      </div>
-    </transition>
+        <div
+          v-if="open"
+          ref="panel"
+          class="fixed z-[100] min-w-44 rounded-md border border-border bg-popover p-1 shadow-lg shadow-black/20"
+          :style="{ left: `${pos.x}px`, top: `${pos.y}px` }"
+          @click="close"
+        >
+          <slot />
+        </div>
+      </transition>
+    </Teleport>
   </div>
 </template>
