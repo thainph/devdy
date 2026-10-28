@@ -502,8 +502,16 @@ pub async fn set_group_members(
     item_ids: Vec<String>,
 ) -> Result<GroupApplyOutcome, String> {
     let kind = GroupKind::parse(&kind)?;
-    let db = db.inner();
+    set_group_members_inner(db.inner(), kind, &group_id, item_ids).await
+}
 
+pub(crate) async fn set_group_members_inner(
+    db: &Db,
+    kind: GroupKind,
+    group_id: &str,
+    item_ids: Vec<String>,
+) -> Result<GroupApplyOutcome, String> {
+    let group_id = group_id.to_string();
     let previous = member_ids(db, kind, &group_id).await?;
     let added: Vec<String> = item_ids
         .iter()

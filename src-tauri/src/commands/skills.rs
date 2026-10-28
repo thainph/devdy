@@ -659,6 +659,122 @@ pub async fn open_skill_folder(db: State<'_, Db>, id: String) -> Result<(), Stri
     Ok(())
 }
 
+/// Every regular file under a skill folder as (relative path → bytes), skipping Finder litter.
+pub(crate) fn read_skill_tree(dir: &Path) -> Result<Vec<(PathBuf, Vec<u8>)>, String> {
+    let mut files = Vec::new();
+    if !dir.is_dir() {
+        return Ok(files);
+    }
+    for entry in WalkDir::new(dir).sort_by_file_name() {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if !entry.file_type().is_file() || entry.file_name() == ".DS_Store" {
+            continue;
+        }
+        let rel = entry.path().strip_prefix(dir).map_err(|e| e.to_string())?.to_path_buf();
+        let data = fs::read(entry.path()).map_err(|e| e.to_string())?;
+        files.push((rel, data));
+    }
+    Ok(files)
+}
+
+/// Create or overwrite (by name) a library skill from a settings backup. A differing local folder
+/// is moved to the legacy backups before the imported files are written; projects that use the
+/// skill are re-synced. `files` paths must already be validated as relative.
+pub(crate) async fn import_backup_skill(
+    app: &AppHandle,
+    db: &Db,
+    id_hint: &str,
+    name: &str,
+    description: &str,
+    target: &str,
+    files: &[(PathBuf, Vec<u8>)],
+) -> Result<(crate::commands::settings_backup::Upsert, Vec<String>), String> {
+    use crate::commands::settings_backup::Upsert;
+    use sqlx::Row;
+    validate_skill_name(name)?;
+    validate_target(target)?;
+
+    let local = sqlx::query("SELECT id, description, target, source_path FROM skills WHERE name = ?")
+        .bind(name)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    let dir = match &local {
+        Some(row) => PathBuf::from(row.get::<String, _>("source_path")),
+        None => skills_dir(app).join(name),
+    };
+
+    let mut wanted: Vec<(PathBuf, Vec<u8>)> = files
+        .iter()
+        .filter(|(p, _)| p.file_name().is_some_and(|f| f != ".DS_Store"))
+        .cloned()
+        .collect();
+    wanted.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut current = read_skill_tree(&dir)?;
+    current.sort_by(|a, b| a.0.cmp(&b.0));
+    let same_files = current == wanted;
+    if let Some(row) = &local {
+        if same_files
+            && row.get::<String, _>("description") == description
+            && row.get::<String, _>("target") == target
+        {
+            return Ok((Upsert::Unchanged, Vec::new()));
+        }
+    }
+
+    if !same_files {
+        if dir.exists() {
+            project_links::back_up_library_orphan(&dir, "skills")?;
+        }
+        for (rel, data) in &wanted {
+            let out = dir.join(rel);
+            if let Some(parent) = out.parent() {
+                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            fs::write(&out, data).map_err(|e| e.to_string())?;
+        }
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let source_path = dir.to_string_lossy().to_string();
+    match local {
+        Some(row) => {
+            let id: String = row.get("id");
+            sqlx::query("UPDATE skills SET description = ?, target = ?, updated_at = ? WHERE id = ?")
+                .bind(description)
+                .bind(target)
+                .bind(&now)
+                .bind(&id)
+                .execute(db)
+                .await
+                .map_err(|e| e.to_string())?;
+            let failures = sync_skill_to_projects(db, &id).await.map_err(|e| e.to_string())?;
+            Ok((Upsert::Updated, failures))
+        }
+        None => {
+            let id_taken = sqlx::query("SELECT 1 FROM skills WHERE id = ?")
+                .bind(id_hint)
+                .fetch_optional(db)
+                .await
+                .map_err(|e| e.to_string())?
+                .is_some();
+            let id = if id_hint.is_empty() || id_taken { Uuid::new_v4().to_string() } else { id_hint.to_string() };
+            sqlx::query("INSERT INTO skills (id, name, description, target, source_path, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+                .bind(&id)
+                .bind(name)
+                .bind(description)
+                .bind(target)
+                .bind(&source_path)
+                .bind(&now)
+                .execute(db)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok((Upsert::Created, Vec::new()))
+        }
+    }
+}
+
 /// Sync a skill to every project that has it applied: (re)create links for the current target
 /// and name, drop the ones no longer targeted. Content needs no copying — projects link to the
 /// source. Returns one message per project that failed.

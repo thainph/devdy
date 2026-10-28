@@ -31,6 +31,7 @@ pub mod rules;
 pub mod runs;
 pub mod sessions;
 pub mod settings;
+pub mod settings_backup;
 pub mod skills;
 pub mod slack_threads;
 pub mod stats;

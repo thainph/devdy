@@ -619,6 +619,105 @@ pub async fn import_mcp_server(db: State<'_, Db>, path: String) -> Result<McpSer
     get_mcp_server(db, id).await
 }
 
+/// Create or overwrite (by name) an MCP server from a settings backup. `secrets` replaces the
+/// stored VALUEs when present; without it a new server gets its KEY names only and an existing
+/// one keeps its current VALUEs.
+pub(crate) async fn import_backup_mcp(
+    db: &Db,
+    id_hint: &str,
+    server: &McpServer,
+    secret: Option<&secrets::McpSecrets>,
+) -> Result<crate::commands::settings_backup::Upsert, String> {
+    use crate::commands::settings_backup::Upsert;
+    use sqlx::Row;
+    validate_name(&server.name)?;
+    if !matches!(server.transport.as_str(), "stdio" | "http" | "sse") {
+        return Err(format!("MCP server '{}': unknown transport", server.name));
+    }
+    let (command, url) =
+        normalized_fields(&server.transport, server.command.clone(), server.url.clone());
+    let local = sqlx::query(&format!("SELECT {} FROM mcp_servers WHERE name = ?", SELECT_COLS))
+        .bind(&server.name)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let (id, outcome) = match local {
+        Some(row) => {
+            let id: String = row.get("id");
+            let current = row_to_server(&row);
+            let same = current.description == server.description
+                && current.transport == server.transport
+                && current.command == command
+                && current.args == server.args
+                && current.url == url
+                && current.env_keys == server.env_keys
+                && current.header_keys == server.header_keys
+                && current.enabled == server.enabled;
+            if !same {
+                sqlx::query(
+                    "UPDATE mcp_servers SET description = ?, transport = ?, command = ?, args = ?, \
+                     url = ?, env_keys = ?, header_keys = ?, enabled = ? WHERE id = ?",
+                )
+                .bind(&server.description)
+                .bind(&server.transport)
+                .bind(&command)
+                .bind(serde_json::to_string(&server.args).unwrap_or_else(|_| "[]".to_string()))
+                .bind(&url)
+                .bind(serde_json::to_string(&server.env_keys).unwrap_or_else(|_| "[]".to_string()))
+                .bind(serde_json::to_string(&server.header_keys).unwrap_or_else(|_| "[]".to_string()))
+                .bind(server.enabled as i64)
+                .bind(&id)
+                .execute(db)
+                .await
+                .map_err(|e| e.to_string())?;
+            }
+            (id, if same { Upsert::Unchanged } else { Upsert::Updated })
+        }
+        None => {
+            let id_taken = sqlx::query("SELECT 1 FROM mcp_servers WHERE id = ?")
+                .bind(id_hint)
+                .fetch_optional(db)
+                .await
+                .map_err(|e| e.to_string())?
+                .is_some();
+            let id = if id_hint.is_empty() || id_taken {
+                Uuid::new_v4().to_string()
+            } else {
+                id_hint.to_string()
+            };
+            insert_server_row(
+                db,
+                &id,
+                &server.name,
+                &server.description,
+                &server.transport,
+                &command,
+                &server.args,
+                &url,
+                &server.env_keys,
+                &server.header_keys,
+                server.enabled,
+                &chrono::Utc::now().to_rfc3339(),
+            )
+            .await?;
+            (id, Upsert::Created)
+        }
+    };
+
+    if let Some(secret) = secret {
+        let current = secrets::get_mcp_secrets(&id);
+        if current.env != secret.env || current.headers != secret.headers {
+            secrets::set_mcp_secrets(&id, &secret.env, &secret.headers)
+                .map_err(|e| format!("Failed to store secrets: {}", e))?;
+            if outcome == Upsert::Unchanged {
+                return Ok(Upsert::Updated);
+            }
+        }
+    }
+    Ok(outcome)
+}
+
 async fn unique_name(db: &Db, base: &str) -> Result<String, String> {
     let mut candidate = base.to_string();
     let mut n = 1;

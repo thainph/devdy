@@ -251,6 +251,32 @@ fn import_private_key_file(
     Ok(dest.to_string_lossy().into_owned())
 }
 
+/// Whether `path` is a private key Devdy copied into its own key store (as opposed to a user path
+/// such as `~/.ssh/id_ed25519`, which is portable as a plain path).
+pub(crate) fn is_managed_key_path(app: &AppHandle, path: &str) -> bool {
+    app.path()
+        .app_data_dir()
+        .map(|dir| Path::new(path).starts_with(dir.join(SERVER_KEYS_DIR)))
+        .unwrap_or(false)
+}
+
+/// Write a private key restored from a settings backup into the server's managed key dir,
+/// replacing any key imported earlier. Returns the new key path.
+pub(crate) fn restore_managed_key(
+    app: &AppHandle,
+    server_id: &str,
+    file_name: &str,
+    data: &[u8],
+) -> Result<String, String> {
+    let dir = server_key_dir(app, server_id)?;
+    let dest = dir.join(format!("{}-{}", Uuid::new_v4(), sanitize_key_filename(file_name)));
+    fs::write(&dest, data).map_err(|e| format!("Failed to restore private key file: {e}"))?;
+    set_private_permissions(&dest, 0o600);
+    let dest = dest.to_string_lossy().into_owned();
+    prune_imported_private_keys(app, server_id, &dest);
+    Ok(dest)
+}
+
 fn server_key_dir_path(app: &AppHandle, server_id: &str) -> Option<PathBuf> {
     app.path()
         .app_data_dir()

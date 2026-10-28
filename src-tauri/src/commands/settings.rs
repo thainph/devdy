@@ -98,6 +98,48 @@ pub struct AppSettings {
     pub quit_background_policy: String,
 }
 
+/// `AppSettings` keys carried by a settings backup. `claude_path` / `codex_path` are left out:
+/// they are machine-specific binary paths. Internal bookkeeping keys (usage snapshots, balancer
+/// state, Inbox API token…) are never exported.
+pub const PORTABLE_SETTING_KEYS: &[&str] = &[
+    "default_engine",
+    "claude_model",
+    "codex_model",
+    "extra_args",
+    "theme",
+    "language",
+    "color_theme",
+    "animated_background",
+    "saved_prompts",
+    "default_permission_mode",
+    "terminal_app",
+    "context_warn_percent",
+    "context_limit_override",
+    "budget_5h_percent",
+    "budget_week_percent",
+    "claude_auto_balance",
+    "claude_auto_balance_min_swap_minutes",
+    "claude_auto_balance_swap_threshold_pct",
+    "translate_engine",
+    "translate_model",
+    "translate_target_lang",
+    "translate_style",
+    "mcp_builtin_devdy_enabled",
+    "cyber_fox_enabled",
+    "cyber_fox_size",
+    "cyber_fox_mode",
+    "cyber_fox_sound",
+    "mascot_speech_enabled",
+    "mascot_speech_engine",
+    "mascot_speech_model",
+    "cyber_fox_lite",
+    "cyber_fox_voice_vi",
+    "cyber_fox_voice_en",
+    "cyber_fox_voice_rate",
+    "cyber_fox_voice_pitch",
+    "quit_background_policy",
+];
+
 #[tauri::command]
 pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
     let rows = sqlx::query("SELECT key, value FROM settings")

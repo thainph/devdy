@@ -16,7 +16,8 @@
     "remote": "Remote Control",
     "prompts": "Prompt Templates",
     "inbox": "Inbox API",
-    "azure": "Azure Accounts"
+    "azure": "Azure Accounts",
+    "backup": "Backup & Sync"
   },
   "general": {
     "theme": "Theme",
@@ -414,5 +415,61 @@
     "accountAdded": "Azure account added",
     "deleteTitle": "Delete Azure account",
     "deleteMessage": "Delete this Azure account and its sign-in session? Projects linked to it will be unlinked."
+  },
+  "backup": {
+    "title": "Backup & Sync",
+    "help": "Export your whole Devdy setup to one file and import it on another machine: app settings, saved prompts, the Skills / Rules library with groups, MCP servers, VPS servers, accounts (GitHub, GitLab, AWS, Azure, Google, Claude) and notes / todos. Projects and session history stay on this machine.",
+    "export": {
+      "title": "Export",
+      "includeSecrets": "Include secrets (encrypted)",
+      "includeSecretsHint": "PATs, MCP env/header values, Google tokens, SSH passphrases and imported private keys — sealed with your password.",
+      "password": "Password (at least 8 characters)",
+      "passwordConfirm": "Confirm password",
+      "passwordWarning": "Devdy cannot recover this password. Without it the secrets in the file cannot be restored.",
+      "passwordTooShort": "The password must be at least {n} characters.",
+      "passwordMismatch": "The passwords do not match.",
+      "noSecretsHint": "Without secrets, accounts must be re-authenticated after import. The file still contains your notes — keep it private.",
+      "button": "Export…",
+      "done": "Settings exported"
+    },
+    "import": {
+      "title": "Import",
+      "help": "Items are merged by name: matching items are overwritten with the imported version, new ones are added, nothing on this machine is deleted. Replaced Skill / Rule files are moved to the legacy backups.",
+      "choose": "Choose backup file…",
+      "exportedAt": "Exported {at} · Devdy {version}",
+      "password": "Backup password",
+      "passwordHint": "Leave empty to import without secrets.",
+      "noSecrets": "This file contains no secrets.",
+      "button": "Import",
+      "cancel": "Cancel",
+      "done": "Settings imported"
+    },
+    "report": {
+      "title": "Import result",
+      "created": "New",
+      "updated": "Updated",
+      "unchanged": "Same",
+      "secretsImported": "Secrets were restored into the Keychain.",
+      "secretsNotImported": "No secrets were imported.",
+      "reloginHint": "Claude and Azure logins never travel: log in to those accounts again, and validate AWS profiles on this machine.",
+      "reload": "Reload Devdy to apply"
+    },
+    "sections": {
+      "settings": "Settings",
+      "skills": "Skills",
+      "rules": "Rules",
+      "skillGroups": "Skill groups",
+      "ruleGroups": "Rule groups",
+      "mcpServers": "MCP servers",
+      "vpsServers": "VPS servers",
+      "githubAccounts": "GitHub accounts",
+      "gitlabAccounts": "GitLab accounts",
+      "awsAccounts": "AWS accounts",
+      "azureAccounts": "Azure accounts",
+      "googleAccounts": "Google accounts",
+      "claudeAccounts": "Claude accounts",
+      "notes": "Notes",
+      "todos": "Todos"
+    }
   }
 }

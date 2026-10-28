@@ -6,7 +6,7 @@ import {
   Cpu, Palette, FileText, ShieldAlert, Sparkles, Github, Gitlab, Cloud, CloudCog,
   CheckCircle2, AlertTriangle, Trash2, Plus, Pencil, Gauge, Radio,
   RefreshCw, Loader2, BadgeCheck, Server, HardDrive, Bot, RotateCcw, UserCircle,
-  LogIn, Star, ChevronDown, ArrowRightLeft, Inbox, GripVertical,
+  LogIn, Star, ChevronDown, ArrowRightLeft, Inbox, GripVertical, ArchiveRestore,
 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
@@ -17,6 +17,7 @@ import MascotStars from '@/components/MascotStars.vue'
 import MascotBubble from '@/components/MascotBubble.vue'
 import RemoteControlSettings from '@/components/remote/RemoteControlSettings.vue'
 import InboxApiSettings from '@/components/InboxApiSettings.vue'
+import SettingsBackup from '@/components/SettingsBackup.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useDragSort } from '@/composables/useDragSort'
@@ -451,6 +452,7 @@ const SECTIONS = [
   { id: 'remote', labelKey: 'settings.sections.remote', icon: Radio },
   { id: 'inbox', labelKey: 'settings.sections.inbox', icon: Inbox },
   { id: 'prompts', labelKey: 'settings.sections.prompts', icon: FileText },
+  { id: 'backup', labelKey: 'settings.sections.backup', icon: ArchiveRestore },
 ] as const
 const activeSection = ref<(typeof SECTIONS)[number]['id']>('general')
 
@@ -2913,6 +2915,11 @@ watch(() => settings.value.language, (v) => {
              shown, so opening the section always reads the live port / status. -->
         <div v-if="!loading && activeSection === 'inbox'" class="max-w-lg">
           <InboxApiSettings />
+        </div>
+
+        <!-- Export / import the whole configuration to move it to another machine. -->
+        <div v-if="!loading && activeSection === 'backup'" class="max-w-lg">
+          <SettingsBackup />
         </div>
       </div>
     </div>
