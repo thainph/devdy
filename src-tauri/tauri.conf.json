@@ -7,6 +7,7 @@
     "beforeDevCommand": "pnpm dev:vite",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "pnpm build:vite",
+    "beforeBundleCommand": "node scripts/ensure-sidecar-deps.mjs",
     "frontendDist": "../dist"
   },
   "app": {
