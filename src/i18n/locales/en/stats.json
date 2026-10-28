@@ -16,6 +16,12 @@
   "project": {
     "all": "All projects"
   },
+  "account": {
+    "all": "All Claude accounts",
+    "none": "No account (~/.claude)",
+    "deleted": "(deleted account)",
+    "default": "default"
+  },
   "plan": {
     "claudeTitle": "Plan usage (Claude subscription)",
     "claudeDescPrefix": "Your account's",
@@ -39,7 +45,8 @@
     "resetsInDays": "resets in {days}d",
     "resetsInHoursMinutes": "resets in {hours}h {minutes}m",
     "resetsInHours": "resets in {hours}h",
-    "resetsInMinutes": "resets in {minutes}m"
+    "resetsInMinutes": "resets in {minutes}m",
+    "emptyAccount": "No plan usage captured for this account yet — run a Claude task with it."
   },
   "empty": {
     "title": "No usage recorded for this filter.",
@@ -70,7 +77,9 @@
     "byModel": "By model",
     "model": "Model",
     "runs": "Runs",
-    "unknownModel": "(unknown)"
+    "unknownModel": "(unknown)",
+    "byAccount": "By Claude account",
+    "account": "Account"
   },
   "action": {
     "backfilled": "Backfilled {inserted} record(s) from {scanned} run log(s).",
