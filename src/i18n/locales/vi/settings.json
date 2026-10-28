@@ -16,7 +16,8 @@
     "remote": "Điều khiển từ xa",
     "prompts": "Mẫu Prompt",
     "inbox": "Inbox API",
-    "azure": "Tài khoản Azure"
+    "azure": "Tài khoản Azure",
+    "backup": "Sao lưu & Đồng bộ"
   },
   "general": {
     "theme": "Giao diện",
@@ -414,5 +415,61 @@
     "accountAdded": "Đã thêm tài khoản Azure",
     "deleteTitle": "Xoá tài khoản Azure",
     "deleteMessage": "Xoá tài khoản Azure này cùng phiên đăng nhập của nó? Các dự án đang liên kết sẽ bị gỡ liên kết."
+  },
+  "backup": {
+    "title": "Sao lưu & Đồng bộ",
+    "help": "Xuất toàn bộ cấu hình Devdy ra một file và nhập trên máy khác: cài đặt, prompt đã lưu, thư viện Skills / Rules kèm nhóm, MCP server, VPS server, tài khoản (GitHub, GitLab, AWS, Azure, Google, Claude) và ghi chú / todo. Project và lịch sử session vẫn ở máy này.",
+    "export": {
+      "title": "Xuất",
+      "includeSecrets": "Kèm secret (mã hoá)",
+      "includeSecretsHint": "PAT, giá trị env/header của MCP, token Google, passphrase SSH và private key đã nhập — được mã hoá bằng mật khẩu của bạn.",
+      "password": "Mật khẩu (tối thiểu 8 ký tự)",
+      "passwordConfirm": "Nhập lại mật khẩu",
+      "passwordWarning": "Devdy không thể khôi phục mật khẩu này. Quên mật khẩu thì không lấy lại được secret trong file.",
+      "passwordTooShort": "Mật khẩu cần ít nhất {n} ký tự.",
+      "passwordMismatch": "Hai mật khẩu không khớp.",
+      "noSecretsHint": "Không kèm secret thì sau khi nhập phải xác thực lại các tài khoản. File vẫn chứa ghi chú của bạn — hãy giữ kín.",
+      "button": "Xuất…",
+      "done": "Đã xuất cấu hình"
+    },
+    "import": {
+      "title": "Nhập",
+      "help": "Gộp theo tên: mục trùng tên bị ghi đè bằng bản trong file, mục mới được thêm, không xoá gì trên máy này. File Skill / Rule bị thay được chuyển vào thư mục legacy backups.",
+      "choose": "Chọn file sao lưu…",
+      "exportedAt": "Xuất lúc {at} · Devdy {version}",
+      "password": "Mật khẩu file sao lưu",
+      "passwordHint": "Để trống để nhập mà không kèm secret.",
+      "noSecrets": "File này không chứa secret.",
+      "button": "Nhập",
+      "cancel": "Huỷ",
+      "done": "Đã nhập cấu hình"
+    },
+    "report": {
+      "title": "Kết quả nhập",
+      "created": "Mới",
+      "updated": "Cập nhật",
+      "unchanged": "Giữ nguyên",
+      "secretsImported": "Secret đã được khôi phục vào Keychain.",
+      "secretsNotImported": "Không nhập secret nào.",
+      "reloginHint": "Phiên đăng nhập Claude và Azure không được mang theo: hãy đăng nhập lại các tài khoản đó và validate lại AWS profile trên máy này.",
+      "reload": "Tải lại Devdy để áp dụng"
+    },
+    "sections": {
+      "settings": "Cài đặt",
+      "skills": "Skills",
+      "rules": "Rules",
+      "skillGroups": "Nhóm skill",
+      "ruleGroups": "Nhóm rule",
+      "mcpServers": "MCP server",
+      "vpsServers": "VPS server",
+      "githubAccounts": "Tài khoản GitHub",
+      "gitlabAccounts": "Tài khoản GitLab",
+      "awsAccounts": "Tài khoản AWS",
+      "azureAccounts": "Tài khoản Azure",
+      "googleAccounts": "Tài khoản Google",
+      "claudeAccounts": "Tài khoản Claude",
+      "notes": "Ghi chú",
+      "todos": "Todo"
+    }
   }
 }

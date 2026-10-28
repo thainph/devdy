@@ -1059,6 +1059,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "drag",
+ "dryoc",
  "futures-util",
  "hex",
  "ignore",

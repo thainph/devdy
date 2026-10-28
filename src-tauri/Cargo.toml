@@ -53,6 +53,8 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 rand = "0.8"
 base64 = "0.22"
 remote-e2e = { path = "../remote-e2e" }
+# Password-sealed secrets in settings backups (Argon2id + XChaCha20-Poly1305); same crate as remote-e2e.
+dryoc = "1.0"
 # Conductor: in-process localhost-only MCP server (Streamable HTTP) that lets a
 # conductor run drive worker runs via session_* tools. Bound to 127.0.0.1 only.
 axum = "0.7"

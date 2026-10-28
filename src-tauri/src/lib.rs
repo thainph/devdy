@@ -97,6 +97,9 @@ use commands::runs::{
 };
 use commands::sessions::reconcile_claude_sessions;
 use commands::settings::{get_settings, update_setting};
+use commands::settings_backup::{
+    export_settings_backup, import_settings_backup, inspect_settings_backup,
+};
 use commands::skills::{
     create_skill, delete_skill, export_skill_zip, get_skill, import_skill_zip, list_skills,
     open_skill_folder, update_skill,
@@ -422,6 +425,9 @@ pub fn run() {
             set_tray_menu,
             get_settings,
             update_setting,
+            export_settings_backup,
+            inspect_settings_backup,
+            import_settings_backup,
             list_skills,
             get_skill,
             create_skill,

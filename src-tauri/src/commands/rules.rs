@@ -1203,6 +1203,93 @@ pub async fn sync_rule_to_projects(db: &Db, rule_id: &str) -> Result<Vec<String>
     Ok(failures)
 }
 
+/// Create or overwrite (by name) a library rule from a settings backup. A differing local source
+/// file is moved to the legacy backups first; projects that use the rule are re-synced.
+pub(crate) async fn import_backup_rule(
+    app: &AppHandle,
+    db: &Db,
+    id_hint: &str,
+    name: &str,
+    description: &str,
+    target: &str,
+    content: &str,
+) -> Result<(crate::commands::settings_backup::Upsert, Vec<String>), String> {
+    use crate::commands::settings_backup::Upsert;
+    use sqlx::Row;
+    validate_rule_name(name)?;
+    validate_target(target)?;
+
+    let local = sqlx::query("SELECT id, description, target, source_path FROM rules WHERE name = ?")
+        .bind(name)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    let path = match &local {
+        Some(row) => PathBuf::from(row.get::<String, _>("source_path")),
+        None => rules_dir(app).join(format!("{}.md", name)),
+    };
+
+    let same_content = fs::read_to_string(&path).ok().as_deref() == Some(content);
+    if let Some(row) = &local {
+        if same_content
+            && row.get::<String, _>("description") == description
+            && row.get::<String, _>("target") == target
+        {
+            return Ok((Upsert::Unchanged, Vec::new()));
+        }
+    }
+    if !same_content {
+        if path.exists() {
+            project_links::back_up_library_orphan(&path, "rules")?;
+        }
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        fs::write(&path, content).map_err(|e| e.to_string())?;
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let source_path = path.to_string_lossy().to_string();
+    match local {
+        Some(row) => {
+            let id: String = row.get("id");
+            sqlx::query("UPDATE rules SET description = ?, target = ?, updated_at = ? WHERE id = ?")
+                .bind(description)
+                .bind(target)
+                .bind(&now)
+                .bind(&id)
+                .execute(db)
+                .await
+                .map_err(|e| e.to_string())?;
+            let failures = sync_rule_to_projects(db, &id).await.map_err(|e| e.to_string())?;
+            if !(applies_codex(target) && parse_codex_mode(content) == CodexMode::Skill) {
+                remove_codex_skill_source(&source_path, name);
+            }
+            Ok((Upsert::Updated, failures))
+        }
+        None => {
+            let id_taken = sqlx::query("SELECT 1 FROM rules WHERE id = ?")
+                .bind(id_hint)
+                .fetch_optional(db)
+                .await
+                .map_err(|e| e.to_string())?
+                .is_some();
+            let id = if id_hint.is_empty() || id_taken { Uuid::new_v4().to_string() } else { id_hint.to_string() };
+            sqlx::query("INSERT INTO rules (id, name, description, target, source_path, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+                .bind(&id)
+                .bind(name)
+                .bind(description)
+                .bind(target)
+                .bind(&source_path)
+                .bind(&now)
+                .execute(db)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok((Upsert::Created, Vec::new()))
+        }
+    }
+}
+
 async fn record_conflict(
     db: &Db,
     project_id: &str,
