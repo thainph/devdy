@@ -39,25 +39,23 @@ pub struct Config {
     pub bind: String,
     /// Shared secret used to authenticate Host `register_host` frames.
     pub host_token: String,
-    /// Time-to-live for an unused `pair_code`.
-    pub pair_ttl: Duration,
-    /// Maximum control frames a single connection may send per window.
+    /// Maximum control frames (register/create_pair/join/…) a single connection
+    /// may send per window. Data frames and keepalives are not counted: the
+    /// Host streams far faster than any sane control budget.
     pub rate_limit_max: u32,
     /// Rate-limit sliding window.
     pub rate_limit_window: Duration,
-    /// Idle timeout for an ACTIVE room with no traffic before it is closed.
-    pub room_idle_timeout: Duration,
-    /// How long a single peer (Host or Controller) may go without sending ANY
-    /// frame before the relay treats it as dropped — the authoritative liveness
-    /// check for half-open sockets that never delivered a TCP close. Sized at
-    /// ~3× the client keepalive cadence so one or two lost beats never trip it.
+    /// How often the relay sends a WebSocket ping to every connection. Browsers
+    /// answer pings natively (even in a background tab whose timers are
+    /// throttled), so this keeps proxies from reaping idle sockets and gives
+    /// the liveness check a steady signal.
+    pub ping_interval: Duration,
+    /// A connection that sends nothing at all (no frame, no pong) for this long
+    /// is treated as dead and closed — the single, authoritative detector for
+    /// half-open sockets (laptop sleep, mobile network change, proxy reap).
     pub peer_liveness_timeout: Duration,
-    /// Grace window kept for an ACTIVE room after its Controller drops, during
-    /// which the Controller may `resume` the same room (phone screen off/on).
-    pub reconnect_window: Duration,
-    /// Hard ceiling on concurrent rooms. Persistent rendezvous rooms carry a
-    /// ~10-year expiry, so the sweeper alone cannot bound the registry; without
-    /// a cap a misbehaving (but authenticated) host could exhaust memory.
+    /// Hard ceiling on listeners + rooms. Everything dies with its connection,
+    /// so this only guards against a misbehaving (but authenticated) Host.
     pub max_rooms: usize,
     /// Largest WebSocket message accepted. tokio-tungstenite otherwise defaults
     /// to 64 MiB, which is far above anything this protocol sends.
@@ -80,16 +78,12 @@ impl Config {
             _ => return Err(ConfigError::Missing("RELAY_HOST_TOKEN")),
         };
 
-        let pair_ttl = Duration::from_secs(parse_u64("PAIR_TTL_SECS", 60)?);
         let rate_limit_max = parse_u64("RELAY_RATE_LIMIT_MAX", 60)? as u32;
         let rate_limit_window =
             Duration::from_secs(parse_u64("RELAY_RATE_LIMIT_WINDOW_SECS", 10)?);
-        let room_idle_timeout =
-            Duration::from_secs(parse_u64("RELAY_ROOM_IDLE_TIMEOUT_SECS", 3600)?);
-        let reconnect_window =
-            Duration::from_secs(parse_u64("RELAY_RECONNECT_WINDOW_SECS", 3600)?);
+        let ping_interval = Duration::from_secs(parse_u64("RELAY_PING_INTERVAL_SECS", 15)?.max(1));
         let peer_liveness_timeout =
-            Duration::from_secs(parse_u64("RELAY_PEER_LIVENESS_TIMEOUT_SECS", 45)?);
+            Duration::from_secs(parse_u64("RELAY_PEER_LIVENESS_TIMEOUT_SECS", 45)?.max(5));
         let max_rooms = parse_u64("RELAY_MAX_ROOMS", 256)? as usize;
         // Sized off the worst legitimate frame, not off the protocol's typical
         // one. The controller composer accepts images up to 10 MiB raw; base64
@@ -102,11 +96,9 @@ impl Config {
         Ok(Config {
             bind,
             host_token,
-            pair_ttl,
             rate_limit_max,
             rate_limit_window,
-            room_idle_timeout,
-            reconnect_window,
+            ping_interval,
             peer_liveness_timeout,
             max_rooms,
             max_message_bytes,

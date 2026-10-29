@@ -18,12 +18,12 @@ Hướng dẫn tái sử dụng để build lại và deploy **relay** (WebSocke
 | Domain controller/relay | `relay.example.com` (TLS do Certbot quản lý) |
 | Nginx site | `/etc/nginx/sites-available/relay.example.com` |
 | Relay bind | `127.0.0.1:8787` (WSS proxy tại `location /ws`) |
-| Relay binary | `/usr/local/bin/devdy-relay` |
-| Relay service | `devdy-relay.service` (systemd, `Restart=always`, user không đặc quyền) |
+| Thư mục dự án | `/projects/relay` (owner `deploy`): `releases/<TS>/` (controller web + `bin/devdy-relay`), `current` → release đang chạy, `shared/` |
+| Relay service | `devdy-relay.service` (systemd, user `devdyrelay`), drop-in `projects.conf`: `ExecStart=/projects/relay/current/bin/devdy-relay` |
 | Relay env | `/etc/devdy-relay.env` (chứa `RELAY_HOST_TOKEN` — **không commit**) |
-| Controller web root | `/var/www/relay/` (mirror nguyên thư mục `dist/`) |
+| Quyền `deploy` | ghi `/projects/relay`; `sudo` không mật khẩu chỉ cho `systemctl start/stop/restart devdy-relay`, `systemctl --no-pager status devdy-relay`, `journalctl --no-pager -u devdy-relay -n 200` |
 
-Nginx (tóm tắt): `root /var/www/relay; index controller.html;` — `location /ws`
+Nginx (tóm tắt): `root /projects/relay/current; index controller.html;` — `location /ws`
 proxy sang `127.0.0.1:8787` (có header `Upgrade/Connection`, `proxy_read_timeout 3600s`);
 `location /` dùng `try_files $uri /controller.html`.
 
@@ -84,59 +84,31 @@ stat -f '%m %N' relay/src/*.rs relay/Cargo.toml | sort -rn | head
 
 ---
 
-## 3. Deploy controller (web tĩnh, rủi ro thấp)
+## 3–4. Deploy (controller + relay cùng một release)
+
+Relay và controller nằm chung một release, đổi cùng lúc bằng symlink `current`.
+Không cần root: user `deploy` có sẵn quyền restart service.
 
 ```bash
-# 1) Backup web root hiện tại (đặt tên theo timestamp trên VPS)
-TS=$(ssh -p <SSH_PORT> <user>@<VPS_IP> 'date +%Y%m%d-%H%M%S')
-ssh -p <SSH_PORT> <user>@<VPS_IP> "cp -a /var/www/relay /var/www/relay.backup-$TS"
+SSH='ssh -p <SSH_PORT>'; H=deploy@<VPS_IP>
+TS=$(date -u +%Y%m%d-%H%M%S); R=/projects/relay/releases/$TS
+BIN=relay/target/x86_64-unknown-linux-musl/release/devdy-relay
 
-# 2) Đồng bộ dist/ -> web root (mirror; --delete dọn asset cũ theo hash)
-rsync -az --delete -e 'ssh -p <SSH_PORT>' \
-  /path/to/Tools/devdy/dist/ \
-  <user>@<VPS_IP>:/var/www/relay/
+# 1) Upload release mới (chưa ảnh hưởng bản đang chạy)
+rsync -az -e "$SSH" dist/ $H:$R/
+rsync -az -e "$SSH" "$BIN" $H:$R/bin/devdy-relay
 
-# 3) (tuỳ chọn) chuẩn hoá owner về root (rsync -a giữ uid local)
-ssh -p <SSH_PORT> <user>@<VPS_IP> 'chown -R root:root /var/www/relay'
+# 2) Trỏ current sang release mới (atomic) + restart relay
+$SSH $H "set -e
+  chmod 0755 $R/bin/devdy-relay
+  ln -sfn $R /projects/relay/current.tmp && mv -T /projects/relay/current.tmp /projects/relay/current
+  sudo -n /usr/bin/systemctl restart devdy-relay
+  sleep 2; sudo -n /usr/bin/systemctl --no-pager status devdy-relay | head -5"
 ```
 
-Không cần reload nginx (chỉ đổi file tĩnh). Verify:
-```bash
-# hash asset trong controller.html phải khớp local, và file asset tồn tại
-grep -oE '/assets/controller-[^"]+\.js' /path/to/Tools/devdy/dist/controller.html
-ssh -p <SSH_PORT> <user>@<VPS_IP> '
-  grep -oE "/assets/controller-[^\"]+\.js" /var/www/relay/controller.html
-  ls -la /var/www/relay/assets/controller-*.js
-  curl -sS -o /dev/null -w "controller.html %{http_code}\n" https://relay.example.com/controller.html
-'
-```
-
----
-
-## 4. Deploy relay binary (có restart service)
-
-```bash
-BIN=/path/to/Tools/devdy/relay/target/x86_64-unknown-linux-musl/release/devdy-relay
-
-# 1) Copy binary mới lên thư mục tạm
-scp -P <SSH_PORT> "$BIN" <user>@<VPS_IP>:/tmp/devdy-relay.new
-
-# 2) Backup binary cũ, thay, restart (thao tác nhanh để giảm downtime)
-ssh -p <SSH_PORT> <user>@<VPS_IP> '
-  set -e
-  TS=$(date +%Y%m%d-%H%M%S)
-  cp -a /usr/local/bin/devdy-relay /usr/local/bin/devdy-relay.backup-$TS
-  systemctl stop devdy-relay
-  install -m 0755 /tmp/devdy-relay.new /usr/local/bin/devdy-relay
-  rm -f /tmp/devdy-relay.new
-  systemctl start devdy-relay
-  sleep 1
-  systemctl is-active devdy-relay
-  systemctl status devdy-relay --no-pager | head -8
-'
-```
-> Lưu ý: `systemd Restart=always` — nếu binary lỗi khởi động, service sẽ loop
-> restart. Xem log ngay sau khi start (mục 5) và rollback nếu cần (mục 6).
+Chỉ sửa controller (không sửa `relay/src`)? Vẫn tạo release mới, copy
+`bin/devdy-relay` từ release hiện tại sang (`cp -a /projects/relay/current/bin $R/`).
+Lúc này không bắt buộc restart service, vì binary không đổi.
 
 ---
 
@@ -157,20 +129,12 @@ kiểm tra engine/permission mode hiển thị đúng và đồng bộ 2 chiều
 
 ## 6. Rollback
 
-**Controller:**
+Trỏ `current` về release trước rồi restart:
 ```bash
-ssh -p <SSH_PORT> <user>@<VPS_IP> '
-  ls -dt /var/www/relay.backup-* | head        # chọn bản gần nhất
-  # rm -rf /var/www/relay && cp -a /var/www/relay.backup-<TS> /var/www/relay
-'
-```
-
-**Relay binary:**
-```bash
-ssh -p <SSH_PORT> <user>@<VPS_IP> '
-  systemctl stop devdy-relay
-  cp -a /usr/local/bin/devdy-relay.backup-<TS> /usr/local/bin/devdy-relay
-  systemctl start devdy-relay && systemctl is-active devdy-relay
+ssh -p <SSH_PORT> deploy@<VPS_IP> '
+  ls -t /projects/relay/releases | head      # chọn release trước đó
+  # ln -sfn /projects/relay/releases/<TS_CU> /projects/relay/current.tmp && mv -T /projects/relay/current.tmp /projects/relay/current
+  # sudo -n /usr/bin/systemctl restart devdy-relay
 '
 ```
 
@@ -179,15 +143,20 @@ ssh -p <SSH_PORT> <user>@<VPS_IP> '
 ## 7. Ghi chú an toàn
 
 - VPS là **production dùng chung** (còn web Node.js/PHP khác chiếm 80/443). Chỉ đụng
-  đúng `devdy-relay.service`, `/usr/local/bin/devdy-relay`, `/var/www/relay/`,
+  đúng `devdy-relay.service`, `/projects/relay/`,
   `/etc/nginx/sites-available/relay.example.com`. **Không** đụng service/site khác.
 - **Không** commit `relay.env` / `RELAY_HOST_TOKEN` hay bất kỳ secret nào.
-- Luôn backup trước khi ghi đè (mục 3.1, 4.2).
-- Dọn backup cũ định kỳ để khỏi đầy đĩa: `ls -dt /var/www/relay.backup-*`,
-  `ls -t /usr/local/bin/devdy-relay.backup-*`.
-- Env relay (mặc định): `RELAY_BIND=127.0.0.1:8787`, `PAIR_TTL_SECS=60`,
-  `RELAY_ROOM_IDLE_TIMEOUT_SECS=3600`, `RELAY_MAX_ROOMS=256`,
+- Mỗi lần deploy là một release mới, nên release cũ chính là bản backup. Dọn bớt
+  release cũ định kỳ (giữ vài bản gần nhất): `ls -t /projects/relay/releases`.
+- Env relay (mặc định): `RELAY_BIND=127.0.0.1:8787`, `RELAY_PING_INTERVAL_SECS=15`,
+  `RELAY_PEER_LIVENESS_TIMEOUT_SECS=45`, `RELAY_MAX_ROOMS=256`,
   `RELAY_MAX_MESSAGE_BYTES=33554432` (32 MiB — phải lớn hơn một lượt có ảnh
   đính kèm: ảnh 10 MiB qua base64 hai lần ≈ 18 MiB). Chi tiết xem
-  `relay/README.md`.
+  `relay/README.md`. Các biến cũ `PAIR_TTL_SECS`, `RELAY_ROOM_IDLE_TIMEOUT_SECS`,
+  `RELAY_RECONNECT_WINDOW_SECS` không còn dùng (để lại trong env cũng không sao).
+- Relay, controller web và app desktop dùng chung một giao thức kết nối lại:
+  khi nâng cấp, deploy **relay + controller trước**, rồi mới cập nhật app desktop.
+  App desktop cũ vẫn chạy được với relay mới, nhưng app mới **không** chạy với
+  relay cũ (relay cũ chỉ route khi đủ `handshake_done`, và không đánh dấu ack
+  `create_pair` bằng `code:"armed"`).
 ```

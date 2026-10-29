@@ -24,16 +24,15 @@ pub enum FrameType {
     /// Not in the SRS §5.3 table but required so the relay can hold the
     /// pending-pair state on the Host's behalf (see dev artifact for rationale).
     CreatePair,
-    /// Either peer signals its E2E handshake half completed (drives
-    /// HANDSHAKING → ACTIVE in the room state machine, SRS §6.2).
+    /// Legacy: peers used to signal handshake completion to drive a room state
+    /// machine. Rooms now route as soon as they exist; accepted and ignored.
     HandshakeDone,
-    /// Controller re-attaches to a room it was dropped from, within the
-    /// `reconnect_window`, using a `resume_token` (phone screen off/on). Re-runs
-    /// the E2E handshake so forward secrecy is preserved.
+    /// Legacy: older Controllers try to re-attach with a resume token. The relay
+    /// always answers `resume_invalid`, which makes them `join` again.
     Resume,
-    /// Application-level heartbeat (either peer → relay). Carries no payload; the
-    /// relay treats it as room activity (resets the idle-sweep clock) and echoes
-    /// it back so BOTH directions stay warm through idle-killing proxies. Needed
+    /// Application-level heartbeat (either peer → relay). Carries no payload; it
+    /// proves the sender is alive (liveness) and the relay echoes it back so
+    /// BOTH directions stay warm through idle-killing proxies. Needed
     /// because a browser cannot originate WS ping frames and a finished run stops
     /// all other traffic, so the socket would otherwise be reaped when idle.
     Keepalive,
@@ -79,14 +78,12 @@ pub struct Envelope {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pair_code: Option<String>,
 
-    /// `create_pair`: when true the pending room does not expire by PAIR_TTL — a
-    /// standing rendezvous a trusted device re-joins anytime (durable reconnect).
+    /// `create_pair`: legacy flag. Every listen now lives as long as the Host's
+    /// connection, so it is accepted and ignored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub persistent: Option<bool>,
 
-    /// `room_ready` (relay → Controller): the rotating token the Controller
-    /// presents in a later `resume` frame. `resume` (Controller → relay): the
-    /// token being redeemed. Never sent to the Host; not an E2E secret.
+    /// `resume` (legacy Controller → relay): ignored; always `resume_invalid`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_token: Option<String>,
 
@@ -134,14 +131,12 @@ impl Envelope {
         }
     }
 
-    /// Build a `room_ready` for the Controller that also carries the rotating
-    /// `resume_token` (used to re-attach after a drop within the window).
-    pub fn room_ready_with_token(
-        room_id: impl Into<String>,
-        resume_token: impl Into<String>,
-    ) -> Self {
+    /// Ack for `create_pair` (relay → Host): the Host now listens on its code.
+    /// Carries the room id the next join will get and `code: "armed"` so the
+    /// Host can tell it apart from a real join's `room_ready`.
+    pub fn room_armed(room_id: impl Into<String>) -> Self {
         let mut e = Self::room_ready(room_id);
-        e.resume_token = Some(resume_token.into());
+        e.code = Some("armed".to_string());
         e
     }
 
@@ -211,8 +206,11 @@ pub enum ErrorCode {
     RoomFull,
     /// No such room / room already CLOSED.
     RoomNotFound,
-    /// `resume_token` unknown, already rotated, or the reconnect window elapsed.
+    /// `resume` is no longer supported; the Controller should `join` instead.
+    /// Kept so older Controllers fall back to a fresh join.
     ResumeInvalid,
+    /// A newer Controller joined the same code and replaced this one.
+    Superseded,
     /// A control frame is not permitted for this connection role.
     Forbidden,
     /// Too many frames in the rate-limit window.
@@ -229,6 +227,7 @@ impl ErrorCode {
             ErrorCode::RoomFull => "room_full",
             ErrorCode::RoomNotFound => "room_not_found",
             ErrorCode::ResumeInvalid => "resume_invalid",
+            ErrorCode::Superseded => "superseded",
             ErrorCode::Forbidden => "forbidden",
             ErrorCode::RateLimited => "rate_limited",
         }

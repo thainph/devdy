@@ -22,7 +22,6 @@ import {
   base64ToUtf8,
   cmdFrame,
   controlFrame,
-  handshakeDoneFrame,
   hsAnswerJson,
   joinFrame,
   keepaliveFrame,
@@ -36,7 +35,6 @@ import {
   listEngineModelsCmd,
   listProjectFilesCmd,
   listPlanUsageCmd,
-  resumeFrame,
   parseStreamPayload,
   toHex,
   utf8ToBase64,
@@ -58,10 +56,11 @@ const BACKOFF_MAX_MS = 5_000
  * rejected OTP (the Host closes the room instead of replying) rather than a
  * transport blip. */
 const OTP_VERDICT_WINDOW_MS = 8_000
-/** Gate-frame resend budget + spacing while the relay room races to ACTIVE
- * (the Host's handshake_done may reach the relay just after our first cmd). */
-const GATE_MAX_RETRIES = 8
-const GATE_RETRY_MS = 250
+/** Every fresh socket must reach the Host within this long: the handshake offer
+ * for an OTP link (then we wait on the user), the session token for a token
+ * reconnect. Otherwise the join landed on a Host the relay has not yet noticed
+ * is gone — drop the socket and join again rather than sit on "Securing…". */
+const ATTACH_TIMEOUT_MS = 15_000
 /** Prefix of the Host notice that reports dropped live events (the Host's bus
  * ring overflowed before the forwarder drained it). Carries the skipped count
  * after the colon; the count is diagnostic — any gap triggers the same replay. */
@@ -160,8 +159,6 @@ export class ControllerConnection {
   private ws: WebSocket | null = null
   private session: Session | null = null
   private seq = 0
-  /** Rotating resume token issued by the relay in `room_ready`. */
-  private resumeToken: string | null = null
   /** Set once the first drop starts the reconnect window; null while stable. */
   private reconnectDeadline: number | null = null
   private backoff = BACKOFF_BASE_MS
@@ -178,9 +175,8 @@ export class ControllerConnection {
   /** Our ephemeral keypair, generated when we answer the handshake offer and
    * reused for the deferred session-key derivation. */
   private myKeypair: Keypair | null = null
-  /** Resend attempts for the first (gate) frame while the relay room races to
-   * ACTIVE right after the handshake (host_handshake_done may lag our cmd). */
-  private gateRetries = 0
+  /** Fires if a fresh socket has not reached the Host in ATTACH_TIMEOUT_MS. */
+  private attachTimer: ReturnType<typeof setTimeout> | null = null
   /** ms timestamp of the last gap-triggered history replay; throttles bursts. */
   private lastGapBackfillAt = 0
   /** ms timestamp of the last socket open (onOpen). Lets forceReconnect coalesce
@@ -249,7 +245,7 @@ export class ControllerConnection {
     }
   }
 
-  /** True once the room is ACTIVE and commands may be sent. */
+  /** True once the Host authenticated us and commands may be sent. */
   get isActive(): boolean {
     return (
       this.state.status.value === 'connected' &&
@@ -285,11 +281,11 @@ export class ControllerConnection {
   }
 
   /** Start the heartbeat loop (idempotent). Each beat is a no-op unless the
-   * socket is OPEN and a room is assigned, so it safely spans reconnect gaps. */
+   * socket is OPEN, so it safely spans reconnect gaps. */
   private startKeepalive(): void {
     if (this.keepaliveTimer !== null) return
     this.keepaliveTimer = setInterval(() => {
-      if (this.ws?.readyState !== WebSocket.OPEN || !this.state.roomId.value) return
+      if (this.ws?.readyState !== WebSocket.OPEN) return
       // Zombie-socket watchdog: the relay echoes every keepalive, so a live
       // socket sees inbound traffic at least this often. Silence past the
       // liveness timeout means the socket went half-open (no onclose fired) —
@@ -312,7 +308,7 @@ export class ControllerConnection {
         this.forceReconnect()
         return
       }
-      this.sendEnvelope(keepaliveFrame(this.state.roomId.value))
+      this.sendEnvelope(keepaliveFrame(this.state.roomId.value ?? ''))
     }, KEEPALIVE_MS)
   }
 
@@ -329,6 +325,7 @@ export class ControllerConnection {
     this.removeWakeListeners()
     this.stopKeepalive()
     this.clearReconnectTimer()
+    this.clearAttachTimer()
     this.reconnectDeadline = null
     this.session = null
     this.failPendingCommandAcks('disconnected')
@@ -349,7 +346,7 @@ export class ControllerConnection {
 
   /**
    * Seal and send a command to the Host. No-op (returns false) when the room
-   * isn't ACTIVE, so the UI can disable controls until connected.
+   * isn't authenticated, so the UI can disable controls until connected.
    */
   sendCommand(cmd: CmdPayload, onAck?: CommandAckHandler): boolean {
     if (!this.isActive) return false
@@ -447,8 +444,8 @@ export class ControllerConnection {
     const durable = this.secret?.mode === 'session'
     if (this.reconnectDeadline === null) {
       if (!durable) return
-      // durable + no active window + socket not open ⇒ dead socket after a
-      // resume; fall through and re-attach via the resume token / rendezvous.
+      // durable + no active window + socket not open ⇒ dead socket; fall
+      // through and re-join.
     } else if (!durable && Date.now() >= this.reconnectDeadline) {
       this.failTerminal('Reconnect window elapsed — please reconnect.')
       return
@@ -458,9 +455,9 @@ export class ControllerConnection {
     this.openSocket()
   }
 
-  /** Shed the current socket — which after a resume may be a "zombie" that still
-   * reports OPEN but carries no traffic — and immediately re-attach on a fresh
-   * one (via the resume token, else the rendezvous code). Used on foreground /
+  /** Shed the current socket — which may be a "zombie" that still reports OPEN
+   * but carries no traffic — and immediately re-join on a fresh one. Used on
+   * foreground /
    * network-online, where trusting readyState would silently strand us.
    * openSocket() tears down the previous socket, keeping the single-socket
    * invariant. */
@@ -469,7 +466,7 @@ export class ControllerConnection {
     // Coalesce a burst of wake events (unlock fires visibilitychange + online +
     // focus within milliseconds). If a reconnect is already CONNECTING, or a
     // socket opened moments ago, trust it — tearing it down here is exactly what
-    // caused the resume→immediate-drop storm (resume_ok then peer_left 20ms
+    // caused a reconnect→immediate-drop storm (join then peer_left 20ms
     // later). A genuinely stale/zombie socket has an old lastOpenAt (from before
     // the device slept), so it still gets replaced.
     if (this.ws && this.ws.readyState === WebSocket.CONNECTING) return
@@ -490,12 +487,13 @@ export class ControllerConnection {
 
   private openSocket(): void {
     // Single-socket invariant. Every reconnect path (backoff timer, wake events,
-    // resume_invalid retry) funnels through here, and browsers fire
+    // relay errors) funnels through here, and browsers fire
     // visibilitychange + focus + online together on resume — so without this we
     // can spin up several sockets that all race for the same room, each tripping
     // the other's peer_left (a reconnect storm). Tear down any prior socket and
     // cancel a pending reconnect before dialing a fresh one.
     this.clearReconnectTimer()
+    this.clearAttachTimer()
     this.failPendingCommandAcks('connection_lost')
     if (this.ws) {
       const prev = this.ws
@@ -535,19 +533,54 @@ export class ControllerConnection {
     // A fresh socket re-runs the gate (which re-arms this if needed); clear any
     // pending await from the dead socket so it can't fire on the new one.
     this.awaitingHostSince = null
-    // Fresh session per connection (forward secrecy) — cleared until handshake.
+    // Fresh room, keys and session per socket (forward secrecy): the Host
+    // re-offers the handshake for every join.
     this.session = null
-    if (this.resumeToken) {
-      // Fast re-attach to the same room with the rotating token (the relay puts
-      // the room back into HANDSHAKING and the Host re-offers the handshake).
-      this.state.status.value = this.reconnectDeadline !== null ? 'reconnecting' : 'joining'
-      this.sendEnvelope(resumeFrame(this.resumeToken))
-    } else {
-      // First join with the per-session rendezvous code (used where the old flow
-      // used the pair code).
-      this.state.status.value = 'joining'
-      this.sendEnvelope(joinFrame(this.link.rendezvous_code))
+    this.hostPub = null
+    this.myKeypair = null
+    this.state.roomId.value = null
+    // Always a plain join: the relay routes it to whichever socket the Host is
+    // on now, and a newer join replaces any stale room of ours.
+    this.state.status.value = this.reconnectDeadline !== null ? 'reconnecting' : 'joining'
+    this.sendEnvelope(joinFrame(this.link.rendezvous_code))
+    this.startAttachTimer()
+  }
+
+  /** Arm the per-socket "reached the Host?" deadline (see ATTACH_TIMEOUT_MS). */
+  private startAttachTimer(): void {
+    this.clearAttachTimer()
+    this.attachTimer = setTimeout(() => {
+      this.attachTimer = null
+      if (this.closedByUser) return
+      if (this.state.auth.value === 'authenticated' && this.state.status.value === 'connected') return
+      // An OTP link that got the Host's offer is waiting on the user (or on the
+      // verdict timer) — that is not a dead Host.
+      if (this.authMode === 'otp' && this.hostPub) return
+      this.restart('Host not responding — retrying…')
+    }, ATTACH_TIMEOUT_MS)
+  }
+
+  private clearAttachTimer(): void {
+    if (this.attachTimer !== null) {
+      clearTimeout(this.attachTimer)
+      this.attachTimer = null
     }
+  }
+
+  /** Drop the current socket and re-join after backoff, surfacing `reason`. */
+  private restart(reason: string): void {
+    if (this.ws) {
+      const ws = this.ws
+      this.ws = null
+      ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null
+      try {
+        ws.close()
+      } catch {
+        // already closing
+      }
+    }
+    this.failPendingCommandAcks('connection_lost')
+    this.beginReconnect(reason)
   }
 
   private onMessage(ev: MessageEvent<unknown>): void {
@@ -562,7 +595,6 @@ export class ControllerConnection {
           this.state.roomId.value = env.room_id
           this.state.status.value = 'handshaking'
         }
-        if (env.resume_token) this.resumeToken = env.resume_token
         break
       case 'control':
         this.onHandshakeOffer(env)
@@ -571,13 +603,15 @@ export class ControllerConnection {
         this.onStreamFrame(env)
         break
       case 'peer_left':
+        // A notice for a room we already left is stale — ignore it.
+        if (env.room_id && env.room_id !== this.state.roomId.value) break
         // The Host dropped. If we just sent an OTP attempt and haven't been
         // authenticated, read this as a rejected OTP (the Host closes the room
         // after a bad/exhausted OTP) rather than a transient drop.
         if (this.otpVerdictPending()) {
           this.failAuth('Wrong or expired code — please try again.')
         } else {
-          this.beginReconnect('Host disconnected')
+          this.restart('Host disconnected')
         }
         break
       case 'error':
@@ -614,8 +648,8 @@ export class ControllerConnection {
     }
     try {
       // Verify the Host (SEC-006) WITHOUT deriving the key — the OTP may not be
-      // known yet. Answering + handshake_done drives the relay room to ACTIVE so
-      // the first sealed cmd (the OTP gate) can actually route.
+      // known yet. The answer gives the Host our public key; the first sealed
+      // cmd (the OTP/token gate) follows once the secret is known.
       this.hostPub = verifyOffer(offerJson, this.link.host_fingerprint)
       this.state.hostFingerprint.value = this.link.host_fingerprint
       if (!this.myKeypair) this.myKeypair = generateKeypair()
@@ -626,9 +660,8 @@ export class ControllerConnection {
           this.nextSeq(),
         ),
       )
-      this.sendEnvelope(handshakeDoneFrame(this.state.roomId.value))
-      // The relay handshake is complete, but business commands are not safe
-      // until the Host accepts the OTP/session gate and returns a fresh token.
+      // Business commands are not safe until the Host accepts the OTP/session
+      // gate and returns a fresh token.
       this.state.status.value = 'handshaking'
       // If the secret is already known (token reconnect, or the OTP was typed
       // before the offer arrived), derive + gate now; otherwise wait for the OTP.
@@ -652,7 +685,6 @@ export class ControllerConnection {
       this.failTerminal(e instanceof HandshakeError ? e.message : 'Handshake failed')
       return
     }
-    this.gateRetries = 0
     this.sendGateFrame()
   }
 
@@ -698,6 +730,10 @@ export class ControllerConnection {
    * connection. */
   private softAuthFail(message: string): void {
     this.clearVerdictTimer()
+    // Forget the rejected code: every reconnect re-runs the handshake, and
+    // re-sending a known-bad OTP would burn the Host's attempts (and lock it)
+    // while the user is still reading the right one.
+    if (this.secret?.mode === 'otp') this.secret = null
     this.otpAttemptAt = null
     this.awaitingHostSince = null
     this.state.auth.value = 'failed'
@@ -768,8 +804,8 @@ export class ControllerConnection {
    * composer needs (now that commands are accepted). */
   private onSessionToken(token: string): void {
     this.clearVerdictTimer()
+    this.clearAttachTimer()
     this.otpAttemptAt = null
-    this.gateRetries = 0
     this.state.auth.value = 'authenticated'
     this.state.status.value = 'connected'
     this.secret = { mode: 'session', token }
@@ -815,6 +851,7 @@ export class ControllerConnection {
     this.removeWakeListeners()
     this.stopKeepalive()
     this.clearReconnectTimer()
+    this.clearAttachTimer()
     this.reconnectDeadline = null
     this.session = null
     this.failPendingCommandAcks('authentication_failed')
@@ -841,59 +878,29 @@ export class ControllerConnection {
 
   private onRelayError(env: Envelope): void {
     const code = env.code ?? 'error'
-    // resume_invalid: the fast-path token is spent / the away room was swept.
-    if (code === 'resume_invalid') {
-      this.resumeToken = null
-      this.state.lastError.value = null
-      this.dropSocketForRetry()
+    // A newer connection (another tab/device, or a reload) took this session
+    // over. Stop here — re-joining would kick it back and the two would fight.
+    if (code === 'superseded') {
+      this.failTerminal('This session is now open on another device or tab — reload to take it back.')
       return
     }
-    // "room not active" right after the handshake means our first (gate) frame
-    // raced ahead of the room reaching ACTIVE (the Host's handshake_done is still
-    // in flight). Resend the gate frame shortly, a few times — this does NOT burn
-    // an OTP attempt (the frame never reached the Host's gate).
-    if (
-      code === 'room_not_found' &&
-      this.session !== null &&
-      this.gateRetries < GATE_MAX_RETRIES
-    ) {
-      // The gate frame outran the room reaching ACTIVE; resend shortly. This must
-      // NOT require auth==='pending': on a reconnect of an already-authenticated
-      // session, auth stays 'authenticated', and gating that on 'pending' made
-      // every reconnect skip the retry and tear the socket down instantly — an
-      // endless resume→drop storm. The session must be re-gated on each fresh
-      // socket regardless of the prior auth phase.
-      this.gateRetries += 1
-      this.clearVerdictTimer()
-      setTimeout(() => this.sendGateFrame(), GATE_RETRY_MS)
+    // The Host is not listening right now (offline, asleep, restarting). Keep
+    // trying with backoff; an OTP link stays bounded by its reconnect window.
+    if (code === 'pair_invalid') {
+      this.restart('Waiting for the host…')
       return
     }
-    // pair_invalid on a session-mode (token) reconnect is ambiguous — the Host
-    // may be restarting / re-arming its rendezvous. Keep retrying briefly; the
-    // reconnect window still bounds it. For a fresh OTP link it is terminal.
-    if (code === 'pair_invalid' || code === 'room_not_found') {
-      if (this.secret?.mode === 'session') {
-        this.state.lastError.value = 'Waiting for the host…'
-        this.dropSocketForRetry()
-      } else {
-        this.failTerminal(relayErrorMessage(code))
-      }
+    // Our room is gone on the relay (the Host or relay dropped it). Re-join —
+    // unless the error is about a room we already left.
+    if (code === 'room_not_found') {
+      if (env.room_id && env.room_id !== this.state.roomId.value) return
+      this.restart('Session lost — reconnecting…')
       return
     }
     if (code === 'room_full' || code === 'auth_failed') {
       this.failTerminal(relayErrorMessage(code))
     } else {
       this.state.lastError.value = relayErrorMessage(code)
-    }
-  }
-
-  private dropSocketForRetry(): void {
-    if (this.ws) {
-      try {
-        this.ws.close()
-      } catch {
-        // already closing — onClose will still fire
-      }
     }
   }
 
@@ -911,13 +918,14 @@ export class ControllerConnection {
 
   private beginReconnect(reason: string): void {
     if (this.closedByUser) return
+    this.clearAttachTimer()
     this.session = null
     const now = Date.now()
     if (this.reconnectDeadline === null) {
       this.reconnectDeadline = now + RECONNECT_WINDOW_MS
     }
     // A session-mode (token) connection keeps retrying its reusable rendezvous
-    // code; a fresh OTP link gives up when the resume window elapses.
+    // code; a fresh OTP link gives up when the reconnect window elapses.
     const durable = this.secret?.mode === 'session'
     if (!durable && now >= this.reconnectDeadline) {
       this.failTerminal('Reconnect window elapsed — please reconnect.')
@@ -949,6 +957,7 @@ export class ControllerConnection {
     this.removeWakeListeners()
     this.stopKeepalive()
     this.clearReconnectTimer()
+    this.clearAttachTimer()
     this.reconnectDeadline = null
     this.session = null
     this.failPendingCommandAcks(message)
@@ -1014,8 +1023,6 @@ function relayErrorMessage(code: string): string {
       return 'This session already has an active controller.'
     case 'auth_failed':
       return 'Authentication failed.'
-    case 'resume_invalid':
-      return 'Reconnect window elapsed — please reconnect.'
     case 'room_not_found':
       return 'The session is no longer available.'
     case 'rate_limited':
