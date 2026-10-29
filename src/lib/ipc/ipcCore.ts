@@ -4,8 +4,10 @@
  *
  * - `invoke` calls get an id and wait in a pending map until the matching
  *   `ipc_result`. While the link is down they are queued and sent, in order,
- *   once it is (re)authenticated. Each call times out after `timeoutMs`
- *   (counted from the `invoke`, queue time included).
+ *   once it is (re)authenticated. Only a call still QUEUED (never sent)
+ *   times out, after `timeoutMs` counted from the `invoke`: once sent, a call
+ *   may legitimately run for minutes (git push, an LLM turn…), and a dropped
+ *   link already fails it (below).
  * - Calls already sent when the link drops are rejected: the controlled side
  *   forgets them on detach, so their results will never come.
  * - `listen` subscriptions are refcounted per event name: only the first
@@ -33,7 +35,7 @@ export interface IpcCoreDeps {
   send: (frame: IpcFrame) => boolean
   /** A fresh correlation id per call. */
   newId: () => string
-  /** Per-call timeout (ms). */
+  /** How long a call may wait in the queue, unsent (ms). */
   timeoutMs?: number
   setTimer?: (fn: () => void, ms: number) => unknown
   clearTimer?: (handle: unknown) => void
@@ -41,7 +43,7 @@ export interface IpcCoreDeps {
   onHandlerError?: (err: unknown) => void
 }
 
-export const IPC_TIMEOUT_MS = 60_000
+export const IPC_QUEUE_TIMEOUT_MS = 120_000
 export const ERR_TIMEOUT = 'remote_timeout'
 export const ERR_CONNECTION_LOST = 'remote_connection_lost'
 export const ERR_CLOSED = 'remote_closed'
@@ -52,6 +54,7 @@ interface PendingCall {
   sent: boolean
   resolve: (value: unknown) => void
   reject: (reason: unknown) => void
+  /** The queue timeout, armed only while unsent. */
   timer: unknown
 }
 
@@ -65,7 +68,7 @@ export class IpcCore {
 
   constructor(deps: IpcCoreDeps) {
     this.deps = {
-      timeoutMs: IPC_TIMEOUT_MS,
+      timeoutMs: IPC_QUEUE_TIMEOUT_MS,
       setTimer: (fn, ms) => setTimeout(fn, ms),
       clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
       onHandlerError: (err) => console.error('[remote-ipc] event handler failed', err),
@@ -92,14 +95,16 @@ export class IpcCore {
         sent: false,
         resolve: resolve as (value: unknown) => void,
         reject,
-        timer: this.deps.setTimer(() => {
-          if (this.pending.get(id) !== call) return
-          this.pending.delete(id)
-          reject(new Error(ERR_TIMEOUT))
-        }, this.deps.timeoutMs),
+        timer: null,
       }
       this.pending.set(id, call)
       if (this.active) call.sent = this.deps.send(call.frame)
+      if (call.sent) return
+      call.timer = this.deps.setTimer(() => {
+        if (this.pending.get(id) !== call || call.sent) return
+        this.pending.delete(id)
+        reject(new Error(ERR_TIMEOUT))
+      }, this.deps.timeoutMs)
     })
   }
 
@@ -145,6 +150,7 @@ export class IpcCore {
         this.active = false
         return
       }
+      this.disarm(call)
     }
   }
 
@@ -195,6 +201,12 @@ export class IpcCore {
 
   private settle(id: string, call: PendingCall): void {
     this.pending.delete(id)
+    this.disarm(call)
+  }
+
+  private disarm(call: PendingCall): void {
+    if (call.timer === null) return
     this.deps.clearTimer(call.timer)
+    call.timer = null
   }
 }

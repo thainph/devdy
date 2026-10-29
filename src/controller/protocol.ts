@@ -381,6 +381,11 @@ export interface IpcEventKind {
   payload: unknown
 }
 
+/** Remote desktop: the Host shed events on a congested link; refetch state. */
+export interface IpcResyncKind {
+  kind: 'ipc_resync'
+}
+
 /** Everything the Host can send the Controller inside a sealed `stream` frame. */
 export type StreamPayload =
   | StreamKind
@@ -403,6 +408,7 @@ export type StreamPayload =
   | ProjectListKind
   | IpcResultKind
   | IpcEventKind
+  | IpcResyncKind
 
 /**
  * Narrow a decoded stream payload. Returns `null` for anything with an
@@ -598,12 +604,15 @@ export function parseStreamPayload(json: unknown): StreamPayload | null {
     }
     case 'ipc_result':
       return typeof o.id === 'string' && typeof o.ok === 'boolean'
-        ? { kind: 'ipc_result', id: o.id, ok: o.ok, value: o.value, error: o.error }
+        ? // A command that resolved to null must not surface as undefined.
+          { kind: 'ipc_result', id: o.id, ok: o.ok, value: o.value === undefined ? null : o.value, error: o.error }
         : null
     case 'ipc_event':
       return typeof o.event === 'string'
         ? { kind: 'ipc_event', event: o.event, payload: o.payload ?? null }
         : null
+    case 'ipc_resync':
+      return { kind: 'ipc_resync' }
     default:
       return null
   }

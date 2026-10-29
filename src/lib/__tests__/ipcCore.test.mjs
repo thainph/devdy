@@ -79,14 +79,45 @@ test('rejects with the error value as-is', async () => {
   assert.equal(r.e, err)
 })
 
-test('timeout rejects with remote_timeout and forgets the call', async () => {
-  const { core, fireTimers } = setup()
+test('a call queued too long rejects with remote_timeout and is never sent', async () => {
+  const { core, sent, fireTimers } = setup()
   const p = core.invoke('slow')
   fireTimers()
   const r = await settled(p)
   assert.equal(r.e.message, ERR_TIMEOUT)
   assert.equal(core.pendingCount, 0)
-  // The queued frame is gone: a later linkUp sends nothing for it.
+  core.linkUp()
+  assert.equal(sent.length, 0)
+})
+
+test('a sent call has no timeout: it waits for its result however long', async () => {
+  const { core, timers } = setup()
+  core.linkUp()
+  const p = core.invoke('git_push')
+  assert.equal(timers.size, 0)
+  core.handleResult('id1', true, 'pushed', undefined)
+  assert.equal(await p, 'pushed')
+})
+
+test('flushing a queued call disarms its queue timeout', async () => {
+  const { core, timers, fireTimers } = setup()
+  const p = core.invoke('slow')
+  assert.equal(timers.size, 1)
+  core.linkUp()
+  assert.equal(timers.size, 0)
+  fireTimers()
+  assert.equal(core.pendingCount, 1)
+  core.handleResult('id1', true, null, undefined)
+  assert.equal(await p, null)
+})
+
+test('a call whose send failed keeps its queue timeout', async () => {
+  const { core, sent, fireTimers } = setup({ canSend: () => false })
+  core.linkUp()
+  const p = core.invoke('x')
+  assert.equal(sent.length, 0)
+  fireTimers()
+  assert.equal((await settled(p)).e.message, ERR_TIMEOUT)
 })
 
 test('linkDown rejects in-flight calls but keeps queued ones', async () => {

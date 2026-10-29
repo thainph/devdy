@@ -149,7 +149,7 @@ use remote::commands::{
 };
 use remote::file_proxy::{rd_download_append, rd_download_create, rdfile_register, rdfile_respond};
 use remote::fs_bridge::{remote_fs_home, remote_fs_list, remote_fs_read, remote_fs_stat};
-use remote::ipc::{remote_bridge_event, remote_bridge_ready, remote_bridge_reply};
+use remote::ipc::{remote_bridge_batch, remote_bridge_ready};
 use remote::RemoteState;
 use runs::broker::approver::ModalApproverResolver;
 use runs::broker::{start_broker, ApproverResolver, BrokerConfig};
@@ -714,8 +714,7 @@ pub fn run() {
             remote_clear_audit,
             remote_status,
             remote_bridge_ready,
-            remote_bridge_reply,
-            remote_bridge_event,
+            remote_bridge_batch,
             remote_fs_list,
             remote_fs_stat,
             remote_fs_read,
