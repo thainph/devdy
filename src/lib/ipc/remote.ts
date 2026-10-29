@@ -39,9 +39,19 @@ export interface RemoteIpcClient {
   close(): void
 }
 
+/**
+ * Captured once, when this module first loads (the shim imports it before the
+ * app boots). The router rewrites the URL on its first navigation, dropping
+ * `?remote=1`; reading `location` later would make a remote window believe it is
+ * local — it then opened its pop-outs as THIS machine's windows, wired to this
+ * machine's backend and deaf to the remote window's bus.
+ */
+const REMOTE_AT_LOAD =
+  typeof location !== 'undefined' && new URLSearchParams(location.search).get('remote') === '1'
+
 /** Whether this window is a remote-desktop window. */
 export function isRemoteMode(): boolean {
-  return typeof location !== 'undefined' && new URLSearchParams(location.search).get('remote') === '1'
+  return REMOTE_AT_LOAD
 }
 
 let client: RemoteIpcClient | null = null
