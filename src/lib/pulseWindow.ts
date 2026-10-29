@@ -5,6 +5,7 @@
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { trackWindowForTray } from '@/lib/tray'
 import { centerOnCurrentMonitor } from '@/lib/windowCascade'
+import { popoutLabel, popoutUrl } from '@/lib/popout'
 
 /** Window label; src-tauri/capabilities/default.json grants it the app permissions. */
 export const PULSE_WINDOW_LABEL = 'pulse'
@@ -30,7 +31,7 @@ export async function openPulseWindow(): Promise<WebviewWindow | null> {
     await focusWindow(win)
     return win
   }
-  const existing = await WebviewWindow.getByLabel(PULSE_WINDOW_LABEL)
+  const existing = await WebviewWindow.getByLabel(popoutLabel(PULSE_WINDOW_LABEL))
   if (existing) {
     await focusWindow(existing)
     return existing
@@ -53,8 +54,8 @@ export async function openPulseWindow(): Promise<WebviewWindow | null> {
 async function createPulseWindow(): Promise<WebviewWindow> {
   const width = 1100
   const height = 780
-  const win = new WebviewWindow(PULSE_WINDOW_LABEL, {
-    url: 'index.html?pulseWindow=1',
+  const win = new WebviewWindow(popoutLabel(PULSE_WINDOW_LABEL), {
+    url: popoutUrl('index.html?pulseWindow=1'),
     title: 'Pulse — Devdy',
     width,
     height,
