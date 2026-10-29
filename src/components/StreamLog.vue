@@ -570,6 +570,30 @@ function isRendering(el: HTMLElement): boolean {
 // cost of a long run actually lives.
 const SKIP_MIN_HEIGHT = 1200
 
+// Measurements are applied on the next frame, not inside the observer callback:
+// toggling `data-measured` changes the entry's layout (content-visibility), and
+// doing that within the callback makes the browser defer the remaining
+// notifications and log "ResizeObserver loop completed with undelivered
+// notifications".
+const pendingHeights = new Map<HTMLElement, number>()
+let applyFrame = 0
+
+function applyPendingHeights() {
+  applyFrame = 0
+  for (const [el, h] of pendingHeights) {
+    if (!el.isConnected) continue
+    if (h < SKIP_MIN_HEIGHT) {
+      // Shrank below the threshold (a tool card collapsed, say): stop
+      // skipping it rather than leaving a stale reservation behind.
+      el.removeAttribute('data-measured')
+      continue
+    }
+    el.style.setProperty('--stream-entry-h', `${Math.round(h)}px`)
+    el.setAttribute('data-measured', '')
+  }
+  pendingHeights.clear()
+}
+
 const entrySizeObserver =
   typeof ResizeObserver === 'undefined'
     ? null
@@ -582,15 +606,9 @@ const entrySizeObserver =
           if (prev !== undefined && Math.abs(prev - h) < 1) continue
           if (!isRendering(el)) continue
           measuredHeights.set(el, h)
-          if (h < SKIP_MIN_HEIGHT) {
-            // Shrank below the threshold (a tool card collapsed, say): stop
-            // skipping it rather than leaving a stale reservation behind.
-            el.removeAttribute('data-measured')
-            continue
-          }
-          el.style.setProperty('--stream-entry-h', `${Math.round(h)}px`)
-          el.setAttribute('data-measured', '')
+          pendingHeights.set(el, h)
         }
+        if (pendingHeights.size && !applyFrame) applyFrame = requestAnimationFrame(applyPendingHeights)
       })
 
 // Entries mounted by THIS log, so a width change can invalidate their heights.
@@ -603,6 +621,7 @@ const vEntrySize = {
   },
   unmounted: (el: HTMLElement) => {
     observedEntries.delete(el)
+    pendingHeights.delete(el)
     entrySizeObserver?.unobserve(el)
   },
 }
@@ -619,6 +638,7 @@ let invalidateTimer: ReturnType<typeof setTimeout> | undefined
 let widthObserver: ResizeObserver | null = null
 
 function invalidateMeasurements() {
+  pendingHeights.clear()
   for (const el of observedEntries) {
     el.removeAttribute('data-measured')
     measuredHeights.delete(el)
