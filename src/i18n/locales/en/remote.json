@@ -26,7 +26,7 @@
     "set": "(set)",
     "masterPasswordReplace": "Enter a new password to replace the current one",
     "masterPasswordSet": "Set a password to skip the OTP each time",
-    "masterPasswordHint": "Once set, enter this password on your phone instead of the OTP code. Stored in the OS keychain. More convenient but fixed — only use it if you are the sole user. Saved together with the settings below.",
+    "masterPasswordHint": "Once set, enter this password on your phone instead of the OTP code. Stored in the OS keychain. More convenient but fixed — only use it if you are the sole user. Changing or clearing it signs out every device signed in so far. Saved together with the settings below.",
     "saveSettings": "Save settings",
     "hostLabel": "host: {id}",
     "perRunHint": "Remote sessions are now created per run: open a run and click the {remote} button in the toolbar to generate a link. Enter your {masterPassword} (if set) or the OTP code on your phone to connect.",
@@ -121,7 +121,8 @@
       "reconnecting": "Reconnecting…",
       "disconnected": "Disconnected",
       "error": "Connection error",
-      "authFailed": "Sign-in expired",
+      "authFailed": "Signed out",
+      "superseded": "Taken over by another device",
       "reconnect": "Reconnect",
       "signInAgain": "Sign in again",
       "signOut": "Sign out"

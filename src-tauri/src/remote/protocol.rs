@@ -583,6 +583,11 @@ pub enum HandshakePayload {
     HsAnswer {
         controller_pub: String, // hex
     },
+    /// Host → Controller: the first sealed frame opened with none of the
+    /// accepted secrets (wrong OTP, or a session token that was rotated away by
+    /// the kill switch / a password change). Unsealed by necessity — the Host
+    /// has no key the Controller shares — and carries nothing.
+    HsReject,
 }
 
 #[cfg(test)]
@@ -599,6 +604,13 @@ mod tests {
         // Empty room_id + None options are omitted or empty, never null noise.
         assert_eq!(j["room_id"], "");
         assert!(j.get("cipher").is_none());
+    }
+
+    #[test]
+    fn hs_reject_wire_matches_the_controller() {
+        // `src/controller/protocol.ts` `isHsReject` reads exactly this.
+        let j = serde_json::to_value(HandshakePayload::HsReject).unwrap();
+        assert_eq!(j, serde_json::json!({ "kind": "hs_reject" }));
     }
 
     #[test]

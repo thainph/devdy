@@ -4,9 +4,10 @@
  * live connection state, and the ways out — reconnect after an error, sign in
  * again when the stored token stops working, or sign out.
  *
- * A rejected token does not always surface as `auth === 'failed'` (the client
- * keeps retrying a session-mode connection), so "Sign in again" is also
- * offered after STUCK_MS without a connection.
+ * A rejected token surfaces as `auth === 'failed'` (the host signed us out);
+ * "Sign in again" is also offered after STUCK_MS without a connection, as a
+ * fallback. When another device takes the session over, the client stops
+ * instead of fighting it and only a deliberate "Reconnect" takes it back.
  */
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -23,7 +24,8 @@ const STUCK_MS = 60_000
 const status = computed(() => props.client.state.status.value)
 const auth = computed(() => props.client.state.auth.value)
 const connected = computed(() => status.value === 'connected' && auth.value === 'authenticated')
-const failed = computed(() => auth.value === 'failed' || status.value === 'error')
+const superseded = computed(() => props.client.state.superseded.value)
+const failed = computed(() => auth.value === 'failed' || (status.value === 'error' && !superseded.value))
 
 // Continuously not connected for STUCK_MS ⇒ probably a dead token.
 const stuck = ref(false)
@@ -45,6 +47,7 @@ onUnmounted(() => {
 const label = computed(() => (props.device ? props.device : t('remote.desktop.banner.unnamed')))
 
 const stateText = computed(() => {
+  if (superseded.value) return t('remote.desktop.banner.superseded')
   if (auth.value === 'failed') return t('remote.desktop.banner.authFailed')
   if (connected.value) return t('remote.desktop.banner.connected')
   switch (status.value) {
@@ -60,14 +63,22 @@ const stateText = computed(() => {
 })
 
 const dotClass = computed(() =>
-  connected.value ? 'bg-emerald-500' : failed.value ? 'bg-destructive' : 'bg-amber-500 animate-pulse',
+  connected.value
+    ? 'bg-emerald-500'
+    : failed.value
+      ? 'bg-destructive'
+      : superseded.value
+        ? 'bg-muted-foreground'
+        : 'bg-amber-500 animate-pulse',
 )
 
 const canReconnect = computed(() => status.value === 'error' || status.value === 'disconnected')
-const needsSignIn = computed(() => failed.value || stuck.value)
+// A takeover is not a sign-in problem: the token still works.
+const needsSignIn = computed(() => failed.value || (stuck.value && !superseded.value))
 
 function reconnect(): void {
-  // A fresh boot re-runs startRemoteIpc with the stored token.
+  // A fresh boot re-runs startRemoteIpc with the stored token (after a
+  // takeover, this takes the session back from the other device).
   location.reload()
 }
 

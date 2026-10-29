@@ -193,7 +193,10 @@ export interface MuxPeerDeps {
 export class MuxPeer {
   private readonly deps: MuxPeerDeps
   private welcomed = false
-  private n = 0
+  /** Starts at a random value: a reloaded pop-out keeps its label, and a
+   * counter restarting at 1 would make its first hello look like a retry of the
+   * previous page's, so the owner would keep that page's subscriptions. */
+  private n = Math.floor(Math.random() * 0x7fffffff)
 
   constructor(deps: MuxPeerDeps) {
     this.deps = deps
