@@ -69,7 +69,16 @@
     "continue": "Continue",
     "couldNotRead": "Could not read the link.",
     "pasteFirst": "Paste the controller link first.",
-    "e2eNote": "The connection is end-to-end encrypted. You will enter a one-time code shown on the host to finish connecting. The relay never sees your data, and the host fingerprint is verified."
+    "e2eNote": "The connection is end-to-end encrypted. You will enter a one-time code shown on the host to finish connecting. The relay never sees your data, and the host fingerprint is verified.",
+    "passwordLabel": "Or sign in with your password",
+    "passwordPlaceholder": "Remote master password",
+    "passwordLogin": "Sign in",
+    "passwordWorking": "Signing in…",
+    "passwordFirst": "Enter the password first.",
+    "passwordHint": "Lost the link? The master password set in Devdy (Settings → Remote Control) reaches your host directly. 5 wrong tries lock it for 5 minutes.",
+    "loginWrongPassword": "Wrong password (or too many tries — wait a few minutes).",
+    "loginHostOffline": "Devdy is not reachable: make sure it is running with Remote Control on and a master password set.",
+    "loginNetwork": "Could not reach the relay. Check your connection and try again."
   },
   "browser": {
     "title": "Runs",

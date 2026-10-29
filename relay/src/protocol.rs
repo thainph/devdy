@@ -87,6 +87,12 @@ pub struct Envelope {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_token: Option<String>,
 
+    /// `create_pair` / `revoke` (Host → relay) and `room_ready` (relay → Host):
+    /// which listen slot the code belongs to. Absent = the session slot;
+    /// `"login"` = password login.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<String>,
+
     /// `error`: machine-readable error code.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
@@ -109,6 +115,7 @@ impl Envelope {
             pair_code: None,
             persistent: None,
             resume_token: None,
+            slot: None,
             code: Some(code.as_str().to_string()),
             message: Some(message.into()),
         }
@@ -126,6 +133,7 @@ impl Envelope {
             pair_code: None,
             persistent: None,
             resume_token: None,
+            slot: None,
             code: None,
             message: None,
         }
@@ -152,6 +160,7 @@ impl Envelope {
             pair_code: None,
             persistent: None,
             resume_token: None,
+            slot: None,
             code: None,
             message: None,
         }
@@ -170,6 +179,7 @@ impl Envelope {
             pair_code: None,
             persistent: None,
             resume_token: None,
+            slot: None,
             code: None,
             message: None,
         }
@@ -187,6 +197,7 @@ impl Envelope {
             pair_code: None,
             persistent: None,
             resume_token: None,
+            slot: None,
             code: Some("ok".to_string()),
             message: None,
         }

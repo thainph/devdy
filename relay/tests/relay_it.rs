@@ -320,3 +320,27 @@ async fn data_frames_are_not_rate_limited() {
         assert_eq!(f["t"], "stream");
     }
 }
+
+#[tokio::test]
+async fn login_slot_is_tagged_and_survives_ending_the_session() {
+    let url = start_relay().await;
+    let mut host = register_host(&url).await;
+    listen(&mut host, "session-code").await;
+    send(&mut host, json!({ "t": "create_pair", "pair_code": "devdy-login", "slot": "login" })).await;
+    let ack = recv_json(&mut host).await.unwrap();
+    assert_eq!(ack["code"], "armed");
+    assert_eq!(ack["slot"], "login");
+
+    let mut ctrl = connect(&url).await;
+    send(&mut ctrl, json!({ "t": "join", "pair_code": "devdy-login" })).await;
+    assert_eq!(recv_json(&mut ctrl).await.unwrap()["t"], "room_ready");
+    let h = recv_json(&mut host).await.unwrap();
+    assert_eq!(h["t"], "room_ready");
+    assert_eq!(h["slot"], "login", "the host learns which slot was joined");
+
+    // Ending the session must not drop the login listen.
+    send(&mut host, json!({ "t": "revoke", "room_id": "" })).await;
+    let mut c2 = connect(&url).await;
+    send(&mut c2, json!({ "t": "join", "pair_code": "devdy-login" })).await;
+    assert_eq!(recv_json(&mut c2).await.unwrap()["t"], "room_ready");
+}

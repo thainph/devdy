@@ -167,9 +167,9 @@ pub fn rehydrate(cred: &crate::secrets::RemoteSession) -> Result<BoundSession, S
     Ok(BoundSession {
         run_id: cred.run_id.clone(),
         rendezvous_code: cred.rendezvous_code.clone(),
-        // link_secret is controller-held only; the host recomputes the reconnect
-        // key from session_secret + the controller's link_secret at open time.
-        link_secret: String::new(),
+        // Empty for credentials persisted before it was stored; such a session
+        // can only be re-entered via OTP / password login.
+        link_secret: cred.link_secret.clone(),
         keypair,
         host_fingerprint,
         otp: String::new(),
@@ -229,6 +229,7 @@ mod tests {
             session_secret: "00112233445566778899aabbccddeeff".to_string(),
             host_pub: pub_hex,
             host_secret: sec_hex,
+            link_secret: String::new(),
             idle_expires_at: 0,
         };
         let s = rehydrate(&cred).expect("rehydrate ok");
@@ -246,6 +247,7 @@ mod tests {
             session_secret: "aa".to_string(),
             host_pub: "zz".to_string(),
             host_secret: "zz".to_string(),
+            link_secret: String::new(),
             idle_expires_at: 0,
         };
         assert!(rehydrate(&cred).is_err());

@@ -248,6 +248,10 @@ async fn connect_once(
 
     // The rendezvous code this connection listens on (None = not listening).
     let mut listening: Option<String> = None;
+    // Password login: whether the login slot is armed, and the login room
+    // currently mid-handshake (if any).
+    let mut login_listening = false;
+    let mut login: Option<LoginPending> = None;
 
     let seq = Arc::new(SeqCounter::default());
     let rate = Arc::new(TokioMutex::new(CommandRateLimiter::new(Instant::now())));
@@ -261,6 +265,7 @@ async fn connect_once(
     let mut forward_task: Option<tokio::task::JoinHandle<()>> = None;
 
     sync_listen(deps, &out_tx, &mut listening, &mut room_ctx, &mut pending_room, &mut forward_task).await;
+    sync_login_listen(&out_tx, &mut login_listening, &mut login);
 
     // Heartbeat: keep the host↔relay socket warm through idle-killing proxies
     // once a run stops streaming. Carries the ACTIVE room id (if any) so the relay
@@ -311,6 +316,7 @@ async fn connect_once(
             }
             _ = deps.announce_signal.notified() => {
                 sync_listen(deps, &out_tx, &mut listening, &mut room_ctx, &mut pending_room, &mut forward_task).await;
+                sync_login_listen(&out_tx, &mut login_listening, &mut login);
             }
             msg = stream.next() => {
                 let Some(msg) = msg else { break ConnectOutcome::Disconnected; };
@@ -344,6 +350,15 @@ async fn connect_once(
                         message = env.message.as_deref().unwrap_or("")
                     );
                     break ConnectOutcome::Disconnected;
+                }
+                // Password-login frames are self-contained; everything else is
+                // the session path.
+                if login_frame(&env, login.as_ref()) {
+                    handle_login_frame(
+                        env, deps, &out_tx, &seq, &mut login,
+                        &mut listening, &mut room_ctx, &mut pending_room, &mut forward_task,
+                    ).await;
+                    continue;
                 }
                 dispatch_inbound(
                     env, config, deps, &out_tx, &seq, &rate, &idem, &idle,
@@ -396,6 +411,187 @@ async fn sync_listen(
         }
     }
     *listening = want;
+}
+
+/// A password-login handshake in progress on the login slot.
+struct LoginPending {
+    room_id: String,
+    /// Ephemeral keypair for this attempt only (not the session's).
+    keypair: remote_e2e::Keypair,
+    controller_pub: Option<Vec<u8>>,
+}
+
+/// Listen on the login slot exactly while a master password is set.
+fn sync_login_listen(out_tx: &OutboundTx, login_listening: &mut bool, login: &mut Option<LoginPending>) {
+    let want = crate::secrets::has_remote_master_password();
+    if want == *login_listening {
+        return;
+    }
+    let frame = if want {
+        Envelope::create_pair_slot(crate::remote::login::LOGIN_CODE, crate::remote::login::LOGIN_SLOT)
+    } else {
+        *login = None;
+        Envelope::revoke_slot(crate::remote::login::LOGIN_SLOT)
+    };
+    let _ = out_tx.send(frame);
+    *login_listening = want;
+}
+
+/// Whether `env` belongs to the password-login flow.
+fn login_frame(env: &Envelope, login: Option<&LoginPending>) -> bool {
+    if env.t == FrameType::RoomReady {
+        return env.slot.as_deref() == Some(crate::remote::login::LOGIN_SLOT);
+    }
+    login.is_some_and(|l| !env.room_id.is_empty() && l.room_id == env.room_id)
+}
+
+/// Drive one password-login frame: offer the handshake on join, keep the
+/// controller key from the answer, and grant (or refuse) on the first sealed
+/// frame.
+#[allow(clippy::too_many_arguments)]
+async fn handle_login_frame(
+    env: Envelope,
+    deps: &AgentDeps,
+    out_tx: &OutboundTx,
+    seq: &Arc<SeqCounter>,
+    login: &mut Option<LoginPending>,
+    listening: &mut Option<String>,
+    room_ctx: &mut Option<Arc<HandlerCtx>>,
+    pending_room: &mut Option<String>,
+    forward_task: &mut Option<tokio::task::JoinHandle<()>>,
+) {
+    use base64::Engine as _;
+    match env.t {
+        FrameType::RoomReady => {
+            if env.code.as_deref() == Some("armed") || env.room_id.is_empty() {
+                return;
+            }
+            let keypair = remote_e2e::Keypair::generate();
+            let Ok(fp) = host_fingerprint(&keypair.public) else { return };
+            let offer = HandshakePayload::HsOffer {
+                host_pub: crate::remote::pairing_hex(&keypair.public),
+                host_fingerprint: fp,
+            };
+            if let Ok(json) = serde_json::to_vec(&offer) {
+                let cipher = base64::engine::general_purpose::STANDARD.encode(json);
+                let _ = out_tx.send(Envelope::data(FrameType::Control, &env.room_id, cipher, seq.next()));
+            }
+            tracing::info!(event = "remote_login_offered", room_id = %env.room_id);
+            *login = Some(LoginPending {
+                room_id: env.room_id,
+                keypair,
+                controller_pub: None,
+            });
+        }
+        FrameType::Control => {
+            let Some(l) = login.as_mut() else { return };
+            let Some(json) = env
+                .cipher
+                .as_deref()
+                .and_then(|c| base64::engine::general_purpose::STANDARD.decode(c).ok())
+            else {
+                return;
+            };
+            if let Ok(HandshakePayload::HsAnswer { controller_pub }) = serde_json::from_slice(&json) {
+                l.controller_pub = crate::remote::pairing_unhex(&controller_pub).filter(|b| b.len() == 32);
+            }
+        }
+        FrameType::Cmd => {
+            let Some(l) = login.as_ref() else { return };
+            let (Some(controller_pub), Some(cipher)) = (l.controller_pub.clone(), env.cipher.clone()) else {
+                return;
+            };
+            let room_id = l.room_id.clone();
+            let allowed = crate::remote::login::FAILURES
+                .lock()
+                .map(|mut f| f.allow(Instant::now()))
+                .unwrap_or(false);
+            if !allowed {
+                tracing::warn!(event = "remote_login_throttled");
+                audit::audit(&deps.db, None, Some(&room_id), None, "login", audit::RESULT_REJECTED, Some("throttled")).await;
+                // Closing the room is the refusal signal the controller sees.
+                let _ = out_tx.send(Envelope::revoke(room_id));
+                *login = None;
+                return;
+            }
+            let Some(password) = crate::secrets::get_remote_master_password() else { return };
+            let Ok(psk) = tokio::task::spawn_blocking(move || crate::remote::login::login_psk(&password)).await else {
+                return;
+            };
+            let opened = Session::new(&psk, &l.keypair, &controller_pub)
+                .ok()
+                .filter(|s| s.open(&cipher).is_ok());
+            let Some(session) = opened else {
+                if let Ok(mut f) = crate::remote::login::FAILURES.lock() {
+                    f.record_failure(Instant::now());
+                }
+                tracing::warn!(event = "remote_login_failed", room_id = %room_id);
+                audit::audit(&deps.db, None, Some(&room_id), None, "login", audit::RESULT_REJECTED, Some("bad_password")).await;
+                let _ = out_tx.send(Envelope::revoke(room_id));
+                *login = None;
+                return;
+            };
+            // Password proven. Hand out a full session link + token; mint a
+            // session when none is bound or the bound one cannot be re-entered
+            // (no link secret: persisted before it was stored).
+            let Some(grant) = ensure_grantable_session(deps).await else {
+                tracing::warn!(event = "remote_login_no_run");
+                return;
+            };
+            sync_listen(deps, out_tx, listening, room_ctx, pending_room, forward_task).await;
+            if let Ok(json) = serde_json::to_vec(&grant) {
+                let c = session.seal(&json);
+                let _ = out_tx.send(Envelope::data(FrameType::Stream, &room_id, c, seq.next()));
+            }
+            // Done with the login room; the Controller continues on the session.
+            let _ = out_tx.send(Envelope::revoke(room_id.clone()));
+            *login = None;
+            audit::audit(&deps.db, None, Some(&room_id), None, "login", audit::RESULT_ACCEPTED, None).await;
+            tracing::info!(event = "remote_login_granted", room_id = %room_id);
+        }
+        FrameType::PeerLeft | FrameType::Error => {
+            *login = None;
+        }
+        _ => {}
+    }
+}
+
+/// The bound session's link + token, minting a session first when nothing
+/// usable is bound. `None` when there is no run to bind to.
+async fn ensure_grantable_session(deps: &AgentDeps) -> Option<StreamPayload> {
+    let current_run = {
+        let bound = deps.bound.lock().await;
+        match bound.as_ref() {
+            Some(b) if !b.link_secret.is_empty() => return Some(grant_of(b)),
+            Some(b) => Some(b.run_id.clone()),
+            None => None,
+        }
+    };
+    let run_id = match current_run {
+        Some(r) => r,
+        None => sqlx::query_scalar::<_, String>(
+            "SELECT id FROM runs ORDER BY COALESCE(last_activity_at, finished_at, started_at, created_at) DESC LIMIT 1",
+        )
+        .fetch_optional(&deps.db)
+        .await
+        .ok()
+        .flatten()?,
+    };
+    let fresh = crate::remote::session::generate(&run_id).ok()?;
+    let _ = crate::secrets::delete_remote_session();
+    let grant = grant_of(&fresh);
+    *deps.bound.lock().await = Some(fresh);
+    Some(grant)
+}
+
+fn grant_of(b: &BoundSession) -> StreamPayload {
+    StreamPayload::LoginGranted {
+        host_fingerprint: b.host_fingerprint.clone(),
+        rendezvous_code: b.rendezvous_code.clone(),
+        run_id: b.run_id.clone(),
+        link_secret: b.link_secret.clone(),
+        token: b.session_secret.clone(),
+    }
 }
 
 /// Forget the current room (authenticated or mid-handshake): stop forwarding,
@@ -800,6 +996,7 @@ async fn try_authenticate_first_frame(
             host_pub: crate::remote::pairing_hex(&b.keypair.public),
             host_secret: crate::remote::pairing_hex(&b.keypair.secret),
             idle_expires_at: idle_expires,
+            link_secret: b.link_secret.clone(),
         };
         let _ = crate::secrets::set_remote_session(&cred);
         // The opaque token is the session_secret (bearer for the controller); it

@@ -7,13 +7,45 @@
  */
 import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Link2, ShieldCheck } from 'lucide-vue-next'
-import { Button, Textarea } from '@/components/ui'
+import { KeyRound, Link2, Loader2, ShieldCheck } from 'lucide-vue-next'
+import { Button, Input, Textarea } from '@/components/ui'
 import { parseSessionLink, SessionLinkParseError, type SessionLinkPayload } from '../protocol'
+import { LoginError, loginWithPassword, type LoginGrant } from '../login'
 
 const { t } = useI18n()
 
-const emit = defineEmits<{ link: [payload: SessionLinkPayload] }>()
+const emit = defineEmits<{ link: [payload: SessionLinkPayload]; granted: [grant: LoginGrant] }>()
+
+// Password login: for when the link is lost. The owner's master password alone
+// reaches the Host through its login slot.
+const password = ref('')
+const loggingIn = ref(false)
+const loginError = ref<string | null>(null)
+
+async function submitPassword(): Promise<void> {
+  if (loggingIn.value) return
+  if (!password.value) {
+    loginError.value = t('controller.link.passwordFirst')
+    return
+  }
+  loggingIn.value = true
+  loginError.value = null
+  try {
+    const grant = await loginWithPassword(password.value)
+    password.value = ''
+    emit('granted', grant)
+  } catch (e) {
+    const code = e instanceof LoginError ? e.code : 'network'
+    loginError.value =
+      code === 'wrong_password'
+        ? t('controller.link.loginWrongPassword')
+        : code === 'host_offline'
+          ? t('controller.link.loginHostOffline')
+          : t('controller.link.loginNetwork')
+  } finally {
+    loggingIn.value = false
+  }
+}
 
 const manual = ref('')
 const error = ref<string | null>(null)
@@ -85,6 +117,30 @@ onMounted(() => {
           <Link2 class="h-4 w-4" :stroke-width="2" /> {{ t('controller.link.continue') }}
         </Button>
         <p v-if="error" class="text-sm text-destructive text-center">{{ error }}</p>
+      </div>
+
+      <div class="space-y-3 border-t border-border pt-6">
+        <label class="block text-xs font-medium uppercase tracking-wider text-foreground/50">
+          {{ t('controller.link.passwordLabel') }}
+        </label>
+        <form class="space-y-3" @submit.prevent="submitPassword">
+          <Input
+            v-model="password"
+            type="password"
+            autocomplete="current-password"
+            :placeholder="t('controller.link.passwordPlaceholder')"
+            :disabled="loggingIn"
+          />
+          <Button type="submit" variant="outline" class="w-full" :disabled="loggingIn">
+            <Loader2 v-if="loggingIn" class="h-4 w-4 animate-spin" :stroke-width="2" />
+            <KeyRound v-else class="h-4 w-4" :stroke-width="2" />
+            {{ loggingIn ? t('controller.link.passwordWorking') : t('controller.link.passwordLogin') }}
+          </Button>
+        </form>
+        <p v-if="loginError" class="text-sm text-destructive text-center">{{ loginError }}</p>
+        <p class="text-[11px] leading-relaxed text-foreground/40 text-center">
+          {{ t('controller.link.passwordHint') }}
+        </p>
       </div>
 
       <p class="text-[11px] leading-relaxed text-foreground/40 text-center">

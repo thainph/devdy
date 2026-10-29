@@ -69,7 +69,16 @@
     "continue": "Tiếp tục",
     "couldNotRead": "Không đọc được link.",
     "pasteFirst": "Dán controller link trước đã.",
-    "e2eNote": "Kết nối được mã hóa đầu-cuối. Bạn sẽ nhập mã một lần hiển thị trên host để hoàn tất kết nối. Relay không bao giờ thấy dữ liệu của bạn, và fingerprint host được xác minh."
+    "e2eNote": "Kết nối được mã hóa đầu-cuối. Bạn sẽ nhập mã một lần hiển thị trên host để hoàn tất kết nối. Relay không bao giờ thấy dữ liệu của bạn, và fingerprint host được xác minh.",
+    "passwordLabel": "Hoặc đăng nhập bằng mật khẩu",
+    "passwordPlaceholder": "Master password của Remote",
+    "passwordLogin": "Đăng nhập",
+    "passwordWorking": "Đang đăng nhập…",
+    "passwordFirst": "Nhập mật khẩu trước đã.",
+    "passwordHint": "Mất link? Master password đặt trong Devdy (Settings → Remote Control) kết nối thẳng tới host. Sai 5 lần sẽ bị khóa 5 phút.",
+    "loginWrongPassword": "Sai mật khẩu (hoặc thử quá nhiều lần — đợi vài phút).",
+    "loginHostOffline": "Không kết nối được tới Devdy: kiểm tra app đang chạy, đã bật Remote Control và đặt master password.",
+    "loginNetwork": "Không kết nối được tới relay. Kiểm tra mạng rồi thử lại."
   },
   "browser": {
     "title": "Các run",

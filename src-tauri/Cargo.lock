@@ -1071,6 +1071,7 @@ dependencies = [
  "notify",
  "notify-rust",
  "octocrab",
+ "pbkdf2",
  "rand 0.8.6",
  "remote-e2e",
  "reqwest 0.12.28",
