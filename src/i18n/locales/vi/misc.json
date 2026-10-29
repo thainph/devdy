@@ -81,6 +81,13 @@
     "run": "Run",
     "project": "Dự án"
   },
+  "remoteDesktopHost": {
+    "title": "Đang bị điều khiển từ một Devdy khác",
+    "since": "từ {time}",
+    "hint": "Một Devdy khác đang điều khiển ứng dụng này qua Remote Control. Ngắt kết nối sẽ cắt ngay; thiết bị đó vẫn có thể đăng nhập lại trừ khi bạn đổi mật khẩu chính hoặc kết thúc phiên.",
+    "disconnect": "Ngắt kết nối",
+    "disconnectFailed": "Không thể ngắt kết nối: {error}"
+  },
   "ide": {
     "openFile": "Mở {path}",
     "selected": "Đã chọn",

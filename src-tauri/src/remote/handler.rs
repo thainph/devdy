@@ -318,6 +318,8 @@ async fn handle_ipc(ctx: &HandlerCtx, cmd: &CmdPayload) {
         "ipc_hello" => return,
         "ipc_invoke" => {
             let (Some(id), Some(name)) = (cmd.id.as_deref(), cmd.cmd.as_deref()) else { return };
+            // Name only: args may carry anything (prompts, paths, secrets).
+            tracing::debug!(event = "remote_ipc_invoke", cmd = %name);
             serde_json::json!({
                 "type": "invoke",
                 "id": id,
