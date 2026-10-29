@@ -806,6 +806,11 @@ fn read_bundle(path: &str) -> Result<Bundle, String> {
     let raw = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
     let bundle: Bundle =
         serde_json::from_slice(&raw).map_err(|_| "Not a Devdy settings backup file".to_string())?;
+    check_bundle(&bundle)?;
+    Ok(bundle)
+}
+
+fn check_bundle(bundle: &Bundle) -> Result<(), String> {
     if bundle.format != FORMAT {
         return Err("Not a Devdy settings backup file".to_string());
     }
@@ -815,7 +820,7 @@ fn read_bundle(path: &str) -> Result<Bundle, String> {
             bundle.version
         ));
     }
-    Ok(bundle)
+    Ok(())
 }
 
 // ---- Export ------------------------------------------------------------------
@@ -1564,8 +1569,7 @@ pub async fn import_settings_backup(
     password: Option<String>,
     create_missing_dirs: Option<bool>,
 ) -> Result<ImportReport, String> {
-    let mut bundle = read_bundle(&path)?;
-    remap_bundle_paths(&mut bundle, std::env::var("HOME").ok().as_deref());
+    let bundle = read_bundle(&path)?;
     let password = password.filter(|p| !p.is_empty());
     let mut report = ImportReport::default();
 
@@ -1588,8 +1592,92 @@ pub async fn import_settings_backup(
         }
         (None, _) => None,
     };
-    let secret = secret.unwrap_or_default();
-    let db = db.inner();
+    Ok(apply_bundle(
+        &app,
+        db.inner(),
+        bundle,
+        secret.unwrap_or_default(),
+        create_missing_dirs.unwrap_or(false),
+        report,
+    )
+    .await)
+}
+
+// ---- LAN transfer --------------------------------------------------------------
+
+/// A backup carried over the end-to-end encrypted LAN channel (`lan_sync`). The channel itself is
+/// the protection, so the secrets travel as a plain payload inside it: no password, no Argon2.
+#[derive(Serialize, Deserialize)]
+struct Transfer {
+    bundle: Bundle,
+    #[serde(default)]
+    secrets: Option<SecretPayload>,
+}
+
+/// A transfer received from another machine, parsed and waiting for the user to import it.
+pub struct ReceivedBackup(Transfer);
+
+impl ReceivedBackup {
+    pub fn parse(raw: &[u8]) -> Result<Self, String> {
+        let transfer: Transfer = serde_json::from_slice(raw)
+            .map_err(|_| "The other device sent unreadable data".to_string())?;
+        check_bundle(&transfer.bundle)?;
+        Ok(Self(transfer))
+    }
+
+    pub fn info(&self) -> BackupInfo {
+        let mut info = self.0.bundle.info();
+        info.has_secrets = self.0.secrets.is_some();
+        info
+    }
+}
+
+/// The whole configuration of this machine, serialized for a LAN transfer.
+pub async fn export_transfer(
+    app: &AppHandle,
+    db: &Db,
+    with_secrets: bool,
+) -> Result<Vec<u8>, String> {
+    let (bundle, payload) = collect(app, db, with_secrets).await?;
+    let transfer = Transfer {
+        bundle,
+        secrets: with_secrets.then_some(payload),
+    };
+    serde_json::to_vec(&transfer).map_err(|e| e.to_string())
+}
+
+pub async fn import_received(
+    app: &AppHandle,
+    db: &Db,
+    received: ReceivedBackup,
+    create_missing_dirs: bool,
+) -> ImportReport {
+    let Transfer { bundle, secrets } = received.0;
+    let report = ImportReport {
+        secrets_imported: secrets.is_some(),
+        ..Default::default()
+    };
+    apply_bundle(
+        app,
+        db,
+        bundle,
+        secrets.unwrap_or_default(),
+        create_missing_dirs,
+        report,
+    )
+    .await
+}
+
+/// Merge `bundle` into this machine (shared by the file import and the LAN transfer).
+async fn apply_bundle(
+    app: &AppHandle,
+    db: &Db,
+    mut bundle: Bundle,
+    secret: SecretPayload,
+    create_missing_dirs: bool,
+    mut report: ImportReport,
+) -> ImportReport {
+    remap_bundle_paths(&mut bundle, std::env::var("HOME").ok().as_deref());
 
     import_settings(db, &bundle, &mut report).await;
 
@@ -1662,7 +1750,6 @@ pub async fn import_settings_backup(
         report.record("claudeAccounts", &entry.label, result);
     }
     // Projects before notes / todos / threads so those can re-link to them.
-    let create_missing_dirs = create_missing_dirs.unwrap_or(false);
     let app_data = app.path().app_data_dir().ok();
     let mut project_ids: Vec<(usize, String)> = Vec::new();
     for (index, entry) in bundle.projects.iter().enumerate() {
@@ -1740,7 +1827,7 @@ pub async fn import_settings_backup(
         }
     }
 
-    Ok(report)
+    report
 }
 
 /// `path` moved from the exporting machine's home to this one's (`/Users/a/x` → `/Users/b/x`).

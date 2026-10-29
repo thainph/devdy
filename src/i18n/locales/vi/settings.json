@@ -476,5 +476,38 @@
       "projects": "Project",
       "pulseWatches": "Theo dõi Pulse"
     }
+  },
+  "lanSync": {
+    "title": "Đồng bộ qua mạng LAN",
+    "help": "Lấy toàn bộ cấu hình từ một máy Devdy khác trong cùng mạng (cùng nội dung với file sao lưu, gộp theo cùng quy tắc: không xoá gì trên máy này). Dữ liệu được mã hoá đầu-cuối bằng mã dùng một lần hiện trên máy kia.",
+    "pull": {
+      "title": "Lấy dữ liệu từ máy khác",
+      "rescan": "Quét lại",
+      "scanning": "Đang tìm máy Devdy trong mạng…",
+      "noDevices": "Không thấy máy nào. Trên máy có dữ liệu, mở Cài đặt → Sao lưu & Đồng bộ và bấm “Bắt đầu chia sẻ”, rồi quét lại — hoặc nhập địa chỉ hiển thị ở máy đó.",
+      "manual": "Nhập địa chỉ",
+      "code": "Mã 6 số",
+      "codeHint": "Mã hiển thị trên máy đang chia sẻ. Nhập sai 5 lần thì máy đó tự dừng chia sẻ.",
+      "button": "Lấy dữ liệu",
+      "from": "Dữ liệu từ {peer}",
+      "withSecrets": "Có kèm secret: sẽ được lưu vào Keychain của máy này.",
+      "withoutSecrets": "Không kèm secret: sau khi nhập cần xác thực lại các tài khoản."
+    },
+    "share": {
+      "title": "Cho máy khác lấy dữ liệu từ máy này",
+      "help": "Mở chia sẻ trong 10 phút cho một lần lấy dữ liệu. Máy kia cần nhập mã hiển thị ở đây.",
+      "includeSecrets": "Kèm secret",
+      "includeSecretsHint": "PAT, giá trị env/header của MCP, token Google, passphrase SSH và private key đã nhập. Chỉ đi qua kênh đã mã hoá.",
+      "start": "Bắt đầu chia sẻ",
+      "codeLabel": "Mã để nhập ở máy kia",
+      "expiresIn": "Còn {time}",
+      "addresses": "Địa chỉ:",
+      "notAdvertised": "Không quảng bá được trong mạng (mDNS): máy kia hãy nhập địa chỉ ở trên.",
+      "secretsWarning": "Đang chia sẻ kèm secret — chỉ đưa mã cho chính bạn trên máy kia.",
+      "stop": "Dừng chia sẻ",
+      "sent": "Đã gửi dữ liệu cho {peer}",
+      "expired": "Đã hết thời gian chia sẻ",
+      "tooManyAttempts": "Đã dừng chia sẻ: nhập sai mã quá nhiều lần"
+    }
   }
 }
