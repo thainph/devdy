@@ -60,6 +60,11 @@ dryoc = "1.0"
 axum = "0.7"
 drag = "2.1.1"
 
+# LAN sync: Bonjour discovery + SPAKE2 handshake keyed by the one-time code (lan_sync/).
+mdns-sd = "0.21"
+if-addrs = "0.15"
+spake2 = "0.4"
+
 [target.'cfg(unix)'.dependencies]
 # Process-group SIGKILL on app exit / cancel, so sidecar + CLI children don't
 # linger and burn API tokens after the app closes.

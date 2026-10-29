@@ -476,5 +476,38 @@
       "projects": "Projects",
       "pulseWatches": "Pulse watches"
     }
+  },
+  "lanSync": {
+    "title": "Sync over LAN",
+    "help": "Pull the whole configuration from another Devdy machine on the same network (the same content as a backup file, merged the same way: nothing on this machine is deleted). The transfer is end-to-end encrypted with the one-time code shown on the other machine.",
+    "pull": {
+      "title": "Get data from another device",
+      "rescan": "Rescan",
+      "scanning": "Looking for Devdy devices on the network…",
+      "noDevices": "No device found. On the machine that has the data, open Settings → Backup & Sync and click “Start sharing”, then rescan — or type the address it shows.",
+      "manual": "Enter address",
+      "code": "6-digit code",
+      "codeHint": "The code shown on the sharing device. After 5 wrong codes it stops sharing.",
+      "button": "Get data",
+      "from": "Data from {peer}",
+      "withSecrets": "Includes secrets: they will be stored in this machine's Keychain.",
+      "withoutSecrets": "No secrets: re-authenticate the accounts after importing."
+    },
+    "share": {
+      "title": "Let another device get data from this one",
+      "help": "Opens sharing for 10 minutes, for one transfer. The other device has to enter the code shown here.",
+      "includeSecrets": "Include secrets",
+      "includeSecretsHint": "PATs, MCP env/header values, Google tokens, SSH passphrases and imported private keys. They only travel over the encrypted channel.",
+      "start": "Start sharing",
+      "codeLabel": "Code to enter on the other device",
+      "expiresIn": "{time} left",
+      "addresses": "Address:",
+      "notAdvertised": "Could not announce this device on the network (mDNS): enter the address above on the other device.",
+      "secretsWarning": "Sharing with secrets — only give the code to yourself on the other device.",
+      "stop": "Stop sharing",
+      "sent": "Data sent to {peer}",
+      "expired": "Sharing timed out",
+      "tooManyAttempts": "Sharing stopped: too many wrong codes"
+    }
   }
 }

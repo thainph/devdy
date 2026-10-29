@@ -6,29 +6,13 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { open, save } from '@tauri-apps/plugin-dialog'
-import { AlertTriangle, ArchiveRestore, Download, FileUp, KeyRound, Loader2, RotateCcw, Upload } from 'lucide-vue-next'
+import { ArchiveRestore, Download, FileUp, KeyRound, Loader2, Upload } from 'lucide-vue-next'
 import { Button, Card, Input } from '@/components/ui'
+import BackupContents from '@/components/BackupContents.vue'
+import BackupImportReport from '@/components/BackupImportReport.vue'
 import { useToast } from '@/composables/useToast'
 import { invoke } from '@/lib/tauri'
-
-interface BackupInfo {
-  exportedAt: string
-  appVersion: string
-  hasSecrets: boolean
-  counts: Record<string, number>
-}
-
-interface ImportCounts {
-  created: number
-  updated: number
-  unchanged: number
-}
-
-interface ImportReport {
-  counts: Record<string, ImportCounts>
-  secretsImported: boolean
-  warnings: string[]
-}
+import { formatExportedAt, type BackupInfo, type ImportReport } from '@/lib/settingsBackup'
 
 const MIN_PASSWORD = 8
 const FILE_EXT = 'devdy-backup'
@@ -81,29 +65,6 @@ const createMissingDirs = ref(true)
 const importing = ref(false)
 const report = ref<ImportReport | null>(null)
 
-const SECTION_KEYS = [
-  'settings', 'skills', 'rules', 'skillGroups', 'ruleGroups', 'mcpServers', 'vpsServers',
-  'githubAccounts', 'gitlabAccounts', 'awsAccounts', 'azureAccounts', 'googleAccounts',
-  'claudeAccounts', 'notes', 'todos', 'slackThreads', 'projects', 'pulseWatches',
-] as const
-
-const infoRows = computed(() =>
-  SECTION_KEYS
-    .map(key => ({ key, count: importInfo.value?.counts[key] ?? 0 }))
-    .filter(row => row.count > 0),
-)
-
-const reportRows = computed(() =>
-  SECTION_KEYS
-    .map(key => ({ key, c: report.value?.counts[key] }))
-    .filter((row): row is { key: (typeof SECTION_KEYS)[number]; c: ImportCounts } => !!row.c),
-)
-
-function formatExportedAt(value: string) {
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
-}
-
 async function chooseFile() {
   const selected = await open({
     multiple: false,
@@ -146,11 +107,6 @@ function cancelImport() {
   importInfo.value = null
   importPath.value = null
   importPassword.value = ''
-}
-
-// Settings, language and every list store were loaded before the import: reload to pick it all up.
-function reloadApp() {
-  window.location.reload()
 }
 </script>
 
@@ -238,12 +194,7 @@ function reloadApp() {
             {{ t('settings.backup.import.exportedAt', { at: formatExportedAt(importInfo.exportedAt), version: importInfo.appVersion || '?' }) }}
           </div>
         </div>
-        <ul class="grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs">
-          <li v-for="row in infoRows" :key="row.key" class="flex justify-between gap-2">
-            <span class="text-muted-foreground">{{ t(`settings.backup.sections.${row.key}`) }}</span>
-            <span class="tabular-nums">{{ row.count }}</span>
-          </li>
-        </ul>
+        <BackupContents :info="importInfo" />
 
         <div v-if="importInfo.hasSecrets" class="space-y-1.5">
           <Input
@@ -276,41 +227,7 @@ function reloadApp() {
       </div>
 
       <!-- Result -->
-      <div v-if="report" class="space-y-2 rounded-lg border border-border/60 p-3">
-        <p class="text-xs font-medium">{{ t('settings.backup.report.title') }}</p>
-        <table class="w-full text-xs">
-          <thead class="text-[10px] uppercase tracking-wider text-muted-foreground">
-            <tr>
-              <th class="text-left font-medium" />
-              <th class="text-right font-medium">{{ t('settings.backup.report.created') }}</th>
-              <th class="text-right font-medium">{{ t('settings.backup.report.updated') }}</th>
-              <th class="text-right font-medium">{{ t('settings.backup.report.unchanged') }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="row in reportRows" :key="row.key">
-              <td class="text-muted-foreground">{{ t(`settings.backup.sections.${row.key}`) }}</td>
-              <td class="text-right tabular-nums">{{ row.c.created }}</td>
-              <td class="text-right tabular-nums">{{ row.c.updated }}</td>
-              <td class="text-right tabular-nums text-muted-foreground">{{ row.c.unchanged }}</td>
-            </tr>
-          </tbody>
-        </table>
-        <p class="text-[11px] text-muted-foreground">
-          {{ report.secretsImported ? t('settings.backup.report.secretsImported') : t('settings.backup.report.secretsNotImported') }}
-        </p>
-        <p class="text-[11px] text-muted-foreground">{{ t('settings.backup.report.reloginHint') }}</p>
-        <ul v-if="report.warnings.length" class="space-y-1 text-[11px] text-amber-600 dark:text-amber-400">
-          <li v-for="(w, i) in report.warnings" :key="i" class="flex items-start gap-1.5">
-            <AlertTriangle class="mt-px h-3 w-3 shrink-0" :stroke-width="1.75" />
-            <span class="break-all">{{ w }}</span>
-          </li>
-        </ul>
-        <Button variant="outline" size="xs" @click="reloadApp">
-          <RotateCcw class="h-3 w-3" :stroke-width="1.75" />
-          {{ t('settings.backup.report.reload') }}
-        </Button>
-      </div>
+      <BackupImportReport v-if="report" :report="report" />
     </section>
   </Card>
 </template>

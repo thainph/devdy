@@ -7,6 +7,7 @@ mod github;
 mod gitlab;
 mod inbox_api;
 mod item_links;
+mod lan_sync;
 mod procs;
 mod pulse;
 mod remote;
@@ -95,6 +96,10 @@ use commands::runs::{
     get_run_log, get_run_log_forward, get_run_log_page, get_run_log_path, get_run_log_revision, get_run_tool_records, get_run_user_records, list_live_runs, list_pending_permissions, read_run_input, rename_run, rerun_run, respond_permission,
     resume_run, send_user_message, set_run_claude_account, set_run_pinned, set_run_protected, start_run,
 };
+use commands::lan_sync::{
+    lan_sync_discard, lan_sync_discover, lan_sync_fetch, lan_sync_import, lan_sync_share_status,
+    lan_sync_start_share, lan_sync_stop_share,
+};
 use commands::sessions::reconcile_claude_sessions;
 use commands::settings::{get_settings, update_setting};
 use commands::settings_backup::{
@@ -172,6 +177,7 @@ pub fn run() {
         // its labels follow the app language; this only routes clicks back.
         .on_menu_event(commands::app_menu::on_menu_event)
         .manage(commands::app_menu::AppMenuState::default())
+        .manage(lan_sync::LanSyncState::default())
         .setup(|app| {
             use tauri::Manager;
             let app_data_dir = app
@@ -428,6 +434,13 @@ pub fn run() {
             export_settings_backup,
             inspect_settings_backup,
             import_settings_backup,
+            lan_sync_start_share,
+            lan_sync_stop_share,
+            lan_sync_share_status,
+            lan_sync_discover,
+            lan_sync_fetch,
+            lan_sync_import,
+            lan_sync_discard,
             list_skills,
             get_skill,
             create_skill,

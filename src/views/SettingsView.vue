@@ -18,6 +18,7 @@ import MascotBubble from '@/components/MascotBubble.vue'
 import RemoteControlSettings from '@/components/remote/RemoteControlSettings.vue'
 import InboxApiSettings from '@/components/InboxApiSettings.vue'
 import SettingsBackup from '@/components/SettingsBackup.vue'
+import SettingsLanSync from '@/components/SettingsLanSync.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useDragSort } from '@/composables/useDragSort'
@@ -2917,8 +2918,9 @@ watch(() => settings.value.language, (v) => {
           <InboxApiSettings />
         </div>
 
-        <!-- Export / import the whole configuration to move it to another machine. -->
-        <div v-if="!loading && activeSection === 'backup'" class="max-w-lg">
+        <!-- Pull the whole configuration from another machine on the LAN, or export / import it as a file. -->
+        <div v-if="!loading && activeSection === 'backup'" class="max-w-lg space-y-4">
+          <SettingsLanSync />
           <SettingsBackup />
         </div>
       </div>
