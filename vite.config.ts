@@ -24,6 +24,7 @@ export default defineConfig(async () => ({
         main: fileURLToPath(new URL('./index.html', import.meta.url)),
         controller: fileURLToPath(new URL('./controller.html', import.meta.url)),
         mascot: fileURLToPath(new URL('./mascot.html', import.meta.url)),
+        bridge: fileURLToPath(new URL('./bridge.html', import.meta.url)),
       },
     },
   },

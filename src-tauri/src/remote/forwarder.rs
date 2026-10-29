@@ -49,7 +49,7 @@ impl SeqCounter {
 
 /// Seal a stream payload into an envelope, or `None` if serialization/sealing
 /// fails (never panics on the network path).
-fn seal_stream(
+pub(crate) fn seal_stream(
     session: &Session,
     room_id: &str,
     payload: &StreamPayload,

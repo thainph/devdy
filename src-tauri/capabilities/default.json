@@ -15,7 +15,9 @@
     "slack-threads",
     "pr-inbox",
     "calendar",
-    "pulse"
+    "pulse",
+    "remote-bridge",
+    "remote-desktop"
   ],
   "permissions": [
     "core:default",
