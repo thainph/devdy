@@ -9,7 +9,7 @@
  * itself authenticates the Host, and the granted link pins it from then on.
  */
 import { ready as e2eReady, generateKeypair, deriveEffectivePsk } from '@/remote/e2e'
-import { LOGIN_CODE, LOGIN_LINK_SECRET, sameOriginRelayUrl, stretchPassword } from '@/lib/remoteLogin'
+import { LOGIN_LINK_SECRET, loginCodeFor, sameOriginRelayUrl, stretchPassword } from '@/lib/remoteLogin'
 import {
   base64ToUtf8,
   cmdFrame,
@@ -41,10 +41,18 @@ export interface LoginGrant {
   token: string
 }
 
+export interface LoginOptions {
+  /** Relay WebSocket URL; defaults to the relay serving this page. */
+  relayUrl?: string
+  /** Alias of the Host to log in to (selects its login code); none = unnamed. */
+  device?: string
+}
+
 /** Log in with `password`. Resolves with the granted link + token. */
-export async function loginWithPassword(password: string): Promise<LoginGrant> {
+export async function loginWithPassword(password: string, opts: LoginOptions = {}): Promise<LoginGrant> {
   await e2eReady()
-  const relayUrl = sameOriginRelayUrl(window.location)
+  const relayUrl = opts.relayUrl ?? sameOriginRelayUrl(window.location)
+  const loginCode = loginCodeFor(opts.device)
   const psk = deriveEffectivePsk(LOGIN_LINK_SECRET, await stretchPassword(password))
 
   return new Promise<LoginGrant>((resolve, reject) => {
@@ -82,7 +90,7 @@ export async function loginWithPassword(password: string): Promise<LoginGrant> {
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(env))
     }
 
-    ws.onopen = () => send(joinFrame(LOGIN_CODE))
+    ws.onopen = () => send(joinFrame(loginCode))
     ws.onerror = () => {}
     ws.onclose = () => finish(new LoginError('network'))
     ws.onmessage = (ev) => {

@@ -2,7 +2,14 @@
 // Run: node --test src/lib/__tests__/remoteLogin.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { LOGIN_LINK_SECRET, sameOriginRelayUrl, stretchPassword } from '../remoteLogin.ts'
+import {
+  DEVICE_ALIAS_RE,
+  LOGIN_LINK_SECRET,
+  loginCodeFor,
+  relayWsUrl,
+  sameOriginRelayUrl,
+  stretchPassword,
+} from '../remoteLogin.ts'
 import { deriveEffectivePsk, ready } from '../../remote/e2e/index.ts'
 
 const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')
@@ -23,4 +30,29 @@ test('login PSK matches the Rust host vector', async () => {
 test('sameOriginRelayUrl follows the page scheme', () => {
   assert.equal(sameOriginRelayUrl({ protocol: 'https:', host: 'relay.example.com' }), 'wss://relay.example.com/ws')
   assert.equal(sameOriginRelayUrl({ protocol: 'http:', host: 'localhost:8080' }), 'ws://localhost:8080/ws')
+})
+
+test('loginCodeFor mirrors login::login_code', () => {
+  assert.equal(loginCodeFor(), 'devdy-login-v1')
+  assert.equal(loginCodeFor(''), 'devdy-login-v1')
+  assert.equal(loginCodeFor('  '), 'devdy-login-v1')
+  assert.equal(loginCodeFor('mac-mini'), 'devdy-login-v1/mac-mini')
+})
+
+test('DEVICE_ALIAS_RE mirrors login::valid_alias', () => {
+  assert.ok(DEVICE_ALIAS_RE.test(''))
+  assert.ok(DEVICE_ALIAS_RE.test('mac-mini-2'))
+  assert.ok(DEVICE_ALIAS_RE.test('a'.repeat(32)))
+  assert.ok(!DEVICE_ALIAS_RE.test('a'.repeat(33)))
+  assert.ok(!DEVICE_ALIAS_RE.test('Mac'))
+  assert.ok(!DEVICE_ALIAS_RE.test('mac/mini'))
+})
+
+test('relayWsUrl keeps ws(s) URLs and maps http(s) to the /ws endpoint', () => {
+  assert.equal(relayWsUrl('wss://relay.example.com/ws'), 'wss://relay.example.com/ws')
+  assert.equal(relayWsUrl('ws://localhost:8080/ws'), 'ws://localhost:8080/ws')
+  assert.equal(relayWsUrl('https://relay.example.com'), 'wss://relay.example.com/ws')
+  assert.equal(relayWsUrl('http://localhost:8080/'), 'ws://localhost:8080/ws')
+  assert.equal(relayWsUrl(''), null)
+  assert.equal(relayWsUrl('not a url'), null)
 })

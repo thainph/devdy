@@ -78,7 +78,10 @@
     "passwordHint": "Lost the link? The master password set in Devdy (Settings → Remote Control) reaches your host directly. 5 wrong tries lock it for 5 minutes.",
     "loginWrongPassword": "Wrong password (or too many tries — wait a few minutes).",
     "loginHostOffline": "Devdy is not reachable: make sure it is running with Remote Control on and a master password set.",
-    "loginNetwork": "Could not reach the relay. Check your connection and try again."
+    "loginNetwork": "Could not reach the relay. Check your connection and try again.",
+    "deviceLabel": "Device",
+    "devicePlaceholder": "Device name (optional)",
+    "deviceInvalid": "Device names use only lowercase letters, digits and '-' (up to 32)."
   },
   "browser": {
     "title": "Runs",

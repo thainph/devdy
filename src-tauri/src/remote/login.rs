@@ -23,7 +23,29 @@ use remote_e2e::derive_effective_psk;
 /// Rendezvous code of the password-login slot. Public by design: knowing it
 /// only lets a peer *try* a password, which the Host rate limits.
 pub const LOGIN_CODE: &str = "devdy-login-v1";
-/// Relay listen slot for [`LOGIN_CODE`].
+/// Longest accepted device alias.
+pub const MAX_ALIAS_LEN: usize = 32;
+
+/// Whether `alias` is a valid device alias: `[a-z0-9-]{0,32}` (empty = none).
+pub fn valid_alias(alias: &str) -> bool {
+    alias.len() <= MAX_ALIAS_LEN
+        && alias
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// The login rendezvous code for this device: [`LOGIN_CODE`], or
+/// `LOGIN_CODE/<alias>` when the owner named it, so hosts sharing a relay (and
+/// possibly a master password) each get their own login slot. Must match
+/// `loginCodeFor` in `src/lib/remoteLogin.ts`.
+pub fn login_code(alias: Option<&str>) -> String {
+    match alias.filter(|a| !a.is_empty()) {
+        Some(a) => format!("{LOGIN_CODE}/{a}"),
+        None => LOGIN_CODE.to_string(),
+    }
+}
+
+/// Relay listen slot for the login code.
 pub const LOGIN_SLOT: &str = "login";
 /// Public stand-in for the link secret in the login KDF (hex of
 /// `"devdy remote login v1 public key"`). Must match the controller.
@@ -120,6 +142,25 @@ mod tests {
         );
     }
     const LOGIN_PSK_VECTOR: &str = "c2ee56d76cc322ce322e386031f956429595a64a04195e648ba9f27fa070e57f";
+
+    #[test]
+    fn login_code_appends_the_alias() {
+        assert_eq!(login_code(None), "devdy-login-v1");
+        assert_eq!(login_code(Some("")), "devdy-login-v1");
+        assert_eq!(login_code(Some("mac-mini")), "devdy-login-v1/mac-mini");
+    }
+
+    #[test]
+    fn alias_validation() {
+        assert!(valid_alias(""));
+        assert!(valid_alias("mac-mini-2"));
+        assert!(valid_alias(&"a".repeat(MAX_ALIAS_LEN)));
+        assert!(!valid_alias(&"a".repeat(MAX_ALIAS_LEN + 1)));
+        assert!(!valid_alias("Mac"));
+        assert!(!valid_alias("mac mini"));
+        assert!(!valid_alias("mac/mini"));
+        assert!(!valid_alias("máy"));
+    }
 
     #[test]
     fn limiter_blocks_after_max_failures_then_recovers() {
