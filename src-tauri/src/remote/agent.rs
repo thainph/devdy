@@ -128,6 +128,8 @@ pub struct AgentDeps {
     /// Wakes the agent whenever the bound session changes (new link, or ended)
     /// so it re-syncs what it listens on with the relay.
     pub announce_signal: Arc<tokio::sync::Notify>,
+    /// Owner kill switch: drop the current Controller room.
+    pub kick_signal: Arc<tokio::sync::Notify>,
     /// Runs the Controller is streaming (shared with the handler + forwarder).
     pub subscriptions: crate::remote::RunSubscriptions,
     /// The run the Controller is currently viewing.
@@ -319,6 +321,9 @@ async fn connect_once(
             _ = deps.announce_signal.notified() => {
                 sync_listen(deps, &out_tx, &mut listening, &mut room_ctx, &mut pending_room, &mut forward_task).await;
                 sync_login_listen(deps, &out_tx, &mut login_listening, &mut login).await;
+            }
+            _ = deps.kick_signal.notified() => {
+                kick_room(deps, &out_tx, &mut room_ctx, &mut pending_room, &mut forward_task).await;
             }
             msg = stream.next() => {
                 let Some(msg) = msg else { break ConnectOutcome::Disconnected; };
@@ -647,6 +652,22 @@ async fn drop_room(
     if had_ctx {
         let _ = deps.app.emit("remote://disconnected", Disconnected { run_id });
     }
+}
+
+/// Owner kill switch: close the current Controller room on the relay (the
+/// listen stays armed) and forget it here.
+async fn kick_room(
+    deps: &AgentDeps,
+    out_tx: &OutboundTx,
+    room_ctx: &mut Option<Arc<HandlerCtx>>,
+    pending_room: &mut Option<String>,
+    forward_task: &mut Option<tokio::task::JoinHandle<()>>,
+) {
+    let room_id = room_ctx.as_ref().map(|c| c.room_id.clone()).or_else(|| pending_room.clone());
+    let Some(room_id) = room_id else { return };
+    tracing::info!(event = "remote_controller_kicked", room_id = %room_id);
+    let _ = out_tx.send(Envelope::revoke(room_id));
+    drop_room(deps, room_ctx, pending_room, forward_task).await;
 }
 
 /// If nothing is bound, rebuild a bound session from a persisted, non-expired

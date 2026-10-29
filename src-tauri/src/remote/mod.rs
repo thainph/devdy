@@ -85,6 +85,9 @@ pub struct RemoteState {
     /// Signalled whenever the bound session changes (new link or ended) so a
     /// running agent re-syncs its relay listen without waiting for a reconnect.
     pub announce_signal: Arc<tokio::sync::Notify>,
+    /// Signalled by the owner's kill switch: the agent revokes the current
+    /// Controller room (it may re-join; ending the session blocks it).
+    pub kick_signal: Arc<tokio::sync::Notify>,
     /// Runs the Controller is streaming right now. Lives here (not in the agent
     /// task) so `remote_status` can report it to the desktop UI.
     pub subscriptions: RunSubscriptions,
@@ -109,6 +112,7 @@ impl RemoteState {
             connected: Arc::new(AtomicBool::new(false)),
             reconnecting: Arc::new(AtomicBool::new(false)),
             announce_signal: Arc::new(tokio::sync::Notify::new()),
+            kick_signal: Arc::new(tokio::sync::Notify::new()),
             subscriptions: Arc::new(TokioMutex::new(HashSet::new())),
             focus_run_id: Arc::new(TokioMutex::new(None)),
             ipc: ipc::IpcHub::default(),
@@ -152,6 +156,7 @@ impl RemoteState {
             connected: self.connected.clone(),
             reconnecting: self.reconnecting.clone(),
             announce_signal: self.announce_signal.clone(),
+            kick_signal: self.kick_signal.clone(),
             subscriptions: self.subscriptions.clone(),
             focus_run_id: self.focus_run_id.clone(),
             ipc: self.ipc.clone(),

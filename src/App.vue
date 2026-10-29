@@ -17,6 +17,7 @@ import CalendarReminder from '@/components/CalendarReminder.vue'
 import WorkspaceTabs from '@/components/WorkspaceTabs.vue'
 import ActiveRunsDock from '@/components/ActiveRunsDock.vue'
 import ActiveRemoteDock from '@/components/ActiveRemoteDock.vue'
+import RemoteDesktopIndicator from '@/components/RemoteDesktopIndicator.vue'
 import FileViewerWindow from '@/views/FileViewerWindow.vue'
 import PermissionWindow from '@/views/PermissionWindow.vue'
 import ThemeDecorations from '@/components/ThemeDecorations.vue'
@@ -997,6 +998,10 @@ onMounted(async () => {
 
     <!-- App-wide toast host (see useToast) -->
     <ToastHost />
+
+    <!-- "Being controlled from another Devdy" pill + kill switch. Lives outside
+         the sidebar so it stays visible when the sidebar is hidden. -->
+    <RemoteDesktopIndicator />
 
     <!-- App-wide side-by-side image comparison (banner + picker + compare view) -->
     <ImageCompareHost />

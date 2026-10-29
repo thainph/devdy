@@ -41,6 +41,10 @@ export interface RemoteStatus {
   session_authenticated: boolean
   /** Unix seconds at which the idle session token expires (sliding 3h). */
   session_idle_expires_at: number | null
+  /** Whether another Devdy is driving this one over remote-desktop IPC. */
+  desktop_controlled: boolean
+  /** Unix seconds at which that remote-desktop controller attached. */
+  desktop_controlled_since: number | null
 }
 
 /**
@@ -163,6 +167,13 @@ export const useRemoteControlStore = defineStore('remoteControl', () => {
     return await invoke<OtpReveal | null>('remote_reveal_otp')
   }
 
+  /** Kill switch: cut off the controller attached right now. It may re-join;
+   * changing the master password or ending the session keeps it out. */
+  async function kickController(): Promise<void> {
+    await invoke('remote_kick_controller')
+    await refreshStatus()
+  }
+
   /** Set (or clear, with an empty string) the owner master password, then refresh
    * status so `has_master_password` reflects the change. */
   async function setMasterPassword(password: string): Promise<void> {
@@ -190,6 +201,7 @@ export const useRemoteControlStore = defineStore('remoteControl', () => {
     createSessionLink,
     endSession,
     revealOtp,
+    kickController,
     setMasterPassword,
     setDeviceAlias,
   }
