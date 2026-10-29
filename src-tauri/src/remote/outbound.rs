@@ -84,6 +84,13 @@ impl OutboundTx {
     /// outcome and reports `Ok(())`, because the caller has no useful recovery
     /// beyond carrying on.
     pub fn send_lossy(&self, env: Envelope) -> Result<(), ()> {
+        self.offer(env).map(|_| ())
+    }
+
+    /// [`Self::send_lossy`] that tells the caller what happened: `Ok(true)`
+    /// queued, `Ok(false)` shed — for a caller that must make up for a dropped
+    /// frame (the remote-desktop IPC asks the Controller to resync).
+    pub fn offer(&self, env: Envelope) -> Result<bool, ()> {
         if self.tx.is_closed() {
             return Err(());
         }
@@ -98,14 +105,12 @@ impl OutboundTx {
                     depth = self.depth.load(Ordering::Relaxed),
                 );
             }
-            return Ok(());
+            return Ok(false);
         }
-        self.send(env)
+        self.send(env).map(|()| true)
     }
 
     /// Current queue depth (frames enqueued but not yet written to the socket).
-    /// Exercised by the unit tests; kept as part of the gauge's API surface.
-    #[allow(dead_code)]
     pub fn depth(&self) -> usize {
         self.depth.load(Ordering::Relaxed)
     }
@@ -189,5 +194,16 @@ mod tests {
         drop(rx);
         assert!(tx.send(frame(1)).is_err());
         assert!(tx.send_lossy(frame(2)).is_err());
+        assert!(tx.offer(frame(3)).is_err());
+    }
+
+    #[tokio::test]
+    async fn offer_reports_whether_the_frame_was_shed() {
+        let (tx, _rx) = channel();
+        for i in 0..OUTBOUND_HIGH_WATER as u64 {
+            assert_eq!(tx.offer(frame(i)), Ok(true));
+        }
+        assert_eq!(tx.offer(frame(9_000)), Ok(false));
+        assert_eq!(tx.shed_count(), 1);
     }
 }
