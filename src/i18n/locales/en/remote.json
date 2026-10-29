@@ -19,16 +19,22 @@
     "saved": "(saved)",
     "authTokenPlaceholder": "Leave blank to keep the current token",
     "authTokenHint": "Stored in the OS keychain, never on disk in cleartext.",
+    "deviceName": "This device name",
+    "deviceNamePlaceholder": "e.g. mac-mini (optional)",
+    "deviceNameHint": "Lowercase letters, digits and '-' (up to 32). Enter it with the master password when signing in from another Devdy or the web controller, so several hosts can share one relay. Leave blank if this is your only host.",
     "masterPassword": "Master password",
     "set": "(set)",
     "masterPasswordReplace": "Enter a new password to replace the current one",
     "masterPasswordSet": "Set a password to skip the OTP each time",
-    "masterPasswordHint": "Once set, enter this password on your phone instead of the OTP code. Stored in the OS keychain. More convenient but fixed — only use it if you are the sole user. Saved together with the settings below.",
+    "masterPasswordHint": "Once set, enter this password on your phone instead of the OTP code. Stored in the OS keychain. More convenient but fixed — only use it if you are the sole user. Changing or clearing it signs out every device signed in so far. Saved together with the settings below.",
     "saveSettings": "Save settings",
     "hostLabel": "host: {id}",
     "perRunHint": "Remote sessions are now created per run: open a run and click the {remote} button in the toolbar to generate a link. Enter your {masterPassword} (if set) or the OTP code on your phone to connect.",
     "remote": "Remote",
     "masterPasswordInline": "master password",
+    "controlOther": "Control another Devdy",
+    "controlOtherHint": "Open a window that drives another Devdy over this relay, signed in with its device name and master password.",
+    "controlOtherOpen": "Open",
     "auditLog": "Audit log",
     "clearLog": "Clear log",
     "table": {
@@ -55,7 +61,8 @@
       "enabled": "Remote Control enabled",
       "masterCleared": "Master password cleared",
       "auditCleared": "Cleared {count} audit entries",
-      "auditAlreadyEmpty": "Audit log is already empty"
+      "auditAlreadyEmpty": "Audit log is already empty",
+      "deviceNameInvalid": "Device name: use only lowercase letters, digits and '-' (up to 32)"
     }
   },
   "session": {
@@ -87,5 +94,44 @@
     "disabledNoRelay": "Remote Control isn't enabled yet. Configure a relay URL in Settings first, then turn it on.",
     "enableNow": "Enable Remote Control",
     "openSettings": "Open Settings"
+  },
+  "desktop": {
+    "login": {
+      "title": "Control another Devdy",
+      "subtitle": "Sign in with the other device's name and its Remote Control master password.",
+      "device": "Device name",
+      "devicePlaceholder": "Leave blank if it has no name",
+      "password": "Master password",
+      "passwordPlaceholder": "Remote master password",
+      "submit": "Connect",
+      "working": "Connecting…",
+      "passwordFirst": "Enter the password first.",
+      "deviceInvalid": "Device names use only lowercase letters, digits and '-' (up to 32).",
+      "wrongPassword": "Wrong password (or too many tries — wait a few minutes).",
+      "hostOffline": "That Devdy is not reachable: check the device name, and that it is running with Remote Control on and a master password set.",
+      "network": "Could not reach the relay. Check your connection and try again.",
+      "noRelay": "Set a Relay URL in Settings → Remote Control on this machine first.",
+      "relayVia": "Via relay {url}"
+    },
+    "banner": {
+      "controlling": "Controlling {device}",
+      "unnamed": "remote Devdy",
+      "connected": "Connected",
+      "connecting": "Connecting…",
+      "reconnecting": "Reconnecting…",
+      "disconnected": "Disconnected",
+      "error": "Connection error",
+      "authFailed": "Signed out",
+      "superseded": "Taken over by another device",
+      "reconnect": "Reconnect",
+      "signInAgain": "Sign in again",
+      "signOut": "Sign out"
+    },
+    "upload": {
+      "progress": "Copying {name} to the controlled Devdy… {percent}%",
+      "progressMany": "Copying {count} files to the controlled Devdy… {percent}%",
+      "failed": "Couldn't copy {name} to the controlled Devdy: {error}",
+      "folderSkipped": "Folders can't be dropped into a controlled Devdy yet ({name})."
+    }
   }
 }

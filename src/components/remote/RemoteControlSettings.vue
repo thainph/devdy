@@ -9,7 +9,10 @@ import { Button, Input, Card, Badge } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useRemoteControlStore } from '@/stores/remoteControl'
-import { Radio, Wifi, WifiOff, ShieldCheck, RefreshCw, Loader2, Trash2 } from 'lucide-vue-next'
+import { DEVICE_ALIAS_RE } from '@/lib/remoteLogin'
+import { isRemoteMode } from '@/lib/ipc/remote'
+import { openRemoteDesktopWindow } from '@/lib/remoteDesktopWindow'
+import { Radio, Wifi, WifiOff, ShieldCheck, RefreshCw, Loader2, Trash2, MonitorSmartphone } from 'lucide-vue-next'
 
 const store = useRemoteControlStore()
 const { t } = useI18n()
@@ -24,6 +27,9 @@ const savingConfig = ref(false)
 const togglingEnabled = ref(false)
 const masterPassword = ref('')
 const savingMasterPw = ref(false)
+const deviceAlias = ref('')
+// A remote-desktop window already drives another Devdy; no nesting.
+const remoteMode = isRemoteMode()
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -40,6 +46,7 @@ async function load() {
   try {
     await store.refreshAll()
     relayUrl.value = store.status?.relay_url ?? ''
+    deviceAlias.value = store.status?.device_alias ?? ''
   } catch (e) {
     toast.error(String(e))
   }
@@ -65,10 +72,17 @@ async function saveConfig() {
     toast.error(t('remote.settings.toast.relayRequired'))
     return
   }
+  const alias = deviceAlias.value.trim().toLowerCase()
+  if (!DEVICE_ALIAS_RE.test(alias)) {
+    toast.error(t('remote.settings.toast.deviceNameInvalid'))
+    return
+  }
   savingConfig.value = true
   try {
     await store.setConfig(url, authToken.value)
     authToken.value = '' // never keep the token around in the field
+    if (alias !== (store.status?.device_alias ?? '')) await store.setDeviceAlias(alias)
+    deviceAlias.value = alias
     // A non-empty field sets/updates the master password; blank leaves it
     // untouched (same "blank keeps current" convention as the auth token).
     // Clearing is done explicitly via the Clear link.
@@ -81,6 +95,14 @@ async function saveConfig() {
     toast.error(String(e))
   } finally {
     savingConfig.value = false
+  }
+}
+
+async function openRemoteDesktop() {
+  try {
+    await openRemoteDesktopWindow()
+  } catch (e) {
+    toast.error(String(e))
   }
 }
 
@@ -243,6 +265,24 @@ function resultTone(r: string): 'success' | 'error' | 'neutral' {
           </p>
         </div>
 
+        <!-- Device name: picks this host's password-login code, so several
+             Devdy hosts can share one relay (and one master password). -->
+        <div class="space-y-1.5">
+          <label class="text-xs font-medium text-muted-foreground">{{ t('remote.settings.deviceName') }}</label>
+          <Input
+            v-model="deviceAlias"
+            autocomplete="off"
+            spellcheck="false"
+            :placeholder="t('remote.settings.deviceNamePlaceholder')"
+            :disabled="savingConfig"
+            class="font-mono"
+            @keyup.enter="saveConfig"
+          />
+          <p class="text-[11px] text-muted-foreground/70">
+            {{ t('remote.settings.deviceNameHint') }}
+          </p>
+        </div>
+
         <!-- Master password: an optional stable code that replaces the per-join
              OTP for a single owner (falls back to OTP when unset). -->
         <div class="space-y-1.5">
@@ -294,6 +334,21 @@ function resultTone(r: string): 'success' | 'error' | 'neutral' {
             </template>
           </i18n-t>
         </p>
+
+        <!-- Remote desktop: drive another Devdy from this one. -->
+        <div
+          v-if="!remoteMode"
+          class="flex items-center justify-between gap-4 border-t border-border/50 pt-3"
+        >
+          <div class="min-w-0">
+            <p class="text-sm font-medium text-foreground">{{ t('remote.settings.controlOther') }}</p>
+            <p class="mt-0.5 text-[11px] text-muted-foreground">{{ t('remote.settings.controlOtherHint') }}</p>
+          </div>
+          <Button variant="outline" class="shrink-0" @click="openRemoteDesktop">
+            <MonitorSmartphone class="h-4 w-4" :stroke-width="1.75" />
+            {{ t('remote.settings.controlOtherOpen') }}
+          </Button>
+        </div>
       </div>
     </Card>
 

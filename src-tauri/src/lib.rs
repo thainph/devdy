@@ -144,9 +144,12 @@ use commands::models::{get_model_caches, refresh_codex_models, validate_claude_m
 use commands::translate::{cancel_translate, prewarm_translate, translate_text, TranslateState};
 use remote::commands::{
     remote_clear_audit, remote_create_session_link, remote_disable, remote_enable,
-    remote_end_session, remote_get_audit, remote_reveal_otp, remote_set_config,
-    remote_set_master_password, remote_status,
+    remote_end_session, remote_get_audit, remote_kick_controller, remote_reveal_otp,
+    remote_set_config, remote_set_device_alias, remote_set_master_password, remote_status,
 };
+use remote::file_proxy::{rd_download_append, rd_download_create, rdfile_register, rdfile_respond};
+use remote::fs_bridge::{remote_fs_home, remote_fs_list, remote_fs_log_dir, remote_fs_read, remote_fs_stat};
+use remote::ipc::{remote_bridge_batch, remote_bridge_ready};
 use remote::RemoteState;
 use runs::broker::approver::ModalApproverResolver;
 use runs::broker::{start_broker, ApproverResolver, BrokerConfig};
@@ -173,6 +176,10 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
+        // Remote desktop: files of the controlled Devdy as URLs in a
+        // remote-desktop window (see remote::file_proxy).
+        .register_asynchronous_uri_scheme_protocol(remote::file_proxy::SCHEME, remote::file_proxy::handle)
+        .manage(remote::file_proxy::FileProxy::default())
         // The menu itself is installed by the frontend (see `set_app_menu`), so
         // its labels follow the app language; this only routes clicks back.
         .on_menu_event(commands::app_menu::on_menu_event)
@@ -699,12 +706,31 @@ pub fn run() {
             remote_disable,
             remote_create_session_link,
             remote_end_session,
+            remote_kick_controller,
             remote_reveal_otp,
             remote_set_master_password,
+            remote_set_device_alias,
             remote_get_audit,
             remote_clear_audit,
             remote_status,
+            remote_bridge_ready,
+            remote_bridge_batch,
+            remote_fs_list,
+            remote_fs_stat,
+            remote_fs_read,
+            remote_fs_home,
+            remote_fs_log_dir,
+            rdfile_register,
+            rdfile_respond,
+            rd_download_create,
+            rd_download_append,
             remote::meta::set_run_meta,
+            remote::upload::remote_upload_begin,
+            remote::upload::remote_upload_chunk,
+            remote::upload::remote_upload_finish,
+            remote::upload::remote_upload_abort,
+            remote::upload::stat_local_files,
+            remote::upload::read_local_file_chunk,
             procs::commands::list_background_processes,
             procs::commands::stop_background_processes,
             procs::commands::kill_background_process,

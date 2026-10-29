@@ -16,6 +16,7 @@ import { trackWindowForTray } from '@/lib/tray'
 import { centerOnCurrentMonitor } from '@/lib/windowCascade'
 import type { ItemKind } from '@/lib/itemWindow'
 import { openSlackWindow } from '@/lib/slackWindow'
+import { popoutLabel, popoutUrl } from '@/lib/popout'
 
 /**
  * The list windows' kinds: todos and notes. Slack threads have their own window
@@ -35,7 +36,7 @@ const LIST_WINDOW_TITLES: Record<ItemKind, string> = {
 
 /** The fixed window label of a kind's list window. */
 export function itemListWindowLabel(kind: ItemKind): string {
-  return `item-list-${kind}`
+  return popoutLabel(`item-list-${kind}`)
 }
 
 /**
@@ -107,7 +108,7 @@ export async function openItemListWindow(
   if (opts.id) params.set('id', opts.id)
 
   const win = new WebviewWindow(label, {
-    url: `index.html?${params.toString()}`,
+    url: popoutUrl(`index.html?${params.toString()}`),
     title: LIST_WINDOW_TITLES[kind],
     width: LIST_WINDOW_WIDTH,
     height: LIST_WINDOW_HEIGHT,

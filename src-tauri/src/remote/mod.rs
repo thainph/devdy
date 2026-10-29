@@ -22,13 +22,17 @@ pub mod audit;
 pub mod bus;
 pub mod command;
 pub mod commands;
+pub mod file_proxy;
 pub mod forwarder;
+pub mod fs_bridge;
 pub mod handler;
+pub mod ipc;
 pub mod login;
 pub mod meta;
 pub mod outbound;
 pub mod protocol;
 pub mod session;
+pub mod upload;
 
 pub use bus::{RemoteBus, RemoteRunEvent};
 pub use meta::{apply_run_meta, RunMetaStore};
@@ -58,6 +62,9 @@ pub type FocusRun = Arc<TokioMutex<Option<String>>>;
 pub const KEY_RELAY_URL: &str = "remote_relay_url";
 pub const KEY_ENABLED: &str = "remote_enabled";
 pub const KEY_DEVICE_ID: &str = "remote_device_id";
+/// Optional short name of this device; selects its password-login code so
+/// several Devdy hosts can share one relay (see `login::login_code`).
+pub const KEY_DEVICE_ALIAS: &str = "remote_device_alias";
 
 /// Live control handle for the running agent task.
 struct AgentControl {
@@ -81,11 +88,16 @@ pub struct RemoteState {
     /// Signalled whenever the bound session changes (new link or ended) so a
     /// running agent re-syncs its relay listen without waiting for a reconnect.
     pub announce_signal: Arc<tokio::sync::Notify>,
+    /// Signalled by the owner's kill switch: the agent revokes the current
+    /// Controller room (it may re-join; ending the session blocks it).
+    pub kick_signal: Arc<tokio::sync::Notify>,
     /// Runs the Controller is streaming right now. Lives here (not in the agent
     /// task) so `remote_status` can report it to the desktop UI.
     pub subscriptions: RunSubscriptions,
     /// The run the Controller is currently viewing.
     pub focus_run_id: FocusRun,
+    /// Remote-desktop IPC routing (another Devdy driving this one).
+    pub ipc: ipc::IpcHub,
     agent: Arc<TokioMutex<Option<AgentControl>>>,
 }
 
@@ -103,8 +115,10 @@ impl RemoteState {
             connected: Arc::new(AtomicBool::new(false)),
             reconnecting: Arc::new(AtomicBool::new(false)),
             announce_signal: Arc::new(tokio::sync::Notify::new()),
+            kick_signal: Arc::new(tokio::sync::Notify::new()),
             subscriptions: Arc::new(TokioMutex::new(HashSet::new())),
             focus_run_id: Arc::new(TokioMutex::new(None)),
+            ipc: ipc::IpcHub::default(),
             agent: Arc::new(TokioMutex::new(None)),
         }
     }
@@ -145,8 +159,10 @@ impl RemoteState {
             connected: self.connected.clone(),
             reconnecting: self.reconnecting.clone(),
             announce_signal: self.announce_signal.clone(),
+            kick_signal: self.kick_signal.clone(),
             subscriptions: self.subscriptions.clone(),
             focus_run_id: self.focus_run_id.clone(),
+            ipc: self.ipc.clone(),
         };
         let config = agent::AgentConfig {
             relay_url,
@@ -225,6 +241,13 @@ pub(crate) async fn set_setting(db: &Db, key: &str, value: &str) -> Result<(), S
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// The configured device alias, when set and valid.
+pub(crate) async fn device_alias(db: &Db) -> Option<String> {
+    get_setting(db, KEY_DEVICE_ALIAS)
+        .await
+        .filter(|a| login::valid_alias(a))
 }
 
 /// Return the Host's stable `device_id`, generating + persisting one on first

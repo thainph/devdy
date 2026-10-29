@@ -9,12 +9,13 @@ import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { emit } from '@tauri-apps/api/event'
 import { trackWindowForTray } from '@/lib/tray'
 import { centerOnCurrentMonitor } from '@/lib/windowCascade'
+import { popoutLabel, popoutUrl } from '@/lib/popout'
 
 const GANTT_WINDOW_LABEL = 'gantt'
 
 /** Open (or focus) the standalone Gantt window, optionally on a given project. */
 export async function openGanttWindow(projectId?: string): Promise<WebviewWindow> {
-  const existing = await WebviewWindow.getByLabel(GANTT_WINDOW_LABEL)
+  const existing = await WebviewWindow.getByLabel(popoutLabel(GANTT_WINDOW_LABEL))
   if (existing) {
     try {
       await existing.unminimize()
@@ -29,8 +30,8 @@ export async function openGanttWindow(projectId?: string): Promise<WebviewWindow
   }
 
   const query = projectId ? `&project=${encodeURIComponent(projectId)}` : ''
-  const win = new WebviewWindow(GANTT_WINDOW_LABEL, {
-    url: `index.html?ganttWindow=1${query}`,
+  const win = new WebviewWindow(popoutLabel(GANTT_WINDOW_LABEL), {
+    url: popoutUrl(`index.html?ganttWindow=1${query}`),
     title: 'Gantt — Devdy',
     width: 1200,
     height: 760,

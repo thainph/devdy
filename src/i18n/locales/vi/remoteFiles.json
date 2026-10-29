@@ -1,0 +1,20 @@
+{
+  "openTitle": "Mở tệp trên máy đang điều khiển",
+  "openFolderTitle": "Chọn thư mục trên máy đang điều khiển",
+  "saveTitle": "Lưu trên máy đang điều khiển",
+  "browseTitle": "Tệp trên máy đang điều khiển",
+  "hint": "Đây là tệp của máy đang điều khiển, không phải của máy này.",
+  "up": "Thư mục cha",
+  "home": "Thư mục chính",
+  "empty": "Thư mục này trống.",
+  "truncated": "Chỉ hiển thị {count} mục đầu tiên của thư mục này. Nhập đường dẫn để đi thẳng tới tệp.",
+  "allFiles": "Tất cả tệp",
+  "open": "Mở",
+  "chooseThisFolder": "Chọn thư mục này",
+  "downloadOpen": "Tải về & mở",
+  "fileName": "Tên",
+  "willReplace": "Tệp cùng tên sẽ bị ghi đè.",
+  "downloading": "Đang tải {name} về máy này…",
+  "downloaded": "Đã lưu vào {path}",
+  "downloadFailed": "Tải về thất bại: {error}"
+}

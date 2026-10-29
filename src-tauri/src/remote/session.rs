@@ -85,6 +85,14 @@ impl BoundSession {
         }
     }
 
+    /// Replace the reconnect secret. Every session token handed out so far stops
+    /// opening the gate, so its holder must sign in again (OTP or master
+    /// password), which hands out the new one. The link, rendezvous code and
+    /// keypair are unchanged, so a live room is not affected by itself.
+    pub fn rotate_session_secret(&mut self) {
+        self.session_secret = hex(&random_bytes(SESSION_SECRET_BYTES));
+    }
+
     /// Seconds until the current OTP expires; 0 when absent or already expired.
     pub fn otp_remaining_secs(&self, now: Instant) -> u64 {
         if self.otp.is_empty() || now >= self.otp_expires_at {
@@ -181,9 +189,84 @@ pub fn rehydrate(cred: &crate::secrets::RemoteSession) -> Result<BoundSession, S
     })
 }
 
+/// The persisted credential after a session-secret rotation: it carries the
+/// bound session's new secret when it belongs to that session, else a fresh
+/// random one (nothing in memory to match, e.g. the agent is stopped). Either
+/// way the token a controller stored no longer matches it.
+pub fn rotated_credential(
+    mut cred: crate::secrets::RemoteSession,
+    bound: Option<&BoundSession>,
+) -> crate::secrets::RemoteSession {
+    cred.session_secret = match bound {
+        Some(b) if b.rendezvous_code == cred.rendezvous_code => b.session_secret.clone(),
+        _ => hex(&random_bytes(SESSION_SECRET_BYTES)),
+    };
+    cred
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cred_of(b: &BoundSession) -> crate::secrets::RemoteSession {
+        crate::secrets::RemoteSession {
+            run_id: b.run_id.clone(),
+            rendezvous_code: b.rendezvous_code.clone(),
+            session_secret: b.session_secret.clone(),
+            host_pub: hex(&b.keypair.public),
+            host_secret: hex(&b.keypair.secret),
+            link_secret: b.link_secret.clone(),
+            idle_expires_at: 42,
+        }
+    }
+
+    /// The reconnect key a token holder derives (see `try_authenticate_first_frame`).
+    fn reconnect_psk(link_secret: &str, token: &str) -> [u8; 32] {
+        remote_e2e::derive_effective_psk(link_secret, token)
+    }
+
+    #[test]
+    fn rotation_invalidates_the_old_token_but_keeps_the_session() {
+        let mut s = generate("run-a").unwrap();
+        let old_token = s.session_secret.clone();
+        let (link, code, fp) = (s.link_secret.clone(), s.rendezvous_code.clone(), s.host_fingerprint.clone());
+        s.rotate_session_secret();
+        assert_ne!(s.session_secret, old_token);
+        assert_eq!(s.session_secret.len(), SESSION_SECRET_BYTES * 2);
+        // The old token no longer derives the host's reconnect key.
+        assert_ne!(reconnect_psk(&link, &old_token), reconnect_psk(&link, &s.session_secret));
+        // Same link: a new sign-in lands on the same session and gets the new token.
+        assert_eq!(s.link_secret, link);
+        assert_eq!(s.rendezvous_code, code);
+        assert_eq!(s.host_fingerprint, fp);
+    }
+
+    #[test]
+    fn rotated_credential_follows_the_bound_session() {
+        let mut s = generate("run-a").unwrap();
+        let cred = cred_of(&s);
+        s.rotate_session_secret();
+        let rotated = rotated_credential(cred, Some(&s));
+        assert_eq!(rotated.session_secret, s.session_secret);
+        assert_eq!(rotated.rendezvous_code, s.rendezvous_code);
+        assert_eq!(rotated.link_secret, s.link_secret);
+        assert_eq!(rotated.idle_expires_at, 42);
+        // A restart rehydrates the rotated secret, not the old one.
+        assert_eq!(rehydrate(&rotated).unwrap().session_secret, s.session_secret);
+    }
+
+    #[test]
+    fn rotated_credential_without_a_matching_session_gets_a_fresh_secret() {
+        let s = generate("run-a").unwrap();
+        let other = generate("run-b").unwrap();
+        let old = s.session_secret.clone();
+        let rotated = rotated_credential(cred_of(&s), None);
+        assert_ne!(rotated.session_secret, old);
+        assert_eq!(rotated.session_secret.len(), SESSION_SECRET_BYTES * 2);
+        let rotated = rotated_credential(cred_of(&s), Some(&other));
+        assert_ne!(rotated.session_secret, old);
+        assert_ne!(rotated.session_secret, other.session_secret);
+    }
 
     #[test]
     fn generate_produces_distinct_strong_secrets() {

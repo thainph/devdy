@@ -124,6 +124,13 @@ export function parseHsOffer(json: unknown): HsOffer | null {
   return { kind: 'hs_offer', host_pub: o.host_pub, host_fingerprint: o.host_fingerprint }
 }
 
+/** Whether a decoded handshake JSON is the Host's `hs_reject`: our first sealed
+ * frame opened with none of its secrets (wrong OTP, or a session token that the
+ * owner rotated away by signing us out). */
+export function isHsReject(json: unknown): boolean {
+  return !!json && typeof json === 'object' && (json as Record<string, unknown>).kind === 'hs_reject'
+}
+
 /** Build the `hs_answer` JSON string to base64-encode into a control frame. */
 export function hsAnswerJson(controllerPubHex: string): string {
   const answer: HsAnswer = { kind: 'hs_answer', controller_pub: controllerPubHex }
@@ -364,6 +371,28 @@ export interface ProjectListKind {
   projects: ProjectInfo[]
 }
 
+/** Remote desktop: the outcome of one `ipc_invoke` (correlated by `id`).
+ * `value` / `error` are exactly what the command resolved / rejected with. */
+export interface IpcResultKind {
+  kind: 'ipc_result'
+  id: string
+  ok: boolean
+  value?: unknown
+  error?: unknown
+}
+
+/** Remote desktop: one app event the Controller subscribed to. */
+export interface IpcEventKind {
+  kind: 'ipc_event'
+  event: string
+  payload: unknown
+}
+
+/** Remote desktop: the Host shed events on a congested link; refetch state. */
+export interface IpcResyncKind {
+  kind: 'ipc_resync'
+}
+
 /** Everything the Host can send the Controller inside a sealed `stream` frame. */
 export type StreamPayload =
   | StreamKind
@@ -384,6 +413,9 @@ export type StreamPayload =
   | PlanUsageKind
   | RunListKind
   | ProjectListKind
+  | IpcResultKind
+  | IpcEventKind
+  | IpcResyncKind
 
 /**
  * Narrow a decoded stream payload. Returns `null` for anything with an
@@ -577,6 +609,17 @@ export function parseStreamPayload(json: unknown): StreamPayload | null {
         claude_accounts: accounts,
       }
     }
+    case 'ipc_result':
+      return typeof o.id === 'string' && typeof o.ok === 'boolean'
+        ? // A command that resolved to null must not surface as undefined.
+          { kind: 'ipc_result', id: o.id, ok: o.ok, value: o.value === undefined ? null : o.value, error: o.error }
+        : null
+    case 'ipc_event':
+      return typeof o.event === 'string'
+        ? { kind: 'ipc_event', event: o.event, payload: o.payload ?? null }
+        : null
+    case 'ipc_resync':
+      return { kind: 'ipc_resync' }
     default:
       return null
   }
@@ -665,6 +708,11 @@ export interface CmdPayload {
     | 'list_plan_usage'
     | 'open_run'
     | 'close_run'
+    // Remote desktop (a Controller that advertised FEATURE_IPC).
+    | 'ipc_hello'
+    | 'ipc_invoke'
+    | 'ipc_listen'
+    | 'ipc_unlisten'
   /** Per-send correlation id used for Host delivery acknowledgement. */
   command_id?: string
   run_id?: string
@@ -694,6 +742,14 @@ export interface CmdPayload {
    * pure opt-in — see {@link CLIENT_FEATURES}.
    */
   client_features?: string[]
+  /** `ipc_invoke`: correlation id echoed in the `ipc_result`. */
+  id?: string
+  /** `ipc_invoke`: the Tauri command, exactly as the UI named it. */
+  cmd?: string
+  /** `ipc_invoke`: the command's arguments, verbatim. */
+  args?: unknown
+  /** `ipc_listen` / `ipc_unlisten`: the app event name. */
+  event?: string
 }
 
 /** Advertise coalesced output batches ({@link OutputBatchKind}). */
@@ -705,6 +761,11 @@ export const FEATURE_OUTPUT_BATCH = 'output_batch'
  * an older bundle, which renders exactly one run, needs.
  */
 export const FEATURE_MULTI_RUN = 'multi_run'
+
+/** Advertise a remote-desktop Controller: the normal Devdy UI whose
+ * `invoke` / `listen` run on the Host (`ipc_*` commands). Sent alone — such a
+ * Controller understands none of the run-streaming payloads. */
+export const FEATURE_IPC = 'ipc'
 
 /** Everything this controller bundle understands, sent on the gate frame. */
 export const CLIENT_FEATURES: string[] = [FEATURE_OUTPUT_BATCH, FEATURE_MULTI_RUN]
@@ -742,6 +803,11 @@ export function requestHistoryCmd(runId: string): CmdPayload {
 }
 
 /** `list_runs` — refresh the run browser. */
+/** `ipc_hello` — the remote-desktop gate frame (carries no request). */
+export function ipcHelloCmd(authMode: AuthMode): CmdPayload {
+  return { kind: 'cmd', action: 'ipc_hello', auth_mode: authMode, client_features: [FEATURE_IPC] }
+}
+
 export function listRunsCmd(): CmdPayload {
   return { kind: 'cmd', action: 'list_runs' }
 }

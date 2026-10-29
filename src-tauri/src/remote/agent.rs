@@ -128,10 +128,14 @@ pub struct AgentDeps {
     /// Wakes the agent whenever the bound session changes (new link, or ended)
     /// so it re-syncs what it listens on with the relay.
     pub announce_signal: Arc<tokio::sync::Notify>,
+    /// Owner kill switch: drop the current Controller room.
+    pub kick_signal: Arc<tokio::sync::Notify>,
     /// Runs the Controller is streaming (shared with the handler + forwarder).
     pub subscriptions: crate::remote::RunSubscriptions,
     /// The run the Controller is currently viewing.
     pub focus_run_id: crate::remote::FocusRun,
+    /// Remote-desktop IPC routing.
+    pub ipc: crate::remote::ipc::IpcHub,
 }
 
 /// Run the agent until `stop` fires. Reconnect loop with capped backoff.
@@ -248,9 +252,9 @@ async fn connect_once(
 
     // The rendezvous code this connection listens on (None = not listening).
     let mut listening: Option<String> = None;
-    // Password login: whether the login slot is armed, and the login room
-    // currently mid-handshake (if any).
-    let mut login_listening = false;
+    // Password login: the code the login slot is armed with (None = not
+    // listening), and the login room currently mid-handshake (if any).
+    let mut login_listening: Option<String> = None;
     let mut login: Option<LoginPending> = None;
 
     let seq = Arc::new(SeqCounter::default());
@@ -265,7 +269,7 @@ async fn connect_once(
     let mut forward_task: Option<tokio::task::JoinHandle<()>> = None;
 
     sync_listen(deps, &out_tx, &mut listening, &mut room_ctx, &mut pending_room, &mut forward_task).await;
-    sync_login_listen(&out_tx, &mut login_listening, &mut login);
+    sync_login_listen(deps, &out_tx, &mut login_listening, &mut login).await;
 
     // Heartbeat: keep the host↔relay socket warm through idle-killing proxies
     // once a run stops streaming. Carries the ACTIVE room id (if any) so the relay
@@ -316,7 +320,10 @@ async fn connect_once(
             }
             _ = deps.announce_signal.notified() => {
                 sync_listen(deps, &out_tx, &mut listening, &mut room_ctx, &mut pending_room, &mut forward_task).await;
-                sync_login_listen(&out_tx, &mut login_listening, &mut login);
+                sync_login_listen(deps, &out_tx, &mut login_listening, &mut login).await;
+            }
+            _ = deps.kick_signal.notified() => {
+                kick_room(deps, &out_tx, &mut room_ctx, &mut pending_room, &mut forward_task).await;
             }
             msg = stream.next() => {
                 let Some(msg) = msg else { break ConnectOutcome::Disconnected; };
@@ -421,20 +428,40 @@ struct LoginPending {
     controller_pub: Option<Vec<u8>>,
 }
 
-/// Listen on the login slot exactly while a master password is set.
-fn sync_login_listen(out_tx: &OutboundTx, login_listening: &mut bool, login: &mut Option<LoginPending>) {
-    let want = crate::secrets::has_remote_master_password();
-    if want == *login_listening {
-        return;
-    }
-    let frame = if want {
-        Envelope::create_pair_slot(crate::remote::login::LOGIN_CODE, crate::remote::login::LOGIN_SLOT)
+/// Listen on the login slot exactly while a master password is set, on this
+/// device's login code (which follows the device alias).
+async fn sync_login_listen(
+    deps: &AgentDeps,
+    out_tx: &OutboundTx,
+    login_listening: &mut Option<String>,
+    login: &mut Option<LoginPending>,
+) {
+    let want = if crate::secrets::has_remote_master_password() {
+        let alias = crate::remote::device_alias(&deps.db).await;
+        Some(crate::remote::login::login_code(alias.as_deref()))
     } else {
-        *login = None;
-        Envelope::revoke_slot(crate::remote::login::LOGIN_SLOT)
+        None
     };
-    let _ = out_tx.send(frame);
+    if let Some(frame) = login_listen_frame(login_listening.as_deref(), want.as_deref()) {
+        // Either change kills the login room mid-handshake.
+        *login = None;
+        let _ = out_tx.send(frame);
+    }
     *login_listening = want;
+}
+
+/// The frame that moves the login slot from `current` to `want`, if any.
+/// A new code is a plain `create_pair` on the same slot: the relay replaces
+/// the old code (and its room) by itself.
+fn login_listen_frame(current: Option<&str>, want: Option<&str>) -> Option<Envelope> {
+    use crate::remote::login::LOGIN_SLOT;
+    if current == want {
+        return None;
+    }
+    Some(match want {
+        Some(code) => Envelope::create_pair_slot(code, LOGIN_SLOT),
+        None => Envelope::revoke_slot(LOGIN_SLOT),
+    })
 }
 
 /// Whether `env` belongs to the password-login flow.
@@ -557,7 +584,9 @@ async fn handle_login_frame(
 }
 
 /// The bound session's link + token, minting a session first when nothing
-/// usable is bound. `None` when there is no run to bind to.
+/// usable is bound. `None` when there is no run to bind to. The token is the
+/// CURRENT session secret, so a controller signed out by a rotation (kill
+/// switch, password change) gets a working one back by signing in.
 async fn ensure_grantable_session(deps: &AgentDeps) -> Option<StreamPayload> {
     let current_run = {
         let bound = deps.bound.lock().await;
@@ -621,9 +650,28 @@ async fn drop_room(
         }
     };
     deps.connected.store(false, Ordering::SeqCst);
+    deps.ipc.detach(&deps.app).await;
     if had_ctx {
         let _ = deps.app.emit("remote://disconnected", Disconnected { run_id });
     }
+}
+
+/// Owner kill switch: close the current Controller room on the relay (the
+/// listen stays armed) and forget it here. `remote_kick_controller` has already
+/// rotated the session secret, so the Controller's re-join is rejected at the
+/// gate until it signs in again.
+async fn kick_room(
+    deps: &AgentDeps,
+    out_tx: &OutboundTx,
+    room_ctx: &mut Option<Arc<HandlerCtx>>,
+    pending_room: &mut Option<String>,
+    forward_task: &mut Option<tokio::task::JoinHandle<()>>,
+) {
+    let room_id = room_ctx.as_ref().map(|c| c.room_id.clone()).or_else(|| pending_room.clone());
+    let Some(room_id) = room_id else { return };
+    tracing::info!(event = "remote_controller_kicked", room_id = %room_id);
+    let _ = out_tx.send(Envelope::revoke(room_id));
+    drop_room(deps, room_ctx, pending_room, forward_task).await;
 }
 
 /// If nothing is bound, rebuild a bound session from a persisted, non-expired
@@ -968,6 +1016,14 @@ async fn try_authenticate_first_frame(
         } else {
             "bad_otp"
         };
+        // Tell the Controller now. A token holder (signed out by the kill switch
+        // or a password change) would otherwise retry forever, burning the OTP
+        // budget every time; an OTP entry gets its verdict without the timeout.
+        if let Ok(json) = serde_json::to_vec(&HandshakePayload::HsReject) {
+            use base64::Engine as _;
+            let cipher = base64::engine::general_purpose::STANDARD.encode(json);
+            let _ = out_tx.send(Envelope::data(FrameType::Control, &room_id, cipher, seq.next()));
+        }
         let _ = deps.app.emit(
             "remote://auth-failed",
             AuthFailed {
@@ -1049,6 +1105,7 @@ async fn try_authenticate_first_frame(
     };
     let batch_output = has_feature(FEATURE_OUTPUT_BATCH);
     let multi_run = has_feature(FEATURE_MULTI_RUN);
+    let ipc = has_feature(crate::remote::ipc::FEATURE_IPC);
     tracing::info!(
         event = "remote_client_features",
         room_id = %room_id,
@@ -1056,63 +1113,71 @@ async fn try_authenticate_first_frame(
         multi_run = multi_run,
     );
 
-    // Start this connection from a clean slate: the linked run is open, nothing
-    // else. A Controller that was browsing before a reconnect re-opens whatever
-    // it wants, so carrying stale subscriptions over would only stream runs
-    // nobody is looking at.
-    {
-        let mut subs = deps.subscriptions.lock().await;
-        subs.clear();
-        subs.insert(run_id.clone());
-    }
-    *deps.focus_run_id.lock().await = Some(run_id.clone());
-
-    let ft = tokio::spawn(forward_loop(
-        deps.bus.clone(),
-        session.clone(),
-        room_id.clone(),
-        out_tx.clone(),
-        seq.clone(),
-        deps.db.clone(),
-        crate::remote::forwarder::ForwardScope {
-            subscriptions: deps.subscriptions.clone(),
-            initial_run_id: run_id.clone(),
-            multi_run,
-            batch_output,
-        },
-    ));
-    if let Some(old) = forward_task.replace(ft) {
-        old.abort();
-    }
-
-    // Push the initial run list: every run for a run browser, just the linked
-    // one for a legacy Controller.
-    let list_filter = if multi_run { None } else { Some(run_id.as_str()) };
-    crate::remote::forwarder::send_run_list(
-        &deps.db,
-        &session,
-        &room_id,
-        out_tx,
-        &**seq,
-        list_filter,
-    )
-    .await;
-
-    // Push the initial engine/model/permission-mode snapshot so the controller's
-    // composer mirrors the desktop from the first frame (no blank/default drift).
-    {
-        use tauri::Manager;
-        if let Some(store) = deps.app.try_state::<crate::remote::RunMetaStore>() {
-            crate::remote::forwarder::send_run_meta(
-                &deps.db, &store, &session, &room_id, out_tx, &**seq, &run_id,
-            )
+    // A remote-desktop Controller drives the full UI through IPC: it needs
+    // none of the phone-controller streams, only its replies routed back.
+    if ipc {
+        deps.ipc
+            .attach(&deps.app, session.clone(), room_id.clone(), out_tx.clone(), seq.clone())
             .await;
+    } else {
+        // Start this connection from a clean slate: the linked run is open, nothing
+        // else. A Controller that was browsing before a reconnect re-opens whatever
+        // it wants, so carrying stale subscriptions over would only stream runs
+        // nobody is looking at.
+        {
+            let mut subs = deps.subscriptions.lock().await;
+            subs.clear();
+            subs.insert(run_id.clone());
         }
-    }
+        *deps.focus_run_id.lock().await = Some(run_id.clone());
 
-    // Push the initial subscription usage badges (Claude + Codex) so the
-    // controller shows plan utilization from the first frame.
-    crate::remote::forwarder::send_plan_usage(&deps.db, &session, &room_id, out_tx, &**seq, &run_id).await;
+        let ft = tokio::spawn(forward_loop(
+            deps.bus.clone(),
+            session.clone(),
+            room_id.clone(),
+            out_tx.clone(),
+            seq.clone(),
+            deps.db.clone(),
+            crate::remote::forwarder::ForwardScope {
+                subscriptions: deps.subscriptions.clone(),
+                initial_run_id: run_id.clone(),
+                multi_run,
+                batch_output,
+            },
+        ));
+        if let Some(old) = forward_task.replace(ft) {
+            old.abort();
+        }
+
+        // Push the initial run list: every run for a run browser, just the linked
+        // one for a legacy Controller.
+        let list_filter = if multi_run { None } else { Some(run_id.as_str()) };
+        crate::remote::forwarder::send_run_list(
+            &deps.db,
+            &session,
+            &room_id,
+            out_tx,
+            &**seq,
+            list_filter,
+        )
+        .await;
+
+        // Push the initial engine/model/permission-mode snapshot so the controller's
+        // composer mirrors the desktop from the first frame (no blank/default drift).
+        {
+            use tauri::Manager;
+            if let Some(store) = deps.app.try_state::<crate::remote::RunMetaStore>() {
+                crate::remote::forwarder::send_run_meta(
+                    &deps.db, &store, &session, &room_id, out_tx, &**seq, &run_id,
+                )
+                .await;
+            }
+        }
+
+        // Push the initial subscription usage badges (Claude + Codex) so the
+        // controller shows plan utilization from the first frame.
+        crate::remote::forwarder::send_plan_usage(&deps.db, &session, &room_id, out_tx, &**seq, &run_id).await;
+    }
 
     let ctx = Arc::new(HandlerCtx {
         app: deps.app.clone(),
@@ -1130,6 +1195,7 @@ async fn try_authenticate_first_frame(
         rate: rate.clone(),
         idem: idem.clone(),
         idle: idle.clone(),
+        ipc,
     });
     *room_ctx = Some(ctx.clone());
 
@@ -1172,7 +1238,28 @@ struct Disconnected {
 
 #[cfg(test)]
 mod tests {
-    use super::should_ignore_handshake;
+    use super::{login_listen_frame, should_ignore_handshake};
+    use crate::remote::protocol::FrameType;
+
+    #[test]
+    fn login_listen_follows_the_login_code() {
+        assert!(login_listen_frame(None, None).is_none());
+        assert!(login_listen_frame(Some("devdy-login-v1"), Some("devdy-login-v1")).is_none());
+
+        let arm = login_listen_frame(None, Some("devdy-login-v1")).unwrap();
+        assert_eq!(arm.t, FrameType::CreatePair);
+        assert_eq!(arm.pair_code.as_deref(), Some("devdy-login-v1"));
+        assert_eq!(arm.slot.as_deref(), Some("login"));
+
+        // A renamed device re-listens on the same slot (create_pair replaces).
+        let rename = login_listen_frame(Some("devdy-login-v1"), Some("devdy-login-v1/mini")).unwrap();
+        assert_eq!(rename.t, FrameType::CreatePair);
+        assert_eq!(rename.pair_code.as_deref(), Some("devdy-login-v1/mini"));
+
+        let off = login_listen_frame(Some("devdy-login-v1/mini"), None).unwrap();
+        assert_eq!(off.t, FrameType::Revoke);
+        assert_eq!(off.slot.as_deref(), Some("login"));
+    }
 
     #[test]
     fn late_or_unexpected_handshake_cannot_mutate_an_active_session() {

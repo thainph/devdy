@@ -35,6 +35,8 @@ import {
   listEngineModelsCmd,
   listProjectFilesCmd,
   listPlanUsageCmd,
+  ipcHelloCmd,
+  isHsReject,
   parseStreamPayload,
   toHex,
   utf8ToBase64,
@@ -125,6 +127,23 @@ export type SecretSource =
 export type StreamHandler = (payload: StreamPayload) => void
 export type CommandAckHandler = (accepted: boolean, reason?: string | null) => void
 
+/**
+ * Optional behaviour switches. Without `ipc` the connection is the phone/web
+ * Controller; with it, it is the transport of a remote-desktop window
+ * (`src/lib/ipc/remote.ts`): the gate frame is `ipc_hello`, nothing is pulled
+ * for the run browser, and the session token is handed to `onToken` instead of
+ * the browser token store.
+ */
+export interface ConnectionOptions {
+  ipc?: boolean
+  /** IPC mode: after every (re)authentication, with the freshly issued token.
+   * Commands are accepted ({@link ControllerConnection.isActive}) by then. */
+  onToken?: (token: string) => void
+  /** IPC mode: the authenticated link is gone (drop, reconnect, close, auth
+   * failure). Anything sent and not yet answered will never be. */
+  onLinkDown?: (reason: string) => void
+}
+
 /** The reactive state the UI binds to. */
 export interface ControllerState {
   status: Ref<ConnStatus>
@@ -140,6 +159,9 @@ export interface ControllerState {
   decodeErrors: Ref<number>
   /** The auth phase (see {@link AuthState}); null until the first attempt. */
   auth: Ref<AuthState | null>
+  /** A newer connection to this session (another tab or device) took it over
+   * and this one stopped for good rather than fight it. */
+  superseded: Ref<boolean>
 }
 
 /**
@@ -154,6 +176,7 @@ export class ControllerConnection {
   /** The secret2 source; null for a fresh OTP link until the user submits it. */
   private secret: SecretSource | null
   private readonly onStream: StreamHandler
+  private readonly opts: ConnectionOptions
   private authMode: AuthMode
 
   private ws: WebSocket | null = null
@@ -229,10 +252,16 @@ export class ControllerConnection {
   private readonly onOnline = (): void => this.forceReconnect()
   private readonly onFocus = (): void => this.wakeReconnect()
 
-  constructor(link: SessionLinkPayload, secret: SecretSource | null, onStream: StreamHandler) {
+  constructor(
+    link: SessionLinkPayload,
+    secret: SecretSource | null,
+    onStream: StreamHandler,
+    opts: ConnectionOptions = {},
+  ) {
     this.link = link
     this.secret = secret
     this.onStream = onStream
+    this.opts = opts
     this.authMode = secret?.mode === 'session' ? 'session' : 'otp'
     this.state = {
       status: ref<ConnStatus>('idle'),
@@ -242,6 +271,7 @@ export class ControllerConnection {
       live: ref<boolean>(false),
       decodeErrors: ref<number>(0),
       auth: ref<AuthState | null>(null),
+      superseded: ref<boolean>(false),
     }
   }
 
@@ -375,7 +405,10 @@ export class ControllerConnection {
     return sent
   }
 
+  /** Every path that drops the session (close, reconnect, auth failure) goes
+   * through here, so it also tells an IPC client its in-flight calls are lost. */
   private failPendingCommandAcks(reason: string): void {
+    this.opts.onLinkDown?.(reason)
     const pending = [...this.pendingCommandAcks.values()]
     this.pendingCommandAcks.clear()
     for (const ack of pending) {
@@ -399,7 +432,8 @@ export class ControllerConnection {
     if (
       cmd.action === 'start_run' ||
       cmd.action === 'send_chat_message' ||
-      cmd.action === 'request_history'
+      cmd.action === 'request_history' ||
+      cmd.action === 'ipc_hello'
     ) {
       this.awaitingHostSince = Date.now()
     }
@@ -646,6 +680,10 @@ export class ControllerConnection {
       this.fail('Malformed handshake frame')
       return
     }
+    if (isHsReject(offerJson)) {
+      this.onGateRejected()
+      return
+    }
     try {
       // Verify the Host (SEC-006) WITHOUT deriving the key — the OTP may not be
       // known yet. The answer gives the Host our public key; the first sealed
@@ -673,6 +711,20 @@ export class ControllerConnection {
     }
   }
 
+  /** The Host could not open our gate frame. An OTP is simply wrong (retry on the
+   * same room); a session token was rotated away — the owner signed us out — so
+   * stop: retrying would only burn the Host's attempt budget. */
+  private onGateRejected(): void {
+    // Only answers our outstanding gate frame. Not `auth === 'pending'`: a token
+    // REconnect keeps `auth` at 'authenticated' while it re-runs the gate.
+    if (this.otpAttemptAt === null) return
+    if (this.authMode === 'otp') {
+      this.softAuthFail('Wrong or expired code — please try again.')
+    } else {
+      this.failAuth('Signed out by the host — please sign in again.')
+    }
+  }
+
   /** Derive the E2E session from the verified host key + the current secret, then
    * send the first sealed frame that the Host opens at its OTP/token gate. */
   private deriveAndAuthenticate(): void {
@@ -697,6 +749,11 @@ export class ControllerConnection {
     this.backoff = BACKOFF_BASE_MS
     if (this.state.auth.value !== 'authenticated') this.state.auth.value = 'pending'
     this.otpAttemptAt = Date.now()
+    if (this.opts.ipc) {
+      this.sendSealedCommand(ipcHelloCmd(this.authMode))
+      this.startVerdictTimer()
+      return
+    }
     this.sendSealedCommand({
       ...requestHistoryCmd(this.link.run_id),
       auth_mode: this.authMode,
@@ -792,7 +849,7 @@ export class ControllerConnection {
     // The Host lost live events before it could forward them, so our transcript
     // has a hole. Backfill from the log rather than leaving a turn that looks
     // complete but is not.
-    if (payload.kind === 'notice' && payload.text.startsWith(STREAM_GAP_PREFIX)) {
+    if (!this.opts.ipc && payload.kind === 'notice' && payload.text.startsWith(STREAM_GAP_PREFIX)) {
       this.requestHistoryBackfill()
       return
     }
@@ -810,6 +867,12 @@ export class ControllerConnection {
     this.state.status.value = 'connected'
     this.secret = { mode: 'session', token }
     this.authMode = 'session'
+    if (this.opts.ipc) {
+      // The remote-desktop window persists its own token and pulls what it
+      // needs through `ipc_invoke`.
+      this.opts.onToken?.(token)
+      return
+    }
     tokenStore.save({
       relay_url: this.link.relay_url,
       host_fingerprint: this.link.host_fingerprint,
@@ -843,7 +906,7 @@ export class ControllerConnection {
   /** OTP rejected / expired / exhausted (or an equivalent silent close). The UI
    * re-prompts for the OTP; we clear any stale token and stop retrying. */
   private failAuth(message: string): void {
-    tokenStore.clear()
+    if (!this.opts.ipc) tokenStore.clear()
     this.state.auth.value = 'failed'
     this.otpAttemptAt = null
     this.awaitingHostSince = null
@@ -881,6 +944,7 @@ export class ControllerConnection {
     // A newer connection (another tab/device, or a reload) took this session
     // over. Stop here — re-joining would kick it back and the two would fight.
     if (code === 'superseded') {
+      this.state.superseded.value = true
       this.failTerminal('This session is now open on another device or tab — reload to take it back.')
       return
     }
