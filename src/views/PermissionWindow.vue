@@ -31,6 +31,12 @@ const allowedTools = ref<string[]>([])
 const pinned = ref(true)
 
 let syncUnlisten: UnlistenFn | null = null
+// Re-announce readiness until the main window has synced us once: a missed
+// first `window-ready` (it raced the main window subscribing — more likely in a
+// remote-desktop window, where events cross windows over a local bus) would
+// otherwise leave this window on "waiting" for good.
+let readyTimer: ReturnType<typeof setInterval> | null = null
+let synced = false
 
 // Which session is asking — shown in the header and the OS title so several
 // permission windows open at once can be told apart.
@@ -60,6 +66,11 @@ onMounted(async () => {
   loadMarkdown()
 
   syncUnlisten = await listen<SyncPayload>(`permission:sync:${runId}`, (event) => {
+    synced = true
+    if (readyTimer) {
+      clearInterval(readyTimer)
+      readyTimer = null
+    }
     request.value = event.payload?.request ?? null
     allowedTools.value = event.payload?.allowedTools ?? []
     const next = event.payload?.session ?? null
@@ -72,9 +83,20 @@ onMounted(async () => {
   // Tell the main window we're ready so it (re)sends the current state — covers
   // the case where the request arrived before this window finished mounting.
   await emit(`permission:window-ready:${runId}`)
+  let tries = 0
+  readyTimer = setInterval(() => {
+    if (synced || ++tries > 8) {
+      if (readyTimer) clearInterval(readyTimer)
+      readyTimer = null
+      return
+    }
+    void emit(`permission:window-ready:${runId}`)
+  }, 1500)
 })
 
 onBeforeUnmount(() => {
+  if (readyTimer) clearInterval(readyTimer)
+  readyTimer = null
   syncUnlisten?.()
   syncUnlisten = null
 })

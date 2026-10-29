@@ -19,6 +19,7 @@ import { installRemoteIpc, startRemoteIpc } from './lib/ipc/remote'
 import { startMuxClient, startMuxHost } from './lib/ipc/muxTransport'
 import { broadcastResync, installResyncReload } from './lib/ipc/resync'
 import { REMOTE_OWNER_LABEL, isRemoteLabel } from './lib/ipc/windows'
+import { installRemoteDiagnostics } from './lib/ipc/diagnostics'
 import { loadRemoteDesktopSession, saveRemoteDesktopSession } from './lib/remoteDesktopSession'
 import RemoteDesktopLogin from './components/remote/RemoteDesktopLogin.vue'
 import RemoteDesktopBanner from './components/remote/RemoteDesktopBanner.vue'
@@ -36,6 +37,7 @@ export function bootRemoteDesktop(mountApp: () => App): void {
   if (label !== REMOTE_OWNER_LABEL) {
     // Calls are queued until the main remote-desktop window answers.
     installRemoteIpc(startMuxClient(label))
+    installRemoteDiagnostics()
     void installResyncReload().catch(() => {})
     mountApp()
     return
@@ -55,6 +57,7 @@ export function bootRemoteDesktop(mountApp: () => App): void {
     (token) => saveRemoteDesktopSession({ ...session, token }),
     broadcastResync,
   )
+  installRemoteDiagnostics()
   void installResyncReload().catch(() => {})
   void startMuxHost(client).catch((e) => console.error('[remoteDesktop] pop-out link failed', e))
   mountApp()

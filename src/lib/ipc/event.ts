@@ -21,6 +21,7 @@ import {
 } from '@tauri-real/event'
 import { remoteIpc } from './remote'
 import { busEventName, toRemoteLabel } from './windows'
+import { traceBusEvent } from './diagnostics'
 
 export * from '@tauri-real/event'
 
@@ -33,7 +34,10 @@ async function listenBoth<T>(event: string, handler: EventCallback<T>): Promise<
   const remote = remoteIpc()!
   const [r, b] = await Promise.allSettled([
     remote.listen<T>(event, handler),
-    realListen<T>(busEventName(event), (e) => handler({ ...e, event })),
+    realListen<T>(busEventName(event), (e) => {
+      traceBusEvent('recv', event, 'bus')
+      handler({ ...e, event })
+    }),
   ])
   // One side failed: release the other, or it would leak (nobody gets its unlisten).
   if (r.status === 'rejected' || b.status === 'rejected') {
@@ -50,7 +54,10 @@ async function listenBoth<T>(event: string, handler: EventCallback<T>): Promise<
 }
 
 export async function listen<T>(event: EventName, handler: EventCallback<T>, options?: Options): Promise<UnlistenFn> {
-  if (remoteIpc() && isRemoteEvent(event, options)) return listenBoth<T>(String(event), handler)
+  if (remoteIpc() && isRemoteEvent(event, options)) {
+    traceBusEvent('listen', String(event))
+    return listenBoth<T>(String(event), handler)
+  }
   return realListen<T>(event, handler, options)
 }
 
@@ -72,7 +79,10 @@ export async function once<T>(event: EventName, handler: EventCallback<T>, optio
 }
 
 export async function emit<T>(event: string, payload?: T): Promise<void> {
-  if (remoteIpc() && !event.startsWith('tauri://')) return realEmit(busEventName(event), payload)
+  if (remoteIpc() && !event.startsWith('tauri://')) {
+    traceBusEvent('emit', event)
+    return realEmit(busEventName(event), payload)
+  }
   return realEmit(event, payload)
 }
 
