@@ -24,6 +24,13 @@ export default defineConfig(async () => ({
       { find: '@', replacement: fileURLToPath(new URL('./src', import.meta.url)) },
     ],
   },
+  optimizeDeps: {
+    // These plugins import `@tauri-apps/api/core` by name and the shim
+    // intercepts some of their commands in a remote-desktop window. Pre-bundled,
+    // they would get a private copy of the shim (and of its remote client,
+    // never started); served as-is, the alias gives them the app's instance.
+    exclude: ['@tauri-apps/plugin-dialog', '@tauri-apps/plugin-opener'],
+  },
   build: {
     // Multi-page: the Tauri app (index.html) and the standalone Controller web
     // client (controller.html, U4) build into the same dist so the Controller
