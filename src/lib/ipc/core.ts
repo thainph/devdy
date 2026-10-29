@@ -28,11 +28,18 @@ const SEAT_LOCAL_COMMANDS = new Set([
   'cancel_mascot_speak',
 ])
 /**
- * App commands a remote window must not run at all: the native menu bar is
- * owned by each machine's own main window, so a remote window rebuilding it
- * would clobber either the controlled machine's menu or the local one.
+ * App commands a remote window must not run at all (they resolve `undefined`):
+ * - `set_app_menu`: the native menu bar is owned by each machine's own main
+ *   window, so a remote window rebuilding it would clobber either the
+ *   controlled machine's menu or the local one.
+ * - `start_file_drag`: acts on the CALLING window, which on the controlled
+ *   machine is its hidden bridge — the native drag would start there and the
+ *   call would hang until it ends. Run locally it has no B paths to drag, so
+ *   dragging a file out of a remote window is simply not offered.
+ * Other commands that take the calling window/webview (`rdfile_register`) are
+ * local plumbing of the shim, called with the real invoke.
  */
-const REMOTE_SKIPPED_COMMANDS = new Set(['set_app_menu'])
+const REMOTE_SKIPPED_COMMANDS = new Set(['set_app_menu', 'start_file_drag'])
 
 export async function invoke<T>(cmd: string, args?: InvokeArgs, options?: InvokeOptions): Promise<T> {
   const remote = remoteIpc()

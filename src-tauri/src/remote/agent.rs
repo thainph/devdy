@@ -584,7 +584,9 @@ async fn handle_login_frame(
 }
 
 /// The bound session's link + token, minting a session first when nothing
-/// usable is bound. `None` when there is no run to bind to.
+/// usable is bound. `None` when there is no run to bind to. The token is the
+/// CURRENT session secret, so a controller signed out by a rotation (kill
+/// switch, password change) gets a working one back by signing in.
 async fn ensure_grantable_session(deps: &AgentDeps) -> Option<StreamPayload> {
     let current_run = {
         let bound = deps.bound.lock().await;
@@ -655,7 +657,9 @@ async fn drop_room(
 }
 
 /// Owner kill switch: close the current Controller room on the relay (the
-/// listen stays armed) and forget it here.
+/// listen stays armed) and forget it here. `remote_kick_controller` has already
+/// rotated the session secret, so the Controller's re-join is rejected at the
+/// gate until it signs in again.
 async fn kick_room(
     deps: &AgentDeps,
     out_tx: &OutboundTx,
@@ -1012,6 +1016,14 @@ async fn try_authenticate_first_frame(
         } else {
             "bad_otp"
         };
+        // Tell the Controller now. A token holder (signed out by the kill switch
+        // or a password change) would otherwise retry forever, burning the OTP
+        // budget every time; an OTP entry gets its verdict without the timeout.
+        if let Ok(json) = serde_json::to_vec(&HandshakePayload::HsReject) {
+            use base64::Engine as _;
+            let cipher = base64::engine::general_purpose::STANDARD.encode(json);
+            let _ = out_tx.send(Envelope::data(FrameType::Control, &room_id, cipher, seq.next()));
+        }
         let _ = deps.app.emit(
             "remote://auth-failed",
             AuthFailed {

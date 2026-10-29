@@ -57,12 +57,16 @@ function setup() {
       newId: () => `${label}-${++id}`,
     })
     const states = []
+    const hellos = []
     const peer = new MuxPeer({
       core,
-      sendHello: (n) => host.handle(label, { t: 'hello', n }),
+      sendHello: (n) => {
+        hellos.push(n)
+        host.handle(label, { t: 'hello', n })
+      },
       onState: (s) => states.push(s),
     })
-    const entry = { core, peer, states }
+    const entry = { core, peer, states, hellos }
     peers.set(label, entry)
     return entry
   }
@@ -143,13 +147,13 @@ test('two peers share one owner-side subscription per event', async () => {
 
 test('a hello retry keeps subscriptions; a new hello starts over', async () => {
   const { client, host, addPeer } = setup()
-  const { core, peer } = addPeer('remote-a')
+  const { core, peer, hellos } = addPeer('remote-a')
   peer.hello()
   core.listen('x', () => {})
   await tick()
   assert.equal(client.count('x'), 1)
   peer.retryHello() // already welcomed: nothing sent
-  host.handle('remote-a', { t: 'hello', n: 1 }) // a late duplicate of the first hello
+  host.handle('remote-a', { t: 'hello', n: hellos[0] }) // a late duplicate of the first hello
   await tick()
   assert.equal(client.count('x'), 1)
   // The owner restarted: the peer re-announces and re-subscribes.
@@ -157,6 +161,14 @@ test('a hello retry keeps subscriptions; a new hello starts over', async () => {
   await tick()
   assert.equal(client.count('x'), 1)
   assert.deepEqual(host.eventsOf('remote-a'), ['x'])
+})
+
+test('a reloaded pop-out (new page, same label) does not pass as a hello retry', () => {
+  const sent = []
+  const page = () => new MuxPeer({ core: { linkUp() {}, linkDown() {} }, sendHello: (n) => sent.push(n) })
+  page().hello()
+  page().hello()
+  assert.notEqual(sent[0], sent[1])
 })
 
 test('owner going down fails in-flight calls; peers leaving release subscriptions', async () => {

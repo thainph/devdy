@@ -7,6 +7,7 @@
   "up": "Thư mục cha",
   "home": "Thư mục chính",
   "empty": "Thư mục này trống.",
+  "truncated": "Chỉ hiển thị {count} mục đầu tiên của thư mục này. Nhập đường dẫn để đi thẳng tới tệp.",
   "allFiles": "Tất cả tệp",
   "open": "Mở",
   "chooseThisFolder": "Chọn thư mục này",

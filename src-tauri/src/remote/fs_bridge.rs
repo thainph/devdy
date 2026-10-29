@@ -24,6 +24,9 @@ use tauri::Manager;
 /// Most bytes one [`remote_fs_read`] returns (binary crosses the relay as
 /// base64 in JSON; callers chunk above this).
 pub const MAX_READ: u64 = 4 * 1024 * 1024;
+/// Most entries one [`remote_fs_list`] returns. A huge directory would
+/// otherwise stat every entry and ship one giant frame over the relay.
+pub const MAX_LIST: usize = 5000;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct FsEntry {
@@ -33,6 +36,14 @@ pub struct FsEntry {
     pub size: u64,
     /// Last modification, Unix milliseconds (`None` when unavailable).
     pub modified: Option<u64>,
+}
+
+/// A directory listing; `truncated` when it held more than [`MAX_LIST`]
+/// entries and only the first ones read are returned.
+#[derive(Debug, Serialize)]
+pub struct FsListing {
+    pub entries: Vec<FsEntry>,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -91,10 +102,15 @@ fn io_err(path: &str, e: std::io::Error) -> String {
     }
 }
 
-pub fn list_dir(path: &str) -> Result<Vec<FsEntry>, String> {
+pub fn list_dir(path: &str, max: usize) -> Result<FsListing, String> {
     let mut out = Vec::new();
+    let mut truncated = false;
     for item in fs::read_dir(path).map_err(|e| io_err(path, e))? {
         let Ok(item) = item else { continue };
+        if out.len() >= max {
+            truncated = true;
+            break;
+        }
         let p = item.path();
         // An entry that vanished or cannot be stat'ed is still listed (parity
         // with Finder), as a plain zero-size file.
@@ -110,7 +126,7 @@ pub fn list_dir(path: &str) -> Result<Vec<FsEntry>, String> {
         }
     }
     sort_entries(&mut out);
-    Ok(out)
+    Ok(FsListing { entries: out, truncated })
 }
 
 pub fn stat(path: &str) -> Result<FsEntry, String> {
@@ -141,10 +157,11 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Sen
 
 // ---- Tauri commands (called by a remote-desktop window over the bridge) ----
 
-/// The entries of a directory (nothing hidden), directories first.
+/// The entries of a directory (nothing hidden), directories first; at most
+/// [`MAX_LIST`] of them.
 #[tauri::command]
-pub async fn remote_fs_list(path: String) -> Result<Vec<FsEntry>, String> {
-    blocking(move || list_dir(&path)).await
+pub async fn remote_fs_list(path: String) -> Result<FsListing, String> {
+    blocking(move || list_dir(&path, MAX_LIST)).await
 }
 
 #[tauri::command]
@@ -163,6 +180,16 @@ pub fn remote_fs_home(app: tauri::AppHandle) -> Result<String, String> {
     app.path()
         .home_dir()
         .map(|p| p.to_string_lossy().into_owned())
+        .map_err(|e| e.to_string())
+}
+
+/// This machine's log folder (where `lib.rs` points the tracing file
+/// appender), so a remote window's "Open logs" shows the controlled machine's.
+#[tauri::command]
+pub fn remote_fs_log_dir(app: tauri::AppHandle) -> Result<String, String> {
+    app.path()
+        .app_data_dir()
+        .map(|p| p.join("logs").to_string_lossy().into_owned())
         .map_err(|e| e.to_string())
 }
 
@@ -197,7 +224,9 @@ mod tests {
         fs::write(dir.join(".dot"), b"hello world").unwrap();
         let d = dir.to_string_lossy().into_owned();
 
-        let list = list_dir(&d).unwrap();
+        let listing = list_dir(&d, MAX_LIST).unwrap();
+        assert!(!listing.truncated);
+        let list = listing.entries;
         assert_eq!(list.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["sub", ".dot"]);
         assert!(list[0].is_dir);
         assert_eq!(list[1].size, 11);
@@ -211,6 +240,10 @@ mod tests {
         assert_eq!(bytes, b"world");
 
         assert!(read_chunk(&d, 0, 1).unwrap_err().starts_with("is a directory"));
+        let capped = list_dir(&d, 1).unwrap();
+        assert!(capped.truncated);
+        assert_eq!(capped.entries.len(), 1);
+        assert!(!list_dir(&d, 2).unwrap().truncated);
         assert!(stat(&format!("{d}/missing")).unwrap_err().starts_with("not found"));
         fs::remove_dir_all(dir).unwrap();
     }

@@ -124,6 +124,13 @@ export function parseHsOffer(json: unknown): HsOffer | null {
   return { kind: 'hs_offer', host_pub: o.host_pub, host_fingerprint: o.host_fingerprint }
 }
 
+/** Whether a decoded handshake JSON is the Host's `hs_reject`: our first sealed
+ * frame opened with none of its secrets (wrong OTP, or a session token that the
+ * owner rotated away by signing us out). */
+export function isHsReject(json: unknown): boolean {
+  return !!json && typeof json === 'object' && (json as Record<string, unknown>).kind === 'hs_reject'
+}
+
 /** Build the `hs_answer` JSON string to base64-encode into a control frame. */
 export function hsAnswerJson(controllerPubHex: string): string {
   const answer: HsAnswer = { kind: 'hs_answer', controller_pub: controllerPubHex }

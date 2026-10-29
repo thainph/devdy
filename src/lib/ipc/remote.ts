@@ -24,6 +24,9 @@ export interface RemoteIpcState {
   status: Ref<ConnStatus>
   auth: Ref<AuthState | null>
   lastError: Ref<string | null>
+  /** Another device (or tab) took B's session over and this window stopped
+   * instead of fighting it; only a deliberate reconnect takes it back. */
+  superseded: Ref<boolean>
 }
 
 export interface RemoteIpcClient {
@@ -81,6 +84,7 @@ export function startRemoteIpc(
     status: ref<ConnStatus>('idle'),
     auth: ref<AuthState | null>(null),
     lastError: ref<string | null>(null),
+    superseded: ref(false),
   }
   const core = new IpcCore({
     send: (frame) => conn?.sendCommand(frame) ?? false,
@@ -130,6 +134,7 @@ export function startRemoteIpc(
       watch(src.status, (v) => (state.status.value = v), { flush: 'sync', immediate: true })
       watch(src.auth, (v) => (state.auth.value = v), { flush: 'sync', immediate: true })
       watch(src.lastError, (v) => (state.lastError.value = v), { flush: 'sync', immediate: true })
+      watch(src.superseded, (v) => (state.superseded.value = v), { flush: 'sync', immediate: true })
       // Only the E2E module init can fail here; the transport reports the rest.
       await conn.connect()
     })
