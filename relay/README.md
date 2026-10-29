@@ -38,25 +38,26 @@ Control frames handled by the relay:
 | `t`              | Direction        | Purpose |
 |------------------|------------------|---------|
 | `register_host`  | Host → Relay     | Authenticate with `auth_token`; hold long-lived. |
-| `create_pair`    | Host → Relay     | Register a one-time `pair_code` (TTL = `PAIR_TTL`); relay returns the assigned `room_id`. |
-| `join`           | Controller → Relay | Enter a room by `pair_code`. |
-| `handshake_done` | Host/Controller → Relay | Signal E2E handshake half complete; when both signal → room `ACTIVE`. |
-| `room_ready`     | Relay → both     | Room paired, carries `room_id`. |
-| `peer_left`      | Relay → survivor | The other peer left / was cut. |
-| `revoke`         | Host → Relay     | Close the room immediately. |
+| `create_pair`    | Host → Relay     | Listen on a rendezvous `pair_code` until this connection closes (a new code replaces the old one). Acked with `room_ready{code:"armed"}`. |
+| `join`           | Controller → Relay | Join the Host listening on `pair_code`. A newer join replaces the previous Controller (`error{superseded}` to the old one). |
+| `room_ready`     | Relay → both     | Room opened, carries `room_id`. |
+| `peer_left`      | Relay → survivor | The other peer left / was cut. Re-join. |
+| `revoke`         | Host → Relay     | Close a room; empty `room_id` = stop listening and close the room. |
+| `keepalive`      | either → Relay   | Echoed back; keeps idle proxies from reaping the socket. |
 | `error`          | Relay → sender   | `{ code, message }` — auth/routing error. |
 
-Room state machine (relay side, SRS §6.2):
+Model (deliberately minimal — reconnect = re-join):
 
-```
-PENDING_PAIR --join valid--> HANDSHAKING --both handshake_done--> ACTIVE
-PENDING_PAIR --TTL elapsed--> EXPIRED (terminal)
-HANDSHAKING  --fail--------> CLOSED  (terminal)
-ACTIVE       --revoke/both left/idle--> CLOSED (terminal)
-```
-
-Guarantees: `MAX_CONTROLLER = 1` (a second `join` is refused); `pair_code` is
-one-time and expires after `PAIR_TTL`.
+- Rooms route as soon as they exist; authentication is end-to-end (OTP /
+  session token between Host and Controller), not a relay state.
+- One room per code, newest join wins — a phone that reconnects on a fresh
+  socket while its old one is half-open is never refused.
+- Liveness is per **connection** and is the relay's only timeout: it pings
+  every `RELAY_PING_INTERVAL_SECS` (browsers answer natively, even in a
+  background tab) and closes any connection that delivers no bytes for
+  `RELAY_PEER_LIVENESS_TIMEOUT_SECS`. Closing a connection drops its listen and
+  room, so nothing outlives a dead peer.
+- Legacy `resume` → `error{resume_invalid}`; legacy `handshake_done` → ignored.
 
 ## Configuration (environment)
 
@@ -64,11 +65,11 @@ one-time and expires after `PAIR_TTL`.
 |---|---|---|---|
 | `RELAY_HOST_TOKEN` | **yes** | — | Shared secret for `register_host`. Relay refuses to start if unset. |
 | `RELAY_BIND` | no | `127.0.0.1:8787` | Bind address (keep it localhost). |
-| `PAIR_TTL_SECS` | no | `60` | Pair-code TTL. |
-| `RELAY_RATE_LIMIT_MAX` | no | `60` | Coarse anti-flood: frames per window. |
+| `RELAY_RATE_LIMIT_MAX` | no | `60` | Anti-flood for control frames (register/create_pair/join/…) per window. Data frames and keepalives are not limited. |
 | `RELAY_RATE_LIMIT_WINDOW_SECS` | no | `10` | Rate-limit window. |
-| `RELAY_ROOM_IDLE_TIMEOUT_SECS` | no | `3600` | Close an idle ACTIVE room. |
-| `RELAY_MAX_ROOMS` | no | `256` | Ceiling on concurrent rooms. Persistent rendezvous rooms carry a ~10-year expiry, so the sweeper alone cannot bound the registry. Re-arming an existing pair code supersedes rather than adds, so it is never refused by this cap. |
+| `RELAY_PING_INTERVAL_SECS` | no | `15` | WebSocket ping cadence to every connection. |
+| `RELAY_PEER_LIVENESS_TIMEOUT_SECS` | no | `45` | Close a connection that sent no bytes (frames, pongs) for this long. |
+| `RELAY_MAX_ROOMS` | no | `256` | Ceiling on listeners + rooms. Everything dies with its connection; this only guards against a misbehaving Host. |
 | `RELAY_MAX_MESSAGE_BYTES` | no | `33554432` | Largest WebSocket message accepted (32 MiB). Must stay above the worst legitimate frame: a 10 MiB image base64'd into the payload and then again into the ciphertext lands near 18 MiB. |
 | `RUST_LOG` | no | `info` | Log level (metadata only; payloads never logged). |
 

@@ -77,11 +77,8 @@ pub struct RemoteState {
     /// desktop badge show a truthful "reconnecting…" instead of a bare
     /// "disconnected" during a transient network blip.
     pub reconnecting: Arc<AtomicBool>,
-    /// Rooms queued for revoke; drained by the agent → `revoke{room_id}`.
-    pub revoke_queue: Arc<TokioMutex<Vec<String>>>,
-    pub revoke_signal: Arc<tokio::sync::Notify>,
-    /// Signalled when a new BoundSession is set so a running agent announces the
-    /// persistent rendezvous to the relay without waiting for a reconnect.
+    /// Signalled whenever the bound session changes (new link or ended) so a
+    /// running agent re-syncs its relay listen without waiting for a reconnect.
     pub announce_signal: Arc<tokio::sync::Notify>,
     /// Runs the Controller is streaming right now. Lives here (not in the agent
     /// task) so `remote_status` can report it to the desktop UI.
@@ -104,8 +101,6 @@ impl RemoteState {
             bound: Arc::new(TokioMutex::new(None)),
             connected: Arc::new(AtomicBool::new(false)),
             reconnecting: Arc::new(AtomicBool::new(false)),
-            revoke_queue: Arc::new(TokioMutex::new(Vec::new())),
-            revoke_signal: Arc::new(tokio::sync::Notify::new()),
             announce_signal: Arc::new(tokio::sync::Notify::new()),
             subscriptions: Arc::new(TokioMutex::new(HashSet::new())),
             focus_run_id: Arc::new(TokioMutex::new(None)),
@@ -148,8 +143,6 @@ impl RemoteState {
             bound: self.bound.clone(),
             connected: self.connected.clone(),
             reconnecting: self.reconnecting.clone(),
-            revoke_queue: self.revoke_queue.clone(),
-            revoke_signal: self.revoke_signal.clone(),
             announce_signal: self.announce_signal.clone(),
             subscriptions: self.subscriptions.clone(),
             focus_run_id: self.focus_run_id.clone(),

@@ -1,16 +1,13 @@
-//! Integration tests for the relay core (Unit U1) using a real in-process
-//! WebSocket client (`tokio-tungstenite`). The relay binds an ephemeral port
-//! (`127.0.0.1:0`) so tests run without any external service or VPS.
+//! Integration tests for the relay using a real in-process WebSocket client
+//! (`tokio-tungstenite`). The relay binds an ephemeral port (`127.0.0.1:0`) so
+//! tests run without any external service or VPS.
 //!
-//! AC coverage map (see dev artifact for the full table):
-//! - AC-01  register_ok                     — Host register with valid token
-//! - AC-02  register_bad_token_closes       — bad token → error + conn closed
-//! - AC-05  join_expired_pair_refused       — expired pair_code refused, no room
-//! - AC-16  second_controller_refused       — MAX_CONTROLLER=1
-//! - routing Host→Controller and back       — forward opaque cipher by room_id
-//! - AC-13  revoke_closes_room              — Host revoke closes room immediately
+//! Model under test: a Host listens on a code for as long as its connection
+//! lives; a Controller joins it (latest join wins); any dead connection —
+//! closed or silent past the liveness timeout — closes its room and the
+//! survivor gets `peer_left`.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use devdy_relay::config::Config;
 use futures_util::{SinkExt, StreamExt};
@@ -22,22 +19,17 @@ const TEST_TOKEN: &str = "test-secret-token-1234567890";
 
 type Ws = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
-/// Start a relay on an ephemeral port with the given pair TTL; returns the URL.
-async fn start_relay(pair_ttl: Duration) -> String {
-    start_relay_with_liveness(pair_ttl, Duration::from_secs(45)).await
+async fn start_relay() -> String {
+    start_relay_with(Duration::from_secs(15), Duration::from_secs(45), 1000).await
 }
 
-/// Start a relay with a custom per-peer liveness timeout (so the half-open-drop
-/// test can trip it in a couple of seconds instead of the 45 s default).
-async fn start_relay_with_liveness(pair_ttl: Duration, peer_liveness_timeout: Duration) -> String {
+async fn start_relay_with(ping_interval: Duration, peer_liveness_timeout: Duration, rate_limit_max: u32) -> String {
     let config = Config {
         bind: "127.0.0.1:0".to_string(),
         host_token: TEST_TOKEN.to_string(),
-        pair_ttl,
-        rate_limit_max: 1000,
-        rate_limit_window: Duration::from_secs(1),
-        room_idle_timeout: Duration::from_secs(3600),
-        reconnect_window: Duration::from_secs(60),
+        rate_limit_max,
+        rate_limit_window: Duration::from_secs(10),
+        ping_interval,
         peer_liveness_timeout,
         max_rooms: 256,
         max_message_bytes: 32 * 1024 * 1024,
@@ -61,23 +53,27 @@ async fn send(ws: &mut Ws, v: Value) {
         .expect("send must succeed");
 }
 
-/// Read the next JSON frame within a timeout; returns None on close/timeout.
-async fn recv_json(ws: &mut Ws) -> Option<Value> {
+/// Read the next JSON frame within `wait`; None on close/timeout. Reading also
+/// answers the relay's pings, which keeps this socket alive.
+async fn recv_within(ws: &mut Ws, wait: Duration) -> Option<Value> {
+    let deadline = tokio::time::Instant::now() + wait;
     loop {
-        let next = tokio::time::timeout(Duration::from_secs(2), ws.next()).await;
+        let next = tokio::time::timeout_at(deadline, ws.next()).await;
         match next {
-            Ok(Some(Ok(Message::Text(t)))) => {
-                return serde_json::from_str(&t).ok();
-            }
+            Ok(Some(Ok(Message::Text(t)))) => return serde_json::from_str(&t).ok(),
             Ok(Some(Ok(Message::Close(_)))) => return None,
             Ok(Some(Ok(_))) => continue,
             Ok(Some(Err(_))) | Ok(None) => return None,
-            Err(_) => return None, // timeout
+            Err(_) => return None,
         }
     }
 }
 
-/// Register a Host and return its socket plus the ack frame type.
+async fn recv_json(ws: &mut Ws) -> Option<Value> {
+    recv_within(ws, Duration::from_secs(2)).await
+}
+
+/// Register a Host.
 async fn register_host(url: &str) -> Ws {
     let mut ws = connect(url).await;
     send(
@@ -90,343 +86,237 @@ async fn register_host(url: &str) -> Ws {
     ws
 }
 
-/// Host creates a pair code and returns the assigned room_id.
-async fn create_pair(host: &mut Ws, code: &str) -> String {
-    send(host, json!({ "t": "create_pair", "pair_code": code })).await;
-    let rr = recv_json(host).await.expect("room_ready for create_pair");
+/// Host listens on `code`; returns the room id the next join will get.
+async fn listen(host: &mut Ws, code: &str) -> String {
+    send(host, json!({ "t": "create_pair", "pair_code": code, "persistent": true })).await;
+    let rr = recv_json(host).await.expect("ack for create_pair");
     assert_eq!(rr["t"], "room_ready");
+    assert_eq!(rr["code"], "armed", "the ack is marked so the host ignores it");
     rr["room_id"].as_str().expect("room_id string").to_string()
 }
 
-// ---------------------------------------------------------------------------
-// AC-01 — Host registers successfully with a valid token.
-// ---------------------------------------------------------------------------
-#[tokio::test]
-async fn ac01_register_ok() {
-    let url = start_relay(Duration::from_secs(60)).await;
-    let mut ws = connect(&url).await;
-    send(
-        &mut ws,
-        json!({ "t": "register_host", "device_id": "dev-1", "auth_token": TEST_TOKEN }),
-    )
-    .await;
-    let ack = recv_json(&mut ws).await.expect("must receive ack");
-    assert_eq!(ack["t"], "control");
-    assert_eq!(ack["code"], "ok");
-}
-
-// ---------------------------------------------------------------------------
-// AC-02 — Wrong token → error frame + connection closed (no infinite retry).
-// ---------------------------------------------------------------------------
-#[tokio::test]
-async fn ac02_register_bad_token_closes() {
-    let url = start_relay(Duration::from_secs(60)).await;
-    let mut ws = connect(&url).await;
-    send(
-        &mut ws,
-        json!({ "t": "register_host", "device_id": "dev-1", "auth_token": "WRONG" }),
-    )
-    .await;
-    let err = recv_json(&mut ws).await.expect("must receive error");
-    assert_eq!(err["t"], "error");
-    assert_eq!(err["code"], "auth_failed");
-
-    // The relay must close the connection after auth failure.
-    let closed = tokio::time::timeout(Duration::from_secs(2), ws.next()).await;
-    match closed {
-        Ok(Some(Ok(Message::Close(_)))) | Ok(None) => {}
-        Ok(Some(Ok(other))) => panic!("expected close, got {other:?}"),
-        Ok(Some(Err(_))) => {}
-        Err(_) => panic!("connection was not closed after auth failure"),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// AC-05 — Join with an expired pair_code is refused and no room is created.
-// ---------------------------------------------------------------------------
-#[tokio::test]
-async fn ac05_join_expired_pair_refused() {
-    // Tiny TTL so the pair code expires almost immediately.
-    let url = start_relay(Duration::from_millis(50)).await;
-    let mut host = register_host(&url).await;
-    let _room = create_pair(&mut host, "PAIRCODE-EXP").await;
-
-    // Wait past TTL (sweeper runs every 1s, but join() also checks time).
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let mut ctrl = connect(&url).await;
-    send(&mut ctrl, json!({ "t": "join", "pair_code": "PAIRCODE-EXP" })).await;
-    let resp = recv_json(&mut ctrl).await.expect("must receive response");
-    assert_eq!(resp["t"], "error");
-    assert_eq!(resp["code"], "pair_invalid");
-}
-
-// ---------------------------------------------------------------------------
-// AC-16 — Second controller joining the same room is refused (MAX_CONTROLLER=1).
-// Note: the pair code is one-time, so the second join uses a *fresh* pair code
-// pointing at a room that already has a controller is impossible via pair_code
-// reuse. Instead we validate the state-machine guarantee directly by having the
-// first controller occupy the room and a second controller re-using the (now
-// consumed) code — which must be refused (invalid), AND we assert the room only
-// ever admits one controller through the join outcome path.
-// ---------------------------------------------------------------------------
-#[tokio::test]
-async fn ac16_second_controller_refused() {
-    let url = start_relay(Duration::from_secs(60)).await;
-    let mut host = register_host(&url).await;
-    let room_id = create_pair(&mut host, "PAIRCODE-DUP").await;
-
-    // First controller joins successfully.
-    let mut ctrl1 = connect(&url).await;
-    send(&mut ctrl1, json!({ "t": "join", "pair_code": "PAIRCODE-DUP" })).await;
-    let rr = recv_json(&mut ctrl1).await.expect("ctrl1 room_ready");
-    assert_eq!(rr["t"], "room_ready");
-    assert_eq!(rr["room_id"], room_id);
-    // Host also receives room_ready.
-    let host_rr = recv_json(&mut host).await.expect("host room_ready");
-    assert_eq!(host_rr["t"], "room_ready");
-
-    // Second controller re-using the same (now consumed, one-time) code is refused.
-    let mut ctrl2 = connect(&url).await;
-    send(&mut ctrl2, json!({ "t": "join", "pair_code": "PAIRCODE-DUP" })).await;
-    let resp = recv_json(&mut ctrl2).await.expect("ctrl2 response");
-    assert_eq!(resp["t"], "error");
-    // Consumed code → pair_invalid (still proves no second controller admitted).
-    assert_eq!(resp["code"], "pair_invalid");
-}
-
-/// Drive a room to ACTIVE: host + controller join and both send handshake_done.
-/// Returns (host, controller, room_id).
-async fn active_room(url: &str, code: &str) -> (Ws, Ws, String) {
-    let mut host = register_host(url).await;
-    let room_id = create_pair(&mut host, code).await;
-
+/// Controller joins `code`; returns (controller socket, room id) after checking
+/// both peers got `room_ready`.
+async fn join(url: &str, host: &mut Ws, code: &str) -> (Ws, String) {
     let mut ctrl = connect(url).await;
     send(&mut ctrl, json!({ "t": "join", "pair_code": code })).await;
-    let rr = recv_json(&mut ctrl).await.expect("ctrl room_ready");
-    assert_eq!(rr["t"], "room_ready");
-    let _host_rr = recv_json(&mut host).await.expect("host room_ready");
-
-    // Both peers complete their handshake half → room ACTIVE.
-    send(&mut host, json!({ "t": "handshake_done", "room_id": room_id })).await;
-    send(&mut ctrl, json!({ "t": "handshake_done", "room_id": room_id })).await;
-    // Give the relay a moment to process both.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    (host, ctrl, room_id)
+    let c = recv_json(&mut ctrl).await.expect("controller room_ready");
+    assert_eq!(c["t"], "room_ready", "got {c}");
+    let room = c["room_id"].as_str().unwrap().to_string();
+    let h = recv_json(host).await.expect("host room_ready");
+    assert_eq!(h["t"], "room_ready");
+    assert_eq!(h["room_id"], room.as_str());
+    assert!(h.get("code").is_none(), "a real join is not marked armed");
+    (ctrl, room)
 }
 
-// ---------------------------------------------------------------------------
-// Routing — Host→Controller and Controller→Host forward opaque cipher by room_id.
-// ---------------------------------------------------------------------------
 #[tokio::test]
-async fn routing_bidirectional() {
-    let url = start_relay(Duration::from_secs(60)).await;
-    let (mut host, mut ctrl, room_id) = active_room(&url, "PAIRCODE-ROUTE").await;
+async fn register_ok_and_bad_token_closes() {
+    let url = start_relay().await;
+    let _host = register_host(&url).await;
 
-    // Host → Controller stream frame with opaque cipher.
-    send(
-        &mut host,
-        json!({ "t": "stream", "room_id": room_id, "seq": 1, "cipher": "SGVsbG8tY2lwaGVy" }),
-    )
-    .await;
-    let got = recv_json(&mut ctrl).await.expect("controller receives stream");
-    assert_eq!(got["t"], "stream");
-    assert_eq!(got["room_id"], room_id);
-    assert_eq!(got["cipher"], "SGVsbG8tY2lwaGVy");
+    let mut bad = connect(&url).await;
+    send(&mut bad, json!({ "t": "register_host", "device_id": "x", "auth_token": "nope" })).await;
+    let err = recv_json(&mut bad).await.expect("error frame");
+    assert_eq!(err["code"], "auth_failed");
+    assert!(recv_json(&mut bad).await.is_none(), "connection closed");
+}
 
-    // Controller → Host cmd frame with opaque cipher.
-    send(
-        &mut ctrl,
-        json!({ "t": "cmd", "room_id": room_id, "seq": 2, "cipher": "Y21kLWNpcGhlcg==" }),
-    )
-    .await;
-    let got = recv_json(&mut host).await.expect("host receives cmd");
+#[tokio::test]
+async fn join_without_a_listening_host_is_invalid() {
+    let url = start_relay().await;
+    let mut ctrl = connect(&url).await;
+    send(&mut ctrl, json!({ "t": "join", "pair_code": "nobody" })).await;
+    let err = recv_json(&mut ctrl).await.expect("error");
+    assert_eq!(err["code"], "pair_invalid");
+}
+
+#[tokio::test]
+async fn join_uses_the_armed_room_id_and_routes_both_ways() {
+    let url = start_relay().await;
+    let mut host = register_host(&url).await;
+    let armed = listen(&mut host, "code-1").await;
+    let (mut ctrl, room) = join(&url, &mut host, "code-1").await;
+    assert_eq!(room, armed);
+
+    // Data routes immediately — no handshake_done gate.
+    send(&mut ctrl, json!({ "t": "cmd", "room_id": room, "cipher": "AAA", "seq": 1 })).await;
+    let got = recv_json(&mut host).await.expect("host gets cmd");
     assert_eq!(got["t"], "cmd");
-    assert_eq!(got["room_id"], room_id);
-    assert_eq!(got["cipher"], "Y21kLWNpcGhlcg==");
+    assert_eq!(got["cipher"], "AAA");
+
+    send(&mut host, json!({ "t": "stream", "room_id": room, "cipher": "BBB", "seq": 1 })).await;
+    let got = recv_json(&mut ctrl).await.expect("controller gets stream");
+    assert_eq!(got["cipher"], "BBB");
 }
 
-// ---------------------------------------------------------------------------
-// AC-13 — Host revoke closes the room immediately; controller is notified/cut.
-// ---------------------------------------------------------------------------
 #[tokio::test]
-async fn ac13_revoke_closes_room() {
-    let url = start_relay(Duration::from_secs(60)).await;
-    let (mut host, mut ctrl, room_id) = active_room(&url, "PAIRCODE-REVOKE").await;
-
-    // Host revokes the room.
-    send(&mut host, json!({ "t": "revoke", "room_id": room_id })).await;
-
-    // Controller must receive peer_left.
-    let pl = recv_json(&mut ctrl).await.expect("controller peer_left");
-    assert_eq!(pl["t"], "peer_left");
-    assert_eq!(pl["room_id"], room_id);
-
-    // After revoke the room is closed: further data from the controller is
-    // rejected as room_not_found (routing dropped).
-    send(
-        &mut ctrl,
-        json!({ "t": "cmd", "room_id": room_id, "cipher": "eA==" }),
-    )
-    .await;
-    let resp = recv_json(&mut ctrl).await.expect("post-revoke response");
-    assert_eq!(resp["t"], "error");
-    assert_eq!(resp["code"], "room_not_found");
-}
-
-// ---------------------------------------------------------------------------
-// Resume — Controller drops from an ACTIVE room (e.g. phone screen off) and
-// re-attaches with its resume token within the window; routing resumes.
-// ---------------------------------------------------------------------------
-#[tokio::test]
-async fn resume_after_controller_drop_reattaches() {
-    let url = start_relay(Duration::from_secs(60)).await;
-    let mut host = register_host(&url).await;
-    let room_id = create_pair(&mut host, "PAIRCODE-RESUME").await;
-
-    // Controller joins and receives its rotating resume token.
+async fn data_to_an_unknown_room_is_refused() {
+    let url = start_relay().await;
     let mut ctrl = connect(&url).await;
-    send(&mut ctrl, json!({ "t": "join", "pair_code": "PAIRCODE-RESUME" })).await;
-    let rr = recv_json(&mut ctrl).await.expect("ctrl room_ready");
-    assert_eq!(rr["t"], "room_ready");
-    let token = rr["resume_token"].as_str().expect("resume_token issued").to_string();
-    let _host_rr = recv_json(&mut host).await.expect("host room_ready");
-    send(&mut host, json!({ "t": "handshake_done", "room_id": room_id })).await;
-    send(&mut ctrl, json!({ "t": "handshake_done", "room_id": room_id })).await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    send(&mut ctrl, json!({ "t": "cmd", "room_id": "rm_nope", "cipher": "x" })).await;
+    let err = recv_json(&mut ctrl).await.expect("error");
+    assert_eq!(err["code"], "room_not_found");
+    assert_eq!(err["room_id"], "rm_nope");
+}
 
-    // Controller drops (screen off): close the socket and let the relay notice.
-    ctrl.close(None).await.ok();
+#[tokio::test]
+async fn newer_controller_supersedes_the_older_one() {
+    let url = start_relay().await;
+    let mut host = register_host(&url).await;
+    listen(&mut host, "code-2").await;
+    let (mut old, room_a) = join(&url, &mut host, "code-2").await;
+
+    let mut new = connect(&url).await;
+    send(&mut new, json!({ "t": "join", "pair_code": "code-2" })).await;
+
+    let o = recv_json(&mut old).await.expect("old controller told");
+    assert_eq!(o["t"], "error");
+    assert_eq!(o["code"], "superseded");
+    assert!(recv_json(&mut old).await.is_none(), "superseded socket is closed");
+    let h1 = recv_json(&mut host).await.expect("host peer_left");
+    assert_eq!(h1["t"], "peer_left");
+    assert_eq!(h1["room_id"], room_a.as_str());
+    let h2 = recv_json(&mut host).await.expect("host room_ready");
+    assert_eq!(h2["t"], "room_ready");
+    let n = recv_json(&mut new).await.expect("new room_ready");
+    assert_eq!(n["room_id"], h2["room_id"]);
+    assert_ne!(n["room_id"], room_a.as_str());
+}
+
+#[tokio::test]
+async fn controller_drop_notifies_host_and_rejoin_works() {
+    let url = start_relay().await;
+    let mut host = register_host(&url).await;
+    listen(&mut host, "code-3").await;
+    let (ctrl, room) = join(&url, &mut host, "code-3").await;
     drop(ctrl);
-    // Host is told the controller went away, but the room stays resumable.
-    let pl = recv_json(&mut host).await.expect("host peer_left");
+
+    let pl = recv_json(&mut host).await.expect("peer_left");
+    assert_eq!(pl["t"], "peer_left");
+    assert_eq!(pl["room_id"], room.as_str());
+
+    // The listen survives: a fresh controller joins right away.
+    let (_ctrl2, room2) = join(&url, &mut host, "code-3").await;
+    assert_ne!(room2, room);
+}
+
+#[tokio::test]
+async fn host_drop_notifies_controller_and_relisten_restores_join() {
+    let url = start_relay().await;
+    let mut host = register_host(&url).await;
+    listen(&mut host, "code-4").await;
+    let (mut ctrl, _room) = join(&url, &mut host, "code-4").await;
+    drop(host);
+
+    let pl = recv_json(&mut ctrl).await.expect("peer_left");
     assert_eq!(pl["t"], "peer_left");
 
-    // Screen back on: a fresh connection resumes with the token.
-    let mut ctrl2 = connect(&url).await;
-    send(&mut ctrl2, json!({ "t": "resume", "resume_token": token })).await;
-    let rr2 = recv_json(&mut ctrl2).await.expect("ctrl2 room_ready");
-    assert_eq!(rr2["t"], "room_ready");
-    assert_eq!(rr2["room_id"], room_id);
-    let new_token = rr2["resume_token"].as_str().expect("rotated token");
-    assert_ne!(new_token, token, "token must rotate on resume");
-    // Host receives room_ready again → it re-offers the handshake.
-    let host_rr2 = recv_json(&mut host).await.expect("host room_ready on resume");
-    assert_eq!(host_rr2["t"], "room_ready");
+    send(&mut ctrl, json!({ "t": "join", "pair_code": "code-4" })).await;
+    assert_eq!(recv_json(&mut ctrl).await.unwrap()["code"], "pair_invalid");
 
-    // Re-run the handshake → ACTIVE, then routing works to the new controller.
-    send(&mut host, json!({ "t": "handshake_done", "room_id": room_id })).await;
-    send(&mut ctrl2, json!({ "t": "handshake_done", "room_id": room_id })).await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    send(
-        &mut host,
-        json!({ "t": "stream", "room_id": room_id, "seq": 1, "cipher": "cmVzdW1lZA==" }),
-    )
-    .await;
-    let got = recv_json(&mut ctrl2).await.expect("resumed controller receives stream");
-    assert_eq!(got["t"], "stream");
-    assert_eq!(got["cipher"], "cmVzdW1lZA==");
+    // Host comes back on a new socket.
+    let mut host2 = register_host(&url).await;
+    listen(&mut host2, "code-4").await;
+    let (_c, _r) = join(&url, &mut host2, "code-4").await;
 }
 
-// ---------------------------------------------------------------------------
-// Half-open drop — the Controller goes SILENT (no TCP close, socket still open),
-// while the Host keeps sending keepalives. The relay's per-peer liveness sweep
-// must still detect the dead Controller and tell the Host `peer_left` — the
-// Host's own keepalive must NOT keep the room "alive" and mask it (the bug where
-// the desktop stayed "connected" while the phone was long gone).
-// ---------------------------------------------------------------------------
 #[tokio::test]
-async fn silent_controller_triggers_peer_left_to_host() {
-    // 2 s liveness so the sweep (1 s cadence) trips within the test.
-    let url = start_relay_with_liveness(Duration::from_secs(60), Duration::from_secs(2)).await;
-    let (mut host, _ctrl, room_id) = active_room(&url, "PAIRCODE-HALFOPEN").await;
-    // `_ctrl` is intentionally kept OPEN but never written to again — a half-open
-    // peer that the relay's read loop can never notice on its own.
+async fn new_host_socket_takes_over_a_stale_one() {
+    let url = start_relay().await;
+    let mut stale = register_host(&url).await;
+    listen(&mut stale, "code-5").await;
+    let (mut ctrl, _room) = join(&url, &mut stale, "code-5").await;
 
-    // Keep the Host alive (as the real agent does) and watch for peer_left.
-    let deadline = Instant::now() + Duration::from_secs(8);
-    let mut got_peer_left = false;
-    while Instant::now() < deadline {
-        send(&mut host, json!({ "t": "keepalive", "room_id": room_id })).await;
-        match tokio::time::timeout(Duration::from_millis(600), host.next()).await {
-            Ok(Some(Ok(Message::Text(t)))) => {
-                let v: Value = serde_json::from_str(&t).unwrap_or(Value::Null);
-                if v["t"] == "peer_left" {
-                    assert_eq!(v["room_id"], room_id);
-                    got_peer_left = true;
-                    break;
-                }
-                // else: the relay's keepalive echo — ignore and keep beating.
-            }
-            _ => {}
-        }
-    }
-    assert!(
-        got_peer_left,
-        "host must be told peer_left when the controller goes silent, despite the host's own keepalives",
-    );
-}
+    // The host reconnected while its old socket is still open (half-open).
+    let mut fresh = register_host(&url).await;
+    listen(&mut fresh, "code-5").await;
+    let pl = recv_json(&mut ctrl).await.expect("controller told to re-join");
+    assert_eq!(pl["t"], "peer_left");
 
-// ---------------------------------------------------------------------------
-// Persistent rendezvous (durable reconnect) — a `create_pair { persistent }`
-// pending room does NOT expire by PAIR_TTL, so a trusted device can join it long
-// after (contrast with ac05 where a normal pair code expires).
-// ---------------------------------------------------------------------------
-#[tokio::test]
-async fn persistent_pair_survives_ttl() {
-    // Tiny TTL: a normal pair code would expire almost immediately.
-    let url = start_relay(Duration::from_millis(50)).await;
-    let mut host = register_host(&url).await;
-
-    // Persistent standing rendezvous.
-    send(
-        &mut host,
-        json!({ "t": "create_pair", "pair_code": "RECONNECT-CODE", "persistent": true }),
-    )
-    .await;
-    let rr = recv_json(&mut host).await.expect("room_ready for persistent create_pair");
+    send(&mut ctrl, json!({ "t": "join", "pair_code": "code-5" })).await;
+    let rr = recv_json(&mut ctrl).await.unwrap();
     assert_eq!(rr["t"], "room_ready");
-    let room_id = rr["room_id"].as_str().unwrap().to_string();
-
-    // Wait well past PAIR_TTL (and a sweeper tick).
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
-    // The device can still join the standing rendezvous.
-    let mut ctrl = connect(&url).await;
-    send(&mut ctrl, json!({ "t": "join", "pair_code": "RECONNECT-CODE" })).await;
-    let jr = recv_json(&mut ctrl).await.expect("join response");
-    assert_eq!(jr["t"], "room_ready", "persistent pending must survive TTL");
-    assert_eq!(jr["room_id"], room_id);
-    // The controller's room_ready carries a resume token too.
-    assert!(jr["resume_token"].is_string(), "join issues a resume token");
+    let h = recv_json(&mut fresh).await.expect("the FRESH host gets the join");
+    assert_eq!(h["room_id"], rr["room_id"]);
+    drop(stale);
 }
 
-// ---------------------------------------------------------------------------
-// Resume — an unknown/stale resume token is refused with `resume_invalid`.
-// ---------------------------------------------------------------------------
 #[tokio::test]
-async fn resume_with_bad_token_refused() {
-    let url = start_relay(Duration::from_secs(60)).await;
-    let mut ctrl = connect(&url).await;
-    send(&mut ctrl, json!({ "t": "resume", "resume_token": "rt_does_not_exist" })).await;
-    let resp = recv_json(&mut ctrl).await.expect("resume response");
-    assert_eq!(resp["t"], "error");
-    assert_eq!(resp["code"], "resume_invalid");
-}
-
-// ---------------------------------------------------------------------------
-// Extra — a data frame to a non-active/unknown room is refused (not forwarded).
-// ---------------------------------------------------------------------------
-#[tokio::test]
-async fn stream_to_unknown_room_refused() {
-    let url = start_relay(Duration::from_secs(60)).await;
+async fn revoke_all_ends_the_session() {
+    let url = start_relay().await;
     let mut host = register_host(&url).await;
-    send(
-        &mut host,
-        json!({ "t": "stream", "room_id": "rm_does_not_exist", "cipher": "eA==" }),
-    )
-    .await;
-    let resp = recv_json(&mut host).await.expect("response");
-    assert_eq!(resp["t"], "error");
-    assert_eq!(resp["code"], "room_not_found");
+    listen(&mut host, "code-6").await;
+    let (mut ctrl, _room) = join(&url, &mut host, "code-6").await;
+
+    send(&mut host, json!({ "t": "revoke", "room_id": "" })).await;
+    assert_eq!(recv_json(&mut ctrl).await.unwrap()["t"], "peer_left");
+    send(&mut ctrl, json!({ "t": "join", "pair_code": "code-6" })).await;
+    assert_eq!(recv_json(&mut ctrl).await.unwrap()["code"], "pair_invalid");
+}
+
+#[tokio::test]
+async fn listening_on_a_new_code_drops_the_old_session() {
+    let url = start_relay().await;
+    let mut host = register_host(&url).await;
+    listen(&mut host, "old").await;
+    let (mut ctrl, _room) = join(&url, &mut host, "old").await;
+
+    listen(&mut host, "new").await;
+    assert_eq!(recv_json(&mut ctrl).await.unwrap()["t"], "peer_left");
+    send(&mut ctrl, json!({ "t": "join", "pair_code": "old" })).await;
+    assert_eq!(recv_json(&mut ctrl).await.unwrap()["code"], "pair_invalid");
+}
+
+#[tokio::test]
+async fn legacy_resume_is_refused() {
+    let url = start_relay().await;
+    let mut ctrl = connect(&url).await;
+    send(&mut ctrl, json!({ "t": "resume", "resume_token": "rt_x" })).await;
+    assert_eq!(recv_json(&mut ctrl).await.unwrap()["code"], "resume_invalid");
+}
+
+#[tokio::test]
+async fn silent_controller_is_dropped_by_liveness() {
+    let url = start_relay_with(Duration::from_millis(300), Duration::from_secs(2), 1000).await;
+    let mut host = register_host(&url).await;
+    listen(&mut host, "code-7").await;
+    // The controller joins, then never reads or writes again — it never
+    // answers pings, exactly like a half-open socket.
+    let (ctrl, room) = join(&url, &mut host, "code-7").await;
+
+    let pl = recv_within(&mut host, Duration::from_secs(5)).await.expect("peer_left");
+    assert_eq!(pl["t"], "peer_left");
+    assert_eq!(pl["room_id"], room.as_str());
+    drop(ctrl);
+}
+
+#[tokio::test]
+async fn a_peer_that_answers_pings_is_never_dropped() {
+    let url = start_relay_with(Duration::from_millis(300), Duration::from_secs(1), 1000).await;
+    let mut host = register_host(&url).await;
+    listen(&mut host, "code-8").await;
+    let (mut ctrl, _room) = join(&url, &mut host, "code-8").await;
+
+    // Both sides only poll (answering pings) for well past the timeout.
+    let (h, c) = tokio::join!(
+        recv_within(&mut host, Duration::from_secs(3)),
+        recv_within(&mut ctrl, Duration::from_secs(3)),
+    );
+    assert!(h.is_none() && c.is_none(), "no peer_left: {h:?} {c:?}");
+}
+
+#[tokio::test]
+async fn data_frames_are_not_rate_limited() {
+    let url = start_relay_with(Duration::from_secs(15), Duration::from_secs(45), 5).await;
+    let mut host = register_host(&url).await;
+    listen(&mut host, "code-9").await;
+    let (mut ctrl, room) = join(&url, &mut host, "code-9").await;
+    for i in 0..50 {
+        send(&mut host, json!({ "t": "stream", "room_id": room, "cipher": "x", "seq": i })).await;
+    }
+    for _ in 0..50 {
+        let f = recv_json(&mut ctrl).await.expect("every stream frame arrives");
+        assert_eq!(f["t"], "stream");
+    }
 }

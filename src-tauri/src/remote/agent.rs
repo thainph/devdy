@@ -1,18 +1,25 @@
-//! Outbound WSS client to the relay: register, announce rendezvous, handshake,
-//! OTP-gate the first frame, then route (FR-001/003/004/012).
+//! Outbound WSS client to the relay: register, listen on the rendezvous code,
+//! handshake, OTP-gate the first frame, then route (FR-001/003/004/012).
 //!
 //! The Host dials the relay (never listens), so it always traverses NAT. One
 //! long-lived connection carries: the `register_host` control frame (SEC-001
-//! auth_token from keyring), a persistent `create_pair` for the single bound
-//! session, the E2E handshake over a `control` data frame, sealed `stream`
-//! frames outbound, and `cmd` frames inbound. On disconnect the agent reconnects
-//! with capped exponential backoff (BR-010) and re-announces.
+//! auth_token from keyring), a `create_pair` that makes the relay route joins
+//! on the bound session's rendezvous code to this connection, the E2E
+//! handshake over a `control` data frame, sealed `stream` frames outbound, and
+//! `cmd` frames inbound.
 //!
-//! Redesign: ONE `BoundSession` at a time. When a controller joins, the host
-//! mints a 6-digit OTP shown on the desktop; the first sealed frame is opened by
-//! trying `KDF(link_secret, session_secret)` (reconnect) then
-//! `KDF(link_secret, otp)` (pairing) — whichever opens authenticates the
-//! session. On success the host mints a durable session token (sliding 3h idle).
+//! Reconnect model (kept deliberately simple):
+//! - Every relay `room_ready` (other than the `armed` ack) is a Controller that
+//!   just joined. The newest join always wins — the relay already dropped the
+//!   previous room — so the Host drops its old room and re-runs the handshake.
+//! - Any socket problem (error, close, 45 s of silence, dial timeout) ends the
+//!   connection; the loop re-dials with capped backoff and listens again.
+//!
+//! ONE `BoundSession` at a time. When a controller joins, the host mints a
+//! 6-digit OTP shown on the desktop; the first sealed frame is opened by trying
+//! `KDF(link_secret, session_secret)` (reconnect) then `KDF(link_secret, otp)`
+//! (pairing) — whichever opens authenticates the session. On success the host
+//! mints a durable session token (sliding 3h idle).
 
 use crate::db::Db;
 use crate::remote::audit;
@@ -36,9 +43,15 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex as TokioMutex;
 use tokio_tungstenite::tungstenite::Message;
 
-/// Min/max reconnect backoff (BR-010): start at 1 s, cap at 30 s.
+/// Min/max reconnect backoff (BR-010): start at 1 s, cap at 15 s. The cap is
+/// what a Controller waits, worst case, after the relay comes back.
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
-const BACKOFF_MAX: Duration = Duration::from_secs(30);
+const BACKOFF_MAX: Duration = Duration::from_secs(15);
+
+/// Upper bound on dialing the relay (DNS + TCP + TLS + WS upgrade). Without it a
+/// dial started during a network change or right after wake can hang forever,
+/// and the agent never gets back to its reconnect loop.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Heartbeat cadence to the relay. Well under the typical 60 s idle cutoff of
 /// proxies/load-balancers so an idle (post-run) socket is never reaped. Matched
@@ -46,8 +59,9 @@ const BACKOFF_MAX: Duration = Duration::from_secs(30);
 /// arithmetic (2 missed beats + slack).
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 
-/// Zombie-socket watchdog. The relay echoes every keepalive, so a live host↔relay
-/// socket receives an inbound frame at least every [`KEEPALIVE_INTERVAL`]. If
+/// Zombie-socket watchdog. The relay echoes every keepalive (and pings), so a
+/// live host↔relay socket receives an inbound frame at least every
+/// [`KEEPALIVE_INTERVAL`]. If
 /// nothing arrives for this long the socket has gone half-open (proxy idle-reap,
 /// laptop sleep, network change) with no TCP close — the read stream would
 /// otherwise block forever and the Host would sit falsely "connected" while the
@@ -58,6 +72,12 @@ const LIVENESS_TIMEOUT: Duration = Duration::from_secs(45);
 /// How often the liveness watchdog checks the inbound clock. Small relative to
 /// [`LIVENESS_TIMEOUT`] so detection latency is close to the timeout itself.
 const LIVENESS_CHECK_INTERVAL: Duration = Duration::from_secs(5);
+
+/// If wall-clock time advanced this much more than monotonic time between two
+/// liveness checks, the machine was asleep. Monotonic time stops during sleep on
+/// macOS, so the silence watchdog alone would wait a full window after wake;
+/// the socket is certainly dead by then, so re-dial straight away.
+const SLEEP_JUMP: Duration = Duration::from_secs(20);
 
 /// Sliding idle window for a remote session token: 3 hours of inactivity.
 pub const IDLE_TTL_SECS: u64 = 3 * 3600;
@@ -74,12 +94,6 @@ pub fn now_unix() -> u64 {
 /// slides it forward on each accepted command; reconnect reads it to decide if
 /// the session token is still valid. Stored as Unix seconds.
 pub type IdleClock = Arc<AtomicU64>;
-
-/// Whether an incoming joined room must be refused because another room already
-/// owns the authenticated bound-session controller slot.
-fn bound_controller_slot_taken(active_room_id: Option<&str>, incoming_room_id: &str) -> bool {
-    matches!(active_room_id, Some(active) if active != incoming_room_id)
-}
 
 fn should_ignore_handshake(
     active_room_id: Option<&str>,
@@ -111,13 +125,8 @@ pub struct AgentDeps {
     /// Whether the host↔relay socket is down and the agent is retrying (backoff),
     /// surfaced to the desktop badge as "reconnecting…".
     pub reconnecting: Arc<std::sync::atomic::AtomicBool>,
-    /// Room ids the Owner asked to revoke (teardown / supersede). The agent
-    /// drains this and sends a `revoke{room_id}` to the relay.
-    pub revoke_queue: Arc<TokioMutex<Vec<String>>>,
-    /// Wakes the agent when a new revoke request is queued.
-    pub revoke_signal: Arc<tokio::sync::Notify>,
-    /// Wakes the agent when a new BoundSession is set so it announces the
-    /// persistent rendezvous on the live connection (not only on reconnect).
+    /// Wakes the agent whenever the bound session changes (new link, or ended)
+    /// so it re-syncs what it listens on with the relay.
     pub announce_signal: Arc<tokio::sync::Notify>,
     /// Runs the Controller is streaming (shared with the handler + forwarder).
     pub subscriptions: crate::remote::RunSubscriptions,
@@ -175,12 +184,23 @@ async fn connect_once(
     auth_token: &str,
     stop: &mut tokio::sync::watch::Receiver<bool>,
 ) -> ConnectOutcome {
-    let ws = match tokio_tungstenite::connect_async(&config.relay_url).await {
-        Ok((ws, _resp)) => ws,
-        Err(e) => {
-            tracing::warn!(event = "remote_connect_failed", error = %e);
-            return ConnectOutcome::Disconnected;
-        }
+    let dial = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        tokio_tungstenite::connect_async(&config.relay_url),
+    );
+    let ws = tokio::select! {
+        _ = stop.changed() => return ConnectOutcome::Stopped,
+        r = dial => match r {
+            Ok(Ok((ws, _resp))) => ws,
+            Ok(Err(e)) => {
+                tracing::warn!(event = "remote_connect_failed", error = %e);
+                return ConnectOutcome::Disconnected;
+            }
+            Err(_) => {
+                tracing::warn!(event = "remote_connect_timeout");
+                return ConnectOutcome::Disconnected;
+            }
+        },
     };
     tracing::info!(event = "remote_connected", url = %config.relay_url);
     // Socket is back up; leave "reconnecting" even before a controller authenticates.
@@ -220,12 +240,14 @@ async fn connect_once(
     // Rehydrate a bound session from a persisted (non-expired) session token so a
     // controller can reconnect without an OTP after an app/relay restart.
     rehydrate_bound_if_empty(deps).await;
+    // A fresh socket has no authenticated controller yet, whatever the last
+    // connection had.
+    if let Some(b) = deps.bound.lock().await.as_mut() {
+        b.authenticated = false;
+    }
 
-    // Announce the persistent rendezvous for the bound session (if any).
-    announce_bound(deps, &out_tx).await;
-
-    // Rooms we've announced (create_pair ack seen) and await a controller join.
-    let mut armed_rooms: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // The rendezvous code this connection listens on (None = not listening).
+    let mut listening: Option<String> = None;
 
     let seq = Arc::new(SeqCounter::default());
     let rate = Arc::new(TokioMutex::new(CommandRateLimiter::new(Instant::now())));
@@ -238,7 +260,7 @@ async fn connect_once(
     let mut pending_room: Option<String> = None;
     let mut forward_task: Option<tokio::task::JoinHandle<()>> = None;
 
-    drain_revokes(deps, &out_tx).await;
+    sync_listen(deps, &out_tx, &mut listening, &mut room_ctx, &mut pending_room, &mut forward_task).await;
 
     // Heartbeat: keep the host↔relay socket warm through idle-killing proxies
     // once a run stops streaming. Carries the ACTIVE room id (if any) so the relay
@@ -252,6 +274,7 @@ async fn connect_once(
     let mut last_inbound = Instant::now();
     let mut liveness = tokio::time::interval(LIVENESS_CHECK_INTERVAL);
     liveness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut last_check = (Instant::now(), SystemTime::now());
 
     let result = loop {
         tokio::select! {
@@ -277,12 +300,17 @@ async fn connect_once(
                     );
                     break ConnectOutcome::Disconnected;
                 }
-            }
-            _ = deps.revoke_signal.notified() => {
-                drain_revokes(deps, &out_tx).await;
+                let (mono, wall) = (Instant::now(), SystemTime::now());
+                let wall_delta = wall.duration_since(last_check.1).unwrap_or_default();
+                let mono_delta = mono.duration_since(last_check.0);
+                last_check = (mono, wall);
+                if wall_delta > mono_delta + SLEEP_JUMP {
+                    tracing::info!(event = "remote_wake_redial", slept_secs = (wall_delta - mono_delta).as_secs());
+                    break ConnectOutcome::Disconnected;
+                }
             }
             _ = deps.announce_signal.notified() => {
-                announce_bound(deps, &out_tx).await;
+                sync_listen(deps, &out_tx, &mut listening, &mut room_ctx, &mut pending_room, &mut forward_task).await;
             }
             msg = stream.next() => {
                 let Some(msg) = msg else { break ConnectOutcome::Disconnected; };
@@ -305,38 +333,100 @@ async fn connect_once(
                     Ok(e) => e,
                     Err(_) => { tracing::debug!(event = "remote_bad_frame"); continue; }
                 };
+                // The relay refused something this connection depends on (our
+                // listen hit the cap / rate limit, or we are not registered).
+                // Re-dial so the listen is re-established instead of sitting on
+                // a socket no controller can reach.
+                if env.t == FrameType::Error && relay_error_needs_redial(env.code.as_deref()) {
+                    tracing::warn!(
+                        event = "remote_relay_error_redial",
+                        code = env.code.as_deref().unwrap_or(""),
+                        message = env.message.as_deref().unwrap_or("")
+                    );
+                    break ConnectOutcome::Disconnected;
+                }
                 dispatch_inbound(
                     env, config, deps, &out_tx, &seq, &rate, &idem, &idle,
-                    &mut room_ctx, &mut pending_room, &mut forward_task, &mut armed_rooms,
+                    &mut room_ctx, &mut pending_room, &mut forward_task,
                 ).await;
             }
         }
     };
 
-    if let Some(t) = forward_task.take() {
-        t.abort();
-    }
+    // The room died with the socket; make the desktop state say so now rather
+    // than after the next successful dial.
+    drop_room(deps, &mut room_ctx, &mut pending_room, &mut forward_task).await;
     drop(out_tx);
     writer.abort();
     result
 }
 
-/// Send a `revoke{room_id}` for every queued revoke request.
-async fn drain_revokes(deps: &AgentDeps, out_tx: &OutboundTx) {
-    let mut queue = deps.revoke_queue.lock().await;
-    for room_id in queue.drain(..) {
-        let _ = out_tx.send(Envelope::revoke(room_id));
-    }
+/// Relay errors that leave this connection useless (see the read loop).
+fn relay_error_needs_redial(code: Option<&str>) -> bool {
+    matches!(code, Some("bad_request" | "rate_limited" | "forbidden" | "auth_failed"))
 }
 
-/// Announce the bound session's rendezvous to the relay as a persistent pair, so
-/// a controller can join (or rejoin, past PAIR_TTL) at any time until teardown.
-async fn announce_bound(deps: &AgentDeps, out_tx: &OutboundTx) {
-    if let Some(b) = deps.bound.lock().await.as_ref() {
-        let _ = out_tx.send(Envelope::create_pair_persistent(
-            b.rendezvous_code.clone(),
-            true,
-        ));
+/// Make what this connection listens on match the bound session:
+/// - new/changed session → `create_pair` with its code (the relay drops the old
+///   code and its room by itself),
+/// - session ended → `revoke` everything.
+///
+/// Either change invalidates the current room, so it is dropped locally too.
+async fn sync_listen(
+    deps: &AgentDeps,
+    out_tx: &OutboundTx,
+    listening: &mut Option<String>,
+    room_ctx: &mut Option<Arc<HandlerCtx>>,
+    pending_room: &mut Option<String>,
+    forward_task: &mut Option<tokio::task::JoinHandle<()>>,
+) {
+    let want = deps.bound.lock().await.as_ref().map(|b| b.rendezvous_code.clone());
+    if want == *listening {
+        return;
+    }
+    if listening.is_some() {
+        drop_room(deps, room_ctx, pending_room, forward_task).await;
+    }
+    match &want {
+        Some(code) => {
+            let _ = out_tx.send(Envelope::create_pair_persistent(code.clone(), true));
+        }
+        None => {
+            let _ = out_tx.send(Envelope::revoke(String::new()));
+        }
+    }
+    *listening = want;
+}
+
+/// Forget the current room (authenticated or mid-handshake): stop forwarding,
+/// require the OTP/token gate again, and tell the desktop.
+async fn drop_room(
+    deps: &AgentDeps,
+    room_ctx: &mut Option<Arc<HandlerCtx>>,
+    pending_room: &mut Option<String>,
+    forward_task: &mut Option<tokio::task::JoinHandle<()>>,
+) {
+    if let Some(t) = forward_task.take() {
+        t.abort();
+    }
+    *pending_room = None;
+    let had_ctx = room_ctx.take().is_some();
+    let run_id = {
+        let mut bound = deps.bound.lock().await;
+        match bound.as_mut() {
+            Some(b) => {
+                b.authenticated = false;
+                // The handshake belonged to that room; a gate frame must only
+                // ever open with the CURRENT room's controller key.
+                b.controller_pub = None;
+                b.run_id.clone()
+            }
+            None => String::new(),
+        }
+    };
+    deps.connected.store(false, Ordering::SeqCst);
+    if had_ctx {
+        let _ = deps.app.emit("remote://disconnected", Disconnected { run_id });
     }
 }
 
@@ -381,7 +471,6 @@ async fn dispatch_inbound(
     room_ctx: &mut Option<Arc<HandlerCtx>>,
     pending_room: &mut Option<String>,
     forward_task: &mut Option<tokio::task::JoinHandle<()>>,
-    armed_rooms: &mut std::collections::HashSet<String>,
 ) {
     match env.t {
         FrameType::RoomReady => {
@@ -389,39 +478,29 @@ async fn dispatch_inbound(
             if room_id.is_empty() {
                 return;
             }
-            // First `room_ready` = create_pair ack — arm and await a join.
-            if armed_rooms.insert(room_id.clone()) {
-                tracing::info!(event = "remote_pair_room_ready", room_id = %room_id);
+            // The create_pair ack: we are listening, nobody joined yet.
+            if env.code.as_deref() == Some("armed") {
+                tracing::info!(event = "remote_listening", next_room_id = %room_id);
                 return;
             }
-            // The standing rendezvous may admit a second relay room while the
-            // bound session already has an authenticated Controller. Refuse that
-            // room at the Host boundary: relay MAX_CONTROLLER is per-room, while
-            // our invariant is per bound session. Most importantly, do not touch
-            // `controller_pub`, `authenticated`, room_ctx, or the first room.
-            if bound_controller_slot_taken(
-                room_ctx.as_ref().map(|ctx| ctx.room_id.as_str()),
-                &room_id,
-            ) {
-                tracing::warn!(
-                    event = "remote_controller_rejected",
-                    reason = "bound_session_full",
-                    room_id = %room_id
-                );
-                let _ = out_tx.send(Envelope::revoke(room_id));
-                return;
-            }
-            // A duplicate notification for the already authenticated room is
-            // harmless, but must not restart its handshake or reset bound auth.
+            // A duplicate notification for the current room must not restart its
+            // handshake or reset auth.
             if room_ctx.as_ref().is_some_and(|ctx| ctx.room_id == room_id) {
                 tracing::debug!(event = "remote_duplicate_room_ready", room_id = %room_id);
                 return;
             }
-            // Second `room_ready` = a controller joined → offer the handshake and
-            // mint a fresh OTP shown on the desktop.
+            // A controller joined. The relay keeps one room per code and the
+            // newest join wins, so whatever room we had is already gone there —
+            // drop it here too and handshake with the newcomer.
+            if room_ctx.is_some() || pending_room.is_some() {
+                drop_room(deps, room_ctx, pending_room, forward_task).await;
+            }
+            // Offer the handshake and mint (or reuse) the OTP shown on the desktop.
             let (host_pub, fp) = {
                 let mut bound = deps.bound.lock().await;
                 let Some(b) = bound.as_mut() else { return; };
+                // A new room needs its own handshake answer before any gate.
+                b.controller_pub = None;
                 // Reuse a still-live code (it may already be shown on the desktop
                 // via reveal) instead of rotating a fresh one out from under the
                 // user on every join; mint only when absent/expired.
@@ -457,8 +536,6 @@ async fn dispatch_inbound(
                 let _ = out_tx.send(Envelope::data(FrameType::Control, &room_id, cipher, seq.next()));
             }
             tracing::info!(event = "remote_handshake_offered", room_id = %room_id);
-            // Keep the standing rendezvous available for the NEXT reconnect.
-            announce_bound(deps, out_tx).await;
         }
 
         FrameType::Control => {
@@ -489,7 +566,7 @@ async fn dispatch_inbound(
             else {
                 return;
             };
-            complete_handshake(env.room_id.clone(), controller_pub, deps, out_tx, pending_room).await;
+            complete_handshake(env.room_id.clone(), controller_pub, deps, pending_room).await;
         }
 
         FrameType::Cmd => {
@@ -518,19 +595,12 @@ async fn dispatch_inbound(
                 handle(ctx, cmd).await;
                 return;
             }
-            // Not yet authenticated on this connection → treat this as the auth
-            // gate (first sealed frame). Resolve the room from the FRAME itself,
-            // not `pending_room`: a peer_left during a reconnect storm can clear
-            // `pending_room` before the gate frame lands, which previously made
-            // the host silently drop it (and every later command), stranding the
-            // controller on a "connected" but dead session. `env.room_id` is
-            // always present on a routed data frame.
-            let room_id = if !env.room_id.is_empty() {
-                env.room_id.clone()
-            } else if let Some(r) = pending_room.clone() {
-                r
-            } else {
-                tracing::debug!(event = "remote_cmd_no_room");
+            // Not yet authenticated → this is the auth gate (first sealed
+            // frame). It must belong to the room we are handshaking with: a late
+            // frame from a replaced room would otherwise authenticate a dead
+            // room, or burn an OTP attempt.
+            let Some(room_id) = pending_room.clone().filter(|r| *r == env.room_id) else {
+                tracing::debug!(event = "remote_cmd_not_pending_room", room_id = %env.room_id);
                 return;
             };
             let Some(cipher) = env.cipher.as_deref() else { return; };
@@ -549,35 +619,13 @@ async fn dispatch_inbound(
 
         FrameType::PeerLeft => {
             tracing::info!(event = "remote_peer_left", room_id = %env.room_id);
-            // A Host connection can own the authenticated room plus a standing
-            // rendezvous. A peer leaving/revoking the latter must not tear down
-            // the authenticated Controller or clear its token state.
-            if let Some(ctx) = room_ctx.as_ref() {
-                if env.room_id != ctx.room_id {
-                    if pending_room.as_deref() == Some(env.room_id.as_str()) {
-                        *pending_room = None;
-                    }
-                    return;
-                }
+            // Only the current room matters; a late notice for a room we already
+            // replaced must not drop the newer one.
+            let current = room_ctx.as_ref().map(|c| c.room_id.as_str()) == Some(env.room_id.as_str())
+                || pending_room.as_deref() == Some(env.room_id.as_str());
+            if current {
+                drop_room(deps, room_ctx, pending_room, forward_task).await;
             }
-            if let Some(t) = forward_task.take() {
-                t.abort();
-            }
-            let run_id = deps
-                .bound
-                .lock()
-                .await
-                .as_ref()
-                .map(|b| b.run_id.clone())
-                .unwrap_or_default();
-            *room_ctx = None;
-            *pending_room = None;
-            // Reset the auth flag so a resume re-runs the OTP/token gate.
-            if let Some(b) = deps.bound.lock().await.as_mut() {
-                b.authenticated = false;
-            }
-            deps.connected.store(false, Ordering::SeqCst);
-            let _ = deps.app.emit("remote://disconnected", Disconnected { run_id });
         }
 
         FrameType::Error => {
@@ -586,6 +634,14 @@ async fn dispatch_inbound(
                 code = env.code.as_deref().unwrap_or(""),
                 message = env.message.as_deref().unwrap_or("")
             );
+            // Our current room no longer exists on the relay: stop pretending.
+            if env.code.as_deref() == Some("room_not_found") && !env.room_id.is_empty() {
+                let current = room_ctx.as_ref().map(|c| c.room_id.as_str()) == Some(env.room_id.as_str())
+                    || pending_room.as_deref() == Some(env.room_id.as_str());
+                if current {
+                    drop_room(deps, room_ctx, pending_room, forward_task).await;
+                }
+            }
         }
 
         _ => {
@@ -602,7 +658,6 @@ async fn complete_handshake(
     room_id: String,
     controller_pub_hex: String,
     deps: &AgentDeps,
-    out_tx: &OutboundTx,
     pending_room: &mut Option<String>,
 ) {
     let controller_pub = match crate::remote::pairing_unhex(&controller_pub_hex) {
@@ -624,19 +679,14 @@ async fn complete_handshake(
         b.controller_pub = Some(controller_pub);
     }
     *pending_room = Some(room_id.clone());
-    // Drive the relay room HANDSHAKING → ACTIVE now (both peers handshake_done).
-    // The OTP gate happens at the app layer on the first sealed `cmd`, which the
-    // relay only routes once the room is ACTIVE — so we must complete the E2E
-    // handshake here, BEFORE authentication. The room being ACTIVE is safe: the
-    // host processes no command and forwards nothing until the OTP/token gate
-    // opens that first frame.
-    let _ = out_tx.send(Envelope::handshake_done(&room_id));
+    // The relay routes as soon as the room exists; the host processes no command
+    // and forwards nothing until the OTP/token gate opens the first sealed frame.
     tracing::info!(event = "remote_handshake_ready", room_id = %room_id);
 }
 
 /// Try to open the controller's first sealed frame with `session_secret` then
 /// `otp`. On success: authenticate, mint + persist a session token, send it,
-/// signal handshake_done, start the scoped forward loop, and dispatch the frame.
+/// start the scoped forward loop, and dispatch the frame.
 #[allow(clippy::too_many_arguments)]
 async fn try_authenticate_first_frame(
     room_id: String,
@@ -779,8 +829,6 @@ async fn try_authenticate_first_frame(
         let _ = out_tx.send(Envelope::data(FrameType::Stream, &room_id, c, seq.next()));
     }
 
-    // Signal HANDSHAKING → ACTIVE to the relay.
-    let _ = out_tx.send(Envelope::handshake_done(&room_id));
     deps.connected.store(true, Ordering::SeqCst);
     audit::audit(
         &deps.db, None, Some(&room_id), Some(&run_id),
@@ -927,18 +975,7 @@ struct Disconnected {
 
 #[cfg(test)]
 mod tests {
-    use super::{bound_controller_slot_taken, should_ignore_handshake};
-
-    #[test]
-    fn authenticated_bound_session_refuses_a_second_room() {
-        assert!(bound_controller_slot_taken(Some("room-first"), "room-second"));
-    }
-
-    #[test]
-    fn active_room_frames_do_not_refuse_the_active_room_itself() {
-        assert!(!bound_controller_slot_taken(Some("room-first"), "room-first"));
-        assert!(!bound_controller_slot_taken(None, "room-first"));
-    }
+    use super::should_ignore_handshake;
 
     #[test]
     fn late_or_unexpected_handshake_cannot_mutate_an_active_session() {

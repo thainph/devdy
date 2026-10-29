@@ -2,7 +2,7 @@
 //! relay's `relay/src/protocol.rs`.
 //!
 //! The Host is a relay *client*: it sends control frames (`register_host`,
-//! `create_pair`, `handshake_done`, `revoke`) and data frames (`stream`,
+//! `create_pair`, `revoke`) and data frames (`stream`,
 //! `permission_request`, `control`), and receives `room_ready`, `peer_left`,
 //! `error` plus data frames from the Controller.
 //!
@@ -114,15 +114,8 @@ impl Envelope {
         e
     }
 
-    /// `handshake_done { room_id }` (FR-003) — half of the HANDSHAKING→ACTIVE
-    /// signal (SRS §6.2).
-    pub fn handshake_done(room_id: impl Into<String>) -> Self {
-        let mut e = Self::bare(FrameType::HandshakeDone);
-        e.room_id = room_id.into();
-        e
-    }
-
-    /// `revoke { room_id }` (FR-010) — Host asks the relay to close the room.
+    /// `revoke { room_id }` (FR-010) — Host asks the relay to close the room; an
+    /// empty `room_id` ends the session (stop listening + close the room).
     pub fn revoke(room_id: impl Into<String>) -> Self {
         let mut e = Self::bare(FrameType::Revoke);
         e.room_id = room_id.into();

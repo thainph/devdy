@@ -4,13 +4,20 @@
 //! Each connection gets a read task (this module) and a write task fed by an
 //! mpsc channel. Shared room state lives behind a single async `Mutex`.
 //!
+//! Liveness is per connection and is the only timeout in the relay: the write
+//! task pings every `ping_interval`, and a connection that delivers no bytes
+//! for `peer_liveness_timeout` is closed. Closing a connection is the one path
+//! that tears down its listen/room, so a dead peer is always cleaned up.
+//!
 //! The relay reads only `t` and `room_id`; `cipher` is forwarded opaque and is
 //! never logged (SEC-006 / NFR-005).
 
 use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
@@ -22,7 +29,7 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::config::Config;
 use crate::protocol::{Envelope, ErrorCode, FrameType};
 use crate::ratelimit::RateLimiter;
-use crate::room::{ConnId, JoinOutcome, Outbound, ResumeOutcome, RoomRegistry};
+use crate::room::{ConnId, JoinOutcome, Notice, Outbound, RoomRegistry};
 
 /// Shared server state.
 pub struct Shared {
@@ -68,18 +75,11 @@ pub async fn serve(config: Config) -> std::io::Result<(RelayHandle, impl std::fu
 
     let accept_shared = shared.clone();
     let accept_loop = async move {
-        // Background sweeper for TTL expiry and idle rooms (SRS §6.2).
-        let sweep_shared = accept_shared.clone();
-        tokio::spawn(async move { sweep_loop(sweep_shared).await });
-
         loop {
             match listener.accept().await {
                 Ok((stream, peer)) => {
-                    // OS-level defence in depth against half-open sockets: without
-                    // this a peer that vanished (mobile network drop, laptop sleep)
-                    // with no FIN/RST would linger for the kernel's ~2 h default.
-                    // The app-level `sweep_peer_liveness` is the primary detector;
-                    // this just lets the kernel reap the dead socket in ~1 min too.
+                    // OS-level backstop against half-open sockets; the app-level
+                    // liveness check in `handle_connection` is the primary one.
                     apply_tcp_keepalive(&stream);
                     let s = accept_shared.clone();
                     tokio::spawn(async move {
@@ -98,45 +98,69 @@ pub async fn serve(config: Config) -> std::io::Result<(RelayHandle, impl std::fu
     Ok((handle, accept_loop))
 }
 
-/// Background loop that expires pending pair codes and idle rooms.
-async fn sweep_loop(shared: Arc<Shared>) {
-    let idle = shared.config.room_idle_timeout;
-    let liveness = shared.config.peer_liveness_timeout;
-    let reconnect_window = shared.config.reconnect_window;
-    let mut ticker = tokio::time::interval(Duration::from_secs(1));
-    loop {
-        ticker.tick().await;
-        let now = Instant::now();
-        let (closed, dropped) = {
-            let mut rooms = shared.rooms.lock().await;
-            // TTL / idle sweep first, then per-peer liveness on what survives.
-            let closed = rooms.sweep(now, idle);
-            let dropped = rooms.sweep_peer_liveness(now, liveness, reconnect_window);
-            (closed, dropped)
-        };
-        for (room_id, survivors) in closed {
-            tracing::info!(event = "room_swept", room_id = %room_id);
-            for sink in survivors {
-                let _ = sink.send(Envelope::peer_left(room_id.clone()));
-            }
-        }
-        // A peer went silent (half-open, no TCP close). The survivor is told
-        // `peer_left` exactly as if the socket had closed cleanly.
-        for (room_id, survivors) in dropped {
-            tracing::info!(event = "peer_liveness_timeout", room_id = %room_id);
-            for sink in survivors {
-                let _ = sink.send(Envelope::peer_left(room_id.clone()));
-            }
-        }
-    }
-}
-
 /// Per-connection role, learned from the first control frame.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Role {
     Unknown,
     Host,
     Controller,
+}
+
+/// A TCP stream that records when it last received any byte. Liveness is
+/// judged on raw bytes, not whole messages, so a large upload on a slow link
+/// (an image turn from a phone on 4G) never looks like a dead peer.
+struct ActivityStream {
+    inner: TcpStream,
+    born: Instant,
+    /// Milliseconds since `born` of the last successful non-empty read.
+    last_read_ms: Arc<AtomicU64>,
+}
+
+impl tokio::io::AsyncRead for ActivityStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let res = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if matches!(res, Poll::Ready(Ok(()))) && buf.filled().len() > before {
+            let ms = self.born.elapsed().as_millis() as u64;
+            self.last_read_ms.store(ms, Ordering::Relaxed);
+        }
+        res
+    }
+}
+
+impl tokio::io::AsyncWrite for ActivityStream {
+    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+/// Deliver room-close notices: `peer_left`, or `error{superseded}` for a
+/// Controller that a newer join replaced. A superseded connection is then
+/// closed, so even a client that does not know `superseded` stops using it.
+///
+/// Callers hold the registry lock while delivering (sends never block), so
+/// every peer sees notices and `room_ready`s in the order the registry changed.
+fn deliver(notices: Vec<Notice>) {
+    for n in notices {
+        if n.superseded {
+            let mut e = Envelope::error(ErrorCode::Superseded, "replaced by a newer connection");
+            e.room_id = n.room_id;
+            let _ = n.out.send(e);
+            n.out.close();
+        } else {
+            let _ = n.out.send(Envelope::peer_left(n.room_id));
+        }
+    }
 }
 
 async fn handle_connection(
@@ -152,26 +176,49 @@ async fn handle_connection(
         max_frame_size: Some(shared.config.max_message_bytes),
         ..Default::default()
     };
-    let ws = tokio_tungstenite::accept_async_with_config(stream, Some(ws_config)).await?;
+    let born = Instant::now();
+    let last_read_ms = Arc::new(AtomicU64::new(0));
+    let stream = ActivityStream {
+        inner: stream,
+        born,
+        last_read_ms: last_read_ms.clone(),
+    };
+    // A client that never finishes the WS upgrade must not pin a task forever.
+    let ws = tokio::time::timeout(
+        shared.config.peer_liveness_timeout,
+        tokio_tungstenite::accept_async_with_config(stream, Some(ws_config)),
+    )
+    .await
+    .map_err(|_| "websocket upgrade timed out")??;
     let conn_id = shared.alloc_conn();
     tracing::info!(event = "conn_open", conn = conn_id, peer = %peer);
 
     let (mut ws_sink, mut ws_stream) = ws.split();
 
-    // Write task: drains the outbound channel to the socket. Depth-capped, so a
-    // peer that stops reading is dropped rather than buffered indefinitely.
+    // Write task: drains the outbound channel to the socket and pings on a
+    // steady cadence. Browsers answer pings natively, so even a backgrounded
+    // phone tab proves it is alive without running any JS.
     let (out_tx, mut out_rx) = crate::room::outbound_channel();
+    let ping_interval = shared.config.ping_interval;
     let writer = tokio::spawn(async move {
-        while let Some(env) = out_rx.recv().await {
-            match serde_json::to_string(&env) {
-                Ok(text) => {
-                    if ws_sink.send(Message::Text(text)).await.is_err() {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(event = "serialize_error", error = %e);
-                }
+        let mut ping = tokio::time::interval(ping_interval);
+        ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            let msg = tokio::select! {
+                env = out_rx.recv() => match env {
+                    Some(env) => match serde_json::to_string(&env) {
+                        Ok(text) => Message::Text(text),
+                        Err(e) => {
+                            tracing::warn!(event = "serialize_error", error = %e);
+                            continue;
+                        }
+                    },
+                    None => break,
+                },
+                _ = ping.tick() => Message::Ping(Vec::new()),
+            };
+            if ws_sink.send(msg).await.is_err() {
+                break;
             }
         }
         let _ = ws_sink.close().await;
@@ -183,34 +230,42 @@ async fn handle_connection(
         shared.config.rate_limit_window,
         Instant::now(),
     );
+    let liveness = shared.config.peer_liveness_timeout;
+    let mut liveness_check = tokio::time::interval(Duration::from_secs(1));
+    liveness_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     // Read loop.
-    while let Some(msg) = ws_stream.next().await {
-        let msg = match msg {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::debug!(event = "ws_read_error", conn = conn_id, error = %e);
+    loop {
+        let msg = tokio::select! {
+            msg = ws_stream.next() => match msg {
+                Some(Ok(m)) => m,
+                Some(Err(e)) => {
+                    tracing::debug!(event = "ws_read_error", conn = conn_id, error = %e);
+                    break;
+                }
+                None => break,
+            },
+            _ = liveness_check.tick() => {
+                let last = Duration::from_millis(last_read_ms.load(Ordering::Relaxed));
+                if born.elapsed().saturating_sub(last) >= liveness {
+                    tracing::info!(event = "conn_liveness_timeout", conn = conn_id);
+                    break;
+                }
+                continue;
+            }
+            _ = out_tx.killed() => {
+                tracing::warn!(event = "conn_too_slow", conn = conn_id);
                 break;
             }
         };
 
         let text = match msg {
             Message::Text(t) => t,
-            Message::Binary(_) => {
-                // Protocol is JSON text; ignore binary but do not drop the conn.
-                continue;
-            }
-            Message::Ping(_) | Message::Pong(_) => continue,
             Message::Close(_) => break,
-            Message::Frame(_) => continue,
+            // Protocol is JSON text; pings/pongs only matter for liveness,
+            // which the byte-level clock already recorded.
+            Message::Binary(_) | Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
         };
-
-        // Rate-limit BEFORE parsing to blunt flooding (SEC-007).
-        if !limiter.allow(Instant::now()) {
-            tracing::warn!(event = "rate_limited", conn = conn_id);
-            let _ = out_tx.send(Envelope::error(ErrorCode::RateLimited, "too many frames"));
-            continue;
-        }
 
         let env: Envelope = match serde_json::from_str(&text) {
             Ok(e) => e,
@@ -222,29 +277,42 @@ async fn handle_connection(
             }
         };
 
-        let close = dispatch(&shared, conn_id, &mut role, &out_tx, env).await;
-        if close {
+        // Rate-limit control frames to blunt join/register flooding (SEC-007).
+        // Data and keepalives are exempt: a streaming Host legitimately sends
+        // far more than any control budget, and dropping its frames would
+        // corrupt the session.
+        if is_rate_limited(env.t) && !limiter.allow(Instant::now()) {
+            tracing::warn!(event = "rate_limited", conn = conn_id);
+            let _ = out_tx.send(Envelope::error(ErrorCode::RateLimited, "too many frames"));
+            continue;
+        }
+
+        if dispatch(&shared, conn_id, &mut role, &out_tx, env).await {
             break;
         }
     }
 
-    // Cleanup on disconnect: close the room (or keep it alive for a Controller
-    // resume) and notify the survivor.
-    let survivor = {
-        let mut rooms = shared.rooms.lock().await;
-        rooms.on_disconnect(conn_id, Instant::now(), shared.config.reconnect_window)
-    };
-    if let Some((room_id, sinks)) = survivor {
-        tracing::info!(event = "peer_left", conn = conn_id, room_id = %room_id);
-        for sink in sinks {
-            let _ = sink.send(Envelope::peer_left(room_id.clone()));
-        }
-    }
+    // Cleanup: drop the Host's listen / close the room, notify the survivor.
+    let notices = shared.rooms.lock().await.on_disconnect(conn_id);
+    deliver(notices);
 
+    // Let the writer flush what is queued (e.g. an auth error) and close, but
+    // never wait on a socket that stopped draining.
     drop(out_tx);
-    let _ = writer.await;
+    let mut writer = writer;
+    if tokio::time::timeout(Duration::from_secs(2), &mut writer).await.is_err() {
+        writer.abort();
+    }
     tracing::info!(event = "conn_close", conn = conn_id);
     Ok(())
+}
+
+/// Frames that count against the per-connection rate limit.
+fn is_rate_limited(t: FrameType) -> bool {
+    !matches!(
+        t,
+        FrameType::Stream | FrameType::PermissionRequest | FrameType::Cmd | FrameType::Control | FrameType::Keepalive
+    )
 }
 
 /// Handle one decoded envelope. Returns `true` if the connection should close
@@ -267,7 +335,6 @@ async fn dispatch(
             if !token_ok {
                 tracing::warn!(event = "register_denied", conn = conn_id);
                 let _ = out_tx.send(Envelope::error(ErrorCode::AuthFailed, "invalid auth token"));
-                // Close connection; Host must not retry indefinitely (BR-010).
                 return true;
             }
             *role = Role::Host;
@@ -280,6 +347,8 @@ async fn dispatch(
             false
         }
 
+        // Host listens on its rendezvous code until it disconnects, revokes, or
+        // listens on another code.
         FrameType::CreatePair => {
             if *role != Role::Host {
                 let _ = out_tx.send(Envelope::error(ErrorCode::Forbidden, "not a registered host"));
@@ -292,33 +361,19 @@ async fn dispatch(
                     return false;
                 }
             };
-            let now = Instant::now();
-            let room_id = new_room_id();
-            // A persistent rendezvous (durable reconnect) must survive while the
-            // trusted device is offline, so it is not bound by PAIR_TTL. It still
-            // dies with the Host connection (on_disconnect closes the Host's rooms).
-            let persistent = env.persistent.unwrap_or(false);
-            let expires_at = if persistent {
-                now + Duration::from_secs(3650 * 24 * 3600)
-            } else {
-                now + shared.config.pair_ttl
-            };
-            let hash = hash_code(pair_code);
-            {
-                let mut rooms = shared.rooms.lock().await;
-                // Re-arming an existing rendezvous supersedes it rather than
-                // adding a room, so only a genuinely NEW code is capped.
-                if rooms.len() >= shared.config.max_rooms && !rooms.has_pending_code(hash) {
-                    drop(rooms);
-                    tracing::warn!(event = "room_cap_reached", conn = conn_id);
-                    let _ = out_tx.send(Envelope::error(ErrorCode::BadRequest, "room cap reached"));
-                    return false;
-                }
-                rooms.create_pending(room_id.clone(), hash, conn_id, out_tx.clone(), now, expires_at);
+            let code = hash_code(pair_code);
+            let next_room_id = new_room_id();
+            let mut rooms = shared.rooms.lock().await;
+            if rooms.len() >= shared.config.max_rooms && !rooms.is_listening(code) {
+                drop(rooms);
+                tracing::warn!(event = "room_cap_reached", conn = conn_id);
+                let _ = out_tx.send(Envelope::error(ErrorCode::BadRequest, "room cap reached"));
+                return false;
             }
-            tracing::info!(event = "pair_created", conn = conn_id, room_id = %room_id);
-            // Ack with the assigned room_id so the Host can track it for revoke.
-            let _ = out_tx.send(Envelope::room_ready(room_id));
+            deliver(rooms.listen(code, conn_id, out_tx.clone(), next_room_id.clone()));
+            let _ = out_tx.send(Envelope::room_armed(next_room_id));
+            drop(rooms);
+            tracing::info!(event = "listening", conn = conn_id);
             false
         }
 
@@ -330,176 +385,82 @@ async fn dispatch(
                     return false;
                 }
             };
-            let now = Instant::now();
-            let hash = hash_code(pair_code);
-            // Mint the first rotating resume token; the Controller presents it
-            // (hashed) in a later `resume` to re-attach after a drop.
-            let resume_token = new_resume_token();
-            let resume_hash = hash_code(&resume_token);
-            let outcome = {
-                let mut rooms = shared.rooms.lock().await;
-                rooms.join(hash, conn_id, out_tx.clone(), resume_hash, now)
-            };
-            match outcome {
+            if *role == Role::Host {
+                let _ = out_tx.send(Envelope::error(ErrorCode::Forbidden, "a host cannot join"));
+                return false;
+            }
+            let mut rooms = shared.rooms.lock().await;
+            match rooms.join(hash_code(pair_code), conn_id, out_tx.clone(), new_room_id()) {
                 JoinOutcome::Joined {
                     room_id,
                     host_out,
-                    controller_out,
+                    notices,
                 } => {
                     *role = Role::Controller;
-                    tracing::info!(event = "join_ok", conn = conn_id, room_id = %room_id);
-                    // Notify both peers (SRS §5.3 room_ready → both). Only the
-                    // Controller receives the resume token.
+                    // Still under the lock: a concurrent join can't interleave
+                    // its room_ready with ours at the Host.
+                    deliver(notices);
                     let _ = host_out.send(Envelope::room_ready(room_id.clone()));
-                    let _ = controller_out
-                        .send(Envelope::room_ready_with_token(room_id, resume_token));
-                    false
+                    let _ = out_tx.send(Envelope::room_ready(room_id.clone()));
+                    drop(rooms);
+                    tracing::info!(event = "join_ok", conn = conn_id, room_id = %room_id);
                 }
                 JoinOutcome::Invalid => {
-                    // AC-05: expired/used/unknown pair code → refuse, no room.
+                    drop(rooms);
+                    // No Host listening (offline / superseded link). The
+                    // Controller retries with backoff.
                     tracing::info!(event = "join_invalid", conn = conn_id);
-                    let _ =
-                        out_tx.send(Envelope::error(ErrorCode::PairInvalid, "pair code invalid or expired"));
-                    false
-                }
-                JoinOutcome::Full => {
-                    // AC-16: second controller refused (MAX_CONTROLLER=1).
-                    tracing::info!(event = "join_room_full", conn = conn_id);
-                    let _ = out_tx.send(Envelope::error(ErrorCode::RoomFull, "room already has a controller"));
-                    false
+                    let _ = out_tx.send(Envelope::error(ErrorCode::PairInvalid, "host is not listening"));
                 }
             }
+            false
         }
 
+        // Legacy resume: always refuse so an older Controller falls back to join.
         FrameType::Resume => {
-            let token = match env.resume_token.as_deref() {
-                Some(t) if !t.is_empty() => t,
-                _ => {
-                    let _ = out_tx.send(Envelope::error(ErrorCode::BadRequest, "missing resume_token"));
-                    return false;
-                }
-            };
-            let now = Instant::now();
-            let old_hash = hash_code(token);
-            // Rotate: mint a fresh token to hand back on success.
-            let new_token = new_resume_token();
-            let new_hash = hash_code(&new_token);
-            let outcome = {
-                let mut rooms = shared.rooms.lock().await;
-                rooms.resume(old_hash, new_hash, conn_id, out_tx.clone(), now)
-            };
-            match outcome {
-                ResumeOutcome::Resumed {
-                    room_id,
-                    host_out,
-                    controller_out,
-                } => {
-                    *role = Role::Controller;
-                    tracing::info!(event = "resume_ok", conn = conn_id, room_id = %room_id);
-                    // Host re-offers the handshake on receiving room_ready; the
-                    // Controller learns its rotated token.
-                    let _ = host_out.send(Envelope::room_ready(room_id.clone()));
-                    let _ = controller_out
-                        .send(Envelope::room_ready_with_token(room_id, new_token));
-                }
-                ResumeOutcome::Invalid => {
-                    tracing::info!(event = "resume_invalid", conn = conn_id);
-                    let _ = out_tx.send(Envelope::error(
-                        ErrorCode::ResumeInvalid,
-                        "resume token invalid or window elapsed",
-                    ));
-                }
-            }
+            let _ = out_tx.send(Envelope::error(
+                ErrorCode::ResumeInvalid,
+                "resume is not supported; join again",
+            ));
             false
         }
 
-        FrameType::HandshakeDone => {
-            let now = Instant::now();
-            let result = {
-                let mut rooms = shared.rooms.lock().await;
-                rooms.mark_handshake_done(&env.room_id, conn_id, now)
-            };
-            if let Some((room_id, became_active)) = result {
-                if became_active {
-                    tracing::info!(event = "room_active", conn = conn_id, room_id = %room_id);
-                }
-            } else {
-                let _ = out_tx.send(Envelope::error(ErrorCode::RoomNotFound, "no room for connection"));
-            }
-            false
-        }
+        // Legacy: rooms route as soon as they exist.
+        FrameType::HandshakeDone => false,
 
         FrameType::Revoke => {
-            // FR-010 / AC-13: only the Host may revoke; close room immediately.
-            let now_host = {
-                let rooms = shared.rooms.lock().await;
-                rooms.is_host(conn_id)
-            };
-            if !now_host {
+            if *role != Role::Host {
                 let _ = out_tx.send(Envelope::error(ErrorCode::Forbidden, "only host can revoke"));
                 return false;
             }
-            let room_id = if env.room_id.is_empty() {
-                let rooms = shared.rooms.lock().await;
-                rooms.room_of(conn_id)
-            } else {
-                Some(env.room_id.clone())
-            };
-            if let Some(room_id) = room_id {
-                let survivors = {
-                    let mut rooms = shared.rooms.lock().await;
-                    rooms.close_room(&room_id, Some(conn_id))
-                };
-                tracing::info!(event = "room_revoked", conn = conn_id, room_id = %room_id);
-                for sink in survivors {
-                    let _ = sink.send(Envelope::peer_left(room_id.clone()));
-                }
-            } else {
-                let _ = out_tx.send(Envelope::error(ErrorCode::RoomNotFound, "no room to revoke"));
+            {
+                let mut rooms = shared.rooms.lock().await;
+                deliver(rooms.revoke(conn_id, &env.room_id, hash_code(&env.room_id)));
             }
+            tracing::info!(event = "revoked", conn = conn_id);
             false
         }
 
-        // Data frames: forwarded opaque by room_id. Data frames require an
-        // ACTIVE room; handshake `control` frames are also allowed while the
-        // room is HANDSHAKING so the E2E offer/answer can complete.
+        // Data frames: forwarded opaque to the other member of the room.
         FrameType::Stream | FrameType::PermissionRequest | FrameType::Cmd | FrameType::Control => {
-            let now = Instant::now();
-            let room_id = env.room_id.clone();
-            let allow_handshaking = matches!(env.t, FrameType::Control);
-            let targets = {
-                let mut rooms = shared.rooms.lock().await;
-                rooms.route(&room_id, conn_id, now, allow_handshaking)
-            };
-            match targets {
-                Some(t) => {
-                    // seq-based loss/dup detection is metadata-only (SRS §5.1);
-                    // logged as a hint, never blocking.
-                    if let Some(seq) = env.seq {
-                        tracing::trace!(event = "route", room_id = %room_id, seq = seq, sinks = t.sinks.len());
-                    }
-                    for sink in t.sinks {
-                        // Forward verbatim; cipher stays opaque and unlogged.
-                        let _ = sink.send(env.clone());
-                    }
+            let target = shared.rooms.lock().await.route(&env.room_id, conn_id);
+            match target {
+                Some(sink) => {
+                    // Forward verbatim; cipher stays opaque and unlogged.
+                    let _ = sink.send(env);
                 }
                 None => {
-                    tracing::debug!(event = "route_dropped", conn = conn_id, room_id = %room_id);
-                    let _ = out_tx.send(Envelope::error(ErrorCode::RoomNotFound, "room not active"));
+                    tracing::debug!(event = "route_dropped", conn = conn_id, room_id = %env.room_id);
+                    let mut e = Envelope::error(ErrorCode::RoomNotFound, "room not found");
+                    e.room_id = env.room_id;
+                    let _ = out_tx.send(e);
                 }
             }
             false
         }
 
-        // Application-level heartbeat: refresh the room's idle clock (so a live
-        // but idle session is not swept) and echo back so the relay→peer leg stays
-        // warm too. Cheap and unauthenticated-by-payload — carries no cipher.
+        // Application-level heartbeat: echo so the relay→peer leg stays warm.
         FrameType::Keepalive => {
-            if !env.room_id.is_empty() {
-                let now = Instant::now();
-                let mut rooms = shared.rooms.lock().await;
-                rooms.touch(&env.room_id, conn_id, now);
-            }
             let _ = out_tx.send(Envelope::keepalive(env.room_id));
             false
         }
@@ -529,12 +490,6 @@ fn apply_tcp_keepalive(stream: &TcpStream) {
 /// Generate a routing room id (`rm_<uuid-v4-simple>`).
 fn new_room_id() -> String {
     format!("rm_{}", uuid::Uuid::new_v4().simple())
-}
-
-/// Generate a rotating resume token. High-entropy (128-bit UUID) so it cannot be
-/// guessed within the reconnect window; only its hash is retained by the relay.
-fn new_resume_token() -> String {
-    format!("rt_{}", uuid::Uuid::new_v4().simple())
 }
 
 /// Hash a raw pair code so only the hash is retained (DATA-004).

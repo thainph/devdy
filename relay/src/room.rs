@@ -1,32 +1,27 @@
-//! Room state machine and registry (SRS §6.2, DATA-004).
+//! Routing registry (SRS §6.2, DATA-004) — deliberately minimal.
 //!
-//! The relay keeps ONLY routing metadata — never payload (CON-04). Each room
-//! ties one Host to at most one Controller (MAX_CONTROLLER=1, BR-015).
+//! The relay keeps ONLY routing metadata — never payload (CON-04). The model is:
 //!
-//! State machine:
-//! ```text
-//! PENDING_PAIR --join valid--> HANDSHAKING --both handshake_done--> ACTIVE
-//! PENDING_PAIR --TTL elapsed--> EXPIRED (terminal)
-//! HANDSHAKING  --fail--------> CLOSED  (terminal)
-//! ACTIVE       --revoke/host left/idle--> CLOSED (terminal)
-//! ACTIVE       --controller drops--> ACTIVE (controller away, resume_deadline)
-//! ACTIVE(away) --resume valid--> HANDSHAKING (re-run E2E, rotate token)
-//! ACTIVE(away) --window elapsed--> CLOSED (terminal)
-//! ```
+//! - A Host connection **listens** on one rendezvous code (`create_pair`). The
+//!   listen lives exactly as long as that connection: no TTL, no persistence.
+//! - A Controller **joins** a code. The relay opens a room `{host, controller}`
+//!   for it and tells both peers `room_ready`. A code has at most ONE room: a
+//!   newer join replaces the previous Controller ("latest wins"), which is what
+//!   makes a phone that reconnects on a fresh socket — while its old socket is
+//!   still half-open — recover instantly instead of being refused.
+//! - Any connection that goes away (close, error, liveness timeout) closes the
+//!   rooms it was part of and the survivor gets `peer_left`. Peers then simply
+//!   re-join; there is no resume token and no room state machine.
 //!
-//! Controller reconnect (phone screen off/on): when the Controller drops from an
-//! ACTIVE room the room is NOT closed immediately — it keeps the Host attached
-//! and holds a `resume_deadline` (Host.reconnect_window). A `resume` frame
-//! carrying the current rotating `resume_token` re-attaches a fresh Controller
-//! connection and re-runs the handshake. The token rotates on every join/resume
-//! so a stale token can never be replayed.
+//! Authentication is end-to-end between Host and Controller (OTP / session
+//! token over the E2E channel), so the relay forwards frames as soon as a room
+//! exists — it does not need a HANDSHAKING/ACTIVE distinction.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 
 use crate::protocol::Envelope;
 
@@ -34,21 +29,22 @@ use crate::protocol::Envelope;
 pub type ConnId = u64;
 
 /// Frames that may sit queued for one connection before the relay gives up on
-/// it. A peer this far behind is not going to catch up; holding its backlog only
-/// costs the relay memory, and the protocol already recovers from a dropped
-/// connection (resume within RECONNECT_WINDOW, or rejoin).
+/// it. A peer this far behind is not going to catch up, so the connection is
+/// killed (its peer gets `peer_left` and both sides re-join) rather than
+/// silently dropping frames and leaving the session desynced.
 pub const OUTBOUND_MAX_QUEUE: usize = 4096;
 
 /// Sender half used to push envelopes to a connection's write task.
 ///
 /// The channel itself is unbounded — the relay routes from inside a lock and
-/// must never await on a send — so the depth is tracked explicitly and a peer
-/// that exceeds [`OUTBOUND_MAX_QUEUE`] is reported as failed, which the caller
-/// turns into a room close.
+/// must never await on a send — so the depth is tracked explicitly. Exceeding
+/// [`OUTBOUND_MAX_QUEUE`] fires `kill`, which the connection task turns into a
+/// disconnect.
 #[derive(Debug, Clone)]
 pub struct Outbound {
     tx: mpsc::UnboundedSender<Envelope>,
     depth: Arc<AtomicUsize>,
+    kill: Arc<Notify>,
 }
 
 /// Receiver half, owned by a connection's write task.
@@ -65,6 +61,7 @@ pub fn outbound_channel() -> (Outbound, OutboundRx) {
         Outbound {
             tx,
             depth: depth.clone(),
+            kill: Arc::new(Notify::new()),
         },
         OutboundRx { rx, depth },
     )
@@ -72,9 +69,11 @@ pub fn outbound_channel() -> (Outbound, OutboundRx) {
 
 impl Outbound {
     /// Queue a frame. `Err(())` when the write task is gone OR the peer is too
-    /// far behind to be worth keeping.
+    /// far behind; in the latter case the connection is also signalled to close.
+    #[allow(clippy::result_unit_err)]
     pub fn send(&self, env: Envelope) -> Result<(), ()> {
         if self.depth.load(Ordering::Relaxed) >= OUTBOUND_MAX_QUEUE {
+            self.kill.notify_one();
             return Err(());
         }
         match self.tx.send(env) {
@@ -84,6 +83,17 @@ impl Outbound {
             }
             Err(_) => Err(()),
         }
+    }
+
+    /// Ask this connection's task to close (after flushing what is queued).
+    pub fn close(&self) {
+        self.kill.notify_one();
+    }
+
+    /// Resolves once this connection has been asked to close (too slow, or
+    /// superseded).
+    pub async fn killed(&self) {
+        self.kill.notified().await
     }
 
     /// Frames queued but not yet written. Exercised by the unit tests.
@@ -102,7 +112,7 @@ impl OutboundRx {
     }
 
     /// Take an already-queued frame without awaiting. Exercised by the tests.
-    #[allow(dead_code)]
+    #[allow(dead_code, clippy::result_unit_err)]
     pub fn try_recv(&mut self) -> Result<Envelope, ()> {
         match self.rx.try_recv() {
             Ok(env) => {
@@ -114,1103 +124,444 @@ impl OutboundRx {
     }
 }
 
-/// Lifecycle state of a room (SRS §6.2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RoomState {
-    /// Host created a `pair_code`; waiting for a Controller `join`.
-    PendingPair,
-    /// Controller joined; peers are running the E2E handshake.
-    Handshaking,
-    /// Handshake complete; envelopes are forwarded between peers.
-    Active,
-    /// Terminal: pair code TTL elapsed before use.
-    Expired,
-    /// Terminal: revoked, both peers gone, handshake failed, or idle timeout.
-    Closed,
-}
-
-impl RoomState {
-    /// Whether the state is terminal (no outbound transitions).
-    pub fn is_terminal(self) -> bool {
-        matches!(self, RoomState::Expired | RoomState::Closed)
-    }
-}
-
-/// One side of a room.
-#[derive(Debug, Clone)]
-struct Peer {
-    conn: ConnId,
-    out: Outbound,
-    handshake_done: bool,
-    /// Last time ANY frame (data, control, keepalive) was received from this
-    /// peer. Tracked per-peer — NOT merged into the room's `last_activity` — so a
-    /// still-present peer's own keepalive can never mask the OTHER peer having
-    /// gone silent (half-open drop with no TCP close). Drives
-    /// [`RoomRegistry::sweep_peer_liveness`].
-    last_seen: Instant,
-}
-
-/// A single room's metadata (DATA-004). No payload is stored here.
-pub struct Room {
+/// A peer that must be told a room closed, and how.
+#[derive(Debug)]
+pub struct Notice {
     pub room_id: String,
-    pub state: RoomState,
-    /// Hash of the pair code (never the raw code) while PENDING_PAIR.
-    pub pair_code_hash: u64,
-    pub created_at: Instant,
-    /// Absolute deadline for the pending pair code (created_at + PAIR_TTL).
-    pub expires_at: Instant,
-    /// Last time any data frame moved through the room (for idle timeout).
-    pub last_activity: Instant,
-    /// Hash of the current rotating resume token, once a Controller has joined.
-    resume_token_hash: Option<u64>,
-    /// While the Controller is away (dropped but resumable), the absolute
-    /// deadline after which the room is swept. `None` while a Controller is
-    /// attached.
-    resume_deadline: Option<Instant>,
-    host: Peer,
-    controller: Option<Peer>,
+    pub out: Outbound,
+    /// `true` when the recipient is a Controller that was replaced by a newer
+    /// join on the same code: it gets `error{superseded}` instead of
+    /// `peer_left`, so it stops instead of re-joining and kicking the newcomer
+    /// back (two tabs ping-ponging forever).
+    pub superseded: bool,
 }
 
-impl Room {
-    /// The `room_id` currently assigned.
-    pub fn id(&self) -> &str {
-        &self.room_id
-    }
-
-    /// Whether both peers have reported their handshake half complete.
-    fn both_handshaken(&self) -> bool {
-        self.host.handshake_done
-            && self
-                .controller
-                .as_ref()
-                .map(|c| c.handshake_done)
-                .unwrap_or(false)
-    }
-
-    /// Refresh the `last_seen` clock of whichever member `conn` identifies. A
-    /// no-op if `conn` is not a member of this room.
-    fn touch_peer(&mut self, conn: ConnId, now: Instant) {
-        if self.host.conn == conn {
-            self.host.last_seen = now;
-        } else if let Some(c) = self.controller.as_mut() {
-            if c.conn == conn {
-                c.last_seen = now;
-            }
-        }
-    }
+/// One live room: exactly one Host and one Controller.
+struct Room {
+    code: u64,
+    host: ConnId,
+    host_out: Outbound,
+    controller: ConnId,
+    controller_out: Outbound,
 }
 
-/// The set of peers a routed frame should be delivered to, plus the resolved
-/// target role, so the caller can log without touching payload.
-pub struct RouteTargets {
-    /// Outbound channels of every peer other than the sender.
-    pub sinks: Vec<Outbound>,
+/// A Host connection listening on a rendezvous code.
+struct Listener {
+    host: ConnId,
+    host_out: Outbound,
+    /// Room id the next join on this code will get. Announced to the Host in the
+    /// `create_pair` ack so older Hosts (which track "armed" rooms) keep working.
+    next_room_id: String,
 }
 
-/// In-memory registry of all rooms and the reverse indexes needed to route and
-/// clean up by connection id.
-///
-/// Guarded by a single `Mutex` in the server; kept intentionally simple and
-/// panic-free (all lookups return `Option`).
-#[derive(Default)]
-pub struct RoomRegistry {
-    rooms: HashMap<String, Room>,
-    /// pair_code_hash -> room_id, for pending rooms only.
-    pending_by_code: HashMap<u64, String>,
-    /// resume_token_hash -> room_id, for ACTIVE (incl. controller-away) rooms.
-    resume_by_token: HashMap<u64, String>,
-    /// conn id -> room_id, for both host and controller connections.
-    conn_to_room: HashMap<ConnId, String>,
-}
-
-/// Outcome of a Controller `join` attempt.
+/// Outcome of a `join`.
 pub enum JoinOutcome {
-    /// Joined successfully; carries the new room id and both outbound sinks so
-    /// the caller can emit `room_ready` to both peers.
+    /// Room opened. The caller sends `room_ready` to both sinks and delivers
+    /// `notices` (the replaced room, if any).
     Joined {
         room_id: String,
         host_out: Outbound,
-        controller_out: Outbound,
+        notices: Vec<Notice>,
     },
-    /// The pair code is unknown, already consumed, or expired.
+    /// No Host is listening on that code (offline, or the link was superseded).
     Invalid,
-    /// The room already holds its one allowed Controller (MAX_CONTROLLER=1).
-    Full,
 }
 
-/// Outcome of a Controller `resume` attempt (reconnect within the window).
-pub enum ResumeOutcome {
-    /// Re-attached; the room is back in HANDSHAKING and both peers must re-run
-    /// the E2E handshake. Carries both sinks so the caller can emit `room_ready`
-    /// (the Host re-offers on receipt; the Controller learns its new token).
-    Resumed {
-        room_id: String,
-        host_out: Outbound,
-        controller_out: Outbound,
-    },
-    /// The token is unknown/rotated, the window elapsed, or a Controller is
-    /// already attached to that room.
-    Invalid,
+/// In-memory registry of listeners and rooms. Guarded by a single `Mutex` in
+/// the server; panic-free (all lookups return `Option`).
+#[derive(Default)]
+pub struct RoomRegistry {
+    /// code hash → listening Host.
+    listeners: HashMap<u64, Listener>,
+    /// room id → room.
+    rooms: HashMap<String, Room>,
+    /// Host conn → the code it listens on (at most one).
+    host_code: HashMap<ConnId, u64>,
+    /// code hash → its (at most one) room.
+    room_by_code: HashMap<u64, String>,
+    /// conn (Host or Controller) → the room it is in (at most one).
+    room_by_conn: HashMap<ConnId, String>,
 }
 
 impl RoomRegistry {
-    /// Register a Host-created pair code in a fresh PENDING_PAIR room.
-    ///
-    /// Returns the generated `room_id`. The raw pair code is hashed by the
-    /// caller; only the hash is kept (DATA-004: `pair_code(hash)`).
-    /// Whether a PENDING room already advertises this pair code hash. Lets the
-    /// caller tell "re-arm an existing rendezvous" (room count unchanged) from
-    /// "open a new one" (room count grows) when enforcing a cap.
-    pub fn has_pending_code(&self, pair_code_hash: u64) -> bool {
-        self.pending_by_code.contains_key(&pair_code_hash)
+    /// Whether a Host already listens on this code (a re-listen does not grow
+    /// the registry, so it is exempt from the cap).
+    pub fn is_listening(&self, code: u64) -> bool {
+        self.listeners.contains_key(&code)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn create_pending(
-        &mut self,
-        room_id: String,
-        pair_code_hash: u64,
-        host_conn: ConnId,
-        host_out: Outbound,
-        now: Instant,
-        expires_at: Instant,
-    ) {
-        // A host re-arms its standing rendezvous by announcing the same pair code
-        // again (it does so after every controller (re)connect). The previous
-        // PENDING rendezvous for this code is now superseded — close it so a
-        // long-lived host does not accumulate orphaned persistent rooms: they
-        // carry a ~10-year expiry and would otherwise never be swept, leaking a
-        // Room (and its outbound sender) on every reconnect. Keyed on
-        // `pending_by_code`, which only ever references PENDING rooms, so an
-        // ACTIVE/HANDSHAKING session (removed from this index on join) is never
-        // touched. Pass the host as originator so no `peer_left` is emitted — this
-        // is a silent supersede, not a teardown the host should react to.
-        if let Some(prev_id) = self.pending_by_code.get(&pair_code_hash).cloned() {
-            if prev_id != room_id {
-                let _ = self.close_room(&prev_id, Some(host_conn));
+    /// Number of listeners + rooms, for the resource cap.
+    pub fn len(&self) -> usize {
+        self.listeners.len() + self.rooms.len()
+    }
+
+    /// Whether nothing is registered.
+    pub fn is_empty(&self) -> bool {
+        self.listeners.is_empty() && self.rooms.is_empty()
+    }
+
+    /// Make `host` listen on `code`, replacing whatever it listened on before.
+    ///
+    /// - Same Host, same code (a re-announce): only the pre-assigned room id is
+    ///   refreshed; a live room on that code is untouched.
+    /// - Same Host, new code (session superseded on the desktop): the old code is
+    ///   dropped and its room closed.
+    /// - Another connection held this code (a stale socket of the same Host that
+    ///   has not timed out yet): the newer Host takes it over and the old room
+    ///   is closed so its Controller re-joins the live Host.
+    ///
+    /// Returns the peers to notify.
+    pub fn listen(&mut self, code: u64, host: ConnId, host_out: Outbound, next_room_id: String) -> Vec<Notice> {
+        let mut notices = Vec::new();
+        if let Some(prev) = self.host_code.get(&host).copied() {
+            if prev != code {
+                notices.extend(self.unlisten(prev, Some(host)));
             }
         }
-        let room = Room {
-            room_id: room_id.clone(),
-            state: RoomState::PendingPair,
-            pair_code_hash,
-            created_at: now,
-            expires_at,
-            last_activity: now,
-            resume_token_hash: None,
-            resume_deadline: None,
-            host: Peer {
-                conn: host_conn,
-                out: host_out,
-                handshake_done: false,
-                last_seen: now,
+        if let Some(l) = self.listeners.get(&code) {
+            if l.host != host {
+                let other = l.host;
+                notices.extend(self.unlisten(code, Some(host)));
+                self.host_code.remove(&other);
+            }
+        }
+        self.listeners.insert(
+            code,
+            Listener {
+                host,
+                host_out,
+                next_room_id,
             },
-            controller: None,
-        };
-        self.pending_by_code.insert(pair_code_hash, room_id.clone());
-        self.conn_to_room.insert(host_conn, room_id.clone());
-        self.rooms.insert(room_id, room);
+        );
+        self.host_code.insert(host, code);
+        notices
     }
 
-    /// Attempt a Controller join by pair code hash (SRS §6.2 PENDING_PAIR→HANDSHAKING).
-    ///
-    /// `resume_token_hash` is the hash of a freshly minted resume token the
-    /// caller will hand to the Controller; it is stored so a later `resume` can
-    /// re-attach to this room.
-    pub fn join(
-        &mut self,
-        pair_code_hash: u64,
-        controller_conn: ConnId,
-        controller_out: Outbound,
-        resume_token_hash: u64,
-        now: Instant,
-    ) -> JoinOutcome {
-        let room_id = match self.pending_by_code.get(&pair_code_hash).cloned() {
-            Some(id) => id,
-            None => return JoinOutcome::Invalid,
-        };
-
-        let room = match self.rooms.get_mut(&room_id) {
-            Some(r) => r,
-            None => {
-                // Dangling index; clean it up.
-                self.pending_by_code.remove(&pair_code_hash);
-                return JoinOutcome::Invalid;
+    /// Stop listening on `code` and close its room. `originator` is excluded
+    /// from the notices.
+    fn unlisten(&mut self, code: u64, originator: Option<ConnId>) -> Vec<Notice> {
+        if let Some(l) = self.listeners.remove(&code) {
+            if self.host_code.get(&l.host) == Some(&code) {
+                self.host_code.remove(&l.host);
             }
-        };
+        }
+        match self.room_by_code.get(&code).cloned() {
+            Some(room_id) => self.close_room(&room_id, originator),
+            None => Vec::new(),
+        }
+    }
 
-        // Expired-by-time or no longer pending → invalid (do not create a room).
-        if room.state != RoomState::PendingPair || now >= room.expires_at {
-            if now >= room.expires_at && room.state == RoomState::PendingPair {
-                room.state = RoomState::Expired;
-            }
-            self.pending_by_code.remove(&pair_code_hash);
+    /// A Controller joins `code`. `next_room_id` is the id the FOLLOWING join
+    /// will get (this join consumes the listener's pre-assigned one).
+    pub fn join(&mut self, code: u64, controller: ConnId, controller_out: Outbound, next_room_id: String) -> JoinOutcome {
+        if !self.listeners.contains_key(&code) {
             return JoinOutcome::Invalid;
         }
-
-        // MAX_CONTROLLER=1: a second controller is refused (BR-015 / AC-16).
-        if room.controller.is_some() {
-            return JoinOutcome::Full;
+        let mut notices = Vec::new();
+        // A connection is in at most one room: leaving the old one first.
+        if let Some(old) = self.room_by_conn.get(&controller).cloned() {
+            notices.extend(self.close_room(&old, Some(controller)));
         }
-
-        room.controller = Some(Peer {
-            conn: controller_conn,
-            out: controller_out.clone(),
-            handshake_done: false,
-            last_seen: now,
-        });
-        room.state = RoomState::Handshaking;
-        room.last_activity = now;
-        room.host.last_seen = now;
-        room.resume_token_hash = Some(resume_token_hash);
-        room.resume_deadline = None;
-        // Pair code is now consumed (one-time, BR-002).
-        self.pending_by_code.remove(&pair_code_hash);
-        self.resume_by_token.insert(resume_token_hash, room_id.clone());
-        self.conn_to_room.insert(controller_conn, room_id.clone());
-
-        let host_out = room.host.out.clone();
+        // Latest wins: replace the code's current Controller.
+        if let Some(old) = self.room_by_code.get(&code).cloned() {
+            let old_ctrl_out = self.rooms.get(&old).map(|r| r.controller_out.clone());
+            for mut n in self.close_room(&old, None) {
+                n.superseded = old_ctrl_out.as_ref().is_some_and(|o| same_sink(&n.out, o));
+                notices.push(n);
+            }
+        }
+        let Some(l) = self.listeners.get_mut(&code) else {
+            return JoinOutcome::Invalid;
+        };
+        let room_id = std::mem::replace(&mut l.next_room_id, next_room_id);
+        let host = l.host;
+        let host_out = l.host_out.clone();
+        self.rooms.insert(
+            room_id.clone(),
+            Room {
+                code,
+                host,
+                host_out: host_out.clone(),
+                controller,
+                controller_out,
+            },
+        );
+        self.room_by_code.insert(code, room_id.clone());
+        self.room_by_conn.insert(host, room_id.clone());
+        self.room_by_conn.insert(controller, room_id.clone());
         JoinOutcome::Joined {
             room_id,
             host_out,
-            controller_out,
+            notices,
         }
     }
 
-    /// Attempt a Controller `resume` by presenting the current resume token hash
-    /// (reconnect within the window). On success the room returns to HANDSHAKING
-    /// with a rotated token so both peers re-run the E2E handshake.
-    ///
-    /// `new_token_hash` replaces the redeemed token (rotation / anti-replay).
-    pub fn resume(
-        &mut self,
-        old_token_hash: u64,
-        new_token_hash: u64,
-        controller_conn: ConnId,
-        controller_out: Outbound,
-        now: Instant,
-    ) -> ResumeOutcome {
-        let room_id = match self.resume_by_token.get(&old_token_hash).cloned() {
-            Some(id) => id,
-            None => return ResumeOutcome::Invalid,
+    /// Where a data frame from `sender` in `room_id` goes: the other member, or
+    /// `None` when the room is gone or the sender is not in it.
+    pub fn route(&self, room_id: &str, sender: ConnId) -> Option<Outbound> {
+        let room = self.rooms.get(room_id)?;
+        if room.host == sender {
+            Some(room.controller_out.clone())
+        } else if room.controller == sender {
+            Some(room.host_out.clone())
+        } else {
+            None
+        }
+    }
+
+    /// Host-initiated close. An empty `room_id` means "end the session": stop
+    /// listening and close the room. Otherwise close that room if the Host owns
+    /// it. Older Hosts revoke by sending their rendezvous code as the room id;
+    /// `room_id_hash` (its code hash) lets that end the session too.
+    /// Returns the peers to notify.
+    pub fn revoke(&mut self, host: ConnId, room_id: &str, room_id_hash: u64) -> Vec<Notice> {
+        if room_id.is_empty() || self.host_code.get(&host) == Some(&room_id_hash) {
+            return match self.host_code.get(&host).copied() {
+                Some(code) => self.unlisten(code, Some(host)),
+                None => Vec::new(),
+            };
+        }
+        match self.rooms.get(room_id) {
+            Some(r) if r.host == host => self.close_room(room_id, Some(host)),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Close a room, returning every member except `originator` to notify.
+    fn close_room(&mut self, room_id: &str, originator: Option<ConnId>) -> Vec<Notice> {
+        let Some(room) = self.rooms.remove(room_id) else {
+            return Vec::new();
         };
-        let room = match self.rooms.get_mut(&room_id) {
-            Some(r) => r,
-            None => {
-                self.resume_by_token.remove(&old_token_hash);
-                return ResumeOutcome::Invalid;
-            }
-        };
-
-        // Only an ACTIVE room whose Controller is currently away may be resumed,
-        // and only before the reconnect window elapses.
-        let within_window = room.resume_deadline.map(|d| now < d).unwrap_or(false);
-        if room.state != RoomState::Active || room.controller.is_some() || !within_window {
-            return ResumeOutcome::Invalid;
+        if self.room_by_code.get(&room.code).map(String::as_str) == Some(room_id) {
+            self.room_by_code.remove(&room.code);
         }
-
-        // Re-attach the fresh Controller connection; both peers must re-handshake.
-        room.host.handshake_done = false;
-        room.host.last_seen = now;
-        room.controller = Some(Peer {
-            conn: controller_conn,
-            out: controller_out.clone(),
-            handshake_done: false,
-            last_seen: now,
-        });
-        room.state = RoomState::Handshaking;
-        room.resume_deadline = None;
-        room.last_activity = now;
-        // Rotate the token so the redeemed one can never be replayed.
-        room.resume_token_hash = Some(new_token_hash);
-        self.resume_by_token.remove(&old_token_hash);
-        self.resume_by_token.insert(new_token_hash, room_id.clone());
-        self.conn_to_room.insert(controller_conn, room_id.clone());
-
-        let host_out = room.host.out.clone();
-        ResumeOutcome::Resumed {
-            room_id,
-            host_out,
-            controller_out,
-        }
-    }
-
-    /// Mark a connection's handshake half done. Returns the room id and whether
-    /// the room just transitioned to ACTIVE.
-    ///
-    /// Routed by the frame's explicit `room_id` (NOT `conn_to_room`): a single
-    /// Host connection legitimately belongs to several rooms at once — the ACTIVE
-    /// session plus any standing durable-reconnect rendezvous it has re-armed — so
-    /// `conn_to_room[host]` points only at the most-recently created one. Using it
-    /// here would mark the wrong room and leave the real one stuck in HANDSHAKING
-    /// (durable reconnect never reaching ACTIVE). The sender must be a member of
-    /// the named room.
-    pub fn mark_handshake_done(
-        &mut self,
-        room_id: &str,
-        conn: ConnId,
-        now: Instant,
-    ) -> Option<(String, bool)> {
-        let room = self.rooms.get_mut(room_id)?;
-        let is_host = room.host.conn == conn;
-        let is_ctrl = room
-            .controller
-            .as_ref()
-            .map(|c| c.conn == conn)
-            .unwrap_or(false);
-        if !is_host && !is_ctrl {
-            return None;
-        }
-        if room.state != RoomState::Handshaking {
-            return Some((room_id.to_string(), room.state == RoomState::Active));
-        }
-        room.touch_peer(conn, now);
-        if is_host {
-            room.host.handshake_done = true;
-        } else if let Some(c) = room.controller.as_mut() {
-            c.handshake_done = true;
-        }
-        let became_active = room.both_handshaken();
-        if became_active {
-            room.state = RoomState::Active;
-            room.last_activity = now;
-        }
-        Some((room_id.to_string(), became_active))
-    }
-
-    /// Resolve where a data frame from `sender_conn` in `room_id` should go.
-    ///
-    /// Permitted while the room is ACTIVE. When `allow_handshaking` is set (used
-    /// only for E2E handshake `control` frames), routing is also allowed while
-    /// the room is HANDSHAKING so the offer/answer can be exchanged before the
-    /// room becomes ACTIVE — otherwise the handshake could never complete.
-    /// Returns `None` when not permitted. Does not inspect any payload.
-    pub fn route(
-        &mut self,
-        room_id: &str,
-        sender_conn: ConnId,
-        now: Instant,
-        allow_handshaking: bool,
-    ) -> Option<RouteTargets> {
-        let room = self.rooms.get_mut(room_id)?;
-        let permitted = room.state == RoomState::Active
-            || (allow_handshaking && room.state == RoomState::Handshaking);
-        if !permitted {
-            return None;
-        }
-        // The sender must be a member of this room.
-        let is_host = room.host.conn == sender_conn;
-        let is_ctrl = room
-            .controller
-            .as_ref()
-            .map(|c| c.conn == sender_conn)
-            .unwrap_or(false);
-        if !is_host && !is_ctrl {
-            return None;
-        }
-        room.last_activity = now;
-        room.touch_peer(sender_conn, now);
-
-        let mut sinks = Vec::new();
-        if !is_host {
-            sinks.push(room.host.out.clone());
-        }
-        if let Some(c) = room.controller.as_ref() {
-            if c.conn != sender_conn {
-                sinks.push(c.out.clone());
-            }
-        }
-        Some(RouteTargets { sinks })
-    }
-
-    /// Refresh a room's idle clock on a keepalive from one of its members, so an
-    /// otherwise-idle ACTIVE session (e.g. after a run finishes) is not idle-swept
-    /// while the peer is still present. No-op for an unknown room or a non-member.
-    pub fn touch(&mut self, room_id: &str, conn: ConnId, now: Instant) {
-        let Some(room) = self.rooms.get_mut(room_id) else {
-            return;
-        };
-        let is_host = room.host.conn == conn;
-        let is_ctrl = room
-            .controller
-            .as_ref()
-            .map(|c| c.conn == conn)
-            .unwrap_or(false);
-        if is_host || is_ctrl {
-            room.last_activity = now;
-            room.touch_peer(conn, now);
-        }
-    }
-
-    /// Look up the room id associated with a connection.
-    pub fn room_of(&self, conn: ConnId) -> Option<String> {
-        self.conn_to_room.get(&conn).cloned()
-    }
-
-    /// Whether the given connection is the Host of its room.
-    pub fn is_host(&self, conn: ConnId) -> bool {
-        self.conn_to_room
-            .get(&conn)
-            .and_then(|id| self.rooms.get(id))
-            .map(|r| r.host.conn == conn)
-            .unwrap_or(false)
-    }
-
-    /// Close a room and notify the surviving peer(s). Returns the notified
-    /// outbound sinks (excluding `originator` if provided) and the previous state.
-    ///
-    /// Used by revoke (Host→relay, FR-010/AC-13) and by peer disconnects.
-    pub fn close_room(&mut self, room_id: &str, originator: Option<ConnId>) -> Vec<Outbound> {
-        let room = match self.rooms.get_mut(room_id) {
-            Some(r) => r,
-            None => return Vec::new(),
-        };
-        if room.state.is_terminal() {
-            // Still surface peers for index cleanup, but nothing to notify.
-        }
-        room.state = RoomState::Closed;
-
-        let mut notify = Vec::new();
-        let host_conn = room.host.conn;
-        let pair_code_hash = room.pair_code_hash;
-        let resume_token_hash = room.resume_token_hash;
-        if Some(host_conn) != originator {
-            notify.push(room.host.out.clone());
-        }
-        let mut ctrl_conn = None;
-        if let Some(c) = room.controller.as_ref() {
-            ctrl_conn = Some(c.conn);
-            if Some(c.conn) != originator {
-                notify.push(c.out.clone());
-            }
-        }
-
-        // Drop indexes for this room — but ONLY where they still point at THIS
-        // room. A single Host connection legitimately owns several rooms at once
-        // (an ACTIVE session PLUS a re-armed standing rendezvous), and those
-        // sibling rooms share BOTH the Host conn id AND the pair_code_hash.
-        // Removing blindly by key would de-index a sibling: closing a finished
-        // session would drop the standing rendezvous's `pending_by_code` entry, so
-        // the phone could never join again (endless `join_invalid` on reconnect).
-        if self.conn_to_room.get(&host_conn).map(String::as_str) == Some(room_id) {
-            self.conn_to_room.remove(&host_conn);
-        }
-        if let Some(cc) = ctrl_conn {
-            if self.conn_to_room.get(&cc).map(String::as_str) == Some(room_id) {
-                self.conn_to_room.remove(&cc);
-            }
-        }
-        if self.pending_by_code.get(&pair_code_hash).map(String::as_str) == Some(room_id) {
-            self.pending_by_code.remove(&pair_code_hash);
-        }
-        if let Some(h) = resume_token_hash {
-            if self.resume_by_token.get(&h).map(String::as_str) == Some(room_id) {
-                self.resume_by_token.remove(&h);
-            }
-        }
-        self.rooms.remove(room_id);
-        notify
-    }
-
-    /// Handle a raw connection drop.
-    ///
-    /// When the **Controller** drops from an ACTIVE room the room is kept alive
-    /// for `reconnect_window` (controller-away): the Host is notified with
-    /// `peer_left` (so it tears down its live session) but the room and its
-    /// resume token survive so a `resume` can re-attach. In every other case
-    /// (Host drop, or a drop before the room reached ACTIVE) the room is closed.
-    ///
-    /// Returns the room id and the survivor sinks to receive `peer_left`.
-    pub fn on_disconnect(
-        &mut self,
-        conn: ConnId,
-        now: Instant,
-        reconnect_window: std::time::Duration,
-    ) -> Option<(String, Vec<Outbound>)> {
-        let room_id = self.conn_to_room.get(&conn).cloned()?;
-        let room = self.rooms.get_mut(&room_id)?;
-
-        let is_controller = room
-            .controller
-            .as_ref()
-            .map(|c| c.conn == conn)
-            .unwrap_or(false);
-
-        // Controller dropped from an established session → keep the room alive so
-        // the phone can resume within the window.
-        if is_controller && room.state == RoomState::Active {
-            let host_out = room.host.out.clone();
-            room.controller = None;
-            room.resume_deadline = Some(now + reconnect_window);
-            self.conn_to_room.remove(&conn);
-            return Some((room_id, vec![host_out]));
-        }
-
-        // Host dropped, or the Controller dropped mid-handshake → close.
-        let survivors = self.close_room(&room_id, Some(conn));
-        Some((room_id, survivors))
-    }
-
-    /// Sweep expired pending rooms and idle active rooms. Returns closed room ids
-    /// and their survivor sinks for `peer_left` notification.
-    pub fn sweep(&mut self, now: Instant, idle_timeout: std::time::Duration) -> Vec<(String, Vec<Outbound>)> {
-        let mut to_close: Vec<String> = Vec::new();
-        for room in self.rooms.values_mut() {
-            match room.state {
-                RoomState::PendingPair | RoomState::Handshaking if now >= room.expires_at => {
-                    // Pending pair code TTL elapsed → EXPIRED / CLOSED.
-                    to_close.push(room.room_id.clone());
-                }
-                // Controller away too long → reconnect window elapsed, close it.
-                RoomState::Active
-                    if room
-                        .resume_deadline
-                        .map(|d| now >= d)
-                        .unwrap_or(false) =>
-                {
-                    to_close.push(room.room_id.clone());
-                }
-                RoomState::Active if now.duration_since(room.last_activity) >= idle_timeout => {
-                    to_close.push(room.room_id.clone());
-                }
-                _ => {}
+        for conn in [room.host, room.controller] {
+            if self.room_by_conn.get(&conn).map(String::as_str) == Some(room_id) {
+                self.room_by_conn.remove(&conn);
             }
         }
         let mut out = Vec::new();
-        for id in to_close {
-            let survivors = self.close_room(&id, None);
-            out.push((id, survivors));
+        if Some(room.host) != originator {
+            out.push(Notice {
+                room_id: room_id.to_string(),
+                out: room.host_out,
+                superseded: false,
+            });
+        }
+        if Some(room.controller) != originator {
+            out.push(Notice {
+                room_id: room_id.to_string(),
+                out: room.controller_out,
+                superseded: false,
+            });
         }
         out
     }
 
-    /// Detect peers that have gone silent past `liveness_timeout` — a half-open
-    /// drop (mobile network change, sleep) where TCP delivered no FIN/RST so the
-    /// relay's read loop never returned and `on_disconnect` never ran.
-    ///
-    /// This is the relay-authoritative counterpart to the clients' own watchdogs:
-    /// the relay is the only party that sees BOTH sockets, so it decides liveness
-    /// per peer. Because `last_seen` is per-peer (never the room-wide
-    /// `last_activity`), a present peer's own keepalive can never keep the room
-    /// "alive" while the other peer is actually dead — the bug where the Host
-    /// stayed "connected" after the Controller silently dropped.
-    ///
-    /// Mirrors [`Self::on_disconnect`] exactly:
-    /// - a silent **Controller** in an ACTIVE room → controller-away: the Host is
-    ///   notified `peer_left`, the room and its resume token survive for
-    ///   `reconnect_window` so the phone can `resume`;
-    /// - a silent **Host** → the room is closed and the Controller notified.
-    ///
-    /// Returns `(room_id, survivor sinks)` to receive `peer_left`.
-    pub fn sweep_peer_liveness(
-        &mut self,
-        now: Instant,
-        liveness_timeout: std::time::Duration,
-        reconnect_window: std::time::Duration,
-    ) -> Vec<(String, Vec<Outbound>)> {
-        // Collect decisions first; act after, so we never mutate while iterating.
-        let mut host_gone: Vec<(String, ConnId)> = Vec::new();
-        let mut ctrl_gone: Vec<(String, ConnId)> = Vec::new();
-        for room in self.rooms.values() {
-            if room.state != RoomState::Active {
-                continue;
-            }
-            // A Host silence closes the whole room, so check it first and skip the
-            // controller check for that room.
-            if now.duration_since(room.host.last_seen) >= liveness_timeout {
-                host_gone.push((room.room_id.clone(), room.host.conn));
-                continue;
-            }
-            if let Some(c) = room.controller.as_ref() {
-                if now.duration_since(c.last_seen) >= liveness_timeout {
-                    ctrl_gone.push((room.room_id.clone(), c.conn));
-                }
-            }
+    /// A connection went away: drop its listen (if a Host) and close its room.
+    pub fn on_disconnect(&mut self, conn: ConnId) -> Vec<Notice> {
+        let mut notices = Vec::new();
+        if let Some(code) = self.host_code.get(&conn).copied() {
+            notices.extend(self.unlisten(code, Some(conn)));
         }
-
-        let mut out = Vec::new();
-        // Host gone → close the room; the Host is the originator (it's dead) so
-        // only the Controller is notified.
-        for (room_id, host_conn) in host_gone {
-            let survivors = self.close_room(&room_id, Some(host_conn));
-            out.push((room_id, survivors));
+        if let Some(room_id) = self.room_by_conn.get(&conn).cloned() {
+            notices.extend(self.close_room(&room_id, Some(conn)));
         }
-        // Controller gone → controller-away: keep the room, open the resume
-        // window, notify the Host so it tears down its live view.
-        for (room_id, ctrl_conn) in ctrl_gone {
-            if let Some(room) = self.rooms.get_mut(&room_id) {
-                let host_out = room.host.out.clone();
-                room.controller = None;
-                room.resume_deadline = Some(now + reconnect_window);
-                self.conn_to_room.remove(&ctrl_conn);
-                out.push((room_id, vec![host_out]));
-            }
-        }
-        out
+        notices
     }
 
-    /// Number of live rooms (for metrics/tests).
-    pub fn len(&self) -> usize {
-        self.rooms.len()
+    /// Whether `conn` is currently a member of `room_id` (tests/introspection).
+    pub fn in_room(&self, room_id: &str, conn: ConnId) -> bool {
+        self.rooms
+            .get(room_id)
+            .is_some_and(|r| r.host == conn || r.controller == conn)
     }
+}
 
-    /// Whether the registry is empty.
-    pub fn is_empty(&self) -> bool {
-        self.rooms.is_empty()
-    }
-
-    /// Current state of a room, if it exists (tests/introspection).
-    pub fn state_of(&self, room_id: &str) -> Option<RoomState> {
-        self.rooms.get(room_id).map(|r| r.state)
-    }
+/// Whether two senders feed the same connection.
+fn same_sink(a: &Outbound, b: &Outbound) -> bool {
+    Arc::ptr_eq(&a.depth, &b.depth)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
-    fn sink() -> Outbound {
-        // The receiver is dropped, but an unbounded channel keeps accepting
-        // until the depth cap, which is what these routing tests need.
-        let (tx, _rx) = outbound_channel();
-        tx
+    fn sink() -> (Outbound, OutboundRx) {
+        outbound_channel()
     }
 
-    fn pending(reg: &mut RoomRegistry, code_hash: u64, host: ConnId, now: Instant, ttl: Duration) -> String {
-        let room_id = format!("rm_{host}");
-        reg.create_pending(room_id.clone(), code_hash, host, sink(), now, now + ttl);
-        room_id
+    fn listen(reg: &mut RoomRegistry, code: u64, host: ConnId) -> Outbound {
+        let (out, _rx) = sink();
+        assert!(reg.listen(code, host, out.clone(), format!("rm_{host}_0")).is_empty());
+        out
     }
 
-    #[test]
-    fn join_then_handshake_reaches_active() {
-        let mut reg = RoomRegistry::default();
-        let now = Instant::now();
-        let room = pending(&mut reg, 1, 10, now, Duration::from_secs(60));
-        assert_eq!(reg.state_of(&room), Some(RoomState::PendingPair));
-
-        match reg.join(1, 20, sink(), 1001, now) {
-            JoinOutcome::Joined { room_id, .. } => assert_eq!(room_id, room),
-            _ => panic!("expected Joined"),
+    fn joined(o: JoinOutcome) -> (String, Vec<Notice>) {
+        match o {
+            JoinOutcome::Joined { room_id, notices, .. } => (room_id, notices),
+            JoinOutcome::Invalid => panic!("expected Joined"),
         }
-        assert_eq!(reg.state_of(&room), Some(RoomState::Handshaking));
-
-        // Only host done → still handshaking.
-        assert_eq!(reg.mark_handshake_done(&room, 10, now), Some((room.clone(), false)));
-        assert_eq!(reg.state_of(&room), Some(RoomState::Handshaking));
-        // Controller done → ACTIVE.
-        assert_eq!(reg.mark_handshake_done(&room, 20, now), Some((room.clone(), true)));
-        assert_eq!(reg.state_of(&room), Some(RoomState::Active));
     }
 
     #[test]
-    fn handshake_control_routes_while_handshaking_but_data_waits_for_active() {
-        // Regression: E2E handshake `control` frames MUST route while the room
-        // is HANDSHAKING, otherwise offer/answer never reach the peer and the
-        // room can never become ACTIVE (deadlock).
+    fn join_unknown_code_is_invalid() {
         let mut reg = RoomRegistry::default();
-        let now = Instant::now();
-        let room = pending(&mut reg, 7, 10, now, Duration::from_secs(60));
-        assert!(matches!(reg.join(7, 20, sink(), 1007, now), JoinOutcome::Joined { .. }));
-        assert_eq!(reg.state_of(&room), Some(RoomState::Handshaking));
-
-        // Handshake control frame (allow_handshaking = true) → routed to peer.
-        assert!(reg.route(&room, 10, now, true).is_some(), "control must route while handshaking");
-        // A data frame (allow_handshaking = false) → refused until ACTIVE.
-        assert!(reg.route(&room, 10, now, false).is_none(), "data must wait for ACTIVE");
-
-        // Complete handshake → ACTIVE, then data frames route too.
-        reg.mark_handshake_done(&room, 10, now);
-        reg.mark_handshake_done(&room, 20, now);
-        assert_eq!(reg.state_of(&room), Some(RoomState::Active));
-        assert!(reg.route(&room, 10, now, false).is_some(), "data routes once ACTIVE");
+        assert!(matches!(reg.join(1, 20, sink().0, "x".into()), JoinOutcome::Invalid));
     }
 
     #[test]
-    fn handshake_done_routed_by_room_id_not_latest_conn() {
-        // Regression: a single Host connection legitimately belongs to two rooms
-        // at once — an in-progress handshake AND a freshly re-armed durable
-        // standing rendezvous. `conn_to_room[host]` points at the latter, so
-        // `handshake_done` MUST be resolved by the frame's room_id; otherwise the
-        // real session never reaches ACTIVE (durable reconnect stuck at
-        // "Connected — waiting for data…").
+    fn join_opens_a_room_that_routes_both_ways() {
         let mut reg = RoomRegistry::default();
-        let now = Instant::now();
-        let host: ConnId = 10;
-
-        // Room A: controller joined → HANDSHAKING.
-        let room_a = pending(&mut reg, 50, host, now, Duration::from_secs(60));
-        assert!(matches!(reg.join(50, 20, sink(), 5000, now), JoinOutcome::Joined { .. }));
-
-        // Host re-arms a standing rendezvous (Room B) on the SAME conn; this
-        // overwrites conn_to_room[host] → B.
-        let room_b = String::from("rm_10_standby");
-        reg.create_pending(room_b.clone(), 51, host, sink(), now, now + Duration::from_secs(60));
-        assert_eq!(reg.room_of(host), Some(room_b.clone()), "conn_to_room now points at B");
-
-        // Completing Room A's handshake by room_id must mark A (not B).
-        reg.mark_handshake_done(&room_a, 20, now);
-        reg.mark_handshake_done(&room_a, host, now);
-        assert_eq!(
-            reg.state_of(&room_a),
-            Some(RoomState::Active),
-            "room A reaches ACTIVE despite conn_to_room pointing at B",
-        );
-        assert_eq!(
-            reg.state_of(&room_b),
-            Some(RoomState::PendingPair),
-            "the standing rendezvous B is untouched",
-        );
+        let host_out = listen(&mut reg, 1, 10);
+        let (ctrl_out, _rx) = sink();
+        let (room, notices) = joined(reg.join(1, 20, ctrl_out.clone(), "rm_next".into()));
+        assert_eq!(room, "rm_10_0", "the pre-assigned id is used");
+        assert!(notices.is_empty());
+        assert!(same_sink(&reg.route(&room, 10).unwrap(), &ctrl_out));
+        assert!(same_sink(&reg.route(&room, 20).unwrap(), &host_out));
+        assert!(reg.route(&room, 99).is_none(), "non-members cannot route");
     }
 
     #[test]
-    fn re_arming_standing_rendezvous_supersedes_old_pending_no_leak() {
-        // A host re-announcing the same pair code (durable-reconnect re-arm after
-        // every controller (re)connect) must NOT accumulate orphaned persistent
-        // pending rooms. Each re-arm supersedes the previous PENDING rendezvous.
+    fn newer_join_replaces_the_controller_and_supersedes_the_old_one() {
         let mut reg = RoomRegistry::default();
-        let now = Instant::now();
-        let host: ConnId = 10;
-        let ttl = Duration::from_secs(3650 * 24 * 3600); // persistent-ish
+        listen(&mut reg, 1, 10);
+        let (old_ctrl, _r1) = sink();
+        let (room_a, _) = joined(reg.join(1, 20, old_ctrl.clone(), "rm_b".into()));
+        let (room_b, notices) = joined(reg.join(1, 21, sink().0, "rm_c".into()));
+        assert_eq!(room_b, "rm_b");
+        assert!(!reg.in_room(&room_a, 20), "old room closed");
+        assert_eq!(notices.len(), 2, "host and old controller are told");
+        let old = notices.iter().find(|n| same_sink(&n.out, &old_ctrl)).unwrap();
+        assert!(old.superseded, "old controller is superseded, not peer_left");
+        assert!(notices.iter().any(|n| !n.superseded && n.room_id == room_a), "host gets peer_left");
+        assert!(reg.in_room(&room_b, 10) && reg.in_room(&room_b, 21));
+    }
 
-        reg.create_pending("rm_a".into(), 99, host, sink(), now, now + ttl);
+    #[test]
+    fn controller_disconnect_keeps_the_listen_so_it_can_rejoin() {
+        let mut reg = RoomRegistry::default();
+        listen(&mut reg, 1, 10);
+        let (room, _) = joined(reg.join(1, 20, sink().0, "rm_2".into()));
+        let notices = reg.on_disconnect(20);
+        assert_eq!(notices.len(), 1, "host gets peer_left");
+        assert_eq!(notices[0].room_id, room);
+        assert!(reg.is_listening(1), "host still listening");
+        assert!(matches!(reg.join(1, 21, sink().0, "rm_3".into()), JoinOutcome::Joined { .. }));
+    }
+
+    #[test]
+    fn host_disconnect_clears_everything_it_owned() {
+        let mut reg = RoomRegistry::default();
+        listen(&mut reg, 1, 10);
+        let (ctrl_out, _rx) = sink();
+        let (room, _) = joined(reg.join(1, 20, ctrl_out.clone(), "rm_2".into()));
+        let notices = reg.on_disconnect(10);
+        assert_eq!(notices.len(), 1);
+        assert!(same_sink(&notices[0].out, &ctrl_out));
+        assert!(!notices[0].superseded);
+        assert!(!reg.in_room(&room, 20));
+        assert!(reg.is_empty(), "no leaked listener or room");
+        assert!(matches!(reg.join(1, 21, sink().0, "x".into()), JoinOutcome::Invalid));
+    }
+
+    #[test]
+    fn reannouncing_the_same_code_keeps_the_live_room() {
+        let mut reg = RoomRegistry::default();
+        let (host_out, _rx) = sink();
+        reg.listen(1, 10, host_out.clone(), "rm_a".into());
+        let (room, _) = joined(reg.join(1, 20, sink().0, "rm_b".into()));
+        assert!(reg.listen(1, 10, host_out, "rm_c".into()).is_empty());
+        assert!(reg.in_room(&room, 20), "room untouched by re-announce");
+        assert_eq!(reg.len(), 2, "one listener + one room");
+    }
+
+    #[test]
+    fn new_code_from_same_host_drops_the_old_session() {
+        let mut reg = RoomRegistry::default();
+        let host_out = listen(&mut reg, 1, 10);
+        let (room, _) = joined(reg.join(1, 20, sink().0, "rm_b".into()));
+        let notices = reg.listen(2, 10, host_out, "rm_c".into());
+        assert_eq!(notices.len(), 1, "old controller told, host (originator) not");
+        assert!(!reg.in_room(&room, 20));
+        assert!(!reg.is_listening(1));
+        assert!(reg.is_listening(2));
         assert_eq!(reg.len(), 1);
-        assert_eq!(reg.room_of(host), Some("rm_a".into()));
+    }
 
-        // Re-arm the SAME code → old pending room is closed, not leaked.
-        reg.create_pending("rm_b".into(), 99, host, sink(), now, now + ttl);
-        assert_eq!(reg.len(), 1, "old standing rendezvous superseded, not leaked");
-        assert_eq!(reg.state_of("rm_a"), None, "previous pending room removed");
-        assert_eq!(reg.state_of("rm_b"), Some(RoomState::PendingPair));
-        assert_eq!(reg.room_of(host), Some("rm_b".into()));
+    #[test]
+    fn a_fresh_host_socket_takes_over_a_stale_one() {
+        let mut reg = RoomRegistry::default();
+        listen(&mut reg, 1, 10);
+        let (room, _) = joined(reg.join(1, 20, sink().0, "rm_b".into()));
+        // Host reconnected on conn 11 while conn 10 is half-open.
+        let (new_host, _rx) = sink();
+        let notices = reg.listen(1, 11, new_host.clone(), "rm_c".into());
+        assert!(notices.iter().any(|n| n.room_id == room), "controller told to re-join");
+        let (room2, _) = joined(reg.join(1, 20, sink().0, "rm_d".into()));
+        assert!(same_sink(&reg.route(&room2, 20).unwrap(), &new_host));
+        // The stale socket finally dies: it must not tear down the new listen.
+        assert!(reg.on_disconnect(10).is_empty());
+        assert!(reg.is_listening(1));
+        assert!(reg.in_room(&room2, 11));
+    }
 
-        // Many re-arms stay bounded at one live room.
-        for i in 0..50 {
-            reg.create_pending(format!("rm_{i}"), 99, host, sink(), now, now + ttl);
+    #[test]
+    fn revoke_empty_ends_the_session() {
+        let mut reg = RoomRegistry::default();
+        listen(&mut reg, 1, 10);
+        let (room, _) = joined(reg.join(1, 20, sink().0, "rm_b".into()));
+        assert!(reg.revoke(20, "", 0).is_empty(), "a controller cannot revoke");
+        assert_eq!(reg.revoke(10, "", 0).len(), 1);
+        assert!(!reg.in_room(&room, 20));
+        assert!(reg.is_empty());
+    }
+
+    #[test]
+    fn revoke_a_room_keeps_listening() {
+        let mut reg = RoomRegistry::default();
+        listen(&mut reg, 1, 10);
+        let (room, _) = joined(reg.join(1, 20, sink().0, "rm_b".into()));
+        assert!(reg.revoke(20, &room, 0).is_empty(), "only the host may revoke");
+        assert_eq!(reg.revoke(10, &room, 0).len(), 1);
+        assert!(reg.is_listening(1));
+    }
+
+    #[test]
+    fn legacy_revoke_by_code_ends_the_session() {
+        let mut reg = RoomRegistry::default();
+        listen(&mut reg, 7, 10);
+        let _ = joined(reg.join(7, 20, sink().0, "rm_b".into()));
+        assert_eq!(reg.revoke(10, "the-code", 7).len(), 1);
+        assert!(reg.is_empty());
+    }
+
+    #[test]
+    fn many_reconnects_never_grow_the_registry() {
+        let mut reg = RoomRegistry::default();
+        let host_out = listen(&mut reg, 1, 10);
+        for i in 0..100u64 {
+            let ctrl = 100 + i;
+            let _ = reg.join(1, ctrl, sink().0, format!("rm_{i}"));
+            reg.listen(1, 10, host_out.clone(), format!("rm_x{i}"));
+            if i % 2 == 0 {
+                reg.on_disconnect(ctrl);
+            }
         }
-        assert_eq!(reg.len(), 1, "repeated re-arms never accumulate");
+        assert!(reg.len() <= 2, "bounded: one listener + at most one room");
     }
 
     #[test]
-    fn re_arm_does_not_touch_active_session_on_same_host() {
-        // The supersede is keyed on `pending_by_code`, which an ACTIVE session is
-        // removed from on join — so re-arming the standing rendezvous must leave a
-        // live session on the SAME host connection untouched.
-        let mut reg = RoomRegistry::default();
-        let now = Instant::now();
-        let host: ConnId = 10;
-
-        // Room A: controller joined + handshaken → ACTIVE (code 60 consumed).
-        let room_a = active_room(&mut reg, 60, host, 20, 6000, now);
-        assert_eq!(reg.state_of(&room_a), Some(RoomState::Active));
-
-        // Host arms a standing rendezvous on a DIFFERENT code, then re-arms it.
-        reg.create_pending("rm_standby1".into(), 61, host, sink(), now, now + Duration::from_secs(60));
-        reg.create_pending("rm_standby2".into(), 61, host, sink(), now, now + Duration::from_secs(60));
-
-        assert_eq!(reg.state_of(&room_a), Some(RoomState::Active), "active session untouched");
-        assert_eq!(reg.state_of("rm_standby1"), None, "old standby superseded");
-        assert_eq!(reg.state_of("rm_standby2"), Some(RoomState::PendingPair));
-        // A resume for the active session still works (its token index is intact).
-        reg.on_disconnect(20, now, Duration::from_secs(60));
-        assert!(matches!(
-            reg.resume(6000, 6001, 21, sink(), now + Duration::from_secs(1)),
-            ResumeOutcome::Resumed { .. }
-        ));
-    }
-
-    #[test]
-    fn closing_active_session_keeps_sibling_standing_rendezvous_joinable() {
-        // Regression: an ACTIVE session and the host's re-armed standing
-        // rendezvous share the same pair_code_hash AND host conn. Closing the
-        // finished session must NOT de-index the standing rendezvous, otherwise a
-        // reconnecting phone gets endless `join_invalid` and can never re-attach.
-        let mut reg = RoomRegistry::default();
-        let now = Instant::now();
-        let host: ConnId = 10;
-        let code = 77u64;
-
-        // Session on `code` reaches ACTIVE (join consumes the code from the index).
-        let room_a = active_room(&mut reg, code, host, 20, 7000, now);
-        // Host re-arms a standing rendezvous on the SAME code (durable reconnect).
-        reg.create_pending(
-            "rm_standby".into(), code, host, sink(), now,
-            now + Duration::from_secs(3650 * 24 * 3600),
-        );
-        assert_eq!(reg.room_of(host), Some("rm_standby".into()));
-
-        // The finished session is closed (revoke / idle / host tears it down).
-        reg.close_room(&room_a, None);
-
-        // The standing rendezvous survives and is still joinable — the reconnect
-        // path works.
-        assert_eq!(reg.state_of("rm_standby"), Some(RoomState::PendingPair));
-        assert_eq!(reg.room_of(host), Some("rm_standby".into()), "host index intact");
-        match reg.join(code, 30, sink(), 7001, now) {
-            JoinOutcome::Joined { room_id, .. } => assert_eq!(room_id, "rm_standby"),
-            _ => panic!("standing rendezvous must remain joinable after sibling close"),
-        }
-    }
-
-    #[test]
-    fn expired_pair_join_is_invalid_and_no_room() {
-        let mut reg = RoomRegistry::default();
-        let now = Instant::now();
-        let _room = pending(&mut reg, 2, 10, now, Duration::from_millis(1));
-        let later = now + Duration::from_secs(1);
-        assert!(matches!(reg.join(2, 20, sink(), 1002, later), JoinOutcome::Invalid));
-    }
-
-    #[test]
-    fn second_controller_is_full() {
-        // Directly exercise MAX_CONTROLLER without pair-code consumption by
-        // re-registering the same code hash after a successful join is not
-        // possible; instead verify Full when a controller already exists.
-        let mut reg = RoomRegistry::default();
-        let now = Instant::now();
-        let room = pending(&mut reg, 3, 10, now, Duration::from_secs(60));
-        assert!(matches!(reg.join(3, 20, sink(), 1003, now), JoinOutcome::Joined { .. }));
-
-        // Simulate a concurrent race where the code is briefly re-indexed while
-        // the room is still pending but already has a controller; a second join
-        // must be refused as Full (MAX_CONTROLLER=1), never admitted.
-        reg.pending_by_code.insert(3, room.clone());
-        if let Some(r) = reg.rooms.get_mut(&room) {
-            r.state = RoomState::PendingPair;
-        }
-        assert!(matches!(reg.join(3, 30, sink(), 1030, now), JoinOutcome::Full));
-    }
-
-    #[test]
-    fn outbound_refuses_a_peer_that_falls_too_far_behind() {
+    fn outbound_kills_a_peer_that_falls_too_far_behind() {
         let (tx, mut rx) = outbound_channel();
         for i in 0..OUTBOUND_MAX_QUEUE {
             assert!(tx.send(Envelope::peer_left(format!("rm_{i}"))).is_ok());
         }
-        assert_eq!(tx.depth(), OUTBOUND_MAX_QUEUE);
-        // Over the cap the relay stops buffering; the caller closes the room.
-        assert!(
-            tx.send(Envelope::peer_left("rm_over".to_string())).is_err(),
-            "a peer this far behind must not be buffered further"
-        );
-        // Draining frees capacity again.
+        assert!(tx.send(Envelope::peer_left("rm_over")).is_err());
+        // The kill permit is stored, so a later waiter still sees it.
+        futures_util::FutureExt::now_or_never(tx.killed()).expect("kill signalled");
         assert!(rx.try_recv().is_ok());
-        assert!(tx.send(Envelope::peer_left("rm_ok".to_string())).is_ok());
-    }
-
-    #[test]
-    fn re_arming_an_existing_code_does_not_count_as_a_new_room() {
-        let mut reg = RoomRegistry::default();
-        let now = Instant::now();
-        pending(&mut reg, 7, 10, now, Duration::from_secs(60));
-        assert_eq!(reg.len(), 1);
-        assert!(reg.has_pending_code(7), "the armed code is visible");
-        assert!(!reg.has_pending_code(8), "an unknown code is not");
-        // The server uses has_pending_code to let a re-arm through a full
-        // registry; re-arming really does keep the count flat.
-        reg.create_pending("rm_10b".to_string(), 7, 10, sink(), now, now + Duration::from_secs(60));
-        assert_eq!(reg.len(), 1, "re-arm supersedes rather than adds");
-    }
-
-    #[test]
-    fn revoke_closes_and_clears_indexes() {
-        let mut reg = RoomRegistry::default();
-        let now = Instant::now();
-        let room = pending(&mut reg, 4, 10, now, Duration::from_secs(60));
-        let _ = reg.join(4, 20, sink(), 1004, now);
-        let survivors = reg.close_room(&room, Some(10));
-        assert_eq!(survivors.len(), 1, "controller should be notified");
-        assert_eq!(reg.state_of(&room), None, "room removed after close");
-        assert!(reg.room_of(10).is_none());
-        assert!(reg.room_of(20).is_none());
-    }
-
-    /// Drive a fresh room all the way to ACTIVE with a known resume token hash.
-    fn active_room(reg: &mut RoomRegistry, code: u64, host: ConnId, ctrl: ConnId, token: u64, now: Instant) -> String {
-        let room = pending(reg, code, host, now, Duration::from_secs(60));
-        assert!(matches!(reg.join(code, ctrl, sink(), token, now), JoinOutcome::Joined { .. }));
-        reg.mark_handshake_done(&room, host, now);
-        reg.mark_handshake_done(&room, ctrl, now);
-        assert_eq!(reg.state_of(&room), Some(RoomState::Active));
-        room
-    }
-
-    #[test]
-    fn controller_drop_keeps_room_and_resume_reattaches() {
-        let mut reg = RoomRegistry::default();
-        let now = Instant::now();
-        let room = active_room(&mut reg, 40, 10, 20, 5000, now);
-
-        // Controller drops → room stays ACTIVE (away), host is a survivor.
-        let (rid, survivors) = reg
-            .on_disconnect(20, now, Duration::from_secs(60))
-            .expect("host must be notified");
-        assert_eq!(rid, room);
-        assert_eq!(survivors.len(), 1, "host is notified peer_left");
-        assert_eq!(reg.state_of(&room), Some(RoomState::Active), "room kept alive");
-        assert!(reg.room_of(20).is_none(), "old controller conn index cleared");
-
-        // Resume with the current token → back to HANDSHAKING with a new token.
-        match reg.resume(5000, 6000, 21, sink(), now + Duration::from_secs(5)) {
-            ResumeOutcome::Resumed { room_id, .. } => assert_eq!(room_id, room),
-            _ => panic!("expected Resumed"),
-        }
-        assert_eq!(reg.state_of(&room), Some(RoomState::Handshaking));
-        assert_eq!(reg.room_of(21), Some(room.clone()));
-
-        // The redeemed token can never be replayed.
-        assert!(matches!(reg.resume(5000, 7000, 22, sink(), now), ResumeOutcome::Invalid));
-
-        // Re-handshake → ACTIVE again.
-        reg.mark_handshake_done(&room, 10, now);
-        reg.mark_handshake_done(&room, 21, now);
-        assert_eq!(reg.state_of(&room), Some(RoomState::Active));
-    }
-
-    #[test]
-    fn resume_after_window_is_invalid_and_swept() {
-        let mut reg = RoomRegistry::default();
-        let now = Instant::now();
-        let room = active_room(&mut reg, 41, 10, 20, 5100, now);
-        reg.on_disconnect(20, now, Duration::from_secs(60));
-
-        // Past the window → resume refused …
-        let later = now + Duration::from_secs(61);
-        assert!(matches!(reg.resume(5100, 5101, 21, sink(), later), ResumeOutcome::Invalid));
-        // … and the sweeper closes the abandoned room.
-        let closed = reg.sweep(later, Duration::from_secs(3600));
-        assert_eq!(closed.len(), 1);
-        assert_eq!(reg.state_of(&room), None);
-    }
-
-    #[test]
-    fn host_drop_closes_room_no_resume() {
-        let mut reg = RoomRegistry::default();
-        let now = Instant::now();
-        let room = active_room(&mut reg, 42, 10, 20, 5200, now);
-        let (_rid, survivors) = reg
-            .on_disconnect(10, now, Duration::from_secs(60))
-            .expect("controller notified");
-        assert_eq!(survivors.len(), 1, "controller is notified peer_left");
-        assert_eq!(reg.state_of(&room), None, "room closed when host drops");
-        assert!(matches!(reg.resume(5200, 5201, 21, sink(), now), ResumeOutcome::Invalid));
-    }
-
-    #[test]
-    fn silent_controller_is_swept_to_away_and_host_notified() {
-        // Half-open drop: the Controller stops sending (no TCP close) while the
-        // Host keeps keepaliving. Per-peer liveness must still detect the dead
-        // Controller — the Host's own keepalive must NOT mask it (the "Host stuck
-        // connected" bug). Room is kept for resume; Host gets peer_left.
-        let mut reg = RoomRegistry::default();
-        let now = Instant::now();
-        let room = active_room(&mut reg, 70, 10, 20, 8000, now);
-        let liveness = Duration::from_secs(45);
-        let window = Duration::from_secs(60);
-
-        // Host keeps beating right up to the deadline; controller went silent at t0.
-        let almost = now + Duration::from_secs(44);
-        reg.touch(&room, 10, almost);
-        assert!(
-            reg.sweep_peer_liveness(almost, liveness, window).is_empty(),
-            "no drop before the controller's liveness deadline",
-        );
-
-        // Past the deadline: controller-away even though the Host is still live.
-        let past = now + Duration::from_secs(46);
-        reg.touch(&room, 10, past); // Host beats again — must not save the controller.
-        let dropped = reg.sweep_peer_liveness(past, liveness, window);
-        assert_eq!(dropped.len(), 1, "silent controller detected");
-        assert_eq!(dropped[0].0, room);
-        assert_eq!(dropped[0].1.len(), 1, "host is notified peer_left");
-        assert_eq!(reg.state_of(&room), Some(RoomState::Active), "room kept for resume");
-        assert!(reg.room_of(20).is_none(), "controller conn index cleared");
-
-        // The resume token still works within the window.
-        assert!(matches!(
-            reg.resume(8000, 8001, 21, sink(), past + Duration::from_secs(1)),
-            ResumeOutcome::Resumed { .. }
-        ));
-    }
-
-    #[test]
-    fn silent_host_is_swept_and_room_closed() {
-        // The Host vanished half-open. Per-peer liveness closes the room and
-        // notifies the Controller — the mirror of a Host TCP drop.
-        let mut reg = RoomRegistry::default();
-        let now = Instant::now();
-        let room = active_room(&mut reg, 71, 10, 20, 8100, now);
-        let liveness = Duration::from_secs(45);
-        let window = Duration::from_secs(60);
-
-        // Controller keeps beating; Host went silent at t0.
-        let past = now + Duration::from_secs(46);
-        reg.touch(&room, 20, past);
-        let dropped = reg.sweep_peer_liveness(past, liveness, window);
-        assert_eq!(dropped.len(), 1, "silent host detected");
-        assert_eq!(dropped[0].1.len(), 1, "controller is notified peer_left");
-        assert_eq!(reg.state_of(&room), None, "room closed when host is silent");
-        assert!(reg.room_of(10).is_none());
-        assert!(reg.room_of(20).is_none());
-    }
-
-    #[test]
-    fn peer_liveness_never_touches_a_healthy_or_non_active_room() {
-        let mut reg = RoomRegistry::default();
-        let now = Instant::now();
-        // ACTIVE but both peers beating right now → untouched.
-        let room = active_room(&mut reg, 72, 10, 20, 8200, now);
-        let liveness = Duration::from_secs(45);
-        let window = Duration::from_secs(60);
-        assert!(reg.sweep_peer_liveness(now, liveness, window).is_empty());
-        assert_eq!(reg.state_of(&room), Some(RoomState::Active));
-
-        // PENDING/HANDSHAKING rooms are governed by PAIR_TTL, not peer liveness.
-        let pending_room = pending(&mut reg, 73, 30, now, Duration::from_secs(60));
-        let later = now + Duration::from_secs(120);
-        // Keep the ACTIVE room genuinely healthy at `later` so it is not itself a
-        // liveness casualty — this test is about the PENDING room being ignored.
-        reg.touch(&room, 10, later);
-        reg.touch(&room, 20, later);
-        assert!(
-            reg.sweep_peer_liveness(later, liveness, window).is_empty(),
-            "peer liveness ignores non-ACTIVE rooms",
-        );
-        assert_eq!(reg.state_of(&pending_room), Some(RoomState::PendingPair));
-        assert_eq!(reg.state_of(&room), Some(RoomState::Active));
-    }
-
-    #[test]
-    fn touch_refreshes_idle_clock_and_prevents_sweep() {
-        let mut reg = RoomRegistry::default();
-        let now = Instant::now();
-        let room = active_room(&mut reg, 43, 10, 20, 5300, now);
-        let idle = Duration::from_secs(60);
-
-        // Just before the idle deadline, a keepalive from the controller refreshes
-        // the clock so the sweep leaves the room alone.
-        let almost = now + Duration::from_secs(59);
-        reg.touch(&room, 20, almost);
-        assert!(reg.sweep(now + Duration::from_secs(90), idle).is_empty());
-        assert_eq!(reg.state_of(&room), Some(RoomState::Active), "kept alive by touch");
-
-        // A non-member touch is a no-op; without further keepalives the room is
-        // eventually swept once idle elapses past the last touch.
-        reg.touch(&room, 999, almost + Duration::from_secs(1));
-        let closed = reg.sweep(almost + idle + Duration::from_secs(1), idle);
-        assert_eq!(closed.len(), 1, "idle room swept after keepalives stop");
-        assert_eq!(reg.state_of(&room), None);
-    }
-
-    #[test]
-    fn sweep_expires_pending_rooms() {
-        let mut reg = RoomRegistry::default();
-        let now = Instant::now();
-        let _room = pending(&mut reg, 5, 10, now, Duration::from_millis(1));
-        let later = now + Duration::from_secs(2);
-        let closed = reg.sweep(later, Duration::from_secs(3600));
-        assert_eq!(closed.len(), 1);
-        assert!(reg.is_empty());
+        assert!(tx.send(Envelope::peer_left("rm_ok")).is_ok());
     }
 }

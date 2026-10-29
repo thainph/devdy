@@ -32,7 +32,7 @@ async fn main() -> ExitCode {
     tracing::info!(
         event = "relay_start",
         bind = %config.bind,
-        pair_ttl_secs = config.pair_ttl.as_secs(),
+        liveness_secs = config.peer_liveness_timeout.as_secs(),
         "starting devdy relay"
     );
 

@@ -118,17 +118,9 @@ pub async fn remote_create_session_link(
         return Err("run_id is required".to_string());
     }
 
-    // Supersede any existing bound session: queue its room for revoke (best
-    // effort — the room_id isn't tracked separately, so revoke via rendezvous)
-    // and delete the persisted credential BEFORE binding the new one.
-    let old_rendezvous = {
-        let bound = state.bound.lock().await;
-        bound.as_ref().map(|b| b.rendezvous_code.clone())
-    };
-    if let Some(rv) = old_rendezvous {
-        state.revoke_queue.lock().await.push(rv);
-        state.revoke_signal.notify_one();
-    }
+    // Supersede any existing bound session: the agent switches its relay listen
+    // to the new code (which drops the old code's room), and the old persisted
+    // credential is deleted BEFORE binding the new one.
     let _ = crate::secrets::delete_remote_session();
 
     let bound = session::generate(&run_id)?;
@@ -164,17 +156,9 @@ pub async fn remote_end_session(
     db: State<'_, Db>,
     state: State<'_, RemoteState>,
 ) -> Result<(), String> {
-    let (rendezvous, run_id) = {
-        let mut bound = state.bound.lock().await;
-        match bound.take() {
-            Some(b) => (Some(b.rendezvous_code), Some(b.run_id)),
-            None => (None, None),
-        }
-    };
-    if let Some(rv) = rendezvous {
-        state.revoke_queue.lock().await.push(rv);
-        state.revoke_signal.notify_one();
-    }
+    let run_id = state.bound.lock().await.take().map(|b| b.run_id);
+    // The agent sees no bound session and revokes its relay listen + room.
+    state.announce_signal.notify_one();
     let _ = crate::secrets::delete_remote_session();
     state.subscriptions.lock().await.clear();
     *state.focus_run_id.lock().await = None;

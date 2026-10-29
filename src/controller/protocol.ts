@@ -53,27 +53,16 @@ export interface Envelope {
   // ---- control-frame-only fields ----
   /** `join`: the one-time pairing code. */
   pair_code?: string
-  /** `room_ready` (relay → us): rotating resume token. `resume` (us → relay):
-   * the token being redeemed to re-attach after a drop. Not an E2E secret. */
-  resume_token?: string
   /** `error`: machine-readable code. */
   code?: string
   /** `error`: human-readable message (never carries secrets). */
   message?: string
 }
 
-/** Build a `join { pair_code }` control frame (FR-003). */
+/** Build a `join { pair_code }` control frame (FR-003). The relay routes it to
+ * the Host listening on that code; a newer join replaces an older one. */
 export function joinFrame(pairCode: string): Envelope {
   return { t: 'join', pair_code: pairCode }
-}
-
-/**
- * Build a `resume { resume_token }` control frame. Used to re-attach to the same
- * room after a transport drop within the relay's reconnect window (e.g. the
- * phone screen turned off then on), instead of the one-time `join` pair code.
- */
-export function resumeFrame(resumeToken: string): Envelope {
-  return { t: 'resume', resume_token: resumeToken }
 }
 
 /**
@@ -94,21 +83,11 @@ export function cmdFrame(roomId: string, sealedCipher: string, seq: number): Env
 /**
  * Build a `keepalive { room_id }` heartbeat. A browser cannot originate WS ping
  * frames, so once a run stops streaming the socket would be reaped by idle
- * proxies; this app-level beat keeps it warm and refreshes the relay room's idle
- * clock. Carries no cipher — the relay just touches the room and echoes it back.
+ * proxies; this app-level beat keeps it warm and feeds our own liveness
+ * watchdog. Carries no cipher — the relay just echoes it back.
  */
 export function keepaliveFrame(roomId: string): Envelope {
   return { t: 'keepalive', room_id: roomId }
-}
-
-/**
- * Build the Controller's `handshake_done` frame. The relay marks the room
- * ACTIVE only once BOTH peers have signalled handshake_done (see relay
- * `mark_handshake_done`); the Host sends its own, so the Controller must send
- * this after answering or the room is swept at the pair TTL.
- */
-export function handshakeDoneFrame(roomId: string): Envelope {
-  return { t: 'handshake_done', room_id: roomId }
 }
 
 // ---- Handshake payloads (spec §3, base64(JSON) in the `control` cipher) ----
