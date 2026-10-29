@@ -147,6 +147,8 @@ use remote::commands::{
     remote_end_session, remote_get_audit, remote_kick_controller, remote_reveal_otp,
     remote_set_config, remote_set_device_alias, remote_set_master_password, remote_status,
 };
+use remote::file_proxy::{rd_download_append, rd_download_create, rdfile_register, rdfile_respond};
+use remote::fs_bridge::{remote_fs_home, remote_fs_list, remote_fs_read, remote_fs_stat};
 use remote::ipc::{remote_bridge_event, remote_bridge_ready, remote_bridge_reply};
 use remote::RemoteState;
 use runs::broker::approver::ModalApproverResolver;
@@ -174,6 +176,10 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
+        // Remote desktop: files of the controlled Devdy as URLs in a
+        // remote-desktop window (see remote::file_proxy).
+        .register_asynchronous_uri_scheme_protocol(remote::file_proxy::SCHEME, remote::file_proxy::handle)
+        .manage(remote::file_proxy::FileProxy::default())
         // The menu itself is installed by the frontend (see `set_app_menu`), so
         // its labels follow the app language; this only routes clicks back.
         .on_menu_event(commands::app_menu::on_menu_event)
@@ -710,6 +716,14 @@ pub fn run() {
             remote_bridge_ready,
             remote_bridge_reply,
             remote_bridge_event,
+            remote_fs_list,
+            remote_fs_stat,
+            remote_fs_read,
+            remote_fs_home,
+            rdfile_register,
+            rdfile_respond,
+            rd_download_create,
+            rd_download_append,
             remote::meta::set_run_meta,
             procs::commands::list_background_processes,
             procs::commands::stop_background_processes,
