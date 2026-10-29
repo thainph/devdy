@@ -120,23 +120,35 @@ pub fn build_ssh_config(
         out.push_str("    BatchMode yes\n");
         if s.auth_method == "key" {
             if let Some(path) = s.private_key_path.as_deref().filter(|p| !p.is_empty()) {
-                out.push_str(&format!("    IdentityFile {path}\n"));
+                out.push_str(&format!("    IdentityFile {}\n", ssh_config_value(path)));
             }
             // Key-auth servers use the per-run agent (holds ssh-add'ed keys).
             if let Some(sock) = per_run_sock.filter(|p| !p.is_empty()) {
-                out.push_str(&format!("    IdentityAgent {sock}\n"));
+                out.push_str(&format!("    IdentityAgent {}\n", ssh_config_value(sock)));
             }
         } else if s.auth_method == "agent" {
             // Agent-auth servers inherit the user's OWN agent, not the empty
             // per-run one (SRS §3.3). No user agent → no IdentityAgent → ssh
             // fails cleanly rather than silently against a keyless agent.
             if let Some(sock) = user_sock.filter(|p| !p.is_empty()) {
-                out.push_str(&format!("    IdentityAgent {sock}\n"));
+                out.push_str(&format!("    IdentityAgent {}\n", ssh_config_value(sock)));
             }
         }
         out.push('\n');
     }
     out
+}
+
+/// Quote an ssh_config value when it contains whitespace. Devdy keeps keys and
+/// agent sockets under `~/Library/Application Support/…`, and an unquoted space
+/// makes ssh reject the WHOLE config ("extra arguments at end of line"), which
+/// breaks every server in the run, not just this one.
+fn ssh_config_value(v: &str) -> String {
+    if v.chars().any(char::is_whitespace) {
+        format!("\"{v}\"")
+    } else {
+        v.to_string()
+    }
 }
 
 /// Build the appended system-prompt block listing the run's available servers so
@@ -504,6 +516,14 @@ mod tests {
     }
 
     // ---- AC-303: config renders the right fields, isolates unmapped servers ----
+
+    #[test]
+    fn paths_with_spaces_are_quoted() {
+        let s = key_server("s1", "h", Some("/Users/u/Library/Application Support/k"), false);
+        let cfg = build_ssh_config(&[s], None, Some("/Users/u/Library/Application Support/agent.sock"));
+        assert!(cfg.contains("    IdentityFile \"/Users/u/Library/Application Support/k\"\n"));
+        assert!(cfg.contains("    IdentityAgent \"/Users/u/Library/Application Support/agent.sock\"\n"));
+    }
 
     #[test]
     fn build_ssh_config_two_blocks_with_and_without_identity_file() {
