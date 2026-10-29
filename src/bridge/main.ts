@@ -3,12 +3,15 @@
  *
  * Another Devdy drives this app's UI over the relay; its `invoke` / `listen`
  * calls arrive here and are replayed with the REAL Tauri APIs, so they behave
- * exactly as if the local user had made them. Results and events go back via
- * `remote_bridge_reply` / `remote_bridge_event` (see `src-tauri/src/remote/ipc.rs`).
+ * exactly as if the local user had made them. Results and events go back, in
+ * the order they happened, through one serialized `remote_bridge_batch` queue
+ * (see lib/ipc/bridgeOutbox.ts and `src-tauri/src/remote/ipc.rs`).
  */
 // Always the real APIs: this page serves remote calls, it never makes them.
 import { invoke } from '@tauri-real/core'
 import { listen, type UnlistenFn } from '@tauri-real/event'
+import { BridgeOutbox } from '@/lib/ipc/bridgeOutbox'
+import { isBridgeDeniedEvent } from '@/lib/ipc/bridgeEvents'
 
 type Request =
   | { type: 'invoke'; id: string; cmd: string; args: Record<string, unknown> | null }
@@ -16,7 +19,14 @@ type Request =
   | { type: 'unlisten'; event: string }
   | { type: 'reset' }
 
+const BRIDGE_LABEL = 'remote-bridge'
+
 const subscriptions = new Map<string, Promise<UnlistenFn>>()
+
+const outbox = new BridgeOutbox({
+  sendBatch: (items) => invoke('remote_bridge_batch', { items }),
+  onError: (e) => console.error('[remote-bridge] batch failed', e),
+})
 
 /** Errors cross the wire as JSON; keep strings as-is, describe the rest. */
 function toWireError(e: unknown): unknown {
@@ -32,18 +42,22 @@ function toWireError(e: unknown): unknown {
 async function runInvoke(id: string, cmd: string, args: Record<string, unknown> | null): Promise<void> {
   try {
     const value = await invoke(cmd, args ?? undefined)
-    await invoke('remote_bridge_reply', { id, ok: true, value: value ?? null, error: null })
+    outbox.push({ kind: 'result', id, ok: true, value: value ?? null, error: null })
   } catch (e) {
-    await invoke('remote_bridge_reply', { id, ok: false, value: null, error: toWireError(e) }).catch(() => {})
+    outbox.push({ kind: 'result', id, ok: false, value: null, error: toWireError(e) })
   }
 }
 
 function subscribe(event: string): void {
-  if (subscriptions.has(event)) return
+  if (subscriptions.has(event) || isBridgeDeniedEvent(event)) return
   subscriptions.set(
     event,
-    listen(event, (e) => {
-      void invoke('remote_bridge_event', { event, payload: e.payload ?? null }).catch(() => {})
+    // Targeted at this webview: app-wide emits (`app.emit`, JS `emit`) still
+    // match any listener, but `emit_to("main", …)` — menu actions, tray
+    // clicks, window-to-window messages meant for THIS machine's windows —
+    // only reaches listeners targeted at that label, so it stays here.
+    listen(event, (e) => outbox.push({ kind: 'event', event, payload: e.payload ?? null }), {
+      target: { kind: 'AnyLabel', label: BRIDGE_LABEL },
     }),
   )
 }

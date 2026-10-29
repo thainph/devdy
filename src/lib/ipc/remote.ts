@@ -56,18 +56,22 @@ function newId(): string {
 
 /**
  * Connect this remote-desktop window to the controlled Devdy. `onToken` is
- * called with the (re)issued session token so the caller can persist it.
+ * called with the (re)issued session token so the caller can persist it;
+ * `onResync` when the controlled Devdy had to drop events for us (congested
+ * link), so state fed by events may be stale (see ./resync.ts).
  *
  * Calls made before the first authentication are queued, not failed, so the
  * app can boot against the client right away. Rejections: the command's own
- * error value (as Tauri's `invoke`), or `Error('remote_timeout')` after 60 s,
- * `Error('remote_connection_lost')` if the link dropped mid-call,
- * `Error('remote_closed')` after {@link RemoteIpcClient.close}.
+ * error value (as Tauri's `invoke`), or `Error('remote_timeout')` when the call
+ * could not even be sent for 2 minutes (a sent call has no time limit: git
+ * push, LLM turns… can run long), `Error('remote_connection_lost')` if the link
+ * dropped mid-call, `Error('remote_closed')` after {@link RemoteIpcClient.close}.
  */
 export function startRemoteIpc(
   link: SessionLinkPayload,
   token: string,
   onToken?: (token: string) => void,
+  onResync?: () => void,
 ): RemoteIpcClient {
   client?.close()
 
@@ -85,12 +89,17 @@ export function startRemoteIpc(
   const onPayload = (p: StreamPayload): void => {
     if (p.kind === 'ipc_result') core.handleResult(p.id, p.ok, p.value, p.error)
     else if (p.kind === 'ipc_event') core.handleEvent(p.event, p.payload)
+    else if (p.kind === 'ipc_resync') onResync?.()
     // Anything else is run-streaming traffic an IPC Controller does not ask for.
   }
 
   const c: RemoteIpcClient = {
     state,
     invoke: <T>(cmd: string, args?: InvokeArgs) => core.invoke<T>(cmd, args),
+    // Resolves once registered here, before the controlled Devdy has actually
+    // subscribed (that takes a round trip, and is replayed after reconnects):
+    // an event emitted there in between is missed, as it would be for a local
+    // listen racing the emit. Acceptable — nothing waits on the ack.
     listen: <T>(event: string, handler: EventCallback<T>) =>
       Promise.resolve<UnlistenFn>(core.listen<T>(event, handler)),
     close: () => {
