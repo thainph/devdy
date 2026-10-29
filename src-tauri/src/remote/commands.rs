@@ -35,6 +35,8 @@ pub struct RemoteStatus {
     pub has_master_password: bool,
     /// The Host device id (generated once), when known.
     pub device_id: Option<String>,
+    /// This device's alias (selects its password-login code), when set.
+    pub device_alias: Option<String>,
     /// The run the session link was minted for, when a remote session is active.
     /// A multi-run Controller can move beyond it — see `focus_run_id`.
     pub bound_run_id: Option<String>,
@@ -236,6 +238,28 @@ pub async fn remote_set_master_password(
     Ok(())
 }
 
+/// Name this device (or clear the name with an empty string). The alias picks
+/// the password-login code (`devdy-login-v1/<alias>`), so a controller can tell
+/// several hosts on one relay apart.
+#[tauri::command]
+pub async fn remote_set_device_alias(
+    db: State<'_, Db>,
+    state: State<'_, RemoteState>,
+    alias: String,
+) -> Result<(), String> {
+    let alias = alias.trim();
+    if !remote::login::valid_alias(alias) {
+        return Err(format!(
+            "invalid device name: use up to {} lowercase letters, digits or '-'",
+            remote::login::MAX_ALIAS_LEN
+        ));
+    }
+    remote::set_setting(db.inner(), remote::KEY_DEVICE_ALIAS, alias).await?;
+    // The agent re-arms the login slot on the new code.
+    state.announce_signal.notify_one();
+    Ok(())
+}
+
 /// Read the audit log (FR-011). `limit` defaults to 200 when None/<=0.
 #[tauri::command]
 pub async fn remote_get_audit(
@@ -268,6 +292,7 @@ pub async fn remote_status(
         .await
         .unwrap_or_default();
     let device_id = remote::get_setting(db.inner(), remote::KEY_DEVICE_ID).await;
+    let device_alias = remote::device_alias(db.inner()).await;
     let (bound_run_id, session_authenticated) = {
         let bound = state.bound.lock().await;
         match bound.as_ref() {
@@ -295,6 +320,7 @@ pub async fn remote_status(
         has_auth_token: crate::secrets::has_remote_auth_token(),
         has_master_password: crate::secrets::has_remote_master_password(),
         device_id,
+        device_alias,
         bound_run_id,
         focus_run_id,
         subscribed_run_ids,

@@ -19,6 +19,9 @@
     "saved": "(đã lưu)",
     "authTokenPlaceholder": "Để trống để giữ token hiện tại",
     "authTokenHint": "Lưu trong keychain của hệ điều hành, không bao giờ lưu dạng thô trên đĩa.",
+    "deviceName": "Tên thiết bị này",
+    "deviceNamePlaceholder": "vd. mac-mini (không bắt buộc)",
+    "deviceNameHint": "Chữ thường, số và '-' (tối đa 32 ký tự). Nhập tên này cùng master password khi đăng nhập từ Devdy khác hoặc web controller, để nhiều host dùng chung một relay. Để trống nếu đây là host duy nhất.",
     "masterPassword": "Mật khẩu chính",
     "set": "(đã đặt)",
     "masterPasswordReplace": "Nhập mật khẩu mới để thay thế mật khẩu hiện tại",
@@ -29,6 +32,9 @@
     "perRunHint": "Phiên điều khiển từ xa giờ được tạo theo từng run: mở một run và nhấn nút {remote} trên thanh công cụ để tạo link. Nhập {masterPassword} (nếu đã đặt) hoặc mã OTP trên điện thoại để kết nối.",
     "remote": "Remote",
     "masterPasswordInline": "mật khẩu chính",
+    "controlOther": "Điều khiển Devdy khác",
+    "controlOtherHint": "Mở cửa sổ điều khiển một Devdy khác qua relay này, đăng nhập bằng tên thiết bị và master password của nó.",
+    "controlOtherOpen": "Mở",
     "auditLog": "Nhật ký kiểm toán",
     "clearLog": "Xóa nhật ký",
     "table": {
@@ -55,7 +61,8 @@
       "enabled": "Đã bật Remote Control",
       "masterCleared": "Đã xóa mật khẩu chính",
       "auditCleared": "Đã xóa {count} bản ghi kiểm toán",
-      "auditAlreadyEmpty": "Nhật ký kiểm toán đã trống"
+      "auditAlreadyEmpty": "Nhật ký kiểm toán đã trống",
+      "deviceNameInvalid": "Tên thiết bị: chỉ dùng chữ thường, số và '-' (tối đa 32 ký tự)"
     }
   },
   "session": {
@@ -87,5 +94,37 @@
     "disabledNoRelay": "Remote Control chưa được bật. Hãy cấu hình relay URL trong Settings trước, sau đó bật lên.",
     "enableNow": "Bật Remote Control",
     "openSettings": "Mở Settings"
+  },
+  "desktop": {
+    "login": {
+      "title": "Điều khiển Devdy khác",
+      "subtitle": "Đăng nhập bằng tên thiết bị kia và master password Remote Control của nó.",
+      "device": "Tên thiết bị",
+      "devicePlaceholder": "Để trống nếu thiết bị chưa đặt tên",
+      "password": "Master password",
+      "passwordPlaceholder": "Master password remote",
+      "submit": "Kết nối",
+      "working": "Đang kết nối…",
+      "passwordFirst": "Hãy nhập mật khẩu trước.",
+      "deviceInvalid": "Tên thiết bị chỉ gồm chữ thường, số và '-' (tối đa 32 ký tự).",
+      "wrongPassword": "Sai mật khẩu (hoặc thử quá nhiều lần — đợi vài phút).",
+      "hostOffline": "Không kết nối được Devdy đó: kiểm tra tên thiết bị, và Devdy đó đang chạy, đã bật Remote Control và đặt master password.",
+      "network": "Không kết nối được relay. Kiểm tra mạng và thử lại.",
+      "noRelay": "Hãy đặt Relay URL trong Settings → Remote Control trên máy này trước.",
+      "relayVia": "Qua relay {url}"
+    },
+    "banner": {
+      "controlling": "Đang điều khiển {device}",
+      "unnamed": "Devdy từ xa",
+      "connected": "Đã kết nối",
+      "connecting": "Đang kết nối…",
+      "reconnecting": "Đang kết nối lại…",
+      "disconnected": "Mất kết nối",
+      "error": "Lỗi kết nối",
+      "authFailed": "Phiên đăng nhập hết hạn",
+      "reconnect": "Kết nối lại",
+      "signInAgain": "Đăng nhập lại",
+      "signOut": "Đăng xuất"
+    }
   }
 }
