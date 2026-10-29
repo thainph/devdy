@@ -1,0 +1,19 @@
+{
+  "openTitle": "Open a file on the controlled machine",
+  "openFolderTitle": "Choose a folder on the controlled machine",
+  "saveTitle": "Save on the controlled machine",
+  "browseTitle": "Files on the controlled machine",
+  "hint": "These are the controlled machine's files, not this computer's.",
+  "up": "Parent folder",
+  "home": "Home folder",
+  "empty": "This folder is empty.",
+  "allFiles": "All files",
+  "open": "Open",
+  "chooseThisFolder": "Choose this folder",
+  "downloadOpen": "Download & open",
+  "fileName": "Name",
+  "willReplace": "A file with this name will be replaced.",
+  "downloading": "Downloading {name} to this computer…",
+  "downloaded": "Saved to {path}",
+  "downloadFailed": "Download failed: {error}"
+}
