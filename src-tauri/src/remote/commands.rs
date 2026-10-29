@@ -47,6 +47,10 @@ pub struct RemoteStatus {
     pub session_authenticated: bool,
     /// Sliding idle expiry (Unix secs) of the bound session, when known.
     pub session_idle_expires_at: Option<u64>,
+    /// Whether another Devdy is driving this one over remote-desktop IPC.
+    pub desktop_controlled: bool,
+    /// When that remote-desktop Controller attached (Unix secs).
+    pub desktop_controlled_since: Option<u64>,
 }
 
 /// Persist relay config (DATA-001). `auth_token`, when provided (non-empty), is
@@ -236,6 +240,26 @@ pub async fn remote_set_master_password(
     Ok(())
 }
 
+/// Kill switch: cut off the Controller currently attached (remote desktop or
+/// phone). It may re-join with its credentials; to keep it out the owner
+/// changes the master password or ends the session.
+#[tauri::command]
+pub async fn remote_kick_controller(
+    db: State<'_, Db>,
+    state: State<'_, RemoteState>,
+) -> Result<(), String> {
+    let attached = state.connected.load(std::sync::atomic::Ordering::SeqCst)
+        || state.ipc.controlled_since().await.is_some();
+    // Nothing to cut: don't leave a stored permit that would kick the next
+    // Controller to join.
+    if !attached || !state.is_running().await {
+        return Ok(());
+    }
+    state.kick_signal.notify_one();
+    audit::audit(db.inner(), None, None, None, "kick_controller", audit::RESULT_ACCEPTED, None).await;
+    Ok(())
+}
+
 /// Read the audit log (FR-011). `limit` defaults to 200 when None/<=0.
 #[tauri::command]
 pub async fn remote_get_audit(
@@ -286,6 +310,7 @@ pub async fn remote_status(
     } else {
         (None, Vec::new())
     };
+    let desktop_controlled_since = state.ipc.controlled_since().await;
     Ok(RemoteStatus {
         enabled,
         running: state.is_running().await,
@@ -300,5 +325,7 @@ pub async fn remote_status(
         subscribed_run_ids,
         session_authenticated,
         session_idle_expires_at,
+        desktop_controlled: desktop_controlled_since.is_some(),
+        desktop_controlled_since,
     })
 }
