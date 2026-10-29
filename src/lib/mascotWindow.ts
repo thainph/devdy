@@ -12,6 +12,7 @@ import { LogicalSize } from '@tauri-apps/api/dpi'
 import { emit } from '@tauri-apps/api/event'
 import type { CyberFoxSize, CyberFoxState } from '@/composables/useMascotState'
 import type { MascotBubbleMessage } from '@/composables/useMascotBubble'
+import { popoutLabel } from '@/lib/popout'
 
 export const MASCOT_WINDOW_LABEL = 'mascot'
 export const MASCOT_STATE_EVENT = 'mascot:state'
@@ -58,7 +59,7 @@ let creating: Promise<WebviewWindow> | null = null
 /** Open (or focus) the desktop-pet window and match its size to the preference. */
 export async function openMascotWindow(size: CyberFoxSize = 'md'): Promise<WebviewWindow> {
   const { width, height } = mascotWindowSize(size)
-  const existing = await WebviewWindow.getByLabel(MASCOT_WINDOW_LABEL)
+  const existing = await WebviewWindow.getByLabel(popoutLabel(MASCOT_WINDOW_LABEL))
   if (existing) {
     try {
       await existing.setSize(new LogicalSize(width, height))
@@ -80,7 +81,7 @@ export async function openMascotWindow(size: CyberFoxSize = 'md'): Promise<Webvi
 }
 
 function createMascotWindow(width: number, height: number): WebviewWindow {
-  const win = new WebviewWindow(MASCOT_WINDOW_LABEL, {
+  const win = new WebviewWindow(popoutLabel(MASCOT_WINDOW_LABEL), {
     // Slim standalone entry (mascot.html → src/mascot/main.ts) instead of booting
     // the full SPA (index.html?mascotWindow=1) inside a second webview.
     url: 'mascot.html',
@@ -108,7 +109,7 @@ function createMascotWindow(width: number, height: number): WebviewWindow {
 
 /** Close the desktop-pet window if it is open (no-op otherwise). */
 export async function closeMascotWindow(): Promise<void> {
-  const existing = await WebviewWindow.getByLabel(MASCOT_WINDOW_LABEL)
+  const existing = await WebviewWindow.getByLabel(popoutLabel(MASCOT_WINDOW_LABEL))
   if (!existing) return
   try {
     await existing.close()

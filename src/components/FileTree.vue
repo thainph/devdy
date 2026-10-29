@@ -12,6 +12,7 @@ import { computed, ref, watch, onBeforeUnmount, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { RotateCw, ListCollapse, FilePlus, FolderPlus, File, Folder } from 'lucide-vue-next'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
+import { remotePathsForDrop } from '@/lib/remoteUpload'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import FileTreeNode from '@/components/FileTreeNode.vue'
 import FileActionsMenu from '@/components/FileActionsMenu.vue'
@@ -192,9 +193,11 @@ function ownTargetAt(pos: { x: number; y: number }) {
   return target && target.projectPath === props.projectPath ? target : null
 }
 
-async function importDropped(paths: string[], dir: string) {
-  if (paths.length === 0) return
+async function importDropped(dropped: string[], dir: string) {
   try {
+    // In a remote-desktop window the dropped files are copied over first.
+    const paths = await remotePathsForDrop(dropped)
+    if (paths.length === 0) return
     const added = await store.importExternal(props.projectPath, paths, dir)
     toast.success(t('files.tree.toastImported', { count: added.length }))
   } catch (err) { toast.error(String(err)) }

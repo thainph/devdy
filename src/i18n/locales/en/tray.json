@@ -10,5 +10,7 @@
   "windows": "Windows",
   "runningSessions": "Running Sessions ({count})",
   "noRunningSessions": "No running sessions",
-  "backgroundProcesses": "Background Processes ({count})"
+  "backgroundProcesses": "Background Processes ({count})",
+  "remoteDesktopWindow": "Remote Devdy",
+  "remoteWindow": "{name} (remote)"
 }

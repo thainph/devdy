@@ -125,6 +125,12 @@
       "reconnect": "Reconnect",
       "signInAgain": "Sign in again",
       "signOut": "Sign out"
+    },
+    "upload": {
+      "progress": "Copying {name} to the controlled Devdy… {percent}%",
+      "progressMany": "Copying {count} files to the controlled Devdy… {percent}%",
+      "failed": "Couldn't copy {name} to the controlled Devdy: {error}",
+      "folderSkipped": "Folders can't be dropped into a controlled Devdy yet ({name})."
     }
   }
 }

@@ -128,6 +128,16 @@ export function startRemoteIpc(
   return c
 }
 
+/**
+ * Install a client that is not a direct relay connection: a remote pop-out's
+ * client reaches the controlled Devdy through the main remote-desktop window
+ * (./muxTransport.ts).
+ */
+export function installRemoteIpc(c: RemoteIpcClient): void {
+  client?.close()
+  client = c
+}
+
 /** Test seam: install a client directly. */
 export function setRemoteIpcForTest(c: RemoteIpcClient | null): void {
   client = c

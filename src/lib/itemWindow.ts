@@ -12,6 +12,7 @@ import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { emit, listen } from '@tauri-apps/api/event'
 import { trackWindowForTray } from '@/lib/tray'
 import { nextCascadePosition } from '@/lib/windowCascade'
+import { popoutLabel, popoutUrl } from '@/lib/popout'
 
 export type ItemKind = 'todo' | 'note'
 
@@ -104,7 +105,7 @@ export async function openItemCreateWindow(
     runId: context.runId ?? null,
   }
 
-  const existing = await WebviewWindow.getByLabel(CREATE_WINDOW_LABEL)
+  const existing = await WebviewWindow.getByLabel(popoutLabel(CREATE_WINDOW_LABEL))
   if (existing) {
     if (await focusWindow(existing)) {
       // Already listening, so no handshake is needed.
@@ -120,8 +121,8 @@ export async function openItemCreateWindow(
 
   const awaitReady = hasPrefill(prefill) ? await waitForReady() : null
 
-  const win = new WebviewWindow(CREATE_WINDOW_LABEL, {
-    url: `index.html?${params.toString()}`,
+  const win = new WebviewWindow(popoutLabel(CREATE_WINDOW_LABEL), {
+    url: popoutUrl(`index.html?${params.toString()}`),
     title: 'New — Devdy',
     width: 420,
     height: 600,
