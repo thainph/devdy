@@ -24,6 +24,7 @@ pub mod command;
 pub mod commands;
 pub mod forwarder;
 pub mod handler;
+pub mod ipc;
 pub mod login;
 pub mod meta;
 pub mod outbound;
@@ -86,6 +87,8 @@ pub struct RemoteState {
     pub subscriptions: RunSubscriptions,
     /// The run the Controller is currently viewing.
     pub focus_run_id: FocusRun,
+    /// Remote-desktop IPC routing (another Devdy driving this one).
+    pub ipc: ipc::IpcHub,
     agent: Arc<TokioMutex<Option<AgentControl>>>,
 }
 
@@ -105,6 +108,7 @@ impl RemoteState {
             announce_signal: Arc::new(tokio::sync::Notify::new()),
             subscriptions: Arc::new(TokioMutex::new(HashSet::new())),
             focus_run_id: Arc::new(TokioMutex::new(None)),
+            ipc: ipc::IpcHub::default(),
             agent: Arc::new(TokioMutex::new(None)),
         }
     }
@@ -147,6 +151,7 @@ impl RemoteState {
             announce_signal: self.announce_signal.clone(),
             subscriptions: self.subscriptions.clone(),
             focus_run_id: self.focus_run_id.clone(),
+            ipc: self.ipc.clone(),
         };
         let config = agent::AgentConfig {
             relay_url,

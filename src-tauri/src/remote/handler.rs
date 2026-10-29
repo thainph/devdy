@@ -69,6 +69,8 @@ pub struct HandlerCtx {
     pub idem: Arc<TokioMutex<IdempotencyGuard>>,
     /// Sliding idle deadline (Unix secs). Bumped on each accepted command.
     pub idle: IdleClock,
+    /// A remote-desktop Controller (drives the UI over `ipc_*` commands).
+    pub ipc: bool,
 }
 
 impl HandlerCtx {
@@ -77,7 +79,13 @@ impl HandlerCtx {
     /// a reconnect within 3h skips the OTP.
     fn slide_idle(&self) {
         let deadline = now_unix() + IDLE_TTL_SECS;
+        // Persisting hits the Keychain; a remote desktop issues many calls a
+        // second, so only write when the deadline moved meaningfully.
+        let prev = self.idle.load(Ordering::SeqCst);
         self.idle.store(deadline, Ordering::SeqCst);
+        if deadline.saturating_sub(prev) < 60 {
+            return;
+        }
         if let Some(mut cred) = crate::secrets::get_remote_session() {
             // The credential is per SESSION, keyed by the link's run.
             if cred.run_id == self.initial_run_id {
@@ -238,6 +246,19 @@ pub async fn handle(ctx: &HandlerCtx, cmd: CmdPayload) {
     let action = cmd.action.as_str();
     let run_id = cmd.run_id.clone();
 
+    // Remote desktop: a full UI driving this app as the local user would. Its
+    // calls go to the bridge verbatim — no per-command allow-list or budget,
+    // by design (the paired device is trusted like the person at the keyboard).
+    if action.starts_with("ipc_") {
+        if !ctx.ipc {
+            reject(ctx, action, None, RejectReason::NotAllowed).await;
+            return;
+        }
+        ctx.slide_idle();
+        handle_ipc(ctx, &cmd).await;
+        return;
+    }
+
     // Gate 0: run scope. A multi-run Controller may act on any run this Host
     // actually has (device approval is the trust boundary, SRS BR-005 v1.1); a
     // legacy one is still pinned to the run its link was minted for. Either way
@@ -287,6 +308,32 @@ pub async fn handle(ctx: &HandlerCtx, cmd: CmdPayload) {
         "close_run" => handle_close_run(ctx, &cmd).await,
         // Unreachable: allow-list already gated. Defensive audit.
         _ => reject(ctx, action, run_id.as_deref(), RejectReason::NotAllowed).await,
+    }
+}
+
+/// Forward one `ipc_*` command to the bridge webview.
+async fn handle_ipc(ctx: &HandlerCtx, cmd: &CmdPayload) {
+    use tauri::Manager;
+    let request = match cmd.action.as_str() {
+        "ipc_hello" => return,
+        "ipc_invoke" => {
+            let (Some(id), Some(name)) = (cmd.id.as_deref(), cmd.cmd.as_deref()) else { return };
+            serde_json::json!({
+                "type": "invoke",
+                "id": id,
+                "cmd": name,
+                "args": cmd.args.clone().unwrap_or(serde_json::Value::Null),
+            })
+        }
+        "ipc_listen" | "ipc_unlisten" => {
+            let Some(event) = cmd.event.as_deref() else { return };
+            let kind = if cmd.action == "ipc_listen" { "listen" } else { "unlisten" };
+            serde_json::json!({ "type": kind, "event": event })
+        }
+        _ => return,
+    };
+    if let Some(state) = ctx.app.try_state::<crate::remote::RemoteState>() {
+        state.ipc.forward(&ctx.app, request).await;
     }
 }
 

@@ -132,6 +132,8 @@ pub struct AgentDeps {
     pub subscriptions: crate::remote::RunSubscriptions,
     /// The run the Controller is currently viewing.
     pub focus_run_id: crate::remote::FocusRun,
+    /// Remote-desktop IPC routing.
+    pub ipc: crate::remote::ipc::IpcHub,
 }
 
 /// Run the agent until `stop` fires. Reconnect loop with capped backoff.
@@ -621,6 +623,7 @@ async fn drop_room(
         }
     };
     deps.connected.store(false, Ordering::SeqCst);
+    deps.ipc.detach(&deps.app).await;
     if had_ctx {
         let _ = deps.app.emit("remote://disconnected", Disconnected { run_id });
     }
@@ -1049,6 +1052,7 @@ async fn try_authenticate_first_frame(
     };
     let batch_output = has_feature(FEATURE_OUTPUT_BATCH);
     let multi_run = has_feature(FEATURE_MULTI_RUN);
+    let ipc = has_feature(crate::remote::ipc::FEATURE_IPC);
     tracing::info!(
         event = "remote_client_features",
         room_id = %room_id,
@@ -1056,63 +1060,71 @@ async fn try_authenticate_first_frame(
         multi_run = multi_run,
     );
 
-    // Start this connection from a clean slate: the linked run is open, nothing
-    // else. A Controller that was browsing before a reconnect re-opens whatever
-    // it wants, so carrying stale subscriptions over would only stream runs
-    // nobody is looking at.
-    {
-        let mut subs = deps.subscriptions.lock().await;
-        subs.clear();
-        subs.insert(run_id.clone());
-    }
-    *deps.focus_run_id.lock().await = Some(run_id.clone());
-
-    let ft = tokio::spawn(forward_loop(
-        deps.bus.clone(),
-        session.clone(),
-        room_id.clone(),
-        out_tx.clone(),
-        seq.clone(),
-        deps.db.clone(),
-        crate::remote::forwarder::ForwardScope {
-            subscriptions: deps.subscriptions.clone(),
-            initial_run_id: run_id.clone(),
-            multi_run,
-            batch_output,
-        },
-    ));
-    if let Some(old) = forward_task.replace(ft) {
-        old.abort();
-    }
-
-    // Push the initial run list: every run for a run browser, just the linked
-    // one for a legacy Controller.
-    let list_filter = if multi_run { None } else { Some(run_id.as_str()) };
-    crate::remote::forwarder::send_run_list(
-        &deps.db,
-        &session,
-        &room_id,
-        out_tx,
-        &**seq,
-        list_filter,
-    )
-    .await;
-
-    // Push the initial engine/model/permission-mode snapshot so the controller's
-    // composer mirrors the desktop from the first frame (no blank/default drift).
-    {
-        use tauri::Manager;
-        if let Some(store) = deps.app.try_state::<crate::remote::RunMetaStore>() {
-            crate::remote::forwarder::send_run_meta(
-                &deps.db, &store, &session, &room_id, out_tx, &**seq, &run_id,
-            )
+    // A remote-desktop Controller drives the full UI through IPC: it needs
+    // none of the phone-controller streams, only its replies routed back.
+    if ipc {
+        deps.ipc
+            .attach(&deps.app, session.clone(), room_id.clone(), out_tx.clone(), seq.clone())
             .await;
+    } else {
+        // Start this connection from a clean slate: the linked run is open, nothing
+        // else. A Controller that was browsing before a reconnect re-opens whatever
+        // it wants, so carrying stale subscriptions over would only stream runs
+        // nobody is looking at.
+        {
+            let mut subs = deps.subscriptions.lock().await;
+            subs.clear();
+            subs.insert(run_id.clone());
         }
-    }
+        *deps.focus_run_id.lock().await = Some(run_id.clone());
 
-    // Push the initial subscription usage badges (Claude + Codex) so the
-    // controller shows plan utilization from the first frame.
-    crate::remote::forwarder::send_plan_usage(&deps.db, &session, &room_id, out_tx, &**seq, &run_id).await;
+        let ft = tokio::spawn(forward_loop(
+            deps.bus.clone(),
+            session.clone(),
+            room_id.clone(),
+            out_tx.clone(),
+            seq.clone(),
+            deps.db.clone(),
+            crate::remote::forwarder::ForwardScope {
+                subscriptions: deps.subscriptions.clone(),
+                initial_run_id: run_id.clone(),
+                multi_run,
+                batch_output,
+            },
+        ));
+        if let Some(old) = forward_task.replace(ft) {
+            old.abort();
+        }
+
+        // Push the initial run list: every run for a run browser, just the linked
+        // one for a legacy Controller.
+        let list_filter = if multi_run { None } else { Some(run_id.as_str()) };
+        crate::remote::forwarder::send_run_list(
+            &deps.db,
+            &session,
+            &room_id,
+            out_tx,
+            &**seq,
+            list_filter,
+        )
+        .await;
+
+        // Push the initial engine/model/permission-mode snapshot so the controller's
+        // composer mirrors the desktop from the first frame (no blank/default drift).
+        {
+            use tauri::Manager;
+            if let Some(store) = deps.app.try_state::<crate::remote::RunMetaStore>() {
+                crate::remote::forwarder::send_run_meta(
+                    &deps.db, &store, &session, &room_id, out_tx, &**seq, &run_id,
+                )
+                .await;
+            }
+        }
+
+        // Push the initial subscription usage badges (Claude + Codex) so the
+        // controller shows plan utilization from the first frame.
+        crate::remote::forwarder::send_plan_usage(&deps.db, &session, &room_id, out_tx, &**seq, &run_id).await;
+    }
 
     let ctx = Arc::new(HandlerCtx {
         app: deps.app.clone(),
@@ -1130,6 +1142,7 @@ async fn try_authenticate_first_frame(
         rate: rate.clone(),
         idem: idem.clone(),
         idle: idle.clone(),
+        ipc,
     });
     *room_ctx = Some(ctx.clone());
 

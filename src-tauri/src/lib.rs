@@ -147,6 +147,7 @@ use remote::commands::{
     remote_end_session, remote_get_audit, remote_reveal_otp, remote_set_config,
     remote_set_master_password, remote_status,
 };
+use remote::ipc::{remote_bridge_event, remote_bridge_ready, remote_bridge_reply};
 use remote::RemoteState;
 use runs::broker::approver::ModalApproverResolver;
 use runs::broker::{start_broker, ApproverResolver, BrokerConfig};
@@ -704,6 +705,9 @@ pub fn run() {
             remote_get_audit,
             remote_clear_audit,
             remote_status,
+            remote_bridge_ready,
+            remote_bridge_reply,
+            remote_bridge_event,
             remote::meta::set_run_meta,
             procs::commands::list_background_processes,
             procs::commands::stop_background_processes,

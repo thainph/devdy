@@ -245,6 +245,21 @@ pub enum StreamPayload {
         /// Absolute idle expiry (Unix seconds); slides forward on activity.
         idle_expires_at: u64,
     },
+    /// Remote desktop: the outcome of one `ipc_invoke`. `value` is the command's
+    /// return value, `error` its rejection, both exactly as the local UI sees.
+    IpcResult {
+        id: String,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<serde_json::Value>,
+    },
+    /// Remote desktop: one app event the Controller subscribed to.
+    IpcEvent {
+        event: String,
+        payload: serde_json::Value,
+    },
     /// Password login succeeded (Host → Controller, on the login room): a full
     /// session link + token so the Controller continues on the session path.
     LoginGranted {
@@ -533,6 +548,18 @@ pub struct CmdPayload {
     /// why every negotiated feature must default to the old behaviour.
     #[serde(default)]
     pub client_features: Option<Vec<String>>,
+    /// `ipc_invoke`: correlation id echoed in the `ipc_result`.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// `ipc_invoke`: the Tauri command to run, exactly as the UI named it.
+    #[serde(default)]
+    pub cmd: Option<String>,
+    /// `ipc_invoke`: the command's arguments, verbatim.
+    #[serde(default)]
+    pub args: Option<serde_json::Value>,
+    /// `ipc_listen` / `ipc_unlisten`: the app event name.
+    #[serde(default)]
+    pub event: Option<String>,
 }
 
 /// The E2E handshake exchange (spec §3). Ephemeral public keys are NOT secret,
