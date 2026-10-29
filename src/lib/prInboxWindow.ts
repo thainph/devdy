@@ -5,6 +5,7 @@
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { trackWindowForTray } from '@/lib/tray'
 import { centerOnCurrentMonitor } from '@/lib/windowCascade'
+import { popoutLabel, popoutUrl } from '@/lib/popout'
 
 /** Window label; src-tauri/capabilities/default.json grants it the app permissions. */
 export const PR_INBOX_WINDOW_LABEL = 'pr-inbox'
@@ -43,7 +44,7 @@ export async function openPrInboxWindow(): Promise<WebviewWindow | null> {
     await focusWindow(win)
     return win
   }
-  const existing = await WebviewWindow.getByLabel(PR_INBOX_WINDOW_LABEL)
+  const existing = await WebviewWindow.getByLabel(popoutLabel(PR_INBOX_WINDOW_LABEL))
   if (existing) {
     await focusWindow(existing)
     return existing
@@ -66,8 +67,8 @@ export async function openPrInboxWindow(): Promise<WebviewWindow | null> {
 async function createPrInboxWindow(): Promise<WebviewWindow> {
   const width = 1100
   const height = 780
-  const win = new WebviewWindow(PR_INBOX_WINDOW_LABEL, {
-    url: 'index.html?prInboxWindow=1',
+  const win = new WebviewWindow(popoutLabel(PR_INBOX_WINDOW_LABEL), {
+    url: popoutUrl('index.html?prInboxWindow=1'),
     title: 'PR Inbox — Devdy',
     width,
     height,

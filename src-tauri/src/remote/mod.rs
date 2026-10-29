@@ -32,6 +32,7 @@ pub mod meta;
 pub mod outbound;
 pub mod protocol;
 pub mod session;
+pub mod upload;
 
 pub use bus::{RemoteBus, RemoteRunEvent};
 pub use meta::{apply_run_meta, RunMetaStore};

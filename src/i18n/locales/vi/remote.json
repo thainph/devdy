@@ -125,6 +125,12 @@
       "reconnect": "Kết nối lại",
       "signInAgain": "Đăng nhập lại",
       "signOut": "Đăng xuất"
+    },
+    "upload": {
+      "progress": "Đang chép {name} sang Devdy đang điều khiển… {percent}%",
+      "progressMany": "Đang chép {count} tệp sang Devdy đang điều khiển… {percent}%",
+      "failed": "Không chép được {name} sang Devdy đang điều khiển: {error}",
+      "folderSkipped": "Chưa thể thả thư mục vào Devdy đang điều khiển ({name})."
     }
   }
 }

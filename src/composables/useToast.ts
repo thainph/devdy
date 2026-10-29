@@ -41,6 +41,13 @@ function show(message: string, variant: ToastVariant, duration: number): number 
   return id
 }
 
+// Replace the text of a toast still on screen (e.g. a progress toast shown
+// with duration 0, dismissed by the caller when done).
+function update(id: number, message: string) {
+  const item = state.items.find((t) => t.id === id)
+  if (item) item.message = message
+}
+
 // Errors linger a little longer than success/info so they're readable.
 const toast = {
   show: (message: string, variant: ToastVariant = 'info', duration = 2500) =>
@@ -51,5 +58,5 @@ const toast = {
 }
 
 export function useToast() {
-  return { state, toast, dismiss }
+  return { state, toast, dismiss, update }
 }

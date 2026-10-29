@@ -7,6 +7,7 @@ import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { emit } from '@tauri-apps/api/event'
 import { trackWindowForTray } from '@/lib/tray'
 import { centerOnCurrentMonitor } from '@/lib/windowCascade'
+import { popoutLabel, popoutUrl } from '@/lib/popout'
 
 /** Window label; src-tauri/capabilities/default.json grants it the app permissions. */
 export const SLACK_WINDOW_LABEL = 'slack-threads'
@@ -72,7 +73,7 @@ export async function openSlackWindow(
 ): Promise<WebviewWindow | null> {
   const projectId = opts.projectId ?? null
 
-  const existing = await WebviewWindow.getByLabel(SLACK_WINDOW_LABEL)
+  const existing = await WebviewWindow.getByLabel(popoutLabel(SLACK_WINDOW_LABEL))
   if (existing) {
     try {
       await existing.unminimize()
@@ -93,8 +94,8 @@ export async function openSlackWindow(
 
   const width = 1100
   const height = 760
-  const win = new WebviewWindow(SLACK_WINDOW_LABEL, {
-    url: `index.html?${params.toString()}`,
+  const win = new WebviewWindow(popoutLabel(SLACK_WINDOW_LABEL), {
+    url: popoutUrl(`index.html?${params.toString()}`),
     title: 'Slack threads — Devdy',
     width,
     height,

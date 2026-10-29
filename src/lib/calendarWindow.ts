@@ -7,6 +7,7 @@ import { emit, once, type UnlistenFn } from '@tauri-apps/api/event'
 import { trackWindowForTray } from '@/lib/tray'
 import { centerOnCurrentMonitor } from '@/lib/windowCascade'
 import type { CalEvent } from '@/stores/googleCalendar'
+import { popoutLabel, popoutUrl } from '@/lib/popout'
 
 /** Window label; src-tauri/capabilities/default.json grants it the app permissions. */
 export const CALENDAR_WINDOW_LABEL = 'calendar'
@@ -60,7 +61,7 @@ export async function openCalendarWindow(
     await focusWindow(win)
     return win
   }
-  const existing = await WebviewWindow.getByLabel(CALENDAR_WINDOW_LABEL)
+  const existing = await WebviewWindow.getByLabel(popoutLabel(CALENDAR_WINDOW_LABEL))
   if (existing) {
     await focusWindow(existing)
     if (opts.event) await emit(CALENDAR_WINDOW_OPEN_EVENT, opts.event).catch(() => {})
@@ -96,8 +97,8 @@ async function createCalendarWindow(): Promise<WebviewWindow> {
 
   const width = 1200
   const height = 820
-  const win = new WebviewWindow(CALENDAR_WINDOW_LABEL, {
-    url: 'index.html?calendarWindow=1',
+  const win = new WebviewWindow(popoutLabel(CALENDAR_WINDOW_LABEL), {
+    url: popoutUrl('index.html?calendarWindow=1'),
     title: 'Calendar — Devdy',
     width,
     height,
