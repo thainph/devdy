@@ -11,27 +11,54 @@ import { KeyRound, Link2, Loader2, ShieldCheck } from 'lucide-vue-next'
 import { Button, Input, Textarea } from '@/components/ui'
 import { parseSessionLink, SessionLinkParseError, type SessionLinkPayload } from '../protocol'
 import { LoginError, loginWithPassword, type LoginGrant } from '../login'
+import { DEVICE_ALIAS_RE } from '@/lib/remoteLogin'
 
 const { t } = useI18n()
 
 const emit = defineEmits<{ link: [payload: SessionLinkPayload]; granted: [grant: LoginGrant] }>()
 
 // Password login: for when the link is lost. The owner's master password alone
-// reaches the Host through its login slot.
+// reaches the Host through its login slot; the optional device name picks
+// which Host when several share the relay (remembered for next time).
+const DEVICE_KEY = 'devdy.controller.loginDevice'
+const device = ref(readDevice())
 const password = ref('')
 const loggingIn = ref(false)
 const loginError = ref<string | null>(null)
 
+function readDevice(): string {
+  try {
+    return localStorage.getItem(DEVICE_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+function rememberDevice(name: string): void {
+  try {
+    if (name) localStorage.setItem(DEVICE_KEY, name)
+    else localStorage.removeItem(DEVICE_KEY)
+  } catch {
+    // storage unavailable (private mode) — just don't remember
+  }
+}
+
 async function submitPassword(): Promise<void> {
   if (loggingIn.value) return
+  const name = device.value.trim().toLowerCase()
+  if (!DEVICE_ALIAS_RE.test(name)) {
+    loginError.value = t('controller.link.deviceInvalid')
+    return
+  }
   if (!password.value) {
     loginError.value = t('controller.link.passwordFirst')
     return
   }
   loggingIn.value = true
   loginError.value = null
+  rememberDevice(name)
   try {
-    const grant = await loginWithPassword(password.value)
+    const grant = await loginWithPassword(password.value, { device: name })
     password.value = ''
     emit('granted', grant)
   } catch (e) {
@@ -124,6 +151,15 @@ onMounted(() => {
           {{ t('controller.link.passwordLabel') }}
         </label>
         <form class="space-y-3" @submit.prevent="submitPassword">
+          <Input
+            v-model="device"
+            autocomplete="off"
+            autocapitalize="none"
+            spellcheck="false"
+            :aria-label="t('controller.link.deviceLabel')"
+            :placeholder="t('controller.link.devicePlaceholder')"
+            :disabled="loggingIn"
+          />
           <Input
             v-model="password"
             type="password"

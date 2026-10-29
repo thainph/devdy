@@ -78,7 +78,10 @@
     "passwordHint": "Mất link? Master password đặt trong Devdy (Settings → Remote Control) kết nối thẳng tới host. Sai 5 lần sẽ bị khóa 5 phút.",
     "loginWrongPassword": "Sai mật khẩu (hoặc thử quá nhiều lần — đợi vài phút).",
     "loginHostOffline": "Không kết nối được tới Devdy: kiểm tra app đang chạy, đã bật Remote Control và đặt master password.",
-    "loginNetwork": "Không kết nối được tới relay. Kiểm tra mạng rồi thử lại."
+    "loginNetwork": "Không kết nối được tới relay. Kiểm tra mạng rồi thử lại.",
+    "deviceLabel": "Thiết bị",
+    "devicePlaceholder": "Tên thiết bị (không bắt buộc)",
+    "deviceInvalid": "Tên thiết bị chỉ gồm chữ thường, số và '-' (tối đa 32 ký tự)."
   },
   "browser": {
     "title": "Các run",

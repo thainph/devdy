@@ -250,9 +250,9 @@ async fn connect_once(
 
     // The rendezvous code this connection listens on (None = not listening).
     let mut listening: Option<String> = None;
-    // Password login: whether the login slot is armed, and the login room
-    // currently mid-handshake (if any).
-    let mut login_listening = false;
+    // Password login: the code the login slot is armed with (None = not
+    // listening), and the login room currently mid-handshake (if any).
+    let mut login_listening: Option<String> = None;
     let mut login: Option<LoginPending> = None;
 
     let seq = Arc::new(SeqCounter::default());
@@ -267,7 +267,7 @@ async fn connect_once(
     let mut forward_task: Option<tokio::task::JoinHandle<()>> = None;
 
     sync_listen(deps, &out_tx, &mut listening, &mut room_ctx, &mut pending_room, &mut forward_task).await;
-    sync_login_listen(&out_tx, &mut login_listening, &mut login);
+    sync_login_listen(deps, &out_tx, &mut login_listening, &mut login).await;
 
     // Heartbeat: keep the host↔relay socket warm through idle-killing proxies
     // once a run stops streaming. Carries the ACTIVE room id (if any) so the relay
@@ -318,7 +318,7 @@ async fn connect_once(
             }
             _ = deps.announce_signal.notified() => {
                 sync_listen(deps, &out_tx, &mut listening, &mut room_ctx, &mut pending_room, &mut forward_task).await;
-                sync_login_listen(&out_tx, &mut login_listening, &mut login);
+                sync_login_listen(deps, &out_tx, &mut login_listening, &mut login).await;
             }
             msg = stream.next() => {
                 let Some(msg) = msg else { break ConnectOutcome::Disconnected; };
@@ -423,20 +423,40 @@ struct LoginPending {
     controller_pub: Option<Vec<u8>>,
 }
 
-/// Listen on the login slot exactly while a master password is set.
-fn sync_login_listen(out_tx: &OutboundTx, login_listening: &mut bool, login: &mut Option<LoginPending>) {
-    let want = crate::secrets::has_remote_master_password();
-    if want == *login_listening {
-        return;
-    }
-    let frame = if want {
-        Envelope::create_pair_slot(crate::remote::login::LOGIN_CODE, crate::remote::login::LOGIN_SLOT)
+/// Listen on the login slot exactly while a master password is set, on this
+/// device's login code (which follows the device alias).
+async fn sync_login_listen(
+    deps: &AgentDeps,
+    out_tx: &OutboundTx,
+    login_listening: &mut Option<String>,
+    login: &mut Option<LoginPending>,
+) {
+    let want = if crate::secrets::has_remote_master_password() {
+        let alias = crate::remote::device_alias(&deps.db).await;
+        Some(crate::remote::login::login_code(alias.as_deref()))
     } else {
-        *login = None;
-        Envelope::revoke_slot(crate::remote::login::LOGIN_SLOT)
+        None
     };
-    let _ = out_tx.send(frame);
+    if let Some(frame) = login_listen_frame(login_listening.as_deref(), want.as_deref()) {
+        // Either change kills the login room mid-handshake.
+        *login = None;
+        let _ = out_tx.send(frame);
+    }
     *login_listening = want;
+}
+
+/// The frame that moves the login slot from `current` to `want`, if any.
+/// A new code is a plain `create_pair` on the same slot: the relay replaces
+/// the old code (and its room) by itself.
+fn login_listen_frame(current: Option<&str>, want: Option<&str>) -> Option<Envelope> {
+    use crate::remote::login::LOGIN_SLOT;
+    if current == want {
+        return None;
+    }
+    Some(match want {
+        Some(code) => Envelope::create_pair_slot(code, LOGIN_SLOT),
+        None => Envelope::revoke_slot(LOGIN_SLOT),
+    })
 }
 
 /// Whether `env` belongs to the password-login flow.
@@ -1185,7 +1205,28 @@ struct Disconnected {
 
 #[cfg(test)]
 mod tests {
-    use super::should_ignore_handshake;
+    use super::{login_listen_frame, should_ignore_handshake};
+    use crate::remote::protocol::FrameType;
+
+    #[test]
+    fn login_listen_follows_the_login_code() {
+        assert!(login_listen_frame(None, None).is_none());
+        assert!(login_listen_frame(Some("devdy-login-v1"), Some("devdy-login-v1")).is_none());
+
+        let arm = login_listen_frame(None, Some("devdy-login-v1")).unwrap();
+        assert_eq!(arm.t, FrameType::CreatePair);
+        assert_eq!(arm.pair_code.as_deref(), Some("devdy-login-v1"));
+        assert_eq!(arm.slot.as_deref(), Some("login"));
+
+        // A renamed device re-listens on the same slot (create_pair replaces).
+        let rename = login_listen_frame(Some("devdy-login-v1"), Some("devdy-login-v1/mini")).unwrap();
+        assert_eq!(rename.t, FrameType::CreatePair);
+        assert_eq!(rename.pair_code.as_deref(), Some("devdy-login-v1/mini"));
+
+        let off = login_listen_frame(Some("devdy-login-v1/mini"), None).unwrap();
+        assert_eq!(off.t, FrameType::Revoke);
+        assert_eq!(off.slot.as_deref(), Some("login"));
+    }
 
     #[test]
     fn late_or_unexpected_handshake_cannot_mutate_an_active_session() {
