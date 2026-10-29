@@ -11,9 +11,18 @@ export default defineConfig(async () => ({
     tailwindcss(),
   ],
   resolve: {
-    alias: {
-      '@': fileURLToPath(new URL('./src', import.meta.url)),
-    },
+    // Remote desktop: every `invoke` / `listen` the UI makes goes through the
+    // IPC shim (src/lib/ipc), which talks to the local backend or — in a
+    // remote-desktop window — to another Devdy over the relay. The shim reaches
+    // the real modules through the `@tauri-real/*` aliases. Tauri's own modules
+    // import each other relatively, so they always get the real ones.
+    alias: [
+      { find: /^@tauri-apps\/api\/core$/, replacement: fileURLToPath(new URL('./src/lib/ipc/core.ts', import.meta.url)) },
+      { find: /^@tauri-apps\/api\/event$/, replacement: fileURLToPath(new URL('./src/lib/ipc/event.ts', import.meta.url)) },
+      { find: /^@tauri-real\/core$/, replacement: fileURLToPath(new URL('./node_modules/@tauri-apps/api/core.js', import.meta.url)) },
+      { find: /^@tauri-real\/event$/, replacement: fileURLToPath(new URL('./node_modules/@tauri-apps/api/event.js', import.meta.url)) },
+      { find: '@', replacement: fileURLToPath(new URL('./src', import.meta.url)) },
+    ],
   },
   build: {
     // Multi-page: the Tauri app (index.html) and the standalone Controller web
