@@ -59,6 +59,9 @@ pub type FocusRun = Arc<TokioMutex<Option<String>>>;
 pub const KEY_RELAY_URL: &str = "remote_relay_url";
 pub const KEY_ENABLED: &str = "remote_enabled";
 pub const KEY_DEVICE_ID: &str = "remote_device_id";
+/// Optional short name of this device; selects its password-login code so
+/// several Devdy hosts can share one relay (see `login::login_code`).
+pub const KEY_DEVICE_ALIAS: &str = "remote_device_alias";
 
 /// Live control handle for the running agent task.
 struct AgentControl {
@@ -230,6 +233,13 @@ pub(crate) async fn set_setting(db: &Db, key: &str, value: &str) -> Result<(), S
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// The configured device alias, when set and valid.
+pub(crate) async fn device_alias(db: &Db) -> Option<String> {
+    get_setting(db, KEY_DEVICE_ALIAS)
+        .await
+        .filter(|a| login::valid_alias(a))
 }
 
 /// Return the Host's stable `device_id`, generating + persisting one on first

@@ -27,6 +27,8 @@ export interface RemoteStatus {
   /** Whether an owner master password is set (controller may use it vs the OTP). */
   has_master_password: boolean
   device_id: string | null
+  /** This device's name; selects its password-login code. */
+  device_alias: string | null
   /** Run the session link was minted for. A multi-run controller can move
    * beyond it — see `focus_run_id`. */
   bound_run_id: string | null
@@ -168,6 +170,12 @@ export const useRemoteControlStore = defineStore('remoteControl', () => {
     await refreshStatus()
   }
 
+  /** Name this device (empty clears it), then refresh `device_alias`. */
+  async function setDeviceAlias(alias: string): Promise<void> {
+    await invoke('remote_set_device_alias', { alias })
+    await refreshStatus()
+  }
+
   return {
     status,
     audit,
@@ -183,5 +191,6 @@ export const useRemoteControlStore = defineStore('remoteControl', () => {
     endSession,
     revealOtp,
     setMasterPassword,
+    setDeviceAlias,
   }
 })
