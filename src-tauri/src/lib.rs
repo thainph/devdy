@@ -144,8 +144,8 @@ use commands::models::{get_model_caches, refresh_codex_models, validate_claude_m
 use commands::translate::{cancel_translate, prewarm_translate, translate_text, TranslateState};
 use remote::commands::{
     remote_clear_audit, remote_create_session_link, remote_disable, remote_enable,
-    remote_end_session, remote_get_audit, remote_reveal_otp, remote_set_config,
-    remote_set_device_alias, remote_set_master_password, remote_status,
+    remote_end_session, remote_get_audit, remote_kick_controller, remote_reveal_otp,
+    remote_set_config, remote_set_device_alias, remote_set_master_password, remote_status,
 };
 use remote::ipc::{remote_bridge_event, remote_bridge_ready, remote_bridge_reply};
 use remote::RemoteState;
@@ -700,6 +700,7 @@ pub fn run() {
             remote_disable,
             remote_create_session_link,
             remote_end_session,
+            remote_kick_controller,
             remote_reveal_otp,
             remote_set_master_password,
             remote_set_device_alias,

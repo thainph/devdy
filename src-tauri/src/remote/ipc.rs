@@ -11,6 +11,10 @@
 //! Requests that arrive before the bridge page has loaded are queued and handed
 //! over by `remote_bridge_ready`; the set of subscribed events is kept here too,
 //! so a reloaded bridge re-subscribes and a dropped Controller unsubscribes all.
+//!
+//! Being driven is never silent: attach/detach emit [`ATTACHED_EVENT`] /
+//! [`DETACHED_EVENT`] for the local "being controlled" indicator and are
+//! audited (individual invokes are not — too chatty).
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -30,6 +34,10 @@ pub const FEATURE_IPC: &str = "ipc";
 pub const BRIDGE_LABEL: &str = "remote-bridge";
 /// Event the bridge receives requests on.
 const BRIDGE_REQUEST_EVENT: &str = "remote-bridge://request";
+/// App event: an IPC Controller started driving this Devdy (`{ since_unix }`).
+pub const ATTACHED_EVENT: &str = "remote://desktop-attached";
+/// App event: the IPC Controller left or was cut off (`{}`).
+pub const DETACHED_EVENT: &str = "remote://desktop-detached";
 
 /// Where replies go: the authenticated IPC Controller's room.
 struct Route {
@@ -42,6 +50,8 @@ struct Route {
 #[derive(Default)]
 struct Inner {
     route: Option<Route>,
+    /// When the current IPC Controller attached (Unix secs).
+    since: Option<u64>,
     bridge_ready: bool,
     queue: Vec<serde_json::Value>,
     events: HashSet<String>,
@@ -71,9 +81,11 @@ impl IpcHub {
         out: OutboundTx,
         seq: Arc<SeqCounter>,
     ) {
+        let since = crate::remote::agent::now_unix();
         {
             let mut inner = self.0.lock().await;
-            inner.route = Some(Route { session, room_id, out, seq });
+            inner.route = Some(Route { session, room_id: room_id.clone(), out, seq });
+            inner.since = Some(since);
             inner.events.clear();
             inner.queue.clear();
         }
@@ -81,6 +93,9 @@ impl IpcHub {
         // Controller left behind.
         let _ = app.emit_to(BRIDGE_LABEL, BRIDGE_REQUEST_EVENT, serde_json::json!({ "type": "reset" }));
         ensure_bridge(app);
+        let _ = app.emit(ATTACHED_EVENT, serde_json::json!({ "since_unix": since }));
+        tracing::info!(event = "remote_desktop_attached", room_id = %room_id);
+        audit_lifecycle(app, &room_id, "desktop_attach").await;
     }
 
     /// The IPC Controller left: stop routing and unsubscribe everything.
@@ -89,11 +104,21 @@ impl IpcHub {
             let mut inner = self.0.lock().await;
             inner.events.clear();
             inner.queue.clear();
-            inner.route.take().is_some()
+            inner.since = None;
+            inner.route.take().map(|r| r.room_id)
         };
-        if had {
+        if let Some(room_id) = had {
             let _ = app.emit_to(BRIDGE_LABEL, BRIDGE_REQUEST_EVENT, serde_json::json!({ "type": "reset" }));
+            let _ = app.emit(DETACHED_EVENT, serde_json::json!({}));
+            tracing::info!(event = "remote_desktop_detached", room_id = %room_id);
+            audit_lifecycle(app, &room_id, "desktop_detach").await;
         }
+    }
+
+    /// When the attached IPC Controller started driving, or `None` when no
+    /// one is.
+    pub async fn controlled_since(&self) -> Option<u64> {
+        self.0.lock().await.since
     }
 
     /// Hand one request to the bridge (queued until it is ready).
@@ -152,6 +177,12 @@ impl IpcHub {
             let _ = r.out.send(env);
         }
     }
+}
+
+/// Audit an attach/detach (the DB is app-managed; skipped if not yet set up).
+async fn audit_lifecycle(app: &AppHandle, room_id: &str, action: &str) {
+    let Some(db) = app.try_state::<crate::db::Db>().map(|d| d.inner().clone()) else { return };
+    crate::remote::audit::audit(&db, None, Some(room_id), None, action, crate::remote::audit::RESULT_ACCEPTED, None).await;
 }
 
 /// Create the hidden bridge webview if it is not running.
