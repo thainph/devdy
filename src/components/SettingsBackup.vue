@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Settings → "Backup & Sync": export the whole Devdy configuration (settings, Skills/Rules
-// library, MCP + VPS servers, account metadata, notes/todos) into one file and import it on
-// another machine. Secrets only travel when the user sets a password (sealed backend-side with
+// library, MCP + VPS servers, account metadata, notes/todos, Slack threads, projects) into one file and import it
+// on another machine. Secrets only travel when the user sets a password (sealed backend-side with
 // Argon2id + XChaCha20-Poly1305). Import merges by name and never deletes local items.
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -77,13 +77,14 @@ async function runExport() {
 const importPath = ref<string | null>(null)
 const importInfo = ref<BackupInfo | null>(null)
 const importPassword = ref('')
+const createMissingDirs = ref(true)
 const importing = ref(false)
 const report = ref<ImportReport | null>(null)
 
 const SECTION_KEYS = [
   'settings', 'skills', 'rules', 'skillGroups', 'ruleGroups', 'mcpServers', 'vpsServers',
   'githubAccounts', 'gitlabAccounts', 'awsAccounts', 'azureAccounts', 'googleAccounts',
-  'claudeAccounts', 'notes', 'todos',
+  'claudeAccounts', 'notes', 'todos', 'slackThreads', 'projects', 'pulseWatches',
 ] as const
 
 const infoRows = computed(() =>
@@ -128,6 +129,7 @@ async function runImport() {
     report.value = await invoke<ImportReport>('import_settings_backup', {
       path: importPath.value,
       password: importInfo.value?.hasSecrets && importPassword.value ? importPassword.value : null,
+      createMissingDirs: createMissingDirs.value,
     })
     importPassword.value = ''
     importInfo.value = null
@@ -253,6 +255,14 @@ function reloadApp() {
           <p class="text-[11px] text-muted-foreground">{{ t('settings.backup.import.passwordHint') }}</p>
         </div>
         <p v-else class="text-[11px] text-muted-foreground">{{ t('settings.backup.import.noSecrets') }}</p>
+
+        <label v-if="importInfo.counts.projects" class="flex items-start gap-2 text-xs">
+          <input v-model="createMissingDirs" type="checkbox" class="mt-0.5 accent-primary">
+          <span>
+            {{ t('settings.backup.import.createMissingDirs') }}
+            <span class="block text-[11px] text-muted-foreground">{{ t('settings.backup.import.createMissingDirsHint') }}</span>
+          </span>
+        </label>
 
         <div class="flex items-center gap-2">
           <Button size="sm" :disabled="importing" @click="runImport">

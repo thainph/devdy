@@ -418,7 +418,7 @@
   },
   "backup": {
     "title": "Sao lưu & Đồng bộ",
-    "help": "Xuất toàn bộ cấu hình Devdy ra một file và nhập trên máy khác: cài đặt, prompt đã lưu, thư viện Skills / Rules kèm nhóm, MCP server, VPS server, tài khoản (GitHub, GitLab, AWS, Azure, Google, Claude) và ghi chú / todo. Project và lịch sử session vẫn ở máy này.",
+    "help": "Xuất toàn bộ cấu hình Devdy ra một file và nhập trên máy khác: cài đặt, prompt đã lưu, thư viện Skills / Rules kèm nhóm, MCP server, VPS server, tài khoản (GitHub, GitLab, AWS, Azure, Google, Claude), ghi chú / todo và Slack thread (kèm bản dịch; file đính kèm được tải lại) và project (repo, Skills / Rules / nhóm, MCP và VPS server đã bật, tài khoản gắn kèm, mục theo dõi Pulse). Lịch sử session vẫn ở máy này.",
     "export": {
       "title": "Xuất",
       "includeSecrets": "Kèm secret (mã hoá)",
@@ -440,6 +440,8 @@
       "password": "Mật khẩu file sao lưu",
       "passwordHint": "Để trống để nhập mà không kèm secret.",
       "noSecrets": "File này không chứa secret.",
+      "createMissingDirs": "Tự tạo thư mục project còn thiếu",
+      "createMissingDirsHint": "Đường dẫn nằm trong thư mục home cũ được đổi sang home của máy này trước. Project nào vẫn chưa có thư mục sẽ được tạo thư mục rỗng; tắt tuỳ chọn này thì project đó bị bỏ qua.",
       "button": "Nhập",
       "cancel": "Huỷ",
       "done": "Đã nhập cấu hình"
@@ -469,7 +471,10 @@
       "googleAccounts": "Tài khoản Google",
       "claudeAccounts": "Tài khoản Claude",
       "notes": "Ghi chú",
-      "todos": "Todo"
+      "todos": "Todo",
+      "slackThreads": "Slack thread",
+      "projects": "Project",
+      "pulseWatches": "Theo dõi Pulse"
     }
   }
 }
