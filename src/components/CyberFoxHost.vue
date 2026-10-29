@@ -5,9 +5,10 @@
 //               the live mascot state to it over Tauri events.
 // The live-runs store lives here (main window), so this component is the single
 // source of truth in both modes; the desktop-pet window is a dumb renderer.
-import { nextTick, onBeforeUnmount, onMounted, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { isRemoteMode } from '@/lib/ipc/remote'
 import CyberFoxFloating from '@/components/CyberFoxFloating.vue'
 import { useMascotState } from '@/composables/useMascotState'
 import { useMascotBubble } from '@/composables/useMascotBubble'
@@ -31,7 +32,7 @@ const {
   enabled,
   soundEnabled,
   liteMode,
-  mode,
+  mode: settingsMode,
   mascotSize,
   voiceNameVi,
   voiceNameEn,
@@ -45,6 +46,9 @@ const {
   evolutionTier,
   mascotStars,
 } = useMascotState()
+// A remote-desktop window shows the fox in-app: the desktop pet belongs to
+// this machine's own main window.
+const mode = computed(() => (isRemoteMode() ? 'in-app' : settingsMode.value))
 
 // Feed app-wide signals (run phase + toasts) into the shared speech bubble.
 // Pass `enabled` so a disabled mascot generates NO speech (no backend LLM call).

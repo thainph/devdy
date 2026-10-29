@@ -12,6 +12,7 @@
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { trackWindowForTray } from '@/lib/tray'
 import { dockRightOnCurrentMonitor } from '@/lib/windowCascade'
+import { popoutLabel, popoutUrl } from '@/lib/popout'
 
 const PERMISSION_WINDOW_WIDTH = 460
 // Cap the panel height so it doesn't stretch the full height of a large external
@@ -24,7 +25,7 @@ const STACK_GAP = 12
 function hashLabel(s: string): string {
   let h = 5381
   for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0
-  return `permission-${h.toString(36)}`
+  return popoutLabel(`permission-${h.toString(36)}`)
 }
 
 /** The window label for a run's permission prompt. */
@@ -66,7 +67,7 @@ export async function openPermissionWindow(
   const shift = indexFromRight * (PERMISSION_WINDOW_WIDTH + STACK_GAP)
   const params = new URLSearchParams({ permissionWindow: '1', runId })
   const win = new WebviewWindow(label, {
-    url: `index.html?${params.toString()}`,
+    url: popoutUrl(`index.html?${params.toString()}`),
     title: 'Permission — Devdy',
     width: PERMISSION_WINDOW_WIDTH,
     height: dock?.height ?? 640,

@@ -32,6 +32,9 @@ import {
   type WebviewWindow,
 } from '@tauri-apps/api/webviewWindow'
 import { invoke } from '@/lib/tauri'
+import { invoke as localInvoke } from '@tauri-real/core'
+import { isRemoteMode } from '@/lib/ipc/remote'
+import { REMOTE_OWNER_LABEL, fromRemoteLabel, isRemoteLabel } from '@/lib/ipc/windows'
 import { i18n } from '@/i18n'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useRunsStore } from '@/stores/runs'
@@ -97,6 +100,11 @@ function labelFor(windowLabel: string, osTitle: string): string {
 }
 
 function rawLabelFor(windowLabel: string, osTitle: string): string {
+  // The remote-desktop window and its pop-outs (lib/ipc/windows.ts).
+  if (windowLabel === REMOTE_OWNER_LABEL) return t('tray.remoteDesktopWindow')
+  if (isRemoteLabel(windowLabel)) {
+    return t('tray.remoteWindow', { name: rawLabelFor(fromRemoteLabel(windowLabel), osTitle) })
+  }
   const title = osTitle.trim()
   const meaningful = title && title !== 'Devdy' && !title.endsWith('— Devdy') ? title : ''
 
@@ -323,7 +331,10 @@ export async function refreshTray(): Promise<void> {
       spec.sessions = buildSessionItems()
     }
 
-    await invoke('set_tray_menu', { spec })
+    // The tray is this machine's: a remote-desktop window must not send its
+    // window list to the controlled Devdy.
+    if (isRemoteMode()) await localInvoke('set_tray_menu', { spec })
+    else await invoke('set_tray_menu', { spec })
   } catch {
     // Outside the Tauri shell (browser dev) there is no tray.
   } finally {
