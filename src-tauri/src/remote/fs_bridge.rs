@@ -183,6 +183,29 @@ pub fn remote_fs_home(app: tauri::AppHandle) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Diagnostics from a remote-desktop window on the CONTROLLING machine: its
+/// console errors and remote-IPC traces land in this machine's log, the one
+/// place both ends can read after the fact. Truncated; never interpreted.
+#[tauri::command]
+pub fn remote_client_log(level: String, source: String, message: String) {
+    const MAX: usize = 2000;
+    let mut message = message;
+    if message.len() > MAX {
+        let mut cut = MAX;
+        while !message.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        message.truncate(cut);
+        message.push('…');
+    }
+    let source: String = source.chars().take(80).collect();
+    match level.as_str() {
+        "error" => tracing::error!(target: "devdy::remote_client", source = %source, "{message}"),
+        "warn" => tracing::warn!(target: "devdy::remote_client", source = %source, "{message}"),
+        _ => tracing::info!(target: "devdy::remote_client", source = %source, "{message}"),
+    }
+}
+
 /// This machine's log folder (where `lib.rs` points the tracing file
 /// appender), so a remote window's "Open logs" shows the controlled machine's.
 #[tauri::command]

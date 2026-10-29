@@ -148,7 +148,9 @@ use remote::commands::{
     remote_set_config, remote_set_device_alias, remote_set_master_password, remote_status,
 };
 use remote::file_proxy::{rd_download_append, rd_download_create, rdfile_register, rdfile_respond};
-use remote::fs_bridge::{remote_fs_home, remote_fs_list, remote_fs_log_dir, remote_fs_read, remote_fs_stat};
+use remote::fs_bridge::{
+    remote_client_log, remote_fs_home, remote_fs_list, remote_fs_log_dir, remote_fs_read, remote_fs_stat,
+};
 use remote::ipc::{remote_bridge_batch, remote_bridge_ready};
 use remote::RemoteState;
 use runs::broker::approver::ModalApproverResolver;
@@ -720,6 +722,7 @@ pub fn run() {
             remote_fs_read,
             remote_fs_home,
             remote_fs_log_dir,
+            remote_client_log,
             rdfile_register,
             rdfile_respond,
             rd_download_create,
