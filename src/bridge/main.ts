@@ -6,8 +6,9 @@
  * exactly as if the local user had made them. Results and events go back via
  * `remote_bridge_reply` / `remote_bridge_event` (see `src-tauri/src/remote/ipc.rs`).
  */
-import { invoke } from '@tauri-apps/api/core'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+// Always the real APIs: this page serves remote calls, it never makes them.
+import { invoke } from '@tauri-real/core'
+import { listen, type UnlistenFn } from '@tauri-real/event'
 
 type Request =
   | { type: 'invoke'; id: string; cmd: string; args: Record<string, unknown> | null }
