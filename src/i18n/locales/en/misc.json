@@ -81,6 +81,13 @@
     "run": "Run",
     "project": "Project"
   },
+  "remoteDesktopHost": {
+    "title": "Being controlled from another Devdy",
+    "since": "since {time}",
+    "hint": "Another Devdy is driving this app through Remote Control. Disconnecting cuts it off now and signs it out: it has to sign in again with the master password or a pairing code. To keep it out, change the master password.",
+    "disconnect": "Disconnect and sign out",
+    "disconnectFailed": "Could not disconnect: {error}"
+  },
   "ide": {
     "openFile": "Open {path}",
     "selected": "Selected",

@@ -229,7 +229,9 @@ function onGranted(grant: LoginGrant): void {
  * connection (safe to call again to retry a wrong code). */
 function onOtp(otp: string): void {
   if (!link.value) return
-  if (!conn.value) startConnection(null)
+  // A connection that stopped (e.g. the host signed out our stored token) is
+  // closed for good; the code goes to a fresh one.
+  if (!conn.value || conn.value.state.status.value === 'error') startConnection(null)
   conn.value?.submitOtp(otp)
 }
 

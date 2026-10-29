@@ -27,6 +27,8 @@ export interface RemoteStatus {
   /** Whether an owner master password is set (controller may use it vs the OTP). */
   has_master_password: boolean
   device_id: string | null
+  /** This device's name; selects its password-login code. */
+  device_alias: string | null
   /** Run the session link was minted for. A multi-run controller can move
    * beyond it — see `focus_run_id`. */
   bound_run_id: string | null
@@ -39,6 +41,10 @@ export interface RemoteStatus {
   session_authenticated: boolean
   /** Unix seconds at which the idle session token expires (sliding 3h). */
   session_idle_expires_at: number | null
+  /** Whether another Devdy is driving this one over remote-desktop IPC. */
+  desktop_controlled: boolean
+  /** Unix seconds at which that remote-desktop controller attached. */
+  desktop_controlled_since: number | null
 }
 
 /**
@@ -161,10 +167,24 @@ export const useRemoteControlStore = defineStore('remoteControl', () => {
     return await invoke<OtpReveal | null>('remote_reveal_otp')
   }
 
+  /** Kill switch: cut off the controller attached right now and sign it out
+   * (its session token stops working). It may sign in again with the master
+   * password or a pairing code; changing the password keeps it out. */
+  async function kickController(): Promise<void> {
+    await invoke('remote_kick_controller')
+    await refreshStatus()
+  }
+
   /** Set (or clear, with an empty string) the owner master password, then refresh
    * status so `has_master_password` reflects the change. */
   async function setMasterPassword(password: string): Promise<void> {
     await invoke('remote_set_master_password', { password })
+    await refreshStatus()
+  }
+
+  /** Name this device (empty clears it), then refresh `device_alias`. */
+  async function setDeviceAlias(alias: string): Promise<void> {
+    await invoke('remote_set_device_alias', { alias })
     await refreshStatus()
   }
 
@@ -182,6 +202,8 @@ export const useRemoteControlStore = defineStore('remoteControl', () => {
     createSessionLink,
     endSession,
     revealOtp,
+    kickController,
     setMasterPassword,
+    setDeviceAlias,
   }
 })

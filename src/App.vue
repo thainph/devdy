@@ -17,6 +17,7 @@ import CalendarReminder from '@/components/CalendarReminder.vue'
 import WorkspaceTabs from '@/components/WorkspaceTabs.vue'
 import ActiveRunsDock from '@/components/ActiveRunsDock.vue'
 import ActiveRemoteDock from '@/components/ActiveRemoteDock.vue'
+import RemoteDesktopIndicator from '@/components/RemoteDesktopIndicator.vue'
 import FileViewerWindow from '@/views/FileViewerWindow.vue'
 import PermissionWindow from '@/views/PermissionWindow.vue'
 import ThemeDecorations from '@/components/ThemeDecorations.vue'
@@ -56,6 +57,8 @@ import { openItemListWindow } from '@/lib/itemListWindow'
 import { applyAppMenu, isMenuActionBound, listenMenuActions, registerMenuAction } from '@/lib/appMenu'
 import { openPath, openUrl } from '@tauri-apps/plugin-opener'
 import { appDataDir, join } from '@tauri-apps/api/path'
+import { isRemoteMode } from '@/lib/ipc/remote'
+import { remoteFs } from '@/lib/ipc/native'
 import { NAV_ROUTES, startsNavGroup } from '@/lib/navigation'
 import { IS_SESSION_WINDOW, SESSION_WINDOW_PROJECT_ID, SESSION_WINDOW_RUN_ID } from '@/lib/windowMode'
 import IssuesGanttView from '@/views/IssuesGanttView.vue'
@@ -411,8 +414,10 @@ function bindGlobalMenuActions() {
     registerMenuAction('help.reportIssue', () => void openUrl(NEW_ISSUE_URL).catch(() => {})),
     registerMenuAction('help.openLogs', async () => {
       try {
-        // Same folder lib.rs points the tracing file appender at.
-        await openPath(await join(await appDataDir(), 'logs'))
+        // Same folder lib.rs points the tracing file appender at. A remote
+        // window shows the controlled machine's (its paths are that machine's).
+        const dir = isRemoteMode() ? await remoteFs.logDir() : await join(await appDataDir(), 'logs')
+        await openPath(dir)
       } catch (e) {
         toast.error(String(e))
       }
@@ -997,6 +1002,10 @@ onMounted(async () => {
 
     <!-- App-wide toast host (see useToast) -->
     <ToastHost />
+
+    <!-- "Being controlled from another Devdy" pill + kill switch. Lives outside
+         the sidebar so it stays visible when the sidebar is hidden. -->
+    <RemoteDesktopIndicator />
 
     <!-- App-wide side-by-side image comparison (banner + picker + compare view) -->
     <ImageCompareHost />
