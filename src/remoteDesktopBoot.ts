@@ -17,6 +17,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { i18n } from './i18n'
 import { installRemoteIpc, startRemoteIpc } from './lib/ipc/remote'
 import { startMuxClient, startMuxHost } from './lib/ipc/muxTransport'
+import { broadcastResync, installResyncReload } from './lib/ipc/resync'
 import { REMOTE_OWNER_LABEL, isRemoteLabel } from './lib/ipc/windows'
 import { loadRemoteDesktopSession, saveRemoteDesktopSession } from './lib/remoteDesktopSession'
 import RemoteDesktopLogin from './components/remote/RemoteDesktopLogin.vue'
@@ -35,6 +36,7 @@ export function bootRemoteDesktop(mountApp: () => App): void {
   if (label !== REMOTE_OWNER_LABEL) {
     // Calls are queued until the main remote-desktop window answers.
     installRemoteIpc(startMuxClient(label))
+    void installResyncReload().catch(() => {})
     mountApp()
     return
   }
@@ -47,9 +49,13 @@ export function bootRemoteDesktop(mountApp: () => App): void {
   }
 
   // Calls made from here on are queued until the session authenticates.
-  const client = startRemoteIpc(session.link, session.token, (token) => {
-    saveRemoteDesktopSession({ ...session, token })
-  })
+  const client = startRemoteIpc(
+    session.link,
+    session.token,
+    (token) => saveRemoteDesktopSession({ ...session, token }),
+    broadcastResync,
+  )
+  void installResyncReload().catch(() => {})
   void startMuxHost(client).catch((e) => console.error('[remoteDesktop] pop-out link failed', e))
   mountApp()
 

@@ -31,10 +31,18 @@ function isRemoteEvent(event: EventName, options?: Options): boolean {
 /** Subscribe on the controlled Devdy and on the local remote-window bus. */
 async function listenBoth<T>(event: string, handler: EventCallback<T>): Promise<UnlistenFn> {
   const remote = remoteIpc()!
-  const [offRemote, offBus] = await Promise.all([
+  const [r, b] = await Promise.allSettled([
     remote.listen<T>(event, handler),
     realListen<T>(busEventName(event), (e) => handler({ ...e, event })),
   ])
+  // One side failed: release the other, or it would leak (nobody gets its unlisten).
+  if (r.status === 'rejected' || b.status === 'rejected') {
+    if (r.status === 'fulfilled') r.value()
+    if (b.status === 'fulfilled') b.value()
+    throw r.status === 'rejected' ? r.reason : (b as PromiseRejectedResult).reason
+  }
+  const offRemote = r.value
+  const offBus = b.value
   return () => {
     offRemote()
     offBus()

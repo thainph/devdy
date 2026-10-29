@@ -84,8 +84,10 @@ function t(key: string, named?: Record<string, unknown>): string {
 
 // Windows that are never useful "switch to" targets: the always-on desktop pet
 // and the transient permission modal (it pops in and auto-dismisses, so listing
-// it would just make a row flicker). Everything else is listed.
-const HIDDEN_WINDOW_LABELS = new Set(['mascot', 'permission-prompt'])
+// it would just make a row flicker), and the invisible remote-desktop bridge
+// (src/bridge/main.ts) — focusing it would only surface a blank page. Everything
+// else is listed.
+const HIDDEN_WINDOW_LABELS = new Set(['mascot', 'permission-prompt', 'remote-bridge'])
 
 // The label shown for a window in the switcher. Some window kinds carry a
 // genuinely meaningful OS title — a session (the run name), a file viewer (the

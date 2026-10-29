@@ -247,11 +247,13 @@ pub enum StreamPayload {
     },
     /// Remote desktop: the outcome of one `ipc_invoke`. `value` is the command's
     /// return value, `error` its rejection, both exactly as the local UI sees.
+    /// `value` is always present: a command that resolved to `null` must not
+    /// arrive as a missing field (`undefined`) on the Controller.
     IpcResult {
         id: String,
         ok: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        value: Option<serde_json::Value>,
+        #[serde(default)]
+        value: serde_json::Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<serde_json::Value>,
     },
@@ -260,6 +262,9 @@ pub enum StreamPayload {
         event: String,
         payload: serde_json::Value,
     },
+    /// Remote desktop: events were shed on a congested link, so the
+    /// Controller's view may be stale — it should refetch its state.
+    IpcResync,
     /// Password login succeeded (Host → Controller, on the login room): a full
     /// session link + token so the Controller continues on the session path.
     LoginGranted {
