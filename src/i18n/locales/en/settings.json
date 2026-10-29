@@ -418,7 +418,7 @@
   },
   "backup": {
     "title": "Backup & Sync",
-    "help": "Export your whole Devdy setup to one file and import it on another machine: app settings, saved prompts, the Skills / Rules library with groups, MCP servers, VPS servers, accounts (GitHub, GitLab, AWS, Azure, Google, Claude) and notes / todos. Projects and session history stay on this machine.",
+    "help": "Export your whole Devdy setup to one file and import it on another machine: app settings, saved prompts, the Skills / Rules library with groups, MCP servers, VPS servers, accounts (GitHub, GitLab, AWS, Azure, Google, Claude), notes / todos and Slack threads (with translations; attachments are downloaded again) and projects (repos, enabled Skills / Rules / groups, MCP and VPS servers, linked accounts, Pulse watches). Session history stays on this machine.",
     "export": {
       "title": "Export",
       "includeSecrets": "Include secrets (encrypted)",
@@ -440,6 +440,8 @@
       "password": "Backup password",
       "passwordHint": "Leave empty to import without secrets.",
       "noSecrets": "This file contains no secrets.",
+      "createMissingDirs": "Create missing project folders",
+      "createMissingDirsHint": "Paths under the old home folder are moved under this machine's home first. A project whose folder still does not exist gets an empty folder; when this is off, that project is skipped.",
       "button": "Import",
       "cancel": "Cancel",
       "done": "Settings imported"
@@ -469,7 +471,10 @@
       "googleAccounts": "Google accounts",
       "claudeAccounts": "Claude accounts",
       "notes": "Notes",
-      "todos": "Todos"
+      "todos": "Todos",
+      "slackThreads": "Slack threads",
+      "projects": "Projects",
+      "pulseWatches": "Pulse watches"
     }
   }
 }

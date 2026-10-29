@@ -3,8 +3,10 @@
 //!
 //! The file is JSON (`*.devdy-backup`). It holds the portable app settings, the Skills / Rules
 //! library (file contents included) with their groups, MCP servers, VPS servers, account metadata
-//! (GitHub, GitLab, AWS, Azure, Google, Claude) and notes / todos. Projects, sessions and usage
-//! history stay on the machine.
+//! (GitHub, GitLab, AWS, Azure, Google, Claude), notes / todos and Slack threads (messages and
+//! translations; attachments are re-downloaded) and projects with their repos, enabled
+//! Skills / Rules / groups / MCP / VPS servers, account links and Pulse watches. Sessions and
+//! usage history stay on the machine.
 //!
 //! Secrets (PATs, MCP env/header VALUEs, Google OAuth client + refresh tokens, SSH passphrases and
 //! Devdy-managed private key files) are only exported when the user gives a password: they are
@@ -13,7 +15,10 @@
 //!
 //! Import merges by name: an item whose name/label exists locally is overwritten with the
 //! imported version, a new one is created, and nothing local is ever deleted. Notes and todos
-//! match by id. Library files replaced by an import are moved to the legacy backups first.
+//! match by id, Slack threads by channel + thread ts, projects by path then name (paths under the
+//! exporting machine's home are moved under this one's; a missing project folder is created only
+//! when the user allows it). Library files replaced by an import are moved to the legacy backups
+//! first.
 
 use crate::commands::groups::{set_group_members_inner, GroupKind};
 use crate::commands::mcp::McpServer;
@@ -21,6 +26,7 @@ use crate::commands::settings::PORTABLE_SETTING_KEYS;
 use crate::commands::{mcp, rules, skills, vps_servers};
 use crate::db::Db;
 use crate::secrets::{self, GoogleClientCreds, McpSecrets};
+use crate::slack_threads::{store as slack_store, SlackThreadsState};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use dryoc::classic::crypto_aead_xchacha20poly1305_ietf::{
@@ -96,7 +102,147 @@ struct Bundle {
     #[serde(default)]
     todos: Vec<TodoEntry>,
     #[serde(default)]
+    slack_threads: Vec<SlackThreadEntry>,
+    #[serde(default)]
+    slack_users: Vec<SlackUserEntry>,
+    #[serde(default)]
+    slack_channels: Vec<SlackChannelEntry>,
+    #[serde(default)]
+    projects: Vec<ProjectEntry>,
+    /// `$HOME` of the exporting machine: project paths under it are moved under this machine's.
+    #[serde(default)]
+    home_dir: Option<String>,
+    #[serde(default)]
     secrets: Option<SealedSecrets>,
+}
+
+/// A project with its repos and everything it is linked to. Links travel by NAME / LABEL (ids
+/// differ between machines); sessions and usage history stay on the machine.
+#[derive(Serialize, Deserialize)]
+struct ProjectEntry {
+    id: String,
+    name: String,
+    path: String,
+    #[serde(default)]
+    github_owner: Option<String>,
+    #[serde(default)]
+    github_repo: Option<String>,
+    default_engine: String,
+    created_at: String,
+    #[serde(default)]
+    position: i64,
+    #[serde(default)]
+    github_project_board_url: Option<String>,
+    #[serde(default)]
+    github_project_field_mappings: Option<String>,
+    #[serde(default)]
+    github_account: Option<String>,
+    #[serde(default)]
+    github_reviewer_account: Option<String>,
+    #[serde(default)]
+    gitlab_account: Option<String>,
+    #[serde(default)]
+    aws_account: Option<String>,
+    #[serde(default)]
+    azure_account: Option<String>,
+    #[serde(default)]
+    claude_account: Option<String>,
+    #[serde(default)]
+    repos: Vec<RepoEntry>,
+    #[serde(default)]
+    skills: Vec<LinkedItem>,
+    #[serde(default)]
+    rules: Vec<LinkedItem>,
+    #[serde(default)]
+    skill_groups: Vec<String>,
+    #[serde(default)]
+    rule_groups: Vec<String>,
+    #[serde(default)]
+    mcp_servers: Vec<String>,
+    #[serde(default)]
+    servers: Vec<ProjectServerEntry>,
+    #[serde(default)]
+    pulse_watches: Vec<PulseWatchEntry>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct RepoEntry {
+    name: String,
+    path: String,
+    #[serde(default)]
+    github_owner: Option<String>,
+    #[serde(default)]
+    github_repo: Option<String>,
+    #[serde(default)]
+    provider: String,
+    #[serde(default)]
+    gitlab_project_path: Option<String>,
+    #[serde(default)]
+    gitlab_project_id: Option<i64>,
+    created_at: String,
+}
+
+/// A skill / rule switched on for the project; `manual = false` when a group brought it in.
+#[derive(Serialize, Deserialize)]
+struct LinkedItem {
+    name: String,
+    #[serde(default)]
+    manual: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ProjectServerEntry {
+    /// VPS server label.
+    server: String,
+    role: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct PulseWatchEntry {
+    id: String,
+    source_type: String,
+    source_ref: String,
+    source_url: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    active: bool,
+    added_via: String,
+    #[serde(default)]
+    checked_at: Option<String>,
+    #[serde(default)]
+    board_json: Option<String>,
+    created_at: String,
+    updated_at: String,
+    #[serde(default)]
+    digests: Vec<PulseDigestEntry>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct PulseDigestEntry {
+    id: String,
+    content_hash: String,
+    status: String,
+    ball: String,
+    #[serde(default)]
+    ball_since: Option<String>,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    next_action: Option<String>,
+    #[serde(default)]
+    deadlines: String,
+    #[serde(default)]
+    decisions: String,
+    #[serde(default)]
+    open_questions: String,
+    #[serde(default)]
+    truncated: bool,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    source_closed: bool,
+    created_at: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -256,6 +402,132 @@ struct TodoEntry {
     project: Option<ProjectRef>,
 }
 
+/// A fetched Slack thread with its messages (original + Vietnamese) and file metadata. File
+/// contents are not carried: an imported thread is re-fetched, which downloads them again.
+#[derive(Serialize, Deserialize)]
+struct SlackThreadEntry {
+    id: String,
+    title: String,
+    #[serde(default)]
+    title_custom: bool,
+    position: i64,
+    created_at: String,
+    updated_at: String,
+    #[serde(default)]
+    workspace_domain: Option<String>,
+    #[serde(default)]
+    team_id: Option<String>,
+    #[serde(default)]
+    workspace: Option<String>,
+    #[serde(default)]
+    channel_id: Option<String>,
+    #[serde(default)]
+    channel: Option<String>,
+    #[serde(default)]
+    thread_ts: Option<String>,
+    #[serde(default)]
+    thread_url: Option<String>,
+    #[serde(default)]
+    fetched_at: Option<String>,
+    #[serde(default)]
+    reply_count: i64,
+    #[serde(default)]
+    last_reply_ts: Option<String>,
+    #[serde(default)]
+    last_seen_ts: Option<String>,
+    #[serde(default)]
+    search_text: String,
+    #[serde(default)]
+    legacy: bool,
+    #[serde(default)]
+    legacy_content: Option<String>,
+    #[serde(default)]
+    project: Option<ProjectRef>,
+    #[serde(default)]
+    messages: Vec<SlackMessageEntry>,
+    #[serde(default)]
+    files: Vec<SlackFileEntry>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SlackMessageEntry {
+    ts: String,
+    seq: i64,
+    #[serde(default)]
+    user_id: Option<String>,
+    #[serde(default)]
+    bot_id: Option<String>,
+    #[serde(default)]
+    author_name: Option<String>,
+    #[serde(default)]
+    author_icon_url: Option<String>,
+    #[serde(default)]
+    subtype: Option<String>,
+    text_raw: String,
+    #[serde(default)]
+    text_vi: Option<String>,
+    src_hash: String,
+    translate_status: String,
+    #[serde(default)]
+    edited_ts: Option<String>,
+    /// JSON, as stored.
+    #[serde(default)]
+    reactions: String,
+    /// JSON array of the EXPORTED `files[].id`.
+    #[serde(default)]
+    file_ids: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SlackFileEntry {
+    id: String,
+    slack_file_id: String,
+    #[serde(default)]
+    message_ts: Option<String>,
+    name: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    mime: Option<String>,
+    #[serde(default)]
+    filetype: Option<String>,
+    #[serde(default)]
+    size: i64,
+    #[serde(default)]
+    remote_updated: Option<i64>,
+    #[serde(default)]
+    permalink: Option<String>,
+    #[serde(default)]
+    width: Option<i64>,
+    #[serde(default)]
+    height: Option<i64>,
+}
+
+/// Cached Slack user names, so imported messages show authors before the first re-fetch.
+#[derive(Serialize, Deserialize)]
+struct SlackUserEntry {
+    team_id: String,
+    user_id: String,
+    #[serde(default)]
+    display_name: Option<String>,
+    #[serde(default)]
+    real_name: Option<String>,
+    #[serde(default)]
+    avatar_url: Option<String>,
+    #[serde(default)]
+    is_bot: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SlackChannelEntry {
+    team_id: String,
+    channel_id: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct SealedSecrets {
     kdf: String,
@@ -359,6 +631,12 @@ impl Bundle {
             ("claudeAccounts", self.claude_accounts.len()),
             ("notes", self.notes.len()),
             ("todos", self.todos.len()),
+            ("slackThreads", self.slack_threads.len()),
+            ("projects", self.projects.len()),
+            (
+                "pulseWatches",
+                self.projects.iter().map(|p| p.pulse_watches.len()).sum(),
+            ),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
@@ -840,6 +1118,9 @@ async fn collect(
     })
     .collect();
 
+    let (slack_threads, slack_users, slack_channels) = collect_slack(db).await?;
+    let projects = collect_projects(db).await?;
+
     let bundle = Bundle {
         format: FORMAT.to_string(),
         version: VERSION,
@@ -860,9 +1141,349 @@ async fn collect(
         claude_accounts,
         notes,
         todos,
+        slack_threads,
+        slack_users,
+        slack_channels,
+        projects,
+        home_dir: std::env::var("HOME").ok().filter(|h| !h.is_empty()),
         secrets: None,
     };
     Ok((bundle, secret))
+}
+
+async fn collect_projects(db: &Db) -> Result<Vec<ProjectEntry>, String> {
+    let err = |e: sqlx::Error| e.to_string();
+    let mut out = Vec::new();
+    for row in sqlx::query(
+        "SELECT p.id, p.name, p.path, p.github_owner, p.github_repo, p.default_engine, p.created_at, \
+                p.position, p.github_project_board_url, p.github_project_field_mappings, \
+                gh.label AS github_account, ghr.label AS github_reviewer_account, \
+                gl.label AS gitlab_account, aws.label AS aws_account, az.label AS azure_account, \
+                cl.label AS claude_account \
+         FROM projects p \
+         LEFT JOIN github_accounts gh ON gh.id = p.github_account_id \
+         LEFT JOIN github_accounts ghr ON ghr.id = p.github_reviewer_account_id \
+         LEFT JOIN gitlab_accounts gl ON gl.id = p.gitlab_account_id \
+         LEFT JOIN aws_accounts aws ON aws.id = p.aws_account_id \
+         LEFT JOIN azure_accounts az ON az.id = p.azure_account_id \
+         LEFT JOIN claude_accounts cl ON cl.id = p.claude_account_id \
+         ORDER BY p.position, p.name",
+    )
+    .fetch_all(db)
+    .await
+    .map_err(err)?
+    {
+        let id: String = row.get("id");
+        let repos = sqlx::query(
+            "SELECT name, path, github_owner, github_repo, provider, gitlab_project_path, \
+                    gitlab_project_id, created_at FROM repos WHERE project_id = ? ORDER BY created_at",
+        )
+        .bind(&id)
+        .fetch_all(db)
+        .await
+        .map_err(err)?
+        .iter()
+        .map(|r| RepoEntry {
+            name: r.get("name"),
+            path: r.get("path"),
+            github_owner: r.get("github_owner"),
+            github_repo: r.get("github_repo"),
+            provider: r.get("provider"),
+            gitlab_project_path: r.get("gitlab_project_path"),
+            gitlab_project_id: r.get("gitlab_project_id"),
+            created_at: r.get("created_at"),
+        })
+        .collect();
+        let linked = |sql: &'static str| {
+            let id = id.clone();
+            async move {
+                sqlx::query(sql)
+                    .bind(&id)
+                    .fetch_all(db)
+                    .await
+                    .map(|rows| {
+                        rows.iter()
+                            .map(|r| LinkedItem {
+                                name: r.get("name"),
+                                manual: r.get::<i64, _>("manual") != 0,
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .map_err(|e| e.to_string())
+            }
+        };
+        let skills = linked(
+            "SELECT s.name, ps.manual FROM project_skills ps JOIN skills s ON s.id = ps.skill_id \
+             WHERE ps.project_id = ? ORDER BY s.name",
+        )
+        .await?;
+        let rules = linked(
+            "SELECT r.name, pr.manual FROM project_rules pr JOIN rules r ON r.id = pr.rule_id \
+             WHERE pr.project_id = ? ORDER BY r.name",
+        )
+        .await?;
+        let names = |sql: &'static str| {
+            let id = id.clone();
+            async move {
+                sqlx::query_scalar::<_, String>(sql)
+                    .bind(&id)
+                    .fetch_all(db)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+        };
+        let skill_groups = names(
+            "SELECT g.name FROM project_skill_groups pg JOIN skill_groups g ON g.id = pg.group_id \
+             WHERE pg.project_id = ? ORDER BY g.name",
+        )
+        .await?;
+        let rule_groups = names(
+            "SELECT g.name FROM project_rule_groups pg JOIN rule_groups g ON g.id = pg.group_id \
+             WHERE pg.project_id = ? ORDER BY g.name",
+        )
+        .await?;
+        let mcp_servers = names(
+            "SELECT m.name FROM project_mcp_servers pm JOIN mcp_servers m ON m.id = pm.server_id \
+             WHERE pm.project_id = ? ORDER BY m.name",
+        )
+        .await?;
+        let servers = sqlx::query(
+            "SELECT s.label, ps.role FROM project_servers ps JOIN servers s ON s.id = ps.server_id \
+             WHERE ps.project_id = ? ORDER BY ps.role, s.label",
+        )
+        .bind(&id)
+        .fetch_all(db)
+        .await
+        .map_err(err)?
+        .iter()
+        .map(|r| ProjectServerEntry {
+            server: r.get("label"),
+            role: r.get("role"),
+        })
+        .collect();
+        let mut pulse_watches = Vec::new();
+        for w in sqlx::query(
+            "SELECT id, source_type, source_ref, source_url, title, active, added_via, checked_at, \
+                    board_json, created_at, updated_at \
+             FROM pulse_watches WHERE project_id = ? ORDER BY created_at",
+        )
+        .bind(&id)
+        .fetch_all(db)
+        .await
+        .map_err(err)?
+        {
+            let watch_id: String = w.get("id");
+            let digests = sqlx::query(
+                "SELECT id, content_hash, status, ball, ball_since, summary, next_action, deadlines, \
+                        decisions, open_questions, truncated, model, source_closed, created_at \
+                 FROM pulse_digests WHERE watch_id = ? ORDER BY created_at",
+            )
+            .bind(&watch_id)
+            .fetch_all(db)
+            .await
+            .map_err(err)?
+            .iter()
+            .map(|d| PulseDigestEntry {
+                id: d.get("id"),
+                content_hash: d.get("content_hash"),
+                status: d.get("status"),
+                ball: d.get("ball"),
+                ball_since: d.get("ball_since"),
+                summary: d.get("summary"),
+                next_action: d.get("next_action"),
+                deadlines: d.get("deadlines"),
+                decisions: d.get("decisions"),
+                open_questions: d.get("open_questions"),
+                truncated: d.get::<i64, _>("truncated") != 0,
+                model: d.get("model"),
+                source_closed: d.get::<i64, _>("source_closed") != 0,
+                created_at: d.get("created_at"),
+            })
+            .collect();
+            pulse_watches.push(PulseWatchEntry {
+                id: watch_id,
+                source_type: w.get("source_type"),
+                source_ref: w.get("source_ref"),
+                source_url: w.get("source_url"),
+                title: w.get("title"),
+                active: w.get::<i64, _>("active") != 0,
+                added_via: w.get("added_via"),
+                checked_at: w.get("checked_at"),
+                board_json: w.get("board_json"),
+                created_at: w.get("created_at"),
+                updated_at: w.get("updated_at"),
+                digests,
+            });
+        }
+        out.push(ProjectEntry {
+            id,
+            name: row.get("name"),
+            path: row.get("path"),
+            github_owner: row.get("github_owner"),
+            github_repo: row.get("github_repo"),
+            default_engine: row.get("default_engine"),
+            created_at: row.get("created_at"),
+            position: row.get("position"),
+            github_project_board_url: row.get("github_project_board_url"),
+            github_project_field_mappings: row.get("github_project_field_mappings"),
+            github_account: row.get("github_account"),
+            github_reviewer_account: row.get("github_reviewer_account"),
+            gitlab_account: row.get("gitlab_account"),
+            aws_account: row.get("aws_account"),
+            azure_account: row.get("azure_account"),
+            claude_account: row.get("claude_account"),
+            repos,
+            skills,
+            rules,
+            skill_groups,
+            rule_groups,
+            mcp_servers,
+            servers,
+            pulse_watches,
+        });
+    }
+    Ok(out)
+}
+
+async fn collect_slack(
+    db: &Db,
+) -> Result<
+    (
+        Vec<SlackThreadEntry>,
+        Vec<SlackUserEntry>,
+        Vec<SlackChannelEntry>,
+    ),
+    String,
+> {
+    let err = |e: sqlx::Error| e.to_string();
+    let mut threads = Vec::new();
+    for row in sqlx::query(
+        "SELECT t.id, t.title, t.title_custom, t.position, t.created_at, t.updated_at, \
+                t.workspace_domain, t.team_id, t.workspace, t.channel_id, t.channel, t.thread_ts, \
+                t.thread_url, t.fetched_at, t.reply_count, t.last_reply_ts, t.last_seen_ts, \
+                t.search_text, t.legacy, t.legacy_content, \
+                p.name AS project_name, p.path AS project_path \
+         FROM slack_threads t LEFT JOIN projects p ON p.id = t.project_id ORDER BY t.position",
+    )
+    .fetch_all(db)
+    .await
+    .map_err(err)?
+    {
+        let id: String = row.get("id");
+        let messages = sqlx::query(
+            "SELECT ts, seq, user_id, bot_id, author_name, author_icon_url, subtype, text_raw, \
+                    text_vi, src_hash, translate_status, edited_ts, reactions, file_ids \
+             FROM slack_messages WHERE thread_id = ? ORDER BY seq",
+        )
+        .bind(&id)
+        .fetch_all(db)
+        .await
+        .map_err(err)?
+        .iter()
+        .map(|m| SlackMessageEntry {
+            ts: m.get("ts"),
+            seq: m.get("seq"),
+            user_id: m.get("user_id"),
+            bot_id: m.get("bot_id"),
+            author_name: m.get("author_name"),
+            author_icon_url: m.get("author_icon_url"),
+            subtype: m.get("subtype"),
+            text_raw: m.get("text_raw"),
+            text_vi: m.get("text_vi"),
+            src_hash: m.get("src_hash"),
+            translate_status: m.get("translate_status"),
+            edited_ts: m.get("edited_ts"),
+            reactions: m.get("reactions"),
+            file_ids: m.get("file_ids"),
+        })
+        .collect();
+        // Legacy zip files (no Slack file id) can't be fetched again, so they are left out.
+        let files = sqlx::query(
+            "SELECT id, slack_file_id, message_ts, name, title, mime, filetype, size, \
+                    remote_updated, permalink, width, height \
+             FROM slack_files WHERE thread_id = ? AND slack_file_id IS NOT NULL ORDER BY created_at",
+        )
+        .bind(&id)
+        .fetch_all(db)
+        .await
+        .map_err(err)?
+        .iter()
+        .map(|f| SlackFileEntry {
+            id: f.get("id"),
+            slack_file_id: f.get("slack_file_id"),
+            message_ts: f.get("message_ts"),
+            name: f.get("name"),
+            title: f.get("title"),
+            mime: f.get("mime"),
+            filetype: f.get("filetype"),
+            size: f.get("size"),
+            remote_updated: f.get("remote_updated"),
+            permalink: f.get("permalink"),
+            width: f.get("width"),
+            height: f.get("height"),
+        })
+        .collect();
+        let name: Option<String> = row.get("project_name");
+        let path: Option<String> = row.get("project_path");
+        threads.push(SlackThreadEntry {
+            id,
+            title: row.get("title"),
+            title_custom: row.get::<i64, _>("title_custom") != 0,
+            position: row.get("position"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+            workspace_domain: row.get("workspace_domain"),
+            team_id: row.get("team_id"),
+            workspace: row.get("workspace"),
+            channel_id: row.get("channel_id"),
+            channel: row.get("channel"),
+            thread_ts: row.get("thread_ts"),
+            thread_url: row.get("thread_url"),
+            fetched_at: row.get("fetched_at"),
+            reply_count: row.get("reply_count"),
+            last_reply_ts: row.get("last_reply_ts"),
+            last_seen_ts: row.get("last_seen_ts"),
+            search_text: row.get("search_text"),
+            legacy: row.get::<i64, _>("legacy") != 0,
+            legacy_content: row.get("legacy_content"),
+            project: name.zip(path).map(|(name, path)| ProjectRef { name, path }),
+            messages,
+            files,
+        });
+    }
+
+    let users = sqlx::query(
+        "SELECT team_id, user_id, display_name, real_name, avatar_url, is_bot FROM slack_users \
+         ORDER BY team_id, user_id",
+    )
+    .fetch_all(db)
+    .await
+    .map_err(err)?
+    .iter()
+    .map(|row| SlackUserEntry {
+        team_id: row.get("team_id"),
+        user_id: row.get("user_id"),
+        display_name: row.get("display_name"),
+        real_name: row.get("real_name"),
+        avatar_url: row.get("avatar_url"),
+        is_bot: row.get::<i64, _>("is_bot") != 0,
+    })
+    .collect();
+    let channels = sqlx::query(
+        "SELECT team_id, channel_id, name, kind FROM slack_channels ORDER BY team_id, channel_id",
+    )
+    .fetch_all(db)
+    .await
+    .map_err(err)?
+    .iter()
+    .map(|row| SlackChannelEntry {
+        team_id: row.get("team_id"),
+        channel_id: row.get("channel_id"),
+        name: row.get("name"),
+        kind: row.get("kind"),
+    })
+    .collect();
+    Ok((threads, users, channels))
 }
 
 /// Table / column names are literals from the callers, never user input.
@@ -941,8 +1562,10 @@ pub async fn import_settings_backup(
     db: State<'_, Db>,
     path: String,
     password: Option<String>,
+    create_missing_dirs: Option<bool>,
 ) -> Result<ImportReport, String> {
-    let bundle = read_bundle(&path)?;
+    let mut bundle = read_bundle(&path)?;
+    remap_bundle_paths(&mut bundle, std::env::var("HOME").ok().as_deref());
     let password = password.filter(|p| !p.is_empty());
     let mut report = ImportReport::default();
 
@@ -1038,6 +1661,30 @@ pub async fn import_settings_backup(
         let result = import_claude(&app, db, entry).await;
         report.record("claudeAccounts", &entry.label, result);
     }
+    // Projects before notes / todos / threads so those can re-link to them.
+    let create_missing_dirs = create_missing_dirs.unwrap_or(false);
+    let app_data = app.path().app_data_dir().ok();
+    let mut project_ids: Vec<(usize, String)> = Vec::new();
+    for (index, entry) in bundle.projects.iter().enumerate() {
+        match import_project(db, entry, create_missing_dirs).await {
+            Ok((outcome, id, warnings)) => {
+                report.tally("projects", outcome);
+                for warning in warnings {
+                    report
+                        .warnings
+                        .push(format!("projects '{}': {warning}", entry.name));
+                }
+                if let Some(dir) = &app_data {
+                    crate::aws_sandbox::write_project_aws_config(db, dir, &id).await;
+                }
+                project_ids.push((index, id));
+            }
+            Err(e) => report
+                .warnings
+                .push(format!("projects '{}': {e}", entry.name)),
+        }
+    }
+
     for entry in &bundle.notes {
         let result = import_note(db, entry).await;
         report.record("notes", &entry.title, result);
@@ -1047,7 +1694,95 @@ pub async fn import_settings_backup(
         report.record("todos", &entry.text, result);
     }
 
+    if !bundle.slack_threads.is_empty() {
+        import_slack_caches(db, &bundle, &mut report).await;
+        let mut created = Vec::new();
+        for entry in &bundle.slack_threads {
+            let result = import_slack_thread(db, entry).await.map(|(outcome, id)| {
+                if outcome == Upsert::Created {
+                    created.push(id);
+                }
+                outcome
+            });
+            report.record("slackThreads", &entry.title, result);
+        }
+        // New threads are `pending`: the fetch job pulls them again (files, new replies) and
+        // keeps the imported translations of unchanged messages.
+        if let Some(state) = app.try_state::<SlackThreadsState>() {
+            for id in &created {
+                state.enqueue(id, false);
+            }
+        }
+        crate::slack_threads::emit_all_changed(&app);
+    }
+
+    // Pulse watches last: a Slack watch points at its (now imported) thread.
+    let mut pulse_pending = false;
+    for (index, project_id) in &project_ids {
+        for watch in &bundle.projects[*index].pulse_watches {
+            let result =
+                import_pulse_watch(db, project_id, watch)
+                    .await
+                    .map(|(outcome, pending)| {
+                        pulse_pending |= pending;
+                        outcome
+                    });
+            report.record(
+                "pulseWatches",
+                watch.title.as_deref().unwrap_or(&watch.source_ref),
+                result,
+            );
+        }
+    }
+    if pulse_pending {
+        if let Some(pulse) = app.try_state::<crate::pulse::PulseState>() {
+            pulse.kick();
+        }
+    }
+
     Ok(report)
+}
+
+/// `path` moved from the exporting machine's home to this one's (`/Users/a/x` → `/Users/b/x`).
+fn remap_home(path: &str, from: Option<&str>, to: Option<&str>) -> String {
+    let (Some(from), Some(to)) = (from, to) else {
+        return path.to_string();
+    };
+    let from = from.trim_end_matches('/');
+    let to = to.trim_end_matches('/');
+    if from.is_empty() || to.is_empty() || from == to {
+        return path.to_string();
+    }
+    match path.strip_prefix(from) {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => format!("{to}{rest}"),
+        _ => path.to_string(),
+    }
+}
+
+/// Rewrite every project path of the bundle for this machine's home directory.
+fn remap_bundle_paths(bundle: &mut Bundle, local_home: Option<&str>) {
+    let from = bundle.home_dir.clone();
+    let remap = |p: &mut String| *p = remap_home(p, from.as_deref(), local_home);
+    for project in &mut bundle.projects {
+        remap(&mut project.path);
+        for repo in &mut project.repos {
+            remap(&mut repo.path);
+        }
+    }
+    let refs = bundle
+        .notes
+        .iter_mut()
+        .filter_map(|n| n.project.as_mut())
+        .chain(bundle.todos.iter_mut().filter_map(|t| t.project.as_mut()))
+        .chain(
+            bundle
+                .slack_threads
+                .iter_mut()
+                .filter_map(|t| t.project.as_mut()),
+        );
+    for project in refs {
+        remap(&mut project.path);
+    }
 }
 
 /// Record a skill/rule upsert, surfacing per-project sync failures as warnings.
@@ -1763,6 +2498,634 @@ async fn import_todo(db: &Db, entry: &TodoEntry) -> Result<Upsert, String> {
     Ok(Upsert::Created)
 }
 
+/// Slack user / channel name caches; local rows win. Imported users are marked stale so the
+/// next fetch refreshes them (and downloads their avatars).
+async fn import_slack_caches(db: &Db, bundle: &Bundle, report: &mut ImportReport) {
+    const STALE: &str = "1970-01-01T00:00:00Z";
+    for user in &bundle.slack_users {
+        if let Err(e) = sqlx::query(
+            "INSERT INTO slack_users (team_id, user_id, display_name, real_name, avatar_url, \
+             avatar_path, is_bot, fetched_at) VALUES (?, ?, ?, ?, ?, NULL, ?, ?) \
+             ON CONFLICT(team_id, user_id) DO NOTHING",
+        )
+        .bind(&user.team_id)
+        .bind(&user.user_id)
+        .bind(&user.display_name)
+        .bind(&user.real_name)
+        .bind(&user.avatar_url)
+        .bind(user.is_bot as i64)
+        .bind(STALE)
+        .execute(db)
+        .await
+        {
+            report
+                .warnings
+                .push(format!("slackUsers '{}': {e}", user.user_id));
+        }
+    }
+    for channel in &bundle.slack_channels {
+        if let Err(e) = sqlx::query(
+            "INSERT INTO slack_channels (team_id, channel_id, name, kind, fetched_at) \
+             VALUES (?, ?, ?, ?, ?) ON CONFLICT(team_id, channel_id) DO NOTHING",
+        )
+        .bind(&channel.team_id)
+        .bind(&channel.channel_id)
+        .bind(&channel.name)
+        .bind(&channel.kind)
+        .bind(STALE)
+        .execute(db)
+        .await
+        {
+            report
+                .warnings
+                .push(format!("slackChannels '{}': {e}", channel.channel_id));
+        }
+    }
+}
+
+/// Match by Slack key (channel + thread ts), else by id. An existing thread keeps its own
+/// messages (the local fetch is newer); it only gains the project link, a custom title and
+/// translations it is missing. A new thread is inserted `pending` with its file rows
+/// undownloaded. Returns the local thread id.
+async fn import_slack_thread(
+    db: &Db,
+    entry: &SlackThreadEntry,
+) -> Result<(Upsert, String), String> {
+    let err = |e: sqlx::Error| e.to_string();
+    let local: Option<String> = match (&entry.channel_id, &entry.thread_ts) {
+        (Some(channel), Some(ts)) => sqlx::query_scalar(
+            "SELECT id FROM slack_threads WHERE channel_id = ? AND thread_ts = ? LIMIT 1",
+        )
+        .bind(channel)
+        .bind(ts)
+        .fetch_optional(db)
+        .await
+        .map_err(err)?,
+        _ => id_by(db, "slack_threads", "id", &entry.id).await?,
+    };
+    let project_id = resolve_project(db, &entry.project).await;
+
+    if let Some(id) = local {
+        let mut changed = sqlx::query(
+            "UPDATE slack_threads SET project_id = ? WHERE id = ? AND ? IS NOT NULL AND project_id IS NOT ?",
+        )
+        .bind(&project_id)
+        .bind(&id)
+        .bind(&project_id)
+        .bind(&project_id)
+        .execute(db)
+        .await
+        .map_err(err)?
+        .rows_affected()
+            > 0;
+        if entry.title_custom {
+            changed |= sqlx::query(
+                "UPDATE slack_threads SET title = ?, title_custom = 1 \
+                 WHERE id = ? AND (title IS NOT ? OR title_custom = 0)",
+            )
+            .bind(&entry.title)
+            .bind(&id)
+            .bind(&entry.title)
+            .execute(db)
+            .await
+            .map_err(err)?
+            .rows_affected()
+                > 0;
+        }
+        for m in &entry.messages {
+            let Some(vi) = m.text_vi.as_deref() else {
+                continue;
+            };
+            changed |= sqlx::query(
+                "UPDATE slack_messages SET text_vi = ?, translate_status = ?, translate_error = NULL \
+                 WHERE thread_id = ? AND ts = ? AND src_hash = ? AND text_vi IS NULL",
+            )
+            .bind(vi)
+            .bind(&m.translate_status)
+            .bind(&id)
+            .bind(&m.ts)
+            .bind(&m.src_hash)
+            .execute(db)
+            .await
+            .map_err(err)?
+            .rows_affected()
+                > 0;
+        }
+        let outcome = if changed {
+            Upsert::Updated
+        } else {
+            Upsert::Unchanged
+        };
+        return Ok((outcome, id));
+    }
+
+    // Ids end up in filesystem paths: only reuse safe ones.
+    let hint = if slack_store::is_safe_id(&entry.id) {
+        entry.id.as_str()
+    } else {
+        ""
+    };
+    let id = free_id(db, "slack_threads", hint).await;
+    let mut file_ids: BTreeMap<&str, String> = BTreeMap::new();
+    for f in &entry.files {
+        if crate::slack_threads::files::is_safe_file_id(&f.slack_file_id) {
+            file_ids.insert(f.id.as_str(), free_id(db, "slack_files", &f.id).await);
+        }
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut tx = db.begin().await.map_err(err)?;
+    sqlx::query(
+        "INSERT INTO slack_threads (id, title, title_custom, project_id, position, created_at, \
+         updated_at, workspace_domain, team_id, workspace, channel_id, channel, thread_ts, \
+         thread_url, fetch_status, fetched_at, reply_count, last_reply_ts, last_seen_ts, \
+         warnings, search_text, legacy, legacy_content) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, '[]', ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(&entry.title)
+    .bind(entry.title_custom as i64)
+    .bind(&project_id)
+    .bind(entry.position)
+    .bind(&entry.created_at)
+    .bind(&entry.updated_at)
+    .bind(&entry.workspace_domain)
+    .bind(&entry.team_id)
+    .bind(&entry.workspace)
+    .bind(&entry.channel_id)
+    .bind(&entry.channel)
+    .bind(&entry.thread_ts)
+    .bind(&entry.thread_url)
+    .bind(&entry.fetched_at)
+    .bind(entry.reply_count)
+    .bind(&entry.last_reply_ts)
+    .bind(&entry.last_seen_ts)
+    .bind(&entry.search_text)
+    .bind(entry.legacy as i64)
+    .bind(&entry.legacy_content)
+    .execute(&mut *tx)
+    .await
+    .map_err(err)?;
+    for f in &entry.files {
+        let Some(file_id) = file_ids.get(f.id.as_str()) else {
+            continue;
+        };
+        sqlx::query(
+            "INSERT INTO slack_files (id, thread_id, slack_file_id, message_ts, name, title, mime, \
+             filetype, size, file_path, remote_updated, permalink, width, height, download_status, \
+             created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, 'pending', ?)",
+        )
+        .bind(file_id)
+        .bind(&id)
+        .bind(&f.slack_file_id)
+        .bind(&f.message_ts)
+        .bind(&f.name)
+        .bind(&f.title)
+        .bind(&f.mime)
+        .bind(&f.filetype)
+        .bind(f.size)
+        .bind(f.remote_updated)
+        .bind(&f.permalink)
+        .bind(f.width)
+        .bind(f.height)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await
+        .map_err(err)?;
+    }
+    for m in &entry.messages {
+        let mapped: Vec<&str> = serde_json::from_str::<Vec<String>>(&m.file_ids)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|old| file_ids.get(old.as_str()).map(String::as_str))
+            .collect();
+        let reactions = if m.reactions.is_empty() {
+            "[]"
+        } else {
+            m.reactions.as_str()
+        };
+        sqlx::query(
+            "INSERT INTO slack_messages (thread_id, ts, seq, user_id, bot_id, author_name, \
+             author_icon_url, subtype, text_raw, text_vi, src_hash, translate_status, \
+             translate_error, edited_ts, reactions, file_ids) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(&m.ts)
+        .bind(m.seq)
+        .bind(&m.user_id)
+        .bind(&m.bot_id)
+        .bind(&m.author_name)
+        .bind(&m.author_icon_url)
+        .bind(&m.subtype)
+        .bind(&m.text_raw)
+        .bind(&m.text_vi)
+        .bind(&m.src_hash)
+        .bind(&m.translate_status)
+        .bind(&m.edited_ts)
+        .bind(reactions)
+        .bind(serde_json::to_string(&mapped).unwrap_or_else(|_| "[]".into()))
+        .execute(&mut *tx)
+        .await
+        .map_err(err)?;
+    }
+    tx.commit().await.map_err(err)?;
+    Ok((Upsert::Created, id))
+}
+
+/// Id of the row of `table` whose `label` matches; `None` for no label or no match.
+async fn id_by_label(
+    db: &Db,
+    table: &str,
+    label: &Option<String>,
+) -> Result<Option<String>, String> {
+    match label {
+        Some(label) => id_by(db, table, "label", label).await,
+        None => Ok(None),
+    }
+}
+
+/// Match a project by path, then by name. A new project needs its folder: it is created when
+/// `create_missing_dirs` is set, the project is skipped otherwise. Links (skills, rules, groups,
+/// MCP / VPS servers) are added, never removed. Returns the local project id and
+/// per-link problems.
+async fn import_project(
+    db: &Db,
+    entry: &ProjectEntry,
+    create_missing_dirs: bool,
+) -> Result<(Upsert, String, Vec<String>), String> {
+    let err = |e: sqlx::Error| e.to_string();
+    let mut warnings = Vec::new();
+    let local = match id_by(db, "projects", "path", &entry.path).await? {
+        Some(id) => Some(id),
+        None => id_by(db, "projects", "name", &entry.name).await?,
+    };
+    let path = match &local {
+        Some(id) => sqlx::query_scalar::<_, String>("SELECT path FROM projects WHERE id = ?")
+            .bind(id)
+            .fetch_one(db)
+            .await
+            .map_err(err)?,
+        None => entry.path.clone(),
+    };
+    if !Path::new(&path).is_dir() {
+        if !create_missing_dirs {
+            if local.is_none() {
+                return Err(format!(
+                    "folder {path} does not exist on this machine (turn on \"create missing project folders\")"
+                ));
+            }
+            warnings.push(format!("folder {path} does not exist"));
+        } else {
+            std::fs::create_dir_all(&path).map_err(|e| format!("could not create {path}: {e}"))?;
+        }
+    }
+
+    let github = id_by_label(db, "github_accounts", &entry.github_account).await?;
+    let github_reviewer =
+        id_by_label(db, "github_accounts", &entry.github_reviewer_account).await?;
+    let gitlab = id_by_label(db, "gitlab_accounts", &entry.gitlab_account).await?;
+    let aws = id_by_label(db, "aws_accounts", &entry.aws_account).await?;
+    let azure = id_by_label(db, "azure_accounts", &entry.azure_account).await?;
+    let claude = id_by_label(db, "claude_accounts", &entry.claude_account).await?;
+
+    let (id, mut outcome) = match local {
+        Some(id) => {
+            // Account links only move when the imported account exists here.
+            let changed = sqlx::query(
+                "UPDATE projects SET default_engine = ?, github_owner = COALESCE(?, github_owner), \
+                 github_repo = COALESCE(?, github_repo), \
+                 github_project_board_url = COALESCE(?, github_project_board_url), \
+                 github_project_field_mappings = COALESCE(?, github_project_field_mappings), \
+                 github_account_id = COALESCE(?, github_account_id), \
+                 github_reviewer_account_id = COALESCE(?, github_reviewer_account_id), \
+                 gitlab_account_id = COALESCE(?, gitlab_account_id), \
+                 aws_account_id = COALESCE(?, aws_account_id), \
+                 azure_account_id = COALESCE(?, azure_account_id), \
+                 claude_account_id = COALESCE(?, claude_account_id) \
+                 WHERE id = ? AND (default_engine IS NOT ? \
+                 OR (? IS NOT NULL AND github_owner IS NOT ?) OR (? IS NOT NULL AND github_repo IS NOT ?) \
+                 OR (? IS NOT NULL AND github_project_board_url IS NOT ?) \
+                 OR (? IS NOT NULL AND github_project_field_mappings IS NOT ?) \
+                 OR (? IS NOT NULL AND github_account_id IS NOT ?) \
+                 OR (? IS NOT NULL AND github_reviewer_account_id IS NOT ?) \
+                 OR (? IS NOT NULL AND gitlab_account_id IS NOT ?) \
+                 OR (? IS NOT NULL AND aws_account_id IS NOT ?) \
+                 OR (? IS NOT NULL AND azure_account_id IS NOT ?) \
+                 OR (? IS NOT NULL AND claude_account_id IS NOT ?))",
+            );
+            let values = [
+                &entry.github_owner,
+                &entry.github_repo,
+                &entry.github_project_board_url,
+                &entry.github_project_field_mappings,
+                &github,
+                &github_reviewer,
+                &gitlab,
+                &aws,
+                &azure,
+                &claude,
+            ];
+            let mut q = changed.bind(&entry.default_engine);
+            for v in values {
+                q = q.bind(v);
+            }
+            q = q.bind(&id).bind(&entry.default_engine);
+            for v in values {
+                q = q.bind(v).bind(v);
+            }
+            let changed = q.execute(db).await.map_err(err)?.rows_affected() > 0;
+            (
+                id,
+                if changed {
+                    Upsert::Updated
+                } else {
+                    Upsert::Unchanged
+                },
+            )
+        }
+        None => {
+            let id = free_id(db, "projects", &entry.id).await;
+            let position: i64 =
+                sqlx::query_scalar("SELECT COALESCE(MAX(position), -1) + 1 FROM projects")
+                    .fetch_one(db)
+                    .await
+                    .map_err(err)?;
+            sqlx::query(
+                "INSERT INTO projects (id, name, path, github_owner, github_repo, default_engine, \
+                 created_at, position, github_project_board_url, github_project_field_mappings, \
+                 github_account_id, github_reviewer_account_id, gitlab_account_id, aws_account_id, \
+                 azure_account_id, claude_account_id) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&id)
+            .bind(&entry.name)
+            .bind(&path)
+            .bind(&entry.github_owner)
+            .bind(&entry.github_repo)
+            .bind(&entry.default_engine)
+            .bind(&entry.created_at)
+            .bind(position)
+            .bind(&entry.github_project_board_url)
+            .bind(&entry.github_project_field_mappings)
+            .bind(&github)
+            .bind(&github_reviewer)
+            .bind(&gitlab)
+            .bind(&aws)
+            .bind(&azure)
+            .bind(&claude)
+            .execute(db)
+            .await
+            .map_err(err)?;
+            (id, Upsert::Created)
+        }
+    };
+    let mut touched = false;
+
+    for repo in &entry.repos {
+        let exists: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM repos WHERE project_id = ? AND (path = ? OR name = ?) LIMIT 1",
+        )
+        .bind(&id)
+        .bind(&repo.path)
+        .bind(&repo.name)
+        .fetch_optional(db)
+        .await
+        .map_err(err)?;
+        if exists.is_some() {
+            continue;
+        }
+        let provider = if repo.provider.is_empty() {
+            "github"
+        } else {
+            repo.provider.as_str()
+        };
+        sqlx::query(
+            "INSERT INTO repos (id, project_id, name, path, github_owner, github_repo, created_at, \
+             provider, gitlab_project_path, gitlab_project_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(&id)
+        .bind(&repo.name)
+        .bind(&repo.path)
+        .bind(&repo.github_owner)
+        .bind(&repo.github_repo)
+        .bind(&repo.created_at)
+        .bind(provider)
+        .bind(&repo.gitlab_project_path)
+        .bind(repo.gitlab_project_id)
+        .execute(db)
+        .await
+        .map_err(err)?;
+        touched = true;
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    for name in &entry.mcp_servers {
+        match id_by(db, "mcp_servers", "name", name).await? {
+            Some(server_id) => {
+                touched |= sqlx::query(
+                    "INSERT OR IGNORE INTO project_mcp_servers (project_id, server_id, enabled_at) \
+                     VALUES (?, ?, ?)",
+                )
+                .bind(&id)
+                .bind(&server_id)
+                .bind(&now)
+                .execute(db)
+                .await
+                .map_err(err)?
+                .rows_affected()
+                    > 0;
+            }
+            None => warnings.push(format!("MCP server '{name}' not found")),
+        }
+    }
+
+    for link in &entry.servers {
+        match id_by(db, "servers", "label", &link.server).await? {
+            Some(server_id) => {
+                touched |= sqlx::query(
+                    "INSERT OR IGNORE INTO project_servers (project_id, server_id, role, created_at) \
+                     VALUES (?, ?, ?, ?)",
+                )
+                .bind(&id)
+                .bind(&server_id)
+                .bind(&link.role)
+                .bind(&now)
+                .execute(db)
+                .await
+                .map_err(err)?
+                .rows_affected()
+                    > 0;
+            }
+            None => warnings.push(format!("VPS server '{}' not found", link.server)),
+        }
+    }
+
+    // Groups first: enabling one applies its members (as group-owned, not manual).
+    for (kind, names) in [
+        (GroupKind::Skill, &entry.skill_groups),
+        (GroupKind::Rule, &entry.rule_groups),
+    ] {
+        let (groups_table, link_table) = match kind {
+            GroupKind::Skill => ("skill_groups", "project_skill_groups"),
+            GroupKind::Rule => ("rule_groups", "project_rule_groups"),
+        };
+        for name in names {
+            let Some(group_id) = id_by(db, groups_table, "name", name).await? else {
+                warnings.push(format!("group '{name}' not found"));
+                continue;
+            };
+            let enabled: Option<i64> = sqlx::query_scalar(&format!(
+                "SELECT 1 FROM {link_table} WHERE project_id = ? AND group_id = ?"
+            ))
+            .bind(&id)
+            .bind(&group_id)
+            .fetch_optional(db)
+            .await
+            .map_err(err)?;
+            if enabled.is_some() {
+                continue;
+            }
+            let applied = crate::commands::groups::enable_group(db, kind, &id, &group_id).await?;
+            for failure in applied.failures {
+                warnings.push(format!("'{}': {}", failure.item_name, failure.error));
+            }
+            touched = true;
+        }
+    }
+
+    for (is_skill, items) in [(true, &entry.skills), (false, &entry.rules)] {
+        let (items_table, link_table, item_col) = if is_skill {
+            ("skills", "project_skills", "skill_id")
+        } else {
+            ("rules", "project_rules", "rule_id")
+        };
+        for item in items {
+            let Some(item_id) = id_by(db, items_table, "name", &item.name).await? else {
+                warnings.push(format!("{items_table} '{}' not found", item.name));
+                continue;
+            };
+            let manual: Option<i64> = sqlx::query_scalar(&format!(
+                "SELECT manual FROM {link_table} WHERE project_id = ? AND {item_col} = ?"
+            ))
+            .bind(&id)
+            .bind(&item_id)
+            .fetch_optional(db)
+            .await
+            .map_err(err)?;
+            // Already applied (and at least as "manual" as the export says).
+            if manual.is_some_and(|m| m != 0 || !item.manual) {
+                continue;
+            }
+            let applied = if is_skill {
+                crate::commands::projects::apply_skill_to_project(db, &id, &item_id, item.manual)
+                    .await
+            } else {
+                rules::apply_rule_to_project(db, &id, &item_id, item.manual).await
+            };
+            match applied {
+                Ok(()) => touched = true,
+                Err(e) => warnings.push(format!("'{}': {e}", item.name)),
+            }
+        }
+    }
+
+    if touched && outcome == Upsert::Unchanged {
+        outcome = Upsert::Updated;
+    }
+    Ok((outcome, id, warnings))
+}
+
+/// Match by source (type + ref). A new Slack watch points at the local copy of its thread, or
+/// waits for Pulse to resolve it. Returns whether Pulse has resolving to do.
+async fn import_pulse_watch(
+    db: &Db,
+    project_id: &str,
+    entry: &PulseWatchEntry,
+) -> Result<(Upsert, bool), String> {
+    let err = |e: sqlx::Error| e.to_string();
+    let existing: Option<String> =
+        sqlx::query_scalar("SELECT id FROM pulse_watches WHERE source_type = ? AND source_ref = ?")
+            .bind(&entry.source_type)
+            .bind(&entry.source_ref)
+            .fetch_optional(db)
+            .await
+            .map_err(err)?;
+    let (watch_id, mut outcome, pending) = match existing {
+        Some(id) => (id, Upsert::Unchanged, false),
+        None => {
+            let thread_id: Option<String> = match entry.source_ref.split_once(':') {
+                Some((channel, ts)) if entry.source_type == "slack" => sqlx::query_scalar(
+                    "SELECT id FROM slack_threads WHERE channel_id = ? AND thread_ts = ?",
+                )
+                .bind(channel)
+                .bind(ts)
+                .fetch_optional(db)
+                .await
+                .map_err(err)?,
+                _ => None,
+            };
+            let pending = entry.source_type == "slack" && thread_id.is_none();
+            let id = free_id(db, "pulse_watches", &entry.id).await;
+            sqlx::query(
+                "INSERT INTO pulse_watches (id, project_id, source_type, source_ref, source_url, \
+                 slack_thread_id, title, active, added_via, resolve_status, checked_at, board_json, \
+                 created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&id)
+            .bind(project_id)
+            .bind(&entry.source_type)
+            .bind(&entry.source_ref)
+            .bind(&entry.source_url)
+            .bind(&thread_id)
+            .bind(&entry.title)
+            .bind(entry.active as i64)
+            .bind(&entry.added_via)
+            .bind(if pending { "pending" } else { "ready" })
+            .bind(&entry.checked_at)
+            .bind(&entry.board_json)
+            .bind(&entry.created_at)
+            .bind(&entry.updated_at)
+            .execute(db)
+            .await
+            .map_err(err)?;
+            (id, Upsert::Created, pending && entry.active)
+        }
+    };
+    for d in &entry.digests {
+        let inserted = sqlx::query(
+            "INSERT OR IGNORE INTO pulse_digests (id, watch_id, content_hash, status, ball, ball_since, \
+             summary, next_action, deadlines, decisions, open_questions, truncated, model, \
+             source_closed, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&d.id)
+        .bind(&watch_id)
+        .bind(&d.content_hash)
+        .bind(&d.status)
+        .bind(&d.ball)
+        .bind(&d.ball_since)
+        .bind(&d.summary)
+        .bind(&d.next_action)
+        .bind(if d.deadlines.is_empty() { "[]" } else { &d.deadlines })
+        .bind(if d.decisions.is_empty() { "[]" } else { &d.decisions })
+        .bind(if d.open_questions.is_empty() { "[]" } else { &d.open_questions })
+        .bind(d.truncated as i64)
+        .bind(&d.model)
+        .bind(d.source_closed as i64)
+        .bind(&d.created_at)
+        .execute(db)
+        .await
+        .map_err(err)?
+        .rows_affected()
+            > 0;
+        if inserted && outcome == Upsert::Unchanged {
+            outcome = Upsert::Updated;
+        }
+    }
+    Ok((outcome, pending))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1918,6 +3281,232 @@ mod tests {
         .unwrap();
         // Union: alpha kept, beta added, unknown names skipped.
         assert_eq!(members, vec!["s1".to_string(), "s2".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn slack_threads_round_trip_and_merge_by_key() {
+        let source = test_db().await;
+        sqlx::query(
+            "INSERT INTO slack_threads (id, title, title_custom, position, created_at, updated_at, \
+             team_id, channel_id, channel, thread_ts, fetch_status, reply_count, search_text) \
+             VALUES ('th-1', 'Deploy', 1, 0, 'c', 'u', 'T1', 'C123', 'ops', '1700000000.000100', \
+             'ready', 1, 'hello')",
+        )
+        .execute(&source)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO slack_files (id, thread_id, slack_file_id, message_ts, name, size, \
+             file_path, download_status, created_at) VALUES ('f-1', 'th-1', 'F1', \
+             '1700000000.000100', 'shot.png', 10, 'slack-threads/th-1/files/F1/shot.png', 'done', 'c')",
+        )
+        .execute(&source)
+        .await
+        .unwrap();
+        for (ts, seq, vi, files) in [
+            ("1700000000.000100", 0, Some("xin chào"), r#"["f-1"]"#),
+            ("1700000000.000200", 1, None, "[]"),
+        ] {
+            sqlx::query(
+                "INSERT INTO slack_messages (thread_id, ts, seq, user_id, text_raw, text_vi, src_hash, \
+                 translate_status, file_ids) VALUES ('th-1', ?, ?, 'U1', 'hello', ?, 'h', ?, ?)",
+            )
+            .bind(ts)
+            .bind(seq)
+            .bind(vi)
+            .bind(if vi.is_some() { "done" } else { "pending" })
+            .bind(files)
+            .execute(&source)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO slack_users (team_id, user_id, display_name, fetched_at) VALUES ('T1', 'U1', 'An', 'now')",
+        )
+        .execute(&source)
+        .await
+        .unwrap();
+
+        let (threads, users, channels) = collect_slack(&source).await.unwrap();
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].messages.len(), 2);
+        assert_eq!(threads[0].files.len(), 1);
+
+        let target = test_db().await;
+        let bundle = Bundle {
+            format: FORMAT.into(),
+            version: VERSION,
+            exported_at: String::new(),
+            app_version: String::new(),
+            settings: BTreeMap::new(),
+            skills: vec![],
+            rules: vec![],
+            skill_groups: vec![],
+            rule_groups: vec![],
+            mcp_servers: vec![],
+            vps_servers: vec![],
+            github_accounts: vec![],
+            gitlab_accounts: vec![],
+            aws_accounts: vec![],
+            azure_accounts: vec![],
+            google_accounts: vec![],
+            claude_accounts: vec![],
+            notes: vec![],
+            todos: vec![],
+            slack_threads: threads,
+            slack_users: users,
+            slack_channels: channels,
+            projects: vec![],
+            home_dir: None,
+            secrets: None,
+        };
+        let mut report = ImportReport::default();
+        import_slack_caches(&target, &bundle, &mut report).await;
+        assert!(report.warnings.is_empty());
+        let entry = &bundle.slack_threads[0];
+        let (outcome, id) = import_slack_thread(&target, entry).await.unwrap();
+        assert_eq!(outcome, Upsert::Created);
+        assert_eq!(id, "th-1");
+
+        let (status, title): (String, String) =
+            sqlx::query_as("SELECT fetch_status, title FROM slack_threads WHERE id = 'th-1'")
+                .fetch_one(&target)
+                .await
+                .unwrap();
+        // Re-fetched after import so the attachments are downloaded again.
+        assert_eq!((status.as_str(), title.as_str()), ("pending", "Deploy"));
+        let (path, dl): (Option<String>, String) =
+            sqlx::query_as("SELECT file_path, download_status FROM slack_files WHERE id = 'f-1'")
+                .fetch_one(&target)
+                .await
+                .unwrap();
+        assert_eq!((path, dl.as_str()), (None, "pending"));
+        let file_ids: String =
+            sqlx::query_scalar("SELECT file_ids FROM slack_messages WHERE seq = 0")
+                .fetch_one(&target)
+                .await
+                .unwrap();
+        assert_eq!(file_ids, r#"["f-1"]"#);
+
+        // Same key again: nothing new.
+        assert_eq!(
+            import_slack_thread(&target, entry).await.unwrap().0,
+            Upsert::Unchanged
+        );
+        // A local thread missing a translation gains it.
+        sqlx::query(
+            "UPDATE slack_messages SET text_vi = NULL, translate_status = 'pending' WHERE seq = 0",
+        )
+        .execute(&target)
+        .await
+        .unwrap();
+        let (outcome, id) = import_slack_thread(&target, entry).await.unwrap();
+        assert_eq!(outcome, Upsert::Updated);
+        let vi: Option<String> = sqlx::query_scalar(
+            "SELECT text_vi FROM slack_messages WHERE thread_id = ? AND seq = 0",
+        )
+        .bind(&id)
+        .fetch_one(&target)
+        .await
+        .unwrap();
+        assert_eq!(vi.as_deref(), Some("xin chào"));
+    }
+
+    #[test]
+    fn remap_home_moves_paths_under_the_new_home() {
+        let (a, b) = (Some("/Users/a"), Some("/Users/b"));
+        assert_eq!(remap_home("/Users/a/work/x", a, b), "/Users/b/work/x");
+        assert_eq!(remap_home("/Users/a", a, b), "/Users/b");
+        // Only whole path components.
+        assert_eq!(remap_home("/Users/ab/x", a, b), "/Users/ab/x");
+        assert_eq!(remap_home("/opt/x", a, b), "/opt/x");
+        assert_eq!(remap_home("/Users/a/x", a, None), "/Users/a/x");
+    }
+
+    #[tokio::test]
+    async fn projects_round_trip_with_links_and_missing_folder() {
+        let source = test_db().await;
+        for sql in [
+            "INSERT INTO projects (id, name, path, default_engine, created_at, github_project_board_url) \
+             VALUES ('p1', 'shop', '/old/home/shop', 'codex', 'c', 'https://board')",
+            "INSERT INTO repos (id, project_id, name, path, created_at, provider) \
+             VALUES ('r1', 'p1', 'api', '/old/home/shop/api', 'c', 'gitlab')",
+            "INSERT INTO mcp_servers (id, name, transport, created_at) VALUES ('m1', 'slack', 'stdio', 'c')",
+            "INSERT INTO project_mcp_servers (project_id, server_id, enabled_at) VALUES ('p1', 'm1', 'c')",
+            "INSERT INTO servers (id, label, host, username, auth_method, created_at) \
+             VALUES ('s1', 'prod', 'h', 'root', 'agent', 'c')",
+            "INSERT INTO project_servers (project_id, server_id, role, created_at) VALUES ('p1', 's1', 'production', 'c')",
+            "INSERT INTO pulse_watches (id, project_id, source_type, source_ref, source_url, added_via, \
+             resolve_status, created_at, updated_at) VALUES ('w1', 'p1', 'github_issue', 'o/r#1', 'u', \
+             'button', 'ready', 'c', 'u')",
+            "INSERT INTO pulse_digests (id, watch_id, content_hash, status, ball, summary, created_at) \
+             VALUES ('g1', 'w1', 'h', 'on_track', 'me', 'all good', 'c')",
+        ] {
+            sqlx::query(sql).execute(&source).await.unwrap();
+        }
+        let mut projects = collect_projects(&source).await.unwrap();
+        assert_eq!(projects.len(), 1);
+        let home = std::env::temp_dir().join(format!("devdy-backup-{}", Uuid::new_v4()));
+        let new_path = home.join("shop");
+        projects[0].path = new_path.to_string_lossy().into_owned();
+
+        let target = test_db().await;
+        for sql in [
+            "INSERT INTO mcp_servers (id, name, transport, created_at) VALUES ('m9', 'slack', 'stdio', 'c')",
+            "INSERT INTO servers (id, label, host, username, auth_method, created_at) \
+             VALUES ('s9', 'prod', 'h', 'root', 'agent', 'c')",
+        ] {
+            sqlx::query(sql).execute(&target).await.unwrap();
+        }
+        let entry = &projects[0];
+        // Missing folder without permission to create it: skipped.
+        assert!(import_project(&target, entry, false).await.is_err());
+        let (outcome, id, warnings) = import_project(&target, entry, true).await.unwrap();
+        assert_eq!(outcome, Upsert::Created);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(new_path.is_dir());
+
+        let (engine, board): (String, Option<String>) = sqlx::query_as(
+            "SELECT default_engine, github_project_board_url FROM projects WHERE id = ?",
+        )
+        .bind(&id)
+        .fetch_one(&target)
+        .await
+        .unwrap();
+        assert_eq!(
+            (engine.as_str(), board.as_deref()),
+            ("codex", Some("https://board"))
+        );
+        let links: (i64, i64, i64) = sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM repos WHERE project_id = ?1 AND provider = 'gitlab'), \
+                    (SELECT COUNT(*) FROM project_mcp_servers WHERE project_id = ?1 AND server_id = 'm9'), \
+                    (SELECT COUNT(*) FROM project_servers WHERE project_id = ?1 AND server_id = 's9')",
+        )
+        .bind(&id)
+        .fetch_one(&target)
+        .await
+        .unwrap();
+        assert_eq!(links, (1, 1, 1));
+
+        let watch = &entry.pulse_watches[0];
+        assert_eq!(
+            import_pulse_watch(&target, &id, watch).await.unwrap(),
+            (Upsert::Created, false)
+        );
+        assert_eq!(
+            import_pulse_watch(&target, &id, watch).await.unwrap(),
+            (Upsert::Unchanged, false)
+        );
+        let digests: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pulse_digests")
+            .fetch_one(&target)
+            .await
+            .unwrap();
+        assert_eq!(digests, 1);
+
+        // Second import: matched by path, nothing new.
+        let (outcome, again, _) = import_project(&target, entry, false).await.unwrap();
+        assert_eq!((outcome, again), (Upsert::Unchanged, id));
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

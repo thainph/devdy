@@ -647,7 +647,7 @@ pub async fn enable_group_for_project(
     enable_group(db, kind, &project_id, &group_id).await
 }
 
-async fn enable_group(
+pub(crate) async fn enable_group(
     db: &Db,
     kind: GroupKind,
     project_id: &str,
