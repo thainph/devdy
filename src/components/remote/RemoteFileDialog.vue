@@ -41,6 +41,7 @@ const { t, locale } = useI18n()
 const dir = ref('')
 const pathInput = ref('')
 const entries = ref<FsEntry[]>([])
+const truncated = ref(false)
 const loading = ref(false)
 const error = ref<string | null>(null)
 const busy = ref(false)
@@ -106,10 +107,11 @@ async function navigate(path: string, select?: string) {
   loading.value = true
   error.value = null
   try {
-    const list = await remoteFs.list(path)
+    const { entries: list, truncated: cut } = await remoteFs.list(path)
     dir.value = path
     pathInput.value = path
     entries.value = list
+    truncated.value = cut
     selected.value = new Set()
     if (select) {
       const hit = list.find((e) => e.name === select)
@@ -224,6 +226,9 @@ onMounted(async () => {
       </div>
       <p class="px-3 pt-2 text-[11px] text-muted-foreground">{{ t('remoteFiles.hint') }}</p>
       <p v-if="error" class="px-3 pt-1 text-xs text-destructive break-all">{{ error }}</p>
+      <p v-else-if="truncated" class="px-3 pt-1 text-[11px] text-amber-500">
+        {{ t('remoteFiles.truncated', { count: entries.length }) }}
+      </p>
       <div ref="listEl" class="flex-1 min-h-0 overflow-auto px-1.5 py-1.5">
         <p v-if="!loading && !error && entries.length === 0" class="px-2 py-6 text-center text-xs text-muted-foreground">
           {{ t('remoteFiles.empty') }}

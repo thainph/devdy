@@ -167,8 +167,9 @@ export const useRemoteControlStore = defineStore('remoteControl', () => {
     return await invoke<OtpReveal | null>('remote_reveal_otp')
   }
 
-  /** Kill switch: cut off the controller attached right now. It may re-join;
-   * changing the master password or ending the session keeps it out. */
+  /** Kill switch: cut off the controller attached right now and sign it out
+   * (its session token stops working). It may sign in again with the master
+   * password or a pairing code; changing the password keeps it out. */
   async function kickController(): Promise<void> {
     await invoke('remote_kick_controller')
     await refreshStatus()

@@ -222,8 +222,32 @@ pub async fn remote_reveal_otp(state: State<'_, RemoteState>) -> Result<Option<O
     }))
 }
 
+/// Sign every controller out of the session: rotate the bound session's
+/// reconnect secret (in memory and in the persisted credential) so a stored
+/// session token no longer opens the gate. Its holder has to sign in again with
+/// the OTP or the master password, which hands out the new token. A controller
+/// attached right now keeps its live room until it is kicked or reconnects.
+async fn sign_out_controllers(state: &RemoteState) {
+    let mut bound = state.bound.lock().await;
+    if let Some(b) = bound.as_mut() {
+        b.rotate_session_secret();
+    }
+    if let Some(cred) = crate::secrets::get_remote_session() {
+        let cred = session::rotated_credential(cred, bound.as_ref());
+        // Failing to persist must not leave the old secret resumable.
+        if crate::secrets::set_remote_session(&cred).is_err() {
+            let _ = crate::secrets::delete_remote_session();
+        }
+    }
+}
+
 /// Set (or clear) the owner's remote master password. An empty string clears it
 /// (falls back to the per-join OTP). Stored in the Keychain, never in SQLite.
+///
+/// Also signs every controller out (see [`sign_out_controllers`]): a session
+/// token obtained with the old password must not outlive it. The controller
+/// attached now (possibly the one making this change) keeps working until it
+/// reconnects, then signs in with the new password.
 #[tauri::command]
 pub async fn remote_set_master_password(
     db: State<'_, Db>,
@@ -231,6 +255,7 @@ pub async fn remote_set_master_password(
     password: String,
 ) -> Result<(), String> {
     crate::secrets::set_remote_master_password(&password).map_err(|e| e.to_string())?;
+    sign_out_controllers(state.inner()).await;
     // Password login is available exactly while a master password is set.
     state.announce_signal.notify_one();
     let action = if password.trim().is_empty() {
@@ -264,22 +289,27 @@ pub async fn remote_set_device_alias(
     Ok(())
 }
 
-/// Kill switch: cut off the Controller currently attached (remote desktop or
-/// phone). It may re-join with its credentials; to keep it out the owner
-/// changes the master password or ends the session.
+/// Kill switch: disconnect AND sign out the Controller currently attached
+/// (remote desktop or phone). The session token it holds is rotated away first,
+/// so it cannot re-join on its own; it has to sign in again with the OTP or the
+/// master password. To keep it out for good the owner changes the master
+/// password (or ends the session).
 #[tauri::command]
 pub async fn remote_kick_controller(
     db: State<'_, Db>,
     state: State<'_, RemoteState>,
 ) -> Result<(), String> {
+    // Rotate before cutting the room, so a fast re-join already meets the new
+    // secret. Done even when nobody is attached right now (e.g. a controller
+    // mid-reconnect): the owner asked for it to be signed out.
+    sign_out_controllers(state.inner()).await;
     let attached = state.connected.load(std::sync::atomic::Ordering::SeqCst)
         || state.ipc.controlled_since().await.is_some();
     // Nothing to cut: don't leave a stored permit that would kick the next
     // Controller to join.
-    if !attached || !state.is_running().await {
-        return Ok(());
+    if attached && state.is_running().await {
+        state.kick_signal.notify_one();
     }
-    state.kick_signal.notify_one();
     audit::audit(db.inner(), None, None, None, "kick_controller", audit::RESULT_ACCEPTED, None).await;
     Ok(())
 }

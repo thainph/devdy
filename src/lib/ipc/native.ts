@@ -38,6 +38,7 @@ import {
   type ByteRange,
   type DialogFilter,
   type FsEntry,
+  type FsListing,
 } from './nativeCore'
 
 // ── The controlled machine's file system ────────────────────────────────────
@@ -49,9 +50,11 @@ function remote() {
 }
 
 export const remoteFs = {
-  list: (path: string) => remote().invoke<FsEntry[]>('remote_fs_list', { path }),
+  list: (path: string) => remote().invoke<FsListing>('remote_fs_list', { path }),
   stat: (path: string) => remote().invoke<FsEntry>('remote_fs_stat', { path }),
   home: () => remote().invoke<string>('remote_fs_home'),
+  /** The controlled machine's log folder. */
+  logDir: () => remote().invoke<string>('remote_fs_log_dir'),
   async read(path: string, offset: number, len: number): Promise<{ bytes: Uint8Array; total: number }> {
     const r = await remote().invoke<{ data_base64: string; total_size: number }>('remote_fs_read', { path, offset, len })
     return { bytes: decodeBase64(r.data_base64), total: r.total_size }
