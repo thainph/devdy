@@ -9,7 +9,10 @@ import { useToast } from '@/composables/useToast'
 import { isRemoteMode } from '@/lib/ipc/remote'
 
 /**
- * Persistent "being controlled from another Devdy" pill with a kill switch.
+ * Persistent "being controlled from another Devdy" pill with a kill switch:
+ * "Disconnect and sign out" cuts the controller off and rotates its session
+ * token away, so it cannot re-join until it signs in again (master password /
+ * pairing code). Changing the master password keeps it out for good.
  *
  * Shown on the controlled host (B) while a remote-desktop controller is attached
  * over IPC. Kept outside the sidebar so hiding the sidebar never hides it. Driven

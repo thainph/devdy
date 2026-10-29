@@ -20,6 +20,13 @@ export interface FsEntry {
   modified: number | null
 }
 
+/** A directory listing (`remote_fs_list`); `truncated` when the directory had
+ * more entries than the controlled machine returns in one listing. */
+export interface FsListing {
+  entries: FsEntry[]
+  truncated: boolean
+}
+
 /** A `plugin:dialog` filter. */
 export interface DialogFilter {
   name: string

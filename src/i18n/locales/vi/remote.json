@@ -26,7 +26,7 @@
     "set": "(đã đặt)",
     "masterPasswordReplace": "Nhập mật khẩu mới để thay thế mật khẩu hiện tại",
     "masterPasswordSet": "Đặt mật khẩu để bỏ qua OTP mỗi lần",
-    "masterPasswordHint": "Sau khi đặt, nhập mật khẩu này trên điện thoại thay vì mã OTP. Lưu trong keychain của hệ điều hành. Tiện hơn nhưng cố định — chỉ dùng nếu bạn là người dùng duy nhất. Được lưu cùng với các cài đặt bên dưới.",
+    "masterPasswordHint": "Sau khi đặt, nhập mật khẩu này trên điện thoại thay vì mã OTP. Lưu trong keychain của hệ điều hành. Tiện hơn nhưng cố định — chỉ dùng nếu bạn là người dùng duy nhất. Đổi hoặc xoá mật khẩu sẽ đăng xuất mọi thiết bị đã đăng nhập. Được lưu cùng với các cài đặt bên dưới.",
     "saveSettings": "Lưu cài đặt",
     "hostLabel": "host: {id}",
     "perRunHint": "Phiên điều khiển từ xa giờ được tạo theo từng run: mở một run và nhấn nút {remote} trên thanh công cụ để tạo link. Nhập {masterPassword} (nếu đã đặt) hoặc mã OTP trên điện thoại để kết nối.",
@@ -121,7 +121,8 @@
       "reconnecting": "Đang kết nối lại…",
       "disconnected": "Mất kết nối",
       "error": "Lỗi kết nối",
-      "authFailed": "Phiên đăng nhập hết hạn",
+      "authFailed": "Đã bị đăng xuất",
+      "superseded": "Thiết bị khác đã giành quyền điều khiển",
       "reconnect": "Kết nối lại",
       "signInAgain": "Đăng nhập lại",
       "signOut": "Đăng xuất"

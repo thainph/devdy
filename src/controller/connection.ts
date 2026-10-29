@@ -36,6 +36,7 @@ import {
   listProjectFilesCmd,
   listPlanUsageCmd,
   ipcHelloCmd,
+  isHsReject,
   parseStreamPayload,
   toHex,
   utf8ToBase64,
@@ -158,6 +159,9 @@ export interface ControllerState {
   decodeErrors: Ref<number>
   /** The auth phase (see {@link AuthState}); null until the first attempt. */
   auth: Ref<AuthState | null>
+  /** A newer connection to this session (another tab or device) took it over
+   * and this one stopped for good rather than fight it. */
+  superseded: Ref<boolean>
 }
 
 /**
@@ -267,6 +271,7 @@ export class ControllerConnection {
       live: ref<boolean>(false),
       decodeErrors: ref<number>(0),
       auth: ref<AuthState | null>(null),
+      superseded: ref<boolean>(false),
     }
   }
 
@@ -675,6 +680,10 @@ export class ControllerConnection {
       this.fail('Malformed handshake frame')
       return
     }
+    if (isHsReject(offerJson)) {
+      this.onGateRejected()
+      return
+    }
     try {
       // Verify the Host (SEC-006) WITHOUT deriving the key — the OTP may not be
       // known yet. The answer gives the Host our public key; the first sealed
@@ -699,6 +708,20 @@ export class ControllerConnection {
       const msg = e instanceof HandshakeError ? e.message : 'Handshake failed'
       // A fingerprint mismatch is terminal — do NOT reconnect into a MITM.
       this.failTerminal(msg)
+    }
+  }
+
+  /** The Host could not open our gate frame. An OTP is simply wrong (retry on the
+   * same room); a session token was rotated away — the owner signed us out — so
+   * stop: retrying would only burn the Host's attempt budget. */
+  private onGateRejected(): void {
+    // Only answers our outstanding gate frame. Not `auth === 'pending'`: a token
+    // REconnect keeps `auth` at 'authenticated' while it re-runs the gate.
+    if (this.otpAttemptAt === null) return
+    if (this.authMode === 'otp') {
+      this.softAuthFail('Wrong or expired code — please try again.')
+    } else {
+      this.failAuth('Signed out by the host — please sign in again.')
     }
   }
 
@@ -921,6 +944,7 @@ export class ControllerConnection {
     // A newer connection (another tab/device, or a reload) took this session
     // over. Stop here — re-joining would kick it back and the two would fight.
     if (code === 'superseded') {
+      this.state.superseded.value = true
       this.failTerminal('This session is now open on another device or tab — reload to take it back.')
       return
     }

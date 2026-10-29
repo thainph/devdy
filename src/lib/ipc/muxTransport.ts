@@ -103,6 +103,8 @@ export function startMuxClient(label: string): RemoteIpcClient {
     status: ref<ConnStatus>('idle'),
     auth: ref<AuthState | null>(null),
     lastError: ref<string | null>(null),
+    // Pop-outs show no banner; the owner window reports a takeover.
+    superseded: ref(false),
   }
   const send = (msg: MuxRequest): boolean => {
     void emitTo(REMOTE_OWNER_LABEL, MUX_REQ_EVENT, { from: label, msg } satisfies MuxEnvelope).catch(() => {})
