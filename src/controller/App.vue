@@ -22,6 +22,7 @@ import type { ComposerTurn } from './components/SessionComposer.vue'
 import { ControllerConnection, type AuthState, type ConnStatus, type SecretSource } from './connection'
 import { createRunStore } from './runStore'
 import * as tokenStore from './sessionTokenStore'
+import type { LoginGrant } from './login'
 import {
   cancelRunCmd,
   listProjectFilesCmd,
@@ -213,6 +214,15 @@ function onLink(payload: SessionLinkPayload): void {
   link.value = payload
   phase.value = 'otp'
   startConnection(null)
+}
+
+/** Password login succeeded: keep the granted link + token exactly like a
+ * token from a link session, then continue on the normal session path. */
+function onGranted(grant: LoginGrant): void {
+  tokenStore.save({ ...grant.link, token: grant.token })
+  link.value = grant.link
+  phase.value = 'session'
+  startConnection({ mode: 'session', token: grant.token })
 }
 
 /** The user submitted an OTP — derive the key + fire the gate on the live
@@ -462,7 +472,7 @@ function onRequestFiles(): void {
 </script>
 
 <template>
-  <LinkEntryView v-if="phase === 'link'" @link="onLink" />
+  <LinkEntryView v-if="phase === 'link'" @link="onLink" @granted="onGranted" />
 
   <OtpEntryView
     v-else-if="phase === 'otp'"

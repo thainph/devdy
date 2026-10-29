@@ -678,6 +678,12 @@ pub struct RemoteSession {
     /// Sliding idle expiry as a Unix timestamp (seconds). Refreshed on each
     /// accepted command; past it the session must re-authenticate with the OTP.
     pub idle_expires_at: u64,
+    /// The session's link secret (hex). Both sides key the reconnect KDF with
+    /// it, so a rehydrated session needs it to accept a token reconnect, and
+    /// password login hands it to a Controller that lost its link. Older
+    /// credentials lack it (empty).
+    #[serde(default)]
+    pub link_secret: String,
 }
 
 /// Persist the Host↔relay auth token.

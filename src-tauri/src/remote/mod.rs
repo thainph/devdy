@@ -24,6 +24,7 @@ pub mod command;
 pub mod commands;
 pub mod forwarder;
 pub mod handler;
+pub mod login;
 pub mod meta;
 pub mod outbound;
 pub mod protocol;

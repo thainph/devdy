@@ -38,11 +38,11 @@ Control frames handled by the relay:
 | `t`              | Direction        | Purpose |
 |------------------|------------------|---------|
 | `register_host`  | Host → Relay     | Authenticate with `auth_token`; hold long-lived. |
-| `create_pair`    | Host → Relay     | Listen on a rendezvous `pair_code` until this connection closes (a new code replaces the old one). Acked with `room_ready{code:"armed"}`. |
+| `create_pair`    | Host → Relay     | Listen on a rendezvous `pair_code` until this connection closes (a new code replaces the old one in the same `slot`). Acked with `room_ready{code:"armed"}`. Optional `slot`: absent = the session, `"login"` = password login (well-known code `devdy-login-v1`). |
 | `join`           | Controller → Relay | Join the Host listening on `pair_code`. A newer join replaces the previous Controller (`error{superseded}` to the old one). |
 | `room_ready`     | Relay → both     | Room opened, carries `room_id`. |
 | `peer_left`      | Relay → survivor | The other peer left / was cut. Re-join. |
-| `revoke`         | Host → Relay     | Close a room; empty `room_id` = stop listening and close the room. |
+| `revoke`         | Host → Relay     | Close a room; empty `room_id` = stop listening in `slot` (default: the session) and close its room. |
 | `keepalive`      | either → Relay   | Echoed back; keeps idle proxies from reaping the socket. |
 | `error`          | Relay → sender   | `{ code, message }` — auth/routing error. |
 
@@ -58,6 +58,11 @@ Model (deliberately minimal — reconnect = re-join):
   `RELAY_PEER_LIVENESS_TIMEOUT_SECS`. Closing a connection drops its listen and
   room, so nothing outlives a dead peer.
 - Legacy `resume` → `error{resume_invalid}`; legacy `handshake_done` → ignored.
+- Password login: while a master password is set, the Host also listens in the
+  `login` slot. The Controller joins it with only the password; the E2E key is
+  derived from the password (PBKDF2 → BLAKE2b), the Host rate limits wrong
+  attempts and answers a correct one with a full session link + token. The
+  relay just routes; `room_ready` to the Host carries `slot` so it can tell.
 
 ## Configuration (environment)
 

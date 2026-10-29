@@ -66,6 +66,11 @@ pub struct Envelope {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub persistent: Option<bool>,
 
+    /// `create_pair` / `revoke` / `room_ready`: the relay listen slot. Absent =
+    /// the session slot; `"login"` = password login.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<String>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
 
@@ -84,6 +89,7 @@ impl Envelope {
             auth_token: None,
             pair_code: None,
             persistent: None,
+            slot: None,
             code: None,
             message: None,
         }
@@ -111,6 +117,20 @@ impl Envelope {
     pub fn create_pair_persistent(pair_code: impl Into<String>, persistent: bool) -> Self {
         let mut e = Self::create_pair(pair_code);
         e.persistent = Some(persistent);
+        e
+    }
+
+    /// `create_pair` in a named listen slot (password login).
+    pub fn create_pair_slot(pair_code: impl Into<String>, slot: impl Into<String>) -> Self {
+        let mut e = Self::create_pair_persistent(pair_code, true);
+        e.slot = Some(slot.into());
+        e
+    }
+
+    /// Stop listening in a named slot (password login disabled).
+    pub fn revoke_slot(slot: impl Into<String>) -> Self {
+        let mut e = Self::revoke(String::new());
+        e.slot = Some(slot.into());
         e
     }
 
@@ -224,6 +244,15 @@ pub enum StreamPayload {
         rendezvous_code: String,
         /// Absolute idle expiry (Unix seconds); slides forward on activity.
         idle_expires_at: u64,
+    },
+    /// Password login succeeded (Host → Controller, on the login room): a full
+    /// session link + token so the Controller continues on the session path.
+    LoginGranted {
+        host_fingerprint: String,
+        rendezvous_code: String,
+        run_id: String,
+        link_secret: String,
+        token: String,
     },
     /// Result of the first-frame authentication attempt (OTP or session).
     AuthResult {

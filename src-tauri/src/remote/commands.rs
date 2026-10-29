@@ -221,9 +221,12 @@ pub async fn remote_reveal_otp(state: State<'_, RemoteState>) -> Result<Option<O
 #[tauri::command]
 pub async fn remote_set_master_password(
     db: State<'_, Db>,
+    state: State<'_, RemoteState>,
     password: String,
 ) -> Result<(), String> {
     crate::secrets::set_remote_master_password(&password).map_err(|e| e.to_string())?;
+    // Password login is available exactly while a master password is set.
+    state.announce_signal.notify_one();
     let action = if password.trim().is_empty() {
         "clear_master_password"
     } else {

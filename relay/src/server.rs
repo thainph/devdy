@@ -362,6 +362,7 @@ async fn dispatch(
                 }
             };
             let code = hash_code(pair_code);
+            let slot = env.slot.clone().unwrap_or_default();
             let next_room_id = new_room_id();
             let mut rooms = shared.rooms.lock().await;
             if rooms.len() >= shared.config.max_rooms && !rooms.is_listening(code) {
@@ -370,8 +371,10 @@ async fn dispatch(
                 let _ = out_tx.send(Envelope::error(ErrorCode::BadRequest, "room cap reached"));
                 return false;
             }
-            deliver(rooms.listen(code, conn_id, out_tx.clone(), next_room_id.clone()));
-            let _ = out_tx.send(Envelope::room_armed(next_room_id));
+            deliver(rooms.listen(code, conn_id, out_tx.clone(), next_room_id.clone(), &slot));
+            let mut ack = Envelope::room_armed(next_room_id);
+            ack.slot = env.slot;
+            let _ = out_tx.send(ack);
             drop(rooms);
             tracing::info!(event = "listening", conn = conn_id);
             false
@@ -394,13 +397,16 @@ async fn dispatch(
                 JoinOutcome::Joined {
                     room_id,
                     host_out,
+                    slot,
                     notices,
                 } => {
                     *role = Role::Controller;
                     // Still under the lock: a concurrent join can't interleave
                     // its room_ready with ours at the Host.
                     deliver(notices);
-                    let _ = host_out.send(Envelope::room_ready(room_id.clone()));
+                    let mut ready = Envelope::room_ready(room_id.clone());
+                    ready.slot = (!slot.is_empty()).then_some(slot);
+                    let _ = host_out.send(ready);
                     let _ = out_tx.send(Envelope::room_ready(room_id.clone()));
                     drop(rooms);
                     tracing::info!(event = "join_ok", conn = conn_id, room_id = %room_id);
@@ -435,7 +441,8 @@ async fn dispatch(
             }
             {
                 let mut rooms = shared.rooms.lock().await;
-                deliver(rooms.revoke(conn_id, &env.room_id, hash_code(&env.room_id)));
+                let slot = env.slot.as_deref().unwrap_or_default();
+                deliver(rooms.revoke(conn_id, &env.room_id, hash_code(&env.room_id), slot));
             }
             tracing::info!(event = "revoked", conn = conn_id);
             false
