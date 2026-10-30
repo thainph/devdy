@@ -72,6 +72,10 @@ pub struct Frame {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shas: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub released: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
@@ -382,6 +386,14 @@ impl Connection {
         f.sha = Some(sha.to_string());
         let r = self.request(f, &["blob_data"]).await?;
         r.data.ok_or_else(|| TransportError::Relay("bad_blob".into()))
+    }
+
+    /// `blob_release{shas}` → how many the relay marked for deletion.
+    pub async fn blob_release(&self, shas: &[String]) -> Result<u64, TransportError> {
+        let mut f = Frame::new("blob_release");
+        f.shas = Some(shas.to_vec());
+        let r = self.request(f, &["blob_released"]).await?;
+        Ok(r.released.unwrap_or(0))
     }
 
     /// `sync_revoke{device_id}` → `control{code:"ok"}`.
