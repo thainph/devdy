@@ -6,13 +6,32 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{Mutex, MutexGuard};
 
-use super::clock::HlcClock;
+use super::clock::{wall_ms, HlcClock};
 use super::codec::{encode_row, read_row, PathCtx};
 use super::op::{Op, OpKind, OP_VERSION};
-use super::{apply, schema, SCHEMA_VERSION};
+use super::{apply, files, schema, secrets, SCHEMA_VERSION};
 use crate::db::Db;
 
 const CURSOR_KEY: &str = "pull_cursor";
+/// A pulled file/secret op that keeps failing is dropped after this many tries.
+const MAX_EXTRA_ATTEMPTS: i64 = 50;
+
+/// Ops whose `tbl` is not a DB table (§9b): routed to `files` / `secrets`,
+/// never to `apply`.
+pub fn is_extra_tbl(tbl: &str) -> bool {
+    tbl == files::TBL || tbl == secrets::TBL
+}
+
+/// The relay's sealed blob store as file sync uses it. The engine implements
+/// it over its connection (sealing with the group key); tests use a fake.
+#[allow(clippy::double_must_use)]
+#[async_trait]
+pub trait BlobIo: Send + Sync {
+    /// Seal and upload one plaintext chunk; returns the sealed blob's sha.
+    async fn put(&self, plaintext: &[u8]) -> Result<String, String>;
+    /// Download, verify and open one blob.
+    async fn get(&self, blob_sha: &str) -> Result<Vec<u8>, String>;
+}
 
 // async_trait's generated futures trip clippy::double_must_use (as elsewhere).
 #[allow(clippy::double_must_use)]
@@ -23,6 +42,18 @@ pub trait SyncStore: Send + Sync {
     async fn apply_remote(&self, ops: Vec<Op>) -> Result<ApplyReport, String>;
     async fn cursor(&self) -> Result<u64, String>; // last pulled relay seq
     async fn set_cursor(&self, seq: u64) -> Result<(), String>;
+
+    /// Scan the non-DB sources that are due (files, Keychain), upload file
+    /// chunks and queue `file` / `secret` ops into the outbox. Called before
+    /// every push and on the outbox poll; cheap when nothing is due.
+    async fn stage(&self, _blobs: &dyn BlobIo) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Apply pulled `file` / `secret` ops (and retry earlier failed ones).
+    async fn apply_remote_extra(&self, ops: Vec<Op>, _blobs: &dyn BlobIo) -> Result<ApplyReport, String> {
+        Ok(ApplyReport { skipped_older: ops.len(), ..Default::default() })
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
@@ -42,6 +73,10 @@ pub struct SqliteSyncStore {
     paths: PathCtx,
     /// Loaded lazily from `sync_state`; the lock also serialises pending/apply.
     clock: Mutex<Option<HlcClock>>,
+    /// Keychain access for `secret` ops; `None` = secrets are not synced.
+    secrets: Option<secrets::Backend>,
+    file_timing: files::Timing,
+    scan: Mutex<files::ScanState>,
 }
 
 fn err(e: sqlx::Error) -> String {
@@ -50,10 +85,28 @@ fn err(e: sqlx::Error) -> String {
 
 impl SqliteSyncStore {
     pub fn new(db: Db, device_id: String) -> Self {
-        SqliteSyncStore { db, device_id, paths: PathCtx::from_env(), clock: Mutex::new(None) }
+        SqliteSyncStore {
+            db,
+            device_id,
+            paths: PathCtx::from_env(),
+            clock: Mutex::new(None),
+            secrets: None,
+            file_timing: files::Timing::default(),
+            scan: Mutex::new(files::ScanState::default()),
+        }
+    }
+
+    pub fn with_secrets(mut self, backend: secrets::Backend) -> Self {
+        self.secrets = Some(backend);
+        self
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
+    pub fn with_file_timing(mut self, timing: files::Timing) -> Self {
+        self.file_timing = timing;
+        self
+    }
+
     pub fn with_paths(mut self, paths: PathCtx) -> Self {
         self.paths = paths;
         self
@@ -87,30 +140,31 @@ impl SyncStore for SqliteSyncStore {
         .map_err(err)?;
 
         let mut out = Vec::with_capacity(groups.len());
+        let with_secrets = self.secrets.is_some() && secrets::enabled(&mut tx).await?;
+        // Read once per call, and only when a secret op is waiting.
+        let mut keychain: Option<std::collections::BTreeMap<secrets::SecretId, String>> = None;
         for (tbl, pk_text, seq, changed_at) in groups {
-            let spec = schema::spec(&tbl);
             let pk: Option<Value> = serde_json::from_str(&pk_text).ok();
-            let (Some(spec), Some(pk)) = (spec, pk) else {
+            let entry = match (tbl.as_str(), pk) {
+                (files::TBL, Some(pk)) => files::pending_row(&mut tx, &pk, with_secrets).await?.map(|e| (pk, e)),
+                (secrets::TBL, Some(pk)) if with_secrets => {
+                    if keychain.is_none() {
+                        let backend = self.secrets.as_ref().ok_or("no keychain")?;
+                        keychain = Some(backend.list()?);
+                    }
+                    keychain.as_ref().and_then(|items| secrets::pending_row(items, &pk)).map(|e| (pk, e))
+                }
+                (_, Some(pk)) => match schema::spec(&tbl) {
+                    Some(spec) => self.db_entry(&mut tx, spec, pk).await?,
+                    None => None,
+                },
+                (_, None) => None,
+            };
+            let Some((pk, (kind, row))) = entry else {
                 drop_entries(&mut tx, &tbl, &pk_text, seq).await?;
                 continue;
             };
-            let row = read_row(&mut tx, spec, &pk).await?;
-            if let Some(f) = spec.filter {
-                let value = row
-                    .as_ref()
-                    .and_then(|r| r.get(f.col))
-                    .or_else(|| (spec.pk == [f.col]).then_some(&pk))
-                    .and_then(Value::as_str);
-                if !spec.accepts(value) {
-                    drop_entries(&mut tx, &tbl, &pk_text, seq).await?;
-                    continue;
-                }
-            }
             let hlc = clock.tick_at(changed_at.max(0) as u64);
-            let (kind, row) = match row {
-                Some(r) => (OpKind::Upsert, Some(encode_row(&self.paths, spec, r))),
-                None => (OpKind::Delete, None),
-            };
             sqlx::query(
                 "INSERT INTO sync_rows (tbl, pk, hlc, deleted) VALUES (?, ?, ?, ?) \
                  ON CONFLICT(tbl, pk) DO UPDATE SET hlc = excluded.hlc, deleted = excluded.deleted",
@@ -128,6 +182,109 @@ impl SyncStore for SqliteSyncStore {
         tx.commit().await.map_err(err)?;
         *guard = Some(clock);
         Ok(out)
+    }
+
+    async fn stage(&self, blobs: &dyn BlobIo) -> Result<(), String> {
+        let mut state = self.scan.lock().await;
+        let Some(mode) = state.due(&self.file_timing, files::has_kicks()) else { return Ok(()) };
+        let with_secrets = match &self.secrets {
+            Some(_) => {
+                let mut conn = self.db.acquire().await.map_err(err)?;
+                secrets::enabled(&mut conn).await?
+            }
+            None => false,
+        };
+        files::stage(&self.db, &self.paths, blobs, &mut state, mode, with_secrets).await?;
+        drop(state);
+        if mode == files::ScanMode::Full {
+            if let (Some(backend), true) = (&self.secrets, with_secrets) {
+                if let Err(e) = secrets::scan(&self.db, backend.as_ref()).await {
+                    tracing::warn!(event = "sync_secret_scan_failed", error = %e);
+                }
+            }
+            // Retry pulled ops that failed earlier even when nothing new arrives.
+            self.apply_remote_extra(Vec::new(), blobs).await?;
+        }
+        Ok(())
+    }
+
+    async fn apply_remote_extra(&self, ops: Vec<Op>, blobs: &dyn BlobIo) -> Result<ApplyReport, String> {
+        let mut guard = self.clock().await?;
+        let mut clock = guard.clone().ok_or("clock not loaded")?;
+        let parked: Vec<(String, i64)> = sqlx::query_as("SELECT op, attempts FROM sync_extra_deferred")
+            .fetch_all(&self.db)
+            .await
+            .map_err(err)?;
+        // Newest op per (tbl, pk); a parked op keeps its attempt count.
+        let mut latest: std::collections::BTreeMap<(String, String), (Op, i64)> = Default::default();
+        let incoming = ops.into_iter().map(|o| (o, 0));
+        let parked = parked.into_iter().filter_map(|(s, n)| Some((serde_json::from_str::<Op>(&s).ok()?, n)));
+        for (op, attempts) in parked.chain(incoming) {
+            let key = (op.tbl.clone(), op.pk_key());
+            match latest.get(&key) {
+                Some((kept, _)) if kept.hlc >= op.hlc => {}
+                _ => {
+                    latest.insert(key, (op, attempts));
+                }
+            }
+        }
+        let mut report = ApplyReport::default();
+        let mut failed: Vec<(Op, i64, String)> = Vec::new();
+        for (_, (op, attempts)) in latest {
+            clock.observe(&op.hlc);
+            if op.schema > SCHEMA_VERSION {
+                failed.push((op, attempts, format!("schema newer than local ({SCHEMA_VERSION})")));
+                continue;
+            }
+            let result = match op.tbl.as_str() {
+                files::TBL => files::apply_op(&self.db, &self.paths, blobs, &op).await.map(|o| match o {
+                    files::Outcome::Applied => (1, 0, 0),
+                    files::Outcome::Skipped => (0, 1, 0),
+                    files::Outcome::Conflict => (1, 0, 1),
+                }),
+                secrets::TBL => match &self.secrets {
+                    Some(b) => secrets::apply_op(&self.db, b.as_ref(), &op).await.map(|o| match o {
+                        secrets::Outcome::Applied => (1, 0, 0),
+                        secrets::Outcome::Skipped => (0, 1, 0),
+                    }),
+                    None => Ok((0, 1, 0)),
+                },
+                _ => Ok((0, 1, 0)),
+            };
+            match result {
+                Ok((a, s, c)) => {
+                    report.applied += a;
+                    report.skipped_older += s;
+                    report.conflicts += c;
+                }
+                Err(e) => failed.push((op, attempts + 1, e)),
+            }
+        }
+        let mut tx = self.db.begin().await.map_err(err)?;
+        sqlx::query("DELETE FROM sync_extra_deferred").execute(&mut *tx).await.map_err(err)?;
+        for (op, attempts, reason) in failed {
+            if attempts > MAX_EXTRA_ATTEMPTS {
+                tracing::warn!(event = "sync_extra_op_dropped", tbl = %op.tbl, reason = %reason);
+                continue;
+            }
+            sqlx::query(
+                "INSERT INTO sync_extra_deferred (tbl, pk, op, reason, attempts, deferred_at) VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&op.tbl)
+            .bind(op.pk_key())
+            .bind(serde_json::to_string(&op).map_err(|e| e.to_string())?)
+            .bind(reason)
+            .bind(attempts)
+            .bind(wall_ms() as i64)
+            .execute(&mut *tx)
+            .await
+            .map_err(err)?;
+            report.deferred += 1;
+        }
+        clock.save(&mut tx).await?;
+        tx.commit().await.map_err(err)?;
+        *guard = Some(clock);
+        Ok(report)
     }
 
     async fn mark_pushed(&self, up_to_outbox_seq: i64) -> Result<(), String> {
@@ -167,6 +324,33 @@ impl SyncStore for SqliteSyncStore {
         .await
         .map_err(err)?;
         Ok(())
+    }
+}
+
+impl SqliteSyncStore {
+    /// The op for a DB row change; `None` = a filtered row (never sent).
+    async fn db_entry(
+        &self,
+        conn: &mut sqlx::SqliteConnection,
+        spec: &'static schema::TableSpec,
+        pk: Value,
+    ) -> Result<Option<(Value, (OpKind, Option<serde_json::Map<String, Value>>))>, String> {
+        let row = read_row(conn, spec, &pk).await?;
+        if let Some(f) = spec.filter {
+            let value = row
+                .as_ref()
+                .and_then(|r| r.get(f.col))
+                .or_else(|| (spec.pk == [f.col]).then_some(&pk))
+                .and_then(Value::as_str);
+            if !spec.accepts(value) {
+                return Ok(None);
+            }
+        }
+        let entry = match row {
+            Some(r) => (OpKind::Upsert, Some(encode_row(&self.paths, spec, r))),
+            None => (OpKind::Delete, None),
+        };
+        Ok(Some((pk, entry)))
     }
 }
 

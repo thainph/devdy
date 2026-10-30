@@ -10,12 +10,18 @@
 //! - the relay sends `sync_notify`,
 //! - the 60 s periodic timer fires.
 //!
+//! Each cycle first lets the store `stage` its non-DB sources (file chunks go
+//! up as sealed blobs through [`RelayBlobs`]); pulled `file` / `secret` ops
+//! are routed to `apply_remote_extra`, everything else to `apply_remote`.
+//!
 //! Status is published through a callback (the app emits it as
 //! `sync://status`). Op contents, blobs and keys are never logged.
 
-use super::crypto::SyncKeys;
+use super::crypto::{blob_sha, SyncKeys};
 use super::op::Op;
-use super::store::SyncStore;
+use super::store::{is_extra_tbl, BlobIo, SyncStore};
+use async_trait::async_trait;
+use base64::Engine as _;
 use super::transport::{ConnectParams, Connection, Event, TransportError, WireItem};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -292,10 +298,16 @@ async fn serve(
                 }
                 true
             }
-            _ = poll.tick() => match ctx.store.pending(1).await {
-                Ok(p) => !p.is_empty(),
-                Err(_) => false,
-            },
+            _ = poll.tick() => {
+                let blobs = RelayBlobs { conn, keys: &ctx.keys };
+                if let Err(e) = ctx.store.stage(&blobs).await {
+                    tracing::debug!(event = "sync_stage_failed", error = %e);
+                }
+                match ctx.store.pending(1).await {
+                    Ok(p) => !p.is_empty(),
+                    Err(_) => false,
+                }
+            }
             _ = periodic.tick() => true,
         };
         if run_cycle && !cycle_reporting(ctx, conn).await {
@@ -351,9 +363,39 @@ impl From<TransportError> for CycleError {
     }
 }
 
+/// Sealed relay blobs over this connection (file chunks).
+pub struct RelayBlobs<'a> {
+    conn: &'a Connection,
+    keys: &'a SyncKeys,
+}
+
+#[async_trait]
+impl BlobIo for RelayBlobs<'_> {
+    async fn put(&self, plaintext: &[u8]) -> Result<String, String> {
+        let sealed = self.keys.seal_bytes(plaintext);
+        let sha = blob_sha(&sealed);
+        let data = base64::engine::general_purpose::STANDARD.encode(&sealed);
+        self.conn.blob_put(&sha, data).await.map_err(|e| e.to_string())?;
+        Ok(sha)
+    }
+
+    async fn get(&self, sha: &str) -> Result<Vec<u8>, String> {
+        let data = self.conn.blob_get(sha).await.map_err(|e| e.to_string())?;
+        let sealed = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(|_| "blob is not valid base64".to_string())?;
+        if blob_sha(&sealed) != sha {
+            return Err("blob does not match its sha".into());
+        }
+        self.keys.open_bytes(&sealed).map_err(|e| e.to_string())
+    }
+}
+
 async fn cycle(ctx: &Ctx, conn: &Connection) -> Result<(), CycleError> {
+    let blobs = RelayBlobs { conn, keys: &ctx.keys };
+    ctx.store.stage(&blobs).await.map_err(CycleError::Store)?;
     push_all(ctx, conn).await?;
-    pull_all(ctx, conn).await
+    pull_all(ctx, conn, &blobs).await
 }
 
 /// The largest prefix of `ops` that fits one push (≥ 1 op), sealed.
@@ -402,7 +444,7 @@ async fn push_all(ctx: &Ctx, conn: &Connection) -> Result<(), CycleError> {
     Ok(())
 }
 
-async fn pull_all(ctx: &Ctx, conn: &Connection) -> Result<(), CycleError> {
+async fn pull_all(ctx: &Ctx, conn: &Connection, blobs: &RelayBlobs<'_>) -> Result<(), CycleError> {
     let mut cursor = ctx.store.cursor().await.map_err(CycleError::Store)?;
     let mut undecryptable = 0usize;
     loop {
@@ -422,10 +464,23 @@ async fn pull_all(ctx: &Ctx, conn: &Connection) -> Result<(), CycleError> {
                 Err(_) => undecryptable += 1,
             }
         }
-        if !ops.is_empty() {
-            let report = ctx.store.apply_remote(ops).await.map_err(CycleError::Store)?;
+        // Rows first: a file op never depends on them, but a run's row
+        // landing before its log keeps the UI consistent.
+        let (extra, rows): (Vec<Op>, Vec<Op>) = ops.into_iter().partition(|o| is_extra_tbl(&o.tbl));
+        if !rows.is_empty() {
+            let report = ctx.store.apply_remote(rows).await.map_err(CycleError::Store)?;
             tracing::debug!(
                 event = "sync_applied",
+                applied = report.applied,
+                skipped = report.skipped_older,
+                conflicts = report.conflicts,
+                deferred = report.deferred,
+            );
+        }
+        if !extra.is_empty() {
+            let report = ctx.store.apply_remote_extra(extra, blobs).await.map_err(CycleError::Store)?;
+            tracing::debug!(
+                event = "sync_applied_extra",
                 applied = report.applied,
                 skipped = report.skipped_older,
                 conflicts = report.conflicts,
@@ -735,6 +790,72 @@ mod tests {
         .await;
         assert_eq!(b.store.cursor(), 1, "cursor moves past the bad op");
         b.engine.stop().await;
+    }
+
+    /// Real stores on both sides: a run log and a Keychain item created on A
+    /// reach B through the relay (blobs sealed, ops routed to files/secrets).
+    #[tokio::test]
+    async fn files_and_secrets_route_through_the_relay() {
+        use crate::sync::codec::PathCtx;
+        use crate::sync::files::tests::{mem_db, tempdir};
+        use crate::sync::secrets::tests::FakeKeychain;
+        use crate::sync::store::SqliteSyncStore;
+
+        let relay = TestRelay::start().await;
+        relay.create_group("g1");
+        let timing = crate::sync::files::Timing { quick: Duration::from_millis(50), full: Duration::from_millis(200) };
+        let mut sides = Vec::new();
+        for id in ["dev-a", "dev-b"] {
+            let home = tempdir();
+            let db = mem_db().await;
+            let kc = Arc::new(FakeKeychain::default());
+            let paths = PathCtx::with_home(home.path()).with_app_data(home.path().join("data"));
+            let store = SqliteSyncStore::new(db.clone(), id.into())
+                .with_paths(paths)
+                .with_secrets(kc.clone())
+                .with_file_timing(timing.clone());
+            let sink: StatusSink = Arc::new(|_: &SyncStatus| {});
+            let engine = SyncEngine::start(params(&relay, id), keys(), Arc::new(store), sink, false, fast());
+            sides.push((home, db, kc, engine));
+        }
+        let (ha, db_a, kc_a, _) = &sides[0];
+        let (hb, db_b, kc_b, _) = &sides[1];
+
+        let project = ha.path().join("w/p");
+        std::fs::create_dir_all(project.join(".devdy/runs")).unwrap();
+        let log = project.join(".devdy/runs/r1.log");
+        std::fs::write(&log, "line 1\n").unwrap();
+        sqlx::query("INSERT INTO projects (id, name, path, created_at) VALUES ('p1', 'p', ?, 'x')")
+            .bind(project.to_string_lossy().as_ref())
+            .execute(db_a)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO runs (id, project_id, type, status, output_path, created_at) VALUES ('r1', 'p1', 'session', 'running', ?, 'x')")
+            .bind(log.to_string_lossy().as_ref())
+            .execute(db_a)
+            .await
+            .unwrap();
+        kc_a.put("github", "acc1", "ghp_from_a");
+
+        let log_b = hb.path().join("w/p/.devdy/runs/r1.log");
+        let read_b = || std::fs::read_to_string(&log_b).ok();
+        eventually("log on b", || read_b().as_deref() == Some("line 1\n")).await;
+        eventually("secret on b", || kc_b.get("github", "acc1").as_deref() == Some("ghp_from_a")).await;
+        let out_b: String = sqlx::query_scalar("SELECT output_path FROM runs WHERE id = 'r1'").fetch_one(db_b).await.unwrap();
+        assert_eq!(out_b, log_b.to_string_lossy(), "the run row points at the synced file");
+
+        // A live session keeps streaming: appends arrive within the quick cadence.
+        std::fs::write(&log, "line 1\nline 2\n").unwrap();
+        eventually("append on b", || read_b().as_deref() == Some("line 1\nline 2\n")).await;
+        // Nothing but sealed bytes on the relay.
+        assert!(relay.stored_blobs().iter().all(|b| !b.contains("ghp_from_a")));
+        // B does not echo what it applied.
+        let echoed: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_outbox WHERE tbl IN ('file', 'secret')").fetch_one(db_b).await.unwrap();
+        assert_eq!(echoed, 0);
+
+        for (_, _, _, engine) in sides {
+            engine.stop().await;
+        }
     }
 
     #[test]
