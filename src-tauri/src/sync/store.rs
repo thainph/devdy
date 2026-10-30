@@ -11,7 +11,7 @@ use super::codec::{encode_row, read_row, PathCtx};
 use super::op::{Op, OpKind, OP_VERSION};
 use super::events::{Notice, Notifier};
 use super::transport::RelayMark;
-use super::{apply, files, schema, secrets, SCHEMA_VERSION};
+use super::{apply, files, prefs, schema, secrets, SCHEMA_VERSION};
 use crate::db::Db;
 
 pub const CURSOR_KEY: &str = "pull_cursor";
@@ -412,10 +412,19 @@ impl SyncStore for SqliteSyncStore {
         let mut report = ApplyReport::default();
         let mut failed: Vec<(Op, i64, String)> = Vec::new();
         let mut grown_runs = std::collections::BTreeSet::new();
+        let filter = {
+            let mut conn = self.db.acquire().await.map_err(err)?;
+            prefs::Filter::load(&mut conn).await?
+        };
         for (_, (op, attempts)) in latest {
             clock.observe(&op.hlc);
             if op.schema > SCHEMA_VERSION {
                 failed.push((op, attempts, format!("schema newer than local ({SCHEMA_VERSION})")));
+                continue;
+            }
+            // Selective sync: dropped, not deferred (re-pulled once enabled).
+            if op.tbl == files::TBL && prefs::skip_file(&self.db, &filter, &paths, &op).await? {
+                report.skipped_older += 1;
                 continue;
             }
             let result = match op.tbl.as_str() {
@@ -673,6 +682,7 @@ impl SqliteSyncStore {
         let entry = match row {
             Some(r) => {
                 let mut wire = encode_row(paths, spec, r);
+                prefs::restore_refs(conn, spec.name, pk_text, &mut wire).await?;
                 if spec.name == "notes" {
                     apply::add_note_base(conn, pk_text, &mut wire).await?;
                 }
