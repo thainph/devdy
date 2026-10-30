@@ -11,14 +11,23 @@
 //! id); an incoming loser is merged into the local row. Either way the content
 //! is settled by last-writer-wins, and the decision is kept as an alias
 //! (`sync_state` `alias:<tbl>:<old pk>`) that redirects later upserts and
-//! references carrying the old id.
+//! references carrying the old id. The same rule settles a row that already
+//! exists here and is renamed into a clash: the loser is folded into the
+//! survivor (children move, the loser row goes).
+//!
+//! The losing id is pushed as an alias op: a Delete whose row is
+//! `{"_alias_of": <surviving pk>}` (same relay key as the old id's ops, so it
+//! supersedes them). A receiver re-keys its own row under the old id to the
+//! survivor (or folds it into the survivor it already has) instead of
+//! deleting it, so children are never cascaded away, whatever order or pull
+//! page the re-keyed rows arrive in. A v1 receiver reads it as a plain Delete.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use serde_json::{Map, Value};
 use sqlx::{Row, SqliteConnection};
 
-use super::bootstrap::{rekey, RekeyOpts, REFS};
+use super::bootstrap::{rekey, rekey_outbox, RekeyOpts, REFS};
 use super::clock::{wall_ms, Hlc, HlcClock};
 use super::codec::{bind_value, decode_row, delete_row, pk_values, read_row, upsert_row, PathCtx};
 use super::op::{canonical_json, Op, OpKind};
@@ -33,6 +42,17 @@ type RowKey = (String, String);
 type Aliases = HashMap<RowKey, Value>;
 
 const ALIAS_PREFIX: &str = "alias:";
+
+/// Row field of an alias op (see the module docs).
+pub const ALIAS_FIELD: &str = "_alias_of";
+
+/// The surviving pk an alias op points at.
+pub fn alias_of(op: &Op) -> Option<&Value> {
+    if op.kind != OpKind::Delete {
+        return None;
+    }
+    op.row.as_ref()?.get(ALIAS_FIELD).filter(|v| !v.is_null())
+}
 
 #[derive(Debug, PartialEq)]
 enum Outcome {
@@ -95,12 +115,14 @@ pub async fn apply_ops(
         }
         candidates.push(op);
     }
-    // Parents first for upserts, children first for deletes.
+    // Parents first for upserts, then aliases (parents first, so their
+    // children move before any delete), children first for deletes.
     candidates.sort_by_key(|op| {
         let level = schema::spec(&op.tbl).map(|s| s.level()).unwrap_or(usize::MAX);
         match op.kind {
             OpKind::Upsert => (0, level),
-            OpKind::Delete => (1, usize::MAX - level),
+            OpKind::Delete if alias_of(op).is_some() => (1, level),
+            OpKind::Delete => (2, usize::MAX - level),
         }
     });
 
@@ -260,6 +282,14 @@ async fn apply_one(
     aliases: &mut Aliases,
 ) -> Result<(Outcome, RowKey), String> {
     let spec = schema::spec(&op.tbl).ok_or("unknown table")?;
+    if op.kind == OpKind::Delete && spec.pk.len() == 1 {
+        // A plain Delete of an id we know was re-keyed (from a v1 sender) is
+        // the same thing as its alias op.
+        let target = alias_of(op).cloned().or_else(|| aliases.get(&(spec.name.to_string(), op.pk_key())).cloned());
+        if let Some(target) = target {
+            return apply_alias(conn, spec, op, target, aliases).await;
+        }
+    }
     let mut op = op.clone();
     let mut merged = false;
     if op.kind == OpKind::Upsert {
@@ -421,6 +451,26 @@ async fn add_alias(conn: &mut SqliteConnection, aliases: &mut Aliases, tbl: &str
     Ok(())
 }
 
+/// Where a re-keyed / merged id of `tbl` lives now (chained), from `sync_state`.
+pub async fn alias_target(conn: &mut SqliteConnection, tbl: &str, pk: &str) -> Result<Option<Value>, String> {
+    let mut cur: Option<Value> = None;
+    let mut key = pk.to_string();
+    for _ in 0..8 {
+        let next: Option<String> = sqlx::query_scalar("SELECT value FROM sync_state WHERE key = ?")
+            .bind(format!("{ALIAS_PREFIX}{tbl}:{key}"))
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(err)?;
+        let Some(v) = next.and_then(|s| serde_json::from_str::<Value>(&s).ok()) else { break };
+        key = canonical_json(&v);
+        if key == pk {
+            break;
+        }
+        cur = Some(v);
+    }
+    Ok(cur)
+}
+
 /// Where an id of `tbl` lives now (following re-key decisions, chained).
 fn resolve(aliases: &Aliases, tbl: &str, id: &Value) -> Option<Value> {
     let mut cur = aliases.get(&(tbl.to_string(), canonical_json(id)))?.clone();
@@ -503,9 +553,10 @@ async fn clashing_row(
     Ok(None)
 }
 
-/// An incoming row new here that clashes with a local row on a UNIQUE key:
-/// the lower id survives on every device (see the module docs). Returns
-/// whether the op was redirected into a local row.
+/// An incoming row that clashes with another local row on a UNIQUE key (new
+/// here, or renamed into the clash): the lower id survives on every device
+/// (see the module docs). Returns whether the op was redirected into a local
+/// row.
 async fn reconcile_unique(
     conn: &mut SqliteConnection,
     paths: &PathCtx,
@@ -516,10 +567,7 @@ async fn reconcile_unique(
     if spec.pk.len() != 1 {
         return Ok(false);
     }
-    // A row we already have under this id: plain last-writer-wins.
-    if read_row(conn, spec, &op.pk).await?.is_some() {
-        return Ok(false);
-    }
+    let exists = read_row(conn, spec, &op.pk).await?.is_some();
     for _ in 0..4 {
         let Some(wire) = op.row.as_ref() else { return Ok(false) };
         let mut row = decode_row(paths, spec, wire);
@@ -530,17 +578,160 @@ async fn reconcile_unique(
         let incoming = op.pk.clone();
         if canonical_json(&local) < canonical_json(&incoming) {
             // Ours survives: the incoming row is merged into it.
+            if exists {
+                fold_into(conn, spec, &incoming, &local, true).await?;
+            } else {
+                super::secrets::queue_key_move(conn, spec.name, &incoming, &local).await?;
+            }
             add_alias(conn, aliases, spec.name, &canonical_json(&incoming), &local).await?;
-            super::secrets::queue_key_move(conn, spec.name, &incoming, &local).await?;
+            // The losing id goes out as an alias op: it supersedes the
+            // sender's ops on the relay and re-keys the row wherever it lives.
+            queue_outbox(conn, spec.name, &canonical_json(&incoming), "D", wall_ms() as i64).await?;
             op.pk = local;
             return Ok(true);
         }
-        // Theirs survives: ours takes its id.
-        rekey(conn, spec, &local, &incoming, RekeyOpts::APPLY).await?;
+        // Theirs survives: ours takes its id (or folds into it).
+        if exists {
+            fold_into(conn, spec, &local, &incoming, true).await?;
+            queue_outbox(conn, spec.name, &canonical_json(&local), "D", wall_ms() as i64).await?;
+            // Not a local change: the op being applied decides the content.
+            queue_outbox(conn, spec.name, &canonical_json(&incoming), "U", 0).await?;
+        } else {
+            rekey(conn, spec, &local, &incoming, RekeyOpts::APPLY).await?;
+        }
         add_alias(conn, aliases, spec.name, &canonical_json(&local), &incoming).await?;
         tracing::info!(event = "sync_unique_rekey", tbl = spec.name);
     }
     Err(format!("{}: unique key clash did not settle", spec.name))
+}
+
+async fn queue_outbox(conn: &mut SqliteConnection, tbl: &str, pk: &str, op: &str, changed_at: i64) -> Result<(), String> {
+    sqlx::query("INSERT INTO sync_outbox (tbl, pk, op, changed_at) VALUES (?, ?, ?, ?)")
+        .bind(tbl)
+        .bind(pk)
+        .bind(op)
+        .bind(changed_at)
+        .execute(&mut *conn)
+        .await
+        .map_err(err)?;
+    Ok(())
+}
+
+/// Two local rows are one: every row pointing at `loser` moves to `survivor`
+/// (a row the survivor already has a twin of is dropped), the loser's
+/// unpushed changes go out as the survivor's, and the loser row is deleted.
+/// With `repush` the moved synced rows are queued for push, like `rekey` does.
+async fn fold_into(
+    conn: &mut SqliteConnection,
+    spec: &TableSpec,
+    loser: &Value,
+    survivor: &Value,
+    repush: bool,
+) -> Result<(), String> {
+    let now = wall_ms() as i64;
+    let (loser_key, survivor_key) = (canonical_json(loser), canonical_json(survivor));
+    for (_, child, col) in REFS.iter().filter(|(p, _, _)| *p == spec.name) {
+        let child_spec = schema::spec(child);
+        let moved: Vec<String> = match child_spec.filter(|_| repush) {
+            Some(cs) => {
+                let sql = format!("SELECT {} FROM {} WHERE {} = ?", pk_sql(cs, &q(child)), q(child), q(col));
+                let rows = bind_value(sqlx::query(&sql), loser).fetch_all(&mut *conn).await.map_err(err)?;
+                rows.iter().map(|r| r.get::<String, _>(0)).collect()
+            }
+            None => Vec::new(),
+        };
+        let sql = format!("UPDATE OR IGNORE {} SET {1} = ? WHERE {1} = ?", q(child), q(col));
+        bind_value(bind_value(sqlx::query(&sql), survivor), loser).execute(&mut *conn).await.map_err(err)?;
+        // What is left clashed with a twin under the survivor.
+        let sql = format!("DELETE FROM {} WHERE {} = ?", q(child), q(col));
+        bind_value(sqlx::query(&sql), loser).execute(&mut *conn).await.map_err(err)?;
+        let Some(cs) = child_spec else { continue };
+        if cs.pk.contains(col) {
+            rekey_outbox(conn, child, (cs.pk.len() > 1).then_some(*col), loser, survivor).await?;
+        }
+        for pk in moved {
+            match serde_json::from_str::<Value>(&pk) {
+                Ok(Value::Object(mut m)) if cs.pk.contains(col) => {
+                    queue_outbox(conn, child, &pk, "D", now).await?;
+                    m.insert((*col).to_string(), survivor.clone());
+                    queue_outbox(conn, child, &canonical_json(&Value::Object(m)), "U", now).await?;
+                }
+                Ok(_) if cs.pk == [*col] => {
+                    queue_outbox(conn, child, &pk, "D", now).await?;
+                    queue_outbox(conn, child, &survivor_key, "U", now).await?;
+                }
+                Ok(_) => queue_outbox(conn, child, &pk, "U", now).await?,
+                Err(_) => {}
+            }
+        }
+    }
+    rekey_outbox(conn, spec.name, None, loser, survivor).await?;
+    delete_row(conn, spec, loser).await?;
+    sqlx::query("DELETE FROM sync_rows WHERE tbl = ? AND pk = ?")
+        .bind(spec.name)
+        .bind(&loser_key)
+        .execute(&mut *conn)
+        .await
+        .map_err(err)?;
+    super::secrets::queue_key_move(conn, spec.name, loser, survivor).await?;
+    Ok(())
+}
+
+/// An alias op (or a Delete of an id we know was re-keyed): the row under the
+/// old id becomes the survivor here too — re-keyed when the survivor is not
+/// here yet, folded into it when it is, deleted only when the survivor itself
+/// was deleted. Never pushed again (the sender queued the moved rows).
+async fn apply_alias(
+    conn: &mut SqliteConnection,
+    spec: &'static TableSpec,
+    op: &Op,
+    target: Value,
+    aliases: &mut Aliases,
+) -> Result<(Outcome, RowKey), String> {
+    let old_key = op.pk_key();
+    let new = resolve(aliases, spec.name, &target).unwrap_or(target);
+    let new_key = canonical_json(&new);
+    if new_key == old_key {
+        return Err(format!("{}: alias of an id to itself", spec.name));
+    }
+    add_alias(conn, aliases, spec.name, &old_key, &new).await?;
+    if read_row(conn, spec, &op.pk).await?.is_some() {
+        let survivor_deleted: Option<i64> = sqlx::query_scalar("SELECT deleted FROM sync_rows WHERE tbl = ? AND pk = ?")
+            .bind(spec.name)
+            .bind(&new_key)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(err)?;
+        if read_row(conn, spec, &new).await?.is_some() {
+            fold_into(conn, spec, &op.pk, &new, false).await?;
+        } else if survivor_deleted == Some(1) {
+            delete_row(conn, spec, &op.pk).await?;
+        } else {
+            rekey(conn, spec, &op.pk, &new, RekeyOpts { keep_hlc: true, repush: false }).await?;
+        }
+        tracing::info!(event = "sync_alias_rekey", tbl = spec.name);
+    }
+    let known: Option<String> = sqlx::query_scalar("SELECT hlc FROM sync_rows WHERE tbl = ? AND pk = ?")
+        .bind(spec.name)
+        .bind(&old_key)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(err)?;
+    let hlc = match known.and_then(|s| s.parse::<Hlc>().ok()) {
+        Some(h) if h > op.hlc => h,
+        _ => op.hlc.clone(),
+    };
+    sqlx::query(
+        "INSERT INTO sync_rows (tbl, pk, hlc, deleted) VALUES (?, ?, ?, 1) \
+         ON CONFLICT(tbl, pk) DO UPDATE SET hlc = excluded.hlc, deleted = 1",
+    )
+    .bind(spec.name)
+    .bind(&old_key)
+    .bind(hlc.to_string())
+    .execute(&mut *conn)
+    .await
+    .map_err(err)?;
+    Ok((Outcome::Applied, (spec.name.to_string(), old_key)))
 }
 
 /// sha256 of a note body (JSON-encoded, so NULL and "" differ).

@@ -55,6 +55,14 @@ pub async fn ensure_device(db: &Db) -> Result<String, String> {
 /// Startup hook (after migrations): device id + capture triggers.
 pub async fn install(db: &Db) -> Result<String, String> {
     let device = ensure_device(db).await?;
+    // Tests capture from the start, as a device in a group.
+    #[cfg(test)]
+    sqlx::query("INSERT OR IGNORE INTO sync_state (key, value) VALUES (?, '1')")
+        .bind(capture::MEMBER_KEY)
+        .execute(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    capture::settle_membership(db).await?;
     capture::install_triggers(db).await?;
     Ok(device)
 }
