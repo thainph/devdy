@@ -154,7 +154,7 @@ use remote::fs_bridge::{
 use remote::ipc::{remote_bridge_batch, remote_bridge_ready};
 use remote::RemoteState;
 use commands::sync::{
-    sync_create_group, sync_device_rename, sync_devices_list, sync_join, sync_leave, sync_now,
+    sync_create_group, sync_devices_list, sync_join, sync_leave, sync_now,
     sync_get_secrets, sync_pause, sync_revoke_device, sync_set_leader, sync_set_secrets, sync_status,
     sync_accept_close, sync_accept_open, sync_accept_state, sync_join_respond, sync_parked_list,
     sync_parked_retry, sync_relay_ready,
@@ -781,7 +781,6 @@ pub fn run() {
             sync_folder_cancel,
             sync_get_secrets,
             sync_devices_list,
-            sync_device_rename,
             sync_revoke_device,
             sync_set_leader,
             sync_relay_ready,

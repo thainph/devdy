@@ -48,7 +48,6 @@ export const syncParkedList = () => invoke<ParkedRow[]>('sync_parked_list')
 export const syncParkedRetry = () => invoke<number>('sync_parked_retry')
 
 export const syncDevicesList = () => invoke<SyncDevice[]>('sync_devices_list')
-export const syncDeviceRename = (name: string) => invoke<void>('sync_device_rename', { name })
 export const syncRevokeDevice = (deviceId: string) => invoke<void>('sync_revoke_device', { deviceId })
 /** Open "Accept a new device"; resolves to its expiry (unix millis). */
 export const syncAcceptOpen = () => invoke<number>('sync_accept_open')

@@ -6,7 +6,7 @@ import {
   Cpu, Palette, FileText, ShieldAlert, Sparkles, Github, Gitlab, Cloud, CloudCog,
   CheckCircle2, AlertTriangle, Trash2, Plus, Pencil, Gauge, Radio,
   RefreshCw, Loader2, BadgeCheck, Server, HardDrive, Bot, RotateCcw, UserCircle,
-  LogIn, Star, ChevronDown, ArrowRightLeft, Inbox, GripVertical, ArchiveRestore, Target,
+  LogIn, Star, ChevronDown, ArrowRightLeft, Inbox, GripVertical, Target,
 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
@@ -15,11 +15,9 @@ import { Button, Input, Textarea, Card, AppSelect } from '@/components/ui'
 import CyberFox from '@/components/CyberFoxCanvas.vue'
 import MascotStars from '@/components/MascotStars.vue'
 import MascotBubble from '@/components/MascotBubble.vue'
-import RemoteControlSettings from '@/components/remote/RemoteControlSettings.vue'
+import DevicesSettings, { type DevicesTab } from '@/components/DevicesSettings.vue'
 import InboxApiSettings from '@/components/InboxApiSettings.vue'
 import FocusSettings from '@/components/FocusSettings.vue'
-import SettingsBackup from '@/components/SettingsBackup.vue'
-import SettingsSync from '@/components/SettingsSync.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useDragSort } from '@/composables/useDragSort'
@@ -452,19 +450,24 @@ const SECTIONS = [
   { id: 'mcp', labelKey: 'settings.sections.mcp', icon: Server },
   { id: 'google', labelKey: 'settings.sections.google', icon: HardDrive },
   { id: 'usage', labelKey: 'settings.sections.usage', icon: Gauge },
-  { id: 'remote', labelKey: 'settings.sections.remote', icon: Radio },
+  { id: 'devices', labelKey: 'settings.sections.devices', icon: Radio },
   { id: 'inbox', labelKey: 'settings.sections.inbox', icon: Inbox },
   { id: 'prompts', labelKey: 'settings.sections.prompts', icon: FileText },
-  { id: 'sync', labelKey: 'settings.sections.backup', icon: ArchiveRestore },
 ] as const
 const activeSection = ref<(typeof SECTIONS)[number]['id']>('general')
 
 // Allow deep-linking to a specific section via `/settings?section=mcp` (used by
 // the "Settings" buttons on the MCP Servers screen's built-in cards).
 const route = useRoute()
+const devicesTab = ref<DevicesTab>('remote')
+// Remote Control and Sync (`backup` before two-way sync) were sections of their own: now tabs of `devices`.
+const DEVICES_TAB_OF: Record<string, DevicesTab> = { remote: 'remote', sync: 'sync', backup: 'sync' }
 function applySectionFromRoute() {
-  // `backup` was the section's id before two-way sync.
-  const target = route.query.section === 'backup' ? 'sync' : route.query.section
+  let target = route.query.section
+  if (typeof target === 'string' && DEVICES_TAB_OF[target]) {
+    devicesTab.value = DEVICES_TAB_OF[target]
+    target = 'devices'
+  }
   if (typeof target === 'string' && SECTIONS.some(s => s.id === target)) {
     activeSection.value = target as (typeof SECTIONS)[number]['id']
   }
@@ -2910,9 +2913,10 @@ watch(() => settings.value.language, (v) => {
 
         </div>
 
-        <!-- Remote Control (wider than the max-w-lg forms to fit the audit table) -->
-        <div v-show="!loading && activeSection === 'remote'" class="max-w-3xl">
-          <RemoteControlSettings />
+        <!-- Remote Control + Sync & backup under their shared relay / device name / master password
+             (wider than the max-w-lg forms to fit the audit table) -->
+        <div v-if="!loading && activeSection === 'devices'" class="max-w-3xl">
+          <DevicesSettings v-model:tab="devicesTab" />
         </div>
 
         <!-- Focus board: working hours. Mounted only while shown so it reads the live settings. -->
@@ -2924,12 +2928,6 @@ watch(() => settings.value.language, (v) => {
              shown, so opening the section always reads the live port / status. -->
         <div v-if="!loading && activeSection === 'inbox'" class="max-w-lg">
           <InboxApiSettings />
-        </div>
-
-        <!-- Two-way sync between this user's machines, then the offline file backup. -->
-        <div v-if="!loading && activeSection === 'sync'" class="max-w-lg space-y-4">
-          <SettingsSync />
-          <SettingsBackup />
         </div>
       </div>
     </div>

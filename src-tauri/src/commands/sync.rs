@@ -104,10 +104,33 @@ impl SyncManager {
         ));
         leader::set_sync_active(true);
         self.start_handoff_loop(db, sync.device_id.clone());
-        let name = default_device_name(db).await;
-        if let Err(e) = leader::touch_self(db, &sync.device_id, &name).await {
+        // The group shows this device by its Remote Control alias, the name
+        // another device types to join through it.
+        let me = &sync.device_id;
+        let res = match crate::remote::device_alias(db).await {
+            Some(alias) if leader::record(db, me).await.map(|r| r.name).as_deref() != Some(alias.as_str()) => {
+                leader::rename_self(db, me, &alias).await
+            }
+            _ => leader::touch_self(db, me, &default_device_name(db).await).await,
+        };
+        if let Err(e) = res {
             tracing::warn!(event = "sync_device_record_failed", error = %e);
         }
+        Ok(())
+    }
+
+    /// The Remote Control alias changed: rename this device in the group.
+    /// Joined but not merged: `start` picks the alias up after the merge.
+    /// A cleared alias keeps the last name.
+    pub async fn alias_changed(&self, db: &Db, alias: &str) -> Result<(), String> {
+        let Some(sync) = crate::secrets::get_sync_secrets().filter(|_| !alias.is_empty()) else {
+            return Ok(());
+        };
+        if crate::sync::bootstrap::is_pending(db).await? {
+            return Ok(());
+        }
+        leader::rename_self(db, &sync.device_id, alias).await?;
+        self.kick().await;
         Ok(())
     }
 
@@ -488,19 +511,6 @@ fn group_device_id() -> Result<String, String> {
 pub async fn sync_devices_list(db: State<'_, Db>) -> Result<Vec<DeviceInfo>, String> {
     let me = group_device_id()?;
     leader::list_devices(db.inner(), &me).await
-}
-
-/// Rename this device (each device names only itself).
-#[tauri::command]
-pub async fn sync_device_rename(
-    db: State<'_, Db>,
-    state: State<'_, SyncManager>,
-    name: String,
-) -> Result<(), String> {
-    let me = group_device_id()?;
-    leader::rename_self(db.inner(), &me, &name).await?;
-    state.kick().await;
-    Ok(())
 }
 
 const ONLY_CREATOR: &str = "only the device that created the group can remove other devices";

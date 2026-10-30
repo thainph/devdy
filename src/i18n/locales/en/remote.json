@@ -10,7 +10,7 @@
     "state": {
       "connected": "Connected to a controller device.",
       "running": "Running — waiting for a device to connect.",
-      "needsRelay": "Save a Relay URL before enabling.",
+      "needsRelay": "Save a Relay URL in the card above first.",
       "off": "Off. Turn on to allow remote control."
     },
     "relayUrl": "Relay URL",
@@ -20,13 +20,13 @@
     "authTokenPlaceholder": "Leave blank to keep the current token",
     "authTokenHint": "Stored in the OS keychain, never on disk in cleartext.",
     "deviceName": "This device name",
-    "deviceNamePlaceholder": "e.g. mac-mini (optional)",
-    "deviceNameHint": "Lowercase letters, digits and '-' (up to 32). Enter it with the master password when signing in from another Devdy or the web controller, so several hosts can share one relay. Leave blank if this is your only host.",
+    "deviceNamePlaceholder": "e.g. mac-mini",
+    "deviceNameHint": "Lowercase letters, digits and '-' (up to 32). Entered with the master password to sign in to this machine (another Devdy or the web controller) or to join its sync group; the sync group shows this machine under it. Lets several hosts share one relay.",
     "masterPassword": "Master password",
     "set": "(set)",
     "masterPasswordReplace": "Enter a new password to replace the current one",
     "masterPasswordSet": "Set a password to skip the OTP each time",
-    "masterPasswordHint": "Once set, enter this password on your phone instead of the OTP code. Stored in the OS keychain. More convenient but fixed — only use it if you are the sole user. Changing or clearing it signs out every device signed in so far. Saved together with the settings below.",
+    "masterPasswordHint": "Enter it on your phone instead of the OTP code, and on another machine joining this one's sync group. Stored in the OS keychain. Fixed — only use it if you are the sole user. Changing or clearing it signs out every device signed in so far.",
     "saveSettings": "Save settings",
     "hostLabel": "host: {id}",
     "perRunHint": "Remote sessions are now created per run: open a run and click the {remote} button in the toolbar to generate a link. Enter your {masterPassword} (if set) or the OTP code on your phone to connect.",
@@ -63,6 +63,10 @@
       "auditCleared": "Cleared {count} audit entries",
       "auditAlreadyEmpty": "Audit log is already empty",
       "deviceNameInvalid": "Device name: use only lowercase letters, digits and '-' (up to 32)"
+    },
+    "identity": {
+      "title": "This device & relay",
+      "intro": "Shared by Remote Control and Sync. Another Devdy enters this device name and master password both to control this machine and to join its sync group, and the sync group lists this machine under the same name."
     }
   },
   "session": {

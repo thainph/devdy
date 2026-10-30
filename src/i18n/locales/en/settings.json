@@ -13,12 +13,15 @@
     "mcp": "MCP Server",
     "google": "Google Account",
     "usage": "Usage & Budget",
-    "remote": "Remote Control",
+    "devices": "Devices & Sync",
     "prompts": "Prompt Templates",
     "inbox": "Inbox API",
     "azure": "Azure Accounts",
-    "backup": "Sync & Backup",
     "focus": "Focus"
+  },
+  "devicesTabs": {
+    "remote": "Remote Control",
+    "sync": "Sync & Backup"
   },
   "general": {
     "theme": "Theme",
@@ -500,13 +503,13 @@
     },
     "create": {
       "title": "Create a sync group",
-      "help": "On your first machine. Uses the relay configured in Remote Control.",
+      "help": "On your first machine. Uses the relay and device name above.",
       "button": "Create sync group",
       "done": "Sync group created"
     },
     "join": {
       "title": "Join a sync group",
-      "help": "On another machine: enter the device name and master password of a machine already in the group (both set in its Remote Control settings). On that machine, open Settings → Sync → Accept a new device first, then allow the request there.",
+      "help": "On another machine: enter the device name and master password of a machine already in the group (from its \"This device & relay\" card). On that machine, open Settings → Devices & Sync → Sync & Backup → Accept a new device first, then allow the request there.",
       "alias": "Device name of the other machine",
       "aliasInvalid": "Device names use lowercase letters, digits and dashes.",
       "password": "Its master password",
@@ -559,13 +562,11 @@
     "devices": {
       "title": "Devices",
       "leaderHelp": "The selected device runs singleton jobs (Slack re-fetch) so they don't run twice. Changes apply right away.",
+      "nameHint": "Each device is listed under its device name (\"This device & relay\" above), the name another machine enters to join through it.",
       "leader": "Leader",
       "noLeader": "No leader — every device runs them",
       "thisDevice": "This device",
       "lastSeen": "Seen {ago}",
-      "rename": "Rename this device",
-      "save": "Save",
-      "cancel": "Cancel",
       "remove": "Remove from group",
       "removed": "Removed {name}",
       "confirmRemove": {
@@ -632,7 +633,8 @@
         "confirmLabel": "Leave anyway"
       }
     },
-    "relayMissing": "This machine has no relay of its own yet: set the relay URL and token in Settings → Remote Control first.",
+    "relayMissing": "This machine has no relay yet: set the relay URL and token in \"This device & relay\" above first.",
+    "needAlias": "Set this device's name in \"This device & relay\" above first: the group lists this machine under it.",
     "errors": {
       "host_offline": "No machine answered on that device name. Check the name and that it is online.",
       "wrong_password": "Wrong master password.",
@@ -663,6 +665,7 @@
     "accept": {
       "title": "Accept a new device",
       "help": "To add a machine, open this for 5 minutes, then start Join on the other machine. You confirm each request here; keep this page open until it is done.",
+      "joinWith": "On the other machine, join with device name {name} and this machine's master password.",
       "button": "Accept a new device",
       "open": "Accepting a new device — {time} left",
       "cancel": "Stop",
@@ -674,6 +677,12 @@
         "allow": "Allow",
         "deny": "Deny",
         "expires": "{time}"
+      },
+      "missing": {
+        "title": "This machine cannot receive join requests yet:",
+        "alias": "no device name (card above)",
+        "password": "no master password (card above)",
+        "remote": "Remote Control is off or not connected to the relay (Remote Control tab)"
       }
     },
     "parked": {
