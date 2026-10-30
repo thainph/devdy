@@ -7,7 +7,10 @@
 //! the creator may revoke others) and kicks the revoked device's connections,
 //! and a creator revoking itself hands the role to its `successor` (if active)
 //! or the earliest-registered active device, announced with `sync_group_info`
-//! and carried by every `sync_welcome` as `creator_device`.
+//! and carried by every `sync_welcome` as `creator_device`. Peer messages
+//! (`sync_peers`, `sync_peer_send` → `sync_peer_msg` on the target's most
+//! recent connection + `sync_peer_ack`, `peer_offline` / `too_large`) follow
+//! the relay contract of on-demand sync.
 //!
 //! Groups made with [`TestRelay::create_group`] are *open* (any device
 //! registers on first hello) so engine tests need no pairing; groups created
@@ -216,6 +219,9 @@ impl TestRelay {
         s.conns.clear();
     }
 }
+
+/// The relay's default `RELAY_SYNC_MAX_BLOB_BYTES` as base64 chars.
+const MAX_PEER_DATA_CHARS: usize = (4 * 1024 * 1024 + 64usize).div_ceil(3) * 4;
 
 fn sha_hex(s: &str) -> String {
     use sha2::Digest as _;
@@ -448,6 +454,45 @@ fn handle_inner(
             let n = shas.iter().filter(|sha| g.blobs.remove(*sha).is_some()).count();
             g.released += n;
             Some(json!({ "t": "blob_released", "released": n }))
+        }
+        "sync_peers" => {
+            let revoked = &s.groups.get(&gid)?.revoked;
+            let mut devices: Vec<String> = s
+                .conns
+                .values()
+                .filter(|(cg, cd, _)| *cg == gid && *cd != did && !revoked.contains(cd))
+                .map(|(_, cd, _)| cd.clone())
+                .collect();
+            devices.sort();
+            devices.dedup();
+            Some(json!({ "t": "sync_peers", "devices": devices }))
+        }
+        "sync_peer_send" => {
+            let (to, data) = (s_("to_device"), s_("data"));
+            if to.is_empty() || data.is_empty() {
+                return Some(error("bad_request"));
+            }
+            if data.len() > MAX_PEER_DATA_CHARS {
+                return Some(error("too_large"));
+            }
+            if to == did || s.groups.get(&gid)?.revoked.contains(&to) {
+                return Some(error("peer_offline"));
+            }
+            // The target's most recent live connection.
+            let target = s
+                .conns
+                .iter()
+                .filter(|(_, (cg, cd, _))| *cg == gid && *cd == to)
+                .max_by_key(|(id, _)| **id)
+                .map(|(_, (_, _, ctx))| ctx.clone());
+            let Some(target) = target else {
+                return Some(error("peer_offline"));
+            };
+            let msg = json!({ "t": "sync_peer_msg", "from_device": did, "data": data }).to_string();
+            if target.send(msg).is_err() {
+                return Some(error("peer_offline"));
+            }
+            Some(json!({ "t": "sync_peer_ack" }))
         }
         "blob_get" => {
             let sha = s_("sha");
