@@ -10,7 +10,9 @@ use crate::sync::engine::{StatusSink, SyncEngine, SyncStatus, Timing, STATUS_EVE
 use crate::sync::leader::{self, DeviceInfo};
 use crate::sync::store::{SqliteSyncStore, SyncStore};
 use crate::sync::transport::{Connection, TransportError};
+use serde_json::json;
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
 
@@ -76,6 +78,24 @@ impl SyncManager {
         }
     }
 
+    /// Push what is queued now, waiting at most `wait` (best effort: offline
+    /// just times out).
+    async fn flush(&self, wait: Duration) {
+        let started = chrono::Utc::now().timestamp_millis();
+        match self.engine.lock().await.as_ref() {
+            Some(e) => e.sync_now(),
+            None => return,
+        }
+        let deadline = tokio::time::Instant::now() + wait;
+        while tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let s = self.status().await;
+            if s.pending == 0 && s.last_push.is_some_and(|p| p >= started) {
+                break;
+            }
+        }
+    }
+
     async fn status(&self) -> SyncStatus {
         match self.engine.lock().await.as_ref() {
             Some(e) => e.status(),
@@ -103,14 +123,24 @@ pub async fn sync_create_group(
     if crate::secrets::get_sync_secrets().is_some() {
         return Err("this device is already in a sync group".into());
     }
-    crate::sync::pair::create_group(db.inner()).await?;
+    let sync = crate::sync::pair::create_group(db.inner()).await?;
     crate::sync::bootstrap::prepare_new_group(db.inner()).await?;
+    // The creator leads singleton jobs until someone picks another device.
+    leader::claim_group(db.inner(), &sync.device_id).await?;
     state.start(&app, db.inner()).await?;
     Ok(state.status().await)
 }
 
+/// Whether this machine has its own relay URL + token (Settings → Remote
+/// Control), which creating or joining a group needs.
+#[tauri::command]
+pub async fn sync_relay_ready(db: State<'_, Db>) -> Result<bool, String> {
+    Ok(crate::sync::pair::relay_ready(db.inner()).await)
+}
+
 /// Join the group of the device named `device_alias` with its Remote Control
-/// master password.
+/// master password. That device's user must have opened "Accept a new
+/// device" and approve the request, which shows this device's name.
 #[tauri::command]
 pub async fn sync_join(
     db: State<'_, Db>,
@@ -128,7 +158,11 @@ pub async fn sync_join(
     if password.is_empty() {
         return Err("password is required".into());
     }
-    crate::sync::pair::join(db.inner(), alias, password).await?;
+    if !crate::sync::pair::relay_ready(db.inner()).await {
+        return Err("relay_not_configured: set the relay URL and token in Settings → Remote Control first".into());
+    }
+    let name = default_device_name(db.inner()).await;
+    crate::sync::pair::join(db.inner(), alias, password, &name).await?;
     // The engine starts after sync_bootstrap_commit.
     crate::sync::bootstrap::mark_joined(db.inner()).await?;
     Ok(state.status().await)
@@ -143,6 +177,17 @@ pub async fn sync_leave(
     db: State<'_, Db>,
     state: State<'_, SyncManager>,
 ) -> Result<bool, String> {
+    // Hand the leader role on and drop this device's record while the engine
+    // can still push it.
+    if let Some(sync) = crate::secrets::get_sync_secrets() {
+        if state.engine.lock().await.is_some() {
+            match leader::on_leave(db.inner(), &sync.device_id).await {
+                Ok(()) => state.flush(Duration::from_secs(5)).await,
+                Err(e) => tracing::warn!(event = "sync_leave_handover_failed", error = %e),
+            }
+        }
+    }
+    crate::sync::pair::close_accept_window();
     state.stop().await;
     let revoked = crate::sync::pair::leave(db.inner()).await?;
     emit_disabled(&app);
@@ -229,8 +274,12 @@ pub async fn sync_device_rename(
     Ok(())
 }
 
+const ONLY_CREATOR: &str = "only the device that created the group can remove other devices";
+
 /// Remove another device from the group: revoke its token on the relay, then
-/// drop its record (and the leader role if it held it).
+/// drop its record (the leader role passes to this device if it held it).
+/// Only the group creator may do this (the relay enforces it). The removed
+/// device keeps the group key but can no longer reach the relay's data.
 #[tauri::command]
 pub async fn sync_revoke_device(
     db: State<'_, Db>,
@@ -241,15 +290,21 @@ pub async fn sync_revoke_device(
     if device_id == sync.device_id {
         return Err("use Leave group to remove this device".into());
     }
+    if leader::creator(db.inner()).await.is_some_and(|c| c != sync.device_id) {
+        return Err(ONLY_CREATOR.into());
+    }
     let params = crate::sync::pair::connect_params(db.inner(), &sync).await?;
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let conn = Connection::connect(&params, false, tx).await.map_err(|e| match e {
         TransportError::Rejected(_) => e.to_string(),
         other => format!("relay unreachable: {other}"),
     })?;
-    conn.revoke(&device_id).await.map_err(|e| e.to_string())?;
+    conn.revoke(&device_id).await.map_err(|e| match e {
+        TransportError::Rejected(c) | TransportError::Relay(c) if c == "forbidden" => ONLY_CREATOR.to_string(),
+        other => other.to_string(),
+    })?;
     drop(conn);
-    leader::forget_device(db.inner(), &device_id).await?;
+    leader::forget_device(db.inner(), &device_id, &sync.device_id).await?;
     tracing::info!(event = "sync_device_revoked");
     state.kick().await;
     Ok(())
@@ -266,4 +321,37 @@ pub async fn sync_set_leader(
     leader::set_leader(db.inner(), device_id.as_deref()).await?;
     state.kick().await;
     Ok(())
+}
+
+/// Open "Accept a new device" for `sync::pair::ACCEPT_WINDOW`; returns the
+/// expiry (unix millis). Join requests arriving meanwhile still need the
+/// user's approval (`sync://join-request` → `sync_join_respond`).
+#[tauri::command]
+pub async fn sync_accept_open(app: AppHandle) -> Result<i64, String> {
+    if crate::secrets::get_sync_secrets().is_none() {
+        return Err("this device is not in a sync group".into());
+    }
+    let expires = crate::sync::pair::open_accept_window();
+    let _ = app.emit(crate::sync::pair::ACCEPT_WINDOW_EVENT, json!({ "expires_at": expires }));
+    Ok(expires)
+}
+
+/// Close the window early (a request still waiting is denied).
+#[tauri::command]
+pub async fn sync_accept_close(app: AppHandle) -> Result<(), String> {
+    crate::sync::pair::close_accept_window();
+    let _ = app.emit(crate::sync::pair::ACCEPT_WINDOW_EVENT, json!({ "expires_at": null }));
+    Ok(())
+}
+
+/// The open window's expiry (unix millis), if any.
+#[tauri::command]
+pub async fn sync_accept_state() -> Result<Option<i64>, String> {
+    Ok(crate::sync::pair::accept_window_expires())
+}
+
+/// Answer a pending join request.
+#[tauri::command]
+pub async fn sync_join_respond(request_id: String, allow: bool) -> Result<(), String> {
+    crate::sync::pair::respond_join(&request_id, allow)
 }

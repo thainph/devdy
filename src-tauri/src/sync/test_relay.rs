@@ -4,6 +4,9 @@
 //! `id` echoed on replies, `sync_ops.last_seq` = last returned seq while
 //! `more` else the head, a failed hello closes the socket, revoke answers
 //! `control{code:"ok"}` and kicks the revoked device's connections.
+//! [`TestRelay::start_strict`] adds the closed-registration rules: a new
+//! device needs a one-time ticket announced with `sync_invite`, `create` on an
+//! existing group fails, and only the creator may revoke another device.
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -25,6 +28,9 @@ struct Group {
     revoked: HashSet<String>,
     blobs: HashMap<String, String>,
     released: usize,
+    creator: String,
+    /// sha256 hex of announced, unused tickets.
+    tickets: HashSet<String>,
 }
 
 #[derive(Default)]
@@ -37,6 +43,7 @@ struct State {
     /// (device, limit) of every pull.
     pulls: Vec<(String, u64)>,
     next_conn: u64,
+    strict: bool,
 }
 
 #[derive(Clone)]
@@ -49,9 +56,18 @@ impl TestRelay {
     pub const TOKEN: &'static str = "relay-host-token";
 
     pub async fn start() -> TestRelay {
+        Self::start_with(false).await
+    }
+
+    /// Closed registration: tickets, no re-create, creator-only revoke.
+    pub async fn start_strict() -> TestRelay {
+        Self::start_with(true).await
+    }
+
+    async fn start_with(strict: bool) -> TestRelay {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let state = Arc::new(Mutex::new(State::default()));
+        let state = Arc::new(Mutex::new(State { strict, ..Default::default() }));
         let st = state.clone();
         tokio::spawn(async move {
             while let Ok((tcp, _)) = listener.accept().await {
@@ -204,8 +220,17 @@ fn handle_inner(
             return Some(error("auth_failed"));
         }
         let (gid, did, tok) = (s_("group_id"), s_("device_id"), s_("device_token"));
+        let strict = s.strict;
+        let mut created = false;
         if f["create"].as_bool() == Some(true) {
-            s.groups.entry(gid.clone()).or_default();
+            if strict && s.groups.contains_key(&gid) {
+                return Some(error("group_exists"));
+            }
+            let g = s.groups.entry(gid.clone()).or_default();
+            if g.creator.is_empty() {
+                g.creator = did.clone();
+                created = true;
+            }
         }
         let Some(g) = s.groups.get_mut(&gid) else {
             return Some(error("group_not_found"));
@@ -217,6 +242,16 @@ fn handle_inner(
             Some(known) if *known != tok => return Some(error("auth_failed")),
             Some(_) => {}
             None => {
+                if strict && !created {
+                    let Some(ticket) = f["ticket"].as_str() else {
+                        return Some(error("ticket_required"));
+                    };
+                    use sha2::Digest as _;
+                    let hash = hex::encode(sha2::Sha256::digest(ticket.as_bytes()));
+                    if !g.tickets.remove(&hash) {
+                        return Some(error("ticket_invalid"));
+                    }
+                }
                 g.devices.insert(did.clone(), tok);
             }
         }
@@ -263,9 +298,18 @@ fn handle_inner(
             let last_seq = if more { page.last().map(|p| p["seq"].as_u64().unwrap()).unwrap() } else { g.head };
             Some(json!({ "t": "sync_ops", "items": page, "last_seq": last_seq, "more": more }))
         }
+        "sync_invite" => {
+            s.groups.get_mut(&gid)?.tickets.insert(s_("ticket_hash"));
+            Some(json!({ "t": "control", "code": "ok" }))
+        }
         "sync_revoke" => {
             let target = s_("device_id");
-            s.groups.get_mut(&gid)?.revoked.insert(target.clone());
+            let strict = s.strict;
+            let g = s.groups.get_mut(&gid)?;
+            if strict && target != did && g.creator != did {
+                return Some(error("forbidden"));
+            }
+            g.revoked.insert(target.clone());
             for (cg, cd, ctx) in s.conns.values() {
                 if *cg == gid && *cd == target {
                     let _ = ctx.send(error("device_revoked").to_string());
