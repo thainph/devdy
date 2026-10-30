@@ -489,6 +489,11 @@ impl Filter {
 pub struct Screened {
     pub keep: Vec<Op>,
     pub skipped: usize,
+    /// `(tbl, op pk)` -> the references this op cut (`Some`), or `None` = the
+    /// row's saved values are settled by it. Recorded by [`record_stripped`]
+    /// only for the ops actually applied (one that loses to a newer local
+    /// change leaves the saved values as they are).
+    pub stripped: HashMap<(String, String), Option<Map<String, Value>>>,
 }
 
 async fn fks(conn: &mut SqliteConnection, cache: &mut HashMap<String, Vec<Fk>>, tbl: &str) -> Result<Vec<Fk>, String> {
@@ -590,7 +595,7 @@ pub async fn screen(conn: &mut SqliteConnection, ops: Vec<Op>) -> Result<Screene
         }
     }
     if filter.is_noop() {
-        return Ok(Screened { keep: ops, skipped: 0 });
+        return Ok(Screened { keep: ops, skipped: 0, stripped: HashMap::new() });
     }
     // Scoped parents arriving in this batch, for children ahead of them.
     let batch: HashMap<(String, String), Option<String>> = ops
@@ -605,6 +610,7 @@ pub async fn screen(conn: &mut SqliteConnection, ops: Vec<Op>) -> Result<Screene
     let mut fk_cache = HashMap::new();
     let mut keep = Vec::with_capacity(ops.len());
     let mut skipped = 0;
+    let mut stripped = HashMap::new();
     for mut op in ops {
         if op_category(&op).is_some_and(|c| filter.category_off(c)) {
             skipped += 1;
@@ -673,57 +679,52 @@ pub async fn screen(conn: &mut SqliteConnection, ops: Vec<Op>) -> Result<Screene
                 skipped += 1;
                 continue;
             }
-            if cut.is_empty() {
-                forget_stripped_if_newer(conn, &op).await?;
-            } else {
+            if !cut.is_empty() {
                 if let Some(row) = op.row.as_mut() {
                     for col in cut.keys() {
                         row.insert(col.clone(), Value::Null);
                     }
                 }
-                sqlx::query(
-                    "INSERT INTO sync_stripped_refs (tbl, pk, refs) VALUES (?, ?, ?) \
-                     ON CONFLICT(tbl, pk) DO UPDATE SET refs = excluded.refs",
-                )
-                .bind(&op.tbl)
-                .bind(op.pk_key())
-                .bind(Value::Object(cut).to_string())
-                .execute(&mut *conn)
-                .await
-                .map_err(err)?;
+                stripped.insert((op.tbl.clone(), op.pk_key()), Some(cut));
+                keep.push(op);
+                continue;
             }
         }
-        if op.kind == OpKind::Delete {
-            forget_stripped_if_newer(conn, &op).await?;
+        // No cut (the link is gone, or its parent is here): settles saved values.
+        let has_saved: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM sync_stripped_refs WHERE tbl = ? AND pk = ?)")
+            .bind(&op.tbl)
+            .bind(op.pk_key())
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(err)?;
+        if has_saved {
+            stripped.insert((op.tbl.clone(), op.pk_key()), None);
         }
         keep.push(op);
     }
-    Ok(Screened { keep, skipped })
+    Ok(Screened { keep, skipped, stripped })
 }
 
-/// An op on a row with cut references that carries no cut (the link is gone,
-/// or its parent is here) settles the row, when it wins over what is here.
-async fn forget_stripped_if_newer(conn: &mut SqliteConnection, op: &Op) -> Result<(), String> {
-    let key = op.pk_key();
-    let known: Option<String> = sqlx::query_scalar(
-        "SELECT r.hlc FROM sync_stripped_refs s LEFT JOIN sync_rows r ON r.tbl = s.tbl AND r.pk = s.pk WHERE s.tbl = ? AND s.pk = ?",
-    )
-    .bind(&op.tbl)
-    .bind(&key)
-    .fetch_optional(&mut *conn)
-    .await
-    .map_err(err)?
-    .map(|h: Option<String>| h.unwrap_or_default());
-    let Some(known) = known else { return Ok(()) };
-    if known.parse::<super::clock::Hlc>().is_ok_and(|h| h >= op.hlc) {
-        return Ok(());
+/// An applied op's effect on the saved references of its row (see
+/// [`Screened::stripped`]): replace them with what it cut, or drop them.
+pub async fn record_stripped(
+    conn: &mut SqliteConnection,
+    tbl: &str,
+    pk: &str,
+    cut: Option<&Map<String, Value>>,
+) -> Result<(), String> {
+    match cut {
+        Some(cut) => sqlx::query(
+            "INSERT INTO sync_stripped_refs (tbl, pk, refs) VALUES (?, ?, ?) ON CONFLICT(tbl, pk) DO UPDATE SET refs = excluded.refs",
+        )
+        .bind(tbl)
+        .bind(pk)
+        .bind(Value::Object(cut.clone()).to_string()),
+        None => sqlx::query("DELETE FROM sync_stripped_refs WHERE tbl = ? AND pk = ?").bind(tbl).bind(pk),
     }
-    sqlx::query("DELETE FROM sync_stripped_refs WHERE tbl = ? AND pk = ?")
-        .bind(&op.tbl)
-        .bind(&key)
-        .execute(&mut *conn)
-        .await
-        .map_err(err)?;
+    .execute(&mut *conn)
+    .await
+    .map_err(err)?;
     Ok(())
 }
 
@@ -1207,6 +1208,72 @@ mod tests {
         // Enabling accounts later does not bring it back either.
         set_categories_off(&db_b, &[]).await.unwrap();
         assert_eq!(count(&db_b, "SELECT COUNT(*) FROM projects WHERE github_account_id IS NULL").await, 1);
+    }
+
+    /// An op that loses to an unpushed local edit is not applied: the saved
+    /// link must stay, or the local edit would push NULL over the source's link.
+    #[tokio::test]
+    async fn a_losing_op_keeps_the_saved_link() {
+        let (db_a, a) = device("a", "/Users/a").await;
+        let (db_b, b) = device("b", "/Users/b").await;
+        exec(&db_a, "INSERT INTO github_accounts (id, label, created_at) VALUES ('g1', 'gh', 'x')").await;
+        exec(&db_a, "INSERT INTO projects (id, name, path, created_at, github_account_id) VALUES ('p1', 'p1', '/Users/a/w/p1', 'x', 'g1')").await;
+        set_categories_off(&db_b, &["accounts".into()]).await.unwrap();
+        let first = push(&a).await;
+        b.apply_remote(first.iter().filter(|o| o.tbl == "projects").cloned().collect()).await.unwrap();
+        assert_eq!(count(&db_b, "SELECT COUNT(*) FROM sync_stripped_refs").await, 1);
+        // B renames (unpushed, newer); accounts on, but g1 not here yet.
+        exec(&db_b, "UPDATE projects SET name = 'b-name' WHERE id = 'p1'").await;
+        exec(&db_b, "UPDATE sync_outbox SET changed_at = 9000000000000").await;
+        set_categories_off(&db_b, &[]).await.unwrap();
+        // A's older edit of P now carries no cut (g1 arrives in the same batch).
+        exec(&db_a, "UPDATE projects SET name = 'a-name' WHERE id = 'p1'").await;
+        let ops = push(&a).await;
+        let mut batch = first.into_iter().filter(|o| o.tbl == "github_accounts").collect::<Vec<_>>();
+        batch.extend(ops);
+        let r = b.apply_remote(batch).await.unwrap();
+        assert_eq!((r.applied, r.skipped_older), (1, 1), "account applied, project op loses");
+        assert_eq!(scalar(&db_b, "SELECT name FROM projects WHERE id = 'p1'").await.as_deref(), Some("b-name"));
+        // The saved link was kept and put back now that g1 is here.
+        assert_eq!(scalar(&db_b, "SELECT github_account_id FROM projects WHERE id = 'p1'").await.as_deref(), Some("g1"));
+        let out = push(&b).await;
+        let row = out.iter().find(|o| o.tbl == "projects").unwrap().row.clone().unwrap();
+        assert_eq!((row["name"].clone(), row["github_account_id"].clone()), (json!("b-name"), json!("g1")));
+    }
+
+    /// Same, while the parent is still absent: the entry stays for the push.
+    #[tokio::test]
+    async fn a_losing_op_without_cut_keeps_the_entry() {
+        let (db_a, a) = device("a", "/Users/a").await;
+        let (db_b, b) = device("b", "/Users/b").await;
+        exec(&db_a, "INSERT INTO github_accounts (id, label, created_at) VALUES ('g1', 'gh', 'x')").await;
+        exec(&db_a, "INSERT INTO projects (id, name, path, created_at, github_account_id) VALUES ('p1', 'p1', '/Users/a/w/p1', 'x', 'g1')").await;
+        set_categories_off(&db_b, &["accounts".into()]).await.unwrap();
+        b.apply_remote(push(&a).await).await.unwrap();
+        exec(&db_b, "UPDATE projects SET name = 'b-name' WHERE id = 'p1'").await;
+        exec(&db_b, "UPDATE sync_outbox SET changed_at = 9000000000000").await;
+        // A unlinks (older than B's rename): would settle the entry if it won.
+        exec(&db_a, "UPDATE projects SET github_account_id = NULL WHERE id = 'p1'").await;
+        let r = b.apply_remote(push(&a).await).await.unwrap();
+        assert_eq!(r.skipped_older, 1);
+        assert_eq!(count(&db_b, "SELECT COUNT(*) FROM sync_stripped_refs").await, 1);
+    }
+
+    #[tokio::test]
+    async fn leaving_or_bootstrapping_clears_a_pending_cursor_reset() {
+        let (db_b, b) = device("b", "/Users/b").await;
+        set_categories_off(&db_b, &["notes".into()]).await.unwrap();
+        set_categories_off(&db_b, &[]).await.unwrap();
+        let pending = |db: Db| async move { count(&db, &format!("SELECT COUNT(*) FROM sync_state WHERE key = '{CURSOR_RESET_KEY}'")).await };
+        assert_eq!(pending(db_b.clone()).await, 1);
+        crate::sync::pair::forget_group_state(&db_b).await.unwrap();
+        assert_eq!(pending(db_b.clone()).await, 0);
+        set_categories_off(&db_b, &["notes".into()]).await.unwrap();
+        set_categories_off(&db_b, &[]).await.unwrap();
+        crate::sync::bootstrap::prepare_new_group(&db_b).await.unwrap();
+        assert_eq!(pending(db_b.clone()).await, 0);
+        b.set_cursor(5).await.unwrap();
+        assert_eq!(b.cursor().await.unwrap(), 5);
     }
 
     #[tokio::test]
