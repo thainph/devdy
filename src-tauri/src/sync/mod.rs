@@ -1,0 +1,62 @@
+//! Two-way sync (design: .workspace/docs/03-design/two-way-sync.md).
+//!
+//! Core (this wave): table registry, trigger-based change capture into
+//! `sync_outbox`, HLC, row codec, and `SqliteSyncStore` — the only thing the
+//! sync engine talks to.
+
+// The engine (transport / crypto / pairing) consumes the store; until it is
+// wired in, parts of the core are only exercised by tests.
+#![allow(dead_code)]
+
+pub mod apply;
+pub mod capture;
+pub mod clock;
+pub mod codec;
+pub mod op;
+pub mod schema;
+pub mod store;
+
+use crate::db::Db;
+
+/// Highest migration this build knows; ops from a newer schema are deferred.
+pub const SCHEMA_VERSION: u32 = 55;
+
+/// This machine's sync device id, created on first use.
+pub async fn ensure_device(db: &Db) -> Result<String, String> {
+    let existing: Option<String> = sqlx::query_scalar("SELECT id FROM sync_device LIMIT 1")
+        .fetch_optional(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(id) = existing {
+        return Ok(id);
+    }
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    sqlx::query("INSERT INTO sync_device (id, name, created_at) VALUES (?, '', ?)")
+        .bind(&id)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+/// Startup hook (after migrations): device id + capture triggers.
+pub async fn install(db: &Db) -> Result<String, String> {
+    let device = ensure_device(db).await?;
+    capture::install_triggers(db).await?;
+    Ok(device)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn schema_version_matches_latest_migration() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+        let latest = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok()?.file_name().to_str()?.get(..4)?.parse::<u32>().ok())
+            .max()
+            .unwrap();
+        assert_eq!(latest, super::SCHEMA_VERSION, "bump sync::SCHEMA_VERSION with new migrations");
+    }
+}
