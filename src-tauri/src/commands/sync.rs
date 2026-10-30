@@ -1,4 +1,6 @@
-//! Two-way sync commands (design §3, §7), used by Settings → Sync.
+//! Two-way sync commands (design §3, §7), used by Settings → Sync. Sync is
+//! on demand (on-demand-sync.md §2): `sync_run` pulls from one source device,
+//! which flushes its outbox when asked; nothing moves on its own.
 //!
 //! Group secrets live in the Keychain (`secrets::SyncSecrets`). The pause and
 //! "sync secrets" flags are machine-local `settings` keys (`sync_paused`,
@@ -6,7 +8,11 @@
 //! and the leader device are synced settings (`sync::leader`).
 
 use crate::db::Db;
-use crate::sync::engine::{StatusSink, SyncEngine, SyncState, SyncStatus, Timing, STATUS_EVENT};
+use crate::sync::engine::{
+    EngineHandle, PeerHandlers, RunPhase, StatusSink, SyncEngine, SyncRunReport, SyncState, SyncStatus, Timing,
+    RUN_EVENT, STATUS_EVENT,
+};
+use crate::sync::peer::{PeerHandler, PeerLink};
 use crate::sync::leader::{self, DeviceInfo};
 use crate::sync::store::{self, ParkedRow, SqliteSyncStore, SyncStore};
 use crate::sync::transport::{Connection, TransportError};
@@ -19,13 +25,36 @@ use tokio::sync::Mutex;
 const KEY_PAUSED: &str = "sync_paused";
 const KEY_SECRETS: &str = crate::sync::secrets::SETTING;
 
-/// App-wide sync state (Tauri managed): the running engine, if any.
+/// App-wide sync state (Tauri managed): the running engine, if any, and the
+/// handlers of other devices' requests.
 #[derive(Clone, Default)]
 pub struct SyncManager {
     engine: Arc<Mutex<Option<SyncEngine>>>,
+    handlers: PeerHandlers,
 }
 
 impl SyncManager {
+    /// Serve another device's requests of `handler.kinds()` (on-demand sync
+    /// features). Callable before or after the engine starts; the first
+    /// handler registered for a kind wins.
+    #[allow(dead_code)] // used by folder sync
+    pub fn register_peer_handler(&self, handler: Arc<dyn PeerHandler>) {
+        if let Ok(mut h) = self.handlers.write() {
+            h.push(handler);
+        }
+    }
+
+    /// The running engine (cheap handle: long operations do not hold the slot).
+    pub async fn handle(&self) -> Option<EngineHandle> {
+        self.engine.lock().await.as_ref().map(SyncEngine::handle)
+    }
+
+    /// Requests / blobs to the other devices, while the engine runs.
+    #[allow(dead_code)] // used by folder sync
+    pub async fn peer_link(&self) -> Option<Arc<dyn PeerLink>> {
+        self.handle().await.map(|h| h.link())
+    }
+
     /// Start the engine when this device is in a group (no-op otherwise or
     /// when already running).
     pub async fn start(&self, app: &AppHandle, db: &Db) -> Result<(), String> {
@@ -55,7 +84,15 @@ impl SyncManager {
         let sink: StatusSink = Arc::new(move |s: &SyncStatus| {
             let _ = emitter.emit(STATUS_EVENT, s);
         });
-        *slot = Some(SyncEngine::start(params, keys, store, sink, paused, Timing::default()));
+        *slot = Some(SyncEngine::start_with(
+            params,
+            keys,
+            store,
+            sink,
+            paused,
+            Timing::default(),
+            self.handlers.clone(),
+        ));
         leader::set_sync_active(true);
         let name = default_device_name(db).await;
         if let Err(e) = leader::touch_self(db, &sync.device_id, &name).await {
@@ -71,7 +108,9 @@ impl SyncManager {
         leader::set_sync_active(false);
     }
 
-    /// The outbox changed: sync soon. Cheap; safe to call from anywhere.
+    /// Something worth syncing changed. Sync is on demand, so this only
+    /// retries the relay connection right away when it is down. Cheap; safe
+    /// to call from anywhere.
     pub async fn kick(&self) {
         if let Some(e) = self.engine.lock().await.as_ref() {
             e.kick();
@@ -81,20 +120,8 @@ impl SyncManager {
     /// Push what is queued now, waiting at most `wait`. Returns whether it
     /// went out (false: offline, paused, or no engine).
     async fn flush(&self, wait: Duration) -> bool {
-        let started = chrono::Utc::now().timestamp_millis();
-        match self.engine.lock().await.as_ref() {
-            Some(e) => e.sync_now(),
-            None => return false,
-        }
-        let deadline = tokio::time::Instant::now() + wait;
-        while tokio::time::Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            let s = self.status().await;
-            if s.pending == 0 && s.last_push.is_some_and(|p| p >= started) {
-                return true;
-            }
-        }
-        false
+        let Some(h) = self.handle().await else { return false };
+        matches!(tokio::time::timeout(wait, h.flush_outbox()).await, Ok(Ok(_)))
     }
 
     /// Wait (at most `wait`) until the engine is connected.
@@ -278,13 +305,57 @@ pub async fn sync_pause(
     Ok(state.status().await)
 }
 
+/// Reconnect to the relay now when the connection is down. Sync itself is
+/// on demand: see `sync_run`.
 #[tauri::command]
 pub async fn sync_now(state: State<'_, SyncManager>) -> Result<(), String> {
     match state.engine.lock().await.as_ref() {
         Some(e) => {
-            e.sync_now();
+            e.kick();
             Ok(())
         }
+        None => Err("this device is not in a sync group".into()),
+    }
+}
+
+/// Payload of `sync://run`.
+#[derive(Debug, Clone, serde::Serialize)]
+struct RunEvent {
+    phase: RunPhase,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+}
+
+/// Manual sync from `source_device`: it pushes its outbox, this device pulls
+/// and applies (one direction). Progress goes out as `sync://run`. Errors are
+/// returned as is; `peer_offline` (the source is not running Devdy / not
+/// connected), `peer_paused`, `peer_timeout` and `sync_not_connected` are
+/// bare codes.
+#[tauri::command]
+pub async fn sync_run(
+    app: AppHandle,
+    state: State<'_, SyncManager>,
+    source_device: String,
+) -> Result<SyncRunReport, String> {
+    let emit = |phase: RunPhase, message: Option<String>| {
+        let _ = app.emit(RUN_EVENT, RunEvent { phase, message });
+    };
+    let result = match state.handle().await {
+        Some(h) => h.run_from(&source_device, &|p| emit(p, None)).await,
+        None => Err("this device is not in a sync group".into()),
+    };
+    match &result {
+        Ok(_) => emit(RunPhase::Done, None),
+        Err(e) => emit(RunPhase::Error, Some(e.clone())),
+    }
+    result
+}
+
+/// Devices of the group connected to the relay right now (not this one).
+#[tauri::command]
+pub async fn sync_peers_online(state: State<'_, SyncManager>) -> Result<Vec<String>, String> {
+    match state.handle().await {
+        Some(h) => h.online_peers().await,
         None => Err("this device is not in a sync group".into()),
     }
 }
@@ -436,14 +507,13 @@ pub async fn sync_parked_list(db: State<'_, Db>) -> Result<Vec<ParkedRow>, Strin
     store::parked_list(db.inner(), PARKED_LIST_LIMIT).await
 }
 
-/// Queue the parked rows for push again; returns how many. Rows the relay
-/// still refuses are parked again.
+/// Queue the parked rows for push again (they go out with the next flush);
+/// returns how many. Rows the relay still refuses are parked again.
 #[tauri::command]
 pub async fn sync_parked_retry(db: State<'_, Db>, state: State<'_, SyncManager>) -> Result<usize, String> {
     let n = store::parked_retry(db.inner()).await?;
     if let Some(e) = state.engine.lock().await.as_ref() {
         e.set_parked(0);
-        e.sync_now();
     }
     Ok(n)
 }

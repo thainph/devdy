@@ -154,6 +154,7 @@ use commands::sync::{
     sync_get_secrets, sync_pause, sync_revoke_device, sync_set_leader, sync_set_secrets, sync_status,
     sync_accept_close, sync_accept_open, sync_accept_state, sync_join_respond, sync_parked_list,
     sync_parked_retry, sync_relay_ready,
+    sync_peers_online, sync_run,
     SyncManager,
 };
 use sync::sessions::{sync_run_owners, sync_take_over_run};
@@ -760,6 +761,8 @@ pub fn run() {
             sync_leave,
             sync_pause,
             sync_now,
+            sync_run,
+            sync_peers_online,
             sync_set_secrets,
             sync_run_owners,
             sync_take_over_run,
