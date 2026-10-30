@@ -57,6 +57,14 @@ pub struct Frame {
     pub device_token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub create: Option<bool>,
+    /// One-time join ticket on the first hello of a new device.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<String>,
+    /// `sync_invite`: hex sha256 of a ticket, and how long it stays valid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_secs: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub items: Option<Vec<WireItem>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -144,7 +152,14 @@ impl std::fmt::Display for TransportError {
 fn is_fatal_code(code: &str) -> bool {
     matches!(
         code,
-        "auth_failed" | "group_not_found" | "device_revoked" | "forbidden" | "sync_disabled"
+        "auth_failed"
+            | "group_not_found"
+            | "device_revoked"
+            | "forbidden"
+            | "sync_disabled"
+            | "ticket_required"
+            | "ticket_invalid"
+            | "group_exists"
     )
 }
 
@@ -195,6 +210,17 @@ impl Connection {
         create: bool,
         events: mpsc::UnboundedSender<Event>,
     ) -> Result<Connection, TransportError> {
+        Self::connect_with_ticket(params, create, None, events).await
+    }
+
+    /// `connect` for a device joining an existing group: its first hello
+    /// carries the one-time ticket a member announced with `sync_invite`.
+    pub async fn connect_with_ticket(
+        params: &ConnectParams,
+        create: bool,
+        ticket: Option<&str>,
+        events: mpsc::UnboundedSender<Event>,
+    ) -> Result<Connection, TransportError> {
         let dial = tokio::time::timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(&params.relay_url));
         let ws = match dial.await {
             Ok(Ok((ws, _))) => ws,
@@ -211,6 +237,7 @@ impl Connection {
         if create {
             hello.create = Some(true);
         }
+        hello.ticket = ticket.map(str::to_string);
         send_frame(&mut sink, &hello).await?;
 
         // Wait for the hello verdict, ignoring anything else (keepalive echoes).
@@ -404,6 +431,19 @@ impl Connection {
         match r.code.as_deref() {
             Some("ok") => Ok(()),
             other => Err(TransportError::Relay(other.unwrap_or("unexpected reply").to_string())),
+        }
+    }
+
+    /// `sync_invite{ticket_hash, ttl_secs}`: let one new device register with
+    /// the ticket whose hex sha256 is `ticket_hash` (ttl ≤ 600 s).
+    pub async fn invite(&self, ticket_hash: &str, ttl_secs: u64) -> Result<(), TransportError> {
+        let mut f = Frame::new("sync_invite");
+        f.ticket_hash = Some(ticket_hash.to_string());
+        f.ttl_secs = Some(ttl_secs.min(600));
+        let r = self.request_within(f, &["control", "sync_invited"], Duration::from_secs(10)).await?;
+        match (r.t.as_str(), r.code.as_deref()) {
+            ("sync_invited", _) | (_, Some("ok")) => Ok(()),
+            (_, other) => Err(TransportError::Relay(other.unwrap_or("unexpected reply").to_string())),
         }
     }
 }

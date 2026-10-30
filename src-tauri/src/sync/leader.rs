@@ -7,6 +7,10 @@
 //! - `sync_device_name:<device id>` = `{"name", "last_seen"}`, one row per
 //!   device, written only by that device (so concurrent edits never collide).
 //!   The settings filter accepts the prefix (`schema::SYNCED_SETTING_PREFIXES`).
+//! - `sync_group_creator` = the device that created the group. The relay lets
+//!   only that device remove others; the UI reads this to explain it. The
+//!   creator starts as leader, and removing / losing the leader hands the role
+//!   to the remover or the creator so singleton jobs never stop silently.
 //!
 //! Whether this device is in a group comes from the running engine
 //! (`set_sync_active`), not the Keychain, so the check is cheap enough for a
@@ -22,6 +26,7 @@ use crate::db::Db;
 
 pub const KEY_LEADER: &str = "sync_leader_device";
 pub const DEVICE_NAME_PREFIX: &str = "sync_device_name:";
+pub const KEY_CREATOR: &str = "sync_group_creator";
 
 /// Refresh this device's `last_seen` at most this often (each write is an op).
 const SEEN_REFRESH_MS: i64 = 60 * 60 * 1000;
@@ -109,6 +114,16 @@ pub async fn is_leader(db: &Db) -> bool {
     is_leader_with(db, SYNC_ACTIVE.load(Ordering::SeqCst)).await
 }
 
+pub async fn creator(db: &Db) -> Option<String> {
+    setting(db, KEY_CREATOR).await.filter(|c| !c.trim().is_empty())
+}
+
+/// This device just created the group: it is the creator and the leader.
+pub async fn claim_group(db: &Db, me: &str) -> Result<(), String> {
+    put_setting(db, KEY_CREATOR, me).await?;
+    set_leader(db, Some(me)).await
+}
+
 /// `None` clears the leader (every device runs singleton jobs).
 pub async fn set_leader(db: &Db, device_id: Option<&str>) -> Result<(), String> {
     match device_id.map(str::trim).filter(|d| !d.is_empty()) {
@@ -133,6 +148,8 @@ pub struct DeviceInfo {
     pub last_seen: Option<i64>,
     pub is_self: bool,
     pub is_leader: bool,
+    /// Created the group: the only device the relay lets remove others.
+    pub is_creator: bool,
 }
 
 pub fn parse_record(value: &str) -> DeviceRecord {
@@ -162,6 +179,7 @@ pub async fn list_devices(db: &Db, me: &str) -> Result<Vec<DeviceInfo>, String> 
             .await
             .map_err(|e| e.to_string())?;
     let leader = leader(db).await;
+    let creator = creator(db).await;
     let mut out: Vec<DeviceInfo> = rows
         .into_iter()
         .filter_map(|(k, v)| {
@@ -170,6 +188,7 @@ pub async fn list_devices(db: &Db, me: &str) -> Result<Vec<DeviceInfo>, String> 
             Some(DeviceInfo {
                 is_self: id == me,
                 is_leader: leader.as_deref() == Some(id.as_str()),
+                is_creator: creator.as_deref() == Some(id.as_str()),
                 id,
                 name: rec.name,
                 last_seen: rec.last_seen,
@@ -183,6 +202,7 @@ pub async fn list_devices(db: &Db, me: &str) -> Result<Vec<DeviceInfo>, String> 
             last_seen: None,
             is_self: true,
             is_leader: leader.as_deref() == Some(me),
+            is_creator: creator.as_deref() == Some(me),
         });
     }
     out.sort_by(|a, b| {
@@ -222,13 +242,37 @@ pub async fn rename_self(db: &Db, me: &str, name: &str) -> Result<(), String> {
     write_record(db, me, &DeviceRecord { name: name.to_string(), last_seen: Some(now) }).await
 }
 
-/// Forget a removed device: its record, and the leader role if it held it.
-pub async fn forget_device(db: &Db, device_id: &str) -> Result<(), String> {
+/// Forget a device `by` removed: its record, and the leader role passes to
+/// `by` if the removed device held it.
+pub async fn forget_device(db: &Db, device_id: &str, by: &str) -> Result<(), String> {
     delete_setting(db, &name_key(device_id)).await?;
     if leader(db).await.as_deref() == Some(device_id) {
-        delete_setting(db, KEY_LEADER).await?;
+        set_leader(db, Some(by)).await?;
     }
     Ok(())
+}
+
+/// This device is leaving: drop its record, and hand the leader role to the
+/// creator (or clear it when the creator is the one leaving).
+pub async fn on_leave(db: &Db, me: &str) -> Result<(), String> {
+    delete_setting(db, &name_key(me)).await?;
+    if leader(db).await.as_deref() == Some(me) {
+        let next = creator(db).await.filter(|c| c != me);
+        set_leader(db, next.as_deref()).await?;
+    }
+    Ok(())
+}
+
+/// The creator takes the leader role back when the leader's device record is
+/// gone (it left or was removed while the hand-over did not reach us).
+/// Returns whether it changed anything.
+pub async fn heal_leader(db: &Db, me: &str) -> Result<bool, String> {
+    let Some(l) = leader(db).await else { return Ok(false) };
+    if l == me || creator(db).await.as_deref() != Some(me) || record(db, &l).await.is_some() {
+        return Ok(false);
+    }
+    set_leader(db, Some(me)).await?;
+    Ok(true)
 }
 
 /// Run `on_gain` whenever this device becomes the leader — once at startup
@@ -249,6 +293,13 @@ where
         }
         let mut was = false;
         loop {
+            if SYNC_ACTIVE.load(Ordering::SeqCst) {
+                if let Some(me) = my_device_id(&db).await {
+                    if let Err(e) = heal_leader(&db, &me).await {
+                        tracing::warn!(event = "sync_leader_heal_failed", error = %e);
+                    }
+                }
+            }
             let now = is_leader(&db).await;
             if now && !was {
                 on_gain().await;
@@ -325,9 +376,38 @@ mod tests {
         touch_self(&db, "me", "MacBook").await.unwrap();
         assert_eq!(record(&db, "me").await.unwrap().name, "Air");
 
-        forget_device(&db, "mini").await.unwrap();
-        assert!(leader(&db).await.is_none(), "removing the leader clears the role");
+        forget_device(&db, "mini", "me").await.unwrap();
+        assert_eq!(leader(&db).await.as_deref(), Some("me"), "removing the leader hands it to the remover");
         assert_eq!(list_devices(&db, "me").await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn creator_leads_and_takes_the_role_back() {
+        let db = db().await;
+        claim_group(&db, "me").await.unwrap();
+        assert_eq!(leader(&db).await.as_deref(), Some("me"));
+        touch_self(&db, "me", "MacBook").await.unwrap();
+        write_record(&db, "mini", &DeviceRecord { name: "Mac mini".into(), last_seen: Some(1) }).await.unwrap();
+        let list = list_devices(&db, "me").await.unwrap();
+        assert!(list[0].is_creator && !list[1].is_creator);
+
+        // The leader leaves: the role goes back to the creator.
+        set_leader(&db, Some("mini")).await.unwrap();
+        on_leave(&db, "mini").await.unwrap();
+        assert_eq!(leader(&db).await.as_deref(), Some("me"));
+        assert!(record(&db, "mini").await.is_none());
+
+        // The creator leaving clears it.
+        on_leave(&db, "me").await.unwrap();
+        assert!(leader(&db).await.is_none());
+
+        // A leader whose record vanished is healed by the creator only.
+        claim_group(&db, "me").await.unwrap();
+        set_leader(&db, Some("gone")).await.unwrap();
+        assert!(!heal_leader(&db, "other").await.unwrap());
+        assert!(heal_leader(&db, "me").await.unwrap());
+        assert_eq!(leader(&db).await.as_deref(), Some("me"));
+        assert!(!heal_leader(&db, "me").await.unwrap());
     }
 
     #[tokio::test]
