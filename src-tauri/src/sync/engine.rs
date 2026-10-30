@@ -1104,7 +1104,7 @@ async fn pull_all(
     progress: &(dyn Fn(RunPhase) + Send + Sync),
 ) -> Result<PullCounts, CycleError> {
     let mut counts = PullCounts::default();
-    let mut cursor = ctx.store.cursor().await.map_err(CycleError::Store)?;
+    let mut cursor = ctx.store.pull_start().await.map_err(CycleError::Store)?;
     let mut undecryptable = 0usize;
     loop {
         progress(RunPhase::Pulling);
