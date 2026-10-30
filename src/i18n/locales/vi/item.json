@@ -80,5 +80,13 @@
   "deletedNoteDraftCopied": "Ghi chú này đã bị xoá ở nơi khác — nội dung chưa lưu đã được chép vào clipboard.",
   "deletedTodoDraftCopied": "Việc này đã bị xoá ở nơi khác — nội dung chưa lưu đã được chép vào clipboard.",
   "deletedNoteDraftLost": "Ghi chú này đã bị xoá ở nơi khác và không chép được nội dung chưa lưu.",
-  "deletedTodoDraftLost": "Việc này đã bị xoá ở nơi khác và không chép được nội dung chưa lưu."
+  "deletedTodoDraftLost": "Việc này đã bị xoá ở nơi khác và không chép được nội dung chưa lưu.",
+  "dueDate": "Hạn chót",
+  "setDueDate": "Đặt hạn chót",
+  "clearDueDate": "Bỏ hạn chót",
+  "dueToday": "Hạn hôm nay",
+  "dueTomorrow": "Hạn ngày mai",
+  "dueInDays": "Còn {n} ngày",
+  "overdueDays": "Quá hạn {n} ngày | Quá hạn {n} ngày",
+  "dueOn": "Hạn {date}"
 }

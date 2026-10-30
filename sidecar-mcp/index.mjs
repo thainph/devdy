@@ -328,7 +328,7 @@ const tools = {
 
   todos_list: {
     description:
-      'List Devdy todos (quick task list), top priority first. Set include_done=false to hide completed items, or scope="project" to only show the current project\'s todos. Each line shows the linked session (run) ids, when any.',
+      'List Devdy todos (quick task list), top priority first. Set include_done=false to hide completed items, or scope="project" to only show the current project\'s todos. Each line shows the deadline (due YYYY-MM-DD) and the linked session (run) ids, when any.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -342,7 +342,7 @@ const tools = {
       return rows
         .map(
           (t) =>
-            `- [${t.done ? 'x' : ' '}] ${t.text}${t.project_name ? ` · ${t.project_name}` : ''}${t.linked_runs ? ` · sessions: ${t.linked_runs}` : ''}  (${t.id})`,
+            `- [${t.done ? 'x' : ' '}] ${t.text}${t.due_date ? ` · due ${t.due_date}` : ''}${t.project_name ? ` · ${t.project_name}` : ''}${t.linked_runs ? ` · sessions: ${t.linked_runs}` : ''}  (${t.id})`,
         )
         .join('\n');
     },
@@ -350,18 +350,35 @@ const tools = {
 
   todos_add: {
     description:
-      'Add a todo. Links to the current project by default; pass scope="global" for a project-less task. Use this to capture follow-up work that surfaces during a session.',
+      'Add a todo. Links to the current project by default; pass scope="global" for a project-less task. Optionally set a deadline with due="YYYY-MM-DD". Use this to capture follow-up work that surfaces during a session.',
     inputSchema: {
       type: 'object',
       properties: {
         text: { type: 'string' },
         scope: { type: 'string', enum: ['project', 'global'] },
+        due: { type: 'string', description: 'Deadline, YYYY-MM-DD (local date)' },
       },
       required: ['text'],
     },
     handler: (a) => {
       const t = store.addTodo(a);
-      return `Added todo ${t.id}${t.project_id ? '' : ' (global)'}.`;
+      return `Added todo ${t.id}${t.project_id ? '' : ' (global)'}${t.due_date ? `, due ${t.due_date}` : ''}.`;
+    },
+  },
+
+  todos_set_due: {
+    description: 'Set a todo\'s deadline (due="YYYY-MM-DD", a local date), or clear it by omitting due / passing "".',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        due: { type: 'string', description: 'YYYY-MM-DD; omit or "" to clear' },
+      },
+      required: ['id'],
+    },
+    handler: (a) => {
+      const r = store.setTodoDue(a);
+      return r.due_date ? `Todo ${r.id} is due ${r.due_date}.` : `Cleared the deadline of todo ${r.id}.`;
     },
   },
 

@@ -18,6 +18,8 @@ export interface Todo {
   created_at: string
   /** Capture context: the project this was jotted down in, when any. */
   project_id: string | null
+  /** Deadline, a local `YYYY-MM-DD` date; null = none. */
+  due_date: string | null
   /** Linked sessions whose run still exists. */
   linked_run_count: number
 }
@@ -67,6 +69,19 @@ export const useTodosStore = defineStore('todos', () => {
     } catch (e) {
       error.value = String(e)
       if (todo) todo.project_id = prev
+    }
+  }
+
+  /** Set or clear (null) a todo's deadline, a `YYYY-MM-DD` date. */
+  async function setDueDate(id: string, dueDate: string | null) {
+    const todo = todos.value.find(t => t.id === id)
+    const prev = todo ? todo.due_date : null
+    if (todo) todo.due_date = dueDate // optimistic
+    try {
+      await invoke('set_todo_due_date', { id, dueDate })
+    } catch (e) {
+      error.value = String(e)
+      if (todo) todo.due_date = prev
     }
   }
 
@@ -152,5 +167,5 @@ export const useTodosStore = defineStore('todos', () => {
     }
   }
 
-  return { todos, loading, error, fetchTodos, add, setProject, toggle, update, remove, removeMany, clearCompleted, reorder }
+  return { todos, loading, error, fetchTodos, add, setProject, setDueDate, toggle, update, remove, removeMany, clearCompleted, reorder }
 })

@@ -89,6 +89,8 @@ function drive(frames) {
 const calls = [
   ['notes-list', 'notes_list', {}],
   ['notes-read', 'notes_read', { id: 'n-1' }],
+  ['todos-due-bad', 'todos_set_due', { id: 't-1', due: '2026-02-30' }],
+  ['todos-due', 'todos_set_due', { id: 't-1', due: '2026-11-05' }],
   ['todos-list', 'todos_list', {}],
   ['notes-delete', 'notes_delete', { id: 'n-1' }],
   ['todos-clear', 'todos_clear_done', {}],
@@ -101,7 +103,9 @@ const out = Object.fromEntries(calls.map(([label], i) => [label, byId.get(i + 1)
 check(out['notes-list'].includes('[n-1] Spec') && out['notes-list'].endsWith('· sessions: r-b, r-a'),
   'notes_list: linked session ids in link order, missing runs hidden');
 check(out['notes-read'].includes('- linked_sessions: r-b, r-a\n'), 'notes_read: linked session ids');
-check(out['todos-list'].includes('ship it · proj · sessions: r-a'), 'todos_list: linked session ids');
+check(out['todos-due'] === 'Todo t-1 is due 2026-11-05.', 'todos_set_due: deadline set');
+check(out['todos-due-bad'].includes('invalid due date'), 'todos_set_due: impossible date rejected');
+check(out['todos-list'].includes('ship it · due 2026-11-05 · proj · sessions: r-a'), 'todos_list: deadline and linked session ids');
 const count = (table) => db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n;
 check(count('notes') === 0 && count('note_runs') === 0, 'notes_delete: note and its links removed');
 check(count('todos') === 0 && count('todo_runs') === 0, 'todos_clear_done: done todos and their links removed');

@@ -26,6 +26,7 @@ dist-ssr
 .claude
 .vscode
 .codex
+.agents
 AGENTS.md
 CLAUDE.md
 .codegraph
