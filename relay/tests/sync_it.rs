@@ -483,6 +483,26 @@ async fn revoke_closes_and_blocks_the_device() {
 }
 
 #[tokio::test]
+async fn creator_leaving_moves_the_role_and_tells_the_group() {
+    let url = start(Opts::default()).await;
+    let (mut a, w) = hello_raw(&url, "a", "tok-a", true).await;
+    assert_eq!(w["creator_device"], "a");
+    let mut b = join(&url, &mut a, "b").await;
+    let mut c = join(&url, &mut a, "c").await;
+
+    send(&mut a, json!({ "t": "sync_revoke", "device_id": "a", "successor": "c" })).await;
+    for ws in [&mut b, &mut c] {
+        let info = recv(ws).await;
+        assert_eq!((info["t"].as_str(), info["creator_device"].as_str()), (Some("sync_group_info"), Some("c")), "got {info}");
+    }
+    // The new creator may remove others; the welcome reports it.
+    send(&mut c, json!({ "t": "sync_revoke", "device_id": "b" })).await;
+    assert_eq!(recv(&mut c).await["code"], "ok");
+    let (_c2, w) = hello_raw(&url, "c", "tok-c", false).await;
+    assert_eq!(w["creator_device"], "c");
+}
+
+#[tokio::test]
 async fn sync_and_remote_control_frames_do_not_mix() {
     let url = start(Opts::default()).await;
 

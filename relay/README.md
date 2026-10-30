@@ -73,7 +73,7 @@ time. The relay only stores ciphertext and never logs op blobs or blob data.
 
 | `t` | Direction | Purpose |
 |---|---|---|
-| `sync_hello{auth_token, group_id, device_id, device_token, create?, ticket?}` | Device → Relay | First frame. `auth_token` = `RELAY_HOST_TOKEN`. `create=true` on an unknown group creates it and registers this device as its **creator**. A known device must match its pinned `sha256(device_token)` (`create=true` from a known device is an idempotent hello). An unknown device joins an existing group only with a one-time `ticket` registered by a member (`sync_invite`); `create=true` from it → `group_exists`. → `sync_welcome{last_seq}` or `error{auth_failed\|group_not_found\|group_exists\|ticket_required\|ticket_invalid\|device_revoked\|sync_disabled}` and the connection closes. |
+| `sync_hello{auth_token, group_id, device_id, device_token, create?, ticket?}` | Device → Relay | First frame. `auth_token` = `RELAY_HOST_TOKEN`. `create=true` on an unknown group creates it and registers this device as its **creator**. A known device must match its pinned `sha256(device_token)` (`create=true` from a known device is an idempotent hello). An unknown device joins an existing group only with a one-time `ticket` registered by a member (`sync_invite`); `create=true` from it → `group_exists`. → `sync_welcome{last_seq, creator_device}` or `error{auth_failed\|group_not_found\|group_exists\|ticket_required\|ticket_invalid\|device_revoked\|sync_disabled}` and the connection closes. |
 | `sync_invite{ticket_hash, ttl_secs}` | Device → Relay | A member registers a join ticket: `ticket_hash` = lowercase hex `sha256(ticket)`, `ttl_secs` 1..600 (default 600). The ticket itself travels device→device, never to the relay before the joiner's hello. One use; at most 16 open per group (expired/used ones are pruned). → `control{code:"ok"}`. Errors: `bad_request`, `quota_exceeded`. |
 | `sync_push{base_seq, items:[{key, blob}]}` | Device → Relay | `base_seq` = the pusher's pull cursor (missing = 0). Relay assigns per-group monotonic `seq`s; an older op with the same `key` is deleted only if `seq <= base_seq` (the pusher had pulled it) or the pusher stored it itself — otherwise both are kept and devices resolve them by HLC. All or nothing. → `sync_ack{last_seq}`. Errors: `quota_exceeded`, `too_large`. |
 | `sync_notify{last_seq}` | Relay → other devices | Sent to every other connected device of the group after a push. |
@@ -81,7 +81,8 @@ time. The relay only stores ciphertext and never logs op blobs or blob data.
 | `blob_put{sha, data}` | Device → Relay | `data` = base64 of the sealed bytes, `sha` = lowercase hex sha256 of those bytes (verified). Idempotent. → `blob_ack{sha}`. Errors: `sha_mismatch`, `too_large`, `quota_exceeded`. |
 | `blob_get{sha}` | Device → Relay | → `blob_data{sha, data}` or `error{blob_not_found}`. |
 | `blob_release{shas}` | Device → Relay | The uploading device no longer references these blobs (at most 1000 per frame). Only blobs that device uploaded are marked; anything else is ignored. → `blob_released{released}` (how many were marked). |
-| `sync_revoke{device_id}` | Device → Relay | A device may revoke itself; only the group's creator may revoke another device (else `forbidden`). The revoked device's live connections get `error{device_revoked}` and close, its hello fails from then on (with or without a ticket). → `control{code:"ok"}`. |
+| `sync_revoke{device_id, successor?}` | Device → Relay | A device may revoke itself; only the group's creator may revoke another device (else `forbidden`). The revoked device's live connections get `error{device_revoked}` and close, its hello fails from then on (with or without a ticket). When the **creator revokes itself** the role moves to `successor` if that is an active member, else to the oldest active member (registration time, ties by device id); no member left = no creator. → `control{code:"ok"}`. |
+| `sync_group_info{creator_device}` | Relay → other devices | Sent to the group's other connected devices when the creator role moved; devices that were offline learn it from their next `sync_welcome`. |
 
 After `sync_welcome` only these frames and `keepalive` are accepted on the
 connection (anything else → `error{forbidden}`); sync frames on a Remote
@@ -116,13 +117,63 @@ writable by the `devdyrelay` user — `ReadWritePaths=` in the unit). Tables:
 `groups` (head seq + byte usage + creator device), `devices`, `ops`, `blobs`
 (with uploader and release time), `invites` (ticket hashes). Older databases are
 upgraded at startup: missing columns are added, `creator_device` is set to the
-group's earliest registered device, and `ops` is rebuilt without its old
+group's earliest active registered device, and `ops` is rebuilt without its old
 `UNIQUE(group_id, key)` constraint. It runs in WAL
 mode, so a copy of the `.db` file alone is not a consistent backup — back up
 with `sqlite3 /projects/relay/shared/sync.db ".backup '/path/sync-$(date +%F).db'"`
 (safe while the relay runs). The content is end-to-end encrypted, but the file
 is the only server-side copy of every group's history; devices keep full local
 copies, so losing it means re-uploading, not data loss.
+
+## Operations (sync store)
+
+**Backup.** `sync.db` runs in WAL mode, so copying the file alone can give a
+torn copy. Use SQLite's online backup, which is safe while the relay runs:
+
+```bash
+sqlite3 /projects/relay/shared/sync.db ".backup '/projects/relay/backup/sync-$(date +%F).db'"
+```
+
+(e.g. from a daily cron of the `deploy` user, keeping a few days). The content
+is end-to-end encrypted, so backups are as safe to store as the live file; the
+devices hold full local copies, so losing the store costs a re-upload, not data.
+
+**Restoring an older backup.** The restored store's head `seq` is lower than
+the cursors devices already pulled to, and the ops pushed after the backup are
+gone. A device detects this on its next `sync_welcome` (`last_seq` below its
+own cursor), stops syncing and asks the user to re-bootstrap the group
+(rejoin / re-upload) instead of pulling from a cursor that now points at
+different ops. Restore only when the store is lost or corrupt; the creator
+recorded in the backup applies again (devices are told on their next welcome).
+
+**VPS setup** (relay deployed by `deploy` under `/projects/relay`, unit
+overridden by `/etc/systemd/system/devdy-relay.service.d/projects.conf`, env
+file `/projects/relay/shared/relay.env`):
+
+```bash
+# 1. Let the sandboxed unit write the store's directory (ProtectSystem=strict).
+sudo tee /etc/systemd/system/devdy-relay.service.d/sync.conf >/dev/null <<'UNIT'
+[Service]
+ReadWritePaths=/projects/relay/shared
+MemoryMax=256M
+UNIT
+
+# 2. devdyrelay must create sync.db and its -wal/-shm files there. Group-write
+#    with the sticky bit: it can add its own files but not replace or delete
+#    deploy's (relay.env, binaries).
+sudo chgrp devdyrelay /projects/relay/shared
+sudo chmod 1775 /projects/relay/shared
+# (an existing store must belong to it as well)
+# sudo chown devdyrelay:devdyrelay /projects/relay/shared/sync.db*
+
+# 3. Enable sync in the env file.
+echo 'RELAY_SYNC_DB=/projects/relay/shared/sync.db' | sudo -u deploy tee -a /projects/relay/shared/relay.env
+
+sudo systemctl daemon-reload && sudo systemctl restart devdy-relay
+journalctl -u devdy-relay -n 20   # expect event="sync_store" enabled=true
+```
+
+Releases only replace `current`; `shared/` (env + store) survives them.
 
 ## Configuration (environment)
 
