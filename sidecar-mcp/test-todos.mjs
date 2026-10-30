@@ -169,8 +169,11 @@ check(out['list-pos'].split('\n')[0].includes('Reply to customer'), 'todos_list:
 
 out = await drive([
   ['done', 'todos_done', { id: plain }],
+  ['redate', 'todos_set_due', { id: full, due: '2026-11-03' }],
+  ['allday', 'todos_set_due', { id: plain, due: '2026-11-03', due_time: '' }],
   ['undue', 'todos_set_due', { id: full }],
 ]);
+const dueOut = out;
 const d = row(plain);
 check(d.done === 1 && d.completed_at && d.status === 'doing', 'todos_done: done stamps completed_at');
 const completedAt = d.completed_at;
@@ -180,6 +183,8 @@ out = await drive([
 ]);
 check(row(plain).completed_at === completedAt, 'todos_done: re-marking keeps completed_at');
 check(out['list-all'].split('\n').at(-1).startsWith('- [x] Reply to customer'), 'todos_list: done todos last');
+check(dueOut.redate === `Todo ${full} is due 2026-11-03 09:30.`, 'todos_set_due: a new date keeps the time');
+check(dueOut.allday === `Todo ${plain} is due 2026-11-03.`, 'todos_set_due: "" makes it all-day');
 check(row(full).due_date === null && row(full).due_time === null, 'todos_set_due: clearing drops the time too');
 out = await drive([['undo', 'todos_done', { id: plain }]]);
 const u = row(plain);
