@@ -14,7 +14,10 @@
 //! for `ScanState::tail_idle` (full chunks go at once).
 //! The tail blob it replaced is queued in `sync_blob_release` and released on
 //! the relay (`blob_release`) once the new manifest was pushed; a release whose
-//! manifest is dropped unpushed is cancelled.
+//! manifest is dropped unpushed is cancelled. The blob stays in `sync_blobs`
+//! until the release is due, so a cancelled one is still known (and released
+//! when a later version supersedes it), and a chunk deduped onto it meanwhile
+//! cancels the release.
 //! The `file` op itself goes through `sync_outbox` like a row change.
 //!
 //! Relay -> local (`apply_op`): last-writer-wins by HLC (via `sync_rows`),
@@ -734,9 +737,10 @@ async fn queue(conn: &mut SqliteConnection, kind: FileKind, portable: &str, op: 
 }
 
 /// The new version of a file no longer uses `old` chunks: those this device
-/// uploaded, and no other file of it still uses, are forgotten (so dedupe
-/// never hands them out again) and released on the relay once the new
-/// manifest — outbox entry `seq` — is pushed (it supersedes the old one).
+/// uploaded, and no other file of it still uses, are released on the relay
+/// once the new manifest — outbox entry `seq` — is pushed (it supersedes the
+/// old one); they are forgotten (so dedupe never hands them out again) when
+/// that release becomes due.
 async fn release_superseded(
     conn: &mut SqliteConnection,
     kind: FileKind,
@@ -764,7 +768,6 @@ async fn release_superseded(
         if ours.is_none() || used.is_some() {
             continue;
         }
-        sqlx::query("DELETE FROM sync_blobs WHERE blob_sha = ?").bind(&c.blob).execute(&mut *conn).await.map_err(err)?;
         sqlx::query("INSERT OR REPLACE INTO sync_blob_release (blob_sha, after_seq, queued_at) VALUES (?, ?, ?)")
             .bind(&c.blob)
             .bind(seq)
@@ -791,6 +794,13 @@ pub async fn releases_pushed(conn: &mut SqliteConnection, up_to: i64) -> Result<
          (SELECT o.seq FROM sync_outbox o WHERE o.seq <= ?1 AND {group_max} <= ?1)"
     ))
     .bind(up_to)
+    .execute(&mut *conn)
+    .await
+    .map_err(err)?;
+    // Due now: never deduped again.
+    sqlx::query(&format!(
+        "DELETE FROM sync_blobs WHERE blob_sha IN (SELECT blob_sha FROM sync_blob_release WHERE after_seq = {RELEASE_READY})"
+    ))
     .execute(&mut *conn)
     .await
     .map_err(err)?;
@@ -950,7 +960,15 @@ async fn upload_file(
             .await
             .map_err(abort)?;
         let blob = match known {
-            Some(b) => b,
+            Some(b) => {
+                // Used again before its release was due: keep it.
+                sqlx::query(&format!("DELETE FROM sync_blob_release WHERE blob_sha = ? AND after_seq > {RELEASE_READY}"))
+                    .bind(&b)
+                    .execute(&mut *conn)
+                    .await
+                    .map_err(abort)?;
+                b
+            }
             None => {
                 let b = blobs.put(&bytes).await.map_err(StageError::Abort)?;
                 sqlx::query(
@@ -2616,15 +2634,15 @@ pub(crate) mod tests {
         let v2 = chunks(db.clone()).await;
         assert_eq!(v1[0].blob, v2[0].blob, "full chunk reused");
         assert_ne!(v1[1].blob, v2[1].blob);
+        let known = |db: Db, blob: String| async move {
+            let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_blobs WHERE blob_sha = ?").bind(blob).fetch_one(&db).await.unwrap();
+            n > 0
+        };
         // Not before the new manifest left the outbox.
         assert!(releasable_blobs(&db, 10).await.unwrap().is_empty());
-        let known: Option<i64> = sqlx::query_scalar("SELECT 1 FROM sync_blobs WHERE blob_sha = ?")
-            .bind(&v1[1].blob)
-            .fetch_optional(&db)
-            .await
-            .unwrap();
-        assert_eq!(known, None, "a released blob is never deduped again");
+        assert!(known(db.clone(), v1[1].blob.clone()).await, "kept until the release is due");
         pushed(&db).await;
+        assert!(!known(db.clone(), v1[1].blob.clone()).await, "a released blob is never deduped again");
         assert_eq!(releasable_blobs(&db, 10).await.unwrap(), vec![v1[1].blob.clone()]);
         forget_released(&db, &[v1[1].blob.clone()]).await.unwrap();
         assert!(releasable_blobs(&db, 10).await.unwrap().is_empty());
@@ -2646,12 +2664,39 @@ pub(crate) mod tests {
         grown.extend(b"+");
         fs::write(&log, &grown).unwrap();
         stage(&db, &p, &blobs, &mut st, ScanMode::Quick, false).await.unwrap();
-        let queued: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_blob_release").fetch_one(&db).await.unwrap();
-        assert_eq!(queued, 1, "the unpushed tail is superseded");
+        let queued: Vec<String> = sqlx::query_scalar("SELECT blob_sha FROM sync_blob_release").fetch_all(&db).await.unwrap();
+        assert_eq!(queued.len(), 1, "the unpushed tail is superseded");
         sqlx::query("DELETE FROM sync_outbox").execute(&db).await.unwrap();
         assert!(releasable_blobs(&db, 10).await.unwrap().is_empty());
-        let queued: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_blob_release").fetch_one(&db).await.unwrap();
-        assert_eq!(queued, 0, "cancelled");
+        let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_blob_release").fetch_one(&db).await.unwrap();
+        assert_eq!(left, 0, "cancelled");
+        assert!(known(db.clone(), queued[0].clone()).await, "a cancelled release keeps the blob known");
+
+        // The file goes back to that content: the chunk is deduped onto the
+        // kept blob.
+        let tail_x = queued[0].clone();
+        let with_tail = |t: &[u8]| {
+            let mut b = mb(CHUNK_SIZE, b'y');
+            b.extend(t);
+            b
+        };
+        fs::write(&log, with_tail(b"tail")).unwrap();
+        stage(&db, &p, &blobs, &mut st, ScanMode::Quick, false).await.unwrap();
+        assert!(chunks(db.clone()).await.iter().any(|c| c.blob == tail_x), "deduped onto the kept blob");
+        pushed(&db).await;
+        for sha in releasable_blobs(&db, 10).await.unwrap() {
+            forget_released(&db, &[sha]).await.unwrap();
+        }
+        // Its release is queued by the next change, then cancelled when the
+        // content comes back before the push.
+        fs::write(&log, with_tail(b"tail2")).unwrap();
+        stage(&db, &p, &blobs, &mut st, ScanMode::Quick, false).await.unwrap();
+        let tail2 = chunks(db.clone()).await[1].blob.clone();
+        fs::write(&log, with_tail(b"tail")).unwrap();
+        stage(&db, &p, &blobs, &mut st, ScanMode::Quick, false).await.unwrap();
+        pushed(&db).await;
+        assert_eq!(releasable_blobs(&db, 10).await.unwrap(), vec![tail2], "a blob in use again is not released");
+        assert!(known(db.clone(), tail_x).await);
     }
 
     /// What `mark_pushed` does for everything in the outbox.
