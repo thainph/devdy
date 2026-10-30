@@ -25,6 +25,7 @@ pub mod engine;
 pub mod leader;
 pub mod pair;
 pub mod peer;
+pub mod prefs;
 pub mod transport;
 #[cfg(test)]
 mod test_relay;
@@ -32,7 +33,7 @@ mod test_relay;
 use crate::db::Db;
 
 /// Highest migration this build knows; ops from a newer schema are deferred.
-pub const SCHEMA_VERSION: u32 = 65;
+pub const SCHEMA_VERSION: u32 = 66;
 
 /// This machine's sync device id, created on first use.
 pub async fn ensure_device(db: &Db) -> Result<String, String> {
@@ -63,6 +64,14 @@ pub async fn install(db: &Db) -> Result<String, String> {
         .execute(db)
         .await
         .map_err(|e| e.to_string())?;
+    // Tests take projects synced from another device, like before selective sync.
+    #[cfg(test)]
+    sqlx::query("INSERT OR IGNORE INTO sync_state (key, value) VALUES (?, '1')")
+        .bind(prefs::SYNCED_PROJECT_ENABLED_KEY)
+        .execute(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    prefs::seed(db).await?;
     capture::settle_membership(db).await?;
     capture::install_triggers(db).await?;
     pair::install_past_device_triggers(db).await?;
