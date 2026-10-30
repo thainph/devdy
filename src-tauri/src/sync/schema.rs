@@ -17,8 +17,8 @@
 //!   its own.
 //! - `project_secrets`: legacy per-project PAT Keychain reference, no longer
 //!   read or written by the app (secrets sync is a separate channel, D4).
-//! - `pulse_requests`: work queue drained by the local Pulse poller (singleton
-//!   jobs run on the leader, D6).
+//! - `todo_notifications`: which Focus reminders already fired on this
+//!   machine (each machine reminds on its own, focus spec BR-07).
 //! - `run_usage_baseline`: per-run parse baseline derived from the local run
 //!   logs (rebuilt by `model_usage::rebuild_from_logs`).
 //! - `slack_legacy_orphans`: one-off migration bookkeeping.
@@ -171,9 +171,8 @@ pub static SYNCED_TABLES: &[TableSpec] = &[
         .natural(&["thread_id", "slack_file_id"])
         .skip(&["file_path", "download_status", "download_error"]),
     TableSpec::new("slack_thread_runs", &["thread_id", "run_id"]),
-    // Unique index idx_pulse_watches_source.
-    TableSpec::new("pulse_watches", ID).natural(&["source_type", "source_ref"]),
-    TableSpec::new("pulse_digests", ID),
+    // One AI day plan per local date (focus spec §3.6c).
+    TableSpec::new("focus_day_plans", &["date"]),
 ];
 
 /// Tables deliberately left out (see the module docs for the reasons).
@@ -185,12 +184,17 @@ pub static EXCLUDED_TABLES: &[&str] = &[
     "sync_conflicts",
     "rule_sync_conflicts",
     "project_secrets",
-    "pulse_requests",
+    "todo_notifications",
     "run_usage_baseline",
     "slack_legacy_orphans",
     "sqlite_sequence",
     "_sqlx_migrations",
 ];
+
+/// Tables an older peer may still send ops for, dropped since (0067 removed
+/// Project Pulse). Their ops are skipped on apply instead of being parked in
+/// `sync_deferred` forever as "unknown table".
+pub static RETIRED_TABLES: &[&str] = &["pulse_watches", "pulse_digests", "pulse_requests"];
 
 pub fn spec(tbl: &str) -> Option<&'static TableSpec> {
     SYNCED_TABLES.iter().find(|t| t.name == tbl)
@@ -233,6 +237,7 @@ mod tests {
             for c in t.pk {
                 assert!(!t.is_skipped(c), "{}: pk column {c} skipped", t.name);
             }
+            assert!(!RETIRED_TABLES.contains(&t.name), "{} both synced and retired", t.name);
         }
     }
 
