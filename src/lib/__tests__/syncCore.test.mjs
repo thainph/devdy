@@ -24,10 +24,12 @@ test('syncTone gives each state its own dot, most urgent first', () => {
   assert.equal(syncTone(null), 'off')
   assert.equal(syncTone(DISABLED_STATUS), 'off')
   assert.equal(syncTone(st()), 'ok')
-  assert.equal(syncTone(st({ pending: 3 })), 'syncing')
+  // On demand: queued changes wait for another device's Sync, they are not "syncing".
+  assert.equal(syncTone(st({ pending: 3 })), 'ok')
+  assert.equal(syncTone(st(), false, true), 'syncing', 'a sync running here')
   assert.equal(syncTone(st({ state: 'connecting' })), 'syncing')
   assert.equal(syncTone(st({ parked: 2 })), 'parked')
-  assert.equal(syncTone(st({ parked: 2, pending: 3 })), 'parked')
+  assert.equal(syncTone(st({ parked: 2 }), false, true), 'parked')
   assert.equal(syncTone(st({ state: 'offline', parked: 2 })), 'offline')
   assert.equal(syncTone(st({ state: 'offline', paused: true })), 'paused')
   assert.equal(syncTone(st({ state: 'error', paused: true })), 'error')
@@ -110,6 +112,8 @@ test('countdown renders m:ss and never goes negative', () => {
 
 test('syncErrorCode picks the backend code prefix', () => {
   assert.equal(syncErrorCode('wrong_password'), 'wrong_password')
+  assert.equal(syncErrorCode('busy'), 'busy', 'a peer serving too many requests')
+  assert.equal(syncErrorCode('folder fetch failed: busy'), 'busy')
   assert.equal(syncErrorCode('not_accepting: open Settings'), 'not_accepting')
   assert.equal(syncErrorCode('declined: the request was declined on that machine'), 'declined')
   assert.equal(syncErrorCode('relay_not_configured: relay URL is not set'), 'relay_not_configured')

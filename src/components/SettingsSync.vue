@@ -378,8 +378,12 @@ async function setLeader(id: string | null) {
   if (id === leaderId.value) return
   busyDevice.value = id ?? 'none'
   try {
-    await syncSetLeader(id)
+    const confirmed = await syncSetLeader(id)
     await loadDevices()
+    if (!confirmed) {
+      const next = devices.value.find((d) => d.id === id)
+      toast.info(t('settings.sync.devices.leaderPending', { name: next ? deviceLabel(next) : id ?? '' }))
+    }
   } catch (e) {
     toast.error(errorText(e))
   } finally {

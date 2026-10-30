@@ -256,8 +256,8 @@ export const useRunsStore = defineStore('runs', () => {
    * confirms a git mismatch; `skipSync` continues before the owner's final
    * output synced.
    */
-  async function takeOverRun(run_id: string, force = false, skipSync = false) {
-    const result = await invoke<TakeOverResult>('sync_take_over_run', { runId: run_id, force, skipSync })
+  async function takeOverRun(run_id: string, force = false, skipSync = false, staleOk = false) {
+    const result = await invoke<TakeOverResult>('sync_take_over_run', { runId: run_id, force, skipSync, staleOk })
     if (result.taken && loadedProjectId.value) await fetchRemoteOwners(loadedProjectId.value)
     return result
   }

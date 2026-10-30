@@ -141,7 +141,7 @@ async function viewBackup(id: string) {
       <section class="space-y-1.5">
         <p v-if="run.stage === 'data'" class="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Loader2 class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
-          {{ t(`settings.sync.run.phase.${run.phase ?? 'requesting'}`, { name: sourceName }) }}
+          {{ t(`settings.sync.run.phase.${run.phase ?? 'requesting'}`, { name: sourceName, n: run.phaseMessage ?? 0 }) }}
         </p>
         <p v-else-if="run.report" class="text-xs text-emerald-600 dark:text-emerald-400">
           {{ t('settings.sync.run.dataDone', { n: run.report.applied }) }}
