@@ -1077,7 +1077,9 @@ pub async fn drain_sidecar(
     // Final authoritative persist (captures anything appended since the last
     // periodic flush). Uses the prefix snapshot rather than re-reading the file,
     // because the periodic flush has already written `prefix + buf` to disk.
-    {
+    // Not when another device took the run over: the log is its now.
+    let handed_off = crate::sync::sessions::is_handed_off(&run_id);
+    if !handed_off {
         let buf = log_buf.lock().await;
         flush_to_disk(&buf);
     }
@@ -1122,20 +1124,26 @@ pub async fn drain_sidecar(
     // A turn finishing is not user activity, so it must not float the run in
     // History. last_activity_at is only pinned to the run's existing sort key
     // (old row values) so the new finished_at can't take over the COALESCE.
-    let _ = sqlx::query(
-        "UPDATE runs SET status = ?, finished_at = ?, \
-         last_activity_at = COALESCE(last_activity_at, finished_at, started_at, created_at, ?), \
-         output_path = ? WHERE id = ?",
-    )
-    .bind(final_status)
-    .bind(&finished_at)
-    .bind(&finished_at)
-    .bind(log_path.to_string_lossy().as_ref())
-    .bind(&run_id)
-    .execute(&db_pool)
-    .await;
-    // The sidecar is gone: other devices may continue the session now.
-    crate::sync::sessions::release(&db_pool, &run_id).await;
+    // Only while this device owns the run: after a take-over the row is the
+    // new owner's, and a 'cancelled' here would sync back over it.
+    if !handed_off {
+        let _ = sqlx::query(&format!(
+            "UPDATE runs SET status = ?, finished_at = ?, \
+             last_activity_at = COALESCE(last_activity_at, finished_at, started_at, created_at, ?), \
+             output_path = ? WHERE id = ? AND {}",
+            crate::sync::sessions::OWNED_HERE
+        ))
+        .bind(final_status)
+        .bind(&finished_at)
+        .bind(&finished_at)
+        .bind(log_path.to_string_lossy().as_ref())
+        .bind(&run_id)
+        .execute(&db_pool)
+        .await;
+        // The sidecar is gone: other devices may continue the session now.
+        crate::sync::sessions::release(&db_pool, &run_id).await;
+    }
+    crate::sync::sessions::clear_handed_off(&run_id);
 
     if let Some(bus) = &remote_bus {
         bus.publish(crate::remote::RemoteRunEvent::Done {
