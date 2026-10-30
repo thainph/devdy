@@ -586,21 +586,21 @@
       "choose": "Choose folder",
       "change": "Change",
       "tabHelp": "Which projects this machine receives, and where their folders live here. Folder sync makes the folder identical to the source machine (branch, commits, uncommitted changes, other files) after a preview.",
-      "selectAll": "Select all projects",
-      "selectAllFolders": "Folder sync for all",
-      "colSync": "Sync",
-      "colProject": "Project",
-      "colLocal": "Folder on this machine",
-      "colFolder": "Folder",
       "pick": "Choose…",
       "more": "Project sync settings",
       "remapped": "mapped",
       "runningHere": "session running here",
-      "folderNeedsSync": "Turn on Sync first",
       "state": {
         "ok": "✓ present",
-        "create": "+ create (not here yet — will be cloned)",
+        "create": "+ will create",
         "pick": "⚠ choose a folder"
+      },
+      "setAll": "Set all:",
+      "mixed": "Mixed",
+      "mode": {
+        "off": "Don't sync",
+        "data": "Data only",
+        "folder": "Data + folder"
       }
     },
     "rebootstrap": {
@@ -691,7 +691,6 @@
     },
     "tabs": {
       "overview": "Overview",
-      "data": "Data",
       "projects": "Projects",
       "devices": "Devices"
     },
@@ -702,7 +701,6 @@
       "offline": "offline",
       "noSource": "No other device in this group yet. Press Accept a new device below, then Join the group from the other machine.",
       "syncFrom": "Sync from {name}",
-      "includeFolders": "Include project folders ({n} enabled)",
       "offlineHelp": "{name} is offline — open Devdy on that machine and try again",
       "last": "Last sync: {ago} · from {name} · {result}",
       "lastNever": "Last sync: never",
@@ -712,9 +710,14 @@
       "lastProjects": "Projects: {ok}/{total}",
       "lastProjectErrors": "{n} error(s)",
       "pending": "Changes waiting to be sent: {n} (sent when another machine syncs from this one)",
-      "pauseHelp": "Paused: this machine does not answer Sync requests from other devices."
+      "pauseHelp": "Paused: this machine does not answer Sync requests from other devices.",
+      "receives": "Receives:",
+      "receivesData": "{n} data types",
+      "receivesProjects": "{n} projects ({k} with folder)",
+      "edit": "Edit"
     },
     "data": {
+      "title": "Data received ({n}/{total})",
       "help": "What this machine receives when you press Sync.",
       "selectAll": "Select all",
       "note": "Turning a category on downloads all of it again on the next Sync. Turning one off keeps the data already here.",
@@ -753,7 +756,7 @@
         },
         "sessions": {
           "label": "Sessions",
-          "hint": "Session history, usage and transcripts"
+          "hint": "Session history, usage and transcripts — the first Sync can be very large (transcript history)"
         }
       }
     },
@@ -804,7 +807,8 @@
         "listDelete": "Deleted",
         "rewound": "branch {branch} will be moved back; its old tip is kept in devdy-sync-backup/…",
         "skippedItems": "Left alone ({n})",
-        "truncated": "List truncated: showing {shown} of {total}"
+        "truncated": "List truncated: showing {shown} of {total}",
+        "safe": "safe · {size}"
       },
       "skipped": {
         "no_local_path": "no folder chosen",
@@ -854,7 +858,8 @@
       },
       "applyFiles": "Sync {n} project(s) · {files} file change(s)",
       "planChanged": "The source folder changed after this preview, so nothing beyond it was written. Review the new preview and confirm again.",
-      "review": "Review again"
+      "review": "Review again",
+      "skippedTitle": "Skipped ({n})"
     },
     "indicator": {
       "lastSync": "Last: {ago}",
