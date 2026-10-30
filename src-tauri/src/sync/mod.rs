@@ -22,6 +22,7 @@ pub mod secrets;
 
 pub mod crypto;
 pub mod engine;
+pub mod folder;
 pub mod leader;
 pub mod pair;
 pub mod peer;

@@ -157,6 +157,7 @@ use commands::sync::{
     SyncManager,
 };
 use sync::sessions::{sync_run_owners, sync_take_over_run};
+use commands::sync_folder::{sync_folder_apply, sync_folder_cancel, sync_folder_preview};
 use commands::sync_bootstrap::{
     sync_bootstrap_commit, sync_bootstrap_pending, sync_bootstrap_preview, sync_project_mapping_list, sync_rebootstrap,
     sync_project_mapping_set, sync_resync_all,
@@ -763,6 +764,9 @@ pub fn run() {
             sync_set_secrets,
             sync_run_owners,
             sync_take_over_run,
+            sync_folder_preview,
+            sync_folder_apply,
+            sync_folder_cancel,
             sync_get_secrets,
             sync_devices_list,
             sync_device_rename,
