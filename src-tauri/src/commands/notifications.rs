@@ -47,6 +47,19 @@ pub(crate) fn show_clickable(
     label: &'static str,
     on_click: impl FnOnce(&AppHandle) + Send + 'static,
 ) {
+    show_clickable_opts(app, title, body, label, true, on_click)
+}
+
+/// `show_clickable`; `raise_main = false` leaves window raising to `on_click`
+/// (a Focus reminder raises the Focus window instead).
+pub(crate) fn show_clickable_opts(
+    app: AppHandle,
+    title: String,
+    body: String,
+    label: &'static str,
+    raise_main: bool,
+    on_click: impl FnOnce(&AppHandle) + Send + 'static,
+) {
     // macOS needs a bundle identifier to own the notification via
     // NSUserNotificationCenter. Dev builds aren't bundled, so we borrow
     // Terminal's identity exactly like tauri-plugin-notification does.
@@ -87,7 +100,7 @@ pub(crate) fn show_clickable(
                         // Clicking a notification we handle ourselves does NOT
                         // auto-activate a backgrounded app on macOS, so raise the
                         // main window explicitly before routing.
-                        if let Some(win) = app.get_webview_window("main") {
+                        if let Some(win) = app.get_webview_window("main").filter(|_| raise_main) {
                             let _ = win.unminimize();
                             let _ = win.show();
                             let _ = win.set_focus();

@@ -4,10 +4,11 @@
 use crate::commands::todos::{load_todos, Todo};
 use crate::db::Db;
 use crate::focus::score::{self, Bucket, Calibration, Reason, TodoInput, WorkHours};
+use crate::focus::capacity::{self, BusyOut, CalEvent, Capacity};
 use crate::focus::settings::{self as focus_settings, FocusSettings};
 use chrono::{DateTime, NaiveDateTime, TimeZone};
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 #[derive(Debug, Serialize)]
 pub struct BoardItem {
@@ -41,12 +42,16 @@ pub struct Board {
     pub items: Vec<BoardItem>,
     /// "Do now" todo ids, at most 3.
     pub top: Vec<String>,
-    /// Calendar workload (phase P2); always null for now.
-    pub capacity: Option<serde_json::Value>,
+    /// Today's workload against the Calendar (BR-08); null when unavailable.
+    pub capacity: Option<Capacity>,
+    /// Why `capacity` is null: `no_account` (no Google account linked),
+    /// `loading` (first fetch still running; `focus:changed` follows), or the
+    /// Calendar error.
+    pub capacity_error: Option<String>,
     pub calibration: CalibrationInfo,
 }
 
-fn to_local<Tz: TimeZone>(s: Option<&str>, tz: &Tz) -> Option<NaiveDateTime> {
+pub(crate) fn to_local<Tz: TimeZone>(s: Option<&str>, tz: &Tz) -> Option<NaiveDateTime> {
     DateTime::parse_from_rfc3339(s?.trim())
         .ok()
         .map(|d| d.with_timezone(tz).naive_local())
@@ -68,18 +73,21 @@ where
         .unwrap_or_else(|| n.format("%Y-%m-%dT%H:%M:%S").to_string())
 }
 
-/// The board for `todos` at `now` (pure; `samples` = `(actual, estimate)` of
-/// done todos, newest first).
-pub fn build_board<Tz: TimeZone>(
+/// Ranked todos at one instant (pure): rows in display order (done ones
+/// completed in the last 7 days only) and the "do now" ids.
+pub struct Ranking {
+    pub rows: Vec<(Todo, score::Ranked)>,
+    pub top: Vec<String>,
+    pub calibration: CalibrationInfo,
+}
+
+pub fn rank_todos<Tz: TimeZone>(
     todos: Vec<Todo>,
-    now: DateTime<Tz>,
+    now: &DateTime<Tz>,
     wh: &WorkHours,
     calibration_enabled: bool,
     samples: &[(i64, i64)],
-) -> Board
-where
-    Tz::Offset: std::fmt::Display,
-{
+) -> Ranking {
     let tz = now.timezone();
     let now_local = now.naive_local();
     let Calibration { factor: measured, samples: n } = score::calibration(samples);
@@ -122,10 +130,35 @@ where
         .into_iter()
         .map(|i| ranked[i].0.id.clone())
         .collect();
+    Ranking {
+        rows: ranked.into_iter().map(|(t, r, _)| (t, r)).collect(),
+        top,
+        calibration: CalibrationInfo {
+            factor,
+            samples: n,
+            enabled: calibration_enabled,
+            measured,
+        },
+    }
+}
 
-    let items = ranked
+/// The board for `todos` at `now` (pure; `samples` = `(actual, estimate)` of
+/// done todos, newest first). `capacity` is filled by the caller.
+pub fn build_board<Tz: TimeZone>(
+    todos: Vec<Todo>,
+    now: DateTime<Tz>,
+    wh: &WorkHours,
+    calibration_enabled: bool,
+    samples: &[(i64, i64)],
+) -> Board
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let tz = now.timezone();
+    let Ranking { rows, top, calibration } = rank_todos(todos, &now, wh, calibration_enabled, samples);
+    let items = rows
         .into_iter()
-        .map(|(todo, r, _)| BoardItem {
+        .map(|(todo, r)| BoardItem {
             todo,
             bucket: r.bucket,
             score: r.score,
@@ -141,12 +174,37 @@ where
         items,
         top,
         capacity: None,
-        calibration: CalibrationInfo {
-            factor,
-            samples: n,
-            enabled: calibration_enabled,
-            measured,
-        },
+        capacity_error: None,
+        calibration,
+    }
+}
+
+/// BR-08 for the board at `now` with today's Calendar `events` (pure).
+pub fn capacity_for<Tz: TimeZone>(
+    board: &Board,
+    now: &DateTime<Tz>,
+    wh: &WorkHours,
+    events: &[CalEvent],
+) -> Capacity
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let tz = now.timezone();
+    let now_local = now.naive_local();
+    let busy = capacity::busy_on(events, now_local.date());
+    Capacity {
+        need_min: capacity::need_minutes(
+            board.items.iter().map(|i| (i.bucket, i.effective_estimate_min)),
+        ),
+        free_min: capacity::free_minutes(now_local, wh, &busy),
+        busy: busy
+            .into_iter()
+            .map(|b| BusyOut {
+                start: to_rfc(b.start, &tz),
+                end: to_rfc(b.end, &tz),
+                title: b.title,
+            })
+            .collect(),
     }
 }
 
@@ -163,19 +221,76 @@ async fn calibration_samples(db: &Db) -> Result<Vec<(i64, i64)>, String> {
     .map_err(|e| e.to_string())
 }
 
+/// Settings, todos and calibration samples of the board.
+pub async fn board_inputs(db: &Db) -> Result<(FocusSettings, Vec<Todo>, Vec<(i64, i64)>), String> {
+    Ok((
+        focus_settings::load(db).await?,
+        load_todos(db).await?,
+        calibration_samples(db).await?,
+    ))
+}
+
 #[tauri::command]
-pub async fn focus_board(db: State<'_, Db>) -> Result<Board, String> {
+pub async fn focus_board(app: AppHandle, db: State<'_, Db>) -> Result<Board, String> {
     let db = db.inner();
-    let settings = focus_settings::load(db).await?;
-    let todos = load_todos(db).await?;
-    let samples = calibration_samples(db).await?;
-    Ok(build_board(
+    let (settings, todos, samples) = board_inputs(db).await?;
+    let now = chrono::Local::now();
+    let wh = settings.work_hours();
+    let mut board = build_board(todos, now, &wh, settings.calibration_enabled, &samples);
+    match crate::focus::calendar::today_events(db, &settings, Some(app)).await {
+        Ok(events) => {
+            let events = crate::focus::calendar::to_local(&events);
+            board.capacity = Some(capacity_for(&board, &now, &wh, &events));
+        }
+        Err(e) => board.capacity_error = Some(e),
+    }
+    Ok(board)
+}
+
+/// Drop the cached Calendar events; the next `focus_board` fetches again.
+#[tauri::command]
+pub async fn focus_refresh_calendar(app: AppHandle) -> Result<(), String> {
+    crate::focus::calendar::invalidate();
+    let _ = app.emit(crate::focus::CHANGED_EVENT, ());
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct FocusCounts {
+    pub overdue: usize,
+    pub today: usize,
+    pub doing: usize,
+}
+
+pub fn counts(board_rows: &[(Todo, score::Ranked)]) -> FocusCounts {
+    let n = |b: Bucket| board_rows.iter().filter(|(_, r)| r.bucket == b).count();
+    FocusCounts {
+        overdue: n(Bucket::Overdue),
+        today: n(Bucket::Today),
+        doing: n(Bucket::Doing),
+    }
+}
+
+/// Overdue / today / doing counts (tray badge); also pushed as `focus:counts`
+/// by the reminder tick.
+#[tauri::command]
+pub async fn focus_counts(db: State<'_, Db>) -> Result<FocusCounts, String> {
+    let (settings, todos, samples) = board_inputs(db.inner()).await?;
+    let r = rank_todos(
         todos,
-        chrono::Local::now(),
+        &chrono::Local::now(),
         &settings.work_hours(),
         settings.calibration_enabled,
         &samples,
-    ))
+    );
+    Ok(counts(&r.rows))
+}
+
+/// The todo a reminder click asked to open, once (the Focus window reads it
+/// on mount in case it was created by the click).
+#[tauri::command]
+pub fn focus_take_open_todo() -> Option<String> {
+    crate::focus::scheduler::take_pending_open()
 }
 
 #[tauri::command]
@@ -299,4 +414,34 @@ mod tests {
         assert_eq!((off.calibration.factor, off.calibration.measured), (1.0, 1.5));
         assert_eq!(off.items[0].effective_estimate_min, 60);
     }
+
+    #[test]
+    fn capacity_and_counts_from_the_board() {
+        // Wednesday 2026-10-28 13:00 +07:00.
+        let now = tz().with_ymd_and_hms(2026, 10, 28, 13, 0, 0).unwrap();
+        let mut overdue = todo("overdue", 0);
+        overdue.due_date = Some("2026-10-27".into());
+        overdue.estimate_min = Some(30);
+        let mut today = todo("today", 1);
+        today.due_date = Some("2026-10-28".into());
+        today.estimate_min = Some(120);
+        let mut doing = todo("doing", 2);
+        doing.status = "doing".into();
+        let later = todo("later", 3);
+        let wh = WorkHours::default();
+        let board = build_board(vec![overdue.clone(), today.clone(), doing.clone(), later.clone()], now, &wh, true, &[]);
+        let at = |h: u32, m: u32| chrono::NaiveDate::from_ymd_opt(2026, 10, 28).unwrap().and_hms_opt(h, m, 0).unwrap();
+        let events = vec![
+            CalEvent { start: at(14, 0), end: at(15, 0), title: "Sync".into(), all_day: false, transparent: false, declined: false },
+            CalEvent { start: at(14, 30), end: at(16, 0), title: "Review".into(), all_day: false, transparent: false, declined: false },
+        ];
+        let c = capacity_for(&board, &now, &wh, &events);
+        // need: 30 + 120 + 60 (doing, no estimate); free: 13:00–18:00 = 300 − 120.
+        assert_eq!((c.need_min, c.free_min), (210, 180));
+        assert_eq!(c.busy.len(), 2);
+        assert_eq!(c.busy[0].start, "2026-10-28T14:00:00+07:00");
+        let r = rank_todos(vec![overdue, today, doing, later], &now, &wh, true, &[]);
+        assert_eq!(counts(&r.rows), FocusCounts { overdue: 1, today: 1, doing: 1 });
+    }
+
 }

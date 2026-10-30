@@ -47,7 +47,10 @@
   "capacity": {
     "summary": "Hôm nay: {need} việc · {free} trống",
     "overloaded": "Quá tải {over}",
-    "busy": "{n} khung bận"
+    "busy": "{n} khung bận",
+    "connect": "Kết nối Google Calendar (Cài đặt → Google) để xem giờ trống hôm nay.",
+    "error": "Không tải được lịch hôm nay",
+    "refresh": "Làm mới lịch"
   },
   "calibration": {
     "slower": "Bạn thường làm lâu hơn ước tính {factor}×",
@@ -209,6 +212,42 @@
     "save": "Lưu",
     "saved": "Đã lưu cài đặt Focus",
     "invalidHours": "Giờ kết thúc phải sau giờ bắt đầu.",
-    "noDays": "Chọn ít nhất một ngày làm việc."
+    "noDays": "Chọn ít nhất một ngày làm việc.",
+    "reminders": {
+      "title": "Nhắc việc",
+      "hint": "Thông báo macOS khi Devdy đang chạy; nhiều thông báo cùng lúc được gộp làm một. Bấm vào sẽ mở Focus tại todo đó.",
+      "morningTime": "Tóm tắt buổi sáng lúc",
+      "invalidMorning": "Giờ tóm tắt buổi sáng phải có dạng HH:MM.",
+      "workHoursOnly": "Ngoài giờ làm việc và ngày nghỉ chỉ gửi các nhắc nhở do bạn tự đặt.",
+      "kinds": {
+        "morning": "Tóm tắt buổi sáng",
+        "start_by": "Đến lúc bắt đầu",
+        "due_soon": "30 phút trước hạn có giờ",
+        "overdue": "Vừa quá hạn",
+        "remind": "Nhắc nhở bạn đặt",
+        "snooze_end": "Hết hoãn"
+      },
+      "kindHints": {
+        "morning": "Số việc hôm nay, số quá hạn và việc nên làm trước",
+        "start_by": "Khi todo cần bắt đầu để kịp hạn",
+        "due_soon": "Chỉ với hạn có giờ",
+        "overdue": "Một lần, ngay khi vừa quá hạn",
+        "remind": "Đúng giờ nhắc đặt trên todo",
+        "snooze_end": "Khi todo đã hoãn quay lại \"Làm ngay\""
+      }
+    },
+    "calendar": {
+      "title": "Google Calendar",
+      "hint": "Các sự kiện bận hôm nay (trừ sự kiện cả ngày, \"rảnh\", đã từ chối) được trừ khỏi giờ làm việc còn lại để biết hôm nay có quá tải không.",
+      "noAccount": "Chưa kết nối tài khoản Google — thêm ở Cài đặt → Google.",
+      "defaultAccount": "Tài khoản Google mặc định",
+      "loading": "Đang tải danh sách lịch…",
+      "busyCalendars": "Lịch tính là bận",
+      "primary": "chính"
+    },
+    "calibration": {
+      "title": "Hiệu chỉnh estimate",
+      "hint": "Nhân estimate theo thời gian thực tế của các todo đã xong (trung vị 20 việc gần nhất, cần ít nhất 5)."
+    }
   }
 }

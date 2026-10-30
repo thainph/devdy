@@ -47,7 +47,10 @@
   "capacity": {
     "summary": "Today: {need} of work · {free} free",
     "overloaded": "Overloaded by {over}",
-    "busy": "{n} busy block | {n} busy blocks"
+    "busy": "{n} busy block | {n} busy blocks",
+    "connect": "Connect Google Calendar (Settings → Google) to see today's free time.",
+    "error": "Couldn't load today's calendar",
+    "refresh": "Refresh calendar"
   },
   "calibration": {
     "slower": "You usually take {factor}× longer than estimated",
@@ -209,6 +212,42 @@
     "save": "Save",
     "saved": "Focus settings saved",
     "invalidHours": "The end of the working day must be after its start.",
-    "noDays": "Pick at least one working day."
+    "noDays": "Pick at least one working day.",
+    "reminders": {
+      "title": "Reminders",
+      "hint": "macOS notifications while Devdy is running; several at once are grouped into one. Clicking one opens Focus on that todo.",
+      "morningTime": "Morning summary at",
+      "invalidMorning": "The morning summary time must be HH:MM.",
+      "workHoursOnly": "Outside working hours and on days off, only reminders you set yourself are sent.",
+      "kinds": {
+        "morning": "Morning summary",
+        "start_by": "Time to start",
+        "due_soon": "30 minutes before a timed deadline",
+        "overdue": "Just overdue",
+        "remind": "Reminders you set",
+        "snooze_end": "Snooze over"
+      },
+      "kindHints": {
+        "morning": "Today's count, overdue count and what to start with",
+        "start_by": "When a todo must start to make its deadline",
+        "due_soon": "Only for deadlines with a time",
+        "overdue": "Once, right after the deadline passes",
+        "remind": "At the reminder time set on a todo",
+        "snooze_end": "When a snoozed todo is back in \"Do now\""
+      }
+    },
+    "calendar": {
+      "title": "Google Calendar",
+      "hint": "Busy events of today (not all-day, not \"free\", not declined) are subtracted from the working hours left to show whether today is overloaded.",
+      "noAccount": "No Google account connected — add one in Settings → Google.",
+      "defaultAccount": "Default Google account",
+      "loading": "Loading calendars…",
+      "busyCalendars": "Calendars that count as busy",
+      "primary": "primary"
+    },
+    "calibration": {
+      "title": "Calibrate estimates",
+      "hint": "Scale estimates by how long your finished todos really took (median of the last 20, needs 5)."
+    }
   }
 }

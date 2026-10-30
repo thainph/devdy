@@ -4,9 +4,13 @@
 // score. Three views: by time ("Do now" top 3 + collapsible buckets), by project
 // (one column each), and the week (Mon → Sun columns by due date). Rows open the
 // detail drawer. Refreshes on `focus:changed` / `item:changed` and every minute.
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+// A reminder click (`focus:open-todo`, or the pending id taken on mount when the
+// click created this window) opens that todo's drawer and flashes its row.
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ChevronDown, ChevronRight, Gauge, Target, TriangleAlert } from 'lucide-vue-next'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { CalendarClock, ChevronDown, ChevronRight, Gauge, RefreshCw, Target, TriangleAlert } from 'lucide-vue-next'
+import { invoke } from '@/lib/tauri'
 import { AppSelect, Button, Card, Skeleton } from '@/components/ui'
 import AddTodoButton from '@/components/focus/AddTodoButton.vue'
 import FocusDialogs from '@/components/focus/FocusDialogs.vue'
@@ -16,7 +20,10 @@ import { useFocusText } from '@/components/focus/useFocusText'
 import { useFocusStore } from '@/stores/focus'
 import { useProjectsStore } from '@/stores/projects'
 import {
+  CAPACITY_LOADING,
+  CAPACITY_NO_ACCOUNT,
   DEFAULT_OPEN_BUCKETS,
+  FOCUS_OPEN_TODO,
   FILTER_NONE,
   calibrationHint,
   filterItems,
@@ -29,6 +36,7 @@ import {
   topItems,
   ymdOf,
   type FocusBucket,
+  type FocusOpenTodo,
 } from '@/lib/focus'
 
 type FocusViewMode = 'time' | 'project' | 'week'
@@ -92,6 +100,18 @@ const today = computed(() => ymdOf(now.value))
 // BR-10: shown only while calibration is on (the backend reports it with the board).
 const calibration = computed(() => calibrationHint(store.board?.calibration))
 const capacity = computed(() => store.board?.capacity ?? null)
+/** Why there is no capacity bar: no Google account → connect hint; other errors → retry. */
+const capacityError = computed(() => (store.board && !store.board.capacity ? store.board.capacity_error ?? null : null))
+const refreshingCalendar = ref(false)
+async function refreshCalendar() {
+  if (refreshingCalendar.value) return
+  refreshingCalendar.value = true
+  try {
+    await store.refreshCalendar()
+  } finally {
+    refreshingCalendar.value = false
+  }
+}
 const overloadMin = computed(() => (capacity.value ? capacity.value.need_min - capacity.value.free_min : 0))
 const capacityPct = computed(() => {
   const c = capacity.value
@@ -131,11 +151,44 @@ watch(openItem, (it) => {
   if (!it && openId.value && store.loaded) openId.value = null
 })
 
-onMounted(() => {
+// ── Reminder clicks → open + flash the todo ──
+const flashId = ref<string | null>(null)
+let flashTimer: ReturnType<typeof setTimeout> | null = null
+async function showTodo(id: string | null | undefined) {
+  if (!id) return
+  if (!store.loaded) await store.load()
+  if (!store.items.some((it) => it.todo.id === id)) return
+  openId.value = id
+  // Make sure its bucket is visible in the time view, then flash the row.
+  const it = store.items.find((x) => x.todo.id === id)
+  if (it && view.value === 'time' && !openBuckets.value.has(it.bucket)) toggleBucket(it.bucket)
+  flashId.value = id
+  if (flashTimer) clearTimeout(flashTimer)
+  flashTimer = setTimeout(() => (flashId.value = null), 2500)
+  await nextTick()
+  document.querySelector(`[data-focus-row="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+}
+
+let unlistenOpen: UnlistenFn | null = null
+onMounted(async () => {
   void store.start()
   if (!projects.projects.length) void projects.fetchProjects()
+  try {
+    unlistenOpen = await listen<FocusOpenTodo>(FOCUS_OPEN_TODO, (e) => {
+      // Consume the pending id too, so a later window mount doesn't reopen it.
+      void invoke('focus_take_open_todo').catch(() => {})
+      void showTodo(e.payload?.todo_id)
+    })
+    void showTodo(await invoke<string | null>('focus_take_open_todo'))
+  } catch {
+    /* outside the Tauri shell */
+  }
 })
-onBeforeUnmount(() => store.stop())
+onBeforeUnmount(() => {
+  store.stop()
+  unlistenOpen?.()
+  if (flashTimer) clearTimeout(flashTimer)
+})
 </script>
 
 <template>
@@ -173,6 +226,38 @@ onBeforeUnmount(() => store.stop())
         <TriangleAlert class="h-3.5 w-3.5" :stroke-width="1.75" />
         {{ t('focus.capacity.overloaded', { over: formatEstimate(overloadMin) }) }}
       </span>
+      <span v-if="capacity.busy.length" class="shrink-0 text-muted-foreground" :title="capacity.busy.map((b) => b.title).join('\n')">
+        {{ t('focus.capacity.busy', { n: capacity.busy.length }, capacity.busy.length) }}
+      </span>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        :disabled="refreshingCalendar"
+        :title="t('focus.capacity.refresh')"
+        :aria-label="t('focus.capacity.refresh')"
+        @click="refreshCalendar"
+      >
+        <RefreshCw class="h-3.5 w-3.5" :class="refreshingCalendar ? 'animate-spin' : ''" :stroke-width="1.75" />
+      </Button>
+    </div>
+    <div
+      v-else-if="capacityError && capacityError !== CAPACITY_LOADING"
+      class="flex shrink-0 items-center gap-2 border-b border-border/60 px-6 py-1.5 text-[11px] text-muted-foreground"
+    >
+      <CalendarClock class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+      <span v-if="capacityError === CAPACITY_NO_ACCOUNT" class="truncate">{{ t('focus.capacity.connect') }}</span>
+      <span v-else class="truncate" :title="capacityError">{{ t('focus.capacity.error') }}</span>
+      <Button
+        v-if="capacityError !== CAPACITY_NO_ACCOUNT"
+        variant="ghost"
+        size="icon-sm"
+        :disabled="refreshingCalendar"
+        :title="t('focus.capacity.refresh')"
+        :aria-label="t('focus.capacity.refresh')"
+        @click="refreshCalendar"
+      >
+        <RefreshCw class="h-3.5 w-3.5" :class="refreshingCalendar ? 'animate-spin' : ''" :stroke-width="1.75" />
+      </Button>
     </div>
 
     <!-- Toolbar: view switcher + filters -->
@@ -234,6 +319,8 @@ onBeforeUnmount(() => store.stop())
           {{ t('focus.nowSection') }}
         </h2>
         <FocusTodoRow
+          :data-focus-row="it.todo.id"
+          :class="flashId === it.todo.id ? 'ring-2 ring-primary/70' : ''"
           v-for="(it, i) in top"
           :key="it.todo.id"
           :item="it"
@@ -257,7 +344,9 @@ onBeforeUnmount(() => store.stop())
           <span v-if="isActiveBucket(g.bucket)" class="ml-auto font-normal text-muted-foreground tabular-nums">~{{ bucketEstimate(g.items) }}</span>
         </button>
         <div v-if="openBuckets.has(g.bucket)" class="mt-0.5">
-          <FocusTodoRow v-for="it in g.items" :key="it.todo.id" :item="it" :now="now" @open="openId = $event" />
+          <FocusTodoRow
+          :data-focus-row="it.todo.id"
+          :class="flashId === it.todo.id ? 'ring-2 ring-primary/70' : ''" v-for="it in g.items" :key="it.todo.id" :item="it" :now="now" @open="openId = $event" />
         </div>
       </section>
     </div>
@@ -279,6 +368,8 @@ onBeforeUnmount(() => store.stop())
         </div>
         <div class="min-h-0 flex-1 space-y-1.5 overflow-y-auto p-2">
           <FocusTodoRow
+          :data-focus-row="it.todo.id"
+          :class="flashId === it.todo.id ? 'ring-2 ring-primary/70' : ''"
             v-for="it in col.items"
             :key="it.todo.id"
             :item="it"
@@ -313,7 +404,9 @@ onBeforeUnmount(() => store.stop())
             {{ t('focus.week.overloaded') }} · {{ span(overloadMin) }}
           </p>
           <div class="min-h-0 flex-1 space-y-1.5 overflow-y-auto p-1.5">
-            <FocusTodoRow v-for="it in col.items" :key="it.todo.id" :item="it" :now="now" layout="card" @open="openId = $event" />
+            <FocusTodoRow
+          :data-focus-row="it.todo.id"
+          :class="flashId === it.todo.id ? 'ring-2 ring-primary/70' : ''" v-for="it in col.items" :key="it.todo.id" :item="it" :now="now" layout="card" @open="openId = $event" />
           </div>
         </div>
       </div>

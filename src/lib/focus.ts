@@ -158,10 +158,17 @@ export interface FocusBoard {
   items: FocusItem[]
   /** Ids of "Làm ngay" (at most 3), in order. */
   top: string[]
-  /** Null until the Calendar is wired (P2). */
+  /** Today's load against Google Calendar (BR-08); null when unavailable. */
   capacity: FocusCapacity | null
+  /** Why `capacity` is null: see `CAPACITY_NO_ACCOUNT` / `CAPACITY_LOADING`, else a Calendar error. */
+  capacity_error?: string | null
   calibration: FocusCalibration
 }
+
+/** `capacity_error`: no Google account linked → "connect Google Calendar". */
+export const CAPACITY_NO_ACCOUNT = 'no_account'
+/** `capacity_error`: first Calendar fetch still running (`focus:changed` follows). */
+export const CAPACITY_LOADING = 'loading'
 
 export interface FocusSettings {
   work_start: string
@@ -195,6 +202,24 @@ export const DEFAULT_FOCUS_SETTINGS: FocusSettings = {
 
 /** Emitted by the backend after every Focus write. */
 export const FOCUS_CHANGED = 'focus:changed'
+/** Backend → every window: a reminder click asks to show a todo (`{ todo_id }`). */
+export const FOCUS_OPEN_TODO = 'focus:open-todo'
+/** Backend → main window: create the Focus window (it doesn't exist yet). */
+export const FOCUS_OPEN_WINDOW = 'focus:open-window'
+export interface FocusOpenTodo {
+  todo_id: string | null
+}
+
+/** Reminder kinds (spec §3.4), the keys of `notify_kinds`. */
+export const NOTIFY_KINDS = ['morning', 'start_by', 'due_soon', 'overdue', 'remind', 'snooze_end'] as const
+export type NotifyKind = (typeof NOTIFY_KINDS)[number]
+
+/** Every reminder kind, on unless the backend says otherwise. */
+export function notifyKindsOf(kinds: Record<string, boolean> | null | undefined): Record<NotifyKind, boolean> {
+  const out = {} as Record<NotifyKind, boolean>
+  for (const k of NOTIFY_KINDS) out[k] = kinds?.[k] ?? true
+  return out
+}
 
 // ── "+ Todo" draft ──────────────────────────────────────────────────────────
 
