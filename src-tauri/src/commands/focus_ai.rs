@@ -602,16 +602,21 @@ pub async fn focus_ai_analyze(
 // ── c. Plan today ───────────────────────────────────────────────────────────
 
 /// Today's busy Calendar intervals (local), the same events `focus_board`'s
-/// capacity uses (BR-08). No account / a failed fetch → working hours only.
-async fn busy_today(db: &Db, settings: &FocusSettings) -> Vec<(NaiveDateTime, NaiveDateTime)> {
-    let Ok(events) = crate::focus::calendar::today_events(db, settings, None).await else {
-        return Vec::new();
+/// capacity uses (BR-08), waiting up to 15 s for a fetch in flight. No
+/// account linked → working hours only; a fetch that fails or is still
+/// running → `calendar_unavailable` (planning over meetings is worse).
+async fn busy_today(db: &Db, settings: &FocusSettings) -> Result<Vec<(NaiveDateTime, NaiveDateTime)>, String> {
+    use crate::focus::calendar::{self, ERR_NO_ACCOUNT, PLAN_WAIT};
+    let events = match calendar::today_events(db, settings, None, PLAN_WAIT).await {
+        Ok(events) => events,
+        Err(e) if e == ERR_NO_ACCOUNT => return Ok(Vec::new()),
+        Err(e) => return Err(format!("calendar_unavailable: {e}")),
     };
-    let events = crate::focus::calendar::to_local(&events);
-    crate::focus::capacity::busy_on(&events, Local::now().date_naive())
+    let events = calendar::to_local(&events);
+    Ok(crate::focus::capacity::busy_on(&events, Local::now().date_naive())
         .into_iter()
         .map(|b| (b.start, b.end))
-        .collect()
+        .collect())
 }
 
 fn plan_todos(items: &[BoardItem], limit: usize) -> Vec<PlanTodo> {
@@ -705,7 +710,7 @@ pub async fn focus_ai_plan_today(
                     .and_then(|i| i.todo.project_id.clone());
                 t.project = project_name(&db, pid.as_deref()).await;
             }
-            let busy = busy_today(&db, &settings).await;
+            let busy = busy_today(&db, &settings).await?;
             let free = ai::free_slots(now.naive_local(), &wh, &busy);
             if free.is_empty() {
                 return Err("no_free_time: no working time left today".into());
