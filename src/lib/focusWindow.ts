@@ -1,5 +1,5 @@
-// Opens THE Pulse window (views/PulseWindow.vue, `?pulseWindow=1`): the Project
-// Pulse screen on its own OS window, so it can sit beside a running session or
+// Opens THE Focus window (views/FocusWindow.vue, `?focusWindow=1`): the Focus
+// board on its own OS window, so it can sit beside a running session or
 // on a second monitor. There is only ever ONE such window (fixed label);
 // opening it again focuses it. Mirrors lib/prInboxWindow.ts.
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
@@ -8,10 +8,10 @@ import { centerOnCurrentMonitor } from '@/lib/windowCascade'
 import { popoutLabel, popoutUrl } from '@/lib/popout'
 
 /** Window label; src-tauri/capabilities/default.json grants it the app permissions. */
-export const PULSE_WINDOW_LABEL = 'pulse'
+export const FOCUS_WINDOW_LABEL = 'focus'
 
 // In-flight creation guard (like lib/prInboxWindow.ts): two quick clicks would
-// otherwise both pass the getByLabel() null check and create 'pulse' twice.
+// otherwise both pass the getByLabel() null check and create 'focus' twice.
 let creating: Promise<WebviewWindow> | null = null
 
 async function focusWindow(win: WebviewWindow) {
@@ -24,14 +24,14 @@ async function focusWindow(win: WebviewWindow) {
   }
 }
 
-export async function openPulseWindow(): Promise<WebviewWindow | null> {
+export async function openFocusWindow(): Promise<WebviewWindow | null> {
   // A creation started by another caller: wait for it, then just focus.
   if (creating) {
     const win = await creating
     await focusWindow(win)
     return win
   }
-  const existing = await WebviewWindow.getByLabel(popoutLabel(PULSE_WINDOW_LABEL))
+  const existing = await WebviewWindow.getByLabel(popoutLabel(FOCUS_WINDOW_LABEL))
   if (existing) {
     await focusWindow(existing)
     return existing
@@ -43,7 +43,7 @@ export async function openPulseWindow(): Promise<WebviewWindow | null> {
     return win
   }
 
-  creating = createPulseWindow()
+  creating = createFocusWindow()
   try {
     return await creating
   } finally {
@@ -51,12 +51,12 @@ export async function openPulseWindow(): Promise<WebviewWindow | null> {
   }
 }
 
-async function createPulseWindow(): Promise<WebviewWindow> {
+async function createFocusWindow(): Promise<WebviewWindow> {
   const width = 1100
   const height = 780
-  const win = new WebviewWindow(popoutLabel(PULSE_WINDOW_LABEL), {
-    url: popoutUrl('index.html?pulseWindow=1'),
-    title: 'Pulse — Devdy',
+  const win = new WebviewWindow(popoutLabel(FOCUS_WINDOW_LABEL), {
+    url: popoutUrl('index.html?focusWindow=1'),
+    title: 'Focus — Devdy',
     width,
     height,
     minWidth: 720,
@@ -64,7 +64,7 @@ async function createPulseWindow(): Promise<WebviewWindow> {
     ...(await centerOnCurrentMonitor(width, height)),
   })
   win.once('tauri://error', (e) => {
-    console.error('[pulseWindow] failed to open window', e)
+    console.error('[focusWindow] failed to open window', e)
   })
   trackWindowForTray(win)
   return win
