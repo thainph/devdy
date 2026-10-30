@@ -229,13 +229,19 @@ pub async fn release(db: &Db, run_id: &str) {
     .await;
 }
 
+/// SQL condition on `runs`: the run is this device's (or never owned, from
+/// before sync). Anything counting "running" runs to decide what THIS device
+/// does must use it, or a session another device runs would count here.
+pub const OWNED_HERE: &str =
+    "(owner_device IS NULL OR owner_device = '' OR owner_device IN (SELECT id FROM sync_device))";
+
 /// App start, before anything runs: nothing from the previous session drives
 /// this device's runs any more. Leftover `running` rows become `cancelled` and
 /// their leases are dropped — but only for runs owned here (or never owned, from
 /// before sync): a run another device is running must not be touched, or the
 /// change would sync back and clobber it.
 pub async fn reconcile_startup(db: &Db) -> Result<(), sqlx::Error> {
-    const MINE: &str = "(owner_device IS NULL OR owner_device IN (SELECT id FROM sync_device))";
+    const MINE: &str = OWNED_HERE;
     sqlx::query(&format!(
         "UPDATE runs SET status = 'cancelled', finished_at = ?, lease_until = NULL \
          WHERE status = 'running' AND {MINE}"
@@ -605,6 +611,25 @@ mod tests {
         assert_eq!(col(&db, "idle", "status").await.as_deref(), Some("completed"));
         assert_eq!(col(&db, "theirs", "status").await.as_deref(), Some("running"));
         assert_eq!(col(&db, "theirs", "lease_until").await, Some(lease));
+    }
+
+    #[tokio::test]
+    async fn remote_running_runs_do_not_make_this_device_busy() {
+        let db = mem_db().await;
+        let lease = future();
+        add_run(&db, "theirs", "running", Some("mini"), Some(&lease)).await;
+        assert!(!crate::pulse::store::any_run_running(&db).await.unwrap());
+        add_run(&db, "legacy", "running", None, None).await;
+        assert!(crate::pulse::store::any_run_running(&db).await.unwrap());
+        let count = |db: Db| async move {
+            sqlx::query_scalar::<_, i64>(&format!("SELECT COUNT(*) FROM runs WHERE status = 'running' AND {OWNED_HERE}"))
+                .fetch_one(&db)
+                .await
+                .unwrap()
+        };
+        add_run(&db, "mine", "running", Some("me"), Some(&lease)).await;
+        add_run(&db, "blank", "running", Some(""), None).await;
+        assert_eq!(count(db.clone()).await, 3);
     }
 
     #[tokio::test]

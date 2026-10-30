@@ -1009,9 +1009,12 @@ watch(conductorAnchorId, (id) => {
 }, { immediate: true })
 // Keep worker permission prompts flowing: listen to each running worker so its
 // queue populates (and the sidebar's ⚠ flag lights up) even before it's opened.
+// Not a worker another device runs: it would count as running here (tray badge).
 watch(conductorWorkers, (ws) => {
   for (const w of ws) {
-    if (w.status === 'running') void live.startListening(w.worker_id, projectId.value)
+    if (w.status === 'running' && !runsStore.remoteOwners.has(w.worker_id)) {
+      void live.startListening(w.worker_id, projectId.value)
+    }
   }
 }, { immediate: true })
 
