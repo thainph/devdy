@@ -1,16 +1,19 @@
 <script setup lang="ts">
 // Settings → Sync: two-way sync of the whole Devdy state between this user's machines over the
 // relay (E2E encrypted). Not in a group → create one, or join another device's group with its
-// device name + master password. Joined but not merged (`sync_bootstrap_pending`, also after an
+// device name + master password (that device must have "Accept a new device" open and approve the
+// request; both need their own relay config). Joined but not merged (`sync_bootstrap_pending`, also after an
 // app restart) → the merge step: preview (totals, per table, project matches) then commit, which
 // starts the engine. In a group → status, sync now / pause, secrets toggle, devices (rename this
-// one, remove others, pick the leader that runs Pulse / Slack polling), project folders for this
-// machine, re-sync, leave.
+// one, remove others — creator only —, pick the leader that runs Pulse / Slack polling), project folders for this
+// machine, re-sync, leave, and "Accept a new device" (5 min window + Allow / Deny per request,
+// closed when this page goes away so a request is never left unseen).
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { open } from '@tauri-apps/plugin-dialog'
+import type { UnlistenFn } from '@tauri-apps/api/event'
 import {
-  Crown, FolderOpen, Loader2, LogIn, LogOut, Pause, Pencil, Play, Plus, RefreshCw, RotateCcw, Trash2, Users,
+  Crown, FolderOpen, Loader2, LogIn, LogOut, Pause, Pencil, Play, Plus, RefreshCw, RotateCcw, Trash2, UserPlus, Users,
 } from 'lucide-vue-next'
 import { Badge, Button, Card, Input } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
@@ -18,7 +21,19 @@ import { useConfirm } from '@/composables/useConfirm'
 import { useSyncStore } from '@/stores/sync'
 import {
   ageParts,
+  canRemoveDevices,
+  countdown,
   deviceLabel,
+  groupCreator,
+  joinErrorCode,
+  onSyncAcceptWindow,
+  onSyncJoinRequest,
+  onSyncJoinResolved,
+  syncAcceptClose,
+  syncAcceptOpen,
+  syncAcceptState,
+  syncJoinRespond,
+  syncRelayReady,
   missingProjects,
   sortDevices,
   syncBootstrapCommit,
@@ -43,6 +58,7 @@ import {
   totalRows,
   type BootstrapPreview,
   type BootstrapReport,
+  type JoinRequest,
   type ProjectMapping,
   type SyncDevice,
 } from '@/lib/sync'
@@ -75,7 +91,15 @@ const DOT: Record<string, string> = {
   error: 'bg-destructive',
 }
 
+/** Backend errors with a known code get a translated message. */
+function errorText(e: unknown): string {
+  const code = joinErrorCode(e)
+  return code ? t(`settings.sync.errors.${code}`) : String(e)
+}
+
 // ---- Not in a group: create / join ----
+/** Own relay URL + token configured (Remote Control); null = not checked yet. */
+const relayReady = ref<boolean | null>(null)
 const creating = ref(false)
 const joinAlias = ref('')
 const joinPassword = ref('')
@@ -107,7 +131,7 @@ async function createGroup() {
     toast.success(t('settings.sync.create.done'))
     await loadPaired()
   } catch (e) {
-    toast.error(String(e))
+    toast.error(errorText(e))
   } finally {
     creating.value = false
   }
@@ -123,7 +147,7 @@ async function join() {
     store.setMergePending(true)
     await loadPreview()
   } catch (e) {
-    toast.error(String(e))
+    toast.error(errorText(e))
   } finally {
     joining.value = false
   }
@@ -179,6 +203,66 @@ const leaving = ref(false)
 
 const self = computed(() => devices.value.find((d) => d.is_self) ?? null)
 const leaderId = computed(() => devices.value.find((d) => d.is_leader)?.id ?? null)
+const canRemove = computed(() => canRemoveDevices(devices.value))
+const creator = computed(() => groupCreator(devices.value))
+
+// ---- Accept a new device (host side of a join) ----
+/** Expiry (unix millis) of the open window, null = closed. */
+const acceptUntil = ref<number | null>(null)
+const acceptBusy = ref(false)
+const joinRequest = ref<JoinRequest | null>(null)
+const answering = ref(false)
+// The countdowns tick every second while something is open.
+const tick = ref(Date.now())
+let ticker: ReturnType<typeof setInterval> | null = null
+const unlisteners: UnlistenFn[] = []
+
+function setAcceptUntil(v: number | null) {
+  acceptUntil.value = v
+  if (v === null) joinRequest.value = null
+  if (v !== null && !ticker) {
+    ticker = setInterval(() => {
+      tick.value = Date.now()
+      if (acceptUntil.value !== null && tick.value >= acceptUntil.value) setAcceptUntil(null)
+    }, 1000)
+  } else if (v === null && ticker) {
+    clearInterval(ticker)
+    ticker = null
+  }
+  tick.value = Date.now()
+}
+
+async function openAccept() {
+  if (acceptBusy.value) return
+  acceptBusy.value = true
+  try {
+    setAcceptUntil(await syncAcceptOpen())
+  } catch (e) {
+    toast.error(String(e))
+  } finally {
+    acceptBusy.value = false
+  }
+}
+
+async function closeAccept() {
+  setAcceptUntil(null)
+  await syncAcceptClose().catch(() => {})
+}
+
+async function answer(allow: boolean) {
+  const req = joinRequest.value
+  if (!req || answering.value) return
+  answering.value = true
+  try {
+    await syncJoinRespond(req.request_id, allow)
+    if (!allow) toast.info(t('settings.sync.accept.denied'))
+  } catch (e) {
+    toast.error(String(e))
+  } finally {
+    answering.value = false
+    if (joinRequest.value?.request_id === req.request_id) joinRequest.value = null
+  }
+}
 
 async function loadDevices() {
   try {
@@ -279,7 +363,7 @@ async function removeDevice(d: SyncDevice) {
     toast.success(t('settings.sync.devices.removed', { name: deviceLabel(d) }))
     await loadDevices()
   } catch (e) {
-    toast.error(String(e))
+    toast.error(String(e).startsWith('only the device that created') ? t('settings.sync.devices.onlyCreatorError') : String(e))
   } finally {
     busyDevice.value = null
   }
@@ -340,6 +424,7 @@ async function leave() {
   if (!ok) return
   leaving.value = true
   try {
+    setAcceptUntil(null)
     const revoked = await syncLeave()
     await store.refresh()
     devices.value = []
@@ -349,6 +434,7 @@ async function leave() {
     commitReport.value = null
     if (revoked) toast.success(t('settings.sync.leave.done'))
     else toast.info(t('settings.sync.leave.offline'))
+    relayReady.value = await syncRelayReady().catch(() => false)
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -358,14 +444,32 @@ async function leave() {
 
 onMounted(async () => {
   clock = setInterval(() => (now.value = Date.now()), 30_000)
+  unlisteners.push(
+    await onSyncJoinRequest((r) => {
+      joinRequest.value = r
+      tick.value = Date.now()
+    }),
+    await onSyncJoinResolved((id, granted) => {
+      const req = joinRequest.value
+      if (req?.request_id === id) joinRequest.value = null
+      if (granted) toast.success(t('settings.sync.accept.allowed', { name: req?.device_name ?? '' }))
+    }),
+    await onSyncAcceptWindow(setAcceptUntil),
+  )
   await store.start()
   await store.refresh()
+  relayReady.value = await syncRelayReady().catch(() => false)
   if (mergePending.value) await loadPreview()
   else await loadPaired()
+  if (paired.value) setAcceptUntil(await syncAcceptState().catch(() => null))
 })
 
 onUnmounted(() => {
   if (clock) clearInterval(clock)
+  for (const u of unlisteners) u()
+  // Nobody would see a join request any more: stop accepting.
+  if (acceptUntil.value !== null) void syncAcceptClose().catch(() => {})
+  setAcceptUntil(null)
 })
 </script>
 
@@ -461,7 +565,10 @@ onUnmounted(() => {
           {{ t('settings.sync.create.title') }}
         </label>
         <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.create.help') }}</p>
-        <Button size="sm" :disabled="creating" @click="createGroup">
+        <p v-if="relayReady === false" class="text-[11px] text-amber-600 dark:text-amber-400">
+          {{ t('settings.sync.relayMissing') }}
+        </p>
+        <Button size="sm" :disabled="creating || relayReady === false" @click="createGroup">
           <component :is="creating ? Loader2 : Plus" class="h-3.5 w-3.5" :class="{ 'animate-spin': creating }" :stroke-width="1.75" />
           {{ t('settings.sync.create.button') }}
         </Button>
@@ -483,10 +590,20 @@ onUnmounted(() => {
           @keydown.enter="join"
         />
         <p v-if="joinError" class="text-[11px] text-destructive">{{ joinError }}</p>
-        <Button size="sm" :disabled="joining || !joinAlias.trim() || !joinPassword || !!joinError" @click="join">
-          <component :is="joining ? Loader2 : LogIn" class="h-3.5 w-3.5" :class="{ 'animate-spin': joining }" :stroke-width="1.75" />
-          {{ t('settings.sync.join.button') }}
-        </Button>
+        <p v-if="relayReady === false" class="text-[11px] text-amber-600 dark:text-amber-400">
+          {{ t('settings.sync.relayMissing') }}
+        </p>
+        <div class="flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            :disabled="joining || relayReady === false || !joinAlias.trim() || !joinPassword || !!joinError"
+            @click="join"
+          >
+            <component :is="joining ? Loader2 : LogIn" class="h-3.5 w-3.5" :class="{ 'animate-spin': joining }" :stroke-width="1.75" />
+            {{ t('settings.sync.join.button') }}
+          </Button>
+          <span v-if="joining" class="text-[11px] text-muted-foreground">{{ t('settings.sync.join.waiting') }}</span>
+        </div>
       </section>
     </template>
 
@@ -546,6 +663,47 @@ onUnmounted(() => {
 
       <div class="border-t border-border/60" />
 
+      <!-- Accept a new device -->
+      <section class="space-y-3">
+        <label class="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+          <UserPlus class="h-3 w-3" :stroke-width="1.75" />
+          {{ t('settings.sync.accept.title') }}
+        </label>
+        <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.accept.help') }}</p>
+        <div v-if="acceptUntil === null">
+          <Button variant="outline" size="sm" :disabled="acceptBusy" @click="openAccept">
+            <component :is="acceptBusy ? Loader2 : UserPlus" class="h-3.5 w-3.5" :class="{ 'animate-spin': acceptBusy }" :stroke-width="1.75" />
+            {{ t('settings.sync.accept.button') }}
+          </Button>
+        </div>
+        <template v-else>
+          <div class="flex flex-wrap items-center gap-2 rounded-lg border border-sky-500/40 bg-sky-500/5 px-3 py-2">
+            <Loader2 class="h-3.5 w-3.5 animate-spin text-sky-500" :stroke-width="1.75" />
+            <span class="text-xs">{{ t('settings.sync.accept.open', { time: countdown(acceptUntil, tick) }) }}</span>
+            <Button variant="ghost" size="xs" class="ml-auto" @click="closeAccept">{{ t('settings.sync.accept.cancel') }}</Button>
+          </div>
+          <div
+            v-if="joinRequest"
+            role="alertdialog"
+            class="space-y-2 rounded-lg border border-amber-500/50 bg-amber-500/5 p-3"
+          >
+            <p class="text-sm font-medium">{{ t('settings.sync.accept.request.title', { name: joinRequest.device_name }) }}</p>
+            <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.accept.request.message') }}</p>
+            <div class="flex flex-wrap items-center gap-2">
+              <Button size="sm" :disabled="answering" @click="answer(true)">{{ t('settings.sync.accept.request.allow') }}</Button>
+              <Button variant="outline" size="sm" :disabled="answering" @click="answer(false)">
+                {{ t('settings.sync.accept.request.deny') }}
+              </Button>
+              <span class="ml-auto text-[11px] tabular-nums text-muted-foreground">
+                {{ t('settings.sync.accept.request.expires', { time: countdown(joinRequest.expires_at, tick) }) }}
+              </span>
+            </div>
+          </div>
+        </template>
+      </section>
+
+      <div class="border-t border-border/60" />
+
       <!-- Devices + leader -->
       <section class="space-y-3">
         <label class="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
@@ -553,6 +711,10 @@ onUnmounted(() => {
           {{ t('settings.sync.devices.title') }}
         </label>
         <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.devices.leaderHelp') }}</p>
+        <p class="text-[11px] text-muted-foreground">
+          {{ canRemove ? t('settings.sync.devices.removeHelp')
+            : t('settings.sync.devices.onlyCreator', { name: creator ? deviceLabel(creator) : '' }) }}
+        </p>
         <ul class="divide-y divide-border/60 rounded-lg border border-border/60">
           <li v-for="d in devices" :key="d.id" class="flex items-center gap-2 px-3 py-2">
             <input
@@ -577,6 +739,7 @@ onUnmounted(() => {
                   {{ deviceLabel(d) }}
                   <Badge v-if="d.is_self" variant="secondary">{{ t('settings.sync.devices.thisDevice') }}</Badge>
                   <Crown v-if="d.is_leader" class="h-3 w-3 text-amber-500" :stroke-width="2" :title="t('settings.sync.devices.leader')" />
+                  <Badge v-if="d.is_creator" variant="secondary">{{ t('settings.sync.devices.creator') }}</Badge>
                 </p>
                 <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.devices.lastSeen', { ago: ago(d.last_seen) }) }}</p>
               </template>
@@ -591,7 +754,7 @@ onUnmounted(() => {
               <Pencil class="h-3 w-3" :stroke-width="1.75" />
             </Button>
             <Button
-              v-if="!d.is_self"
+              v-if="!d.is_self && canRemove"
               variant="ghost"
               size="xs"
               :disabled="busyDevice !== null"

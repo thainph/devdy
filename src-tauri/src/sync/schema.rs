@@ -47,7 +47,7 @@ impl RowFilter {
 /// Sync-only settings, outside `PORTABLE_SETTING_KEYS` so file backups don't
 /// carry them (see `sync::leader`): the leader device, and one name record per
 /// device (a prefix, so each device writes only its own row).
-pub const SYNCED_SETTING_PREFIXES: &[&str] = &["sync_leader_device", "sync_device_name:"];
+pub const SYNCED_SETTING_PREFIXES: &[&str] = &["sync_leader_device", "sync_device_name:", "sync_group_creator"];
 
 #[derive(Debug, Clone, Copy)]
 pub struct TableSpec {

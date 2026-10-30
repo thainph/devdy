@@ -559,17 +559,25 @@ async fn handle_login_frame(
                 return;
             };
             // Password proven. Another Devdy joining this one's sync group asks
-            // for the group key instead of a Remote Control session.
+            // for the group key instead of a Remote Control session. The
+            // password is not enough: the user must have opened "Accept a new
+            // device" and approve this request, so answer off the agent loop.
             if crate::sync::pair::is_sync_join(&proof) {
-                let reply = crate::sync::pair::host_join_reply();
-                let granted = reply["kind"] == "sync_grant";
-                let c = session.seal(reply.to_string().as_bytes());
-                let _ = out_tx.send(Envelope::data(FrameType::Stream, &room_id, c, seq.next()));
-                let _ = out_tx.send(Envelope::revoke(room_id.clone()));
                 *login = None;
-                let result = if granted { audit::RESULT_ACCEPTED } else { audit::RESULT_REJECTED };
-                audit::audit(&deps.db, None, Some(&room_id), None, "sync_join", result, None).await;
-                tracing::info!(event = "remote_sync_join", room_id = %room_id, granted);
+                let (out_tx, seq, db, app) = (out_tx.clone(), seq.clone(), deps.db.clone(), deps.app.clone());
+                tokio::spawn(async move {
+                    let tell_wait = || {
+                        let c = session.seal(serde_json::json!({ "kind": "sync_pending" }).to_string().as_bytes());
+                        let _ = out_tx.send(Envelope::data(FrameType::Stream, &room_id, c, seq.next()));
+                    };
+                    let outcome = crate::sync::pair::host_join(&db, &app, &proof, tell_wait).await;
+                    let c = session.seal(outcome.reply.to_string().as_bytes());
+                    let _ = out_tx.send(Envelope::data(FrameType::Stream, &room_id, c, seq.next()));
+                    let _ = out_tx.send(Envelope::revoke(room_id.clone()));
+                    let result = if outcome.granted { audit::RESULT_ACCEPTED } else { audit::RESULT_REJECTED };
+                    audit::audit(&db, None, Some(&room_id), None, "sync_join", result, Some(&outcome.detail)).await;
+                    tracing::info!(event = "remote_sync_join", room_id = %room_id, granted = outcome.granted);
+                });
                 return;
             }
             // Hand out a full session link + token; mint a
