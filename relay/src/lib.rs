@@ -13,6 +13,7 @@ pub mod protocol;
 pub mod ratelimit;
 pub mod room;
 pub mod server;
+pub mod sync;
 
 pub use config::Config;
 pub use server::{serve, RelayHandle};
