@@ -165,6 +165,54 @@ export const DEFAULT_FOCUS_SETTINGS: FocusSettings = {
 /** Emitted by the backend after every Focus write. */
 export const FOCUS_CHANGED = 'focus:changed'
 
+// ── "+ Todo" draft ──────────────────────────────────────────────────────────
+
+/** The capture form's fields (TodoCaptureFields), as typed. */
+export interface TodoDraft {
+  text: string
+  /** '' = no project. */
+  projectId: string
+  /** `YYYY-MM-DD` or ''. */
+  dueDate: string
+  /** `HH:MM` or ''; ignored without a date. */
+  dueTime: string
+  priority: TodoPriority
+  /** Free text, see parseEstimate. */
+  estimate: string
+  sourceUrl: string
+}
+
+/** What a "+ Todo" entry point knows about its context. */
+export interface TodoPrefill {
+  text?: string
+  projectId?: string | null
+  /** Session the todo is captured from (a `captured` link). */
+  runId?: string | null
+  sourceUrl?: string | null
+  dueDate?: string | null
+}
+
+export function emptyTodoDraft(over: Partial<TodoDraft> = {}): TodoDraft {
+  return { text: '', projectId: '', dueDate: '', dueTime: '', priority: 2, estimate: '', sourceUrl: '', ...over }
+}
+
+/** `add_todo` args of a draft, or null when it can't be saved (no text / unreadable estimate). */
+export function draftToInput(d: TodoDraft, runId: string | null = null): AddTodoInput | null {
+  const text = d.text.trim()
+  const estimate = parseEstimate(d.estimate)
+  if (!text || estimate === undefined) return null
+  return {
+    text,
+    projectId: d.projectId || null,
+    runId,
+    dueDate: d.dueDate || null,
+    dueTime: d.dueDate && d.dueTime ? d.dueTime : null,
+    priority: d.priority,
+    estimateMin: estimate,
+    sourceUrl: d.sourceUrl.trim() || null,
+  }
+}
+
 // ── Buckets ─────────────────────────────────────────────────────────────────
 
 /** Section order of the "by time" view (spec §3.2 mockup). */
