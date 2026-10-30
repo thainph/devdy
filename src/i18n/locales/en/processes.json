@@ -18,6 +18,7 @@
     "run": "Session",
     "translate": "Translate",
     "slack_translate": "Slack translate",
+    "focus_ai": "Focus AI",
     "mascot": "Mascot",
     "probe": "Model probe",
     "mcp_test": "MCP test",

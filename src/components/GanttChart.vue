@@ -84,8 +84,8 @@ const lanes = computed<Lane[]>(() => {
         if (end < start) end = start
         bars.push({ issue, start, end, inferredStart: !issue.startDate })
       }
-      // Unassigned sorts last (￿) when ordering by assignee.
-      const assigneeKey = (b: Bar) => (b.issue.assignees[0]?.toLowerCase() ?? '￿')
+      // Unassigned sorts last (U+FFFF) when ordering by assignee.
+      const assigneeKey = (b: Bar) => (b.issue.assignees[0]?.toLowerCase() ?? '\uFFFF')
       bars.sort((a, b) => {
         if (props.sortBy === 'assignee') {
           const ka = assigneeKey(a)

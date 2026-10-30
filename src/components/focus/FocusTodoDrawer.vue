@@ -90,13 +90,12 @@ const patch = computed<TodoPatch | null>(() => {
   if (d.text.trim() !== td.text) p.text = d.text.trim()
   if ((d.projectId || null) !== td.project_id) p.project_id = d.projectId || null
   if ((d.dueDate || null) !== td.due_date) p.due_date = d.dueDate || null
+  // Clearing the date clears the time on the backend; only send a time with a date.
   const dueTime = d.dueDate && d.dueTime ? d.dueTime : null
-  if (dueTime !== td.due_time) p.due_time = dueTime
+  if (d.dueDate && dueTime !== td.due_time) p.due_time = dueTime
   if (d.priority !== td.priority) p.priority = d.priority
-  if (estimate !== td.estimate_min) {
-    p.estimate_min = estimate
-    p.estimate_source = estimate == null ? null : 'user'
-  }
+  // The backend marks a set estimate `estimate_source = 'user'` itself.
+  if (estimate !== td.estimate_min) p.estimate_min = estimate
   if (status.value !== td.status) p.status = status.value
   const snooze = fromLocalInput(snoozedUntil.value)
   if (snooze !== (td.snoozed_until ? fromLocalInput(toLocalInput(td.snoozed_until)) : null)) p.snoozed_until = snooze

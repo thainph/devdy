@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from '@/lib/tauri'
 import { ITEM_CHANGED } from '@/lib/itemWindow'
 import {
@@ -18,12 +18,15 @@ import {
  * the backend (`focus_board`), the work-hour settings, and every todo write the
  * board, the drawer and the "+ Todo" forms make.
  *
- * The board is recomputed by the backend, so writes simply refetch it: on
- * `focus:changed` / `item:changed` (other windows, MCP) and every 60 s so the
- * relative times stay true. Writes also broadcast `item:changed` so the Todos
- * window (stores/todos, another webview) refetches too.
+ * The board is recomputed by the backend, so writes simply refetch it: right
+ * after our own writes, on `focus:changed` / `item:changed` (the backend emits
+ * both after every todo write — ours, other windows', MCP's — so the Todos
+ * window refetches too; `item:changed` also covers session links) and every
+ * 60 s so the relative times stay true.
  */
 const REFRESH_MS = 60_000
+/** The two events of one write arrive together: one refetch for both. */
+const EVENT_DEBOUNCE_MS = 150
 
 export const useFocusStore = defineStore('focus', () => {
   const board = ref<FocusBoard | null>(null)
@@ -80,16 +83,27 @@ export const useFocusStore = defineStore('focus', () => {
     }
   }
 
-  async function saveSettings(next: FocusSettings) {
-    await invoke('focus_settings_set', { settings: next })
-    settings.value = { ...next }
+  /** Save; the backend returns the normalised settings, which become the state. */
+  async function saveSettings(next: FocusSettings): Promise<FocusSettings> {
+    const saved = await invoke<FocusSettings>('focus_settings_set', { settings: next })
+    settings.value = { ...DEFAULT_FOCUS_SETTINGS, ...saved }
     void load()
+    return settings.value
   }
 
   // Live updates while at least one screen uses the board.
   let users = 0
   let unlisten: UnlistenFn[] = []
   let timer: ReturnType<typeof setInterval> | null = null
+  let debounce: ReturnType<typeof setTimeout> | null = null
+
+  function scheduleLoad() {
+    if (debounce) clearTimeout(debounce)
+    debounce = setTimeout(() => {
+      debounce = null
+      void load()
+    }, EVENT_DEBOUNCE_MS)
+  }
 
   async function start() {
     users += 1
@@ -98,7 +112,7 @@ export const useFocusStore = defineStore('focus', () => {
     void load()
     timer = setInterval(() => void load(), REFRESH_MS)
     try {
-      unlisten = await Promise.all([listen(FOCUS_CHANGED, () => void load()), listen(ITEM_CHANGED, () => void load())])
+      unlisten = await Promise.all([listen(FOCUS_CHANGED, scheduleLoad), listen(ITEM_CHANGED, scheduleLoad)])
     } catch {
       /* outside the Tauri shell */
     }
@@ -111,6 +125,8 @@ export const useFocusStore = defineStore('focus', () => {
     unlisten = []
     if (timer) clearInterval(timer)
     timer = null
+    if (debounce) clearTimeout(debounce)
+    debounce = null
   }
 
   function stop() {
@@ -118,27 +134,22 @@ export const useFocusStore = defineStore('focus', () => {
     if (users === 0) teardown()
   }
 
-  async function changed() {
-    void emit(ITEM_CHANGED, { kind: 'todo' }).catch(() => {})
-    await load()
-  }
-
   // ── Writes ──────────────────────────────────────────────────────────────
 
   async function add(input: AddTodoInput): Promise<FocusTodo> {
     const todo = await invoke<FocusTodo>('add_todo', { ...input, text: input.text.trim() })
-    await changed()
+    await load()
     return todo
   }
 
   async function update(id: string, patch: TodoPatch): Promise<FocusTodo> {
     const todo = await invoke<FocusTodo>('update_todo_fields', { id, patch })
-    await changed()
+    await load()
     return todo
   }
 
   const markDone = (id: string) => update(id, { done: true })
-  /** Back to open work: `todo`, `completed_at` cleared by the backend (§3.3). */
+  /** Back to open work (§3.3); the backend resets status and `completed_at` on `done: false` anyway. */
   const markUndone = (id: string) => update(id, { done: false, status: 'todo' })
   /** `doing`; the backend stamps `started_at` the first time. */
   const startTodo = (id: string) => update(id, { status: 'doing' })
@@ -149,7 +160,7 @@ export const useFocusStore = defineStore('focus', () => {
 
   async function remove(id: string) {
     await invoke('delete_todo', { id })
-    await changed()
+    await load()
   }
 
   return {

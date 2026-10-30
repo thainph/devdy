@@ -2,7 +2,9 @@
 // estimates and the "why here" tooltip built from the backend's reasons (BR-05).
 import { useI18n } from 'vue-i18n'
 import {
+  dayDiff,
   dueLabel,
+  parseReason,
   formatEstimate,
   spanOf,
   type DueLabel,
@@ -11,7 +13,7 @@ import {
 } from '@/lib/focus'
 
 export function useFocusText() {
-  const { t, te, locale } = useI18n()
+  const { t, locale } = useI18n()
 
   function span(minutes: number): string {
     const s = spanOf(minutes)
@@ -55,31 +57,45 @@ export function useFocusText() {
     return { text: dueText(label, now), tone }
   }
 
-  function reasonText(r: FocusReason): string {
-    const n = typeof r.value === 'number' ? r.value : Number(r.value)
-    switch (r.kind) {
-      case 'due_in':
-      case 'overdue_by':
-        return Number.isFinite(n) ? t(`focus.reasons.${r.kind}`, { span: span(n) }) : t(`focus.reasons.${r.kind}`, { span: '?' })
-      case 'needs':
-        return t('focus.reasons.needs', { estimate: formatEstimate(n) })
-      case 'slack':
-        return Number.isFinite(n) && n < 0
-          ? t('focus.reasons.slackNegative', { span: span(n) })
-          : t('focus.reasons.slack', { span: span(n || 0) })
+  /** "15:00 today" / "tomorrow 15:00" / "Mon 15:00" of a local `date` + `time`. */
+  function whenText(date: string, time: string | null, now: number): string {
+    const diff = dayDiff(new Date(`${date}T00:00`).getTime(), now)
+    if (diff === 0) return time ? t('focus.due.todayAt', { time }) : t('focus.due.today')
+    if (diff === 1) return time ? t('focus.due.tomorrowAt', { time }) : t('focus.due.tomorrow')
+    const day = shortDate(date, now)
+    return time ? t('focus.due.dateAt', { date: day, time }) : day
+  }
+
+  function reasonText(r: FocusReason, now: number): string {
+    const v = parseReason(r)
+    switch (v.kind) {
+      case 'doing':
+      case 'waiting':
+      case 'no_due':
+      case 'done':
+        return t(`focus.reasons.${v.kind}`)
+      case 'snoozed':
+      case 'due':
+        if (!v.date) return v.kind === 'snoozed' ? t('focus.reasons.snoozedNoTime') : t('focus.reasons.no_due')
+        return t(`focus.reasons.${v.kind}`, { when: whenText(v.date, v.time, now) })
+      case 'overdue':
+      case 'work_left':
+      case 'late_by':
+        return t(`focus.reasons.${v.kind}`, { span: span(v.minutes) })
+      case 'estimate':
+      case 'estimate_missing':
+        return t(`focus.reasons.${v.kind}`, { estimate: formatEstimate(v.minutes) })
       case 'priority':
-        return t('focus.reasons.priority', { n: r.value ?? '' })
-      case 'aging':
-        return t('focus.reasons.aging', { n }, n)
-      default:
-        if (te(`focus.reasons.${r.kind}`) && r.value === undefined) return t(`focus.reasons.${r.kind}`)
-        return r.value === undefined ? r.kind : t('focus.reasons.unknown', { kind: r.kind, value: String(r.value) })
+      case 'age_days':
+        return t(`focus.reasons.${v.kind}`, { n: v.n })
+      case 'unknown':
+        return v.value == null ? v.name : t('focus.reasons.unknown', { kind: v.name, value: v.value })
     }
   }
 
   /** "Why here" tooltip: the reasons joined with " · ". */
-  function whyText(item: FocusItem): string {
-    return item.reasons.map(reasonText).join(' · ')
+  function whyText(item: FocusItem, now: number): string {
+    return item.reasons.map((r) => reasonText(r, now)).join(' · ')
   }
 
   /** Local date-time of an RFC3339 instant. */

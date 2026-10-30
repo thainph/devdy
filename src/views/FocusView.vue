@@ -89,7 +89,8 @@ const projectColumns = computed(() => groupByProject(visible.value))
 const weekColumns = computed(() => groupByWeek(visible.value, now.value))
 const today = computed(() => ymdOf(now.value))
 
-const calibration = computed(() => (store.settings.calibration_enabled ? calibrationHint(store.board?.calibration) : null))
+// BR-10: shown only while calibration is on (the backend reports it with the board).
+const calibration = computed(() => calibrationHint(store.board?.calibration))
 const capacity = computed(() => store.board?.capacity ?? null)
 const overloadMin = computed(() => (capacity.value ? capacity.value.need_min - capacity.value.free_min : 0))
 const capacityPct = computed(() => {
