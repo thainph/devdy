@@ -3,6 +3,7 @@ import { invoke } from '@/lib/tauri'
 import { ref, reactive, computed } from 'vue'
 import type { ImageAttachment } from '@/lib/streamEvents'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
+import type { RemoteRunOwner, TakeOverResult } from '@/lib/runOwnership'
 
 /**
  * Fingerprint of the file(s) backing a run's log, from `get_run_log_revision`.
@@ -204,6 +205,7 @@ export const useRunsStore = defineStore('runs', () => {
       runs.value = keepOrder && loadedProjectId.value === project_id ? mergeKeepingOrder(list) : list
       loadedProjectId.value = project_id
       rememberRuns(runs.value)
+      void fetchRemoteOwners(project_id)
     } finally {
       loading.value = false
     }
@@ -233,6 +235,29 @@ export const useRunsStore = defineStore('runs', () => {
    * here: its `loading` flash blanks the whole session list to "Loading…" on
    * every spawn, which flickers badly when a conductor spawns a batch of workers.
    */
+  /**
+   * Runs of the loaded project owned by another device (cross-device sync):
+   * drives the device badge and the read-only / "Continue here" composer.
+   */
+  const remoteOwners = ref(new Map<string, RemoteRunOwner>())
+
+  async function fetchRemoteOwners(project_id: string) {
+    try {
+      const list = await invoke<RemoteRunOwner[]>('sync_run_owners', { projectId: project_id })
+      if (project_id !== loadedProjectId.value) return
+      remoteOwners.value = new Map(list.map((o) => [o.run_id, o]))
+    } catch {
+      // Sync not available: every run is treated as local.
+    }
+  }
+
+  /** "Continue here": move a run owned by another device to this one. */
+  async function takeOverRun(run_id: string, force = false) {
+    const result = await invoke<TakeOverResult>('sync_take_over_run', { runId: run_id, force })
+    if (result.taken && loadedProjectId.value) await fetchRemoteOwners(loadedProjectId.value)
+    return result
+  }
+
   async function refreshMeta(project_id: string) {
     const list = await invoke<RunRecord[]>('list_runs', { projectId: project_id })
     rememberRuns(list)
@@ -592,8 +617,8 @@ export const useRunsStore = defineStore('runs', () => {
   }
 
   return {
-    runs, loading, loadedProjectId, runMeta, orderStale,
-    fetchRuns, sortRuns, refreshMeta, fetchIssue, fetchPr,
+    runs, loading, loadedProjectId, runMeta, orderStale, remoteOwners,
+    fetchRuns, fetchRemoteOwners, takeOverRun, sortRuns, refreshMeta, fetchIssue, fetchPr,
     startRun, rerunRun, refetchRun, cancelRun, resumeRun,
     getRunLog, getRunLogRevision, getRunLogPage, getRunLogForward, getRunLogPath, getRunToolRecords, getRunUserRecords, readRunInput,
     respondPermission, listPendingPermissions, listLiveRuns, sendUserMessage, endRunInput,

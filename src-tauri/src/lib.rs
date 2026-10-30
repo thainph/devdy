@@ -153,6 +153,7 @@ use commands::sync::{
     sync_create_group, sync_join, sync_leave, sync_now, sync_pause, sync_set_secrets, sync_status,
     SyncManager,
 };
+use sync::sessions::{sync_run_owners, sync_take_over_run};
 use runs::broker::approver::ModalApproverResolver;
 use runs::broker::{start_broker, ApproverResolver, BrokerConfig};
 use runs::{new_broker_approvals, new_broker_runs, new_registry, RunRegistry};
@@ -434,6 +435,11 @@ pub fn run() {
             // a sync group (group secrets live in the Keychain).
             let sync_manager = SyncManager::default();
             app.manage(sync_manager.clone());
+            // Keep the leases of this device's live runs fresh (cross-device sessions).
+            sync::sessions::spawn_heartbeat(
+                app.state::<db::Db>().inner().clone(),
+                app.state::<RunRegistry>().inner().clone(),
+            );
             {
                 let app_handle = app.handle().clone();
                 let db_for_sync = app_handle.state::<db::Db>().inner().clone();
@@ -734,6 +740,8 @@ pub fn run() {
             sync_pause,
             sync_now,
             sync_set_secrets,
+            sync_run_owners,
+            sync_take_over_run,
             remote_bridge_ready,
             remote_bridge_batch,
             remote_fs_list,
