@@ -22,7 +22,7 @@ use crate::runs::liveness::{
 use crate::runs::permission::PermissionRequestEvent;
 use crate::runs::RunRegistry;
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -356,8 +356,19 @@ struct LogFlusher {
 
 impl LogFlusher {
     fn new(path: PathBuf, merge_existing: bool) -> Self {
-        let base = if merge_existing { std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) } else { 0 };
+        let mut base = if merge_existing { std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) } else { 0 };
+        // A log that ends mid-line (its writer was killed, or a synced copy
+        // stopped short) would glue the resumed turn's first line onto the
+        // fragment: end that line first (review-3 L2).
+        if base > 0 && !ends_with_newline(&path) && Self::append_newline(&path).is_ok() {
+            base += 1;
+        }
         LogFlusher { path, base, written: 0, fresh: !merge_existing, torn: false }
+    }
+
+    fn append_newline(path: &Path) -> std::io::Result<()> {
+        let mut f = std::fs::OpenOptions::new().append(true).open(path)?;
+        std::io::Write::write_all(&mut f, b"\n")
     }
 
     fn flush(&mut self, buf: &str) {
@@ -401,6 +412,18 @@ impl LogFlusher {
             let _ = std::fs::remove_file(&tmp);
         })
     }
+}
+
+/// Whether the file's last byte is a newline (false when unreadable).
+fn ends_with_newline(path: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut last = [0u8; 1];
+    std::fs::File::open(path)
+        .and_then(|mut f| {
+            f.seek(SeekFrom::End(-1))?;
+            f.read_exact(&mut last)
+        })
+        .is_ok_and(|()| last[0] == b'\n')
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1857,7 +1880,7 @@ pub(crate) async fn insert_usage_from_result(
 
 #[cfg(test)]
 mod log_flusher_tests {
-    use super::LogFlusher;
+    use super::{ends_with_newline, LogFlusher};
 
     fn tmp(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("devdy-log-flush-{}", uuid::Uuid::new_v4().simple()));
@@ -1913,6 +1936,33 @@ mod log_flusher_tests {
         buf.push_str("turn 3\n");
         f.flush(&buf);
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "turn 1\n--- resumed ---\nturn 2\nturn 3\n");
+    }
+
+    /// Review-3 L2: resuming onto a log that ends mid-line starts on a new
+    /// line instead of gluing the first new line onto the fragment.
+    #[test]
+    fn resumed_log_cut_mid_line_starts_on_a_new_line() {
+        let p = tmp("r3.log");
+        std::fs::write(&p, "turn 1\n{\"type\":\"assi").unwrap();
+        let mut f = LogFlusher::new(p.clone(), true);
+        let mut buf = String::from("--- resumed ---\n");
+        f.flush(&buf);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "turn 1\n{\"type\":\"assi\n--- resumed ---\n");
+        // The cut-back of a torn append keeps that newline.
+        f.torn = true;
+        buf.push_str("turn 2\n");
+        f.flush(&buf);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "turn 1\n{\"type\":\"assi\n--- resumed ---\nturn 2\n");
+        // A complete log or an empty / missing one gets nothing added.
+        let q = tmp("r4.log");
+        std::fs::write(&q, "turn 1\n").unwrap();
+        LogFlusher::new(q.clone(), true);
+        assert_eq!(std::fs::read_to_string(&q).unwrap(), "turn 1\n");
+        let e = tmp("r5.log");
+        std::fs::write(&e, "").unwrap();
+        LogFlusher::new(e.clone(), true);
+        assert_eq!(std::fs::read_to_string(&e).unwrap(), "");
+        assert!(!ends_with_newline(&tmp("missing.log")));
     }
 }
 
