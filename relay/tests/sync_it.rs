@@ -1,10 +1,10 @@
-//! Integration tests for the two-way sync store (design `two-way-sync` §9.2)
-//! over a real in-process WebSocket, each relay with its own temp SQLite file.
+//! Integration tests for sync groups (design `on-demand-sync` §P1: the relay
+//! is a pipe) over a real in-process WebSocket, each relay with its own temp
+//! SQLite file.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
-use base64::Engine as _;
 use devdy_relay::config::Config;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -19,21 +19,17 @@ type Ws = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 struct Opts {
     sync: bool,
-    max_group_bytes: u64,
     rate_limit_max: u32,
     /// Store file (default: a fresh temp file).
     db: Option<PathBuf>,
-    vacuum_on_start: bool,
 }
 
 impl Default for Opts {
     fn default() -> Self {
         Opts {
             sync: true,
-            max_group_bytes: 2 * 1024 * 1024 * 1024,
             rate_limit_max: 1000,
             db: None,
-            vacuum_on_start: false,
         }
     }
 }
@@ -53,9 +49,7 @@ async fn start(opts: Opts) -> String {
         max_rooms: 256,
         max_message_bytes: 32 * 1024 * 1024,
         sync_db: opts.sync.then(|| opts.db.unwrap_or_else(temp_db)),
-        sync_max_group_bytes: opts.max_group_bytes,
-        sync_max_blob_bytes: 4 * 1024 * 1024 + 64,
-        sync_vacuum_on_start: opts.vacuum_on_start,
+        sync_max_peer_bytes: 4 * 1024 * 1024 + 64,
     };
     let (handle, accept_loop) = devdy_relay::server::serve(config).await.expect("relay must bind");
     tokio::spawn(accept_loop);
@@ -105,12 +99,18 @@ async fn hello(url: &str, device: &str, create: bool) -> Ws {
     ws
 }
 
-/// Join `device` to the group with a ticket that `member` registers.
-async fn join(url: &str, member: &mut Ws, device: &str) -> Ws {
+/// Register a join ticket for `device` through `member`; returns the ticket.
+async fn invite(member: &mut Ws, device: &str) -> String {
     let ticket = format!("ticket-for-{device}");
     send(member, json!({ "t": "sync_invite", "ticket_hash": sha_hex(ticket.as_bytes()), "ttl_secs": 60 })).await;
     let ack = recv(member).await;
     assert_eq!((ack["t"].as_str(), ack["code"].as_str()), (Some("control"), Some("ok")), "got {ack}");
+    ticket
+}
+
+/// Join `device` to the group with a ticket that `member` registers.
+async fn join(url: &str, member: &mut Ws, device: &str) -> Ws {
+    let ticket = invite(member, device).await;
     let (ws, reply) = hello_ticket(url, device, &ticket).await;
     assert_eq!(reply["t"], "sync_welcome", "got {reply}");
     ws
@@ -128,28 +128,8 @@ async fn hello_ticket(url: &str, device: &str, ticket: &str) -> (Ws, Value) {
     (ws, reply)
 }
 
-async fn push(ws: &mut Ws, items: Value) -> Value {
-    send(ws, json!({ "t": "sync_push", "items": items })).await;
-    recv(ws).await
-}
-
-async fn pull(ws: &mut Ws, after: u64, limit: u64) -> Value {
-    send(ws, json!({ "t": "sync_pull", "after_seq": after, "limit": limit })).await;
-    let r = recv(ws).await;
-    assert_eq!(r["t"], "sync_ops", "got {r}");
-    r
-}
-
-fn seqs(page: &Value) -> Vec<u64> {
-    page["items"].as_array().unwrap().iter().map(|i| i["seq"].as_u64().unwrap()).collect()
-}
-
 fn sha_hex(b: &[u8]) -> String {
     Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect()
-}
-
-fn b64(b: &[u8]) -> String {
-    base64::engine::general_purpose::STANDARD.encode(b)
 }
 
 #[tokio::test]
@@ -161,7 +141,7 @@ async fn sync_disabled_without_db() {
     assert_closed(&mut ws).await;
 
     let (mut ws, _) = connect_async(&url).await.unwrap();
-    send(&mut ws, json!({ "t": "sync_pull", "after_seq": 0 })).await;
+    send(&mut ws, json!({ "t": "sync_peers" })).await;
     assert_eq!(recv(&mut ws).await["code"], "sync_disabled");
 }
 
@@ -185,7 +165,12 @@ async fn hello_create_ticket_and_auth() {
     assert_eq!(recv(&mut ws).await["code"], "auth_failed");
     assert_closed(&mut ws).await;
 
-    let mut a = hello(&url, "a", true).await;
+    let (mut a, w) = hello_raw(&url, "a", "tok-a", true).await;
+    assert_eq!(w["t"], "sync_welcome");
+    assert_eq!(w["creator_device"], "a");
+    for gone in ["last_seq", "epoch", "known_head"] {
+        assert!(w.get(gone).is_none(), "welcome has no {gone}: {w}");
+    }
     // An unknown device needs a ticket; create=true does not bypass it.
     let (mut x, r) = hello_raw(&url, "x", "tok-x", false).await;
     assert_eq!(r["code"], "ticket_required");
@@ -219,233 +204,64 @@ async fn hello_create_ticket_and_auth() {
 }
 
 #[tokio::test]
-async fn welcome_carries_last_seq() {
-    let url = start(Opts::default()).await;
-    let mut a = hello(&url, "a", true).await;
-    push(&mut a, json!([{ "key": "k1", "blob": "AA" }, { "key": "k2", "blob": "BB" }])).await;
-    let ticket = "t-b";
-    send(&mut a, json!({ "t": "sync_invite", "ticket_hash": sha_hex(ticket.as_bytes()), "ttl_secs": 60 })).await;
-    assert_eq!(recv(&mut a).await["code"], "ok");
-    let (_, r) = hello_ticket(&url, "b", ticket).await;
-    assert_eq!(r["t"], "sync_welcome");
-    assert_eq!(r["last_seq"], 2);
-}
-
-#[tokio::test]
-async fn push_ack_notify_pull() {
+async fn a_third_device_gets_group_full() {
     let url = start(Opts::default()).await;
     let mut a = hello(&url, "a", true).await;
     let mut b = join(&url, &mut a, "b").await;
 
-    send(
-        &mut a,
-        json!({ "t": "sync_push", "id": 7, "items": [{ "key": "k1", "blob": "b3AxCg==" }, { "key": "k2", "blob": "b3AyCg==" }] }),
-    )
-    .await;
-    let ack = recv(&mut a).await;
-    assert_eq!(ack["t"], "sync_ack");
-    assert_eq!(ack["last_seq"], 2);
-    assert_eq!(ack["id"], 7, "request id is echoed");
+    let ticket = invite(&mut a, "c").await;
+    let (mut c, r) = hello_ticket(&url, "c", &ticket).await;
+    assert_eq!((r["t"].as_str(), r["code"].as_str()), (Some("error"), Some("group_full")), "got {r}");
+    assert_closed(&mut c).await;
+    // The two members are unaffected.
+    let _a2 = hello(&url, "a", false).await;
+    let _b2 = hello(&url, "b", false).await;
 
-    let n = recv(&mut b).await;
-    assert_eq!(n["t"], "sync_notify");
-    assert_eq!(n["last_seq"], 2);
-    // The pusher is not notified.
-    assert!(recv_within(&mut a, Duration::from_millis(300)).await.is_none());
-
-    let page = pull(&mut b, 0, 100).await;
-    assert_eq!(seqs(&page), vec![1, 2]);
-    assert_eq!(page["items"][0]["device_id"], "a");
-    assert_eq!(page["items"][0]["blob"], "b3AxCg==");
-    assert_eq!(page["items"][0]["key"], "k1");
-    assert_eq!(page["last_seq"], 2);
-    assert_eq!(page["more"], false);
-
-    let page = pull(&mut b, 2, 100).await;
-    assert!(seqs(&page).is_empty());
-    assert_eq!(page["last_seq"], 2);
-
-    // Empty push: ack with the head, no notify.
-    let ack = push(&mut b, json!([])).await;
-    assert_eq!(ack["last_seq"], 2);
-    assert!(recv_within(&mut a, Duration::from_millis(300)).await.is_none());
+    // Once b leaves, c takes the free slot with the same (unused) ticket.
+    send(&mut b, json!({ "t": "sync_revoke", "device_id": "b" })).await;
+    assert_eq!(recv(&mut b).await["code"], "ok");
+    let (_c, r) = hello_ticket(&url, "c", &ticket).await;
+    assert_eq!(r["t"], "sync_welcome", "got {r}");
 }
 
 #[tokio::test]
-async fn push_supersedes_by_key() {
+async fn removed_frames_are_unsupported() {
     let url = start(Opts::default()).await;
+    let removed = [
+        json!({ "t": "sync_push", "id": 1, "items": [{ "key": "k", "blob": "x" }] }),
+        json!({ "t": "sync_pull", "after_seq": 0 }),
+        json!({ "t": "blob_put", "sha": sha_hex(b"x"), "data": "eA==" }),
+        json!({ "t": "blob_get", "sha": sha_hex(b"x") }),
+        json!({ "t": "blob_release", "shas": [] }),
+        json!({ "t": "sync_notify", "last_seq": 1 }),
+        json!({ "t": "sync_ops" }),
+    ];
+    // Before and after sync_hello; the connection stays usable.
+    let (mut fresh, _) = connect_async(&url).await.unwrap();
     let mut a = hello(&url, "a", true).await;
-    push(&mut a, json!([{ "key": "k1", "blob": "v1" }, { "key": "k2", "blob": "v1" }])).await;
-    let ack = push(&mut a, json!([{ "key": "k1", "blob": "v2" }])).await;
-    assert_eq!(ack["last_seq"], 3);
-    let page = pull(&mut a, 0, 0).await;
-    assert_eq!(seqs(&page), vec![2, 3]);
-    assert_eq!(page["items"][1]["blob"], "v2");
-    assert_eq!(page["last_seq"], 3);
-}
-
-/// Finding #1: a device that was offline pushes an older edit of a row after
-/// another device pushed a newer one. The relay must keep the newer op until
-/// the stale pusher has pulled it.
-#[tokio::test]
-async fn stale_push_does_not_erase_an_unseen_op() {
-    let url = start(Opts::default()).await;
-    let mut a = hello(&url, "a", true).await;
-    let mut b = join(&url, &mut a, "b").await;
-    // A pushes t=200 at seq 1; B has only pulled up to 0.
-    assert_eq!(push_base(&mut a, 0, json!([{ "key": "row", "blob": "t200" }])).await["last_seq"], 1);
-    let _ = recv(&mut b).await; // notify
-    assert_eq!(push_base(&mut b, 0, json!([{ "key": "row", "blob": "t100" }])).await["last_seq"], 2);
-    assert_eq!(recv(&mut a).await["t"], "sync_notify");
-    let page = pull(&mut a, 0, 0).await;
-    let blobs: Vec<&str> = page["items"].as_array().unwrap().iter().map(|i| i["blob"].as_str().unwrap()).collect();
-    assert_eq!(blobs, vec!["t200", "t100"], "both kept; devices resolve by HLC");
-    // A has seen seq 2 now; its next edit replaces both.
-    push_base(&mut a, 2, json!([{ "key": "row", "blob": "t300" }])).await;
-    assert_eq!(recv(&mut b).await["t"], "sync_notify");
-    assert_eq!(seqs(&pull(&mut b, 0, 0).await), vec![3]);
-}
-
-async fn push_base(ws: &mut Ws, base: u64, items: Value) -> Value {
-    send(ws, json!({ "t": "sync_push", "base_seq": base, "items": items })).await;
-    recv(ws).await
-}
-
-#[tokio::test]
-async fn pull_is_paginated() {
-    let url = start(Opts::default()).await;
-    let mut a = hello(&url, "a", true).await;
-    let items: Vec<Value> = (0..7).map(|i| json!({ "key": format!("k{i}"), "blob": "x" })).collect();
-    push(&mut a, Value::Array(items)).await;
-
-    let mut cursor = 0;
-    let mut got = Vec::new();
-    loop {
-        let page = pull(&mut a, cursor, 3).await;
-        got.extend(seqs(&page));
-        cursor = page["last_seq"].as_u64().unwrap();
-        if page["more"] == false {
-            break;
+    for ws in [&mut fresh, &mut a] {
+        for f in &removed {
+            send(ws, f.clone()).await;
+            let e = recv(ws).await;
+            assert_eq!((e["t"].as_str(), e["code"].as_str()), (Some("error"), Some("unsupported")), "{f} -> {e}");
         }
-        assert_eq!(seqs(&page).len(), 3);
     }
-    assert_eq!(got, (1..=7).collect::<Vec<_>>());
-    assert_eq!(cursor, 7);
-
-    // `limit` is capped at 500.
-    let items: Vec<Value> = (0..600).map(|i| json!({ "key": format!("m{i}"), "blob": "y" })).collect();
-    push(&mut a, Value::Array(items)).await;
-    let page = pull(&mut a, 0, 100_000).await;
-    assert_eq!(seqs(&page).len(), 500);
-    assert_eq!(page["more"], true);
-    assert_eq!(page["last_seq"], 500);
+    send(&mut a, json!({ "t": "sync_push", "id": 7 })).await;
+    assert_eq!(recv(&mut a).await["id"], 7, "request id is echoed");
+    assert!(peers(&mut a).await.is_empty());
 }
 
 #[tokio::test]
-async fn pull_page_is_byte_capped() {
-    let url = start(Opts::default()).await;
-    let mut a = hello(&url, "a", true).await;
-    let big = "z".repeat(3 * 1024 * 1024);
-    let items: Vec<Value> = (0..3).map(|i| json!({ "key": format!("k{i}"), "blob": big })).collect();
-    assert_eq!(push(&mut a, Value::Array(items)).await["last_seq"], 3);
-
-    let page = pull(&mut a, 0, 0).await;
-    assert_eq!(seqs(&page), vec![1, 2], "8 MiB page budget fits two 3 MiB ops");
-    assert_eq!(page["more"], true);
-    let page = pull(&mut a, page["last_seq"].as_u64().unwrap(), 0).await;
-    assert_eq!(seqs(&page), vec![3]);
-    assert_eq!(page["more"], false);
-}
-
-#[tokio::test]
-async fn data_frames_are_not_rate_limited() {
+async fn peer_send_is_not_rate_limited() {
     let url = start(Opts { rate_limit_max: 3, ..Default::default() }).await;
     let mut a = hello(&url, "a", true).await;
+    let mut b = join(&url, &mut a, "b").await;
     for i in 0..50 {
-        let ack = push(&mut a, json!([{ "key": format!("k{i}"), "blob": "x" }])).await;
-        assert_eq!(ack["t"], "sync_ack", "push {i}: {ack}");
+        send(&mut a, json!({ "t": "sync_peer_send", "id": i, "to_device": "b", "data": "eA==" })).await;
+        let ack = recv(&mut a).await;
+        assert_eq!(ack["t"], "sync_peer_ack", "send {i}: {ack}");
+        assert_eq!(recv(&mut b).await["t"], "sync_peer_msg");
     }
-}
-
-#[tokio::test]
-async fn blob_put_get() {
-    let url = start(Opts::default()).await;
-    let mut a = hello(&url, "a", true).await;
-    let mut b = join(&url, &mut a, "b").await;
-
-    // A full 4 MiB sealed chunk fits in one frame.
-    let data: Vec<u8> = (0..4 * 1024 * 1024 + 64).map(|i| (i % 251) as u8).collect();
-    let sha = sha_hex(&data);
-    send(&mut a, json!({ "t": "blob_put", "sha": sha, "data": b64(&data) })).await;
-    let ack = recv(&mut a).await;
-    assert_eq!(ack["t"], "blob_ack", "got {ack}");
-    assert_eq!(ack["sha"], sha.as_str());
-    // Idempotent.
-    send(&mut a, json!({ "t": "blob_put", "sha": sha, "data": b64(&data) })).await;
-    assert_eq!(recv(&mut a).await["t"], "blob_ack");
-
-    send(&mut b, json!({ "t": "blob_get", "sha": sha })).await;
-    let got = recv(&mut b).await;
-    assert_eq!(got["t"], "blob_data");
-    assert_eq!(got["sha"], sha.as_str());
-    assert_eq!(got["data"], b64(&data));
-
-    // sha mismatch.
-    send(&mut a, json!({ "t": "blob_put", "sha": sha_hex(b"other"), "data": b64(b"bytes") })).await;
-    assert_eq!(recv(&mut a).await["code"], "sha_mismatch");
-    // Too large.
-    let huge = vec![1u8; 4 * 1024 * 1024 + 65];
-    send(&mut a, json!({ "t": "blob_put", "sha": sha_hex(&huge), "data": b64(&huge) })).await;
-    assert_eq!(recv(&mut a).await["code"], "too_large");
-    // Unknown sha.
-    send(&mut b, json!({ "t": "blob_get", "sha": sha_hex(b"missing") })).await;
-    assert_eq!(recv(&mut b).await["code"], "blob_not_found");
-}
-
-#[tokio::test]
-async fn blob_release_is_acked_and_uploader_only() {
-    let url = start(Opts::default()).await;
-    let mut a = hello(&url, "a", true).await;
-    let mut b = join(&url, &mut a, "b").await;
-    let sha = sha_hex(b"tail");
-    send(&mut a, json!({ "t": "blob_put", "sha": sha, "data": b64(b"tail") })).await;
-    assert_eq!(recv(&mut a).await["t"], "blob_ack");
-
-    // Another device can't release it.
-    send(&mut b, json!({ "t": "blob_release", "id": 1, "shas": [sha] })).await;
-    let r = recv(&mut b).await;
-    assert_eq!((r["t"].as_str(), r["released"].as_u64(), r["id"].as_u64()), (Some("blob_released"), Some(0), Some(1)));
-    // The uploader can; it stays fetchable during the grace period.
-    send(&mut a, json!({ "t": "blob_release", "shas": [sha, "x"] })).await;
-    assert_eq!(recv(&mut a).await["released"], 1);
-    send(&mut b, json!({ "t": "blob_get", "sha": sha })).await;
-    assert_eq!(recv(&mut b).await["t"], "blob_data");
-    // Malformed.
-    send(&mut a, json!({ "t": "blob_release" })).await;
-    assert_eq!(recv(&mut a).await["t"], "error");
-}
-
-#[tokio::test]
-async fn group_quota_is_enforced() {
-    let url = start(Opts { max_group_bytes: 100, ..Default::default() }).await;
-    let mut a = hello(&url, "a", true).await;
-    let blob60 = "a".repeat(60);
-    assert_eq!(push(&mut a, json!([{ "key": "k1", "blob": blob60 }])).await["t"], "sync_ack");
-    // Superseding the same key frees its bytes.
-    assert_eq!(push(&mut a, json!([{ "key": "k1", "blob": blob60 }])).await["t"], "sync_ack");
-    let r = push(&mut a, json!([{ "key": "k2", "blob": blob60 }])).await;
-    assert_eq!(r["code"], "quota_exceeded");
-
-    let data = vec![7u8; 50];
-    send(&mut a, json!({ "t": "blob_put", "sha": sha_hex(&data), "data": b64(&data) })).await;
-    assert_eq!(recv(&mut a).await["code"], "quota_exceeded");
-    let data = vec![7u8; 40];
-    send(&mut a, json!({ "t": "blob_put", "sha": sha_hex(&data), "data": b64(&data) })).await;
-    assert_eq!(recv(&mut a).await["t"], "blob_ack");
-
-    // The rejected push stored nothing.
-    let page = pull(&mut a, 0, 0).await;
-    assert_eq!(seqs(&page), vec![2]);
 }
 
 #[tokio::test]
@@ -454,6 +270,10 @@ async fn revoke_closes_and_blocks_the_device() {
     let mut a = hello(&url, "a", true).await;
     let mut b = join(&url, &mut a, "b").await;
 
+    // A non-creator may only revoke itself.
+    send(&mut b, json!({ "t": "sync_revoke", "device_id": "a" })).await;
+    assert_eq!(recv(&mut b).await["code"], "forbidden");
+
     send(&mut a, json!({ "t": "sync_revoke", "device_id": "b" })).await;
     let ack = recv(&mut a).await;
     assert_eq!(ack["t"], "control");
@@ -461,51 +281,36 @@ async fn revoke_closes_and_blocks_the_device() {
 
     let e = recv(&mut b).await;
     assert_eq!(e["code"], "device_revoked");
+    assert_closed(&mut b).await;
     // A ticket does not let a revoked device back in.
     let (mut b3, r) = hello_ticket(&url, "b", "anything").await;
     assert_eq!(r["code"], "device_revoked");
     assert_closed(&mut b3).await;
-    assert_closed(&mut b).await;
-
     let (mut b2, r) = hello_raw(&url, "b", "tok-b", false).await;
     assert_eq!(r["code"], "device_revoked");
     assert_closed(&mut b2).await;
 
-    // The revoked device no longer gets notifications; a still works.
-    assert_eq!(push(&mut a, json!([{ "key": "k", "blob": "x" }])).await["t"], "sync_ack");
-
-    // A non-creator may only revoke itself.
-    let mut c = join(&url, &mut a, "c").await;
-    let mut d = join(&url, &mut a, "d").await;
-    send(&mut c, json!({ "t": "sync_revoke", "device_id": "d" })).await;
-    assert_eq!(recv(&mut c).await["code"], "forbidden");
-    send(&mut c, json!({ "t": "sync_revoke", "device_id": "c" })).await;
-    let mut codes = Vec::new();
-    while let Some(f) = recv_within(&mut c, Duration::from_secs(2)).await {
-        codes.push(f["code"].as_str().unwrap_or_default().to_string());
-    }
-    assert!(codes.contains(&"ok".to_string()) || codes.contains(&"device_revoked".to_string()), "{codes:?}");
-    assert_eq!(push(&mut d, json!([{ "key": "k2", "blob": "y" }])).await["t"], "sync_ack");
+    // a still works and can bring in another device.
+    let _c = join(&url, &mut a, "c").await;
+    assert_eq!(peers(&mut a).await, vec!["c"]);
 }
 
 #[tokio::test]
 async fn creator_leaving_moves_the_role_and_tells_the_group() {
     let url = start(Opts::default()).await;
-    let (mut a, w) = hello_raw(&url, "a", "tok-a", true).await;
-    assert_eq!(w["creator_device"], "a");
+    let mut a = hello(&url, "a", true).await;
     let mut b = join(&url, &mut a, "b").await;
-    let mut c = join(&url, &mut a, "c").await;
 
-    send(&mut a, json!({ "t": "sync_revoke", "device_id": "a", "successor": "c" })).await;
-    for ws in [&mut b, &mut c] {
-        let info = recv(ws).await;
-        assert_eq!((info["t"].as_str(), info["creator_device"].as_str()), (Some("sync_group_info"), Some("c")), "got {info}");
-    }
-    // The new creator may remove others; the welcome reports it.
-    send(&mut c, json!({ "t": "sync_revoke", "device_id": "b" })).await;
-    assert_eq!(recv(&mut c).await["code"], "ok");
-    let (_c2, w) = hello_raw(&url, "c", "tok-c", false).await;
-    assert_eq!(w["creator_device"], "c");
+    send(&mut a, json!({ "t": "sync_revoke", "device_id": "a", "successor": "b" })).await;
+    let info = recv(&mut b).await;
+    assert_eq!((info["t"].as_str(), info["creator_device"].as_str()), (Some("sync_group_info"), Some("b")), "got {info}");
+    // The new creator may invite and remove others; the welcome reports it.
+    let mut c = join(&url, &mut b, "c").await;
+    send(&mut b, json!({ "t": "sync_revoke", "device_id": "c" })).await;
+    assert_eq!(recv(&mut b).await["code"], "ok");
+    assert_eq!(recv(&mut c).await["code"], "device_revoked");
+    let (_b2, w) = hello_raw(&url, "b", "tok-b", false).await;
+    assert_eq!(w["creator_device"], "b");
 }
 
 #[tokio::test]
@@ -514,7 +319,7 @@ async fn sync_and_remote_control_frames_do_not_mix() {
 
     // Sync frames before sync_hello.
     let (mut ws, _) = connect_async(&url).await.unwrap();
-    send(&mut ws, json!({ "t": "sync_push", "items": [] })).await;
+    send(&mut ws, json!({ "t": "sync_invite", "ticket_hash": sha_hex(b"t") })).await;
     assert_eq!(recv(&mut ws).await["code"], "forbidden");
 
     // Remote Control frames on a sync connection.
@@ -616,13 +421,13 @@ async fn peer_send_to_offline_or_foreign_device_fails() {
     assert_eq!(recv(&mut a).await["code"], "peer_offline");
     assert!(recv_within(&mut b_other, Duration::from_millis(300)).await.is_none());
 
-    // Revoked device.
-    let mut c = join(&url, &mut a, "c").await;
-    send(&mut a, json!({ "t": "sync_revoke", "device_id": "c" })).await;
+    // Revoked device, even while still connected.
+    let mut b = hello(&url, "b", false).await;
+    send(&mut a, json!({ "t": "sync_revoke", "device_id": "b" })).await;
     assert_eq!(recv(&mut a).await["code"], "ok");
-    send(&mut a, json!({ "t": "sync_peer_send", "to_device": "c", "data": "eA==" })).await;
+    send(&mut a, json!({ "t": "sync_peer_send", "to_device": "b", "data": "eA==" })).await;
     assert_eq!(recv(&mut a).await["code"], "peer_offline");
-    assert_eq!(recv(&mut c).await["code"], "device_revoked");
+    assert_eq!(recv(&mut b).await["code"], "device_revoked");
 }
 
 #[tokio::test]
@@ -631,15 +436,14 @@ async fn sync_peers_lists_live_group_devices() {
     let mut a = hello(&url, "a", true).await;
     assert!(peers(&mut a).await.is_empty());
     let b = join(&url, &mut a, "b").await;
-    let _b2 = hello(&url, "b", false).await;
-    let _c = join(&url, &mut a, "c").await;
+    let b2 = hello(&url, "b", false).await;
     let _a2 = hello(&url, "a", false).await;
     let _other = hello_group(&url, "grp-2", "z").await;
-    assert_eq!(peers(&mut a).await, vec!["b", "c"], "deduped, caller and other groups excluded");
+    assert_eq!(peers(&mut a).await, vec!["b"], "deduped, caller and other groups excluded");
     drop(b);
-    drop(_b2);
+    drop(b2);
     tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(peers(&mut a).await, vec!["c"]);
+    assert!(peers(&mut a).await.is_empty());
 
     // Peer frames need a hello first.
     let (mut ws, _) = connect_async(&url).await.unwrap();
@@ -654,7 +458,7 @@ async fn peer_send_too_large() {
     let url = start(Opts::default()).await;
     let mut a = hello(&url, "a", true).await;
     let mut b = join(&url, &mut a, "b").await;
-    // Exactly the base64 of the max blob passes; one more char does not.
+    // Exactly the base64 of the max peer message passes; one more char does not.
     let max_chars = (4 * 1024 * 1024 + 64usize).div_ceil(3) * 4;
     let data = "A".repeat(max_chars);
     send(&mut a, json!({ "t": "sync_peer_send", "to_device": "b", "data": data })).await;
@@ -670,7 +474,7 @@ async fn peer_send_too_large() {
 /// Rows stored for `group` in each per-group table, and whether its row exists.
 fn stored(db: &PathBuf, group: &str) -> (Vec<i64>, bool) {
     let c = rusqlite::Connection::open(db).unwrap();
-    let counts = ["ops", "blobs", "devices", "epochs", "invites"]
+    let counts = ["devices", "invites"]
         .iter()
         .map(|t| {
             c.query_row(&format!("SELECT COUNT(*) FROM {t} WHERE group_id = ?1"), [group], |r| r.get(0))
@@ -689,24 +493,10 @@ fn file_bytes(db: &PathBuf) -> i64 {
         .unwrap()
 }
 
-/// Ops, a blob and an open invite in the group `ws` belongs to.
-async fn fill(ws: &mut Ws, blob_bytes: usize) {
-    assert_eq!(push(ws, json!([{ "key": "k1", "blob": "AA" }, { "key": "k2", "blob": "BB" }])).await["t"], "sync_ack");
-    let data: Vec<u8> = (0..blob_bytes).map(|i| (i % 251) as u8).collect();
-    send(ws, json!({ "t": "blob_put", "sha": sha_hex(&data), "data": b64(&data) })).await;
-    assert_eq!(recv(ws).await["t"], "blob_ack");
-    send(ws, json!({ "t": "sync_invite", "ticket_hash": sha_hex(b"unused"), "ttl_secs": 60 })).await;
-    assert_eq!(recv(ws).await["code"], "ok");
-}
-
-/// The next frame that is not a `sync_notify`.
-async fn recv_skip_notify(ws: &mut Ws) -> Value {
-    loop {
-        let f = recv(ws).await;
-        if f["t"] != "sync_notify" {
-            return f;
-        }
-    }
+fn tables(db: &PathBuf) -> Vec<String> {
+    let c = rusqlite::Connection::open(db).unwrap();
+    let mut stmt = c.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").unwrap();
+    stmt.query_map([], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap()
 }
 
 async fn revoke_self(ws: &mut Ws, device: &str) {
@@ -721,48 +511,23 @@ async fn last_device_leaving_purges_the_group() {
     let url = start(Opts { db: Some(db.clone()), ..Default::default() }).await;
     let mut a = hello(&url, "a", true).await;
     let mut b = join(&url, &mut a, "b").await;
-    fill(&mut a, 1024).await;
+    invite(&mut a, "unused").await;
     let mut other = hello_group(&url, "grp-2", "z").await;
-    fill(&mut other, 1024).await;
+    invite(&mut other, "unused").await;
     let other_before = stored(&db, "grp-2");
 
     // The creator revokes b, then leaves itself: nobody is left.
     send(&mut a, json!({ "t": "sync_revoke", "device_id": "b" })).await;
     assert_eq!(recv(&mut a).await["code"], "ok");
-    assert_eq!(recv_skip_notify(&mut b).await["code"], "device_revoked");
+    assert_eq!(recv(&mut b).await["code"], "device_revoked");
     assert!(stored(&db, GROUP).1, "a is still active");
     revoke_self(&mut a, "a").await;
 
-    assert_eq!(stored(&db, GROUP), (vec![0; 5], false), "ops, blobs, devices, epochs, invites, group");
+    assert_eq!(stored(&db, GROUP), (vec![0; 2], false), "devices, invites, group");
     assert_eq!(stored(&db, "grp-2"), other_before, "other groups are untouched");
     let (mut ws, r) = hello_raw(&url, "a", "tok-a", false).await;
     assert_eq!(r["code"], "group_not_found");
     assert_closed(&mut ws).await;
-}
-
-#[tokio::test]
-async fn revoking_one_of_two_devices_deletes_nothing() {
-    let db = temp_db();
-    let url = start(Opts { db: Some(db.clone()), ..Default::default() }).await;
-    let mut a = hello(&url, "a", true).await;
-    let mut b = join(&url, &mut a, "b").await;
-    fill(&mut a, 1024).await;
-    let before = stored(&db, GROUP);
-
-    // A member leaving, then the creator leaving while a member remains.
-    let mut c = join(&url, &mut a, "c").await;
-    revoke_self(&mut c, "c").await;
-    send(&mut a, json!({ "t": "sync_revoke", "device_id": "a", "successor": "b" })).await;
-    assert_eq!(recv(&mut a).await["code"], "ok");
-    assert_eq!(recv_skip_notify(&mut b).await["creator_device"], "b");
-
-    let (counts, exists) = stored(&db, GROUP);
-    assert!(exists);
-    assert_eq!(counts[..2], before.0[..2], "ops and blobs kept");
-    assert_eq!(counts[2], 3, "a, b and c rows kept (revoked ones pin their ids)");
-    let page = pull(&mut b, 0, 0).await;
-    assert_eq!(seqs(&page), vec![1, 2]);
-    assert_eq!(push(&mut b, json!([{ "key": "k3", "blob": "CC" }])).await["t"], "sync_ack");
 }
 
 #[tokio::test]
@@ -771,9 +536,7 @@ async fn startup_purges_groups_without_an_active_device() {
     let url = start(Opts { db: Some(db.clone()), ..Default::default() }).await;
     let mut a = hello(&url, "a", true).await;
     let _b = join(&url, &mut a, "b").await;
-    fill(&mut a, 1024).await;
-    let mut z = hello_group(&url, "grp-2", "z").await;
-    fill(&mut z, 1024).await;
+    let _z = hello_group(&url, "grp-2", "z").await;
     let kept = stored(&db, "grp-2");
     // A group every device left before purging existed.
     rusqlite::Connection::open(&db)
@@ -783,43 +546,76 @@ async fn startup_purges_groups_without_an_active_device() {
     assert!(stored(&db, GROUP).1);
 
     let url = start(Opts { db: Some(db.clone()), ..Default::default() }).await;
-    assert_eq!(stored(&db, GROUP), (vec![0; 5], false));
-    let (counts, exists) = stored(&db, "grp-2");
-    assert!(exists);
-    assert_eq!(counts[..3], kept.0[..3], "active group's ops, blobs and devices kept");
+    assert_eq!(stored(&db, GROUP), (vec![0; 2], false));
+    assert_eq!(stored(&db, "grp-2"), kept);
     let (_, r) = hello_raw(&url, "a", "tok-a", false).await;
     assert_eq!(r["code"], "group_not_found");
-    let mut z = hello_group(&url, "grp-2", "z").await;
-    assert_eq!(seqs(&pull(&mut z, 0, 0).await), vec![1, 2]);
+    let _z = hello_group(&url, "grp-2", "z").await;
 }
 
+/// A store written by the relay that kept ops and blobs: its data tables are
+/// dropped at startup and the file shrinks; groups and devices keep working.
 #[tokio::test]
-async fn vacuum_on_start_shrinks_and_keeps_serving() {
+async fn startup_drops_the_old_data_store() {
     let db = temp_db();
-    let url = start(Opts { db: Some(db.clone()), ..Default::default() }).await;
-    let mut a = hello(&url, "a", true).await;
-    fill(&mut a, 1024 * 1024).await;
-    let mut z = hello_group(&url, "grp-2", "z").await;
-    fill(&mut z, 1024 * 1024).await;
-    rusqlite::Connection::open(&db)
-        .unwrap()
-        .execute("UPDATE devices SET revoked = 1 WHERE group_id = ?1", [GROUP])
+    {
+        let c = rusqlite::Connection::open(&db).unwrap();
+        c.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             CREATE TABLE groups (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, last_seq INTEGER NOT NULL DEFAULT 0,
+                 bytes INTEGER NOT NULL DEFAULT 0, creator_device TEXT);
+             CREATE TABLE devices (group_id TEXT NOT NULL REFERENCES groups(id), device_id TEXT NOT NULL, token_hash TEXT NOT NULL,
+                 revoked INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, PRIMARY KEY (group_id, device_id));
+             CREATE TABLE ops (group_id TEXT NOT NULL REFERENCES groups(id), seq INTEGER NOT NULL, device_id TEXT NOT NULL,
+                 key TEXT NOT NULL, blob TEXT NOT NULL, PRIMARY KEY (group_id, seq));
+             CREATE INDEX idx_ops_key ON ops(group_id, key);
+             CREATE TABLE blobs (group_id TEXT NOT NULL REFERENCES groups(id), sha TEXT NOT NULL, data BLOB NOT NULL,
+                 device_id TEXT, released_at INTEGER, PRIMARY KEY (group_id, sha));
+             CREATE INDEX idx_blobs_released ON blobs(group_id, released_at) WHERE released_at IS NOT NULL;
+             CREATE TABLE store_epoch (id INTEGER PRIMARY KEY CHECK (id = 1), epoch TEXT NOT NULL);
+             CREATE TABLE epochs (group_id TEXT NOT NULL REFERENCES groups(id), epoch TEXT NOT NULL, head INTEGER NOT NULL,
+                 PRIMARY KEY (group_id, epoch));
+             CREATE TABLE invites (group_id TEXT NOT NULL REFERENCES groups(id), ticket_hash TEXT NOT NULL,
+                 expires_at INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (group_id, ticket_hash));",
+        )
         .unwrap();
+        c.execute(
+            "INSERT INTO groups (id, created_at, last_seq, bytes, creator_device) VALUES (?1, 0, 2, 0, 'a')",
+            [GROUP],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO devices (group_id, device_id, token_hash, created_at) VALUES (?1, 'a', ?2, 0)",
+            [GROUP, &sha_hex(b"tok-a")],
+        )
+        .unwrap();
+        c.execute("INSERT INTO ops VALUES (?1, 1, 'a', 'k1', 'AA'), (?1, 2, 'a', 'k2', 'BB')", [GROUP])
+            .unwrap();
+        let data = vec![7u8; 2 * 1024 * 1024];
+        c.execute(
+            "INSERT INTO blobs (group_id, sha, data, device_id) VALUES (?1, 's', ?2, 'a')",
+            rusqlite::params![GROUP, data],
+        )
+        .unwrap();
+        c.execute("INSERT INTO store_epoch VALUES (1, 'e1')", []).unwrap();
+        c.execute("INSERT INTO epochs VALUES (?1, 'e1', 2)", [GROUP]).unwrap();
+    }
     let before = file_bytes(&db);
 
-    let url = start(Opts { db: Some(db.clone()), vacuum_on_start: true, ..Default::default() }).await;
+    let url = start(Opts { db: Some(db.clone()), ..Default::default() }).await;
+    assert_eq!(tables(&db), vec!["devices", "groups", "invites"]);
     let after = file_bytes(&db);
-    assert!(after < before - 512 * 1024, "{before} -> {after}");
-    let mode: i64 = rusqlite::Connection::open(&db)
-        .unwrap()
-        .query_row("PRAGMA auto_vacuum", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(mode, 2, "switched to incremental auto-vacuum");
+    assert!(after < before - 1024 * 1024, "vacuumed: {before} -> {after}");
 
-    // Still serving; a later purge now gives its pages back.
-    let mut z = hello_group(&url, "grp-2", "z").await;
-    assert_eq!(seqs(&pull(&mut z, 0, 0).await), vec![1, 2]);
-    revoke_self(&mut z, "z").await;
-    assert_eq!(stored(&db, "grp-2"), (vec![0; 5], false));
-    assert!(file_bytes(&db) < after - 512 * 1024, "incremental vacuum after the purge");
+    let (mut a, w) = hello_raw(&url, "a", "tok-a", false).await;
+    assert_eq!(w["t"], "sync_welcome", "got {w}");
+    assert_eq!(w["creator_device"], "a");
+    let mut b = join(&url, &mut a, "b").await;
+    send(&mut b, json!({ "t": "sync_peer_send", "to_device": "a", "data": "eA==" })).await;
+    assert_eq!(recv(&mut b).await["t"], "sync_peer_ack");
+    assert_eq!(recv(&mut a).await["from_device"], "b");
+
+    // A second start finds nothing to migrate.
+    let _url = start(Opts { db: Some(db.clone()), ..Default::default() }).await;
+    assert_eq!(tables(&db), vec!["devices", "groups", "invites"]);
 }
