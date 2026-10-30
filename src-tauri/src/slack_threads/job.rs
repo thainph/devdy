@@ -415,7 +415,7 @@ impl Job<'_> {
             &self.ctx.auth_cache,
         )
         .await?;
-        // Remember whose token this is (Project Pulse "ball in my court").
+        // Remember whose token this is (who "me" is in a thread).
         if let Err(e) = store::upsert_identity(self.db(), &auth).await {
             tracing::warn!(event = "slack_identity_upsert_failed", error = %e);
         }
