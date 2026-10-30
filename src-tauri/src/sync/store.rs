@@ -51,6 +51,16 @@ pub trait SyncStore: Send + Sync {
         Ok(())
     }
 
+    /// Relay blobs this device stopped using whose release is due.
+    async fn releasable_blobs(&self, _limit: usize) -> Result<Vec<String>, String> {
+        Ok(Vec::new())
+    }
+
+    /// The relay took the release of `shas` (or never will): forget them.
+    async fn blobs_released(&self, _shas: &[String]) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Apply pulled `file` / `secret` ops (and retry earlier failed ones).
     async fn apply_remote_extra(&self, ops: Vec<Op>, _blobs: &dyn BlobIo) -> Result<ApplyReport, String> {
         Ok(ApplyReport { skipped_older: ops.len(), ..Default::default() })
@@ -319,6 +329,14 @@ impl SyncStore for SqliteSyncStore {
             self.notice(Notice::RunLogUpdated(run));
         }
         Ok(report)
+    }
+
+    async fn releasable_blobs(&self, limit: usize) -> Result<Vec<String>, String> {
+        files::releasable_blobs(&self.db, limit).await
+    }
+
+    async fn blobs_released(&self, shas: &[String]) -> Result<(), String> {
+        files::forget_released(&self.db, shas).await
     }
 
     async fn mark_pushed(&self, up_to_outbox_seq: i64) -> Result<(), String> {

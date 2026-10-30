@@ -8,6 +8,8 @@
 //! Content is cut into 1 MiB plaintext chunks, each sealed and stored as a
 //! relay blob. `sync_blobs` remembers which plaintext chunk is already up, so a
 //! growing append-only log re-uploads only its last partial chunk + new ones.
+//! The tail blob it replaced is queued in `sync_blob_release` and released on
+//! the relay (`blob_release`) once the new manifest is pushed.
 //! The `file` op itself goes through `sync_outbox` like a row change.
 //!
 //! Relay -> local (`apply_op`): last-writer-wins by HLC (via `sync_rows`),
@@ -18,6 +20,9 @@
 //! Library files authored (or edited) here are moved to the legacy backups
 //! before a remote version replaces them. Files written here are recorded with
 //! origin = 'remote' so the session watcher does not import them again.
+//! Transcripts and Codex rollouts get the sender's cwd rewritten to this
+//! device's project path; the record then keeps the synced sha/chunks as the
+//! base and the rewritten file's size/sha as `local_size` / `local_sha256`.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
@@ -489,8 +494,9 @@ async fn set_local_view(conn: &mut SqliteConnection, kind: FileKind, portable: &
     Ok(())
 }
 
-async fn queue(conn: &mut SqliteConnection, kind: FileKind, portable: &str, op: &str) -> Result<(), String> {
-    sqlx::query("INSERT INTO sync_outbox (tbl, pk, op, changed_at) VALUES (?, ?, ?, ?)")
+/// Queue a file op; returns its outbox seq.
+async fn queue(conn: &mut SqliteConnection, kind: FileKind, portable: &str, op: &str) -> Result<i64, String> {
+    let done = sqlx::query("INSERT INTO sync_outbox (tbl, pk, op, changed_at) VALUES (?, ?, ?, ?)")
         .bind(TBL)
         .bind(canonical_json(&file_pk(kind, portable)))
         .bind(op)
@@ -498,7 +504,72 @@ async fn queue(conn: &mut SqliteConnection, kind: FileKind, portable: &str, op: 
         .execute(&mut *conn)
         .await
         .map_err(err)?;
+    Ok(done.last_insert_rowid())
+}
+
+/// The new version of a file no longer uses `old` chunks: those this device
+/// uploaded, and no other file of it still uses, are forgotten (so dedupe
+/// never hands them out again) and released on the relay once the new
+/// manifest — outbox entry `seq` — is pushed (it supersedes the old one).
+async fn release_superseded(
+    conn: &mut SqliteConnection,
+    kind: FileKind,
+    portable: &str,
+    old: &[ChunkRef],
+    new: &[ChunkRef],
+    seq: i64,
+) -> Result<(), String> {
+    for c in old.iter().filter(|c| !new.iter().any(|n| n.blob == c.blob)) {
+        let ours: Option<i64> = sqlx::query_scalar("SELECT 1 FROM sync_blobs WHERE blob_sha = ?")
+            .bind(&c.blob)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(err)?;
+        let used: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM sync_files WHERE deleted = 0 AND instr(chunks_json, ?) > 0 \
+             AND NOT (kind = ? AND path = ?) LIMIT 1",
+        )
+        .bind(&c.blob)
+        .bind(kind.as_str())
+        .bind(portable)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(err)?;
+        if ours.is_none() || used.is_some() {
+            continue;
+        }
+        sqlx::query("DELETE FROM sync_blobs WHERE blob_sha = ?").bind(&c.blob).execute(&mut *conn).await.map_err(err)?;
+        sqlx::query("INSERT OR REPLACE INTO sync_blob_release (blob_sha, after_seq, queued_at) VALUES (?, ?, ?)")
+            .bind(&c.blob)
+            .bind(seq)
+            .bind(wall_ms() as i64)
+            .execute(&mut *conn)
+            .await
+            .map_err(err)?;
+    }
     Ok(())
+}
+
+/// Blobs whose release is due: the entry carrying the newer manifest left the
+/// outbox (pushed, or beaten by a remote op that superseded it as well).
+pub async fn releasable_blobs(db: &Db, limit: usize) -> Result<Vec<String>, String> {
+    sqlx::query_scalar(
+        "SELECT blob_sha FROM sync_blob_release r \
+         WHERE NOT EXISTS (SELECT 1 FROM sync_outbox o WHERE o.seq <= r.after_seq) \
+         ORDER BY after_seq LIMIT ?",
+    )
+    .bind(limit as i64)
+    .fetch_all(db)
+    .await
+    .map_err(err)
+}
+
+pub async fn forget_released(db: &Db, shas: &[String]) -> Result<(), String> {
+    let mut tx = db.begin().await.map_err(err)?;
+    for sha in shas {
+        sqlx::query("DELETE FROM sync_blob_release WHERE blob_sha = ?").bind(sha).execute(&mut *tx).await.map_err(err)?;
+    }
+    tx.commit().await.map_err(err)
 }
 
 fn mtime_ms(meta: &fs::Metadata) -> i64 {
@@ -720,7 +791,12 @@ async fn stage_one(db: &Db, blobs: &dyn BlobIo, t: &Tracked) -> Result<bool, Sta
         save_record(&mut tx, t.kind, &t.portable, &t.local, Some((&content, mtime)), mode, None, "local")
             .await
             .map_err(local)?;
-        queue(&mut tx, t.kind, &t.portable, "U").await.map_err(local)?;
+        let seq = queue(&mut tx, t.kind, &t.portable, "U").await.map_err(local)?;
+        if let Some(r) = rec.as_ref().filter(|r| !r.deleted) {
+            release_superseded(&mut tx, t.kind, &t.portable, &r.chunks, &content.chunks, seq)
+                .await
+                .map_err(local)?;
+        }
     }
     tx.commit().await.map_err(|e| local(e.to_string()))?;
     Ok(!unchanged)
@@ -1896,6 +1972,55 @@ pub(crate) mod tests {
         more += &transcript_lines(&pb_path, 1);
         fs::write(&tb, more).unwrap();
         assert_eq!(stage(&db_b, &pb, &blobs, &mut st_b, ScanMode::Full, false).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn superseded_tail_chunks_are_released_after_the_push() {
+        let h = tempdir();
+        let db = mem_db().await;
+        let p = ctx(h.path());
+        let blobs = MemBlobs::default();
+        let log = add_run(&db, h.path(), "r1", "running").await;
+        let mut body = mb(CHUNK_SIZE, b'x');
+        body.extend(b"tail");
+        fs::write(&log, &body).unwrap();
+        // Another file whose content is the same as the log's full first chunk.
+        let twin = add_run(&db, h.path(), "r2", "running").await;
+        fs::write(&twin, mb(CHUNK_SIZE, b'x')).unwrap();
+        let mut st = ScanState::default();
+        stage(&db, &p, &blobs, &mut st, ScanMode::Full, false).await.unwrap();
+        let chunks = |db: Db| async move {
+            let j: String = sqlx::query_scalar("SELECT chunks_json FROM sync_files WHERE path LIKE '%r1.log'").fetch_one(&db).await.unwrap();
+            serde_json::from_str::<Vec<ChunkRef>>(&j).unwrap()
+        };
+        let v1 = chunks(db.clone()).await;
+        sqlx::query("DELETE FROM sync_outbox").execute(&db).await.unwrap();
+
+        body.extend(b" more");
+        fs::write(&log, &body).unwrap();
+        stage(&db, &p, &blobs, &mut st, ScanMode::Quick, false).await.unwrap();
+        let v2 = chunks(db.clone()).await;
+        assert_eq!(v1[0].blob, v2[0].blob, "full chunk reused");
+        assert_ne!(v1[1].blob, v2[1].blob);
+        // Not before the new manifest left the outbox.
+        assert!(releasable_blobs(&db, 10).await.unwrap().is_empty());
+        let known: Option<i64> = sqlx::query_scalar("SELECT 1 FROM sync_blobs WHERE blob_sha = ?")
+            .bind(&v1[1].blob)
+            .fetch_optional(&db)
+            .await
+            .unwrap();
+        assert_eq!(known, None, "a released blob is never deduped again");
+        sqlx::query("DELETE FROM sync_outbox").execute(&db).await.unwrap();
+        assert_eq!(releasable_blobs(&db, 10).await.unwrap(), vec![v1[1].blob.clone()]);
+        forget_released(&db, &[v1[1].blob.clone()]).await.unwrap();
+        assert!(releasable_blobs(&db, 10).await.unwrap().is_empty());
+
+        // The log shrinks to its first chunk: that chunk is still used by the
+        // twin file, so only the tail goes.
+        fs::write(&log, mb(CHUNK_SIZE, b'y')).unwrap();
+        stage(&db, &p, &blobs, &mut st, ScanMode::Quick, false).await.unwrap();
+        sqlx::query("DELETE FROM sync_outbox").execute(&db).await.unwrap();
+        assert_eq!(releasable_blobs(&db, 10).await.unwrap(), vec![v2[1].blob.clone()]);
     }
 
     #[tokio::test]

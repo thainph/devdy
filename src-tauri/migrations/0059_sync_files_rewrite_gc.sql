@@ -6,3 +6,13 @@
 -- mistaken for a local change and pushed back.
 ALTER TABLE sync_files ADD COLUMN local_size INTEGER;
 ALTER TABLE sync_files ADD COLUMN local_sha256 TEXT;
+
+-- Relay blobs this device uploaded and no longer references (the superseded
+-- tail chunk of a growing log, ...). Sent as `blob_release` once the outbox
+-- entry carrying the new manifest (seq `after_seq`) has been pushed, so the
+-- relay can delete them after its grace period.
+CREATE TABLE sync_blob_release (
+    blob_sha    TEXT PRIMARY KEY,
+    after_seq   INTEGER NOT NULL,
+    queued_at   INTEGER NOT NULL
+);
