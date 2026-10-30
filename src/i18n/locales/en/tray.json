@@ -12,5 +12,7 @@
   "noRunningSessions": "No running sessions",
   "backgroundProcesses": "Background Processes ({count})",
   "remoteDesktopWindow": "Remote Devdy",
-  "remoteWindow": "{name} (remote)"
+  "remoteWindow": "{name} (remote)",
+  "focus": "Focus",
+  "focusOverdue": "Focus — {count} overdue"
 }

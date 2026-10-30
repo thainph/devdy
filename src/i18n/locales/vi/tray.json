@@ -12,5 +12,7 @@
   "noRunningSessions": "Không có phiên nào đang chạy",
   "backgroundProcesses": "Tiến trình nền ({count})",
   "remoteDesktopWindow": "Devdy từ xa",
-  "remoteWindow": "{name} (từ xa)"
+  "remoteWindow": "{name} (từ xa)",
+  "focus": "Focus",
+  "focusOverdue": "Focus — {count} việc quá hạn"
 }

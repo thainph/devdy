@@ -80,6 +80,16 @@ export const useFocusStore = defineStore('focus', () => {
     }
   }
 
+  /** Drop the cached Calendar events and reload the board (capacity bar). */
+  async function refreshCalendar() {
+    try {
+      await invoke('focus_refresh_calendar')
+    } catch {
+      /* outside the Tauri shell */
+    }
+    await load()
+  }
+
   async function saveSettings(next: FocusSettings) {
     await invoke('focus_settings_set', { settings: next })
     settings.value = { ...next }
@@ -165,6 +175,7 @@ export const useFocusStore = defineStore('focus', () => {
     load,
     loadSettings,
     saveSettings,
+    refreshCalendar,
     start,
     stop,
     add,
