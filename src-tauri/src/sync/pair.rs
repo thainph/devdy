@@ -247,13 +247,14 @@ pub async fn join(db: &Db, alias: &str, password: String, device_name: &str) -> 
 }
 
 /// Leave the group: revoke this device on the relay (best effort) and wipe
-/// the Keychain entry. Returns whether the relay accepted the revoke.
-pub async fn leave(db: &Db) -> Result<bool, String> {
+/// the Keychain entry. `successor` takes the creator role if this device has
+/// it (see `leader::on_leave`). Returns whether the relay accepted the revoke.
+pub async fn leave(db: &Db, successor: Option<&str>) -> Result<bool, String> {
     let Some(sync) = crate::secrets::get_sync_secrets() else {
         return Ok(false);
     };
     let revoked = match connect_params(db, &sync).await {
-        Ok(params) => revoke_self(&params).await,
+        Ok(params) => revoke_self(&params, successor).await,
         Err(_) => false,
     };
     crate::secrets::delete_sync_secrets().map_err(|e| e.to_string())?;
@@ -261,12 +262,12 @@ pub async fn leave(db: &Db) -> Result<bool, String> {
     Ok(revoked)
 }
 
-async fn revoke_self(params: &ConnectParams) -> bool {
+async fn revoke_self(params: &ConnectParams, successor: Option<&str>) -> bool {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     match Connection::connect(params, false, tx).await {
         // The relay may kick this connection before its "ok" arrives.
         Ok(conn) => matches!(
-            conn.revoke(&params.device_id).await,
+            conn.revoke_with(&params.device_id, successor).await,
             Ok(()) | Err(TransportError::Rejected(_) | TransportError::Closed)
         ),
         // Already revoked: nothing left to do on the relay.
@@ -936,7 +937,7 @@ mod tests {
         connect(&me1, false, Some("t1")).await.unwrap();
 
         // Leave: revoke self; that id can never come back.
-        assert!(revoke_self(&me1).await);
+        assert!(revoke_self(&me1, None).await);
         let again = connect(&me1, false, None).await.err();
         assert_eq!(again, Some(TransportError::Rejected("device_revoked".into())));
 

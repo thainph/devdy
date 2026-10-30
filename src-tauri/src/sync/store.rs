@@ -77,6 +77,11 @@ pub trait SyncStore: Send + Sync {
     async fn parked_count(&self) -> Result<u64, String> {
         Ok(0)
     }
+
+    /// The relay named the group's creator (welcome, or the role moved).
+    async fn set_group_creator(&self, _device_id: &str) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
@@ -434,6 +439,10 @@ impl SyncStore for SqliteSyncStore {
             .await
             .map_err(err)?;
         Ok(n as u64)
+    }
+
+    async fn set_group_creator(&self, device_id: &str) -> Result<(), String> {
+        super::leader::set_creator(&self.db, device_id).await
     }
 
     async fn apply_remote(&self, ops: Vec<Op>) -> Result<ApplyReport, String> {
