@@ -586,6 +586,8 @@
       "choose": "Chọn thư mục",
       "change": "Đổi",
       "tabHelp": "Máy này nhận những dự án nào, và thư mục của chúng nằm ở đâu trên máy này. Đồng bộ thư mục làm thư mục giống hệt máy nguồn (branch, commit, thay đổi chưa commit, các file khác) sau khi xem trước.",
+      "selectAll": "Chọn tất cả dự án",
+      "selectAllFolders": "Sync thư mục tất cả",
       "colSync": "Sync",
       "colProject": "Dự án",
       "colLocal": "Thư mục trên máy này",

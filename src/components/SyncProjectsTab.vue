@@ -51,6 +51,23 @@ async function patch(p: ProjectPref, change: ProjectPrefPatch) {
   }
 }
 
+/** Turn `key` on for every project still off (folder sync needs a local path). */
+async function selectAll(key: 'enabled' | 'folder') {
+  if (busy.value || !store.prefs) return
+  busy.value = 'all'
+  try {
+    for (const p of store.prefs.projects) {
+      if (p[key] || (key === 'folder' && !p.local_path)) continue
+      await syncProjectPrefSet(p.project_id, key === 'folder' ? { enabled: true, folder: true } : { enabled: true })
+    }
+  } catch (e) {
+    toast.error(errorText(e))
+  } finally {
+    await store.loadPrefs().catch(() => {})
+    busy.value = null
+  }
+}
+
 async function pickFolder(p: ProjectPref) {
   const selected = await open({ directory: true, multiple: false, title: p.name })
   if (!selected || Array.isArray(selected)) return
@@ -67,6 +84,15 @@ onMounted(reload)
 <template>
   <section class="space-y-3">
     <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.projects.tabHelp') }}</p>
+    <div v-if="store.prefs?.projects.length" class="flex flex-wrap items-center gap-2">
+      <Button variant="outline" size="sm" :disabled="busy !== null" @click="selectAll('enabled')">
+        <Loader2 v-if="busy === 'all'" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+        {{ t('settings.sync.projects.selectAll') }}
+      </Button>
+      <Button variant="outline" size="sm" :disabled="busy !== null" @click="selectAll('folder')">
+        {{ t('settings.sync.projects.selectAllFolders') }}
+      </Button>
+    </div>
     <p v-if="store.prefs && !store.prefs.projects.length" class="text-[11px] text-muted-foreground">
       {{ t('settings.sync.projects.empty') }}
     </p>

@@ -586,6 +586,8 @@
       "choose": "Choose folder",
       "change": "Change",
       "tabHelp": "Which projects this machine receives, and where their folders live here. Folder sync makes the folder identical to the source machine (branch, commits, uncommitted changes, other files) after a preview.",
+      "selectAll": "Select all projects",
+      "selectAllFolders": "Folder sync for all",
       "colSync": "Sync",
       "colProject": "Project",
       "colLocal": "Folder on this machine",

@@ -552,6 +552,63 @@ fn code_of(e: TransportError) -> String {
     }
 }
 
+/// Without a running engine (first-join merge): ask every online device of
+/// the group to push its whole outbox, one after the other, so the relay
+/// holds the group's full state before it is read. `events` must be the
+/// receiver of `conn`'s event channel. Returns the devices that flushed;
+/// one that is offline, paused or failing is skipped (its rows arrive with
+/// a later Sync from it).
+pub async fn flush_online_peers(
+    conn: &Connection,
+    events: &mut mpsc::UnboundedReceiver<Event>,
+    keys: &SyncKeys,
+    idle: Duration,
+) -> Result<Vec<String>, String> {
+    let mut flushed = Vec::new();
+    for peer in conn.peers().await.map_err(code_of)? {
+        let msg = PeerMsg {
+            v: PEER_MSG_VERSION,
+            id: new_msg_id(),
+            kind: OPS_FLUSH.to_string(),
+            reply_to: None,
+            last: false,
+            body: json!({}),
+        };
+        let plain = serde_json::to_vec(&msg).map_err(|e| e.to_string())?;
+        let data = base64::engine::general_purpose::STANDARD.encode(keys.seal_bytes(&plain));
+        if let Err(e) = conn.peer_send(&peer, data).await {
+            tracing::info!(event = "sync_join_flush_skipped", error = %code_of(e));
+            continue;
+        }
+        // Progress replies keep it alive; anything else from the peer is ignored.
+        let done = loop {
+            match tokio::time::timeout(idle, events.recv()).await {
+                Err(_) => break Err(PEER_TIMEOUT.to_string()),
+                Ok(None) | Ok(Some(Event::Closed)) => return Err("peer connection lost".into()),
+                Ok(Some(Event::PeerMsg { from, data })) if from == peer => {
+                    let Some(reply) = open_peer_msg(keys, &data) else { continue };
+                    if reply.reply_to.as_deref() != Some(msg.id.as_str()) {
+                        continue;
+                    }
+                    if reply.kind == OPS_FLUSHED {
+                        break Ok(());
+                    }
+                    if reply.kind == ERROR_KIND {
+                        let m = reply.body.get("message").and_then(Value::as_str).unwrap_or("error");
+                        break Err(m.to_string());
+                    }
+                }
+                Ok(Some(_)) => {}
+            }
+        };
+        match done {
+            Ok(()) => flushed.push(peer),
+            Err(e) => tracing::info!(event = "sync_join_flush_skipped", error = %e),
+        }
+    }
+    Ok(flushed)
+}
+
 fn open_peer_msg(keys: &SyncKeys, data: &str) -> Option<PeerMsg> {
     let sealed = base64::engine::general_purpose::STANDARD.decode(data).ok()?;
     let plain = keys.open_bytes(&sealed).ok()?;
@@ -1638,6 +1695,34 @@ mod tests {
         assert_eq!((again.pulled, again.applied), (0, 0));
         a.engine.stop().await;
         b.engine.stop().await;
+    }
+
+    /// The first-join merge runs without an engine: it asks the online
+    /// devices to push their outbox, so the relay holds their state.
+    #[tokio::test]
+    async fn a_merge_connection_flushes_the_online_devices() {
+        let relay = TestRelay::start().await;
+        relay.create_group("g1");
+        let a = device(&relay, "dev-a", fast());
+        online(&[&a]).await;
+        a.store.add("notes", "n1", "first");
+        a.store.add("notes", "n2", "second");
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let conn = Connection::connect(&params(&relay, "dev-b"), false, tx).await.unwrap();
+        let flushed = flush_online_peers(&conn, &mut rx, &keys(), Duration::from_secs(10)).await.unwrap();
+        assert_eq!(flushed, vec!["dev-a".to_string()]);
+        assert_eq!(a.store.outbox_len(), 0);
+        let (items, _, _) = conn.pull(0, 100).await.unwrap();
+        assert_eq!(items.len(), 2);
+
+        // A paused device is skipped, not an error.
+        a.engine.set_paused(true);
+        a.store.add("notes", "n3", "third");
+        let flushed = flush_online_peers(&conn, &mut rx, &keys(), Duration::from_secs(10)).await.unwrap();
+        assert!(flushed.is_empty());
+        assert_eq!(a.store.outbox_len(), 1);
+        a.engine.stop().await;
     }
 
     #[tokio::test]

@@ -21,13 +21,21 @@ fn paths(app: &AppHandle) -> Result<PathCtx, String> {
     Ok(PathCtx::from_env().with_app_data(data))
 }
 
-/// A connection to the group and its keys.
+/// How long a device being flushed may stay silent (it sends progress
+/// replies while it pushes).
+const FLUSH_IDLE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// A connection to the group and its keys, after every online device pushed
+/// its outbox: sync is on-demand, so the relay only holds what devices were
+/// asked for, and the merge must see the group's full state.
 async fn open_group(db: &Db) -> Result<(Connection, SyncKeys), String> {
     let sync = crate::secrets::get_sync_secrets().ok_or("this device is not in a sync group")?;
     let params = crate::sync::pair::connect_params(db, &sync).await?;
     let keys = crate::sync::pair::keys_of(&sync)?;
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let conn = Connection::connect(&params, false, tx).await.map_err(|e| e.to_string())?;
+    let flushed = crate::sync::engine::flush_online_peers(&conn, &mut rx, &keys, FLUSH_IDLE).await?;
+    tracing::info!(event = "sync_join_flushed", devices = flushed.len());
     Ok((conn, keys))
 }
 
