@@ -14,6 +14,8 @@ import { invoke } from '@/lib/tauri'
 import { AppSelect, Button, Card, Skeleton } from '@/components/ui'
 import AddTodoButton from '@/components/focus/AddTodoButton.vue'
 import FocusDialogs from '@/components/focus/FocusDialogs.vue'
+import FocusAiDialogs from '@/components/focus/FocusAiDialogs.vue'
+import FocusDayPlan from '@/components/focus/FocusDayPlan.vue'
 import FocusTodoDrawer from '@/components/focus/FocusTodoDrawer.vue'
 import FocusTodoRow from '@/components/focus/FocusTodoRow.vue'
 import { useFocusText } from '@/components/focus/useFocusText'
@@ -211,7 +213,7 @@ onBeforeUnmount(() => {
         </span>
       </div>
       <div class="flex shrink-0 items-center gap-2">
-        <!-- P3: "Plan today ✨" goes here. -->
+        <FocusDayPlan @open="openId = $event" />
         <AddTodoButton button-variant="primary" size="sm" />
       </div>
     </div>
@@ -414,5 +416,6 @@ onBeforeUnmount(() => {
 
     <FocusTodoDrawer :item="openItem" @close="openId = null" />
     <FocusDialogs />
+    <FocusAiDialogs />
   </div>
 </template>

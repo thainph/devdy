@@ -595,13 +595,109 @@ export function calibrationHint(c: FocusCalibration | null | undefined): number 
   return f === 1 ? null : f
 }
 
-/** BR-11-ish suggestion for "how long did it take": wall time since start, unless implausible (> 3× estimate). */
-export function suggestActualMin(todo: Pick<FocusTodo, 'started_at' | 'estimate_min'>, now: number): number | null {
-  const started = todo.started_at ? Date.parse(todo.started_at) : NaN
-  if (!Number.isFinite(started) || !todo.estimate_min) return null
-  const min = Math.round((now - started) / 60_000)
-  if (min < 1 || min > todo.estimate_min * 3) return null
-  return min
+// ── AI (P3, on demand) ──────────────────────────────────────────────────────
+
+/** `focus_ai_suggest` result: fills the "+ Todo" form, nothing is saved. */
+export interface AiSuggestion {
+  title: string
+  /** Only with a deadline quoted from the source (`due_evidence`). */
+  due_date: string | null
+  due_time: string | null
+  due_evidence: string | null
+  priority: TodoPriority
+  estimate_min: number
+  reason: string
+}
+
+/** `focus_ai_analyze` structured result (the markdown goes to `ai_plan`). */
+export interface AiAnalysis {
+  summary: string
+  steps: string[]
+  estimate_min: number
+  estimate_low_min: number
+  estimate_high_min: number
+  confidence: 'low' | 'medium' | 'high'
+  risks: string[]
+  questions: string[]
+  suggested_priority: TodoPriority | null
+  suggested_due_date: string | null
+  suggested_due_time: string | null
+}
+
+export interface AiAnalyzeResult {
+  analysis: AiAnalysis
+  todo: FocusTodo
+}
+
+export interface DayPlanBlock {
+  /** `b1`, `b2`… in time order. */
+  id: string
+  todo_id: string
+  /** Local `HH:MM`. */
+  start: string
+  end: string
+  note: string
+  calendar_event_id: string | null
+}
+
+/** `focus_ai_plan_today` / `focus_day_plan_get`. */
+export interface DayPlan {
+  date: string
+  blocks: DayPlanBlock[]
+  deferred: { todo_id: string; reason: string }[]
+  summary: string
+  /** Blocks the backend dropped (unknown todo, outside free time, overlap). */
+  dropped: number
+  created_at: string
+}
+
+/** What "Apply" of an analysis puts into the drawer's form. */
+export interface AiApply {
+  estimateMin?: number
+  priority?: TodoPriority
+  dueDate?: string
+  dueTime?: string
+}
+
+export type AiRequestKind = 'suggest' | 'analyze' | 'plan'
+
+/** `focus:ai-progress` payload. */
+export interface AiProgress {
+  request_id: string
+  kind: AiRequestKind
+  todo_id: string | null
+  stage: 'started' | 'done' | 'error' | 'cancelled'
+  error: string | null
+}
+
+export const FOCUS_AI_PROGRESS = 'focus:ai-progress'
+
+/** Command errors are `"<code>: <detail>"`; `cancelled` is bare. */
+export function aiErrorCode(e: unknown): { code: string | null; detail: string } {
+  const msg = String(e instanceof Error ? e.message : e)
+  if (msg === 'cancelled') return { code: 'cancelled', detail: '' }
+  const m = /^([a-z_]+):\s*(.*)$/s.exec(msg)
+  return m ? { code: m[1], detail: m[2] } : { code: null, detail: msg }
+}
+
+/** The form after "✨ Suggest": AI values fill the fields; the user's own text / deadline win when set. */
+export function applySuggestion(d: TodoDraft, s: AiSuggestion): TodoDraft {
+  const next = { ...d, priority: s.priority, estimate: formatEstimate(s.estimate_min) }
+  if (!d.text.trim()) next.text = s.title
+  if (!d.dueDate && s.due_date) {
+    next.dueDate = s.due_date
+    next.dueTime = s.due_time ?? ''
+  }
+  return next
+}
+
+/** Minutes between two `HH:MM`. */
+export function blockMinutes(b: Pick<DayPlanBlock, 'start' | 'end'>): number {
+  const m = (hm: string) => {
+    const [h, mm] = hm.split(':').map(Number)
+    return h * 60 + mm
+  }
+  return Math.max(0, m(b.end) - m(b.start))
 }
 
 // ── Sources ─────────────────────────────────────────────────────────────────

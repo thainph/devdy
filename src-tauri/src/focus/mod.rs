@@ -9,7 +9,9 @@
 //! - `capacity` (pure, BR-08) / `calendar` (Google fetch + cache, §3.5)
 //! - `source_content`, `github`, `ai_util`: kept from Project Pulse for the AI
 //!   commands of phase P3
+//! - `ai`: the AI prompts, answer validation, free slots and BR-11 (pure, P3)
 
+pub mod ai;
 pub mod ai_util;
 pub mod calendar;
 pub mod capacity;

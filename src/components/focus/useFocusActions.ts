@@ -10,8 +10,9 @@ import { openUrl } from '@tauri-apps/plugin-opener'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useFocusStore } from '@/stores/focus'
+import { useFocusAiStore } from '@/stores/focusAi'
 import { firstLine } from '@/lib/itemText'
-import { formatEstimate, suggestActualMin, type FocusTodo } from '@/lib/focus'
+import { formatEstimate, type FocusTodo } from '@/lib/focus'
 
 /** "How long did it take?" after Done (§3.3). */
 const actualPrompt = ref<{ todo: FocusTodo; suggestion: string } | null>(null)
@@ -38,7 +39,8 @@ export function useFocusActions() {
   async function done(todo: FocusTodo) {
     if (!(await run(() => store.markDone(todo.id)))) return
     if (todo.started_at && todo.estimate_min) {
-      const s = suggestActualMin(todo, Date.now())
+      // BR-11, computed by the backend (linked sessions, else working time).
+      const s = await useFocusAiStore().suggestActual(todo.id).catch(() => null)
       actualPrompt.value = { todo, suggestion: s ? formatEstimate(s) : '' }
     }
   }
