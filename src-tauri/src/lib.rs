@@ -121,7 +121,7 @@ use commands::slack_threads::{
     translate_slack_reply, unlink_slack_thread_run,
 };
 use commands::focus::{
-    focus_board, focus_counts, focus_refresh_calendar, focus_settings_get, focus_settings_set,
+    focus_board, focus_refresh_calendar, focus_settings_get, focus_settings_set,
     focus_take_open_todo,
 };
 use commands::focus_ai::{
@@ -696,7 +696,6 @@ pub fn run() {
             focus_board,
             focus_settings_get,
             focus_settings_set,
-            focus_counts,
             focus_refresh_calendar,
             focus_take_open_todo,
             focus_ai_suggest,

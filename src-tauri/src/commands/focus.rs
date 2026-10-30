@@ -261,37 +261,6 @@ pub async fn focus_refresh_calendar(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct FocusCounts {
-    pub overdue: usize,
-    pub today: usize,
-    pub doing: usize,
-}
-
-pub fn counts(board_rows: &[(Todo, score::Ranked)]) -> FocusCounts {
-    let n = |b: Bucket| board_rows.iter().filter(|(_, r)| r.bucket == b).count();
-    FocusCounts {
-        overdue: n(Bucket::Overdue),
-        today: n(Bucket::Today),
-        doing: n(Bucket::Doing),
-    }
-}
-
-/// Overdue / today / doing counts (tray badge); also pushed as `focus:counts`
-/// by the reminder tick.
-#[tauri::command]
-pub async fn focus_counts(db: State<'_, Db>) -> Result<FocusCounts, String> {
-    let (settings, todos, samples) = board_inputs(db.inner()).await?;
-    let r = rank_todos(
-        todos,
-        &chrono::Local::now(),
-        &settings.work_hours(),
-        settings.calibration_enabled,
-        &samples,
-    );
-    Ok(counts(&r.rows))
-}
-
 /// The todo a reminder click asked to open, once (the Focus window reads it
 /// on mount in case it was created by the click).
 #[tauri::command]
@@ -422,7 +391,7 @@ mod tests {
     }
 
     #[test]
-    fn capacity_and_counts_from_the_board() {
+    fn capacity_from_the_board() {
         // Wednesday 2026-10-28 13:00 +07:00.
         let now = tz().with_ymd_and_hms(2026, 10, 28, 13, 0, 0).unwrap();
         let mut overdue = todo("overdue", 0);
@@ -435,7 +404,7 @@ mod tests {
         doing.status = "doing".into();
         let later = todo("later", 3);
         let wh = WorkHours::default();
-        let board = build_board(vec![overdue.clone(), today.clone(), doing.clone(), later.clone()], now, &wh, true, &[]);
+        let board = build_board(vec![overdue, today, doing, later], now, &wh, true, &[]);
         let at = |h: u32, m: u32| chrono::NaiveDate::from_ymd_opt(2026, 10, 28).unwrap().and_hms_opt(h, m, 0).unwrap();
         let events = vec![
             CalEvent { start: at(14, 0), end: at(15, 0), title: "Sync".into(), all_day: false, transparent: false, declined: false },
@@ -446,8 +415,6 @@ mod tests {
         assert_eq!((c.need_min, c.free_min), (210, 180));
         assert_eq!(c.busy.len(), 2);
         assert_eq!(c.busy[0].start, "2026-10-28T14:00:00+07:00");
-        let r = rank_todos(vec![overdue, today, doing, later], &now, &wh, true, &[]);
-        assert_eq!(counts(&r.rows), FocusCounts { overdue: 1, today: 1, doing: 1 });
     }
 
 }
