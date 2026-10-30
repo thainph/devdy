@@ -112,6 +112,13 @@ impl SqliteSyncStore {
         self
     }
 
+    /// `paths` plus the current project path map (it changes at bootstrap and
+    /// when the user maps a project by hand).
+    async fn paths_now(&self) -> Result<PathCtx, String> {
+        let map = super::bootstrap::load_project_map(&self.db).await?;
+        Ok(self.paths.clone().with_project_map(map))
+    }
+
     async fn clock(&self) -> Result<MutexGuard<'_, Option<HlcClock>>, String> {
         let mut guard = self.clock.lock().await;
         if guard.is_none() {
@@ -127,6 +134,7 @@ impl SyncStore for SqliteSyncStore {
     /// Outbox entries coalesced per row (the op carries the CURRENT row, or a
     /// Delete when it is gone), each with a fresh HLC no older than the change.
     async fn pending(&self, limit: usize) -> Result<Vec<(i64, Op)>, String> {
+        let paths = self.paths_now().await?;
         let mut guard = self.clock().await?;
         let mut clock = guard.clone().ok_or("clock not loaded")?;
         let mut tx = self.db.begin().await.map_err(err)?;
@@ -155,7 +163,7 @@ impl SyncStore for SqliteSyncStore {
                     keychain.as_ref().and_then(|items| secrets::pending_row(items, &pk)).map(|e| (pk, e))
                 }
                 (_, Some(pk)) => match schema::spec(&tbl) {
-                    Some(spec) => self.db_entry(&mut tx, spec, pk).await?,
+                    Some(spec) => self.db_entry(&mut tx, &paths, spec, &pk_text, pk).await?,
                     None => None,
                 },
                 (_, None) => None,
@@ -194,7 +202,8 @@ impl SyncStore for SqliteSyncStore {
             }
             None => false,
         };
-        files::stage(&self.db, &self.paths, blobs, &mut state, mode, with_secrets).await?;
+        let paths = self.paths_now().await?;
+        files::stage(&self.db, &paths, blobs, &mut state, mode, with_secrets).await?;
         drop(state);
         if mode == files::ScanMode::Full {
             if let (Some(backend), true) = (&self.secrets, with_secrets) {
@@ -211,6 +220,7 @@ impl SyncStore for SqliteSyncStore {
     async fn apply_remote_extra(&self, ops: Vec<Op>, blobs: &dyn BlobIo) -> Result<ApplyReport, String> {
         let mut guard = self.clock().await?;
         let mut clock = guard.clone().ok_or("clock not loaded")?;
+        let paths = self.paths_now().await?;
         let parked: Vec<(String, i64)> = sqlx::query_as("SELECT op, attempts FROM sync_extra_deferred")
             .fetch_all(&self.db)
             .await
@@ -237,7 +247,7 @@ impl SyncStore for SqliteSyncStore {
                 continue;
             }
             let result = match op.tbl.as_str() {
-                files::TBL => files::apply_op(&self.db, &self.paths, blobs, &op).await.map(|o| match o {
+                files::TBL => files::apply_op(&self.db, &paths, blobs, &op).await.map(|o| match o {
                     files::Outcome::Applied => (1, 0, 0),
                     files::Outcome::Skipped => (0, 1, 0),
                     files::Outcome::Conflict => (1, 0, 1),
@@ -299,7 +309,8 @@ impl SyncStore for SqliteSyncStore {
     async fn apply_remote(&self, ops: Vec<Op>) -> Result<ApplyReport, String> {
         let mut guard = self.clock().await?;
         let mut clock = guard.clone().ok_or("clock not loaded")?;
-        let report = apply::apply_ops(&self.db, &self.paths, &mut clock, ops).await?;
+        let paths = self.paths_now().await?;
+        let report = apply::apply_ops(&self.db, &paths, &mut clock, ops).await?;
         *guard = Some(clock);
         Ok(report)
     }
@@ -332,7 +343,9 @@ impl SqliteSyncStore {
     async fn db_entry(
         &self,
         conn: &mut sqlx::SqliteConnection,
+        paths: &PathCtx,
         spec: &'static schema::TableSpec,
+        pk_text: &str,
         pk: Value,
     ) -> Result<Option<(Value, (OpKind, Option<serde_json::Map<String, Value>>))>, String> {
         let row = read_row(conn, spec, &pk).await?;
@@ -347,7 +360,13 @@ impl SqliteSyncStore {
             }
         }
         let entry = match row {
-            Some(r) => (OpKind::Upsert, Some(encode_row(&self.paths, spec, r))),
+            Some(r) => {
+                let mut wire = encode_row(paths, spec, r);
+                if spec.name == "notes" {
+                    apply::add_note_base(conn, pk_text, &mut wire).await?;
+                }
+                (OpKind::Upsert, Some(wire))
+            }
             None => (OpKind::Delete, None),
         };
         Ok(Some((pk, entry)))

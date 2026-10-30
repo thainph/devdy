@@ -33,7 +33,9 @@ use sha2::{Digest, Sha256};
 use sqlx::{Row, SqliteConnection};
 
 use super::clock::{wall_ms, Hlc};
-use super::codec::{expand_portable, map_in_project, to_portable, PathCtx};
+use super::codec::{expand_portable, map_in_project, portable_path, PathCtx};
+#[cfg(test)]
+use super::codec::to_portable;
 use super::op::{canonical_json, Op, OpKind};
 use super::store::BlobIo;
 use crate::db::Db;
@@ -241,7 +243,7 @@ fn walk_files(root: &Path, out: &mut Vec<PathBuf>) {
 }
 
 fn track(paths: &PathCtx, kind: FileKind, local: PathBuf, out: &mut Vec<Tracked>) {
-    let portable = to_portable(paths, &local.to_string_lossy());
+    let portable = portable_path(paths, &local.to_string_lossy());
     out.push(Tracked { kind, local, portable });
 }
 
