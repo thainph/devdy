@@ -232,6 +232,10 @@ const creator = computed(() => groupCreator(devices.value))
 const acceptUntil = ref<number | null>(null)
 const acceptBusy = ref(false)
 const joinRequest = ref<JoinRequest | null>(null)
+// A device asking to join is answered on the Devices tab: bring it up.
+watch(joinRequest, (r) => {
+  if (r) tab.value = 'devices'
+})
 const answering = ref(false)
 // The countdowns tick every second while something is open.
 const tick = ref(Date.now())
@@ -263,6 +267,12 @@ async function openAccept() {
   } finally {
     acceptBusy.value = false
   }
+}
+
+/** From the overview: open the window and show it (requests are answered on Devices). */
+async function openAcceptHere() {
+  tab.value = 'devices'
+  if (acceptUntil.value === null) await openAccept()
 }
 
 async function closeAccept() {
@@ -667,7 +677,13 @@ onUnmounted(() => {
       <template v-if="tab === 'overview'">
         <section class="space-y-3">
           <p class="text-xs font-medium">{{ t('settings.sync.ondemand.header') }}</p>
-          <p v-if="!otherDevices.length" class="text-[11px] text-muted-foreground">{{ t('settings.sync.ondemand.noSource') }}</p>
+          <div v-if="!otherDevices.length" class="space-y-2">
+            <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.ondemand.noSource') }}</p>
+            <Button variant="outline" size="sm" :disabled="acceptBusy" @click="openAcceptHere">
+              <component :is="acceptBusy ? Loader2 : UserPlus" class="h-3.5 w-3.5" :class="{ 'animate-spin': acceptBusy }" :stroke-width="1.75" />
+              {{ t('settings.sync.accept.button') }}
+            </Button>
+          </div>
           <template v-else>
             <div class="flex items-center gap-2">
               <span class="shrink-0 text-xs text-muted-foreground">{{ t('settings.sync.ondemand.source') }}</span>
