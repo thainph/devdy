@@ -538,6 +538,7 @@ async fn dispatch(
         | FrameType::SyncNotify
         | FrameType::SyncRevoke
         | FrameType::SyncInvite
+        | FrameType::SyncGroupInfo
         | FrameType::BlobPut
         | FrameType::BlobAck
         | FrameType::BlobGet

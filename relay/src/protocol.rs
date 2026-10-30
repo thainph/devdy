@@ -55,6 +55,8 @@ pub enum FrameType {
     SyncNotify,
     SyncRevoke,
     SyncInvite,
+    /// Relay → devices: the group's creator moved (`creator_device`).
+    SyncGroupInfo,
     BlobPut,
     BlobAck,
     BlobGet,

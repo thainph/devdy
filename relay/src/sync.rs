@@ -84,6 +84,7 @@ pub fn is_sync_frame(t: FrameType) -> bool {
             | FrameType::SyncNotify
             | FrameType::SyncRevoke
             | FrameType::SyncInvite
+            | FrameType::SyncGroupInfo
             | FrameType::BlobPut
             | FrameType::BlobAck
             | FrameType::BlobGet
@@ -128,6 +129,9 @@ struct Request {
     sha: Option<String>,
     data: Option<String>,
     shas: Option<Vec<String>>,
+    /// `sync_revoke` of the creator by itself: the device it hands the
+    /// creator role to (ignored unless an active member).
+    successor: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -198,7 +202,7 @@ CREATE TABLE IF NOT EXISTS groups (
     last_seq    INTEGER NOT NULL DEFAULT 0,
     bytes       INTEGER NOT NULL DEFAULT 0,
     -- The device whose hello created the group: the only one that may revoke
-    -- other devices.
+    -- other devices. Moves to another active device when it revokes itself.
     creator_device TEXT
 );
 CREATE TABLE IF NOT EXISTS devices (
@@ -267,12 +271,13 @@ fn upgrade(conn: &Connection) -> rusqlite::Result<()> {
     if !columns(conn, "groups")?.iter().any(|c| c == "creator_device") {
         conn.execute_batch("ALTER TABLE groups ADD COLUMN creator_device TEXT;")?;
     }
-    // Groups created before the column existed: the earliest registered device
-    // (pre-revoked placeholders have no token) is taken as the creator.
+    // Groups created before the column existed: the earliest active registered
+    // device (pre-revoked placeholders have no token) is taken as the creator.
+    // A group whose last member left stays without one.
     conn.execute_batch(
         "UPDATE groups SET creator_device = (
              SELECT d.device_id FROM devices d
-             WHERE d.group_id = groups.id AND d.token_hash != ''
+             WHERE d.group_id = groups.id AND d.token_hash != '' AND d.revoked = 0
              ORDER BY d.created_at, d.rowid LIMIT 1)
          WHERE creator_device IS NULL;",
     )?;
@@ -371,8 +376,8 @@ pub struct HelloAuth<'a> {
 
 /// `sync_hello`: create the group (`create`, the device becomes its creator),
 /// register an unknown device that presents a valid join ticket, or check a
-/// known one's token. Returns the group head.
-pub fn hello(conn: &mut Connection, group: &str, device: &str, auth: HelloAuth, now: i64) -> SyncResult<u64> {
+/// known one's token. Returns the group head and creator.
+pub fn hello(conn: &mut Connection, group: &str, device: &str, auth: HelloAuth, now: i64) -> SyncResult<Welcome> {
     let tx = conn.transaction()?;
     let exists: bool = tx
         .query_row("SELECT 1 FROM groups WHERE id = ?1", params![group], |_| Ok(()))
@@ -423,9 +428,25 @@ pub fn hello(conn: &mut Connection, group: &str, device: &str, auth: HelloAuth, 
         }
     }
     gc_blobs(&tx, group, now)?;
-    let (head, _) = group_head(&tx, group)?;
+    let (last_seq, _) = group_head(&tx, group)?;
+    let creator = group_creator(&tx, group)?;
     tx.commit()?;
-    Ok(head)
+    Ok(Welcome { last_seq, creator })
+}
+
+/// What `sync_welcome` tells a device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Welcome {
+    pub last_seq: u64,
+    /// The device allowed to revoke others (`None`: every member left).
+    pub creator: Option<String>,
+}
+
+fn group_creator(conn: &Connection, group: &str) -> SyncResult<Option<String>> {
+    Ok(conn
+        .query_row("SELECT creator_device FROM groups WHERE id = ?1", params![group], |r| r.get(0))
+        .optional()?
+        .flatten())
 }
 
 fn register(conn: &Connection, group: &str, device: &str, token_hash: &str, now: i64) -> SyncResult<()> {
@@ -672,26 +693,66 @@ fn gc_blobs(conn: &Connection, group: &str, now: i64) -> SyncResult<usize> {
 /// `sync_revoke`: mark `target` revoked. A device may revoke itself; only the
 /// group's creator may revoke another one. A device not seen yet is recorded
 /// as revoked, so it can never register later.
-pub fn revoke(conn: &mut Connection, group: &str, device: &str, target: &str) -> SyncResult<()> {
+///
+/// When the creator revokes itself the role moves on, so the group never
+/// loses the one device that may remove others: to `successor` if that is an
+/// active member, else to the oldest active member (`None` if none is left).
+/// Returns the new creator when it changed.
+pub fn revoke(
+    conn: &mut Connection,
+    group: &str,
+    device: &str,
+    target: &str,
+    successor: Option<&str>,
+) -> SyncResult<Option<String>> {
     let tx = conn.transaction()?;
     ensure_active(&tx, group, device)?;
-    if target != device {
-        let creator: Option<String> = tx.query_row(
-            "SELECT creator_device FROM groups WHERE id = ?1",
-            params![group],
-            |r| r.get(0),
-        )?;
-        if creator.as_deref() != Some(device) {
-            return Err(SyncError::Code(ErrorCode::Forbidden, "only the group creator can revoke another device"));
-        }
+    let creator = group_creator(&tx, group)?;
+    if target != device && creator.as_deref() != Some(device) {
+        return Err(SyncError::Code(ErrorCode::Forbidden, "only the group creator can revoke another device"));
     }
     tx.execute(
         "INSERT INTO devices (group_id, device_id, token_hash, revoked, created_at) VALUES (?1, ?2, '', 1, ?3)
          ON CONFLICT (group_id, device_id) DO UPDATE SET revoked = 1",
         params![group, target, now_secs()],
     )?;
+    let mut moved = None;
+    if creator.as_deref() == Some(target) {
+        let next = next_creator(&tx, group, successor)?;
+        tx.execute(
+            "UPDATE groups SET creator_device = ?2 WHERE id = ?1",
+            params![group, next],
+        )?;
+        moved = next;
+    }
     tx.commit()?;
-    Ok(())
+    Ok(moved)
+}
+
+/// The creator's successor: `wanted` if it is an active member, else the
+/// member registered first (ties by device id, so the pick is deterministic).
+fn next_creator(conn: &Connection, group: &str, wanted: Option<&str>) -> SyncResult<Option<String>> {
+    const ACTIVE: &str = "group_id = ?1 AND revoked = 0 AND token_hash != ''";
+    if let Some(w) = wanted.filter(|w| valid_id(w)) {
+        let ok = conn
+            .query_row(
+                &format!("SELECT 1 FROM devices WHERE {ACTIVE} AND device_id = ?2"),
+                params![group, w],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if ok {
+            return Ok(Some(w.to_string()));
+        }
+    }
+    Ok(conn
+        .query_row(
+            &format!("SELECT device_id FROM devices WHERE {ACTIVE} ORDER BY created_at, device_id LIMIT 1"),
+            params![group],
+            |r| r.get(0),
+        )
+        .optional()?)
 }
 
 /// The identity a connection proved with `sync_hello`.
@@ -778,9 +839,13 @@ impl SyncHub {
                     return false;
                 }
                 match self.hello(conn_id, out, req, host_token).await {
-                    Ok((s, head)) => {
+                    Ok((s, w)) => {
                         tracing::info!(event = "sync_welcome", conn = conn_id, group = %s.group_id, device = %s.device_id);
-                        send_json(out, json!({ "t": "sync_welcome", "last_seq": head }), id);
+                        send_json(
+                            out,
+                            json!({ "t": "sync_welcome", "last_seq": w.last_seq, "creator_device": w.creator }),
+                            id,
+                        );
                         *session = Some(s);
                         false
                     }
@@ -821,7 +886,7 @@ impl SyncHub {
         out: &Outbound,
         req: Request,
         host_token: &str,
-    ) -> SyncResult<(SyncSession, u64)> {
+    ) -> SyncResult<(SyncSession, Welcome)> {
         let token_ok = req
             .auth_token
             .as_deref()
@@ -843,7 +908,7 @@ impl SyncHub {
         let create = req.create.unwrap_or(false);
         let ticket_hash = req.ticket.filter(|t| !t.is_empty()).map(|t| sha256_hex(t.as_bytes()));
         let (g, d) = (group.clone(), device.clone());
-        let head = self
+        let welcome = self
             .call(move |c| {
                 let auth = HelloAuth {
                     token_hash: &token_hash,
@@ -868,7 +933,7 @@ impl SyncHub {
                 group_id: group,
                 device_id: device,
             },
-            head,
+            welcome,
         ))
     }
 
@@ -943,10 +1008,15 @@ impl SyncHub {
                     return Err(bad("missing device_id"));
                 }
                 let t2 = target.clone();
-                self.call(move |c| revoke(c, &g, &d, &t2)).await?;
+                let successor = req.successor;
+                let moved = self.call(move |c| revoke(c, &g, &d, &t2, successor.as_deref())).await?;
                 tracing::info!(event = "sync_revoke", conn = conn_id, group = %s.group_id, device = %target);
                 send_json(out, json!({ "t": "control", "code": "ok" }), id);
                 self.kick(&s.group_id, &target);
+                if let Some(creator) = moved {
+                    tracing::info!(event = "sync_creator_moved", group = %s.group_id, device = %creator);
+                    self.group_info(&s.group_id, &target, &creator);
+                }
             }
             FrameType::SyncInvite => {
                 let hash = req.ticket_hash.ok_or_else(|| bad("missing ticket_hash"))?;
@@ -966,6 +1036,17 @@ impl SyncHub {
         let live = self.live.lock().unwrap_or_else(|p| p.into_inner());
         for c in live.get(group).into_iter().flatten() {
             if c.device_id != from_device {
+                let _ = c.out.send_text(text.clone());
+            }
+        }
+    }
+
+    /// Tell the group's other connected devices who its creator is now.
+    fn group_info(&self, group: &str, except_device: &str, creator: &str) {
+        let text = json!({ "t": "sync_group_info", "creator_device": creator }).to_string();
+        let live = self.live.lock().unwrap_or_else(|p| p.into_inner());
+        for c in live.get(group).into_iter().flatten() {
+            if c.device_id != except_device {
                 let _ = c.out.send_text(text.clone());
             }
         }
@@ -1124,7 +1205,7 @@ mod tests {
         fn with(t: &str) -> HelloAuth<'_> {
             HelloAuth { token_hash: "hb", create: false, ticket_hash: Some(t) }
         }
-        let code = |r: SyncResult<u64>| match r {
+        let code = |r: SyncResult<Welcome>| match r {
             Err(SyncError::Code(c, _)) => c.as_str(),
             Ok(_) => "ok",
             Err(_) => "db",
@@ -1154,11 +1235,37 @@ mod tests {
     fn only_the_creator_revokes_others() {
         let mut c = mem();
         group(&mut c, &["b", "c"]);
-        assert!(matches!(revoke(&mut c, "g", "b", "c"), Err(SyncError::Code(ErrorCode::Forbidden, _))));
-        assert!(matches!(revoke(&mut c, "g", "b", "a"), Err(SyncError::Code(ErrorCode::Forbidden, _))));
-        revoke(&mut c, "g", "b", "b").unwrap();
-        revoke(&mut c, "g", "a", "c").unwrap();
+        assert!(matches!(revoke(&mut c, "g", "b", "c", None), Err(SyncError::Code(ErrorCode::Forbidden, _))));
+        assert!(matches!(revoke(&mut c, "g", "b", "a", None), Err(SyncError::Code(ErrorCode::Forbidden, _))));
+        assert_eq!(revoke(&mut c, "g", "b", "b", None).unwrap(), None, "a member leaving keeps the creator");
+        assert_eq!(revoke(&mut c, "g", "a", "c", None).unwrap(), None);
         assert!(matches!(ensure_active(&c, "g", "c"), Err(SyncError::Code(ErrorCode::DeviceRevoked, _))));
+    }
+
+    #[test]
+    fn creator_leaving_hands_the_role_on() {
+        let creator = |c: &Connection| group_creator(c, "g").unwrap();
+        let mut c = mem();
+        group(&mut c, &["b", "c", "d"]);
+        c.execute("UPDATE devices SET created_at = 5 WHERE device_id = 'b'", []).unwrap();
+        // A revoked placeholder (never registered) is not a candidate.
+        revoke(&mut c, "g", "a", "x", None).unwrap();
+
+        // Requested successor wins when it is an active member.
+        assert_eq!(revoke(&mut c, "g", "a", "a", Some("d")).unwrap().as_deref(), Some("d"));
+        assert_eq!(creator(&c).as_deref(), Some("d"));
+        // The new creator may now remove others; a former peer may not.
+        assert!(matches!(revoke(&mut c, "g", "c", "b", None), Err(SyncError::Code(ErrorCode::Forbidden, _))));
+
+        // Unknown / revoked successor: the oldest active member (c joined at 1, b at 5).
+        assert_eq!(revoke(&mut c, "g", "d", "d", Some("x")).unwrap().as_deref(), Some("c"));
+        assert_eq!(revoke(&mut c, "g", "c", "c", None).unwrap().as_deref(), Some("b"));
+        let w = hello(&mut c, "g", "b", auth("h", false), 9).unwrap();
+        assert_eq!(w.creator.as_deref(), Some("b"), "the welcome carries the creator");
+
+        // The last member leaving leaves no creator.
+        assert_eq!(revoke(&mut c, "g", "b", "b", None).unwrap(), None);
+        assert_eq!(creator(&c), None);
     }
 
     #[test]
@@ -1249,7 +1356,7 @@ mod tests {
     fn revoke_before_first_hello_blocks_tofu() {
         let mut c = mem();
         group(&mut c, &[]);
-        revoke(&mut c, "g", "a", "b").unwrap();
+        revoke(&mut c, "g", "a", "b", None).unwrap();
         assert!(matches!(
             hello(&mut c, "g", "b", auth("h2", false), 0),
             Err(SyncError::Code(ErrorCode::DeviceRevoked, _))

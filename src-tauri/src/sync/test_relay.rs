@@ -4,7 +4,10 @@
 //! 127.0.0.1, with the relay's semantics: `id` echoed on replies,
 //! `sync_ops.last_seq` = last returned seq while `more` else the head, a
 //! failed hello closes the socket, revoke answers `control{code:"ok"}` (only
-//! the creator may revoke others) and kicks the revoked device's connections.
+//! the creator may revoke others) and kicks the revoked device's connections,
+//! and a creator revoking itself hands the role to its `successor` (if active)
+//! or the earliest-registered active device, announced with `sync_group_info`
+//! and carried by every `sync_welcome` as `creator_device`.
 //!
 //! Groups made with [`TestRelay::create_group`] are *open* (any device
 //! registers on first hello) so engine tests need no pairing; groups created
@@ -27,6 +30,8 @@ struct Group {
     /// (seq, device_id, key, blob)
     ops: Vec<(u64, String, String, String)>,
     devices: HashMap<String, String>,
+    /// Device ids in registration order (creator succession).
+    joined: Vec<String>,
     revoked: HashSet<String>,
     creator: Option<String>,
     /// Registration without a ticket (test convenience).
@@ -250,6 +255,7 @@ fn handle_inner(
             let g = s.groups.entry(gid.clone()).or_default();
             g.creator = Some(did.clone());
             g.devices.insert(did.clone(), tok.clone());
+            g.joined.push(did.clone());
         }
         let Some(g) = s.groups.get_mut(&gid) else {
             return Some(error("group_not_found"));
@@ -262,6 +268,7 @@ fn handle_inner(
             Some(_) => {}
             None if g.open => {
                 g.devices.insert(did.clone(), tok);
+                g.joined.push(did.clone());
             }
             None if create => return Some(error("group_exists")),
             None => {
@@ -272,12 +279,13 @@ fn handle_inner(
                     return Some(error("ticket_invalid"));
                 }
                 g.devices.insert(did.clone(), tok);
+                g.joined.push(did.clone());
             }
         }
-        let head = g.head;
+        let (head, creator) = (g.head, g.creator.clone());
         s.conns.insert(conn_id, (gid.clone(), did.clone(), tx.clone()));
         *me = Some((gid, did));
-        return Some(json!({ "t": "sync_welcome", "last_seq": head }));
+        return Some(json!({ "t": "sync_welcome", "last_seq": head, "creator_device": creator }));
     }
     let Some((gid, did)) = me.clone() else {
         return Some(error("forbidden"));
@@ -344,10 +352,24 @@ fn handle_inner(
                 return Some(error("forbidden"));
             }
             g.revoked.insert(target.clone());
+            let moved = if g.creator.as_deref() == Some(target.as_str()) {
+                let active = |d: &String| g.devices.contains_key(d) && !g.revoked.contains(d);
+                let wanted = f["successor"].as_str().map(str::to_string).filter(|w| active(w));
+                g.creator = wanted.or_else(|| g.joined.iter().find(|d| active(d)).cloned());
+                g.creator.clone()
+            } else {
+                None
+            };
+            let info = moved.map(|c| json!({ "t": "sync_group_info", "creator_device": c }).to_string());
             for (cg, cd, ctx) in s.conns.values() {
-                if *cg == gid && *cd == target {
+                if *cg != gid {
+                    continue;
+                }
+                if *cd == target {
                     let _ = ctx.send(error("device_revoked").to_string());
                     let _ = ctx.send(CLOSE.to_string());
+                } else if let Some(info) = &info {
+                    let _ = ctx.send(info.clone());
                 }
             }
             Some(json!({ "t": "control", "code": "ok" }))
