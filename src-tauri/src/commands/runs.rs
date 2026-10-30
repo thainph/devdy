@@ -1111,6 +1111,8 @@ pub(crate) async fn cancel_run_inner(
     // device that is actually running it.
     if !stop_local_sidecar(registry, &run_id).await {
         crate::sync::sessions::ensure_not_held_elsewhere(db, &run_id).await?;
+        // Its owner is gone: take the run over before writing it (L6).
+        crate::sync::sessions::adopt_orphan(db, &run_id).await?;
     }
 
     let cancelled_at = chrono::Utc::now().to_rfc3339();
