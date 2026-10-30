@@ -68,19 +68,11 @@ pub async fn install(db: &Db) -> Result<String, String> {
     Ok(device)
 }
 
-/// `sync_state` key: "1" while this machine is a group member (set when it
-/// creates or joins a group, before anything is queued; removed on leave).
-pub const MEMBER_KEY: &str = "member";
-
-/// Record whether this machine is a group member ([`MEMBER_KEY`]).
+/// Record whether this machine is a group member: set when it creates or
+/// joins a group, before anything is queued; cleared (with the outbox) on
+/// leave. Capture only runs while it is set (see `capture::MEMBER_KEY`).
 pub async fn set_member(db: &Db, member: bool) -> Result<(), String> {
-    let q = if member {
-        sqlx::query("INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, '1')")
-    } else {
-        sqlx::query("DELETE FROM sync_state WHERE key = ?")
-    };
-    q.bind(MEMBER_KEY).execute(db).await.map_err(|e| e.to_string())?;
-    Ok(())
+    capture::set_member(db, member).await
 }
 
 #[cfg(test)]
