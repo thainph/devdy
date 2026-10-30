@@ -2,16 +2,24 @@
 // and the `sync://*` events.
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from '@/lib/tauri'
-import type { BootstrapPreview, BootstrapReport, ProjectMapping, SyncDevice, SyncStatus } from '@/lib/syncCore'
+import type { BootstrapPreview, BootstrapReport, JoinRequest, ProjectMapping, SyncDevice, SyncStatus } from '@/lib/syncCore'
 
 export * from '@/lib/syncCore'
 
 export const SYNC_STATUS_EVENT = 'sync://status'
 /** Synced DB rows were applied; payload `{ tables: string[] }`. */
 export const SYNC_ROWS_APPLIED_EVENT = 'sync://rows-applied'
+/** Host side: a device asks to join (needs Allow / Deny). */
+export const SYNC_JOIN_REQUEST_EVENT = 'sync://join-request'
+/** Host side: a join request was answered, timed out or withdrawn. */
+export const SYNC_JOIN_RESOLVED_EVENT = 'sync://join-resolved'
+/** Host side: the "accept a new device" window opened / closed; `{ expires_at }`. */
+export const SYNC_ACCEPT_WINDOW_EVENT = 'sync://accept-window'
 
 export const syncStatus = () => invoke<SyncStatus>('sync_status')
 export const syncCreateGroup = () => invoke<SyncStatus>('sync_create_group')
+/** This machine has its own relay URL + token (needed to create / join). */
+export const syncRelayReady = () => invoke<boolean>('sync_relay_ready')
 /** Joins without syncing: preview + commit the first-join merge next. */
 export const syncJoin = (deviceAlias: string, password: string) =>
   invoke<SyncStatus>('sync_join', { deviceAlias, password })
@@ -25,6 +33,12 @@ export const syncSetSecrets = (enabled: boolean) => invoke<void>('sync_set_secre
 export const syncDevicesList = () => invoke<SyncDevice[]>('sync_devices_list')
 export const syncDeviceRename = (name: string) => invoke<void>('sync_device_rename', { name })
 export const syncRevokeDevice = (deviceId: string) => invoke<void>('sync_revoke_device', { deviceId })
+/** Open "Accept a new device"; resolves to its expiry (unix millis). */
+export const syncAcceptOpen = () => invoke<number>('sync_accept_open')
+export const syncAcceptClose = () => invoke<void>('sync_accept_close')
+export const syncAcceptState = () => invoke<number | null>('sync_accept_state')
+export const syncJoinRespond = (requestId: string, allow: boolean) =>
+  invoke<void>('sync_join_respond', { requestId, allow })
 /** `null` clears the leader: every device runs the singleton jobs. */
 export const syncSetLeader = (deviceId: string | null) => invoke<void>('sync_set_leader', { deviceId })
 
@@ -44,4 +58,18 @@ export function onSyncStatus(cb: (s: SyncStatus) => void): Promise<UnlistenFn> {
 
 export function onSyncRowsApplied(cb: (tables: string[]) => void): Promise<UnlistenFn> {
   return listen<{ tables?: string[] }>(SYNC_ROWS_APPLIED_EVENT, (e) => cb(e.payload?.tables ?? []))
+}
+
+export function onSyncJoinRequest(cb: (r: JoinRequest) => void): Promise<UnlistenFn> {
+  return listen<JoinRequest>(SYNC_JOIN_REQUEST_EVENT, (e) => cb(e.payload))
+}
+
+export function onSyncJoinResolved(cb: (requestId: string, granted: boolean) => void): Promise<UnlistenFn> {
+  return listen<{ request_id: string; granted: boolean }>(SYNC_JOIN_RESOLVED_EVENT, (e) =>
+    cb(e.payload.request_id, e.payload.granted),
+  )
+}
+
+export function onSyncAcceptWindow(cb: (expiresAt: number | null) => void): Promise<UnlistenFn> {
+  return listen<{ expires_at: number | null }>(SYNC_ACCEPT_WINDOW_EVENT, (e) => cb(e.payload?.expires_at ?? null))
 }
