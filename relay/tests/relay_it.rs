@@ -36,6 +36,7 @@ async fn start_relay_with(ping_interval: Duration, peer_liveness_timeout: Durati
         sync_db: None,
         sync_max_group_bytes: 0,
         sync_max_blob_bytes: 0,
+        sync_vacuum_on_start: false,
     };
     let (handle, accept_loop) = devdy_relay::server::serve(config)
         .await
