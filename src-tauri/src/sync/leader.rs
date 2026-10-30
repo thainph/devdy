@@ -43,26 +43,106 @@ const SEEN_REFRESH_MS: i64 = 60 * 60 * 1000;
 const WATCH_INTERVAL: Duration = Duration::from_secs(30);
 
 static SYNC_ACTIVE: AtomicBool = AtomicBool::new(false);
-/// This device handed the leader role to that device, which has not yet
-/// confirmed it synced the change (on-demand sync: it learns only when it
-/// syncs). Until then this device keeps running the singleton jobs.
-static HANDOFF_TO: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
-/// Record (or clear) an unconfirmed hand-off of the leader role.
-pub fn set_handoff_pending(to: Option<&str>) {
-    if let Ok(mut h) = HANDOFF_TO.lock() {
-        *h = to.map(str::to_string);
-    }
+/// Machine-local (`sync_state`, never synced): the leader this device last
+/// saw, so it notices the role leaving it — set here or arrived through sync.
+const SEEN_KEY: &str = "leader_seen";
+/// Machine-local: the device this one handed the leader role to and which has
+/// not confirmed it synced that yet (on-demand sync: it learns only when it
+/// syncs). Until then this device keeps running the singleton jobs and keeps
+/// telling it (`leader_changed`), across restarts.
+const HANDOFF_KEY: &str = "leader_handoff";
+
+async fn state(db: &Db, key: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT value FROM sync_state WHERE key = ?")
+        .bind(key)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten()
+        .filter(|v: &String| !v.is_empty())
 }
 
-pub fn handoff_pending() -> Option<String> {
-    HANDOFF_TO.lock().ok().and_then(|h| h.clone())
+async fn put_state(db: &Db, key: &str, value: Option<&str>) -> Result<(), String> {
+    let q = match value {
+        Some(v) => sqlx::query("INSERT INTO sync_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+            .bind(key)
+            .bind(v.to_string()),
+        None => sqlx::query("DELETE FROM sync_state WHERE key = ?").bind(key),
+    };
+    q.execute(db).await.map(drop).map_err(|e| e.to_string())
+}
+
+/// The unconfirmed hand-off of the leader role, if any.
+pub async fn handoff_pending(db: &Db) -> Option<String> {
+    state(db, HANDOFF_KEY).await
+}
+
+/// Forget the hand-off (confirmed, or this device leaves the group).
+pub async fn clear_handoff(db: &Db) -> Result<(), String> {
+    put_state(db, HANDOFF_KEY, None).await
+}
+
+/// This device leaves the group: forget what it saw of the leader role.
+pub async fn forget_local(db: &Db) -> Result<(), String> {
+    put_state(db, HANDOFF_KEY, None).await?;
+    put_state(db, SEEN_KEY, None).await
+}
+
+/// `to` confirmed: clear the hand-off if it is still the one pending.
+pub async fn handoff_confirmed(db: &Db, to: &str) -> Result<(), String> {
+    if handoff_pending(db).await.as_deref() == Some(to) {
+        clear_handoff(db).await?;
+    }
+    Ok(())
 }
 
 /// The old leader keeps the jobs while its hand-off to the current leader is
 /// unconfirmed (a later change made elsewhere ends that).
 pub fn keeps_jobs(handoff: Option<&str>, leader: Option<&str>) -> bool {
     handoff.is_some() && handoff == leader
+}
+
+/// Notice the leader role moving: when it left this device (whoever made the
+/// change), record a hand-off to the new leader. Returns the pending hand-off.
+pub async fn observe_change(db: &Db, me: &str) -> Result<Option<String>, String> {
+    let now = leader(db).await;
+    let seen = state(db, SEEN_KEY).await;
+    if seen.as_deref() != now.as_deref() {
+        if let (Some(_), Some(new)) = (seen.as_deref().filter(|s| *s == me), now.as_deref().filter(|n| *n != me)) {
+            put_state(db, HANDOFF_KEY, Some(new)).await?;
+        }
+        put_state(db, SEEN_KEY, now.as_deref()).await?;
+    }
+    let pending = handoff_pending(db).await;
+    if pending.is_some() && !keeps_jobs(pending.as_deref(), now.as_deref()) {
+        // The role moved on again (or back here): nothing left to hand over.
+        clear_handoff(db).await?;
+        return Ok(None);
+    }
+    Ok(pending)
+}
+
+/// One round of an unconfirmed hand-off: notice changes, then tell the new
+/// leader (`notify`: sends `leader_changed` and waits for it to sync). Returns
+/// whether a hand-off is still pending.
+pub async fn handoff_step<F, Fut>(db: &Db, me: &str, notify: F) -> Result<bool, String>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    let Some(to) = observe_change(db, me).await? else { return Ok(false) };
+    match notify(to.clone()).await {
+        Ok(()) => {
+            handoff_confirmed(db, &to).await?;
+            tracing::info!(event = "sync_leader_handoff_confirmed");
+            Ok(false)
+        }
+        Err(e) => {
+            tracing::info!(event = "sync_leader_handoff_pending", error = %e);
+            Ok(true)
+        }
+    }
 }
 /// Set once the startup sync autostart finished (in a group or not), so the
 /// first leader decision does not run before the engine had a chance to start.
@@ -142,8 +222,15 @@ pub async fn is_leader_with(db: &Db, sync_on: bool) -> bool {
 /// Whether this device runs singleton jobs right now.
 pub async fn is_leader(db: &Db) -> bool {
     let sync_on = SYNC_ACTIVE.load(Ordering::SeqCst);
-    if sync_on && keeps_jobs(handoff_pending().as_deref(), leader(db).await.as_deref()) {
-        return true;
+    if sync_on {
+        // A change that arrived through sync and took the role from this
+        // device becomes a pending hand-off right away: the jobs never stop
+        // before the new leader confirms.
+        if let Some(me) = my_device_id(db).await {
+            if matches!(observe_change(db, &me).await, Ok(Some(_))) {
+                return true;
+            }
+        }
     }
     is_leader_with(db, sync_on).await
 }
@@ -395,6 +482,48 @@ mod tests {
         assert!(!keeps_jobs(None, Some("new")), "confirmed");
         assert!(!keeps_jobs(Some("new"), Some("other")), "changed again elsewhere");
         assert!(!keeps_jobs(Some("new"), None));
+    }
+
+    /// Review B: the role leaving this device — set here or learned through
+    /// sync — is a persisted hand-off; the jobs stay here until the new
+    /// leader confirms, and a later change elsewhere ends it.
+    #[tokio::test]
+    async fn the_device_losing_the_role_keeps_it_until_confirmed() {
+        let db = db().await;
+        let me = my_device_id(&db).await.unwrap();
+        set_leader(&db, Some(&me)).await.unwrap();
+        assert_eq!(observe_change(&db, &me).await.unwrap(), None, "first look only records");
+        // The change arrives (through sync, or made here).
+        set_leader(&db, Some("b")).await.unwrap();
+        assert_eq!(observe_change(&db, &me).await.unwrap().as_deref(), Some("b"));
+        // Survives a restart: it lives in sync_state.
+        assert_eq!(handoff_pending(&db).await.as_deref(), Some("b"));
+        assert!(keeps_jobs(handoff_pending(&db).await.as_deref(), leader(&db).await.as_deref()));
+        // B unreachable: still pending.
+        let still = handoff_step(&db, &me, |_| async { Err("peer_offline".to_string()) }).await.unwrap();
+        assert!(still);
+        let told = std::sync::Mutex::new(Vec::new());
+        let still = handoff_step(&db, &me, |to| {
+            told.lock().unwrap().push(to);
+            async { Ok(()) }
+        })
+        .await
+        .unwrap();
+        assert!(!still);
+        assert_eq!(*told.lock().unwrap(), vec!["b".to_string()]);
+        assert_eq!(handoff_pending(&db).await, None);
+
+        // Another device was the leader: nothing to hand over from here.
+        set_leader(&db, Some("c")).await.unwrap();
+        assert_eq!(observe_change(&db, &me).await.unwrap(), None);
+        // Pending to b, then the role moves on to c elsewhere: dropped.
+        set_leader(&db, Some(&me)).await.unwrap();
+        observe_change(&db, &me).await.unwrap();
+        set_leader(&db, Some("b")).await.unwrap();
+        assert_eq!(observe_change(&db, &me).await.unwrap().as_deref(), Some("b"));
+        set_leader(&db, Some("c")).await.unwrap();
+        assert_eq!(observe_change(&db, &me).await.unwrap(), None);
+        assert_eq!(handoff_pending(&db).await, None);
     }
 
     #[test]

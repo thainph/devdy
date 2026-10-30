@@ -27,6 +27,8 @@ const KEY_PAUSED: &str = "sync_paused";
 const LEADER_CONFIRM_WAIT: Duration = Duration::from_secs(30);
 /// Retry cadence of an unconfirmed leader hand-off.
 const LEADER_RETRY_EVERY: Duration = Duration::from_secs(60);
+/// How often a leader change arrived through sync is looked for.
+const LEADER_WATCH_EVERY: Duration = Duration::from_secs(30);
 const KEY_SECRETS: &str = crate::sync::secrets::SETTING;
 
 /// App-wide sync state (Tauri managed): the running engine, if any, and the
@@ -35,6 +37,9 @@ const KEY_SECRETS: &str = crate::sync::secrets::SETTING;
 pub struct SyncManager {
     engine: Arc<Mutex<Option<SyncEngine>>>,
     handlers: PeerHandlers,
+    /// Drives an unconfirmed leader hand-off while the engine runs.
+    handoff: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    handoff_kick: Arc<tokio::sync::Notify>,
 }
 
 impl SyncManager {
@@ -96,6 +101,7 @@ impl SyncManager {
             self.handlers.clone(),
         ));
         leader::set_sync_active(true);
+        self.start_handoff_loop(db, sync.device_id.clone());
         let name = default_device_name(db).await;
         if let Err(e) = leader::touch_self(db, &sync.device_id, &name).await {
             tracing::warn!(event = "sync_device_record_failed", error = %e);
@@ -107,8 +113,45 @@ impl SyncManager {
         if let Some(engine) = self.engine.lock().await.take() {
             engine.stop().await;
         }
-        leader::set_handoff_pending(None);
+        if let Some(t) = self.handoff.lock().ok().and_then(|mut t| t.take()) {
+            t.abort();
+        }
         leader::set_sync_active(false);
+    }
+
+    /// While the engine runs: notice the leader role leaving this device (set
+    /// here or arrived through sync) and tell the new leader until it confirms
+    /// (`leader::handoff_step`); this device keeps the singleton jobs
+    /// meanwhile. The hand-off is persisted, so a restart resumes it.
+    fn start_handoff_loop(&self, db: &Db, me: String) {
+        let (manager, db) = (self.clone(), db.clone());
+        let task = tokio::spawn(async move {
+            loop {
+                let notify = |to: String| {
+                    let manager = manager.clone();
+                    async move {
+                        match manager.handle().await {
+                            Some(h) => h.notify_leader(&to).await,
+                            None => Err("not in a sync group".to_string()),
+                        }
+                    }
+                };
+                let pending = leader::handoff_step(&db, &me, notify).await.unwrap_or_else(|e| {
+                    tracing::warn!(event = "sync_leader_handoff_failed", error = %e);
+                    true
+                });
+                let wait = if pending { LEADER_RETRY_EVERY } else { LEADER_WATCH_EVERY };
+                tokio::select! {
+                    _ = tokio::time::sleep(wait) => {}
+                    _ = manager.handoff_kick.notified() => {}
+                }
+            }
+        });
+        if let Ok(mut slot) = self.handoff.lock() {
+            if let Some(old) = slot.replace(task) {
+                old.abort();
+            }
+        }
     }
 
     /// Something worth syncing changed. Sync is on demand, so this only
@@ -125,58 +168,6 @@ impl SyncManager {
     async fn flush(&self, wait: Duration) -> bool {
         let Some(h) = self.handle().await else { return false };
         matches!(tokio::time::timeout(wait, h.flush_outbox()).await, Ok(Ok(_)))
-    }
-
-    /// The leader role moved to `to` (set here): tell it to sync from this
-    /// device now. Until it confirms, this device keeps running the singleton
-    /// jobs (`leader::keeps_jobs`) and retries in the background. Returns
-    /// whether it confirmed within [`LEADER_CONFIRM_WAIT`].
-    async fn hand_leader_to(&self, db: &Db, to: Option<String>) -> bool {
-        let me = group_device_id().ok();
-        let Some(to) = to.filter(|t| Some(t) != me.as_ref()) else {
-            leader::set_handoff_pending(None);
-            return true;
-        };
-        leader::set_handoff_pending(Some(&to));
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let (manager, db) = (self.clone(), db.clone());
-        tokio::spawn(async move {
-            let mut tx = Some(tx);
-            loop {
-                // Superseded by another hand-off, or the role moved on elsewhere.
-                if leader::handoff_pending().as_deref() != Some(to.as_str()) {
-                    return;
-                }
-                if leader::leader(&db).await.as_deref() != Some(to.as_str()) {
-                    leader::set_handoff_pending(None);
-                    return;
-                }
-                let done = match manager.handle().await {
-                    Some(h) => h.notify_leader(&to).await,
-                    None => Err("not in a sync group".into()),
-                };
-                match done {
-                    Ok(()) => {
-                        if leader::handoff_pending().as_deref() == Some(to.as_str()) {
-                            leader::set_handoff_pending(None);
-                        }
-                        tracing::info!(event = "sync_leader_handoff_confirmed");
-                        if let Some(tx) = tx.take() {
-                            let _ = tx.send(true);
-                        }
-                        return;
-                    }
-                    Err(e) => {
-                        tracing::info!(event = "sync_leader_handoff_pending", error = %e);
-                        if let Some(tx) = tx.take() {
-                            let _ = tx.send(false);
-                        }
-                    }
-                }
-                tokio::time::sleep(LEADER_RETRY_EVERY).await;
-            }
-        });
-        matches!(tokio::time::timeout(LEADER_CONFIRM_WAIT, rx).await, Ok(Ok(true)))
     }
 
     /// Tell `to` it leads now and wait (at most `wait`) until it synced that.
@@ -357,6 +348,7 @@ pub async fn sync_leave(
     }
     crate::sync::pair::close_accept_window();
     state.stop().await;
+    leader::forget_local(db.inner()).await?;
     let revoked = crate::sync::pair::leave(db.inner(), successor.as_deref()).await?;
     emit_disabled(&app);
     Ok(revoked)
@@ -414,6 +406,8 @@ pub async fn sync_run(
         Some(h) => h.run_from(&source_device, &|p, m| emit(p, m)).await,
         None => Err("this device is not in a sync group".into()),
     };
+    // A leader change may have arrived.
+    state.handoff_kick.notify_one();
     match &result {
         Ok(_) => emit(RunPhase::Done, None),
         Err(e) => emit(RunPhase::Error, Some(e.clone())),
@@ -523,22 +517,37 @@ pub async fn sync_revoke_device(
 }
 
 /// Pick the device that runs singleton jobs (Pulse / Slack polling); `None`
-/// lets every device run them. The new leader is told to sync from this
-/// device at once; returns whether it confirmed. Unconfirmed (offline), this
-/// device keeps running the jobs and keeps retrying until it does.
+/// lets every device run them. The new leader is always told to sync from
+/// this device at once; returns whether it confirmed. The device that was
+/// the leader — this one, or another that learns of the change when it
+/// syncs — keeps running the jobs until the new leader confirms
+/// (`leader::observe_change`).
 #[tauri::command]
 pub async fn sync_set_leader(
     db: State<'_, Db>,
     state: State<'_, SyncManager>,
     device_id: Option<String>,
 ) -> Result<bool, String> {
-    let was_leader = leader::is_leader(db.inner()).await;
-    leader::set_leader(db.inner(), device_id.as_deref()).await?;
-    if !was_leader {
-        // Another device ran the jobs; it learns of this when it syncs.
-        return Ok(true);
+    let db = db.inner();
+    let me = group_device_id().ok();
+    if let Some(me) = &me {
+        // Record who leads before the change, so losing the role is noticed.
+        leader::observe_change(db, me).await?;
     }
-    Ok(state.hand_leader_to(db.inner(), device_id).await)
+    leader::set_leader(db, device_id.as_deref()).await?;
+    if let Some(me) = &me {
+        leader::observe_change(db, me).await?;
+    }
+    let Some(to) = device_id.filter(|d| Some(d) != me.as_ref()) else {
+        return Ok(true);
+    };
+    let confirmed = state.notify_leader(&to, LEADER_CONFIRM_WAIT).await;
+    if confirmed {
+        leader::handoff_confirmed(db, &to).await?;
+    } else {
+        state.handoff_kick.notify_one();
+    }
+    Ok(confirmed)
 }
 
 /// Open "Accept a new device" for `sync::pair::ACCEPT_WINDOW`; returns the
