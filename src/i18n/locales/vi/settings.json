@@ -17,7 +17,7 @@
     "prompts": "Mẫu Prompt",
     "inbox": "Inbox API",
     "azure": "Tài khoản Azure",
-    "backup": "Sao lưu & Đồng bộ"
+    "backup": "Đồng bộ & Sao lưu"
   },
   "general": {
     "theme": "Giao diện",
@@ -417,7 +417,7 @@
     "deleteMessage": "Xoá tài khoản Azure này cùng phiên đăng nhập của nó? Các dự án đang liên kết sẽ bị gỡ liên kết."
   },
   "backup": {
-    "title": "Sao lưu & Đồng bộ",
+    "title": "Sao lưu ra file",
     "help": "Xuất toàn bộ cấu hình Devdy ra một file và nhập trên máy khác: cài đặt, prompt đã lưu, thư viện Skills / Rules kèm nhóm, MCP server, VPS server, tài khoản (GitHub, GitLab, AWS, Azure, Google, Claude), ghi chú / todo và Slack thread (kèm bản dịch; file đính kèm được tải lại) và project (repo, Skills / Rules / nhóm, MCP và VPS server đã bật, tài khoản gắn kèm, mục theo dõi Pulse). Lịch sử session vẫn ở máy này.",
     "export": {
       "title": "Xuất",
@@ -475,6 +475,105 @@
       "slackThreads": "Slack thread",
       "projects": "Project",
       "pulseWatches": "Theo dõi Pulse"
+    }
+  },
+  "sync": {
+    "title": "Đồng bộ",
+    "short": "Đồng bộ",
+    "help": "Giữ một trạng thái Devdy chung giữa các máy của bạn: cài đặt, thư viện, ghi chú / việc cần làm, thread Slack, dự án và phiên làm việc. Mọi dữ liệu đi qua relay của bạn, mã hoá đầu-cuối, và vẫn đồng bộ khi máy kia đang tắt. Code trong working tree không được đồng bộ — việc đó vẫn do git đảm nhận.",
+    "unavailable": "Bản này chưa hỗ trợ.",
+    "state": {
+      "disabled": "Tắt",
+      "connecting": "Đang kết nối…",
+      "online": "Trực tuyến",
+      "offline": "Ngoại tuyến",
+      "error": "Lỗi",
+      "paused": "Tạm dừng"
+    },
+    "ago": {
+      "never": "chưa bao giờ",
+      "now": "vừa xong",
+      "minutes": "{n} phút trước",
+      "hours": "{n} giờ trước",
+      "days": "{n} ngày trước"
+    },
+    "create": {
+      "title": "Tạo nhóm đồng bộ",
+      "help": "Làm trên máy đầu tiên. Dùng relay đã cấu hình trong Điều khiển từ xa.",
+      "button": "Tạo nhóm đồng bộ",
+      "done": "Đã tạo nhóm đồng bộ"
+    },
+    "join": {
+      "title": "Tham gia nhóm đồng bộ",
+      "help": "Làm trên máy khác: nhập tên thiết bị và mật khẩu chính của một máy đã ở trong nhóm (đặt trong phần Điều khiển từ xa của máy đó). Máy đó phải đang trực tuyến.",
+      "alias": "Tên thiết bị của máy kia",
+      "aliasInvalid": "Tên thiết bị chỉ gồm chữ thường, số và dấu gạch ngang.",
+      "password": "Mật khẩu chính của máy đó",
+      "button": "Tham gia",
+      "done": "Đã tham gia nhóm đồng bộ",
+      "previewTitle": "Xem trước khi gộp",
+      "previewHelp": "Những gì lần đồng bộ đầu tiên mang về và cách khớp với dữ liệu sẵn có trên máy này. Không có gì trên máy bị xoá.",
+      "previewEmpty": "Không có gì để gộp.",
+      "commit": "Gộp và bắt đầu đồng bộ",
+      "reportTitle": "Đã gộp"
+    },
+    "status": {
+      "lastPush": "Đẩy lần cuối",
+      "lastPull": "Kéo lần cuối",
+      "pending": "Đang chờ",
+      "now": "Đồng bộ ngay",
+      "pause": "Tạm dừng",
+      "resume": "Tiếp tục"
+    },
+    "secrets": {
+      "label": "Đồng bộ bí mật",
+      "hint": "Token và mật khẩu trong Keychain, được niêm phong bằng khoá nhóm. Tắt để chỉ giữ chúng trên máy này."
+    },
+    "devices": {
+      "title": "Thiết bị",
+      "leaderHelp": "Thiết bị được chọn chạy các tác vụ đơn lẻ (quét Pulse, tải lại Slack) để chúng không chạy hai lần. Thay đổi có hiệu lực ngay.",
+      "leader": "Máy chủ trì",
+      "noLeader": "Không có máy chủ trì — mọi thiết bị đều chạy",
+      "thisDevice": "Máy này",
+      "lastSeen": "Thấy {ago}",
+      "rename": "Đổi tên máy này",
+      "save": "Lưu",
+      "cancel": "Huỷ",
+      "remove": "Gỡ khỏi nhóm",
+      "removed": "Đã gỡ {name}",
+      "confirmRemove": {
+        "title": "Gỡ thiết bị?",
+        "message": "{name} sẽ không thể đồng bộ nữa. Dữ liệu trên máy đó vẫn giữ nguyên.",
+        "confirmLabel": "Gỡ"
+      }
+    },
+    "projects": {
+      "title": "Thư mục dự án trên máy này",
+      "help": "Các dự án từ máy khác của bạn và vị trí của chúng ở đây. Chọn thư mục cho những dự án chưa có trên máy này.",
+      "empty": "Không có dự án cần ánh xạ.",
+      "notHere": "Chưa có trên máy này",
+      "choose": "Chọn thư mục",
+      "change": "Đổi"
+    },
+    "resync": {
+      "button": "Đồng bộ lại toàn bộ",
+      "hint": "Tải lên lại toàn bộ trạng thái của máy này",
+      "done": "Đã bắt đầu đồng bộ lại toàn bộ",
+      "confirm": {
+        "title": "Đồng bộ lại toàn bộ?",
+        "message": "Toàn bộ trạng thái của máy này sẽ được tải lên lại. Hữu ích sau thời gian dài ngoại tuyến hoặc khi các máy bị lệch nhau.",
+        "confirmLabel": "Đồng bộ lại"
+      }
+    },
+    "leave": {
+      "button": "Rời nhóm",
+      "done": "Đã rời nhóm đồng bộ",
+      "offline": "Đã rời nhóm đồng bộ (không kết nối được relay; hãy gỡ máy này từ một thiết bị khác)",
+      "confirm": {
+        "title": "Rời nhóm đồng bộ?",
+        "message": "Máy này sẽ ngừng đồng bộ. Dữ liệu trên máy vẫn giữ nguyên; để tham gia lại bạn cần tên và mật khẩu chính của một thiết bị khác.",
+        "confirmLabel": "Rời nhóm"
+      }
     }
   }
 }

@@ -1,12 +1,15 @@
-//! Two-way sync commands (design §3, §7). No UI in wave 1.
+//! Two-way sync commands (design §3, §7), used by Settings → Sync.
 //!
 //! Group secrets live in the Keychain (`secrets::SyncSecrets`). The pause and
 //! "sync secrets" flags are machine-local `settings` keys (`sync_paused`,
-//! `sync_secrets_enabled`) and must never be synced themselves.
+//! `sync_secrets_enabled`) and must never be synced themselves. Device names
+//! and the leader device are synced settings (`sync::leader`).
 
 use crate::db::Db;
 use crate::sync::engine::{StatusSink, SyncEngine, SyncStatus, Timing, STATUS_EVENT};
+use crate::sync::leader::{self, DeviceInfo};
 use crate::sync::store::{SqliteSyncStore, SyncStore};
+use crate::sync::transport::{Connection, TransportError};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Mutex;
@@ -40,6 +43,11 @@ impl SyncManager {
             let _ = emitter.emit(STATUS_EVENT, s);
         });
         *slot = Some(SyncEngine::start(params, keys, store, sink, paused, Timing::default()));
+        leader::set_sync_active(true);
+        let name = default_device_name(db).await;
+        if let Err(e) = leader::touch_self(db, &sync.device_id, &name).await {
+            tracing::warn!(event = "sync_device_record_failed", error = %e);
+        }
         Ok(())
     }
 
@@ -47,10 +55,10 @@ impl SyncManager {
         if let Some(engine) = self.engine.lock().await.take() {
             engine.stop().await;
         }
+        leader::set_sync_active(false);
     }
 
     /// The outbox changed: sync soon. Cheap; safe to call from anywhere.
-    #[allow(dead_code)] // called by sync-core's capture path after merge
     pub async fn kick(&self) {
         if let Some(e) = self.engine.lock().await.as_ref() {
             e.kick();
@@ -153,9 +161,97 @@ pub async fn sync_now(state: State<'_, SyncManager>) -> Result<(), String> {
     }
 }
 
+/// Whether Keychain secrets are synced (D4: default on when never set).
+#[tauri::command]
+pub async fn sync_get_secrets(db: State<'_, Db>) -> Result<bool, String> {
+    Ok(crate::remote::get_setting(db.inner(), KEY_SECRETS).await.as_deref() != Some("false"))
+}
+
 /// Whether Keychain secrets are synced (D4, default on). Stored only for now;
 /// secrets sync lands in wave 2.
 #[tauri::command]
 pub async fn sync_set_secrets(db: State<'_, Db>, enabled: bool) -> Result<(), String> {
     crate::remote::set_setting(db.inner(), KEY_SECRETS, if enabled { "true" } else { "false" }).await
+}
+
+/// Name a device gets until the user renames it: the Remote Control alias,
+/// else the computer name.
+async fn default_device_name(db: &Db) -> String {
+    if let Some(alias) = crate::remote::device_alias(db).await {
+        return alias;
+    }
+    let computer = tokio::process::Command::new("scutil")
+        .args(["--get", "ComputerName"])
+        .output()
+        .await
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|n| !n.is_empty());
+    computer.unwrap_or_else(|| "Devdy".to_string())
+}
+
+fn group_device_id() -> Result<String, String> {
+    crate::secrets::get_sync_secrets()
+        .map(|s| s.device_id)
+        .ok_or_else(|| "this device is not in a sync group".to_string())
+}
+
+/// Devices of the group (from their synced name records), this one first.
+#[tauri::command]
+pub async fn sync_devices_list(db: State<'_, Db>) -> Result<Vec<DeviceInfo>, String> {
+    let me = group_device_id()?;
+    leader::list_devices(db.inner(), &me).await
+}
+
+/// Rename this device (each device names only itself).
+#[tauri::command]
+pub async fn sync_device_rename(
+    db: State<'_, Db>,
+    state: State<'_, SyncManager>,
+    name: String,
+) -> Result<(), String> {
+    let me = group_device_id()?;
+    leader::rename_self(db.inner(), &me, &name).await?;
+    state.kick().await;
+    Ok(())
+}
+
+/// Remove another device from the group: revoke its token on the relay, then
+/// drop its record (and the leader role if it held it).
+#[tauri::command]
+pub async fn sync_revoke_device(
+    db: State<'_, Db>,
+    state: State<'_, SyncManager>,
+    device_id: String,
+) -> Result<(), String> {
+    let sync = crate::secrets::get_sync_secrets().ok_or("this device is not in a sync group")?;
+    if device_id == sync.device_id {
+        return Err("use Leave group to remove this device".into());
+    }
+    let params = crate::sync::pair::connect_params(db.inner(), &sync).await?;
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let conn = Connection::connect(&params, false, tx).await.map_err(|e| match e {
+        TransportError::Rejected(_) => e.to_string(),
+        other => format!("relay unreachable: {other}"),
+    })?;
+    conn.revoke(&device_id).await.map_err(|e| e.to_string())?;
+    drop(conn);
+    leader::forget_device(db.inner(), &device_id).await?;
+    tracing::info!(event = "sync_device_revoked");
+    state.kick().await;
+    Ok(())
+}
+
+/// Pick the device that runs singleton jobs (Pulse / Slack polling); `None`
+/// lets every device run them. Takes effect on the next poll, no restart.
+#[tauri::command]
+pub async fn sync_set_leader(
+    db: State<'_, Db>,
+    state: State<'_, SyncManager>,
+    device_id: Option<String>,
+) -> Result<(), String> {
+    leader::set_leader(db.inner(), device_id.as_deref()).await?;
+    state.kick().await;
+    Ok(())
 }

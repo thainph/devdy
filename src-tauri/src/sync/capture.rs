@@ -23,8 +23,12 @@ const GUARD_OFF: &str = "COALESCE((SELECT active FROM sync_apply_guard WHERE id 
 
 fn filter_sql(spec: &TableSpec, row: &str) -> Option<String> {
     let f = spec.filter?;
+    let col = format!("{row}.{}", q(f.col));
     let values: Vec<String> = f.allowed.iter().map(|v| lit(v)).collect();
-    Some(format!("{row}.{} IN ({})", q(f.col), values.join(", ")))
+    let mut any = vec![format!("{col} IN ({})", values.join(", "))];
+    // substr(), not LIKE: keys may contain `_` / `%`.
+    any.extend(f.prefixes.iter().map(|p| format!("substr({col}, 1, {}) = {}", p.len(), lit(p))));
+    Some(format!("({})", any.join(" OR ")))
 }
 
 fn outbox_insert(spec: &TableSpec, row: &str, op: &str) -> String {
