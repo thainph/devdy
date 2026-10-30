@@ -10,7 +10,7 @@
     "state": {
       "connected": "Đã kết nối tới thiết bị điều khiển.",
       "running": "Đang chạy — chờ thiết bị kết nối.",
-      "needsRelay": "Lưu Relay URL trước khi bật.",
+      "needsRelay": "Lưu Relay URL ở thẻ phía trên trước khi bật.",
       "off": "Đang tắt. Bật lên để cho phép điều khiển từ xa."
     },
     "relayUrl": "Relay URL",
@@ -20,13 +20,13 @@
     "authTokenPlaceholder": "Để trống để giữ token hiện tại",
     "authTokenHint": "Lưu trong keychain của hệ điều hành, không bao giờ lưu dạng thô trên đĩa.",
     "deviceName": "Tên thiết bị này",
-    "deviceNamePlaceholder": "vd. mac-mini (không bắt buộc)",
-    "deviceNameHint": "Chữ thường, số và '-' (tối đa 32 ký tự). Nhập tên này cùng master password khi đăng nhập từ Devdy khác hoặc web controller, để nhiều host dùng chung một relay. Để trống nếu đây là host duy nhất.",
+    "deviceNamePlaceholder": "vd. mac-mini",
+    "deviceNameHint": "Chữ thường, số và '-' (tối đa 32 ký tự). Nhập tên này cùng mật khẩu chính để đăng nhập vào máy này (từ Devdy khác hoặc web controller) hoặc để tham gia nhóm đồng bộ của nó; nhóm đồng bộ hiển thị máy này bằng tên này. Giúp nhiều host dùng chung một relay.",
     "masterPassword": "Mật khẩu chính",
     "set": "(đã đặt)",
     "masterPasswordReplace": "Nhập mật khẩu mới để thay thế mật khẩu hiện tại",
     "masterPasswordSet": "Đặt mật khẩu để bỏ qua OTP mỗi lần",
-    "masterPasswordHint": "Sau khi đặt, nhập mật khẩu này trên điện thoại thay vì mã OTP. Lưu trong keychain của hệ điều hành. Tiện hơn nhưng cố định — chỉ dùng nếu bạn là người dùng duy nhất. Đổi hoặc xoá mật khẩu sẽ đăng xuất mọi thiết bị đã đăng nhập. Được lưu cùng với các cài đặt bên dưới.",
+    "masterPasswordHint": "Nhập mật khẩu này trên điện thoại thay cho mã OTP, và trên máy khác khi tham gia nhóm đồng bộ của máy này. Lưu trong keychain của hệ điều hành. Cố định — chỉ dùng nếu bạn là người dùng duy nhất. Đổi hoặc xoá mật khẩu sẽ đăng xuất mọi thiết bị đã đăng nhập.",
     "saveSettings": "Lưu cài đặt",
     "hostLabel": "host: {id}",
     "perRunHint": "Phiên điều khiển từ xa giờ được tạo theo từng run: mở một run và nhấn nút {remote} trên thanh công cụ để tạo link. Nhập {masterPassword} (nếu đã đặt) hoặc mã OTP trên điện thoại để kết nối.",
@@ -63,6 +63,10 @@
       "auditCleared": "Đã xóa {count} bản ghi kiểm toán",
       "auditAlreadyEmpty": "Nhật ký kiểm toán đã trống",
       "deviceNameInvalid": "Tên thiết bị: chỉ dùng chữ thường, số và '-' (tối đa 32 ký tự)"
+    },
+    "identity": {
+      "title": "Thiết bị này & Relay",
+      "intro": "Dùng chung cho Điều khiển từ xa và Đồng bộ. Máy Devdy khác nhập tên thiết bị và mật khẩu chính này để điều khiển máy này hoặc để tham gia nhóm đồng bộ của nó; nhóm đồng bộ cũng hiển thị máy này bằng đúng tên đó."
     }
   },
   "session": {

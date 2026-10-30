@@ -1,15 +1,15 @@
 <script setup lang="ts">
-// Host-side Remote Control settings. Lets the Owner enable the feature,
-// configure the relay, and review the audit log. Remote sessions are now
+// Host-side Remote Control settings. Lets the Owner enable the feature and
+// review the audit log; the relay, device name and master password it uses are
+// in DeviceRelaySettings (shared with Sync). Remote sessions are now
 // created per-run via the Remote button inside a run (RemoteSessionModal) —
 // there is no global device pairing anymore.
 import { onMounted, onUnmounted, ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Button, Input, Card, Badge } from '@/components/ui'
+import { Button, Card, Badge } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useRemoteControlStore } from '@/stores/remoteControl'
-import { DEVICE_ALIAS_RE } from '@/lib/remoteLogin'
 import { isRemoteMode } from '@/lib/ipc/remote'
 import { openRemoteDesktopWindow } from '@/lib/remoteDesktopWindow'
 import { Radio, Wifi, WifiOff, ShieldCheck, RefreshCw, Loader2, Trash2, MonitorSmartphone } from 'lucide-vue-next'
@@ -20,14 +20,7 @@ const { toast } = useToast()
 const { confirm } = useConfirm()
 const clearingAudit = ref(false)
 
-// --- Config form (relay URL + auth token) ---
-const relayUrl = ref('')
-const authToken = ref('')
-const savingConfig = ref(false)
 const togglingEnabled = ref(false)
-const masterPassword = ref('')
-const savingMasterPw = ref(false)
-const deviceAlias = ref('')
 // A remote-desktop window already drives another Devdy; no nesting.
 const remoteMode = isRemoteMode()
 
@@ -45,8 +38,6 @@ const canToggle = computed(() => enabled.value || !!status.value?.relay_url?.tri
 async function load() {
   try {
     await store.refreshAll()
-    relayUrl.value = store.status?.relay_url ?? ''
-    deviceAlias.value = store.status?.device_alias ?? ''
   } catch (e) {
     toast.error(String(e))
   }
@@ -65,38 +56,6 @@ onMounted(() => {
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
 })
-
-async function saveConfig() {
-  const url = relayUrl.value.trim()
-  if (!url) {
-    toast.error(t('remote.settings.toast.relayRequired'))
-    return
-  }
-  const alias = deviceAlias.value.trim().toLowerCase()
-  if (!DEVICE_ALIAS_RE.test(alias)) {
-    toast.error(t('remote.settings.toast.deviceNameInvalid'))
-    return
-  }
-  savingConfig.value = true
-  try {
-    await store.setConfig(url, authToken.value)
-    authToken.value = '' // never keep the token around in the field
-    if (alias !== (store.status?.device_alias ?? '')) await store.setDeviceAlias(alias)
-    deviceAlias.value = alias
-    // A non-empty field sets/updates the master password; blank leaves it
-    // untouched (same "blank keeps current" convention as the auth token).
-    // Clearing is done explicitly via the Clear link.
-    if (masterPassword.value.trim()) {
-      await store.setMasterPassword(masterPassword.value)
-      masterPassword.value = ''
-    }
-    toast.success(t('remote.settings.toast.settingsSaved'))
-  } catch (e) {
-    toast.error(String(e))
-  } finally {
-    savingConfig.value = false
-  }
-}
 
 async function openRemoteDesktop() {
   try {
@@ -120,27 +79,6 @@ async function toggleEnabled() {
     toast.error(String(e))
   } finally {
     togglingEnabled.value = false
-  }
-}
-
-async function clearMasterPassword() {
-  if (savingMasterPw.value) return
-  const ok = await confirm({
-    title: t('remote.settings.confirmClearMaster.title'),
-    message: t('remote.settings.confirmClearMaster.message'),
-    confirmLabel: t('remote.settings.confirmClearMaster.confirmLabel'),
-    variant: 'destructive',
-  })
-  if (!ok) return
-  savingMasterPw.value = true
-  try {
-    await store.setMasterPassword('')
-    masterPassword.value = ''
-    toast.success(t('remote.settings.toast.masterCleared'))
-  } catch (e) {
-    toast.error(String(e))
-  } finally {
-    savingMasterPw.value = false
   }
 }
 
@@ -238,90 +176,6 @@ function resultTone(r: string): 'success' | 'error' | 'neutral' {
               />
             </span>
           </button>
-        </div>
-
-        <div class="space-y-1.5">
-          <label class="text-xs font-medium text-muted-foreground">{{ t('remote.settings.relayUrl') }}</label>
-          <Input
-            v-model="relayUrl"
-            :placeholder="t('remote.settings.relayUrlPlaceholder')"
-            :disabled="savingConfig"
-          />
-        </div>
-
-        <div class="space-y-1.5">
-          <label class="text-xs font-medium text-muted-foreground">
-            {{ t('remote.settings.authToken') }}
-            <span v-if="status?.has_auth_token" class="text-emerald-500">{{ t('remote.settings.saved') }}</span>
-          </label>
-          <Input
-            v-model="authToken"
-            type="password"
-            :placeholder="t('remote.settings.authTokenPlaceholder')"
-            :disabled="savingConfig"
-          />
-          <p class="text-[11px] text-muted-foreground/70">
-            {{ t('remote.settings.authTokenHint') }}
-          </p>
-        </div>
-
-        <!-- Device name: picks this host's password-login code, so several
-             Devdy hosts can share one relay (and one master password). -->
-        <div class="space-y-1.5">
-          <label class="text-xs font-medium text-muted-foreground">{{ t('remote.settings.deviceName') }}</label>
-          <Input
-            v-model="deviceAlias"
-            autocomplete="off"
-            spellcheck="false"
-            :placeholder="t('remote.settings.deviceNamePlaceholder')"
-            :disabled="savingConfig"
-            class="font-mono"
-            @keyup.enter="saveConfig"
-          />
-          <p class="text-[11px] text-muted-foreground/70">
-            {{ t('remote.settings.deviceNameHint') }}
-          </p>
-        </div>
-
-        <!-- Master password: an optional stable code that replaces the per-join
-             OTP for a single owner (falls back to OTP when unset). -->
-        <div class="space-y-1.5">
-          <label class="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-            <span>
-              {{ t('remote.settings.masterPassword') }}
-              <span v-if="status?.has_master_password" class="text-emerald-500">{{ t('remote.settings.set') }}</span>
-            </span>
-            <button
-              v-if="status?.has_master_password"
-              type="button"
-              :disabled="savingMasterPw"
-              class="ml-auto font-normal text-[11px] text-muted-foreground/80 hover:text-destructive transition-colors disabled:opacity-50"
-              @click="clearMasterPassword"
-            >
-              {{ t('common.clear') }}
-            </button>
-          </label>
-          <Input
-            v-model="masterPassword"
-            type="password"
-            :placeholder="status?.has_master_password
-              ? t('remote.settings.masterPasswordReplace')
-              : t('remote.settings.masterPasswordSet')"
-            :disabled="savingConfig || savingMasterPw"
-            @keyup.enter="saveConfig"
-          />
-          <p class="text-[11px] text-muted-foreground/70">
-            {{ t('remote.settings.masterPasswordHint') }}
-          </p>
-        </div>
-
-        <div class="flex items-center gap-2 pt-1">
-          <Button variant="outline" :disabled="savingConfig" @click="saveConfig">
-            {{ t('remote.settings.saveSettings') }}
-          </Button>
-          <span v-if="status?.device_id" class="ml-auto text-[11px] text-muted-foreground/60 font-mono">
-            {{ t('remote.settings.hostLabel', { id: status.device_id.slice(0, 8) }) }}
-          </span>
         </div>
 
         <p class="text-[11px] text-muted-foreground/70 border-t border-border/50 pt-3">

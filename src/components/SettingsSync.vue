@@ -1,8 +1,10 @@
 <script setup lang="ts">
-// Settings → Sync: on-demand sync of the Devdy state between this user's machines over the
-// relay (E2E encrypted). Not in a group → create one, or join another device's group with its
-// device name + master password (that device must have "Accept a new device" open and approve the
-// request; both need their own relay config). Joined but not merged (`sync_bootstrap_pending`, also after an
+// Settings → Devices & Sync → Sync: on-demand sync of the Devdy state between this user's machines
+// over the relay (E2E encrypted). The relay, device name and master password come from the
+// "This device & relay" card above (DeviceRelaySettings, shared with Remote Control). Not in a
+// group → create one, or join another device's group with its device name + master password
+// (that device must have "Accept a new device" open and approve the request; both need their
+// own relay config and a device name). Joined but not merged (`sync_bootstrap_pending`, also after an
 // app restart) → the merge step: preview (totals, per table, project matches) then commit, which
 // starts the engine. In a group → three tabs:
 // - Overview: source device (picked automatically when obvious, a selector only with 2+ other
@@ -11,14 +13,15 @@
 //   prominent — last sync, changes waiting to be sent, changes the relay refused (parked, with
 //   Retry), "merge again" when the relay lost ops (`relay_behind`), re-sync, pause, leave.
 // - Projects: per-project mode (off / data / data + folder) and folder (SyncProjectsTab).
-// - Devices: devices (rename this one, remove others — creator only —, pick the leader that runs
-//   Slack polling) and "Accept a new device" (5 min window + Allow / Deny per request,
-//   closed when this page goes away so a request is never left unseen).
+// - Devices: devices (listed under their device names; remove others — creator only —, pick the
+//   leader that runs Slack polling) and "Accept a new device" (5 min window + Allow / Deny per
+//   request, closed when this page goes away so a request is never left unseen). Requests come
+//   in through Remote Control, so the window needs it connected and a master password.
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import {
-  AlertTriangle, ChevronRight, Crown, Loader2, LogIn, LogOut, Pause, Pencil, Play, Plus, RefreshCw, RotateCcw, Trash2,
+  AlertTriangle, ChevronRight, Crown, Loader2, LogIn, LogOut, Pause, Play, Plus, RefreshCw, RotateCcw, Trash2,
   UserPlus, Users,
 } from 'lucide-vue-next'
 import { AppSelect, Badge, Button, Card, Input } from '@/components/ui'
@@ -27,6 +30,7 @@ import SyncProjectsTab from '@/components/SyncProjectsTab.vue'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useSyncStore } from '@/stores/sync'
+import { useRemoteControlStore } from '@/stores/remoteControl'
 import {
   ageParts,
   canRemoveDevices,
@@ -45,7 +49,6 @@ import {
   syncBootstrapCommit,
   syncBootstrapPreview,
   syncCreateGroup,
-  syncDeviceRename,
   syncJoin,
   syncLeave,
   syncParkedList,
@@ -75,6 +78,7 @@ const { t, te } = useI18n()
 const { toast } = useToast()
 const { confirm } = useConfirm()
 const store = useSyncStore()
+const remote = useRemoteControlStore()
 
 const status = computed(() => store.status)
 const paired = computed(() => status.value.state !== 'disabled')
@@ -99,6 +103,16 @@ function errorText(e: unknown): string {
 // ---- Not in a group: create / join ----
 /** Own relay URL + token configured (Remote Control); null = not checked yet. */
 const relayReady = ref<boolean | null>(null)
+/** This device's name (shared with Remote Control): the group lists it under it. */
+const alias = computed(() => remote.status?.device_alias ?? '')
+const aliasMissing = computed(() => remote.status !== null && !alias.value)
+// The relay is edited in the card above: re-check when it changes.
+watch(
+  () => [remote.status?.relay_url, remote.status?.has_auth_token],
+  async () => {
+    if (relayReady.value !== null) relayReady.value = await syncRelayReady().catch(() => false)
+  },
+)
 const creating = ref(false)
 const joinAlias = ref('')
 const joinPassword = ref('')
@@ -123,7 +137,7 @@ const joinError = computed(() => {
 })
 
 async function createGroup() {
-  if (creating.value) return
+  if (creating.value || aliasMissing.value) return
   creating.value = true
   try {
     store.set(await syncCreateGroup())
@@ -138,7 +152,7 @@ async function createGroup() {
 
 async function join() {
   const alias = joinAlias.value.trim().toLowerCase()
-  if (joining.value || !alias || !joinPassword.value || joinError.value) return
+  if (joining.value || !alias || !joinPassword.value || joinError.value || aliasMissing.value) return
   joining.value = true
   try {
     store.set(await syncJoin(alias, joinPassword.value))
@@ -191,8 +205,6 @@ const tab = ref<Tab>('overview')
 const busyPause = ref(false)
 
 const devices = computed(() => store.devices)
-const renaming = ref(false)
-const newName = ref('')
 const busyDevice = ref<string | null>(null)
 
 // ---- Overview: source device + Sync ----
@@ -227,7 +239,6 @@ const retrying = ref(false)
 const resyncing = ref(false)
 const leaving = ref(false)
 
-const self = computed(() => devices.value.find((d) => d.is_self) ?? null)
 const leaderId = computed(() => devices.value.find((d) => d.is_leader)?.id ?? null)
 const canRemove = computed(() => canRemoveDevices(devices.value))
 const creator = computed(() => groupCreator(devices.value))
@@ -236,6 +247,16 @@ const creator = computed(() => groupCreator(devices.value))
 /** Expiry (unix millis) of the open window, null = closed. */
 const acceptUntil = ref<number | null>(null)
 const acceptBusy = ref(false)
+/** What keeps join requests from reaching this machine (they come in through Remote Control). */
+const acceptMissing = computed(() => {
+  const st = remote.status
+  if (!st) return []
+  const out: ('alias' | 'password' | 'remote')[] = []
+  if (!st.device_alias) out.push('alias')
+  if (!st.has_master_password) out.push('password')
+  if (!st.enabled || !st.connected) out.push('remote')
+  return out
+})
 const joinRequest = ref<JoinRequest | null>(null)
 // A device asking to join is answered on the Devices tab: bring it up.
 watch(joinRequest, (r) => {
@@ -263,7 +284,7 @@ function setAcceptUntil(v: number | null) {
 }
 
 async function openAccept() {
-  if (acceptBusy.value) return
+  if (acceptBusy.value || acceptMissing.value.length) return
   acceptBusy.value = true
   try {
     setAcceptUntil(await syncAcceptOpen())
@@ -349,26 +370,6 @@ async function togglePause() {
     toast.error(errorText(e))
   } finally {
     busyPause.value = false
-  }
-}
-
-function startRename() {
-  newName.value = self.value?.name ?? ''
-  renaming.value = true
-}
-
-async function saveRename() {
-  const name = newName.value.trim()
-  if (!name) return
-  busyDevice.value = self.value?.id ?? 'self'
-  try {
-    await syncDeviceRename(name)
-    renaming.value = false
-    await loadDevices()
-  } catch (e) {
-    toast.error(errorText(e))
-  } finally {
-    busyDevice.value = null
   }
 }
 
@@ -499,6 +500,7 @@ onMounted(async () => {
   // Who is online, for the source dot (only while in a group).
   peersTimer = setInterval(() => {
     if (paired.value && !mergePending.value) void store.refreshPeers()
+    void remote.refreshStatus().catch(() => {})
   }, 20_000)
   unlisteners.push(
     await onSyncJoinRequest((r) => {
@@ -513,7 +515,7 @@ onMounted(async () => {
     await onSyncAcceptWindow(setAcceptUntil),
   )
   await store.start()
-  await store.refresh()
+  await Promise.all([store.refresh(), remote.refreshStatus().catch(() => {})])
   relayReady.value = await syncRelayReady().catch(() => false)
   if (mergePending.value) await loadPreview()
   else await loadPaired()
@@ -625,7 +627,10 @@ onUnmounted(() => {
         <p v-if="relayReady === false" class="text-[11px] text-amber-600 dark:text-amber-400">
           {{ t('settings.sync.relayMissing') }}
         </p>
-        <Button size="sm" :disabled="creating || relayReady === false" @click="createGroup">
+        <p v-else-if="aliasMissing" class="text-[11px] text-amber-600 dark:text-amber-400">
+          {{ t('settings.sync.needAlias') }}
+        </p>
+        <Button size="sm" :disabled="creating || relayReady === false || aliasMissing" @click="createGroup">
           <component :is="creating ? Loader2 : Plus" class="h-3.5 w-3.5" :class="{ 'animate-spin': creating }" :stroke-width="1.75" />
           {{ t('settings.sync.create.button') }}
         </Button>
@@ -650,10 +655,13 @@ onUnmounted(() => {
         <p v-if="relayReady === false" class="text-[11px] text-amber-600 dark:text-amber-400">
           {{ t('settings.sync.relayMissing') }}
         </p>
+        <p v-else-if="aliasMissing" class="text-[11px] text-amber-600 dark:text-amber-400">
+          {{ t('settings.sync.needAlias') }}
+        </p>
         <div class="flex flex-wrap items-center gap-2">
           <Button
             size="sm"
-            :disabled="joining || relayReady === false || !joinAlias.trim() || !joinPassword || !!joinError"
+            :disabled="joining || relayReady === false || aliasMissing || !joinAlias.trim() || !joinPassword || !!joinError"
             @click="join"
           >
             <component :is="joining ? Loader2 : LogIn" class="h-3.5 w-3.5" :class="{ 'animate-spin': joining }" :stroke-width="1.75" />
@@ -687,7 +695,7 @@ onUnmounted(() => {
           <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.ondemand.header') }}</p>
           <div v-if="!otherDevices.length" class="space-y-2">
             <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.ondemand.noSource') }}</p>
-            <Button variant="outline" size="sm" :disabled="acceptBusy" @click="openAcceptHere">
+            <Button variant="outline" size="sm" :disabled="acceptBusy || !!acceptMissing.length" @click="openAcceptHere">
               <component :is="acceptBusy ? Loader2 : UserPlus" class="h-3.5 w-3.5" :class="{ 'animate-spin': acceptBusy }" :stroke-width="1.75" />
               {{ t('settings.sync.accept.button') }}
             </Button>
@@ -838,6 +846,7 @@ onUnmounted(() => {
             <Users class="h-3 w-3" :stroke-width="1.75" />
             {{ t('settings.sync.devices.title') }}
           </label>
+          <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.devices.nameHint') }}</p>
           <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.devices.leaderHelp') }}</p>
           <p class="text-[11px] text-muted-foreground">
             {{ canRemove ? t('settings.sync.devices.removeHelp')
@@ -855,32 +864,14 @@ onUnmounted(() => {
                 @change="setLeader(d.id)"
               >
               <div class="min-w-0 flex-1">
-                <div v-if="d.is_self && renaming" class="flex items-center gap-1.5">
-                  <Input v-model="newName" class="h-7" maxlength="64" @keydown.enter="saveRename" @keydown.esc="renaming = false" />
-                  <Button size="xs" :disabled="!newName.trim() || busyDevice !== null" @click="saveRename">
-                    {{ t('settings.sync.devices.save') }}
-                  </Button>
-                  <Button variant="ghost" size="xs" @click="renaming = false">{{ t('settings.sync.devices.cancel') }}</Button>
-                </div>
-                <template v-else>
-                  <p class="flex items-center gap-1.5 truncate text-sm">
-                    {{ deviceLabel(d) }}
-                    <Badge v-if="d.is_self" variant="secondary">{{ t('settings.sync.devices.thisDevice') }}</Badge>
-                    <Crown v-if="d.is_leader" class="h-3 w-3 text-amber-500" :stroke-width="2" :title="t('settings.sync.devices.leader')" />
-                    <Badge v-if="d.is_creator" variant="secondary">{{ t('settings.sync.devices.creator') }}</Badge>
-                  </p>
-                  <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.devices.lastSeen', { ago: ago(d.last_seen) }) }}</p>
-                </template>
+                <p class="flex items-center gap-1.5 truncate text-sm">
+                  {{ deviceLabel(d) }}
+                  <Badge v-if="d.is_self" variant="secondary">{{ t('settings.sync.devices.thisDevice') }}</Badge>
+                  <Crown v-if="d.is_leader" class="h-3 w-3 text-amber-500" :stroke-width="2" :title="t('settings.sync.devices.leader')" />
+                  <Badge v-if="d.is_creator" variant="secondary">{{ t('settings.sync.devices.creator') }}</Badge>
+                </p>
+                <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.devices.lastSeen', { ago: ago(d.last_seen) }) }}</p>
               </div>
-              <Button
-                v-if="d.is_self && !renaming"
-                variant="ghost"
-                size="xs"
-                :title="t('settings.sync.devices.rename')"
-                @click="startRename"
-              >
-                <Pencil class="h-3 w-3" :stroke-width="1.75" />
-              </Button>
               <Button
                 v-if="!d.is_self && canRemove"
                 variant="ghost"
@@ -915,8 +906,14 @@ onUnmounted(() => {
             {{ t('settings.sync.accept.title') }}
           </label>
           <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.accept.help') }}</p>
+          <div v-if="acceptMissing.length" class="space-y-0.5 text-[11px] text-amber-600 dark:text-amber-400">
+            <p>{{ t('settings.sync.accept.missing.title') }}</p>
+            <ul class="list-disc pl-4">
+              <li v-for="m in acceptMissing" :key="m">{{ t(`settings.sync.accept.missing.${m}`) }}</li>
+            </ul>
+          </div>
           <div v-if="acceptUntil === null">
-            <Button variant="outline" size="sm" :disabled="acceptBusy" @click="openAccept">
+            <Button variant="outline" size="sm" :disabled="acceptBusy || !!acceptMissing.length" @click="openAccept">
               <component :is="acceptBusy ? Loader2 : UserPlus" class="h-3.5 w-3.5" :class="{ 'animate-spin': acceptBusy }" :stroke-width="1.75" />
               {{ t('settings.sync.accept.button') }}
             </Button>
@@ -927,6 +924,11 @@ onUnmounted(() => {
               <span class="text-xs">{{ t('settings.sync.accept.open', { time: countdown(acceptUntil, tick) }) }}</span>
               <Button variant="ghost" size="xs" class="ml-auto" @click="closeAccept">{{ t('settings.sync.accept.cancel') }}</Button>
             </div>
+            <p v-if="alias" class="text-[11px] text-muted-foreground">
+              <i18n-t keypath="settings.sync.accept.joinWith" tag="span">
+                <template #name><span class="font-mono font-medium text-foreground">{{ alias }}</span></template>
+              </i18n-t>
+            </p>
             <div
               v-if="joinRequest"
               role="alertdialog"
