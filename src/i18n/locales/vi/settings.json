@@ -575,7 +575,8 @@
       },
       "creator": "Đã tạo nhóm",
       "removeHelp": "Thiết bị bị gỡ vẫn giữ bản sao khoá nhóm nhưng không thể truy cập dữ liệu của nhóm trên relay nữa (phiên bản này chưa đổi khoá).",
-      "onlyCreator": "Chỉ thiết bị đã tạo nhóm ({name}) mới gỡ được thiết bị."
+      "onlyCreator": "Chỉ thiết bị đã tạo nhóm ({name}) mới gỡ được thiết bị.",
+      "leaderPending": "{name} chưa xác nhận đã nhận chạy các tác vụ nền (có thể đang offline). Máy này sẽ tiếp tục chạy chúng cho đến khi máy kia xác nhận."
     },
     "projects": {
       "title": "Thư mục dự án trên máy này",
@@ -637,7 +638,7 @@
       "host_unsupported": "Devdy trên máy đó quá cũ để thêm thiết bị. Hãy cập nhật trước.",
       "not_accepting": "Máy đó chưa nhận thiết bị mới. Mở Cài đặt → Đồng bộ → Chấp nhận thiết bị mới trên máy đó rồi thử lại.",
       "declined": "Yêu cầu đã bị từ chối hoặc không được trả lời kịp trên máy đó.",
-      "busy": "Máy đó đang xử lý một yêu cầu tham gia khác. Thử lại sau giây lát.",
+      "busy": "Máy đó đang bận xử lý các yêu cầu khác. Thử lại sau giây lát.",
       "relay_not_configured": "Máy này chưa có relay riêng: hãy đặt URL và token relay trong Cài đặt → Điều khiển từ xa trước.",
       "relay_error": "Máy đó không kết nối được relay. Hãy thử lại.",
       "sync_bootstrap_runs_live": "Hãy dừng các phiên đang chạy trên máy này trước khi hợp nhất.",
@@ -651,7 +652,7 @@
       "sync_bootstrap_in_progress": "Đồng bộ đang gộp dữ liệu của máy này. Hãy thử lại sau giây lát.",
       "auth_failed": "Relay từ chối token relay của máy này. Hãy kiểm tra URL và token relay trong Cài đặt → Remote Control.",
       "relay_behind": "Relay đã mất các thay đổi mà máy này đã nhận (relay được khôi phục từ bản sao lưu). Đồng bộ tạm dừng cho tới khi máy này gộp lại với nhóm.",
-      "sync_leave_handoff_pending": "Máy này đang chạy các tác vụ nền của nhóm hoặc là máy tạo nhóm, và không kết nối được relay để chuyển giao vai trò đó.",
+      "sync_leave_handoff_pending": "Máy này đang chạy các tác vụ nền của nhóm hoặc là máy tạo nhóm, và chưa chuyển giao được vai trò đó (không kết nối được relay hoặc máy leader mới).",
       "peer_offline": "Máy nguồn đang offline — mở Devdy trên máy đó rồi thử lại.",
       "peer_paused": "Máy nguồn đang tạm dừng sync. Bật lại sync trên máy đó rồi thử lại.",
       "peer_timeout": "Máy nguồn không phản hồi kịp. Kiểm tra máy đó đang thức và có mạng, rồi thử lại.",
@@ -778,6 +779,7 @@
       "title": "Sync từ {name}",
       "phase": {
         "requesting": "Đang yêu cầu {name} gửi thay đổi…",
+        "flushing": "{name} đang gửi thay đổi (đã gửi {n})…",
         "pulling": "Đang tải thay đổi…",
         "applying": "Đang áp dụng thay đổi…",
         "done": "Đã nhận dữ liệu",

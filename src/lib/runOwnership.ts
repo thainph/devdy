@@ -36,6 +36,8 @@ export interface TakeOverResult {
   /** The owner's final output is still syncing: retry, or continue anyway. */
   syncing: SyncGap | null
   transcript_available: boolean
+  /** The owner could not be synced from first (`peer_offline`…): the session may still run there. */
+  owner_unreachable: string | null
 }
 
 /** Emitted when synced bytes were appended to a run's log; payload `{ run_id }`. */

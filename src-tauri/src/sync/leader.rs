@@ -43,6 +43,27 @@ const SEEN_REFRESH_MS: i64 = 60 * 60 * 1000;
 const WATCH_INTERVAL: Duration = Duration::from_secs(30);
 
 static SYNC_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// This device handed the leader role to that device, which has not yet
+/// confirmed it synced the change (on-demand sync: it learns only when it
+/// syncs). Until then this device keeps running the singleton jobs.
+static HANDOFF_TO: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Record (or clear) an unconfirmed hand-off of the leader role.
+pub fn set_handoff_pending(to: Option<&str>) {
+    if let Ok(mut h) = HANDOFF_TO.lock() {
+        *h = to.map(str::to_string);
+    }
+}
+
+pub fn handoff_pending() -> Option<String> {
+    HANDOFF_TO.lock().ok().and_then(|h| h.clone())
+}
+
+/// The old leader keeps the jobs while its hand-off to the current leader is
+/// unconfirmed (a later change made elsewhere ends that).
+pub fn keeps_jobs(handoff: Option<&str>, leader: Option<&str>) -> bool {
+    handoff.is_some() && handoff == leader
+}
 /// Set once the startup sync autostart finished (in a group or not), so the
 /// first leader decision does not run before the engine had a chance to start.
 static SYNC_READY: AtomicBool = AtomicBool::new(false);
@@ -120,7 +141,11 @@ pub async fn is_leader_with(db: &Db, sync_on: bool) -> bool {
 
 /// Whether this device runs singleton jobs right now.
 pub async fn is_leader(db: &Db) -> bool {
-    is_leader_with(db, SYNC_ACTIVE.load(Ordering::SeqCst)).await
+    let sync_on = SYNC_ACTIVE.load(Ordering::SeqCst);
+    if sync_on && keeps_jobs(handoff_pending().as_deref(), leader(db).await.as_deref()) {
+        return true;
+    }
+    is_leader_with(db, sync_on).await
 }
 
 pub async fn creator(db: &Db) -> Option<String> {
@@ -362,6 +387,14 @@ mod tests {
         assert!(decide(true, Some("  "), "me"));
         assert!(decide(true, Some("me"), "me"));
         assert!(!decide(true, Some("other"), "me"));
+    }
+
+    #[test]
+    fn old_leader_keeps_jobs_until_the_hand_off_is_confirmed() {
+        assert!(keeps_jobs(Some("new"), Some("new")));
+        assert!(!keeps_jobs(None, Some("new")), "confirmed");
+        assert!(!keeps_jobs(Some("new"), Some("other")), "changed again elsewhere");
+        assert!(!keeps_jobs(Some("new"), None));
     }
 
     #[test]
