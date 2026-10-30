@@ -17,7 +17,8 @@
     "prompts": "Prompt Templates",
     "inbox": "Inbox API",
     "azure": "Azure Accounts",
-    "backup": "Sync & Backup"
+    "backup": "Sync & Backup",
+    "focus": "Focus"
   },
   "general": {
     "theme": "Theme",
@@ -418,7 +419,7 @@
   },
   "backup": {
     "title": "File backup",
-    "help": "Export your whole Devdy setup to one file and import it on another machine: app settings, saved prompts, the Skills / Rules library with groups, MCP servers, VPS servers, accounts (GitHub, GitLab, AWS, Azure, Google, Claude), notes / todos and Slack threads (with translations; attachments are downloaded again) and projects (repos, enabled Skills / Rules / groups, MCP and VPS servers, linked accounts, Pulse watches). Session history stays on this machine.",
+    "help": "Export your whole Devdy setup to one file and import it on another machine: app settings, saved prompts, the Skills / Rules library with groups, MCP servers, VPS servers, accounts (GitHub, GitLab, AWS, Azure, Google, Claude), notes / todos and Slack threads (with translations; attachments are downloaded again) and projects (repos, enabled Skills / Rules / groups, MCP and VPS servers, linked accounts). Session history stays on this machine.",
     "export": {
       "title": "Export",
       "includeSecrets": "Include secrets (encrypted)",
@@ -473,8 +474,7 @@
       "notes": "Notes",
       "todos": "Todos",
       "slackThreads": "Slack threads",
-      "projects": "Projects",
-      "pulseWatches": "Pulse watches"
+      "projects": "Projects"
     }
   },
   "sync": {
@@ -558,7 +558,7 @@
     },
     "devices": {
       "title": "Devices",
-      "leaderHelp": "The selected device runs singleton jobs (Pulse polling, Slack re-fetch) so they don't run twice. Changes apply right away.",
+      "leaderHelp": "The selected device runs singleton jobs (Slack re-fetch) so they don't run twice. Changes apply right away.",
       "leader": "Leader",
       "noLeader": "No leader — every device runs them",
       "thisDevice": "This device",
@@ -626,7 +626,7 @@
       },
       "handoff": {
         "title": "Leave without handing on its role?",
-        "message": "This device runs the group's background jobs (Pulse, Slack polling) or created the group, and the relay could not be reached to hand that role to another device. If you leave now, the other devices keep waiting for it: pick a new leader on one of them afterwards. Go back online (and unpause sync) to hand it on properly.",
+        "message": "This device runs the group's background jobs (Slack polling) or created the group, and the relay could not be reached to hand that role to another device. If you leave now, the other devices keep waiting for it: pick a new leader on one of them afterwards. Go back online (and unpause sync) to hand it on properly.",
         "confirmLabel": "Leave anyway"
       }
     },
@@ -743,15 +743,11 @@
         },
         "notes": {
           "label": "Notes & Todos",
-          "hint": "Notes, todos and their session links"
+          "hint": "Notes, todos, Focus day plans and their session links"
         },
         "slack": {
           "label": "Slack threads",
           "hint": "Saved Slack threads"
-        },
-        "pulse": {
-          "label": "Pulse",
-          "hint": "Watched issues and PRs"
         },
         "sessions": {
           "label": "Sessions",

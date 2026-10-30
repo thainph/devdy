@@ -1,6 +1,6 @@
 //! Background process tracker.
 //!
-//! Every long-lived process Devdy spawns (run sidecars, warm translate / Pulse
+//! Every long-lived process Devdy spawns (run sidecars, warm translate / Focus AI
 //! sessions, mascot, probes, MCP tests, per-run ssh-agents) is registered here.
 //! A periodic `ps` sample follows each one's whole tree — its process group plus
 //! every descendant by parent link, so children that `setsid()` out of the group
@@ -34,7 +34,9 @@ pub enum ProcKind {
     Run,
     Translate,
     SlackTranslate,
-    PulseDigest,
+    /// One-shot Focus AI engine (P3); was the Pulse digest engine.
+    #[serde(alias = "pulse_digest")]
+    FocusAi,
     Mascot,
     Probe,
     McpTest,

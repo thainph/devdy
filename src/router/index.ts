@@ -12,14 +12,14 @@ import PrInboxView from '../views/PrInboxView.vue'
 import { openPrInboxWindow } from '../lib/prInboxWindow'
 import { openCalendarWindow } from '../lib/calendarWindow'
 import { openGanttWindow } from '../lib/ganttWindow'
-import { openPulseWindow } from '../lib/pulseWindow'
+import { openFocusWindow } from '../lib/focusWindow'
 import IssuesGanttView from '../views/IssuesGanttView.vue'
 import ProjectDetailView from '../views/ProjectDetailView.vue'
 import RunView from '../views/RunView.vue'
 import SettingsView from '../views/SettingsView.vue'
 import StatsView from '../views/StatsView.vue'
 import CalendarView from '../views/CalendarView.vue'
-import PulseView from '../views/PulseView.vue'
+import FocusView from '../views/FocusView.vue'
 import AboutView from '../views/AboutView.vue'
 import BackgroundProcessesView from '../views/BackgroundProcessesView.vue'
 
@@ -53,7 +53,7 @@ const router = createRouter({
         return from.matched.length > 0 ? false : '/projects'
       },
     },
-    // Gantt and Pulse too (lib/ganttWindow, lib/pulseWindow). `?project=` deep
+    // Gantt and Focus too (lib/ganttWindow, lib/focusWindow). `?project=` deep
     // links (Projects screen) carry over to the Gantt window.
     {
       path: '/gantt',
@@ -65,11 +65,11 @@ const router = createRouter({
       },
     },
     {
-      path: '/pulse',
-      name: 'pulse',
-      component: PulseView,
+      path: '/focus',
+      name: 'focus',
+      component: FocusView,
       beforeEnter: (_to, from) => {
-        void openPulseWindow()
+        void openFocusWindow()
         return from.matched.length > 0 ? false : '/projects'
       },
     },

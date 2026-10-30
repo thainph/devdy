@@ -126,8 +126,6 @@ pub static REFS: &[(&str, &str, &str)] = &[
     ("projects", "todo_runs", "project_id"),
     ("projects", "slack_threads", "project_id"),
     ("projects", "slack_thread_runs", "project_id"),
-    ("projects", "pulse_watches", "project_id"),
-    ("projects", "pulse_requests", "project_id"),
     ("projects", "project_skills", "project_id"),
     ("projects", "project_rules", "project_id"),
     ("projects", "project_skill_groups", "project_id"),
@@ -146,15 +144,11 @@ pub static REFS: &[(&str, &str, &str)] = &[
     ("runs", "slack_thread_runs", "run_id"),
     ("runs", "notes", "run_id"),
     ("runs", "todos", "run_id"),
-    ("runs", "pulse_watches", "added_run_id"),
     ("runs", "runs", "conductor_run_id"),
     ("runs", "remote_audit", "run_id"),
     ("slack_threads", "slack_messages", "thread_id"),
     ("slack_threads", "slack_files", "thread_id"),
     ("slack_threads", "slack_thread_runs", "thread_id"),
-    ("slack_threads", "pulse_watches", "slack_thread_id"),
-    ("pulse_watches", "pulse_digests", "watch_id"),
-    ("pulse_watches", "pulse_requests", "watch_id"),
 ];
 
 fn err(e: sqlx::Error) -> String {
@@ -1279,9 +1273,7 @@ mod tests {
             "INSERT INTO slack_messages (thread_id, ts, seq, src_hash) VALUES ('st-P', '1.0', 0, 'h')",
             "INSERT INTO slack_files (id, thread_id, slack_file_id, name, created_at) VALUES ('sf-P', 'st-P', 'F-P', 'f', 'x')",
             "INSERT INTO slack_thread_runs (thread_id, run_id, project_id, source, linked_at) VALUES ('st-P', 'rn-P', 'pr-P', 'manual', 'x')",
-            "INSERT INTO pulse_watches (id, project_id, source_type, source_ref, source_url, added_via, slack_thread_id, added_run_id, created_at, updated_at) \
-             VALUES ('pw-P', 'pr-P', 'github_issue', 'o/r#P', 'u', 'button', 'st-P', 'rn-P', 'x', 'x')",
-            "INSERT INTO pulse_digests (id, watch_id, content_hash, status, ball, created_at) VALUES ('pd-P', 'pw-P', 'h', 'on_track', 'me', 'x')",
+            "INSERT INTO focus_day_plans (date, plan_json, created_at) VALUES ('day-P', '{}', 'x')",
         ];
         for s in stmts {
             exec(db, &s.replace("{home}", home).replace("-P", &format!("-{p}")).replace("#P", &format!("#{p}"))).await;
@@ -1316,7 +1308,6 @@ mod tests {
         exec(&db_b, "INSERT INTO project_secrets (project_id, pat_keyring_key) VALUES ('pr-B', 'k')").await;
         exec(&db_b, "INSERT INTO sync_conflicts (id, project_id, skill_id, detected_at, local_hash, source_hash) VALUES ('c1', 'pr-B', 'sk-B', 'x', 'l', 's')").await;
         exec(&db_b, "INSERT INTO conductor_sessions (id, project_id, created_at) VALUES ('cs', 'pr-B', 'x')").await;
-        exec(&db_b, "INSERT INTO pulse_requests (id, kind, watch_id, project_id, created_at) VALUES ('rq', 'refresh', 'pw-B', 'pr-B', 'x')").await;
         // b's data predates a's: the group's version of matched rows wins.
         exec(&db_b, "UPDATE sync_outbox SET changed_at = 1").await;
         let state = group_state(&a).await;
@@ -1334,7 +1325,7 @@ mod tests {
             let t = table(&p, tbl);
             assert_eq!((t.matched, t.rekeyed, t.new_remote, t.new_local), (1, 0, 0, 0), "{tbl} matches by pk after its parents");
         }
-        for tbl in ["runs", "notes", "todos", "slack_threads", "pulse_watches"] {
+        for tbl in ["runs", "notes", "todos", "slack_threads"] {
             let t = table(&p, tbl);
             assert_eq!((t.matched, t.new_remote, t.new_local), (0, 1, 1), "{tbl}");
         }
@@ -1357,7 +1348,6 @@ mod tests {
         assert_eq!(one("SELECT COUNT(*) FROM todos WHERE id = 'to-B' AND project_id = 'pr-A'").await, 1);
         assert_eq!(one("SELECT COUNT(*) FROM note_runs WHERE project_id = 'pr-A'").await, 2);
         assert_eq!(one("SELECT COUNT(*) FROM slack_threads WHERE project_id = 'pr-A'").await, 2);
-        assert_eq!(one("SELECT COUNT(*) FROM pulse_watches WHERE project_id = 'pr-A'").await, 2);
         assert_eq!(one("SELECT COUNT(*) FROM deleted_sessions WHERE project_id = 'pr-A'").await, 2);
         assert_eq!(one("SELECT COUNT(*) FROM projects WHERE github_account_id = 'gh-A' AND github_reviewer_account_id = 'gh-A' AND gitlab_account_id = 'gl-A' AND aws_account_id = 'aws-A' AND azure_account_id = 'az-A' AND claude_account_id = 'ca-A'").await, 1);
         assert_eq!(one("SELECT COUNT(*) FROM project_skills WHERE project_id = 'pr-A' AND skill_id = 'sk-A'").await, 1);
@@ -1367,7 +1357,6 @@ mod tests {
         assert_eq!(one("SELECT COUNT(*) FROM project_secrets WHERE project_id = 'pr-A'").await, 1);
         assert_eq!(one("SELECT COUNT(*) FROM sync_conflicts WHERE project_id = 'pr-A' AND skill_id = 'sk-A'").await, 1);
         assert_eq!(one("SELECT COUNT(*) FROM conductor_sessions WHERE project_id = 'pr-A'").await, 1);
-        assert_eq!(one("SELECT COUNT(*) FROM pulse_requests WHERE project_id = 'pr-A' AND watch_id = 'pw-B'").await, 1);
 
         // b pushes only what the group lacks, already under the group's ids.
         let ops = b.pending(100_000).await.unwrap();

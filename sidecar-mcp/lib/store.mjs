@@ -21,6 +21,8 @@ import {
   realpathSync,
 } from 'node:fs';
 import { dirname, join, resolve, relative, sep } from 'node:path';
+import { normalizeSource } from './todo-source.mjs';
+import { normDue, normDueTime, normInstant, normStatus, parseEstimate, parsePriority } from './todo-fields.mjs';
 
 let handle = null;
 
@@ -402,21 +404,39 @@ export function getRun(runId) {
 }
 
 // ---- Todos (global scratchpad) ---------------------------------------------
+//
+// Same invariants as src-tauri/src/commands/todos.rs: `status` is
+// todo|doing|waiting (default todo), `done` and `completed_at` change together
+// (un-doing returns to `todo`), `doing` stamps `started_at` once, every write
+// stamps `updated_at`, and a source link is normalised (lib/todo-source.mjs).
 
-/** A deadline as stored: `YYYY-MM-DD` (a real calendar date), or null to clear. */
-function normDue(due) {
-  if (due == null || String(due).trim() === '') return null;
-  const d = String(due).trim();
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d);
-  const date = m && new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
-  if (!date || date.toISOString().slice(0, 10) !== d) {
-    throw new Error(`invalid due date (want YYYY-MM-DD): ${d}`);
-  }
-  return d;
+const TODO_COLS = `t.id, t.text, t.done, t.position, t.created_at, t.project_id, t.due_date, t.due_time,
+  t.priority, t.estimate_min, t.estimate_source, t.status, t.snoozed_until, t.remind_at,
+  t.source_type, t.source_ref, t.source_url, t.started_at, t.completed_at, t.actual_min,
+  t.ai_analyzed_at, t.updated_at`;
+
+const TODO_SORTS = {
+  // Open first; earliest deadline (time-less = end of day), no deadline last;
+  // then priority and the list order. Done ones last, newest first.
+  due: `t.done ASC, (t.due_date IS NULL) ASC, t.due_date ASC, COALESCE(t.due_time, '99:99') ASC,
+        t.priority ASC, t.position ASC, t.completed_at DESC, t.created_at DESC`,
+  position: 't.position ASC, t.created_at DESC',
+};
+
+function requireTodo(id) {
+  if (!id) throw new Error('id is required');
+  const row = db().prepare('SELECT id, done, due_date, status, started_at FROM todos WHERE id = ?').get(id);
+  if (!row) throw new Error(`todo not found: ${id}`);
+  return row;
 }
 
-/** scope="project" narrows to the current project's todos; default spans all. */
-export function listTodos({ includeDone = true, scope = 'all' } = {}) {
+/**
+ * scope="project" narrows to the current project's todos; default spans all.
+ * sort="due" (default) or "position" (the quick list's manual order).
+ */
+export function listTodos({ includeDone = true, scope = 'all', sort = 'due' } = {}) {
+  const order = TODO_SORTS[sort];
+  if (!order) throw new Error('sort must be "due" or "position"');
   const clauses = [];
   const params = [];
   if (!includeDone) clauses.push('t.done = 0');
@@ -427,79 +447,128 @@ export function listTodos({ includeDone = true, scope = 'all' } = {}) {
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
   return db()
     .prepare(
-      `SELECT t.id, t.text, t.done, t.position, t.created_at, t.project_id, t.due_date, ${TODO_LINKS},
-              p.name AS project_name
+      `SELECT ${TODO_COLS}, ${TODO_LINKS}, p.name AS project_name
        FROM todos t LEFT JOIN projects p ON p.id = t.project_id
-       ${where} ORDER BY t.position ASC, t.created_at DESC`,
+       ${where} ORDER BY ${order}`,
     )
     .all(...params);
 }
 
 /** New todos go to the top (a position below the current minimum), like the app. */
-export function addTodo({ text, scope = 'project', due } = {}) {
+export function addTodo({ text, scope = 'project', due, due_time, priority, estimate, estimate_min, source_url } = {}) {
   const t = String(text || '').trim();
   if (!t) throw new Error('text is required');
   const dueDate = normDue(due);
+  const dueTime = normDueTime(due_time);
+  if (dueTime && !dueDate) throw new Error('due_time needs a due date');
+  const prio = priority == null || priority === '' ? 2 : parsePriority(priority);
+  const est = parseEstimate(estimate ?? estimate_min);
+  const src = normalizeSource(source_url);
   const projectId = scopedProjectId(scope);
   const min = db().prepare('SELECT MIN(position) AS m FROM todos').get();
   const position = (min && min.m != null ? min.m : 0) - 1;
   const id = randomUUID();
-  const now = nowIso();
+  const now = nowRfc3339();
   db()
     .prepare(
-      'INSERT INTO todos (id, text, done, position, created_at, project_id, due_date) VALUES (?, ?, 0, ?, ?, ?, ?)',
+      `INSERT INTO todos (id, text, done, position, created_at, project_id, due_date, due_time, priority,
+         estimate_min, estimate_source, status, source_type, source_ref, source_url, updated_at)
+       VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?)`,
     )
-    .run(id, t, position, now, projectId, dueDate);
-  return { id, text: t, project_id: projectId, due_date: dueDate };
+    .run(
+      id, t, position, now, projectId, dueDate, dueTime, prio, est, est == null ? null : 'user',
+      src?.source_type ?? null, src?.source_ref ?? null, src?.source_url ?? null, now,
+    );
+  return readTodo(id);
 }
 
 export function readTodo(id) {
   if (!id) throw new Error('id is required');
   return db()
     .prepare(
-      `SELECT t.id, t.text, t.done, t.position, t.created_at, t.project_id, t.due_date, ${TODO_LINKS},
-              p.name AS project_name
+      `SELECT ${TODO_COLS}, ${TODO_LINKS}, p.name AS project_name
        FROM todos t LEFT JOIN projects p ON p.id = t.project_id WHERE t.id = ?`,
     )
     .get(id);
 }
 
-export function setTodoDone({ id, done = true } = {}) {
-  if (!id) throw new Error('id is required');
-  const row = db().prepare('SELECT id FROM todos WHERE id = ?').get(id);
-  if (!row) throw new Error(`todo not found: ${id}`);
-  db().prepare('UPDATE todos SET done = ? WHERE id = ?').run(done ? 1 : 0, id);
+function writeDone(id, done) {
+  const now = nowRfc3339();
+  db()
+    .prepare(
+      `UPDATE todos SET done = ?,
+         completed_at = CASE WHEN ? = 0 THEN NULL WHEN done = 1 AND completed_at IS NOT NULL THEN completed_at ELSE ? END,
+         status = CASE WHEN ? = 0 AND done = 1 THEN 'todo' ELSE status END,
+         updated_at = ?
+       WHERE id = ?`,
+    )
+    .run(done ? 1 : 0, done ? 1 : 0, now, done ? 1 : 0, now, id);
   return { id, done: !!done };
+}
+
+export function setTodoDone({ id, done = true } = {}) {
+  requireTodo(id);
+  return writeDone(id, done);
 }
 
 /** Flip done state without having to read it first. */
 export function toggleTodo({ id } = {}) {
-  if (!id) throw new Error('id is required');
-  const row = db().prepare('SELECT id, done FROM todos WHERE id = ?').get(id);
-  if (!row) throw new Error(`todo not found: ${id}`);
-  const done = !row.done;
-  db().prepare('UPDATE todos SET done = ? WHERE id = ?').run(done ? 1 : 0, id);
-  return { id, done };
+  const row = requireTodo(id);
+  return writeDone(id, !row.done);
 }
 
-export function updateTodo({ id, text } = {}) {
-  if (!id) throw new Error('id is required');
-  const t = String(text || '').trim();
-  if (!t) throw new Error('text is required');
-  const row = db().prepare('SELECT id FROM todos WHERE id = ?').get(id);
-  if (!row) throw new Error(`todo not found: ${id}`);
-  db().prepare('UPDATE todos SET text = ? WHERE id = ?').run(t, id);
-  return { id, text: t };
+/**
+ * Patch a todo: text, priority, estimate, status, snooze_until (RFC3339; "" /
+ * null clears). Keys left out are untouched.
+ */
+export function updateTodo({ id, text, priority, estimate, estimate_min, status, snooze_until } = {}) {
+  const row = requireTodo(id);
+  const sets = [];
+  const params = [];
+  const set = (col, v) => {
+    sets.push(`${col} = ?`);
+    params.push(v);
+  };
+  if (text !== undefined) {
+    const t = String(text ?? '').trim();
+    if (!t) throw new Error('text is required');
+    set('text', t);
+  }
+  if (priority !== undefined && priority !== null) set('priority', parsePriority(priority));
+  const est = estimate !== undefined ? estimate : estimate_min;
+  if (est !== undefined) {
+    const m = parseEstimate(est);
+    set('estimate_min', m);
+    set('estimate_source', m == null ? null : 'user');
+  }
+  if (status !== undefined && status !== null) {
+    const st = normStatus(status);
+    set('status', st);
+    if (st === 'doing' && !row.started_at) set('started_at', nowRfc3339());
+  }
+  if (snooze_until !== undefined) set('snoozed_until', normInstant('snooze_until', snooze_until));
+  if (!sets.length) throw new Error('nothing to update (pass text, priority, estimate, status or snooze_until)');
+  set('updated_at', nowRfc3339());
+  db().prepare(`UPDATE todos SET ${sets.join(', ')} WHERE id = ?`).run(...params, id);
+  return readTodo(id);
 }
 
-/** Set a todo's deadline (`YYYY-MM-DD`), or clear it with an empty / null due. */
-export function setTodoDue({ id, due } = {}) {
-  if (!id) throw new Error('id is required');
+/**
+ * Set a todo's deadline (`YYYY-MM-DD`, optional `HH:MM` time; no time key
+ * keeps the current one), or clear both with an empty / null due.
+ */
+export function setTodoDue({ id, due, due_time } = {}) {
+  const row = requireTodo(id);
   const dueDate = normDue(due);
-  const row = db().prepare('SELECT id FROM todos WHERE id = ?').get(id);
-  if (!row) throw new Error(`todo not found: ${id}`);
-  db().prepare('UPDATE todos SET due_date = ? WHERE id = ?').run(dueDate, id);
-  return { id, due_date: dueDate };
+  // Like the app: no due_time key keeps the current time (dropped with the
+  // date); null / "" makes it an all-day deadline.
+  const kept = due_time === undefined ? db().prepare('SELECT due_time FROM todos WHERE id = ?').get(row.id).due_time : null;
+  const dueTime = dueDate ? (due_time === undefined ? kept : normDueTime(due_time)) : null;
+  if (normDueTime(due_time ?? null) && !dueDate) throw new Error('due_time needs a due date');
+  db()
+    .prepare('UPDATE todos SET due_date = ?, due_time = ?, updated_at = ? WHERE id = ?')
+    .run(dueDate, dueTime, nowRfc3339(), id);
+  return { id, due_date: dueDate, due_time: dueTime };
 }
 
 export function deleteTodos({ ids } = {}) {
@@ -526,16 +595,9 @@ export function clearDoneTodos() {
 
 /** Link a todo to the current project, or detach it with scope="global". */
 export function setTodoProject({ id, scope = 'project' } = {}) {
-  if (!id) throw new Error('id is required');
-  if (!db().prepare('SELECT id FROM todos WHERE id = ?').get(id)) {
-    throw new Error(`todo not found: ${id}`);
-  }
-  if (scope === 'global') {
-    db().prepare('UPDATE todos SET project_id = NULL WHERE id = ?').run(id);
-    return { id, project_id: null };
-  }
-  const projectId = requireProject();
-  db().prepare('UPDATE todos SET project_id = ? WHERE id = ?').run(projectId, id);
+  requireTodo(id);
+  const projectId = scope === 'global' ? null : requireProject();
+  db().prepare('UPDATE todos SET project_id = ?, updated_at = ? WHERE id = ?').run(projectId, nowRfc3339(), id);
   return { id, project_id: projectId };
 }
 

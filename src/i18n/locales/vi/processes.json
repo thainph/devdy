@@ -12,13 +12,13 @@
     "leftoverHint": "Phiên đã kết thúc nhưng các tiến trình nó khởi chạy vẫn còn sống.",
     "sessions": "Phiên làm việc",
     "services": "Dịch vụ ứng dụng",
-    "servicesHint": "Các tiến trình hỗ trợ của Devdy (dịch, Pulse, mascot, kiểm tra model, kiểm tra MCP, ssh-agent)."
+    "servicesHint": "Các tiến trình hỗ trợ của Devdy (dịch, mascot, kiểm tra model, kiểm tra MCP, ssh-agent)."
   },
   "kind": {
     "run": "Phiên",
     "translate": "Dịch",
     "slack_translate": "Dịch Slack",
-    "pulse_digest": "Tổng hợp Pulse",
+    "focus_ai": "AI Focus",
     "mascot": "Mascot",
     "probe": "Kiểm tra model",
     "mcp_test": "Kiểm tra MCP",

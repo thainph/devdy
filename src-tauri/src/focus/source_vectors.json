@@ -1,0 +1,96 @@
+[
+  { "input": "", "type": null },
+  { "input": "   ", "type": null },
+  {
+    "input": "https://malme.slack.com/archives/C0B83GHDTFG/p1789877283026359",
+    "type": "slack",
+    "ref": "slack:malme/C0B83GHDTFG/1789877283.026359",
+    "url": "https://malme.slack.com/archives/C0B83GHDTFG/p1789877283026359"
+  },
+  {
+    "input": " <https://Malme.slack.com/archives/C0B83GHDTFG/p1789877300000100?thread_ts=1789877283.026359&cid=C0B83GHDTFG> ",
+    "type": "slack",
+    "ref": "slack:malme/C0B83GHDTFG/1789877283.026359",
+    "url": "https://Malme.slack.com/archives/C0B83GHDTFG/p1789877300000100?thread_ts=1789877283.026359&cid=C0B83GHDTFG"
+  },
+  {
+    "input": "https://acme.enterprise.slack.com/archives/G0123456789/p1789877283026359",
+    "type": "slack",
+    "ref": "slack:acme.enterprise/G0123456789/1789877283.026359",
+    "url": "https://acme.enterprise.slack.com/archives/G0123456789/p1789877283026359"
+  },
+  {
+    "input": "https://malme.slack.com/archives/D0B83GHDTFG/p1789877283026359",
+    "type": "url",
+    "ref": null,
+    "url": "https://malme.slack.com/archives/D0B83GHDTFG/p1789877283026359"
+  },
+  {
+    "input": "https://github.com/Papay-VN/Devdy/issues/123",
+    "type": "github",
+    "ref": "github:papay-vn/devdy#123",
+    "url": "https://github.com/Papay-VN/Devdy/issues/123"
+  },
+  {
+    "input": "https://www.github.com/papay/devdy/pull/45/files?w=1#diff",
+    "type": "github",
+    "ref": "github:papay/devdy#45",
+    "url": "https://www.github.com/papay/devdy/pull/45/files?w=1#diff"
+  },
+  {
+    "input": "http://github.com/a/b.c_d-e/issues/7/",
+    "type": "github",
+    "ref": "github:a/b.c_d-e#7",
+    "url": "http://github.com/a/b.c_d-e/issues/7/"
+  },
+  {
+    "input": "https://github.com/papay/devdy",
+    "type": "url",
+    "ref": null,
+    "url": "https://github.com/papay/devdy"
+  },
+  {
+    "input": "https://github.com/papay/devdy/issues/0",
+    "type": "url",
+    "ref": null,
+    "url": "https://github.com/papay/devdy/issues/0"
+  },
+  { "input": "Papay/Devdy#12", "type": "github", "ref": "github:papay/devdy#12", "url": "Papay/Devdy#12" },
+  {
+    "input": "https://gitlab.com/Group/Sub/Proj/-/issues/9",
+    "type": "gitlab",
+    "ref": "gitlab:group/sub/proj#9",
+    "url": "https://gitlab.com/Group/Sub/Proj/-/issues/9"
+  },
+  {
+    "input": "https://git.example.co/team/app/-/merge_requests/31/diffs",
+    "type": "gitlab",
+    "ref": "gitlab:team/app!31",
+    "url": "https://git.example.co/team/app/-/merge_requests/31/diffs"
+  },
+  {
+    "input": "https://gitlab.com/team/app/-/pipelines/31",
+    "type": "url",
+    "ref": null,
+    "url": "https://gitlab.com/team/app/-/pipelines/31"
+  },
+  {
+    "input": "run:0b9d7c1e-1f2a-4c3b-9d8e-7f6a5b4c3d2e",
+    "type": "run",
+    "ref": "run:0b9d7c1e-1f2a-4c3b-9d8e-7f6a5b4c3d2e",
+    "url": "run:0b9d7c1e-1f2a-4c3b-9d8e-7f6a5b4c3d2e"
+  },
+  { "input": "devdy://run/abc_123/", "type": "run", "ref": "run:abc_123", "url": "devdy://run/abc_123/" },
+  { "input": "run:", "error": true },
+  { "input": "run:a b", "error": true },
+  {
+    "input": "https://docs.google.com/document/d/abc/edit",
+    "type": "url",
+    "ref": null,
+    "url": "https://docs.google.com/document/d/abc/edit"
+  },
+  { "input": "hello world", "error": true },
+  { "input": "#12", "error": true },
+  { "input": "ftp://example.com/x", "error": true },
+  { "input": "https:// bad host", "error": true }
+]

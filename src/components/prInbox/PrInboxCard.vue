@@ -12,7 +12,7 @@
 // meta row sheds, in order: other reviewers (< 52rem) → labels (< 44rem) →
 // time (< 38rem; a stale time is never hidden) → author (< 36rem). Title and
 // the action button always stay (the button goes icon-only, title + aria-label
-// kept).
+// kept). "+ Todo" (icon) files a todo for the PR (Focus §3.1).
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { openUrl } from '@tauri-apps/plugin-opener'
@@ -21,6 +21,7 @@ import type { PrGroupBy } from '@/lib/prInboxGrouping'
 import { isStale, reviewerAccountsOf, STALE_AFTER_DAYS } from '@/lib/prInboxFilters'
 import { runStatusDotClass } from '@/lib/runDisplay'
 import { Button, Card, Badge } from '@/components/ui'
+import AddTodoButton from '@/components/focus/AddTodoButton.vue'
 import PrAvatar from './PrAvatar.vue'
 import {
   RefreshCw, Sparkles, FolderPlus, ExternalLink, User, Users, Eye, Bot, MoreHorizontal, Tag,
@@ -75,6 +76,12 @@ const showAccountChip = computed(() =>
 
 const fullRef = computed(() => `${props.item.owner}/${props.item.repo}#${props.item.number}`)
 const repoText = computed(() => (props.showOwner ? `${props.item.owner}/${props.item.repo}` : props.item.repo))
+
+const todoPrefill = computed(() => ({
+  text: t('focus.capture.reviewPr', { title: props.item.title, number: props.item.number }),
+  projectId: props.item.project_id,
+  sourceUrl: props.item.html_url,
+}))
 
 const stale = computed(() => isStale(props.item.updated_at, props.now))
 const labels = computed(() => props.item.labels ?? [])
@@ -316,6 +323,12 @@ function relativeTime(iso: string): string {
         <FolderPlus class="h-3.5 w-3.5" :stroke-width="2" />
         <span v-if="!compact" class="hidden @[36rem]/list:inline">{{ t('prInbox.addToDevdy') }}</span>
       </Button>
+      <AddTodoButton
+        :prefill="todoPrefill"
+        variant="icon"
+        button-variant="ghost"
+        :size="compact ? 'icon-sm' : 'icon'"
+      />
       <Button
         variant="ghost"
         :size="compact ? 'icon-sm' : 'icon'"

@@ -456,19 +456,6 @@ pub async fn load_style(db: &Db) -> Result<String, String> {
     Ok(load_settings(db).await?.style)
 }
 
-/// `engine:model` the warm sidecar runs with (claude without a model uses
-/// haiku), recorded with what it produced (e.g. Pulse digests).
-pub async fn load_engine_model(db: &Db) -> Result<String, String> {
-    let s = load_settings(db).await?;
-    let engine = s.engine.trim().to_ascii_lowercase();
-    let model = match s.model.trim() {
-        "" if engine != "codex" => "haiku",
-        "" => "default",
-        m => m,
-    };
-    Ok(format!("{engine}:{model}"))
-}
-
 /// The user's `translate_target_lang` setting (`vi` when unset).
 pub async fn load_default_target(db: &Db) -> Result<String, String> {
     Ok(load_settings(db).await?.default_target)
@@ -489,7 +476,7 @@ fn build_prompt(source: &str, target_name: &str, style: &str) -> String {
 }
 
 /// Options that open the warm claude session. Every caller of this engine (UI
-/// translate, Inbox API, Slack thread translate, Project Pulse digests) feeds it
+/// translate, Inbox API, Slack thread translate, Focus AI) feeds it
 /// UNTRUSTED text, so the session is tool-less: `noTools` makes the sidecar
 /// strip every tool/MCP source and deny any call — a prompt injection in a Slack
 /// message or GitHub comment must not reach Bash/Write/WebFetch. Never pair it
@@ -589,7 +576,7 @@ fn proc_label(kind: crate::procs::ProcKind, is_codex: bool) -> String {
     use crate::procs::ProcKind;
     let what = match kind {
         ProcKind::SlackTranslate => "Slack translation session",
-        ProcKind::PulseDigest => "Pulse digest session",
+        ProcKind::FocusAi => "Focus AI session",
         _ => "Translation session",
     };
     format!("{what} ({})", if is_codex { "codex" } else { "claude" })
@@ -867,8 +854,33 @@ pub async fn submit_prompt(
     submit_with(app, state, &settings, prompt, want_events).await
 }
 
-/// Shared body of `submit` / `submit_prompt`: ensure a warm sidecar, enqueue
-/// the turn and write the prompt.
+/// [`submit_prompt`] with the engine / model swapped for `engine` / `model`
+/// (Focus AI settings; empty = the translate ones). A new engine without a
+/// model uses that engine's default.
+pub async fn submit_prompt_as(
+    app: &AppHandle,
+    db: &Db,
+    state: &TranslateState,
+    prompt: String,
+    engine: &str,
+    model: &str,
+) -> Result<(u64, Option<UnboundedReceiver<TurnEvent>>), String> {
+    if prompt.trim().is_empty() {
+        return Err(ERR_NOTHING_TO_TRANSLATE.to_string());
+    }
+    let mut settings = load_settings(db).await?;
+    if !engine.trim().is_empty() && !engine.trim().eq_ignore_ascii_case(settings.engine.trim()) {
+        settings.engine = engine.trim().to_ascii_lowercase();
+        settings.model = String::new();
+    }
+    if !model.trim().is_empty() {
+        settings.model = model.trim().to_string();
+    }
+    submit_with(app, state, &settings, prompt, true).await
+}
+
+/// Shared body of `submit` / `submit_prompt` / `submit_prompt_as`: ensure a
+/// warm sidecar, enqueue the turn and write the prompt.
 async fn submit_with(
     app: &AppHandle,
     state: &TranslateState,

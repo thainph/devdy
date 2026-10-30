@@ -6,9 +6,9 @@
 //   • Quick notes  — full CRUD over Devdy's markdown scratchpad (per-project or global)
 //   • Slack threads (slack_threads_*) fetched + translated to Vietnamese by the app:
 //     list/read (Vietnamese, original on request)/search/rename/set_project/delete
-//   • Project Pulse (pulse_*) — watch Slack threads / GitHub issues, read progress digests
 //   • Session recall — search & read past run transcripts across sessions
-//   • Todos / project context / VPS — full CRUD on quick tasks, git, managed servers
+//   • Todos / project context / VPS — full CRUD on todos (deadline, priority, estimate,
+//     status, source; ranked in the app's Focus board), git, managed servers
 //   • Skills & Rules library — CRUD the reusable skill/rule definitions (source-only)
 //
 // Scope: env `DEVDY_PROJECT_ID` / `DEVDY_PROJECT_PATH` pin the "current project";
@@ -21,13 +21,26 @@ import { readRunTranscript, renderTranscript, findSnippet } from './lib/transcri
 import { fileTree, gitStatus, gitDiff } from './lib/project.mjs';
 import { runOnServer } from './lib/ssh.mjs';
 import { slackThreadTools } from './lib/slack-thread-tools.mjs';
-import { pulseTools } from './lib/pulse-tools.mjs';
+import { formatEstimate } from './lib/todo-fields.mjs';
 
 const SERVER_INFO = { name: 'devdy', version: '0.1.0' };
 const DEFAULT_PROTOCOL = '2025-06-18';
 
 const log = (...a) => process.stderr.write(`[devdy-mcp] ${a.join(' ')}\n`);
 const firstLine = (s = '') => String(s).split('\n').find((l) => l.trim()) || '';
+// One todo as a list line: `- [ ] text · due 2026-10-30 15:00 · P1 · ~2h · doing · …  (id)`.
+const todoLine = (t) => {
+  const bits = [];
+  if (t.due_date) bits.push(`due ${t.due_date}${t.due_time ? ` ${t.due_time}` : ''}`);
+  if (t.priority != null && t.priority !== 2) bits.push(`P${t.priority}`);
+  if (t.estimate_min != null) bits.push(`~${formatEstimate(t.estimate_min)}`);
+  if (!t.done && t.status && t.status !== 'todo') bits.push(t.status);
+  if (!t.done && t.snoozed_until) bits.push(`snoozed until ${t.snoozed_until}`);
+  if (t.project_name) bits.push(t.project_name);
+  if (t.source_url) bits.push(`source ${t.source_ref || t.source_url}`);
+  if (t.linked_runs) bits.push(`sessions: ${t.linked_runs}`);
+  return `- [${t.done ? 'x' : ' '}] ${t.text}${bits.map((b) => ` · ${b}`).join('')}  (${t.id})`;
+};
 // A one-line excerpt centred on the first case-insensitive hit; falls back to the
 // head of the text when the match was in the title rather than the body.
 const snippetAround = (text = '', query = '', width = 120) => {
@@ -217,11 +230,6 @@ const tools = {
   // read-mostly tools (see lib/slack-thread-tools.mjs).
   ...slackThreadTools({ snippetAround }),
 
-  // ---- Project Pulse -----------------------------------------------------------
-  // Watch list + AI progress digests (migration 0050); writes SQLite only and
-  // the app resolves / refreshes (see lib/pulse-tools.mjs).
-  ...pulseTools(),
-
   sessions_recent: {
     description:
       'List recent Devdy runs/sessions (chat history) with duration, tokens and cost. Defaults to the current project; scope="all" spans every project. Pass from/to (local YYYY-MM-DD, inclusive) to list a day or date range — e.g. for a daily work summary — and get totals. Use the returned run ids with session_read.',
@@ -328,57 +336,61 @@ const tools = {
 
   todos_list: {
     description:
-      'List Devdy todos (quick task list), top priority first. Set include_done=false to hide completed items, or scope="project" to only show the current project\'s todos. Each line shows the deadline (due YYYY-MM-DD) and the linked session (run) ids, when any.',
+      'List Devdy todos. Default sort="due": open todos first by deadline (date, then time; no deadline last), then priority; sort="position" gives the manual list order. Set include_done=false to hide completed items, or scope="project" to only show the current project\'s todos. Each line shows deadline, priority, estimate, status, snooze, project, source link and linked session (run) ids. This is not the recommended work order: open Focus in Devdy for the recommended order.',
     inputSchema: {
       type: 'object',
       properties: {
         include_done: { type: 'boolean' },
         scope: { type: 'string', enum: ['all', 'project'], description: 'all (default) or project' },
+        sort: { type: 'string', enum: ['due', 'position'], description: 'due (default) or position' },
       },
     },
     handler: (a) => {
-      const rows = store.listTodos({ includeDone: a.include_done !== false, scope: a.scope });
+      const rows = store.listTodos({ includeDone: a.include_done !== false, scope: a.scope, sort: a.sort || 'due' });
       if (!rows.length) return 'No todos.';
-      return rows
-        .map(
-          (t) =>
-            `- [${t.done ? 'x' : ' '}] ${t.text}${t.due_date ? ` · due ${t.due_date}` : ''}${t.project_name ? ` · ${t.project_name}` : ''}${t.linked_runs ? ` · sessions: ${t.linked_runs}` : ''}  (${t.id})`,
-        )
-        .join('\n');
+      return rows.map(todoLine).join('\n');
     },
   },
 
   todos_add: {
     description:
-      'Add a todo. Links to the current project by default; pass scope="global" for a project-less task. Optionally set a deadline with due="YYYY-MM-DD". Use this to capture follow-up work that surfaces during a session.',
+      'Add a todo. Links to the current project by default; pass scope="global" for a project-less task. Optional: deadline due="YYYY-MM-DD" (+ due_time="HH:MM", 24 h), priority 1–3 or "P1".."P3" (default 2), estimate ("30m", "2h", "1h30" or minutes, 5–2400), source_url (Slack thread, GitHub/GitLab issue or PR, run:<id>, or any URL). Use this to capture follow-up work that surfaces during a session; open Focus in Devdy for the recommended order.',
     inputSchema: {
       type: 'object',
       properties: {
         text: { type: 'string' },
         scope: { type: 'string', enum: ['project', 'global'] },
         due: { type: 'string', description: 'Deadline, YYYY-MM-DD (local date)' },
+        due_time: { type: 'string', description: 'Deadline time, HH:MM 24 h (needs due)' },
+        priority: { type: ['integer', 'string'], description: '1 (high) – 3 (low), or "P1".."P3"; default 2' },
+        estimate: { type: ['string', 'integer'], description: '"30m", "2h", "1h30" or minutes' },
+        source_url: { type: 'string', description: 'Where the work comes from (link)' },
       },
       required: ['text'],
     },
     handler: (a) => {
       const t = store.addTodo(a);
-      return `Added todo ${t.id}${t.project_id ? '' : ' (global)'}${t.due_date ? `, due ${t.due_date}` : ''}.`;
+      return `Added todo ${t.id}${t.project_id ? '' : ' (global)'}: ${todoLine(t).replace(/^- \[ \] /, '')}`;
     },
   },
 
   todos_set_due: {
-    description: 'Set a todo\'s deadline (due="YYYY-MM-DD", a local date), or clear it by omitting due / passing "".',
+    description:
+      'Set a todo\'s deadline (due="YYYY-MM-DD", a local date, plus optional due_time="HH:MM"; leave due_time out to keep the current time, "" for all day), or clear both by omitting due / passing "".',
     inputSchema: {
       type: 'object',
       properties: {
         id: { type: 'string' },
         due: { type: 'string', description: 'YYYY-MM-DD; omit or "" to clear' },
+        due_time: { type: 'string', description: 'HH:MM 24 h; omit to keep the current time, "" for all day' },
       },
       required: ['id'],
     },
     handler: (a) => {
       const r = store.setTodoDue(a);
-      return r.due_date ? `Todo ${r.id} is due ${r.due_date}.` : `Cleared the deadline of todo ${r.id}.`;
+      return r.due_date
+        ? `Todo ${r.id} is due ${r.due_date}${r.due_time ? ` ${r.due_time}` : ''}.`
+        : `Cleared the deadline of todo ${r.id}.`;
     },
   },
 
@@ -399,15 +411,23 @@ const tools = {
   },
 
   todos_update: {
-    description: 'Rewrite a todo\'s text.',
+    description:
+      'Update a todo: text, priority (1–3 or "P1".."P3"), estimate ("30m", "2h", "1h30" or minutes; "" clears), status ("todo", "doing" = working on it now, "waiting" = blocked on someone else) and snooze_until (RFC3339 date-time, e.g. 2026-10-30T14:00:00+07:00; "" clears). Only the fields passed change. Open Focus in Devdy for the recommended order.',
     inputSchema: {
       type: 'object',
-      properties: { id: { type: 'string' }, text: { type: 'string' } },
-      required: ['id', 'text'],
+      properties: {
+        id: { type: 'string' },
+        text: { type: 'string' },
+        priority: { type: ['integer', 'string'] },
+        estimate: { type: ['string', 'integer'] },
+        status: { type: 'string', enum: ['todo', 'doing', 'waiting'] },
+        snooze_until: { type: 'string', description: 'RFC3339; "" to un-snooze' },
+      },
+      required: ['id'],
     },
     handler: (a) => {
       const r = store.updateTodo(a);
-      return `Updated todo ${r.id}.`;
+      return `Updated todo ${r.id}: ${todoLine(r).replace(/^- \[.\] /, '')}`;
     },
   },
 
@@ -945,7 +965,7 @@ function handle(msg) {
       try {
         const text = tool.handler((params && params.arguments) || {});
         if (text && typeof text.then === 'function') {
-          // Async tool (e.g. pulse_status waiting on the app): keep the process
+          // Async tool (e.g. one waiting on the app or a server): keep the process
           // alive until it answers, even if stdin closes meanwhile.
           inflight += 1;
           text.then(ok, fail).finally(() => {

@@ -41,6 +41,8 @@ import { useRunsStore } from '@/stores/runs'
 import { useProjectsStore } from '@/stores/projects'
 import { useBackgroundProcessesStore } from '@/stores/backgroundProcesses'
 import { TRAY_PROCS_ID, trayCount } from '@/lib/backgroundProcesses'
+import { useFocusStore } from '@/stores/focus'
+import { TRAY_FOCUS_ID, trayBadge } from '@/lib/focusTray'
 
 type TrayItem =
   | { kind: 'item'; id: string; label: string }
@@ -120,7 +122,7 @@ function rawLabelFor(windowLabel: string, osTitle: string): string {
   if (windowLabel === 'slack-threads') return meaningful || t('slackThread.window.title')
   if (windowLabel === 'pr-inbox') return meaningful || t('prInbox.window.title')
   if (windowLabel === 'calendar') return meaningful || t('calendar.window.title')
-  if (windowLabel === 'pulse') return meaningful || t('pulse.window.title')
+  if (windowLabel === 'focus') return meaningful || t('focus.window.title')
   // Unknown / future window kind: best effort — its title, else the raw label.
   return meaningful || windowLabel
 }
@@ -173,7 +175,22 @@ const mark = (pending: number) => (pending > 0 ? '⚠ ' : '● ')
  * source to resend the menu whenever the section's contents change.
  */
 export function buildSessionItems(): TrayItem[] {
-  return [...buildRunItems(), ...buildProcessItems()]
+  return [...buildFocusItems(), ...buildRunItems(), ...buildProcessItems()]
+}
+
+// "Focus (N overdue)": opens the Focus window (Rust raises it, or asks this
+// window to create it — `focus:open-window`). Lives in the main-window-owned
+// section because only the main window keeps the board loaded.
+function buildFocusItems(): TrayItem[] {
+  const overdue = useFocusStore().overdueCount
+  return [
+    {
+      kind: 'item',
+      id: TRAY_FOCUS_ID,
+      label: overdue > 0 ? t('tray.focusOverdue', { count: overdue }) : t('tray.focus'),
+    },
+    { kind: 'separator' },
+  ]
 }
 
 // "Background processes (N)": sessions plus processes left behind, so stray dev
@@ -328,8 +345,8 @@ export async function refreshTray(): Promise<void> {
       /* outside the Tauri shell */
     }
     if (isMain) {
-      const runningCount = useLiveRunsStore().runningIds.length
-      spec.title = runningCount > 0 ? String(runningCount) : ''
+      // Running sessions, then overdue Focus todos (`2 ⏰3`).
+      spec.title = trayBadge(useLiveRunsStore().runningIds.length, useFocusStore().overdueCount)
       spec.sessions = buildSessionItems()
     }
 

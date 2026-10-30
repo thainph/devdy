@@ -12,13 +12,13 @@
     "leftoverHint": "Their session ended, but processes it started are still alive.",
     "sessions": "Sessions",
     "services": "App services",
-    "servicesHint": "Devdy's own helpers (translation, Pulse, mascot, probes, MCP tests, ssh-agent)."
+    "servicesHint": "Devdy's own helpers (translation, mascot, probes, MCP tests, ssh-agent)."
   },
   "kind": {
     "run": "Session",
     "translate": "Translate",
     "slack_translate": "Slack translate",
-    "pulse_digest": "Pulse digest",
+    "focus_ai": "Focus AI",
     "mascot": "Mascot",
     "probe": "Model probe",
     "mcp_test": "MCP test",

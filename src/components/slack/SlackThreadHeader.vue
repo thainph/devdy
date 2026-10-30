@@ -6,9 +6,8 @@
 // whole-thread "Show original" toggle (primary while on), Refresh (spinner +
 // disabled while a job runs), Open in Slack and the ⋯ menu (New session from
 // this thread — disabled without a project · Copy ID · Re-translate — disabled
-// while a job runs · Delete). "Watch" toggles the thread in Project Pulse
-// (asks for a project first when the thread has none). The host
-// confirms deletes and shows the toasts.
+// while a job runs · Delete). "+ Todo" creates a todo from the thread (title,
+// project and link prefilled). The host confirms deletes and shows the toasts.
 //
 // Narrow pane: the title gives way first (down to 6rem), then the project name
 // truncates.
@@ -22,8 +21,7 @@ import { formatFullDate } from '@/lib/slackThreadUtils'
 import { isBusy, type SlackThreadRunLink, type SlackThreadSummary } from '@/stores/slackThreads'
 import LinkedSessionsMenu from '@/components/sessions/LinkedSessionsMenu.vue'
 import DetailActionsMenu from '@/components/sessions/DetailActionsMenu.vue'
-import PulseWatchButton from '@/components/pulse/PulseWatchButton.vue'
-import { slackSourceRef } from '@/lib/pulse'
+import AddTodoButton from '@/components/focus/AddTodoButton.vue'
 import type { SessionLink } from '@/lib/sessionLinks'
 
 const props = defineProps<{
@@ -64,10 +62,10 @@ const meta = computed(() => {
   return [channel, th.workspace ?? th.workspaceDomain ?? ''].filter(Boolean).join(' · ')
 })
 
-const pulseSource = computed(() => ({
-  type: 'slack' as const,
-  ref: slackSourceRef(props.thread.channelId, props.thread.threadTs),
-  url: props.thread.threadUrl,
+const todoPrefill = computed(() => ({
+  text: props.thread.title,
+  projectId: props.thread.projectId,
+  sourceUrl: props.thread.threadUrl,
 }))
 
 const metaTitle = computed(() =>
@@ -128,13 +126,7 @@ const metaTitle = computed(() =>
         @unlink-run="emit('unlinkRun', $event)"
         @link="emit('linkRun', $event)"
       />
-      <PulseWatchButton
-        v-if="!thread.legacy && pulseSource.ref"
-        :source="pulseSource"
-        :project-id="thread.projectId"
-        variant="label"
-        @project-chosen="emit('setProject', $event)"
-      />
+      <AddTodoButton :prefill="todoPrefill" variant="label" />
       <div class="mx-0.5 h-4 w-px shrink-0 bg-border" aria-hidden="true" />
       <Button
         :variant="showOriginal ? 'primary' : 'outline'"

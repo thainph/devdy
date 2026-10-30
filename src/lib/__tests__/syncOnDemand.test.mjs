@@ -35,9 +35,9 @@ import {
 import { syncErrorCode } from '../syncCore.ts'
 
 test('setCategory keeps known ids in display order', () => {
-  assert.deepEqual(setCategory([], 'pulse', false), ['pulse'])
-  assert.deepEqual(setCategory(['pulse'], 'config', false), ['config', 'pulse'])
-  assert.deepEqual(setCategory(['config', 'pulse'], 'config', true), ['pulse'])
+  assert.deepEqual(setCategory([], 'slack', false), ['slack'])
+  assert.deepEqual(setCategory(['slack'], 'config', false), ['config', 'slack'])
+  assert.deepEqual(setCategory(['config', 'slack'], 'config', true), ['slack'])
   assert.deepEqual(setCategory(['bogus', 'notes'], 'notes', true), [])
   assert.deepEqual(setCategory(['notes'], 'notes', false), ['notes'])
 })
@@ -48,7 +48,7 @@ test('allCategoriesOn / categoriesEnabled', () => {
   assert.equal(allCategoriesOn(['secrets']), false)
   assert.deepEqual(categoriesEnabled(['notes', 'slack'], ['slack']), ['notes'])
   assert.ok(SYNC_CATEGORY_IDS.includes('secrets'))
-  assert.equal(SYNC_CATEGORY_IDS.length, 10)
+  assert.equal(SYNC_CATEGORY_IDS.length, 9)
 })
 
 test('parseExcludes trims, drops blanks / comments / duplicates', () => {

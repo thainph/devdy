@@ -2,10 +2,10 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { ZoomIn, ZoomOut, CalendarOff, User, Eye, EyeOff, Loader2, Activity, ExternalLink } from 'lucide-vue-next'
+import { ZoomIn, ZoomOut, CalendarOff, User, Eye, EyeOff, Loader2, ListPlus, ExternalLink } from 'lucide-vue-next'
 import { ContextMenu, DropdownItem } from '@/components/ui'
-import { usePulseWatch } from '@/composables/usePulseWatch'
-import { githubIssueRef } from '@/lib/pulse'
+import TodoCaptureModal from '@/components/focus/TodoCaptureModal.vue'
+import type { TodoPrefill } from '@/lib/focus'
 import {
   useProjectIssuesStore,
   type MilestoneGroup,
@@ -22,7 +22,7 @@ const props = defineProps<{
   expanded?: Set<string>
   /** Milestone titles (lowercased) whose closed issues are being fetched. */
   loading?: Set<string>
-  /** Project of the board: issues are watched in Pulse under it. */
+  /** Project of the board: todos made from its issues are filed under it. */
   projectId?: string | null
 }>()
 const emit = defineEmits<{ (e: 'toggle-closed', title: string): void }>()
@@ -84,8 +84,8 @@ const lanes = computed<Lane[]>(() => {
         if (end < start) end = start
         bars.push({ issue, start, end, inferredStart: !issue.startDate })
       }
-      // Unassigned sorts last (￿) when ordering by assignee.
-      const assigneeKey = (b: Bar) => (b.issue.assignees[0]?.toLowerCase() ?? '￿')
+      // Unassigned sorts last (U+FFFF) when ordering by assignee.
+      const assigneeKey = (b: Bar) => (b.issue.assignees[0]?.toLowerCase() ?? '\uFFFF')
       bars.sort((a, b) => {
         if (props.sortBy === 'assignee') {
           const ka = assigneeKey(a)
@@ -246,24 +246,25 @@ function open(issue: IssueRow) {
   openUrl(issue.htmlUrl).catch(() => {})
 }
 
-// Row menu (right-click): watch / unwatch the issue in Project Pulse (§3.2),
-// open it on GitHub. Watched rows carry a small Pulse mark.
-const pulse = usePulseWatch()
+// Row menu (right-click): "+ Todo" from the issue (title, project, link and its
+// deadline prefilled — spec §3.1), open it on GitHub.
 const rowMenu = ref<{ x: number; y: number; issue: IssueRow } | null>(null)
+const todoPrefill = ref<TodoPrefill | null>(null)
 
-function pulseSource(issue: IssueRow) {
-  return { type: 'github_issue' as const, ref: githubIssueRef(issue.htmlUrl), url: issue.htmlUrl }
-}
-function isWatched(issue: IssueRow): boolean {
-  return !!pulse.watchOf(pulseSource(issue))
-}
 function openRowMenu(e: MouseEvent, issue: IssueRow) {
   rowMenu.value = { x: e.clientX, y: e.clientY, issue }
 }
-async function toggleWatch() {
+function addTodo() {
   const issue = rowMenu.value?.issue
   rowMenu.value = null
-  if (issue) await pulse.toggle(pulseSource(issue), props.projectId ?? null)
+  if (!issue) return
+  const deadline = /^\d{4}-\d{2}-\d{2}/.exec(issue.deadline ?? '')?.[0] ?? null
+  todoPrefill.value = {
+    text: `${issue.title} (#${issue.number})`,
+    projectId: props.projectId ?? null,
+    sourceUrl: issue.htmlUrl,
+    dueDate: deadline,
+  }
 }
 function openFromMenu() {
   const issue = rowMenu.value?.issue
@@ -383,12 +384,6 @@ function fmt(iso: string | null): string {
             >
               <span class="font-mono text-[10px] text-muted-foreground/70 shrink-0">#{{ b.issue.number }}</span>
               <span class="flex-1 min-w-0 truncate">{{ b.issue.title }}</span>
-              <Activity
-                v-if="isWatched(b.issue)"
-                class="h-3 w-3 shrink-0 text-primary"
-                :stroke-width="2"
-                :aria-label="t('pulse.watch.watching')"
-              />
               <span
                 v-if="assigneeText(b.issue)"
                 class="shrink-0 flex items-center gap-0.5 text-[9px] text-muted-foreground max-w-24 truncate"
@@ -463,18 +458,15 @@ function fmt(iso: string | null): string {
       :y="rowMenu?.y ?? 0"
       @close="rowMenu = null"
     >
-      <DropdownItem
-        :disabled="!rowMenu || (!isWatched(rowMenu.issue) && !projectId)"
-        :title="!projectId ? t('pulse.watch.needProject') : undefined"
-        @click="toggleWatch"
-      >
-        <Activity class="h-3.5 w-3.5" :stroke-width="1.75" />
-        {{ rowMenu && isWatched(rowMenu.issue) ? t('pulse.watch.unwatchInPulse') : t('pulse.watch.inPulse') }}
+      <DropdownItem @click="addTodo">
+        <ListPlus class="h-3.5 w-3.5" :stroke-width="1.75" />
+        {{ t('focus.addTodoHint') }}
       </DropdownItem>
       <DropdownItem @click="openFromMenu">
         <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
-        {{ t('pulse.drawer.openSource') }}
+        {{ t('focus.actions.openSource') }}
       </DropdownItem>
     </ContextMenu>
+    <TodoCaptureModal :open="!!todoPrefill" :prefill="todoPrefill" @close="todoPrefill = null" />
   </div>
 </template>

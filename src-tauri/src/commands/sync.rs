@@ -516,7 +516,7 @@ pub async fn sync_revoke_device(
     Ok(())
 }
 
-/// Pick the device that runs singleton jobs (Pulse / Slack polling); `None`
+/// Pick the device that runs singleton jobs (Slack polling); `None`
 /// lets every device run them. The new leader is always told to sync from
 /// this device at once; returns whether it confirmed. The device that was
 /// the leader — this one, or another that learns of the change when it

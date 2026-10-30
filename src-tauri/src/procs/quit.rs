@@ -237,7 +237,7 @@ pub fn on_exit(app: &AppHandle) {
 }
 
 /// Kill every registered run sidecar (and its CLI) and the warm translate /
-/// Slack / Pulse / mascot sessions, so no `claude` / `codex` process lingers
+/// Slack / mascot / Focus AI sessions, so no `claude` / `codex` process lingers
 /// burning API tokens. Idempotent; also run on `RunEvent::Exit`.
 pub fn stop_app_sidecars(app: &AppHandle) {
     let registry = app.state::<RunRegistry>().inner().clone();
@@ -259,15 +259,19 @@ pub fn stop_app_sidecars(app: &AppHandle) {
         .state::<crate::slack_threads::SlackTranslateState>()
         .inner()
         .clone();
-    let pulse = app.state::<crate::pulse::PulseState>().inner().clone();
     let mascot = app
         .state::<crate::commands::mascot_speak::MascotSpeakState>()
         .inner()
         .clone();
+    let focus_ai = app
+        .try_state::<crate::commands::focus_ai::FocusAiState>()
+        .map(|s| s.inner().clone());
     tauri::async_runtime::block_on(async move {
         translate.shutdown().await;
         slack.0.shutdown().await;
-        pulse.shutdown().await;
         mascot.shutdown().await;
+        if let Some(focus_ai) = focus_ai {
+            focus_ai.shutdown().await;
+        }
     });
 }
