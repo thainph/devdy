@@ -399,6 +399,8 @@ struct TodoEntry {
     position: i64,
     created_at: String,
     #[serde(default)]
+    due_date: Option<String>,
+    #[serde(default)]
     project: Option<ProjectRef>,
 }
 
@@ -1105,7 +1107,7 @@ async fn collect(
     })
     .collect();
     let todos = sqlx::query(
-        "SELECT t.id, t.text, t.done, t.position, t.created_at, \
+        "SELECT t.id, t.text, t.done, t.position, t.created_at, t.due_date, \
                 p.name AS project_name, p.path AS project_path \
          FROM todos t LEFT JOIN projects p ON p.id = t.project_id ORDER BY t.position",
     )
@@ -1119,6 +1121,7 @@ async fn collect(
         done: row.get::<i64, _>("done") != 0,
         position: row.get("position"),
         created_at: row.get("created_at"),
+        due_date: row.get("due_date"),
         project: project_of(row),
     })
     .collect();
@@ -2545,18 +2548,21 @@ async fn import_todo(db: &Db, entry: &TodoEntry) -> Result<Upsert, String> {
     let exists = id_by(db, "todos", "id", &entry.id).await?.is_some();
     if exists {
         let changed = sqlx::query(
-            "UPDATE todos SET text = ?, done = ?, position = ?, project_id = COALESCE(?, project_id) \
+            "UPDATE todos SET text = ?, done = ?, position = ?, due_date = ?, \
+             project_id = COALESCE(?, project_id) \
              WHERE id = ? AND (text IS NOT ? OR done IS NOT ? OR position IS NOT ? \
-             OR (? IS NOT NULL AND project_id IS NOT ?))",
+             OR due_date IS NOT ? OR (? IS NOT NULL AND project_id IS NOT ?))",
         )
         .bind(&entry.text)
         .bind(entry.done as i64)
         .bind(entry.position)
+        .bind(&entry.due_date)
         .bind(&project_id)
         .bind(&entry.id)
         .bind(&entry.text)
         .bind(entry.done as i64)
         .bind(entry.position)
+        .bind(&entry.due_date)
         .bind(&project_id)
         .bind(&project_id)
         .execute(db)
@@ -2571,13 +2577,15 @@ async fn import_todo(db: &Db, entry: &TodoEntry) -> Result<Upsert, String> {
         });
     }
     sqlx::query(
-        "INSERT INTO todos (id, text, done, position, created_at, project_id) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO todos (id, text, done, position, created_at, due_date, project_id) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&entry.id)
     .bind(&entry.text)
     .bind(entry.done as i64)
     .bind(entry.position)
     .bind(&entry.created_at)
+    .bind(&entry.due_date)
     .bind(&project_id)
     .execute(db)
     .await
@@ -3291,6 +3299,7 @@ mod tests {
             done: true,
             position: 3,
             created_at: "c".into(),
+            due_date: Some("2026-11-05".into()),
             project: None,
         };
         assert_eq!(import_todo(&db, &todo).await.unwrap(), Upsert::Created);

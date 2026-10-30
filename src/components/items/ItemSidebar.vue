@@ -6,12 +6,14 @@
 // collapsible, remembered in localStorage per kind).
 //
 // A note row: title, a one-line preview, its age and a link mark with the
-// linked-session count. A todo row: a clickable checkbox, its first line, age
-// and the link mark.
+// linked-session count. A todo row: a clickable checkbox, its first line, its
+// deadline (red when overdue, amber when due within a few days), age and the
+// link mark.
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   AlertCircle,
+  CalendarDays,
   Check,
   ChevronDown,
   ChevronRight,
@@ -26,6 +28,8 @@ import {
 } from 'lucide-vue-next'
 import { AppSelect, Button, Input } from '@/components/ui'
 import { relativeAge } from '@/lib/itemText'
+import { formatDate, ymdToDate } from '@/lib/dateValue'
+import { dueStatus, localYmd } from '@/lib/todoDue'
 import { formatFullDate } from '@/lib/slackThreadUtils'
 import type { ItemRow } from './itemRow'
 
@@ -58,7 +62,31 @@ const emit = defineEmits<{
   retry: []
 }>()
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
+
+/** Deadline badges by row id: short date + urgency (a done todo is never late). */
+const dueBadges = computed(() => {
+  const today = localYmd()
+  const out: Record<string, { label: string; title: string; tone: string }> = {}
+  for (const row of props.rows) {
+    const d = ymdToDate(row.dueDate)
+    if (!d) continue
+    const status = row.done ? 'later' : dueStatus(row.dueDate, today)
+    out[row.id] = {
+      label: formatDate(d, locale.value, {
+        day: 'numeric',
+        month: 'short',
+        ...(row.dueDate!.slice(0, 4) === today.slice(0, 4) ? {} : { year: 'numeric' }),
+      }),
+      title: t('item.dueOn', { date: formatDate(d, locale.value, { dateStyle: 'full' }) }),
+      tone:
+        status === 'overdue' ? 'bg-destructive/15 font-medium text-destructive'
+        : status === 'today' || status === 'soon' ? 'bg-amber-500/15 font-medium text-amber-600 dark:text-amber-400'
+        : 'text-muted-foreground',
+    }
+  }
+  return out
+})
 
 const FILTERS = computed(() =>
   props.kind === 'note'
@@ -281,6 +309,15 @@ const groups = computed(() => {
                     :class="row.done && 'text-muted-foreground line-through'"
                   >
                     {{ row.title || t('item.untitled') }}
+                  </span>
+                  <span
+                    v-if="dueBadges[row.id]"
+                    class="flex shrink-0 items-center gap-0.5 rounded px-1 text-[10px] tabular-nums"
+                    :class="dueBadges[row.id].tone"
+                    :title="dueBadges[row.id].title"
+                  >
+                    <CalendarDays class="h-3 w-3" :stroke-width="2" />
+                    {{ dueBadges[row.id].label }}
                   </span>
                   <span
                     v-if="row.linkedRunCount > 0"

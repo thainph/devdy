@@ -28,6 +28,8 @@ const props = withDefaults(defineProps<{
   disabled?: boolean
   /** Prefix "Today" / "Yesterday" to the label when applicable. */
   relative?: boolean
+  /** Label while no date is picked (default "Pick a date"). */
+  placeholder?: string
 }>(), {
   size: 'sm',
   disabled: false,
@@ -47,7 +49,7 @@ const maxValue = computed(() => ymdToDate(props.max))
 
 const label = computed(() => {
   const d = value.value
-  if (!d) return t('common.date.pick')
+  if (!d) return props.placeholder ?? t('common.date.pick')
   const now = todayDate()
   const sameYear = d.year === now.year
   const text = formatDate(d, locale.value, {

@@ -403,6 +403,18 @@ export function getRun(runId) {
 
 // ---- Todos (global scratchpad) ---------------------------------------------
 
+/** A deadline as stored: `YYYY-MM-DD` (a real calendar date), or null to clear. */
+function normDue(due) {
+  if (due == null || String(due).trim() === '') return null;
+  const d = String(due).trim();
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d);
+  const date = m && new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  if (!date || date.toISOString().slice(0, 10) !== d) {
+    throw new Error(`invalid due date (want YYYY-MM-DD): ${d}`);
+  }
+  return d;
+}
+
 /** scope="project" narrows to the current project's todos; default spans all. */
 export function listTodos({ includeDone = true, scope = 'all' } = {}) {
   const clauses = [];
@@ -415,7 +427,7 @@ export function listTodos({ includeDone = true, scope = 'all' } = {}) {
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
   return db()
     .prepare(
-      `SELECT t.id, t.text, t.done, t.position, t.created_at, t.project_id, ${TODO_LINKS},
+      `SELECT t.id, t.text, t.done, t.position, t.created_at, t.project_id, t.due_date, ${TODO_LINKS},
               p.name AS project_name
        FROM todos t LEFT JOIN projects p ON p.id = t.project_id
        ${where} ORDER BY t.position ASC, t.created_at DESC`,
@@ -424,9 +436,10 @@ export function listTodos({ includeDone = true, scope = 'all' } = {}) {
 }
 
 /** New todos go to the top (a position below the current minimum), like the app. */
-export function addTodo({ text, scope = 'project' } = {}) {
+export function addTodo({ text, scope = 'project', due } = {}) {
   const t = String(text || '').trim();
   if (!t) throw new Error('text is required');
+  const dueDate = normDue(due);
   const projectId = scopedProjectId(scope);
   const min = db().prepare('SELECT MIN(position) AS m FROM todos').get();
   const position = (min && min.m != null ? min.m : 0) - 1;
@@ -434,17 +447,17 @@ export function addTodo({ text, scope = 'project' } = {}) {
   const now = nowIso();
   db()
     .prepare(
-      'INSERT INTO todos (id, text, done, position, created_at, project_id) VALUES (?, ?, 0, ?, ?, ?)',
+      'INSERT INTO todos (id, text, done, position, created_at, project_id, due_date) VALUES (?, ?, 0, ?, ?, ?, ?)',
     )
-    .run(id, t, position, now, projectId);
-  return { id, text: t, project_id: projectId };
+    .run(id, t, position, now, projectId, dueDate);
+  return { id, text: t, project_id: projectId, due_date: dueDate };
 }
 
 export function readTodo(id) {
   if (!id) throw new Error('id is required');
   return db()
     .prepare(
-      `SELECT t.id, t.text, t.done, t.position, t.created_at, t.project_id, ${TODO_LINKS},
+      `SELECT t.id, t.text, t.done, t.position, t.created_at, t.project_id, t.due_date, ${TODO_LINKS},
               p.name AS project_name
        FROM todos t LEFT JOIN projects p ON p.id = t.project_id WHERE t.id = ?`,
     )
@@ -477,6 +490,16 @@ export function updateTodo({ id, text } = {}) {
   if (!row) throw new Error(`todo not found: ${id}`);
   db().prepare('UPDATE todos SET text = ? WHERE id = ?').run(t, id);
   return { id, text: t };
+}
+
+/** Set a todo's deadline (`YYYY-MM-DD`), or clear it with an empty / null due. */
+export function setTodoDue({ id, due } = {}) {
+  if (!id) throw new Error('id is required');
+  const dueDate = normDue(due);
+  const row = db().prepare('SELECT id FROM todos WHERE id = ?').get(id);
+  if (!row) throw new Error(`todo not found: ${id}`);
+  db().prepare('UPDATE todos SET due_date = ? WHERE id = ?').run(dueDate, id);
+  return { id, due_date: dueDate };
 }
 
 export function deleteTodos({ ids } = {}) {

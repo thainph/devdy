@@ -11,7 +11,8 @@ use uuid::Uuid;
 /// `project_id` is the capture context (nullable, unenforced): set when the todo
 /// was jotted down inside a project, so the list can filter by project. Sessions
 /// (runs) are linked through `todo_runs` (see `item_links`); `linked_run_count`
-/// counts those whose run still exists.
+/// counts those whose run still exists. `due_date` is an optional deadline, a
+/// local calendar date `YYYY-MM-DD`.
 #[derive(Debug, Serialize, Clone)]
 pub struct Todo {
     pub id: String,
@@ -20,6 +21,7 @@ pub struct Todo {
     pub position: i64,
     pub created_at: String,
     pub project_id: Option<String>,
+    pub due_date: Option<String>,
     pub linked_run_count: i64,
 }
 
@@ -31,6 +33,7 @@ fn row_to_todo(row: &sqlx::sqlite::SqliteRow) -> Todo {
         position: row.get("position"),
         created_at: row.get("created_at"),
         project_id: row.get("project_id"),
+        due_date: row.get("due_date"),
         linked_run_count: row.get("linked_run_count"),
     }
 }
@@ -38,7 +41,7 @@ fn row_to_todo(row: &sqlx::sqlite::SqliteRow) -> Todo {
 #[tauri::command]
 pub async fn list_todos(db: State<'_, Db>) -> Result<Vec<Todo>, String> {
     let rows = sqlx::query(&format!(
-        "SELECT t.id, t.text, t.done, t.position, t.created_at, t.project_id, {} FROM todos t \
+        "SELECT t.id, t.text, t.done, t.position, t.created_at, t.project_id, t.due_date, {} FROM todos t \
          ORDER BY t.position ASC, t.created_at DESC",
         item_links::linked_count_sql(ItemKind::Todo, "t")
     ))
@@ -98,6 +101,7 @@ pub async fn add_todo(
         position,
         created_at,
         project_id,
+        due_date: None,
         linked_run_count: linked as i64,
     })
 }
@@ -112,6 +116,31 @@ pub async fn set_todo_project(
 ) -> Result<(), String> {
     sqlx::query("UPDATE todos SET project_id = ? WHERE id = ?")
         .bind(&project_id)
+        .bind(&id)
+        .execute(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Set or clear (`None`) a todo's deadline, a `YYYY-MM-DD` date.
+#[tauri::command]
+pub async fn set_todo_due_date(
+    db: State<'_, Db>,
+    id: String,
+    due_date: Option<String>,
+) -> Result<(), String> {
+    let due_date = match due_date.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(d) => Some(
+            chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d")
+                .map_err(|_| format!("invalid due date: {d}"))?
+                .format("%Y-%m-%d")
+                .to_string(),
+        ),
+    };
+    sqlx::query("UPDATE todos SET due_date = ? WHERE id = ?")
+        .bind(&due_date)
         .bind(&id)
         .execute(db.inner())
         .await

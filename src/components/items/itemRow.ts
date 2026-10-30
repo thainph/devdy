@@ -12,6 +12,8 @@ export interface ItemRow {
   done: boolean
   projectId: string | null
   linkedRunCount: number
+  /** Todos: the deadline (`YYYY-MM-DD`), when set. */
+  dueDate: string | null
   /** ISO time of the age shown (note: last edit, todo: creation). */
   at: string
   /** Lower-cased text the search box matches. */
@@ -29,6 +31,7 @@ export function noteRow(n: Note): ItemRow {
     done: false,
     projectId: n.project_id,
     linkedRunCount: n.linked_run_count,
+    dueDate: null,
     at: n.updated_at,
     hay: `${n.title}\n${n.content}`.toLowerCase(),
   }
@@ -42,6 +45,7 @@ export function todoRow(x: Todo): ItemRow {
     done: x.done,
     projectId: x.project_id,
     linkedRunCount: x.linked_run_count,
+    dueDate: x.due_date,
     at: x.created_at,
     hay: x.text.toLowerCase(),
   }

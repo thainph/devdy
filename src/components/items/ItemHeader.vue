@@ -3,8 +3,8 @@
 // SlackThreadHeader, same layout and controls:
 //
 //   note  title (click → inline rename) / updated · N characters
-//   todo  ☐ text's first line (click → edit) / created · from <session>
-//   right [Project ▾][Sessions (n) ▾] | (todo) ✓ Done · ✎ Edit · (note) ⧉ Copy
+//   todo  ☐ text's first line (click → edit) / created · from <session> · due
+//   right (todo) [📅 deadline ×] [Project ▾][Sessions (n) ▾] | (todo) ✓ Done · ✎ Edit · (note) ⧉ Copy
 //         markdown · ⋯ (New session from this … · Copy ID · Delete)
 //
 // While editing, the actions give way to Cancel · Save (⌘/Ctrl+Enter / Esc do
@@ -12,8 +12,8 @@
 // project name truncates.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Check, Pencil } from 'lucide-vue-next'
-import { Button } from '@/components/ui'
+import { Check, Pencil, X } from 'lucide-vue-next'
+import { Button, DatePicker } from '@/components/ui'
 import InlineRenameInput from '@/components/InlineRenameInput.vue'
 import ProjectSelect from '@/components/ProjectSelect.vue'
 import CopyMarkdownButton from '@/components/CopyMarkdownButton.vue'
@@ -22,6 +22,7 @@ import DetailActionsMenu from '@/components/sessions/DetailActionsMenu.vue'
 import { useSessionText } from '@/composables/useSessionText'
 import { firstLine, relativeAge } from '@/lib/itemText'
 import { formatFullDate } from '@/lib/slackThreadUtils'
+import { daysUntil, dueStatus, localYmd } from '@/lib/todoDue'
 import type { SessionLink } from '@/lib/sessionLinks'
 import type { Note } from '@/stores/notes'
 import type { Todo } from '@/stores/todos'
@@ -48,6 +49,7 @@ const emit = defineEmits<{
   save: []
   toggleDone: []
   setProject: [projectId: string | null]
+  setDueDate: [dueDate: string | null]
   openRun: [link: SessionLink]
   unlinkRun: [link: SessionLink]
   linkRun: [runId: string]
@@ -67,6 +69,21 @@ const body = computed(() => note.value?.content ?? todo.value?.text ?? '')
 const heading = computed(
   () => note.value?.title.trim() || firstLine(body.value) || t('item.untitled'),
 )
+
+/** The todo's deadline, relative to today ("Due in 3 days", "Overdue by 2 days"). */
+const due = computed(() => {
+  const date = todo.value?.due_date
+  const days = daysUntil(date, localYmd())
+  if (!date || days == null) return null
+  const label =
+    days < 0 ? t('item.overdueDays', { n: -days }, -days)
+    : days === 0 ? t('item.dueToday')
+    : days === 1 ? t('item.dueTomorrow')
+    : t('item.dueInDays', { n: days })
+  // A finished todo is never late.
+  const status = todo.value?.done ? 'later' : dueStatus(date, localYmd())
+  return { label, status }
+})
 
 /** note: updated · N characters; todo: created · from <the session it was written in>. */
 const meta = computed(() => {
@@ -133,10 +150,40 @@ const newSessionLabel = computed(() =>
           {{ heading }}
         </h1>
       </div>
-      <p class="mt-0.5 truncate text-xs text-muted-foreground" :title="metaTitle">{{ meta }}</p>
+      <p class="mt-0.5 truncate text-xs text-muted-foreground" :title="metaTitle">
+        {{ meta }}<template v-if="due">
+          ·
+          <span
+            :class="{
+              'font-medium text-destructive': due.status === 'overdue',
+              'font-medium text-amber-600 dark:text-amber-400': due.status === 'today' || due.status === 'soon',
+            }"
+          >{{ due.label }}</span>
+        </template>
+      </p>
     </div>
 
     <div class="flex min-w-0 items-center gap-1.5">
+      <!-- Todo: its deadline (× clears it). -->
+      <div v-if="todo" class="flex shrink-0 items-center">
+        <DatePicker
+          :model-value="todo.due_date ?? ''"
+          size="xs"
+          :placeholder="t('item.setDueDate')"
+          :class="todo.due_date ? 'rounded-r-none' : ''"
+          @update:model-value="emit('setDueDate', $event || null)"
+        />
+        <button
+          v-if="todo.due_date"
+          type="button"
+          class="flex h-7 w-6 cursor-pointer items-center justify-center rounded-r-md border border-l-0 border-border bg-background text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          :title="t('item.clearDueDate')"
+          :aria-label="t('item.clearDueDate')"
+          @click="emit('setDueDate', null)"
+        >
+          <X class="h-3 w-3" :stroke-width="2" />
+        </button>
+      </div>
       <!-- The item's project and its sessions: linking depends on the project. -->
       <div class="w-[11rem] min-w-[5.5rem] shrink">
         <ProjectSelect

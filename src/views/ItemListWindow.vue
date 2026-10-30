@@ -257,6 +257,13 @@ async function setProject(next: string | null) {
   announce()
 }
 
+async function setDueDate(next: string | null) {
+  const it = item.value as Todo | null
+  if (kind !== 'todo' || !it || next === it.due_date) return
+  await todos.setDueDate(it.id, next)
+  announce()
+}
+
 async function toggleDone(id: string) {
   if (kind !== 'todo') return
   await todos.toggle(id)
@@ -512,6 +519,7 @@ onBeforeUnmount(() => {
         @save="bodyRef?.save()"
         @toggle-done="toggleDone(item.id)"
         @set-project="setProject"
+        @set-due-date="setDueDate"
         @open-run="openRun"
         @unlink-run="unlinkRun"
         @link-run="linkRun"

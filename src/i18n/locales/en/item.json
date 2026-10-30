@@ -80,5 +80,13 @@
   "deletedNoteDraftCopied": "This note was deleted elsewhere — your unsaved text was copied to the clipboard.",
   "deletedTodoDraftCopied": "This task was deleted elsewhere — your unsaved text was copied to the clipboard.",
   "deletedNoteDraftLost": "This note was deleted elsewhere and your unsaved text could not be copied.",
-  "deletedTodoDraftLost": "This task was deleted elsewhere and your unsaved text could not be copied."
+  "deletedTodoDraftLost": "This task was deleted elsewhere and your unsaved text could not be copied.",
+  "dueDate": "Deadline",
+  "setDueDate": "Set a deadline",
+  "clearDueDate": "Clear the deadline",
+  "dueToday": "Due today",
+  "dueTomorrow": "Due tomorrow",
+  "dueInDays": "Due in {n} days",
+  "overdueDays": "Overdue by {n} day | Overdue by {n} days",
+  "dueOn": "Due {date}"
 }
