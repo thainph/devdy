@@ -20,6 +20,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4"] }
 socket2 = "0.5"
+rusqlite = { version = "0.32", features = ["bundled"] }
+sha2 = "0.10"
+base64 = "0.22"
 
 [dev-dependencies]
 tokio-tungstenite = "0.24"
