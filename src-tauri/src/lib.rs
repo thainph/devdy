@@ -460,6 +460,10 @@ pub fn run() {
                 let app_handle = app.handle().clone();
                 let db_for_sync = app_handle.state::<db::Db>().inner().clone();
                 tauri::async_runtime::spawn(async move {
+                    let in_group = secrets::get_sync_secrets().is_some();
+                    if let Err(e) = sync::pair::reconcile_membership(&db_for_sync, in_group).await {
+                        tracing::warn!(event = "sync_membership_reconcile_failed", error = %e);
+                    }
                     if let Err(e) = sync_manager.start(&app_handle, &db_for_sync).await {
                         tracing::warn!(event = "sync_autostart_failed", error = %e);
                     }

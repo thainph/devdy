@@ -6,7 +6,7 @@
 //! and the leader device are synced settings (`sync::leader`).
 
 use crate::db::Db;
-use crate::sync::engine::{StatusSink, SyncEngine, SyncStatus, Timing, STATUS_EVENT};
+use crate::sync::engine::{StatusSink, SyncEngine, SyncState, SyncStatus, Timing, STATUS_EVENT};
 use crate::sync::leader::{self, DeviceInfo};
 use crate::sync::store::{self, ParkedRow, SqliteSyncStore, SyncStore};
 use crate::sync::transport::{Connection, TransportError};
@@ -78,21 +78,44 @@ impl SyncManager {
         }
     }
 
-    /// Push what is queued now, waiting at most `wait` (best effort: offline
-    /// just times out).
-    async fn flush(&self, wait: Duration) {
+    /// Push what is queued now, waiting at most `wait`. Returns whether it
+    /// went out (false: offline, paused, or no engine).
+    async fn flush(&self, wait: Duration) -> bool {
         let started = chrono::Utc::now().timestamp_millis();
         match self.engine.lock().await.as_ref() {
             Some(e) => e.sync_now(),
-            None => return,
+            None => return false,
         }
         let deadline = tokio::time::Instant::now() + wait;
         while tokio::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(200)).await;
             let s = self.status().await;
             if s.pending == 0 && s.last_push.is_some_and(|p| p >= started) {
-                break;
+                return true;
             }
+        }
+        false
+    }
+
+    /// Wait (at most `wait`) until the engine is connected.
+    async fn wait_online(&self, wait: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            let s = self.status().await;
+            if s.state == SyncState::Online && !s.paused {
+                return true;
+            }
+            if s.state == SyncState::Disabled || tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    /// Pause / resume the running engine without touching the stored setting.
+    async fn set_engine_paused(&self, paused: bool) {
+        if let Some(e) = self.engine.lock().await.as_ref() {
+            e.set_paused(paused);
         }
     }
 
@@ -167,30 +190,72 @@ pub async fn sync_join(
     Ok(state.status().await)
 }
 
+/// `sync_leave` refused: this device holds the leader / creator role and its
+/// hand-off could not be pushed (offline). Leaving anyway (`force`) leaves
+/// the other devices waiting on a departed leader.
+pub const LEAVE_HANDOFF_PENDING: &str = "sync_leave_handoff_pending";
+
+/// How long leaving waits for the relay to take the role hand-off.
+const LEAVE_PUSH_WAIT: Duration = Duration::from_secs(10);
+
+/// Review-3 M5: whether leaving may go on. The hand-off rides the outbox,
+/// which leaving clears, so a role holder whose hand-off did not reach the
+/// relay must not leave silently.
+fn leave_gate(holds_role: bool, handed_off: bool, force: bool) -> Result<(), String> {
+    if holds_role && !handed_off && !force {
+        return Err(format!(
+            "{LEAVE_HANDOFF_PENDING}: this device leads the group's singleton jobs or created the group, \
+             and the relay could not be reached to hand that on"
+        ));
+    }
+    Ok(())
+}
+
 /// Leave the group: revoke this device on the relay and wipe the Keychain
 /// entry. Returns whether the relay confirmed the revoke (false = offline;
-/// the local membership is gone either way).
+/// the local membership is gone either way). A device holding the leader /
+/// creator role first pushes the hand-off (resuming a paused engine for it)
+/// and refuses with [`LEAVE_HANDOFF_PENDING`] when that fails, unless `force`.
 #[tauri::command]
 pub async fn sync_leave(
     app: AppHandle,
     db: State<'_, Db>,
     state: State<'_, SyncManager>,
+    force: Option<bool>,
 ) -> Result<bool, String> {
+    let force = force.unwrap_or(false);
     // Hand the leader / creator roles on and drop this device's record while
     // the engine can still push it; the relay is told the creator's successor.
     let mut successor = None;
     if let Some(sync) = crate::secrets::get_sync_secrets() {
-        if state.engine.lock().await.is_some() {
-            match leader::on_leave(db.inner(), &sync.device_id).await {
+        let me = sync.device_id.as_str();
+        let is_creator = leader::creator(db.inner()).await.as_deref() == Some(me);
+        let holds_role = is_creator || leader::leader(db.inner()).await.as_deref() == Some(me);
+        let paused = crate::remote::get_setting(db.inner(), KEY_PAUSED).await.as_deref() == Some("true");
+        if paused {
+            state.set_engine_paused(false).await;
+        }
+        // Without a role, only this device's own record is at stake.
+        let online = state.wait_online(if holds_role { LEAVE_PUSH_WAIT } else { LEAVE_PUSH_WAIT / 2 }).await;
+        let mut handed_off = false;
+        if online {
+            match leader::on_leave(db.inner(), me).await {
                 Ok(next) => {
                     successor = next;
-                    state.flush(Duration::from_secs(5)).await;
+                    handed_off = state.flush(LEAVE_PUSH_WAIT).await;
                 }
                 Err(e) => tracing::warn!(event = "sync_leave_handover_failed", error = %e),
             }
         }
-        if successor.is_none() && leader::creator(db.inner()).await.as_deref() == Some(sync.device_id.as_str()) {
-            successor = leader::leave_successor(db.inner(), &sync.device_id).await;
+        if let Err(e) = leave_gate(holds_role, handed_off, force) {
+            // Still a member: whatever was queued goes out once back online.
+            if paused {
+                state.set_engine_paused(true).await;
+            }
+            return Err(e);
+        }
+        if successor.is_none() && is_creator {
+            successor = leader::leave_successor(db.inner(), me).await;
         }
     }
     crate::sync::pair::close_accept_window();
@@ -381,4 +446,21 @@ pub async fn sync_parked_retry(db: State<'_, Db>, state: State<'_, SyncManager>)
         e.sync_now();
     }
     Ok(n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_role_holder_leaves_only_once_the_hand_off_is_out() {
+        // Review-3 M5: offline / paused leader or creator is refused…
+        let e = leave_gate(true, false, false).unwrap_err();
+        assert!(e.starts_with(LEAVE_HANDOFF_PENDING), "{e}");
+        // …unless the user insists, or the hand-off went out.
+        assert!(leave_gate(true, false, true).is_ok());
+        assert!(leave_gate(true, true, false).is_ok());
+        // Nothing to hand on: leave offline as before.
+        assert!(leave_gate(false, false, false).is_ok());
+    }
 }
