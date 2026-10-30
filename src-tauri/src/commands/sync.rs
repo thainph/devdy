@@ -37,7 +37,6 @@ impl SyncManager {
     /// Serve another device's requests of `handler.kinds()` (on-demand sync
     /// features). Callable before or after the engine starts; the first
     /// handler registered for a kind wins.
-    #[allow(dead_code)] // used by folder sync
     pub fn register_peer_handler(&self, handler: Arc<dyn PeerHandler>) {
         if let Ok(mut h) = self.handlers.write() {
             h.push(handler);
@@ -50,7 +49,6 @@ impl SyncManager {
     }
 
     /// Requests / blobs to the other devices, while the engine runs.
-    #[allow(dead_code)] // used by folder sync
     pub async fn peer_link(&self) -> Option<Arc<dyn PeerLink>> {
         self.handle().await.map(|h| h.link())
     }

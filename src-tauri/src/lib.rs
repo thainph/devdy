@@ -453,6 +453,9 @@ pub fn run() {
             // Two-way sync: start the background engine when this device is in
             // a sync group (group secrets live in the Keychain).
             let sync_manager = SyncManager::default();
+            sync_manager.register_peer_handler(commands::sync_folder::folder_handler(
+                app.state::<db::Db>().inner().clone(),
+            ));
             app.manage(sync_manager.clone());
             // Keep the leases of this device's live runs fresh (cross-device sessions).
             sync::sessions::spawn_heartbeat(
