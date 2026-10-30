@@ -112,6 +112,14 @@ fn collect(res: notify::Result<notify::Event>, out: &mut HashSet<PathBuf>) {
 /// Map a changed transcript back to its project and mirror the session in,
 /// dispatching on which store the file lives in.
 async fn handle_change(db: &Pool<Sqlite>, app: &AppHandle, path: &Path) {
+    // Written by two-way sync and untouched since: already mirrored (the run
+    // row and its log arrive through sync too). Otherwise let sync pick up the
+    // change within seconds instead of on its next full scan.
+    if crate::sync::files::written_by_sync(db, path).await {
+        return;
+    }
+    crate::sync::files::kick(path);
+
     let is_codex = path
         .file_name()
         .and_then(|n| n.to_str())

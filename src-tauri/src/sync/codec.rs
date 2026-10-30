@@ -1,6 +1,12 @@
 //! Row <-> JSON map using the registry: drops machine-local columns, turns path
-//! columns into a portable form (`~/...` under $HOME, absolute otherwise) and
-//! expands them again on the receiving device.
+//! columns into a portable form (`@data/...` under Devdy's app data dir,
+//! `~/...` under $HOME, absolute otherwise) and expands them again on the
+//! receiving device.
+//!
+//! Claude transcript stores name each project folder after the encoded cwd
+//! (`-Users-alice-w-p`), so inside a `projects/` folder the encoded home prefix
+//! becomes `~` too (`~/.claude/projects/~-w-p/<session>.jsonl`) and is
+//! re-encoded with this device's home.
 
 use std::path::{Path, PathBuf};
 
@@ -9,42 +15,96 @@ use sqlx::SqliteConnection;
 
 use super::schema::{q, TableSpec};
 
-/// Where this device keeps things; only the home dir for now.
+/// Where this device keeps things: the home dir and Devdy's app data dir
+/// (library, managed SSH keys; differs between the prod and dev builds).
 #[derive(Debug, Clone)]
 pub struct PathCtx {
     pub home: PathBuf,
+    pub app_data: Option<PathBuf>,
 }
+
+/// Portable prefix of paths under the app data dir.
+const DATA_MARK: &str = "@data";
 
 impl PathCtx {
     pub fn from_env() -> Self {
-        PathCtx { home: std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default() }
+        PathCtx { home: std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default(), app_data: None }
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn with_home(home: impl Into<PathBuf>) -> Self {
-        PathCtx { home: home.into() }
+        PathCtx { home: home.into(), app_data: None }
+    }
+
+    pub fn with_app_data(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.app_data = Some(dir.into());
+        self
     }
 }
 
-/// `~/rel` when `path` is under the home dir, `path` unchanged otherwise.
+/// `encode_project_dir` of Claude Code (kept local so the codec stays pure).
+fn encode_dir(path: &str) -> String {
+    path.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+}
+
+/// Rewrites the folder right after a `projects` component: `from` prefix -> `to`.
+fn swap_encoded_home(rel: &str, from: &str, to: &str) -> String {
+    let parts: Vec<&str> = rel.split('/').collect();
+    let mut out: Vec<String> = Vec::with_capacity(parts.len());
+    for (i, part) in parts.iter().enumerate() {
+        let after_projects = i >= 2 && parts[i - 1] == "projects";
+        match part.strip_prefix(from) {
+            Some(rest) if after_projects && !from.is_empty() && (rest.is_empty() || rest.starts_with('-')) => {
+                out.push(format!("{to}{rest}"))
+            }
+            _ => out.push((*part).to_string()),
+        }
+    }
+    out.join("/")
+}
+
+/// `@data/rel` under the app data dir, `~/rel` under the home dir, `path`
+/// unchanged otherwise.
 pub fn to_portable(ctx: &PathCtx, path: &str) -> String {
+    if let Some(data) = ctx.app_data.as_deref().filter(|d| !d.as_os_str().is_empty()) {
+        match Path::new(path).strip_prefix(data) {
+            Ok(rel) if rel.as_os_str().is_empty() => return DATA_MARK.to_string(),
+            Ok(rel) => return format!("{DATA_MARK}/{}", rel.to_string_lossy()),
+            Err(_) => {}
+        }
+    }
     if ctx.home.as_os_str().is_empty() {
         return path.to_string();
     }
     match Path::new(path).strip_prefix(&ctx.home) {
         Ok(rel) if rel.as_os_str().is_empty() => "~".to_string(),
-        Ok(rel) => format!("~/{}", rel.to_string_lossy()),
+        Ok(rel) => {
+            let rel = swap_encoded_home(&rel.to_string_lossy(), &encode_dir(&ctx.home.to_string_lossy()), "~");
+            format!("~/{rel}")
+        }
         Err(_) => path.to_string(),
     }
 }
 
-/// Inverse of `to_portable` for this device.
+/// Inverse of `to_portable` for this device. `@data` paths stay as they are
+/// when the app data dir is unknown.
 pub fn expand_portable(ctx: &PathCtx, portable: &str) -> String {
     if portable == "~" {
         return ctx.home.to_string_lossy().into_owned();
     }
+    if let Some(data) = &ctx.app_data {
+        if portable == DATA_MARK {
+            return data.to_string_lossy().into_owned();
+        }
+        if let Some(rel) = portable.strip_prefix("@data/") {
+            return data.join(rel).to_string_lossy().into_owned();
+        }
+    }
     match portable.strip_prefix("~/") {
-        Some(rel) => ctx.home.join(rel).to_string_lossy().into_owned(),
+        Some(rel) => {
+            let rel = swap_encoded_home(rel, "~", &encode_dir(&ctx.home.to_string_lossy()));
+            ctx.home.join(rel).to_string_lossy().into_owned()
+        }
         None => portable.to_string(),
     }
 }
@@ -59,6 +119,15 @@ pub fn map_project_path(ctx: &PathCtx, portable: &str) -> String {
 fn local_path(ctx: &PathCtx, spec: &TableSpec, col: &str, portable: &str) -> String {
     match (spec.name, col) {
         ("projects", "path") | ("repos", "path") => map_project_path(ctx, portable),
+        ("runs", "output_path") | ("runs", "input_path") => map_in_project(ctx, portable),
+        _ => expand_portable(ctx, portable),
+    }
+}
+
+/// A file inside a project's `.devdy/` folder follows the project's mapping.
+pub fn map_in_project(ctx: &PathCtx, portable: &str) -> String {
+    match portable.find("/.devdy/") {
+        Some(i) if i > 0 => format!("{}{}", map_project_path(ctx, &portable[..i]), &portable[i..]),
         _ => expand_portable(ctx, portable),
     }
 }
@@ -243,6 +312,27 @@ mod tests {
         assert_eq!(expand_portable(&mac_b, "~"), "/Users/bob");
         assert_eq!(expand_portable(&mac_b, "/opt/repo"), "/opt/repo");
         assert_eq!(map_project_path(&mac_b, "~/w/p"), "/Users/bob/w/p");
+        assert_eq!(map_in_project(&mac_b, "~/w/p/.devdy/runs/r.log"), "/Users/bob/w/p/.devdy/runs/r.log");
+    }
+
+    #[test]
+    fn app_data_and_claude_store_paths() {
+        let a = PathCtx::with_home("/Users/alice").with_app_data("/Users/alice/Library/Application Support/vn.papay.devdy");
+        let b = PathCtx::with_home("/Users/bob").with_app_data("/Users/bob/Library/Application Support/vn.papay.devdy.dev");
+        let p = to_portable(&a, "/Users/alice/Library/Application Support/vn.papay.devdy/skills/x/SKILL.md");
+        assert_eq!(p, "@data/skills/x/SKILL.md");
+        assert_eq!(expand_portable(&b, &p), "/Users/bob/Library/Application Support/vn.papay.devdy.dev/skills/x/SKILL.md");
+        // Without an app data dir the marker is kept (never guessed).
+        assert_eq!(expand_portable(&PathCtx::with_home("/h"), &p), p);
+
+        let t = to_portable(&a, "/Users/alice/.claude/projects/-Users-alice-Workspace-devdy/s1.jsonl");
+        assert_eq!(t, "~/.claude/projects/~-Workspace-devdy/s1.jsonl");
+        assert_eq!(expand_portable(&b, &t), "/Users/bob/.claude/projects/-Users-bob-Workspace-devdy/s1.jsonl");
+        // Only the folder right after `projects`, and only a whole home prefix.
+        let other = to_portable(&a, "/Users/alice/.claude/projects/-Users-alicex-p/s.jsonl");
+        assert_eq!(other, "~/.claude/projects/-Users-alicex-p/s.jsonl");
+        assert_eq!(to_portable(&a, "/Users/alice/w/-Users-alice-x"), "~/w/-Users-alice-x");
+        assert_eq!(expand_portable(&b, "~/w/~-x"), "/Users/bob/w/~-x");
     }
 
     #[test]
