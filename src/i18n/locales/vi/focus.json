@@ -1,0 +1,210 @@
+{
+  "title": "Focus",
+  "window": {
+    "title": "Focus"
+  },
+  "addTodo": "Todo",
+  "addTodoHint": "Tạo todo mới",
+  "nowSection": "Làm ngay",
+  "loadError": "Không tải được bảng",
+  "retry": "Thử lại",
+  "empty": {
+    "title": "Chưa có việc nào",
+    "hint": "Tạo todo tại đây, hoặc bấm “+ Todo” ở Slack thread, issue, PR hay session. Devdy xếp thứ tự theo hạn, estimate và ưu tiên.",
+    "filtered": "Không có todo nào khớp bộ lọc."
+  },
+  "buckets": {
+    "doing": "Đang làm",
+    "overdue": "Quá hạn",
+    "today": "Hôm nay",
+    "tomorrow": "Ngày mai",
+    "this_week": "Tuần này",
+    "later": "Sau",
+    "no_due": "Không hạn",
+    "waiting": "Đang chờ người khác",
+    "snoozed": "Đã hoãn",
+    "done": "Đã xong gần đây"
+  },
+  "views": {
+    "label": "Xem",
+    "time": "Theo thời gian",
+    "project": "Theo dự án",
+    "week": "Tuần"
+  },
+  "filters": {
+    "allProjects": "Mọi dự án",
+    "noProject": "Không có dự án",
+    "allSources": "Mọi nguồn",
+    "noSource": "Không có nguồn"
+  },
+  "sources": {
+    "slack": "Slack",
+    "github": "GitHub",
+    "gitlab": "GitLab",
+    "run": "Session",
+    "url": "Link"
+  },
+  "capacity": {
+    "summary": "Hôm nay: {need} việc · {free} trống",
+    "overloaded": "Quá tải {over}",
+    "busy": "{n} khung bận"
+  },
+  "calibration": {
+    "slower": "Bạn thường làm lâu hơn ước tính {factor}×",
+    "faster": "Bạn thường làm xong trong {factor}× thời gian ước tính"
+  },
+  "due": {
+    "overdue": "Quá hạn {span}",
+    "startBy": "Bắt đầu trước {time}",
+    "startByLate": "Lẽ ra bắt đầu lúc {time}",
+    "today": "Hôm nay",
+    "todayAt": "{time} hôm nay",
+    "tomorrow": "Ngày mai",
+    "tomorrowAt": "Mai {time}",
+    "dateAt": "{date} {time}"
+  },
+  "span": {
+    "m": "{n} phút",
+    "h": "{n} giờ",
+    "d": "{n} ngày"
+  },
+  "estimate": {
+    "missing": "Chưa estimate — tạm tính {estimate}",
+    "ai": "AI ước tính"
+  },
+  "priority": {
+    "label": "Ưu tiên",
+    "1": "P1 · Cao",
+    "2": "P2 · Bình thường",
+    "3": "P3 · Thấp"
+  },
+  "status": {
+    "label": "Trạng thái",
+    "todo": "Cần làm",
+    "doing": "Đang làm",
+    "waiting": "Đang chờ người khác"
+  },
+  "whyHere": "Vì sao ở đây",
+  "reasons": {
+    "due_in": "còn {span} làm việc",
+    "overdue_by": "quá hạn {span}",
+    "needs": "cần ~{estimate}",
+    "slack": "dư {span}",
+    "slackNegative": "thiếu {span}",
+    "priority": "P{n}",
+    "aging": "đã mở {n} ngày",
+    "doing": "đang làm",
+    "no_due": "không hạn",
+    "estimate_missing": "chưa estimate",
+    "unknown": "{kind}: {value}"
+  },
+  "actions": {
+    "done": "Xong",
+    "undone": "Bỏ đánh dấu xong",
+    "start": "Bắt đầu",
+    "backToTodo": "Về cần làm",
+    "snooze": "Hoãn",
+    "waiting": "Chờ người khác",
+    "edit": "Sửa",
+    "delete": "Xoá",
+    "openSource": "Mở nguồn",
+    "sessions": "{n} session liên kết"
+  },
+  "snooze": {
+    "hour": "1 giờ",
+    "afternoon": "Chiều nay (14:00)",
+    "tomorrow": "Mai {time}",
+    "nextWeek": "Tuần sau (T2 {time})",
+    "custom": "Chọn thời gian…",
+    "wake": "Bỏ hoãn",
+    "customTitle": "Hoãn đến",
+    "until": "Hoãn đến {time}",
+    "apply": "Hoãn"
+  },
+  "confirmDelete": {
+    "title": "Xoá todo?",
+    "message": "“{text}” sẽ bị xoá và không khôi phục được.",
+    "button": "Xoá"
+  },
+  "toast": {
+    "added": "Đã thêm todo",
+    "saved": "Đã lưu",
+    "deleted": "Đã xoá todo",
+    "snoozed": "Đã hoãn đến {time}"
+  },
+  "actual": {
+    "title": "Thực tế mất bao lâu?",
+    "hint": "Ước tính {estimate}. Ghi thời gian thực tế giúp hiệu chỉnh các estimate sau.",
+    "placeholder": "vd. 1h30",
+    "skip": "Bỏ qua",
+    "save": "Lưu"
+  },
+  "drawer": {
+    "text": "Tiêu đề",
+    "project": "Dự án",
+    "due": "Hạn",
+    "dueTime": "Giờ (tuỳ chọn)",
+    "clearDue": "Xoá hạn",
+    "estimate": "Estimate",
+    "estimatePlaceholder": "30m, 2h, 1h30",
+    "estimateInvalid": "Nhập kiểu 30m, 2h, 1h30 hoặc số phút (5 phút – 40h)",
+    "effectiveEstimate": "Tính là {estimate} trên bảng",
+    "snoozedUntil": "Hoãn đến",
+    "remindAt": "Nhắc lúc",
+    "clear": "Xoá",
+    "source": "Nguồn",
+    "actual": "Thời gian thực tế",
+    "aiPlan": "Kế hoạch AI",
+    "aiAnalyzedAt": "Phân tích lúc {time}",
+    "created": "Tạo lúc {time}",
+    "started": "Bắt đầu lúc {time}",
+    "completed": "Xong lúc {time}",
+    "save": "Lưu",
+    "cancel": "Huỷ",
+    "unsaved": "Bỏ các thay đổi chưa lưu?",
+    "discard": "Bỏ thay đổi"
+  },
+  "capture": {
+    "title": "Todo mới",
+    "textPlaceholder": "Cần làm gì?",
+    "project": "Dự án",
+    "due": "Hạn",
+    "dueTime": "Giờ",
+    "priority": "Ưu tiên",
+    "estimate": "Estimate",
+    "source": "Nguồn",
+    "removeSource": "Bỏ nguồn",
+    "save": "Thêm todo",
+    "reviewPr": "Review {title} (#{number})",
+    "suggest": "Gợi ý"
+  },
+  "columns": {
+    "noProject": "Không có dự án",
+    "overdue": "{n} quá hạn"
+  },
+  "week": {
+    "overloaded": "Quá tải",
+    "estimateHint": "Tổng estimate các todo có hạn trong ngày"
+  },
+  "settings": {
+    "title": "Focus",
+    "hint": "Giờ làm việc quyết định bảng Focus: hạn không có giờ được tính là cuối giờ làm việc của ngày đó, và thời gian còn lại chỉ đếm phút làm việc.",
+    "workHours": "Giờ làm việc",
+    "workStart": "Bắt đầu",
+    "workEnd": "Kết thúc",
+    "workDays": "Ngày làm việc",
+    "days": {
+      "1": "T2",
+      "2": "T3",
+      "3": "T4",
+      "4": "T5",
+      "5": "T6",
+      "6": "T7",
+      "7": "CN"
+    },
+    "save": "Lưu",
+    "saved": "Đã lưu cài đặt Focus",
+    "invalidHours": "Giờ kết thúc phải sau giờ bắt đầu.",
+    "noDays": "Chọn ít nhất một ngày làm việc."
+  }
+}
