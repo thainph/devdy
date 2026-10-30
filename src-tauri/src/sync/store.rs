@@ -10,12 +10,26 @@ use super::clock::{wall_ms, HlcClock};
 use super::codec::{encode_row, read_row, PathCtx};
 use super::op::{Op, OpKind, OP_VERSION};
 use super::events::{Notice, Notifier};
+use super::transport::RelayMark;
 use super::{apply, files, schema, secrets, SCHEMA_VERSION};
 use crate::db::Db;
 
-const CURSOR_KEY: &str = "pull_cursor";
+pub const CURSOR_KEY: &str = "pull_cursor";
+/// `sync_state` key of the relay history mark (`transport::RelayMark`, JSON).
+pub const RELAY_MARK_KEY: &str = "relay_mark";
 /// A pulled file/secret op that keeps failing is dropped after this many tries.
 const MAX_EXTRA_ATTEMPTS: i64 = 50;
+
+/// Forget the relay history mark: the next connection adopts the relay's
+/// epoch as it is (after a re-merge with a relay that lost ops).
+pub async fn clear_relay_mark(db: &Db) -> Result<(), String> {
+    sqlx::query("DELETE FROM sync_state WHERE key = ?")
+        .bind(RELAY_MARK_KEY)
+        .execute(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
 
 /// Ops whose `tbl` is not a DB table (§9b): routed to `files` / `secrets`,
 /// never to `apply`.
@@ -44,6 +58,15 @@ pub trait SyncStore: Send + Sync {
         Ok(!self.pending(1).await?.is_empty())
     }
     async fn mark_pushed(&self, up_to_outbox_seq: i64) -> Result<(), String>;
+    /// [`SyncStore::pending`] restricted to rows of `tbls` (DB tables only).
+    async fn pending_in(&self, _tbls: &[&str], _limit: usize) -> Result<Vec<(i64, Op)>, String> {
+        Ok(Vec::new())
+    }
+    /// Those ops (from [`SyncStore::pending_in`]) were pushed: drop their
+    /// rows' outbox entries up to their seqs, leaving everything else queued.
+    async fn mark_ops_pushed(&self, _ops: &[(i64, Op)]) -> Result<(), String> {
+        Ok(())
+    }
     async fn apply_remote(&self, ops: Vec<Op>) -> Result<ApplyReport, String>;
     async fn cursor(&self) -> Result<u64, String>; // last pulled relay seq
     async fn set_cursor(&self, seq: u64) -> Result<(), String>;
@@ -84,6 +107,21 @@ pub trait SyncStore: Send + Sync {
 
     /// The relay named the group's creator (welcome, or the role moved).
     async fn set_group_creator(&self, _device_id: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// The relay store epoch this device last synced in and the highest seq
+    /// it saw there (restore detection, `Connection::check_history`).
+    async fn relay_mark(&self) -> Result<Option<RelayMark>, String> {
+        Ok(None)
+    }
+
+    async fn set_relay_mark(&self, _mark: &RelayMark) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// This device saw relay seq `seq` (pulled, or acked for its push).
+    async fn note_relay_seq(&self, _seq: u64) -> Result<(), String> {
         Ok(())
     }
 }
@@ -129,6 +167,89 @@ impl SqliteSyncStore {
             scan: Mutex::new(files::ScanState::default()),
             notify: None,
         }
+    }
+
+    /// Pending ops, oldest first: of every row, or only of rows in `only`.
+    async fn pending_filtered(&self, limit: usize, only: Option<&[&str]>) -> Result<Vec<(i64, Op)>, String> {
+        if let Some(t) = only {
+            // Polled while pushes back off: stay cheap when nothing waits.
+            let sql = format!("SELECT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl IN ({}))", vec!["?"; t.len()].join(", "));
+            let mut q = sqlx::query_scalar::<_, bool>(&sql);
+            for tbl in t {
+                q = q.bind(*tbl);
+            }
+            if t.is_empty() || !q.fetch_one(&self.db).await.map_err(err)? {
+                return Ok(Vec::new());
+            }
+        }
+        let paths = self.paths_now().await?;
+        let with_secrets = self.secrets_on().await?;
+        // The Keychain is read before the transaction (it may prompt), and
+        // only when a secret op is waiting.
+        let secret_waiting: Option<i64> = sqlx::query_scalar("SELECT 1 FROM sync_outbox WHERE tbl = ? LIMIT 1")
+            .bind(secrets::TBL)
+            .fetch_optional(&self.db)
+            .await
+            .map_err(err)?;
+        let keychain = match (&self.secrets, with_secrets && secret_waiting.is_some()) {
+            (Some(backend), true) => {
+                let b = backend.clone();
+                Some(tokio::task::spawn_blocking(move || b.list()).await.map_err(|e| e.to_string())??)
+            }
+            _ => None,
+        };
+        let mut guard = self.clock().await?;
+        let mut clock = guard.clone().ok_or("clock not loaded")?;
+        let mut tx = self.db.begin().await.map_err(err)?;
+        let only_sql = only.map_or(String::new(), |t| format!("WHERE tbl IN ({})", vec!["?"; t.len()].join(", ")));
+        let sql = format!(
+            "SELECT tbl, pk, MAX(seq) AS s, MAX(changed_at) FROM sync_outbox {only_sql} \
+             GROUP BY tbl, pk ORDER BY s LIMIT ?"
+        );
+        let mut q = sqlx::query_as::<_, (String, String, i64, i64)>(&sql);
+        for t in only.unwrap_or_default() {
+            q = q.bind(*t);
+        }
+        let groups = q.bind(limit as i64).fetch_all(&mut *tx).await.map_err(err)?;
+
+        let mut out = Vec::with_capacity(groups.len());
+        for (tbl, pk_text, seq, changed_at) in groups {
+            let pk: Option<Value> = serde_json::from_str(&pk_text).ok();
+            let entry = match (tbl.as_str(), pk) {
+                (files::TBL, Some(pk)) => files::pending_row(&mut tx, &pk, with_secrets).await?.map(|e| (pk, e)),
+                (secrets::TBL, Some(pk)) if with_secrets => match &keychain {
+                    Some(items) => secrets::pending_row(items, &pk).map(|e| (pk, e)),
+                    // Queued after the Keychain was read: next time.
+                    None => continue,
+                },
+                (_, Some(pk)) => match schema::spec(&tbl) {
+                    Some(spec) => self.db_entry(&mut tx, &paths, spec, &pk_text, pk).await?,
+                    None => None,
+                },
+                (_, None) => None,
+            };
+            let Some((pk, (kind, row))) = entry else {
+                drop_entries(&mut tx, &tbl, &pk_text, seq).await?;
+                continue;
+            };
+            let hlc = clock.tick_at(changed_at.max(0) as u64);
+            sqlx::query(
+                "INSERT INTO sync_rows (tbl, pk, hlc, deleted) VALUES (?, ?, ?, ?) \
+                 ON CONFLICT(tbl, pk) DO UPDATE SET hlc = excluded.hlc, deleted = excluded.deleted",
+            )
+            .bind(&tbl)
+            .bind(&pk_text)
+            .bind(hlc.to_string())
+            .bind((kind == OpKind::Delete) as i64)
+            .execute(&mut *tx)
+            .await
+            .map_err(err)?;
+            out.push((seq, Op { v: OP_VERSION, schema: SCHEMA_VERSION, hlc, tbl, pk, kind, row }));
+        }
+        clock.save(&mut tx).await?;
+        tx.commit().await.map_err(err)?;
+        *guard = Some(clock);
+        Ok(out)
     }
 
     pub fn with_notifier(mut self, notify: Notifier) -> Self {
@@ -206,72 +327,33 @@ impl SyncStore for SqliteSyncStore {
     /// Outbox entries coalesced per row (the op carries the CURRENT row, or a
     /// Delete when it is gone), each with a fresh HLC no older than the change.
     async fn pending(&self, limit: usize) -> Result<Vec<(i64, Op)>, String> {
-        let paths = self.paths_now().await?;
-        let with_secrets = self.secrets_on().await?;
-        // The Keychain is read before the transaction (it may prompt), and
-        // only when a secret op is waiting.
-        let secret_waiting: Option<i64> = sqlx::query_scalar("SELECT 1 FROM sync_outbox WHERE tbl = ? LIMIT 1")
-            .bind(secrets::TBL)
-            .fetch_optional(&self.db)
-            .await
-            .map_err(err)?;
-        let keychain = match (&self.secrets, with_secrets && secret_waiting.is_some()) {
-            (Some(backend), true) => {
-                let b = backend.clone();
-                Some(tokio::task::spawn_blocking(move || b.list()).await.map_err(|e| e.to_string())??)
-            }
-            _ => None,
-        };
-        let mut guard = self.clock().await?;
-        let mut clock = guard.clone().ok_or("clock not loaded")?;
-        let mut tx = self.db.begin().await.map_err(err)?;
-        let groups: Vec<(String, String, i64, i64)> = sqlx::query_as(
-            "SELECT tbl, pk, MAX(seq) AS s, MAX(changed_at) FROM sync_outbox \
-             GROUP BY tbl, pk ORDER BY s LIMIT ?",
-        )
-        .bind(limit as i64)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(err)?;
+        self.pending_filtered(limit, None).await
+    }
 
-        let mut out = Vec::with_capacity(groups.len());
-        for (tbl, pk_text, seq, changed_at) in groups {
-            let pk: Option<Value> = serde_json::from_str(&pk_text).ok();
-            let entry = match (tbl.as_str(), pk) {
-                (files::TBL, Some(pk)) => files::pending_row(&mut tx, &pk, with_secrets).await?.map(|e| (pk, e)),
-                (secrets::TBL, Some(pk)) if with_secrets => match &keychain {
-                    Some(items) => secrets::pending_row(items, &pk).map(|e| (pk, e)),
-                    // Queued after the Keychain was read: next time.
-                    None => continue,
-                },
-                (_, Some(pk)) => match schema::spec(&tbl) {
-                    Some(spec) => self.db_entry(&mut tx, &paths, spec, &pk_text, pk).await?,
-                    None => None,
-                },
-                (_, None) => None,
-            };
-            let Some((pk, (kind, row))) = entry else {
-                drop_entries(&mut tx, &tbl, &pk_text, seq).await?;
-                continue;
-            };
-            let hlc = clock.tick_at(changed_at.max(0) as u64);
+    async fn pending_in(&self, tbls: &[&str], limit: usize) -> Result<Vec<(i64, Op)>, String> {
+        if tbls.iter().any(|t| is_extra_tbl(t)) {
+            return Err("pending_in takes DB tables only".into());
+        }
+        self.pending_filtered(limit, Some(tbls)).await
+    }
+
+    async fn mark_ops_pushed(&self, ops: &[(i64, Op)]) -> Result<(), String> {
+        let mut tx = self.db.begin().await.map_err(err)?;
+        for (seq, op) in ops {
+            let pk = op.pk_key();
             sqlx::query(
-                "INSERT INTO sync_rows (tbl, pk, hlc, deleted) VALUES (?, ?, ?, ?) \
-                 ON CONFLICT(tbl, pk) DO UPDATE SET hlc = excluded.hlc, deleted = excluded.deleted",
+                "DELETE FROM sync_parked WHERE tbl = ? AND pk = ? AND EXISTS \
+                 (SELECT 1 FROM sync_outbox o WHERE o.tbl = sync_parked.tbl AND o.pk = sync_parked.pk AND o.seq <= ?)",
             )
-            .bind(&tbl)
-            .bind(&pk_text)
-            .bind(hlc.to_string())
-            .bind((kind == OpKind::Delete) as i64)
+            .bind(&op.tbl)
+            .bind(&pk)
+            .bind(seq)
             .execute(&mut *tx)
             .await
             .map_err(err)?;
-            out.push((seq, Op { v: OP_VERSION, schema: SCHEMA_VERSION, hlc, tbl, pk, kind, row }));
+            drop_entries(&mut tx, &op.tbl, &pk, *seq).await?;
         }
-        clock.save(&mut tx).await?;
-        tx.commit().await.map_err(err)?;
-        *guard = Some(clock);
-        Ok(out)
+        tx.commit().await.map_err(err)
     }
 
     async fn has_pending(&self) -> Result<bool, String> {
@@ -492,6 +574,43 @@ impl SyncStore for SqliteSyncStore {
         )
         .bind(CURSOR_KEY)
         .bind(seq.to_string())
+        .execute(&self.db)
+        .await
+        .map_err(err)?;
+        Ok(())
+    }
+
+    async fn relay_mark(&self) -> Result<Option<RelayMark>, String> {
+        let v: Option<String> = sqlx::query_scalar("SELECT value FROM sync_state WHERE key = ?")
+            .bind(RELAY_MARK_KEY)
+            .fetch_optional(&self.db)
+            .await
+            .map_err(err)?;
+        Ok(v.and_then(|s| serde_json::from_str(&s).ok()))
+    }
+
+    async fn set_relay_mark(&self, mark: &RelayMark) -> Result<(), String> {
+        let value = serde_json::to_string(mark).map_err(|e| e.to_string())?;
+        sqlx::query(
+            "INSERT INTO sync_state (key, value) VALUES (?, ?) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(RELAY_MARK_KEY)
+        .bind(value)
+        .execute(&self.db)
+        .await
+        .map_err(err)?;
+        Ok(())
+    }
+
+    async fn note_relay_seq(&self, seq: u64) -> Result<(), String> {
+        sqlx::query(
+            "UPDATE sync_state SET value = json_set(value, '$.seen', ?) \
+             WHERE key = ? AND json_valid(value) AND COALESCE(json_extract(value, '$.seen'), 0) < ?",
+        )
+        .bind(seq as i64)
+        .bind(RELAY_MARK_KEY)
+        .bind(seq as i64)
         .execute(&self.db)
         .await
         .map_err(err)?;

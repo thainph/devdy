@@ -22,7 +22,9 @@
 //! (larger than [`MAX_OP_BLOB_CHARS`], or refused as `too_large` /
 //! `bad_request`) is parked (`SyncStore::park`) instead of blocking the queue;
 //! any other refused push (quota, relay trouble) backs off exponentially up to
-//! [`Timing::push_backoff_max`] while pulls go on.
+//! [`Timing::push_backoff_max`] while pulls go on. Meanwhile run ownership /
+//! lease changes ([`PRIORITY_TABLES`]) still go out on their own: a lease that
+//! stops being renewed makes the other devices offer to take a live run over.
 //!
 //! Status is published through a callback (the app emits it as
 //! `sync://status`). Op contents, blobs and keys are never logged.
@@ -42,6 +44,9 @@ use tokio::sync::{mpsc, watch, Notify};
 pub const STATUS_EVENT: &str = "sync://status";
 const PUSH_BATCH: usize = 500;
 const PUSH_BATCH_BYTES: usize = 4 * 1024 * 1024;
+/// Rows pushed even while a refused push backs off (review-3 M1): run
+/// ownership and lease renewals. Small, and each supersedes its previous op.
+const PRIORITY_TABLES: &[&str] = &["runs"];
 /// Largest sealed op (base64 chars) worth sending: the relay's default cap,
 /// base64 of `RELAY_SYNC_MAX_BLOB_BYTES` (4 MiB + 64). Bigger ops are parked.
 pub const MAX_OP_BLOB_CHARS: usize = (4 * 1024 * 1024 + 64usize).div_ceil(3) * 4;
@@ -245,15 +250,7 @@ async fn run(ctx: Ctx, mut stop: watch::Receiver<bool>) {
         }
         ctx.shared.update(|s| s.state = SyncState::Connecting);
         let (ev_tx, ev_rx) = mpsc::unbounded_channel();
-        let connected = match Connection::connect(&ctx.params, false, ev_tx).await {
-            // A relay behind our cursor lost ops: stop until re-merged (N15).
-            Ok(conn) => match ctx.store.cursor().await {
-                Ok(cursor) => conn.check_not_behind(cursor).map(|_| conn),
-                Err(e) => Err(TransportError::Network(e)),
-            },
-            Err(e) => Err(e),
-        };
-        let wait = match connected {
+        let wait = match connect_checked(&ctx, ev_tx).await {
             Ok(conn) => {
                 backoff = ctx.timing.backoff_min;
                 ctx.shared.update(|s| s.state = SyncState::Online);
@@ -298,6 +295,22 @@ async fn run(ctx: Ctx, mut stop: watch::Receiver<bool>) {
     ctx.shared.update(|s| s.state = SyncState::Disabled);
 }
 
+/// Connect presenting the relay store epoch this device last synced in, and
+/// refuse a relay that lost ops this device saw (restored from a backup):
+/// sync stops until the device merges again (N15, review-3 M6).
+async fn connect_checked(ctx: &Ctx, events: mpsc::UnboundedSender<Event>) -> Result<Connection, TransportError> {
+    let store_err = TransportError::Network;
+    let mark = ctx.store.relay_mark().await.map_err(store_err)?;
+    let conn = Connection::connect_known(&ctx.params, mark.as_ref().map(|m| m.epoch.as_str()), events).await?;
+    let cursor = ctx.store.cursor().await.map_err(store_err)?;
+    if let Some(next) = conn.check_history(cursor, mark.as_ref())? {
+        if Some(&next) != mark.as_ref() {
+            ctx.store.set_relay_mark(&next).await.map_err(store_err)?;
+        }
+    }
+    Ok(conn)
+}
+
 /// Serve one connection until it drops, we stop, or we pause.
 async fn serve(
     ctx: &Ctx,
@@ -313,6 +326,8 @@ async fn serve(
     periodic.tick().await;
 
     let mut backoff = PushBackoff::default();
+    // Throttles the priority pushes made while `backoff` holds the rest.
+    let mut priority = PushBackoff::default();
     if !cycle_reporting(ctx, conn, &mut backoff, true, true).await {
         return;
     }
@@ -346,8 +361,15 @@ async fn serve(
             }
             _ = poll.tick() => {
                 // While a refused push backs off, nothing is staged and
-                // pending ops alone do not trigger a cycle.
-                backoff.due() && match stage(ctx, conn).await {
+                // pending ops alone do not trigger a cycle; lease renewals
+                // still go out.
+                if !backoff.due() {
+                    if push_priority(ctx, conn, &mut priority).await.as_ref().is_err_and(is_dead) {
+                        return;
+                    }
+                    continue;
+                }
+                match stage(ctx, conn).await {
                     Err(e @ CycleError::Transport(TransportError::Relay(_))) => {
                         report_refused_push(ctx, &mut backoff, e);
                         false
@@ -368,6 +390,10 @@ async fn serve(
         if run_cycle {
             let push = backoff.due();
             if !cycle_reporting(ctx, conn, &mut backoff, push, push && !staged).await {
+                return;
+            }
+            // The full push did not run, or its blobs were refused.
+            if !backoff.due() && push_priority(ctx, conn, &mut priority).await.as_ref().is_err_and(is_dead) {
                 return;
             }
         }
@@ -666,13 +692,19 @@ async fn push_all(ctx: &Ctx, conn: &Connection) -> Result<(), CycleError> {
         let n = batch.items.len();
         let (seqs, items): (Vec<i64>, Vec<WireItem>) = batch.items.into_iter().unzip();
         match conn.push(items.clone(), base).await {
-            Ok(_) => ctx.store.mark_pushed(up_to).await.map_err(CycleError::Store)?,
+            Ok(ack) => {
+                ctx.store.mark_pushed(up_to).await.map_err(CycleError::Store)?;
+                ctx.store.note_relay_seq(ack).await.map_err(CycleError::Store)?;
+            }
             // One op spoils the whole (all-or-nothing) batch: send them one by
             // one so only the culprit is parked.
             Err(TransportError::Relay(code)) if is_op_rejection(&code) => {
                 for (seq, item) in seqs.into_iter().zip(items) {
                     match conn.push(vec![item], base).await {
-                        Ok(_) => ctx.store.mark_pushed(seq).await.map_err(CycleError::Store)?,
+                        Ok(ack) => {
+                            ctx.store.mark_pushed(seq).await.map_err(CycleError::Store)?;
+                            ctx.store.note_relay_seq(ack).await.map_err(CycleError::Store)?;
+                        }
                         Err(TransportError::Relay(code)) if is_op_rejection(&code) => park(ctx, seq, &code).await?,
                         Err(e) => return Err(e.into()),
                     }
@@ -687,6 +719,39 @@ async fn push_all(ctx: &Ctx, conn: &Connection) -> Result<(), CycleError> {
         ctx.shared.update(|s| s.last_push = Some(now_ms()));
     }
     Ok(())
+}
+
+/// Push only the [`PRIORITY_TABLES`] rows (review-3 M1), for when the full
+/// push is held back. Oversized ones are left for the full push (it parks
+/// them). A refusal backs `throttle` off so it is not retried every poll.
+async fn push_priority(ctx: &Ctx, conn: &Connection, throttle: &mut PushBackoff) -> Result<(), CycleError> {
+    if !throttle.due() {
+        return Ok(());
+    }
+    let ops = ctx.store.pending_in(PRIORITY_TABLES, PUSH_BATCH).await.map_err(CycleError::Store)?;
+    if ops.is_empty() {
+        return Ok(());
+    }
+    let batch = build_push(&ctx.keys, &ops)?;
+    if batch.items.is_empty() {
+        return Ok(());
+    }
+    let sent: Vec<(i64, Op)> = ops.into_iter().filter(|(seq, _)| batch.items.iter().any(|(s, _)| s == seq)).collect();
+    let items = batch.items.into_iter().map(|(_, item)| item).collect();
+    let base = ctx.store.cursor().await.map_err(CycleError::Store)?;
+    match conn.push(items, base).await {
+        Ok(ack) => {
+            throttle.reset();
+            ctx.store.mark_ops_pushed(&sent).await.map_err(CycleError::Store)?;
+            ctx.store.note_relay_seq(ack).await.map_err(CycleError::Store)?;
+            tracing::debug!(event = "sync_pushed_priority", ops = sent.len());
+            Ok(())
+        }
+        Err(e) => {
+            throttle.failed(ctx.timing.backoff_min, ctx.timing.push_backoff_max);
+            Err(e.into())
+        }
+    }
 }
 
 async fn pull_all(ctx: &Ctx, conn: &Connection, blobs: &RelayBlobs<'_>) -> Result<(), CycleError> {
@@ -737,6 +802,7 @@ async fn pull_all(ctx: &Ctx, conn: &Connection, blobs: &RelayBlobs<'_>) -> Resul
         next = next.max(last_seq);
         if next != cursor {
             ctx.store.set_cursor(next).await.map_err(CycleError::Store)?;
+            ctx.store.note_relay_seq(next).await.map_err(CycleError::Store)?;
             cursor = next;
         }
         if !more {
@@ -812,6 +878,14 @@ mod tests {
         }
         async fn mark_pushed(&self, up_to: i64) -> Result<(), String> {
             self.inner.lock().unwrap().outbox.retain(|(s, _)| *s > up_to);
+            Ok(())
+        }
+        async fn pending_in(&self, tbls: &[&str], limit: usize) -> Result<Vec<(i64, Op)>, String> {
+            let g = self.inner.lock().unwrap();
+            Ok(g.outbox.iter().filter(|(_, o)| tbls.contains(&o.tbl.as_str())).take(limit).cloned().collect())
+        }
+        async fn mark_ops_pushed(&self, ops: &[(i64, Op)]) -> Result<(), String> {
+            self.inner.lock().unwrap().outbox.retain(|(s, _)| ops.iter().all(|(p, _)| p != s));
             Ok(())
         }
         async fn apply_remote(&self, ops: Vec<Op>) -> Result<ApplyReport, String> {
@@ -1274,6 +1348,58 @@ mod tests {
         b.engine.stop().await;
     }
 
+    /// Review-3 M1: while B's pushes are held back (its blob uploads are
+    /// refused), the lease renewals of its live run still reach A, so A does
+    /// not see the lease expire and offer to take a live run over.
+    #[tokio::test]
+    async fn lease_renewals_go_out_while_pushes_back_off() {
+        let relay = TestRelay::start().await;
+        relay.create_group("g1");
+        let a = device(&relay, "dev-a", fast());
+        let b = device(&relay, "dev-b", fast());
+        eventually("online", || b.engine.status().state == SyncState::Online).await;
+        relay.fail_blob_puts_of("dev-b", Some("quota_exceeded"));
+        b.store.inner.lock().unwrap().stage_blobs = true;
+        b.store.add("notes", "n1", "held back");
+        b.engine.kick();
+        eventually("error", || b.engine.status().last_error.is_some_and(|e| e.contains("quota_exceeded"))).await;
+        for i in 1..=3 {
+            let lease = format!("lease {i}");
+            b.store.add("runs", "r1", &lease);
+            eventually("renewal on a", || a.store.applied_titles().last() == Some(&lease)).await;
+        }
+        assert!(!a.store.applied_titles().contains(&"held back".to_string()));
+        assert_eq!(b.store.outbox_len(), 1, "the rest stays queued");
+        relay.fail_blob_puts_of("dev-b", None);
+        eventually("pushed after recovery", || b.store.outbox_len() == 0).await;
+        a.engine.stop().await;
+        b.engine.stop().await;
+    }
+
+    /// The SQLite side of the priority push: only the listed tables' rows are
+    /// read and marked, everything else stays queued in order.
+    #[tokio::test]
+    async fn sqlite_store_pushes_priority_rows_alone() {
+        use crate::sync::files::tests::mem_db;
+        use crate::sync::store::SqliteSyncStore;
+        let db = mem_db().await;
+        let store = SqliteSyncStore::new(db.clone(), "dev-a".into());
+        for sql in [
+            "INSERT INTO todos (id, text, position, created_at) VALUES ('t1', 'x', 0, 'x')",
+            "INSERT INTO projects (id, name, path, created_at) VALUES ('p1', 'P', '/nonexistent/p1', 'x')",
+            "INSERT INTO runs (id, project_id, type, status, engine, created_at) VALUES ('r1', 'p1', 'session', 'running', 'claude', 'x')",
+        ] {
+            sqlx::query(sql).execute(&db).await.unwrap();
+        }
+        let prio = store.pending_in(PRIORITY_TABLES, 10).await.unwrap();
+        assert_eq!(prio.iter().map(|(_, o)| o.tbl.as_str()).collect::<Vec<_>>(), vec!["runs"]);
+        store.mark_ops_pushed(&prio).await.unwrap();
+        let left: Vec<String> = store.pending(10).await.unwrap().into_iter().map(|(_, o)| o.tbl).collect();
+        assert_eq!(left, vec!["todos", "projects"]);
+        assert!(store.pending_in(PRIORITY_TABLES, 10).await.unwrap().is_empty());
+        assert!(store.pending_in(&["file"], 10).await.is_err());
+    }
+
     #[tokio::test]
     async fn sqlite_store_parks_until_the_row_changes_again() {
         use crate::sync::files::tests::mem_db;
@@ -1409,6 +1535,52 @@ mod tests {
             sessions::renew(&a.0, std::slice::from_ref(&run)).await.unwrap();
             assert_eq!(owner_of(&a.0, &run).await.2, None);
         }
+    }
+
+    /// Review-3 M6: the relay is restored from a backup and a device that
+    /// never saw the lost ops pushes its head past B's cursor before B comes
+    /// back. B must still refuse it (needs a re-merge), while a plain relay
+    /// restart keeps B syncing.
+    #[tokio::test]
+    async fn restored_relay_is_refused_after_another_device_pushed_past() {
+        let relay = TestRelay::start().await;
+        relay.create_group("g1");
+        let a = manual_side(&relay, "dev-a").await;
+        let b = manual_side(&relay, "dev-b").await;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        connect_checked(&b.1, tx).await.unwrap();
+        let exec = |db: &crate::db::Db, sql: &'static str| {
+            let db = db.clone();
+            async move { sqlx::query(sql).execute(&db).await.unwrap() }
+        };
+        exec(&a.0, "INSERT INTO todos (id, text, position, created_at) VALUES ('t1', 'one', 0, 'x')").await;
+        push_side(&a).await;
+        let backup = relay.snapshot("g1");
+        exec(&a.0, "INSERT INTO todos (id, text, position, created_at) VALUES ('t2', 'two', 1, 'x'), ('t3', 'three', 2, 'x')").await;
+        push_side(&a).await;
+        pull_side(&b).await;
+        let cursor = b.1.store.cursor().await.unwrap();
+        assert_eq!(b.1.store.relay_mark().await.unwrap().map(|m| m.seen), Some(cursor));
+
+        // A restart is not a restore.
+        relay.restart();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        connect_checked(&b.1, tx).await.expect("a restarted relay keeps its history");
+
+        relay.restore("g1", backup);
+        let c = manual_side(&relay, "dev-c").await;
+        for sql in [
+            "INSERT INTO todos (id, text, position, created_at) VALUES ('c1', 'c', 0, 'x')",
+            "INSERT INTO todos (id, text, position, created_at) VALUES ('c2', 'c', 0, 'x')",
+            "INSERT INTO todos (id, text, position, created_at) VALUES ('c3', 'c', 0, 'x')",
+        ] {
+            exec(&c.0, sql).await;
+        }
+        push_side(&c).await;
+        assert!(relay.head() >= cursor, "the head alone no longer shows the loss");
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let err = connect_checked(&b.1, tx).await.err();
+        assert_eq!(err, Some(TransportError::Rejected(crate::sync::transport::RELAY_BEHIND.into())));
     }
 
     /// Finding #1, the exact scenario: B edits a row while offline (older

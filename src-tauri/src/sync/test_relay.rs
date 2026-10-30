@@ -24,8 +24,8 @@ use tokio_tungstenite::tungstenite::Message;
 /// Internal outbound marker: close this connection.
 const CLOSE: &str = "\u{0}close";
 
-#[derive(Default)]
-struct Group {
+#[derive(Default, Clone)]
+pub struct Group {
     head: u64,
     /// (seq, device_id, key, blob)
     ops: Vec<(u64, String, String, String)>,
@@ -40,6 +40,16 @@ struct Group {
     invites: HashSet<String>,
     blobs: HashMap<String, String>,
     released: usize,
+    /// Store epoch → the group's head in it (the relay's `epochs` table).
+    epochs: HashMap<String, u64>,
+}
+
+impl Group {
+    fn bump(&mut self, epoch: &str) -> u64 {
+        self.head += 1;
+        self.epochs.insert(epoch.to_string(), self.head);
+        self.head
+    }
 }
 
 #[derive(Default)]
@@ -62,6 +72,8 @@ struct State {
     /// device → error code its blob uploads get.
     fail_blob_puts: HashMap<String, String>,
     next_conn: u64,
+    /// The store's current epoch (new on every [`TestRelay::restart`]).
+    epoch: String,
 }
 
 #[derive(Clone)]
@@ -76,7 +88,7 @@ impl TestRelay {
     pub async fn start() -> TestRelay {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let state = Arc::new(Mutex::new(State::default()));
+        let state = Arc::new(Mutex::new(State { epoch: "epoch-0".into(), ..Default::default() }));
         let st = state.clone();
         tokio::spawn(async move {
             while let Ok((tcp, _)) = listener.accept().await {
@@ -109,10 +121,28 @@ impl TestRelay {
     /// Store a raw op as if `device` had pushed it.
     pub fn inject(&self, group: &str, device: &str, blob: &str) {
         let mut s = self.state.lock().unwrap();
+        let epoch = s.epoch.clone();
         let g = s.groups.entry(group.into()).or_default();
-        g.head += 1;
-        let seq = g.head;
+        let seq = g.bump(&epoch);
         g.ops.push((seq, device.into(), format!("k{seq}"), blob.into()));
+    }
+
+    /// A copy of a group's stored state (a backup of the relay's store).
+    pub fn snapshot(&self, group: &str) -> Group {
+        self.state.lock().unwrap().groups.get(group).cloned().unwrap_or_default()
+    }
+
+    /// The relay process restarts: a new store epoch, connections dropped.
+    pub fn restart(&self) {
+        self.drop_all();
+        let mut s = self.state.lock().unwrap();
+        s.epoch = format!("epoch-{}", uuid::Uuid::new_v4().simple());
+    }
+
+    /// The relay is restored from `backup` (and restarted).
+    pub fn restore(&self, group: &str, backup: Group) {
+        self.state.lock().unwrap().groups.insert(group.into(), backup);
+        self.restart();
     }
 
     pub fn op_count(&self) -> usize {
@@ -258,6 +288,7 @@ fn handle_inner(
 ) -> Option<Value> {
     let s_ = |k: &str| f[k].as_str().unwrap_or_default().to_string();
     let mut s = state.lock().unwrap();
+    let cur_epoch = s.epoch.clone();
     let t = f["t"].as_str().unwrap_or_default();
     if t == "keepalive" {
         return Some(json!({ "t": "keepalive", "room_id": "" }));
@@ -301,9 +332,15 @@ fn handle_inner(
             }
         }
         let (head, creator) = (g.head, g.creator.clone());
+        g.epochs.entry(cur_epoch.clone()).or_insert(head);
+        let known_head = f["known_epoch"].as_str().and_then(|e| g.epochs.get(e).copied());
+        let epoch = cur_epoch;
         s.conns.insert(conn_id, (gid.clone(), did.clone(), tx.clone()));
         *me = Some((gid, did));
-        return Some(json!({ "t": "sync_welcome", "last_seq": head, "creator_device": creator }));
+        return Some(json!({
+            "t": "sync_welcome", "last_seq": head, "creator_device": creator,
+            "epoch": epoch, "known_head": known_head,
+        }));
     }
     let Some((gid, did)) = me.clone() else {
         return Some(error("forbidden"));
@@ -320,13 +357,13 @@ fn handle_inner(
                     return Some(error("too_large"));
                 }
             }
+            let epoch = cur_epoch;
             let g = s.groups.get_mut(&gid)?;
             let base = f["base_seq"].as_u64().unwrap_or(0);
             for item in items {
                 let key = item["key"].as_str().unwrap_or_default().to_string();
                 let blob = item["blob"].as_str().unwrap_or_default().to_string();
-                g.head += 1;
-                let seq = g.head;
+                let seq = g.bump(&epoch);
                 // Only ops the pusher has seen (or pushed itself) are superseded.
                 g.ops.retain(|o| o.2 != key || (o.0 > base && o.1 != did));
                 g.ops.push((seq, did.clone(), key, blob));
