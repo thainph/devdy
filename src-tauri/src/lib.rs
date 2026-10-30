@@ -14,6 +14,7 @@ mod remote;
 mod runs;
 mod secrets;
 mod slack_threads;
+mod sync;
 
 use commands::app_menu::set_app_menu;
 use commands::tray::set_tray_menu;
@@ -230,6 +231,11 @@ pub fn run() {
             let db_path = app_data_dir.join("data.db");
             let db = tauri::async_runtime::block_on(db::init_db(&db_path))
                 .expect("Failed to initialize database");
+            // Sync change capture: device id + triggers (rebuilt only when the
+            // table registry changed). A failure must not block startup.
+            if let Err(e) = tauri::async_runtime::block_on(sync::install(&db)) {
+                eprintln!("[sync] install failed: {e}");
+            }
             // One-time, off the startup path: re-derive the usage ledger from
             // run logs (reads every log, so it can take a while).
             {
