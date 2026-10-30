@@ -4,6 +4,8 @@ import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useProjectsStore } from '@/stores/projects'
 import { useFocusStore } from '@/stores/focus'
+import { openFocusWindow } from '@/lib/focusWindow'
+import { FOCUS_OPEN_WINDOW, type FocusOpenTodo } from '@/lib/focus'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
@@ -331,6 +333,7 @@ let unlistenActivated: UnlistenFn | null = null
 
 // Listener for a session row clicked in the menu-bar switcher (see lib/tray.ts).
 let unlistenTrayRun: UnlistenFn | null = null
+let unlistenFocusOpen: UnlistenFn | null = null
 
 // Listener for the tray's "Background processes" row (lib/tray.ts).
 let unlistenTrayProcs: UnlistenFn | null = null
@@ -472,6 +475,8 @@ onBeforeUnmount(() => {
   unlistenActivated = null
   unlistenTrayRun?.()
   unlistenTrayRun = null
+  unlistenFocusOpen?.()
+  unlistenFocusOpen = null
   unlistenTrayProcs?.()
   unlistenTrayProcs = null
   unlistenCaptureNotification?.()
@@ -642,6 +647,16 @@ onMounted(async () => {
   try {
     unlistenTrayRun = await listen<TrayOpenRun>(TRAY_OPEN_RUN, (e) => {
       if (e.payload?.runId) void openRunFromTray(e.payload.runId)
+    })
+  } catch {
+    // Ignore (e.g. running outside the Tauri shell during dev in a browser).
+  }
+
+  // A Focus reminder click (or the tray's Focus row) while the Focus window is
+  // closed: open it here; it picks the todo up itself (`focus_take_open_todo`).
+  try {
+    unlistenFocusOpen = await listen<FocusOpenTodo>(FOCUS_OPEN_WINDOW, () => {
+      void openFocusWindow()
     })
   } catch {
     // Ignore (e.g. running outside the Tauri shell during dev in a browser).
