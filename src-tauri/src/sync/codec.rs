@@ -26,6 +26,9 @@ pub struct PathCtx {
     /// (portable root as synced, local root), longest synced root first. Kept
     /// in `sync_state.project_path_map` (see `bootstrap::load_project_map`).
     pub project_map: Vec<(String, String)>,
+    /// Config dirs of the Claude accounts set up here (`claude_accounts`):
+    /// besides `~/.claude`, the only places a synced transcript may land.
+    pub claude_dirs: Vec<PathBuf>,
 }
 
 /// Portable prefix of paths under the app data dir.
@@ -37,16 +40,22 @@ impl PathCtx {
             home: std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default(),
             app_data: None,
             project_map: Vec::new(),
+            claude_dirs: Vec::new(),
         }
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn with_home(home: impl Into<PathBuf>) -> Self {
-        PathCtx { home: home.into(), app_data: None, project_map: Vec::new() }
+        PathCtx { home: home.into(), app_data: None, project_map: Vec::new(), claude_dirs: Vec::new() }
     }
 
     pub fn with_app_data(mut self, dir: impl Into<PathBuf>) -> Self {
         self.app_data = Some(dir.into());
+        self
+    }
+
+    pub fn with_claude_dirs(mut self, dirs: impl IntoIterator<Item = PathBuf>) -> Self {
+        self.claude_dirs = dirs.into_iter().filter(|d| d.is_absolute()).collect();
         self
     }
 
@@ -131,11 +140,12 @@ pub fn expand_portable(ctx: &PathCtx, portable: &str) -> String {
         if portable == DATA_MARK {
             return data.to_string_lossy().into_owned();
         }
-        if let Some(rel) = portable.strip_prefix("@data/") {
+        // `@data//x` must not become `/x` (`join` of an absolute path).
+        if let Some(rel) = portable.strip_prefix("@data/").filter(|r| !r.starts_with('/')) {
             return data.join(rel).to_string_lossy().into_owned();
         }
     }
-    match portable.strip_prefix("~/") {
+    match portable.strip_prefix("~/").filter(|r| !r.starts_with('/')) {
         Some(rel) => {
             let rel = swap_encoded_home(rel, "~", &encode_dir(&ctx.home.to_string_lossy()));
             ctx.home.join(rel).to_string_lossy().into_owned()

@@ -6,12 +6,21 @@
 //! Changes are found by hashing every item on the full-scan cadence and
 //! comparing with the hashes stored in `sync_state` (`secret_hash:<pk>`,
 //! salted per device); values are never written to the DB. The sync group's
-//! own secrets and Remote Control's per-machine credentials are never listed
-//! (see `crate::secrets::sync_items`), and never accepted from a peer.
+//! own secrets and Remote Control's credentials (relay host token included)
+//! are never listed (see `crate::secrets::sync_items`), and never accepted
+//! from a peer.
+//!
+//! Items keyed by a row id (PATs, MCP env/headers, server and AWS credentials,
+//! Google tokens: `crate::secrets::ROW_KEYED_SERVICES`) follow their row when
+//! sync re-keys it: the move is queued in `sync_state` with the re-key and
+//! carried out after the DB transaction ([`run_key_moves`]), never
+//! overwriting an item the new id already has. Keychain calls never run
+//! inside a DB transaction (they may block on a prompt).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use sqlx::SqliteConnection;
@@ -24,6 +33,8 @@ pub const TBL: &str = "secret";
 pub const SETTING: &str = "sync_secrets_enabled";
 const HASH_PREFIX: &str = "secret_hash:";
 const SALT_KEY: &str = "secret_salt";
+/// `sync_state` key: JSON list of Keychain moves still to carry out.
+const KEY_MOVES_KEY: &str = "secret_key_moves";
 
 /// A Keychain item as sync names it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -135,14 +146,22 @@ async fn set_hash(conn: &mut SqliteConnection, id: &SecretId, h: Option<&str>) -
     Ok(())
 }
 
+async fn list(backend: &Backend) -> Result<BTreeMap<SecretId, String>, String> {
+    let b = backend.clone();
+    tokio::task::spawn_blocking(move || b.list()).await.map_err(|e| e.to_string())?
+}
+
 /// Hash every item and queue `secret` ops for the ones that changed since the
 /// last scan. Returns how many were queued.
-pub async fn scan(db: &Db, backend: &dyn SecretBackend) -> Result<usize, String> {
-    let mut tx = db.begin().await.map_err(err)?;
-    if !enabled(&mut tx).await? {
-        return Ok(0);
+pub async fn scan(db: &Db, backend: Backend) -> Result<usize, String> {
+    {
+        let mut conn = db.acquire().await.map_err(err)?;
+        if !enabled(&mut conn).await? {
+            return Ok(0);
+        }
     }
-    let items = backend.list()?;
+    let items = list(&backend).await?;
+    let mut tx = db.begin().await.map_err(err)?;
     let salt = salt(&mut tx).await?;
     let stored: BTreeMap<String, String> = sqlx::query_as::<_, (String, String)>(
         "SELECT key, value FROM sync_state WHERE key LIKE 'secret\\_hash:%' ESCAPE '\\'",
@@ -213,31 +232,33 @@ pub enum Outcome {
 }
 
 /// Apply one remote `secret` op (LWW by HLC, like a row).
-pub async fn apply_op(db: &Db, backend: &dyn SecretBackend, op: &Op) -> Result<Outcome, String> {
+pub async fn apply_op(db: &Db, backend: Backend, op: &Op) -> Result<Outcome, String> {
     let id = SecretId::from_pk(&op.pk).ok_or_else(|| format!("malformed secret pk {}", op.pk))?;
-    let mut tx = db.begin().await.map_err(err)?;
-    if !enabled(&mut tx).await? || !crate::secrets::is_sync_item(&id.service, &id.account) {
-        return Ok(Outcome::Skipped);
-    }
     let key = op.pk_key();
-    let known: Option<String> = sqlx::query_scalar("SELECT hlc FROM sync_rows WHERE tbl = ? AND pk = ?")
-        .bind(TBL)
-        .bind(&key)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(err)?;
-    if known.and_then(|s| s.parse::<Hlc>().ok()).is_some_and(|h| h >= op.hlc) {
-        return Ok(Outcome::Skipped);
-    }
-    let local_changed: Option<i64> =
-        sqlx::query_scalar("SELECT MAX(changed_at) FROM sync_outbox WHERE tbl = ? AND pk = ?")
+    {
+        let mut conn = db.acquire().await.map_err(err)?;
+        if !enabled(&mut conn).await? || !crate::secrets::is_sync_item(&id.service, &id.account) {
+            return Ok(Outcome::Skipped);
+        }
+        let known: Option<String> = sqlx::query_scalar("SELECT hlc FROM sync_rows WHERE tbl = ? AND pk = ?")
             .bind(TBL)
             .bind(&key)
-            .fetch_one(&mut *tx)
+            .fetch_optional(&mut *conn)
             .await
             .map_err(err)?;
-    if local_changed.is_some_and(|c| c.max(0) as u64 >= op.hlc.millis) {
-        return Ok(Outcome::Skipped);
+        if known.and_then(|s| s.parse::<Hlc>().ok()).is_some_and(|h| h >= op.hlc) {
+            return Ok(Outcome::Skipped);
+        }
+        let local_changed: Option<i64> =
+            sqlx::query_scalar("SELECT MAX(changed_at) FROM sync_outbox WHERE tbl = ? AND pk = ?")
+                .bind(TBL)
+                .bind(&key)
+                .fetch_one(&mut *conn)
+                .await
+                .map_err(err)?;
+        if local_changed.is_some_and(|c| c.max(0) as u64 >= op.hlc.millis) {
+            return Ok(Outcome::Skipped);
+        }
     }
     let value = match op.kind {
         OpKind::Upsert => Some(
@@ -250,8 +271,12 @@ pub async fn apply_op(db: &Db, backend: &dyn SecretBackend, op: &Op) -> Result<O
         ),
         OpKind::Delete => None,
     };
-    backend.set(&id, value.as_deref())?;
+    {
+        let (b, id, value) = (backend.clone(), id.clone(), value.clone());
+        tokio::task::spawn_blocking(move || b.set(&id, value.as_deref())).await.map_err(|e| e.to_string())??;
+    }
     // Remember the applied value's hash so the next scan does not echo it.
+    let mut tx = db.begin().await.map_err(err)?;
     let salt = salt(&mut tx).await?;
     set_hash(&mut tx, &id, value.as_deref().map(|v| hash(&salt, &id, v)).as_deref()).await?;
     sqlx::query("DELETE FROM sync_outbox WHERE tbl = ? AND pk = ?")
@@ -273,6 +298,91 @@ pub async fn apply_op(db: &Db, backend: &dyn SecretBackend, op: &Op) -> Result<O
     .map_err(err)?;
     tx.commit().await.map_err(err)?;
     Ok(Outcome::Applied)
+}
+
+// ---- Keychain moves of re-keyed rows ----------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct KeyMove {
+    service: String,
+    from: String,
+    to: String,
+}
+
+async fn load_moves(conn: &mut SqliteConnection) -> Result<Vec<KeyMove>, String> {
+    let v: Option<String> = sqlx::query_scalar("SELECT value FROM sync_state WHERE key = ?")
+        .bind(KEY_MOVES_KEY)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(err)?;
+    Ok(v.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default())
+}
+
+async fn save_moves(conn: &mut SqliteConnection, moves: &[KeyMove]) -> Result<(), String> {
+    if moves.is_empty() {
+        sqlx::query("DELETE FROM sync_state WHERE key = ?").bind(KEY_MOVES_KEY).execute(&mut *conn).await.map_err(err)?;
+        return Ok(());
+    }
+    sqlx::query("INSERT INTO sync_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .bind(KEY_MOVES_KEY)
+        .bind(serde_json::to_string(moves).map_err(|e| e.to_string())?)
+        .execute(&mut *conn)
+        .await
+        .map_err(err)?;
+    Ok(())
+}
+
+/// A row of `tbl` was re-keyed `old` -> `new`: queue the move of the Keychain
+/// item keyed by its id (if the table has one). Call inside the re-key's
+/// transaction; [`run_key_moves`] does the move after it committed.
+pub async fn queue_key_move(conn: &mut SqliteConnection, tbl: &str, old: &Value, new: &Value) -> Result<(), String> {
+    let Some((_, service)) = crate::secrets::ROW_KEYED_SERVICES.iter().find(|(t, _)| *t == tbl) else { return Ok(()) };
+    let (Some(from), Some(to)) = (old.as_str(), new.as_str()) else { return Ok(()) };
+    let mut moves = load_moves(conn).await?;
+    let m = KeyMove { service: service.to_string(), from: from.into(), to: to.into() };
+    if !moves.contains(&m) {
+        moves.push(m);
+    }
+    save_moves(conn, &moves).await
+}
+
+/// Carry out the queued Keychain moves: the item goes to the new id unless
+/// that one already has an item (which wins), and leaves the old id. Moves
+/// that fail (Keychain locked...) stay queued. Returns how many were done.
+pub async fn run_key_moves(db: &Db, backend: Backend) -> Result<usize, String> {
+    let moves = {
+        let mut conn = db.acquire().await.map_err(err)?;
+        load_moves(&mut conn).await?
+    };
+    if moves.is_empty() {
+        return Ok(0);
+    }
+    let todo = moves.clone();
+    let done = tokio::task::spawn_blocking(move || -> Result<Vec<KeyMove>, String> {
+        let mut items = backend.list()?;
+        let mut done = Vec::new();
+        for m in todo {
+            let (from, to) = (SecretId::new(&m.service, &m.from), SecretId::new(&m.service, &m.to));
+            if let Some(value) = items.get(&from).cloned() {
+                if let std::collections::btree_map::Entry::Vacant(slot) = items.entry(to) {
+                    backend.set(slot.key(), Some(&value))?;
+                    slot.insert(value);
+                }
+                backend.set(&from, None)?;
+                items.remove(&from);
+            }
+            done.push(m);
+        }
+        Ok(done)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let mut tx = db.begin().await.map_err(err)?;
+    let mut left = load_moves(&mut tx).await?;
+    left.retain(|m| !done.contains(m));
+    save_moves(&mut tx, &left).await?;
+    tx.commit().await.map_err(err)?;
+    Ok(done.len())
 }
 
 #[cfg(test)]
@@ -335,18 +445,18 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn scan_hashes_and_queues_changes_only() {
         let db = mem_db().await;
-        let kc = FakeKeychain::default();
+        let kc = Arc::new(FakeKeychain::default());
         kc.put("github", "acc1", "ghp_secret");
         kc.put("mcp", "srv", r#"{"env":{"K":"v"},"headers":{}}"#);
-        assert_eq!(scan(&db, &kc).await.unwrap(), 2);
-        assert_eq!(scan(&db, &kc).await.unwrap(), 0, "unchanged");
+        assert_eq!(scan(&db, kc.clone()).await.unwrap(), 2);
+        assert_eq!(scan(&db, kc.clone()).await.unwrap(), 0, "unchanged");
         // Only hashes are stored, never values.
         let state: Vec<String> = sqlx::query_scalar("SELECT value FROM sync_state").fetch_all(&db).await.unwrap();
         assert!(state.iter().all(|v| !v.contains("ghp_secret") && !v.contains("\"K\"")));
 
         kc.put("github", "acc1", "ghp_rotated");
         kc.items.lock().unwrap().remove(&SecretId::new("mcp", "srv"));
-        assert_eq!(scan(&db, &kc).await.unwrap(), 2);
+        assert_eq!(scan(&db, kc.clone()).await.unwrap(), 2);
         let ob = outbox(&db).await;
         assert_eq!(&ob[2..], &[
             (r#"{"account":"acc1","service":"github"}"#.to_string(), "U".to_string()),
@@ -362,44 +472,49 @@ pub(crate) mod tests {
 
         // A locked Keychain is an error; an empty listing never mass-deletes.
         *kc.broken.lock().unwrap() = true;
-        assert!(scan(&db, &kc).await.is_err());
+        assert!(scan(&db, kc.clone()).await.is_err());
         *kc.broken.lock().unwrap() = false;
         kc.items.lock().unwrap().clear();
-        assert_eq!(scan(&db, &kc).await.unwrap(), 0);
+        assert_eq!(scan(&db, kc.clone()).await.unwrap(), 0);
 
         // Disabled: nothing is scanned.
         sqlx::query("INSERT INTO settings (key, value) VALUES (?, 'false')").bind(SETTING).execute(&db).await.unwrap();
         kc.put("gitlab", "g", "glpat");
-        assert_eq!(scan(&db, &kc).await.unwrap(), 0);
+        assert_eq!(scan(&db, kc.clone()).await.unwrap(), 0);
     }
 
     #[tokio::test]
     async fn apply_sets_keychain_without_echo() {
         let db = mem_db().await;
-        let kc = FakeKeychain::default();
+        let kc = Arc::new(FakeKeychain::default());
         let id = SecretId::new("github", "acc1");
-        assert_eq!(apply_op(&db, &kc, &op(&id, Some("ghp_remote"), 1_000)).await.unwrap(), Outcome::Applied);
+        assert_eq!(apply_op(&db, kc.clone(), &op(&id, Some("ghp_remote"), 1_000)).await.unwrap(), Outcome::Applied);
         assert_eq!(kc.get("github", "acc1").as_deref(), Some("ghp_remote"));
-        assert_eq!(scan(&db, &kc).await.unwrap(), 0, "the applied value is not pushed back");
+        assert_eq!(scan(&db, kc.clone()).await.unwrap(), 0, "the applied value is not pushed back");
         // Older op loses.
-        assert_eq!(apply_op(&db, &kc, &op(&id, Some("old"), 500)).await.unwrap(), Outcome::Skipped);
+        assert_eq!(apply_op(&db, kc.clone(), &op(&id, Some("old"), 500)).await.unwrap(), Outcome::Skipped);
         // A newer unpushed local change wins over an older remote op.
         kc.put("github", "acc1", "ghp_local");
-        assert_eq!(scan(&db, &kc).await.unwrap(), 1);
-        assert_eq!(apply_op(&db, &kc, &op(&id, Some("stale"), 2_000)).await.unwrap(), Outcome::Skipped);
+        assert_eq!(scan(&db, kc.clone()).await.unwrap(), 1);
+        assert_eq!(apply_op(&db, kc.clone(), &op(&id, Some("stale"), 2_000)).await.unwrap(), Outcome::Skipped);
         assert_eq!(kc.get("github", "acc1").as_deref(), Some("ghp_local"));
         // Delete.
         let far = wall_ms() + 60_000;
-        assert_eq!(apply_op(&db, &kc, &op(&id, None, far)).await.unwrap(), Outcome::Applied);
+        assert_eq!(apply_op(&db, kc.clone(), &op(&id, None, far)).await.unwrap(), Outcome::Applied);
         assert_eq!(kc.get("github", "acc1"), None);
         assert!(outbox(&db).await.is_empty());
-        // Per-machine items are never accepted.
+        // Per-machine items are never accepted (the relay host token included).
+        let relay = SecretId::new("relay", "default");
+        assert_eq!(apply_op(&db, kc.clone(), &op(&relay, Some("tok"), far + 1)).await.unwrap(), Outcome::Skipped);
+        assert_eq!(kc.get("relay", "default"), None);
+        assert!(pending_row(&BTreeMap::from([(relay.clone(), "tok".to_string())]), &relay.pk()).is_none());
+        assert!(!crate::secrets::is_sync_item("relay", "default"));
         let own = SecretId::new("sync", "group");
-        assert_eq!(apply_op(&db, &kc, &op(&own, Some("x"), far + 1)).await.unwrap(), Outcome::Skipped);
+        assert_eq!(apply_op(&db, kc.clone(), &op(&own, Some("x"), far + 1)).await.unwrap(), Outcome::Skipped);
         assert_eq!(kc.get("sync", "group"), None);
         // Disabled: skipped.
         sqlx::query("INSERT INTO settings (key, value) VALUES (?, 'false')").bind(SETTING).execute(&db).await.unwrap();
-        assert_eq!(apply_op(&db, &kc, &op(&id, Some("v"), far + 2)).await.unwrap(), Outcome::Skipped);
+        assert_eq!(apply_op(&db, kc.clone(), &op(&id, Some("v"), far + 2)).await.unwrap(), Outcome::Skipped);
         assert_eq!(kc.get("github", "acc1"), None);
     }
 }

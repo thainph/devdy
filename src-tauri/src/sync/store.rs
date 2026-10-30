@@ -138,10 +138,33 @@ impl SqliteSyncStore {
     }
 
     /// `paths` plus the current project path map (it changes at bootstrap and
-    /// when the user maps a project by hand).
+    /// when the user maps a project by hand) and Claude config dirs.
     async fn paths_now(&self) -> Result<PathCtx, String> {
         let map = super::bootstrap::load_project_map(&self.db).await?;
-        Ok(self.paths.clone().with_project_map(map))
+        let dirs: Vec<String> = sqlx::query_scalar("SELECT config_dir FROM claude_accounts WHERE config_dir != ''")
+            .fetch_all(&self.db)
+            .await
+            .map_err(err)?;
+        Ok(self.paths.clone().with_project_map(map).with_claude_dirs(dirs.into_iter().map(std::path::PathBuf::from)))
+    }
+
+    /// Whether `secret` ops (and SSH key files) travel: a Keychain backend is
+    /// wired and the machine-local setting is on.
+    async fn secrets_on(&self) -> Result<bool, String> {
+        if self.secrets.is_none() {
+            return Ok(false);
+        }
+        let mut conn = self.db.acquire().await.map_err(err)?;
+        secrets::enabled(&mut conn).await
+    }
+
+    /// Move the Keychain items of rows re-keyed by apply or by the bootstrap
+    /// merge (which applies through `apply_remote` too).
+    async fn move_secrets(&self) {
+        let Some(backend) = &self.secrets else { return };
+        if let Err(e) = secrets::run_key_moves(&self.db, backend.clone()).await {
+            tracing::warn!(event = "sync_secret_move_failed", error = %e);
+        }
     }
 
     async fn clock(&self) -> Result<MutexGuard<'_, Option<HlcClock>>, String> {
@@ -160,6 +183,21 @@ impl SyncStore for SqliteSyncStore {
     /// Delete when it is gone), each with a fresh HLC no older than the change.
     async fn pending(&self, limit: usize) -> Result<Vec<(i64, Op)>, String> {
         let paths = self.paths_now().await?;
+        let with_secrets = self.secrets_on().await?;
+        // The Keychain is read before the transaction (it may prompt), and
+        // only when a secret op is waiting.
+        let secret_waiting: Option<i64> = sqlx::query_scalar("SELECT 1 FROM sync_outbox WHERE tbl = ? LIMIT 1")
+            .bind(secrets::TBL)
+            .fetch_optional(&self.db)
+            .await
+            .map_err(err)?;
+        let keychain = match (&self.secrets, with_secrets && secret_waiting.is_some()) {
+            (Some(backend), true) => {
+                let b = backend.clone();
+                Some(tokio::task::spawn_blocking(move || b.list()).await.map_err(|e| e.to_string())??)
+            }
+            _ => None,
+        };
         let mut guard = self.clock().await?;
         let mut clock = guard.clone().ok_or("clock not loaded")?;
         let mut tx = self.db.begin().await.map_err(err)?;
@@ -173,20 +211,15 @@ impl SyncStore for SqliteSyncStore {
         .map_err(err)?;
 
         let mut out = Vec::with_capacity(groups.len());
-        let with_secrets = self.secrets.is_some() && secrets::enabled(&mut tx).await?;
-        // Read once per call, and only when a secret op is waiting.
-        let mut keychain: Option<std::collections::BTreeMap<secrets::SecretId, String>> = None;
         for (tbl, pk_text, seq, changed_at) in groups {
             let pk: Option<Value> = serde_json::from_str(&pk_text).ok();
             let entry = match (tbl.as_str(), pk) {
                 (files::TBL, Some(pk)) => files::pending_row(&mut tx, &pk, with_secrets).await?.map(|e| (pk, e)),
-                (secrets::TBL, Some(pk)) if with_secrets => {
-                    if keychain.is_none() {
-                        let backend = self.secrets.as_ref().ok_or("no keychain")?;
-                        keychain = Some(backend.list()?);
-                    }
-                    keychain.as_ref().and_then(|items| secrets::pending_row(items, &pk)).map(|e| (pk, e))
-                }
+                (secrets::TBL, Some(pk)) if with_secrets => match &keychain {
+                    Some(items) => secrets::pending_row(items, &pk).map(|e| (pk, e)),
+                    // Queued after the Keychain was read: next time.
+                    None => continue,
+                },
                 (_, Some(pk)) => match schema::spec(&tbl) {
                     Some(spec) => self.db_entry(&mut tx, &paths, spec, &pk_text, pk).await?,
                     None => None,
@@ -220,19 +253,16 @@ impl SyncStore for SqliteSyncStore {
     async fn stage(&self, blobs: &dyn BlobIo) -> Result<(), String> {
         let mut state = self.scan.lock().await;
         let Some(mode) = state.due(&self.file_timing, files::has_kicks()) else { return Ok(()) };
-        let with_secrets = match &self.secrets {
-            Some(_) => {
-                let mut conn = self.db.acquire().await.map_err(err)?;
-                secrets::enabled(&mut conn).await?
-            }
-            None => false,
-        };
+        let with_secrets = self.secrets_on().await?;
         let paths = self.paths_now().await?;
+        state.tail_idle = self.file_timing.tail_idle();
         files::stage(&self.db, &paths, blobs, &mut state, mode, with_secrets).await?;
         drop(state);
         if mode == files::ScanMode::Full {
+            // Keychain moves left over by an earlier re-key (Keychain locked...).
+            self.move_secrets().await;
             if let (Some(backend), true) = (&self.secrets, with_secrets) {
-                if let Err(e) = secrets::scan(&self.db, backend.as_ref()).await {
+                if let Err(e) = secrets::scan(&self.db, backend.clone()).await {
                     tracing::warn!(event = "sync_secret_scan_failed", error = %e);
                 }
             }
@@ -243,6 +273,7 @@ impl SyncStore for SqliteSyncStore {
     }
 
     async fn apply_remote_extra(&self, ops: Vec<Op>, blobs: &dyn BlobIo) -> Result<ApplyReport, String> {
+        let with_keys = self.secrets_on().await?;
         let mut guard = self.clock().await?;
         let mut clock = guard.clone().ok_or("clock not loaded")?;
         let paths = self.paths_now().await?;
@@ -273,13 +304,13 @@ impl SyncStore for SqliteSyncStore {
                 continue;
             }
             let result = match op.tbl.as_str() {
-                files::TBL => files::apply_op(&self.db, &paths, blobs, &op).await.map(|o| match o {
+                files::TBL => files::apply_op(&self.db, &paths, blobs, &op, with_keys).await.map(|o| match o {
                     files::Outcome::Applied => (1, 0, 0),
                     files::Outcome::Skipped => (0, 1, 0),
                     files::Outcome::Conflict => (1, 0, 1),
                 }),
                 secrets::TBL => match &self.secrets {
-                    Some(b) => secrets::apply_op(&self.db, b.as_ref(), &op).await.map(|o| match o {
+                    Some(b) => secrets::apply_op(&self.db, b.clone(), &op).await.map(|o| match o {
                         secrets::Outcome::Applied => (1, 0, 0),
                         secrets::Outcome::Skipped => (0, 1, 0),
                     }),
@@ -340,12 +371,14 @@ impl SyncStore for SqliteSyncStore {
     }
 
     async fn mark_pushed(&self, up_to_outbox_seq: i64) -> Result<(), String> {
+        let mut tx = self.db.begin().await.map_err(err)?;
+        files::releases_pushed(&mut tx, up_to_outbox_seq).await?;
         sqlx::query("DELETE FROM sync_outbox WHERE seq <= ?")
             .bind(up_to_outbox_seq)
-            .execute(&self.db)
+            .execute(&mut *tx)
             .await
             .map_err(err)?;
-        Ok(())
+        tx.commit().await.map_err(err)
     }
 
     async fn apply_remote(&self, ops: Vec<Op>) -> Result<ApplyReport, String> {
@@ -355,6 +388,8 @@ impl SyncStore for SqliteSyncStore {
         let tables: std::collections::BTreeSet<String> = ops.iter().map(|o| o.tbl.clone()).collect();
         let report = apply::apply_ops(&self.db, &paths, &mut clock, ops).await?;
         *guard = Some(clock);
+        drop(guard);
+        self.move_secrets().await;
         if report.applied > 0 {
             self.notice(Notice::RowsApplied(tables.into_iter().collect()));
         }
@@ -799,4 +834,131 @@ mod tests {
         reopened.set_cursor(42).await.unwrap();
         assert_eq!(store.cursor().await.unwrap(), 42);
     }
+    /// Exchange ops both ways until neither side has anything left to push.
+    async fn converge(a: &SqliteSyncStore, b: &SqliteSyncStore) {
+        for _ in 0..8 {
+            sync(a, b).await;
+            sync(b, a).await;
+            if outbox(&a.db).await.is_empty() && outbox(&b.db).await.is_empty() {
+                for db in [&a.db, &b.db] {
+                    let parked: Vec<String> = sqlx::query_scalar("SELECT reason FROM sync_deferred").fetch_all(db).await.unwrap();
+                    assert!(parked.is_empty(), "deferred: {parked:?}");
+                }
+                return;
+            }
+        }
+        panic!("no convergence");
+    }
+
+    async fn rows(db: &Db, sql: &str) -> Vec<String> {
+        sqlx::query_scalar(sql).fetch_all(db).await.unwrap()
+    }
+
+    /// Two paired devices with the same project (synced) and nothing else.
+    async fn paired() -> (Db, SqliteSyncStore, Db, SqliteSyncStore) {
+        let (db_a, a) = device("a", "/Users/a").await;
+        let (db_b, b) = device("b", "/Users/b").await;
+        add_project(&db_a, "p1", "/Users/a/w/p1").await;
+        exec(&db_a, "INSERT INTO rules (id, name, description, source_path, updated_at) VALUES ('ru', 'r', '', '/x', 'x')").await;
+        converge(&a, &b).await;
+        (db_a, a, db_b, b)
+    }
+
+    #[tokio::test]
+    async fn same_skill_created_on_both_converges_on_the_lower_id() {
+        for a_first in [true, false] {
+            let (db_a, a, db_b, b) = paired().await;
+            // Created independently after pairing; b's copy has the higher id
+            // and a child pointing at it.
+            exec(&db_a, "INSERT INTO skills (id, name, description, source_path, updated_at) VALUES ('sk-1', 'review', 'from a', '/s', 'x')").await;
+            exec(&db_b, "INSERT INTO skills (id, name, description, source_path, updated_at) VALUES ('sk-2', 'review', 'from b', '/s', 'x')").await;
+            exec(&db_b, "INSERT INTO project_skills (project_id, skill_id, applied_at) VALUES ('p1', 'sk-2', 'x')").await;
+            exec(&db_b, "UPDATE sync_outbox SET changed_at = changed_at + 5000").await; // b's edit is the newer one
+            if a_first {
+                sync(&a, &b).await;
+            } else {
+                sync(&b, &a).await;
+            }
+            converge(&a, &b).await;
+            for db in [&db_a, &db_b] {
+                assert_eq!(rows(db, "SELECT id || ':' || description FROM skills").await, vec!["sk-1:from b"], "a_first={a_first}");
+                assert_eq!(rows(db, "SELECT project_id || '/' || skill_id FROM project_skills").await, vec!["p1/sk-1"]);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn same_cli_session_and_pulse_watch_converge() {
+        for a_first in [true, false] {
+            let (db_a, a, db_b, b) = paired().await;
+            // The same external session imported on both machines; b's row
+            // has the lower id here and a's has a linked note.
+            exec(&db_a, "INSERT INTO runs (id, project_id, type, engine, session_id, created_at) VALUES ('run-z', 'p1', 'session', 'claude', 'sess', 'a')").await;
+            exec(&db_a, "INSERT INTO notes (id, title, position, created_at, updated_at) VALUES ('n1', 'n', 0, 'x', 'x')").await;
+            exec(&db_a, "INSERT INTO note_runs (note_id, run_id, project_id, source, linked_at) VALUES ('n1', 'run-z', 'p1', 'manual', 'x')").await;
+            exec(&db_b, "INSERT INTO runs (id, project_id, type, engine, session_id, created_at) VALUES ('run-a', 'p1', 'session', 'claude', 'sess', 'b')").await;
+            for (db, id) in [(&db_a, "pw-a"), (&db_b, "pw-b")] {
+                exec(db, &format!(
+                    "INSERT INTO pulse_watches (id, project_id, source_type, source_ref, source_url, added_via, created_at, updated_at) \
+                     VALUES ('{id}', 'p1', 'github_issue', 'o/r#1', 'u', 'button', 'x', 'x')"
+                ))
+                .await;
+            }
+            exec(&db_b, "INSERT INTO pulse_digests (id, watch_id, content_hash, status, ball, created_at) VALUES ('pd', 'pw-b', 'h', 'on_track', 'me', 'x')").await;
+            if a_first {
+                sync(&a, &b).await;
+            } else {
+                sync(&b, &a).await;
+            }
+            converge(&a, &b).await;
+            for db in [&db_a, &db_b] {
+                assert_eq!(rows(db, "SELECT id FROM runs").await, vec!["run-a"], "a_first={a_first}");
+                assert_eq!(rows(db, "SELECT note_id || '/' || run_id FROM note_runs").await, vec!["n1/run-a"]);
+                assert_eq!(rows(db, "SELECT id FROM pulse_watches").await, vec!["pw-a"]);
+                assert_eq!(rows(db, "SELECT watch_id FROM pulse_digests").await, vec!["pw-a"]);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn rekeyed_rows_take_their_keychain_items_along() {
+        use crate::sync::secrets::tests::FakeKeychain;
+        let (db_a, a, db_b, b) = paired().await;
+        let (kc_a, kc_b) = (std::sync::Arc::new(FakeKeychain::default()), std::sync::Arc::new(FakeKeychain::default()));
+        let a = a.with_secrets(kc_a.clone());
+        let b = b.with_secrets(kc_b.clone());
+        exec(&db_a, "INSERT INTO mcp_servers (id, name, transport, created_at) VALUES ('m-1', 'fs', 'stdio', 'x')").await;
+        exec(&db_b, "INSERT INTO mcp_servers (id, name, transport, created_at) VALUES ('m-2', 'fs', 'stdio', 'x')").await;
+        // Created on b first this time.
+        exec(&db_b, "INSERT INTO google_accounts (id, label, email, created_at) VALUES ('go-2', 'work', 'a@b', 'x')").await;
+        exec(&db_a, "INSERT INTO google_accounts (id, label, email, created_at) VALUES ('go-1', 'work', 'a@b', 'x')").await;
+        kc_b.put("google_accounts", "go-2", "refresh_b");
+        kc_b.put("mcp", "m-2", r#"{"env":{"K":"b"},"headers":{}}"#);
+        converge(&a, &b).await;
+        assert_eq!(rows(&db_b, "SELECT id FROM mcp_servers").await, vec!["m-1"]);
+        // b's item moved to the surviving id; an item already there is kept.
+        assert_eq!(kc_b.get("mcp", "m-1").as_deref(), Some(r#"{"env":{"K":"b"},"headers":{}}"#));
+        assert_eq!(kc_b.get("mcp", "m-2"), None);
+        assert_eq!(rows(&db_b, "SELECT id FROM google_accounts").await, vec!["go-1"]);
+        assert_eq!((kc_b.get("google_accounts", "go-1").as_deref(), kc_b.get("google_accounts", "go-2")), (Some("refresh_b"), None));
+        assert!(kc_a.items.lock().unwrap().is_empty(), "a had nothing to move");
+        kc_b.put("github", "gh-1", "kept");
+        kc_b.put("github", "gh-9", "orphan");
+        let mut conn = db_b.acquire().await.unwrap();
+        crate::sync::secrets::queue_key_move(&mut conn, "github_accounts", &json!("gh-9"), &json!("gh-1")).await.unwrap();
+        crate::sync::secrets::queue_key_move(&mut conn, "notes", &json!("x"), &json!("y")).await.unwrap();
+        drop(conn);
+        assert_eq!(crate::sync::secrets::run_key_moves(&db_b, kc_b.clone()).await.unwrap(), 1);
+        assert_eq!((kc_b.get("github", "gh-1").as_deref(), kc_b.get("github", "gh-9")), (Some("kept"), None));
+        // A locked Keychain keeps the move queued.
+        let mut conn = db_b.acquire().await.unwrap();
+        crate::sync::secrets::queue_key_move(&mut conn, "github_accounts", &json!("gh-1"), &json!("gh-0")).await.unwrap();
+        drop(conn);
+        *kc_b.broken.lock().unwrap() = true;
+        assert!(crate::sync::secrets::run_key_moves(&db_b, kc_b.clone()).await.is_err());
+        *kc_b.broken.lock().unwrap() = false;
+        assert_eq!(crate::sync::secrets::run_key_moves(&db_b, kc_b.clone()).await.unwrap(), 1);
+        assert_eq!(kc_b.get("github", "gh-0").as_deref(), Some("kept"));
+    }
+
 }

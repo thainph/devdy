@@ -592,7 +592,7 @@ async fn merge(
             let mut local = local_by_pk.get(&lpk).cloned().unwrap_or_default();
             if lpk != rpk {
                 let old: Value = serde_json::from_str(&lpk).map_err(|e| e.to_string())?;
-                rekey(conn, spec, &old, &op.pk).await?;
+                rekey(conn, spec, &old, &op.pk, RekeyOpts::BOOTSTRAP).await?;
                 counts.rekeyed += 1;
                 for (c, v) in spec.pk.iter().zip(super::codec::pk_values(spec, &op.pk)?) {
                     local.insert((*c).to_string(), v);
@@ -704,27 +704,100 @@ async fn rekey_outbox(conn: &mut SqliteConnection, tbl: &str, col: Option<&str>,
     Ok(())
 }
 
-/// Give a local row the remote id, and every row pointing at it (REFS) too.
-async fn rekey(conn: &mut SqliteConnection, spec: &TableSpec, old: &Value, new: &Value) -> Result<(), String> {
-    let [pk_col] = spec.pk else {
-        return Err(format!("{}: cannot re-key a composite key", spec.name));
-    };
-    let sql = format!("UPDATE {} SET {1} = ? WHERE {1} = ?", q(spec.name), q(pk_col));
-    bind_value(bind_value(sqlx::query(&sql), new), old).execute(&mut *conn).await.map_err(err)?;
-    rekey_outbox(conn, spec.name, None, old, new).await?;
-    sqlx::query("DELETE FROM sync_rows WHERE tbl = ? AND pk = ?")
-        .bind(spec.name)
-        .bind(canonical_json(old))
+/// How a re-key treats the sync bookkeeping.
+#[derive(Debug, Clone, Copy)]
+pub struct RekeyOpts {
+    /// Keep the row's last known HLC under the new id, so the op that caused
+    /// the re-key is still judged by last-writer-wins (apply). The first-join
+    /// merge drops it instead.
+    pub keep_hlc: bool,
+    /// Queue the moved rows for push: the old id as a delete, the row and
+    /// every child that now points at the new id as upserts, so the relay log
+    /// stops referring to the old id (apply, after pairing).
+    pub repush: bool,
+}
+
+impl RekeyOpts {
+    pub const BOOTSTRAP: RekeyOpts = RekeyOpts { keep_hlc: false, repush: false };
+    pub const APPLY: RekeyOpts = RekeyOpts { keep_hlc: true, repush: true };
+}
+
+async fn queue_push(conn: &mut SqliteConnection, tbl: &str, pk: &str, op: &str, changed_at: i64) -> Result<(), String> {
+    sqlx::query("INSERT INTO sync_outbox (tbl, pk, op, changed_at) VALUES (?, ?, ?, ?)")
+        .bind(tbl)
+        .bind(pk)
+        .bind(op)
+        .bind(changed_at)
         .execute(&mut *conn)
         .await
         .map_err(err)?;
+    Ok(())
+}
+
+/// Give a local row the remote id, and every row pointing at it (REFS) too;
+/// the Keychain items keyed by its id follow after the commit
+/// (`sync::secrets::run_key_moves`).
+pub async fn rekey(conn: &mut SqliteConnection, spec: &TableSpec, old: &Value, new: &Value, opts: RekeyOpts) -> Result<(), String> {
+    let [pk_col] = spec.pk else {
+        return Err(format!("{}: cannot re-key a composite key", spec.name));
+    };
+    let (old_key, new_key) = (canonical_json(old), canonical_json(new));
+    let now = wall_ms() as i64;
+    let sql = format!("UPDATE {} SET {1} = ? WHERE {1} = ?", q(spec.name), q(pk_col));
+    bind_value(bind_value(sqlx::query(&sql), new), old).execute(&mut *conn).await.map_err(err)?;
+    rekey_outbox(conn, spec.name, None, old, new).await?;
+    if opts.keep_hlc {
+        sqlx::query("UPDATE OR IGNORE sync_rows SET pk = ? WHERE tbl = ? AND pk = ?")
+            .bind(&new_key)
+            .bind(spec.name)
+            .bind(&old_key)
+            .execute(&mut *conn)
+            .await
+            .map_err(err)?;
+    }
+    sqlx::query("DELETE FROM sync_rows WHERE tbl = ? AND pk = ?")
+        .bind(spec.name)
+        .bind(&old_key)
+        .execute(&mut *conn)
+        .await
+        .map_err(err)?;
+    super::secrets::queue_key_move(conn, spec.name, old, new).await?;
+    if opts.repush {
+        queue_push(conn, spec.name, &old_key, "D", now).await?;
+        // Not a local change (dated 0): the kept HLC alone decides whether the
+        // op that caused the re-key wins (which drops this entry).
+        queue_push(conn, spec.name, &new_key, "U", 0).await?;
+    }
     for (_, child, col) in REFS.iter().filter(|(p, _, _)| *p == spec.name) {
+        let child_spec = schema::spec(child);
+        let moved: Vec<String> = match child_spec.filter(|_| opts.repush) {
+            Some(cs) => {
+                let sql = format!("SELECT {} FROM {} WHERE {} = ?", pk_sql(cs, &q(child)), q(child), q(col));
+                let rows = bind_value(sqlx::query(&sql), old).fetch_all(&mut *conn).await.map_err(err)?;
+                rows.iter().map(|r| r.get::<String, _>(0)).collect()
+            }
+            None => Vec::new(),
+        };
         let sql = format!("UPDATE {} SET {1} = ? WHERE {1} = ?", q(child), q(col));
         bind_value(bind_value(sqlx::query(&sql), new), old).execute(&mut *conn).await.map_err(err)?;
-        if let Some(child_spec) = schema::spec(child) {
-            if child_spec.pk.contains(col) {
-                let col = if child_spec.pk.len() == 1 { None } else { Some(*col) };
-                rekey_outbox(conn, child, col, old, new).await?;
+        let Some(cs) = child_spec else { continue };
+        if cs.pk.contains(col) {
+            let col_in_pk = if cs.pk.len() == 1 { None } else { Some(*col) };
+            rekey_outbox(conn, child, col_in_pk, old, new).await?;
+        }
+        for pk in moved {
+            match serde_json::from_str::<Value>(&pk) {
+                Ok(Value::Object(mut m)) if cs.pk.contains(col) => {
+                    queue_push(conn, child, &pk, "D", now).await?;
+                    m.insert((*col).to_string(), new.clone());
+                    queue_push(conn, child, &canonical_json(&Value::Object(m)), "U", now).await?;
+                }
+                Ok(_) if cs.pk == [*col] => {
+                    queue_push(conn, child, &pk, "D", now).await?;
+                    queue_push(conn, child, &new_key, "U", now).await?;
+                }
+                Ok(_) => queue_push(conn, child, &pk, "U", now).await?,
+                Err(_) => {}
             }
         }
     }
@@ -1070,6 +1143,20 @@ mod tests {
         assert!(pushed.contains("runs") && pushed.contains("notes") && !pushed.contains("projects"), "{pushed:?}");
         assert!(!is_pending(&db_b).await.unwrap());
         assert_eq!(b.cursor().await.unwrap(), 42);
+
+        // Keychain items keyed by a re-keyed id follow it (this store has no
+        // Keychain: the moves stay queued until one runs them).
+        let kc = std::sync::Arc::new(crate::sync::secrets::tests::FakeKeychain::default());
+        for (service, id) in [("github", "gh-B"), ("gitlab", "gl-B"), ("mcp", "mcp-B"), ("servers", "sv-B"), ("aws", "aws-B"), ("google_accounts", "go-B")] {
+            kc.put(service, id, &format!("{service}-secret"));
+        }
+        kc.put("github", "gh-A", "already-there");
+        assert_eq!(crate::sync::secrets::run_key_moves(&db_b, kc.clone()).await.unwrap(), 6);
+        assert_eq!(kc.get("github", "gh-A").as_deref(), Some("already-there"), "never overwritten");
+        for (service, id) in [("gitlab", "gl-A"), ("mcp", "mcp-A"), ("servers", "sv-A"), ("aws", "aws-A"), ("google_accounts", "go-A")] {
+            assert_eq!(kc.get(service, id), Some(format!("{service}-secret")), "{service}");
+        }
+        assert!(kc.items.lock().unwrap().keys().all(|k| !k.account.ends_with("-B")));
     }
 
     #[tokio::test]
