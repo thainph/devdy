@@ -465,16 +465,20 @@ pub(crate) async fn upsert_session_run_core(
         return Ok(SyncOutcome::Updated(id));
     }
 
-    // New session. Defer if a run is mid-flight (its session_id may be pending)
-    // so the watcher doesn't import a duplicate of a still-initializing run.
+    // New session. Defer if a run is mid-flight here (its session_id may be
+    // pending) so the watcher doesn't import a duplicate of a still-initializing
+    // run. A run another device is running can't be that, and would otherwise
+    // block imports for as long as it runs.
     if defer_when_busy {
-        let running: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM runs WHERE project_id = ? AND status = 'running'",
-        )
-        .bind(project_id)
-        .fetch_one(db)
-        .await
-        .map_err(|e| e.to_string())?;
+        let sql = format!(
+            "SELECT COUNT(*) FROM runs WHERE project_id = ? AND status = 'running' AND {}",
+            crate::sync::sessions::OWNED_HERE
+        );
+        let running: i64 = sqlx::query_scalar(&sql)
+            .bind(project_id)
+            .fetch_one(db)
+            .await
+            .map_err(|e| e.to_string())?;
         if running > 0 {
             return Ok(SyncOutcome::Skipped);
         }
