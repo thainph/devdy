@@ -13,7 +13,7 @@ use super::git::{self, Opts};
 use super::paths;
 use super::KEEP_BACKUPS;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -64,8 +64,10 @@ pub fn new_ts() -> String {
 
 /// Commit the repo's current worktree + index state onto
 /// `devdy-sync-backup/<ts>`. Returns (worktree commit, index commit); `None`
-/// for a repo without commits and without anything staged or tracked.
-/// Edits hidden by assume-unchanged / skip-worktree are included.
+/// (no branch) when it would hold nothing not already safe: worktree and
+/// index identical to HEAD, and HEAD reachable from another ref (or no
+/// commit and nothing tracked). Edits hidden by assume-unchanged /
+/// skip-worktree are included.
 pub fn backup_repo(dir: &Path, ts: &str) -> Result<Option<(String, Option<String>)>, String> {
     let head = git::head(dir);
     let gdir = git::git_dir(dir)?;
@@ -87,7 +89,12 @@ pub fn backup_repo(dir: &Path, ts: &str) -> Result<Option<(String, Option<String
     let empty = git::empty_tree(dir)?;
     // The real index as its own commit (impossible with unresolved conflicts).
     let index_tree = git::text(dir, &["write-tree"]).ok();
-    if head.is_none() && wt_tree == empty && index_tree.as_deref().is_none_or(|t| t == empty) {
+    let base_tree = match &head {
+        Some(h) => git::text(dir, &["rev-parse", &format!("{h}^{{tree}}")])?,
+        None => empty.clone(),
+    };
+    let clean = wt_tree == base_tree && index_tree.as_deref() == Some(base_tree.as_str());
+    if clean && head.as_deref().is_none_or(|h| reachable_elsewhere(dir, h)) {
         return Ok(None);
     }
     let branch = git::current_branch(dir).unwrap_or_else(|| "detached HEAD".into());
@@ -120,17 +127,57 @@ pub fn backup_branch_tip(dir: &Path, ts: &str, branch: &str, old: &str) -> Resul
     git::run(dir, &["update-ref", &format!("refs/heads/{BRANCH_PREFIX}{ts}-{branch}"), old]).map(|_| ())
 }
 
-/// Delete all but the [`KEEP_BACKUPS`] newest backup timestamps.
+/// `sha` is reachable from a local branch, remote-tracking ref or tag that
+/// is not itself a sync backup.
+pub fn reachable_elsewhere(dir: &Path, sha: &str) -> bool {
+    let Ok(out) = git::run(dir, &["for-each-ref", "--format=%(refname)", "--contains", sha, "refs/heads", "refs/remotes", "refs/tags"]) else {
+        return false;
+    };
+    String::from_utf8_lossy(&out).lines().any(|r| !r.starts_with(&format!("refs/heads/{BRANCH_PREFIX}")))
+}
+
+/// The backup ref holds something that would be lost without it.
+fn holds_data(dir: &Path, refname: &str) -> bool {
+    let Ok(line) = git::text(dir, &["rev-list", "--parents", "-n", "1", refname]) else { return false };
+    let ids: Vec<&str> = line.split_whitespace().collect();
+    let Some((&commit, parents)) = ids.split_first() else { return false };
+    let subject = |c: &str| git::text(dir, &["log", "-1", "--format=%s", c]).unwrap_or_default();
+    let tree = |c: &str| git::text(dir, &["rev-parse", &format!("{c}^{{tree}}")]).unwrap_or_default();
+    if !subject(commit).starts_with("devdy sync backup: worktree") {
+        // A rewound branch tip.
+        return !reachable_elsewhere(dir, commit);
+    }
+    let (index, head): (Vec<&str>, Vec<&str>) = parents.iter().partition(|p| subject(p).starts_with("devdy sync backup: index"));
+    let Some(head) = head.first() else { return true }; // no commit yet: only made when non-empty
+    let base = tree(head);
+    tree(commit) != base || index.first().is_some_and(|i| tree(i) != base) || !reachable_elsewhere(dir, head)
+}
+
+/// Delete backups that hold nothing (see [`holds_data`]), and all but the
+/// [`KEEP_BACKUPS`] newest of those that do: empty backups never push a
+/// useful one out.
 pub fn prune_repo(dir: &Path) -> Result<(), String> {
     let out = git::run(dir, &["for-each-ref", "--format=%(refname)", &format!("refs/heads/{BRANCH_PREFIX}")])?;
     let refs: Vec<String> = String::from_utf8_lossy(&out).lines().map(|s| s.to_string()).collect();
     let ts_of = |r: &str| r.strip_prefix(&format!("refs/heads/{BRANCH_PREFIX}")).and_then(|s| s.get(..TS_LEN)).map(|s| s.to_string());
-    let all: BTreeSet<String> = refs.iter().filter_map(|r| ts_of(r)).collect();
-    let drop: BTreeSet<&String> = all.iter().rev().skip(KEEP_BACKUPS).collect();
-    let mut input = String::new();
+    let mut groups: BTreeMap<String, Vec<(&String, bool)>> = BTreeMap::new();
     for r in &refs {
-        if ts_of(r).is_some_and(|t| drop.contains(&t)) {
-            input.push_str(&format!("delete {r}\n"));
+        if let Some(ts) = ts_of(r) {
+            groups.entry(ts).or_default().push((r, holds_data(dir, r)));
+        }
+    }
+    let mut kept = 0;
+    let mut input = String::new();
+    for (_, group) in groups.iter().rev() {
+        let useful = group.iter().any(|(_, d)| *d);
+        let keep_group = useful && kept < KEEP_BACKUPS;
+        if keep_group {
+            kept += 1;
+        }
+        for (r, data) in group {
+            if !keep_group || !data {
+                input.push_str(&format!("delete {r}\n"));
+            }
         }
     }
     if !input.is_empty() {
