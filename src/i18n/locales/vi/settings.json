@@ -488,7 +488,8 @@
       "offline": "Ngoại tuyến",
       "error": "Lỗi",
       "paused": "Tạm dừng",
-      "mergePending": "Chờ hợp nhất"
+      "mergePending": "Chờ hợp nhất",
+      "parked": "Có thay đổi chưa đồng bộ"
     },
     "ago": {
       "never": "chưa bao giờ",
@@ -548,7 +549,8 @@
       "pending": "Đang chờ",
       "now": "Đồng bộ ngay",
       "pause": "Tạm dừng",
-      "resume": "Tiếp tục"
+      "resume": "Tiếp tục",
+      "parked": "Chưa đồng bộ"
     },
     "secrets": {
       "label": "Đồng bộ bí mật",
@@ -573,8 +575,7 @@
       },
       "creator": "Đã tạo nhóm",
       "removeHelp": "Thiết bị bị gỡ vẫn giữ bản sao khoá nhóm nhưng không thể truy cập dữ liệu của nhóm trên relay nữa (phiên bản này chưa đổi khoá).",
-      "onlyCreator": "Chỉ thiết bị đã tạo nhóm ({name}) mới gỡ được thiết bị.",
-      "onlyCreatorError": "Chỉ thiết bị đã tạo nhóm mới gỡ được thiết bị khác."
+      "onlyCreator": "Chỉ thiết bị đã tạo nhóm ({name}) mới gỡ được thiết bị."
     },
     "projects": {
       "title": "Thư mục dự án trên máy này",
@@ -611,10 +612,17 @@
       "host_not_in_group": "Máy đó không ở trong nhóm đồng bộ nào.",
       "host_unsupported": "Devdy trên máy đó quá cũ để thêm thiết bị. Hãy cập nhật trước.",
       "not_accepting": "Máy đó chưa nhận thiết bị mới. Mở Cài đặt → Đồng bộ → Chấp nhận thiết bị mới trên máy đó rồi thử lại.",
-      "declined": "Yêu cầu đã bị từ chối (hoặc không được trả lời kịp) trên máy đó.",
+      "declined": "Yêu cầu đã bị từ chối hoặc không được trả lời kịp trên máy đó.",
       "busy": "Máy đó đang xử lý một yêu cầu tham gia khác. Thử lại sau giây lát.",
       "relay_not_configured": "Máy này chưa có relay riêng: hãy đặt URL và token relay trong Cài đặt → Điều khiển từ xa trước.",
-      "relay_error": "Máy đó không kết nối được relay. Hãy thử lại."
+      "relay_error": "Máy đó không kết nối được relay. Hãy thử lại.",
+      "sync_bootstrap_runs_live": "Hãy dừng các phiên đang chạy trên máy này trước khi hợp nhất.",
+      "ticket_required": "Relay cần vé tham gia từ một thiết bị đã ở trong nhóm. Hãy nhờ thiết bị đó chấp nhận máy này lại.",
+      "ticket_invalid": "Vé tham gia đã hết hạn hoặc đã được dùng. Hãy tham gia lại.",
+      "group_exists": "Nhóm đồng bộ này đã tồn tại trên relay.",
+      "forbidden": "Chỉ thiết bị đã tạo nhóm mới được gỡ thiết bị khác.",
+      "quota_exceeded": "Dung lượng lưu trữ relay của nhóm này đã đầy.",
+      "device_revoked": "Thiết bị này đã bị gỡ khỏi nhóm đồng bộ. Hãy rời nhóm rồi tham gia lại."
     },
     "accept": {
       "title": "Chấp nhận thiết bị mới",
@@ -630,6 +638,19 @@
         "allow": "Cho phép",
         "deny": "Từ chối",
         "expires": "{time}"
+      }
+    },
+    "parked": {
+      "title": "Thay đổi bị relay từ chối",
+      "help": "Relay đã từ chối vĩnh viễn các thay đổi này (quá lớn hoặc sai định dạng) nên chúng không được đồng bộ và không còn chặn các thay đổi khác. Sửa lại dòng đó sẽ xếp hàng như bình thường; Thử lại sẽ gửi phiên bản hiện tại ngay.",
+      "retry": "Thử lại",
+      "retried": "Đã xếp hàng lại {n} thay đổi",
+      "tooltip": "{n} thay đổi bị relay từ chối",
+      "when": "Bị giữ {ago}",
+      "more": "Đang hiện {n} mục mới nhất.",
+      "reason": {
+        "too_large": "Quá lớn",
+        "bad_request": "Bị từ chối"
       }
     }
   }

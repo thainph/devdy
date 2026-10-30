@@ -11,6 +11,8 @@ export interface SyncStatus {
   last_push: number | null
   last_pull: number | null
   pending: number
+  /** Rows whose latest change the relay permanently refused (not synced until retried or changed). */
+  parked: number
   last_error: string | null
 }
 
@@ -20,7 +22,19 @@ export const DISABLED_STATUS: SyncStatus = {
   last_push: null,
   last_pull: null,
   pending: 0,
+  parked: 0,
   last_error: null,
+}
+
+/** A row the relay refused for good (`sync_parked_list`, Rust `store::ParkedRow`). */
+export interface ParkedRow {
+  tbl: string
+  /** Readable primary key (`id`, or `k=v, k=v`). */
+  pk: string
+  /** `too_large` | `bad_request`. */
+  reason: string
+  /** Unix millis. */
+  parked_at: number
 }
 
 /** One device of the group (Rust `sync::leader::DeviceInfo`). */
@@ -121,16 +135,33 @@ export function missingProjects(p: Pick<BootstrapPreview, 'projects'>): ProjectM
   return p.projects.filter((m) => !m.on_this_machine)
 }
 
-/** Colour of the status dot. */
-export type SyncTone = 'off' | 'ok' | 'busy' | 'warn' | 'error'
+/**
+ * Status dot state, most urgent first: merge pending, error, paused, offline,
+ * parked rows, syncing (connecting / backlog), ok.
+ */
+export type SyncTone = 'off' | 'ok' | 'syncing' | 'merge' | 'parked' | 'paused' | 'offline' | 'error'
 
 export function syncTone(s: SyncStatus | null | undefined, mergePending = false): SyncTone {
-  if (mergePending) return 'warn'
+  if (mergePending) return 'merge'
   if (!s || s.state === 'disabled') return 'off'
   if (s.state === 'error') return 'error'
-  if (s.paused || s.state === 'offline') return 'warn'
-  if (s.state === 'connecting' || s.pending > 0) return 'busy'
+  if (s.paused) return 'paused'
+  if (s.state === 'offline') return 'offline'
+  if (s.parked > 0) return 'parked'
+  if (s.state === 'connecting' || s.pending > 0) return 'syncing'
   return 'ok'
+}
+
+/** Tailwind classes of the dot per tone. */
+export const SYNC_DOT_CLASS: Record<SyncTone, string> = {
+  off: 'bg-muted-foreground/40',
+  ok: 'bg-emerald-500',
+  syncing: 'bg-sky-500',
+  merge: 'bg-violet-500',
+  parked: 'bg-orange-500',
+  paused: 'bg-muted-foreground',
+  offline: 'bg-amber-500',
+  error: 'bg-destructive',
 }
 
 /** i18n key (under `settings.sync.state`) for the status label. */
@@ -138,6 +169,7 @@ export function syncStateKey(s: SyncStatus | null | undefined, mergePending = fa
   if (mergePending) return 'mergePending'
   if (!s || s.state === 'disabled') return 'disabled'
   if (s.paused) return 'paused'
+  if (s.state === 'online' && s.parked > 0) return 'parked'
   return s.state
 }
 
@@ -191,8 +223,11 @@ export function countdown(expiresAt: number | null | undefined, now: number = Da
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
 
-/** Join / create failure codes the backend prefixes its messages with. */
-export const JOIN_ERROR_CODES = [
+/**
+ * Backend failure codes with a translated message (`settings.sync.errors.<code>`): join / create
+ * failures, the merge refusal, and the relay's sync error codes.
+ */
+export const SYNC_ERROR_CODES = [
   'host_offline',
   'wrong_password',
   'host_not_in_group',
@@ -202,11 +237,42 @@ export const JOIN_ERROR_CODES = [
   'busy',
   'relay_not_configured',
   'relay_error',
+  'sync_bootstrap_runs_live',
+  'ticket_required',
+  'ticket_invalid',
+  'group_exists',
+  'forbidden',
+  'quota_exceeded',
+  'device_revoked',
 ] as const
-export type JoinErrorCode = (typeof JOIN_ERROR_CODES)[number]
+export type SyncErrorCode = (typeof SYNC_ERROR_CODES)[number]
 
-/** The known failure code at the start of a join error, else null (show it raw). */
-export function joinErrorCode(message: unknown): JoinErrorCode | null {
+/** Codes the relay sends; the backend wraps them ("relay rejected this device: device_revoked"). */
+const RELAY_CODES: readonly SyncErrorCode[] = [
+  'ticket_required',
+  'ticket_invalid',
+  'group_exists',
+  'forbidden',
+  'quota_exceeded',
+  'device_revoked',
+]
+
+/** Backend messages that carry no code. */
+const PHRASES: Array<[string, SyncErrorCode]> = [
+  ['only the device that created the group can remove', 'forbidden'],
+  ['relay not configured', 'relay_not_configured'],
+]
+
+/**
+ * The known failure code of a backend error (a `code:` prefix, a relay code anywhere in it, or a
+ * known phrase), else null (show it raw).
+ */
+export function syncErrorCode(message: unknown): SyncErrorCode | null {
   const m = String(message ?? '').trim()
-  return JOIN_ERROR_CODES.find((c) => m === c || m.startsWith(`${c}:`)) ?? null
+  const prefixed = SYNC_ERROR_CODES.find((c) => m === c || m.startsWith(`${c}:`))
+  if (prefixed) return prefixed
+  const relay = RELAY_CODES.find((c) => new RegExp(`(^|[^a-z_])${c}($|[^a-z_])`).test(m))
+  if (relay) return relay
+  const lower = m.toLowerCase()
+  return PHRASES.find(([p]) => lower.includes(p))?.[1] ?? null
 }

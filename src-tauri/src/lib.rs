@@ -152,7 +152,8 @@ use remote::RemoteState;
 use commands::sync::{
     sync_create_group, sync_device_rename, sync_devices_list, sync_join, sync_leave, sync_now,
     sync_get_secrets, sync_pause, sync_revoke_device, sync_set_leader, sync_set_secrets, sync_status,
-    sync_accept_close, sync_accept_open, sync_accept_state, sync_join_respond, sync_relay_ready,
+    sync_accept_close, sync_accept_open, sync_accept_state, sync_join_respond, sync_parked_list,
+    sync_parked_retry, sync_relay_ready,
     SyncManager,
 };
 use sync::sessions::{sync_run_owners, sync_take_over_run};
@@ -768,6 +769,8 @@ pub fn run() {
             sync_accept_close,
             sync_accept_state,
             sync_join_respond,
+            sync_parked_list,
+            sync_parked_retry,
             sync_resync_all,
             sync_bootstrap_pending,
             sync_bootstrap_preview,
