@@ -162,9 +162,8 @@ pub async fn sync_join(
         return Err("relay_not_configured: set the relay URL and token in Settings → Remote Control first".into());
     }
     let name = default_device_name(db.inner()).await;
+    // Leaves the merge pending: the engine starts after sync_bootstrap_commit.
     crate::sync::pair::join(db.inner(), alias, password, &name).await?;
-    // The engine starts after sync_bootstrap_commit.
-    crate::sync::bootstrap::mark_joined(db.inner()).await?;
     Ok(state.status().await)
 }
 

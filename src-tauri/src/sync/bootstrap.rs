@@ -30,7 +30,7 @@ use super::codec::{bind_value, decode_row, expand_portable, map_project_path, pk
 use super::crypto::SyncKeys;
 use super::op::{canonical_json, Op, OpKind};
 use super::schema::{self, lit, pk_sql, q, TableSpec, SYNCED_TABLES};
-use super::store::{ApplyReport, SqliteSyncStore, SyncStore};
+use super::store::{is_extra_tbl, ApplyReport, BlobIo, SqliteSyncStore, SyncStore};
 use super::transport::Connection;
 use crate::db::Db;
 
@@ -40,6 +40,54 @@ pub const PROJECT_MAP_KEY: &str = "project_path_map";
 /// the engine does not start meanwhile (it would push rows with local ids).
 pub const PENDING_KEY: &str = "bootstrap_pending";
 const PULL_LIMIT: u64 = 500;
+/// Remote ops applied per write transaction by [`commit`] (a long write
+/// transaction would starve the other writers, e.g. `sidecar-mcp`).
+const APPLY_CHUNK: usize = 500;
+/// `sync_state` key: JSON list of per-id app-data folders still to rename
+/// after a re-key (see [`DIR_KEYED`], [`run_dir_moves`]).
+const DIR_MOVES_KEY: &str = "dir_moves";
+
+/// Folders under app data named after a row id, which follow the row when it
+/// is re-keyed: `(table, folder, column holding a path into it)`.
+pub static DIR_KEYED: &[(&str, &str, Option<&str>)] = &[
+    ("claude_accounts", "claude-accounts", Some("config_dir")),
+    ("azure_accounts", "azure-accounts", None),
+    ("servers", "server-keys", Some("private_key_path")),
+    ("projects", "aws-projects", None),
+];
+
+/// Set while a first-join merge is being committed: run starts are refused
+/// meanwhile (the merge re-keys the ids a new sidecar would be handed).
+static COMMITTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Error code of a run start refused during [`commit`].
+pub const COMMITTING_CODE: &str = "sync_bootstrap_in_progress";
+
+/// Held for the whole commit (live-run check included); dropping it lets runs
+/// start again.
+pub struct CommitGuard(());
+
+impl Drop for CommitGuard {
+    fn drop(&mut self) {
+        COMMITTING.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Block run starts until the guard drops; fails when a commit is already on.
+pub fn begin_commit() -> Result<CommitGuard, String> {
+    COMMITTING
+        .compare_exchange(false, true, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst)
+        .map(|_| CommitGuard(()))
+        .map_err(|_| format!("{COMMITTING_CODE}: a sync merge is already running"))
+}
+
+/// Run-start hook (`start_run_inner`, resume): refused while a merge commits.
+pub fn refuse_if_committing() -> Result<(), String> {
+    if COMMITTING.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(format!("{COMMITTING_CODE}: sync is merging this device's data; try again in a moment"));
+    }
+    Ok(())
+}
 
 /// Every column holding the id of a row of a table that can be re-keyed
 /// (natural key != pk), declared FK or not, synced or machine-local:
@@ -159,21 +207,28 @@ pub async fn is_pending(db: &Db) -> Result<bool, String> {
     Ok(get_state(&mut conn, PENDING_KEY).await?.as_deref() == Some("1"))
 }
 
-/// Just joined a group: hold the engine until the merge is committed.
+/// Just joined a group (or about to): hold the engine until the merge is
+/// committed. Also used to re-merge with a relay that lost ops (N15).
 pub async fn mark_joined(db: &Db) -> Result<(), String> {
     let mut conn = db.acquire().await.map_err(err)?;
     set_state(&mut conn, PENDING_KEY, "1").await
 }
 
+pub async fn clear_pending(db: &Db) -> Result<(), String> {
+    let mut conn = db.acquire().await.map_err(err)?;
+    set_state(&mut conn, PENDING_KEY, "0").await
+}
+
 /// This device just created a group: it is the reference state, so upload
-/// everything from the start of the (empty) group's log.
+/// everything from the start of the (empty) group's log. The pending flag is
+/// cleared last: a crash before that resumes at the merge step.
 pub async fn prepare_new_group(db: &Db) -> Result<usize, String> {
     let device = super::ensure_device(db).await?;
     SqliteSyncStore::new(db.clone(), device).set_cursor(0).await?;
-    let mut conn = db.acquire().await.map_err(err)?;
-    set_state(&mut conn, PENDING_KEY, "0").await?;
-    drop(conn);
-    enqueue_all(db).await
+    super::set_member(db, true).await?;
+    let n = enqueue_all(db).await?;
+    clear_pending(db).await?;
+    Ok(n)
 }
 
 // ---- full upload ---------------------------------------------------------------
@@ -762,6 +817,9 @@ pub async fn rekey(conn: &mut SqliteConnection, spec: &TableSpec, old: &Value, n
         .await
         .map_err(err)?;
     super::secrets::queue_key_move(conn, spec.name, old, new).await?;
+    if let (Some(from), Some(to)) = (old.as_str(), new.as_str()) {
+        queue_dir_move(conn, spec.name, pk_col, from, to).await?;
+    }
     if opts.repush {
         queue_push(conn, spec.name, &old_key, "D", now).await?;
         // Not a local change (dated 0): the kept HLC alone decides whether the
@@ -804,6 +862,93 @@ pub async fn rekey(conn: &mut SqliteConnection, spec: &TableSpec, old: &Value, n
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+struct DirMove {
+    dir: String,
+    from: String,
+    to: String,
+}
+
+async fn load_dir_moves(conn: &mut SqliteConnection) -> Result<Vec<DirMove>, String> {
+    Ok(get_state(conn, DIR_MOVES_KEY).await?.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default())
+}
+
+async fn save_dir_moves(conn: &mut SqliteConnection, moves: &[DirMove]) -> Result<(), String> {
+    set_state(conn, DIR_MOVES_KEY, &serde_json::to_string(moves).map_err(|e| e.to_string())?).await
+}
+
+/// The row `from` of `tbl` (already re-keyed to `to`) owns a folder under app
+/// data named after its id: point its path column at the new folder name and
+/// queue the folder rename for after the transaction ([`run_dir_moves`]).
+async fn queue_dir_move(conn: &mut SqliteConnection, tbl: &str, pk_col: &str, from: &str, to: &str) -> Result<(), String> {
+    let Some((_, dir, col)) = DIR_KEYED.iter().find(|(t, _, _)| *t == tbl) else { return Ok(()) };
+    if let Some(col) = col {
+        let (old_seg, new_seg) = (format!("/{dir}/{from}"), format!("/{dir}/{to}"));
+        let sql = format!(
+            "UPDATE {t} SET {c} = substr({c}, 1, instr({c}, ?1) - 1) || ?2 || substr({c}, instr({c}, ?1) + length(?1)) \
+             WHERE {k} = ?3 AND (instr({c}, ?1 || '/') > 0 OR substr({c}, -length(?1)) = ?1)",
+            t = q(tbl),
+            c = q(col),
+            k = q(pk_col),
+        );
+        sqlx::query(&sql).bind(&old_seg).bind(&new_seg).bind(to).execute(&mut *conn).await.map_err(err)?;
+    }
+    let mut moves = load_dir_moves(conn).await?;
+    let m = DirMove { dir: dir.to_string(), from: from.into(), to: to.into() };
+    if !moves.contains(&m) {
+        moves.push(m);
+        save_dir_moves(conn, &moves).await?;
+    }
+    Ok(())
+}
+
+/// Rename the queued per-id folders under `paths.app_data` (a login, Azure
+/// profile, managed SSH key... must follow its re-keyed row). A folder whose
+/// new name is already taken is left alone (the existing one wins); a rename
+/// that fails stays queued. Returns how many were moved.
+pub async fn run_dir_moves(db: &Db, paths: &PathCtx) -> Result<usize, String> {
+    let Some(root) = paths.app_data.clone() else { return Ok(0) };
+    let mut conn = db.acquire().await.map_err(err)?;
+    let moves = load_dir_moves(&mut conn).await?;
+    drop(conn);
+    if moves.is_empty() {
+        return Ok(0);
+    }
+    let todo = moves.clone();
+    let (done, moved) = tokio::task::spawn_blocking(move || {
+        let mut done = Vec::new();
+        let mut moved = 0;
+        for m in todo {
+            let safe = |id: &str| !id.is_empty() && !id.contains(['/', '\\']) && id != "." && id != "..";
+            if !safe(&m.from) || !safe(&m.to) {
+                done.push(m);
+                continue;
+            }
+            let (from, to) = (root.join(&m.dir).join(&m.from), root.join(&m.dir).join(&m.to));
+            if !from.exists() || to.exists() {
+                done.push(m);
+                continue;
+            }
+            match std::fs::rename(&from, &to) {
+                Ok(()) => {
+                    moved += 1;
+                    done.push(m);
+                }
+                Err(e) => tracing::warn!(event = "sync_dir_move_failed", dir = %m.dir, error = %e),
+            }
+        }
+        (done, moved)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut tx = db.begin().await.map_err(err)?;
+    let mut left = load_dir_moves(&mut tx).await?;
+    left.retain(|m| !done.contains(m));
+    save_dir_moves(&mut tx, &left).await?;
+    tx.commit().await.map_err(err)?;
+    Ok(moved)
+}
+
 async fn begin_guarded(db: &Db) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>, String> {
     let mut tx = db.begin().await.map_err(err)?;
     sqlx::query("PRAGMA defer_foreign_keys = ON").execute(&mut *tx).await.map_err(err)?;
@@ -821,15 +966,42 @@ pub async fn preview(db: &Db, home: &PathCtx, state: &RemoteState, git: &HashMap
     Ok(preview)
 }
 
+fn add_report(total: &mut ApplyReport, r: &ApplyReport) {
+    total.applied += r.applied;
+    total.skipped_older += r.skipped_older;
+    total.conflicts += r.conflicts;
+    // Each call retries what is still parked: the last count is the total.
+    total.deferred = r.deferred;
+}
+
+/// Row ops in the order chunks must land: upserts parents first, then
+/// deletes children first (a chunk boundary never splits a parent from a
+/// child that needs it).
+fn apply_order(mut ops: Vec<Op>) -> Vec<Op> {
+    let level = |op: &Op| schema::spec(&op.tbl).map(|s| s.level()).unwrap_or(usize::MAX);
+    ops.sort_by(|a, b| {
+        let key = |op: &Op| match op.kind {
+            OpKind::Upsert => (0usize, level(op)),
+            OpKind::Delete => (1, usize::MAX - level(op)),
+        };
+        key(a).cmp(&key(b)).then_with(|| a.hlc.cmp(&b.hlc))
+    });
+    ops
+}
+
 /// Run the first-join merge for real: re-key + project map (one guarded
-/// transaction), LWW-apply the group state, queue the local-only rows, and
-/// continue pulling after it. The engine must not be running.
+/// transaction), LWW-apply the group's rows in chunks, then its files and
+/// Keychain items (`blobs` fetches their content), queue the local-only rows,
+/// and continue pulling after it. The engine must not be running; the caller
+/// holds [`begin_commit`]. Safe to run again after a crash: the pending flag
+/// is cleared last and a second merge finds the rows already re-keyed.
 pub async fn commit(
     db: &Db,
     store: &SqliteSyncStore,
     home: &PathCtx,
     state: RemoteState,
     git: &HashMap<String, String>,
+    blobs: &dyn BlobIo,
 ) -> Result<BootstrapReport, String> {
     let mut tx = begin_guarded(db).await?;
     let merged = merge(&mut tx, home, &state.ops, git).await?;
@@ -847,10 +1019,24 @@ pub async fn commit(
     sqlx::query("UPDATE sync_apply_guard SET active = 0 WHERE id = 1").execute(&mut *tx).await.map_err(err)?;
     tx.commit().await.map_err(err)?;
 
-    let applied = store.apply_remote(state.ops).await?;
+    run_dir_moves(db, home).await?;
+
+    let (extra, rows): (Vec<Op>, Vec<Op>) = state.ops.into_iter().partition(|o| is_extra_tbl(&o.tbl));
+    let mut applied = ApplyReport::default();
+    for chunk in apply_order(rows).chunks(APPLY_CHUNK) {
+        add_report(&mut applied, &store.apply_remote(chunk.to_vec()).await?);
+    }
+    let mut extra_report = ApplyReport::default();
+    for chunk in extra.chunks(APPLY_CHUNK) {
+        add_report(&mut extra_report, &store.apply_remote_extra(chunk.to_vec(), blobs).await?);
+    }
+    applied.applied += extra_report.applied;
+    applied.skipped_older += extra_report.skipped_older;
+    applied.conflicts += extra_report.conflicts;
+    applied.deferred += extra_report.deferred;
+    run_dir_moves(db, home).await?;
     store.set_cursor(state.last_seq).await?;
-    let mut conn = db.acquire().await.map_err(err)?;
-    set_state(&mut conn, PENDING_KEY, "0").await?;
+    clear_pending(db).await?;
     let mut preview = merged.preview;
     preview.undecryptable = state.undecryptable;
     Ok(BootstrapReport { preview, applied, queued: merged.local_only.len() })
@@ -956,6 +1142,7 @@ mod tests {
     use crate::sync::op::OP_VERSION;
     use crate::sync::SCHEMA_VERSION;
     use serde_json::json;
+    use crate::sync::files::tests::MemBlobs;
     use sqlx::sqlite::SqlitePoolOptions;
 
     async fn mem_db() -> Db {
@@ -1100,7 +1287,7 @@ mod tests {
         }
         assert_eq!(table(&p, "settings").matched, 1);
 
-        let report = commit(&db_b, &b, &home_b, state, &git).await.unwrap();
+        let report = commit(&db_b, &b, &home_b, state, &git, &MemBlobs::default()).await.unwrap();
         assert_eq!(report.applied.deferred, 0, "{report:?}");
         assert_eq!(count(&db_b, "SELECT COUNT(*) FROM pragma_foreign_key_check").await, 0);
         // Every parent got a's id...
@@ -1220,7 +1407,7 @@ mod tests {
         assert_eq!(by["p-away"], (None, "/Users/bob/w/away"));
         assert!(!p.projects.iter().find(|m| m.remote_id == "p-away").unwrap().on_this_machine);
 
-        commit(&db_b, &b, &home_b, state, &git).await.unwrap();
+        commit(&db_b, &b, &home_b, state, &git, &MemBlobs::default()).await.unwrap();
         assert_eq!(scalar(&db_b, "SELECT path FROM projects WHERE id = 'p-git'").await.unwrap(), "/Volumes/code/devdy");
         assert_eq!(scalar(&db_b, "SELECT name FROM projects WHERE id = 'p-path'").await.unwrap(), "same-path", "remote row wins");
         assert_eq!(scalar(&db_b, "SELECT path FROM projects WHERE id = 'p-name'").await.unwrap(), "/Users/bob/elsewhere/notes");
@@ -1365,10 +1552,338 @@ mod tests {
         exec(&db_b, "INSERT INTO notes (id, title, content, position, created_at, updated_at) VALUES ('n', 'T', 'b-body', 0, 'x', 'x')").await;
         exec(&db_b, "DELETE FROM sync_outbox").await; // edited before sync existed
         let state = group_state(&a).await;
-        let r = commit(&db_b, &b, &home_b, state, &HashMap::new()).await.unwrap();
+        let r = commit(&db_b, &b, &home_b, state, &HashMap::new(), &MemBlobs::default()).await.unwrap();
         assert_eq!(r.applied.conflicts, 1);
         assert_eq!(note(&db_b, "n").await, "a-body");
         assert_eq!(scalar(&db_b, "SELECT content FROM notes WHERE id != 'n'").await.unwrap(), "b-body");
+    }
+
+    async fn eventually(what: &str, mut check: impl FnMut() -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while std::time::Instant::now() < deadline {
+            if check().await {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    /// Every string in every synced row of `db`.
+    async fn all_synced_strings(db: &Db) -> Vec<(String, String)> {
+        let mut conn = db.acquire().await.unwrap();
+        let mut out = Vec::new();
+        for spec in SYNCED_TABLES {
+            for row in read_all(&mut conn, spec).await.unwrap() {
+                for v in row.values() {
+                    if let Some(s) = v.as_str() {
+                        out.push((spec.name.to_string(), s.to_string()));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The real first run: the Mac mini (M) has everything and creates the
+    /// group on the relay; a MacBook (B, other home, other app data, some of
+    /// the same things under other ids, plus its own) joins, previews and
+    /// commits the merge. Rows, files and Keychain items arrive under B's
+    /// paths, B's matching rows take M's ids (with their per-id folders), and
+    /// M loses nothing.
+    #[tokio::test]
+    async fn first_run_end_to_end_over_the_relay() {
+        use crate::sync::crypto::{generate_group_key, SyncKeys};
+        use crate::sync::engine::{RelayBlobs, StatusSink, SyncEngine, SyncStatus, Timing};
+        use crate::sync::files::tests::{mem_db, tempdir};
+        use crate::sync::secrets::tests::FakeKeychain;
+        use crate::sync::test_relay::TestRelay;
+        use crate::sync::transport::ConnectParams;
+        use sha2::Digest as _;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let base = tempdir();
+        let home_m = base.path().join("Users/m");
+        let home_b = base.path().join("Users/b");
+        let data_m = home_m.join("Library/Application Support/vn.papay.devdy");
+        let data_b = home_b.join("Library/Application Support/vn.papay.devdy.dev");
+        let (hm, hb) = (home_m.to_string_lossy().to_string(), home_b.to_string_lossy().to_string());
+        let write = |p: &std::path::Path, body: &str| {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, body).unwrap();
+        };
+        let fast = Timing {
+            outbox_poll: Duration::from_millis(50),
+            periodic: Duration::from_secs(3600),
+            kick_debounce: Duration::from_millis(10),
+            backoff_min: Duration::from_millis(50),
+            backoff_max: Duration::from_millis(200),
+            rejected_retry: Duration::from_secs(3600),
+            push_backoff_max: Duration::from_millis(400),
+            pull_limit: 500,
+        };
+        let file_timing = crate::sync::files::Timing { quick: Duration::from_millis(50), full: Duration::from_millis(150) };
+        let keys = SyncKeys::derive(&generate_group_key()).unwrap();
+        let relay = TestRelay::start().await;
+        let params = |device: &str| ConnectParams {
+            relay_url: relay.url(),
+            auth_token: TestRelay::TOKEN.into(),
+            group_id: "g-first-run".into(),
+            device_id: device.into(),
+            device_token: format!("tok-{device}"),
+        };
+        let quiet: StatusSink = Arc::new(|_: &SyncStatus| {});
+
+        // ---- M: the Mac mini, with everything ----
+        let db_m = mem_db().await;
+        let kc_m = Arc::new(FakeKeychain::default());
+        let ctx_m = PathCtx::with_home(&home_m).with_app_data(&data_m);
+        let project_m = home_m.join("w/devdy");
+        std::fs::create_dir_all(&project_m).unwrap();
+        let skill_m = data_m.join("skills/review");
+        write(&skill_m.join("SKILL.md"), "# review (M)\n");
+        write(&skill_m.join("refs/a.md"), "reference from M\n");
+        let log_m = project_m.join(".devdy/runs/rn-M.log");
+        write(&log_m, "{\"type\":\"system\"}\n");
+        let claude_m = data_m.join("claude-accounts/ca-M");
+        let transcript_m = claude_m
+            .join("projects")
+            .join(crate::commands::sessions::encode_project_dir(&project_m.to_string_lossy()))
+            .join("s1.jsonl");
+        write(&transcript_m, &format!("{{\"type\":\"user\",\"cwd\":\"{}\",\"message\":\"hi\"}}\n", project_m.to_string_lossy()));
+        let key_m = data_m.join("server-keys/sv-M/id_ed25519");
+        write(&key_m, "-----BEGIN OPENSSH PRIVATE KEY-----\nM\n");
+        for sql in [
+            "INSERT INTO github_accounts (id, label, username, created_at) VALUES ('gh-M', 'work', 'me', 'x')".to_string(),
+            format!("INSERT INTO claude_accounts (id, label, config_dir, created_at) VALUES ('ca-M', 'max', '{}', 'x')", claude_m.to_string_lossy()),
+            format!("INSERT INTO servers (id, label, host, username, auth_method, private_key_path, created_at) VALUES ('sv-M', 'vps', 'h', 'u', 'key', '{}', 'x')", key_m.to_string_lossy()),
+            format!("INSERT INTO skills (id, name, description, source_path, updated_at) VALUES ('sk-M', 'review', '', '{}', 'x')", skill_m.to_string_lossy()),
+            format!("INSERT INTO projects (id, name, path, created_at, github_account_id, claude_account_id) VALUES ('pr-M', 'devdy', '{}', 'x', 'gh-M', 'ca-M')", project_m.to_string_lossy()),
+            "INSERT INTO project_skills (project_id, skill_id, applied_at) VALUES ('pr-M', 'sk-M', 'x')".to_string(),
+            format!(
+                "INSERT INTO runs (id, project_id, type, status, engine, session_id, claude_account_id, output_path, transcript_path, created_at) \
+                 VALUES ('rn-M', 'pr-M', 'session', 'done', 'claude', 's1', 'ca-M', '{}', '{}', 'x')",
+                log_m.to_string_lossy(),
+                transcript_m.to_string_lossy()
+            ),
+            "INSERT INTO notes (id, title, content, project_id, position, created_at, updated_at) VALUES ('no-M', 'plan', 'from M', 'pr-M', 0, 'x', 'x')".to_string(),
+        ] {
+            exec(&db_m, &sql).await;
+        }
+        kc_m.put("github", "gh-M", "ghp_from_M");
+
+        // M creates the group: registers as its creator and uploads everything.
+        let dev_m = crate::sync::ensure_device(&db_m).await.unwrap();
+        let (etx, _erx) = tokio::sync::mpsc::unbounded_channel();
+        let conn_m = Connection::connect(&params(&dev_m), true, etx).await.unwrap();
+        prepare_new_group(&db_m).await.unwrap();
+        let store_m = SqliteSyncStore::new(db_m.clone(), dev_m.clone())
+            .with_paths(ctx_m.clone())
+            .with_secrets(kc_m.clone())
+            .with_file_timing(file_timing.clone());
+        let engine_m = SyncEngine::start(params(&dev_m), keys.clone(), Arc::new(store_m), quiet.clone(), false, fast.clone());
+        let outbox_empty = |db: &Db| {
+            let db = db.clone();
+            move || -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
+                let db = db.clone();
+                Box::pin(async move { count(&db, "SELECT COUNT(*) FROM sync_outbox").await == 0 })
+            }
+        };
+        eventually("M uploaded", outbox_empty(&db_m)).await;
+        let files_up = || -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
+            let relay = relay.clone();
+            Box::pin(async move { relay.blob_counts().0 >= 5 })
+        };
+        eventually("M's files on the relay", files_up).await;
+        eventually("M's file ops pushed", outbox_empty(&db_m)).await;
+
+        // ---- B: the MacBook, with its own (overlapping) data ----
+        let db_b = mem_db().await;
+        let kc_b = Arc::new(FakeKeychain::default());
+        let ctx_b = PathCtx::with_home(&home_b).with_app_data(&data_b);
+        let project_b = home_b.join("w/devdy");
+        std::fs::create_dir_all(&project_b).unwrap();
+        let skill_b = data_b.join("skills/review");
+        write(&skill_b.join("SKILL.md"), "# review (B)\n");
+        let claude_b = data_b.join("claude-accounts/ca-B");
+        write(&claude_b.join(".credentials.json"), "{\"login\":\"B\"}");
+        for sql in [
+            "INSERT INTO github_accounts (id, label, username, created_at) VALUES ('gh-B', 'work', 'me', 'x')".to_string(),
+            format!("INSERT INTO claude_accounts (id, label, config_dir, created_at) VALUES ('ca-B', 'max', '{}', 'x')", claude_b.to_string_lossy()),
+            format!("INSERT INTO skills (id, name, description, source_path, updated_at) VALUES ('sk-B', 'review', '', '{}', 'x')", skill_b.to_string_lossy()),
+            format!("INSERT INTO projects (id, name, path, created_at, github_account_id, claude_account_id) VALUES ('pr-B', 'devdy', '{}', 'x', 'gh-B', 'ca-B')", project_b.to_string_lossy()),
+            "INSERT INTO runs (id, project_id, type, status, engine, session_id, claude_account_id, created_at) VALUES ('rn-B', 'pr-B', 'session', 'done', 'claude', 's-b', 'ca-B', 'x')".to_string(),
+            "INSERT INTO notes (id, title, content, project_id, position, created_at, updated_at) VALUES ('no-B', 'mine', 'from B', 'pr-B', 1, 'x', 'x')".to_string(),
+        ] {
+            exec(&db_b, &sql).await;
+        }
+        // B's rows predate sync (the group's versions of matched rows win).
+        exec(&db_b, "DELETE FROM sync_outbox").await;
+        kc_b.put("github", "gh-B", "ghp_from_B");
+
+        // B joins with a ticket M announced, and holds the engine.
+        let ticket = "first-run-ticket";
+        conn_m.sync_invite(&hex::encode(sha2::Sha256::digest(ticket.as_bytes())), 60).await.unwrap();
+        let dev_b = crate::sync::ensure_device(&db_b).await.unwrap();
+        let (etx, _erx) = tokio::sync::mpsc::unbounded_channel();
+        let conn_b = Connection::connect_with_ticket(&params(&dev_b), false, Some(ticket), etx).await.unwrap();
+        mark_joined(&db_b).await.unwrap();
+
+        let state = fetch_group_state(&conn_b, &keys).await.unwrap();
+        assert_eq!(state.undecryptable, 0);
+        let git = HashMap::new();
+        let p = preview(&db_b, &ctx_b, &state, &git).await.unwrap();
+        let by: HashMap<&str, Option<&str>> = p.projects.iter().map(|m| (m.remote_id.as_str(), m.matched_by.as_deref())).collect();
+        assert_eq!(by["pr-M"], Some("path"));
+        assert_eq!(p.projects[0].local_path, project_b.to_string_lossy());
+        for tbl in ["projects", "skills", "claude_accounts", "github_accounts"] {
+            assert_eq!((table(&p, tbl).matched, table(&p, tbl).rekeyed), (1, 1), "{tbl}");
+        }
+        assert_eq!(scalar(&db_b, "SELECT id FROM projects").await.unwrap(), "pr-B", "preview writes nothing");
+
+        let store_b = SqliteSyncStore::new(db_b.clone(), dev_b.clone())
+            .with_paths(ctx_b.clone())
+            .with_secrets(kc_b.clone())
+            .with_file_timing(file_timing.clone());
+        let report = commit(&db_b, &store_b, &ctx_b, state, &git, &RelayBlobs::new(&conn_b, &keys)).await.unwrap();
+        assert_eq!(report.applied.deferred, 0, "{report:?}");
+        assert!(!is_pending(&db_b).await.unwrap());
+        assert_eq!(count(&db_b, "SELECT COUNT(*) FROM sync_extra_deferred").await, 0);
+
+        // Matched rows took M's ids; B's own rows follow them.
+        for (tbl, id) in [("projects", "pr-M"), ("skills", "sk-M"), ("claude_accounts", "ca-M"), ("github_accounts", "gh-M")] {
+            assert_eq!(count(&db_b, &format!("SELECT COUNT(*) FROM {tbl}")).await, 1, "{tbl}");
+            assert_eq!(scalar(&db_b, &format!("SELECT id FROM {tbl}")).await.unwrap(), id, "{tbl}");
+        }
+        assert_eq!(scalar(&db_b, "SELECT project_id FROM runs WHERE id = 'rn-B'").await.unwrap(), "pr-M");
+        assert_eq!(scalar(&db_b, "SELECT claude_account_id FROM runs WHERE id = 'rn-B'").await.unwrap(), "ca-M");
+        assert_eq!(scalar(&db_b, "SELECT project_id FROM notes WHERE id = 'no-B'").await.unwrap(), "pr-M");
+
+        // Every path is B's: no portable marker, nothing of M's home left.
+        for (tbl, v) in all_synced_strings(&db_b).await {
+            assert!(!v.contains("@data") && !v.contains(&hm) && !v.starts_with('~'), "{tbl}: {v}");
+        }
+        let claude_dir_b = data_b.join("claude-accounts/ca-M");
+        assert_eq!(scalar(&db_b, "SELECT config_dir FROM claude_accounts").await.unwrap(), claude_dir_b.to_string_lossy());
+        assert_eq!(scalar(&db_b, "SELECT path FROM projects").await.unwrap(), project_b.to_string_lossy());
+        assert_eq!(scalar(&db_b, "SELECT source_path FROM skills").await.unwrap(), skill_b.to_string_lossy());
+        let key_b = data_b.join("server-keys/sv-M/id_ed25519");
+        assert_eq!(scalar(&db_b, "SELECT private_key_path FROM servers").await.unwrap(), key_b.to_string_lossy());
+
+        // N12: B's Claude login followed its account to the new id.
+        assert_eq!(std::fs::read_to_string(claude_dir_b.join(".credentials.json")).unwrap(), "{\"login\":\"B\"}");
+        assert!(!claude_b.exists());
+
+        // N1: files arrived at B's paths.
+        assert_eq!(std::fs::read_to_string(skill_b.join("refs/a.md")).unwrap(), "reference from M\n");
+        assert!(skill_b.join("SKILL.md").is_file());
+        let log_b: String = scalar(&db_b, "SELECT output_path FROM runs WHERE id = 'rn-M'").await.unwrap();
+        assert_eq!(log_b, project_b.join(".devdy/runs/rn-M.log").to_string_lossy());
+        assert_eq!(std::fs::read_to_string(&log_b).unwrap(), "{\"type\":\"system\"}\n");
+        let transcript_b: String = scalar(&db_b, "SELECT transcript_path FROM runs WHERE id = 'rn-M'").await.unwrap();
+        let enc_b = crate::commands::sessions::encode_project_dir(&project_b.to_string_lossy());
+        assert_eq!(transcript_b, claude_dir_b.join("projects").join(enc_b).join("s1.jsonl").to_string_lossy(), "B's project folder");
+        let t = std::fs::read_to_string(&transcript_b).unwrap();
+        assert!(t.contains(&*project_b.to_string_lossy()) && !t.contains(&hm), "{t}");
+        assert_eq!(std::fs::read_to_string(&key_b).unwrap(), "-----BEGIN OPENSSH PRIVATE KEY-----\nM\n");
+        // ...and the Keychain item, under M's id.
+        assert_eq!(kc_b.get("github", "gh-M").as_deref(), Some("ghp_from_M"));
+        assert_eq!(kc_b.get("github", "gh-B"), None);
+
+        // B syncs on: M gets B's own rows and loses nothing.
+        drop(conn_b);
+        let engine_b = SyncEngine::start(params(&dev_b), keys.clone(), Arc::new(store_b), quiet.clone(), false, fast.clone());
+        let got_note = || -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
+            let db = db_m.clone();
+            Box::pin(async move { count(&db, "SELECT COUNT(*) FROM notes WHERE id = 'no-B'").await == 1 })
+        };
+        eventually("B's note on M", got_note).await;
+        eventually("B pushed", outbox_empty(&db_b)).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        for (tbl, id) in [("projects", "pr-M"), ("skills", "sk-M"), ("claude_accounts", "ca-M"), ("github_accounts", "gh-M"), ("servers", "sv-M"), ("runs", "rn-M"), ("notes", "no-M")] {
+            assert_eq!(count(&db_m, &format!("SELECT COUNT(*) FROM {tbl} WHERE id = '{id}'")).await, 1, "{tbl} {id} kept on M");
+        }
+        assert_eq!(scalar(&db_m, "SELECT project_id FROM runs WHERE id = 'rn-B'").await.as_deref(), Some("pr-M"));
+        assert_eq!(scalar(&db_m, "SELECT path FROM projects").await.unwrap(), project_m.to_string_lossy());
+        for (tbl, v) in all_synced_strings(&db_m).await {
+            assert!(!v.contains("@data") && !v.contains(&hb), "{tbl}: {v}");
+        }
+        // A library file both machines authored before sync: B's never-synced
+        // copy is newer, so it wins everywhere; M's version is kept on B as a
+        // conflict copy (files::apply_op) and nothing else of M's is touched.
+        let conflict_copy = std::fs::read_dir(&skill_b)
+            .unwrap()
+            .flatten()
+            .find(|e| e.file_name().to_string_lossy().starts_with("SKILL.md.conflict-"))
+            .expect("M's SKILL.md kept on B");
+        assert_eq!(std::fs::read_to_string(conflict_copy.path()).unwrap(), "# review (M)\n");
+        assert_eq!(std::fs::read_to_string(skill_m.join("refs/a.md")).unwrap(), "reference from M\n");
+        assert_eq!(std::fs::read_to_string(&log_m).unwrap(), "{\"type\":\"system\"}\n");
+        assert_eq!(kc_m.get("github", "gh-M").as_deref(), Some("ghp_from_M"));
+        engine_b.stop().await;
+        engine_m.stop().await;
+    }
+
+    #[test]
+    fn run_starts_are_refused_while_a_merge_commits() {
+        assert!(refuse_if_committing().is_ok());
+        let guard = begin_commit().unwrap();
+        assert!(refuse_if_committing().unwrap_err().starts_with(COMMITTING_CODE));
+        assert!(begin_commit().is_err(), "one merge at a time");
+        drop(guard);
+        assert!(refuse_if_committing().is_ok());
+    }
+
+    #[tokio::test]
+    async fn large_group_state_applies_in_chunks_parents_first() {
+        let (db_a, a, _) = device("a", "/Users/a").await;
+        let (db_b, b, home_b) = device("b", "/Users/b").await;
+        exec(&db_a, "INSERT INTO projects (id, name, path, created_at) VALUES ('p', 'p', '/Users/a/p', 'x')").await;
+        exec(&db_a, "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1200) \
+                     INSERT INTO todos (id, text, project_id, position, created_at) SELECT 't' || i, 'x', 'p', i, 'x' FROM n").await;
+        let mut state = group_state(&a).await;
+        // Children first in the log: the chunks still land parents first.
+        state.ops.reverse();
+        mark_joined(&db_b).await.unwrap();
+        let r = commit(&db_b, &b, &home_b, state, &HashMap::new(), &MemBlobs::default()).await.unwrap();
+        assert_eq!((r.applied.applied, r.applied.deferred), (1201, 0), "{r:?}");
+        assert_eq!(count(&db_b, "SELECT COUNT(*) FROM todos WHERE project_id = 'p'").await, 1200);
+        assert!(!is_pending(&db_b).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn rekeyed_rows_take_their_app_data_folders_along() {
+        let home = std::env::temp_dir().join(format!("devdy-dirmove-{}", uuid::Uuid::new_v4().simple()));
+        let data = home.join("data");
+        let h = home.to_string_lossy().to_string();
+        let (db_a, a, _) = device("a", "/Users/a").await;
+        let db_b = mem_db().await;
+        let ctx_b = PathCtx::with_home(&home).with_app_data(&data);
+        let b = SqliteSyncStore::new(db_b.clone(), "b".into()).with_paths(ctx_b.clone());
+        exec(&db_a, "INSERT INTO azure_accounts (id, label, created_at) VALUES ('az-A', 'az', 'x')").await;
+        exec(&db_a, "INSERT INTO claude_accounts (id, label, config_dir, created_at) VALUES ('ca-A', 'max', '/elsewhere', 'x')").await;
+        exec(&db_b, "INSERT INTO azure_accounts (id, label, created_at) VALUES ('az-B', 'az', 'x')").await;
+        exec(&db_b, &format!("INSERT INTO claude_accounts (id, label, config_dir, created_at) VALUES ('ca-B', 'max', '{h}/data/claude-accounts/ca-B', 'x')")).await;
+        exec(&db_b, "DELETE FROM sync_outbox").await;
+        for (dir, id) in [("azure-accounts", "az-B"), ("claude-accounts", "ca-B")] {
+            std::fs::create_dir_all(data.join(dir).join(id)).unwrap();
+            std::fs::write(data.join(dir).join(id).join("login"), id).unwrap();
+        }
+        // b has an unpushed change to its account: its row (and its folder) win.
+        exec(&db_b, "UPDATE claude_accounts SET label = 'max' WHERE id = 'ca-B'").await;
+        exec(&db_b, "UPDATE sync_outbox SET changed_at = 9000000000000").await;
+        let state = group_state(&a).await;
+
+        preview(&db_b, &ctx_b, &state, &HashMap::new()).await.unwrap();
+        assert!(data.join("claude-accounts/ca-B").is_dir(), "preview moves nothing");
+        commit(&db_b, &b, &ctx_b, state, &HashMap::new(), &MemBlobs::default()).await.unwrap();
+        assert_eq!(std::fs::read_to_string(data.join("azure-accounts/az-A/login")).unwrap(), "az-B");
+        assert_eq!(std::fs::read_to_string(data.join("claude-accounts/ca-A/login")).unwrap(), "ca-B");
+        assert!(!data.join("claude-accounts/ca-B").exists());
+        assert_eq!(scalar(&db_b, "SELECT config_dir FROM claude_accounts").await.unwrap(), format!("{h}/data/claude-accounts/ca-A"));
+        assert_eq!(count(&db_b, "SELECT COUNT(*) FROM sync_state WHERE key = 'dir_moves' AND value != '[]'").await, 0);
+        std::fs::remove_dir_all(&home).ok();
     }
 
     #[tokio::test]

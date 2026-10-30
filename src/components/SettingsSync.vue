@@ -6,7 +6,8 @@
 // app restart) → the merge step: preview (totals, per table, project matches) then commit, which
 // starts the engine. In a group → status, sync now / pause, secrets toggle, devices (rename this
 // one, remove others — creator only —, pick the leader that runs Pulse / Slack polling), project folders for this
-// machine, changes the relay refused (parked, with Retry), re-sync, leave, and "Accept a new device" (5 min window + Allow / Deny per request,
+// machine, changes the relay refused (parked, with Retry), "merge again" when the relay lost ops (`relay_behind`), re-sync, leave,
+// and "Accept a new device" (5 min window + Allow / Deny per request,
 // closed when this page goes away so a request is never left unseen).
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -50,6 +51,7 @@ import {
   syncPause,
   syncProjectMappingList,
   syncProjectMappingSet,
+  syncRebootstrap,
   syncResyncAll,
   syncRevokeDevice,
   syncSetLeader,
@@ -437,6 +439,25 @@ async function resyncAll() {
   }
 }
 
+// The relay lost ops this machine already pulled: sync stays stopped until it merges again.
+const relayBehind = computed(() => syncErrorCode(status.value.last_error) === 'relay_behind')
+const rebootstrapping = ref(false)
+
+async function rebootstrap() {
+  if (rebootstrapping.value) return
+  rebootstrapping.value = true
+  try {
+    await syncRebootstrap()
+    await store.refresh()
+    store.setMergePending(true)
+    await loadPreview()
+  } catch (e) {
+    toast.error(errorText(e))
+  } finally {
+    rebootstrapping.value = false
+  }
+}
+
 async function leave() {
   const ok = await confirm({
     title: t('settings.sync.leave.confirm.title'),
@@ -659,6 +680,10 @@ onUnmounted(() => {
         <p v-if="status.last_error && status.state !== 'online'" class="break-words text-[11px] text-destructive">
           {{ errorText(status.last_error) }}
         </p>
+        <Button v-if="relayBehind" variant="outline" size="sm" :disabled="rebootstrapping" @click="rebootstrap">
+          <RotateCcw class="h-3.5 w-3.5" :class="{ 'animate-spin': rebootstrapping }" :stroke-width="1.75" />
+          {{ rebootstrapping ? t('settings.sync.rebootstrap.busy') : t('settings.sync.rebootstrap.button') }}
+        </Button>
         <div class="flex flex-wrap items-center gap-2">
           <Button size="sm" :disabled="busyNow || status.paused" @click="runNow">
             <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': busyNow }" :stroke-width="1.75" />

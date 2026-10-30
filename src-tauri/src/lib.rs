@@ -158,7 +158,7 @@ use commands::sync::{
 };
 use sync::sessions::{sync_run_owners, sync_take_over_run};
 use commands::sync_bootstrap::{
-    sync_bootstrap_commit, sync_bootstrap_pending, sync_bootstrap_preview, sync_project_mapping_list,
+    sync_bootstrap_commit, sync_bootstrap_pending, sync_bootstrap_preview, sync_project_mapping_list, sync_rebootstrap,
     sync_project_mapping_set, sync_resync_all,
 };
 use runs::broker::approver::ModalApproverResolver;
@@ -775,6 +775,7 @@ pub fn run() {
             sync_bootstrap_pending,
             sync_bootstrap_preview,
             sync_bootstrap_commit,
+            sync_rebootstrap,
             sync_project_mapping_list,
             sync_project_mapping_set,
             remote_bridge_ready,

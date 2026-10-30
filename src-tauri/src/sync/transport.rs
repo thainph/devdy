@@ -167,6 +167,10 @@ fn is_fatal_code(code: &str) -> bool {
     )
 }
 
+/// [`Connection::check_not_behind`]'s code: the relay's log is older than
+/// this device's cursor (needs a re-merge, `sync_rebootstrap`).
+pub const RELAY_BEHIND: &str = "relay_behind";
+
 /// Longest join ticket lifetime the relay accepts.
 #[allow(dead_code)] // pairing (join tickets)
 pub const MAX_TICKET_TTL_SECS: u64 = 600;
@@ -202,6 +206,8 @@ pub struct Connection {
     request_lock: Mutex<()>,
     next_id: std::sync::atomic::AtomicU64,
     task: tokio::task::JoinHandle<()>,
+    /// The group's `last_seq` the relay announced in `sync_welcome`.
+    head: u64,
 }
 
 impl Drop for Connection {
@@ -251,13 +257,13 @@ impl Connection {
         send_frame(&mut sink, &hello).await?;
 
         // Wait for the hello verdict, ignoring anything else (keepalive echoes).
-        tokio::time::timeout(REQUEST_TIMEOUT, async {
+        let head = tokio::time::timeout(REQUEST_TIMEOUT, async {
             while let Some(msg) = stream.next().await {
                 let Some(frame) = parse(msg.map_err(|e| TransportError::Network(e.to_string()))?) else {
                     continue;
                 };
                 match frame.t.as_str() {
-                    "sync_welcome" => return Ok(()),
+                    "sync_welcome" => return Ok(frame.last_seq.unwrap_or(0)),
                     "error" => {
                         let code = frame.code.unwrap_or_else(|| "error".into());
                         return Err(if is_fatal_code(&code) {
@@ -344,7 +350,19 @@ impl Connection {
             request_lock: Mutex::new(()),
             next_id: std::sync::atomic::AtomicU64::new(1),
             task,
+            head,
         })
+    }
+
+    /// N15: a relay whose head is behind this device's pull cursor lost ops
+    /// (restored from a backup): pulling on would skip the seqs it hands out
+    /// again, and pushing with that cursor as `base_seq` would let it drop ops
+    /// this device never saw. Sync must stop until the device merges again.
+    pub fn check_not_behind(&self, cursor: u64) -> Result<(), TransportError> {
+        if self.head < cursor {
+            return Err(TransportError::Rejected(RELAY_BEHIND.into()));
+        }
+        Ok(())
     }
 
     /// Send `frame` and wait for its reply (one of `expect`, or an `error`).
@@ -528,6 +546,20 @@ mod tests {
     fn sha_hex(s: &str) -> String {
         use sha2::Digest as _;
         hex::encode(sha2::Sha256::digest(s.as_bytes()))
+    }
+
+    #[tokio::test]
+    async fn a_relay_behind_the_cursor_is_refused() {
+        let relay = crate::sync::test_relay::TestRelay::start().await;
+        relay.create_group("g");
+        relay.inject("g", "x", "b1");
+        relay.inject("g", "x", "b2");
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let conn = Connection::connect(&params(&relay, "d"), false, tx).await.unwrap();
+        assert_eq!(conn.check_not_behind(2), Ok(()));
+        assert_eq!(conn.check_not_behind(0), Ok(()));
+        // Restored from a backup older than what this device pulled.
+        assert_eq!(conn.check_not_behind(7), Err(TransportError::Rejected(RELAY_BEHIND.into())));
     }
 
     #[tokio::test]
