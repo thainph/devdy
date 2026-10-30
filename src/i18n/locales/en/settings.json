@@ -17,7 +17,7 @@
     "prompts": "Prompt Templates",
     "inbox": "Inbox API",
     "azure": "Azure Accounts",
-    "backup": "Backup & Sync"
+    "backup": "Sync & Backup"
   },
   "general": {
     "theme": "Theme",
@@ -417,7 +417,7 @@
     "deleteMessage": "Delete this Azure account and its sign-in session? Projects linked to it will be unlinked."
   },
   "backup": {
-    "title": "Backup & Sync",
+    "title": "File backup",
     "help": "Export your whole Devdy setup to one file and import it on another machine: app settings, saved prompts, the Skills / Rules library with groups, MCP servers, VPS servers, accounts (GitHub, GitLab, AWS, Azure, Google, Claude), notes / todos and Slack threads (with translations; attachments are downloaded again) and projects (repos, enabled Skills / Rules / groups, MCP and VPS servers, linked accounts, Pulse watches). Session history stays on this machine.",
     "export": {
       "title": "Export",
@@ -477,37 +477,195 @@
       "pulseWatches": "Pulse watches"
     }
   },
-  "lanSync": {
-    "title": "Sync over LAN",
-    "help": "Pull the whole configuration from another Devdy machine on the same network (the same content as a backup file, merged the same way: nothing on this machine is deleted). The transfer is end-to-end encrypted with the one-time code shown on the other machine.",
-    "pull": {
-      "title": "Get data from another device",
-      "rescan": "Rescan",
-      "scanning": "Looking for Devdy devices on the network…",
-      "noDevices": "No device found. On the machine that has the data, open Settings → Backup & Sync and click “Start sharing”, then rescan — or type the address it shows.",
-      "manual": "Enter address",
-      "code": "6-digit code",
-      "codeHint": "The code shown on the sharing device. After 5 wrong codes it stops sharing.",
-      "button": "Get data",
-      "from": "Data from {peer}",
-      "withSecrets": "Includes secrets: they will be stored in this machine's Keychain.",
-      "withoutSecrets": "No secrets: re-authenticate the accounts after importing."
+  "sync": {
+    "title": "Sync",
+    "short": "Sync",
+    "help": "Keep one shared Devdy state across your machines: settings, library, notes / todos, Slack threads, projects and sessions. Everything goes through your relay end-to-end encrypted and syncs even when the other machine is off. Code in your working trees is not synced — that stays git's job.",
+    "state": {
+      "disabled": "Off",
+      "connecting": "Connecting…",
+      "online": "Online",
+      "offline": "Offline",
+      "error": "Error",
+      "paused": "Paused",
+      "mergePending": "Merge pending",
+      "parked": "Some changes not synced"
     },
-    "share": {
-      "title": "Let another device get data from this one",
-      "help": "Opens sharing for 10 minutes, for one transfer. The other device has to enter the code shown here.",
-      "includeSecrets": "Include secrets",
-      "includeSecretsHint": "PATs, MCP env/header values, Google tokens, SSH passphrases and imported private keys. They only travel over the encrypted channel.",
-      "start": "Start sharing",
-      "codeLabel": "Code to enter on the other device",
-      "expiresIn": "{time} left",
-      "addresses": "Address:",
-      "notAdvertised": "Could not announce this device on the network (mDNS): enter the address above on the other device.",
-      "secretsWarning": "Sharing with secrets — only give the code to yourself on the other device.",
-      "stop": "Stop sharing",
-      "sent": "Data sent to {peer}",
-      "expired": "Sharing timed out",
-      "tooManyAttempts": "Sharing stopped: too many wrong codes"
+    "ago": {
+      "never": "never",
+      "now": "just now",
+      "minutes": "{n} min ago",
+      "hours": "{n} h ago",
+      "days": "{n} d ago"
+    },
+    "create": {
+      "title": "Create a sync group",
+      "help": "On your first machine. Uses the relay configured in Remote Control.",
+      "button": "Create sync group",
+      "done": "Sync group created"
+    },
+    "join": {
+      "title": "Join a sync group",
+      "help": "On another machine: enter the device name and master password of a machine already in the group (both set in its Remote Control settings). On that machine, open Settings → Sync → Accept a new device first, then allow the request there.",
+      "alias": "Device name of the other machine",
+      "aliasInvalid": "Device names use lowercase letters, digits and dashes.",
+      "password": "Its master password",
+      "button": "Join",
+      "done": "Joined the sync group",
+      "previewTitle": "Merge preview",
+      "previewHelp": "What the first sync brings in and how it matches this machine's existing data. Nothing local is deleted.",
+      "previewEmpty": "Nothing to merge.",
+      "commit": "Merge and start syncing",
+      "reportTitle": "Merged",
+      "pendingHelp": "This machine joined a sync group but has not merged its data yet. Syncing starts after the merge.",
+      "previewLoading": "Loading the group state…",
+      "previewFailed": "Could not load the merge preview",
+      "retry": "Retry",
+      "tablesTitle": "By table",
+      "projectsTitle": "Projects",
+      "missingHelp": "{n} project(s) are not on this machine yet: pick their folders under \"Project folders\" after merging.",
+      "undecryptable": "{n} item(s) from the relay could not be decrypted and will be skipped.",
+      "counts": {
+        "new_remote": "New from the group",
+        "matched": "Already here",
+        "rekeyed": "Matched to a local copy",
+        "new_local": "Only on this machine (uploaded)",
+        "conflicts": "Differ (group version wins)",
+        "deleted_remote": "Deleted in the group",
+        "queued": "Queued for upload"
+      },
+      "matchedBy": {
+        "id": "same id",
+        "path": "same folder",
+        "git_remote": "same git remote",
+        "name": "same name",
+        "new": "new"
+      },
+      "waiting": "Waiting for approval on the other machine…"
+    },
+    "status": {
+      "lastPush": "Last push",
+      "lastPull": "Last pull",
+      "pending": "Pending",
+      "now": "Sync now",
+      "pause": "Pause",
+      "resume": "Resume",
+      "parked": "Not synced"
+    },
+    "secrets": {
+      "label": "Sync secrets",
+      "hint": "Tokens and passwords from the Keychain, sealed with the group key. Turn off to keep them on this machine only."
+    },
+    "devices": {
+      "title": "Devices",
+      "leaderHelp": "The selected device runs singleton jobs (Pulse polling, Slack re-fetch) so they don't run twice. Changes apply right away.",
+      "leader": "Leader",
+      "noLeader": "No leader — every device runs them",
+      "thisDevice": "This device",
+      "lastSeen": "Seen {ago}",
+      "rename": "Rename this device",
+      "save": "Save",
+      "cancel": "Cancel",
+      "remove": "Remove from group",
+      "removed": "Removed {name}",
+      "confirmRemove": {
+        "title": "Remove device?",
+        "message": "{name} will no longer be able to sync. Its local data stays on it, and it keeps the old group key but can no longer reach the group's data on the relay.",
+        "confirmLabel": "Remove"
+      },
+      "creator": "Created the group",
+      "removeHelp": "A removed device keeps its copy of the group key but can no longer reach the group's data on the relay (the key is not rotated in this version).",
+      "onlyCreator": "Only the device that created the group ({name}) can remove devices."
+    },
+    "projects": {
+      "title": "Project folders on this machine",
+      "help": "Projects from your other machines and where they live here. Pick a folder for those not on this machine yet.",
+      "empty": "No projects to map.",
+      "notHere": "Not on this machine",
+      "choose": "Choose folder",
+      "change": "Change"
+    },
+    "rebootstrap": {
+      "button": "Merge with the group again",
+      "busy": "Merging again…"
+    },
+    "resync": {
+      "button": "Re-sync everything",
+      "hint": "Upload this machine's full state again",
+      "done": "Full re-sync started ({n} items queued)",
+      "confirm": {
+        "title": "Re-sync everything?",
+        "message": "This machine's whole state is uploaded again. Useful after a long time offline or if devices drifted apart.",
+        "confirmLabel": "Re-sync"
+      }
+    },
+    "leave": {
+      "button": "Leave group",
+      "done": "Left the sync group",
+      "offline": "Left the sync group (the relay could not be reached; remove this device from another one)",
+      "confirm": {
+        "title": "Leave the sync group?",
+        "message": "This machine stops syncing. Its local data stays; to join again you need another device's name and master password.",
+        "confirmLabel": "Leave"
+      },
+      "handoff": {
+        "title": "Leave without handing on its role?",
+        "message": "This device runs the group's background jobs (Pulse, Slack polling) or created the group, and the relay could not be reached to hand that role to another device. If you leave now, the other devices keep waiting for it: pick a new leader on one of them afterwards. Go back online (and unpause sync) to hand it on properly.",
+        "confirmLabel": "Leave anyway"
+      }
+    },
+    "relayMissing": "This machine has no relay of its own yet: set the relay URL and token in Settings → Remote Control first.",
+    "errors": {
+      "host_offline": "No machine answered on that device name. Check the name and that it is online.",
+      "wrong_password": "Wrong master password.",
+      "host_not_in_group": "That machine is not in a sync group.",
+      "host_unsupported": "That machine's Devdy is too old to add devices. Update it first.",
+      "not_accepting": "That machine is not accepting new devices. Open Settings → Sync → Accept a new device on it, then try again.",
+      "declined": "The request was declined or not answered in time on that machine.",
+      "busy": "That machine is answering another join request. Try again in a moment.",
+      "relay_not_configured": "This machine has no relay of its own yet: set the relay URL and token in Settings → Remote Control first.",
+      "relay_error": "That machine could not reach the relay. Try again.",
+      "sync_bootstrap_runs_live": "Stop running sessions on this machine before merging.",
+      "ticket_required": "The relay needs a join ticket from a device already in the group. Ask that device to accept this one again.",
+      "ticket_invalid": "The join ticket expired or was already used. Join again.",
+      "group_exists": "That sync group already exists on the relay.",
+      "forbidden": "Only the device that created the group can remove devices.",
+      "quota_exceeded": "The relay storage quota for this group is full.",
+      "device_revoked": "This device was removed from the sync group. Leave the group, then join again.",
+      "sync_bootstrap_not_pending": "There is no merge waiting on this machine.",
+      "sync_bootstrap_in_progress": "Sync is merging this machine's data. Try again in a moment.",
+      "auth_failed": "The relay refused this machine's relay token. Check the relay URL and token in Settings → Remote Control.",
+      "relay_behind": "The relay lost changes this machine already received (it was restored from a backup). Sync is stopped until this machine merges with the group again.",
+      "sync_leave_handoff_pending": "This device leads the group's background jobs or created the group, and the relay could not be reached to hand that on."
+    },
+    "accept": {
+      "title": "Accept a new device",
+      "help": "To add a machine, open this for 5 minutes, then start Join on the other machine. You confirm each request here; keep this page open until it is done.",
+      "button": "Accept a new device",
+      "open": "Accepting a new device — {time} left",
+      "cancel": "Stop",
+      "allowed": "{name} can now finish joining",
+      "denied": "Request denied",
+      "request": {
+        "title": "Allow “{name}” to join sync?",
+        "message": "It gets the group key and everything that syncs (including secrets when secret sync is on). Only allow a machine you are setting up right now.",
+        "allow": "Allow",
+        "deny": "Deny",
+        "expires": "{time}"
+      }
+    },
+    "parked": {
+      "title": "Changes the relay refused",
+      "help": "The relay permanently refused these changes (too large or malformed), so they are not synced and no longer block the others. Editing the row again queues it as usual; Retry sends the current version now.",
+      "retry": "Retry",
+      "retried": "Queued {n} change(s) again",
+      "tooltip": "{n} change(s) refused by the relay",
+      "when": "Parked {ago}",
+      "more": "Showing the newest {n}.",
+      "reason": {
+        "too_large": "Too large",
+        "bad_request": "Rejected"
+      }
     }
   }
 }

@@ -18,6 +18,7 @@ import WorkspaceTabs from '@/components/WorkspaceTabs.vue'
 import ActiveRunsDock from '@/components/ActiveRunsDock.vue'
 import ActiveRemoteDock from '@/components/ActiveRemoteDock.vue'
 import RemoteDesktopIndicator from '@/components/RemoteDesktopIndicator.vue'
+import SyncIndicator from '@/components/SyncIndicator.vue'
 import FileViewerWindow from '@/views/FileViewerWindow.vue'
 import PermissionWindow from '@/views/PermissionWindow.vue'
 import ThemeDecorations from '@/components/ThemeDecorations.vue'
@@ -951,8 +952,9 @@ onMounted(async () => {
           <ActiveRemoteDock />
 
           <!-- Version footer -->
-          <div class="px-4 py-3 border-t border-border/50">
+          <div class="flex items-center justify-between gap-2 px-4 py-3 border-t border-border/50">
             <p v-if="appVersion" class="text-[10px] text-muted-foreground/50 font-mono">v{{ appVersion }}</p>
+            <SyncIndicator />
           </div>
         </div>
       </aside>

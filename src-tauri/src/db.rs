@@ -24,14 +24,9 @@ pub async fn init_db(db_path: &Path) -> Result<Db> {
 /// them any more, so flip any leftover `running` rows to `cancelled` instead of
 /// leaving them stuck forever. Their processes did NOT necessarily die with the
 /// app: the background-process tracker (`procs::startup_sweep`) finds and stops
-/// or lists whatever is still alive.
+/// or lists whatever is still alive. Runs another device is running (synced)
+/// are left alone.
 async fn reconcile_interrupted_runs(pool: &Db) -> Result<()> {
-    sqlx::query(
-        "UPDATE runs SET status = 'cancelled', finished_at = ? \
-         WHERE status = 'running'",
-    )
-    .bind(chrono::Utc::now().to_rfc3339())
-    .execute(pool)
-    .await?;
+    crate::sync::sessions::reconcile_startup(pool).await?;
     Ok(())
 }

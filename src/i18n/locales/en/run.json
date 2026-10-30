@@ -203,5 +203,23 @@
     "comfortable": "Comfortable",
     "compact": "Compact",
     "dense": "Dense"
+  },
+  "syncOwner": {
+    "anotherDevice": "another device",
+    "badgeTitle": "Owned by {device}",
+    "runningOn": "Running on {device} — follow along here; the session can be continued once it is idle.",
+    "lastRanOn": "Last run on {device}.",
+    "continueHere": "Continue here",
+    "gitMismatchTitle": "Working tree differs",
+    "gitMismatchMessage": "This session last ran on {device} at commit {recordedHead} ({recordedState}).\nThis Mac's checkout is at {localHead} ({localState}).\n\nThe agent will see this machine's files. Continue here anyway?",
+    "clean": "clean",
+    "dirty": "uncommitted changes",
+    "unknown": "unknown",
+    "noRepo": "no git repository",
+    "transcriptMissing": "The session's transcript hasn't synced to this Mac yet — the next message starts a new conversation without the earlier context.",
+    "stillSyncing": "Still syncing the final output from {device} ({percent}%).",
+    "retry": "Retry",
+    "continueAnyway": "Continue anyway",
+    "continuedOn": "This session was continued on {device}; it stopped here."
   }
 }

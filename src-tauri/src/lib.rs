@@ -7,13 +7,13 @@ mod github;
 mod gitlab;
 mod inbox_api;
 mod item_links;
-mod lan_sync;
 mod procs;
 mod pulse;
 mod remote;
 mod runs;
 mod secrets;
 mod slack_threads;
+mod sync;
 
 use commands::app_menu::set_app_menu;
 use commands::tray::set_tray_menu;
@@ -96,10 +96,6 @@ use commands::runs::{
     get_run_log, get_run_log_forward, get_run_log_page, get_run_log_path, get_run_log_revision, get_run_tool_records, get_run_user_records, list_live_runs, list_pending_permissions, read_run_input, rename_run, rerun_run, respond_permission,
     resume_run, send_user_message, set_run_claude_account, set_run_pinned, set_run_protected, start_run,
 };
-use commands::lan_sync::{
-    lan_sync_discard, lan_sync_discover, lan_sync_fetch, lan_sync_import, lan_sync_share_status,
-    lan_sync_start_share, lan_sync_stop_share,
-};
 use commands::sessions::reconcile_claude_sessions;
 use commands::settings::{get_settings, update_setting};
 use commands::settings_backup::{
@@ -153,6 +149,18 @@ use remote::fs_bridge::{
 };
 use remote::ipc::{remote_bridge_batch, remote_bridge_ready};
 use remote::RemoteState;
+use commands::sync::{
+    sync_create_group, sync_device_rename, sync_devices_list, sync_join, sync_leave, sync_now,
+    sync_get_secrets, sync_pause, sync_revoke_device, sync_set_leader, sync_set_secrets, sync_status,
+    sync_accept_close, sync_accept_open, sync_accept_state, sync_join_respond, sync_parked_list,
+    sync_parked_retry, sync_relay_ready,
+    SyncManager,
+};
+use sync::sessions::{sync_run_owners, sync_take_over_run};
+use commands::sync_bootstrap::{
+    sync_bootstrap_commit, sync_bootstrap_pending, sync_bootstrap_preview, sync_project_mapping_list, sync_rebootstrap,
+    sync_project_mapping_set, sync_resync_all,
+};
 use runs::broker::approver::ModalApproverResolver;
 use runs::broker::{start_broker, ApproverResolver, BrokerConfig};
 use runs::{new_broker_approvals, new_broker_runs, new_registry, RunRegistry};
@@ -186,7 +194,6 @@ pub fn run() {
         // its labels follow the app language; this only routes clicks back.
         .on_menu_event(commands::app_menu::on_menu_event)
         .manage(commands::app_menu::AppMenuState::default())
-        .manage(lan_sync::LanSyncState::default())
         .setup(|app| {
             use tauri::Manager;
             let app_data_dir = app
@@ -230,6 +237,11 @@ pub fn run() {
             let db_path = app_data_dir.join("data.db");
             let db = tauri::async_runtime::block_on(db::init_db(&db_path))
                 .expect("Failed to initialize database");
+            // Sync change capture: device id + triggers (rebuilt only when the
+            // table registry changed). A failure must not block startup.
+            if let Err(e) = tauri::async_runtime::block_on(sync::install(&db)) {
+                eprintln!("[sync] install failed: {e}");
+            }
             // One-time, off the startup path: re-derive the usage ledger from
             // run logs (reads every log, so it can take a while).
             {
@@ -302,10 +314,19 @@ pub fn run() {
             app.manage(slack_state.clone());
             {
                 let slack_state = slack_state.clone();
-                tauri::async_runtime::spawn(async move {
-                    slack_state.startup_recover().await;
-                    slack_state.start_worker();
+                tauri::async_runtime::spawn({
+                    let slack_state = slack_state.clone();
+                    async move { slack_state.start_worker() }
                 });
+                // Re-queueing unfinished threads is a singleton job (sync D6):
+                // only the leader device does it, again when it becomes leader.
+                sync::leader::watch_leadership(
+                    app.state::<db::Db>().inner().clone(),
+                    move || {
+                        let slack_state = slack_state.clone();
+                        async move { slack_state.startup_recover().await }
+                    },
+                );
             }
             // Project Pulse: resolves watches / requests written by the MCP
             // sidecar (and kicked by the pulse commands).
@@ -426,6 +447,30 @@ pub fn run() {
                 });
             }
 
+            // Two-way sync: start the background engine when this device is in
+            // a sync group (group secrets live in the Keychain).
+            let sync_manager = SyncManager::default();
+            app.manage(sync_manager.clone());
+            // Keep the leases of this device's live runs fresh (cross-device sessions).
+            sync::sessions::spawn_heartbeat(
+                app.state::<db::Db>().inner().clone(),
+                app.state::<RunRegistry>().inner().clone(),
+            );
+            {
+                let app_handle = app.handle().clone();
+                let db_for_sync = app_handle.state::<db::Db>().inner().clone();
+                tauri::async_runtime::spawn(async move {
+                    let in_group = secrets::get_sync_secrets().is_some();
+                    if let Err(e) = sync::pair::reconcile_membership(&db_for_sync, in_group).await {
+                        tracing::warn!(event = "sync_membership_reconcile_failed", error = %e);
+                    }
+                    if let Err(e) = sync_manager.start(&app_handle, &db_for_sync).await {
+                        tracing::warn!(event = "sync_autostart_failed", error = %e);
+                    }
+                    sync::leader::mark_ready();
+                });
+            }
+
             // macOS menu-bar icon: a quick switcher for open windows. The menu
             // contents are pushed by the frontend (set_tray_menu); this only
             // installs the icon so it appears immediately at launch.
@@ -443,13 +488,6 @@ pub fn run() {
             export_settings_backup,
             inspect_settings_backup,
             import_settings_backup,
-            lan_sync_start_share,
-            lan_sync_stop_share,
-            lan_sync_share_status,
-            lan_sync_discover,
-            lan_sync_fetch,
-            lan_sync_import,
-            lan_sync_discard,
             list_skills,
             get_skill,
             create_skill,
@@ -716,6 +754,34 @@ pub fn run() {
             remote_get_audit,
             remote_clear_audit,
             remote_status,
+            sync_status,
+            sync_create_group,
+            sync_join,
+            sync_leave,
+            sync_pause,
+            sync_now,
+            sync_set_secrets,
+            sync_run_owners,
+            sync_take_over_run,
+            sync_get_secrets,
+            sync_devices_list,
+            sync_device_rename,
+            sync_revoke_device,
+            sync_set_leader,
+            sync_relay_ready,
+            sync_accept_open,
+            sync_accept_close,
+            sync_accept_state,
+            sync_join_respond,
+            sync_parked_list,
+            sync_parked_retry,
+            sync_resync_all,
+            sync_bootstrap_pending,
+            sync_bootstrap_preview,
+            sync_bootstrap_commit,
+            sync_rebootstrap,
+            sync_project_mapping_list,
+            sync_project_mapping_set,
             remote_bridge_ready,
             remote_bridge_batch,
             remote_fs_list,

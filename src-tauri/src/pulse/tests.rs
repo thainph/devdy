@@ -45,6 +45,7 @@ fn req<'a>(project_id: &'a str, source: &'a Source, move_project: bool) -> Watch
 
 const SLACK: &str = "https://malme.slack.com/archives/C0B83GHDTFG/p1789877283026359";
 const ISSUE: &str = "org/app#12";
+const ISSUE_2: &str = "org/app#13";
 
 #[derive(Default)]
 struct FakeSlack {
@@ -774,6 +775,26 @@ async fn add_request(db: &Db, id: &str, kind: &str, watch_id: Option<&str>, proj
     .execute(db)
     .await
     .unwrap();
+}
+
+/// Not the sync leader: synced pending watches are left alone; only a watch
+/// this device asked to resolve (a local request) is resolved.
+#[tokio::test]
+async fn non_leader_resolves_only_locally_requested_watches() {
+    let db = mem_db().await;
+    let h = harness(&db);
+    h.github.set(ISSUE, Ok(issue("Login fails", "")));
+    h.github.set(ISSUE_2, Ok(issue("Other", "")));
+    let synced = h.watch(ISSUE_2).await;
+    let local = h.watch(ISSUE).await;
+    add_request(&db, "q1", "resolve", Some(&local.id), None).await;
+
+    assert_eq!(h.state.process(false).await, vec![local.id.clone()]);
+    h.state.idle().await;
+    assert_eq!(h.get(&local.id).await.resolve_status, "ready");
+    assert_eq!(h.get(&synced.id).await.resolve_status, "pending");
+
+    assert_eq!(h.state.process(true).await, vec![synced.id.clone()]);
 }
 
 #[tokio::test]

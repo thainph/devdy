@@ -340,6 +340,7 @@ async fn sync_run_usage(
 /// engine's `parse` fn. This reconciles the shared transcript store with runs:
 /// - existing run for the session → refresh its rendered log on disk;
 /// - no run yet → import it as a `session` run (history + token usage);
+/// - the transcript was written by two-way sync → skip (it is already mirrored);
 /// - the session is owned by a *running* Devdy run → leave it to the live
 ///   stream; and if any run in the project is still `running` we defer importing
 ///   *new* sessions, since that run may just not have captured its `session_id`
@@ -376,6 +377,15 @@ pub(crate) async fn upsert_session_run_core(
     .await
     .map_err(|e| e.to_string())?;
     if tombstoned > 0 {
+        return Ok(SyncOutcome::Skipped);
+    }
+
+    // Written by two-way sync and untouched since: the run row and its log
+    // arrive through sync as well, so mirroring it here would either rebuild a
+    // log sync already wrote or — when the transcript lands before its runs row
+    // — import a duplicate session. Every caller (watcher, on-open reconcile,
+    // get_run_log) goes through here.
+    if crate::sync::files::written_by_sync(db, file).await {
         return Ok(SyncOutcome::Skipped);
     }
 
@@ -465,16 +475,20 @@ pub(crate) async fn upsert_session_run_core(
         return Ok(SyncOutcome::Updated(id));
     }
 
-    // New session. Defer if a run is mid-flight (its session_id may be pending)
-    // so the watcher doesn't import a duplicate of a still-initializing run.
+    // New session. Defer if a run is mid-flight here (its session_id may be
+    // pending) so the watcher doesn't import a duplicate of a still-initializing
+    // run. A run another device is running can't be that, and would otherwise
+    // block imports for as long as it runs.
     if defer_when_busy {
-        let running: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM runs WHERE project_id = ? AND status = 'running'",
-        )
-        .bind(project_id)
-        .fetch_one(db)
-        .await
-        .map_err(|e| e.to_string())?;
+        let sql = format!(
+            "SELECT COUNT(*) FROM runs WHERE project_id = ? AND status = 'running' AND {}",
+            crate::sync::sessions::OWNED_HERE
+        );
+        let running: i64 = sqlx::query_scalar(&sql)
+            .bind(project_id)
+            .fetch_one(db)
+            .await
+            .map_err(|e| e.to_string())?;
         if running > 0 {
             return Ok(SyncOutcome::Skipped);
         }
@@ -739,5 +753,62 @@ mod tests {
         let f = temp_file("usage", content);
         assert!(parse_transcript(&f, "/proj").is_none());
         let _ = fs::remove_file(&f);
+    }
+
+    /// Review-3 M2: a session synced from another device, continued here
+    /// ("Continue here" + a resumed turn): the transcript grows past the size
+    /// sync last wrote, but the run's log is this device's drain output, so
+    /// the importer must not rebuild it from the transcript.
+    #[tokio::test]
+    async fn continued_session_log_is_not_rebuilt_from_its_transcript() {
+        let db = sqlx::sqlite::SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        crate::sync::install(&db).await.unwrap();
+        let proj = std::env::temp_dir().join(format!("devdy-m2-{}", uuid::Uuid::new_v4().simple()));
+        let runs_dir = proj.join(".devdy").join("runs");
+        fs::create_dir_all(&runs_dir).unwrap();
+        let log = runs_dir.join("r1.log");
+        let cwd = proj.to_string_lossy().to_string();
+        let turn = |text: &str| {
+            format!(
+                "{}\n{}\n",
+                serde_json::json!({"type": "user", "cwd": cwd, "message": {"role": "user", "content": text}}),
+                serde_json::json!({"type": "assistant", "message": {"role": "assistant", "model": "m", "content": [{"type": "text", "text": "ok"}]}})
+            )
+        };
+        let transcript = proj.join("s1.jsonl");
+        fs::write(&transcript, turn("first, on the other device")).unwrap();
+        let mirrored = fs::metadata(&transcript).unwrap().len() as i64;
+        sqlx::query("INSERT INTO projects (id, name, path, created_at) VALUES ('p1', 'P', ?, 'x')")
+            .bind(proj.to_string_lossy().as_ref())
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO runs (id, project_id, type, status, engine, session_id, created_at, output_path, transcript_path, \
+             transcript_synced_size, owner_device) VALUES ('r1', 'p1', 'session', 'done', 'claude', 's1', 'x', ?, ?, ?, 'other')",
+        )
+        .bind(log.to_string_lossy().as_ref())
+        .bind(transcript.to_string_lossy().as_ref())
+        .bind(mirrored)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        // Continue here: claim, the resumed turn appends to the transcript,
+        // the drain writes the merged log (stderr, resume marker, cost…).
+        crate::sync::sessions::claim(&db, "r1", &proj.to_string_lossy()).await.unwrap();
+        let mut f = fs::OpenOptions::new().append(true).open(&transcript).unwrap();
+        f.write_all(turn("second, continued here").as_bytes()).unwrap();
+        drop(f);
+        let merged = "merged log: first turn\n[resumed]\nsecond turn\ncost line\n";
+        fs::write(&log, merged).unwrap();
+
+        let path = proj.to_string_lossy().to_string();
+        upsert_session_run_core(&db, "p1", "P", &path, "s1", "claude", &transcript, parse_transcript, true)
+            .await
+            .unwrap();
+        assert_eq!(fs::read_to_string(&log).unwrap(), merged);
+        let _ = fs::remove_dir_all(&proj);
     }
 }

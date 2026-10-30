@@ -77,11 +77,18 @@ pub fn login_psk(password: &str) -> [u8; 32] {
             }
         }
     }
-    let psk = derive_effective_psk(LOGIN_LINK_SECRET, &stretch(password));
+    let psk = derive_login_psk(password);
     if let Ok(mut guard) = CACHE.lock() {
         *guard = Some((password.to_string(), psk));
     }
     psk
+}
+
+/// The login PSK for `password`, uncached. Used by the client side (sync
+/// join), which must not keep another machine's password around. Slow: run it
+/// off the async runtime.
+pub fn derive_login_psk(password: &str) -> [u8; 32] {
+    derive_effective_psk(LOGIN_LINK_SECRET, &stretch(password))
 }
 
 /// Sliding-window counter of failed login attempts (process-wide, so

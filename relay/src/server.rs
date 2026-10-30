@@ -29,22 +29,31 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::config::Config;
 use crate::protocol::{Envelope, ErrorCode, FrameType};
 use crate::ratelimit::RateLimiter;
-use crate::room::{ConnId, JoinOutcome, Notice, Outbound, RoomRegistry};
+use crate::room::{ConnId, JoinOutcome, Notice, OutFrame, Outbound, RoomRegistry};
+use crate::sync::{Limits, SyncHub, SyncSession};
 
 /// Shared server state.
 pub struct Shared {
     pub config: Config,
     pub rooms: Mutex<RoomRegistry>,
+    pub sync: SyncHub,
     next_conn: AtomicU64,
 }
 
 impl Shared {
-    fn new(config: Config) -> Self {
-        Shared {
+    fn new(config: Config) -> std::io::Result<Self> {
+        let limits = Limits {
+            max_group_bytes: config.sync_max_group_bytes,
+            max_blob_bytes: config.sync_max_blob_bytes,
+        };
+        let sync = SyncHub::open(config.sync_db.as_deref(), limits)
+            .map_err(|e| std::io::Error::other(format!("sync db: {e}")))?;
+        Ok(Shared {
             config,
             rooms: Mutex::new(RoomRegistry::default()),
+            sync,
             next_conn: AtomicU64::new(1),
-        }
+        })
     }
 
     fn alloc_conn(&self) -> ConnId {
@@ -64,9 +73,10 @@ pub struct RelayHandle {
 pub async fn serve(config: Config) -> std::io::Result<(RelayHandle, impl std::future::Future<Output = ()>)> {
     let listener = TcpListener::bind(&config.bind).await?;
     let local_addr = listener.local_addr()?;
-    let shared = Arc::new(Shared::new(config));
+    let shared = Arc::new(Shared::new(config)?);
 
     tracing::info!(event = "relay_bound", addr = %local_addr, "relay listening (localhost, Topology B)");
+    tracing::info!(event = "sync_store", enabled = shared.sync.enabled());
 
     let handle = RelayHandle {
         local_addr,
@@ -104,6 +114,8 @@ enum Role {
     Unknown,
     Host,
     Controller,
+    /// Welcomed by `sync_hello`: only sync/blob frames and keepalives.
+    Sync,
 }
 
 /// A TCP stream that records when it last received any byte. Liveness is
@@ -171,9 +183,10 @@ async fn handle_connection(
     // Cap the frame/message size the library will buffer for us. Without this
     // tokio-tungstenite accepts up to its 64 MiB default per message, which any
     // unauthenticated connection could use to make the relay allocate.
+    let max_message_bytes = shared.config.effective_max_message_bytes();
     let ws_config = WebSocketConfig {
-        max_message_size: Some(shared.config.max_message_bytes),
-        max_frame_size: Some(shared.config.max_message_bytes),
+        max_message_size: Some(max_message_bytes),
+        max_frame_size: Some(max_message_bytes),
         ..Default::default()
     };
     let born = Instant::now();
@@ -206,13 +219,14 @@ async fn handle_connection(
         loop {
             let msg = tokio::select! {
                 env = out_rx.recv() => match env {
-                    Some(env) => match serde_json::to_string(&env) {
+                    Some(OutFrame::Env(env)) => match serde_json::to_string(&env) {
                         Ok(text) => Message::Text(text),
                         Err(e) => {
                             tracing::warn!(event = "serialize_error", error = %e);
                             continue;
                         }
                     },
+                    Some(OutFrame::Text(text)) => Message::Text(text),
                     None => break,
                 },
                 _ = ping.tick() => Message::Ping(Vec::new()),
@@ -225,6 +239,7 @@ async fn handle_connection(
     });
 
     let mut role = Role::Unknown;
+    let mut sync_session: Option<SyncSession> = None;
     let mut limiter = RateLimiter::new(
         shared.config.rate_limit_max,
         shared.config.rate_limit_window,
@@ -287,10 +302,44 @@ async fn handle_connection(
             continue;
         }
 
+        // Sync connection: sync/blob frames go to the sync store; nothing of
+        // Remote Control is reachable from it (and vice versa).
+        if role == Role::Sync || crate::sync::is_sync_frame(env.t) {
+            let close = match (role, env.t) {
+                (Role::Host | Role::Controller, _) => {
+                    let _ = out_tx.send(Envelope::error(ErrorCode::Forbidden, "not a sync connection"));
+                    false
+                }
+                (_, t) if crate::sync::is_sync_frame(t) => {
+                    shared
+                        .sync
+                        .handle(conn_id, &mut sync_session, &out_tx, &text, &shared.config.host_token)
+                        .await
+                }
+                (_, FrameType::Keepalive) => {
+                    let _ = out_tx.send(Envelope::keepalive(String::new()));
+                    false
+                }
+                _ => {
+                    let _ = out_tx.send(Envelope::error(ErrorCode::Forbidden, "only sync frames on a sync connection"));
+                    false
+                }
+            };
+            if sync_session.is_some() {
+                role = Role::Sync;
+            }
+            if close {
+                break;
+            }
+            continue;
+        }
+
         if dispatch(&shared, conn_id, &mut role, &out_tx, env).await {
             break;
         }
     }
+
+    shared.sync.on_disconnect(conn_id, sync_session.as_ref());
 
     // Cleanup: drop the Host's listen / close the room, notify the survivor.
     let notices = shared.rooms.lock().await.on_disconnect(conn_id);
@@ -309,7 +358,8 @@ async fn handle_connection(
 
 /// Frames that count against the per-connection rate limit.
 fn is_rate_limited(t: FrameType) -> bool {
-    !matches!(
+    !crate::sync::is_sync_data_frame(t)
+        && !matches!(
         t,
         FrameType::Stream | FrameType::PermissionRequest | FrameType::Cmd | FrameType::Control | FrameType::Keepalive
     )
@@ -477,6 +527,27 @@ async fn dispatch(
             tracing::debug!(event = "ignored_inbound_control", conn = conn_id);
             false
         }
+
+        // Sync frames are handled before `dispatch` (see the read loop).
+        FrameType::SyncHello
+        | FrameType::SyncWelcome
+        | FrameType::SyncPush
+        | FrameType::SyncAck
+        | FrameType::SyncPull
+        | FrameType::SyncOps
+        | FrameType::SyncNotify
+        | FrameType::SyncRevoke
+        | FrameType::SyncInvite
+        | FrameType::SyncGroupInfo
+        | FrameType::BlobPut
+        | FrameType::BlobAck
+        | FrameType::BlobGet
+        | FrameType::BlobData
+        | FrameType::BlobRelease
+        | FrameType::BlobReleased => {
+            tracing::debug!(event = "ignored_inbound_control", conn = conn_id);
+            false
+        }
     }
 }
 
@@ -511,7 +582,7 @@ fn hash_code(code: &str) -> u64 {
 
 /// Length-then-content comparison that avoids early-exit on the first differing
 /// byte, reducing timing signal on the shared host token (SEC-001).
-fn constant_time_eq(a: &str, b: &str) -> bool {
+pub(crate) fn constant_time_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     if a.len() != b.len() {
         return false;

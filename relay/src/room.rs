@@ -42,30 +42,55 @@ pub const OUTBOUND_MAX_QUEUE: usize = 4096;
 /// must never await on a send — so the depth is tracked explicitly. Exceeding
 /// [`OUTBOUND_MAX_QUEUE`] fires `kill`, which the connection task turns into a
 /// disconnect.
+/// One queued frame: a routed/control envelope, or a frame the sync store
+/// already serialized (its shape is not an [`Envelope`]).
+// Envelopes are the hot path (every routed frame); boxing them to shrink the
+// rare text variant would add an allocation per frame.
+#[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
+pub enum OutFrame {
+    Env(Envelope),
+    Text(String),
+}
+
 #[derive(Debug, Clone)]
 pub struct Outbound {
-    tx: mpsc::UnboundedSender<Envelope>,
+    tx: mpsc::UnboundedSender<OutFrame>,
     depth: Arc<AtomicUsize>,
+    /// Bytes of queued [`OutFrame::Text`] frames (sync replies can be MiBs).
+    text_bytes: Arc<AtomicUsize>,
     kill: Arc<Notify>,
 }
 
 /// Receiver half, owned by a connection's write task.
 pub struct OutboundRx {
-    rx: mpsc::UnboundedReceiver<Envelope>,
+    rx: mpsc::UnboundedReceiver<OutFrame>,
     depth: Arc<AtomicUsize>,
+    text_bytes: Arc<AtomicUsize>,
+}
+
+impl OutFrame {
+    fn text_len(&self) -> usize {
+        match self {
+            OutFrame::Text(t) => t.len(),
+            OutFrame::Env(_) => 0,
+        }
+    }
 }
 
 /// Create a connected pair for one connection.
 pub fn outbound_channel() -> (Outbound, OutboundRx) {
     let (tx, rx) = mpsc::unbounded_channel();
     let depth = Arc::new(AtomicUsize::new(0));
+    let text_bytes = Arc::new(AtomicUsize::new(0));
     (
         Outbound {
             tx,
             depth: depth.clone(),
+            text_bytes: text_bytes.clone(),
             kill: Arc::new(Notify::new()),
         },
-        OutboundRx { rx, depth },
+        OutboundRx { rx, depth, text_bytes },
     )
 }
 
@@ -74,16 +99,31 @@ impl Outbound {
     /// far behind; in the latter case the connection is also signalled to close.
     #[allow(clippy::result_unit_err)]
     pub fn send(&self, env: Envelope) -> Result<(), ()> {
+        self.send_frame(OutFrame::Env(env))
+    }
+
+    /// Queue an already-serialized JSON text frame (sync responses).
+    #[allow(clippy::result_unit_err)]
+    pub fn send_text(&self, text: String) -> Result<(), ()> {
+        self.send_frame(OutFrame::Text(text))
+    }
+
+    fn send_frame(&self, frame: OutFrame) -> Result<(), ()> {
         if self.depth.load(Ordering::Relaxed) >= OUTBOUND_MAX_QUEUE {
             self.kill.notify_one();
             return Err(());
         }
-        match self.tx.send(env) {
-            Ok(()) => {
-                self.depth.fetch_add(1, Ordering::Relaxed);
-                Ok(())
+        let len = frame.text_len();
+        // Count before sending so the receiver's decrement never underflows.
+        self.depth.fetch_add(1, Ordering::Relaxed);
+        self.text_bytes.fetch_add(len, Ordering::Relaxed);
+        match self.tx.send(frame) {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                self.depth.fetch_sub(1, Ordering::Relaxed);
+                self.text_bytes.fetch_sub(len, Ordering::Relaxed);
+                Err(())
             }
-            Err(_) => Err(()),
         }
     }
 
@@ -98,6 +138,11 @@ impl Outbound {
         self.kill.notified().await
     }
 
+    /// Bytes of sync text frames queued but not yet written.
+    pub fn queued_text_bytes(&self) -> usize {
+        self.text_bytes.load(Ordering::Relaxed)
+    }
+
     /// Frames queued but not yet written. Exercised by the unit tests.
     #[allow(dead_code)]
     pub fn depth(&self) -> usize {
@@ -107,18 +152,20 @@ impl Outbound {
 
 impl OutboundRx {
     /// Await the next frame, keeping the depth gauge in step.
-    pub async fn recv(&mut self) -> Option<Envelope> {
+    pub async fn recv(&mut self) -> Option<OutFrame> {
         let env = self.rx.recv().await?;
         self.depth.fetch_sub(1, Ordering::Relaxed);
+        self.text_bytes.fetch_sub(env.text_len(), Ordering::Relaxed);
         Some(env)
     }
 
     /// Take an already-queued frame without awaiting. Exercised by the tests.
     #[allow(dead_code, clippy::result_unit_err)]
-    pub fn try_recv(&mut self) -> Result<Envelope, ()> {
+    pub fn try_recv(&mut self) -> Result<OutFrame, ()> {
         match self.rx.try_recv() {
             Ok(env) => {
                 self.depth.fetch_sub(1, Ordering::Relaxed);
+                self.text_bytes.fetch_sub(env.text_len(), Ordering::Relaxed);
                 Ok(env)
             }
             Err(_) => Err(()),
