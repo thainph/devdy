@@ -14,6 +14,7 @@ mod remote;
 mod runs;
 mod secrets;
 mod slack_threads;
+mod sync;
 
 use commands::app_menu::set_app_menu;
 use commands::tray::set_tray_menu;
@@ -153,6 +154,10 @@ use remote::fs_bridge::{
 };
 use remote::ipc::{remote_bridge_batch, remote_bridge_ready};
 use remote::RemoteState;
+use commands::sync::{
+    sync_create_group, sync_join, sync_leave, sync_now, sync_pause, sync_set_secrets, sync_status,
+    SyncManager,
+};
 use runs::broker::approver::ModalApproverResolver;
 use runs::broker::{start_broker, ApproverResolver, BrokerConfig};
 use runs::{new_broker_approvals, new_broker_runs, new_registry, RunRegistry};
@@ -422,6 +427,20 @@ pub fn run() {
                         {
                             tracing::warn!(event = "remote_autostart_failed", error = %e);
                         }
+                    }
+                });
+            }
+
+            // Two-way sync: start the background engine when this device is in
+            // a sync group (group secrets live in the Keychain).
+            let sync_manager = SyncManager::default();
+            app.manage(sync_manager.clone());
+            {
+                let app_handle = app.handle().clone();
+                let db_for_sync = app_handle.state::<db::Db>().inner().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = sync_manager.start(&app_handle, &db_for_sync).await {
+                        tracing::warn!(event = "sync_autostart_failed", error = %e);
                     }
                 });
             }
@@ -716,6 +735,13 @@ pub fn run() {
             remote_get_audit,
             remote_clear_audit,
             remote_status,
+            sync_status,
+            sync_create_group,
+            sync_join,
+            sync_leave,
+            sync_pause,
+            sync_now,
+            sync_set_secrets,
             remote_bridge_ready,
             remote_bridge_batch,
             remote_fs_list,
