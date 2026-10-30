@@ -156,7 +156,7 @@ pub struct Expected {
 }
 
 /// Everything the apply needs to know besides the manifest.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Plan {
     pub preview: FolderPreview,
     /// Case-insensitive volume.
@@ -171,11 +171,20 @@ pub struct Plan {
     pub deletes: HashMap<String, Stat>,
     /// Folded paths the source has (or skipped): never deleted.
     pub keep: HashSet<String>,
+    /// Every repo path of the manifest.
+    pub repo_paths: Vec<String>,
+    /// Repos the git phase left alone: their own files are not touched.
+    pub skipped_repos: Vec<String>,
 }
 
 impl Plan {
     pub fn is_blocked(&self, rel: &str) -> bool {
-        self.blocked.iter().any(|b| paths::is_under(rel, b))
+        self.blocked.iter().any(|b| paths::is_under(rel, b)) || self.owner(rel).is_some_and(|o| self.skipped_repos.iter().any(|s| s == o))
+    }
+
+    /// The innermost repo `rel` belongs to.
+    fn owner(&self, rel: &str) -> Option<&str> {
+        self.repo_paths.iter().filter(|p| paths::is_under(rel, p)).max_by_key(|p| p.len()).map(String::as_str)
     }
 
     /// A planned receiver-only file, still as planned.
@@ -223,7 +232,7 @@ fn patch_files(r: &RepoManifest) -> u64 {
 }
 
 pub fn plan(root: &Path, project_id: &str, m: &Manifest, sc: &Scan, ex: &Excludes, ci: bool) -> Result<Plan, String> {
-    let mut p = Plan { ci, ..Default::default() };
+    let mut p = Plan { ci, repo_paths: m.repos.iter().map(|r| r.path.clone()).collect(), ..Default::default() };
     let fold = |s: &str| paths::fold(s, ci);
     let pv = &mut p.preview;
     pv.project_id = project_id.to_string();

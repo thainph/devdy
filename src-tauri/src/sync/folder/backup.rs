@@ -169,6 +169,11 @@ pub fn backup_files(root: &Path, ts: &str, rels: &[String]) -> Result<Option<Pat
 }
 
 fn copy_one(src: &Path, dst: &Path) -> Result<(), String> {
+    // Already backed up in this run (e.g. both replaced and colliding): the
+    // first copy is the state before the sync.
+    if fs::symlink_metadata(dst).is_ok() {
+        return Ok(());
+    }
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("backup dir: {e}"))?;
     }
@@ -181,6 +186,44 @@ fn copy_one(src: &Path, dst: &Path) -> Result<(), String> {
     } else {
         Ok(())
     }
+}
+
+/// Put `rels` back from `<root>/.devdy/sync-backup/<ts>/` (what
+/// [`backup_files`] saved there), replacing whatever is at those paths now.
+/// Best effort: returns the paths that could not be restored.
+pub fn restore_files(root: &Path, ts: &str, rels: &[String]) -> Vec<String> {
+    let from = root.join(FOLDER).join(ts);
+    let mut failed = Vec::new();
+    for rel in rels {
+        let res = (|| -> Result<(), String> {
+            paths::check_rel(rel)?;
+            let src = from.join(rel);
+            if fs::symlink_metadata(&src).is_err() {
+                return Ok(());
+            }
+            paths::ensure_parents(root, rel, &|_| false)?;
+            let dst = root.join(rel);
+            match fs::symlink_metadata(&dst) {
+                Ok(m) if m.is_dir() => fs::remove_dir_all(&dst).map_err(|e| e.to_string())?,
+                Ok(_) => fs::remove_file(&dst).map_err(|e| e.to_string())?,
+                Err(_) => {}
+            }
+            for e in walkdir::WalkDir::new(&src).follow_links(false) {
+                let e = e.map_err(|e| e.to_string())?;
+                let sub = e.path().strip_prefix(&from).map_err(|_| "backup path outside the backup")?;
+                if e.file_type().is_dir() {
+                    fs::create_dir_all(root.join(sub)).map_err(|e| e.to_string())?;
+                } else {
+                    copy_one(e.path(), &root.join(sub))?;
+                }
+            }
+            Ok(())
+        })();
+        if res.is_err() {
+            failed.push(rel.clone());
+        }
+    }
+    failed
 }
 
 pub fn prune_folder(root: &Path) -> Result<(), String> {

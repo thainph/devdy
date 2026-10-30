@@ -161,8 +161,7 @@ pub async fn apply(
         let (root, m, plan) = (root.clone(), m.clone(), plan.clone());
         blocking(move || take_backup(&root, &m, &plan)).await?
     };
-    let mut report = ApplyReport { backup: info.clone(), ..Default::default() };
-    let with_backup = |e: String| format!("{e} (backup: {})", info.describe());
+    let mut report = ApplyReport { backup: info, ..Default::default() };
 
     let res = async {
         if let Some(pc) = &guard.precheck {
@@ -172,7 +171,11 @@ pub async fn apply(
     }
     .await;
     let _ = fs::remove_dir_all(root.join(STAGING));
-    res.map_err(with_backup)?;
+    if let Err(e) = res {
+        // The git phase may have added files to the backup since.
+        note_folder(&mut report, &root);
+        return Err(format!("{e} (backup: {})", report.backup.describe()));
+    }
     Ok(report)
 }
 
@@ -249,6 +252,7 @@ async fn run_after_backup(
         report.bytes_downloaded += base.lock().unwrap().done_bytes;
         em.base.done_bytes = em.base.total_bytes;
     }
+    let mut skipped_repos: Vec<String> = Vec::new();
     for &i in &plan.repos {
         cancel.check()?;
         let r = m.repos[i].clone();
@@ -263,12 +267,26 @@ async fn run_after_backup(
             blocked: plan.blocked.clone(),
             backup: report.backup.commits.get(&r.path).cloned(),
         };
-        let skips = blocking(move || apply_repo(&cx, &r, bundle.as_deref())).await?;
-        report.skipped.extend(skips);
+        let path = r.path.clone();
+        let res = blocking(move || apply_repo(&cx, &r, bundle.as_deref())).await;
         note_folder(report, root);
+        let out = res?;
+        if !out.applied {
+            skipped_repos.push(path);
+        }
+        report.skipped.extend(out.skips);
         em.base.files_done += 1;
         em.emit();
     }
+
+    // A repo left alone: its files are not touched either (nested repos are).
+    let plan = if skipped_repos.is_empty() {
+        plan
+    } else {
+        let mut p = (*plan).clone();
+        p.skipped_repos = skipped_repos;
+        Arc::new(p)
+    };
 
     // ---- files (non-git + the source's dirty tracked files)
     em.phase("files");
@@ -376,10 +394,17 @@ pub struct RepoCtx {
     pub backup: Option<(String, Option<String>)>,
 }
 
-/// Make one repo match the source (objects come from `bundle`). Returns
-/// what was left alone; a repo whose new tree would write into a blocked
-/// path is skipped whole (`path_conflict`).
-pub fn apply_repo(cx: &RepoCtx, r: &RepoManifest, bundle: Option<&Path>) -> Result<Vec<SkipItem>, String> {
+/// Result of one repo's git step.
+pub struct RepoOutcome {
+    /// `false`: left alone as a whole (see `skips`).
+    pub applied: bool,
+    pub skips: Vec<SkipItem>,
+}
+
+/// Make one repo match the source (objects come from `bundle`). A repo
+/// whose new tree would write into a blocked path (`path_conflict`) or whose
+/// refs cannot be set here (`ref_conflict`) is left alone, unchanged.
+pub fn apply_repo(cx: &RepoCtx, r: &RepoManifest, bundle: Option<&Path>) -> Result<RepoOutcome, String> {
     let root = &cx.root;
     let label = if r.path.is_empty() { "." } else { r.path.as_str() };
     let ctx = |e: String| format!("{label}: {e}");
@@ -437,24 +462,21 @@ pub fn apply_repo(cx: &RepoCtx, r: &RepoManifest, bundle: Option<&Path>) -> Resu
         None => git::empty_tree(&dir).map_err(ctx)?,
     };
     let tree = git::tree_paths(&dir, &target).map_err(ctx)?;
-    let skip_repo = || Ok(vec![SkipItem::new(r.path.clone(), "path_conflict")]);
+    let gitlinks = git::tree_gitlinks(&dir, &target).map_err(ctx)?;
+    let skip_repo = |reason: &str| {
+        drop_tmp_refs(&dir);
+        Ok(RepoOutcome { applied: false, skips: vec![SkipItem::new(r.path.clone(), reason)] })
+    };
     // The new tree must not write into a blocked path (a repo only this
-    // machine has, a submodule, ...).
-    if tree.iter().any(|p| cx.blocked.iter().any(|b| paths::is_under(&full(p), b))) {
-        drop_tmp_refs(&dir);
-        return skip_repo();
+    // machine has, ...); a submodule's own gitlink sitting on its directory
+    // is fine (git leaves the directory alone).
+    let into_blocked = |p: &String| {
+        let fp = full(p);
+        cx.blocked.iter().any(|b| paths::is_under(&fp, b) && !(gitlinks.contains(p) && fp == *b))
+    };
+    if tree.iter().any(into_blocked) {
+        return skip_repo("path_conflict");
     }
-    // Untracked / ignored / excluded paths here that the new tree replaces:
-    // back them up first (git would overwrite them silently).
-    let coll: Vec<String> = collisions(&dir, &tree).map_err(ctx)?.iter().map(|p| full(p)).collect();
-    if coll.iter().any(|c| cx.blocked.iter().any(|b| paths::is_under(b, c) || paths::is_under(c, b))) {
-        drop_tmp_refs(&dir);
-        return skip_repo();
-    }
-    backup::backup_files(root, &cx.ts, &coll).map_err(ctx)?;
-
-    let mut skips = Vec::new();
-    let lfs_keep = lfs_preserve(&dir, &target, &tree, &cx.staging, &full, &mut skips).map_err(ctx)?;
 
     // State to put back if the switch fails half-way.
     let old_sym = git::exec(&dir, &["symbolic-ref", "-q", "HEAD"], Opts::default())
@@ -471,18 +493,78 @@ pub fn apply_repo(cx: &RepoCtx, r: &RepoManifest, bundle: Option<&Path>) -> Resu
         remotes: git::remotes(&dir).map_err(ctx)?,
     };
     let elsewhere = git::branches_checked_out_elsewhere(&dir);
+    // Refs that cannot be set here (`feature` vs `feature/x`, ...): found
+    // before anything changes.
+    if !refs_settable(&dir, r, &old, &elsewhere).map_err(ctx)? {
+        return skip_repo("ref_conflict");
+    }
+
+    // Untracked / ignored / excluded paths here that the new tree replaces:
+    // back them up first (git would overwrite them silently).
+    let coll: Vec<String> = collisions(&dir, &tree, &gitlinks).map_err(ctx)?.iter().map(|p| full(p)).collect();
+    if coll.iter().any(|c| cx.blocked.iter().any(|b| paths::is_under(b, c) || paths::is_under(c, b))) {
+        return skip_repo("path_conflict");
+    }
+    backup::backup_files(root, &cx.ts, &coll).map_err(ctx)?;
+
+    let mut skips = Vec::new();
+    let lfs_keep = lfs_preserve(&dir, &target, &tree, &cx.staging, &full, &mut skips).map_err(ctx)?;
+
     if let Err(e) = switch(&dir, r, &target, &elsewhere, &old, &cx.ts, &mut skips) {
-        let back = restore(&dir, r, &old, cx.backup.as_ref());
+        let mut failed = restore(&dir, r, &old, cx.backup.as_ref());
+        // `read-tree` removed what it had written over the colliding files.
+        let lost = backup::restore_files(root, &cx.ts, &coll);
+        if !lost.is_empty() {
+            failed.push(format!("files {}", lost.join(", ")));
+        }
         drop_tmp_refs(&dir);
-        return Err(ctx(match back {
-            Ok(()) => format!("{e}; the repo was put back as it was"),
-            Err(e2) => format!("{e}; putting the repo back failed too: {e2}"),
+        return Err(ctx(if failed.is_empty() {
+            format!("{e}; the repo and the files it replaced were put back as they were")
+        } else {
+            format!("{e}; putting back failed for: {}", failed.join("; "))
         }));
     }
     for (p, staged) in lfs_keep {
         put_back(&dir, &p, &staged, &cx.staging).map_err(ctx)?;
     }
-    Ok(skips)
+    Ok(RepoOutcome { applied: true, skips })
+}
+
+/// Every ref [`switch`] will write is valid and clashes with no existing
+/// ref (refs are never deleted here, so `a` and `a/b` cannot both exist).
+fn refs_settable(dir: &Path, r: &RepoManifest, old: &Old, elsewhere: &HashSet<String>) -> Result<bool, String> {
+    let existing: BTreeSet<String> = git::ref_names(dir)?.into_iter().collect();
+    let mut writes: Vec<String> = r
+        .branches
+        .iter()
+        .filter(|(n, s)| old.branches.get(*n) != Some(*s) && !elsewhere.contains(*n))
+        .map(|(n, _)| format!("refs/heads/{n}"))
+        .collect();
+    writes.extend(r.remote_refs.iter().filter(|(n, s)| old.remote_refs.get(*n) != Some(*s)).map(|(n, _)| n.clone()));
+    if let Some(b) = &r.branch {
+        writes.push(format!("refs/heads/{b}"));
+    }
+    for w in &writes {
+        if !git::ref_format_ok(dir, w) {
+            return Ok(false);
+        }
+        // An existing ref is a parent "directory" of `w`, or below it.
+        let mut prefix = String::new();
+        for part in w.split('/') {
+            if !prefix.is_empty() {
+                if existing.contains(&prefix) {
+                    return Ok(false);
+                }
+                prefix.push('/');
+            }
+            prefix.push_str(part);
+        }
+        let below = format!("{w}/");
+        if existing.range(below.clone()..).next().is_some_and(|e| e.starts_with(&below)) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 struct Old {
@@ -583,72 +665,75 @@ fn switch(dir: &Path, r: &RepoManifest, target: &str, elsewhere: &HashSet<String
     Ok(())
 }
 
-/// Undo a failed [`switch`]: refs, HEAD, remotes and upstreams as they were,
-/// worktree and index from the backup commits.
-fn restore(dir: &Path, r: &RepoManifest, old: &Old, backup: Option<&(String, Option<String>)>) -> Result<(), String> {
+/// Undo a failed [`switch`], best effort step by step: HEAD and the
+/// worktree + index first (from the backup commits), then refs, remotes and
+/// upstreams. Returns what could not be put back.
+fn restore(dir: &Path, r: &RepoManifest, old: &Old, backup: Option<&(String, Option<String>)>) -> Vec<String> {
+    let mut failed: Vec<String> = Vec::new();
+    let mut step = |what: &str, res: Result<(), String>| {
+        if let Err(e) = res {
+            failed.push(format!("{what} ({e})"));
+        }
+    };
+    let ok = |r: Result<Vec<u8>, String>| r.map(|_| ());
+    step(
+        "HEAD",
+        match (&old.sym, &old.head) {
+            (Some(sym), _) => ok(git::run(dir, &["symbolic-ref", "HEAD", sym])),
+            (None, Some(h)) => ok(git::run(dir, &["update-ref", "--no-deref", "HEAD", h])),
+            (None, None) => Ok(()),
+        },
+    );
+    step(
+        "worktree",
+        match (backup, &old.head) {
+            (Some((wt, idx)), _) => ok(git::run(dir, &["read-tree", "--reset", "-u", wt]))
+                .and_then(|_| idx.as_ref().map_or(Ok(()), |i| ok(git::run(dir, &["read-tree", i])))),
+            (None, Some(h)) => ok(git::run(dir, &["read-tree", "--reset", "-u", h])),
+            (None, None) => ok(git::run(dir, &["read-tree", "--empty"])),
+        },
+    );
+    // One ref at a time, so one that cannot be set does not stop the others.
+    let mut lines: Vec<String> = Vec::new();
+    for name in r.branches.keys() {
+        lines.push(match old.branches.get(name) {
+            Some(s) => format!("update refs/heads/{name} {s}\n"),
+            None => format!("delete refs/heads/{name}\n"),
+        });
+    }
+    for name in r.remote_refs.keys() {
+        lines.push(match old.remote_refs.get(name) {
+            Some(s) => format!("update {name} {s}\n"),
+            None => format!("delete {name}\n"),
+        });
+    }
+    for l in lines {
+        let res = git::run_with(dir, &["update-ref", "--stdin"], Opts { stdin: Some(l.as_bytes()), ..Default::default() });
+        step(l.split_whitespace().nth(1).unwrap_or("ref"), ok(res));
+    }
     for name in r.remotes.keys() {
-        match old.remotes.get(name) {
-            Some(url) => {
-                git::run(dir, &["config", &format!("remote.{name}.url"), url])?;
-            }
+        let res = match old.remotes.get(name) {
+            Some(url) => ok(git::run(dir, &["config", &format!("remote.{name}.url"), url])),
             None => {
                 let _ = git::exec(dir, &["config", "--remove-section", &format!("remote.{name}")], Opts::default());
+                Ok(())
             }
-        }
+        };
+        step(&format!("remote {name}"), res);
     }
     for name in r.branches.keys() {
         let (kr, km) = (format!("branch.{name}.remote"), format!("branch.{name}.merge"));
-        match old.upstreams.get(name) {
-            Some((remote, merge)) => {
-                git::run(dir, &["config", &kr, remote])?;
-                git::run(dir, &["config", &km, merge])?;
-            }
+        let res = match old.upstreams.get(name) {
+            Some((remote, merge)) => ok(git::run(dir, &["config", &kr, remote])).and_then(|_| ok(git::run(dir, &["config", &km, merge]))),
             None => {
                 let _ = git::exec(dir, &["config", "--unset-all", &kr], Opts::default());
                 let _ = git::exec(dir, &["config", "--unset-all", &km], Opts::default());
+                Ok(())
             }
-        }
+        };
+        step(&format!("upstream of {name}"), res);
     }
-    let mut input = String::new();
-    for name in r.branches.keys() {
-        match old.branches.get(name) {
-            Some(s) => input.push_str(&format!("update refs/heads/{name} {s}\n")),
-            None => input.push_str(&format!("delete refs/heads/{name}\n")),
-        }
-    }
-    for name in r.remote_refs.keys() {
-        match old.remote_refs.get(name) {
-            Some(s) => input.push_str(&format!("update {name} {s}\n")),
-            None => input.push_str(&format!("delete {name}\n")),
-        }
-    }
-    if !input.is_empty() {
-        git::run_with(dir, &["update-ref", "--stdin"], Opts { stdin: Some(input.as_bytes()), ..Default::default() })?;
-    }
-    match (&old.sym, &old.head) {
-        (Some(sym), _) => {
-            git::run(dir, &["symbolic-ref", "HEAD", sym])?;
-        }
-        (None, Some(h)) => {
-            git::run(dir, &["update-ref", "--no-deref", "HEAD", h])?;
-        }
-        (None, None) => {}
-    }
-    match (backup, &old.head) {
-        (Some((wt, idx)), _) => {
-            git::run(dir, &["read-tree", "--reset", "-u", wt])?;
-            if let Some(i) = idx {
-                git::run(dir, &["read-tree", i])?;
-            }
-        }
-        (None, Some(h)) => {
-            git::run(dir, &["read-tree", "--reset", "-u", h])?;
-        }
-        (None, None) => {
-            git::run(dir, &["read-tree", "--empty"])?;
-        }
-    }
-    Ok(())
+    failed
 }
 
 fn drop_tmp_refs(dir: &Path) {
@@ -661,7 +746,7 @@ fn drop_tmp_refs(dir: &Path) {
 
 /// Repo-relative paths that exist here, untracked (or ignored / excluded),
 /// where the new tree puts a file or needs a directory. Topmost only.
-fn collisions(dir: &Path, tree: &[String]) -> Result<Vec<String>, String> {
+fn collisions(dir: &Path, tree: &[String], gitlinks: &HashSet<String>) -> Result<Vec<String>, String> {
     let tracked: HashSet<String> = git::ls_files(dir)?.into_iter().map(|(p, _)| p).collect();
     let mut dirs: BTreeSet<String> = BTreeSet::new();
     for p in tree {
@@ -685,8 +770,11 @@ fn collisions(dir: &Path, tree: &[String]) -> Result<Vec<String>, String> {
         if tracked.contains(p) || out.iter().any(|o| paths::is_under(p, o)) {
             continue;
         }
-        if fs::symlink_metadata(dir.join(p)).is_ok() {
-            out.push(p.clone());
+        match fs::symlink_metadata(dir.join(p)) {
+            // A submodule's directory: git leaves it alone.
+            Ok(m) if m.is_dir() && gitlinks.contains(p) => {}
+            Ok(_) => out.push(p.clone()),
+            Err(_) => {}
         }
     }
     Ok(out)
