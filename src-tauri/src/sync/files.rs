@@ -1158,6 +1158,32 @@ async fn remove_remote(
     Ok(Outcome::Applied)
 }
 
+/// The run whose log or transcript a `file` op wrote, if any (for the
+/// `sync://run-log-updated` event).
+pub async fn run_of_op(db: &Db, paths: &PathCtx, op: &Op) -> Option<String> {
+    let (kind, portable) = parse_pk(&op.pk).ok()?;
+    let path = localize(paths, kind, &portable).ok()?;
+    let p = path.to_string_lossy().into_owned();
+    let stem = path.file_stem()?.to_string_lossy().into_owned();
+    let (sql, key) = match kind {
+        // `<project>/.devdy/runs/<run id>.log`, or a recorded output path.
+        FileKind::RunLog => ("SELECT id FROM runs WHERE id = ?2 OR output_path = ?1 LIMIT 1", stem),
+        FileKind::ClaudeTranscript => (
+            "SELECT id FROM runs WHERE transcript_path = ?1 OR (engine = 'claude' AND session_id = ?2) \
+             ORDER BY created_at DESC LIMIT 1",
+            stem,
+        ),
+        // rollout-<YYYY-MM-DDThh-mm-ss>-<thread id>.jsonl
+        FileKind::CodexRollout => (
+            "SELECT id FROM runs WHERE transcript_path = ?1 OR (engine = 'codex' AND session_id = ?2) \
+             ORDER BY created_at DESC LIMIT 1",
+            stem.strip_prefix("rollout-").and_then(|s| s.get(20..)).unwrap_or_default().to_string(),
+        ),
+        FileKind::Library | FileKind::SshKey => return None,
+    };
+    sqlx::query_scalar(sql).bind(&p).bind(&key).fetch_optional(db).await.ok().flatten()
+}
+
 // ---- Session watcher guard ---------------------------------------------------------
 
 /// Whether `path` is a transcript sync wrote and nobody has touched since: the
@@ -1366,6 +1392,9 @@ pub(crate) mod tests {
         assert_eq!(apply_op(&db_b, &pb, &blobs, &op).await.unwrap(), Outcome::Applied);
         let local_b = hb.path().join("w/p/.devdy/runs/r1.log");
         assert_eq!(fs::read(&local_b).unwrap(), body);
+        assert_eq!(run_of_op(&db_b, &pb, &op).await, None, "B has no runs row yet");
+        add_run(&db_b, hb.path(), "r1", "running").await;
+        assert_eq!(run_of_op(&db_b, &pb, &op).await.as_deref(), Some("r1"));
         let leftovers: Vec<_> = fs::read_dir(local_b.parent().unwrap()).unwrap().flatten().collect();
         assert_eq!(leftovers.len(), 1, "no tmp file left behind");
         // Re-applying the same op is a no-op.
