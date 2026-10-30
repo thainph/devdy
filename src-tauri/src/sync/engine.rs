@@ -13,6 +13,9 @@
 //! Each cycle first lets the store `stage` its non-DB sources (file chunks go
 //! up as sealed blobs through [`RelayBlobs`]); pulled `file` / `secret` ops
 //! are routed to `apply_remote_extra`, everything else to `apply_remote`.
+//! Staging is part of pushing: nothing is staged (no blob uploaded) while a
+//! refused push backs off, and a refused blob upload (quota) backs off the
+//! same way.
 //!
 //! Pulling first means a push is always built on top of everything the relay
 //! had, and a push failure never stops pulls. An op the relay can never take
@@ -302,10 +305,12 @@ async fn serve(
     periodic.tick().await;
 
     let mut backoff = PushBackoff::default();
-    if !cycle_reporting(ctx, conn, &mut backoff, true).await {
+    if !cycle_reporting(ctx, conn, &mut backoff, true, true).await {
         return;
     }
     loop {
+        // The outbox poll stages itself; its cycle does not stage again.
+        let mut staged = false;
         let run_cycle = tokio::select! {
             _ = stop.changed() => return,
             _ = paused_rx.changed() => {
@@ -326,22 +331,29 @@ async fn serve(
                 true
             }
             _ = poll.tick() => {
-                let blobs = RelayBlobs { conn, keys: &ctx.keys };
-                if let Err(e) = ctx.store.stage(&blobs).await {
-                    tracing::debug!(event = "sync_stage_failed", error = %e);
-                }
-                // While a refused push backs off, pending ops alone do not
-                // trigger a cycle.
-                backoff.due() && match ctx.store.pending(1).await {
-                    Ok(p) => !p.is_empty(),
-                    Err(_) => false,
+                // While a refused push backs off, nothing is staged and
+                // pending ops alone do not trigger a cycle.
+                backoff.due() && match stage(ctx, conn).await {
+                    Err(e @ CycleError::Transport(TransportError::Relay(_))) => {
+                        report_refused_push(ctx, &mut backoff, e);
+                        false
+                    }
+                    Err(e) if is_dead(&e) => return,
+                    Err(e) => {
+                        tracing::debug!(event = "sync_stage_failed", error = ?e);
+                        false
+                    }
+                    Ok(()) => {
+                        staged = true;
+                        matches!(ctx.store.pending(1).await, Ok(p) if !p.is_empty())
+                    }
                 }
             }
             _ = periodic.tick() => true,
         };
         if run_cycle {
             let push = backoff.due();
-            if !cycle_reporting(ctx, conn, &mut backoff, push).await {
+            if !cycle_reporting(ctx, conn, &mut backoff, push, push && !staged).await {
                 return;
             }
         }
@@ -373,9 +385,24 @@ impl PushBackoff {
     }
 }
 
+/// A blob upload the relay refused outside a cycle: back off like a refused
+/// push and show why.
+fn report_refused_push(ctx: &Ctx, backoff: &mut PushBackoff, e: CycleError) {
+    let wait = backoff.failed(ctx.timing.backoff_min, ctx.timing.push_backoff_max);
+    tracing::info!(event = "sync_push_backoff", secs = wait.as_secs());
+    let msg = match e {
+        CycleError::Transport(t) => t.to_string(),
+        CycleError::Store(s) => s,
+    };
+    ctx.shared.update(|s| {
+        s.state = SyncState::Error;
+        s.last_error = Some(msg);
+    });
+}
+
 /// Run a cycle and record the outcome. `false` = the connection is unusable.
-async fn cycle_reporting(ctx: &Ctx, conn: &Connection, backoff: &mut PushBackoff, push: bool) -> bool {
-    let (pulled, pushed) = cycle(ctx, conn, push).await;
+async fn cycle_reporting(ctx: &Ctx, conn: &Connection, backoff: &mut PushBackoff, push: bool, stage: bool) -> bool {
+    let (pulled, pushed) = cycle(ctx, conn, push, stage).await;
     match &pushed {
         Some(Ok(())) => backoff.reset(),
         Some(Err(e)) if !is_dead(e) => {
@@ -449,6 +476,18 @@ fn is_dead(e: &CycleError) -> bool {
 pub struct RelayBlobs<'a> {
     conn: &'a Connection,
     keys: &'a SyncKeys,
+    /// The first upload error (the store only sees its text).
+    put_error: Mutex<Option<TransportError>>,
+}
+
+impl<'a> RelayBlobs<'a> {
+    fn new(conn: &'a Connection, keys: &'a SyncKeys) -> Self {
+        RelayBlobs { conn, keys, put_error: Mutex::new(None) }
+    }
+
+    fn take_put_error(&self) -> Option<TransportError> {
+        self.put_error.lock().ok()?.take()
+    }
 }
 
 #[async_trait]
@@ -457,7 +496,13 @@ impl BlobIo for RelayBlobs<'_> {
         let sealed = self.keys.seal_bytes(plaintext);
         let sha = blob_sha(&sealed);
         let data = base64::engine::general_purpose::STANDARD.encode(&sealed);
-        self.conn.blob_put(&sha, data).await.map_err(|e| e.to_string())?;
+        if let Err(e) = self.conn.blob_put(&sha, data).await {
+            let msg = e.to_string();
+            if let Ok(mut first) = self.put_error.lock() {
+                first.get_or_insert(e);
+            }
+            return Err(msg);
+        }
         Ok(sha)
     }
 
@@ -473,27 +518,49 @@ impl BlobIo for RelayBlobs<'_> {
     }
 }
 
-/// Stage, pull, then (when `push`) push and release blobs. Returns the pull
-/// outcome (a staging error counts as one) and the push outcome when it ran.
+/// Let the store stage its files. A blob upload that failed on the relay's
+/// side comes back as that transport error (a refusal backs off like a
+/// refused push, a dead socket drops the connection).
+async fn stage(ctx: &Ctx, conn: &Connection) -> Result<(), CycleError> {
+    let blobs = RelayBlobs::new(conn, &ctx.keys);
+    let staged = ctx.store.stage(&blobs).await;
+    match (blobs.take_put_error(), staged) {
+        (Some(e), _) => Err(e.into()),
+        (None, r) => r.map_err(CycleError::Store),
+    }
+}
+
+/// Stage (when `stage`), pull, then (when `push`) push and release blobs.
+/// Nothing is staged while a refused push backs off (callers pass `stage`
+/// only with `push`). Returns the pull outcome (a staging error other than a
+/// refused upload counts as one) and the push outcome when it ran (a refused
+/// upload counts as one).
 async fn cycle(
     ctx: &Ctx,
     conn: &Connection,
     push: bool,
+    stage_first: bool,
 ) -> (Result<(), CycleError>, Option<Result<(), CycleError>>) {
-    let blobs = RelayBlobs { conn, keys: &ctx.keys };
-    let staged = ctx.store.stage(&blobs).await.map_err(CycleError::Store);
+    let staged = if stage_first { stage(ctx, conn).await } else { Ok(()) };
+    if staged.as_ref().is_err_and(is_dead) {
+        return (staged, None);
+    }
+    let blobs = RelayBlobs::new(conn, &ctx.keys);
     let pulled = pull_all(ctx, conn, &blobs).await;
     if pulled.as_ref().is_err_and(is_dead) {
         return (pulled, None);
     }
-    let pushed = if push {
-        let r = match push_all(ctx, conn).await {
-            Ok(()) => release_blobs(ctx, conn).await,
-            Err(e) => Err(e),
-        };
-        Some(r)
-    } else {
-        None
+    let (staged, pushed) = match staged {
+        // A refused upload: no push this time, back off like a refused one.
+        Err(e @ CycleError::Transport(_)) => (Ok(()), Some(Err(e))),
+        staged if push => (
+            staged,
+            Some(match push_all(ctx, conn).await {
+                Ok(()) => release_blobs(ctx, conn).await,
+                Err(e) => Err(e),
+            }),
+        ),
+        staged => (staged, None),
     };
     (pulled.and(staged), pushed)
 }
@@ -693,6 +760,8 @@ mod tests {
         applied: Vec<Op>,
         cursor: u64,
         parked: Vec<(String, String)>,
+        /// Every `stage` uploads a blob (a live file that keeps growing).
+        stage_blobs: bool,
     }
 
     impl FakeStore {
@@ -755,6 +824,12 @@ mod tests {
         }
         async fn parked_count(&self) -> Result<u64, String> {
             Ok(self.inner.lock().unwrap().parked.len() as u64)
+        }
+        async fn stage(&self, blobs: &dyn BlobIo) -> Result<(), String> {
+            if self.inner.lock().unwrap().stage_blobs {
+                blobs.put(b"growing tail").await?;
+            }
+            Ok(())
         }
     }
 
@@ -1131,6 +1206,60 @@ mod tests {
         b.engine.stop().await;
     }
 
+    /// Finding N11: while a refused push backs off, nothing is staged — a
+    /// live file does not keep uploading blobs nobody can reference.
+    #[tokio::test]
+    async fn no_blob_uploads_while_push_backs_off() {
+        let relay = TestRelay::start().await;
+        relay.create_group("g1");
+        let b = device(&relay, "dev-b", fast());
+        eventually("online", || b.engine.status().state == SyncState::Online).await;
+        relay.fail_pushes_of("dev-b", Some("quota_exceeded"));
+        b.store.add("notes", "n1", "stuck");
+        b.store.inner.lock().unwrap().stage_blobs = true;
+        b.engine.kick();
+        eventually("error", || b.engine.status().last_error.is_some_and(|e| e.contains("quota_exceeded"))).await;
+        let (puts, pushes) = (relay.blob_put_attempts("dev-b"), relay.push_attempts("dev-b"));
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        let puts = relay.blob_put_attempts("dev-b") - puts;
+        let pushes = relay.push_attempts("dev-b") - pushes;
+        // One staging per push attempt at most, not one per 50 ms poll (~24).
+        assert!(puts <= pushes + 1, "{puts} blob uploads for {pushes} pushes");
+        assert!(puts <= 6, "{puts} blob uploads in 1.2 s of backoff");
+        relay.fail_pushes_of("dev-b", None);
+        eventually("pushed after recovery", || b.store.outbox_len() == 0).await;
+        b.engine.stop().await;
+    }
+
+    /// Finding N11: a blob upload refused for quota backs off like a refused
+    /// push (and shows the error) instead of retrying every poll.
+    #[tokio::test]
+    async fn refused_blob_upload_backs_off() {
+        let relay = TestRelay::start().await;
+        relay.create_group("g1");
+        let a = device(&relay, "dev-a", fast());
+        let b = device(&relay, "dev-b", fast());
+        eventually("online", || b.engine.status().state == SyncState::Online).await;
+        relay.fail_blob_puts_of("dev-b", Some("quota_exceeded"));
+        b.store.inner.lock().unwrap().stage_blobs = true;
+        b.store.add("notes", "n1", "waits");
+        b.engine.kick();
+        eventually("error", || b.engine.status().last_error.is_some_and(|e| e.contains("quota_exceeded"))).await;
+        let start = relay.blob_put_attempts("dev-b");
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        let tries = relay.blob_put_attempts("dev-b") - start;
+        assert!(tries <= 6, "{tries} blob uploads in 1.2 s");
+        assert_eq!(relay.push_attempts("dev-b"), 0, "no push while its blobs are refused");
+        // Pulls go on.
+        a.store.add("notes", "n2", "from a");
+        a.engine.kick();
+        eventually("b pulled anyway", || b.store.applied_titles() == vec!["from a"]).await;
+        relay.fail_blob_puts_of("dev-b", None);
+        eventually("pushed after recovery", || b.store.outbox_len() == 0).await;
+        a.engine.stop().await;
+        b.engine.stop().await;
+    }
+
     #[tokio::test]
     async fn sqlite_store_parks_until_the_row_changes_again() {
         use crate::sync::files::tests::mem_db;
@@ -1154,6 +1283,118 @@ mod tests {
         assert_eq!(store.parked_count().await.unwrap(), 1);
         store.mark_pushed(up_to).await.unwrap();
         assert_eq!(store.parked_count().await.unwrap(), 0);
+    }
+
+    type Side = (crate::db::Db, Ctx, Connection);
+
+    /// A device on a real SQLite store whose cycle steps are driven by hand.
+    async fn manual_side(relay: &TestRelay, id: &str) -> Side {
+        use crate::sync::files::tests::mem_db;
+        use crate::sync::store::SqliteSyncStore;
+        let db = mem_db().await;
+        let store: Arc<dyn SyncStore> = Arc::new(SqliteSyncStore::new(db.clone(), id.into()));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let conn = Connection::connect(&params(relay, id), false, tx).await.unwrap();
+        let ctx = Ctx {
+            params: params(relay, id),
+            keys: keys(),
+            store,
+            shared: Arc::new(Shared {
+                status: Mutex::new(SyncStatus::disabled()),
+                sink: Arc::new(|_: &SyncStatus| {}),
+                kick: Notify::new(),
+                kick_now: AtomicBool::new(false),
+                paused: watch::channel(false).0,
+            }),
+            timing: fast(),
+        };
+        (db, ctx, conn)
+    }
+
+    async fn push_side(side: &Side) {
+        push_all(&side.1, &side.2).await.unwrap();
+    }
+
+    async fn pull_side(side: &Side) {
+        let blobs = RelayBlobs::new(&side.2, &side.1.keys);
+        pull_all(&side.1, &side.2, &blobs).await.unwrap();
+    }
+
+    async fn owner_of(db: &crate::db::Db, run: &str) -> (Option<String>, i64, Option<String>) {
+        sqlx::query_as("SELECT owner_device, owner_epoch, lease_until FROM runs WHERE id = ?")
+            .bind(run)
+            .fetch_one(db)
+            .await
+            .unwrap()
+    }
+
+    /// Finding N4: A owns a run and is cut off; B takes it over (epoch 1),
+    /// then A — not knowing — resumes and renews its lease (newer HLCs, epoch
+    /// 0). Whether A pushes its stale renewal blind or pulls first with it
+    /// still queued, every device (and one joining later) ends up with B as
+    /// the owner, and A stops renewing.
+    #[tokio::test]
+    async fn network_split_take_over_converges_to_the_taker() {
+        use crate::sync::sessions;
+        for pull_first in [false, true] {
+            let run = format!("split-{}", uuid::Uuid::new_v4().simple());
+            let relay = TestRelay::start().await;
+            relay.create_group("g1");
+            let a = manual_side(&relay, "dev-a").await;
+            let b = manual_side(&relay, "dev-b").await;
+            let c = manual_side(&relay, "dev-c").await;
+            let id_b = crate::sync::ensure_device(&b.0).await.unwrap();
+            let project = std::env::temp_dir().join(format!("devdy-split-{}", uuid::Uuid::new_v4().simple()));
+            sqlx::query("INSERT INTO projects (id, name, path, created_at) VALUES ('p1', 'p', ?, 'x')")
+                .bind(project.to_string_lossy().as_ref())
+                .execute(&a.0)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO runs (id, project_id, type, status, engine, created_at) VALUES (?, 'p1', 'session', 'done', 'claude', 'x')")
+                .bind(&run)
+                .execute(&a.0)
+                .await
+                .unwrap();
+            let path = project.to_string_lossy().to_string();
+            sessions::claim(&a.0, &run, &path).await.unwrap();
+            sessions::release(&a.0, &run).await;
+            push_side(&a).await;
+            pull_side(&b).await;
+            pull_side(&c).await;
+            assert_eq!(owner_of(&b.0, &run).await.1, 0);
+
+            // The split: B takes over, then A resumes and renews offline.
+            let taken = sessions::take_over(&b.0, &run, false, true, true).await.unwrap();
+            assert!(taken.taken);
+            assert_eq!(owner_of(&b.0, &run).await, (Some(id_b.clone()), 1, None));
+            push_side(&b).await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            sessions::claim(&a.0, &run, &path).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            sessions::renew(&a.0, std::slice::from_ref(&run)).await.unwrap();
+
+            if pull_first {
+                // A's renewal is still queued when B's take-over arrives.
+                pull_side(&a).await;
+                push_side(&a).await;
+            } else {
+                // A pushes its stale renewal without having pulled.
+                push_side(&a).await;
+                pull_side(&a).await;
+            }
+            pull_side(&b).await;
+            pull_side(&c).await;
+            for (name, side) in [("a", &a), ("b", &b), ("c", &c)] {
+                assert_eq!(owner_of(&side.0, &run).await, (Some(id_b.clone()), 1, None), "device {name} (pull_first {pull_first})");
+            }
+            // A device joining later converges too.
+            let d = manual_side(&relay, "dev-d").await;
+            pull_side(&d).await;
+            assert_eq!(owner_of(&d.0, &run).await, (Some(id_b.clone()), 1, None), "late joiner (pull_first {pull_first})");
+            // A no longer renews a run it lost.
+            sessions::renew(&a.0, std::slice::from_ref(&run)).await.unwrap();
+            assert_eq!(owner_of(&a.0, &run).await.2, None);
+        }
     }
 
     /// Finding #1, the exact scenario: B edits a row while offline (older
@@ -1206,7 +1447,7 @@ mod tests {
             push_all(&side.1, &side.2).await
         }
         async fn pull(side: &(crate::db::Db, Ctx, Connection)) -> Result<(), CycleError> {
-            let blobs = RelayBlobs { conn: &side.2, keys: &side.1.keys };
+            let blobs = RelayBlobs::new(&side.2, &side.1.keys);
             pull_all(&side.1, &side.2, &blobs).await
         }
 

@@ -213,14 +213,17 @@ pub async fn ensure_not_held_elsewhere(db: &Db, run_id: &str) -> Result<(), Stri
     Ok(())
 }
 
-/// The run (re)started here: take ownership and a fresh lease now, then record
+/// The run (re)started here: take ownership and a fresh lease now (a run
+/// another device owned moves to the next ownership epoch), then record
 /// the working tree's git state in the background (git can be slow).
 pub async fn claim(db: &Db, run_id: &str, cwd: &str) -> Result<(), String> {
     let me = local_device(db).await?;
     sqlx::query(
-        "UPDATE runs SET owner_device = ?, device_name = ?, lease_until = ?, \
+        "UPDATE runs SET owner_epoch = owner_epoch + (COALESCE(owner_device, '') NOT IN ('', ?)), \
+         owner_device = ?, device_name = ?, lease_until = ?, \
          final_log_size = NULL, final_transcript_size = NULL WHERE id = ?",
     )
+        .bind(&me.id)
         .bind(&me.id)
         .bind(&me.name)
         .bind(lease_deadline(Utc::now()))
@@ -300,8 +303,16 @@ pub async fn release(db: &Db, run_id: &str) {
         row.get::<Option<String>, _>("project_path").as_deref(),
     )
     .await;
-    let size = |p: &Option<PathBuf>| p.as_ref().and_then(|p| std::fs::metadata(p).ok()).map(|m| m.len() as i64);
-    let (log_size, transcript_size) = (size(&log), size(&transcript));
+    // Sizes as the other devices get the files (a transcript sync rewrote
+    // here and nothing appended to since never travels again, so its size on
+    // disk would never be reached there).
+    let size = |p: Option<PathBuf>| async move {
+        match p {
+            Some(p) => super::files::wire_size(db, &p).await.map(|n| n as i64),
+            None => None,
+        }
+    };
+    let (log_size, transcript_size) = (size(log.clone()).await, size(transcript.clone()).await);
     let _ = sqlx::query(
         "UPDATE runs SET lease_until = NULL, final_log_size = ?, final_transcript_size = ? \
          WHERE id = ? AND (owner_device IS NULL OR owner_device = ?) \
@@ -651,13 +662,17 @@ pub async fn take_over(
         TakeOverDecision::Confirm(m) => Ok(TakeOverResult { mismatch: Some(m), ..result }),
         TakeOverDecision::Proceed => {
             // A run left `running` by an owner whose lease expired is dead.
+            // Ownership moving here opens a new epoch: whatever the old owner
+            // still pushes from before it learns of this never takes it back.
             let now = Utc::now().to_rfc3339();
             sqlx::query(
-                "UPDATE runs SET owner_device = ?, device_name = ?, lease_until = NULL, \
+                "UPDATE runs SET owner_epoch = owner_epoch + (COALESCE(owner_device, '') NOT IN ('', ?)), \
+                 owner_device = ?, device_name = ?, lease_until = NULL, \
                  finished_at = CASE WHEN status = 'running' THEN ? ELSE finished_at END, \
                  status = CASE WHEN status = 'running' THEN 'cancelled' ELSE status END \
                  WHERE id = ?",
             )
+            .bind(&me.id)
             .bind(&me.id)
             .bind(&me.name)
             .bind(&now)
@@ -668,6 +683,101 @@ pub async fn take_over(
             receipts().forget(run_id);
             Ok(TakeOverResult { taken: true, ..result })
         }
+    }
+}
+
+// ---- ownership epochs (applying synced `runs` rows) -----------------------
+
+/// Columns of `runs` owned by the device running it. They move together and
+/// follow `owner_epoch`, not the row's HLC: an old owner cut off from the
+/// relay keeps renewing its lease (fresh HLCs) while another device takes the
+/// run over (a higher epoch); its renewals must not win the run back.
+pub const OWNERSHIP_COLUMNS: &[&str] = &[
+    "owner_epoch",
+    "owner_device",
+    "device_name",
+    "lease_until",
+    "status",
+    "finished_at",
+    "final_log_size",
+    "final_transcript_size",
+    "git_head",
+    "git_dirty",
+];
+
+/// How an incoming `runs` upsert meets the local row's ownership.
+#[derive(Debug, PartialEq)]
+pub enum OwnerMerge {
+    /// Same epoch (or not a run / epoch unknown): plain last-writer-wins.
+    Lww,
+    /// The local epoch is higher: whatever wins the row, its ownership
+    /// columns keep these local values (and an unpushed local change stays
+    /// queued).
+    KeepLocal(serde_json::Map<String, serde_json::Value>),
+    /// The incoming epoch is higher: its ownership columns apply even if the
+    /// rest of the op loses by HLC.
+    TakeIncoming,
+}
+
+fn epoch_of(row: &serde_json::Map<String, serde_json::Value>) -> Option<i64> {
+    row.get("owner_epoch").and_then(serde_json::Value::as_i64)
+}
+
+/// Compare the ownership epoch of an incoming op with the local row's
+/// (called by `apply` inside its transaction, before the HLC checks).
+pub async fn owner_merge(
+    conn: &mut sqlx::SqliteConnection,
+    spec: &super::schema::TableSpec,
+    op: &super::op::Op,
+) -> Result<OwnerMerge, String> {
+    if spec.name != "runs" || op.kind != super::op::OpKind::Upsert {
+        return Ok(OwnerMerge::Lww);
+    }
+    let Some(incoming) = op.row.as_ref().and_then(epoch_of) else { return Ok(OwnerMerge::Lww) };
+    let Some(local) = super::codec::read_row(conn, spec, &op.pk).await? else { return Ok(OwnerMerge::Lww) };
+    let local_epoch = epoch_of(&local).unwrap_or(0);
+    Ok(match local_epoch.cmp(&incoming) {
+        std::cmp::Ordering::Equal => OwnerMerge::Lww,
+        std::cmp::Ordering::Less => OwnerMerge::TakeIncoming,
+        std::cmp::Ordering::Greater => OwnerMerge::KeepLocal(
+            OWNERSHIP_COLUMNS
+                .iter()
+                .filter_map(|c| local.get(*c).map(|v| ((*c).to_string(), v.clone())))
+                .collect(),
+        ),
+    })
+}
+
+impl OwnerMerge {
+    /// The op lost by HLC: still move a newer ownership onto the local row.
+    /// Returns whether anything was written.
+    pub async fn apply_skipped(&self, conn: &mut sqlx::SqliteConnection, op: &super::op::Op) -> Result<bool, String> {
+        if *self != OwnerMerge::TakeIncoming {
+            return Ok(false);
+        }
+        let (Some(row), Some(id)) = (op.row.as_ref(), op.pk.as_str()) else { return Ok(false) };
+        let cols: Vec<&str> = OWNERSHIP_COLUMNS.iter().copied().filter(|c| row.contains_key(*c)).collect();
+        let sets: Vec<String> = cols.iter().map(|c| format!("{} = ?", super::schema::q(c))).collect();
+        let sql = format!("UPDATE runs SET {} WHERE id = ?", sets.join(", "));
+        let mut query = sqlx::query(&sql);
+        for c in &cols {
+            query = super::codec::bind_value(query, &row[*c]);
+        }
+        query.bind(id).execute(&mut *conn).await.map_err(|e| e.to_string())?;
+        Ok(true)
+    }
+
+    /// The op wins by HLC: keep a higher local ownership in the written row.
+    pub fn overlay(&self, row: &mut serde_json::Map<String, serde_json::Value>) {
+        if let OwnerMerge::KeepLocal(own) = self {
+            row.extend(own.iter().map(|(k, v)| (k.clone(), v.clone())));
+        }
+    }
+
+    /// A pending local change carries the higher ownership: it must still be
+    /// pushed even though the rest of the row lost.
+    pub fn keeps_local(&self) -> bool {
+        matches!(self, OwnerMerge::KeepLocal(_))
     }
 }
 
@@ -1055,6 +1165,60 @@ mod tests {
         assert!(r.taken && r.mismatch.is_none() && r.syncing.is_none());
         assert_eq!(col(&db, "noop", "status").await.as_deref(), Some("running"), "not cancelled");
         assert!(col(&db, "noop", "lease_until").await.is_some(), "lease kept");
+    }
+
+    /// Finding N13: B continued a session whose transcript sync wrote here
+    /// with the cwd rewritten (longer on disk than the synced content), and
+    /// the resume wrote nothing. B records the synced size, so A — whose copy
+    /// is that synced content — can take the run back; once B's own bytes
+    /// are on disk, their size is what counts.
+    #[tokio::test]
+    async fn final_sizes_are_the_synced_sizes_after_a_cwd_rewrite() {
+        use sha2::{Digest, Sha256};
+        let b = mem_db().await;
+        let transcript = temp_file("s-n13.jsonl", 120);
+        add_run(&b, "n13", "running", Some("me"), Some(&future())).await;
+        sqlx::query("UPDATE runs SET session_id = 's-n13', transcript_path = ? WHERE id = 'n13'")
+            .bind(transcript.to_string_lossy().as_ref())
+            .execute(&b)
+            .await
+            .unwrap();
+        let disk_sha = hex::encode(Sha256::digest(vec![b'x'; 120]));
+        sqlx::query(
+            "INSERT INTO sync_files (kind, path, local_path, size, sha256, local_size, local_sha256, origin) \
+             VALUES ('claude_transcript', 't', ?, 100, 'synced', 120, ?, 'remote')",
+        )
+        .bind(transcript.to_string_lossy().as_ref())
+        .bind(&disk_sha)
+        .execute(&b)
+        .await
+        .unwrap();
+        release(&b, "n13").await;
+        assert_eq!(col(&b, "n13", "final_transcript_size").await.as_deref(), Some("100"));
+
+        // A has the synced content (100 bytes): the gap is closed.
+        let a = db_for("mini", "Mac mini").await;
+        exec(&a, "INSERT INTO projects (id, name, path, created_at) VALUES ('p1', 'P', '/nonexistent/p1', '2026-01-01')").await;
+        add_run(&a, "n13", "completed", Some("me"), None).await;
+        let a_copy = temp_file("s-n13.jsonl", 100);
+        sqlx::query("UPDATE runs SET session_id = 's-n13', transcript_path = ?, final_transcript_size = 100 WHERE id = 'n13'")
+            .bind(a_copy.to_string_lossy().as_ref())
+            .execute(&a)
+            .await
+            .unwrap();
+        let r = take_over(&a, "n13", false, true, false).await.unwrap();
+        assert_eq!(r.syncing, None);
+        assert!(r.taken);
+
+        // Same size but other bytes than sync wrote (the resume rewrote a
+        // line): the file on disk is what travels next.
+        std::fs::write(&transcript, vec![b'y'; 120]).unwrap();
+        exec(&b, "UPDATE runs SET lease_until = 'x' WHERE id = 'n13'").await;
+        release(&b, "n13").await;
+        assert_eq!(col(&b, "n13", "final_transcript_size").await.as_deref(), Some("120"));
+        for f in [transcript, a_copy] {
+            let _ = std::fs::remove_dir_all(f.parent().unwrap());
+        }
     }
 
     #[tokio::test]

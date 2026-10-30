@@ -52,6 +52,10 @@ struct State {
     max_blob: Option<usize>,
     /// device → error code its pushes get.
     fail_pushes: HashMap<String, String>,
+    /// Every `blob_put` attempt, by device.
+    blob_puts: Vec<String>,
+    /// device → error code its blob uploads get.
+    fail_blob_puts: HashMap<String, String>,
     next_conn: u64,
 }
 
@@ -147,6 +151,20 @@ impl TestRelay {
             Some(c) => s.fail_pushes.insert(device.into(), c.into()),
             None => s.fail_pushes.remove(device),
         };
+    }
+
+    /// Answer every `blob_put` of `device` with `error{code}` (`None` = stop).
+    pub fn fail_blob_puts_of(&self, device: &str, code: Option<&str>) {
+        let mut s = self.state.lock().unwrap();
+        match code {
+            Some(c) => s.fail_blob_puts.insert(device.into(), c.into()),
+            None => s.fail_blob_puts.remove(device),
+        };
+    }
+
+    /// `blob_put` attempts (accepted or not) `device` made.
+    pub fn blob_put_attempts(&self, device: &str) -> usize {
+        self.state.lock().unwrap().blob_puts.iter().filter(|d| *d == device).count()
     }
 
     /// Push attempts (accepted or not) `device` made.
@@ -353,6 +371,10 @@ fn handle_inner(
             Some(json!({ "t": "control", "code": "ok" }))
         }
         "blob_put" => {
+            s.blob_puts.push(did.clone());
+            if let Some(code) = s.fail_blob_puts.get(&did) {
+                return Some(error(code));
+            }
             let sha = s_("sha");
             s.groups.get_mut(&gid)?.blobs.insert(sha.clone(), s_("data"));
             Some(json!({ "t": "blob_ack", "sha": sha }))

@@ -10,8 +10,10 @@
 //! growing append-only log re-uploads only its last partial chunk + new ones.
 //! A grown append-only file is hashed from the SHA-256 state recorded after its
 //! last full chunk (`hash_state`), not from the start. While its run is live,
-//! its trailing partial chunk is only published once the file has been idle
-//! for `ScanState::tail_idle` (full chunks go at once).
+//! its trailing partial chunk is held back (full chunks go at once) until the
+//! file stopped growing for half of `ScanState::tail_idle` — judged by its size
+//! across scans, not its mtime — or at the latest `tail_idle` after it was
+//! first held, so a session that keeps writing still streams its tail.
 //! The tail blob it replaced is queued in `sync_blob_release` and released on
 //! the relay (`blob_release`) once the new manifest was pushed; a release whose
 //! manifest is dropped unpushed is cancelled.
@@ -329,17 +331,42 @@ impl Default for Timing {
 }
 
 impl Timing {
-    /// How long a live append-only file must stay untouched before its
-    /// partial tail goes up: two quick scans, at most [`TAIL_IDLE`] (10 s with
-    /// the default cadence).
+    /// Longest a live append-only file's partial tail is held back: two quick
+    /// scans, at most [`TAIL_IDLE`] (10 s with the default cadence).
     pub fn tail_idle(&self) -> Duration {
         TAIL_IDLE.min(self.quick * 2)
     }
 }
 
-/// How long a live append-only file must stay untouched before its trailing
-/// partial chunk is published.
+/// Longest a live append-only file's trailing partial chunk is held back
+/// (it goes after half of it once the file stops growing).
 pub const TAIL_IDLE: Duration = Duration::from_secs(10);
+
+/// A live file whose partial tail is held back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TailHold {
+    size: u64,
+    /// When the size last changed (as seen by the scans).
+    grown_at: Instant,
+    /// When the tail was first held back.
+    since: Instant,
+}
+
+impl TailHold {
+    /// The hold after seeing the file at `size` now, and whether its tail is
+    /// due: the file stopped growing for `idle / 2`, or was held for `idle`.
+    fn observe(prev: Option<TailHold>, size: u64, now: Instant, idle: Duration) -> (TailHold, bool) {
+        let hold = match prev {
+            Some(h) if h.size == size => h,
+            Some(h) => TailHold { size, grown_at: now, since: h.since },
+            None => TailHold { size, grown_at: now, since: now },
+        };
+        let due = idle.is_zero()
+            || now.duration_since(hold.grown_at) >= idle / 2
+            || now.duration_since(hold.since) >= idle;
+        (hold, due)
+    }
+}
 
 pub struct ScanState {
     last_quick: Option<Instant>,
@@ -350,6 +377,7 @@ pub struct ScanState {
     /// Live files whose partial tail is not published yet: rechecked on every
     /// quick scan until it is.
     tail_pending: BTreeSet<Tracked>,
+    tail_holds: HashMap<PathBuf, TailHold>,
     pub tail_idle: Duration,
 }
 
@@ -360,6 +388,7 @@ impl Default for ScanState {
             last_full: None,
             codex_index: Default::default(),
             tail_pending: BTreeSet::new(),
+            tail_holds: HashMap::new(),
             tail_idle: TAIL_IDLE,
         }
     }
@@ -1056,12 +1085,15 @@ pub async fn stage(
     }
     let mut queued = 0;
     let mut tail_pending = BTreeSet::new();
+    let mut tail_holds = HashMap::new();
     for t in &tracked {
-        match stage_one(db, blobs, t, state.tail_idle).await {
+        let held = state.tail_holds.get(&t.local).copied();
+        match stage_one(db, blobs, t, held, state.tail_idle).await {
             Ok(staged) => {
                 queued += staged.queued as usize;
-                if staged.tail_pending {
+                if let Some(hold) = staged.held {
                     tail_pending.insert(Tracked { live: true, ..t.clone() });
+                    tail_holds.insert(t.local.clone(), hold);
                 }
             }
             Err(StageError::Abort(e)) => return Err(e),
@@ -1069,6 +1101,7 @@ pub async fn stage(
         }
     }
     state.tail_pending = tail_pending;
+    state.tail_holds = tail_holds;
     if mode == ScanMode::Full {
         queued += stage_deletions(db, with_keys).await?;
     }
@@ -1085,11 +1118,17 @@ enum StageError {
 #[derive(Debug, Default, Clone, Copy)]
 struct Staged {
     queued: bool,
-    /// A partial tail was held back (the file is live and not idle yet).
-    tail_pending: bool,
+    /// A partial tail was held back (the file is live and still growing).
+    held: Option<TailHold>,
 }
 
-async fn stage_one(db: &Db, blobs: &dyn BlobIo, t: &Tracked, tail_idle: Duration) -> Result<Staged, StageError> {
+async fn stage_one(
+    db: &Db,
+    blobs: &dyn BlobIo,
+    t: &Tracked,
+    held: Option<TailHold>,
+    tail_idle: Duration,
+) -> Result<Staged, StageError> {
     let local = StageError::Local;
     let meta = match tokio::fs::metadata(&t.local).await {
         Ok(m) if m.is_file() => m,
@@ -1108,8 +1147,9 @@ async fn stage_one(db: &Db, blobs: &dyn BlobIo, t: &Tracked, tail_idle: Duration
             return Ok(Staged::default());
         }
     }
-    let idle = (wall_ms() as i64).saturating_sub(mtime) >= tail_idle.as_millis() as i64;
-    let with_tail = !t.kind.append_only() || !t.live || idle || meta.len() % CHUNK_SIZE as u64 == 0;
+    let partial_tail = t.kind.append_only() && t.live && meta.len() % CHUNK_SIZE as u64 != 0;
+    let (hold, due) = TailHold::observe(held, meta.len(), Instant::now(), tail_idle);
+    let with_tail = !partial_tail || due;
     if !with_tail {
         // Only full chunks may go now: nothing to do unless one was added.
         let full_end = meta.len() / CHUNK_SIZE as u64 * CHUNK_SIZE as u64;
@@ -1118,7 +1158,7 @@ async fn stage_one(db: &Db, blobs: &dyn BlobIo, t: &Tracked, tail_idle: Duration
             .filter(|r| !r.deleted && r.local_path == local_str && r.local_size.is_none())
             .map_or(0, |r| r.size);
         if full_end <= published || full_end == 0 {
-            return Ok(Staged { queued: false, tail_pending: true });
+            return Ok(Staged { queued: false, held: Some(hold) });
         }
     }
     let resume = {
@@ -1130,7 +1170,7 @@ async fn stage_one(db: &Db, blobs: &dyn BlobIo, t: &Tracked, tail_idle: Duration
     // A rewritten transcript compares by what sync wrote to disk: identical =
     // not a local change, even though it differs from the synced content.
     let unchanged = rec.as_ref().is_some_and(|r| !r.deleted && r.disk_sha() == content.sha256);
-    let staged = Staged { queued: !unchanged, tail_pending: !with_tail };
+    let staged = Staged { queued: !unchanged, held: (!with_tail).then_some(hold) };
     let mut tx = sqlx::Connection::begin(&mut *conn).await.map_err(|e| local(e.to_string()))?;
     if unchanged {
         // Touched but identical (or moved): remember the new stat, keep origin.
@@ -2090,6 +2130,33 @@ pub async fn run_of_op(db: &Db, paths: &PathCtx, op: &Op) -> Option<String> {
     sqlx::query_scalar(sql).bind(&p).bind(&key).fetch_optional(db).await.ok().flatten()
 }
 
+/// Size of `path` as the other devices get it, for the final sizes a run
+/// records on release: a file still exactly as sync wrote it here with a
+/// rewritten cwd counts with the synced content's size (it is never pushed
+/// again, so its size here would never arrive anywhere); anything else with
+/// its size on disk, which is what the next scan uploads.
+pub async fn wire_size(db: &Db, path: &Path) -> Option<u64> {
+    let meta = tokio::fs::metadata(path).await.ok().filter(|m| m.is_file())?;
+    let rec: Option<(i64, Option<i64>, Option<String>)> = sqlx::query_as(
+        "SELECT size, local_size, local_sha256 FROM sync_files WHERE local_path = ? AND deleted = 0",
+    )
+    .bind(path.to_string_lossy().as_ref())
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+    if let Some((size, Some(local_size), Some(local_sha))) = rec {
+        if local_size.max(0) as u64 == meta.len() {
+            let (p, len) = (path.to_path_buf(), meta.len());
+            let sha = blocking(move || sha_of_prefix(&p, len)).await.ok().flatten();
+            if sha.as_deref() == Some(local_sha.as_str()) {
+                return Some(size.max(0) as u64);
+            }
+        }
+    }
+    Some(meta.len())
+}
+
 // ---- Session watcher guard ---------------------------------------------------------
 
 /// Whether `path` is a transcript sync wrote and nobody has touched since: the
@@ -2836,6 +2903,7 @@ pub(crate) mod tests {
         let mut st = ScanState::default();
         assert_eq!(st.tail_idle, TAIL_IDLE);
         assert_eq!(Timing::default().tail_idle(), Duration::from_secs(10));
+        st.tail_idle = Duration::from_millis(600);
 
         // Only a partial chunk, just written: nothing goes up yet.
         fs::write(&log, b"turn 1\n").unwrap();
@@ -2853,9 +2921,10 @@ pub(crate) mod tests {
         assert_eq!(stage(&db, &p, &blobs, &mut st, ScanMode::Quick, false).await.unwrap(), 0);
         assert_eq!(*blobs.puts.lock().unwrap(), 1);
 
-        // Idle long enough: the tail goes up.
-        let old = std::time::SystemTime::now() - Duration::from_secs(30);
-        fs::File::options().append(true).open(&log).unwrap().set_modified(old).unwrap();
+        // Stopped growing for half the idle time: the tail goes up. Its
+        // mtime is irrelevant (a fresh one does not hold it back).
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        fs::File::options().append(true).open(&log).unwrap().set_modified(std::time::SystemTime::now()).unwrap();
         assert_eq!(stage(&db, &p, &blobs, &mut st, ScanMode::Quick, false).await.unwrap(), 1);
         let rec = record(&db, FileKind::RunLog, portable).await;
         assert_eq!((rec.size, rec.sha256.clone()), (body.len() as u64, sha_hex(&body)));
@@ -2866,6 +2935,65 @@ pub(crate) mod tests {
         fs::write(&log, &body).unwrap();
         assert_eq!(stage(&db, &p, &blobs, &mut st, ScanMode::Full, false).await.unwrap(), 1);
         assert_eq!(record(&db, FileKind::RunLog, portable).await.size, body.len() as u64);
+    }
+
+    /// Finding N8: a live log that never stops growing still streams its
+    /// partial tail, at the latest `tail_idle` after it was first held.
+    #[tokio::test]
+    async fn growing_live_tail_streams_within_the_idle_window() {
+        let h = tempdir();
+        let db = mem_db().await;
+        let p = ctx(h.path());
+        let blobs = MemBlobs::default();
+        let log = add_run(&db, h.path(), "r1", "running").await;
+        let portable = "~/w/p/.devdy/runs/r1.log";
+        let idle = Duration::from_millis(400);
+        let mut st = ScanState { tail_idle: idle, ..Default::default() };
+        let mut body = String::new();
+        let start = Instant::now();
+        let mut published = None;
+        while start.elapsed() < idle * 3 {
+            body.push_str("event\n");
+            fs::write(&log, &body).unwrap();
+            stage(&db, &p, &blobs, &mut st, ScanMode::Quick, false).await.unwrap();
+            let size = sqlx::query_scalar::<_, i64>("SELECT size FROM sync_files WHERE path = ?")
+                .bind(portable)
+                .fetch_optional(&db)
+                .await
+                .unwrap();
+            if size.is_some_and(|s| s > 0) {
+                published = Some(start.elapsed());
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(40)).await;
+        }
+        let at = published.expect("the tail of a growing live log never went up");
+        assert!(at >= idle / 2, "held back while growing ({at:?})");
+        assert!(at <= idle + Duration::from_millis(200), "published within the idle window ({at:?})");
+        // Not re-sent on every scan: held again from the published size.
+        let puts = *blobs.puts.lock().unwrap();
+        body.push_str("more\n");
+        fs::write(&log, &body).unwrap();
+        stage(&db, &p, &blobs, &mut st, ScanMode::Quick, false).await.unwrap();
+        assert_eq!(*blobs.puts.lock().unwrap(), puts);
+    }
+
+    #[test]
+    fn tail_hold_by_size_growth() {
+        let t0 = Instant::now();
+        let idle = Duration::from_secs(10);
+        let s = |n| t0 + Duration::from_secs(n);
+        let (h, due) = TailHold::observe(None, 10, t0, idle);
+        assert!(!due);
+        // Still the same size 5 s later: idle.
+        assert!(TailHold::observe(Some(h), 10, s(5), idle).1);
+        // Grew at 4 s: not idle at 6 s, but held for 10 s at 10 s.
+        let (h, due) = TailHold::observe(Some(h), 20, s(4), idle);
+        assert!(!due);
+        let (h, due) = TailHold::observe(Some(h), 30, s(8), idle);
+        assert!(!due);
+        assert!(TailHold::observe(Some(h), 40, s(10), idle).1);
+        assert!(TailHold::observe(None, 1, t0, Duration::ZERO).1);
     }
 
     #[tokio::test]
