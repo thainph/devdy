@@ -252,6 +252,19 @@ export function emptyTodoDraft(over: Partial<TodoDraft> = {}): TodoDraft {
   return { text: '', projectId: '', dueDate: '', dueTime: '', priority: 2, estimate: '', sourceUrl: '', ...over }
 }
 
+/**
+ * The drawer's form after its todo changed underneath it (another window, the
+ * AI, MCP): every field the user hasn't touched (`form[k] === base[k]`) takes
+ * the new value, edited ones are kept. `base` is the form as last loaded.
+ */
+export function rebaseForm<T extends Record<string, unknown>>(form: T, base: T, next: T): T {
+  const out = { ...form }
+  for (const k of Object.keys(next) as (keyof T)[]) {
+    if (form[k] === base[k]) out[k] = next[k]
+  }
+  return out
+}
+
 /** `add_todo` args of a draft, or null when it can't be saved (no text / unreadable estimate). */
 export function draftToInput(d: TodoDraft, runId: string | null = null): AddTodoInput | null {
   const text = d.text.trim()
