@@ -456,19 +456,6 @@ pub async fn load_style(db: &Db) -> Result<String, String> {
     Ok(load_settings(db).await?.style)
 }
 
-/// `engine:model` the warm sidecar runs with (claude without a model uses
-/// haiku), recorded with what it produced (e.g. Focus AI answers).
-pub async fn load_engine_model(db: &Db) -> Result<String, String> {
-    let s = load_settings(db).await?;
-    let engine = s.engine.trim().to_ascii_lowercase();
-    let model = match s.model.trim() {
-        "" if engine != "codex" => "haiku",
-        "" => "default",
-        m => m,
-    };
-    Ok(format!("{engine}:{model}"))
-}
-
 /// The user's `translate_target_lang` setting (`vi` when unset).
 pub async fn load_default_target(db: &Db) -> Result<String, String> {
     Ok(load_settings(db).await?.default_target)
@@ -867,8 +854,6 @@ pub async fn submit_prompt(
     submit_with(app, state, &settings, prompt, want_events).await
 }
 
-/// Shared body of `submit` / `submit_prompt`: ensure a warm sidecar, enqueue
-/// the turn and write the prompt.
 /// [`submit_prompt`] with the engine / model swapped for `engine` / `model`
 /// (Focus AI settings; empty = the translate ones). A new engine without a
 /// model uses that engine's default.
@@ -894,6 +879,8 @@ pub async fn submit_prompt_as(
     submit_with(app, state, &settings, prompt, true).await
 }
 
+/// Shared body of `submit` / `submit_prompt` / `submit_prompt_as`: ensure a
+/// warm sidecar, enqueue the turn and write the prompt.
 async fn submit_with(
     app: &AppHandle,
     state: &TranslateState,

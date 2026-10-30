@@ -5,7 +5,7 @@
 //! - `focus_ai_analyze` — plan + estimate of a todo, stored as `ai_plan`
 //! - `focus_ai_plan_today` / `focus_day_plan_get` — today's timeline (`focus_day_plans`)
 //! - `focus_plan_to_calendar` — push plan blocks to Google Calendar
-//! - `focus_ai_cancel` — abort a request (`focus:ai-progress` reports it)
+//! - `focus_ai_cancel` — abort a request (it then fails with `cancelled`)
 //! - `focus_start_with_ai` — a new session working on the todo
 //! - `focus_suggest_actual` — BR-11 "how long did it take"
 //!
@@ -32,22 +32,10 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, State};
 
-/// Progress of a request: `started`, then `done` | `error` | `cancelled`.
-pub const PROGRESS_EVENT: &str = "focus:ai-progress";
 /// A prompt that has not answered by then is abandoned.
 const TURN_TIMEOUT: Duration = Duration::from_secs(180);
-
-#[derive(Clone, Serialize)]
-struct Progress<'a> {
-    request_id: &'a str,
-    /// `suggest | analyze | plan`.
-    kind: &'a str,
-    todo_id: Option<&'a str>,
-    stage: &'a str,
-    error: Option<&'a str>,
-}
 
 /// Running requests (key → request id + abort handle) and the warm engine
 /// they share, its own instance so Focus prompts never queue behind
@@ -154,10 +142,6 @@ impl AiEngine for FocusEngine {
         }
         out
     }
-
-    async fn model(&self) -> Option<String> {
-        None
-    }
 }
 
 fn engine_for(app: &AppHandle, db: &Db, state: &FocusAiState, s: &FocusSettings) -> FocusEngine {
@@ -188,14 +172,11 @@ async fn ask<T>(
 }
 
 /// Run `work` as request `request_id` under `key` (one at a time per key),
-/// abortable by `focus_ai_cancel`, with `focus:ai-progress` around it.
+/// abortable by `focus_ai_cancel` (the caller then gets `cancelled`).
 async fn run_request<T, F>(
-    app: &AppHandle,
     state: &FocusAiState,
     key: String,
     request_id: Option<String>,
-    kind: &str,
-    todo_id: Option<&str>,
     turn: TurnSlot,
     work: F,
 ) -> Result<T, String>
@@ -222,40 +203,14 @@ where
         );
         task
     };
-    let progress = |stage: &str, error: Option<&str>| {
-        let _ = app.emit(
-            PROGRESS_EVENT,
-            Progress {
-                request_id: &request_id,
-                kind,
-                todo_id,
-                stage,
-                error,
-            },
-        );
-    };
-    progress("started", None);
     let out = task.await;
     if let Ok(mut running) = state.running.lock() {
         running.remove(&key);
     }
     match out {
-        Ok(Ok(v)) => {
-            progress("done", None);
-            Ok(v)
-        }
-        Ok(Err(e)) => {
-            progress("error", Some(&e));
-            Err(e)
-        }
-        Err(e) if e.is_cancelled() => {
-            progress("cancelled", None);
-            Err("cancelled".into())
-        }
-        Err(e) => {
-            progress("error", Some(&e.to_string()));
-            Err(e.to_string())
-        }
+        Ok(r) => r,
+        Err(e) if e.is_cancelled() => Err("cancelled".into()),
+        Err(e) => Err(e.to_string()),
     }
 }
 
@@ -487,7 +442,7 @@ pub async fn focus_ai_suggest(
     let engine = engine_for(&app, &db, &state, &settings);
     let key = format!("suggest:{}", source_url.trim());
     let turn = engine.turn.clone();
-    run_request(&app, &state, key, request_id, "suggest", None, turn, async move {
+    run_request(&state, key, request_id, turn, async move {
         let source = source_ctx(
             &db,
             &source_url,
@@ -534,12 +489,9 @@ pub async fn focus_ai_analyze(
     let id = todo_id.clone();
     let turn = engine.turn.clone();
     run_request(
-        &app,
         &state,
         key,
         request_id,
-        "analyze",
-        Some(&todo_id),
         turn,
         async move {
             let todo = get_todo(&db, &id).await?;
@@ -678,12 +630,9 @@ pub async fn focus_ai_plan_today(
     let engine = engine_for(&app, &db, &state, &settings);
     let turn = engine.turn.clone();
     run_request(
-        &app,
         &state,
         "plan".into(),
         request_id,
-        "plan",
-        None,
         turn,
         async move {
             let now = local_now();

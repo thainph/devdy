@@ -672,19 +672,6 @@ export interface AiApply {
   dueTime?: string
 }
 
-export type AiRequestKind = 'suggest' | 'analyze' | 'plan'
-
-/** `focus:ai-progress` payload. */
-export interface AiProgress {
-  request_id: string
-  kind: AiRequestKind
-  todo_id: string | null
-  stage: 'started' | 'done' | 'error' | 'cancelled'
-  error: string | null
-}
-
-export const FOCUS_AI_PROGRESS = 'focus:ai-progress'
-
 /** Command errors are `"<code>: <detail>"`; `cancelled` is bare. */
 export function aiErrorCode(e: unknown): { code: string | null; detail: string } {
   const msg = String(e instanceof Error ? e.message : e)

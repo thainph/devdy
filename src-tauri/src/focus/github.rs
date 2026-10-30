@@ -1,8 +1,7 @@
-//! GitHub source fetch for Focus AI (P3): issue + comments + state + labels +
+//! GitHub source fetch for Focus AI: issue + comments + state + labels +
 //! assignees + milestone over REST with the project's GitHub account, plus the
 //! issue's Start / Deadline / Status on the project's board (one GraphQL
 //! query on the issue's `projectItems`). Read-only.
-#![allow(dead_code)] // Used by the Focus AI commands (P3).
 
 use super::source_content::{BoardFields, IssueComment, IssueData};
 use crate::commands::github::{board_item_fields, is_bot_user, parse_board_mappings};
@@ -32,9 +31,6 @@ pub trait GithubFetch: Send + Sync {
         repo: &str,
         number: u64,
     ) -> Result<IssueData, CodedError>;
-
-    /// Login of the project's GitHub account (prompt context), if known.
-    async fn my_login(&self, project_id: &str) -> Option<String>;
 }
 
 /// HTTP status → source error code.
@@ -333,19 +329,6 @@ impl GithubFetch for OctoGithub {
             board,
             board_unavailable,
         })
-    }
-
-    async fn my_login(&self, project_id: &str) -> Option<String> {
-        sqlx::query_scalar::<_, Option<String>>(
-            "SELECT a.username FROM projects p JOIN github_accounts a \
-             ON a.id = p.github_account_id WHERE p.id = ?",
-        )
-        .bind(project_id)
-        .fetch_optional(&self.db)
-        .await
-        .ok()
-        .flatten()
-        .flatten()
     }
 }
 

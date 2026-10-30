@@ -434,14 +434,6 @@ impl SlackThreadsState {
         self.queue.lock().is_ok_and(|q| q.running.contains(id))
     }
 
-    /// A job for `id` is queued or running.
-    #[allow(dead_code)] // Focus AI (P3) waits on a Slack refresh with it.
-    pub fn is_queued(&self, id: &str) -> bool {
-        self.queue
-            .lock()
-            .is_ok_and(|q| q.running.contains(id) || q.pending.iter().any(|x| x == id))
-    }
-
     /// Queue a job, or flag one re-run if a job for `id` is in flight.
     pub fn enqueue(&self, id: &str, from_api: bool) {
         if let Ok(mut q) = self.queue.lock() {

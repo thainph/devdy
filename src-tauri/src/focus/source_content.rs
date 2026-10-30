@@ -10,7 +10,6 @@
 //! `truncated` records the cut. GitHub's `hash` is the sha256 of the text;
 //! Slack's is over the original messages (`ts|user_id|subtype|text_raw` per
 //! line), so a re-translation alone never changes it.
-#![allow(dead_code)] // Used by the Focus AI commands (P3).
 
 use crate::slack_threads::mrkdwn::{self, Links, Names};
 use sha2::{Digest as _, Sha256};
@@ -82,23 +81,6 @@ pub struct IssueData {
     pub board: Option<BoardFields>,
     /// The board query failed this time (board fields unknown, not absent).
     pub board_unavailable: bool,
-}
-
-impl IssueData {
-    pub fn is_closed(&self) -> bool {
-        self.state.eq_ignore_ascii_case("closed")
-    }
-
-    /// BR-07: board `Deadline`, else the milestone due date.
-    pub fn hard_deadline(&self) -> Option<(String, String)> {
-        if let Some(d) = self.board.as_ref().and_then(|b| b.deadline.clone()) {
-            return Some(("Deadline (board)".to_string(), d));
-        }
-        self.milestone_due.clone().map(|d| {
-            let name = self.milestone.clone().unwrap_or_default();
-            (format!("Milestone {name}").trim().to_string(), d)
-        })
-    }
 }
 
 pub fn sha256_hex(s: &str) -> String {
@@ -367,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn github_content_and_hard_deadline() {
+    fn github_content_lists_issue_fields() {
         let mut i = IssueData {
             owner: "org".into(),
             repo: "app".into(),
@@ -397,20 +379,11 @@ mod tests {
              2026-10-01T00:00:00+00:00\n\nSteps…\n--- [2026-10-02T00:00:00+00:00] bob commented:\n\
              Fixed in #13"
         );
-        assert!(i.is_closed());
-        assert_eq!(
-            i.hard_deadline(),
-            Some(("Milestone v1".into(), "2026-10-30".into()))
-        );
         i.board = Some(BoardFields {
             start: None,
             deadline: Some("2026-11-05".into()),
             status: Some("In progress".into()),
         });
-        assert_eq!(
-            i.hard_deadline(),
-            Some(("Deadline (board)".into(), "2026-11-05".into()))
-        );
         assert!(github_content(&i)
             .text
             .contains("Board: Start=- Deadline=2026-11-05 Status=In progress"));
