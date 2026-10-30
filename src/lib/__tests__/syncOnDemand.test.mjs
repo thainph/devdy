@@ -3,6 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  runProgress,
   SYNC_CATEGORY_IDS,
   allCategoriesOn,
   autoSource,
@@ -345,4 +346,15 @@ test('autoSource saves the only other device, or the only online one when none i
   assert.equal(autoSource(null, [me, a, b], null), null)
   assert.equal(autoSource('a', [me, a, b], ['b']), null)
   assert.equal(autoSource(null, [me], null), null)
+})
+
+test('runProgress shows file bytes once contents are read, else changes', () => {
+  assert.equal(runProgress(null), null)
+  assert.equal(runProgress({ phase: 'requesting' }), null)
+  assert.deepEqual(runProgress({ phase: 'pulling', ops: 120 }), { kind: 'ops', ops: 120 })
+  assert.deepEqual(
+    runProgress({ phase: 'pulling', ops: 9, done_bytes: 300, total_bytes: 1200, files_done: 1, files_total: 4 }),
+    { kind: 'files', done: 300, total: 1200, filesDone: 1, filesTotal: 4, percent: 25 },
+  )
+  assert.equal(runProgress({ phase: 'pulling', done_bytes: 5000, total_bytes: 1000 }).percent, 100)
 })

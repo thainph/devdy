@@ -19,7 +19,7 @@ export interface SyncRunReport {
 }
 
 /** `flushing` is no longer sent (the source serves its change feed directly). */
-export type SyncRunPhase = 'requesting' | 'flushing' | 'pulling' | 'applying' | 'done' | 'error'
+export type SyncRunPhase = 'requesting' | 'pulling' | 'applying' | 'done' | 'error'
 
 /** `sync://run` payload. */
 export interface SyncRunEvent {
@@ -579,4 +579,28 @@ export function pickSource(
   const others = devices.filter((d) => !d.is_self)
   if (saved && others.some((d) => d.id === saved)) return saved
   return others.find((d) => online?.includes(d.id))?.id ?? others[0]?.id ?? null
+}
+
+/** What a `sync://run` event says about progress: file bytes once contents
+ *  are being read, else the changes received so far. */
+export type RunProgress =
+  | { kind: 'files'; done: number; total: number; filesDone: number; filesTotal: number; percent: number }
+  | { kind: 'ops'; ops: number }
+  | null
+
+export function runProgress(e: SyncRunEvent | null | undefined): RunProgress {
+  if (!e) return null
+  const total = e.total_bytes ?? 0
+  if (total > 0) {
+    const done = Math.min(e.done_bytes ?? 0, total)
+    return {
+      kind: 'files',
+      done,
+      total,
+      filesDone: e.files_done ?? 0,
+      filesTotal: e.files_total ?? 0,
+      percent: Math.floor((done / total) * 100),
+    }
+  }
+  return e.ops ? { kind: 'ops', ops: e.ops } : null
 }
