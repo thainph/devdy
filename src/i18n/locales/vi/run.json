@@ -217,9 +217,11 @@
     "unknown": "không rõ",
     "noRepo": "không có git repository",
     "transcriptMissing": "Transcript của session chưa đồng bộ về máy này — tin nhắn tiếp theo sẽ bắt đầu hội thoại mới, không có ngữ cảnh trước đó.",
-    "stillSyncing": "Đang đồng bộ output cuối cùng từ {device} ({percent}%).",
-    "retry": "Thử lại",
+    "stillSyncing": "Vẫn còn thiếu một phần output cuối cùng từ {device} ({percent}%).",
     "continueAnyway": "Vẫn tiếp tục",
-    "continuedOn": "Session này đã được tiếp tục trên {device}; đã dừng ở máy này."
+    "continuedOn": "Session này đã được tiếp tục trên {device}; đã dừng ở máy này.",
+    "syncFrom": "Sync từ {device}",
+    "unreachableTitle": "Không kết nối được {device}",
+    "unreachableMessage": "Devdy trên {device} đang offline hoặc không phản hồi, nên máy này không kiểm tra được phiên còn đang chạy ở đó hay không. Nếu còn, cả hai máy sẽ cùng làm trên một phiên.\n\nVẫn tiếp tục ở đây?"
   }
 }

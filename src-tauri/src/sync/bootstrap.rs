@@ -1873,7 +1873,7 @@ mod tests {
         let got_note = || -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
             let (db, m, dev_b) = (db_m.clone(), engine_m.handle(), dev_b.clone());
             Box::pin(async move {
-                m.run_from(&dev_b, &|_| {}).await.is_ok() && count(&db, "SELECT COUNT(*) FROM notes WHERE id = 'no-B'").await == 1
+                m.run_from(&dev_b, &|_, _| {}).await.is_ok() && count(&db, "SELECT COUNT(*) FROM notes WHERE id = 'no-B'").await == 1
             })
         };
         eventually("B's note on M after syncing from B", got_note).await;

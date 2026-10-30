@@ -582,6 +582,32 @@ pub struct TakeOverResult {
     pub syncing: Option<SyncGap>,
     /// The synced CLI transcript is present, so the resume keeps the context.
     pub transcript_available: bool,
+    /// Set (with `taken = false`) when the owner could not be synced from
+    /// first (its code: `peer_offline`, `peer_paused`…): the session may still
+    /// run there. Continue only once the user confirmed (`stale_ok`).
+    pub owner_unreachable: Option<String>,
+}
+
+/// "Continue here" on a run another device owns decides on fresh data: sync
+/// from the owner first (its lease renewal and final output come along).
+/// Without automatic sync the last pulled lease is always old, so it would
+/// read as expired even while the session still runs there. `Err(code)` when
+/// the owner cannot be reached.
+pub async fn refresh_from_owner(sync: Option<crate::sync::engine::EngineHandle>, owner: &str) -> Result<(), String> {
+    let h = sync.ok_or_else(|| crate::sync::engine::NOT_CONNECTED.to_string())?;
+    h.run_from(owner, &|_, _| {}).await.map(drop)
+}
+
+/// The remote owner of `run_id` as seen here, if another device owns it.
+async fn remote_owner(db: &Db, run_id: &str) -> Result<Option<String>, String> {
+    let owner: Option<String> = sqlx::query_scalar("SELECT owner_device FROM runs WHERE id = ?")
+        .bind(run_id)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| e.to_string())?
+        .flatten();
+    let me = local_device(db).await?;
+    Ok(owner.filter(|o| is_remote(Some(o), &me.id)))
 }
 
 /// This device's copy of the run's CLI transcript (Claude session file or
@@ -885,18 +911,32 @@ pub async fn sync_run_owners(
 }
 
 /// "Continue here": move a session owned by another device to this one. A
-/// run live here already is a no-op success. While the owner's final output
-/// is still syncing the gap is returned (`skip_sync` continues anyway); with
+/// run live here already is a no-op success. The owner is synced from first
+/// ([`refresh_from_owner`]); when it cannot be reached `owner_unreachable` is
+/// returned unless `stale_ok`. While the owner's final output is still
+/// syncing the gap is returned (`skip_sync` continues anyway); with
 /// `force = false` a git mismatch is returned for confirmation instead.
 #[tauri::command]
 pub async fn sync_take_over_run(
     db: tauri::State<'_, Db>,
     registry: tauri::State<'_, RunRegistry>,
+    sync: tauri::State<'_, crate::commands::sync::SyncManager>,
     run_id: String,
     force: Option<bool>,
     skip_sync: Option<bool>,
+    stale_ok: Option<bool>,
 ) -> Result<TakeOverResult, String> {
     let live_here = registry.lock().await.contains_key(&run_id);
+    if !live_here {
+        if let Some(owner) = remote_owner(db.inner(), &run_id).await? {
+            if let Err(code) = refresh_from_owner(sync.handle().await, &owner).await {
+                tracing::info!(event = "sync_take_over_owner_unreachable", code = %code);
+                if !stale_ok.unwrap_or(false) {
+                    return Ok(TakeOverResult { owner_unreachable: Some(code), ..Default::default() });
+                }
+            }
+        }
+    }
     take_over(db.inner(), &run_id, live_here, force.unwrap_or(false), skip_sync.unwrap_or(false)).await
 }
 

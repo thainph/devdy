@@ -11,7 +11,8 @@ export interface SyncRunReport {
   last_seq: number
 }
 
-export type SyncRunPhase = 'requesting' | 'pulling' | 'applying' | 'done' | 'error'
+/** `flushing`: the source is pushing its changes (`message` = how many so far). */
+export type SyncRunPhase = 'requesting' | 'flushing' | 'pulling' | 'applying' | 'done' | 'error'
 
 /** `sync://run` payload. */
 export interface SyncRunEvent {

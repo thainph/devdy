@@ -575,7 +575,8 @@
       },
       "creator": "Created the group",
       "removeHelp": "A removed device keeps its copy of the group key but can no longer reach the group's data on the relay (the key is not rotated in this version).",
-      "onlyCreator": "Only the device that created the group ({name}) can remove devices."
+      "onlyCreator": "Only the device that created the group ({name}) can remove devices.",
+      "leaderPending": "{name} has not confirmed it took over the background jobs yet (it may be offline). This device keeps running them until it does."
     },
     "projects": {
       "title": "Project folders on this machine",
@@ -637,7 +638,7 @@
       "host_unsupported": "That machine's Devdy is too old to add devices. Update it first.",
       "not_accepting": "That machine is not accepting new devices. Open Settings → Sync → Accept a new device on it, then try again.",
       "declined": "The request was declined or not answered in time on that machine.",
-      "busy": "That machine is answering another join request. Try again in a moment.",
+      "busy": "That machine is busy with other requests. Try again in a moment.",
       "relay_not_configured": "This machine has no relay of its own yet: set the relay URL and token in Settings → Remote Control first.",
       "relay_error": "That machine could not reach the relay. Try again.",
       "sync_bootstrap_runs_live": "Stop running sessions on this machine before merging.",
@@ -651,7 +652,7 @@
       "sync_bootstrap_in_progress": "Sync is merging this machine's data. Try again in a moment.",
       "auth_failed": "The relay refused this machine's relay token. Check the relay URL and token in Settings → Remote Control.",
       "relay_behind": "The relay lost changes this machine already received (it was restored from a backup). Sync is stopped until this machine merges with the group again.",
-      "sync_leave_handoff_pending": "This device leads the group's background jobs or created the group, and the relay could not be reached to hand that on.",
+      "sync_leave_handoff_pending": "This device leads the group's background jobs or created the group, and the hand-off could not be completed (the relay or the new leader could not be reached).",
       "peer_offline": "The source machine is offline — open Devdy on it and try again.",
       "peer_paused": "Sync is paused on the source machine. Resume it there, then try again.",
       "peer_timeout": "The source machine did not answer in time. Check that it is awake and online, then try again.",
@@ -778,6 +779,7 @@
       "title": "Sync from {name}",
       "phase": {
         "requesting": "Asking {name} to send its changes…",
+        "flushing": "{name} is sending its changes ({n} so far)…",
         "pulling": "Downloading changes…",
         "applying": "Applying changes…",
         "done": "Data received",
