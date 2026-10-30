@@ -31,7 +31,8 @@ use crate::db::Db;
 
 pub const TBL: &str = "secret";
 pub const SETTING: &str = "sync_secrets_enabled";
-const HASH_PREFIX: &str = "secret_hash:";
+/// `sync_state` key prefix of the last synced hash of each Keychain item.
+pub const HASH_PREFIX: &str = "secret_hash:";
 const SALT_KEY: &str = "secret_salt";
 /// `sync_state` key: JSON list of Keychain moves still to carry out.
 const KEY_MOVES_KEY: &str = "secret_key_moves";

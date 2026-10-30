@@ -25,8 +25,11 @@ export const syncRelayReady = () => invoke<boolean>('sync_relay_ready')
 /** Joins without syncing: preview + commit the first-join merge next. */
 export const syncJoin = (deviceAlias: string, password: string) =>
   invoke<SyncStatus>('sync_join', { deviceAlias, password })
-/** Resolves to whether the relay confirmed the revoke. */
-export const syncLeave = () => invoke<boolean>('sync_leave')
+/**
+ * Resolves to whether the relay confirmed the revoke. A leader / creator whose role hand-off could
+ * not be pushed is refused with `sync_leave_handoff_pending` unless `force`.
+ */
+export const syncLeave = (force = false) => invoke<boolean>('sync_leave', { force })
 export const syncPause = (paused: boolean) => invoke<SyncStatus>('sync_pause', { paused })
 export const syncNow = () => invoke<void>('sync_now')
 export const syncGetSecrets = () => invoke<boolean>('sync_get_secrets')

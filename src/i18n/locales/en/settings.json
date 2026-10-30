@@ -607,6 +607,11 @@
         "title": "Leave the sync group?",
         "message": "This machine stops syncing. Its local data stays; to join again you need another device's name and master password.",
         "confirmLabel": "Leave"
+      },
+      "handoff": {
+        "title": "Leave without handing on its role?",
+        "message": "This device runs the group's background jobs (Pulse, Slack polling) or created the group, and the relay could not be reached to hand that role to another device. If you leave now, the other devices keep waiting for it: pick a new leader on one of them afterwards. Go back online (and unpause sync) to hand it on properly.",
+        "confirmLabel": "Leave anyway"
       }
     },
     "relayMissing": "This machine has no relay of its own yet: set the relay URL and token in Settings → Remote Control first.",
@@ -630,7 +635,8 @@
       "sync_bootstrap_not_pending": "There is no merge waiting on this machine.",
       "sync_bootstrap_in_progress": "Sync is merging this machine's data. Try again in a moment.",
       "auth_failed": "The relay refused this machine's relay token. Check the relay URL and token in Settings → Remote Control.",
-      "relay_behind": "The relay lost changes this machine already received (it was restored from a backup). Sync is stopped until this machine merges with the group again."
+      "relay_behind": "The relay lost changes this machine already received (it was restored from a backup). Sync is stopped until this machine merges with the group again.",
+      "sync_leave_handoff_pending": "This device leads the group's background jobs or created the group, and the relay could not be reached to hand that on."
     },
     "accept": {
       "title": "Accept a new device",

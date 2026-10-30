@@ -469,7 +469,18 @@ async function leave() {
   leaving.value = true
   try {
     setAcceptUntil(null)
-    const revoked = await syncLeave()
+    const revoked = await syncLeave().catch(async (e: unknown) => {
+      // Leader / creator offline: its role hand-off would be lost; leave only if confirmed.
+      if (syncErrorCode(e) !== 'sync_leave_handoff_pending') throw e
+      const anyway = await confirm({
+        title: t('settings.sync.leave.handoff.title'),
+        message: t('settings.sync.leave.handoff.message'),
+        confirmLabel: t('settings.sync.leave.handoff.confirmLabel'),
+        variant: 'destructive',
+      })
+      return anyway ? syncLeave(true) : null
+    })
+    if (revoked === null) return
     await store.refresh()
     devices.value = []
     mappings.value = []
