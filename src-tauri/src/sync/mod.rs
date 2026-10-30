@@ -22,8 +22,11 @@ pub mod secrets;
 
 pub mod crypto;
 pub mod engine;
+pub mod folder;
 pub mod leader;
 pub mod pair;
+pub mod peer;
+pub mod prefs;
 pub mod transport;
 #[cfg(test)]
 mod test_relay;
@@ -62,6 +65,15 @@ pub async fn install(db: &Db) -> Result<String, String> {
         .execute(db)
         .await
         .map_err(|e| e.to_string())?;
+    // Tests take projects synced from another device, like before selective sync.
+    #[cfg(test)]
+    sqlx::query("INSERT OR IGNORE INTO sync_state (key, value) VALUES (?, '1')")
+        .bind(prefs::SYNCED_PROJECT_ENABLED_KEY)
+        .execute(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    prefs::seed(db).await?;
+    prefs::install_ref_triggers(db).await?;
     capture::settle_membership(db).await?;
     capture::install_triggers(db).await?;
     pair::install_past_device_triggers(db).await?;
