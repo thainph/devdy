@@ -8,15 +8,23 @@
 //! Content is cut into 1 MiB plaintext chunks, each sealed and stored as a
 //! relay blob. `sync_blobs` remembers which plaintext chunk is already up, so a
 //! growing append-only log re-uploads only its last partial chunk + new ones.
+//! A grown append-only file is hashed from the SHA-256 state recorded after its
+//! last full chunk (`hash_state`), not from the start. While its run is live,
+//! its trailing partial chunk is only published once the file has been idle
+//! for `ScanState::tail_idle` (full chunks go at once).
 //! The tail blob it replaced is queued in `sync_blob_release` and released on
-//! the relay (`blob_release`) once the new manifest is pushed.
+//! the relay (`blob_release`) once the new manifest was pushed; a release whose
+//! manifest is dropped unpushed is cancelled.
 //! The `file` op itself goes through `sync_outbox` like a row change.
 //!
 //! Relay -> local (`apply_op`): last-writer-wins by HLC (via `sync_rows`),
 //! missing chunks downloaded and verified, written atomically (tmp + rename)
-//! at this device's path. A local file with content sync never saw is not
-//! overwritten when it is newer (or, for append-only files, diverged): the
-//! remote version goes to a `<name>.conflict-<device>` sibling instead.
+//! at this device's path, or appended in place when the incoming version of an
+//! append-only file extends the local one. A local file with content sync
+//! never saw is not overwritten when it is newer (or, for append-only files,
+//! unless it is a prefix of the incoming version): the remote version goes to a
+//! `<name>.conflict-<device>` sibling instead, and the local version keeps its
+//! place in the outbox. File IO and hashing run on the blocking pool.
 //! Library files authored (or edited) here are moved to the legacy backups
 //! before a remote version replaces them. Files written here are recorded with
 //! origin = 'remote' so the session watcher does not import them again.
@@ -90,6 +98,22 @@ impl FileKind {
     fn append_only(self) -> bool {
         matches!(self, FileKind::RunLog | FileKind::ClaudeTranscript | FileKind::CodexRollout)
     }
+
+    /// Files whose cwd is rewritten to this device's project path.
+    fn rewrites_cwd(self) -> bool {
+        matches!(self, FileKind::ClaudeTranscript | FileKind::CodexRollout)
+    }
+
+    /// The only modes a file of this kind is written with: library files 0644
+    /// (0755 when the sender's copy was executable), keys 0600, the rest the
+    /// default.
+    fn mode(self, sent: Option<u32>) -> Option<u32> {
+        match self {
+            FileKind::SshKey => Some(0o600),
+            FileKind::Library => Some(if sent.unwrap_or(0) & 0o111 != 0 { 0o755 } else { 0o644 }),
+            _ => None,
+        }
+    }
 }
 
 /// The op pk of a file.
@@ -112,6 +136,9 @@ pub struct Tracked {
     pub kind: FileKind,
     pub local: PathBuf,
     pub portable: String,
+    /// Still being written (its run is running, or it was kicked): an
+    /// append-only file's partial tail waits until the file is idle.
+    pub live: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -139,6 +166,7 @@ struct Record {
     /// else `None`: the file is the synced content.
     local_size: Option<u64>,
     local_sha256: Option<String>,
+    hash_state: Option<HashState>,
 }
 
 impl Record {
@@ -150,6 +178,138 @@ impl Record {
     fn disk_sha(&self) -> &str {
         self.local_sha256.as_deref().unwrap_or(&self.sha256)
     }
+
+    /// The synced content's SHA-256 state after its full chunks, when it can
+    /// be resumed for the file on disk (same inode).
+    fn synced_mid(&self, ino: u64) -> Option<Mid> {
+        let hs = self.hash_state.as_ref().filter(|h| h.ino != 0 && h.ino == ino)?;
+        let mid = hs.synced?;
+        let full = (mid.off / CHUNK_SIZE as u64) as usize;
+        (mid.off % CHUNK_SIZE as u64 == 0 && mid.off <= self.size && full <= self.chunks.len()).then_some(mid)
+    }
+}
+
+// ---- Resumable SHA-256 ---------------------------------------------------------
+
+const SHA256_IV: [u32; 8] =
+    [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+
+const SHA256_K: [u32; 64] = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98,
+    0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
+    0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8,
+    0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+    0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819,
+    0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a,
+    0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+    0xc67178f2,
+];
+
+/// The SHA-256 compression function over one 64-byte block (FIPS 180-4),
+/// which `sha2` only exposes behind a feature.
+fn compress(h: &mut [u32; 8], block: &[u8; 64]) {
+    let mut w = [0u32; 64];
+    for (i, word) in block.as_chunks::<4>().0.iter().enumerate() {
+        w[i] = u32::from_be_bytes(*word);
+    }
+    for i in 16..64 {
+        let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+        let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+        w[i] = w[i - 16].wrapping_add(s0).wrapping_add(w[i - 7]).wrapping_add(s1);
+    }
+    let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh] = *h;
+    for i in 0..64 {
+        let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+        let ch = (e & f) ^ (!e & g);
+        let t1 = hh.wrapping_add(s1).wrapping_add(ch).wrapping_add(SHA256_K[i]).wrapping_add(w[i]);
+        let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+        let maj = (a & b) ^ (a & c) ^ (b & c);
+        let t2 = s0.wrapping_add(maj);
+        hh = g;
+        g = f;
+        f = e;
+        e = d.wrapping_add(t1);
+        d = c;
+        c = b;
+        b = a;
+        a = t1.wrapping_add(t2);
+    }
+    for (x, v) in h.iter_mut().zip([a, b, c, d, e, f, g, hh]) {
+        *x = x.wrapping_add(v);
+    }
+}
+
+/// SHA-256 state after the first `off` bytes of some content (`off` a
+/// multiple of 64), so content that grew is hashed from there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct Mid {
+    off: u64,
+    h: [u32; 8],
+}
+
+impl Default for Mid {
+    fn default() -> Self {
+        Mid { off: 0, h: SHA256_IV }
+    }
+}
+
+impl Mid {
+    /// Absorb the whole 64-byte blocks of `bytes` (the content from `off` on);
+    /// returns how many bytes that was.
+    fn absorb(&mut self, bytes: &[u8]) -> usize {
+        let n = bytes.len() / 64 * 64;
+        for block in bytes[..n].as_chunks::<64>().0 {
+            compress(&mut self.h, block);
+        }
+        self.off += n as u64;
+        n
+    }
+
+    /// Hex sha256 of the content absorbed so far followed by `rest`.
+    fn finish(mut self, rest: &[u8]) -> String {
+        let n = self.absorb(rest);
+        let rest = &rest[n..];
+        let bits = (self.off + rest.len() as u64) * 8;
+        let mut last = Vec::with_capacity(128);
+        last.extend_from_slice(rest);
+        last.push(0x80);
+        while last.len() % 64 != 56 {
+            last.push(0);
+        }
+        last.extend_from_slice(&bits.to_be_bytes());
+        self.absorb(&last);
+        hex::encode(self.h.iter().flat_map(|w| w.to_be_bytes()).collect::<Vec<u8>>())
+    }
+}
+
+/// `sync_files.hash_state`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct HashState {
+    /// Inode of the file on disk the states were taken from (0 = unknown: a
+    /// replaced file is re-read from the start).
+    ino: u64,
+    /// Synced content after its full chunks (`off` = full chunks × CHUNK_SIZE).
+    synced: Option<Mid>,
+    /// The file on disk, when it differs from the synced content (cwd rewrite).
+    disk: Option<Mid>,
+}
+
+fn inode(meta: &fs::Metadata) -> u64 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        meta.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        0
+    }
+}
+
+/// Run blocking file IO / hashing off the async runtime.
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
+    tokio::task::spawn_blocking(f).await.map_err(|e| e.to_string())
 }
 
 // ---- Scan cadence ------------------------------------------------------------
@@ -168,13 +328,41 @@ impl Default for Timing {
     }
 }
 
-#[derive(Default)]
+impl Timing {
+    /// How long a live append-only file must stay untouched before its
+    /// partial tail goes up: two quick scans, at most [`TAIL_IDLE`] (10 s with
+    /// the default cadence).
+    pub fn tail_idle(&self) -> Duration {
+        TAIL_IDLE.min(self.quick * 2)
+    }
+}
+
+/// How long a live append-only file must stay untouched before its trailing
+/// partial chunk is published.
+pub const TAIL_IDLE: Duration = Duration::from_secs(10);
+
 pub struct ScanState {
     last_quick: Option<Instant>,
     last_full: Option<Instant>,
     /// Codex thread id -> rollout, rebuilt on every full scan (a Devdy-native
     /// Codex run does not record its rollout path).
-    codex_index: HashMap<String, PathBuf>,
+    codex_index: std::sync::Arc<HashMap<String, PathBuf>>,
+    /// Live files whose partial tail is not published yet: rechecked on every
+    /// quick scan until it is.
+    tail_pending: BTreeSet<Tracked>,
+    pub tail_idle: Duration,
+}
+
+impl Default for ScanState {
+    fn default() -> Self {
+        ScanState {
+            last_quick: None,
+            last_full: None,
+            codex_index: Default::default(),
+            tail_pending: BTreeSet::new(),
+            tail_idle: TAIL_IDLE,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -262,9 +450,9 @@ fn walk_files(root: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn track(paths: &PathCtx, kind: FileKind, local: PathBuf, out: &mut Vec<Tracked>) {
+fn track(paths: &PathCtx, kind: FileKind, local: PathBuf, live: bool, out: &mut Vec<Tracked>) {
     let portable = portable_path(paths, &local.to_string_lossy());
-    out.push(Tracked { kind, local, portable });
+    out.push(Tracked { kind, local, portable, live });
 }
 
 /// Library files: every file of every skill folder, every rule file and the
@@ -273,31 +461,36 @@ async fn library_files(db: &Db, paths: &PathCtx, out: &mut Vec<Tracked>) -> Resu
     if paths.app_data.is_none() {
         return Ok(());
     }
-    let mut files = Vec::new();
-    for src in sqlx::query_scalar::<_, String>("SELECT source_path FROM skills").fetch_all(db).await.map_err(err)? {
-        let p = PathBuf::from(src);
-        if under_app_data(paths, &p) {
-            walk_files(&p, &mut files);
-        }
-    }
-    for row in sqlx::query("SELECT name, source_path FROM rules").fetch_all(db).await.map_err(err)? {
-        let name: String = row.get("name");
-        let p = PathBuf::from(row.get::<String, _>("source_path"));
-        if !under_app_data(paths, &p) {
-            continue;
-        }
-        if p.is_file() {
-            files.push(p.clone());
-        }
-        if let Some(dir) = p.parent() {
-            let codex = dir.join(".codex-skills").join(&name);
-            if codex.is_dir() {
-                walk_files(&codex, &mut files);
+    let skills: Vec<String> = sqlx::query_scalar("SELECT source_path FROM skills").fetch_all(db).await.map_err(err)?;
+    let rules: Vec<(String, String)> = sqlx::query_as("SELECT name, source_path FROM rules").fetch_all(db).await.map_err(err)?;
+    let ctx = paths.clone();
+    let files = blocking(move || {
+        let mut files = Vec::new();
+        for p in skills.into_iter().map(PathBuf::from) {
+            if under_app_data(&ctx, &p) {
+                walk_files(&p, &mut files);
             }
         }
-    }
+        for (name, src) in rules {
+            let p = PathBuf::from(src);
+            if !under_app_data(&ctx, &p) {
+                continue;
+            }
+            if p.is_file() {
+                files.push(p.clone());
+            }
+            if let Some(dir) = p.parent() {
+                let codex = dir.join(".codex-skills").join(&name);
+                if codex.is_dir() {
+                    walk_files(&codex, &mut files);
+                }
+            }
+        }
+        files
+    })
+    .await?;
     for f in files {
-        track(paths, FileKind::Library, f, out);
+        track(paths, FileKind::Library, f, false, out);
     }
     Ok(())
 }
@@ -309,10 +502,12 @@ async fn ssh_key_files(db: &Db, paths: &PathCtx, out: &mut Vec<Tracked>) -> Resu
             .fetch_all(db)
             .await
             .map_err(err)?;
-    for p in rows.into_iter().map(PathBuf::from) {
-        if p.starts_with(&keys_root) && p.is_file() {
-            track(paths, FileKind::SshKey, p, out);
-        }
+    let keys = blocking(move || {
+        rows.into_iter().map(PathBuf::from).filter(|p| p.starts_with(&keys_root) && p.is_file()).collect::<Vec<_>>()
+    })
+    .await?;
+    for p in keys {
+        track(paths, FileKind::SshKey, p, false, out);
     }
     Ok(())
 }
@@ -337,59 +532,65 @@ async fn run_files(
     db: &Db,
     paths: &PathCtx,
     running_only: bool,
-    codex: &HashMap<String, PathBuf>,
+    codex: std::sync::Arc<HashMap<String, PathBuf>>,
     out: &mut Vec<Tracked>,
 ) -> Result<(), String> {
     let sql = format!(
         "SELECT r.id, r.engine, r.session_id, r.output_path, r.transcript_path, p.path AS project_path, \
-                a.config_dir \
+                a.config_dir, COALESCE(r.status = 'running', 0) AS live \
          FROM runs r JOIN projects p ON p.id = r.project_id \
          LEFT JOIN claude_accounts a ON a.id = r.claude_account_id {}",
         if running_only { "WHERE r.status = 'running'" } else { "" }
     );
-    let rows = sqlx::query(&sql).fetch_all(db).await.map_err(err)?;
-    for row in rows {
-        let id: String = row.get("id");
-        let engine: Option<String> = row.get("engine");
-        let session: Option<String> = row.get("session_id");
-        let output: Option<String> = row.get("output_path");
-        let transcript: Option<String> = row.get("transcript_path");
-        let project: String = row.get("project_path");
-        let config_dir: Option<String> = row.get("config_dir");
-
-        let conventional = Path::new(&project).join(".devdy").join("runs").join(format!("{id}.log"));
-        let mut logs: Vec<PathBuf> = output.map(PathBuf::from).into_iter().collect();
-        if !logs.contains(&conventional) {
-            logs.push(conventional);
+    let rows: Vec<RunFileRow> = sqlx::query_as(&sql).fetch_all(db).await.map_err(err)?;
+    let ctx = paths.clone();
+    let found = blocking(move || {
+        let mut out = Vec::new();
+        for row in rows {
+            run_row_files(&ctx, row, &codex, &mut out);
         }
-        for log in logs.into_iter().filter(|p| p.is_file()) {
-            track(paths, FileKind::RunLog, log, out);
-        }
-
-        let recorded = transcript.map(PathBuf::from).filter(|p| p.is_file());
-        match (engine.as_deref(), session.as_deref()) {
-            (Some("claude"), Some(sid)) => {
-                let file = recorded.or_else(|| {
-                    let root = match config_dir.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
-                        Some(d) => PathBuf::from(d),
-                        None => paths.home.join(".claude"),
-                    };
-                    let enc = crate::commands::sessions::encode_project_dir(&project);
-                    Some(root.join("projects").join(enc).join(format!("{sid}.jsonl"))).filter(|p| p.is_file())
-                });
-                if let Some(f) = file {
-                    track(paths, FileKind::ClaudeTranscript, f, out);
-                }
-            }
-            (Some("codex"), Some(sid)) => {
-                if let Some(f) = recorded.or_else(|| codex.get(sid).cloned().filter(|p| p.is_file())) {
-                    track(paths, FileKind::CodexRollout, f, out);
-                }
-            }
-            _ => {}
-        }
-    }
+        out
+    })
+    .await?;
+    out.extend(found);
     Ok(())
+}
+
+type RunFileRow = (String, Option<String>, Option<String>, Option<String>, Option<String>, String, Option<String>, bool);
+
+fn run_row_files(paths: &PathCtx, row: RunFileRow, codex: &HashMap<String, PathBuf>, out: &mut Vec<Tracked>) {
+    let (id, engine, session, output, transcript, project, config_dir, live) = row;
+    let conventional = Path::new(&project).join(".devdy").join("runs").join(format!("{id}.log"));
+    let mut logs: Vec<PathBuf> = output.map(PathBuf::from).into_iter().collect();
+    if !logs.contains(&conventional) {
+        logs.push(conventional);
+    }
+    for log in logs.into_iter().filter(|p| p.is_file()) {
+        track(paths, FileKind::RunLog, log, live, out);
+    }
+
+    let recorded = transcript.map(PathBuf::from).filter(|p| p.is_file());
+    match (engine.as_deref(), session.as_deref()) {
+        (Some("claude"), Some(sid)) => {
+            let file = recorded.or_else(|| {
+                let root = match config_dir.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+                    Some(d) => PathBuf::from(d),
+                    None => paths.home.join(".claude"),
+                };
+                let enc = crate::commands::sessions::encode_project_dir(&project);
+                Some(root.join("projects").join(enc).join(format!("{sid}.jsonl"))).filter(|p| p.is_file())
+            });
+            if let Some(f) = file {
+                track(paths, FileKind::ClaudeTranscript, f, live, out);
+            }
+        }
+        (Some("codex"), Some(sid)) => {
+            if let Some(f) = recorded.or_else(|| codex.get(sid).cloned().filter(|p| p.is_file())) {
+                track(paths, FileKind::CodexRollout, f, live, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Every file this device currently tracks.
@@ -402,23 +603,36 @@ async fn collect(
 ) -> Result<Vec<Tracked>, String> {
     let mut out = Vec::new();
     if mode == ScanMode::Full {
-        state.codex_index = codex_index(&paths.home);
+        let home = paths.home.clone();
+        state.codex_index = std::sync::Arc::new(blocking(move || codex_index(&home)).await?);
         library_files(db, paths, &mut out).await?;
         if with_keys {
             ssh_key_files(db, paths, &mut out).await?;
         }
     }
-    run_files(db, paths, mode == ScanMode::Quick, &state.codex_index, &mut out).await?;
-    out.sort();
-    out.dedup();
-    Ok(out)
+    run_files(db, paths, mode == ScanMode::Quick, state.codex_index.clone(), &mut out).await?;
+    out.extend(state.tail_pending.iter().cloned());
+    Ok(dedup_tracked(out))
+}
+
+/// One entry per file; live if any of its sources says so.
+fn dedup_tracked(mut list: Vec<Tracked>) -> Vec<Tracked> {
+    list.sort();
+    let mut out: Vec<Tracked> = Vec::with_capacity(list.len());
+    for t in list {
+        match out.last_mut() {
+            Some(prev) if prev.kind == t.kind && prev.local == t.local && prev.portable == t.portable => prev.live |= t.live,
+            _ => out.push(t),
+        }
+    }
+    out
 }
 
 // ---- Records -----------------------------------------------------------------
 
 async fn load_record(conn: &mut SqliteConnection, kind: FileKind, portable: &str) -> Result<Option<Record>, String> {
     let row = sqlx::query(
-        "SELECT local_path, size, sha256, chunks_json, mtime, mode, deleted, origin, local_size, local_sha256 \
+        "SELECT local_path, size, sha256, chunks_json, mtime, mode, deleted, origin, local_size, local_sha256, hash_state \
          FROM sync_files WHERE kind = ? AND path = ?",
     )
     .bind(kind.as_str())
@@ -437,6 +651,7 @@ async fn load_record(conn: &mut SqliteConnection, kind: FileKind, portable: &str
         origin: r.get("origin"),
         local_size: r.get::<Option<i64>, _>("local_size").map(|n| n.max(0) as u64),
         local_sha256: r.get("local_sha256"),
+        hash_state: r.get::<Option<String>, _>("hash_state").and_then(|s| serde_json::from_str(&s).ok()),
     }))
 }
 
@@ -461,7 +676,7 @@ async fn save_record(
          ON CONFLICT(kind, path) DO UPDATE SET local_path = excluded.local_path, size = excluded.size, \
            sha256 = excluded.sha256, chunks_json = excluded.chunks_json, mtime = excluded.mtime, \
            mode = excluded.mode, hlc = COALESCE(excluded.hlc, sync_files.hlc), deleted = excluded.deleted, \
-           origin = excluded.origin, local_size = NULL, local_sha256 = NULL",
+           origin = excluded.origin, local_size = NULL, local_sha256 = NULL, hash_state = NULL",
     )
     .bind(kind.as_str())
     .bind(portable)
@@ -486,6 +701,17 @@ async fn set_local_view(conn: &mut SqliteConnection, kind: FileKind, portable: &
     sqlx::query("UPDATE sync_files SET local_size = ?, local_sha256 = ? WHERE kind = ? AND path = ?")
         .bind(size as i64)
         .bind(sha)
+        .bind(kind.as_str())
+        .bind(portable)
+        .execute(&mut *conn)
+        .await
+        .map_err(err)?;
+    Ok(())
+}
+
+async fn set_hash_state(conn: &mut SqliteConnection, kind: FileKind, portable: &str, hs: &HashState) -> Result<(), String> {
+    sqlx::query("UPDATE sync_files SET hash_state = ? WHERE kind = ? AND path = ?")
+        .bind(serde_json::to_string(hs).map_err(|e| e.to_string())?)
         .bind(kind.as_str())
         .bind(portable)
         .execute(&mut *conn)
@@ -550,14 +776,51 @@ async fn release_superseded(
     Ok(())
 }
 
-/// Blobs whose release is due: the entry carrying the newer manifest left the
-/// outbox (pushed, or beaten by a remote op that superseded it as well).
+/// `sync_blob_release.after_seq` of a release whose manifest was pushed.
+const RELEASE_READY: i64 = 0;
+
+/// Called by `mark_pushed(up_to)` before it deletes the outbox entries up to
+/// `up_to`: a release becomes due when the newer manifest went out, i.e. the
+/// whole outbox group of its file (pending sends the group's newest entry)
+/// was pushed. A release whose entry is deleted while the group's newer entry
+/// stays (not pushed in this batch) moves to that entry.
+pub async fn releases_pushed(conn: &mut SqliteConnection, up_to: i64) -> Result<(), String> {
+    let group_max = "(SELECT MAX(o2.seq) FROM sync_outbox o2 WHERE o2.tbl = o.tbl AND o2.pk = o.pk)";
+    sqlx::query(&format!(
+        "UPDATE sync_blob_release SET after_seq = {RELEASE_READY} WHERE after_seq > {RELEASE_READY} AND after_seq IN \
+         (SELECT o.seq FROM sync_outbox o WHERE o.seq <= ?1 AND {group_max} <= ?1)"
+    ))
+    .bind(up_to)
+    .execute(&mut *conn)
+    .await
+    .map_err(err)?;
+    sqlx::query(&format!(
+        "UPDATE sync_blob_release SET after_seq = \
+           (SELECT {group_max} FROM sync_outbox o WHERE o.seq = sync_blob_release.after_seq) \
+         WHERE after_seq > {RELEASE_READY} AND after_seq <= ?1 \
+           AND EXISTS (SELECT 1 FROM sync_outbox o WHERE o.seq = sync_blob_release.after_seq)"
+    ))
+    .bind(up_to)
+    .execute(&mut *conn)
+    .await
+    .map_err(err)?;
+    Ok(())
+}
+
+/// Blobs whose release is due (their newer manifest was pushed). Releases
+/// whose manifest left the outbox unpushed (beaten by a remote op, dropped)
+/// are cancelled: the relay may still serve the old manifest, which uses them.
 pub async fn releasable_blobs(db: &Db, limit: usize) -> Result<Vec<String>, String> {
-    sqlx::query_scalar(
-        "SELECT blob_sha FROM sync_blob_release r \
-         WHERE NOT EXISTS (SELECT 1 FROM sync_outbox o WHERE o.seq <= r.after_seq) \
-         ORDER BY after_seq LIMIT ?",
-    )
+    sqlx::query(&format!(
+        "DELETE FROM sync_blob_release WHERE after_seq > {RELEASE_READY} \
+         AND NOT EXISTS (SELECT 1 FROM sync_outbox o WHERE o.seq = sync_blob_release.after_seq)"
+    ))
+    .execute(db)
+    .await
+    .map_err(err)?;
+    sqlx::query_scalar(&format!(
+        "SELECT blob_sha FROM sync_blob_release WHERE after_seq = {RELEASE_READY} ORDER BY queued_at LIMIT ?"
+    ))
     .bind(limit as i64)
     .fetch_all(db)
     .await
@@ -626,25 +889,61 @@ fn read_full(f: &mut fs::File, buf: &mut [u8]) -> std::io::Result<usize> {
     Ok(n)
 }
 
-/// Hash `path` in `CHUNK_SIZE` chunks, uploading every chunk the relay does
-/// not have yet (per `sync_blobs`).
-async fn upload_file(conn: &mut SqliteConnection, blobs: &dyn BlobIo, path: &Path) -> Result<Content, StageError> {
+/// Up to `len` bytes of `path` from `at`.
+fn read_at(path: &Path, at: u64, len: usize) -> std::io::Result<Vec<u8>> {
+    let mut f = fs::File::open(path)?;
+    f.seek(SeekFrom::Start(at))?;
+    let mut buf = vec![0u8; len];
+    let n = read_full(&mut f, &mut buf)?;
+    buf.truncate(n);
+    Ok(buf)
+}
+
+fn sha_hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
+/// Where `upload_file` starts: the full chunks before `mid.off` are the
+/// recorded ones (already up).
+struct Resume {
+    mid: Mid,
+    chunks: Vec<ChunkRef>,
+}
+
+/// Hash `path` in `CHUNK_SIZE` chunks (from `resume` when given), uploading
+/// every chunk the relay does not have yet (per `sync_blobs`). Without
+/// `with_tail` a trailing partial chunk is left out (content = the full
+/// chunks). Returns the content and the SHA-256 state after its full chunks.
+async fn upload_file(
+    conn: &mut SqliteConnection,
+    blobs: &dyn BlobIo,
+    path: &Path,
+    resume: Option<Resume>,
+    with_tail: bool,
+) -> Result<(Content, Mid), StageError> {
     let local = |e: std::io::Error| StageError::Local(format!("{}: {e}", path.display()));
     let abort = |e: sqlx::Error| StageError::Abort(e.to_string());
-    let mut f = fs::File::open(path).map_err(local)?;
-    let mut whole = Sha256::new();
-    let mut chunks = Vec::new();
-    let mut size = 0u64;
-    let mut buf = vec![0u8; CHUNK_SIZE];
+    let (mut mid, mut chunks) = match resume {
+        Some(r) => (r.mid, r.chunks),
+        None => (Mid::default(), Vec::new()),
+    };
     loop {
-        let n = read_full(&mut f, &mut buf).map_err(local)?;
-        if n == 0 {
-            break;
+        let (p, at) = (path.to_path_buf(), mid.off);
+        let bytes = blocking(move || read_at(&p, at, CHUNK_SIZE)).await.map_err(StageError::Local)?.map_err(local)?;
+        let n = bytes.len();
+        if n == 0 || (n < CHUNK_SIZE && !with_tail) {
+            return Ok((Content { size: mid.off, sha256: mid.finish(&[]), chunks }, mid));
         }
-        let bytes = &buf[..n];
-        whole.update(bytes);
-        size += n as u64;
-        let sha = hex::encode(Sha256::digest(bytes));
+        let (bytes, sha, next) = blocking(move || {
+            let sha = sha_hex(&bytes);
+            let mut next = mid;
+            if bytes.len() == CHUNK_SIZE {
+                next.absorb(&bytes);
+            }
+            (bytes, sha, next)
+        })
+        .await
+        .map_err(StageError::Local)?;
         let known: Option<String> = sqlx::query_scalar("SELECT blob_sha FROM sync_blobs WHERE chunk_sha = ?")
             .bind(&sha)
             .fetch_optional(&mut *conn)
@@ -653,7 +952,7 @@ async fn upload_file(conn: &mut SqliteConnection, blobs: &dyn BlobIo, path: &Pat
         let blob = match known {
             Some(b) => b,
             None => {
-                let b = blobs.put(bytes).await.map_err(StageError::Abort)?;
+                let b = blobs.put(&bytes).await.map_err(StageError::Abort)?;
                 sqlx::query(
                     "INSERT OR REPLACE INTO sync_blobs (chunk_sha, blob_sha, len, uploaded_at) VALUES (?, ?, ?, ?)",
                 )
@@ -669,10 +968,39 @@ async fn upload_file(conn: &mut SqliteConnection, blobs: &dyn BlobIo, path: &Pat
         };
         chunks.push(ChunkRef { sha, blob, len: n as u64 });
         if n < CHUNK_SIZE {
-            break;
+            let size = mid.off + n as u64;
+            let sha256 = blocking(move || mid.finish(&bytes)).await.map_err(StageError::Local)?;
+            return Ok((Content { size, sha256, chunks }, mid));
+        }
+        mid = next;
+    }
+}
+
+/// Where hashing a grown append-only file can resume: after the recorded full
+/// chunks, if the file still starts with them (same inode, the last recorded
+/// full chunk and the recorded partial tail read back unchanged).
+fn resume_point(kind: FileKind, rec: Option<&Record>, path: &Path, meta: &fs::Metadata) -> Option<Resume> {
+    let r = rec.filter(|r| kind.append_only() && !r.deleted && r.local_size.is_none())?;
+    if r.local_path != path.to_string_lossy() || meta.len() < r.size {
+        return None;
+    }
+    let mid = r.synced_mid(inode(meta))?;
+    let full = (mid.off / CHUNK_SIZE as u64) as usize;
+    if full > 0 {
+        let last = &r.chunks[full - 1];
+        let bytes = read_at(path, mid.off - CHUNK_SIZE as u64, CHUNK_SIZE).ok()?;
+        if sha_hex(&bytes) != last.sha {
+            return None;
         }
     }
-    Ok(Content { size, sha256: hex::encode(whole.finalize()), chunks })
+    if r.size > mid.off {
+        let tail = r.chunks.get(full)?;
+        let bytes = read_at(path, mid.off, (r.size - mid.off) as usize).ok()?;
+        if bytes.len() as u64 != tail.len || sha_hex(&bytes) != tail.sha {
+            return None;
+        }
+    }
+    Some(Resume { mid, chunks: r.chunks[..full].to_vec() })
 }
 
 fn sha_of_prefix(path: &Path, len: u64) -> Option<String> {
@@ -719,22 +1047,28 @@ pub async fn stage(
                     .map_err(err)?;
             if let Some((kind, portable)) = row {
                 if let Some(kind) = FileKind::parse(&kind) {
-                    tracked.push(Tracked { kind, local: p.clone(), portable });
+                    // Kicked by the session watcher: being written right now.
+                    tracked.push(Tracked { kind, local: p.clone(), portable, live: true });
                 }
             }
         }
-        tracked.sort();
-        tracked.dedup();
+        tracked = dedup_tracked(tracked);
     }
     let mut queued = 0;
+    let mut tail_pending = BTreeSet::new();
     for t in &tracked {
-        match stage_one(db, blobs, t).await {
-            Ok(true) => queued += 1,
-            Ok(false) => {}
+        match stage_one(db, blobs, t, state.tail_idle).await {
+            Ok(staged) => {
+                queued += staged.queued as usize;
+                if staged.tail_pending {
+                    tail_pending.insert(Tracked { live: true, ..t.clone() });
+                }
+            }
             Err(StageError::Abort(e)) => return Err(e),
             Err(StageError::Local(e)) => tracing::debug!(event = "sync_file_skipped", error = %e),
         }
     }
+    state.tail_pending = tail_pending;
     if mode == ScanMode::Full {
         queued += stage_deletions(db, with_keys).await?;
     }
@@ -748,11 +1082,18 @@ enum StageError {
     Local(String),
 }
 
-async fn stage_one(db: &Db, blobs: &dyn BlobIo, t: &Tracked) -> Result<bool, StageError> {
+#[derive(Debug, Default, Clone, Copy)]
+struct Staged {
+    queued: bool,
+    /// A partial tail was held back (the file is live and not idle yet).
+    tail_pending: bool,
+}
+
+async fn stage_one(db: &Db, blobs: &dyn BlobIo, t: &Tracked, tail_idle: Duration) -> Result<Staged, StageError> {
     let local = StageError::Local;
-    let meta = match fs::metadata(&t.local) {
+    let meta = match tokio::fs::metadata(&t.local).await {
         Ok(m) if m.is_file() => m,
-        Ok(_) => return Ok(false),
+        Ok(_) => return Ok(Staged::default()),
         Err(e) => return Err(local(format!("{}: {e}", t.local.display()))),
     };
     if meta.len() > MAX_FILE {
@@ -764,18 +1105,32 @@ async fn stage_one(db: &Db, blobs: &dyn BlobIo, t: &Tracked) -> Result<bool, Sta
     let local_str = t.local.to_string_lossy();
     if let Some(r) = &rec {
         if !r.deleted && r.disk_size() == meta.len() && r.mtime == mtime && r.local_path == local_str {
-            return Ok(false);
+            return Ok(Staged::default());
         }
     }
-    let content = upload_file(&mut conn, blobs, &t.local).await?;
-    let mode = match t.kind {
-        FileKind::SshKey => Some(0o600),
-        FileKind::Library => file_mode(&meta),
-        _ => None,
+    let idle = (wall_ms() as i64).saturating_sub(mtime) >= tail_idle.as_millis() as i64;
+    let with_tail = !t.kind.append_only() || !t.live || idle || meta.len() % CHUNK_SIZE as u64 == 0;
+    if !with_tail {
+        // Only full chunks may go now: nothing to do unless one was added.
+        let full_end = meta.len() / CHUNK_SIZE as u64 * CHUNK_SIZE as u64;
+        let published = rec
+            .as_ref()
+            .filter(|r| !r.deleted && r.local_path == local_str && r.local_size.is_none())
+            .map_or(0, |r| r.size);
+        if full_end <= published || full_end == 0 {
+            return Ok(Staged { queued: false, tail_pending: true });
+        }
+    }
+    let resume = {
+        let (kind, rec, path, meta) = (t.kind, rec.clone(), t.local.clone(), meta.clone());
+        blocking(move || resume_point(kind, rec.as_ref(), &path, &meta)).await.map_err(local)?
     };
+    let (content, mid) = upload_file(&mut conn, blobs, &t.local, resume, with_tail).await?;
+    let mode = t.kind.mode(file_mode(&meta));
     // A rewritten transcript compares by what sync wrote to disk: identical =
     // not a local change, even though it differs from the synced content.
     let unchanged = rec.as_ref().is_some_and(|r| !r.deleted && r.disk_sha() == content.sha256);
+    let staged = Staged { queued: !unchanged, tail_pending: !with_tail };
     let mut tx = sqlx::Connection::begin(&mut *conn).await.map_err(|e| local(e.to_string()))?;
     if unchanged {
         // Touched but identical (or moved): remember the new stat, keep origin.
@@ -791,6 +1146,8 @@ async fn stage_one(db: &Db, blobs: &dyn BlobIo, t: &Tracked) -> Result<bool, Sta
         save_record(&mut tx, t.kind, &t.portable, &t.local, Some((&content, mtime)), mode, None, "local")
             .await
             .map_err(local)?;
+        let hs = HashState { ino: inode(&meta), synced: Some(mid), disk: None };
+        set_hash_state(&mut tx, t.kind, &t.portable, &hs).await.map_err(local)?;
         let seq = queue(&mut tx, t.kind, &t.portable, "U").await.map_err(local)?;
         if let Some(r) = rec.as_ref().filter(|r| !r.deleted) {
             release_superseded(&mut tx, t.kind, &t.portable, &r.chunks, &content.chunks, seq)
@@ -799,7 +1156,7 @@ async fn stage_one(db: &Db, blobs: &dyn BlobIo, t: &Tracked) -> Result<bool, Sta
         }
     }
     tx.commit().await.map_err(|e| local(e.to_string()))?;
-    Ok(!unchanged)
+    Ok(staged)
 }
 
 /// Library files / keys removed on their own (their folder is still there)
@@ -811,18 +1168,29 @@ async fn stage_deletions(db: &Db, with_keys: bool) -> Result<usize, String> {
             .fetch_all(db)
             .await
             .map_err(err)?;
+    // (kind, portable, local, folder still there) of the files gone from disk.
+    let gone = blocking(move || {
+        rows.into_iter()
+            .filter_map(|(kind, portable, local)| {
+                let kind = FileKind::parse(&kind)?;
+                if kind == FileKind::SshKey && !with_keys {
+                    return None;
+                }
+                let p = PathBuf::from(&local);
+                if fs::symlink_metadata(&p).is_ok() {
+                    return None;
+                }
+                let folder = p.parent().is_some_and(Path::is_dir);
+                Some((kind, portable, p, folder))
+            })
+            .collect::<Vec<_>>()
+    })
+    .await?;
     let mut queued = 0;
-    for (kind, portable, local) in rows {
-        let Some(kind) = FileKind::parse(&kind) else { continue };
-        if kind == FileKind::SshKey && !with_keys {
-            continue;
-        }
-        let p = Path::new(&local);
-        if fs::symlink_metadata(p).is_ok() {
-            continue;
-        }
+    for (kind, portable, p, folder) in gone {
+        let p = p.as_path();
         let mut tx = db.begin().await.map_err(err)?;
-        if p.parent().is_some_and(Path::is_dir) {
+        if folder {
             save_record(&mut tx, kind, &portable, p, None, None, None, "local").await?;
             queue(&mut tx, kind, &portable, "D").await?;
             queued += 1;
@@ -877,11 +1245,15 @@ pub enum Outcome {
 /// Where a portable file path lives on this device, refusing anything that
 /// would land outside the place its kind belongs to.
 pub fn localize(paths: &PathCtx, kind: FileKind, portable: &str) -> Result<PathBuf, String> {
+    let bad = || format!("cannot place {} file {portable} on this device", kind.as_str());
+    // `~//x` / `@data//x` would expand to `/x`.
+    if portable.contains("//") {
+        return Err(bad());
+    }
     let p = PathBuf::from(match kind {
         FileKind::RunLog => map_in_project(paths, portable),
         _ => expand_portable(paths, portable),
     });
-    let bad = || format!("cannot place {} file {portable} on this device", kind.as_str());
     if !p.is_absolute() || p.components().any(|c| matches!(c, Component::ParentDir | Component::CurDir)) {
         return Err(bad());
     }
@@ -900,7 +1272,13 @@ pub fn localize(paths: &PathCtx, kind: FileKind, portable: &str) -> Result<PathB
             parts.windows(2).any(|w| w[0].as_os_str() == ".devdy" && w[1].as_os_str() == "runs")
         }
         FileKind::ClaudeTranscript => {
-            p.extension().is_some_and(|e| e == "jsonl") && p.components().any(|c| c.as_os_str() == "projects")
+            // `<config dir>/projects/<project folder>/.../<session>.jsonl`, the
+            // config dir being `~/.claude` or a Claude account's.
+            let home = (!paths.home.as_os_str().is_empty()).then(|| paths.home.join(".claude"));
+            p.extension().is_some_and(|e| e == "jsonl")
+                && home.iter().chain(&paths.claude_dirs).any(|root| {
+                    p.strip_prefix(root.join("projects")).is_ok_and(|rel| rel.components().count() >= 2)
+                })
         }
         FileKind::CodexRollout => p.starts_with(paths.home.join(".codex").join("sessions")) && name.starts_with("rollout-"),
     };
@@ -911,6 +1289,7 @@ pub fn localize(paths: &PathCtx, kind: FileKind, portable: &str) -> Result<PathB
     }
 }
 
+#[derive(Debug, Clone)]
 struct Incoming {
     size: u64,
     sha256: String,
@@ -940,8 +1319,12 @@ fn parse_row(row: &Map<String, Value>) -> Result<Incoming, String> {
 }
 
 /// Apply one remote `file` op. Errors mean "retry later" (the caller defers).
-pub async fn apply_op(db: &Db, paths: &PathCtx, blobs: &dyn BlobIo, op: &Op) -> Result<Outcome, String> {
+/// `with_keys`: local secrets sync is on (SSH keys are only written then).
+pub async fn apply_op(db: &Db, paths: &PathCtx, blobs: &dyn BlobIo, op: &Op, with_keys: bool) -> Result<Outcome, String> {
     let (kind, portable) = parse_pk(&op.pk)?;
+    if kind == FileKind::SshKey && !with_keys {
+        return Ok(Outcome::Skipped);
+    }
     let key = op.pk_key();
     let mut conn = db.acquire().await.map_err(err)?;
     let known: Option<String> = sqlx::query_scalar("SELECT hlc FROM sync_rows WHERE tbl = ? AND pk = ?")
@@ -971,18 +1354,22 @@ pub async fn apply_op(db: &Db, paths: &PathCtx, blobs: &dyn BlobIo, op: &Op) -> 
     let outcome = match op.kind {
         OpKind::Upsert => {
             let row = op.row.as_ref().ok_or("upsert without row")?;
-            let roots = match kind {
-                FileKind::ClaudeTranscript | FileKind::CodexRollout => project_roots(db, paths).await?,
-                _ => Vec::new(),
-            };
-            write_remote(db, blobs, kind, &portable, &path, rec.as_ref(), &parse_row(row)?, op, &roots).await?
+            let roots = if kind.rewrites_cwd() { project_roots(db, paths).await? } else { Vec::new() };
+            write_remote(db, blobs, kind, &portable, &path, rec, &parse_row(row)?, op, &roots).await?
         }
-        OpKind::Delete => remove_remote(db, kind, &portable, &path, rec.as_ref()).await?,
+        OpKind::Delete => remove_remote(db, kind, &portable, &path, rec).await?,
     };
 
     let mut tx = db.begin().await.map_err(err)?;
-    if outcome != Outcome::Skipped {
-        // Whatever local change was pending lost (or survives as a conflict copy).
+    // Whatever local change was pending lost (or survives as a conflict copy),
+    // except a diverged append-only file: the local version stays in place
+    // and must still be pushed.
+    let local_lost = match outcome {
+        Outcome::Applied => true,
+        Outcome::Conflict => !kind.append_only(),
+        Outcome::Skipped => false,
+    };
+    if local_lost {
         sqlx::query("DELETE FROM sync_outbox WHERE tbl = ? AND pk = ?")
             .bind(TBL)
             .bind(&key)
@@ -1011,11 +1398,16 @@ fn matches_record(path: &Path, rec: Option<&Record>) -> bool {
     fs::metadata(path).is_ok_and(|m| m.len() == r.disk_size() && mtime_ms(&m) == r.mtime)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Placement {
     /// Replace the file.
     Replace,
     /// Replace, but first move the unseen local version to the backups.
     BackupThenReplace,
+    /// Append-only file with content sync never saw: replaced only when it is
+    /// a prefix of the incoming version, kept when the incoming version is a
+    /// prefix of it, else the incoming version goes next to it.
+    Extend,
     /// Keep the local file, write the remote one next to it.
     Sibling,
     /// Keep the local file, drop the remote version (local is ahead).
@@ -1032,6 +1424,16 @@ fn decide(kind: FileKind, path: &Path, rec: Option<&Record>, inc: &Incoming, op_
     if meta.len() == inc.size && sha_of_prefix(path, inc.size).as_deref() == Some(inc.sha256.as_str()) {
         return Placement::Same;
     }
+    if kind.append_only() {
+        // Exactly what sync wrote here: nothing local to lose.
+        if matches_record(path, rec) && rec.is_some_and(|r| r.origin == "remote") {
+            return Placement::Replace;
+        }
+        if meta.len() > inc.size && sha_of_prefix(path, inc.size).as_deref() == Some(inc.sha256.as_str()) {
+            return Placement::Keep;
+        }
+        return Placement::Extend;
+    }
     if matches_record(path, rec) {
         // A library version authored here is kept in the backups when a
         // remote one wins; one that came from sync exists elsewhere anyway.
@@ -1039,15 +1441,6 @@ fn decide(kind: FileKind, path: &Path, rec: Option<&Record>, inc: &Incoming, op_
         return if kind == FileKind::Library && authored_here { Placement::BackupThenReplace } else { Placement::Replace };
     }
     // The local file holds content sync never saw.
-    if kind.append_only() {
-        let local_len = meta.len();
-        if local_len > inc.size && sha_of_prefix(path, inc.size).as_deref() == Some(inc.sha256.as_str()) {
-            return Placement::Keep;
-        }
-        // Local being a prefix of the incoming version is checked while
-        // assembling (`prefix_ok`); anything else diverged.
-        return Placement::Sibling;
-    }
     if mtime_ms(&meta).max(0) as u64 > op_millis {
         Placement::Sibling
     } else if kind == FileKind::Library {
@@ -1068,18 +1461,34 @@ fn tmp_path(path: &Path) -> PathBuf {
     path.with_file_name(format!(".{name}{TMP_MARK}{}.tmp", uuid::Uuid::new_v4().simple()))
 }
 
+/// Size check of a downloaded chunk (all but the last are full).
+fn check_chunk(bytes: &[u8], i: usize, count: usize) -> Result<(), String> {
+    if bytes.len() > CHUNK_SIZE || (i + 1 < count && bytes.len() != CHUNK_SIZE) {
+        return Err("chunk has the wrong size".into());
+    }
+    Ok(())
+}
+
 /// Write the incoming content to `tmp`, reusing chunks the local copy already
-/// has (only when the local file is the version sync recorded).
+/// has (only when the local file is the version sync recorded). Returns the
+/// content and the SHA-256 state after its full chunks.
 async fn assemble(
     blobs: &dyn BlobIo,
     path: &Path,
     rec: Option<&Record>,
     inc: &Incoming,
     tmp: &Path,
-) -> Result<Content, String> {
+) -> Result<(Content, Mid), String> {
     // Chunks are reused from the local copy only when it is the synced content
     // byte for byte (not a cwd-rewritten transcript).
-    let reusable: HashMap<usize, (u64, u64)> = match rec.filter(|r| r.local_sha256.is_none() && matches_record(path, rec)) {
+    let local_ok = match rec.filter(|r| r.local_sha256.is_none()).cloned() {
+        Some(r) => {
+            let p = path.to_path_buf();
+            blocking(move || matches_record(&p, Some(&r))).await?
+        }
+        None => false,
+    };
+    let reusable: HashMap<usize, (u64, u64)> = match rec.filter(|_| local_ok) {
         Some(r) => {
             let mut off = 0u64;
             r.chunks
@@ -1097,39 +1506,61 @@ async fn assemble(
         None => HashMap::new(),
     };
     let io = |e: std::io::Error| format!("{}: {e}", tmp.display());
-    let mut out = fs::File::create(tmp).map_err(io)?;
-    let mut whole = Sha256::new();
+    let t = tmp.to_path_buf();
+    let mut out = Some(blocking(move || fs::File::create(&t)).await?.map_err(io)?);
+    let mut mid = Mid::default();
+    let mut sha256 = None;
     let mut chunks = Vec::with_capacity(inc.chunks.len());
     let mut size = 0u64;
     for (i, blob) in inc.chunks.iter().enumerate() {
         let bytes = match reusable.get(&i) {
             Some((at, len)) => {
-                let mut f = fs::File::open(path).map_err(io)?;
-                f.seek(SeekFrom::Start(*at)).map_err(io)?;
-                let mut b = vec![0u8; *len as usize];
-                f.read_exact(&mut b).map_err(io)?;
+                let (p, at, len) = (path.to_path_buf(), *at, *len as usize);
+                let b = blocking(move || read_at(&p, at, len)).await?.map_err(io)?;
+                if b.len() != len {
+                    return Err(format!("{}: changed while reading", path.display()));
+                }
                 b
             }
             None => blobs.get(blob).await?,
         };
-        if bytes.len() > CHUNK_SIZE || (i + 1 < inc.chunks.len() && bytes.len() != CHUNK_SIZE) {
-            return Err("chunk has the wrong size".into());
-        }
-        whole.update(&bytes);
+        check_chunk(&bytes, i, inc.chunks.len())?;
         size += bytes.len() as u64;
-        out.write_all(&bytes).map_err(io)?;
-        chunks.push(ChunkRef { sha: hex::encode(Sha256::digest(&bytes)), blob: blob.clone(), len: bytes.len() as u64 });
+        let mut f = out.take().ok_or("file closed")?;
+        let last = i + 1 == inc.chunks.len();
+        let (f, sha, next, whole) = blocking(move || {
+            let r = f.write_all(&bytes);
+            let sha = sha_hex(&bytes);
+            let mut next = mid;
+            let whole = if bytes.len() == CHUNK_SIZE {
+                next.absorb(&bytes);
+                last.then(|| next.finish(&[]))
+            } else {
+                Some(mid.finish(&bytes))
+            };
+            r.map(|_| (f, sha, next, whole))
+        })
+        .await?
+        .map_err(io)?;
+        out = Some(f);
+        mid = next;
+        sha256 = whole;
+        chunks.push(ChunkRef { sha, blob: blob.clone(), len: size - chunks.iter().map(|c: &ChunkRef| c.len).sum::<u64>() });
     }
-    out.sync_all().map_err(io)?;
-    let sha256 = hex::encode(whole.finalize());
+    let f = out.take().ok_or("file closed")?;
+    blocking(move || f.sync_all()).await?.map_err(io)?;
+    let sha256 = sha256.unwrap_or_else(|| Mid::default().finish(&[]));
     if size != inc.size || sha256 != inc.sha256 {
         return Err("downloaded content does not match the file op".into());
     }
-    Ok(Content { size, sha256, chunks })
+    Ok((Content { size, sha256, chunks }, mid))
 }
 
+/// The new bytes of an append-only file whose incoming version extends the
+/// version recorded here, appended in place (no full rewrite, no re-download
+/// of the chunks it already has). `None` = not applicable: take the full path.
 #[allow(clippy::too_many_arguments)]
-async fn write_remote(
+async fn append_in_place(
     db: &Db,
     blobs: &dyn BlobIo,
     kind: FileKind,
@@ -1139,12 +1570,146 @@ async fn write_remote(
     inc: &Incoming,
     op: &Op,
     roots: &[(String, String)],
-) -> Result<Outcome, String> {
-    let mut placement = decide(kind, path, rec, inc, op.hlc.millis);
-    let mode = match kind {
-        FileKind::SshKey => Some(0o600),
-        _ => inc.mode,
+) -> Result<Option<Outcome>, String> {
+    let Some(r) = rec.filter(|r| kind.append_only() && inc.size > r.size).cloned() else { return Ok(None) };
+    let (p, rr) = (path.to_path_buf(), r.clone());
+    let probe = blocking(move || {
+        let meta = fs::metadata(&p).ok()?;
+        if !matches_record(&p, Some(&rr)) {
+            return None;
+        }
+        // Line-wise cwd rewrite: only safe to rewrite the appended part on its
+        // own when the file ends at a line break.
+        let ends_line = meta.len() == 0 || read_at(&p, meta.len() - 1, 1).ok()?.as_slice() == b"\n";
+        Some((inode(&meta), ends_line))
+    })
+    .await?;
+    let Some((ino, ends_line)) = probe else { return Ok(None) };
+    let Some(synced) = r.synced_mid(ino) else { return Ok(None) };
+    if r.local_sha256.is_some() && r.hash_state.as_ref().is_none_or(|h| h.disk.is_none()) {
+        return Ok(None);
+    }
+    let rewrite = kind.rewrites_cwd() && !roots.is_empty();
+    if rewrite && !ends_line {
+        return Ok(None);
+    }
+    let full = (synced.off / CHUNK_SIZE as u64) as usize;
+    if inc.chunks.len() < full || (0..full).any(|i| inc.chunks[i] != r.chunks[i].blob) {
+        return Ok(None);
+    }
+    let mut data = Vec::with_capacity((inc.size - synced.off) as usize);
+    for (i, blob) in inc.chunks.iter().enumerate().skip(full) {
+        let bytes = blobs.get(blob).await?;
+        check_chunk(&bytes, i, inc.chunks.len())?;
+        data.extend_from_slice(&bytes);
+    }
+    if data.len() as u64 != inc.size - synced.off {
+        return Err("downloaded content does not match the file op".into());
+    }
+    let kept = (r.size - synced.off) as usize;
+    if kept > 0 && r.chunks.get(full).is_none_or(|c| c.sha != sha_hex(&data[..kept])) {
+        // The incoming version does not extend ours after all.
+        return Ok(None);
+    }
+    let roots = roots.to_vec();
+    let (p, disk_mid, old_disk) = (path.to_path_buf(), r.hash_state.as_ref().and_then(|h| h.disk).unwrap_or(synced), r.disk_size());
+    let prepared = blocking(move || -> Result<_, String> {
+        let sha256 = synced.finish(&data);
+        let mut next_synced = synced;
+        next_synced.absorb(&data[..data.len() / CHUNK_SIZE * CHUNK_SIZE]);
+        let mut chunk_refs = Vec::new();
+        for piece in data.chunks(CHUNK_SIZE) {
+            chunk_refs.push((sha_hex(piece), piece.len() as u64));
+        }
+        let appended = &data[kept..];
+        let rewritten = if rewrite { rewrite_cwds(appended, &roots) } else { None };
+        let changed = rewritten.is_some();
+        let disk_append = rewritten.unwrap_or_else(|| appended.to_vec());
+        // The disk view: its recorded state + the bytes after it on disk + the new ones.
+        let mut disk_bytes = read_at(&p, disk_mid.off, (old_disk - disk_mid.off) as usize).map_err(|e| e.to_string())?;
+        if disk_bytes.len() as u64 != old_disk - disk_mid.off {
+            return Err(format!("{}: changed while reading", p.display()));
+        }
+        disk_bytes.extend_from_slice(&disk_append);
+        let disk_sha = disk_mid.finish(&disk_bytes);
+        let mut next_disk = disk_mid;
+        next_disk.absorb(&disk_bytes);
+        Ok((sha256, next_synced, chunk_refs, disk_append, changed, disk_sha, next_disk))
+    })
+    .await??;
+    let (sha256, next_synced, refs, disk_append, rewritten, disk_sha, next_disk) = prepared;
+    if sha256 != inc.sha256 {
+        return Err("downloaded content does not match the file op".into());
+    }
+    let mut chunks: Vec<ChunkRef> = r.chunks[..full].to_vec();
+    for ((sha, len), blob) in refs.into_iter().zip(&inc.chunks[full..]) {
+        chunks.push(ChunkRef { sha, blob: blob.clone(), len });
+    }
+    let content = Content { size: inc.size, sha256, chunks };
+    let new_disk = old_disk + disk_append.len() as u64;
+    let local_view = r.local_sha256.is_some() || rewritten;
+    let hs = HashState { ino, synced: Some(next_synced), disk: local_view.then_some(next_disk) };
+    // Recorded before the write so the session watcher, woken by it, already
+    // knows this version came from sync.
+    let mut conn = db.acquire().await.map_err(err)?;
+    save_record(&mut conn, kind, portable, path, Some((&content, 0)), None, Some(&op.hlc), "remote").await?;
+    if local_view {
+        set_local_view(&mut conn, kind, portable, new_disk, &disk_sha).await?;
+    }
+    set_hash_state(&mut conn, kind, portable, &hs).await?;
+    let p = path.to_path_buf();
+    let written = blocking(move || -> std::io::Result<i64> {
+        let mut f = fs::OpenOptions::new().append(true).open(&p)?;
+        if let Err(e) = f.write_all(&disk_append).and_then(|_| f.sync_data()) {
+            let _ = f.set_len(old_disk);
+            return Err(e);
+        }
+        Ok(mtime_ms(&f.metadata()?))
+    })
+    .await?;
+    let mtime = match written {
+        Ok(m) => m,
+        Err(e) => {
+            // Back to the version on disk: forget the record (re-read next scan).
+            let _ = sqlx::query("DELETE FROM sync_files WHERE kind = ? AND path = ?")
+                .bind(kind.as_str())
+                .bind(portable)
+                .execute(&mut *conn)
+                .await;
+            return Err(format!("{}: {e}", path.display()));
+        }
     };
+    sqlx::query("UPDATE sync_files SET mtime = ? WHERE kind = ? AND path = ?")
+        .bind(mtime)
+        .bind(kind.as_str())
+        .bind(portable)
+        .execute(&mut *conn)
+        .await
+        .map_err(err)?;
+    if kind.rewrites_cwd() {
+        mark_transcript_mirrored(&mut conn, path, new_disk).await?;
+    }
+    Ok(Some(Outcome::Applied))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn write_remote(
+    db: &Db,
+    blobs: &dyn BlobIo,
+    kind: FileKind,
+    portable: &str,
+    path: &Path,
+    rec: Option<Record>,
+    inc: &Incoming,
+    op: &Op,
+    roots: &[(String, String)],
+) -> Result<Outcome, String> {
+    let mut placement = {
+        let (p, r, i, millis) = (path.to_path_buf(), rec.clone(), inc.clone(), op.hlc.millis);
+        blocking(move || decide(kind, &p, r.as_ref(), &i, millis)).await?
+    };
+    let rec = rec.as_ref();
+    let mode = kind.mode(inc.mode);
     if let Placement::Keep = placement {
         return Ok(Outcome::Skipped);
     }
@@ -1162,18 +1727,35 @@ async fn write_remote(
             debug_assert_eq!(r.sha256, inc.sha256);
             return Ok(Outcome::Applied);
         }
-        let meta = fs::metadata(path).map_err(|e| e.to_string())?;
-        let content = Content { size: inc.size, sha256: inc.sha256.clone(), chunks: chunk_refs_of(path, inc)? };
+        let (p, i) = (path.to_path_buf(), inc.clone());
+        let (meta, chunks, mid) = blocking(move || -> Result<_, String> {
+            let meta = fs::metadata(&p).map_err(|e| e.to_string())?;
+            let (chunks, mid) = chunk_refs_of(&p, &i)?;
+            Ok((meta, chunks, mid))
+        })
+        .await??;
+        let content = Content { size: inc.size, sha256: inc.sha256.clone(), chunks };
         save_record(&mut conn, kind, portable, path, Some((&content, mtime_ms(&meta))), mode, Some(&op.hlc), "remote").await?;
+        set_hash_state(&mut conn, kind, portable, &HashState { ino: inode(&meta), synced: Some(mid), disk: None }).await?;
         return Ok(Outcome::Applied);
     }
-    let parent = path.parent().ok_or("file without a parent folder")?;
-    fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-    if kind == FileKind::SshKey {
-        set_mode(parent, 0o700);
+    if matches!(placement, Placement::Replace | Placement::Extend) {
+        if let Some(outcome) = append_in_place(db, blobs, kind, portable, path, rec, inc, op, roots).await? {
+            return Ok(outcome);
+        }
     }
+    let parent = path.parent().ok_or("file without a parent folder")?.to_path_buf();
+    let is_key = kind == FileKind::SshKey;
+    blocking(move || -> Result<(), String> {
+        fs::create_dir_all(&parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+        if is_key {
+            set_mode(&parent, 0o700);
+        }
+        Ok(())
+    })
+    .await??;
     let tmp = tmp_path(path);
-    let content = match assemble(blobs, path, rec, inc, &tmp).await {
+    let (content, mid) = match assemble(blobs, path, rec, inc, &tmp).await {
         Ok(c) => c,
         Err(e) => {
             let _ = fs::remove_file(&tmp);
@@ -1186,23 +1768,32 @@ async fn write_remote(
     };
     // The sender's cwd -> this device's project path. From here on `tmp` is
     // what lands on disk; `content` stays the synced version.
-    let local_view = match kind {
-        FileKind::ClaudeTranscript | FileKind::CodexRollout => rewrite_file_cwds(&tmp, roots).map_err(finish)?,
-        _ => None,
+    let local_view = if kind.rewrites_cwd() {
+        let (t, r) = (tmp.clone(), roots.to_vec());
+        blocking(move || rewrite_file_cwds(&t, &r)).await.and_then(|r| r).map_err(finish)?
+    } else {
+        None
     };
-    let disk_size = local_view.as_ref().map_or(content.size, |(n, _)| *n);
-    // A diverged append-only file whose content is a prefix of the incoming
-    // one was simply behind; one the incoming version is a prefix of is ahead.
-    if matches!(placement, Placement::Sibling) && kind.append_only() {
-        let local_len = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-        let common = local_len.min(disk_size);
-        if sha_of_prefix(path, common) == sha_of_prefix(&tmp, common) {
-            if local_len > disk_size {
+    let disk_size = local_view.as_ref().map_or(content.size, |(n, _, _)| *n);
+    if placement == Placement::Extend {
+        // Local behind (a prefix of the incoming version): replaced. Local
+        // ahead (the incoming version is a prefix of it): kept. Else diverged.
+        let (p, t) = (path.to_path_buf(), tmp.clone());
+        let (local_len, same_start) = blocking(move || {
+            let local_len = fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+            let common = local_len.min(disk_size);
+            (local_len, sha_of_prefix(&p, common).is_some_and(|a| sha_of_prefix(&t, common) == Some(a)))
+        })
+        .await
+        .map_err(finish)?;
+        placement = match (same_start, local_len > disk_size) {
+            (true, true) => {
                 let _ = fs::remove_file(&tmp);
                 return Ok(Outcome::Skipped);
             }
-            placement = Placement::Replace;
-        }
+            (true, false) => Placement::Replace,
+            (false, _) => Placement::Sibling,
+        };
     }
     if let Some(m) = mode {
         set_mode(&tmp, m);
@@ -1216,18 +1807,24 @@ async fn write_remote(
         }
         _ => {
             if matches!(placement, Placement::BackupThenReplace) && path.exists() {
-                crate::commands::project_links::back_up_library_orphan(path, "sync").map_err(finish)?;
+                let p = path.to_path_buf();
+                blocking(move || crate::commands::project_links::back_up_library_orphan(&p, "sync"))
+                    .await
+                    .and_then(|r| r)
+                    .map_err(finish)?;
             }
-            let mtime = fs::metadata(&tmp).map(|m| mtime_ms(&m)).map_err(|e| finish(e.to_string()))?;
+            let meta = fs::metadata(&tmp).map_err(|e| finish(e.to_string()))?;
+            let hs = HashState { ino: inode(&meta), synced: Some(mid), disk: local_view.as_ref().map(|(_, _, m)| *m) };
             // Recorded before the rename so the session watcher, woken by the
             // rename, already knows this version came from sync.
             let mut conn = db.acquire().await.map_err(|e| finish(err(e)))?;
-            save_record(&mut conn, kind, portable, path, Some((&content, mtime)), mode, Some(&op.hlc), "remote")
+            save_record(&mut conn, kind, portable, path, Some((&content, mtime_ms(&meta))), mode, Some(&op.hlc), "remote")
                 .await
                 .map_err(finish)?;
-            if let Some((n, sha)) = &local_view {
+            if let Some((n, sha, _)) = &local_view {
                 set_local_view(&mut conn, kind, portable, *n, sha).await.map_err(finish)?;
             }
+            set_hash_state(&mut conn, kind, portable, &hs).await.map_err(finish)?;
             if let Err(e) = fs::rename(&tmp, path) {
                 let _ = sqlx::query("DELETE FROM sync_files WHERE kind = ? AND path = ?")
                     .bind(kind.as_str())
@@ -1236,7 +1833,7 @@ async fn write_remote(
                     .await;
                 return Err(finish(format!("{}: {e}", path.display())));
             }
-            if matches!(kind, FileKind::ClaudeTranscript | FileKind::CodexRollout) {
+            if kind.rewrites_cwd() {
                 mark_transcript_mirrored(&mut conn, path, disk_size).await?;
             }
             Ok(Outcome::Applied)
@@ -1380,8 +1977,9 @@ pub(crate) fn rewrite_cwds(text: &[u8], roots: &[(String, String)]) -> Option<Ve
     Some(out)
 }
 
-/// Rewrite `tmp` in place; returns the new size + sha256 when it changed.
-fn rewrite_file_cwds(tmp: &Path, roots: &[(String, String)]) -> Result<Option<(u64, String)>, String> {
+/// Rewrite `tmp` in place; returns the new size, sha256 and SHA-256 state
+/// when it changed.
+fn rewrite_file_cwds(tmp: &Path, roots: &[(String, String)]) -> Result<Option<(u64, String, Mid)>, String> {
     if roots.is_empty() {
         return Ok(None);
     }
@@ -1391,19 +1989,26 @@ fn rewrite_file_cwds(tmp: &Path, roots: &[(String, String)]) -> Result<Option<(u
     let mut f = fs::File::create(tmp).map_err(io)?;
     f.write_all(&new).map_err(io)?;
     f.sync_all().map_err(io)?;
-    Ok(Some((new.len() as u64, hex::encode(Sha256::digest(&new)))))
+    let mut mid = Mid::default();
+    mid.absorb(&new);
+    Ok(Some((new.len() as u64, hex::encode(Sha256::digest(&new)), mid)))
 }
 
-/// Chunk refs for a local file already identical to the incoming version.
-fn chunk_refs_of(path: &Path, inc: &Incoming) -> Result<Vec<ChunkRef>, String> {
+/// Chunk refs (and the SHA-256 state after the full chunks) for a local file
+/// already identical to the incoming version.
+fn chunk_refs_of(path: &Path, inc: &Incoming) -> Result<(Vec<ChunkRef>, Mid), String> {
     let mut f = fs::File::open(path).map_err(|e| e.to_string())?;
     let mut buf = vec![0u8; CHUNK_SIZE];
     let mut out = Vec::with_capacity(inc.chunks.len());
+    let mut mid = Mid::default();
     for blob in &inc.chunks {
         let n = read_full(&mut f, &mut buf).map_err(|e| e.to_string())?;
-        out.push(ChunkRef { sha: hex::encode(Sha256::digest(&buf[..n])), blob: blob.clone(), len: n as u64 });
+        if n == CHUNK_SIZE {
+            mid.absorb(&buf);
+        }
+        out.push(ChunkRef { sha: sha_hex(&buf[..n]), blob: blob.clone(), len: n as u64 });
     }
-    Ok(out)
+    Ok((out, mid))
 }
 
 /// The run log arrived through sync as well, so the transcript counts as
@@ -1434,25 +2039,29 @@ async fn remove_remote(
     kind: FileKind,
     portable: &str,
     path: &Path,
-    rec: Option<&Record>,
+    rec: Option<Record>,
 ) -> Result<Outcome, String> {
-    let mut conn = db.acquire().await.map_err(err)?;
-    if fs::symlink_metadata(path).is_err() {
-        save_record(&mut conn, kind, portable, path, None, None, None, "remote").await?;
-        return Ok(Outcome::Applied);
-    }
-    if !matches_record(path, rec) {
-        // Edited here since the last sync: keep it (it will be pushed back).
-        return Ok(Outcome::Conflict);
-    }
-    match kind {
-        FileKind::Library | FileKind::SshKey => {
-            crate::commands::project_links::back_up_library_orphan(path, "sync")?;
+    let p = path.to_path_buf();
+    let removed = blocking(move || -> Result<Outcome, String> {
+        if fs::symlink_metadata(&p).is_err() {
+            return Ok(Outcome::Applied);
         }
-        _ => fs::remove_file(path).map_err(|e| format!("{}: {e}", path.display()))?,
+        if !matches_record(&p, rec.as_ref()) {
+            // Edited here since the last sync: keep it (it will be pushed back).
+            return Ok(Outcome::Conflict);
+        }
+        match kind {
+            FileKind::Library | FileKind::SshKey => drop(crate::commands::project_links::back_up_library_orphan(&p, "sync")?),
+            _ => fs::remove_file(&p).map_err(|e| format!("{}: {e}", p.display()))?,
+        }
+        Ok(Outcome::Applied)
+    })
+    .await??;
+    if removed == Outcome::Applied {
+        let mut conn = db.acquire().await.map_err(err)?;
+        save_record(&mut conn, kind, portable, path, None, None, None, "remote").await?;
     }
-    save_record(&mut conn, kind, portable, path, None, None, None, "remote").await?;
-    Ok(Outcome::Applied)
+    Ok(removed)
 }
 
 /// The run whose log or transcript a `file` op wrote, if any (for the
@@ -1595,6 +2204,11 @@ pub(crate) mod tests {
         log
     }
 
+    /// Partial tails go up at once (the deferral has its own test).
+    fn eager() -> ScanState {
+        ScanState { tail_idle: Duration::ZERO, ..Default::default() }
+    }
+
     fn mb(n: usize, byte: u8) -> Vec<u8> {
         vec![byte; n]
     }
@@ -1609,7 +2223,7 @@ pub(crate) mod tests {
         body.extend(mb(CHUNK_SIZE / 2, b'b'));
         fs::write(&log, &body).unwrap();
         let blobs = MemBlobs::default();
-        let mut st = ScanState::default();
+        let mut st = eager();
 
         assert_eq!(stage(&db, &paths, &blobs, &mut st, ScanMode::Full, false).await.unwrap(), 1);
         assert_eq!(*blobs.puts.lock().unwrap(), 2);
@@ -1655,7 +2269,7 @@ pub(crate) mod tests {
         fs::write(&live, b"1").unwrap();
         fs::write(&done, b"1").unwrap();
         let blobs = MemBlobs::default();
-        let mut st = ScanState::default();
+        let mut st = eager();
         assert_eq!(stage(&db, &paths, &blobs, &mut st, ScanMode::Full, false).await.unwrap(), 2);
         fs::write(&live, b"12").unwrap();
         fs::write(&done, b"12").unwrap();
@@ -1681,12 +2295,12 @@ pub(crate) mod tests {
         body.extend(b"tail");
         fs::write(&log, &body).unwrap();
         let blobs = MemBlobs::default();
-        let mut st = ScanState::default();
+        let mut st = eager();
         stage(&db_a, &pa, &blobs, &mut st, ScanMode::Full, false).await.unwrap();
-        let t = Tracked { kind: FileKind::RunLog, local: log.clone(), portable: "~/w/p/.devdy/runs/r1.log".into() };
+        let t = Tracked { kind: FileKind::RunLog, local: log.clone(), portable: "~/w/p/.devdy/runs/r1.log".into(), live: false };
         let op = op_for(&db_a, &t, 1_000, "dev-a").await;
 
-        assert_eq!(apply_op(&db_b, &pb, &blobs, &op).await.unwrap(), Outcome::Applied);
+        assert_eq!(apply_op(&db_b, &pb, &blobs, &op, true).await.unwrap(), Outcome::Applied);
         let local_b = hb.path().join("w/p/.devdy/runs/r1.log");
         assert_eq!(fs::read(&local_b).unwrap(), body);
         assert_eq!(run_of_op(&db_b, &pb, &op).await, None, "B has no runs row yet");
@@ -1695,7 +2309,7 @@ pub(crate) mod tests {
         let leftovers: Vec<_> = fs::read_dir(local_b.parent().unwrap()).unwrap().flatten().collect();
         assert_eq!(leftovers.len(), 1, "no tmp file left behind");
         // Re-applying the same op is a no-op.
-        assert_eq!(apply_op(&db_b, &pb, &blobs, &op).await.unwrap(), Outcome::Skipped);
+        assert_eq!(apply_op(&db_b, &pb, &blobs, &op, true).await.unwrap(), Outcome::Skipped);
         // Applied files are not queued back.
         assert!(outbox_files(&db_b).await.is_empty());
 
@@ -1705,7 +2319,7 @@ pub(crate) mod tests {
         stage(&db_a, &pa, &blobs, &mut st, ScanMode::Quick, false).await.unwrap();
         let op2 = op_for(&db_a, &t, 2_000, "dev-a").await;
         let gets = *blobs.gets.lock().unwrap();
-        assert_eq!(apply_op(&db_b, &pb, &blobs, &op2).await.unwrap(), Outcome::Applied);
+        assert_eq!(apply_op(&db_b, &pb, &blobs, &op2, true).await.unwrap(), Outcome::Applied);
         assert_eq!(*blobs.gets.lock().unwrap() - gets, 2, "first chunk reused from disk");
         assert_eq!(fs::read(&local_b).unwrap(), body);
 
@@ -1716,7 +2330,7 @@ pub(crate) mod tests {
         let op3 = op_for(&db_a, &t, 3_000, "dev-a").await;
         let last = op3.row.as_ref().unwrap()["chunks"].as_array().unwrap().last().unwrap().as_str().unwrap().to_string();
         blobs.blobs.lock().unwrap().insert(last, b"evil".to_vec());
-        assert!(apply_op(&db_b, &pb, &blobs, &op3).await.is_err());
+        assert!(apply_op(&db_b, &pb, &blobs, &op3, true).await.is_err());
         assert_eq!(fs::read(&local_b).unwrap().len(), 2 * CHUNK_SIZE + 4);
     }
 
@@ -1740,12 +2354,12 @@ pub(crate) mod tests {
                 .await
                 .unwrap();
         }
-        let mut st = ScanState::default();
+        let mut st = eager();
         stage(&db_a, &pa, &blobs, &mut st, ScanMode::Full, false).await.unwrap();
-        let t = Tracked { kind: FileKind::Library, local: fa.clone(), portable: "@data/rules/git.md".into() };
+        let t = Tracked { kind: FileKind::Library, local: fa.clone(), portable: "@data/rules/git.md".into(), live: false };
         fs::write(&fb, "edited on b").unwrap();
         let op = op_for(&db_a, &t, 1_000, "dev-a").await; // older than B's edit
-        assert_eq!(apply_op(&db_b, &pb, &blobs, &op).await.unwrap(), Outcome::Conflict);
+        assert_eq!(apply_op(&db_b, &pb, &blobs, &op, true).await.unwrap(), Outcome::Conflict);
         assert_eq!(fs::read_to_string(&fb).unwrap(), "edited on b");
         assert_eq!(fs::read_to_string(fb.with_file_name("git.md.conflict-dev-a")).unwrap(), "from a");
 
@@ -1753,7 +2367,7 @@ pub(crate) mod tests {
         // moved to the legacy backups.
         let far = wall_ms() + 60_000;
         let op = op_for(&db_a, &t, far, "dev-a").await;
-        let r = apply_op(&db_b, &pb, &blobs, &op).await.unwrap();
+        let r = apply_op(&db_b, &pb, &blobs, &op, true).await.unwrap();
         assert_eq!(r, Outcome::Applied);
         assert_eq!(fs::read_to_string(&fb).unwrap(), "from a");
 
@@ -1764,29 +2378,29 @@ pub(crate) mod tests {
         fs::create_dir_all(ta.parent().unwrap()).unwrap();
         fs::write(&ta, "l1\nl2-a\n").unwrap();
         let mut conn = db_a.acquire().await.unwrap();
-        let content = upload_file(&mut conn, &blobs, &ta).await.ok().unwrap();
+        let (content, _) = upload_file(&mut conn, &blobs, &ta, None, true).await.ok().unwrap();
         let portable = to_portable(&pa, &ta.to_string_lossy());
         assert_eq!(portable, "~/.claude/projects/~-w-p/s1.jsonl");
         save_record(&mut conn, FileKind::ClaudeTranscript, &portable, &ta, Some((&content, 0)), None, None, "local").await.unwrap();
         drop(conn);
-        let tt = Tracked { kind: FileKind::ClaudeTranscript, local: ta.clone(), portable: portable.clone() };
+        let tt = Tracked { kind: FileKind::ClaudeTranscript, local: ta.clone(), portable: portable.clone(), live: false };
         let op = op_for(&db_a, &tt, 1_000, "dev-a").await;
         let tb = localize(&pb, FileKind::ClaudeTranscript, &portable).unwrap();
         fs::create_dir_all(tb.parent().unwrap()).unwrap();
         fs::write(&tb, "l1\nl2-b\n").unwrap();
-        assert_eq!(apply_op(&db_b, &pb, &blobs, &op).await.unwrap(), Outcome::Conflict);
+        assert_eq!(apply_op(&db_b, &pb, &blobs, &op, true).await.unwrap(), Outcome::Conflict);
         assert_eq!(fs::read_to_string(&tb).unwrap(), "l1\nl2-b\n");
         assert!(tb.with_file_name("s1.jsonl.conflict-dev-a").is_file());
 
         fs::write(&tb, "l1\nl2-a\nl3-b\n").unwrap();
         let op = op_for(&db_a, &tt, 2_000, "dev-a").await;
-        assert_eq!(apply_op(&db_b, &pb, &blobs, &op).await.unwrap(), Outcome::Skipped);
+        assert_eq!(apply_op(&db_b, &pb, &blobs, &op, true).await.unwrap(), Outcome::Skipped);
         assert_eq!(fs::read_to_string(&tb).unwrap(), "l1\nl2-a\nl3-b\n");
 
         // Local behind remote (a strict prefix) is just updated.
         fs::write(&tb, "l1\n").unwrap();
         let op = op_for(&db_a, &tt, 3_000, "dev-a").await;
-        assert_eq!(apply_op(&db_b, &pb, &blobs, &op).await.unwrap(), Outcome::Applied);
+        assert_eq!(apply_op(&db_b, &pb, &blobs, &op, true).await.unwrap(), Outcome::Applied);
         assert_eq!(fs::read_to_string(&tb).unwrap(), "l1\nl2-a\n");
     }
 
@@ -1834,15 +2448,15 @@ pub(crate) mod tests {
         fs::create_dir_all(ta.parent().unwrap()).unwrap();
         fs::write(&ta, "{}\n").unwrap();
         add_run(&db_a, ha.path(), "r1", "done").await;
-        let mut st = ScanState::default();
+        let mut st = eager();
         stage(&db_a, &pa, &blobs, &mut st, ScanMode::Full, false).await.unwrap();
         let portable = to_portable(&pa, &ta.to_string_lossy());
-        let t = Tracked { kind: FileKind::ClaudeTranscript, local: ta.clone(), portable: portable.clone() };
+        let t = Tracked { kind: FileKind::ClaudeTranscript, local: ta.clone(), portable: portable.clone(), live: false };
         let op = op_for(&db_a, &t, 1_000, "dev-a").await;
 
         add_run(&db_b, hb.path(), "r1", "done").await;
         let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_outbox").fetch_one(&db_b).await.unwrap();
-        assert_eq!(apply_op(&db_b, &pb, &blobs, &op).await.unwrap(), Outcome::Applied);
+        assert_eq!(apply_op(&db_b, &pb, &blobs, &op, true).await.unwrap(), Outcome::Applied);
         let tb = localize(&pb, FileKind::ClaudeTranscript, &portable).unwrap();
         assert!(written_by_sync(&db_b, &tb).await, "sync-written transcript is ignored by the watcher");
         let mirrored: Option<i64> = sqlx::query_scalar("SELECT transcript_synced_size FROM runs WHERE id = 'r1'").fetch_one(&db_b).await.unwrap();
@@ -1917,10 +2531,10 @@ pub(crate) mod tests {
         fs::create_dir_all(ta.parent().unwrap()).unwrap();
         fs::write(&ta, transcript_lines(&project_a.to_string_lossy(), 1)).unwrap();
         add_run(&db_a, ha.path(), "r1", "done").await;
-        let mut st = ScanState::default();
+        let mut st = eager();
         stage(&db_a, &pa, &blobs, &mut st, ScanMode::Full, false).await.unwrap();
         let portable = to_portable(&pa, &ta.to_string_lossy());
-        let t = Tracked { kind: FileKind::ClaudeTranscript, local: ta.clone(), portable: portable.clone() };
+        let t = Tracked { kind: FileKind::ClaudeTranscript, local: ta.clone(), portable: portable.clone(), live: false };
         let op = op_for(&db_a, &t, 1_000, "dev-a").await;
 
         // B has the project (at its own path) but not the runs row yet.
@@ -1929,7 +2543,7 @@ pub(crate) mod tests {
             .execute(&db_b)
             .await
             .unwrap();
-        assert_eq!(apply_op(&db_b, &pb, &blobs, &op).await.unwrap(), Outcome::Applied);
+        assert_eq!(apply_op(&db_b, &pb, &blobs, &op, true).await.unwrap(), Outcome::Applied);
         let tb = localize(&pb, FileKind::ClaudeTranscript, &portable).unwrap();
         let on_b = fs::read_to_string(&tb).unwrap();
         assert_eq!(on_b, transcript_lines(&project_b.to_string_lossy(), 1), "cwd follows B's project path");
@@ -1950,7 +2564,7 @@ pub(crate) mod tests {
 
         // The rewritten file is not a local change: nothing is pushed back.
         add_run(&db_b, hb.path(), "r1", "done").await;
-        let mut st_b = ScanState::default();
+        let mut st_b = eager();
         assert_eq!(stage(&db_b, &pb, &blobs, &mut st_b, ScanMode::Full, false).await.unwrap(), 0);
         assert!(outbox_files(&db_b).await.is_empty());
 
@@ -1958,7 +2572,7 @@ pub(crate) mod tests {
         fs::write(&ta, transcript_lines(&project_a.to_string_lossy(), 2)).unwrap();
         stage(&db_a, &pa, &blobs, &mut st, ScanMode::Full, false).await.unwrap();
         let op2 = op_for(&db_a, &t, 2_000, "dev-a").await;
-        assert_eq!(apply_op(&db_b, &pb, &blobs, &op2).await.unwrap(), Outcome::Applied);
+        assert_eq!(apply_op(&db_b, &pb, &blobs, &op2, true).await.unwrap(), Outcome::Applied);
         assert_eq!(fs::read_to_string(&tb).unwrap(), transcript_lines(&project_b.to_string_lossy(), 2));
         let siblings = fs::read_dir(tb.parent().unwrap()).unwrap().flatten().count();
         assert_eq!(siblings, 1, "no conflict sibling");
@@ -1987,14 +2601,14 @@ pub(crate) mod tests {
         // Another file whose content is the same as the log's full first chunk.
         let twin = add_run(&db, h.path(), "r2", "running").await;
         fs::write(&twin, mb(CHUNK_SIZE, b'x')).unwrap();
-        let mut st = ScanState::default();
+        let mut st = eager();
         stage(&db, &p, &blobs, &mut st, ScanMode::Full, false).await.unwrap();
         let chunks = |db: Db| async move {
             let j: String = sqlx::query_scalar("SELECT chunks_json FROM sync_files WHERE path LIKE '%r1.log'").fetch_one(&db).await.unwrap();
             serde_json::from_str::<Vec<ChunkRef>>(&j).unwrap()
         };
         let v1 = chunks(db.clone()).await;
-        sqlx::query("DELETE FROM sync_outbox").execute(&db).await.unwrap();
+        pushed(&db).await;
 
         body.extend(b" more");
         fs::write(&log, &body).unwrap();
@@ -2010,7 +2624,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(known, None, "a released blob is never deduped again");
-        sqlx::query("DELETE FROM sync_outbox").execute(&db).await.unwrap();
+        pushed(&db).await;
         assert_eq!(releasable_blobs(&db, 10).await.unwrap(), vec![v1[1].blob.clone()]);
         forget_released(&db, &[v1[1].blob.clone()]).await.unwrap();
         assert!(releasable_blobs(&db, 10).await.unwrap().is_empty());
@@ -2019,9 +2633,66 @@ pub(crate) mod tests {
         // twin file, so only the tail goes.
         fs::write(&log, mb(CHUNK_SIZE, b'y')).unwrap();
         stage(&db, &p, &blobs, &mut st, ScanMode::Quick, false).await.unwrap();
-        sqlx::query("DELETE FROM sync_outbox").execute(&db).await.unwrap();
+        pushed(&db).await;
         assert_eq!(releasable_blobs(&db, 10).await.unwrap(), vec![v2[1].blob.clone()]);
+        forget_released(&db, &[v2[1].blob.clone()]).await.unwrap();
+
+        // A manifest dropped unpushed (a remote version won) never releases
+        // the chunks the relay may still serve.
+        let mut grown = mb(CHUNK_SIZE, b'y');
+        grown.extend(b"tail");
+        fs::write(&log, &grown).unwrap();
+        stage(&db, &p, &blobs, &mut st, ScanMode::Quick, false).await.unwrap();
+        grown.extend(b"+");
+        fs::write(&log, &grown).unwrap();
+        stage(&db, &p, &blobs, &mut st, ScanMode::Quick, false).await.unwrap();
+        let queued: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_blob_release").fetch_one(&db).await.unwrap();
+        assert_eq!(queued, 1, "the unpushed tail is superseded");
+        sqlx::query("DELETE FROM sync_outbox").execute(&db).await.unwrap();
+        assert!(releasable_blobs(&db, 10).await.unwrap().is_empty());
+        let queued: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_blob_release").fetch_one(&db).await.unwrap();
+        assert_eq!(queued, 0, "cancelled");
     }
+
+    /// What `mark_pushed` does for everything in the outbox.
+    async fn pushed(db: &Db) {
+        let up_to: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(seq), 0) FROM sync_outbox").fetch_one(db).await.unwrap();
+        let mut conn = db.acquire().await.unwrap();
+        releases_pushed(&mut conn, up_to).await.unwrap();
+        sqlx::query("DELETE FROM sync_outbox WHERE seq <= ?").bind(up_to).execute(&mut *conn).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn release_waits_for_the_files_newest_manifest() {
+        let h = tempdir();
+        let db = mem_db().await;
+        let p = ctx(h.path());
+        let blobs = MemBlobs::default();
+        let log = add_run(&db, h.path(), "r1", "running").await;
+        let mut st = eager();
+        fs::write(&log, b"v1").unwrap();
+        stage(&db, &p, &blobs, &mut st, ScanMode::Full, false).await.unwrap();
+        pushed(&db).await;
+        fs::write(&log, b"v1 v2").unwrap();
+        stage(&db, &p, &blobs, &mut st, ScanMode::Quick, false).await.unwrap();
+        let first: i64 = sqlx::query_scalar("SELECT MAX(seq) FROM sync_outbox").fetch_one(&db).await.unwrap();
+        // Another row changes, then the file again: a push that stops before
+        // the file's newest entry must not release v1's chunk.
+        sqlx::query("INSERT INTO todos (id, text, position, created_at) VALUES ('t', 'x', 0, 'x')").execute(&db).await.unwrap();
+        fs::write(&log, b"v1 v2 v3").unwrap();
+        stage(&db, &p, &blobs, &mut st, ScanMode::Quick, false).await.unwrap();
+        let todo: i64 = sqlx::query_scalar("SELECT seq FROM sync_outbox WHERE tbl = 'todos'").fetch_one(&db).await.unwrap();
+        assert!(first < todo);
+        let mut conn = db.acquire().await.unwrap();
+        releases_pushed(&mut conn, todo).await.unwrap();
+        sqlx::query("DELETE FROM sync_outbox WHERE seq <= ?").bind(todo).execute(&mut *conn).await.unwrap();
+        drop(conn);
+        assert!(releasable_blobs(&db, 10).await.unwrap().is_empty(), "the file's newest manifest is not pushed yet");
+        pushed(&db).await;
+        assert_eq!(releasable_blobs(&db, 10).await.unwrap().len(), 2, "v1 and v2 tails");
+    }
+
+
 
     #[tokio::test]
     async fn library_file_delete_round_trip() {
@@ -2039,7 +2710,7 @@ pub(crate) mod tests {
             .execute(&db_a)
             .await
             .unwrap();
-        let mut st = ScanState::default();
+        let mut st = eager();
         assert_eq!(stage(&db_a, &pa, &blobs, &mut st, ScanMode::Full, false).await.unwrap(), 2);
         let mut ops = Vec::new();
         for (pk, _) in outbox_files(&db_a).await {
@@ -2049,7 +2720,7 @@ pub(crate) mod tests {
             ops.push(upsert_op(pk, row.unwrap(), 1_000, "dev-a"));
         }
         for op in &ops {
-            assert_eq!(apply_op(&db_b, &pb, &blobs, op).await.unwrap(), Outcome::Applied);
+            assert_eq!(apply_op(&db_b, &pb, &blobs, op, true).await.unwrap(), Outcome::Applied);
         }
         let ref_b = pb.app_data.as_ref().unwrap().join("skills/review/references/zz-sync-ref.md");
         assert_eq!(fs::read_to_string(&ref_b).unwrap(), "ref");
@@ -2063,14 +2734,14 @@ pub(crate) mod tests {
             .await
             .unwrap();
         fs::write(&skill_b, "zz-sync-b-version").unwrap();
-        let mut st_b = ScanState::default();
+        let mut st_b = eager();
         assert_eq!(stage(&db_b, &pb, &blobs, &mut st_b, ScanMode::Full, false).await.unwrap(), 1);
         fs::write(dir_a.join("SKILL.md"), "skill v2").unwrap();
         stage(&db_a, &pa, &blobs, &mut st, ScanMode::Full, false).await.unwrap();
-        let t = Tracked { kind: FileKind::Library, local: dir_a.join("SKILL.md"), portable: "@data/skills/review/SKILL.md".into() };
+        let t = Tracked { kind: FileKind::Library, local: dir_a.join("SKILL.md"), portable: "@data/skills/review/SKILL.md".into(), live: false };
         let op = op_for(&db_a, &t, wall_ms() + 60_000, "dev-a").await;
         sqlx::query("DELETE FROM sync_outbox").execute(&db_b).await.unwrap();
-        assert_eq!(apply_op(&db_b, &pb, &blobs, &op).await.unwrap(), Outcome::Applied);
+        assert_eq!(apply_op(&db_b, &pb, &blobs, &op, true).await.unwrap(), Outcome::Applied);
         assert_eq!(fs::read_to_string(&skill_b).unwrap(), "skill v2");
         let root = crate::commands::project_links::backup_root();
         let kept = walkdir::WalkDir::new(&root).into_iter().flatten().any(|e| {
@@ -2089,9 +2760,249 @@ pub(crate) mod tests {
         let (kind, row) = pending_row(&mut conn, &pk, false).await.unwrap().unwrap();
         assert_eq!((kind, row), (OpKind::Delete, None));
         let del = Op { v: OP_VERSION, schema: SCHEMA_VERSION, hlc: Hlc::new(2_000, 0, "dev-a"), tbl: TBL.into(), pk, kind: OpKind::Delete, row: None };
-        assert_eq!(apply_op(&db_b, &pb, &blobs, &del).await.unwrap(), Outcome::Applied);
+        assert_eq!(apply_op(&db_b, &pb, &blobs, &del, true).await.unwrap(), Outcome::Applied);
         assert!(!ref_b.exists());
         let root = crate::commands::project_links::backup_root();
         assert!(walkdir::WalkDir::new(root).into_iter().flatten().any(|e| e.file_name() == "zz-sync-ref.md"));
     }
+    #[test]
+    fn resumable_sha256_matches_sha2() {
+        for len in [0usize, 1, 55, 56, 63, 64, 65, 127, 128, 1000, CHUNK_SIZE + 3] {
+            let data: Vec<u8> = (0..len).map(|i| (i * 7 % 251) as u8).collect();
+            assert_eq!(Mid::default().finish(&data), sha_hex(&data), "len {len}");
+            // Resumed from any 64-byte boundary.
+            let mut mid = Mid::default();
+            let cut = len / 2 / 64 * 64;
+            mid.absorb(&data[..cut]);
+            assert_eq!(mid.off as usize, cut);
+            assert_eq!(mid.finish(&data[cut..]), sha_hex(&data), "len {len} resumed at {cut}");
+        }
+    }
+
+    async fn record(db: &Db, kind: FileKind, portable: &str) -> Record {
+        let mut conn = db.acquire().await.unwrap();
+        load_record(&mut conn, kind, portable).await.unwrap().unwrap()
+    }
+
+    #[tokio::test]
+    async fn grown_log_is_hashed_from_the_recorded_state() {
+        let h = tempdir();
+        let db = mem_db().await;
+        let p = ctx(h.path());
+        let blobs = MemBlobs::default();
+        let log = add_run(&db, h.path(), "r1", "done").await;
+        let portable = "~/w/p/.devdy/runs/r1.log";
+        let mut body = mb(2 * CHUNK_SIZE, b'a');
+        body.extend(b"tail");
+        fs::write(&log, &body).unwrap();
+        let mut st = eager();
+        stage(&db, &p, &blobs, &mut st, ScanMode::Full, false).await.unwrap();
+        let rec = record(&db, FileKind::RunLog, portable).await;
+        let meta = fs::metadata(&log).unwrap();
+        assert_eq!(rec.synced_mid(inode(&meta)).unwrap().off, 2 * CHUNK_SIZE as u64);
+
+        // Appended: resumes after the full chunks, same result as a full read.
+        body.extend(mb(CHUNK_SIZE, b'b'));
+        fs::write(&log, &body).unwrap();
+        let meta = fs::metadata(&log).unwrap();
+        let resume = resume_point(FileKind::RunLog, Some(&rec), &log, &meta).expect("resumable");
+        assert_eq!((resume.mid.off, resume.chunks.len()), (2 * CHUNK_SIZE as u64, 2));
+        stage(&db, &p, &blobs, &mut st, ScanMode::Full, false).await.unwrap();
+        let rec = record(&db, FileKind::RunLog, portable).await;
+        assert_eq!((rec.size, rec.sha256.clone()), (body.len() as u64, sha_hex(&body)));
+        assert_eq!(rec.chunks.len(), 4);
+
+        // Rewritten in place (not an append): detected, re-read from the start.
+        body[CHUNK_SIZE * 3 - 1] = b'X';
+        body.extend(b"more");
+        fs::write(&log, &body).unwrap();
+        let meta = fs::metadata(&log).unwrap();
+        assert!(resume_point(FileKind::RunLog, Some(&rec), &log, &meta).is_none());
+        stage(&db, &p, &blobs, &mut st, ScanMode::Full, false).await.unwrap();
+        let rec = record(&db, FileKind::RunLog, portable).await;
+        assert_eq!(rec.sha256, sha_hex(&body));
+        // A library file never resumes.
+        assert!(resume_point(FileKind::Library, Some(&rec), &log, &meta).is_none());
+    }
+
+    #[tokio::test]
+    async fn live_partial_tail_waits_until_idle() {
+        let h = tempdir();
+        let db = mem_db().await;
+        let p = ctx(h.path());
+        let blobs = MemBlobs::default();
+        let log = add_run(&db, h.path(), "r1", "running").await;
+        let portable = "~/w/p/.devdy/runs/r1.log";
+        let mut st = ScanState::default();
+        assert_eq!(st.tail_idle, TAIL_IDLE);
+        assert_eq!(Timing::default().tail_idle(), Duration::from_secs(10));
+
+        // Only a partial chunk, just written: nothing goes up yet.
+        fs::write(&log, b"turn 1\n").unwrap();
+        assert_eq!(stage(&db, &p, &blobs, &mut st, ScanMode::Full, false).await.unwrap(), 0);
+        assert_eq!(*blobs.puts.lock().unwrap(), 0);
+        // A full chunk goes at once, the partial tail after it waits.
+        let mut body = mb(CHUNK_SIZE, b'a');
+        body.extend(b"partial");
+        fs::write(&log, &body).unwrap();
+        assert_eq!(stage(&db, &p, &blobs, &mut st, ScanMode::Quick, false).await.unwrap(), 1);
+        let rec = record(&db, FileKind::RunLog, portable).await;
+        assert_eq!((rec.size, rec.chunks.len(), *blobs.puts.lock().unwrap()), (CHUNK_SIZE as u64, 1, 1));
+        assert_eq!(rec.sha256, sha_hex(&body[..CHUNK_SIZE]));
+        // Rechecked on quick scans without being re-read or re-queued.
+        assert_eq!(stage(&db, &p, &blobs, &mut st, ScanMode::Quick, false).await.unwrap(), 0);
+        assert_eq!(*blobs.puts.lock().unwrap(), 1);
+
+        // Idle long enough: the tail goes up.
+        let old = std::time::SystemTime::now() - Duration::from_secs(30);
+        fs::File::options().append(true).open(&log).unwrap().set_modified(old).unwrap();
+        assert_eq!(stage(&db, &p, &blobs, &mut st, ScanMode::Quick, false).await.unwrap(), 1);
+        let rec = record(&db, FileKind::RunLog, portable).await;
+        assert_eq!((rec.size, rec.sha256.clone()), (body.len() as u64, sha_hex(&body)));
+
+        // A finished run's file goes up whole at once.
+        sqlx::query("UPDATE runs SET status = 'done'").execute(&db).await.unwrap();
+        body.extend(b" and more");
+        fs::write(&log, &body).unwrap();
+        assert_eq!(stage(&db, &p, &blobs, &mut st, ScanMode::Full, false).await.unwrap(), 1);
+        assert_eq!(record(&db, FileKind::RunLog, portable).await.size, body.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn unpushed_local_appends_survive_a_diverging_remote_version() {
+        let (ha, hb) = (tempdir(), tempdir());
+        let (db_a, db_b) = (mem_db().await, mem_db().await);
+        let (pa, pb) = (ctx(ha.path()), ctx(hb.path()));
+        let blobs = MemBlobs::default();
+        let la = add_run(&db_a, ha.path(), "r1", "done").await;
+        let lb = add_run(&db_b, hb.path(), "r1", "done").await;
+        let t = Tracked { kind: FileKind::RunLog, local: la.clone(), portable: "~/w/p/.devdy/runs/r1.log".into(), live: false };
+        fs::write(&la, "l1\n").unwrap();
+        let (mut sa, mut sb) = (eager(), eager());
+        stage(&db_a, &pa, &blobs, &mut sa, ScanMode::Full, false).await.unwrap();
+        apply_op(&db_b, &pb, &blobs, &op_for(&db_a, &t, 1_000, "dev-a").await, true).await.unwrap();
+
+        // B continues the log and stages it (record = B's own version), A
+        // continues differently; A's op is newer than B's change.
+        fs::write(&lb, "l1\nl2-b\n").unwrap();
+        stage(&db_b, &pb, &blobs, &mut sb, ScanMode::Full, false).await.unwrap();
+        sqlx::query("UPDATE sync_outbox SET changed_at = 1").execute(&db_b).await.unwrap();
+        fs::write(&la, "l1\nl2-a\n").unwrap();
+        stage(&db_a, &pa, &blobs, &mut sa, ScanMode::Full, false).await.unwrap();
+        let op = op_for(&db_a, &t, 2_000, "dev-a").await;
+        assert_eq!(apply_op(&db_b, &pb, &blobs, &op, true).await.unwrap(), Outcome::Conflict);
+        assert_eq!(fs::read_to_string(&lb).unwrap(), "l1\nl2-b\n", "B's turn is kept");
+        assert_eq!(fs::read_to_string(lb.with_file_name("r1.log.conflict-dev-a")).unwrap(), "l1\nl2-a\n");
+        assert_eq!(outbox_files(&db_b).await.len(), 1, "B's unpushed append is still pushed");
+
+        // A version that extends B's: replaced (appended in place).
+        let ino = inode(&fs::metadata(&lb).unwrap());
+        fs::write(&la, "l1\nl2-b\nl3-a\n").unwrap();
+        stage(&db_a, &pa, &blobs, &mut sa, ScanMode::Full, false).await.unwrap();
+        let op = op_for(&db_a, &t, 3_000, "dev-a").await;
+        assert_eq!(apply_op(&db_b, &pb, &blobs, &op, true).await.unwrap(), Outcome::Applied);
+        assert_eq!(fs::read_to_string(&lb).unwrap(), "l1\nl2-b\nl3-a\n");
+        assert_eq!(inode(&fs::metadata(&lb).unwrap()), ino, "appended in place");
+        assert!(outbox_files(&db_b).await.is_empty(), "contained in the applied version");
+    }
+
+    #[tokio::test]
+    async fn peers_append_in_place() {
+        let (ha, hb) = (tempdir(), tempdir());
+        let (db_a, db_b) = (mem_db().await, mem_db().await);
+        let (pa, pb) = (ctx(ha.path()), ctx(hb.path()));
+        let blobs = MemBlobs::default();
+        let la = add_run(&db_a, ha.path(), "r1", "done").await;
+        let t = Tracked { kind: FileKind::RunLog, local: la.clone(), portable: "~/w/p/.devdy/runs/r1.log".into(), live: false };
+        let mut body = mb(CHUNK_SIZE, b'x');
+        body.extend(b"tail\n");
+        fs::write(&la, &body).unwrap();
+        let mut st = eager();
+        stage(&db_a, &pa, &blobs, &mut st, ScanMode::Full, false).await.unwrap();
+        apply_op(&db_b, &pb, &blobs, &op_for(&db_a, &t, 1_000, "dev-a").await, true).await.unwrap();
+        let lb = hb.path().join("w/p/.devdy/runs/r1.log");
+        let ino = inode(&fs::metadata(&lb).unwrap());
+
+        for (n, millis) in [(1usize, 2_000u64), (2, 3_000)] {
+            body.extend(mb(CHUNK_SIZE / 2 * n, b'0' + n as u8));
+            fs::write(&la, &body).unwrap();
+            stage(&db_a, &pa, &blobs, &mut st, ScanMode::Full, false).await.unwrap();
+            let gets = *blobs.gets.lock().unwrap();
+            let op = op_for(&db_a, &t, millis, "dev-a").await;
+            assert_eq!(apply_op(&db_b, &pb, &blobs, &op, true).await.unwrap(), Outcome::Applied);
+            assert_eq!(fs::read(&lb).unwrap(), body);
+            assert_eq!(inode(&fs::metadata(&lb).unwrap()), ino, "appended, not replaced");
+            let needed = op.row.as_ref().unwrap()["chunks"].as_array().unwrap().len() - 1;
+            assert_eq!(*blobs.gets.lock().unwrap() - gets, needed, "only the chunks from the old tail on");
+        }
+        let rec = record(&db_b, FileKind::RunLog, "~/w/p/.devdy/runs/r1.log").await;
+        assert_eq!((rec.size, rec.sha256.clone(), rec.origin.as_str()), (body.len() as u64, sha_hex(&body), "remote"));
+        assert!(matches_record(&lb, Some(&rec)));
+        // Nothing to push back.
+        let mut sb = eager();
+        assert_eq!(stage(&db_b, &pb, &blobs, &mut sb, ScanMode::Full, false).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn modes_are_masked_and_keys_need_local_secrets_sync() {
+        let (ha, hb) = (tempdir(), tempdir());
+        let (db_a, db_b) = (mem_db().await, mem_db().await);
+        let (pa, pb) = (ctx(ha.path()), ctx(hb.path()));
+        let blobs = MemBlobs::default();
+        let skill = pa.app_data.as_ref().unwrap().join("skills/s");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("run.sh"), "#!/bin/sh").unwrap();
+        fs::write(skill.join("SKILL.md"), "md").unwrap();
+        sqlx::query("INSERT INTO skills (id, name, description, target, source_path, updated_at) VALUES ('s', 's', '', 'claude', ?, 'x')")
+            .bind(skill.to_string_lossy().as_ref())
+            .execute(&db_a)
+            .await
+            .unwrap();
+        let mut st = eager();
+        stage(&db_a, &pa, &blobs, &mut st, ScanMode::Full, false).await.unwrap();
+        for (name, sent, want) in [("run.sh", 0o777, 0o755), ("SKILL.md", 0o666, 0o644)] {
+            let t = Tracked { kind: FileKind::Library, local: skill.join(name), portable: format!("@data/skills/s/{name}"), live: false };
+            let mut op = op_for(&db_a, &t, 1_000, "dev-a").await;
+            op.row.as_mut().unwrap().insert("mode".into(), json!(sent));
+            assert_eq!(apply_op(&db_b, &pb, &blobs, &op, true).await.unwrap(), Outcome::Applied);
+            let got = file_mode(&fs::metadata(pb.app_data.as_ref().unwrap().join("skills/s").join(name)).unwrap()).unwrap();
+            assert_eq!(got, want, "{name}");
+        }
+
+        // SSH key: never written while local secrets sync is off.
+        let key = pa.app_data.as_ref().unwrap().join("server-keys/k1");
+        fs::create_dir_all(key.parent().unwrap()).unwrap();
+        fs::write(&key, "-----KEY-----").unwrap();
+        sqlx::query("INSERT INTO servers (id, label, host, username, auth_method, private_key_path, created_at) VALUES ('sv', 'v', 'h', 'u', 'key', ?, 'x')")
+            .bind(key.to_string_lossy().as_ref())
+            .execute(&db_a)
+            .await
+            .unwrap();
+        stage(&db_a, &pa, &blobs, &mut st, ScanMode::Full, true).await.unwrap();
+        let t = Tracked { kind: FileKind::SshKey, local: key.clone(), portable: "@data/server-keys/k1".into(), live: false };
+        let op = op_for(&db_a, &t, 2_000, "dev-a").await;
+        let key_b = pb.app_data.as_ref().unwrap().join("server-keys/k1");
+        assert_eq!(apply_op(&db_b, &pb, &blobs, &op, false).await.unwrap(), Outcome::Skipped);
+        assert!(!key_b.exists());
+        assert_eq!(apply_op(&db_b, &pb, &blobs, &op, true).await.unwrap(), Outcome::Applied);
+        assert_eq!(file_mode(&fs::metadata(&key_b).unwrap()), Some(0o600));
+    }
+
+    #[test]
+    fn transcripts_only_land_under_claude_config_dirs() {
+        let home = PathBuf::from("/Users/bob");
+        let p = ctx(&home).with_claude_dirs([PathBuf::from("/Users/bob/.claude-max"), PathBuf::from("relative")]);
+        let ok = |s: &str| localize(&p, FileKind::ClaudeTranscript, s);
+        assert!(ok("~/.claude/projects/~-w-p/s.jsonl").is_ok());
+        assert!(ok("~/.claude-max/projects/~-w-p/s.jsonl").is_ok());
+        assert!(ok("~/.claude-other/projects/~-w-p/s.jsonl").is_err(), "not a configured account");
+        assert!(ok("~/.claude/projects/s.jsonl").is_err(), "no project folder");
+        assert!(ok("~/w/projects/x/s.jsonl").is_err());
+        assert!(ok("~//tmp/projects/x/s.jsonl").is_err());
+        assert!(ok("/tmp/.claude/projects/x/s.jsonl").is_err());
+        assert!(ok("~/.claude/projects/x/../../../.zshrc.jsonl").is_err());
+        assert_eq!(expand_portable(&p, "~//etc/passwd"), "~//etc/passwd", "never escapes the home dir");
+        assert!(localize(&p, FileKind::RunLog, "~//w/.devdy/runs/r.log").is_err());
+    }
+
 }

@@ -1,11 +1,24 @@
 //! Applying remote ops: one transaction, capture triggers muted by the guard,
 //! last-writer-wins by HLC, tombstones for deletes, FK-safe out-of-order apply.
+//!
+//! Two devices can create "the same thing" independently after pairing (a
+//! skill with the same name, the same imported CLI session, the same Pulse
+//! watch): an incoming row whose pk is new here but that clashes with a local
+//! row on another UNIQUE key is reconciled the same way on every device,
+//! whatever the arrival order: the row with the lower id survives. A local
+//! loser is re-keyed to the incoming id (children, outbox, Keychain items
+//! follow; the moved rows are queued for push so the relay log drops the old
+//! id); an incoming loser is merged into the local row. Either way the content
+//! is settled by last-writer-wins, and the decision is kept as an alias
+//! (`sync_state` `alias:<tbl>:<old pk>`) that redirects later upserts and
+//! references carrying the old id.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use serde_json::{Map, Value};
 use sqlx::{Row, SqliteConnection};
 
+use super::bootstrap::{rekey, RekeyOpts, REFS};
 use super::clock::{wall_ms, Hlc, HlcClock};
 use super::codec::{bind_value, decode_row, delete_row, pk_values, read_row, upsert_row, PathCtx};
 use super::op::{canonical_json, Op, OpKind};
@@ -15,6 +28,11 @@ use super::SCHEMA_VERSION;
 use crate::db::Db;
 
 type RowKey = (String, String);
+
+/// `(table, canonical old pk)` -> surviving pk.
+type Aliases = HashMap<RowKey, Value>;
+
+const ALIAS_PREFIX: &str = "alias:";
 
 #[derive(Debug, PartialEq)]
 enum Outcome {
@@ -98,16 +116,18 @@ pub async fn apply_ops(
 
         let mut report = base.clone();
         let mut failed: Vec<(Op, String)> = Vec::new();
-        let mut applied: HashSet<RowKey> = HashSet::new();
+        // Row actually written (an op may be redirected) -> the op's own key.
+        let mut applied: HashMap<RowKey, RowKey> = HashMap::new();
         let mut touched: BTreeSet<&'static str> = BTreeSet::new();
+        let mut aliases = load_aliases(&mut tx).await?;
         for op in &candidates {
             let key = (op.tbl.clone(), op.pk_key());
             if fk_blocked.contains(&key) {
                 continue;
             }
             sqlx::query("SAVEPOINT sync_op").execute(&mut *tx).await.map_err(err)?;
-            match apply_one(&mut tx, paths, op).await {
-                Ok(outcome) => {
+            match apply_one(&mut tx, paths, op, &mut aliases).await {
+                Ok((outcome, row_key)) => {
                     sqlx::query("RELEASE sync_op").execute(&mut *tx).await.map_err(err)?;
                     match outcome {
                         Outcome::Skipped => report.skipped_older += 1,
@@ -119,13 +139,15 @@ pub async fn apply_ops(
                             if let Some(spec) = schema::spec(&op.tbl) {
                                 touched.insert(spec.name);
                             }
-                            applied.insert(key);
+                            applied.insert(row_key, key);
                         }
                     }
                 }
                 Err(e) => {
                     sqlx::query("ROLLBACK TO sync_op").execute(&mut *tx).await.map_err(err)?;
                     sqlx::query("RELEASE sync_op").execute(&mut *tx).await.map_err(err)?;
+                    // Aliases the failed op recorded were rolled back too.
+                    aliases = load_aliases(&mut tx).await?;
                     failed.push((op.clone(), e));
                 }
             }
@@ -135,7 +157,7 @@ pub async fn apply_ops(
         // (whole transaction rolled back, so an update leaves the old row in
         // place) and keep them for a later retry.
         let violating = fk_violations(&mut tx, &touched).await?;
-        let mut blocked: Vec<RowKey> = violating.intersection(&applied).cloned().collect();
+        let mut blocked: Vec<RowKey> = violating.into_iter().filter(|k| applied.contains_key(k)).collect();
         if let Some(pre) = &preexisting {
             blocked.retain(|k| !pre.contains(k));
         }
@@ -149,7 +171,7 @@ pub async fn apply_ops(
                 blocked.retain(|k| !pre.contains(k));
                 preexisting = Some(pre);
             }
-            fk_blocked.extend(blocked);
+            fk_blocked.extend(blocked.iter().filter_map(|k| applied.get(k).cloned()));
             continue;
         }
 
@@ -229,9 +251,49 @@ async fn fk_violations(
     Ok(out)
 }
 
-async fn apply_one(conn: &mut SqliteConnection, paths: &PathCtx, op: &Op) -> Result<Outcome, String> {
+/// Apply one op; returns the outcome and the row it wrote (an upsert may be
+/// redirected to another id, see the module docs).
+async fn apply_one(
+    conn: &mut SqliteConnection,
+    paths: &PathCtx,
+    op: &Op,
+    aliases: &mut Aliases,
+) -> Result<(Outcome, RowKey), String> {
     let spec = schema::spec(&op.tbl).ok_or("unknown table")?;
+    let mut op = op.clone();
+    let mut merged = false;
+    if op.kind == OpKind::Upsert {
+        follow_aliases(spec, &mut op, aliases);
+        merged = reconcile_unique(conn, paths, spec, &mut op, aliases).await?;
+    }
     let key = op.pk_key();
+    let outcome = apply_row(conn, paths, spec, &op, &key).await?;
+    if merged {
+        // The sender still has its row under the losing id: push ours (the
+        // merged result) so it re-keys too, whichever version won here.
+        sqlx::query(
+            "INSERT INTO sync_outbox (tbl, pk, op, changed_at) SELECT ?, ?, 'U', 0 \
+             WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = ? AND pk = ?)",
+        )
+        .bind(spec.name)
+        .bind(&key)
+        .bind(spec.name)
+        .bind(&key)
+        .execute(&mut *conn)
+        .await
+        .map_err(err)?;
+    }
+    Ok((outcome, (spec.name.to_string(), key)))
+}
+
+async fn apply_row(
+    conn: &mut SqliteConnection,
+    paths: &PathCtx,
+    spec: &'static TableSpec,
+    op: &Op,
+    key: &str,
+) -> Result<Outcome, String> {
+    let key = key.to_string();
     let known: Option<String> = sqlx::query_scalar("SELECT hlc FROM sync_rows WHERE tbl = ? AND pk = ?")
         .bind(spec.name)
         .bind(&key)
@@ -326,6 +388,159 @@ async fn apply_one(conn: &mut SqliteConnection, paths: &PathCtx, op: &Op) -> Res
         set_note_base(conn, &key, op.row.as_ref().and_then(|r| r.get("content"))).await?;
     }
     Ok(outcome)
+}
+
+// ---- Unique-key reconcile ---------------------------------------------------------
+
+async fn load_aliases(conn: &mut SqliteConnection) -> Result<Aliases, String> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT key, value FROM sync_state WHERE substr(key, 1, ?) = ?",
+    )
+    .bind(ALIAS_PREFIX.len() as i64)
+    .bind(ALIAS_PREFIX)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(err)?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(k, v)| {
+            let (tbl, pk) = k.strip_prefix(ALIAS_PREFIX)?.split_once(':')?;
+            Some(((tbl.to_string(), pk.to_string()), serde_json::from_str(&v).ok()?))
+        })
+        .collect())
+}
+
+async fn add_alias(conn: &mut SqliteConnection, aliases: &mut Aliases, tbl: &str, old: &str, new: &Value) -> Result<(), String> {
+    sqlx::query("INSERT INTO sync_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .bind(format!("{ALIAS_PREFIX}{tbl}:{old}"))
+        .bind(canonical_json(new))
+        .execute(&mut *conn)
+        .await
+        .map_err(err)?;
+    aliases.insert((tbl.to_string(), old.to_string()), new.clone());
+    Ok(())
+}
+
+/// Where an id of `tbl` lives now (following re-key decisions, chained).
+fn resolve(aliases: &Aliases, tbl: &str, id: &Value) -> Option<Value> {
+    let mut cur = aliases.get(&(tbl.to_string(), canonical_json(id)))?.clone();
+    for _ in 0..8 {
+        match aliases.get(&(tbl.to_string(), canonical_json(&cur))) {
+            Some(next) if *next != cur => cur = next.clone(),
+            _ => break,
+        }
+    }
+    Some(cur)
+}
+
+/// Rewrite an upsert that still carries ids an earlier reconcile replaced:
+/// its own pk, and every column referencing a re-keyed row.
+fn follow_aliases(spec: &TableSpec, op: &mut Op, aliases: &Aliases) {
+    if aliases.is_empty() {
+        return;
+    }
+    if spec.pk.len() == 1 {
+        if let Some(to) = resolve(aliases, spec.name, &op.pk) {
+            op.pk = to;
+        }
+    }
+    for (parent, _, col) in REFS.iter().filter(|(_, child, _)| *child == spec.name) {
+        let Some(to) = op.row.as_ref().and_then(|r| r.get(*col)).and_then(|v| resolve(aliases, parent, v)) else { continue };
+        if let Some(row) = op.row.as_mut() {
+            row.insert((*col).to_string(), to.clone());
+        }
+        if let Value::Object(pk) = &mut op.pk {
+            if pk.contains_key(*col) {
+                pk.insert((*col).to_string(), to);
+            }
+        }
+    }
+}
+
+/// The pk of a local row (other than `pk`) holding the same values as `row`
+/// in one of the table's UNIQUE indexes (NULLs never clash).
+async fn clashing_row(
+    conn: &mut SqliteConnection,
+    spec: &TableSpec,
+    row: &Map<String, Value>,
+    pk: &Value,
+) -> Result<Option<Value>, String> {
+    let indexes: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_index_list(?) WHERE \"unique\" = 1 AND origin != 'pk'")
+            .bind(spec.name)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(err)?;
+    let [pk_col] = spec.pk else { return Ok(None) };
+    for index in indexes {
+        let cols: Vec<Option<String>> = sqlx::query_scalar("SELECT name FROM pragma_index_info(?) ORDER BY seqno")
+            .bind(&index)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(err)?;
+        let Some(cols) = cols.into_iter().collect::<Option<Vec<String>>>() else { continue };
+        let Some(values) = cols.iter().map(|c| row.get(c).filter(|v| !v.is_null())).collect::<Option<Vec<&Value>>>() else {
+            continue;
+        };
+        let cond: Vec<String> = cols.iter().map(|c| format!("{} = ?", q(c))).collect();
+        let sql = format!(
+            "SELECT {} FROM {} WHERE {} AND {} != ? LIMIT 1",
+            pk_sql(spec, &q(spec.name)),
+            q(spec.name),
+            cond.join(" AND "),
+            q(pk_col),
+        );
+        let mut query = sqlx::query(&sql);
+        for v in values {
+            query = bind_value(query, v);
+        }
+        let found = bind_value(query, pk).fetch_optional(&mut *conn).await.map_err(err)?;
+        if let Some(r) = found {
+            let pk: String = r.get(0);
+            return Ok(Some(serde_json::from_str(&pk).map_err(|e| e.to_string())?));
+        }
+    }
+    Ok(None)
+}
+
+/// An incoming row new here that clashes with a local row on a UNIQUE key:
+/// the lower id survives on every device (see the module docs). Returns
+/// whether the op was redirected into a local row.
+async fn reconcile_unique(
+    conn: &mut SqliteConnection,
+    paths: &PathCtx,
+    spec: &'static TableSpec,
+    op: &mut Op,
+    aliases: &mut Aliases,
+) -> Result<bool, String> {
+    if spec.pk.len() != 1 {
+        return Ok(false);
+    }
+    // A row we already have under this id: plain last-writer-wins.
+    if read_row(conn, spec, &op.pk).await?.is_some() {
+        return Ok(false);
+    }
+    for _ in 0..4 {
+        let Some(wire) = op.row.as_ref() else { return Ok(false) };
+        let mut row = decode_row(paths, spec, wire);
+        for (col, v) in spec.pk.iter().zip(pk_values(spec, &op.pk)?) {
+            row.insert((*col).to_string(), v);
+        }
+        let Some(local) = clashing_row(conn, spec, &row, &op.pk).await? else { return Ok(false) };
+        let incoming = op.pk.clone();
+        if canonical_json(&local) < canonical_json(&incoming) {
+            // Ours survives: the incoming row is merged into it.
+            add_alias(conn, aliases, spec.name, &canonical_json(&incoming), &local).await?;
+            super::secrets::queue_key_move(conn, spec.name, &incoming, &local).await?;
+            op.pk = local;
+            return Ok(true);
+        }
+        // Theirs survives: ours takes its id.
+        rekey(conn, spec, &local, &incoming, RekeyOpts::APPLY).await?;
+        add_alias(conn, aliases, spec.name, &canonical_json(&local), &incoming).await?;
+        tracing::info!(event = "sync_unique_rekey", tbl = spec.name);
+    }
+    Err(format!("{}: unique key clash did not settle", spec.name))
 }
 
 /// sha256 of a note body (JSON-encoded, so NULL and "" differ).

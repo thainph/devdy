@@ -6,6 +6,7 @@
 
 use crate::commands::sync::SyncManager;
 use crate::db::Db;
+use crate::runs::RunRegistry;
 use crate::sync::bootstrap::{self, BootstrapPreview, BootstrapReport, ProjectMapping, RemoteState};
 use crate::sync::codec::PathCtx;
 use crate::sync::store::SqliteSyncStore;
@@ -49,20 +50,35 @@ pub async fn sync_bootstrap_preview(db: State<'_, Db>) -> Result<BootstrapPrevie
     bootstrap::preview(db, &PathCtx::from_env(), &state, &git).await
 }
 
+/// Error code the UI shows as "stop the running sessions first".
+pub const RUNS_LIVE: &str = "sync_bootstrap_runs_live";
+
+/// Re-keying moves project / run ids that a live sidecar still uses
+/// (`DEVDY_PROJECT_ID`, its run row): only allowed with no run in flight.
+fn refuse_if_live(live: usize) -> Result<(), String> {
+    if live > 0 {
+        return Err(format!("{RUNS_LIVE}: {live} session(s) still running on this device; stop them before merging"));
+    }
+    Ok(())
+}
+
 /// Merge the group state into this device (re-key, LWW apply, queue the
-/// local-only rows), then start syncing.
+/// local-only rows), then start syncing. Refused while a run is live.
 #[tauri::command]
 pub async fn sync_bootstrap_commit(
     app: AppHandle,
     db: State<'_, Db>,
     state: State<'_, SyncManager>,
+    registry: State<'_, RunRegistry>,
 ) -> Result<BootstrapReport, String> {
     let db = db.inner();
+    refuse_if_live(registry.lock().await.len())?;
     state.stop().await;
     let sync = crate::secrets::get_sync_secrets().ok_or("this device is not in a sync group")?;
     let remote = group_state(db).await?;
     let git = bootstrap::local_git_remotes(db).await?;
-    let store = SqliteSyncStore::new(db.clone(), sync.device_id.clone());
+    let store = SqliteSyncStore::new(db.clone(), sync.device_id.clone())
+        .with_secrets(std::sync::Arc::new(crate::sync::secrets::KeychainBackend));
     let report = bootstrap::commit(db, &store, &PathCtx::from_env(), remote, &git).await?;
     let tables: Vec<String> = report.preview.tables.iter().map(|t| t.tbl.clone()).collect();
     crate::sync::events::rows_applied(&app, &tables);
@@ -83,4 +99,16 @@ pub async fn sync_project_mapping_set(
     local_path: String,
 ) -> Result<ProjectMapping, String> {
     bootstrap::set_project_mapping(db.inner(), &PathCtx::from_env(), &project_id, &local_path).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commit_is_refused_while_a_run_is_live() {
+        assert!(refuse_if_live(0).is_ok());
+        let e = refuse_if_live(2).unwrap_err();
+        assert!(e.starts_with(RUNS_LIVE), "{e}");
+    }
 }
