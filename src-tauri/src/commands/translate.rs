@@ -869,6 +869,31 @@ pub async fn submit_prompt(
 
 /// Shared body of `submit` / `submit_prompt`: ensure a warm sidecar, enqueue
 /// the turn and write the prompt.
+/// [`submit_prompt`] with the engine / model swapped for `engine` / `model`
+/// (Focus AI settings; empty = the translate ones). A new engine without a
+/// model uses that engine's default.
+pub async fn submit_prompt_as(
+    app: &AppHandle,
+    db: &Db,
+    state: &TranslateState,
+    prompt: String,
+    engine: &str,
+    model: &str,
+) -> Result<(u64, Option<UnboundedReceiver<TurnEvent>>), String> {
+    if prompt.trim().is_empty() {
+        return Err(ERR_NOTHING_TO_TRANSLATE.to_string());
+    }
+    let mut settings = load_settings(db).await?;
+    if !engine.trim().is_empty() && !engine.trim().eq_ignore_ascii_case(settings.engine.trim()) {
+        settings.engine = engine.trim().to_ascii_lowercase();
+        settings.model = String::new();
+    }
+    if !model.trim().is_empty() {
+        settings.model = model.trim().to_string();
+    }
+    submit_with(app, state, &settings, prompt, true).await
+}
+
 async fn submit_with(
     app: &AppHandle,
     state: &TranslateState,

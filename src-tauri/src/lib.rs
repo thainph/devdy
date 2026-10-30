@@ -121,6 +121,10 @@ use commands::slack_threads::{
     translate_slack_reply, unlink_slack_thread_run,
 };
 use commands::focus::{focus_board, focus_settings_get, focus_settings_set};
+use commands::focus_ai::{
+    focus_ai_analyze, focus_ai_cancel, focus_ai_plan_today, focus_ai_suggest, focus_day_plan_get,
+    focus_plan_to_calendar, focus_start_with_ai, focus_suggest_actual,
+};
 use commands::item_links::{link_item_run, list_item_runs, list_run_items, unlink_item_run};
 use commands::notes::{
     add_note, delete_note, delete_notes, list_notes, reorder_notes, set_note_project, update_note,
@@ -191,6 +195,7 @@ pub fn run() {
         // its labels follow the app language; this only routes clicks back.
         .on_menu_event(commands::app_menu::on_menu_event)
         .manage(commands::app_menu::AppMenuState::default())
+        .manage(commands::focus_ai::FocusAiState::default())
         .setup(|app| {
             use tauri::Manager;
             let app_data_dir = app
@@ -686,6 +691,14 @@ pub fn run() {
             focus_board,
             focus_settings_get,
             focus_settings_set,
+            focus_ai_suggest,
+            focus_ai_analyze,
+            focus_ai_plan_today,
+            focus_day_plan_get,
+            focus_plan_to_calendar,
+            focus_ai_cancel,
+            focus_start_with_ai,
+            focus_suggest_actual,
             delete_todo,
             delete_todos,
             clear_completed_todos,
