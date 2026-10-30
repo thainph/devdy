@@ -5,6 +5,12 @@ import assert from 'node:assert/strict'
 import {
   SYNC_CATEGORY_IDS,
   allCategoriesOn,
+  autoSource,
+  canAutoApply,
+  commonMode,
+  isSafePreview,
+  modePatch,
+  projectMode,
   backupDir,
   canApplyPreview,
   categoriesEnabled,
@@ -285,4 +291,58 @@ test('pickSource prefers the saved device, then an online one', () => {
 test('syncErrorCode knows peer_offline', () => {
   assert.equal(syncErrorCode('peer_offline'), 'peer_offline')
   assert.equal(syncErrorCode('sync run failed: peer_offline'), 'peer_offline')
+})
+
+test('isSafePreview: clone, fast-forward and add-only are safe', () => {
+  assert.equal(isSafePreview(preview({ create: true, repos: [repo({ clone: true, branch_from: null, head_from: null, commits: 12 })] })), true)
+  assert.equal(isSafePreview(preview({ repos: [repo({ head_from: '1111111', commits: 3 })] })), true)
+  assert.equal(isSafePreview(preview({ add: [{ path: 'a', size: 1 }], add_count: 1, overwrite_count: 0 })), true)
+  assert.equal(isSafePreview(preview({ repos: [repo({ head_from: 'abcdef1234567' })] })), true)
+  assert.equal(isSafePreview(preview({ repos: [repo({ branch_from: 'dev', head_from: '1111111' })] })), true)
+})
+
+test('isSafePreview: each risky reason blocks it', () => {
+  assert.equal(isSafePreview(preview({ error: 'boom' })), false)
+  assert.equal(isSafePreview(preview({ skipped: 'running_session' })), false)
+  assert.equal(isSafePreview(preview({ delete: [{ path: 'x', size: 1 }] })), false)
+  assert.equal(isSafePreview(preview({ delete_count: 3 })), false)
+  assert.equal(isSafePreview(preview({ local_changes: ['src/a.ts'] })), false)
+  assert.equal(isSafePreview(preview({ repos: [repo({ head_from: '1111111', commits: 2, branches_rewound: ['main'] })] })), false)
+  // HEAD moves back on the same branch with nothing to receive: a rewind.
+  assert.equal(isSafePreview(preview({ repos: [repo({ head_from: '1111111' })] })), false)
+})
+
+test('canAutoApply ignores skipped projects but needs one to apply', () => {
+  const safe = preview({ project_id: 'a' })
+  const skipped = preview({ project_id: 'b', skipped: 'no_local_path' })
+  assert.equal(canAutoApply([safe, skipped]), true)
+  assert.equal(canAutoApply([safe, preview({ project_id: 'c', local_changes: ['x'] })]), false)
+  assert.equal(canAutoApply([skipped]), false)
+  assert.equal(canAutoApply([]), false)
+})
+
+test('projectMode / modePatch / commonMode', () => {
+  assert.equal(projectMode({ enabled: false, folder: true }), 'off')
+  assert.equal(projectMode({ enabled: true, folder: false }), 'data')
+  assert.equal(projectMode({ enabled: true, folder: true }), 'folder')
+  assert.deepEqual(modePatch('off'), { enabled: false })
+  assert.deepEqual(modePatch('data'), { enabled: true, folder: false })
+  assert.deepEqual(modePatch('folder'), { enabled: true, folder: true })
+  assert.equal(commonMode([{ enabled: true, folder: true }, { enabled: true, folder: true }]), 'folder')
+  assert.equal(commonMode([{ enabled: true, folder: true }, { enabled: false, folder: true }]), null)
+  assert.equal(commonMode([]), null)
+})
+
+test('autoSource saves the only other device, or the only online one when none is saved', () => {
+  const me = { id: 'me', is_self: true }
+  const a = { id: 'a', is_self: false }
+  const b = { id: 'b', is_self: false }
+  assert.equal(autoSource(null, [me, a], null), 'a')
+  assert.equal(autoSource('gone', [me, a], null), 'a')
+  assert.equal(autoSource('a', [me, a], null), null)
+  assert.equal(autoSource(null, [me, a, b], ['b']), 'b')
+  assert.equal(autoSource(null, [me, a, b], ['a', 'b']), null)
+  assert.equal(autoSource(null, [me, a, b], null), null)
+  assert.equal(autoSource('a', [me, a, b], ['b']), null)
+  assert.equal(autoSource(null, [me], null), null)
 })

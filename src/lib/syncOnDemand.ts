@@ -246,6 +246,43 @@ export function folderProjects(list: readonly ProjectPref[]): ProjectPref[] {
   return list.filter((p) => p.enabled && p.folder)
 }
 
+/** What a project receives: nothing, its data, or its data + folder. */
+export type ProjectMode = 'off' | 'data' | 'folder'
+
+export const PROJECT_MODES: readonly ProjectMode[] = ['off', 'data', 'folder']
+
+export function projectMode(p: Pick<ProjectPref, 'enabled' | 'folder'>): ProjectMode {
+  if (!p.enabled) return 'off'
+  return p.folder ? 'folder' : 'data'
+}
+
+export function modePatch(mode: ProjectMode): ProjectPrefPatch {
+  if (mode === 'off') return { enabled: false }
+  return { enabled: true, folder: mode === 'folder' }
+}
+
+/** The mode every project shares, null when they differ (or there are none). */
+export function commonMode(list: ReadonlyArray<Pick<ProjectPref, 'enabled' | 'folder'>>): ProjectMode | null {
+  const modes = new Set(list.map(projectMode))
+  return modes.size === 1 ? [...modes][0] : null
+}
+
+/**
+ * The source to save without asking: the only other device of the group, or — with none saved
+ * (or the saved one gone) — the only online one. null = keep what is saved / let the user pick.
+ */
+export function autoSource(
+  saved: string | null | undefined,
+  devices: ReadonlyArray<{ id: string; is_self: boolean }>,
+  online: readonly string[] | null,
+): string | null {
+  const others = devices.filter((d) => !d.is_self)
+  if (others.length === 1) return others[0].id === saved ? null : others[0].id
+  if (saved && others.some((d) => d.id === saved)) return null
+  const live = others.filter((d) => online?.includes(d.id))
+  return live.length === 1 ? live[0].id : null
+}
+
 // ---- Formatting ----
 
 const UNITS = ['B', 'KB', 'MB', 'GB', 'TB']
@@ -424,6 +461,26 @@ export function previewTotals(list: readonly FolderPreview[], selected: readonly
       0,
     ),
   }
+}
+
+/**
+ * Applying cannot lose anything on this machine: no error, not skipped, no deletes, no local
+ * changes to back up, no branch rewound and no HEAD moved back on the same branch (HEAD changes
+ * with no commits to receive). Clones, fast-forwards and added files are safe. When every
+ * non-skipped preview is safe, Sync applies without showing the preview.
+ */
+export function isSafePreview(p: FolderPreview): boolean {
+  if (p.error || p.skipped) return false
+  if (fileCount(p.delete, p.delete_count) > 0 || (p.local_changes?.length ?? 0) > 0) return false
+  return (p.repos ?? []).every((r) =>
+    !(r.branches_rewound?.length) &&
+    !(!r.clone && !!r.head_from && !!r.head && r.head_from !== r.head && r.branch_from === r.branch_to && !r.commits))
+}
+
+/** Sync may apply these previews right away: every non-skipped one is safe (and one is left to apply). */
+export function canAutoApply(list: readonly FolderPreview[]): boolean {
+  const live = list.filter((p) => !p.skipped)
+  return live.length > 0 && live.every(isSafePreview)
 }
 
 /** Projects checked by default in the preview: every applicable one. */

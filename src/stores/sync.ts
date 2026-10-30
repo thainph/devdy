@@ -3,6 +3,8 @@ import { computed, reactive, ref } from 'vue'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import {
   DISABLED_STATUS,
+  autoSource,
+  canAutoApply,
   deviceLabel,
   folderProjects,
   isFolderFinal,
@@ -12,12 +14,14 @@ import {
   overallPercent,
   parseLastRun,
   pickSource,
+  setCategory,
   sortDevices,
   syncBootstrapPending,
   syncDevicesList,
   syncFolderApply,
   syncFolderCancel,
   syncFolderPreview,
+  syncGetSecrets,
   syncPeersOnline,
   syncPrefsGet,
   syncPrefsSetSource,
@@ -35,7 +39,6 @@ import {
 } from '@/lib/sync'
 
 const LAST_RUN_KEY = 'devdy.sync.lastRun'
-const INCLUDE_FOLDERS_KEY = 'devdy.sync.includeFolders'
 
 /**
  * Where a manual Sync is: `data` = `sync_run` (pull + apply DB ops), `preview_loading` / `preview` =
@@ -74,14 +77,14 @@ export const useSyncStore = defineStore('sync', () => {
   const prefs = ref<SyncPrefs | null>(null)
   /** Other devices with a live relay connection; null = unknown (not asked yet / failed). */
   const peersOnline = ref<string[] | null>(null)
-  const includeFolders = ref(readStorage(INCLUDE_FOLDERS_KEY) === '1')
+  /** The legacy secrets switch (`sync_set_secrets`); `secrets` counts as off when either says so. */
+  const secretsOn = ref(true)
   const lastRun = ref<LastSyncRun | null>(parseLastRun(readStorage(LAST_RUN_KEY)))
   const dialogOpen = ref(false)
 
   const run = reactive({
     stage: 'idle' as RunStage,
     source: '',
-    includeFolders: false,
     phase: null as SyncRunPhase | null,
     phaseMessage: null as string | null,
     report: null as SyncRunReport | null,
@@ -100,6 +103,11 @@ export const useSyncStore = defineStore('sync', () => {
   let starting: Promise<void> | null = null
 
   const source = computed(() => pickSource(prefs.value?.source_device, devices.value, peersOnline.value))
+  /** Disabled data categories, `secrets` included when the legacy switch is off. */
+  const categoriesOff = computed(() => {
+    const list = prefs.value?.categories_off ?? []
+    return secretsOn.value || list.includes('secrets') ? list : setCategory(list, 'secrets', false)
+  })
   const busy = computed(() => ['data', 'preview_loading', 'applying'].includes(run.stage))
   const percent = computed(() =>
     overallPercent(run.applying.map((id) => run.progress[id] ?? { phase: 'manifest', done_bytes: 0, total_bytes: 0 })),
@@ -151,16 +159,23 @@ export const useSyncStore = defineStore('sync', () => {
   /** Load what the Sync button needs (devices, prefs, who is online); errors are swallowed. */
   async function loadForSync() {
     await Promise.all([loadDevices().catch(() => {}), loadPrefs().catch(() => {}), refreshPeers()])
+    await ensureSource()
+  }
+
+  async function loadSecrets() {
+    secretsOn.value = await syncGetSecrets().catch(() => true)
+  }
+
+  /** Save the obvious source (see `autoSource`) so Sync never asks for one it can guess. */
+  async function ensureSource() {
+    if (!prefs.value || !devices.value.length) return
+    const id = autoSource(prefs.value.source_device, devices.value, peersOnline.value)
+    if (id) await setSource(id).catch(() => {})
   }
 
   async function setSource(id: string) {
     await syncPrefsSetSource(id)
     if (prefs.value) prefs.value = { ...prefs.value, source_device: id }
-  }
-
-  function setIncludeFolders(v: boolean) {
-    includeFolders.value = v
-    writeStorage(INCLUDE_FOLDERS_KEY, v ? '1' : '0')
   }
 
   function saveLastRun(r: LastSyncRun) {
@@ -172,7 +187,6 @@ export const useSyncStore = defineStore('sync', () => {
     Object.assign(run, {
       stage: 'idle',
       source: '',
-      includeFolders: false,
       phase: null,
       phaseMessage: null,
       report: null,
@@ -187,10 +201,11 @@ export const useSyncStore = defineStore('sync', () => {
   }
 
   /**
-   * Sync from `src` (default: the chosen source): pull + apply its data, then — with folders —
-   * load the folder preview and wait for the user. Opens the dialog. No-op while one runs.
+   * Sync from `src` (default: the chosen source): pull + apply its data, then preview the folders
+   * of the "data + folder" projects — applied right away when every preview is safe, else the
+   * dialog waits for the user. Opens the dialog. No-op while one runs.
    */
-  async function syncFrom(src?: string | null, withFolders?: boolean) {
+  async function syncFrom(src?: string | null) {
     if (busy.value) {
       dialogOpen.value = true
       return
@@ -199,7 +214,6 @@ export const useSyncStore = defineStore('sync', () => {
     if (!from) return
     resetRun()
     run.source = from
-    run.includeFolders = withFolders ?? includeFolders.value
     run.stage = 'data'
     run.phase = 'requesting'
     dialogOpen.value = true
@@ -235,11 +249,11 @@ export const useSyncStore = defineStore('sync', () => {
     } finally {
       void refresh()
     }
-    if (run.includeFolders) await loadPreview()
-    else run.stage = 'done'
+    await loadPreview(true)
   }
 
-  async function loadPreview() {
+  /** `auto`: apply without stopping at the preview when nothing in it is risky. */
+  async function loadPreview(auto = false) {
     await loadPrefs().catch(() => {})
     const ids = folderProjects(prefs.value?.projects ?? []).map((p) => p.project_id)
     if (!ids.length) {
@@ -250,7 +264,9 @@ export const useSyncStore = defineStore('sync', () => {
     try {
       run.previews = await syncFolderPreview(run.source, ids)
       run.selected = defaultSelection(run.previews)
-      run.stage = 'preview'
+      if (auto && canAutoApply(run.previews)) await applyFolders(run.selected)
+      else if (run.previews.every((p) => p.skipped)) run.stage = 'done'
+      else run.stage = 'preview'
     } catch (e) {
       run.stage = 'error'
       run.error = String(e)
@@ -351,10 +367,10 @@ export const useSyncStore = defineStore('sync', () => {
   }
 
   return {
-    status, mergePending, devices, prefs, peersOnline, includeFolders, lastRun, dialogOpen, run,
-    source, busy, percent, failedIds,
+    status, mergePending, devices, prefs, peersOnline, secretsOn, lastRun, dialogOpen, run,
+    source, categoriesOff, busy, percent, failedIds,
     deviceName, isOnline, refresh, set, setMergePending, loadDevices, loadPrefs, refreshPeers, loadForSync,
-    setSource, setIncludeFolders, syncFrom, loadPreview, reviewAgain, toggleSelected, applyFolders, cancelFolders, resetRun,
+    loadSecrets, ensureSource, setSource, syncFrom, loadPreview, reviewAgain, toggleSelected, applyFolders, cancelFolders, resetRun,
     start, stop,
   }
 })

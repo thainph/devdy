@@ -586,21 +586,21 @@
       "choose": "Chọn thư mục",
       "change": "Đổi",
       "tabHelp": "Máy này nhận những dự án nào, và thư mục của chúng nằm ở đâu trên máy này. Đồng bộ thư mục làm thư mục giống hệt máy nguồn (branch, commit, thay đổi chưa commit, các file khác) sau khi xem trước.",
-      "selectAll": "Chọn tất cả dự án",
-      "selectAllFolders": "Sync thư mục tất cả",
-      "colSync": "Sync",
-      "colProject": "Dự án",
-      "colLocal": "Thư mục trên máy này",
-      "colFolder": "Thư mục",
       "pick": "Chọn…",
       "more": "Cài đặt sync của dự án",
       "remapped": "đã ánh xạ",
       "runningHere": "đang có session chạy ở đây",
-      "folderNeedsSync": "Bật Sync trước",
       "state": {
         "ok": "✓ có",
-        "create": "+ tạo (chưa có — sẽ clone)",
+        "create": "+ sẽ tạo",
         "pick": "⚠ chọn thư mục"
+      },
+      "setAll": "Đặt tất cả:",
+      "mixed": "Khác nhau",
+      "mode": {
+        "off": "Không sync",
+        "data": "Chỉ dữ liệu",
+        "folder": "Dữ liệu + thư mục"
       }
     },
     "rebootstrap": {
@@ -691,7 +691,6 @@
     },
     "tabs": {
       "overview": "Tổng quan",
-      "data": "Dữ liệu",
       "projects": "Dự án",
       "devices": "Thiết bị"
     },
@@ -702,7 +701,6 @@
       "offline": "offline",
       "noSource": "Nhóm chưa có máy nào khác. Bấm Chấp nhận thiết bị mới bên dưới, rồi Tham gia nhóm từ máy kia.",
       "syncFrom": "Sync từ {name}",
-      "includeFolders": "Kèm thư mục dự án ({n} dự án bật)",
       "offlineHelp": "{name} đang offline — mở Devdy trên máy đó rồi thử lại",
       "last": "Lần sync gần nhất: {ago} · từ {name} · {result}",
       "lastNever": "Lần sync gần nhất: chưa có",
@@ -712,9 +710,14 @@
       "lastProjects": "Dự án: {ok}/{total}",
       "lastProjectErrors": "{n} lỗi",
       "pending": "Thay đổi chờ gửi: {n} (sẽ gửi khi máy khác Sync từ máy này)",
-      "pauseHelp": "Đang tạm dừng: máy này không trả lời yêu cầu Sync từ máy khác."
+      "pauseHelp": "Đang tạm dừng: máy này không trả lời yêu cầu Sync từ máy khác.",
+      "receives": "Nhận:",
+      "receivesData": "{n} loại dữ liệu",
+      "receivesProjects": "{n} dự án ({k} kèm thư mục)",
+      "edit": "Chỉnh"
     },
     "data": {
+      "title": "Dữ liệu nhận ({n}/{total})",
       "help": "Những gì máy này nhận khi bạn bấm Sync.",
       "selectAll": "Chọn tất cả",
       "note": "Bật một mục sẽ tải lại toàn bộ mục đó ở lần Sync tới. Tắt một mục vẫn giữ dữ liệu đang có trên máy này.",
@@ -753,7 +756,7 @@
         },
         "sessions": {
           "label": "Sessions",
-          "hint": "Lịch sử phiên, usage và transcript"
+          "hint": "Lịch sử phiên, usage và transcript — lần đầu có thể rất nặng (lịch sử transcript)"
         }
       }
     },
@@ -804,7 +807,8 @@
         "listDelete": "Xoá",
         "rewound": "branch {branch} sẽ bị lùi lại; tip cũ được giữ ở devdy-sync-backup/…",
         "skippedItems": "Bỏ qua ({n})",
-        "truncated": "Danh sách bị cắt: hiện {shown}/{total}"
+        "truncated": "Danh sách bị cắt: hiện {shown}/{total}",
+        "safe": "an toàn · {size}"
       },
       "skipped": {
         "no_local_path": "chưa chọn thư mục",
@@ -854,7 +858,8 @@
       },
       "applyFiles": "Sync {n} dự án · {files} thay đổi file",
       "planChanged": "Thư mục nguồn đã thay đổi sau lần xem trước này nên không ghi gì vượt quá nó. Xem lại bản xem trước mới rồi xác nhận lại.",
-      "review": "Xem lại"
+      "review": "Xem lại",
+      "skippedTitle": "Bỏ qua ({n})"
     },
     "indicator": {
       "lastSync": "Lần cuối: {ago}",
