@@ -120,7 +120,10 @@ use commands::slack_threads::{
     rename_slack_thread, reorder_slack_threads, retranslate_slack_thread, set_slack_thread_project,
     translate_slack_reply, unlink_slack_thread_run,
 };
-use commands::focus::{focus_board, focus_settings_get, focus_settings_set};
+use commands::focus::{
+    focus_board, focus_counts, focus_refresh_calendar, focus_settings_get, focus_settings_set,
+    focus_take_open_todo,
+};
 use commands::item_links::{link_item_run, list_item_runs, list_run_items, unlink_item_run};
 use commands::notes::{
     add_note, delete_note, delete_notes, list_notes, reorder_notes, set_note_project, update_note,
@@ -325,6 +328,8 @@ pub fn run() {
                     },
                 );
             }
+            // Focus reminders (focus::scheduler): a 60 s tick while the app runs.
+            focus::scheduler::start(app.handle().clone(), app.state::<db::Db>().inner().clone());
             app.manage(MascotSpeakState::default());
             app.manage(BalanceGuard::default());
             app.manage(new_registry());
@@ -686,6 +691,9 @@ pub fn run() {
             focus_board,
             focus_settings_get,
             focus_settings_set,
+            focus_counts,
+            focus_refresh_calendar,
+            focus_take_open_todo,
             delete_todo,
             delete_todos,
             clear_completed_todos,
