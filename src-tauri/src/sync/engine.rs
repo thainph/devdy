@@ -242,7 +242,15 @@ async fn run(ctx: Ctx, mut stop: watch::Receiver<bool>) {
         }
         ctx.shared.update(|s| s.state = SyncState::Connecting);
         let (ev_tx, ev_rx) = mpsc::unbounded_channel();
-        let wait = match Connection::connect(&ctx.params, false, ev_tx).await {
+        let connected = match Connection::connect(&ctx.params, false, ev_tx).await {
+            // A relay behind our cursor lost ops: stop until re-merged (N15).
+            Ok(conn) => match ctx.store.cursor().await {
+                Ok(cursor) => conn.check_not_behind(cursor).map(|_| conn),
+                Err(e) => Err(TransportError::Network(e)),
+            },
+            Err(e) => Err(e),
+        };
+        let wait = match connected {
             Ok(conn) => {
                 backoff = ctx.timing.backoff_min;
                 ctx.shared.update(|s| s.state = SyncState::Online);
@@ -455,6 +463,12 @@ fn is_dead(e: &CycleError) -> bool {
 pub struct RelayBlobs<'a> {
     conn: &'a Connection,
     keys: &'a SyncKeys,
+}
+
+impl<'a> RelayBlobs<'a> {
+    pub fn new(conn: &'a Connection, keys: &'a SyncKeys) -> Self {
+        RelayBlobs { conn, keys }
+    }
 }
 
 #[async_trait]

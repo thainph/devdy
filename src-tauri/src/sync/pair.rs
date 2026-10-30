@@ -117,34 +117,103 @@ fn sha256_hex(s: &str) -> String {
     hex::encode(sha2::Sha256::digest(s.as_bytes()))
 }
 
-/// Give this machine a fresh sync device id for a new membership: the
-/// `sync_device` row (HLCs use it), runs it owns, and drop the device record
-/// of the old id (a left device's record would linger in the group).
+/// `sync_state` key prefix of the device ids this machine had in earlier
+/// memberships (value: unused). Runs still stamped with one are this
+/// machine's: [`install_past_device_triggers`] maps them to the current id.
+pub const PAST_DEVICE_PREFIX: &str = "past_device:";
+
+/// Switch this machine to the sync device id `new` of a new membership (call
+/// it once the relay accepted `new`): the `sync_device` row (HLCs use it), the
+/// runs it owns, and drop the device record of the old id (a left device's
+/// record would linger in the group). All of it under the apply guard: a
+/// device id change is not an edit to push (pushed run rows would overwrite
+/// another device's take-over). The old id is kept as a past id, so run rows
+/// a peer sends back with it stay this machine's.
 /// Rows already stamped with the old id keep their HLC: the device part is
 /// only a tie-breaker. The persisted HLC watermark is device-independent.
-pub async fn new_membership_device(db: &Db) -> Result<String, String> {
+pub async fn new_membership_device(db: &Db, new: &str) -> Result<(), String> {
     let old = super::ensure_device(db).await?;
-    let new = uuid::Uuid::new_v4().simple().to_string();
-    let mut tx = db.begin().await.map_err(|e| e.to_string())?;
+    if old == new {
+        return Ok(());
+    }
+    let e = |e: sqlx::Error| e.to_string();
+    let mut tx = db.begin().await.map_err(e)?;
+    sqlx::query("UPDATE sync_apply_guard SET active = 1 WHERE id = 1").execute(&mut *tx).await.map_err(e)?;
     sqlx::query("UPDATE sync_device SET id = ? WHERE id = ?")
-        .bind(&new)
+        .bind(new)
         .bind(&old)
         .execute(&mut *tx)
         .await
-        .map_err(|e| e.to_string())?;
-    sqlx::query("UPDATE runs SET owner_device = ? WHERE owner_device = ?")
-        .bind(&new)
-        .bind(&old)
+        .map_err(e)?;
+    sqlx::query("INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, '1')")
+        .bind(format!("{PAST_DEVICE_PREFIX}{old}"))
         .execute(&mut *tx)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(e)?;
+    sqlx::query(
+        "UPDATE runs SET owner_device = ? WHERE owner_device IN \
+         (SELECT substr(key, ?) FROM sync_state WHERE substr(key, 1, ?) = ?)",
+    )
+    .bind(new)
+    .bind(PAST_DEVICE_PREFIX.len() as i64 + 1)
+    .bind(PAST_DEVICE_PREFIX.len() as i64)
+    .bind(PAST_DEVICE_PREFIX)
+    .execute(&mut *tx)
+    .await
+    .map_err(e)?;
     sqlx::query("DELETE FROM settings WHERE key = ?")
         .bind(format!("{}{old}", super::leader::DEVICE_NAME_PREFIX))
         .execute(&mut *tx)
         .await
-        .map_err(|e| e.to_string())?;
-    tx.commit().await.map_err(|e| e.to_string())?;
-    Ok(new)
+        .map_err(e)?;
+    sqlx::query("UPDATE sync_apply_guard SET active = 0 WHERE id = 1").execute(&mut *tx).await.map_err(e)?;
+    tx.commit().await.map_err(e)?;
+    Ok(())
+}
+
+/// Runs that arrive (or change) owned by one of this machine's past device
+/// ids get the current id. Only remote ops carry a past id, and those apply
+/// under the guard, so the rewrite is never pushed.
+pub async fn install_past_device_triggers(db: &Db) -> Result<(), String> {
+    for (name, event) in [("sync_past_owner_ins", "INSERT"), ("sync_past_owner_upd", "UPDATE OF owner_device")] {
+        let sql = format!(
+            "CREATE TRIGGER IF NOT EXISTS {name} AFTER {event} ON runs \
+             WHEN NEW.owner_device IS NOT NULL AND NEW.owner_device != '' \
+              AND EXISTS (SELECT 1 FROM sync_state WHERE key = '{PAST_DEVICE_PREFIX}' || NEW.owner_device) \
+             BEGIN UPDATE runs SET owner_device = (SELECT id FROM sync_device LIMIT 1) WHERE id = NEW.id; END"
+        );
+        sqlx::query(&sql).execute(db).await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Group-scoped synced settings (device names, leader, creator) of a group
+/// this machine left: removed locally without pushing deletes, so they never
+/// travel into the next group as ghosts.
+async fn forget_group_settings(db: &Db) -> Result<(), String> {
+    use super::leader::{DEVICE_NAME_PREFIX, KEY_CREATOR, KEY_LEADER};
+    let e = |e: sqlx::Error| e.to_string();
+    let mut tx = db.begin().await.map_err(e)?;
+    sqlx::query("UPDATE sync_apply_guard SET active = 1 WHERE id = 1").execute(&mut *tx).await.map_err(e)?;
+    sqlx::query("DELETE FROM settings WHERE substr(key, 1, ?) = ? OR key IN (?, ?)")
+        .bind(DEVICE_NAME_PREFIX.len() as i64)
+        .bind(DEVICE_NAME_PREFIX)
+        .bind(KEY_LEADER)
+        .bind(KEY_CREATOR)
+        .execute(&mut *tx)
+        .await
+        .map_err(e)?;
+    sqlx::query("DELETE FROM sync_outbox WHERE tbl = 'settings' AND (substr(pk, 2, ?) = ? OR pk IN (?, ?))")
+        .bind(DEVICE_NAME_PREFIX.len() as i64)
+        .bind(DEVICE_NAME_PREFIX)
+        .bind(serde_json::Value::from(KEY_LEADER).to_string())
+        .bind(serde_json::Value::from(KEY_CREATOR).to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(e)?;
+    sqlx::query("UPDATE sync_apply_guard SET active = 0 WHERE id = 1").execute(&mut *tx).await.map_err(e)?;
+    tx.commit().await.map_err(e)?;
+    Ok(())
 }
 
 /// Relay URL + host token from Remote Control's config. `sync` adds the
@@ -191,14 +260,32 @@ async fn hello(params: &ConnectParams, create: bool, ticket: Option<&str>) -> Re
         .map_err(|e| e.to_string())
 }
 
-/// First device: make a new group on the relay and store it.
+/// Become a member under the new device id `sync.device_id`: flag the
+/// membership and the pending merge first (a crash after the Keychain write
+/// then resumes at the merge step instead of syncing unmerged), register on
+/// the relay, and only once it accepted switch this machine's device id and
+/// store the group.
+async fn enter_group(db: &Db, sync: &SyncSecrets, params: &ConnectParams, create: bool, ticket: Option<&str>) -> Result<(), String> {
+    super::set_member(db, true).await?;
+    super::bootstrap::mark_joined(db).await?;
+    if let Err(e) = hello(params, create, ticket).await {
+        let _ = super::bootstrap::clear_pending(db).await;
+        let _ = super::set_member(db, false).await;
+        return Err(e);
+    }
+    new_membership_device(db, &sync.device_id).await?;
+    crate::secrets::set_sync_secrets(sync).map_err(|e| e.to_string())
+}
+
+/// First device: make a new group on the relay and store it. The caller runs
+/// `bootstrap::prepare_new_group` next (until then the merge stays pending).
 pub async fn create_group(db: &Db) -> Result<SyncSecrets, String> {
     let (relay_url, auth_token) = relay_endpoint(db, None).await?;
     let sync = SyncSecrets {
         group_id: uuid::Uuid::new_v4().to_string(),
         group_key: hex::encode(generate_group_key()),
         device_token: random_hex(32),
-        device_id: new_membership_device(db).await?,
+        device_id: uuid::Uuid::new_v4().simple().to_string(),
         relay_token: None,
     };
     let params = ConnectParams {
@@ -208,16 +295,36 @@ pub async fn create_group(db: &Db) -> Result<SyncSecrets, String> {
         device_id: sync.device_id.clone(),
         device_token: sync.device_token.clone(),
     };
-    hello(&params, true, None).await?;
-    crate::secrets::set_sync_secrets(&sync).map_err(|e| e.to_string())?;
+    enter_group(db, &sync, &params, true, None).await?;
     tracing::info!(event = "sync_group_created");
     Ok(sync)
 }
 
+/// Whether the relay takes this machine's host token (and has sync on),
+/// checked before bothering the host's user: a hello for a group that does
+/// not exist is refused with `group_not_found` only after the token passed.
+pub async fn check_relay_auth(relay_url: &str, auth_token: &str) -> Result<(), String> {
+    let params = ConnectParams {
+        relay_url: relay_url.to_string(),
+        auth_token: auth_token.to_string(),
+        group_id: uuid::Uuid::new_v4().to_string(),
+        device_id: uuid::Uuid::new_v4().simple().to_string(),
+        device_token: random_hex(16),
+    };
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    match Connection::connect(&params, false, tx).await {
+        Ok(_) => Ok(()),
+        Err(TransportError::Rejected(c) | TransportError::Relay(c)) if c == "group_not_found" || c == "ticket_required" => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// Join the group of the device named `alias` using its master password; the
-/// host's user must approve the request (it shows `device_name`).
+/// host's user must approve the request (it shows `device_name`). Leaves the
+/// merge pending (`bootstrap::PENDING_KEY`).
 pub async fn join(db: &Db, alias: &str, password: String, device_name: &str) -> Result<SyncSecrets, String> {
     let (relay_url, auth_token) = relay_endpoint(db, None).await?;
+    check_relay_auth(&relay_url, &auth_token).await?;
     let psk = tokio::task::spawn_blocking(move || crate::remote::login::derive_login_psk(&password))
         .await
         .map_err(|e| e.to_string())?;
@@ -230,7 +337,7 @@ pub async fn join(db: &Db, alias: &str, password: String, device_name: &str) -> 
         group_id: grant.group_id,
         group_key: hex::encode(&grant.group_key),
         device_token: random_hex(32),
-        device_id: new_membership_device(db).await?,
+        device_id: uuid::Uuid::new_v4().simple().to_string(),
         relay_token: None,
     };
     let params = ConnectParams {
@@ -240,15 +347,15 @@ pub async fn join(db: &Db, alias: &str, password: String, device_name: &str) -> 
         device_id: sync.device_id.clone(),
         device_token: sync.device_token.clone(),
     };
-    hello(&params, false, Some(&grant.ticket)).await?;
-    crate::secrets::set_sync_secrets(&sync).map_err(|e| e.to_string())?;
+    enter_group(db, &sync, &params, false, Some(&grant.ticket)).await?;
     tracing::info!(event = "sync_group_joined");
     Ok(sync)
 }
 
-/// Leave the group: revoke this device on the relay (best effort) and wipe
-/// the Keychain entry. `successor` takes the creator role if this device has
-/// it (see `leader::on_leave`). Returns whether the relay accepted the revoke.
+/// Leave the group: revoke this device on the relay (best effort), wipe the
+/// Keychain entry and forget the group's device records locally. `successor`
+/// takes the creator role if this device has it (see `leader::on_leave`).
+/// Returns whether the relay accepted the revoke.
 pub async fn leave(db: &Db, successor: Option<&str>) -> Result<bool, String> {
     let Some(sync) = crate::secrets::get_sync_secrets() else {
         return Ok(false);
@@ -258,6 +365,11 @@ pub async fn leave(db: &Db, successor: Option<&str>) -> Result<bool, String> {
         Err(_) => false,
     };
     crate::secrets::delete_sync_secrets().map_err(|e| e.to_string())?;
+    if let Err(e) = forget_group_settings(db).await {
+        tracing::warn!(event = "sync_leave_cleanup_failed", error = %e);
+    }
+    super::set_member(db, false).await?;
+    super::bootstrap::clear_pending(db).await?;
     tracing::info!(event = "sync_group_left", revoked);
     Ok(revoked)
 }
@@ -908,8 +1020,12 @@ mod tests {
         store.apply_remote(vec![op]).await.unwrap();
         sqlx::query("UPDATE todos SET text = 'local edit' WHERE id = 't1'").execute(&db).await.unwrap();
 
-        let new = new_membership_device(&db).await.unwrap();
-        assert_ne!(new, old);
+        sqlx::query("DELETE FROM sync_outbox WHERE tbl != 'todos'").execute(&db).await.unwrap();
+        let new = "new-dev".to_string();
+        new_membership_device(&db, &new).await.unwrap();
+        // N3: the id switch itself is not pushed (it would overwrite a peer's take-over).
+        let queued: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_outbox WHERE tbl != 'todos'").fetch_one(&db).await.unwrap();
+        assert_eq!(queued, 0);
         assert_eq!(crate::sync::leader::my_device_id(&db).await.as_deref(), Some(new.as_str()));
         let owner: String = sqlx::query_scalar("SELECT owner_device FROM runs WHERE id = 'r1'").fetch_one(&db).await.unwrap();
         assert_eq!(owner, new, "own runs stay own");
@@ -922,6 +1038,48 @@ mod tests {
         let todo = ops.iter().find(|(_, o)| o.tbl == "todos").expect("pending todo op");
         assert!(todo.1.hlc > far);
         assert_eq!(todo.1.hlc.device, new);
+
+        // A peer sends the run back still owned by the old id: it stays ours,
+        // without echoing the rewrite.
+        store.mark_pushed(ops.last().unwrap().0).await.unwrap();
+        let back = crate::sync::op::Op {
+            v: crate::sync::op::OP_VERSION,
+            schema: crate::sync::SCHEMA_VERSION,
+            hlc: Hlc::new(9_000_000_100_000, 0, "peer"),
+            tbl: "runs".into(),
+            pk: json!("r1"),
+            kind: crate::sync::op::OpKind::Upsert,
+            row: json!({"id": "r1", "project_id": "p1", "type": "session", "status": "done", "engine": "claude", "created_at": "x", "owner_device": old, "title": "renamed"}).as_object().cloned(),
+        };
+        let r = store.apply_remote(vec![back]).await.unwrap();
+        assert_eq!(r.applied, 1, "{r:?}");
+        let (owner, title): (String, Option<String>) =
+            sqlx::query_as("SELECT owner_device, title FROM runs WHERE id = 'r1'").fetch_one(&db).await.unwrap();
+        assert_eq!((owner.as_str(), title.as_deref()), (new.as_str(), Some("renamed")));
+        assert!(store.pending(100).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn relay_auth_is_checked_before_asking_the_host() {
+        let relay = TestRelay::start().await;
+        assert_eq!(check_relay_auth(&relay.url(), TestRelay::TOKEN).await, Ok(()));
+        let bad = check_relay_auth(&relay.url(), "wrong").await.unwrap_err();
+        assert!(bad.contains("auth_failed"), "{bad}");
+        assert!(check_relay_auth("ws://127.0.0.1:1/ws", TestRelay::TOKEN).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn leaving_forgets_the_group_device_records_without_pushing() {
+        let db = mem_db().await;
+        crate::sync::leader::touch_self(&db, "me", "MacBook").await.unwrap();
+        crate::sync::leader::touch_self(&db, "other", "Mini").await.unwrap();
+        crate::sync::leader::set_leader(&db, Some("other")).await.unwrap();
+        sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES ('theme', 'dark')").execute(&db).await.unwrap();
+        forget_group_settings(&db).await.unwrap();
+        let left: Vec<String> = sqlx::query_scalar("SELECT key FROM settings WHERE key LIKE 'sync_%'").fetch_all(&db).await.unwrap();
+        assert!(left.is_empty(), "{left:?}");
+        let queued: Vec<String> = sqlx::query_scalar("SELECT pk FROM sync_outbox WHERE tbl = 'settings'").fetch_all(&db).await.unwrap();
+        assert_eq!(queued, vec!["\"theme\"".to_string()], "no delete pushed, nothing left queued for the old group");
     }
 
     #[tokio::test]
@@ -931,7 +1089,8 @@ mod tests {
         let host = params(&relay, "g", "host");
         let host_conn = connect(&host, true, None).await.unwrap();
 
-        let id1 = new_membership_device(&db).await.unwrap();
+        let id1 = "id-one".to_string();
+        new_membership_device(&db, &id1).await.unwrap();
         host_conn.sync_invite(&sha256_hex("t1"), 60).await.unwrap();
         let me1 = params(&relay, "g", &id1);
         connect(&me1, false, Some("t1")).await.unwrap();
@@ -942,7 +1101,8 @@ mod tests {
         assert_eq!(again, Some(TransportError::Rejected("device_revoked".into())));
 
         // Rejoin: a new membership, a new id, a new ticket.
-        let id2 = new_membership_device(&db).await.unwrap();
+        let id2 = "id-two".to_string();
+        new_membership_device(&db, &id2).await.unwrap();
         assert_ne!(id1, id2);
         host_conn.sync_invite(&sha256_hex("t2"), 60).await.unwrap();
         connect(&params(&relay, "g", &id2), false, Some("t2")).await.unwrap();

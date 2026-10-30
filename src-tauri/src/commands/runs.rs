@@ -120,6 +120,8 @@ pub(crate) async fn start_run_inner(
     let db = &db;
     let registry = &registry;
 
+    // No new sidecar while a sync merge re-keys ids (sync_bootstrap_commit).
+    crate::sync::bootstrap::refuse_if_committing()?;
     // Another device may be running this (synced) session right now.
     crate::sync::sessions::ensure_not_held_elsewhere(db, &payload.run_id).await?;
 
@@ -3317,6 +3319,7 @@ pub(crate) async fn resume_run_with(
 ) -> Result<(), String> {
     use sqlx::Row;
 
+    crate::sync::bootstrap::refuse_if_committing()?;
     crate::sync::sessions::ensure_not_held_elsewhere(db.inner(), &run_id).await?;
 
     let row = sqlx::query(

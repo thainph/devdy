@@ -113,7 +113,12 @@ pub fn to_portable(ctx: &PathCtx, path: &str) -> String {
     if let Some(data) = ctx.app_data.as_deref().filter(|d| !d.as_os_str().is_empty()) {
         match Path::new(path).strip_prefix(data) {
             Ok(rel) if rel.as_os_str().is_empty() => return DATA_MARK.to_string(),
-            Ok(rel) => return format!("{DATA_MARK}/{}", rel.to_string_lossy()),
+            // A Claude account's config dir lives here: its project folders
+            // carry the encoded home like `~/.claude/projects/...` does.
+            Ok(rel) => {
+                let rel = swap_encoded_home(&rel.to_string_lossy(), &encode_dir(&ctx.home.to_string_lossy()), "~");
+                return format!("{DATA_MARK}/{rel}");
+            }
             Err(_) => {}
         }
     }
@@ -142,6 +147,7 @@ pub fn expand_portable(ctx: &PathCtx, portable: &str) -> String {
         }
         // `@data//x` must not become `/x` (`join` of an absolute path).
         if let Some(rel) = portable.strip_prefix("@data/").filter(|r| !r.starts_with('/')) {
+            let rel = swap_encoded_home(rel, "~", &encode_dir(&ctx.home.to_string_lossy()));
             return data.join(rel).to_string_lossy().into_owned();
         }
     }
@@ -384,6 +390,13 @@ mod tests {
         assert_eq!(other, "~/.claude/projects/-Users-alicex-p/s.jsonl");
         assert_eq!(to_portable(&a, "/Users/alice/w/-Users-alice-x"), "~/w/-Users-alice-x");
         assert_eq!(expand_portable(&b, "~/w/~-x"), "/Users/bob/w/~-x");
+        // A Claude account's config dir under app data: same project folder swap.
+        let c = to_portable(&a, "/Users/alice/Library/Application Support/vn.papay.devdy/claude-accounts/c1/projects/-Users-alice-w-devdy/s1.jsonl");
+        assert_eq!(c, "@data/claude-accounts/c1/projects/~-w-devdy/s1.jsonl");
+        assert_eq!(
+            expand_portable(&b, &c),
+            "/Users/bob/Library/Application Support/vn.papay.devdy.dev/claude-accounts/c1/projects/-Users-bob-w-devdy/s1.jsonl"
+        );
     }
 
     #[test]
