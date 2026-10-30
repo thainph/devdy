@@ -55,8 +55,42 @@ struct Progress<'a> {
 /// another's answer).
 #[derive(Clone)]
 pub struct FocusAiState {
-    running: Arc<Mutex<HashMap<String, (String, tokio::task::AbortHandle)>>>,
+    running: Arc<Mutex<HashMap<String, Running>>>,
     translate: TranslateState,
+}
+
+/// The engine turn a request is waiting on (so a cancel can free the warm
+/// session, like the timeout does).
+type TurnSlot = Arc<Mutex<Option<u64>>>;
+
+struct Running {
+    request_id: String,
+    abort: tokio::task::AbortHandle,
+    turn: TurnSlot,
+}
+
+impl FocusAiState {
+    /// Stop the warm Focus AI session (app exit).
+    pub async fn shutdown(&self) {
+        self.translate.shutdown().await;
+    }
+
+    /// Abort request `request_id` and abandon its engine turn; false when it
+    /// is not running (any more).
+    pub async fn cancel(&self, request_id: &str) -> bool {
+        let turn = {
+            let Ok(running) = self.running.lock() else { return false };
+            let Some(r) = running.values().find(|r| r.request_id == request_id) else {
+                return false;
+            };
+            r.abort.abort();
+            r.turn.lock().ok().and_then(|t| *t)
+        };
+        if let Some(turn) = turn {
+            self.translate.abandon_turn(turn).await;
+        }
+        true
+    }
 }
 
 impl Default for FocusAiState {
@@ -76,6 +110,8 @@ struct FocusEngine {
     app: AppHandle,
     db: Db,
     state: TranslateState,
+    /// The turn in flight (read by `FocusAiState::cancel`).
+    turn: TurnSlot,
     engine: String,
     model: String,
 }
@@ -92,6 +128,9 @@ impl AiEngine for FocusEngine {
             &self.model,
         )
         .await?;
+        if let Ok(mut slot) = self.turn.lock() {
+            *slot = Some(turn);
+        }
         let mut rx = rx.ok_or("no result channel")?;
         let wait = async {
             loop {
@@ -103,13 +142,17 @@ impl AiEngine for FocusEngine {
                 }
             }
         };
-        match tokio::time::timeout(TURN_TIMEOUT, wait).await {
+        let out = match tokio::time::timeout(TURN_TIMEOUT, wait).await {
             Ok(r) => r,
             Err(_) => {
                 self.state.abandon_turn(turn).await;
                 Err("timeout".into())
             }
+        };
+        if let Ok(mut slot) = self.turn.lock() {
+            *slot = None;
         }
+        out
     }
 
     async fn model(&self) -> Option<String> {
@@ -122,6 +165,7 @@ fn engine_for(app: &AppHandle, db: &Db, state: &FocusAiState, s: &FocusSettings)
         app: app.clone(),
         db: db.clone(),
         state: state.translate.clone(),
+        turn: TurnSlot::default(),
         engine: s.ai_engine.clone(),
         model: s.ai_model.clone(),
     }
@@ -152,6 +196,7 @@ async fn run_request<T, F>(
     request_id: Option<String>,
     kind: &str,
     todo_id: Option<&str>,
+    turn: TurnSlot,
     work: F,
 ) -> Result<T, String>
 where
@@ -167,7 +212,14 @@ where
             return Err("busy: an AI request for this is already running".into());
         }
         let task = tokio::spawn(work);
-        running.insert(key.clone(), (request_id.clone(), task.abort_handle()));
+        running.insert(
+            key.clone(),
+            Running {
+                request_id: request_id.clone(),
+                abort: task.abort_handle(),
+                turn,
+            },
+        );
         task
     };
     let progress = |stage: &str, error: Option<&str>| {
@@ -434,7 +486,8 @@ pub async fn focus_ai_suggest(
     let settings = focus_settings::load(&db).await?;
     let engine = engine_for(&app, &db, &state, &settings);
     let key = format!("suggest:{}", source_url.trim());
-    run_request(&app, &state, key, request_id, "suggest", None, async move {
+    let turn = engine.turn.clone();
+    run_request(&app, &state, key, request_id, "suggest", None, turn, async move {
         let source = source_ctx(
             &db,
             &source_url,
@@ -479,6 +532,7 @@ pub async fn focus_ai_analyze(
     let key = format!("todo:{todo_id}");
     let app2 = app.clone();
     let id = todo_id.clone();
+    let turn = engine.turn.clone();
     run_request(
         &app,
         &state,
@@ -486,6 +540,7 @@ pub async fn focus_ai_analyze(
         request_id,
         "analyze",
         Some(&todo_id),
+        turn,
         async move {
             let todo = get_todo(&db, &id).await?;
             let source = match todo.source_url.as_deref() {
@@ -616,6 +671,7 @@ pub async fn focus_ai_plan_today(
     let db = db.inner().clone();
     let settings = focus_settings::load(&db).await?;
     let engine = engine_for(&app, &db, &state, &settings);
+    let turn = engine.turn.clone();
     run_request(
         &app,
         &state,
@@ -623,6 +679,7 @@ pub async fn focus_ai_plan_today(
         request_id,
         "plan",
         None,
+        turn,
         async move {
             let now = local_now();
             let wh = settings.work_hours();
@@ -776,14 +833,7 @@ pub async fn focus_ai_cancel(
     state: State<'_, FocusAiState>,
     request_id: String,
 ) -> Result<bool, String> {
-    let running = state.running.lock().map_err(|e| e.to_string())?;
-    match running.values().find(|(r, _)| *r == request_id) {
-        Some((_, handle)) => {
-            handle.abort();
-            Ok(true)
-        }
-        None => Ok(false),
-    }
+    Ok(state.cancel(&request_id).await)
 }
 
 // ── d. Start with AI ────────────────────────────────────────────────────────
@@ -899,4 +949,29 @@ pub async fn focus_suggest_actual(
         todo.estimate_min,
         &settings.work_hours(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cancel_aborts_the_request_and_frees_its_turn() {
+        let state = FocusAiState::default();
+        let task = tokio::spawn(async { tokio::time::sleep(Duration::from_secs(60)).await });
+        let turn: TurnSlot = Arc::new(Mutex::new(Some(7)));
+        state.running.lock().unwrap().insert(
+            "todo:t1".into(),
+            Running {
+                request_id: "r1".into(),
+                abort: task.abort_handle(),
+                turn,
+            },
+        );
+        assert!(!state.cancel("other").await);
+        // No warm session: abandoning turn 7 is a no-op, but must not hang.
+        assert!(state.cancel("r1").await);
+        assert!(task.await.unwrap_err().is_cancelled());
+        state.shutdown().await;
+    }
 }
