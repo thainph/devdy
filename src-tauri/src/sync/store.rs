@@ -59,6 +59,13 @@ impl SqliteSyncStore {
         self
     }
 
+    /// `paths` plus the current project path map (it changes at bootstrap and
+    /// when the user maps a project by hand).
+    async fn paths_now(&self) -> Result<PathCtx, String> {
+        let map = super::bootstrap::load_project_map(&self.db).await?;
+        Ok(self.paths.clone().with_project_map(map))
+    }
+
     async fn clock(&self) -> Result<MutexGuard<'_, Option<HlcClock>>, String> {
         let mut guard = self.clock.lock().await;
         if guard.is_none() {
@@ -74,6 +81,7 @@ impl SyncStore for SqliteSyncStore {
     /// Outbox entries coalesced per row (the op carries the CURRENT row, or a
     /// Delete when it is gone), each with a fresh HLC no older than the change.
     async fn pending(&self, limit: usize) -> Result<Vec<(i64, Op)>, String> {
+        let paths = self.paths_now().await?;
         let mut guard = self.clock().await?;
         let mut clock = guard.clone().ok_or("clock not loaded")?;
         let mut tx = self.db.begin().await.map_err(err)?;
@@ -108,7 +116,13 @@ impl SyncStore for SqliteSyncStore {
             }
             let hlc = clock.tick_at(changed_at.max(0) as u64);
             let (kind, row) = match row {
-                Some(r) => (OpKind::Upsert, Some(encode_row(&self.paths, spec, r))),
+                Some(r) => {
+                    let mut wire = encode_row(&paths, spec, r);
+                    if tbl == "notes" {
+                        apply::add_note_base(&mut tx, &pk_text, &mut wire).await?;
+                    }
+                    (OpKind::Upsert, Some(wire))
+                }
                 None => (OpKind::Delete, None),
             };
             sqlx::query(
@@ -142,7 +156,8 @@ impl SyncStore for SqliteSyncStore {
     async fn apply_remote(&self, ops: Vec<Op>) -> Result<ApplyReport, String> {
         let mut guard = self.clock().await?;
         let mut clock = guard.clone().ok_or("clock not loaded")?;
-        let report = apply::apply_ops(&self.db, &self.paths, &mut clock, ops).await?;
+        let paths = self.paths_now().await?;
+        let report = apply::apply_ops(&self.db, &paths, &mut clock, ops).await?;
         *guard = Some(clock);
         Ok(report)
     }

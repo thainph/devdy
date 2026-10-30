@@ -46,7 +46,8 @@ pub struct TableSpec {
     /// Filesystem paths, sent in portable form (`~/...`) and re-expanded.
     pub path_cols: &'static [&'static str],
     /// Columns identifying "the same thing" across devices whose ids differ
-    /// (used by the bootstrap merge, wave 2).
+    /// (used by the bootstrap merge; a NULL in any of them never matches).
+    /// `projects` is matched by `bootstrap` itself (path, git remote, name).
     pub natural_key: &'static [&'static str],
     pub filter: Option<RowFilter>,
 }
@@ -129,7 +130,9 @@ pub static SYNCED_TABLES: &[TableSpec] = &[
     TableSpec::new("project_rule_groups", &["project_id", "group_id"]),
     TableSpec::new("project_mcp_servers", &["project_id", "server_id"]),
     TableSpec::new("project_servers", &["project_id", "server_id", "role"]),
+    // Same imported CLI session (unique index idx_runs_project_engine_session).
     TableSpec::new("runs", ID)
+        .natural(&["project_id", "engine", "session_id"])
         .paths(&["output_path", "input_path", "transcript_path"])
         // How far the local session watcher has mirrored the transcript.
         .skip(&["transcript_synced_size"]),
@@ -150,7 +153,8 @@ pub static SYNCED_TABLES: &[TableSpec] = &[
         .natural(&["thread_id", "slack_file_id"])
         .skip(&["file_path", "download_status", "download_error"]),
     TableSpec::new("slack_thread_runs", &["thread_id", "run_id"]),
-    TableSpec::new("pulse_watches", ID).natural(&["project_id", "source_ref"]),
+    // Unique index idx_pulse_watches_source.
+    TableSpec::new("pulse_watches", ID).natural(&["source_type", "source_ref"]),
     TableSpec::new("pulse_digests", ID),
 ];
 
