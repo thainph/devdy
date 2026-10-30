@@ -32,18 +32,90 @@ export interface SyncDevice {
   is_leader: boolean
 }
 
-/** A project known to the group, and where it lives on this machine. */
+/** A project on this machine and where it lives (Rust `sync::bootstrap::ProjectMapping`). */
 export interface ProjectMapping {
-  remote_project_id: string
+  project_id: string
   name: string
-  remote_path?: string | null
-  local_path: string | null
+  /** Local checkout root. */
+  path: string
+  /** The root as synced to the other devices. */
+  synced_path: string
+  /** Set by the first-join match or by hand. */
+  mapped: boolean
+  /** `false` = the checkout does not exist on this machine. */
+  on_this_machine: boolean
+}
+
+/** Per-table merge counts (Rust `TableCounts`). */
+export interface TableCounts {
+  tbl: string
+  matched: number
+  rekeyed: number
+  new_remote: number
+  new_local: number
+  conflicts: number
+  deleted_remote: number
+}
+
+/** How a synced project matched a local one (Rust `ProjectMatch`). */
+export interface ProjectMatch {
+  remote_id: string
+  name: string
+  synced_path: string
+  local_id: string | null
+  /** `id` | `path` | `git_remote` | `name`; null = new on this machine. */
+  matched_by: string | null
+  local_path: string
+  on_this_machine: boolean
+}
+
+/** `sync_bootstrap_preview` (Rust `BootstrapPreview`): totals + per table + projects. */
+export interface BootstrapPreview {
+  matched: number
+  rekeyed: number
+  new_remote: number
+  new_local: number
+  conflicts: number
+  deleted_remote: number
+  tables: TableCounts[]
+  projects: ProjectMatch[]
+  undecryptable: number
+}
+
+/** `sync_bootstrap_commit` (Rust `BootstrapReport`). */
+export interface BootstrapReport {
+  preview: BootstrapPreview
+  applied: { applied: number; skipped_older: number; conflicts: number; deferred: number }
+  /** Local rows queued for push. */
+  queued: number
+}
+
+/** The count columns of a preview, in display order. */
+export const COUNT_KEYS = ['new_remote', 'matched', 'rekeyed', 'new_local', 'conflicts', 'deleted_remote'] as const
+export type CountKey = (typeof COUNT_KEYS)[number]
+
+/** Non-zero totals of a preview as `[key, n]` rows. */
+export function totalRows(p: Pick<BootstrapPreview, CountKey>): Array<[CountKey, number]> {
+  return COUNT_KEYS.filter((k) => p[k] > 0).map((k) => [k, p[k]])
+}
+
+/** Tables with something to report, with a compact "+3 new · 2 matched" summary. */
+export function tableRows(p: Pick<BootstrapPreview, 'tables'>): Array<{ tbl: string; counts: Array<[CountKey, number]> }> {
+  return p.tables
+    .map((t) => ({ tbl: t.tbl, counts: totalRows(t) }))
+    .filter((r) => r.counts.length > 0)
+}
+
+/** Synced projects the merge could not place on this machine. */
+export function missingProjects(p: Pick<BootstrapPreview, 'projects'>): ProjectMatch[] {
+  return p.projects.filter((m) => !m.on_this_machine)
 }
 
 /** Colour of the status dot. */
 export type SyncTone = 'off' | 'ok' | 'busy' | 'warn' | 'error'
 
-export function syncTone(s: SyncStatus | null | undefined): SyncTone {
+export function syncTone(s: SyncStatus | null | undefined, mergePending = false): SyncTone {
+  if (mergePending) return 'warn'
   if (!s || s.state === 'disabled') return 'off'
   if (s.state === 'error') return 'error'
   if (s.paused || s.state === 'offline') return 'warn'
@@ -52,15 +124,11 @@ export function syncTone(s: SyncStatus | null | undefined): SyncTone {
 }
 
 /** i18n key (under `settings.sync.state`) for the status label. */
-export function syncStateKey(s: SyncStatus | null | undefined): string {
+export function syncStateKey(s: SyncStatus | null | undefined, mergePending = false): string {
+  if (mergePending) return 'mergePending'
   if (!s || s.state === 'disabled') return 'disabled'
   if (s.paused) return 'paused'
   return s.state
-}
-
-/** Tauri's error for a command this build does not register. */
-export function isMissingCommand(e: unknown): boolean {
-  return /command \S+ not found/i.test(String(e))
 }
 
 /**
@@ -75,31 +143,6 @@ export function ageParts(ms: number | null | undefined, now: number = Date.now()
   if (s < 3600) return { unit: 'minutes', n: Math.floor(s / 60) }
   if (s < 86_400) return { unit: 'hours', n: Math.floor(s / 3600) }
   return { unit: 'days', n: Math.floor(s / 86_400) }
-}
-
-/**
- * Flatten a bootstrap preview / report into `[label, count]` rows. The shape
- * belongs to the bootstrap command, so accept any nesting of numeric fields
- * (`{ counts: { notes: 3 } }`, `{ notes: 3 }`, `{ remote: { notes: 3 } }`) and
- * drop zero counts.
- */
-export function countRows(value: unknown, prefix = ''): Array<[string, number]> {
-  if (!value || typeof value !== 'object') return []
-  const out: Array<[string, number]> = []
-  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    const key = k === 'counts' ? prefix : prefix ? `${prefix}.${k}` : k
-    if (typeof v === 'number') {
-      if (v !== 0) out.push([key || k, v])
-    } else if (v && typeof v === 'object' && !Array.isArray(v)) {
-      out.push(...countRows(v, key))
-    }
-  }
-  return out
-}
-
-/** Projects the group knows that have no folder on this machine yet. */
-export function unmappedProjects(list: ProjectMapping[]): ProjectMapping[] {
-  return list.filter((p) => !p.local_path?.trim())
 }
 
 /** Devices in display order: this one first, then the leader, then by name. */

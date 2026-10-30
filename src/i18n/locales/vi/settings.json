@@ -481,14 +481,14 @@
     "title": "Đồng bộ",
     "short": "Đồng bộ",
     "help": "Giữ một trạng thái Devdy chung giữa các máy của bạn: cài đặt, thư viện, ghi chú / việc cần làm, thread Slack, dự án và phiên làm việc. Mọi dữ liệu đi qua relay của bạn, mã hoá đầu-cuối, và vẫn đồng bộ khi máy kia đang tắt. Code trong working tree không được đồng bộ — việc đó vẫn do git đảm nhận.",
-    "unavailable": "Bản này chưa hỗ trợ.",
     "state": {
       "disabled": "Tắt",
       "connecting": "Đang kết nối…",
       "online": "Trực tuyến",
       "offline": "Ngoại tuyến",
       "error": "Lỗi",
-      "paused": "Tạm dừng"
+      "paused": "Tạm dừng",
+      "mergePending": "Chờ hợp nhất"
     },
     "ago": {
       "never": "chưa bao giờ",
@@ -515,7 +515,31 @@
       "previewHelp": "Những gì lần đồng bộ đầu tiên mang về và cách khớp với dữ liệu sẵn có trên máy này. Không có gì trên máy bị xoá.",
       "previewEmpty": "Không có gì để gộp.",
       "commit": "Gộp và bắt đầu đồng bộ",
-      "reportTitle": "Đã gộp"
+      "reportTitle": "Đã gộp",
+      "pendingHelp": "Máy này đã tham gia nhóm đồng bộ nhưng chưa hợp nhất dữ liệu. Đồng bộ sẽ bắt đầu sau khi hợp nhất.",
+      "previewLoading": "Đang tải trạng thái của nhóm…",
+      "previewFailed": "Không tải được bản xem trước hợp nhất",
+      "retry": "Thử lại",
+      "tablesTitle": "Theo bảng",
+      "projectsTitle": "Dự án",
+      "missingHelp": "{n} dự án chưa có trên máy này: chọn thư mục cho chúng ở mục \"Thư mục dự án\" sau khi hợp nhất.",
+      "undecryptable": "{n} mục từ relay không giải mã được và sẽ bị bỏ qua.",
+      "counts": {
+        "new_remote": "Mới từ nhóm",
+        "matched": "Đã có ở đây",
+        "rekeyed": "Khớp với bản cục bộ",
+        "new_local": "Chỉ có trên máy này (sẽ tải lên)",
+        "conflicts": "Khác nhau (bản của nhóm thắng)",
+        "deleted_remote": "Đã xoá trong nhóm",
+        "queued": "Đã xếp hàng tải lên"
+      },
+      "matchedBy": {
+        "id": "cùng id",
+        "path": "cùng thư mục",
+        "git_remote": "cùng git remote",
+        "name": "cùng tên",
+        "new": "mới"
+      }
     },
     "status": {
       "lastPush": "Đẩy lần cuối",
@@ -558,7 +582,7 @@
     "resync": {
       "button": "Đồng bộ lại toàn bộ",
       "hint": "Tải lên lại toàn bộ trạng thái của máy này",
-      "done": "Đã bắt đầu đồng bộ lại toàn bộ",
+      "done": "Đã bắt đầu đồng bộ lại toàn bộ ({n} mục được xếp hàng)",
       "confirm": {
         "title": "Đồng bộ lại toàn bộ?",
         "message": "Toàn bộ trạng thái của máy này sẽ được tải lên lại. Hữu ích sau thời gian dài ngoại tuyến hoặc khi các máy bị lệch nhau.",

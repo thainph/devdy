@@ -481,14 +481,14 @@
     "title": "Sync",
     "short": "Sync",
     "help": "Keep one shared Devdy state across your machines: settings, library, notes / todos, Slack threads, projects and sessions. Everything goes through your relay end-to-end encrypted and syncs even when the other machine is off. Code in your working trees is not synced — that stays git's job.",
-    "unavailable": "Not available in this build yet.",
     "state": {
       "disabled": "Off",
       "connecting": "Connecting…",
       "online": "Online",
       "offline": "Offline",
       "error": "Error",
-      "paused": "Paused"
+      "paused": "Paused",
+      "mergePending": "Merge pending"
     },
     "ago": {
       "never": "never",
@@ -515,7 +515,31 @@
       "previewHelp": "What the first sync brings in and how it matches this machine's existing data. Nothing local is deleted.",
       "previewEmpty": "Nothing to merge.",
       "commit": "Merge and start syncing",
-      "reportTitle": "Merged"
+      "reportTitle": "Merged",
+      "pendingHelp": "This machine joined a sync group but has not merged its data yet. Syncing starts after the merge.",
+      "previewLoading": "Loading the group state…",
+      "previewFailed": "Could not load the merge preview",
+      "retry": "Retry",
+      "tablesTitle": "By table",
+      "projectsTitle": "Projects",
+      "missingHelp": "{n} project(s) are not on this machine yet: pick their folders under \"Project folders\" after merging.",
+      "undecryptable": "{n} item(s) from the relay could not be decrypted and will be skipped.",
+      "counts": {
+        "new_remote": "New from the group",
+        "matched": "Already here",
+        "rekeyed": "Matched to a local copy",
+        "new_local": "Only on this machine (uploaded)",
+        "conflicts": "Differ (group version wins)",
+        "deleted_remote": "Deleted in the group",
+        "queued": "Queued for upload"
+      },
+      "matchedBy": {
+        "id": "same id",
+        "path": "same folder",
+        "git_remote": "same git remote",
+        "name": "same name",
+        "new": "new"
+      }
     },
     "status": {
       "lastPush": "Last push",
@@ -558,7 +582,7 @@
     "resync": {
       "button": "Re-sync everything",
       "hint": "Upload this machine's full state again",
-      "done": "Full re-sync started",
+      "done": "Full re-sync started ({n} items queued)",
       "confirm": {
         "title": "Re-sync everything?",
         "message": "This machine's whole state is uploaded again. Useful after a long time offline or if devices drifted apart.",

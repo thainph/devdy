@@ -30,6 +30,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { remotePathsForDrop } from '@/lib/remoteUpload'
 import { RUN_LOG_UPDATED_EVENT, ownerLabel, runOwnership, shortHead, type RemoteRunOwner } from '@/lib/runOwnership'
+import { onSyncRowsApplied } from '@/lib/sync'
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
 import {
   Play, Square, GitPullRequest, Bug,
@@ -724,10 +725,10 @@ const currentRun = computed(() => runsStore.runs.find(r => r.id === currentRunId
 // A synced run owned by another device is read-only here while that device
 // runs it (its log streams in via sync), and offers "Continue here" once it is
 // idle or its lease ran out. `ownerNow` ticks so an expired lease is noticed
-// without a backend round-trip.
+// without a backend round-trip; row changes (status, lease released) arrive as
+// `sync://rows-applied`.
 const ownerNow = ref(Date.now())
 let ownerTimer: ReturnType<typeof setInterval> | null = null
-let ownerTicks = 0
 const currentOwner = computed(() =>
   currentRunId.value ? runsStore.remoteOwners.get(currentRunId.value) : undefined,
 )
@@ -743,12 +744,19 @@ function remoteOwnerOf(runId: string): RemoteRunOwner | undefined {
 
 function onOwnerTick() {
   ownerNow.value = Date.now()
-  // While a remote device runs the open session, poll its row so a finished
-  // turn (lease released) shows up even when no log bytes arrive.
-  if (++ownerTicks % 3 === 0 && currentOwnership.value === 'remote-running') {
+}
+
+// Synced `runs` rows landed (another device started / finished a turn, or a
+// new session): refresh the list and the owners. Debounced like log appends.
+let syncRowsUnlisten: UnlistenFn | null = null
+let syncRowsTimer: ReturnType<typeof setTimeout> | null = null
+function handleSyncRowsApplied(tables: string[]) {
+  if (!tables.includes('runs') || syncRowsTimer) return
+  syncRowsTimer = setTimeout(() => {
+    syncRowsTimer = null
     void runsStore.refreshMeta(projectId.value).catch(() => {})
     void runsStore.fetchRemoteOwners(projectId.value)
-  }
+  }, 500)
 }
 
 // Synced log appends: refresh the list (status, owners) and re-read the open
@@ -1968,6 +1976,7 @@ onMounted(async () => {
   syncLogUnlisten = await listen<{ run_id: string }>(RUN_LOG_UPDATED_EVENT, (event) => {
     if (event.payload?.run_id) onSyncLogUpdated(event.payload.run_id)
   })
+  syncRowsUnlisten = await onSyncRowsApplied(handleSyncRowsApplied)
 
   sessionsChangedUnlisten = await listen<{ project_id: string; run_id?: string }>(
     'sessions:changed',
@@ -2050,6 +2059,10 @@ onUnmounted(() => {
   syncLogUnlisten?.()
   syncLogUnlisten = null
   if (syncLogTimer) clearTimeout(syncLogTimer)
+  syncRowsUnlisten?.()
+  syncRowsUnlisten = null
+  if (syncRowsTimer) clearTimeout(syncRowsTimer)
+  syncRowsTimer = null
   syncLogTimer = null
   if (ownerTimer) clearInterval(ownerTimer)
   ownerTimer = null
