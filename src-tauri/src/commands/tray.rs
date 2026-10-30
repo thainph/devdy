@@ -57,12 +57,15 @@ const OPEN_RUN_EVENT: &str = "tray://open-run";
 const PROCS_ID: &str = "tray:procs";
 /// Event sent to the main window for [`PROCS_ID`].
 const OPEN_PROCS_EVENT: &str = "tray:open-processes";
+/// Row id that opens the Focus board (its window; the main window creates it
+/// when missing, see `focus::scheduler::open_focus`).
+const FOCUS_ID: &str = "tray:focus";
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum TrayItem {
     /// A clickable row. `id` is `tray:win:<label>`, `tray:run:<runId>`,
-    /// `tray:menu:<appMenuId>`, `tray:procs` or `tray:quit`.
+    /// `tray:menu:<appMenuId>`, `tray:procs`, `tray:focus` or `tray:quit`.
     Item { id: String, label: String },
     /// A greyed-out, non-clickable section title.
     Header { label: String },
@@ -211,6 +214,17 @@ fn on_menu_event<R: Runtime>(app: &AppHandle<R>, event: tauri::menu::MenuEvent) 
             let _ = win.set_focus();
         }
         let _ = app.emit_to("main", OPEN_PROCS_EVENT, ());
+        return;
+    }
+    if id == FOCUS_ID {
+        use crate::focus::scheduler::{FOCUS_WINDOW, OPEN_WINDOW_EVENT};
+        if let Some(win) = app.get_webview_window(FOCUS_WINDOW) {
+            let _ = win.unminimize();
+            let _ = win.show();
+            let _ = win.set_focus();
+        } else {
+            let _ = app.emit_to("main", OPEN_WINDOW_EVENT, serde_json::json!({ "todo_id": null }));
+        }
         return;
     }
     if let Some(label) = id.strip_prefix(WIN_PREFIX) {

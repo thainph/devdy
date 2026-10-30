@@ -258,3 +258,10 @@ DROP TABLE IF EXISTS pulse_watches;
 - **Nguồn (BR-02)**: Slack team = phần host trước `.slack.com`; link DM Slack được lưu như `url`; PR GitHub dùng chung dạng `github:o/r#n` với issue. Vector dùng chung Rust/MCP: `src-tauri/src/focus/source_vectors.json`.
 - **Sync**: bản ghi `pulse_*` từ máy bản cũ bị bỏ qua (không đưa vào `sync_deferred`); cột lạ bị bỏ qua sẵn trong `codec::upsert_row`.
 - **Settings**: các key `focus.*` (trừ `focus.calendar_*`) nằm trong `PORTABLE_SETTING_KEYS` (backup + sync). Backup cài đặt mang theo các cột Focus của todo.
+
+## 11. Ghi chú triển khai P2
+
+- **Nhắc việc** (`focus::scheduler`): tick đầu sau 10 s, rồi mỗi 60 s. `morning` chỉ gửi trong giờ làm việc của ngày làm việc, từ `morning_time` (bỏ lỡ vẫn gửi muộn trong ngày). `due_soon` / `overdue` / `start_by` không gửi khi todo đang hoãn; `start_by` chỉ với status `todo`. `fire_key` của các loại theo hạn = hạn hiệu dụng `YYYY-MM-DDTHH:MM` (local). Ghi `todo_notifications` **trước** khi hiện thông báo; xoá bản ghi > 30 ngày. Nội dung thông báo theo ngôn ngữ app (`settings.language`).
+- **Bấm thông báo**: không tự nâng cửa sổ chính. Cửa sổ `focus` đang mở → nâng lên + phát `focus:open-todo { todo_id }` cho mọi cửa sổ. Chưa mở → phát `focus:open-window` cho cửa sổ chính (frontend tạo cửa sổ bằng `openFocusWindow()`, cùng URL / tuỳ chọn), cửa sổ mới lấy todo bằng `focus_take_open_todo` khi mount (id chờ chỉ lấy được một lần).
+- **Tray**: dòng `tray:focus` ("Focus — N việc quá hạn") ở phần do cửa sổ chính sở hữu; tiêu đề menu bar = số phiên đang chạy + `⏰N` quá hạn. `focus:counts { overdue, today, doing }` phát mỗi tick; `focus_counts` để lấy theo yêu cầu.
+- **Calendar** (`focus::calendar`): tài khoản = `calendar_account_id` hoặc tài khoản Google mặc định; lịch = `calendar_ids` hoặc `primary`. Cache 10 phút theo (tài khoản, lịch, ngày), kể cả lỗi; `focus_refresh_calendar` xoá cache. `focus_board` chờ Google tối đa 3 s, quá thì dùng kết quả cũ cùng ngày (nếu có) và phát `focus:changed` khi tải xong. `capacity_error`: `no_account`, `loading`, hoặc thông điệp lỗi (không chứa token). Lỗi một lịch bất kỳ → cả capacity lỗi.
