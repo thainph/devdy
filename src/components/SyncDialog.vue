@@ -1,8 +1,10 @@
 <script setup lang="ts">
 // The on-demand Sync dialog (app-wide, state in the sync store): pull + apply data from the
-// source device (`sync_run`, phases from `sync://run`), then — with project folders — the folder
-// preview (`sync_folder_preview`), then folder sync progress (`sync_folder_apply`, `sync://folder`)
-// with "Run in background" (close, keep running) and "Stop" (`sync_folder_cancel`).
+// source device (`sync_run`, phases from `sync://run`), then the folder preview of the "data +
+// folder" projects (`sync_folder_preview`) — shown only when something in it is risky (risky
+// projects expanded, safe ones collapsed), else applied straight away — then folder sync progress
+// (`sync_folder_apply`, `sync://folder`) with "Run in background" (close, keep running) and "Stop"
+// (`sync_folder_cancel`). Skipped projects are listed with the result.
 // Opened from Settings → Sync and the sidebar SyncIndicator popover.
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -22,6 +24,7 @@ import {
   formatBytes,
   formatEta,
   isPlanChanged,
+  isSafePreview,
   isTruncated,
   previewIsNoop,
   previewTotals,
@@ -55,6 +58,22 @@ function toggleExpanded(id: string) {
   else next.add(id)
   expanded.value = next
 }
+
+/** Safe projects start collapsed in the preview; risky ones are always open. */
+const openSafe = ref<Set<string>>(new Set())
+
+function isOpen(p: FolderPreview): boolean {
+  return !isSafePreview(p) || openSafe.value.has(p.project_id)
+}
+
+function toggleSafe(id: string) {
+  const next = new Set(openSafe.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  openSafe.value = next
+}
+
+const skippedPreviews = computed(() => run.previews.filter((p) => p.skipped))
 
 function skipLabel(reason: string): string {
   const key = `settings.sync.run.skipped.${reason}`
@@ -133,7 +152,7 @@ function cancelPreview() {
 
 /** Retry whatever failed: the data pull, the preview, starting the apply, or the failed projects. */
 function retry() {
-  if (!run.report) void store.syncFrom(run.source, run.includeFolders)
+  if (!run.report) void store.syncFrom(run.source)
   else if (store.failedIds.length) void store.applyFolders(store.failedIds)
   else if (run.applying.length) void store.applyFolders(run.applying)
   else void store.loadPreview()
@@ -192,7 +211,7 @@ async function viewBackup(id: string) {
         {{ t('settings.sync.run.previewLoading') }}
       </p>
       <p
-        v-else-if="run.stage === 'done' && run.includeFolders && run.report && !run.previews.length"
+        v-else-if="run.stage === 'done' && run.report && !run.previews.length"
         class="text-[11px] text-muted-foreground"
       >
         {{ t('settings.sync.run.noFolders') }}
@@ -217,8 +236,18 @@ async function viewBackup(id: string) {
               <span v-if="p.local_path" class="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground" :title="p.local_path">
                 {{ p.local_path }}
               </span>
+              <span v-else class="flex-1" />
+              <button
+                v-if="isSafePreview(p)"
+                type="button"
+                class="flex shrink-0 items-center gap-0.5 text-[11px] text-muted-foreground hover:text-foreground"
+                @click.prevent="toggleSafe(p.project_id)"
+              >
+                {{ t('settings.sync.run.preview.safe', { size: formatBytes(p.download_bytes) }) }}
+                <component :is="isOpen(p) ? ChevronDown : ChevronRight" class="h-3 w-3" :stroke-width="1.75" />
+              </button>
             </label>
-            <div class="space-y-0.5 pl-6 text-[11px]">
+            <div v-if="isOpen(p)" class="space-y-0.5 pl-6 text-[11px]">
               <template v-if="p.skipped">
                 <p class="text-muted-foreground">{{ skipLabel(p.skipped) }}</p>
               </template>
@@ -316,6 +345,17 @@ async function viewBackup(id: string) {
         <p class="min-w-0 flex-1">{{ t('settings.sync.run.planChanged') }}</p>
         <Button variant="outline" size="xs" @click="store.reviewAgain()">{{ t('settings.sync.run.review') }}</Button>
       </div>
+
+      <!-- Skipped projects (never block applying) -->
+      <section v-if="run.stage !== 'preview' && skippedPreviews.length" class="space-y-1 text-[11px] text-muted-foreground">
+        <p class="font-medium">{{ t('settings.sync.run.skippedTitle', { n: skippedPreviews.length }) }}</p>
+        <ul class="space-y-0.5">
+          <li v-for="p in skippedPreviews" :key="p.project_id" class="flex min-w-0 gap-2">
+            <span class="min-w-0 truncate text-foreground">{{ p.name }}</span>
+            <span class="shrink-0">{{ skipLabel(p.skipped!) }}</span>
+          </li>
+        </ul>
+      </section>
 
       <!-- Folder progress / result -->
       <section v-if="run.applying.length && (run.stage === 'applying' || run.stage === 'done' || run.stage === 'error')" class="space-y-2">
