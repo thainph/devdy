@@ -53,6 +53,7 @@ impl SqliteSyncStore {
         SqliteSyncStore { db, device_id, paths: PathCtx::from_env(), clock: Mutex::new(None) }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn with_paths(mut self, paths: PathCtx) -> Self {
         self.paths = paths;
         self

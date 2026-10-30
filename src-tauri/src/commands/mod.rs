@@ -36,6 +36,7 @@ pub mod skills;
 pub mod slack_threads;
 pub mod stats;
 pub mod storage;
+pub mod sync;
 pub mod todos;
 pub mod translate;
 pub mod tray;

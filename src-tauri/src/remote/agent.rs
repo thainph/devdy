@@ -547,8 +547,8 @@ async fn handle_login_frame(
             };
             let opened = Session::new(&psk, &l.keypair, &controller_pub)
                 .ok()
-                .filter(|s| s.open(&cipher).is_ok());
-            let Some(session) = opened else {
+                .and_then(|s| s.open(&cipher).ok().map(|pt| (s, pt)));
+            let Some((session, proof)) = opened else {
                 if let Ok(mut f) = crate::remote::login::FAILURES.lock() {
                     f.record_failure(Instant::now());
                 }
@@ -558,7 +558,21 @@ async fn handle_login_frame(
                 *login = None;
                 return;
             };
-            // Password proven. Hand out a full session link + token; mint a
+            // Password proven. Another Devdy joining this one's sync group asks
+            // for the group key instead of a Remote Control session.
+            if crate::sync::pair::is_sync_join(&proof) {
+                let reply = crate::sync::pair::host_join_reply();
+                let granted = reply["kind"] == "sync_grant";
+                let c = session.seal(reply.to_string().as_bytes());
+                let _ = out_tx.send(Envelope::data(FrameType::Stream, &room_id, c, seq.next()));
+                let _ = out_tx.send(Envelope::revoke(room_id.clone()));
+                *login = None;
+                let result = if granted { audit::RESULT_ACCEPTED } else { audit::RESULT_REJECTED };
+                audit::audit(&deps.db, None, Some(&room_id), None, "sync_join", result, None).await;
+                tracing::info!(event = "remote_sync_join", room_id = %room_id, granted);
+                return;
+            }
+            // Hand out a full session link + token; mint a
             // session when none is bound or the bound one cannot be re-entered
             // (no link secret: persisted before it was stored).
             let Some(grant) = ensure_grantable_session(deps).await else {
