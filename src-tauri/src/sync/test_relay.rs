@@ -24,6 +24,7 @@ struct Group {
     devices: HashMap<String, String>,
     revoked: HashSet<String>,
     blobs: HashMap<String, String>,
+    released: usize,
 }
 
 #[derive(Default)]
@@ -99,6 +100,12 @@ impl TestRelay {
     pub fn stored_blobs(&self) -> Vec<String> {
         let s = self.state.lock().unwrap();
         s.groups.values().flat_map(|g| g.ops.iter().map(|o| o.3.clone())).collect()
+    }
+
+    /// Blobs currently stored / released so far, over all groups.
+    pub fn blob_counts(&self) -> (usize, usize) {
+        let s = self.state.lock().unwrap();
+        (s.groups.values().map(|g| g.blobs.len()).sum(), s.groups.values().map(|g| g.released).sum())
     }
 
     pub fn hello_count(&self) -> usize {
@@ -271,6 +278,17 @@ fn handle_inner(
             let sha = s_("sha");
             s.groups.get_mut(&gid)?.blobs.insert(sha.clone(), s_("data"));
             Some(json!({ "t": "blob_ack", "sha": sha }))
+        }
+        "blob_release" => {
+            // Immediate here (the real relay waits out a grace period).
+            let g = s.groups.get_mut(&gid)?;
+            let shas: Vec<String> = f["shas"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            let n = shas.iter().filter(|sha| g.blobs.remove(*sha).is_some()).count();
+            g.released += n;
+            Some(json!({ "t": "blob_released", "released": n }))
         }
         "blob_get" => {
             let sha = s_("sha");

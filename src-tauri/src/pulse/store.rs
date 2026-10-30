@@ -658,9 +658,14 @@ pub async fn max_updated_at(db: &Db) -> Result<Option<String>, CodedError> {
         .map_err(internal)
 }
 
-/// The poller only runs while a session is running (or the Pulse screen is open).
+/// The poller only runs while a session of this device is running (or the
+/// Pulse screen is open); one running on another synced device does not count.
 pub async fn any_run_running(db: &Db) -> Result<bool, CodedError> {
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runs WHERE status = 'running')")
+    let sql = format!(
+        "SELECT EXISTS(SELECT 1 FROM runs WHERE status = 'running' AND {})",
+        crate::sync::sessions::OWNED_HERE
+    );
+    sqlx::query_scalar(&sql)
         .fetch_one(db)
         .await
         .map_err(internal)

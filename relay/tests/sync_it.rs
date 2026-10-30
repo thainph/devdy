@@ -329,6 +329,29 @@ async fn blob_put_get() {
 }
 
 #[tokio::test]
+async fn blob_release_is_acked_and_uploader_only() {
+    let url = start(Opts::default()).await;
+    let mut a = hello(&url, "a", true).await;
+    let mut b = hello(&url, "b", false).await;
+    let sha = sha_hex(b"tail");
+    send(&mut a, json!({ "t": "blob_put", "sha": sha, "data": b64(b"tail") })).await;
+    assert_eq!(recv(&mut a).await["t"], "blob_ack");
+
+    // Another device can't release it.
+    send(&mut b, json!({ "t": "blob_release", "id": 1, "shas": [sha] })).await;
+    let r = recv(&mut b).await;
+    assert_eq!((r["t"].as_str(), r["released"].as_u64(), r["id"].as_u64()), (Some("blob_released"), Some(0), Some(1)));
+    // The uploader can; it stays fetchable during the grace period.
+    send(&mut a, json!({ "t": "blob_release", "shas": [sha, "x"] })).await;
+    assert_eq!(recv(&mut a).await["released"], 1);
+    send(&mut b, json!({ "t": "blob_get", "sha": sha })).await;
+    assert_eq!(recv(&mut b).await["t"], "blob_data");
+    // Malformed.
+    send(&mut a, json!({ "t": "blob_release" })).await;
+    assert_eq!(recv(&mut a).await["t"], "error");
+}
+
+#[tokio::test]
 async fn group_quota_is_enforced() {
     let url = start(Opts { max_group_bytes: 100, ..Default::default() }).await;
     let mut a = hello(&url, "a", true).await;
