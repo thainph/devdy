@@ -11,7 +11,7 @@ use super::codec::{encode_row, read_row, PathCtx};
 use super::op::{Op, OpKind, OP_VERSION};
 use super::events::{Notice, Notifier};
 use super::transport::RelayMark;
-use super::{apply, files, schema, secrets, SCHEMA_VERSION};
+use super::{apply, files, prefs, schema, secrets, SCHEMA_VERSION};
 use crate::db::Db;
 
 pub const CURSOR_KEY: &str = "pull_cursor";
@@ -70,6 +70,16 @@ pub trait SyncStore: Send + Sync {
     async fn apply_remote(&self, ops: Vec<Op>) -> Result<ApplyReport, String>;
     async fn cursor(&self) -> Result<u64, String>; // last pulled relay seq
     async fn set_cursor(&self, seq: u64) -> Result<(), String>;
+    /// A pull cursor reset (selective sync turned something on) is waiting
+    /// for the next pull: the cursor reads 0 until then.
+    async fn cursor_reset_pending(&self) -> Result<bool, String> {
+        Ok(false)
+    }
+    /// The cursor a pull starts from (also ends a pending reset, which kept
+    /// earlier pulls from writing over it).
+    async fn pull_start(&self) -> Result<u64, String> {
+        self.cursor().await
+    }
 
     /// Scan the non-DB sources that are due (files, Keychain), upload file
     /// chunks and queue `file` / `secret` ops into the outbox. Called before
@@ -412,10 +422,19 @@ impl SyncStore for SqliteSyncStore {
         let mut report = ApplyReport::default();
         let mut failed: Vec<(Op, i64, String)> = Vec::new();
         let mut grown_runs = std::collections::BTreeSet::new();
+        let filter = {
+            let mut conn = self.db.acquire().await.map_err(err)?;
+            prefs::Filter::load(&mut conn).await?
+        };
         for (_, (op, attempts)) in latest {
             clock.observe(&op.hlc);
             if op.schema > SCHEMA_VERSION {
                 failed.push((op, attempts, format!("schema newer than local ({SCHEMA_VERSION})")));
+                continue;
+            }
+            // Selective sync: dropped, not deferred (re-pulled once enabled).
+            if op.tbl == files::TBL && prefs::skip_file(&self.db, &filter, &paths, &op).await? {
+                report.skipped_older += 1;
                 continue;
             }
             let result = match op.tbl.as_str() {
@@ -551,6 +570,8 @@ impl SyncStore for SqliteSyncStore {
         let runs: Vec<String> =
             ops.iter().filter(|o| o.tbl == "runs").filter_map(|o| o.pk.as_str().map(str::to_string)).collect();
         let report = apply::apply_ops(&self.db, &paths, &mut clock, ops).await?;
+        // Cut references whose parent just arrived.
+        prefs::settle_stripped(&self.db).await?;
         *guard = Some(clock);
         drop(guard);
         self.move_secrets().await;
@@ -572,13 +593,42 @@ impl SyncStore for SqliteSyncStore {
         Ok(v.and_then(|s| s.parse().ok()).unwrap_or(0))
     }
 
+    async fn pull_start(&self) -> Result<u64, String> {
+        let mut tx = self.db.begin().await.map_err(err)?;
+        sqlx::query("DELETE FROM sync_state WHERE key = ?")
+            .bind(prefs::CURSOR_RESET_KEY)
+            .execute(&mut *tx)
+            .await
+            .map_err(err)?;
+        let v: Option<String> = sqlx::query_scalar("SELECT value FROM sync_state WHERE key = ?")
+            .bind(CURSOR_KEY)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(err)?;
+        tx.commit().await.map_err(err)?;
+        Ok(v.and_then(|s| s.parse().ok()).unwrap_or(0))
+    }
+
+    async fn cursor_reset_pending(&self) -> Result<bool, String> {
+        let v: Option<String> = sqlx::query_scalar("SELECT value FROM sync_state WHERE key = ?")
+            .bind(prefs::CURSOR_RESET_KEY)
+            .fetch_optional(&self.db)
+            .await
+            .map_err(err)?;
+        Ok(v.is_some())
+    }
+
+    /// A no-op while a reset is pending (`prefs`): a pull that started before
+    /// it must not move the cursor past ops it filtered out.
     async fn set_cursor(&self, seq: u64) -> Result<(), String> {
         sqlx::query(
-            "INSERT INTO sync_state (key, value) VALUES (?, ?) \
+            "INSERT INTO sync_state (key, value) SELECT ?1, ?2 \
+             WHERE NOT EXISTS (SELECT 1 FROM sync_state WHERE key = ?3) \
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         )
         .bind(CURSOR_KEY)
         .bind(seq.to_string())
+        .bind(prefs::CURSOR_RESET_KEY)
         .execute(&self.db)
         .await
         .map_err(err)?;
@@ -673,6 +723,7 @@ impl SqliteSyncStore {
         let entry = match row {
             Some(r) => {
                 let mut wire = encode_row(paths, spec, r);
+                prefs::restore_refs(conn, spec.name, pk_text, &mut wire).await?;
                 if spec.name == "notes" {
                     apply::add_note_base(conn, pk_text, &mut wire).await?;
                 }

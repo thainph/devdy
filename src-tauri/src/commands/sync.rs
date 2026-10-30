@@ -1,4 +1,6 @@
-//! Two-way sync commands (design §3, §7), used by Settings → Sync.
+//! Two-way sync commands (design §3, §7), used by Settings → Sync. Sync is
+//! on demand (on-demand-sync.md §2): `sync_run` pulls from one source device,
+//! which flushes its outbox when asked; nothing moves on its own.
 //!
 //! Group secrets live in the Keychain (`secrets::SyncSecrets`). The pause and
 //! "sync secrets" flags are machine-local `settings` keys (`sync_paused`,
@@ -6,7 +8,11 @@
 //! and the leader device are synced settings (`sync::leader`).
 
 use crate::db::Db;
-use crate::sync::engine::{StatusSink, SyncEngine, SyncState, SyncStatus, Timing, STATUS_EVENT};
+use crate::sync::engine::{
+    EngineHandle, PeerHandlers, RunPhase, StatusSink, SyncEngine, SyncRunReport, SyncState, SyncStatus, Timing,
+    RUN_EVENT, STATUS_EVENT,
+};
+use crate::sync::peer::{PeerHandler, PeerLink};
 use crate::sync::leader::{self, DeviceInfo};
 use crate::sync::store::{self, ParkedRow, SqliteSyncStore, SyncStore};
 use crate::sync::transport::{Connection, TransportError};
@@ -17,15 +23,45 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
 
 const KEY_PAUSED: &str = "sync_paused";
+/// How long `sync_set_leader` waits for the new leader to confirm.
+const LEADER_CONFIRM_WAIT: Duration = Duration::from_secs(30);
+/// Retry cadence of an unconfirmed leader hand-off.
+const LEADER_RETRY_EVERY: Duration = Duration::from_secs(60);
+/// How often a leader change arrived through sync is looked for.
+const LEADER_WATCH_EVERY: Duration = Duration::from_secs(30);
 const KEY_SECRETS: &str = crate::sync::secrets::SETTING;
 
-/// App-wide sync state (Tauri managed): the running engine, if any.
+/// App-wide sync state (Tauri managed): the running engine, if any, and the
+/// handlers of other devices' requests.
 #[derive(Clone, Default)]
 pub struct SyncManager {
     engine: Arc<Mutex<Option<SyncEngine>>>,
+    handlers: PeerHandlers,
+    /// Drives an unconfirmed leader hand-off while the engine runs.
+    handoff: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    handoff_kick: Arc<tokio::sync::Notify>,
 }
 
 impl SyncManager {
+    /// Serve another device's requests of `handler.kinds()` (on-demand sync
+    /// features). Callable before or after the engine starts; the first
+    /// handler registered for a kind wins.
+    pub fn register_peer_handler(&self, handler: Arc<dyn PeerHandler>) {
+        if let Ok(mut h) = self.handlers.write() {
+            h.push(handler);
+        }
+    }
+
+    /// The running engine (cheap handle: long operations do not hold the slot).
+    pub async fn handle(&self) -> Option<EngineHandle> {
+        self.engine.lock().await.as_ref().map(SyncEngine::handle)
+    }
+
+    /// Requests / blobs to the other devices, while the engine runs.
+    pub async fn peer_link(&self) -> Option<Arc<dyn PeerLink>> {
+        self.handle().await.map(|h| h.link())
+    }
+
     /// Start the engine when this device is in a group (no-op otherwise or
     /// when already running).
     pub async fn start(&self, app: &AppHandle, db: &Db) -> Result<(), String> {
@@ -55,8 +91,17 @@ impl SyncManager {
         let sink: StatusSink = Arc::new(move |s: &SyncStatus| {
             let _ = emitter.emit(STATUS_EVENT, s);
         });
-        *slot = Some(SyncEngine::start(params, keys, store, sink, paused, Timing::default()));
+        *slot = Some(SyncEngine::start_with(
+            params,
+            keys,
+            store,
+            sink,
+            paused,
+            Timing::default(),
+            self.handlers.clone(),
+        ));
         leader::set_sync_active(true);
+        self.start_handoff_loop(db, sync.device_id.clone());
         let name = default_device_name(db).await;
         if let Err(e) = leader::touch_self(db, &sync.device_id, &name).await {
             tracing::warn!(event = "sync_device_record_failed", error = %e);
@@ -68,10 +113,50 @@ impl SyncManager {
         if let Some(engine) = self.engine.lock().await.take() {
             engine.stop().await;
         }
+        if let Some(t) = self.handoff.lock().ok().and_then(|mut t| t.take()) {
+            t.abort();
+        }
         leader::set_sync_active(false);
     }
 
-    /// The outbox changed: sync soon. Cheap; safe to call from anywhere.
+    /// While the engine runs: notice the leader role leaving this device (set
+    /// here or arrived through sync) and tell the new leader until it confirms
+    /// (`leader::handoff_step`); this device keeps the singleton jobs
+    /// meanwhile. The hand-off is persisted, so a restart resumes it.
+    fn start_handoff_loop(&self, db: &Db, me: String) {
+        let (manager, db) = (self.clone(), db.clone());
+        let task = tokio::spawn(async move {
+            loop {
+                let notify = |to: String| {
+                    let manager = manager.clone();
+                    async move {
+                        match manager.handle().await {
+                            Some(h) => h.notify_leader(&to).await,
+                            None => Err("not in a sync group".to_string()),
+                        }
+                    }
+                };
+                let pending = leader::handoff_step(&db, &me, notify).await.unwrap_or_else(|e| {
+                    tracing::warn!(event = "sync_leader_handoff_failed", error = %e);
+                    true
+                });
+                let wait = if pending { LEADER_RETRY_EVERY } else { LEADER_WATCH_EVERY };
+                tokio::select! {
+                    _ = tokio::time::sleep(wait) => {}
+                    _ = manager.handoff_kick.notified() => {}
+                }
+            }
+        });
+        if let Ok(mut slot) = self.handoff.lock() {
+            if let Some(old) = slot.replace(task) {
+                old.abort();
+            }
+        }
+    }
+
+    /// Something worth syncing changed. Sync is on demand, so this only
+    /// retries the relay connection right away when it is down. Cheap; safe
+    /// to call from anywhere.
     pub async fn kick(&self) {
         if let Some(e) = self.engine.lock().await.as_ref() {
             e.kick();
@@ -81,20 +166,14 @@ impl SyncManager {
     /// Push what is queued now, waiting at most `wait`. Returns whether it
     /// went out (false: offline, paused, or no engine).
     async fn flush(&self, wait: Duration) -> bool {
-        let started = chrono::Utc::now().timestamp_millis();
-        match self.engine.lock().await.as_ref() {
-            Some(e) => e.sync_now(),
-            None => return false,
-        }
-        let deadline = tokio::time::Instant::now() + wait;
-        while tokio::time::Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            let s = self.status().await;
-            if s.pending == 0 && s.last_push.is_some_and(|p| p >= started) {
-                return true;
-            }
-        }
-        false
+        let Some(h) = self.handle().await else { return false };
+        matches!(tokio::time::timeout(wait, h.flush_outbox()).await, Ok(Ok(_)))
+    }
+
+    /// Tell `to` it leads now and wait (at most `wait`) until it synced that.
+    async fn notify_leader(&self, to: &str, wait: Duration) -> bool {
+        let Some(h) = self.handle().await else { return false };
+        matches!(tokio::time::timeout(wait, h.notify_leader(to)).await, Ok(Ok(())))
     }
 
     /// Wait (at most `wait`) until the engine is connected.
@@ -197,6 +276,8 @@ pub const LEAVE_HANDOFF_PENDING: &str = "sync_leave_handoff_pending";
 
 /// How long leaving waits for the relay to take the role hand-off.
 const LEAVE_PUSH_WAIT: Duration = Duration::from_secs(10);
+/// How long leaving waits for the new leader to sync the hand-off.
+const LEAVE_LEADER_WAIT: Duration = Duration::from_secs(60);
 
 /// Review-3 M5: whether leaving may go on. The hand-off rides the outbox,
 /// which leaving clears, so a role holder whose hand-off did not reach the
@@ -238,11 +319,18 @@ pub async fn sync_leave(
         // Without a role, only this device's own record is at stake.
         let online = state.wait_online(if holds_role { LEAVE_PUSH_WAIT } else { LEAVE_PUSH_WAIT / 2 }).await;
         let mut handed_off = false;
+        let was_leader = leader::leader(db.inner()).await.as_deref() == Some(me);
         if online {
             match leader::on_leave(db.inner(), me).await {
                 Ok(next) => {
                     successor = next;
                     handed_off = state.flush(LEAVE_PUSH_WAIT).await;
+                    // The new leader must take the role before this device
+                    // (which stops the jobs here) is gone.
+                    let new_leader = leader::leader(db.inner()).await.filter(|l| l != me);
+                    if let (true, true, Some(to)) = (handed_off, was_leader, new_leader) {
+                        handed_off = state.notify_leader(&to, LEAVE_LEADER_WAIT).await;
+                    }
                 }
                 Err(e) => tracing::warn!(event = "sync_leave_handover_failed", error = %e),
             }
@@ -260,6 +348,7 @@ pub async fn sync_leave(
     }
     crate::sync::pair::close_accept_window();
     state.stop().await;
+    leader::forget_local(db.inner()).await?;
     let revoked = crate::sync::pair::leave(db.inner(), successor.as_deref()).await?;
     emit_disabled(&app);
     Ok(revoked)
@@ -278,13 +367,59 @@ pub async fn sync_pause(
     Ok(state.status().await)
 }
 
+/// Reconnect to the relay now when the connection is down. Sync itself is
+/// on demand: see `sync_run`.
 #[tauri::command]
 pub async fn sync_now(state: State<'_, SyncManager>) -> Result<(), String> {
     match state.engine.lock().await.as_ref() {
         Some(e) => {
-            e.sync_now();
+            e.kick();
             Ok(())
         }
+        None => Err("this device is not in a sync group".into()),
+    }
+}
+
+/// Payload of `sync://run`.
+#[derive(Debug, Clone, serde::Serialize)]
+struct RunEvent {
+    phase: RunPhase,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+}
+
+/// Manual sync from `source_device`: it pushes its outbox, this device pulls
+/// and applies (one direction). Progress goes out as `sync://run`. Errors are
+/// returned as is; `peer_offline` (the source is not running Devdy / not
+/// connected), `peer_paused`, `peer_timeout` and `sync_not_connected` are
+/// bare codes.
+#[tauri::command]
+pub async fn sync_run(
+    app: AppHandle,
+    state: State<'_, SyncManager>,
+    source_device: String,
+) -> Result<SyncRunReport, String> {
+    let emit = |phase: RunPhase, message: Option<String>| {
+        let _ = app.emit(RUN_EVENT, RunEvent { phase, message });
+    };
+    let result = match state.handle().await {
+        Some(h) => h.run_from(&source_device, &|p, m| emit(p, m)).await,
+        None => Err("this device is not in a sync group".into()),
+    };
+    // A leader change may have arrived.
+    state.handoff_kick.notify_one();
+    match &result {
+        Ok(_) => emit(RunPhase::Done, None),
+        Err(e) => emit(RunPhase::Error, Some(e.clone())),
+    }
+    result
+}
+
+/// Devices of the group connected to the relay right now (not this one).
+#[tauri::command]
+pub async fn sync_peers_online(state: State<'_, SyncManager>) -> Result<Vec<String>, String> {
+    match state.handle().await {
+        Some(h) => h.online_peers().await,
         None => Err("this device is not in a sync group".into()),
     }
 }
@@ -382,16 +517,37 @@ pub async fn sync_revoke_device(
 }
 
 /// Pick the device that runs singleton jobs (Pulse / Slack polling); `None`
-/// lets every device run them. Takes effect on the next poll, no restart.
+/// lets every device run them. The new leader is always told to sync from
+/// this device at once; returns whether it confirmed. The device that was
+/// the leader — this one, or another that learns of the change when it
+/// syncs — keeps running the jobs until the new leader confirms
+/// (`leader::observe_change`).
 #[tauri::command]
 pub async fn sync_set_leader(
     db: State<'_, Db>,
     state: State<'_, SyncManager>,
     device_id: Option<String>,
-) -> Result<(), String> {
-    leader::set_leader(db.inner(), device_id.as_deref()).await?;
-    state.kick().await;
-    Ok(())
+) -> Result<bool, String> {
+    let db = db.inner();
+    let me = group_device_id().ok();
+    if let Some(me) = &me {
+        // Record who leads before the change, so losing the role is noticed.
+        leader::observe_change(db, me).await?;
+    }
+    leader::set_leader(db, device_id.as_deref()).await?;
+    if let Some(me) = &me {
+        leader::observe_change(db, me).await?;
+    }
+    let Some(to) = device_id.filter(|d| Some(d) != me.as_ref()) else {
+        return Ok(true);
+    };
+    let confirmed = state.notify_leader(&to, LEADER_CONFIRM_WAIT).await;
+    if confirmed {
+        leader::handoff_confirmed(db, &to).await?;
+    } else {
+        state.handoff_kick.notify_one();
+    }
+    Ok(confirmed)
 }
 
 /// Open "Accept a new device" for `sync::pair::ACCEPT_WINDOW`; returns the
@@ -436,14 +592,13 @@ pub async fn sync_parked_list(db: State<'_, Db>) -> Result<Vec<ParkedRow>, Strin
     store::parked_list(db.inner(), PARKED_LIST_LIMIT).await
 }
 
-/// Queue the parked rows for push again; returns how many. Rows the relay
-/// still refuses are parked again.
+/// Queue the parked rows for push again (they go out with the next flush);
+/// returns how many. Rows the relay still refuses are parked again.
 #[tauri::command]
 pub async fn sync_parked_retry(db: State<'_, Db>, state: State<'_, SyncManager>) -> Result<usize, String> {
     let n = store::parked_retry(db.inner()).await?;
     if let Some(e) = state.engine.lock().await.as_ref() {
         e.set_parked(0);
-        e.sync_now();
     }
     Ok(n)
 }

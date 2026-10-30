@@ -83,14 +83,17 @@ time. The relay only stores ciphertext and never logs op blobs or blob data.
 | `blob_release{shas}` | Device → Relay | The uploading device no longer references these blobs (at most 1000 per frame). Only blobs that device uploaded are marked; anything else is ignored. → `blob_released{released}` (how many were marked). |
 | `sync_revoke{device_id, successor?}` | Device → Relay | A device may revoke itself; only the group's creator may revoke another device (else `forbidden`). The revoked device's live connections get `error{device_revoked}` and close, its hello fails from then on (with or without a ticket). When the **creator revokes itself** the role moves to `successor` if that is an active member, else to the oldest active member (registration time, ties by device id); no member left = no creator. → `control{code:"ok"}`. |
 | `sync_group_info{creator_device}` | Relay → other devices | Sent to the group's other connected devices when the creator role moved; devices that were offline learn it from their next `sync_welcome`. |
+| `sync_peers{}` | Device → Relay | On-demand sync (design `on-demand-sync` §1). → `sync_peers{devices:[device_id, ...]}`: the group's devices with a live sync connection, excluding the caller (deduplicated, sorted). |
+| `sync_peer_send{to_device, data}` | Device → Relay | Forward `data` (base64 of a message sealed with the group key) to `to_device`'s most recent live connection in the **same group**, as `sync_peer_msg`. → `sync_peer_ack{}` once queued for the target. Errors: `peer_offline` (no live connection, revoked, not a member, the sender itself, or the target's queue did not drain within 60 s — that target is then disconnected), `too_large` (`data` longer than the base64 of `RELAY_SYNC_MAX_BLOB_BYTES`), `bad_request` (missing `to_device` / `data`). Never stored, never logged. |
+| `sync_peer_msg{from_device, data}` | Relay → target device | A forwarded `sync_peer_send` (no `id`). |
 
 After `sync_welcome` only these frames and `keepalive` are accepted on the
 connection (anything else → `error{forbidden}`); sync frames on a Remote
 Control connection are refused the same way. An optional `id` on any request
 is echoed on its response or error. Push/pull/blob frames (including
-`blob_release`) are not rate limited
-(an initial upload sends many); `sync_hello`/`sync_invite`/`sync_revoke` count
-as control frames. A connection's requests are handled one at a time, and a
+`blob_release`) and `sync_peer_send` are not rate limited
+(an initial upload, or a folder sync's replies, send many);
+`sync_hello`/`sync_invite`/`sync_revoke`/`sync_peers` count as control frames. A connection's requests are handled one at a time, and a
 `sync_pull` / `blob_get` is only served once the replies still queued for that
 socket are under 16 MiB (`MAX_QUEUED_REPLY_BYTES`); a client that stops reading
 for 60 s is disconnected. While sync is enabled the WebSocket message limit is raised, if

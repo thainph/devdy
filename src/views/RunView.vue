@@ -740,8 +740,9 @@ const currentOwnerName = computed(() =>
   currentOwner.value ? ownerLabel(currentOwner.value, t('run.syncOwner.anotherDevice')) : '',
 )
 const takingOver = ref(false)
-// The owner's final log/transcript are still arriving: shown with Retry and
-// "Continue anyway" instead of the plain "Continue here".
+// The owner's final log/transcript are still missing after syncing from it:
+// shown with "Sync from <owner>" and "Continue anyway" instead of the plain
+// "Continue here".
 const takeOverSyncing = ref<SyncGap | null>(null)
 watch(currentRunId, () => { takeOverSyncing.value = null })
 
@@ -801,7 +802,21 @@ async function handleTakeOver(skipSync = false) {
   const device = currentOwnerName.value
   takingOver.value = true
   try {
+    // The backend syncs from the owner first, so the decision uses its current
+    // lease. An unreachable owner may still be running the session: ask.
+    let staleOk = false
     let result = await runsStore.takeOverRun(id, false, skipSync)
+    if (!result.taken && result.owner_unreachable) {
+      const ok = await confirm({
+        title: t('run.syncOwner.unreachableTitle', { device }),
+        message: t('run.syncOwner.unreachableMessage', { device }),
+        confirmLabel: t('run.syncOwner.continueHere'),
+        variant: 'primary',
+      })
+      if (!ok) return
+      staleOk = true
+      result = await runsStore.takeOverRun(id, false, skipSync, true)
+    }
     takeOverSyncing.value = !result.taken && result.syncing ? result.syncing : null
     if (takeOverSyncing.value) return
     if (!result.taken && result.mismatch) {
@@ -822,13 +837,15 @@ async function handleTakeOver(skipSync = false) {
         variant: 'primary',
       })
       if (!ok) return
-      result = await runsStore.takeOverRun(id, true, skipSync)
+      result = await runsStore.takeOverRun(id, true, skipSync, staleOk)
     }
     if (!result.taken) return
     if (!result.transcript_available) toast.info(t('run.syncOwner.transcriptMissing'))
     await runsStore.refreshMeta(projectId.value)
   } catch (e) {
     toast.error(String(e))
+    // E.g. still running on the owner: show what the sync brought.
+    void runsStore.fetchRemoteOwners(projectId.value)
   } finally {
     takingOver.value = false
   }
@@ -4684,7 +4701,7 @@ function handleRefInput(val: string) {
                 @click="handleTakeOver()"
               >
                 <component :is="takingOver ? Loader2 : RefreshCw" class="h-3.5 w-3.5" :class="{ 'animate-spin': takingOver }" :stroke-width="2" />
-                {{ t('run.syncOwner.retry') }}
+                {{ t('run.syncOwner.syncFrom', { device: currentOwnerName }) }}
               </button>
             </template>
             <template v-else>

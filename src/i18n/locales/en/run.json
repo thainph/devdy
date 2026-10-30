@@ -217,9 +217,11 @@
     "unknown": "unknown",
     "noRepo": "no git repository",
     "transcriptMissing": "The session's transcript hasn't synced to this Mac yet — the next message starts a new conversation without the earlier context.",
-    "stillSyncing": "Still syncing the final output from {device} ({percent}%).",
-    "retry": "Retry",
+    "stillSyncing": "Still missing part of the final output from {device} ({percent}%).",
     "continueAnyway": "Continue anyway",
-    "continuedOn": "This session was continued on {device}; it stopped here."
+    "continuedOn": "This session was continued on {device}; it stopped here.",
+    "syncFrom": "Sync from {device}",
+    "unreachableTitle": "{device} can't be reached",
+    "unreachableMessage": "Devdy on {device} is offline or not answering, so this Mac can't check whether the session is still running there. If it is, both machines would work on the same session.\n\nContinue here anyway?"
   }
 }

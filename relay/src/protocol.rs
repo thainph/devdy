@@ -63,6 +63,17 @@ pub enum FrameType {
     BlobData,
     BlobRelease,
     BlobReleased,
+    // On-demand sync (design on-demand-sync §1): device ↔ device messages
+    // forwarded over live sync connections, never stored or logged.
+    /// Device → relay: list the group's other connected devices.
+    /// Relay → device: the reply (`devices`).
+    SyncPeers,
+    /// Device → relay: forward `data` to `to_device`.
+    SyncPeerSend,
+    /// Relay → sender: `sync_peer_send` was forwarded.
+    SyncPeerAck,
+    /// Relay → target: a forwarded message (`from_device`, `data`).
+    SyncPeerMsg,
 }
 
 /// The outermost envelope the relay can observe (SRS §5.1).
@@ -270,6 +281,9 @@ pub enum ErrorCode {
     TicketRequired,
     /// The join ticket is unknown, expired or already used.
     TicketInvalid,
+    /// `sync_peer_send` target has no live sync connection in the group (or
+    /// is revoked / not a member).
+    PeerOffline,
 }
 
 impl ErrorCode {
@@ -296,6 +310,7 @@ impl ErrorCode {
             ErrorCode::GroupExists => "group_exists",
             ErrorCode::TicketRequired => "ticket_required",
             ErrorCode::TicketInvalid => "ticket_invalid",
+            ErrorCode::PeerOffline => "peer_offline",
         }
     }
 }

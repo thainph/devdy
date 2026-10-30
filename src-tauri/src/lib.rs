@@ -154,13 +154,16 @@ use commands::sync::{
     sync_get_secrets, sync_pause, sync_revoke_device, sync_set_leader, sync_set_secrets, sync_status,
     sync_accept_close, sync_accept_open, sync_accept_state, sync_join_respond, sync_parked_list,
     sync_parked_retry, sync_relay_ready,
+    sync_peers_online, sync_run,
     SyncManager,
 };
 use sync::sessions::{sync_run_owners, sync_take_over_run};
+use commands::sync_folder::{sync_folder_apply, sync_folder_cancel, sync_folder_preview};
 use commands::sync_bootstrap::{
     sync_bootstrap_commit, sync_bootstrap_pending, sync_bootstrap_preview, sync_project_mapping_list, sync_rebootstrap,
     sync_project_mapping_set, sync_resync_all,
 };
+use commands::sync_prefs::{sync_prefs_get, sync_prefs_set_categories, sync_prefs_set_source, sync_project_pref_set};
 use runs::broker::approver::ModalApproverResolver;
 use runs::broker::{start_broker, ApproverResolver, BrokerConfig};
 use runs::{new_broker_approvals, new_broker_runs, new_registry, RunRegistry};
@@ -450,6 +453,9 @@ pub fn run() {
             // Two-way sync: start the background engine when this device is in
             // a sync group (group secrets live in the Keychain).
             let sync_manager = SyncManager::default();
+            sync_manager.register_peer_handler(commands::sync_folder::folder_handler(
+                app.state::<db::Db>().inner().clone(),
+            ));
             app.manage(sync_manager.clone());
             // Keep the leases of this device's live runs fresh (cross-device sessions).
             sync::sessions::spawn_heartbeat(
@@ -760,9 +766,14 @@ pub fn run() {
             sync_leave,
             sync_pause,
             sync_now,
+            sync_run,
+            sync_peers_online,
             sync_set_secrets,
             sync_run_owners,
             sync_take_over_run,
+            sync_folder_preview,
+            sync_folder_apply,
+            sync_folder_cancel,
             sync_get_secrets,
             sync_devices_list,
             sync_device_rename,
@@ -782,6 +793,10 @@ pub fn run() {
             sync_rebootstrap,
             sync_project_mapping_list,
             sync_project_mapping_set,
+            sync_prefs_get,
+            sync_prefs_set_source,
+            sync_prefs_set_categories,
+            sync_project_pref_set,
             remote_bridge_ready,
             remote_bridge_batch,
             remote_fs_list,

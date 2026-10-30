@@ -9,8 +9,9 @@
 //! Requests are strictly sequential (one in flight per connection) and carry
 //! an `id` the relay echoes on the reply or error, which is how replies are
 //! matched; a reply without an `id` is matched by type. The unsolicited
-//! `sync_notify` / `sync_group_info` frames (and the welcome's
-//! `creator_device`) are surfaced as [`Event`]s. Payloads (`blob`,
+//! `sync_notify` / `sync_group_info` / `sync_peer_msg` frames (and the
+//! welcome's `creator_device`) are surfaced as [`Event`]s, so a message from
+//! another device never waits behind a request in flight. Payloads (`blob`,
 //! `data`) and tokens are never logged.
 
 use futures_util::{SinkExt, StreamExt};
@@ -28,6 +29,9 @@ const LIVENESS_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 /// monotonic clock ⇒ the machine slept and the socket is dead.
 const SLEEP_JUMP: Duration = Duration::from_secs(20);
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// `sync_peer_send`: the relay acks once the target's socket took the
+/// message, which may take up to 60 s with a slow target.
+const PEER_SEND_TIMEOUT: Duration = Duration::from_secs(75);
 
 /// One item of `sync_push.items` / `sync_ops.items`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -111,6 +115,15 @@ pub struct Frame {
     /// not asked, or an epoch this store never had).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub known_head: Option<u64>,
+    /// `sync_peer_send`: the device the sealed `data` goes to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_device: Option<String>,
+    /// `sync_peer_msg`: the device that sent it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_device: Option<String>,
+    /// `sync_peers` reply: the group's other devices with a live connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub devices: Option<Vec<String>>,
 }
 
 impl Frame {
@@ -202,12 +215,30 @@ pub struct RelayMark {
 pub const MAX_TICKET_TTL_SECS: u64 = 600;
 
 /// Unsolicited things the connection reports to its owner.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Event {
     Notify(u64),
     /// The group's creator per the relay (on welcome, and when it moves).
     Creator(String),
+    /// `sync_peer_msg`: base64 sealed data another device of the group sent.
+    PeerMsg { from: String, data: String },
     Closed,
+}
+
+// Hand-written so a peer message's data never reaches a log line.
+impl std::fmt::Debug for Event {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Event::Notify(seq) => f.debug_tuple("Notify").field(seq).finish(),
+            Event::Creator(c) => f.debug_tuple("Creator").field(c).finish(),
+            Event::PeerMsg { from, data } => f
+                .debug_struct("PeerMsg")
+                .field("from", from)
+                .field("len", &data.len())
+                .finish(),
+            Event::Closed => f.write_str("Closed"),
+        }
+    }
 }
 
 struct Waiter {
@@ -388,6 +419,11 @@ impl Connection {
                                     let _ = events.send(Event::Creator(c));
                                 }
                             }
+                            "sync_peer_msg" => {
+                                if let (Some(from), Some(data)) = (frame.from_device, frame.data) {
+                                    let _ = events.send(Event::PeerMsg { from, data });
+                                }
+                            }
                             "keepalive" => {}
                             t => {
                                 let mut slot = task_waiter.lock().await;
@@ -417,6 +453,14 @@ impl Connection {
             epoch,
             known_head,
         })
+    }
+
+    /// Close the socket now (requests in flight fail right away).
+    pub fn close(&self) {
+        self.task.abort();
+        if let Ok(mut w) = self.waiter.try_lock() {
+            w.take();
+        }
     }
 
     /// N15 / M6: a relay that lost ops this device saw (restored from a
@@ -531,6 +575,22 @@ impl Connection {
         f.shas = Some(shas.to_vec());
         let r = self.request(f, &["blob_released"]).await?;
         Ok(r.released.unwrap_or(0))
+    }
+
+    /// `sync_peers` → the group's other devices with a live connection.
+    pub async fn peers(&self) -> Result<Vec<String>, TransportError> {
+        let r = self.request_within(Frame::new("sync_peers"), &["sync_peers"], Duration::from_secs(10)).await?;
+        Ok(r.devices.unwrap_or_default())
+    }
+
+    /// `sync_peer_send{to_device, data}` → `sync_peer_ack` once the relay
+    /// queued it for `to`; `Relay("peer_offline")` when `to` has no live
+    /// connection, `Relay("too_large")` over the relay's blob cap.
+    pub async fn peer_send(&self, to: &str, data_b64: String) -> Result<(), TransportError> {
+        let mut f = Frame::new("sync_peer_send");
+        f.to_device = Some(to.to_string());
+        f.data = Some(data_b64);
+        self.request_within(f, &["sync_peer_ack"], PEER_SEND_TIMEOUT).await.map(|_| ())
     }
 
     /// `sync_invite{ticket_hash, ttl_secs}` → `control{code:"ok"}`: register a
@@ -804,6 +864,39 @@ mod tests {
         assert_eq!(serde_json::to_value(&push).unwrap(), serde_json::json!({ "t": "sync_push", "base_seq": 3 }));
         // The connection is still usable after an error reply.
         assert_eq!(c.pull(0, 10).await.unwrap().0.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn peer_messages_reach_the_other_device_as_events() {
+        let relay = crate::sync::test_relay::TestRelay::start().await;
+        relay.create_group("g");
+        let (tx_a, _rx_a) = mpsc::unbounded_channel();
+        let a = Connection::connect(&params(&relay, "a"), false, tx_a).await.unwrap();
+        assert_eq!(a.peers().await.unwrap(), Vec::<String>::new());
+        let (tx_b, mut rx_b) = mpsc::unbounded_channel();
+        let _b = Connection::connect(&params(&relay, "b"), false, tx_b).await.unwrap();
+        assert_eq!(a.peers().await.unwrap(), vec!["b"]);
+
+        a.peer_send("b", "c2VhbGVk".into()).await.unwrap();
+        let ev = loop {
+            match recv(&mut rx_b).await {
+                Some(Event::Creator(_)) => continue,
+                other => break other,
+            }
+        };
+        assert_eq!(ev, Some(Event::PeerMsg { from: "a".into(), data: "c2VhbGVk".into() }));
+        assert!(!format!("{ev:?}").contains("c2VhbGVk"), "data never printed");
+        let offline = Some(TransportError::Relay("peer_offline".into()));
+        assert_eq!(a.peer_send("z", "eA==".into()).await.err(), offline);
+        assert_eq!(a.peer_send("a", "eA==".into()).await.err(), offline, "not to itself");
+        let big = "x".repeat((4 * 1024 * 1024 + 64usize).div_ceil(3) * 4 + 1);
+        assert_eq!(a.peer_send("b", big).await.err(), Some(TransportError::Relay("too_large".into())));
+        let mut f = Frame::new("sync_peer_send");
+        f.to_device = Some("b".into());
+        assert_eq!(
+            serde_json::to_value(&f).unwrap(),
+            serde_json::json!({ "t": "sync_peer_send", "to_device": "b" })
+        );
     }
 
     #[test]
