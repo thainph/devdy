@@ -38,6 +38,8 @@ pub const SOURCE_KEY: &str = "sync_source_device";
 /// `settings` key: JSON array of disabled category ids (machine-local; never
 /// holds `secrets`, which lives in `secrets::SETTING`).
 pub const CATEGORIES_OFF_KEY: &str = "sync_categories_off";
+/// `sync_state` flag: the pull cursor was reset and no pull started since.
+pub const CURSOR_RESET_KEY: &str = "pull_cursor_reset";
 /// `sync_state` flag set by migration 0066 until [`seed`] ran.
 const SEED_KEY: &str = "prefs_seed_pending";
 /// `sync_state` test hook read by the `projects` insert trigger: whether a
@@ -165,13 +167,20 @@ async fn put_setting(conn: &mut SqliteConnection, key: &str, value: Option<&str>
     Ok(())
 }
 
-/// Next pull starts from the beginning of the group log.
+/// Next pull starts from the beginning of the group log. The pending flag
+/// keeps a pull already running from writing its own cursor over the reset
+/// (`SqliteSyncStore::set_cursor`); the next pull clears it when it starts
+/// (`SyncStore::pull_start`).
 async fn reset_cursor(conn: &mut SqliteConnection) -> Result<(), String> {
-    sqlx::query("INSERT INTO sync_state (key, value) VALUES (?, '0') ON CONFLICT(key) DO UPDATE SET value = '0'")
-        .bind(CURSOR_KEY)
-        .execute(&mut *conn)
-        .await
-        .map_err(err)?;
+    for key in [CURSOR_KEY, CURSOR_RESET_KEY] {
+        let value = if key == CURSOR_KEY { "0" } else { "1" };
+        sqlx::query("INSERT INTO sync_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+            .bind(key)
+            .bind(value)
+            .execute(&mut *conn)
+            .await
+            .map_err(err)?;
+    }
     Ok(())
 }
 
@@ -218,8 +227,8 @@ pub async fn categories_off(conn: &mut SqliteConnection) -> Result<Vec<String>, 
 }
 
 /// Replace the disabled categories. `secrets` maps onto `sync_secrets_enabled`.
-/// Enabling any category resets the pull cursor (and lets rows whose
-/// references were cut be applied again in full).
+/// Enabling any category resets the pull cursor, and puts back the references
+/// cut from local rows whose parent is here now (the others as it arrives).
 pub async fn set_categories_off(db: &Db, off: &[String]) -> Result<(), String> {
     if let Some(bad) = off.iter().find(|c| !CATEGORIES.contains(&c.as_str())) {
         return Err(format!("unknown sync category: {bad}"));
@@ -233,14 +242,12 @@ pub async fn set_categories_off(db: &Db, off: &[String]) -> Result<(), String> {
     put_setting(&mut tx, super::secrets::SETTING, Some(if secrets_on { "true" } else { "false" })).await?;
     if before.iter().any(|c| !off.contains(c)) {
         reset_cursor(&mut tx).await?;
-        // Re-applied in full by the re-pull (or cut again if still needed).
-        sqlx::query("DELETE FROM sync_rows WHERE EXISTS (SELECT 1 FROM sync_stripped_refs s WHERE s.tbl = sync_rows.tbl AND s.pk = sync_rows.pk)")
-            .execute(&mut *tx)
-            .await
-            .map_err(err)?;
-        sqlx::query("DELETE FROM sync_stripped_refs").execute(&mut *tx).await.map_err(err)?;
     }
-    tx.commit().await.map_err(err)
+    tx.commit().await.map_err(err)?;
+    // Not left to the re-pull: the row's newest op may be this machine's own
+    // push (never applied back here), which carried the saved values.
+    settle_stripped(db).await?;
+    Ok(())
 }
 
 pub async fn source_device(db: &Db) -> Result<Option<String>, String> {
@@ -666,7 +673,9 @@ pub async fn screen(conn: &mut SqliteConnection, ops: Vec<Op>) -> Result<Screene
                 skipped += 1;
                 continue;
             }
-            if !cut.is_empty() {
+            if cut.is_empty() {
+                forget_stripped_if_newer(conn, &op).await?;
+            } else {
                 if let Some(row) = op.row.as_mut() {
                     for col in cut.keys() {
                         row.insert(col.clone(), Value::Null);
@@ -684,13 +693,146 @@ pub async fn screen(conn: &mut SqliteConnection, ops: Vec<Op>) -> Result<Screene
                 .map_err(err)?;
             }
         }
+        if op.kind == OpKind::Delete {
+            forget_stripped_if_newer(conn, &op).await?;
+        }
         keep.push(op);
     }
     Ok(Screened { keep, skipped })
 }
 
-/// Push side: put back the references [`screen`] cut from this row (still
-/// NULL here), so this machine never erases them on the other devices.
+/// An op on a row with cut references that carries no cut (the link is gone,
+/// or its parent is here) settles the row, when it wins over what is here.
+async fn forget_stripped_if_newer(conn: &mut SqliteConnection, op: &Op) -> Result<(), String> {
+    let key = op.pk_key();
+    let known: Option<String> = sqlx::query_scalar(
+        "SELECT r.hlc FROM sync_stripped_refs s LEFT JOIN sync_rows r ON r.tbl = s.tbl AND r.pk = s.pk WHERE s.tbl = ? AND s.pk = ?",
+    )
+    .bind(&op.tbl)
+    .bind(&key)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(err)?
+    .map(|h: Option<String>| h.unwrap_or_default());
+    let Some(known) = known else { return Ok(()) };
+    if known.parse::<super::clock::Hlc>().is_ok_and(|h| h >= op.hlc) {
+        return Ok(());
+    }
+    sqlx::query("DELETE FROM sync_stripped_refs WHERE tbl = ? AND pk = ?")
+        .bind(&op.tbl)
+        .bind(&key)
+        .execute(&mut *conn)
+        .await
+        .map_err(err)?;
+    Ok(())
+}
+
+/// Put cut references back into the local rows where the column is still the
+/// cut NULL, the parent's category is on and the parent row is here (apply
+/// guard on: not a local change). Settled entries are dropped. Returns how
+/// many columns were restored.
+pub async fn settle_stripped(db: &Db) -> Result<usize, String> {
+    let entries: Vec<(String, String, String)> = sqlx::query_as("SELECT tbl, pk, refs FROM sync_stripped_refs")
+        .fetch_all(db)
+        .await
+        .map_err(err)?;
+    if entries.is_empty() {
+        return Ok(0);
+    }
+    let mut tx = db.begin().await.map_err(err)?;
+    sqlx::query("UPDATE sync_apply_guard SET active = 1 WHERE id = 1").execute(&mut *tx).await.map_err(err)?;
+    let off: HashSet<String> = categories_off(&mut tx).await?.into_iter().collect();
+    let mut fk_cache = HashMap::new();
+    let mut restored = 0;
+    for (tbl, pk, refs) in entries {
+        let spec = schema::spec(&tbl);
+        let pk_json = serde_json::from_str::<Value>(&pk).ok();
+        let (Some(spec), Some(pk_json), Ok(Value::Object(refs))) = (spec, pk_json, serde_json::from_str::<Value>(&refs)) else {
+            sqlx::query("DELETE FROM sync_stripped_refs WHERE tbl = ? AND pk = ?").bind(&tbl).bind(&pk).execute(&mut *tx).await.map_err(err)?;
+            continue;
+        };
+        let pk_vals = super::codec::pk_values(spec, &pk_json)?;
+        let fks = fks(&mut tx, &mut fk_cache, &tbl).await?;
+        let mut left = Map::new();
+        for (col, v) in refs {
+            let Some(fk) = fks.iter().find(|f| f.col == col) else { continue };
+            if table_category(&fk.parent).is_some_and(|c| off.contains(c)) {
+                left.insert(col, v);
+                continue;
+            }
+            let sql = format!("SELECT EXISTS (SELECT 1 FROM {} WHERE {} = ?)", q(&fk.parent), q(&fk.parent_col));
+            let present: bool = super::codec::bind_value(sqlx::query(&sql), &v).fetch_one(&mut *tx).await.map_err(err)?.get(0);
+            if !present {
+                left.insert(col, v);
+                continue;
+            }
+            let cond: Vec<String> = spec.pk.iter().map(|c| format!("{} = ?", q(c))).collect();
+            let sql = format!("UPDATE {} SET {c} = ? WHERE {} AND {c} IS NULL", q(&tbl), cond.join(" AND "), c = q(&col));
+            let mut query = super::codec::bind_value(sqlx::query(&sql), &v);
+            for pv in &pk_vals {
+                query = super::codec::bind_value(query, pv);
+            }
+            restored += query.execute(&mut *tx).await.map_err(err)?.rows_affected() as usize;
+        }
+        if left.is_empty() {
+            sqlx::query("DELETE FROM sync_stripped_refs WHERE tbl = ? AND pk = ?").bind(&tbl).bind(&pk).execute(&mut *tx).await.map_err(err)?;
+        } else {
+            sqlx::query("UPDATE sync_stripped_refs SET refs = ? WHERE tbl = ? AND pk = ?")
+                .bind(Value::Object(left).to_string())
+                .bind(&tbl)
+                .bind(&pk)
+                .execute(&mut *tx)
+                .await
+                .map_err(err)?;
+        }
+    }
+    sqlx::query("UPDATE sync_apply_guard SET active = 0 WHERE id = 1").execute(&mut *tx).await.map_err(err)?;
+    tx.commit().await.map_err(err)?;
+    Ok(restored)
+}
+
+/// Startup: one trigger per cuttable column (nullable FK into a categorised
+/// table) dropping the saved value once a LOCAL change sets that column, so a
+/// link changed or cleared here is never put back by [`restore_refs`].
+pub async fn install_ref_triggers(db: &Db) -> Result<(), String> {
+    let mut tx = db.begin().await.map_err(err)?;
+    let old: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'sync\\_prefs\\_ref\\_%' ESCAPE '\\'")
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(err)?;
+    for name in old {
+        sqlx::query(&format!("DROP TRIGGER IF EXISTS {}", q(&name))).execute(&mut *tx).await.map_err(err)?;
+    }
+    let mut fk_cache = HashMap::new();
+    for spec in schema::SYNCED_TABLES {
+        for fk in fks(&mut tx, &mut fk_cache, spec.name).await? {
+            if !fk.nullable || table_category(&fk.parent).is_none() {
+                continue;
+            }
+            let (t, c) = (spec.name, fk.col.as_str());
+            let sql = format!(
+                "CREATE TRIGGER {name} AFTER UPDATE OF {qc} ON {qt} \
+                 WHEN NEW.{qc} IS NOT OLD.{qc} AND (SELECT active FROM sync_apply_guard WHERE id = 1) = 0 BEGIN \
+                 UPDATE sync_stripped_refs SET refs = json_remove(refs, {path}) WHERE tbl = {lt} AND pk = {pk}; \
+                 DELETE FROM sync_stripped_refs WHERE tbl = {lt} AND pk = {pk} AND refs = '{{}}'; END",
+                name = q(&format!("sync_prefs_ref_{t}_{c}")),
+                qc = q(c),
+                qt = q(t),
+                path = schema::lit(&format!("$.\"{c}\"")),
+                lt = schema::lit(t),
+                pk = schema::pk_sql(spec, "NEW"),
+            );
+            sqlx::query(&sql).execute(&mut *tx).await.map_err(err)?;
+        }
+    }
+    tx.commit().await.map_err(err)
+}
+
+/// Push side: put back the references [`screen`] cut from this row while
+/// they are still the cut NULL here (a local change of the column drops the
+/// saved value, see [`install_ref_triggers`]), so this machine never erases
+/// them on the other devices.
 pub async fn restore_refs(conn: &mut SqliteConnection, tbl: &str, pk: &str, wire: &mut Map<String, Value>) -> Result<(), String> {
     let refs: Option<String> = sqlx::query_scalar("SELECT refs FROM sync_stripped_refs WHERE tbl = ? AND pk = ?")
         .bind(tbl)
@@ -999,11 +1141,94 @@ mod tests {
         let row = out.iter().find(|o| o.tbl == "projects").unwrap().row.clone().unwrap();
         assert_eq!((row["name"].clone(), row["github_account_id"].clone()), (json!("renamed"), json!("g1")));
 
-        // Enabling accounts re-applies the row in full on the re-pull.
+        // Enabling accounts: the link comes back once the account is here.
         set_categories_off(&db_b, &[]).await.unwrap();
-        assert_eq!(count(&db_b, "SELECT COUNT(*) FROM sync_stripped_refs").await, 0);
+        assert_eq!(count(&db_b, "SELECT COUNT(*) FROM sync_stripped_refs").await, 1, "account not here yet");
         b.apply_remote(ops).await.unwrap();
         assert_eq!(scalar(&db_b, "SELECT github_account_id FROM projects WHERE id = 'p1'").await.as_deref(), Some("g1"));
+        assert_eq!(count(&db_b, "SELECT COUNT(*) FROM sync_stripped_refs").await, 0);
+    }
+
+    /// B (accounts off) has the link cut; B's own edit then supersedes A's
+    /// project op on the relay, so the re-pull after enabling accounts only
+    /// brings the account back. The link must still be restored here.
+    #[tokio::test]
+    async fn enabling_a_category_restores_cut_links_without_the_rows_op() {
+        let (db_a, a) = device("a", "/Users/a").await;
+        let (db_b, b) = device("b", "/Users/b").await;
+        exec(&db_a, "INSERT INTO github_accounts (id, label, created_at) VALUES ('g1', 'gh', 'x')").await;
+        exec(&db_a, "INSERT INTO projects (id, name, path, created_at, github_account_id) VALUES ('p1', 'p1', '/Users/a/w/p1', 'x', 'g1')").await;
+        set_categories_off(&db_b, &["accounts".into()]).await.unwrap();
+        let ops = push(&a).await;
+        b.apply_remote(ops.clone()).await.unwrap();
+        exec(&db_b, "UPDATE projects SET name = 'renamed' WHERE id = 'p1'").await;
+        let out = push(&b).await;
+        assert_eq!(out[0].row.as_ref().unwrap()["github_account_id"], json!("g1"));
+
+        set_categories_off(&db_b, &[]).await.unwrap();
+        // The relay now holds the account op and B's own project op (skipped as own push).
+        let account: Vec<Op> = ops.into_iter().filter(|o| o.tbl == "github_accounts").collect();
+        b.apply_remote(account).await.unwrap();
+        assert_eq!(scalar(&db_b, "SELECT github_account_id FROM projects WHERE id = 'p1'").await.as_deref(), Some("g1"));
+        assert!(b.pending(10).await.unwrap().is_empty(), "restoring is not a local change");
+        exec(&db_b, "UPDATE projects SET name = 'again' WHERE id = 'p1'").await;
+        let out = push(&b).await;
+        assert_eq!(out[0].row.as_ref().unwrap()["github_account_id"], json!("g1"));
+    }
+
+    #[tokio::test]
+    async fn a_removed_link_is_not_resurrected() {
+        let (db_a, a) = device("a", "/Users/a").await;
+        let (db_b, b) = device("b", "/Users/b").await;
+        exec(&db_a, "INSERT INTO github_accounts (id, label, created_at) VALUES ('g1', 'gh', 'x')").await;
+        exec(&db_a, "INSERT INTO projects (id, name, path, created_at, github_account_id) VALUES ('p1', 'p1', '/Users/a/w/p1', 'x', 'g1')").await;
+        set_categories_off(&db_b, &["accounts".into()]).await.unwrap();
+        b.apply_remote(push(&a).await).await.unwrap();
+        assert_eq!(count(&db_b, "SELECT COUNT(*) FROM sync_stripped_refs").await, 1);
+
+        // A unlinks: the newer op carries no cut and settles the row.
+        exec(&db_a, "UPDATE projects SET github_account_id = NULL WHERE id = 'p1'").await;
+        b.apply_remote(push(&a).await).await.unwrap();
+        assert_eq!(count(&db_b, "SELECT COUNT(*) FROM sync_stripped_refs").await, 0);
+        exec(&db_b, "UPDATE projects SET name = 'x' WHERE id = 'p1'").await;
+        assert_eq!(push(&b).await[0].row.as_ref().unwrap()["github_account_id"], Value::Null);
+
+        // Cut again, then B links another account and clears it: stays cleared.
+        exec(&db_a, "UPDATE projects SET github_account_id = 'g1', name = 'y' WHERE id = 'p1'").await;
+        b.apply_remote(push(&a).await).await.unwrap();
+        assert_eq!(count(&db_b, "SELECT COUNT(*) FROM sync_stripped_refs").await, 1);
+        exec(&db_b, "INSERT INTO github_accounts (id, label, created_at) VALUES ('g2', 'mine', 'x')").await;
+        exec(&db_b, "UPDATE projects SET github_account_id = 'g2' WHERE id = 'p1'").await;
+        exec(&db_b, "UPDATE projects SET github_account_id = NULL WHERE id = 'p1'").await;
+        assert_eq!(count(&db_b, "SELECT COUNT(*) FROM sync_stripped_refs").await, 0);
+        let out = push(&b).await;
+        let row = out.iter().find(|o| o.tbl == "projects").unwrap().row.clone().unwrap();
+        assert_eq!(row["github_account_id"], Value::Null);
+        // Enabling accounts later does not bring it back either.
+        set_categories_off(&db_b, &[]).await.unwrap();
+        assert_eq!(count(&db_b, "SELECT COUNT(*) FROM projects WHERE github_account_id IS NULL").await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_cursor_reset_survives_a_pull_in_flight() {
+        let (db_b, b) = device("b", "/Users/b").await;
+        b.set_cursor(42).await.unwrap();
+        set_categories_off(&db_b, &["notes".into()]).await.unwrap();
+        set_categories_off(&db_b, &[]).await.unwrap();
+        assert_eq!(b.cursor().await.unwrap(), 0);
+        // A pull that started before the reset writes its next cursor: ignored.
+        b.set_cursor(99).await.unwrap();
+        assert_eq!(b.cursor().await.unwrap(), 0);
+        // The next pull starts from 0 and owns the cursor again.
+        assert_eq!(b.pull_start().await.unwrap(), 0);
+        b.set_cursor(7).await.unwrap();
+        assert_eq!(b.cursor().await.unwrap(), 7);
+        let patch = ProjectPrefPatch { enabled: Some(true), ..Default::default() };
+        exec(&db_b, "INSERT INTO projects (id, name, path, created_at) VALUES ('p', 'p', '/x', 'x')").await;
+        exec(&db_b, "UPDATE sync_project_prefs SET enabled = 0").await;
+        set_project_pref(&db_b, &PathCtx::with_home("/Users/b"), "p", patch).await.unwrap();
+        b.set_cursor(8).await.unwrap();
+        assert_eq!(b.cursor().await.unwrap(), 0);
     }
 
     fn file_op(kind: &str, path: &str) -> Op {

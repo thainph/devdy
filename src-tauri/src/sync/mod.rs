@@ -73,6 +73,7 @@ pub async fn install(db: &Db) -> Result<String, String> {
         .await
         .map_err(|e| e.to_string())?;
     prefs::seed(db).await?;
+    prefs::install_ref_triggers(db).await?;
     capture::settle_membership(db).await?;
     capture::install_triggers(db).await?;
     pair::install_past_device_triggers(db).await?;
