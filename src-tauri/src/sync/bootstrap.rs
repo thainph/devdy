@@ -1756,7 +1756,7 @@ mod tests {
             move || -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
                 let (h, db, relay) = (h.clone(), db.clone(), relay.clone());
                 Box::pin(async move {
-                    h.flush_outbox().await.is_ok()
+                    h.flush_outbox(crate::sync::store::StageScope::All).await.is_ok()
                         && count(&db, "SELECT COUNT(*) FROM sync_outbox").await == 0
                         && relay.blob_counts().0 >= blobs
                 })
@@ -1868,7 +1868,7 @@ mod tests {
         let got_note = || -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
             let (db, m, dev_b) = (db_m.clone(), engine_m.handle(), dev_b.clone());
             Box::pin(async move {
-                m.run_from(&dev_b, &|_, _| {}).await.is_ok() && count(&db, "SELECT COUNT(*) FROM notes WHERE id = 'no-B'").await == 1
+                m.run_from(&dev_b, crate::sync::store::StageScope::All, &|_, _| {}).await.is_ok() && count(&db, "SELECT COUNT(*) FROM notes WHERE id = 'no-B'").await == 1
             })
         };
         eventually("B's note on M after syncing from B", got_note).await;

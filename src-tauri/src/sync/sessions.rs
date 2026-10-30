@@ -595,7 +595,8 @@ pub struct TakeOverResult {
 /// the owner cannot be reached.
 pub async fn refresh_from_owner(sync: Option<crate::sync::engine::EngineHandle>, owner: &str) -> Result<(), String> {
     let h = sync.ok_or_else(|| crate::sync::engine::NOT_CONNECTED.to_string())?;
-    h.run_from(owner, &|_, _| {}).await.map(drop)
+    // Continuing needs the transcript: files included.
+    h.run_from(owner, crate::sync::store::StageScope::All, &|_, _| {}).await.map(drop)
 }
 
 /// The remote owner of `run_id` as seen here, if another device owns it.

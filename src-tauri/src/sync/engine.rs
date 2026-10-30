@@ -37,7 +37,7 @@
 use super::crypto::{blob_sha, SyncKeys};
 use super::op::Op;
 use super::peer::{PeerHandler, PeerLink, PeerMsg, Replies, Reply, ERROR_KIND, MAX_BLOB_PLAINTEXT};
-use super::store::{is_extra_tbl, BlobIo, SyncStore};
+use super::store::{is_extra_tbl, BlobIo, StageScope, SyncStore};
 use super::transport::{ConnectParams, Connection, Event, TransportError, WireItem};
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -405,14 +405,20 @@ impl EngineHandle {
 
     /// Push this device's whole outbox now (what serving [`OPS_FLUSH`] does);
     /// returns the relay seq it reached.
-    pub async fn flush_outbox(&self) -> Result<u64, String> {
-        flush(&self.ctx).await
+    pub async fn flush_outbox(&self, scope: StageScope) -> Result<u64, String> {
+        flush(&self.ctx, scope).await
     }
 
-    /// Manual sync from `source`: it flushes its outbox, this device pulls
-    /// and applies. `progress` sees the non-final phases.
-    pub async fn run_from(&self, source: &str, progress: &(dyn Fn(RunPhase, Option<String>) + Send + Sync)) -> Result<SyncRunReport, String> {
-        run_from(&self.ctx, source, progress).await
+    /// Manual sync from `source`: it flushes its outbox (uploading the files
+    /// `scope` asks for), this device pulls and applies. `progress` sees the
+    /// non-final phases.
+    pub async fn run_from(
+        &self,
+        source: &str,
+        scope: StageScope,
+        progress: &(dyn Fn(RunPhase, Option<String>) + Send + Sync),
+    ) -> Result<SyncRunReport, String> {
+        run_from(&self.ctx, source, scope, progress).await
     }
 }
 
@@ -562,6 +568,7 @@ pub async fn flush_online_peers(
     conn: &Connection,
     events: &mut mpsc::UnboundedReceiver<Event>,
     keys: &SyncKeys,
+    scope: StageScope,
     idle: Duration,
 ) -> Result<Vec<String>, String> {
     let mut flushed = Vec::new();
@@ -572,7 +579,7 @@ pub async fn flush_online_peers(
             kind: OPS_FLUSH.to_string(),
             reply_to: None,
             last: false,
-            body: json!({}),
+            body: json!({ "files": scope }),
         };
         let plain = serde_json::to_vec(&msg).map_err(|e| e.to_string())?;
         let data = base64::engine::general_purpose::STANDARD.encode(keys.seal_bytes(&plain));
@@ -777,14 +784,17 @@ async fn serve_request(ctx: Arc<Ctx>, from: String, msg: PeerMsg) {
         reply.error(PEER_PAUSED).await
     } else if msg.kind == OPS_FLUSH {
         let done = || json!({ "done": ctx.shared.flush_done.load(Ordering::Relaxed) });
-        match with_keepalive(&ctx, &reply, OPS_FLUSH_PROGRESS, done, flush(&ctx)).await {
+        // Older devices send no scope: everything, as before.
+        let scope: StageScope = msg.body.get("files").cloned().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+        match with_keepalive(&ctx, &reply, OPS_FLUSH_PROGRESS, done, flush(&ctx, scope)).await {
             Ok(last_seq) => reply.send(OPS_FLUSHED, json!({ "last_seq": last_seq }), true).await,
             Err(e) => reply.error(e).await,
         }
     } else if msg.kind == LEADER_CHANGED {
         // The sender made this device the leader: fetch that now, so its
         // singleton jobs do not wait for the next manual sync.
-        let synced = run_from(&ctx, &from, &|_, _| {});
+        // Only the leader setting matters here: rows, no files.
+        let synced = run_from(&ctx, &from, StageScope::Nothing, &|_, _| {});
         match with_keepalive(&ctx, &reply, STILL_WORKING, || json!({}), synced).await {
             Ok(_) => reply.send(LEADER_SYNCED, json!({}), true).await,
             Err(e) => reply.error(e).await,
@@ -988,11 +998,11 @@ impl PeerLink for EngineLink {
 
 /// Serve [`OPS_FLUSH`]: stage, push the whole outbox, release superseded
 /// blobs. Returns the relay seq the receiver has to pull up to.
-async fn flush(ctx: &Ctx) -> Result<u64, String> {
+async fn flush(ctx: &Ctx, scope: StageScope) -> Result<u64, String> {
     let conn = ctx.shared.conn().ok_or(NOT_CONNECTED)?;
     let _work = ctx.shared.work.lock().await;
     ctx.shared.flush_done.store(0, Ordering::Relaxed);
-    let result = flush_on(ctx, &conn).await;
+    let result = flush_on(ctx, &conn, scope).await;
     if let Ok(parked) = ctx.store.parked_count().await {
         ctx.shared.update(|s| s.parked = parked);
     }
@@ -1029,8 +1039,8 @@ async fn flush(ctx: &Ctx) -> Result<u64, String> {
     }
 }
 
-async fn flush_on(ctx: &Ctx, conn: &Connection) -> Result<u64, CycleError> {
-    match stage(ctx, conn).await {
+async fn flush_on(ctx: &Ctx, conn: &Connection, scope: StageScope) -> Result<u64, CycleError> {
+    match stage(ctx, conn, scope).await {
         // A refused upload (quota): the files cannot go out, so nothing
         // that may reference them does; lease renewals still do.
         Err(e @ CycleError::Transport(TransportError::Relay(_))) => {
@@ -1060,13 +1070,14 @@ async fn flush_on(ctx: &Ctx, conn: &Connection) -> Result<u64, CycleError> {
 async fn run_from(
     ctx: &Arc<Ctx>,
     source: &str,
+    scope: StageScope,
     progress: &(dyn Fn(RunPhase, Option<String>) + Send + Sync),
 ) -> Result<SyncRunReport, String> {
     if source == ctx.params.device_id {
         return Err("cannot sync from this device itself".into());
     }
     progress(RunPhase::Requesting, None);
-    let mut replies = request(ctx, source, OPS_FLUSH, json!({})).await?;
+    let mut replies = request(ctx, source, OPS_FLUSH, json!({ "files": scope })).await?;
     let last_seq = loop {
         match replies.recv().await {
             Some(Ok((kind, body))) if kind == OPS_FLUSHED => {
@@ -1202,9 +1213,9 @@ impl BlobIo for RelayBlobs<'_> {
 /// Let the store stage its files. A blob upload that failed on the relay's
 /// side comes back as that transport error (a refusal holds the push back,
 /// a dead socket fails the flush).
-async fn stage(ctx: &Ctx, conn: &Connection) -> Result<(), CycleError> {
+async fn stage(ctx: &Ctx, conn: &Connection, scope: StageScope) -> Result<(), CycleError> {
     let blobs = RelayBlobs::new(conn, &ctx.keys);
-    let staged = ctx.store.stage(&blobs).await;
+    let staged = ctx.store.stage_scoped(&blobs, scope).await;
     match (blobs.take_put_error(), staged) {
         (Some(e), _) => Err(e.into()),
         (None, r) => r.map_err(CycleError::Store),
@@ -1470,6 +1481,8 @@ mod tests {
         stage_delay: Option<Duration>,
         /// A selective-sync cursor reset is pending: `set_cursor` is a no-op.
         reset_pending: bool,
+        /// Scope of every scoped stage, in order.
+        scopes: Vec<StageScope>,
     }
 
     impl FakeStore {
@@ -1547,6 +1560,10 @@ mod tests {
         async fn parked_count(&self) -> Result<u64, String> {
             Ok(self.inner.lock().unwrap().parked.len() as u64)
         }
+        async fn stage_scoped(&self, blobs: &dyn BlobIo, scope: StageScope) -> Result<(), String> {
+            self.inner.lock().unwrap().scopes.push(scope);
+            self.stage(blobs).await
+        }
         async fn stage(&self, blobs: &dyn BlobIo) -> Result<(), String> {
             let delay = self.inner.lock().unwrap().stage_delay;
             if let Some(d) = delay {
@@ -1599,7 +1616,7 @@ mod tests {
     impl Device {
         /// "Sync from `source`" on this device.
         async fn sync_from(&self, source: &str) -> Result<SyncRunReport, String> {
-            self.engine.handle().run_from(source, &|_, _| {}).await
+            self.engine.handle().run_from(source, StageScope::All, &|_, _| {}).await
         }
         fn link(&self) -> Arc<dyn PeerLink> {
             self.engine.handle().link()
@@ -1671,10 +1688,11 @@ mod tests {
         let report = b
             .engine
             .handle()
-            .run_from("dev-a", &move |p, _| seen.lock().unwrap().push(p))
+            .run_from("dev-a", StageScope::All, &move |p, _| seen.lock().unwrap().push(p))
             .await
             .unwrap();
         assert_eq!(report, SyncRunReport { pulled: 2, applied: 2, last_seq: 2 });
+        assert_eq!(a.store.inner.lock().unwrap().scopes, vec![StageScope::All], "the requester's scope reaches the source");
         assert_eq!(b.store.applied_titles(), vec!["first", "second"]);
         assert_eq!(b.store.cursor(), 2);
         assert_eq!(a.store.outbox_len(), 0);
@@ -1710,16 +1728,17 @@ mod tests {
 
         let (tx, mut rx) = mpsc::unbounded_channel();
         let conn = Connection::connect(&params(&relay, "dev-b"), false, tx).await.unwrap();
-        let flushed = flush_online_peers(&conn, &mut rx, &keys(), Duration::from_secs(10)).await.unwrap();
+        let flushed = flush_online_peers(&conn, &mut rx, &keys(), StageScope::NoSessions, Duration::from_secs(10)).await.unwrap();
         assert_eq!(flushed, vec!["dev-a".to_string()]);
         assert_eq!(a.store.outbox_len(), 0);
+        assert_eq!(a.store.inner.lock().unwrap().scopes, vec![StageScope::NoSessions], "no session files for a merge");
         let (items, _, _) = conn.pull(0, 100).await.unwrap();
         assert_eq!(items.len(), 2);
 
         // A paused device is skipped, not an error.
         a.engine.set_paused(true);
         a.store.add("notes", "n3", "third");
-        let flushed = flush_online_peers(&conn, &mut rx, &keys(), Duration::from_secs(10)).await.unwrap();
+        let flushed = flush_online_peers(&conn, &mut rx, &keys(), StageScope::NoSessions, Duration::from_secs(10)).await.unwrap();
         assert!(flushed.is_empty());
         assert_eq!(a.store.outbox_len(), 1);
         a.engine.stop().await;
@@ -1764,10 +1783,10 @@ mod tests {
         let a = device(&relay, "dev-a", fast());
         online(&[&a]).await;
         a.store.add("notes", "n1", "v1");
-        a.engine.handle().flush_outbox().await.unwrap();
+        a.engine.handle().flush_outbox(StageScope::All).await.unwrap();
         assert_eq!(relay.op_count(), 1);
         a.store.add("notes", "n1", "v2");
-        assert_eq!(a.engine.handle().flush_outbox().await.unwrap(), 2);
+        assert_eq!(a.engine.handle().flush_outbox(StageScope::All).await.unwrap(), 2);
         assert_eq!(a.store.outbox_len(), 0);
         assert_eq!(relay.op_count(), 1, "same key replaces the older op");
 
@@ -2003,7 +2022,7 @@ mod tests {
             let b = b.clone();
             async move {
                 for _ in 0..100 {
-                    b.run_from("dev-a", &|_, _| {}).await.unwrap();
+                    b.run_from("dev-a", StageScope::All, &|_, _| {}).await.unwrap();
                     if done() {
                         return;
                     }
@@ -2054,7 +2073,7 @@ mod tests {
         // Nothing but sealed bytes on the relay.
         assert!(relay.stored_blobs().iter().all(|b| !b.contains("ghp_from_a")));
         // B does not echo what it applied, even when it flushes itself.
-        b.flush_outbox().await.unwrap();
+        b.flush_outbox(StageScope::All).await.unwrap();
         let echoed: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_outbox WHERE tbl IN ('file', 'secret')").fetch_one(db_b).await.unwrap();
         assert_eq!(echoed, 0);
 
@@ -2244,7 +2263,7 @@ mod tests {
         let report = b
             .engine
             .handle()
-            .run_from("dev-a", &move |p, m| seen.lock().unwrap().push((p, m)))
+            .run_from("dev-a", StageScope::All, &move |p, m| seen.lock().unwrap().push((p, m)))
             .await
             .unwrap();
         assert_eq!(report.applied, 1);
@@ -2376,7 +2395,7 @@ mod tests {
             .await
             .unwrap();
         sessions::claim(db_a, "r1", &project.to_string_lossy()).await.unwrap();
-        engine_b.handle().run_from(id_a, &|_, _| {}).await.unwrap();
+        engine_b.handle().run_from(id_a, StageScope::All, &|_, _| {}).await.unwrap();
         let lease = |db: &crate::db::Db| {
             let db = db.clone();
             async move {
