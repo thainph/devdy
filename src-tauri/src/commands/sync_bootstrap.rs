@@ -30,9 +30,13 @@ pub async fn sync_resync_all(db: State<'_, Db>, state: State<'_, SyncManager>) -
     Ok(n)
 }
 
-/// Whether this device joined a group and still has to merge its data.
+/// Whether this device joined a group and still has to merge its data (a
+/// stale flag left by leaving mid-merge does not count).
 #[tauri::command]
 pub async fn sync_bootstrap_pending(db: State<'_, Db>) -> Result<bool, String> {
+    if crate::secrets::get_sync_secrets().is_none() {
+        return Ok(false);
+    }
     bootstrap::is_pending(db.inner()).await
 }
 
@@ -60,6 +64,8 @@ pub async fn sync_bootstrap_commit(
     let git = bootstrap::local_git_remotes(db).await?;
     let store = SqliteSyncStore::new(db.clone(), sync.device_id.clone());
     let report = bootstrap::commit(db, &store, &PathCtx::from_env(), remote, &git).await?;
+    let tables: Vec<String> = report.preview.tables.iter().map(|t| t.tbl.clone()).collect();
+    crate::sync::events::rows_applied(&app, &tables);
     state.start(&app, db).await?;
     Ok(report)
 }
@@ -73,8 +79,8 @@ pub async fn sync_project_mapping_list(db: State<'_, Db>) -> Result<Vec<ProjectM
 #[tauri::command]
 pub async fn sync_project_mapping_set(
     db: State<'_, Db>,
-    remote_project_id: String,
+    project_id: String,
     local_path: String,
 ) -> Result<ProjectMapping, String> {
-    bootstrap::set_project_mapping(db.inner(), &PathCtx::from_env(), &remote_project_id, &local_path).await
+    bootstrap::set_project_mapping(db.inner(), &PathCtx::from_env(), &project_id, &local_path).await
 }

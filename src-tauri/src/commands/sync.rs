@@ -45,7 +45,8 @@ impl SyncManager {
         let store: Arc<dyn SyncStore> = Arc::new(
             SqliteSyncStore::new(db.clone(), sync.device_id.clone())
                 .with_paths(paths)
-                .with_secrets(Arc::new(crate::sync::secrets::KeychainBackend)),
+                .with_secrets(Arc::new(crate::sync::secrets::KeychainBackend))
+                .with_notifier(crate::sync::events::app_notifier(app.clone())),
         );
         let paused = crate::remote::get_setting(db, KEY_PAUSED).await.as_deref() == Some("true");
         let emitter = app.clone();

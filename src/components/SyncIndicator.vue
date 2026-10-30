@@ -18,7 +18,7 @@ const store = useSyncStore()
 const enabled = !isRemoteMode()
 
 const status = computed(() => store.status)
-const tone = computed(() => syncTone(status.value))
+const tone = computed(() => syncTone(status.value, store.mergePending))
 
 const DOT: Record<string, string> = {
   off: 'bg-muted-foreground/40',
@@ -32,7 +32,7 @@ const tooltip = computed(() => {
   const s = status.value
   const { unit, n } = ageParts(s.last_pull)
   const parts = [
-    `${t('settings.sync.title')}: ${t(`settings.sync.state.${syncStateKey(s)}`)}`,
+    `${t('settings.sync.title')}: ${t(`settings.sync.state.${syncStateKey(s, store.mergePending)}`)}`,
     `${t('settings.sync.status.lastPull')}: ${t(`settings.sync.ago.${unit}`, { n })}`,
   ]
   if (s.pending) parts.push(`${t('settings.sync.status.pending')}: ${s.pending}`)
@@ -51,7 +51,7 @@ onMounted(() => {
 
 <template>
   <button
-    v-if="enabled && status.state !== 'disabled'"
+    v-if="enabled && (status.state !== 'disabled' || store.mergePending)"
     type="button"
     class="flex items-center gap-1.5 rounded px-1 text-[10px] text-muted-foreground/70 hover:text-foreground"
     :title="tooltip"

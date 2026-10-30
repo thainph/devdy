@@ -1,10 +1,11 @@
 <script setup lang="ts">
 // Settings → Sync: two-way sync of the whole Devdy state between this user's machines over the
 // relay (E2E encrypted). Not in a group → create one, or join another device's group with its
-// device name + master password (then review the bootstrap preview and commit). In a group →
-// status, sync now / pause, secrets toggle, devices (rename this one, remove others, pick the
-// leader that runs Pulse / Slack polling), project folders for this machine, re-sync, leave.
-// Commands owned by other sync workers may be missing in a build: their controls show disabled.
+// device name + master password. Joined but not merged (`sync_bootstrap_pending`, also after an
+// app restart) → the merge step: preview (totals, per table, project matches) then commit, which
+// starts the engine. In a group → status, sync now / pause, secrets toggle, devices (rename this
+// one, remove others, pick the leader that runs Pulse / Slack polling), project folders for this
+// machine, re-sync, leave.
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { open } from '@tauri-apps/plugin-dialog'
@@ -16,10 +17,9 @@ import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useSyncStore } from '@/stores/sync'
 import {
-  MISSING,
   ageParts,
-  countRows,
   deviceLabel,
+  missingProjects,
   sortDevices,
   syncBootstrapCommit,
   syncBootstrapPreview,
@@ -39,6 +39,10 @@ import {
   syncSetSecrets,
   syncStateKey,
   syncTone,
+  tableRows,
+  totalRows,
+  type BootstrapPreview,
+  type BootstrapReport,
   type ProjectMapping,
   type SyncDevice,
 } from '@/lib/sync'
@@ -51,7 +55,8 @@ const store = useSyncStore()
 
 const status = computed(() => store.status)
 const paired = computed(() => status.value.state !== 'disabled')
-const tone = computed(() => syncTone(status.value))
+const mergePending = computed(() => store.mergePending)
+const tone = computed(() => syncTone(status.value, mergePending.value))
 
 // Relative times ("3 min ago") re-render on this clock.
 const now = ref(Date.now())
@@ -75,10 +80,18 @@ const creating = ref(false)
 const joinAlias = ref('')
 const joinPassword = ref('')
 const joining = ref(false)
-/** After join: the bootstrap preview waiting for "Commit". */
-const preview = ref<Array<[string, number]> | null>(null)
+/** Joined, not merged: the first-join merge preview waiting for "Commit". */
+const preview = ref<BootstrapPreview | null>(null)
+const previewLoading = ref(false)
+const previewError = ref('')
 const committing = ref(false)
-const commitReport = ref<Array<[string, number]> | null>(null)
+const commitReport = ref<BootstrapReport | null>(null)
+const previewTables = computed(() => (preview.value ? tableRows(preview.value) : []))
+const previewMissing = computed(() => (preview.value ? missingProjects(preview.value) : []))
+
+function countLabel([key, n]: [string, number]): string {
+  return `${t(`settings.sync.join.counts.${key}`)}: ${n}`
+}
 
 const joinError = computed(() => {
   const alias = joinAlias.value.trim().toLowerCase()
@@ -107,16 +120,8 @@ async function join() {
   try {
     store.set(await syncJoin(alias, joinPassword.value))
     joinPassword.value = ''
-    const p = await syncBootstrapPreview().catch((e) => {
-      toast.error(String(e))
-      return MISSING
-    })
-    if (p === MISSING) {
-      toast.success(t('settings.sync.join.done'))
-      await loadPaired()
-    } else {
-      preview.value = countRows(p)
-    }
+    store.setMergePending(true)
+    await loadPreview()
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -124,13 +129,28 @@ async function join() {
   }
 }
 
+async function loadPreview() {
+  if (previewLoading.value) return
+  previewLoading.value = true
+  previewError.value = ''
+  try {
+    preview.value = await syncBootstrapPreview()
+  } catch (e) {
+    preview.value = null
+    previewError.value = String(e)
+  } finally {
+    previewLoading.value = false
+  }
+}
+
 async function commitBootstrap() {
   if (committing.value) return
   committing.value = true
   try {
-    const r = await syncBootstrapCommit()
-    commitReport.value = r === MISSING ? [] : countRows(r)
+    commitReport.value = await syncBootstrapCommit()
     preview.value = null
+    store.setMergePending(false)
+    await store.refresh()
     toast.success(t('settings.sync.join.done'))
     await loadPaired()
   } catch (e) {
@@ -144,20 +164,16 @@ async function commitBootstrap() {
 const busyNow = ref(false)
 const busyPause = ref(false)
 const secrets = ref(true)
-const secretsAvailable = ref(true)
 const busySecrets = ref(false)
 
 const devices = ref<SyncDevice[]>([])
-const devicesAvailable = ref(true)
 const renaming = ref(false)
 const newName = ref('')
 const busyDevice = ref<string | null>(null)
 
 const mappings = ref<ProjectMapping[]>([])
-const mappingsAvailable = ref(true)
 const busyMapping = ref<string | null>(null)
 
-const resyncAvailable = ref(true)
 const resyncing = ref(false)
 const leaving = ref(false)
 
@@ -166,9 +182,7 @@ const leaderId = computed(() => devices.value.find((d) => d.is_leader)?.id ?? nu
 
 async function loadDevices() {
   try {
-    const list = await syncDevicesList()
-    devicesAvailable.value = list !== MISSING
-    devices.value = list === MISSING ? [] : sortDevices(list)
+    devices.value = sortDevices(await syncDevicesList())
   } catch (e) {
     devices.value = []
     toast.error(String(e))
@@ -177,9 +191,7 @@ async function loadDevices() {
 
 async function loadMappings() {
   try {
-    const list = await syncProjectMappingList()
-    mappingsAvailable.value = list !== MISSING
-    mappings.value = list === MISSING ? [] : list
+    mappings.value = await syncProjectMappingList()
   } catch (e) {
     mappings.value = []
     toast.error(String(e))
@@ -187,9 +199,7 @@ async function loadMappings() {
 }
 
 async function loadSecrets() {
-  const v = await syncGetSecrets().catch(() => MISSING)
-  secretsAvailable.value = v !== MISSING
-  secrets.value = typeof v === 'boolean' ? v : true
+  secrets.value = await syncGetSecrets().catch(() => true)
 }
 
 async function loadPaired() {
@@ -222,7 +232,7 @@ async function togglePause() {
 }
 
 async function toggleSecrets() {
-  if (busySecrets.value || !secretsAvailable.value) return
+  if (busySecrets.value) return
   busySecrets.value = true
   const next = !secrets.value
   try {
@@ -291,9 +301,9 @@ async function setLeader(id: string | null) {
 async function pickFolder(p: ProjectMapping) {
   const selected = await open({ directory: true, multiple: false, title: p.name })
   if (!selected || Array.isArray(selected)) return
-  busyMapping.value = p.remote_project_id
+  busyMapping.value = p.project_id
   try {
-    await syncProjectMappingSet(p.remote_project_id, selected)
+    await syncProjectMappingSet(p.project_id, selected)
     await loadMappings()
   } catch (e) {
     toast.error(String(e))
@@ -311,9 +321,8 @@ async function resyncAll() {
   if (!ok) return
   resyncing.value = true
   try {
-    const r = await syncResyncAll()
-    if (r === MISSING) resyncAvailable.value = false
-    else toast.success(t('settings.sync.resync.done'))
+    const n = await syncResyncAll()
+    toast.success(t('settings.sync.resync.done', { n }))
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -335,6 +344,8 @@ async function leave() {
     await store.refresh()
     devices.value = []
     mappings.value = []
+    preview.value = null
+    previewError.value = ''
     commitReport.value = null
     if (revoked) toast.success(t('settings.sync.leave.done'))
     else toast.info(t('settings.sync.leave.offline'))
@@ -349,7 +360,8 @@ onMounted(async () => {
   clock = setInterval(() => (now.value = Date.now()), 30_000)
   await store.start()
   await store.refresh()
-  await loadPaired()
+  if (mergePending.value) await loadPreview()
+  else await loadPaired()
 })
 
 onUnmounted(() => {
@@ -364,29 +376,82 @@ onUnmounted(() => {
       <span class="text-xs font-semibold">{{ t('settings.sync.title') }}</span>
       <span class="ml-auto flex items-center gap-1.5 text-[11px] text-muted-foreground">
         <span class="h-2 w-2 rounded-full" :class="DOT[tone]" />
-        {{ t(`settings.sync.state.${syncStateKey(status)}`) }}
+        {{ t(`settings.sync.state.${syncStateKey(status, mergePending)}`) }}
       </span>
     </template>
 
     <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.help') }}</p>
 
-    <!-- Bootstrap preview after joining -->
-    <section v-if="preview" class="space-y-3 rounded-lg border border-border/60 bg-muted/20 p-3">
+    <!-- Joined, first-join merge not committed yet -->
+    <section v-if="mergePending" class="space-y-3 rounded-lg border border-border/60 bg-muted/20 p-3">
       <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
         {{ t('settings.sync.join.previewTitle') }}
       </label>
-      <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.join.previewHelp') }}</p>
-      <ul v-if="preview.length" class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-        <li v-for="[label, n] in preview" :key="label" class="flex justify-between gap-2">
-          <span class="truncate font-mono text-muted-foreground">{{ label }}</span>
-          <span class="tabular-nums">{{ n }}</span>
-        </li>
-      </ul>
-      <p v-else class="text-[11px] text-muted-foreground">{{ t('settings.sync.join.previewEmpty') }}</p>
-      <Button size="sm" :disabled="committing" @click="commitBootstrap">
-        <component :is="committing ? Loader2 : LogIn" class="h-3.5 w-3.5" :class="{ 'animate-spin': committing }" :stroke-width="1.75" />
-        {{ t('settings.sync.join.commit') }}
-      </Button>
+      <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.join.pendingHelp') }}</p>
+      <p v-if="previewLoading" class="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+        <Loader2 class="h-3 w-3 animate-spin" :stroke-width="1.75" />
+        {{ t('settings.sync.join.previewLoading') }}
+      </p>
+      <template v-else-if="preview">
+        <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.join.previewHelp') }}</p>
+        <ul v-if="totalRows(preview).length" class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+          <li v-for="[key, n] in totalRows(preview)" :key="key" class="flex justify-between gap-2">
+            <span class="truncate text-muted-foreground">{{ t(`settings.sync.join.counts.${key}`) }}</span>
+            <span class="tabular-nums">{{ n }}</span>
+          </li>
+        </ul>
+        <p v-else class="text-[11px] text-muted-foreground">{{ t('settings.sync.join.previewEmpty') }}</p>
+        <details v-if="previewTables.length" class="text-xs">
+          <summary class="cursor-pointer text-[11px] text-muted-foreground">{{ t('settings.sync.join.tablesTitle') }}</summary>
+          <ul class="mt-1 space-y-0.5">
+            <li v-for="row in previewTables" :key="row.tbl" class="flex justify-between gap-3">
+              <span class="truncate font-mono text-muted-foreground">{{ row.tbl }}</span>
+              <span class="truncate text-right text-[11px]">{{ row.counts.map(countLabel).join(' · ') }}</span>
+            </li>
+          </ul>
+        </details>
+        <div v-if="preview.projects.length" class="space-y-1">
+          <p class="text-[11px] font-medium text-muted-foreground">{{ t('settings.sync.join.projectsTitle') }}</p>
+          <ul class="divide-y divide-border/60 rounded-md border border-border/60">
+            <li v-for="m in preview.projects" :key="m.remote_id" class="px-2.5 py-1.5">
+              <p class="flex items-center gap-1.5 truncate text-xs">
+                {{ m.name }}
+                <Badge variant="secondary">{{ t(`settings.sync.join.matchedBy.${m.matched_by ?? 'new'}`) }}</Badge>
+              </p>
+              <p
+                class="truncate font-mono text-[11px]"
+                :class="m.on_this_machine ? 'text-muted-foreground' : 'text-amber-600 dark:text-amber-400'"
+                :title="m.local_path"
+              >
+                {{ m.on_this_machine ? m.local_path : t('settings.sync.projects.notHere') }}
+              </p>
+            </li>
+          </ul>
+          <p v-if="previewMissing.length" class="text-[11px] text-muted-foreground">
+            {{ t('settings.sync.join.missingHelp', { n: previewMissing.length }) }}
+          </p>
+        </div>
+        <p v-if="preview.undecryptable" class="text-[11px] text-amber-600 dark:text-amber-400">
+          {{ t('settings.sync.join.undecryptable', { n: preview.undecryptable }) }}
+        </p>
+      </template>
+      <p v-else-if="previewError" class="break-words text-[11px] text-destructive">
+        {{ t('settings.sync.join.previewFailed') }}: {{ previewError }}
+      </p>
+      <div class="flex flex-wrap items-center gap-2">
+        <Button size="sm" :disabled="committing || previewLoading || !preview" @click="commitBootstrap">
+          <component :is="committing ? Loader2 : LogIn" class="h-3.5 w-3.5" :class="{ 'animate-spin': committing }" :stroke-width="1.75" />
+          {{ t('settings.sync.join.commit') }}
+        </Button>
+        <Button v-if="previewError && !previewLoading" variant="outline" size="sm" @click="loadPreview">
+          <RotateCcw class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ t('settings.sync.join.retry') }}
+        </Button>
+        <Button variant="destructive" size="sm" class="ml-auto" :disabled="leaving || committing" @click="leave">
+          <component :is="leaving ? Loader2 : LogOut" class="h-3.5 w-3.5" :class="{ 'animate-spin': leaving }" :stroke-width="1.75" />
+          {{ t('settings.sync.leave.button') }}
+        </Button>
+      </div>
     </section>
 
     <!-- Not in a group -->
@@ -467,7 +532,7 @@ onUnmounted(() => {
           role="switch"
           :aria-checked="secrets"
           :aria-label="t('settings.sync.secrets.label')"
-          :disabled="busySecrets || !secretsAvailable"
+          :disabled="busySecrets"
           class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:opacity-50"
           :class="secrets ? 'bg-primary' : 'bg-muted'"
           @click="toggleSecrets"
@@ -488,8 +553,7 @@ onUnmounted(() => {
           {{ t('settings.sync.devices.title') }}
         </label>
         <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.devices.leaderHelp') }}</p>
-        <p v-if="!devicesAvailable" class="text-[11px] text-muted-foreground italic">{{ t('settings.sync.unavailable') }}</p>
-        <ul v-else class="divide-y divide-border/60 rounded-lg border border-border/60">
+        <ul class="divide-y divide-border/60 rounded-lg border border-border/60">
           <li v-for="d in devices" :key="d.id" class="flex items-center gap-2 px-3 py-2">
             <input
               type="radio"
@@ -559,23 +623,22 @@ onUnmounted(() => {
           {{ t('settings.sync.projects.title') }}
         </label>
         <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.projects.help') }}</p>
-        <p v-if="!mappingsAvailable" class="text-[11px] text-muted-foreground italic">{{ t('settings.sync.unavailable') }}</p>
-        <p v-else-if="!mappings.length" class="text-[11px] text-muted-foreground">{{ t('settings.sync.projects.empty') }}</p>
+        <p v-if="!mappings.length" class="text-[11px] text-muted-foreground">{{ t('settings.sync.projects.empty') }}</p>
         <ul v-else class="divide-y divide-border/60 rounded-lg border border-border/60">
-          <li v-for="p in mappings" :key="p.remote_project_id" class="flex items-center gap-2 px-3 py-2">
+          <li v-for="p in mappings" :key="p.project_id" class="flex items-center gap-2 px-3 py-2">
             <div class="min-w-0 flex-1">
               <p class="truncate text-sm">{{ p.name }}</p>
               <p
                 class="truncate font-mono text-[11px]"
-                :class="p.local_path ? 'text-muted-foreground' : 'text-amber-600 dark:text-amber-400'"
-                :title="p.local_path ?? p.remote_path ?? ''"
+                :class="p.on_this_machine ? 'text-muted-foreground' : 'text-amber-600 dark:text-amber-400'"
+                :title="p.on_this_machine ? p.path : p.synced_path"
               >
-                {{ p.local_path || t('settings.sync.projects.notHere') }}
+                {{ p.on_this_machine ? p.path : t('settings.sync.projects.notHere') }}
               </p>
             </div>
             <Button variant="outline" size="xs" :disabled="busyMapping !== null" @click="pickFolder(p)">
-              <component :is="busyMapping === p.remote_project_id ? Loader2 : FolderOpen" class="h-3 w-3" :class="{ 'animate-spin': busyMapping === p.remote_project_id }" :stroke-width="1.75" />
-              {{ p.local_path ? t('settings.sync.projects.change') : t('settings.sync.projects.choose') }}
+              <component :is="busyMapping === p.project_id ? Loader2 : FolderOpen" class="h-3 w-3" :class="{ 'animate-spin': busyMapping === p.project_id }" :stroke-width="1.75" />
+              {{ p.on_this_machine ? t('settings.sync.projects.change') : t('settings.sync.projects.choose') }}
             </Button>
           </li>
         </ul>
@@ -587,8 +650,8 @@ onUnmounted(() => {
         <Button
           variant="outline"
           size="sm"
-          :disabled="resyncing || !resyncAvailable"
-          :title="resyncAvailable ? t('settings.sync.resync.hint') : t('settings.sync.unavailable')"
+          :disabled="resyncing"
+          :title="t('settings.sync.resync.hint')"
           @click="resyncAll"
         >
           <component :is="resyncing ? Loader2 : RotateCcw" class="h-3.5 w-3.5" :class="{ 'animate-spin': resyncing }" :stroke-width="1.75" />
@@ -602,14 +665,18 @@ onUnmounted(() => {
     </template>
 
     <!-- Result of the first-join merge -->
-    <section v-if="commitReport && commitReport.length" class="space-y-2 rounded-lg border border-border/60 bg-muted/20 p-3">
+    <section v-if="commitReport && paired" class="space-y-2 rounded-lg border border-border/60 bg-muted/20 p-3">
       <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
         {{ t('settings.sync.join.reportTitle') }}
       </label>
       <ul class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-        <li v-for="[label, n] in commitReport" :key="label" class="flex justify-between gap-2">
-          <span class="truncate font-mono text-muted-foreground">{{ label }}</span>
+        <li v-for="[key, n] in totalRows(commitReport.preview)" :key="key" class="flex justify-between gap-2">
+          <span class="truncate text-muted-foreground">{{ t(`settings.sync.join.counts.${key}`) }}</span>
           <span class="tabular-nums">{{ n }}</span>
+        </li>
+        <li class="flex justify-between gap-2">
+          <span class="truncate text-muted-foreground">{{ t('settings.sync.join.counts.queued') }}</span>
+          <span class="tabular-nums">{{ commitReport.queued }}</span>
         </li>
       </ul>
     </section>

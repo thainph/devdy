@@ -9,6 +9,7 @@ use tokio::sync::{Mutex, MutexGuard};
 use super::clock::{wall_ms, HlcClock};
 use super::codec::{encode_row, read_row, PathCtx};
 use super::op::{Op, OpKind, OP_VERSION};
+use super::events::{Notice, Notifier};
 use super::{apply, files, schema, secrets, SCHEMA_VERSION};
 use crate::db::Db;
 
@@ -50,6 +51,16 @@ pub trait SyncStore: Send + Sync {
         Ok(())
     }
 
+    /// Relay blobs this device stopped using whose release is due.
+    async fn releasable_blobs(&self, _limit: usize) -> Result<Vec<String>, String> {
+        Ok(Vec::new())
+    }
+
+    /// The relay took the release of `shas` (or never will): forget them.
+    async fn blobs_released(&self, _shas: &[String]) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Apply pulled `file` / `secret` ops (and retry earlier failed ones).
     async fn apply_remote_extra(&self, ops: Vec<Op>, _blobs: &dyn BlobIo) -> Result<ApplyReport, String> {
         Ok(ApplyReport { skipped_older: ops.len(), ..Default::default() })
@@ -77,6 +88,8 @@ pub struct SqliteSyncStore {
     secrets: Option<secrets::Backend>,
     file_timing: files::Timing,
     scan: Mutex<files::ScanState>,
+    /// Tells the UI what was applied (`None` in tests / bootstrap).
+    notify: Option<Notifier>,
 }
 
 fn err(e: sqlx::Error) -> String {
@@ -93,6 +106,18 @@ impl SqliteSyncStore {
             secrets: None,
             file_timing: files::Timing::default(),
             scan: Mutex::new(files::ScanState::default()),
+            notify: None,
+        }
+    }
+
+    pub fn with_notifier(mut self, notify: Notifier) -> Self {
+        self.notify = Some(notify);
+        self
+    }
+
+    fn notice(&self, n: Notice) {
+        if let Some(f) = &self.notify {
+            f(n);
         }
     }
 
@@ -240,6 +265,7 @@ impl SyncStore for SqliteSyncStore {
         }
         let mut report = ApplyReport::default();
         let mut failed: Vec<(Op, i64, String)> = Vec::new();
+        let mut grown_runs = std::collections::BTreeSet::new();
         for (_, (op, attempts)) in latest {
             clock.observe(&op.hlc);
             if op.schema > SCHEMA_VERSION {
@@ -261,6 +287,11 @@ impl SyncStore for SqliteSyncStore {
                 },
                 _ => Ok((0, 1, 0)),
             };
+            if matches!(result, Ok((1, _, 0))) && self.notify.is_some() && op.tbl == files::TBL {
+                if let Some(run) = files::run_of_op(&self.db, &paths, &op).await {
+                    grown_runs.insert(run);
+                }
+            }
             match result {
                 Ok((a, s, c)) => {
                     report.applied += a;
@@ -294,7 +325,18 @@ impl SyncStore for SqliteSyncStore {
         clock.save(&mut tx).await?;
         tx.commit().await.map_err(err)?;
         *guard = Some(clock);
+        for run in grown_runs {
+            self.notice(Notice::RunLogUpdated(run));
+        }
         Ok(report)
+    }
+
+    async fn releasable_blobs(&self, limit: usize) -> Result<Vec<String>, String> {
+        files::releasable_blobs(&self.db, limit).await
+    }
+
+    async fn blobs_released(&self, shas: &[String]) -> Result<(), String> {
+        files::forget_released(&self.db, shas).await
     }
 
     async fn mark_pushed(&self, up_to_outbox_seq: i64) -> Result<(), String> {
@@ -310,8 +352,12 @@ impl SyncStore for SqliteSyncStore {
         let mut guard = self.clock().await?;
         let mut clock = guard.clone().ok_or("clock not loaded")?;
         let paths = self.paths_now().await?;
+        let tables: std::collections::BTreeSet<String> = ops.iter().map(|o| o.tbl.clone()).collect();
         let report = apply::apply_ops(&self.db, &paths, &mut clock, ops).await?;
         *guard = Some(clock);
+        if report.applied > 0 {
+            self.notice(Notice::RowsApplied(tables.into_iter().collect()));
+        }
         Ok(report)
     }
 

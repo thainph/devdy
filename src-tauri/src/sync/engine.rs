@@ -395,7 +395,32 @@ async fn cycle(ctx: &Ctx, conn: &Connection) -> Result<(), CycleError> {
     let blobs = RelayBlobs { conn, keys: &ctx.keys };
     ctx.store.stage(&blobs).await.map_err(CycleError::Store)?;
     push_all(ctx, conn).await?;
+    release_blobs(ctx, conn).await?;
     pull_all(ctx, conn, &blobs).await
+}
+
+/// Most shas per `blob_release` (the relay's cap).
+const RELEASE_BATCH: usize = 1000;
+
+/// Tell the relay which blobs this device superseded (relay-side GC). A relay
+/// without `blob_release` answers with an error: the releases are dropped
+/// (the blobs simply stay, as before).
+async fn release_blobs(ctx: &Ctx, conn: &Connection) -> Result<(), CycleError> {
+    loop {
+        let shas = ctx.store.releasable_blobs(RELEASE_BATCH).await.map_err(CycleError::Store)?;
+        if shas.is_empty() {
+            return Ok(());
+        }
+        match conn.blob_release(&shas).await {
+            Ok(n) => tracing::debug!(event = "sync_blobs_released", released = n),
+            Err(TransportError::Relay(code)) => tracing::debug!(event = "sync_blob_release_refused", code = %code),
+            Err(e) => return Err(e.into()),
+        }
+        ctx.store.blobs_released(&shas).await.map_err(CycleError::Store)?;
+        if shas.len() < RELEASE_BATCH {
+            return Ok(());
+        }
+    }
 }
 
 /// The largest prefix of `ops` that fits one push (≥ 1 op), sealed.
@@ -847,6 +872,11 @@ mod tests {
         // A live session keeps streaming: appends arrive within the quick cadence.
         std::fs::write(&log, "line 1\nline 2\n").unwrap();
         eventually("append on b", || read_b().as_deref() == Some("line 1\nline 2\n")).await;
+        // A's superseded tail chunk is released on the relay once the new
+        // manifest is pushed.
+        eventually("old tail released", || relay.blob_counts().1 >= 1).await;
+        let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_blob_release").fetch_one(db_a).await.unwrap();
+        assert_eq!(left, 0);
         // Nothing but sealed bytes on the relay.
         assert!(relay.stored_blobs().iter().all(|b| !b.contains("ghp_from_a")));
         // B does not echo what it applied.
