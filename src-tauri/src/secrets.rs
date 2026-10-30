@@ -830,8 +830,9 @@ pub fn delete_sync_secrets() -> Result<()> {
 //
 // `sync::secrets` replicates Keychain content between the devices of a sync
 // group as `(service, account) -> value` items. Structured entries travel as
-// their JSON. Never listed (machine-local): the sync membership itself, the
-// Remote Control session credential and master password, legacy Google tokens.
+// their JSON. Never listed (machine-local): the sync membership itself, every
+// Remote Control credential (relay host token, session, master password) and
+// legacy Google tokens.
 
 /// Item services that sync, with how their accounts are keyed.
 const SYNC_SERVICES: &[&str] = &[
@@ -842,14 +843,24 @@ const SYNC_SERVICES: &[&str] = &[
     "aws",
     "google_client",
     "google_accounts",
-    "relay",
 ];
 const SINGLE_ACCOUNT: &str = "default";
+
+/// `(table, item service)`: Keychain items whose account is the id of a row of
+/// that table. A sync re-key of such a row moves the item along with it.
+pub const ROW_KEYED_SERVICES: &[(&str, &str)] = &[
+    ("github_accounts", "github"),
+    ("gitlab_accounts", "gitlab"),
+    ("mcp_servers", "mcp"),
+    ("servers", "servers"),
+    ("aws_accounts", "aws"),
+    ("google_accounts", "google_accounts"),
+];
 
 /// Whether `(service, account)` is an item sync may read or write.
 pub fn is_sync_item(service: &str, account: &str) -> bool {
     match service {
-        "google_client" | "relay" => account == SINGLE_ACCOUNT,
+        "google_client" => account == SINGLE_ACCOUNT,
         s => SYNC_SERVICES.contains(&s) && !account.is_empty(),
     }
 }
@@ -897,9 +908,6 @@ pub fn sync_items() -> Result<Vec<(String, String, String)>> {
     for (id, v) in &store.google_accounts {
         push("google_accounts", id, v.clone());
     }
-    if let Some(t) = store.remote.auth_token.as_ref().filter(|t| !t.trim().is_empty()) {
-        push("relay", SINGLE_ACCOUNT, t.clone());
-    }
     Ok(out)
 }
 
@@ -925,7 +933,6 @@ pub fn sync_set_item(service: &str, account: &str, value: Option<&str>) -> Resul
         ("google_client", v) => store.google_client = v.map(serde_json::from_str).transpose()?,
         ("google_accounts", Some(v)) => drop(store.google_accounts.insert(id, v.to_string())),
         ("google_accounts", None) => drop(store.google_accounts.remove(&id)),
-        ("relay", v) => store.remote.auth_token = v.map(str::to_string),
         _ => return Err(anyhow!("not a synced keychain item")),
     }
     persist(store)
