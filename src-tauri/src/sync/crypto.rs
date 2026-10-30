@@ -5,7 +5,11 @@
 //! and the op-key MAC key are never the same bytes:
 //!
 //! - `enc` seals ops and blobs: `nonce(24) || XChaCha20-Poly1305(enc, nonce,
-//!   plaintext, aad = "devdy-sync-v1")`, base64 on the wire for ops.
+//!   plaintext, aad)`, base64 on the wire for ops. Blobs (content-addressed
+//!   file chunks) use `aad = "devdy-sync-v1"`; an op binds its row key too,
+//!   `aad = "devdy-sync-v1" || op_key`, and the receiver checks that the
+//!   decrypted `(tbl, pk)` hashes to the key the relay filed it under, so the
+//!   relay cannot serve one row's op under another row's key.
 //! - `mac` computes `op_key(tbl, pk)`, the opaque per-row key the relay uses to
 //!   supersede older ops without seeing content.
 //!
@@ -37,6 +41,8 @@ pub enum CryptoError {
     /// Too short, or authentication failed (tampered / wrong key).
     Open,
     Json,
+    /// The op opened but belongs to another row than the key it came with.
+    KeyMismatch,
 }
 
 impl std::fmt::Display for CryptoError {
@@ -46,6 +52,7 @@ impl std::fmt::Display for CryptoError {
             CryptoError::Base64 => "sealed payload is not valid base64",
             CryptoError::Open => "sealed payload failed authentication",
             CryptoError::Json => "sealed payload is not a valid op",
+            CryptoError::KeyMismatch => "sealed op does not match its row key",
         })
     }
 }
@@ -90,13 +97,17 @@ impl SyncKeys {
     }
 
     fn seal_with_nonce(&self, plaintext: &[u8], nonce: &[u8; NONCE_LEN]) -> Vec<u8> {
+        self.seal_aad(plaintext, nonce, AAD)
+    }
+
+    fn seal_aad(&self, plaintext: &[u8], nonce: &[u8; NONCE_LEN], aad: &[u8]) -> Vec<u8> {
         let mut out = vec![0u8; NONCE_LEN + plaintext.len() + TAG_LEN];
         out[..NONCE_LEN].copy_from_slice(nonce);
         // Only fails on buffer-size mismatches, which the allocation above rules out.
         let _ = crypto_aead_xchacha20poly1305_ietf_encrypt(
             &mut out[NONCE_LEN..],
             plaintext,
-            Some(AAD),
+            Some(aad),
             nonce,
             &self.enc,
         );
@@ -104,6 +115,10 @@ impl SyncKeys {
     }
 
     pub fn open_bytes(&self, sealed: &[u8]) -> Result<Vec<u8>, CryptoError> {
+        self.open_aad(sealed, AAD)
+    }
+
+    fn open_aad(&self, sealed: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
         if sealed.len() < NONCE_LEN + TAG_LEN {
             return Err(CryptoError::Open);
         }
@@ -111,21 +126,32 @@ impl SyncKeys {
         nonce.copy_from_slice(&sealed[..NONCE_LEN]);
         let ct = &sealed[NONCE_LEN..];
         let mut pt = vec![0u8; ct.len() - TAG_LEN];
-        crypto_aead_xchacha20poly1305_ietf_decrypt(&mut pt, ct, Some(AAD), &nonce, &self.enc)
+        crypto_aead_xchacha20poly1305_ietf_decrypt(&mut pt, ct, Some(aad), &nonce, &self.enc)
             .map_err(|_| CryptoError::Open)?;
         Ok(pt)
     }
 
-    /// The wire `blob` for an op: base64(nonce || seal(json(op))).
-    pub fn seal_op(&self, op: &Op) -> Result<String, CryptoError> {
+    /// The wire `(key, blob)` for an op: `op_key(tbl, pk)` and
+    /// base64(nonce || seal(json(op), aad = AAD || key)).
+    pub fn seal_op(&self, op: &Op) -> Result<(String, String), CryptoError> {
         let json = serde_json::to_vec(op).map_err(|_| CryptoError::Json)?;
-        Ok(B64.encode(self.seal_bytes(&json)))
+        let key = self.op_key(&op.tbl, &op.pk);
+        let mut nonce = [0u8; NONCE_LEN];
+        copy_randombytes(&mut nonce);
+        let blob = B64.encode(self.seal_aad(&json, &nonce, &op_aad(&key)));
+        Ok((key, blob))
     }
 
-    pub fn open_op(&self, blob_b64: &str) -> Result<Op, CryptoError> {
+    /// Open an op the relay returned under `key`; it must have been sealed for
+    /// that key and be the row the key names.
+    pub fn open_op(&self, blob_b64: &str, key: &str) -> Result<Op, CryptoError> {
         let sealed = B64.decode(blob_b64).map_err(|_| CryptoError::Base64)?;
-        let pt = self.open_bytes(&sealed)?;
-        serde_json::from_slice(&pt).map_err(|_| CryptoError::Json)
+        let pt = self.open_aad(&sealed, &op_aad(key))?;
+        let op: Op = serde_json::from_slice(&pt).map_err(|_| CryptoError::Json)?;
+        if self.op_key(&op.tbl, &op.pk) != key {
+            return Err(CryptoError::KeyMismatch);
+        }
+        Ok(op)
     }
 
     /// Opaque row key: `hex(blake2b(key = mac, tbl || 0x00 || canonical_json(pk)))`.
@@ -138,6 +164,13 @@ impl SyncKeys {
         let _ = crypto_generichash(&mut out, &input, Some(&self.mac));
         hex::encode(out)
     }
+}
+
+fn op_aad(key: &str) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(AAD.len() + key.len());
+    aad.extend_from_slice(AAD);
+    aad.extend_from_slice(key.as_bytes());
+    aad
 }
 
 /// Content address of a sealed blob (§9.2: sha256 of the sealed bytes).
@@ -236,11 +269,28 @@ mod tests {
     fn op_roundtrips() {
         let k = keys();
         let op = sample_op();
-        let blob = k.seal_op(&op).unwrap();
-        let back = k.open_op(&blob).unwrap();
+        let (key, blob) = k.seal_op(&op).unwrap();
+        assert_eq!(key, k.op_key("notes", &json!("n-1")));
+        let back = k.open_op(&blob, &key).unwrap();
         assert_eq!(serde_json::to_value(&back).unwrap(), serde_json::to_value(&op).unwrap());
         // Fresh nonce each time.
-        assert_ne!(blob, k.seal_op(&op).unwrap());
+        assert_ne!(blob, k.seal_op(&op).unwrap().1);
+    }
+
+    #[test]
+    fn op_is_bound_to_its_row_key() {
+        let k = keys();
+        let (key, blob) = k.seal_op(&sample_op()).unwrap();
+        // Served under another row's key: the AAD no longer matches.
+        let other = k.op_key("notes", &json!("n-2"));
+        assert_eq!(k.open_op(&blob, &other).err(), Some(CryptoError::Open));
+        // Constant-AAD sealing (the old format) does not open as an op.
+        let json = serde_json::to_vec(&sample_op()).unwrap();
+        assert_eq!(k.open_op(&B64.encode(k.seal_bytes(&json)), &key).err(), Some(CryptoError::Open));
+        // Sealed for a key that is not its own (tbl, pk): rejected after opening.
+        let nonce = [5u8; NONCE_LEN];
+        let forged = B64.encode(k.seal_aad(&json, &nonce, &op_aad(&other)));
+        assert_eq!(k.open_op(&forged, &other).err(), Some(CryptoError::KeyMismatch));
     }
 
     #[test]
@@ -254,7 +304,7 @@ mod tests {
         }
         assert_eq!(k.open_bytes(&sealed[..sealed.len() - 1]), Err(CryptoError::Open));
         assert_eq!(k.open_bytes(&sealed[..10]), Err(CryptoError::Open));
-        assert_eq!(k.open_op("not base64!").err(), Some(CryptoError::Base64));
+        assert_eq!(k.open_op("not base64!", "k").err(), Some(CryptoError::Base64));
     }
 
     #[test]
@@ -277,8 +327,8 @@ mod tests {
     #[test]
     fn non_op_plaintext_is_rejected() {
         let k = keys();
-        let blob = B64.encode(k.seal_bytes(b"{\"nope\":1}"));
-        assert_eq!(k.open_op(&blob).err(), Some(CryptoError::Json));
+        let blob = B64.encode(k.seal_aad(b"{\"nope\":1}", &[0u8; NONCE_LEN], &op_aad("k")));
+        assert_eq!(k.open_op(&blob, "k").err(), Some(CryptoError::Json));
     }
 
     #[test]

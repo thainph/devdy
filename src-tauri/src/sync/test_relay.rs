@@ -1,9 +1,14 @@
-//! Test-only in-process relay implementing the §9.2 sync subset (hello, push
-//! with per-key supersede, paginated pull, notify, revoke, blobs, keepalive
-//! echo) over a real WebSocket on 127.0.0.1, with the relay's semantics:
-//! `id` echoed on replies, `sync_ops.last_seq` = last returned seq while
-//! `more` else the head, a failed hello closes the socket, revoke answers
-//! `control{code:"ok"}` and kicks the revoked device's connections.
+//! Test-only in-process relay implementing the §9.2 sync subset (hello with
+//! join tickets, invite, push with cursor-aware per-key supersede, paginated
+//! pull, notify, revoke, blobs, keepalive echo) over a real WebSocket on
+//! 127.0.0.1, with the relay's semantics: `id` echoed on replies,
+//! `sync_ops.last_seq` = last returned seq while `more` else the head, a
+//! failed hello closes the socket, revoke answers `control{code:"ok"}` (only
+//! the creator may revoke others) and kicks the revoked device's connections.
+//!
+//! Groups made with [`TestRelay::create_group`] are *open* (any device
+//! registers on first hello) so engine tests need no pairing; groups created
+//! by a `create` hello require tickets like the real relay.
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -23,6 +28,11 @@ struct Group {
     ops: Vec<(u64, String, String, String)>,
     devices: HashMap<String, String>,
     revoked: HashSet<String>,
+    creator: Option<String>,
+    /// Registration without a ticket (test convenience).
+    open: bool,
+    /// sha256 hex of open join tickets.
+    invites: HashSet<String>,
     blobs: HashMap<String, String>,
     released: usize,
 }
@@ -36,6 +46,12 @@ struct State {
     hellos: usize,
     /// (device, limit) of every pull.
     pulls: Vec<(String, u64)>,
+    /// Every push attempt, by device.
+    pushes: Vec<String>,
+    /// `too_large` for any pushed blob longer than this.
+    max_blob: Option<usize>,
+    /// device → error code its pushes get.
+    fail_pushes: HashMap<String, String>,
     next_conn: u64,
 }
 
@@ -71,8 +87,9 @@ impl TestRelay {
         format!("ws://{}/ws", self.addr)
     }
 
+    /// An open group: devices register on first hello, no ticket.
     pub fn create_group(&self, id: &str) {
-        self.state.lock().unwrap().groups.entry(id.into()).or_default();
+        self.state.lock().unwrap().groups.entry(id.into()).or_default().open = true;
     }
 
     pub fn revoke(&self, group: &str, device: &str) {
@@ -118,6 +135,25 @@ impl TestRelay {
         s.pulls.iter().filter(|p| p.0 == device).map(|p| p.1).collect()
     }
 
+    /// Refuse pushes carrying a blob longer than `n` chars with `too_large`.
+    pub fn reject_blobs_over(&self, n: usize) {
+        self.state.lock().unwrap().max_blob = Some(n);
+    }
+
+    /// Answer every push of `device` with `error{code}` (`None` = stop).
+    pub fn fail_pushes_of(&self, device: &str, code: Option<&str>) {
+        let mut s = self.state.lock().unwrap();
+        match code {
+            Some(c) => s.fail_pushes.insert(device.into(), c.into()),
+            None => s.fail_pushes.remove(device),
+        };
+    }
+
+    /// Push attempts (accepted or not) `device` made.
+    pub fn push_attempts(&self, device: &str) -> usize {
+        self.state.lock().unwrap().pushes.iter().filter(|d| *d == device).count()
+    }
+
     /// Kill every open socket (relay restart / network drop).
     pub fn drop_all(&self) {
         let mut s = self.state.lock().unwrap();
@@ -126,6 +162,11 @@ impl TestRelay {
         }
         s.conns.clear();
     }
+}
+
+fn sha_hex(s: &str) -> String {
+    use sha2::Digest as _;
+    hex::encode(sha2::Sha256::digest(s.as_bytes()))
 }
 
 fn error(code: &str) -> Value {
@@ -204,8 +245,11 @@ fn handle_inner(
             return Some(error("auth_failed"));
         }
         let (gid, did, tok) = (s_("group_id"), s_("device_id"), s_("device_token"));
-        if f["create"].as_bool() == Some(true) {
-            s.groups.entry(gid.clone()).or_default();
+        let create = f["create"].as_bool() == Some(true);
+        if create && !s.groups.contains_key(&gid) {
+            let g = s.groups.entry(gid.clone()).or_default();
+            g.creator = Some(did.clone());
+            g.devices.insert(did.clone(), tok.clone());
         }
         let Some(g) = s.groups.get_mut(&gid) else {
             return Some(error("group_not_found"));
@@ -216,7 +260,17 @@ fn handle_inner(
         match g.devices.get(&did) {
             Some(known) if *known != tok => return Some(error("auth_failed")),
             Some(_) => {}
+            None if g.open => {
+                g.devices.insert(did.clone(), tok);
+            }
+            None if create => return Some(error("group_exists")),
             None => {
+                let Some(ticket) = f["ticket"].as_str() else {
+                    return Some(error("ticket_required"));
+                };
+                if !g.invites.remove(&sha_hex(ticket)) {
+                    return Some(error("ticket_invalid"));
+                }
                 g.devices.insert(did.clone(), tok);
             }
         }
@@ -230,13 +284,25 @@ fn handle_inner(
     };
     match t {
         "sync_push" => {
+            s.pushes.push(did.clone());
+            if let Some(code) = s.fail_pushes.get(&did) {
+                return Some(error(code));
+            }
+            let items = f["items"].as_array().cloned().unwrap_or_default();
+            if let Some(max) = s.max_blob {
+                if items.iter().any(|i| i["blob"].as_str().unwrap_or_default().len() > max) {
+                    return Some(error("too_large"));
+                }
+            }
             let g = s.groups.get_mut(&gid)?;
-            for item in f["items"].as_array().cloned().unwrap_or_default() {
+            let base = f["base_seq"].as_u64().unwrap_or(0);
+            for item in items {
                 let key = item["key"].as_str().unwrap_or_default().to_string();
                 let blob = item["blob"].as_str().unwrap_or_default().to_string();
                 g.head += 1;
                 let seq = g.head;
-                g.ops.retain(|o| o.2 != key);
+                // Only ops the pusher has seen (or pushed itself) are superseded.
+                g.ops.retain(|o| o.2 != key || (o.0 > base && o.1 != did));
                 g.ops.push((seq, did.clone(), key, blob));
             }
             let head = g.head;
@@ -257,15 +323,27 @@ fn handle_inner(
             let page: Vec<Value> = newer
                 .iter()
                 .take(limit as usize)
-                .map(|o| json!({ "seq": o.0, "device_id": o.1, "blob": o.3 }))
+                .map(|o| json!({ "seq": o.0, "device_id": o.1, "key": o.2, "blob": o.3 }))
                 .collect();
             let more = newer.len() > page.len();
             let last_seq = if more { page.last().map(|p| p["seq"].as_u64().unwrap()).unwrap() } else { g.head };
             Some(json!({ "t": "sync_ops", "items": page, "last_seq": last_seq, "more": more }))
         }
+        "sync_invite" => {
+            let ttl = f["ttl_secs"].as_u64().unwrap_or(600);
+            if ttl == 0 || ttl > 600 || s_("ticket_hash").len() != 64 {
+                return Some(error("bad_request"));
+            }
+            s.groups.get_mut(&gid)?.invites.insert(s_("ticket_hash"));
+            Some(json!({ "t": "control", "code": "ok" }))
+        }
         "sync_revoke" => {
             let target = s_("device_id");
-            s.groups.get_mut(&gid)?.revoked.insert(target.clone());
+            let g = s.groups.get_mut(&gid)?;
+            if target != did && g.creator.as_deref() != Some(did.as_str()) && !g.open {
+                return Some(error("forbidden"));
+            }
+            g.revoked.insert(target.clone());
             for (cg, cd, ctx) in s.conns.values() {
                 if *cg == gid && *cd == target {
                     let _ = ctx.send(error("device_revoked").to_string());
