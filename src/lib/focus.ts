@@ -88,10 +88,35 @@ export type FocusBucket =
   | 'later'
   | 'no_due'
 
-/** One "why here" fact (BR-05). Unknown kinds are rendered generically. */
+/**
+ * One "why here" fact (BR-05), as the backend's `focus::score` emits it:
+ *  - `doing`, `waiting`, `no_due`, `done` — no value (null);
+ *  - `snoozed`, `due` — local time `YYYY-MM-DDTHH:MM` (snoozed may be null);
+ *  - `overdue` — wall-clock minutes past due;
+ *  - `work_left`, `late_by` — working minutes;
+ *  - `estimate`, `estimate_missing` — minutes;
+ *  - `priority` — 1 | 3 (only when ≠ 2);
+ *  - `age_days` — days open (only when ≥ 2).
+ * Unknown kinds are rendered generically.
+ */
+export type FocusReasonKind =
+  | 'doing'
+  | 'waiting'
+  | 'no_due'
+  | 'done'
+  | 'snoozed'
+  | 'due'
+  | 'overdue'
+  | 'work_left'
+  | 'late_by'
+  | 'estimate'
+  | 'estimate_missing'
+  | 'priority'
+  | 'age_days'
+
 export interface FocusReason {
-  kind: string
-  value?: string | number
+  kind: FocusReasonKind | (string & {})
+  value?: string | number | null
 }
 
 export interface FocusItem {
@@ -119,8 +144,13 @@ export interface FocusCapacity {
 }
 
 export interface FocusCalibration {
+  /** Applied to estimates (1.0 when calibration is off). */
   factor: number
   samples: number
+  /** Settings switch (BR-10). */
+  enabled: boolean
+  /** The factor computed from history, whether applied or not. */
+  measured: number
 }
 
 export interface FocusBoard {
@@ -144,8 +174,9 @@ export interface FocusSettings {
   calendar_account_id: string | null
   calendar_ids: string[]
   calibration_enabled: boolean
-  ai_engine: string | null
-  ai_model: string | null
+  /** '' = follow the translate engine / model. */
+  ai_engine: string
+  ai_model: string
 }
 
 export const DEFAULT_FOCUS_SETTINGS: FocusSettings = {
@@ -158,8 +189,8 @@ export const DEFAULT_FOCUS_SETTINGS: FocusSettings = {
   calendar_account_id: null,
   calendar_ids: [],
   calibration_enabled: true,
-  ai_engine: null,
-  ai_model: null,
+  ai_engine: '',
+  ai_model: '',
 }
 
 /** Emitted by the backend after every Focus write. */
@@ -494,12 +525,48 @@ export function snoozePresets(now: number, workStart = '09:00'): { preset: Snooz
   return out
 }
 
+// ── Reasons ─────────────────────────────────────────────────────────────────
+
+/** A reason decoded for display; the UI words it (useFocusText). */
+export type ReasonView =
+  | { kind: 'doing' | 'waiting' | 'no_due' | 'done' }
+  | { kind: 'snoozed' | 'due'; date: string | null; time: string | null }
+  | { kind: 'overdue' | 'work_left' | 'late_by' | 'estimate' | 'estimate_missing'; minutes: number }
+  | { kind: 'priority' | 'age_days'; n: number }
+  | { kind: 'unknown'; name: string; value: string | null }
+
+const FLAG_REASONS = ['doing', 'waiting', 'no_due', 'done'] as const
+const TIME_REASONS = ['snoozed', 'due'] as const
+const MINUTE_REASONS = ['overdue', 'work_left', 'late_by', 'estimate', 'estimate_missing'] as const
+const COUNT_REASONS = ['priority', 'age_days'] as const
+
+function includes<T extends string>(list: readonly T[], v: string): v is T {
+  return (list as readonly string[]).includes(v)
+}
+
+/** Decode one backend reason; anything off-contract falls back to `unknown`. */
+export function parseReason(r: FocusReason): ReasonView {
+  const v = r.value
+  const unknown = (): ReasonView => ({ kind: 'unknown', name: r.kind, value: v == null ? null : String(v) })
+  if (includes(FLAG_REASONS, r.kind)) return { kind: r.kind }
+  if (includes(TIME_REASONS, r.kind)) {
+    if (v == null) return { kind: r.kind, date: null, time: null }
+    const m = /^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}))?/.exec(String(v))
+    return m ? { kind: r.kind, date: m[1], time: m[2] ?? null } : unknown()
+  }
+  const n = typeof v === 'number' ? v : Number(v)
+  if (v == null || v === '' || !Number.isFinite(n)) return unknown()
+  if (includes(MINUTE_REASONS, r.kind)) return { kind: r.kind, minutes: n }
+  if (includes(COUNT_REASONS, r.kind)) return { kind: r.kind, n }
+  return unknown()
+}
+
 // ── Calibration ─────────────────────────────────────────────────────────────
 
 /** BR-10 hint factor ("you usually take 1.4× longer"), or null when not worth saying. */
 export function calibrationHint(c: FocusCalibration | null | undefined): number | null {
-  if (!c || c.samples < 5 || !Number.isFinite(c.factor)) return null
-  const f = Math.round(c.factor * 10) / 10
+  if (!c || !c.enabled || c.samples < 5 || !Number.isFinite(c.measured)) return null
+  const f = Math.round(c.measured * 10) / 10
   return f === 1 ? null : f
 }
 

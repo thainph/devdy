@@ -54,7 +54,8 @@ async function save() {
   if (error.value || saving.value) return
   saving.value = true
   try {
-    await store.saveSettings({ ...store.settings, ...form.value })
+    const saved = await store.saveSettings({ ...store.settings, ...form.value })
+    form.value = { ...saved, work_days: [...saved.work_days] }
     toast.success(t('focus.settings.saved'))
   } catch (e) {
     toast.error(String(e))

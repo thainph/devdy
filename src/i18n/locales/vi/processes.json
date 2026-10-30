@@ -18,6 +18,7 @@
     "run": "Phiên",
     "translate": "Dịch",
     "slack_translate": "Dịch Slack",
+    "focus_ai": "AI Focus",
     "mascot": "Mascot",
     "probe": "Kiểm tra model",
     "mcp_test": "Kiểm tra MCP",

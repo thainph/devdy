@@ -50,7 +50,7 @@ const chipStyle = computed(() => {
 })
 const due = computed(() => text.due(props.item, props.now))
 const why = computed(() => {
-  const reasons = text.whyText(props.item)
+  const reasons = text.whyText(props.item, props.now)
   return reasons ? `${t('focus.whyHere')}: ${reasons}` : title.value
 })
 const estimate = computed(() => formatEstimate(props.item.effective_estimate_min))

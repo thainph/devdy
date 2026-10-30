@@ -19,6 +19,7 @@ import {
   groupByWeek,
   guessSourceType,
   parseEstimate,
+  parseReason,
   snoozePresets,
   sourceShortLabel,
   spanOf,
@@ -217,12 +218,35 @@ test('local datetime input round-trip', () => {
   assert.equal(toLocalInput(null), '')
 })
 
-test('calibrationHint needs ≥5 samples and a factor ≠ 1', () => {
-  assert.equal(calibrationHint({ factor: 1.4, samples: 5 }), 1.4)
-  assert.equal(calibrationHint({ factor: 1.4, samples: 4 }), null)
-  assert.equal(calibrationHint({ factor: 1.02, samples: 9 }), null)
-  assert.equal(calibrationHint({ factor: 0.66, samples: 9 }), 0.7)
+test('calibrationHint uses the measured factor, only when enabled with ≥5 samples', () => {
+  const c = (over) => ({ factor: 1.4, measured: 1.4, samples: 5, enabled: true, ...over })
+  assert.equal(calibrationHint(c()), 1.4)
+  assert.equal(calibrationHint(c({ samples: 4 })), null)
+  assert.equal(calibrationHint(c({ measured: 1.02 })), null)
+  assert.equal(calibrationHint(c({ measured: 0.66, factor: 0.66 })), 0.7)
+  assert.equal(calibrationHint(c({ enabled: false, factor: 1 })), null)
   assert.equal(calibrationHint(null), null)
+})
+
+test('parseReason decodes every backend reason kind', () => {
+  for (const kind of ['doing', 'waiting', 'no_due', 'done']) {
+    assert.deepEqual(parseReason({ kind, value: null }), { kind })
+  }
+  assert.deepEqual(parseReason({ kind: 'due', value: '2026-10-30T15:00' }), { kind: 'due', date: '2026-10-30', time: '15:00' })
+  assert.deepEqual(parseReason({ kind: 'snoozed', value: '2026-11-02T09:00' }), { kind: 'snoozed', date: '2026-11-02', time: '09:00' })
+  assert.deepEqual(parseReason({ kind: 'snoozed', value: null }), { kind: 'snoozed', date: null, time: null })
+  for (const kind of ['overdue', 'work_left', 'late_by', 'estimate', 'estimate_missing']) {
+    assert.deepEqual(parseReason({ kind, value: 90 }), { kind, minutes: 90 })
+  }
+  assert.deepEqual(parseReason({ kind: 'priority', value: 1 }), { kind: 'priority', n: 1 })
+  assert.deepEqual(parseReason({ kind: 'age_days', value: 4 }), { kind: 'age_days', n: 4 })
+})
+
+test('parseReason falls back to unknown for new kinds or bad values', () => {
+  assert.deepEqual(parseReason({ kind: 'calendar', value: 'busy' }), { kind: 'unknown', name: 'calendar', value: 'busy' })
+  assert.deepEqual(parseReason({ kind: 'mystery', value: null }), { kind: 'unknown', name: 'mystery', value: null })
+  assert.deepEqual(parseReason({ kind: 'work_left', value: null }), { kind: 'unknown', name: 'work_left', value: null })
+  assert.deepEqual(parseReason({ kind: 'due', value: 'soon' }), { kind: 'unknown', name: 'due', value: 'soon' })
 })
 
 test('suggestActualMin: wall time since start unless > 3× estimate', () => {
