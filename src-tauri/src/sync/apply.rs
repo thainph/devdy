@@ -324,6 +324,8 @@ async fn apply_row(
     key: &str,
 ) -> Result<Outcome, String> {
     let key = key.to_string();
+    // A run's ownership follows its epoch, not the HLC.
+    let owner = super::sessions::owner_merge(conn, spec, op).await?;
     let known: Option<String> = sqlx::query_scalar("SELECT hlc FROM sync_rows WHERE tbl = ? AND pk = ?")
         .bind(spec.name)
         .bind(&key)
@@ -332,7 +334,7 @@ async fn apply_row(
         .map_err(err)?;
     if let Some(h) = known.and_then(|s| s.parse::<Hlc>().ok()) {
         if h >= op.hlc {
-            return Ok(Outcome::Skipped);
+            return Ok(if owner.apply_skipped(conn, op).await? { Outcome::Applied } else { Outcome::Skipped });
         }
     }
 
@@ -357,7 +359,9 @@ async fn apply_row(
     let mut local_body: Option<Value> = None;
     match merge {
         NoteMerge::Copied => outcome = Outcome::Conflict,
-        NoteMerge::Lww | NoteMerge::KeepLocal(_) if local_newer => return Ok(Outcome::Skipped),
+        NoteMerge::Lww | NoteMerge::KeepLocal(_) if local_newer => {
+            return Ok(if owner.apply_skipped(conn, op).await? { Outcome::Applied } else { Outcome::Skipped });
+        }
         NoteMerge::TakeRemote if local_newer => {
             // The local row wins except for the body only the remote changed.
             take_remote_body(conn, op).await?;
@@ -378,7 +382,7 @@ async fn apply_row(
         }
         NoteMerge::Lww | NoteMerge::TakeRemote => {}
     }
-    if local_changed.is_some() && local_body.is_none() {
+    if local_changed.is_some() && local_body.is_none() && !owner.keeps_local() {
         // The local change lost (or survives as a copy): never push it.
         sqlx::query("DELETE FROM sync_outbox WHERE tbl = ? AND pk = ?")
             .bind(spec.name)
@@ -399,6 +403,7 @@ async fn apply_row(
             if let Some(body) = local_body {
                 local.insert("content".into(), body);
             }
+            owner.overlay(&mut local);
             upsert_row(conn, spec, &local).await?;
         }
         OpKind::Delete => delete_row(conn, spec, &op.pk).await?,
