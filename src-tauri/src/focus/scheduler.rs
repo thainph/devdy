@@ -29,6 +29,9 @@ use std::collections::HashSet;
 pub const MORNING_ID: &str = "_morning";
 /// Older notifications than this are skipped (machine asleep).
 pub const MISSED_AFTER_MIN: i64 = 120;
+/// An `overdue` deadline on the edge of the working day still fires this long
+/// after it passes, outside working hours.
+pub const OVERDUE_GRACE_MIN: i64 = 15;
 /// `due_soon` lead time.
 pub const DUE_SOON_MIN: i64 = 30;
 /// Lines listed in a grouped notification.
@@ -173,12 +176,47 @@ fn line(kind: Kind, it: &SchedItem, now: NaiveDateTime, lang: &str) -> String {
     }
 }
 
+fn is_workday(d: chrono::NaiveDate, wh: &WorkHours) -> bool {
+    use chrono::Datelike;
+    wh.days[d.weekday().num_days_from_monday() as usize]
+}
+
 /// Whether `now` is inside the working window of a working day.
 pub fn in_work_hours(now: NaiveDateTime, wh: &WorkHours) -> bool {
-    use chrono::Datelike;
-    wh.days[now.date().weekday().num_days_from_monday() as usize]
-        && now.time() >= wh.start
-        && now.time() < wh.end
+    is_workday(now.date(), wh) && now.time() >= wh.start && now.time() < wh.end
+}
+
+/// `t` itself inside working hours, else the start of the next working window
+/// (`None` without any working day).
+pub fn next_work_start(t: NaiveDateTime, wh: &WorkHours) -> Option<NaiveDateTime> {
+    if in_work_hours(t, wh) {
+        return Some(t);
+    }
+    (0..=14)
+        .map(|i| t.date() + Duration::days(i))
+        .filter(|d| is_workday(*d, wh))
+        .map(|d| d.and_time(wh.start))
+        .find(|ws| *ws >= t)
+}
+
+/// `overdue` may fire at `now` for a deadline `due <= now`:
+/// - right when it passes, even just outside working hours, if the deadline
+///   is on a working day within `[start, end]` (a date-only deadline is the
+///   end of work) — up to `OVERDUE_GRACE_MIN` late;
+/// - otherwise inside working hours, until 2 h after the first working moment
+///   at / after the deadline (an evening / weekend deadline is reported once
+///   on the next working morning).
+fn overdue_due_now(due: NaiveDateTime, now: NaiveDateTime, wh: &WorkHours) -> bool {
+    if due > now {
+        return false;
+    }
+    let at_boundary = is_workday(due.date(), wh) && due.time() >= wh.start && due.time() <= wh.end;
+    if at_boundary && now - due <= Duration::minutes(OVERDUE_GRACE_MIN) {
+        return true;
+    }
+    in_work_hours(now, wh)
+        && next_work_start(due, wh)
+            .is_some_and(|from| now >= from && now - from <= Duration::minutes(MISSED_AFTER_MIN))
 }
 
 /// The notifications due at `now` (BR-07). `items` are the board's open
@@ -241,17 +279,18 @@ pub fn decide(
         if let Some(r) = it.remind_at.filter(|r| *r <= now && !missed(*r)) {
             push(Kind::Remind, &it.id, key(r), line(Kind::Remind, it, now, lang));
         }
+        let snoozed = it.bucket == Bucket::Snoozed;
+        if let Some(due) = it.effective_due.filter(|d| !snoozed && *d <= now) {
+            if overdue_due_now(due, now, &wh) {
+                push(Kind::Overdue, &it.id, key(due), line(Kind::Overdue, it, now, lang));
+            }
+        }
         if !working {
             continue;
         }
-        let snoozed = it.bucket == Bucket::Snoozed;
         if let Some(due) = it.effective_due.filter(|_| !snoozed) {
             let fk = key(due);
-            if due <= now {
-                if !missed(due) {
-                    push(Kind::Overdue, &it.id, fk, line(Kind::Overdue, it, now, lang));
-                }
-            } else {
+            if due > now {
                 let soon = due - Duration::minutes(DUE_SOON_MIN);
                 if it.has_due_time && soon <= now && !missed(soon) {
                     push(Kind::DueSoon, &it.id, fk.clone(), line(Kind::DueSoon, it, now, lang));
@@ -565,6 +604,45 @@ mod tests {
         let moved = SchedItem { effective_due: Some(at("2026-10-28 17:30")), ..it };
         let n = decide(at("2026-10-28 17:30"), &s, &[moved], &f, "en");
         assert_eq!(kinds(&n), vec![("overdue", "a")]);
+    }
+
+    #[test]
+    fn overdue_fires_for_date_only_and_off_hours_deadlines() {
+        let s = quiet();
+        // Date-only: due at the end of work (18:00).
+        let it = SchedItem { effective_due: Some(at("2026-10-28 18:00")), ..item("a") };
+        let tick = |now: &str, f: &Fired| decide(at(now), &s, std::slice::from_ref(&it), f, "en");
+        assert!(tick("2026-10-28 17:59", &Fired::new()).is_empty());
+        let n = tick("2026-10-28 18:00", &Fired::new());
+        assert_eq!(kinds(&n), vec![("overdue", "a")]);
+        let f = fired(&n);
+        assert!(tick("2026-10-28 18:01", &f).is_empty());
+        assert!(tick("2026-10-29 09:00", &f).is_empty(), "sent once");
+        // Missed at 18:00 (machine asleep): late evening stays quiet, the
+        // next working morning reports it once, within 2 h.
+        assert_eq!(kinds(&tick("2026-10-28 18:01", &Fired::new())), vec![("overdue", "a")]);
+        assert!(tick("2026-10-28 22:00", &Fired::new()).is_empty());
+        assert_eq!(kinds(&tick("2026-10-29 09:00", &Fired::new())), vec![("overdue", "a")]);
+        assert!(tick("2026-10-29 11:01", &Fired::new()).is_empty());
+        // An evening deadline waits for the next working morning (Fri 20:00 → Mon).
+        let eve = SchedItem { effective_due: Some(at("2026-10-30 20:00")), has_due_time: true, ..item("b") };
+        let tick = |now: &str| decide(at(now), &s, std::slice::from_ref(&eve), &Fired::new(), "en");
+        assert!(tick("2026-10-30 20:00").is_empty());
+        assert!(tick("2026-10-31 10:00").is_empty());
+        assert_eq!(kinds(&tick("2026-11-02 09:00")), vec![("overdue", "b")]);
+        // Before work starts: reported at 09:00.
+        let early = SchedItem { effective_due: Some(at("2026-10-28 08:00")), has_due_time: true, ..item("c") };
+        let n = decide(at("2026-10-28 09:00"), &s, std::slice::from_ref(&early), &Fired::new(), "en");
+        assert_eq!(kinds(&n), vec![("overdue", "c")]);
+    }
+
+    #[test]
+    fn next_work_start_skips_nights_and_weekends() {
+        let wh = WorkHours::default();
+        assert_eq!(next_work_start(at("2026-10-28 10:00"), &wh), Some(at("2026-10-28 10:00")));
+        assert_eq!(next_work_start(at("2026-10-28 18:00"), &wh), Some(at("2026-10-29 09:00")));
+        assert_eq!(next_work_start(at("2026-10-28 07:00"), &wh), Some(at("2026-10-28 09:00")));
+        assert_eq!(next_work_start(at("2026-10-30 19:00"), &wh), Some(at("2026-11-02 09:00")));
     }
 
     #[test]
