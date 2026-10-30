@@ -1,4 +1,4 @@
-//! Source content to hash and summarise (BR-05, pure).
+//! Source content fed to the Focus AI prompts (spec §3.6, pure; from Pulse).
 //!
 //! - Slack: every message by `seq`, one per line
 //!   `[<ISO time>] <author>(<me|other>): <text_vi ?? text_raw>`.
@@ -9,7 +9,8 @@
 //! issue header + body) is kept, then as many of the newest blocks as fit;
 //! `truncated` records the cut. GitHub's `hash` is the sha256 of the text;
 //! Slack's is over the original messages (`ts|user_id|subtype|text_raw` per
-//! line), so a re-translation alone never triggers a new digest.
+//! line), so a re-translation alone never changes it.
+#![allow(dead_code)] // Used by the Focus AI commands (P3).
 
 use crate::slack_threads::mrkdwn::{self, Links, Names};
 use sha2::{Digest as _, Sha256};

@@ -1,9 +1,10 @@
-//! GitHub side of the Pulse refresh: issue + comments + state + labels +
+//! GitHub source fetch for Focus AI (P3): issue + comments + state + labels +
 //! assignees + milestone over REST with the project's GitHub account, plus the
 //! issue's Start / Deadline / Status on the project's board (one GraphQL
 //! query on the issue's `projectItems`). Read-only.
+#![allow(dead_code)] // Used by the Focus AI commands (P3).
 
-use super::content::{BoardFields, IssueComment, IssueData};
+use super::source_content::{BoardFields, IssueComment, IssueData};
 use crate::commands::github::{board_item_fields, is_bot_user, parse_board_mappings};
 use crate::db::Db;
 use crate::slack_threads::CodedError;
@@ -15,7 +16,7 @@ use serde_json::Value;
 /// hand — the content keeps header + body + the newest comments within 60k
 /// anyway, so older pages would only be cut again.
 const COMMENTS_PER_PAGE: u8 = 100;
-const COMMENT_BUDGET: usize = super::content::MAX_CONTENT_CHARS;
+const COMMENT_BUDGET: usize = super::source_content::MAX_CONTENT_CHARS;
 /// Pages of `projectItems` / `fieldValues` looked through on the board query.
 const MAX_BOARD_PAGES: usize = 50;
 
@@ -36,7 +37,7 @@ pub trait GithubFetch: Send + Sync {
     async fn my_login(&self, project_id: &str) -> Option<String>;
 }
 
-/// HTTP status → watch error code (§7).
+/// HTTP status → source error code.
 pub fn status_error(status: u16, detail: impl Into<String>) -> CodedError {
     let code = match status {
         404 | 410 => "github_not_found",
@@ -292,7 +293,7 @@ impl GithubFetch for OctoGithub {
             Some(m) => match fetch_board(&client, &owner, &repo, number, &m).await {
                 Ok(b) => b,
                 Err(e) => {
-                    tracing::warn!(event = "pulse_board_query_failed", error = %e);
+                    tracing::warn!(event = "focus_board_query_failed", error = %e);
                     board_unavailable = true;
                     None
                 }
@@ -377,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn status_codes_map_to_watch_errors() {
+    fn status_codes_map_to_source_errors() {
         assert_eq!(status_error(404, "x").code, "github_not_found");
         assert_eq!(status_error(410, "x").code, "github_not_found");
         assert_eq!(status_error(401, "x").code, "github_auth");

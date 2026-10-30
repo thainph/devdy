@@ -1210,16 +1210,16 @@ mod tests {
     async fn remote_running_runs_do_not_make_this_device_busy() {
         let db = mem_db().await;
         let lease = future();
-        add_run(&db, "theirs", "running", Some("mini"), Some(&lease)).await;
-        assert!(!crate::pulse::store::any_run_running(&db).await.unwrap());
-        add_run(&db, "legacy", "running", None, None).await;
-        assert!(crate::pulse::store::any_run_running(&db).await.unwrap());
         let count = |db: Db| async move {
             sqlx::query_scalar::<_, i64>(&format!("SELECT COUNT(*) FROM runs WHERE status = 'running' AND {OWNED_HERE}"))
                 .fetch_one(&db)
                 .await
                 .unwrap()
         };
+        add_run(&db, "theirs", "running", Some("mini"), Some(&lease)).await;
+        assert_eq!(count(db.clone()).await, 0);
+        add_run(&db, "legacy", "running", None, None).await;
+        assert_eq!(count(db.clone()).await, 1);
         add_run(&db, "mine", "running", Some("me"), Some(&lease)).await;
         add_run(&db, "blank", "running", Some(""), None).await;
         assert_eq!(count(db.clone()).await, 3);

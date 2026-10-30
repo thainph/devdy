@@ -138,6 +138,16 @@ pub const PORTABLE_SETTING_KEYS: &[&str] = &[
     "cyber_fox_voice_rate",
     "cyber_fox_voice_pitch",
     "quit_background_policy",
+    // Focus (focus::settings); the calendar choice stays per machine.
+    "focus.work_start",
+    "focus.work_end",
+    "focus.work_days",
+    "focus.morning_time",
+    "focus.notify_enabled",
+    "focus.notify_kinds",
+    "focus.calibration_enabled",
+    "focus.ai_engine",
+    "focus.ai_model",
 ];
 
 #[tauri::command]

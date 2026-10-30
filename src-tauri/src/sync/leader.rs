@@ -2,7 +2,7 @@
 //! group (§7).
 //!
 //! Both live in synced `settings` rows so every device sees the same answer:
-//! - `sync_leader_device` = the device id that runs Pulse polling and Slack
+//! - `sync_leader_device` = the device id that runs Slack
 //!   recovery. Unset = every device runs them (as before sync).
 //! - `sync_device_name:<device id>` = `{"name", "last_seen"}`, one row per
 //!   device, written only by that device (so concurrent edits never collide).
