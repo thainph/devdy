@@ -58,6 +58,9 @@ struct SecretStore {
     /// on first read (see `take_legacy_google`). Never written anymore.
     #[serde(default)]
     google: Option<GoogleTokens>,
+    /// Two-way sync group membership (group key + this device's relay token).
+    #[serde(default)]
+    sync: Option<SyncSecrets>,
     /// Per-process guard: `"<provider>:<account_id>"` keys we already attempted to
     /// migrate from a legacy per-account item. A denied or missing legacy read is
     /// recorded here so it is NEVER retried within the same run — otherwise a
@@ -773,5 +776,52 @@ pub fn delete_remote_session() -> Result<()> {
     ensure_loaded(&mut guard);
     let store = guard.as_mut().expect("store loaded");
     store.remote.session = None;
+    persist(store)
+}
+
+// ---- Two-way sync -----------------------------------------------------------
+//
+// The sync group key and this device's relay token live in the SAME
+// consolidated Keychain item (one prompt per reinstall). SQLite never holds them.
+
+/// This device's membership of a sync group.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct SyncSecrets {
+    pub group_id: String,
+    /// 32-byte group key, hex.
+    pub group_key: String,
+    /// Bearer token this device authenticates to the relay's sync store with.
+    pub device_token: String,
+    /// Stable sync device id. Kept here until sync-core's `sync_device` table
+    /// is available; `sync::pair::device_id` prefers that table.
+    pub device_id: String,
+    /// Relay host token handed over at join, used when this device has no
+    /// Remote Control token of its own.
+    #[serde(default)]
+    pub relay_token: Option<String>,
+}
+
+/// Persist (or replace) the sync group membership.
+pub fn set_sync_secrets(sync: &SyncSecrets) -> Result<()> {
+    let mut guard = CACHE.lock().map_err(|_| anyhow!("secret cache poisoned"))?;
+    ensure_loaded(&mut guard);
+    let store = guard.as_mut().expect("store loaded");
+    store.sync = Some(sync.clone());
+    persist(store)
+}
+
+/// The sync group membership, if this device is in a group.
+pub fn get_sync_secrets() -> Option<SyncSecrets> {
+    let mut guard = CACHE.lock().ok()?;
+    ensure_loaded(&mut guard);
+    guard.as_ref().and_then(|store| store.sync.clone())
+}
+
+/// Forget the sync group membership (leave). No-op if absent.
+pub fn delete_sync_secrets() -> Result<()> {
+    let mut guard = CACHE.lock().map_err(|_| anyhow!("secret cache poisoned"))?;
+    ensure_loaded(&mut guard);
+    let store = guard.as_mut().expect("store loaded");
+    store.sync = None;
     persist(store)
 }
