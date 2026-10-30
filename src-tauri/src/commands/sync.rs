@@ -31,6 +31,10 @@ impl SyncManager {
         let Some(sync) = crate::secrets::get_sync_secrets() else {
             return Ok(());
         };
+        // Joined but not merged yet: pushing now would send local ids.
+        if crate::sync::bootstrap::is_pending(db).await? {
+            return Ok(());
+        }
         let params = crate::sync::pair::connect_params(db, &sync).await?;
         let keys = crate::sync::pair::keys_of(&sync)?;
         let store: Arc<dyn SyncStore> = Arc::new(SqliteSyncStore::new(db.clone(), sync.device_id.clone()));
@@ -50,7 +54,6 @@ impl SyncManager {
     }
 
     /// The outbox changed: sync soon. Cheap; safe to call from anywhere.
-    #[allow(dead_code)] // called by sync-core's capture path after merge
     pub async fn kick(&self) {
         if let Some(e) = self.engine.lock().await.as_ref() {
             e.kick();
@@ -85,6 +88,7 @@ pub async fn sync_create_group(
         return Err("this device is already in a sync group".into());
     }
     crate::sync::pair::create_group(db.inner()).await?;
+    crate::sync::bootstrap::prepare_new_group(db.inner()).await?;
     state.start(&app, db.inner()).await?;
     Ok(state.status().await)
 }
@@ -93,7 +97,6 @@ pub async fn sync_create_group(
 /// master password.
 #[tauri::command]
 pub async fn sync_join(
-    app: AppHandle,
     db: State<'_, Db>,
     state: State<'_, SyncManager>,
     device_alias: String,
@@ -110,7 +113,8 @@ pub async fn sync_join(
         return Err("password is required".into());
     }
     crate::sync::pair::join(db.inner(), alias, password).await?;
-    state.start(&app, db.inner()).await?;
+    // The engine starts after sync_bootstrap_commit.
+    crate::sync::bootstrap::mark_joined(db.inner()).await?;
     Ok(state.status().await)
 }
 
