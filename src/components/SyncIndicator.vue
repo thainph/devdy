@@ -27,7 +27,7 @@ const open = ref(false)
 useEscapeClose(open)
 
 const status = computed(() => store.status)
-const tone = computed(() => syncTone(status.value, store.mergePending))
+const tone = computed(() => syncTone(status.value, store.mergePending, store.busy))
 const paired = computed(() => status.value.state !== 'disabled' && !store.mergePending)
 const source = computed(() => store.source)
 const sourceOnline = computed(() => store.isOnline(source.value))

@@ -57,7 +57,8 @@ export const syncAcceptState = () => invoke<number | null>('sync_accept_state')
 export const syncJoinRespond = (requestId: string, allow: boolean) =>
   invoke<void>('sync_join_respond', { requestId, allow })
 /** `null` clears the leader: every device runs the singleton jobs. */
-export const syncSetLeader = (deviceId: string | null) => invoke<void>('sync_set_leader', { deviceId })
+/** Resolves `false` when the new leader has not confirmed yet (this device keeps the jobs meanwhile). */
+export const syncSetLeader = (deviceId: string | null) => invoke<boolean>('sync_set_leader', { deviceId })
 
 /** Queue every synced row for push; resolves to the count. */
 export const syncResyncAll = () => invoke<number>('sync_resync_all')

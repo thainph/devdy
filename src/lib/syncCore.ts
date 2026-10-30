@@ -137,18 +137,19 @@ export function missingProjects(p: Pick<BootstrapPreview, 'projects'>): ProjectM
 
 /**
  * Status dot state, most urgent first: merge pending, error, paused, offline,
- * parked rows, syncing (connecting / backlog), ok.
+ * parked rows, syncing (connecting, or a manual sync / folder sync running here), ok.
+ * Queued changes (`pending`) do not count: sync is on demand, they wait for another device's Sync.
  */
 export type SyncTone = 'off' | 'ok' | 'syncing' | 'merge' | 'parked' | 'paused' | 'offline' | 'error'
 
-export function syncTone(s: SyncStatus | null | undefined, mergePending = false): SyncTone {
+export function syncTone(s: SyncStatus | null | undefined, mergePending = false, running = false): SyncTone {
   if (mergePending) return 'merge'
   if (!s || s.state === 'disabled') return 'off'
   if (s.state === 'error') return 'error'
   if (s.paused) return 'paused'
   if (s.state === 'offline') return 'offline'
   if (s.parked > 0) return 'parked'
-  if (s.state === 'connecting' || s.pending > 0) return 'syncing'
+  if (s.state === 'connecting' || running) return 'syncing'
   return 'ok'
 }
 
@@ -270,6 +271,7 @@ const RELAY_CODES: readonly SyncErrorCode[] = [
   'peer_paused',
   'peer_timeout',
   'sync_not_connected',
+  'busy',
 ]
 
 /** Backend messages that carry no code. */

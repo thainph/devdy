@@ -44,6 +44,7 @@ use base64::Engine as _;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch, Notify};
@@ -55,6 +56,19 @@ pub const RUN_EVENT: &str = "sync://run";
 pub const OPS_FLUSH: &str = "ops_flush";
 /// Reply to [`OPS_FLUSH`]: `{last_seq}`, the relay seq to pull up to.
 pub const OPS_FLUSHED: &str = "ops_flushed";
+/// Non-last reply while a flush runs: `{done}` ops pushed so far. Keeps the
+/// requester's inactivity timeout from firing on a big backlog.
+pub const OPS_FLUSH_PROGRESS: &str = "ops_flush_progress";
+/// Request served by the engine: "you are the leader now — sync from me". The
+/// receiver runs a sync from the sender, then replies [`LEADER_SYNCED`].
+pub const LEADER_CHANGED: &str = "leader_changed";
+pub const LEADER_SYNCED: &str = "leader_synced";
+/// Non-last reply of long requests served by the engine (no body).
+pub const STILL_WORKING: &str = "still_working";
+/// Too many requests of that device in flight here.
+pub const PEER_BUSY: &str = "busy";
+/// Requests of one device served at once; more are answered [`PEER_BUSY`].
+const MAX_SERVED_PER_PEER: usize = 4;
 /// The other device has no live relay connection (the relay's code).
 #[allow(dead_code)] // matched by the UI; tests
 pub const PEER_OFFLINE: &str = "peer_offline";
@@ -119,6 +133,8 @@ impl SyncStatus {
 #[serde(rename_all = "snake_case")]
 pub enum RunPhase {
     Requesting,
+    /// The source is pushing its outbox (message: ops pushed so far).
+    Flushing,
     Pulling,
     Applying,
     Done,
@@ -148,6 +164,8 @@ pub struct Timing {
     pub pull_limit: u64,
     /// A request fails after this long without any reply (each one resets it).
     pub peer_timeout: Duration,
+    /// How often a long request served here sends a non-last reply.
+    pub peer_keepalive: Duration,
 }
 
 impl Default for Timing {
@@ -159,6 +177,7 @@ impl Default for Timing {
             push_backoff_max: Duration::from_secs(600),
             pull_limit: 500,
             peer_timeout: Duration::from_secs(120),
+            peer_keepalive: Duration::from_secs(15),
         }
     }
 }
@@ -174,6 +193,7 @@ impl Timing {
             push_backoff_max: Duration::from_millis(400),
             pull_limit: 500,
             peer_timeout: Duration::from_secs(10),
+            peer_keepalive: Duration::from_secs(2),
         }
     }
 }
@@ -214,6 +234,10 @@ struct Shared {
     /// held while waiting on another device.
     work: tokio::sync::Mutex<()>,
     blob_refusal: Mutex<BlobRefusal>,
+    /// Ops pushed by the flush in progress (progress replies).
+    flush_done: AtomicU64,
+    /// Requests being served, per requesting device.
+    serving: Mutex<HashMap<String, usize>>,
 }
 
 impl Shared {
@@ -230,6 +254,8 @@ impl Shared {
             handlers,
             work: tokio::sync::Mutex::new(()),
             blob_refusal: Mutex::new(BlobRefusal::default()),
+            flush_done: AtomicU64::new(0),
+            serving: Mutex::new(HashMap::new()),
         }
     }
 
@@ -357,6 +383,20 @@ impl EngineHandle {
         self.link().online_peers().await
     }
 
+    /// Tell `to`, the new leader, to sync from this device right away; Ok
+    /// once it did.
+    pub async fn notify_leader(&self, to: &str) -> Result<(), String> {
+        let mut replies = request(&self.ctx, to, LEADER_CHANGED, json!({})).await?;
+        loop {
+            match replies.recv().await {
+                Some(Ok((kind, _))) if kind == LEADER_SYNCED => return Ok(()),
+                Some(Ok(_)) => continue,
+                Some(Err(e)) => return Err(e),
+                None => return Err("peer connection lost".into()),
+            }
+        }
+    }
+
     /// Push this device's whole outbox now (what serving [`OPS_FLUSH`] does);
     /// returns the relay seq it reached.
     pub async fn flush_outbox(&self) -> Result<u64, String> {
@@ -365,7 +405,7 @@ impl EngineHandle {
 
     /// Manual sync from `source`: it flushes its outbox, this device pulls
     /// and applies. `progress` sees the non-final phases.
-    pub async fn run_from(&self, source: &str, progress: &(dyn Fn(RunPhase) + Send + Sync)) -> Result<SyncRunReport, String> {
+    pub async fn run_from(&self, source: &str, progress: &(dyn Fn(RunPhase, Option<String>) + Send + Sync)) -> Result<SyncRunReport, String> {
         run_from(&self.ctx, source, progress).await
     }
 }
@@ -545,7 +585,81 @@ fn on_peer_msg(ctx: &Arc<Ctx>, from: String, data: &str) {
         return;
     }
     let ctx = ctx.clone();
-    tokio::spawn(async move { serve_request(ctx, from, msg).await });
+    let Some(slot) = ServingSlot::take(&ctx, &from) else {
+        tracing::info!(event = "sync_peer_busy");
+        let reply = PeerReply { ctx: ctx.clone(), to: from, reply_to: msg.id };
+        tokio::spawn(async move {
+            let reply: Arc<dyn Reply> = Arc::new(reply);
+            let _ = reply.error(PEER_BUSY).await;
+        });
+        return;
+    };
+    tokio::spawn(async move {
+        serve_request(ctx, from, msg).await;
+        drop(slot);
+    });
+}
+
+/// One of the [`MAX_SERVED_PER_PEER`] requests a device may have served here
+/// at once; freed on drop.
+struct ServingSlot {
+    ctx: Arc<Ctx>,
+    from: String,
+}
+
+impl ServingSlot {
+    fn take(ctx: &Arc<Ctx>, from: &str) -> Option<ServingSlot> {
+        let mut serving = ctx.shared.serving.lock().ok()?;
+        let n = serving.entry(from.to_string()).or_default();
+        if *n >= MAX_SERVED_PER_PEER {
+            return None;
+        }
+        *n += 1;
+        Some(ServingSlot { ctx: ctx.clone(), from: from.to_string() })
+    }
+}
+
+impl Drop for ServingSlot {
+    fn drop(&mut self) {
+        if let Ok(mut serving) = self.ctx.shared.serving.lock() {
+            if let Some(n) = serving.get_mut(&self.from) {
+                *n = n.saturating_sub(1);
+                if *n == 0 {
+                    serving.remove(&self.from);
+                }
+            }
+        }
+    }
+}
+
+/// Run `work`, sending a non-last `kind` reply with `body()` every
+/// [`Timing::peer_keepalive`] until it ends, so the requester does not time out.
+///
+/// The sends run as their own future, polled alongside `work`: a send waits
+/// for the connection's request lock, which `work` may hold across a request,
+/// so awaiting it while `work` is not polled would deadlock.
+async fn with_keepalive<T>(
+    ctx: &Ctx,
+    reply: &Arc<dyn Reply>,
+    kind: &str,
+    body: impl Fn() -> Value,
+    work: impl std::future::Future<Output = T>,
+) -> T {
+    let every = ctx.timing.peer_keepalive;
+    let keepalive = async {
+        let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+        loop {
+            tick.tick().await;
+            if let Err(e) = reply.send(kind, body(), false).await {
+                tracing::debug!(event = "sync_peer_keepalive_failed", error = %e);
+            }
+        }
+    };
+    tokio::pin!(work, keepalive);
+    tokio::select! {
+        out = &mut work => out,
+        never = &mut keepalive => never,
+    }
 }
 
 async fn serve_request(ctx: Arc<Ctx>, from: String, msg: PeerMsg) {
@@ -558,8 +672,17 @@ async fn serve_request(ctx: Arc<Ctx>, from: String, msg: PeerMsg) {
     let sent = if ctx.shared.paused() {
         reply.error(PEER_PAUSED).await
     } else if msg.kind == OPS_FLUSH {
-        match flush(&ctx).await {
+        let done = || json!({ "done": ctx.shared.flush_done.load(Ordering::Relaxed) });
+        match with_keepalive(&ctx, &reply, OPS_FLUSH_PROGRESS, done, flush(&ctx)).await {
             Ok(last_seq) => reply.send(OPS_FLUSHED, json!({ "last_seq": last_seq }), true).await,
+            Err(e) => reply.error(e).await,
+        }
+    } else if msg.kind == LEADER_CHANGED {
+        // The sender made this device the leader: fetch that now, so its
+        // singleton jobs do not wait for the next manual sync.
+        let synced = run_from(&ctx, &from, &|_, _| {});
+        match with_keepalive(&ctx, &reply, STILL_WORKING, || json!({}), synced).await {
+            Ok(_) => reply.send(LEADER_SYNCED, json!({}), true).await,
             Err(e) => reply.error(e).await,
         }
     } else {
@@ -737,6 +860,7 @@ impl PeerLink for EngineLink {
 async fn flush(ctx: &Ctx) -> Result<u64, String> {
     let conn = ctx.shared.conn().ok_or(NOT_CONNECTED)?;
     let _work = ctx.shared.work.lock().await;
+    ctx.shared.flush_done.store(0, Ordering::Relaxed);
     let result = flush_on(ctx, &conn).await;
     if let Ok(parked) = ctx.store.parked_count().await {
         ctx.shared.update(|s| s.parked = parked);
@@ -752,6 +876,11 @@ async fn flush(ctx: &Ctx) -> Result<u64, String> {
         Err(e) => {
             let msg = e.to_string();
             tracing::info!(event = "sync_flush_failed", error = %msg);
+            // What is still queued (a failure may come before or midway
+            // through the push, which is what counts it).
+            if let Ok(left) = ctx.store.pending(PUSH_BATCH).await {
+                ctx.shared.update(|s| s.pending = left.len());
+            }
             let dead = is_dead(&e);
             let shown = msg.clone();
             ctx.shared.update(|s| {
@@ -800,17 +929,21 @@ async fn flush_on(ctx: &Ctx, conn: &Connection) -> Result<u64, CycleError> {
 async fn run_from(
     ctx: &Arc<Ctx>,
     source: &str,
-    progress: &(dyn Fn(RunPhase) + Send + Sync),
+    progress: &(dyn Fn(RunPhase, Option<String>) + Send + Sync),
 ) -> Result<SyncRunReport, String> {
     if source == ctx.params.device_id {
         return Err("cannot sync from this device itself".into());
     }
-    progress(RunPhase::Requesting);
+    progress(RunPhase::Requesting, None);
     let mut replies = request(ctx, source, OPS_FLUSH, json!({})).await?;
     let last_seq = loop {
         match replies.recv().await {
             Some(Ok((kind, body))) if kind == OPS_FLUSHED => {
                 break body.get("last_seq").and_then(Value::as_u64).unwrap_or(0);
+            }
+            Some(Ok((kind, body))) if kind == OPS_FLUSH_PROGRESS => {
+                let done = body.get("done").and_then(Value::as_u64).unwrap_or(0);
+                progress(RunPhase::Flushing, Some(done.to_string()));
             }
             Some(Ok(_)) => continue,
             Some(Err(e)) => return Err(e),
@@ -1056,6 +1189,7 @@ async fn push_all(ctx: &Ctx, conn: &Connection) -> Result<Option<u64>, CycleErro
             }
             Err(e) => return Err(e.into()),
         }
+        ctx.shared.flush_done.fetch_add(n as u64, Ordering::Relaxed);
         tracing::debug!(event = "sync_pushed", ops = n);
     }
     if acked.is_some() {
@@ -1101,13 +1235,13 @@ async fn pull_all(
     ctx: &Ctx,
     conn: &Connection,
     blobs: &RelayBlobs<'_>,
-    progress: &(dyn Fn(RunPhase) + Send + Sync),
+    progress: &(dyn Fn(RunPhase, Option<String>) + Send + Sync),
 ) -> Result<PullCounts, CycleError> {
     let mut counts = PullCounts::default();
     let mut cursor = ctx.store.cursor().await.map_err(CycleError::Store)?;
     let mut undecryptable = 0usize;
     loop {
-        progress(RunPhase::Pulling);
+        progress(RunPhase::Pulling, None);
         let (items, last_seq, more) = conn.pull(cursor, ctx.timing.pull_limit).await?;
         let mut next = cursor;
         let mut ops = Vec::with_capacity(items.len());
@@ -1126,7 +1260,7 @@ async fn pull_all(
         }
         counts.pulled += ops.len();
         if !ops.is_empty() {
-            progress(RunPhase::Applying);
+            progress(RunPhase::Applying, None);
         }
         // Rows first: a file op never depends on them, but a run's row
         // landing before its log keeps the UI consistent.
@@ -1199,6 +1333,8 @@ mod tests {
         parked: Vec<(String, String)>,
         /// Every `stage` uploads a blob (a live file that keeps growing).
         stage_blobs: bool,
+        /// Every `stage` takes this long (a big backlog).
+        stage_delay: Option<Duration>,
     }
 
     impl FakeStore {
@@ -1271,6 +1407,10 @@ mod tests {
             Ok(self.inner.lock().unwrap().parked.len() as u64)
         }
         async fn stage(&self, blobs: &dyn BlobIo) -> Result<(), String> {
+            let delay = self.inner.lock().unwrap().stage_delay;
+            if let Some(d) = delay {
+                tokio::time::sleep(d).await;
+            }
             if self.inner.lock().unwrap().stage_blobs {
                 blobs.put(b"growing tail").await?;
             }
@@ -1318,7 +1458,7 @@ mod tests {
     impl Device {
         /// "Sync from `source`" on this device.
         async fn sync_from(&self, source: &str) -> Result<SyncRunReport, String> {
-            self.engine.handle().run_from(source, &|_| {}).await
+            self.engine.handle().run_from(source, &|_, _| {}).await
         }
         fn link(&self) -> Arc<dyn PeerLink> {
             self.engine.handle().link()
@@ -1390,7 +1530,7 @@ mod tests {
         let report = b
             .engine
             .handle()
-            .run_from("dev-a", &move |p| seen.lock().unwrap().push(p))
+            .run_from("dev-a", &move |p, _| seen.lock().unwrap().push(p))
             .await
             .unwrap();
         assert_eq!(report, SyncRunReport { pulled: 2, applied: 2, last_seq: 2 });
@@ -1694,7 +1834,7 @@ mod tests {
             let b = b.clone();
             async move {
                 for _ in 0..100 {
-                    b.run_from("dev-a", &|_| {}).await.unwrap();
+                    b.run_from("dev-a", &|_, _| {}).await.unwrap();
                     if done() {
                         return;
                     }
@@ -1915,6 +2055,197 @@ mod tests {
         assert_eq!(store.parked_count().await.unwrap(), 0);
     }
 
+    /// Review #3: a flush that takes longer than the requester's inactivity
+    /// timeout keeps it alive with progress replies.
+    #[tokio::test]
+    async fn a_long_flush_sends_progress_and_does_not_time_out() {
+        let relay = TestRelay::start().await;
+        relay.create_group("g1");
+        let mut src = fast();
+        src.peer_keepalive = Duration::from_millis(250);
+        let mut dst = fast();
+        dst.peer_timeout = Duration::from_millis(1500);
+        let a = device(&relay, "dev-a", src);
+        let b = device(&relay, "dev-b", dst);
+        online(&[&a, &b]).await;
+        a.store.inner.lock().unwrap().stage_delay = Some(Duration::from_millis(4000));
+        a.store.add("notes", "n1", "slow");
+        let phases = Arc::new(Mutex::new(Vec::new()));
+        let seen = phases.clone();
+        let report = b
+            .engine
+            .handle()
+            .run_from("dev-a", &move |p, m| seen.lock().unwrap().push((p, m)))
+            .await
+            .unwrap();
+        assert_eq!(report.applied, 1);
+        let phases = phases.lock().unwrap().clone();
+        assert!(
+            phases.iter().any(|(p, m)| *p == RunPhase::Flushing && m.as_deref() == Some("0")),
+            "{phases:?}"
+        );
+        a.engine.stop().await;
+        b.engine.stop().await;
+    }
+
+    /// Waits until released.
+    struct Hold(Arc<Notify>);
+
+    #[async_trait]
+    impl PeerHandler for Hold {
+        fn kinds(&self) -> &'static [&'static str] {
+            &["hold"]
+        }
+        async fn handle(&self, _link: Arc<dyn PeerLink>, _from: String, _kind: String, _body: Value, reply: Arc<dyn Reply>) {
+            self.0.notified().await;
+            let _ = reply.send("held", json!({}), true).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn requests_of_one_device_beyond_the_cap_are_busy() {
+        let relay = TestRelay::start().await;
+        relay.create_group("g1");
+        let a = device(&relay, "dev-a", fast());
+        let b = device(&relay, "dev-b", fast());
+        online(&[&a, &b]).await;
+        let release = Arc::new(Notify::new());
+        b.handlers.write().unwrap().push(Arc::new(Hold(release.clone())));
+        let mut held = Vec::new();
+        for _ in 0..MAX_SERVED_PER_PEER {
+            held.push(a.link().request("dev-b", "hold", json!({})).await.unwrap());
+        }
+        eventually("all held", || {
+            b.engine.handle().ctx.shared.serving.lock().unwrap().get("dev-a") == Some(&MAX_SERVED_PER_PEER)
+        })
+        .await;
+        let extra = collect(a.link().request("dev-b", "hold", json!({})).await.unwrap()).await;
+        assert_eq!(extra, vec![Err(PEER_BUSY.to_string())]);
+        release.notify_waiters();
+        for r in held {
+            assert_eq!(collect(r).await, vec![Ok(("held".to_string(), json!({})))]);
+        }
+        eventually("slots freed", || b.engine.handle().ctx.shared.serving.lock().unwrap().is_empty()).await;
+        a.engine.stop().await;
+        b.engine.stop().await;
+    }
+
+    /// Review #5: the old leader tells the new one, which syncs from it at
+    /// once (and confirms); an offline new leader is reported.
+    #[tokio::test]
+    async fn the_new_leader_syncs_from_the_old_one_when_told() {
+        let relay = TestRelay::start().await;
+        relay.create_group("g1");
+        let a = device(&relay, "dev-a", fast());
+        let b = device(&relay, "dev-b", fast());
+        online(&[&a, &b]).await;
+        a.store.add("settings", "sync_leader_device", "dev-b");
+        a.engine.handle().notify_leader("dev-b").await.unwrap();
+        assert_eq!(b.store.applied_titles(), vec!["dev-b"]);
+        assert_eq!(a.engine.handle().notify_leader("dev-z").await, Err(PEER_OFFLINE.to_string()));
+        a.engine.stop().await;
+        b.engine.stop().await;
+    }
+
+    /// Review #8: a failed flush leaves `pending` at what is still queued.
+    #[tokio::test]
+    async fn a_failed_flush_recounts_pending() {
+        let relay = TestRelay::start().await;
+        relay.create_group("g1");
+        let a = device(&relay, "dev-a", fast());
+        let b = device(&relay, "dev-b", fast());
+        online(&[&a, &b]).await;
+        relay.fail_blob_puts_of("dev-b", Some("quota_exceeded"));
+        b.store.inner.lock().unwrap().stage_blobs = true;
+        b.store.add("notes", "n1", "one");
+        b.store.add("notes", "n2", "two");
+        assert!(a.sync_from("dev-b").await.is_err());
+        assert_eq!(b.engine.status().pending, 2);
+        relay.fail_blob_puts_of("dev-b", None);
+        a.sync_from("dev-b").await.unwrap();
+        assert_eq!(b.engine.status().pending, 0);
+        a.engine.stop().await;
+        b.engine.stop().await;
+    }
+
+    /// Review #4: "Continue here" syncs from the owner first, so a lease the
+    /// owner still renews is seen as live (the take-over is refused), and an
+    /// unreachable owner is reported instead of read as expired.
+    #[tokio::test]
+    async fn continue_here_decides_on_the_owners_current_lease() {
+        use crate::sync::codec::PathCtx;
+        use crate::sync::files::tests::{mem_db, tempdir};
+        use crate::sync::sessions;
+        use crate::sync::store::SqliteSyncStore;
+
+        let relay = TestRelay::start().await;
+        relay.create_group("g1");
+        let mut sides = Vec::new();
+        for _ in 0..2 {
+            let home = tempdir();
+            let db = mem_db().await;
+            let id = crate::sync::ensure_device(&db).await.unwrap();
+            let paths = PathCtx::with_home(home.path()).with_app_data(home.path().join("data"));
+            let store = SqliteSyncStore::new(db.clone(), id.clone()).with_paths(paths);
+            let sink: StatusSink = Arc::new(|_: &SyncStatus| {});
+            let engine = SyncEngine::start(params(&relay, &id), keys(), Arc::new(store), sink, false, fast());
+            sides.push((home, db, id, engine));
+        }
+        eventually("online", || sides.iter().all(|s| s.3.status().state == SyncState::Online)).await;
+        let (home_b, db_b, _, engine_b) = sides.pop().unwrap();
+        let (home_a, db_a, id_a, engine_a) = sides.pop().unwrap();
+        let (db_a, db_b, id_a) = (&db_a, &db_b, &id_a);
+        let project = home_a.path().join("p");
+        std::fs::create_dir_all(&project).unwrap();
+        sqlx::query("INSERT INTO projects (id, name, path, created_at) VALUES ('p1', 'p', ?, 'x')")
+            .bind(project.to_string_lossy().as_ref())
+            .execute(db_a)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO runs (id, project_id, type, status, engine, created_at) VALUES ('r1', 'p1', 'session', 'running', 'claude', 'x')")
+            .execute(db_a)
+            .await
+            .unwrap();
+        sessions::claim(db_a, "r1", &project.to_string_lossy()).await.unwrap();
+        engine_b.handle().run_from(id_a, &|_, _| {}).await.unwrap();
+        let lease = |db: &crate::db::Db| {
+            let db = db.clone();
+            async move {
+                sqlx::query_scalar::<_, Option<String>>("SELECT lease_until FROM runs WHERE id = 'r1'")
+                    .fetch_one(&db)
+                    .await
+                    .unwrap()
+            }
+        };
+        // A renews while it runs; B only has the lease of its last sync.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        sessions::renew(db_a, &["r1".to_string()]).await.unwrap();
+        assert_ne!(lease(db_b).await, lease(db_a).await);
+
+        sessions::refresh_from_owner(Some(engine_b.handle()), id_a).await.unwrap();
+        assert_eq!(lease(db_b).await, lease(db_a).await, "B decides on A's current lease");
+        let err = sessions::take_over(db_b, "r1", false, false, false).await.unwrap_err();
+        assert!(!err.is_empty(), "still running on A: refused");
+
+        engine_a.stop().await;
+        for _ in 0..200 {
+            if engine_b.handle().online_peers().await.unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(
+            sessions::refresh_from_owner(Some(engine_b.handle()), id_a).await,
+            Err(PEER_OFFLINE.to_string())
+        );
+        assert_eq!(
+            sessions::refresh_from_owner(None, id_a).await,
+            Err(NOT_CONNECTED.to_string())
+        );
+        engine_b.stop().await;
+        drop((home_a, home_b));
+    }
+
     type Side = (crate::db::Db, Ctx, Connection);
 
     /// A device on a real SQLite store whose cycle steps are driven by hand.
@@ -1941,7 +2272,7 @@ mod tests {
 
     async fn pull_side(side: &Side) {
         let blobs = RelayBlobs::new(&side.2, &side.1.keys);
-        pull_all(&side.1, &side.2, &blobs, &|_| {}).await.unwrap();
+        pull_all(&side.1, &side.2, &blobs, &|_, _| {}).await.unwrap();
     }
 
     async fn owner_of(db: &crate::db::Db, run: &str) -> (Option<String>, i64, Option<String>) {
@@ -2161,7 +2492,7 @@ mod tests {
         }
         async fn pull(side: &(crate::db::Db, Ctx, Connection)) -> Result<(), CycleError> {
             let blobs = RelayBlobs::new(&side.2, &side.1.keys);
-            pull_all(&side.1, &side.2, &blobs, &|_| {}).await.map(|_| ())
+            pull_all(&side.1, &side.2, &blobs, &|_, _| {}).await.map(|_| ())
         }
 
         // A creates the row; B has it.
