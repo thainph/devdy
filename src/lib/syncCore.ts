@@ -249,6 +249,7 @@ export const SYNC_ERROR_CODES = [
   'forbidden',
   'quota_exceeded',
   'device_revoked',
+  'peer_offline',
 ] as const
 export type SyncErrorCode = (typeof SYNC_ERROR_CODES)[number]
 
@@ -262,6 +263,7 @@ const RELAY_CODES: readonly SyncErrorCode[] = [
   'forbidden',
   'quota_exceeded',
   'device_revoked',
+  'peer_offline',
 ]
 
 /** Backend messages that carry no code. */

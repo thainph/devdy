@@ -5,8 +5,12 @@ import { invoke } from '@/lib/tauri'
 import type {
   BootstrapPreview, BootstrapReport, JoinRequest, ParkedRow, ProjectMapping, SyncDevice, SyncStatus,
 } from '@/lib/syncCore'
+import type {
+  FolderPreview, FolderProgress, ProjectPrefPatch, SyncPrefs, SyncRunEvent, SyncRunReport,
+} from '@/lib/syncOnDemand'
 
 export * from '@/lib/syncCore'
+export * from '@/lib/syncOnDemand'
 
 export const SYNC_STATUS_EVENT = 'sync://status'
 /** Synced DB rows were applied; payload `{ tables: string[] }`. */
@@ -17,6 +21,10 @@ export const SYNC_JOIN_REQUEST_EVENT = 'sync://join-request'
 export const SYNC_JOIN_RESOLVED_EVENT = 'sync://join-resolved'
 /** Host side: the "accept a new device" window opened / closed; `{ expires_at }`. */
 export const SYNC_ACCEPT_WINDOW_EVENT = 'sync://accept-window'
+/** On-demand sync progress (`sync_run`): `{ phase, message? }`. */
+export const SYNC_RUN_EVENT = 'sync://run'
+/** Project folder sync progress (`sync_folder_apply`), one per project update. */
+export const SYNC_FOLDER_EVENT = 'sync://folder'
 
 export const syncStatus = () => invoke<SyncStatus>('sync_status')
 export const syncCreateGroup = () => invoke<SyncStatus>('sync_create_group')
@@ -62,6 +70,34 @@ export const syncRebootstrap = () => invoke<void>('sync_rebootstrap')
 export const syncProjectMappingList = () => invoke<ProjectMapping[]>('sync_project_mapping_list')
 export const syncProjectMappingSet = (projectId: string, localPath: string) =>
   invoke<ProjectMapping>('sync_project_mapping_set', { projectId, localPath })
+
+// ---- On-demand sync (docs/03-design/on-demand-sync.md §2–§4) ----
+/** Ask `sourceDevice` to push its outbox, then pull + apply it here. Fails with `peer_offline`. */
+export const syncRun = (sourceDevice: string) => invoke<SyncRunReport>('sync_run', { sourceDevice })
+/** Other devices of the group with a live relay connection. */
+export const syncPeersOnline = () => invoke<string[]>('sync_peers_online')
+export const syncPrefsGet = () => invoke<SyncPrefs>('sync_prefs_get')
+export const syncPrefsSetSource = (deviceId: string) => invoke<void>('sync_prefs_set_source', { deviceId })
+/** `off` = disabled category ids. */
+export const syncPrefsSetCategories = (off: string[]) => invoke<void>('sync_prefs_set_categories', { off })
+export const syncProjectPrefSet = (projectId: string, patch: ProjectPrefPatch) =>
+  invoke<void>('sync_project_pref_set', { projectId, patch })
+/** What syncing these projects' folders from `sourceDevice` would do (nothing written). */
+export const syncFolderPreview = (sourceDevice: string, projectIds: string[]) =>
+  invoke<FolderPreview[]>('sync_folder_preview', { sourceDevice, projectIds })
+/** Starts in the background; progress comes as `sync://folder`. */
+export const syncFolderApply = (sourceDevice: string, projectIds: string[]) =>
+  invoke<void>('sync_folder_apply', { sourceDevice, projectIds })
+/** Stop the running folder sync; already-written contents are kept for next time. */
+export const syncFolderCancel = () => invoke<void>('sync_folder_cancel')
+
+export function onSyncRun(cb: (e: SyncRunEvent) => void): Promise<UnlistenFn> {
+  return listen<SyncRunEvent>(SYNC_RUN_EVENT, (e) => cb(e.payload))
+}
+
+export function onSyncFolder(cb: (e: FolderProgress) => void): Promise<UnlistenFn> {
+  return listen<FolderProgress>(SYNC_FOLDER_EVENT, (e) => cb(e.payload))
+}
 
 export function onSyncStatus(cb: (s: SyncStatus) => void): Promise<UnlistenFn> {
   return listen<SyncStatus>(SYNC_STATUS_EVENT, (e) => cb(e.payload))
