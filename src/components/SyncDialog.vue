@@ -21,11 +21,14 @@ import {
   folderPercent,
   formatBytes,
   formatEta,
+  isPlanChanged,
+  isTruncated,
   previewIsNoop,
   previewTotals,
   summarizePreview,
   syncErrorCode,
   type FolderPreview,
+  type PreviewFile,
 } from '@/lib/sync'
 
 const { t, te } = useI18n()
@@ -56,6 +59,27 @@ function toggleExpanded(id: string) {
 function skipLabel(reason: string): string {
   const key = `settings.sync.run.skipped.${reason}`
   return te(key) ? t(key) : t('settings.sync.run.skipped.other', { reason })
+}
+
+function skipItemLabel(reason: string): string {
+  const key = `settings.sync.run.skipItem.${reason}`
+  return te(key) ? t(key) : reason
+}
+
+/** The file lists of a preview with their exact counts (the lists themselves are capped). */
+function fileLists(p: FolderPreview): Array<{ key: string; files: PreviewFile[]; count: number; truncated: boolean }> {
+  return ([
+    ['listOverwrite', p.overwrite, p.overwrite_count],
+    ['listAdd', p.add, p.add_count],
+    ['listDelete', p.delete, p.delete_count],
+  ] as const)
+    .map(([key, files, count]) => ({
+      key,
+      files: files ?? [],
+      count: Math.max(count ?? 0, files?.length ?? 0),
+      truncated: isTruncated(files, count),
+    }))
+    .filter((l) => l.count > 0)
 }
 
 function branchLabel(name: string | null): string {
@@ -115,7 +139,12 @@ function retry() {
   else void store.loadPreview()
 }
 
-const canRetry = computed(() => run.stage === 'error' || (run.stage === 'done' && store.failedIds.length > 0))
+/** Apply aborted: the source's folder changed beyond the confirmed preview. */
+const planChanged = computed(() =>
+  isPlanChanged(run.error) || run.applying.some((id) => isPlanChanged(run.progress[id]?.message)))
+
+const canRetry = computed(() =>
+  !planChanged.value && (run.stage === 'error' || (run.stage === 'done' && store.failedIds.length > 0)))
 
 function openProject(id: string) {
   close()
@@ -224,6 +253,24 @@ async function viewBackup(id: string) {
                   <p v-if="s.tooLarge" class="text-amber-600 dark:text-amber-400">
                     {{ t('settings.sync.run.preview.tooLarge', { n: s.tooLarge }) }}
                   </p>
+                  <template v-for="r in s.rewound" :key="`rw:${r.repo}`">
+                    <p v-for="b in r.branches" :key="`${r.repo}:${b}`" class="flex items-start gap-1 text-amber-600 dark:text-amber-400">
+                      <AlertTriangle class="mt-px h-3 w-3 shrink-0" :stroke-width="1.75" />
+                      <span>
+                        <span v-if="r.repo" class="font-mono">{{ r.repo }}: </span>
+                        {{ t('settings.sync.run.preview.rewound', { branch: b }) }}
+                      </span>
+                    </p>
+                  </template>
+                  <details v-if="p.skipped_items?.length" class="text-muted-foreground">
+                    <summary class="cursor-pointer">{{ t('settings.sync.run.preview.skippedItems', { n: p.skipped_items.length }) }}</summary>
+                    <ul class="mt-1 max-h-32 space-y-0.5 overflow-y-auto pl-3">
+                      <li v-for="it in p.skipped_items" :key="`${it.reason}:${it.path}`" class="flex justify-between gap-3">
+                        <span class="truncate font-mono" :title="it.path">{{ it.path || '.' }}</span>
+                        <span class="shrink-0">{{ skipItemLabel(it.reason) }}<template v-if="it.size"> · {{ formatBytes(it.size) }}</template></span>
+                      </li>
+                    </ul>
+                  </details>
                   <template v-if="s.overwrite || s.add || s.delete || s.tooLarge">
                     <button
                       type="button"
@@ -234,17 +281,12 @@ async function viewBackup(id: string) {
                       {{ expanded.has(p.project_id) ? t('settings.sync.run.preview.hideDetails') : t('settings.sync.run.preview.details') }}
                     </button>
                     <div v-if="expanded.has(p.project_id)" class="max-h-48 space-y-1.5 overflow-y-auto rounded-md border border-border/60 p-2">
-                      <div
-                        v-for="[key, files] in ([
-                          ['listOverwrite', p.overwrite],
-                          ['listAdd', p.add],
-                          ['listDelete', p.delete],
-                        ] as const)"
-                        v-show="files?.length"
-                        :key="key"
-                      >
-                        <p class="font-medium text-muted-foreground">{{ t(`settings.sync.run.preview.${key}`) }} ({{ files?.length ?? 0 }})</p>
-                        <p v-for="f in files" :key="f.path" class="flex justify-between gap-3 font-mono">
+                      <div v-for="l in fileLists(p)" :key="l.key">
+                        <p class="font-medium text-muted-foreground">{{ t(`settings.sync.run.preview.${l.key}`) }} ({{ l.count }})</p>
+                        <p v-if="l.truncated" class="text-amber-600 dark:text-amber-400">
+                          {{ t('settings.sync.run.preview.truncated', { shown: l.files.length, total: l.count }) }}
+                        </p>
+                        <p v-for="f in l.files" :key="f.path" class="flex justify-between gap-3 font-mono">
                           <span class="truncate" :title="f.path">{{ f.path }}</span>
                           <span class="shrink-0 text-muted-foreground">{{ formatBytes(f.size) }}</span>
                         </p>
@@ -264,6 +306,16 @@ async function viewBackup(id: string) {
           </li>
         </ul>
       </section>
+
+      <!-- Apply refused: the source changed since the preview -->
+      <div
+        v-if="planChanged && !store.busy"
+        class="flex items-start gap-2 rounded-lg border border-amber-500/50 bg-amber-500/5 p-3 text-xs"
+      >
+        <AlertTriangle class="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" :stroke-width="1.75" />
+        <p class="min-w-0 flex-1">{{ t('settings.sync.run.planChanged') }}</p>
+        <Button variant="outline" size="xs" @click="store.reviewAgain()">{{ t('settings.sync.run.review') }}</Button>
+      </div>
 
       <!-- Folder progress / result -->
       <section v-if="run.applying.length && (run.stage === 'applying' || run.stage === 'done' || run.stage === 'error')" class="space-y-2">
@@ -320,7 +372,7 @@ async function viewBackup(id: string) {
         </p>
         <Button variant="outline" size="sm" @click="cancelPreview">{{ t('settings.sync.run.cancel') }}</Button>
         <Button size="sm" :disabled="!totals.count" @click="store.applyFolders()">
-          {{ t('settings.sync.run.apply', { n: totals.count }) }}
+          {{ totals.files ? t('settings.sync.run.applyFiles', { n: totals.count, files: totals.files }) : t('settings.sync.run.apply', { n: totals.count }) }}
         </Button>
       </template>
       <template v-else-if="run.stage === 'applying'">

@@ -257,6 +257,13 @@ export const useSyncStore = defineStore('sync', () => {
     }
   }
 
+  /** The source's folder changed past the confirmed preview: drop the apply and preview again. */
+  async function reviewAgain() {
+    if (busy.value) return
+    Object.assign(run, { applying: [], progress: {}, started: {}, stopped: false, error: null })
+    await loadPreview()
+  }
+
   function toggleSelected(id: string, on: boolean) {
     run.selected = on ? [...new Set([...run.selected, id])] : run.selected.filter((x) => x !== id)
   }
@@ -347,7 +354,7 @@ export const useSyncStore = defineStore('sync', () => {
     status, mergePending, devices, prefs, peersOnline, includeFolders, lastRun, dialogOpen, run,
     source, busy, percent, failedIds,
     deviceName, isOnline, refresh, set, setMergePending, loadDevices, loadPrefs, refreshPeers, loadForSync,
-    setSource, setIncludeFolders, syncFrom, loadPreview, toggleSelected, applyFolders, cancelFolders, resetRun,
+    setSource, setIncludeFolders, syncFrom, loadPreview, reviewAgain, toggleSelected, applyFolders, cancelFolders, resetRun,
     start, stop,
   }
 })
