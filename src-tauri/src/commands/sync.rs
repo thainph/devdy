@@ -11,11 +11,11 @@ use crate::sync::leader::{self, DeviceInfo};
 use crate::sync::store::{SqliteSyncStore, SyncStore};
 use crate::sync::transport::{Connection, TransportError};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
 
 const KEY_PAUSED: &str = "sync_paused";
-const KEY_SECRETS: &str = "sync_secrets_enabled";
+const KEY_SECRETS: &str = crate::sync::secrets::SETTING;
 
 /// App-wide sync state (Tauri managed): the running engine, if any.
 #[derive(Clone, Default)]
@@ -36,7 +36,13 @@ impl SyncManager {
         };
         let params = crate::sync::pair::connect_params(db, &sync).await?;
         let keys = crate::sync::pair::keys_of(&sync)?;
-        let store: Arc<dyn SyncStore> = Arc::new(SqliteSyncStore::new(db.clone(), sync.device_id.clone()));
+        let paths = crate::sync::codec::PathCtx::from_env()
+            .with_app_data(app.path().app_data_dir().map_err(|e| format!("no app data dir: {e}"))?);
+        let store: Arc<dyn SyncStore> = Arc::new(
+            SqliteSyncStore::new(db.clone(), sync.device_id.clone())
+                .with_paths(paths)
+                .with_secrets(Arc::new(crate::sync::secrets::KeychainBackend)),
+        );
         let paused = crate::remote::get_setting(db, KEY_PAUSED).await.as_deref() == Some("true");
         let emitter = app.clone();
         let sink: StatusSink = Arc::new(move |s: &SyncStatus| {
@@ -167,8 +173,8 @@ pub async fn sync_get_secrets(db: State<'_, Db>) -> Result<bool, String> {
     Ok(crate::remote::get_setting(db.inner(), KEY_SECRETS).await.as_deref() != Some("false"))
 }
 
-/// Whether Keychain secrets are synced (D4, default on). Stored only for now;
-/// secrets sync lands in wave 2.
+/// Whether Keychain secrets (and managed SSH key files) are synced (D4,
+/// default on).
 #[tauri::command]
 pub async fn sync_set_secrets(db: State<'_, Db>, enabled: bool) -> Result<(), String> {
     crate::remote::set_setting(db.inner(), KEY_SECRETS, if enabled { "true" } else { "false" }).await

@@ -3,6 +3,8 @@
 //! Core: table registry, trigger-based change capture into `sync_outbox`, HLC,
 //! row codec, and `SqliteSyncStore` — the only thing the sync engine talks to.
 //! Client: crypto, relay transport, push/pull engine and pairing.
+//! Non-DB ops: `files` (library, run logs, transcripts, keys) and `secrets`
+//! (Keychain items).
 
 pub mod apply;
 pub mod capture;
@@ -13,6 +15,9 @@ pub mod op;
 pub mod schema;
 pub mod sessions;
 pub mod store;
+
+pub mod files;
+pub mod secrets;
 
 pub mod crypto;
 pub mod engine;
