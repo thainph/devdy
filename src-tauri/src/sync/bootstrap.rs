@@ -1677,16 +1677,7 @@ mod tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, body).unwrap();
         };
-        let fast = Timing {
-            outbox_poll: Duration::from_millis(50),
-            periodic: Duration::from_secs(3600),
-            kick_debounce: Duration::from_millis(10),
-            backoff_min: Duration::from_millis(50),
-            backoff_max: Duration::from_millis(200),
-            rejected_retry: Duration::from_secs(3600),
-            push_backoff_max: Duration::from_millis(400),
-            pull_limit: 500,
-        };
+        let fast = Timing::fast();
         let file_timing = crate::sync::files::Timing { quick: Duration::from_millis(50), full: Duration::from_millis(150) };
         let keys = SyncKeys::derive(&generate_group_key()).unwrap();
         let relay = TestRelay::start().await;
@@ -1754,13 +1745,19 @@ mod tests {
                 Box::pin(async move { count(&db, "SELECT COUNT(*) FROM sync_outbox").await == 0 })
             }
         };
-        eventually("M uploaded", outbox_empty(&db_m)).await;
-        let files_up = || -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
-            let relay = relay.clone();
-            Box::pin(async move { relay.blob_counts().0 >= 5 })
+        // On demand: M uploads when asked to flush.
+        let flushed = |engine: &SyncEngine, db: &Db, blobs: usize| {
+            let (h, db, relay) = (engine.handle(), db.clone(), relay.clone());
+            move || -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
+                let (h, db, relay) = (h.clone(), db.clone(), relay.clone());
+                Box::pin(async move {
+                    h.flush_outbox().await.is_ok()
+                        && count(&db, "SELECT COUNT(*) FROM sync_outbox").await == 0
+                        && relay.blob_counts().0 >= blobs
+                })
+            }
         };
-        eventually("M's files on the relay", files_up).await;
-        eventually("M's file ops pushed", outbox_empty(&db_m)).await;
+        eventually("M uploaded its rows and files", flushed(&engine_m, &db_m, 5)).await;
 
         // ---- B: the MacBook, with its own (overlapping) data ----
         let db_b = mem_db().await;
@@ -1864,10 +1861,12 @@ mod tests {
         drop(conn_b);
         let engine_b = SyncEngine::start(params(&dev_b), keys.clone(), Arc::new(store_b), quiet.clone(), false, fast.clone());
         let got_note = || -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
-            let db = db_m.clone();
-            Box::pin(async move { count(&db, "SELECT COUNT(*) FROM notes WHERE id = 'no-B'").await == 1 })
+            let (db, m, dev_b) = (db_m.clone(), engine_m.handle(), dev_b.clone());
+            Box::pin(async move {
+                m.run_from(&dev_b, &|_| {}).await.is_ok() && count(&db, "SELECT COUNT(*) FROM notes WHERE id = 'no-B'").await == 1
+            })
         };
-        eventually("B's note on M", got_note).await;
+        eventually("B's note on M after syncing from B", got_note).await;
         eventually("B pushed", outbox_empty(&db_b)).await;
         tokio::time::sleep(Duration::from_millis(300)).await;
         for (tbl, id) in [("projects", "pr-M"), ("skills", "sk-M"), ("claude_accounts", "ca-M"), ("github_accounts", "gh-M"), ("servers", "sv-M"), ("runs", "rn-M"), ("notes", "no-M")] {
