@@ -104,7 +104,6 @@ pub fn spec_hash() -> String {
 /// was not pushed belongs to no group any more (a later join queues the
 /// local-only rows again).
 // Wired by pair/bootstrap (create / join / leave).
-#[cfg_attr(not(test), allow(dead_code))]
 pub async fn set_member(db: &Db, member: bool) -> Result<(), String> {
     let err = |e: sqlx::Error| e.to_string();
     let mut tx = db.begin().await.map_err(err)?;
