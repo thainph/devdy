@@ -277,17 +277,104 @@ CREATE TABLE IF NOT EXISTS invites (
 /// Columns added after the first release of the store (existing databases).
 const BLOB_COLUMNS: &[(&str, &str)] = &[("device_id", "TEXT"), ("released_at", "INTEGER")];
 
-/// Open (creating if needed) the sync database.
+/// Tables holding per-group rows (`group_id`), children of `groups`.
+const GROUP_TABLES: &[&str] = &["ops", "blobs", "epochs", "invites", "devices"];
+
+/// Open (creating if needed) the sync database, then purge the groups every
+/// device has left.
 pub fn open_db(path: &Path) -> rusqlite::Result<Connection> {
-    let conn = Connection::open(path)?;
+    let mut conn = Connection::open(path)?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    // Only takes effect on a new file (an existing one switches on VACUUM).
+    conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.execute_batch(SCHEMA)?;
     upgrade(&conn)?;
     new_store_epoch(&conn)?;
+    let purged = purge_abandoned(&mut conn)?;
+    tracing::info!(event = "sync_groups_purged", groups = purged);
     Ok(conn)
+}
+
+/// The group still has a device that has not been revoked.
+fn has_active_device(conn: &Connection, group: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM devices WHERE group_id = ?1 AND revoked = 0)",
+        params![group],
+        |r| r.get(0),
+    )
+}
+
+/// Delete everything stored for `group`. Only for a group without an active
+/// device, inside the caller's transaction.
+fn purge_group(conn: &Connection, group: &str) -> rusqlite::Result<()> {
+    for table in GROUP_TABLES {
+        conn.execute(&format!("DELETE FROM {table} WHERE group_id = ?1"), params![group])?;
+    }
+    conn.execute("DELETE FROM groups WHERE id = ?1", params![group])?;
+    Ok(())
+}
+
+/// Purge every group without an active device (left before purging existed),
+/// one transaction per group. Returns how many were purged.
+pub fn purge_abandoned(conn: &mut Connection) -> rusqlite::Result<usize> {
+    let groups: Vec<String> = conn
+        .prepare(
+            "SELECT id FROM groups WHERE NOT EXISTS \
+             (SELECT 1 FROM devices d WHERE d.group_id = groups.id AND d.revoked = 0)",
+        )?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut purged = 0;
+    for group in &groups {
+        let tx = conn.transaction()?;
+        if !has_active_device(&tx, group)? {
+            purge_group(&tx, group)?;
+            purged += 1;
+        }
+        tx.commit()?;
+    }
+    if purged > 0 {
+        reclaim_space(conn);
+    }
+    Ok(purged)
+}
+
+/// After a purge: hand the freed pages back to the file system when the store
+/// uses incremental auto-vacuum. Otherwise they stay in the file and are
+/// reused by later writes (no blocking full VACUUM here).
+fn reclaim_space(conn: &Connection) {
+    let res = conn.query_row("PRAGMA auto_vacuum", [], |r| r.get::<_, i64>(0)).and_then(|mode| {
+        if mode == 2 {
+            // Frees pages step by step: run it to completion.
+            let mut stmt = conn.prepare("PRAGMA incremental_vacuum")?;
+            let mut rows = stmt.query([])?;
+            while rows.next()?.is_some() {}
+        }
+        Ok(())
+    });
+    if let Err(e) = res {
+        tracing::warn!(event = "sync_vacuum_failed", error = %e);
+    }
+}
+
+/// `RELAY_SYNC_VACUUM_ON_START`: a one-time `VACUUM` that shrinks the file to
+/// its live data and switches it to incremental auto-vacuum, so later purges
+/// give their pages back. Returns the file size (bytes) before and after.
+pub fn vacuum(conn: &Connection) -> rusqlite::Result<(u64, u64)> {
+    let size = || {
+        conn.query_row(
+            "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n.max(0) as u64)
+    };
+    let before = size()?;
+    conn.execute_batch("PRAGMA auto_vacuum = INCREMENTAL; VACUUM;")?;
+    Ok((before, size()?))
 }
 
 /// Epochs of a group kept for devices that last synced in them; one is added
@@ -789,14 +876,18 @@ fn gc_blobs(conn: &Connection, group: &str, now: i64) -> SyncResult<usize> {
 /// When the creator revokes itself the role moves on, so the group never
 /// loses the one device that may remove others: to `successor` if that is an
 /// active member, else to the oldest active member (`None` if none is left).
-/// Returns the new creator when it changed.
+///
+/// When no active device is left the whole group is purged in the same
+/// transaction (ops, blobs, devices, epochs, invites); a later hello for it
+/// gets `group_not_found`. The store's single connection runs every request
+/// in its own transaction, so a purge never interleaves with a push / hello.
 pub fn revoke(
     conn: &mut Connection,
     group: &str,
     device: &str,
     target: &str,
     successor: Option<&str>,
-) -> SyncResult<Option<String>> {
+) -> SyncResult<Revoked> {
     let tx = conn.transaction()?;
     ensure_active(&tx, group, device)?;
     let creator = group_creator(&tx, group)?;
@@ -817,8 +908,24 @@ pub fn revoke(
         )?;
         moved = next;
     }
+    let purged = !has_active_device(&tx, group)?;
+    if purged {
+        purge_group(&tx, group)?;
+    }
     tx.commit()?;
-    Ok(moved)
+    if purged {
+        reclaim_space(conn);
+    }
+    Ok(Revoked { creator_moved: moved, purged })
+}
+
+/// What a `sync_revoke` changed besides the target.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Revoked {
+    /// The new creator, when the role moved.
+    pub creator_moved: Option<String>,
+    /// No active device was left: the group and all its data were deleted.
+    pub purged: bool,
 }
 
 /// The creator's successor: `wanted` if it is an active member, else the
@@ -870,9 +977,22 @@ pub struct SyncHub {
 
 impl SyncHub {
     /// Open the store at `path`, or build a disabled hub when `None`.
-    pub fn open(path: Option<&Path>, limits: Limits) -> rusqlite::Result<Self> {
+    /// `vacuum_on_start`: run [`vacuum`] once after the startup purge (a
+    /// failure is logged, the relay still starts).
+    pub fn open(path: Option<&Path>, limits: Limits, vacuum_on_start: bool) -> rusqlite::Result<Self> {
         let db = match path {
-            Some(p) => Some(Arc::new(Mutex::new(open_db(p)?))),
+            Some(p) => {
+                let conn = open_db(p)?;
+                if vacuum_on_start {
+                    match vacuum(&conn) {
+                        Ok((before, after)) => {
+                            tracing::info!(event = "sync_vacuum", before_bytes = before, after_bytes = after)
+                        }
+                        Err(e) => tracing::warn!(event = "sync_vacuum_failed", error = %e),
+                    }
+                }
+                Some(Arc::new(Mutex::new(conn)))
+            }
             None => None,
         };
         Ok(SyncHub {
@@ -1109,11 +1229,14 @@ impl SyncHub {
                 }
                 let t2 = target.clone();
                 let successor = req.successor;
-                let moved = self.call(move |c| revoke(c, &g, &d, &t2, successor.as_deref())).await?;
+                let r = self.call(move |c| revoke(c, &g, &d, &t2, successor.as_deref())).await?;
                 tracing::info!(event = "sync_revoke", conn = conn_id, group = %s.group_id, device = %target);
+                if r.purged {
+                    tracing::info!(event = "sync_groups_purged", groups = 1);
+                }
                 send_json(out, json!({ "t": "control", "code": "ok" }), id);
                 self.kick(&s.group_id, &target);
-                if let Some(creator) = moved {
+                if let Some(creator) = r.creator_moved {
                     tracing::info!(event = "sync_creator_moved", group = %s.group_id, device = %creator);
                     self.group_info(&s.group_id, &target, &creator);
                 }
@@ -1412,8 +1535,8 @@ mod tests {
         group(&mut c, &["b", "c"]);
         assert!(matches!(revoke(&mut c, "g", "b", "c", None), Err(SyncError::Code(ErrorCode::Forbidden, _))));
         assert!(matches!(revoke(&mut c, "g", "b", "a", None), Err(SyncError::Code(ErrorCode::Forbidden, _))));
-        assert_eq!(revoke(&mut c, "g", "b", "b", None).unwrap(), None, "a member leaving keeps the creator");
-        assert_eq!(revoke(&mut c, "g", "a", "c", None).unwrap(), None);
+        assert_eq!(revoke(&mut c, "g", "b", "b", None).unwrap(), Revoked::default(), "a member leaving keeps the creator");
+        assert_eq!(revoke(&mut c, "g", "a", "c", None).unwrap(), Revoked::default());
         assert!(matches!(ensure_active(&c, "g", "c"), Err(SyncError::Code(ErrorCode::DeviceRevoked, _))));
     }
 
@@ -1427,19 +1550,19 @@ mod tests {
         revoke(&mut c, "g", "a", "x", None).unwrap();
 
         // Requested successor wins when it is an active member.
-        assert_eq!(revoke(&mut c, "g", "a", "a", Some("d")).unwrap().as_deref(), Some("d"));
+        assert_eq!(revoke(&mut c, "g", "a", "a", Some("d")).unwrap().creator_moved.as_deref(), Some("d"));
         assert_eq!(creator(&c).as_deref(), Some("d"));
         // The new creator may now remove others; a former peer may not.
         assert!(matches!(revoke(&mut c, "g", "c", "b", None), Err(SyncError::Code(ErrorCode::Forbidden, _))));
 
         // Unknown / revoked successor: the oldest active member (c joined at 1, b at 5).
-        assert_eq!(revoke(&mut c, "g", "d", "d", Some("x")).unwrap().as_deref(), Some("c"));
-        assert_eq!(revoke(&mut c, "g", "c", "c", None).unwrap().as_deref(), Some("b"));
+        assert_eq!(revoke(&mut c, "g", "d", "d", Some("x")).unwrap().creator_moved.as_deref(), Some("c"));
+        assert_eq!(revoke(&mut c, "g", "c", "c", None).unwrap().creator_moved.as_deref(), Some("b"));
         let w = hello(&mut c, "g", "b", auth("h", false), 9).unwrap();
         assert_eq!(w.creator.as_deref(), Some("b"), "the welcome carries the creator");
 
-        // The last member leaving leaves no creator.
-        assert_eq!(revoke(&mut c, "g", "b", "b", None).unwrap(), None);
+        // The last member leaving leaves no creator: the group is purged.
+        assert_eq!(revoke(&mut c, "g", "b", "b", None).unwrap(), Revoked { creator_moved: None, purged: true });
         assert_eq!(creator(&c), None);
     }
 
@@ -1572,6 +1695,23 @@ mod tests {
         assert_eq!(w.known_head, None, "a synced in an epoch this store never saw");
         drop(c);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every table keyed by `group_id` is cleared by a purge.
+    #[test]
+    fn purge_covers_every_group_table() {
+        let c = mem();
+        let tables: Vec<String> = c
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name != 'groups'")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        for t in tables {
+            let keyed = columns(&c, &t).unwrap().iter().any(|col| col == "group_id");
+            assert_eq!(keyed, GROUP_TABLES.contains(&t.as_str()), "table {t}");
+        }
     }
 
     #[test]

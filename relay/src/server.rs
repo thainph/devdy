@@ -46,7 +46,7 @@ impl Shared {
             max_group_bytes: config.sync_max_group_bytes,
             max_blob_bytes: config.sync_max_blob_bytes,
         };
-        let sync = SyncHub::open(config.sync_db.as_deref(), limits)
+        let sync = SyncHub::open(config.sync_db.as_deref(), limits, config.sync_vacuum_on_start)
             .map_err(|e| std::io::Error::other(format!("sync db: {e}")))?;
         Ok(Shared {
             config,
