@@ -31,7 +31,7 @@ mod test_relay;
 use crate::db::Db;
 
 /// Highest migration this build knows; ops from a newer schema are deferred.
-pub const SCHEMA_VERSION: u32 = 59;
+pub const SCHEMA_VERSION: u32 = 62;
 
 /// This machine's sync device id, created on first use.
 pub async fn ensure_device(db: &Db) -> Result<String, String> {

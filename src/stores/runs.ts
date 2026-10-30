@@ -3,7 +3,7 @@ import { invoke } from '@/lib/tauri'
 import { ref, reactive, computed } from 'vue'
 import type { ImageAttachment } from '@/lib/streamEvents'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
-import type { RemoteRunOwner, TakeOverResult } from '@/lib/runOwnership'
+import { stampReceived, type RemoteRunOwner, type TakeOverResult } from '@/lib/runOwnership'
 
 /**
  * Fingerprint of the file(s) backing a run's log, from `get_run_log_revision`.
@@ -245,15 +245,19 @@ export const useRunsStore = defineStore('runs', () => {
     try {
       const list = await invoke<RemoteRunOwner[]>('sync_run_owners', { projectId: project_id })
       if (project_id !== loadedProjectId.value) return
-      remoteOwners.value = new Map(list.map((o) => [o.run_id, o]))
+      remoteOwners.value = new Map(stampReceived(list, Date.now()).map((o) => [o.run_id, o]))
     } catch {
       // Sync not available: every run is treated as local.
     }
   }
 
-  /** "Continue here": move a run owned by another device to this one. */
-  async function takeOverRun(run_id: string, force = false) {
-    const result = await invoke<TakeOverResult>('sync_take_over_run', { runId: run_id, force })
+  /**
+   * "Continue here": move a run owned by another device to this one. `force`
+   * confirms a git mismatch; `skipSync` continues before the owner's final
+   * output synced.
+   */
+  async function takeOverRun(run_id: string, force = false, skipSync = false) {
+    const result = await invoke<TakeOverResult>('sync_take_over_run', { runId: run_id, force, skipSync })
     if (result.taken && loadedProjectId.value) await fetchRemoteOwners(loadedProjectId.value)
     return result
   }
