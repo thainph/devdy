@@ -1134,6 +1134,8 @@ pub async fn drain_sidecar(
     .bind(&run_id)
     .execute(&db_pool)
     .await;
+    // The sidecar is gone: other devices may continue the session now.
+    crate::sync::sessions::release(&db_pool, &run_id).await;
 
     if let Some(bus) = &remote_bus {
         bus.publish(crate::remote::RemoteRunEvent::Done {
