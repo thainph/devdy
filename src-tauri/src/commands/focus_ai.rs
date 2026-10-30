@@ -697,12 +697,43 @@ pub async fn focus_day_plan_get(
 /// Create a Google Calendar event `[Devdy] <todo>` per block of `date` (all,
 /// or `block_ids`) not pushed yet, on the primary calendar of the Focus
 /// account (Settings → Focus) or else the default Google account.
+/// Dates whose plan is being pushed to Calendar.
+fn pushing_dates() -> &'static Mutex<std::collections::HashSet<String>> {
+    static S: std::sync::OnceLock<Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+    S.get_or_init(Default::default)
+}
+
+/// Holds a date in `pushing_dates` until dropped.
+#[derive(Debug)]
+struct PlanPushGuard(String);
+
+impl PlanPushGuard {
+    fn take(date: &str) -> Result<Self, String> {
+        let mut set = pushing_dates().lock().map_err(|e| e.to_string())?;
+        if !set.insert(date.to_string()) {
+            return Err("busy: this plan is already being added to Calendar".into());
+        }
+        Ok(PlanPushGuard(date.to_string()))
+    }
+}
+
+impl Drop for PlanPushGuard {
+    fn drop(&mut self) {
+        if let Ok(mut set) = pushing_dates().lock() {
+            set.remove(&self.0);
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn focus_plan_to_calendar(
     db: State<'_, Db>,
     date: String,
     block_ids: Option<Vec<String>>,
 ) -> Result<DayPlan, String> {
+    // One push per day at a time: a double click must not create every
+    // event twice.
+    let _guard = PlanPushGuard::take(&date)?;
     let pool = db.inner().clone();
     let mut plan = load_plan(&pool, &date)
         .await?
@@ -746,15 +777,24 @@ pub async fn focus_plan_to_calendar(
             .get(&b.todo_id)
             .cloned()
             .unwrap_or_else(|| b.todo_id.clone());
+        // A bad block is reported, never aborts the loop: events already
+        // created above must still be saved with the plan.
+        let (start, end) = match (rfc(&b.start), rfc(&b.end)) {
+            (Ok(s), Ok(e)) => (s, e),
+            (Err(e), _) | (_, Err(e)) => {
+                errors.push(format!("block {}: {e}", b.id));
+                continue;
+            }
+        };
         let payload = crate::commands::gcalendar::EventPayload {
             summary: Some(format!("[Devdy] {title}")),
             description: (!b.note.is_empty()).then(|| b.note.clone()),
             start: Some(crate::commands::gcalendar::EventDateTimePayload {
-                date_time: Some(rfc(&b.start)?),
+                date_time: Some(start),
                 ..Default::default()
             }),
             end: Some(crate::commands::gcalendar::EventDateTimePayload {
-                date_time: Some(rfc(&b.end)?),
+                date_time: Some(end),
                 ..Default::default()
             }),
             ..Default::default()
@@ -927,5 +967,15 @@ mod tests {
         assert!(state.cancel("r1").await);
         assert!(task.await.unwrap_err().is_cancelled());
         state.shutdown().await;
+    }
+
+    #[test]
+    fn one_calendar_push_per_date() {
+        let a = PlanPushGuard::take("2026-10-28").unwrap();
+        assert!(PlanPushGuard::take("2026-10-28").unwrap_err().starts_with("busy:"));
+        let b = PlanPushGuard::take("2026-10-29").unwrap();
+        drop(a);
+        assert!(PlanPushGuard::take("2026-10-28").is_ok());
+        drop(b);
     }
 }
