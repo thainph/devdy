@@ -340,6 +340,7 @@ async fn sync_run_usage(
 /// engine's `parse` fn. This reconciles the shared transcript store with runs:
 /// - existing run for the session → refresh its rendered log on disk;
 /// - no run yet → import it as a `session` run (history + token usage);
+/// - the transcript was written by two-way sync → skip (it is already mirrored);
 /// - the session is owned by a *running* Devdy run → leave it to the live
 ///   stream; and if any run in the project is still `running` we defer importing
 ///   *new* sessions, since that run may just not have captured its `session_id`
@@ -376,6 +377,15 @@ pub(crate) async fn upsert_session_run_core(
     .await
     .map_err(|e| e.to_string())?;
     if tombstoned > 0 {
+        return Ok(SyncOutcome::Skipped);
+    }
+
+    // Written by two-way sync and untouched since: the run row and its log
+    // arrive through sync as well, so mirroring it here would either rebuild a
+    // log sync already wrote or — when the transcript lands before its runs row
+    // — import a duplicate session. Every caller (watcher, on-open reconcile,
+    // get_run_log) goes through here.
+    if crate::sync::files::written_by_sync(db, file).await {
         return Ok(SyncOutcome::Skipped);
     }
 
