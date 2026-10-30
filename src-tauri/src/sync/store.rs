@@ -39,6 +39,10 @@ pub trait BlobIo: Send + Sync {
 #[async_trait]
 pub trait SyncStore: Send + Sync {
     async fn pending(&self, limit: usize) -> Result<Vec<(i64 /*outbox seq*/, Op)>, String>;
+    /// Whether anything waits in the outbox (cheap; polled every few seconds).
+    async fn has_pending(&self) -> Result<bool, String> {
+        Ok(!self.pending(1).await?.is_empty())
+    }
     async fn mark_pushed(&self, up_to_outbox_seq: i64) -> Result<(), String>;
     async fn apply_remote(&self, ops: Vec<Op>) -> Result<ApplyReport, String>;
     async fn cursor(&self) -> Result<u64, String>; // last pulled relay seq
@@ -268,6 +272,10 @@ impl SyncStore for SqliteSyncStore {
         tx.commit().await.map_err(err)?;
         *guard = Some(clock);
         Ok(out)
+    }
+
+    async fn has_pending(&self) -> Result<bool, String> {
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM sync_outbox)").fetch_one(&self.db).await.map_err(err)
     }
 
     async fn stage(&self, blobs: &dyn BlobIo) -> Result<(), String> {
@@ -520,7 +528,11 @@ impl SqliteSyncStore {
                 }
                 (OpKind::Upsert, Some(wire))
             }
-            None => (OpKind::Delete, None),
+            // A re-keyed / merged id goes out as an alias op (apply.rs).
+            None => match apply::alias_target(conn, spec.name, pk_text).await? {
+                Some(to) => (OpKind::Delete, Some(serde_json::Map::from_iter([(apply::ALIAS_FIELD.to_string(), to)]))),
+                None => (OpKind::Delete, None),
+            },
         };
         Ok(Some((pk, entry)))
     }
@@ -1089,6 +1101,115 @@ mod tests {
         *kc_b.broken.lock().unwrap() = false;
         assert_eq!(crate::sync::secrets::run_key_moves(&db_b, kc_b.clone()).await.unwrap(), 1);
         assert_eq!(kc_b.get("github", "gh-0").as_deref(), Some("kept"));
+    }
+
+    async fn skill(db: &Db, id: &str, name: &str) {
+        exec(db, &format!("INSERT INTO skills (id, name, description, source_path, updated_at) VALUES ('{id}', '{name}', '', '/s', 'x')")).await;
+    }
+
+    #[tokio::test]
+    async fn merged_then_deleted_row_is_gone_everywhere() {
+        let (db_a, a, db_b, b) = paired().await;
+        skill(&db_a, "sk-1", "review").await;
+        skill(&db_b, "sk-2", "review").await;
+        // a merges b's copy into its own (lower) id...
+        sync(&b, &a).await;
+        assert_eq!(rows(&db_a, "SELECT id FROM skills").await, vec!["sk-1"]);
+        // ...and deletes it before b ever hears of sk-1.
+        exec(&db_a, "DELETE FROM skills WHERE id = 'sk-1'").await;
+        let ops = a.pending(100).await.unwrap();
+        let alias = ops.iter().find(|(_, o)| o.pk == json!("sk-2")).map(|(_, o)| o.clone()).expect("loser id pushed");
+        assert_eq!((alias.kind, apply::alias_of(&alias)), (OpKind::Delete, Some(&json!("sk-1"))));
+        a.mark_pushed(ops.last().unwrap().0).await.unwrap();
+        b.apply_remote(ops.into_iter().map(|(_, o)| o).collect()).await.unwrap();
+        converge(&a, &b).await;
+        for db in [&db_a, &db_b] {
+            assert!(rows(db, "SELECT id FROM skills").await.is_empty());
+        }
+        // A late copy of the loser's old upsert is redirected, not resurrected.
+        let late = upsert("skills", json!("sk-2"), "0000000000001000-b".parse().unwrap(),
+            json!({"id": "sk-2", "name": "review", "description": "", "source_path": "/s", "updated_at": "x"}));
+        a.apply_remote(vec![late]).await.unwrap();
+        assert!(rows(&db_a, "SELECT id FROM skills").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn rekey_split_across_pull_pages_keeps_every_child() {
+        let (db_a, a) = device("a", "/Users/a").await;
+        let (db_b, b) = device("b", "/Users/b").await;
+        let (db_c, c) = device("c", "/Users/c").await;
+        // b's project reached c, which added a repo of its own (not pushed yet).
+        add_project(&db_b, "p-2", "/Users/b/w/x").await;
+        exec(&db_b, "INSERT INTO repos (id, project_id, name, path, created_at) VALUES ('r-b', 'p-2', 'x', '/Users/b/w/x', 'x')").await;
+        sync(&b, &c).await;
+        exec(&db_c, "INSERT INTO repos (id, project_id, name, path, created_at) VALUES ('r-c', 'p-2', 'y', '/Users/c/w/x/y', 'x')").await;
+        // a made the same project independently with a lower id: b re-keys.
+        add_project(&db_a, "p-1", "/Users/a/w/x").await;
+        sync(&a, &b).await;
+        assert_eq!(rows(&db_b, "SELECT id FROM projects").await, vec!["p-1"]);
+        // c pulls b's re-key one op per page, old id first.
+        let ops = b.pending(100).await.unwrap();
+        assert_eq!(ops[0].1.pk, json!("p-2"));
+        b.mark_pushed(ops.last().unwrap().0).await.unwrap();
+        for (_, op) in ops {
+            c.apply_remote(vec![op]).await.unwrap();
+        }
+        assert_eq!(rows(&db_c, "SELECT id FROM projects").await, vec!["p-1"]);
+        assert_eq!(rows(&db_c, "SELECT id || '>' || project_id FROM repos ORDER BY id").await, vec!["r-b>p-1", "r-c>p-1"]);
+        // c's own repo still goes out, under the surviving id.
+        let out: Vec<Op> = c.pending(100).await.unwrap().into_iter().map(|(_, o)| o).collect();
+        let rc = out.iter().find(|o| o.pk == json!("r-c")).expect("r-c pushed");
+        assert_eq!(rc.row.as_ref().unwrap()["project_id"], json!("p-1"));
+        assert!(out.iter().all(|o| o.pk != json!("p-2")), "c does not push the re-key again");
+    }
+
+    #[tokio::test]
+    async fn rename_into_a_unique_clash_converges() {
+        let (db_a, a, db_b, b) = paired().await;
+        skill(&db_a, "sk-1", "x").await;
+        skill(&db_a, "sk-2", "y").await;
+        exec(&db_a, "INSERT INTO project_skills (project_id, skill_id, applied_at) VALUES ('p1', 'sk-2', 'x')").await;
+        converge(&a, &b).await;
+        // a frees the name and gives it to sk-2; b edits sk-1 meanwhile (newer).
+        exec(&db_a, "UPDATE skills SET name = 'w' WHERE id = 'sk-1'").await;
+        exec(&db_a, "UPDATE skills SET name = 'x' WHERE id = 'sk-2'").await;
+        exec(&db_b, "UPDATE skills SET description = 'from b' WHERE id = 'sk-1'").await;
+        exec(&db_b, "UPDATE sync_outbox SET changed_at = changed_at + 5000").await;
+        converge(&a, &b).await;
+        for db in [&db_a, &db_b] {
+            assert_eq!(rows(db, "SELECT id || ':' || name || ':' || description FROM skills").await, vec!["sk-1:x:from b"]);
+            assert_eq!(rows(db, "SELECT project_id || '/' || skill_id FROM project_skills").await, vec!["p1/sk-1"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn nothing_is_captured_outside_a_group() {
+        let db = mem_db().await;
+        crate::sync::capture::set_member(&db, false).await.unwrap();
+        exec(&db, "INSERT INTO todos (id, text, position, created_at) VALUES ('t1', 'a', 0, 'x')").await;
+        assert!(outbox(&db).await.is_empty());
+        let store = SqliteSyncStore::new(db.clone(), "d".into());
+        assert!(!store.has_pending().await.unwrap());
+        crate::sync::capture::set_member(&db, true).await.unwrap();
+        exec(&db, "UPDATE todos SET text = 'b' WHERE id = 't1'").await;
+        assert_eq!(outbox(&db).await.len(), 1);
+        assert!(store.has_pending().await.unwrap());
+        // Leaving drops what was not pushed.
+        crate::sync::capture::set_member(&db, false).await.unwrap();
+        assert!(outbox(&db).await.is_empty());
+
+        // Startup: entries queued by older builds outside a group are pruned...
+        exec(&db, "DELETE FROM sync_state WHERE key = 'member'").await;
+        exec(&db, "INSERT INTO sync_outbox (tbl, pk, op, changed_at) VALUES ('todos', '\"t1\"', 'U', 1)").await;
+        crate::sync::capture::settle_membership(&db).await.unwrap();
+        assert!(outbox(&db).await.is_empty());
+        assert_eq!(scalar(&db, "SELECT value FROM sync_state WHERE key = 'member'").await, None);
+        // ...while a device that already synced keeps capturing.
+        store.set_cursor(7).await.unwrap();
+        exec(&db, "INSERT INTO sync_outbox (tbl, pk, op, changed_at) VALUES ('todos', '\"t1\"', 'U', 1)").await;
+        crate::sync::capture::settle_membership(&db).await.unwrap();
+        assert_eq!(outbox(&db).await.len(), 1);
+        assert_eq!(scalar(&db, "SELECT value FROM sync_state WHERE key = 'member'").await.as_deref(), Some("1"));
     }
 
     #[test]

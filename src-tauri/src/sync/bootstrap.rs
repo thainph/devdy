@@ -592,6 +592,24 @@ async fn merge(
             }
         }
 
+        // Projects: exact path matches across all remote rows come first, so a
+        // looser match (git remote, name) of an earlier row can't claim them.
+        let mut by_path: HashMap<String, String> = HashMap::new();
+        if spec.name == "projects" {
+            let mut locals: Vec<(&String, &Map<String, Value>)> = local_by_pk.iter().filter(|(pk, _)| free(pk, &claimed)).collect();
+            locals.sort_by(|a, b| a.0.cmp(b.0));
+            for op in remote_rows.iter().filter(|op| !local_by_pk.contains_key(&op.pk_key())) {
+                let Some(path) = op.row.as_ref().map(|r| decode_row(&ctx, spec, r)).and_then(|d| str_of(&d, "path").map(str::to_string)) else {
+                    continue;
+                };
+                let taken: HashSet<&String> = by_path.values().collect();
+                if let Some((pk, _)) = locals.iter().find(|(pk, l)| !taken.contains(pk) && str_of(l, "path") == Some(path.as_str())) {
+                    by_path.insert(op.pk_key(), (*pk).clone());
+                }
+            }
+        }
+        let path_taken: HashSet<String> = by_path.values().cloned().collect();
+
         for op in remote_rows {
             let Some(row) = op.row.as_ref() else { continue };
             let rpk = op.pk_key();
@@ -601,8 +619,12 @@ async fn merge(
             if local_by_pk.contains_key(&rpk) {
                 matched_by = Some("id");
                 local_pk = Some(rpk.clone());
+            } else if let Some(pk) = by_path.get(&rpk) {
+                matched_by = Some("path");
+                local_pk = Some(pk.clone());
             } else if spec.name == "projects" {
-                if let Some((pk, by)) = match_project(&local_by_pk, &decoded, op, &projects_index, &|pk| free(pk, &claimed)) {
+                let free = |pk: &String| free(pk, &claimed) && !path_taken.contains(pk);
+                if let Some((pk, by)) = match_project(&local_by_pk, &decoded, op, &projects_index, &free) {
                     matched_by = Some(by);
                     local_pk = Some(pk);
                 }
@@ -722,7 +744,7 @@ fn match_project(
 }
 
 /// Rewrites outbox entries of `tbl` whose pk (or pk column `col`) is `old`.
-async fn rekey_outbox(conn: &mut SqliteConnection, tbl: &str, col: Option<&str>, old: &Value, new: &Value) -> Result<(), String> {
+pub(super) async fn rekey_outbox(conn: &mut SqliteConnection, tbl: &str, col: Option<&str>, old: &Value, new: &Value) -> Result<(), String> {
     match col {
         None => {
             sqlx::query("UPDATE sync_outbox SET pk = ? WHERE tbl = ? AND pk = ?")
@@ -1379,6 +1401,25 @@ mod tests {
     async fn project_op(a_db: &Db, a: &SqliteSyncStore) -> RemoteState {
         let _ = a_db;
         group_state(a).await
+    }
+
+    #[tokio::test]
+    async fn exact_path_matches_win_over_an_earlier_git_remote_match() {
+        let (db_a, a, _) = device("a", "/Users/alice").await;
+        let (db_b, _b, home_b) = device("b", "/Users/bob").await;
+        // Two checkouts of the same repo on a; the first one in the log only
+        // matches b's project by git remote, the second one by exact path.
+        exec(&db_a, "INSERT INTO projects (id, name, path, created_at, github_owner, github_repo) VALUES ('p-mini', 'devdy-mini', '/Users/alice/w/mini', 'x', 'thainph', 'devdy')").await;
+        exec(&db_a, "INSERT INTO projects (id, name, path, created_at, github_owner, github_repo) VALUES ('p-main', 'devdy', '/Users/alice/w/devdy', 'x', 'thainph', 'devdy')").await;
+        exec(&db_b, "INSERT INTO projects (id, name, path, created_at) VALUES ('b1', 'devdy', '/Users/bob/w/devdy', 'x')").await;
+        let git: HashMap<String, String> = [("/Users/bob/w/devdy".to_string(), "git@github.com:thainph/devdy.git".to_string())].into();
+        exec(&db_b, "DELETE FROM sync_outbox").await;
+        let state = project_op(&db_a, &a).await;
+        assert_eq!(state.ops.iter().filter(|o| o.tbl == "projects").map(|o| o.pk.as_str().unwrap()).collect::<Vec<_>>(), vec!["p-mini", "p-main"]);
+        let p = preview(&db_b, &home_b, &state, &git).await.unwrap();
+        let by: HashMap<&str, Option<&str>> = p.projects.iter().map(|m| (m.remote_id.as_str(), m.matched_by.as_deref())).collect();
+        assert_eq!(by["p-main"], Some("path"));
+        assert_eq!(by["p-mini"], None);
     }
 
     #[tokio::test]
