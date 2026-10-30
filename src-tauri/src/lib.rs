@@ -155,6 +155,10 @@ use commands::sync::{
     SyncManager,
 };
 use sync::sessions::{sync_run_owners, sync_take_over_run};
+use commands::sync_bootstrap::{
+    sync_bootstrap_commit, sync_bootstrap_pending, sync_bootstrap_preview, sync_project_mapping_list,
+    sync_project_mapping_set, sync_resync_all,
+};
 use runs::broker::approver::ModalApproverResolver;
 use runs::broker::{start_broker, ApproverResolver, BrokerConfig};
 use runs::{new_broker_approvals, new_broker_runs, new_registry, RunRegistry};
@@ -758,6 +762,12 @@ pub fn run() {
             sync_device_rename,
             sync_revoke_device,
             sync_set_leader,
+            sync_resync_all,
+            sync_bootstrap_pending,
+            sync_bootstrap_preview,
+            sync_bootstrap_commit,
+            sync_project_mapping_list,
+            sync_project_mapping_set,
             remote_bridge_ready,
             remote_bridge_batch,
             remote_fs_list,

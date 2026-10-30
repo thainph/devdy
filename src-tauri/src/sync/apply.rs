@@ -7,7 +7,7 @@ use serde_json::{Map, Value};
 use sqlx::{Row, SqliteConnection};
 
 use super::clock::{wall_ms, Hlc, HlcClock};
-use super::codec::{decode_row, delete_row, pk_values, read_row, upsert_row, PathCtx};
+use super::codec::{bind_value, decode_row, delete_row, pk_values, read_row, upsert_row, PathCtx};
 use super::op::{canonical_json, Op, OpKind};
 use super::schema::{self, pk_sql, q, TableSpec};
 use super::store::ApplyReport;
@@ -244,7 +244,6 @@ async fn apply_one(conn: &mut SqliteConnection, paths: &PathCtx, op: &Op) -> Res
         }
     }
 
-    let mut outcome = Outcome::Applied;
     let local_changed: Option<i64> =
         sqlx::query_scalar("SELECT MAX(changed_at) FROM sync_outbox WHERE tbl = ? AND pk = ?")
             .bind(spec.name)
@@ -252,14 +251,42 @@ async fn apply_one(conn: &mut SqliteConnection, paths: &PathCtx, op: &Op) -> Res
             .fetch_one(&mut *conn)
             .await
             .map_err(err)?;
-    if let Some(changed) = local_changed {
-        if spec.name == "notes" && op.kind == OpKind::Upsert && keep_note_conflict_copy(conn, op).await? {
-            outcome = Outcome::Conflict;
-        } else if changed.max(0) as u64 >= op.hlc.millis {
-            // The unpushed local change is newer; it will be pushed with an HLC
-            // above this one and win on the other side too.
-            return Ok(Outcome::Skipped);
+    // An unpushed local change newer than the op: it will be pushed with an
+    // HLC above this one and win on the other side too.
+    let local_newer = local_changed.is_some_and(|c| c.max(0) as u64 >= op.hlc.millis);
+    let merge = if spec.name == "notes" && op.kind == OpKind::Upsert {
+        note_merge(conn, op).await?
+    } else {
+        NoteMerge::Lww
+    };
+    let mut outcome = Outcome::Applied;
+    // The remote row is applied but the local note body is kept (and pushed
+    // again), because only this side changed it.
+    let mut local_body: Option<Value> = None;
+    match merge {
+        NoteMerge::Copied => outcome = Outcome::Conflict,
+        NoteMerge::Lww | NoteMerge::KeepLocal(_) if local_newer => return Ok(Outcome::Skipped),
+        NoteMerge::TakeRemote if local_newer => {
+            // The local row wins except for the body only the remote changed.
+            take_remote_body(conn, op).await?;
+            return Ok(Outcome::Applied);
         }
+        NoteMerge::KeepLocal(body) => {
+            local_body = Some(body);
+            sqlx::query(
+                "INSERT INTO sync_outbox (tbl, pk, op, changed_at) SELECT 'notes', ?, 'U', ? \
+                 WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = 'notes' AND pk = ?)",
+            )
+            .bind(&key)
+            .bind(wall_ms() as i64)
+            .bind(&key)
+            .execute(&mut *conn)
+            .await
+            .map_err(err)?;
+        }
+        NoteMerge::Lww | NoteMerge::TakeRemote => {}
+    }
+    if local_changed.is_some() && local_body.is_none() {
         // The local change lost (or survives as a copy): never push it.
         sqlx::query("DELETE FROM sync_outbox WHERE tbl = ? AND pk = ?")
             .bind(spec.name)
@@ -277,6 +304,9 @@ async fn apply_one(conn: &mut SqliteConnection, paths: &PathCtx, op: &Op) -> Res
             for (col, v) in spec.pk.iter().zip(pk_values(spec, &op.pk)?) {
                 local.insert((*col).to_string(), v);
             }
+            if let Some(body) = local_body {
+                local.insert("content".into(), body);
+            }
             upsert_row(conn, spec, &local).await?;
         }
         OpKind::Delete => delete_row(conn, spec, &op.pk).await?,
@@ -292,20 +322,109 @@ async fn apply_one(conn: &mut SqliteConnection, paths: &PathCtx, op: &Op) -> Res
     .execute(&mut *conn)
     .await
     .map_err(err)?;
+    if spec.name == "notes" && op.kind == OpKind::Upsert {
+        set_note_base(conn, &key, op.row.as_ref().and_then(|r| r.get("content"))).await?;
+    }
     Ok(outcome)
 }
 
-/// Both sides edited this note since the last sync: the remote version becomes
-/// the row, the local one is kept as a new note "<title> (conflict copy)"
-/// (queued for push explicitly, since the guard mutes the triggers). Returns
-/// false when there is nothing to keep (no local row, same content).
-async fn keep_note_conflict_copy(conn: &mut SqliteConnection, op: &Op) -> Result<bool, String> {
+/// sha256 of a note body (JSON-encoded, so NULL and "" differ).
+pub fn content_hash(content: Option<&Value>) -> String {
+    use sha2::{Digest, Sha256};
+    let json = canonical_json(content.unwrap_or(&Value::Null));
+    hex::encode(Sha256::digest(json.as_bytes()))
+}
+
+/// Pseudo-column of a pushed note row: `base_hash` of the sender, i.e. the
+/// body its edit was made on top of. Not a real column, so `upsert_row` never
+/// writes it.
+pub const NOTE_BASE_FIELD: &str = "_sync_base";
+
+/// Remember the note body received from another device.
+async fn set_note_base(conn: &mut SqliteConnection, pk: &str, content: Option<&Value>) -> Result<(), String> {
+    sqlx::query("UPDATE sync_rows SET base_hash = ? WHERE tbl = 'notes' AND pk = ?")
+        .bind(content_hash(content))
+        .bind(pk)
+        .execute(&mut *conn)
+        .await
+        .map_err(err)?;
+    Ok(())
+}
+
+/// Adds `NOTE_BASE_FIELD` to a note row about to be pushed (`SyncStore::pending`).
+pub async fn add_note_base(conn: &mut SqliteConnection, pk: &str, row: &mut Map<String, Value>) -> Result<(), String> {
+    let base: Option<String> = sqlx::query_scalar("SELECT base_hash FROM sync_rows WHERE tbl = 'notes' AND pk = ?")
+        .bind(pk)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(err)?
+        .flatten();
+    row.insert(NOTE_BASE_FIELD.into(), base.map(Value::String).unwrap_or(Value::Null));
+    Ok(())
+}
+
+/// How an incoming note meets the local version of the same note, judged on
+/// the body: the local base (`sync_rows.base_hash`, last body received) tells
+/// whether this side edited it, the op's base (`NOTE_BASE_FIELD`) whether the
+/// sender built on the local body.
+#[derive(Debug)]
+enum NoteMerge {
+    /// Same body (or nothing to compare): plain row-level LWW.
+    Lww,
+    /// Both sides edited the body concurrently: the local one was kept as a copy.
+    Copied,
+    /// Only this side changed the body: keep it whatever wins the rest of the row.
+    KeepLocal(Value),
+    /// The remote body supersedes the local one, whatever wins the rest of the row.
+    TakeRemote,
+}
+
+async fn note_merge(conn: &mut SqliteConnection, op: &Op) -> Result<NoteMerge, String> {
     let spec = schema::spec("notes").ok_or("notes not synced")?;
-    let Some(local) = read_row(conn, spec, &op.pk).await? else { return Ok(false) };
-    let remote_content = op.row.as_ref().and_then(|r| r.get("content"));
-    if remote_content == local.get("content") {
-        return Ok(false);
+    let Some(local) = read_row(conn, spec, &op.pk).await? else { return Ok(NoteMerge::Lww) };
+    let Some(remote_body) = op.row.as_ref().and_then(|r| r.get("content")) else {
+        return Ok(NoteMerge::Lww);
+    };
+    let local_body = local.get("content").cloned().unwrap_or(Value::Null);
+    if *remote_body == local_body {
+        return Ok(NoteMerge::Lww);
     }
+    let received: Option<String> = sqlx::query_scalar("SELECT base_hash FROM sync_rows WHERE tbl = 'notes' AND pk = ?")
+        .bind(op.pk_key())
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(err)?
+        .flatten();
+    let remote_base = op.row.as_ref().and_then(|r| r.get(NOTE_BASE_FIELD)).and_then(Value::as_str);
+    let local_hash = content_hash(Some(&local_body));
+    // The sender edited on top of our body, or we never edited what we got.
+    if remote_base == Some(local_hash.as_str()) || received.as_deref() == Some(local_hash.as_str()) {
+        return Ok(NoteMerge::TakeRemote);
+    }
+    // The sender did not touch the body it had (only other columns changed).
+    if remote_base == Some(content_hash(Some(remote_body)).as_str()) {
+        return Ok(NoteMerge::KeepLocal(local_body));
+    }
+    keep_note_conflict_copy(conn, &local).await?;
+    Ok(NoteMerge::Copied)
+}
+
+/// The local note row stays; only its body becomes the remote one (the
+/// outbox entry is kept, so the merged row is pushed).
+async fn take_remote_body(conn: &mut SqliteConnection, op: &Op) -> Result<(), String> {
+    let body = op.row.as_ref().and_then(|r| r.get("content")).cloned().unwrap_or(Value::Null);
+    let id = op.pk.as_str().ok_or("notes: malformed pk")?;
+    let query = sqlx::query("UPDATE notes SET content = ? WHERE id = ?");
+    bind_value(query, &body).bind(id).execute(&mut *conn).await.map_err(err)?;
+    set_note_base(conn, &op.pk_key(), Some(&body)).await
+}
+
+/// Both sides edited this note's body since the last agreed version: the
+/// remote version becomes the row, the local one is kept as a new note
+/// "<title> (conflict copy)" (queued for push explicitly, since the guard
+/// mutes the triggers).
+async fn keep_note_conflict_copy(conn: &mut SqliteConnection, local: &Map<String, Value>) -> Result<(), String> {
+    let spec = schema::spec("notes").ok_or("notes not synced")?;
     let title = local.get("title").and_then(Value::as_str).unwrap_or("");
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -321,5 +440,5 @@ async fn keep_note_conflict_copy(conn: &mut SqliteConnection, op: &Op) -> Result
         .execute(&mut *conn)
         .await
         .map_err(err)?;
-    Ok(true)
+    Ok(())
 }

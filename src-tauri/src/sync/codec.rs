@@ -15,12 +15,17 @@ use sqlx::SqliteConnection;
 
 use super::schema::{q, TableSpec};
 
-/// Where this device keeps things: the home dir and Devdy's app data dir
-/// (library, managed SSH keys; differs between the prod and dev builds).
+/// Where this device keeps things: the home dir, Devdy's app data dir
+/// (library, managed SSH keys; differs between the prod and dev builds) and the
+/// project roots that live at a different place here than on the device that
+/// synced them.
 #[derive(Debug, Clone)]
 pub struct PathCtx {
     pub home: PathBuf,
     pub app_data: Option<PathBuf>,
+    /// (portable root as synced, local root), longest synced root first. Kept
+    /// in `sync_state.project_path_map` (see `bootstrap::load_project_map`).
+    pub project_map: Vec<(String, String)>,
 }
 
 /// Portable prefix of paths under the app data dir.
@@ -28,17 +33,47 @@ const DATA_MARK: &str = "@data";
 
 impl PathCtx {
     pub fn from_env() -> Self {
-        PathCtx { home: std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default(), app_data: None }
+        PathCtx {
+            home: std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default(),
+            app_data: None,
+            project_map: Vec::new(),
+        }
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn with_home(home: impl Into<PathBuf>) -> Self {
-        PathCtx { home: home.into(), app_data: None }
+        PathCtx { home: home.into(), app_data: None, project_map: Vec::new() }
     }
 
     pub fn with_app_data(mut self, dir: impl Into<PathBuf>) -> Self {
         self.app_data = Some(dir.into());
         self
+    }
+
+    pub fn with_project_map(mut self, map: impl IntoIterator<Item = (String, String)>) -> Self {
+        let mut map: Vec<(String, String)> = map.into_iter().collect();
+        map.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(&b.0)));
+        self.project_map = map;
+        self
+    }
+}
+
+/// The part of `path` below `root` ("" for the root itself), if it is under it.
+fn under<'a>(path: &'a str, root: &str) -> Option<&'a str> {
+    let root = root.trim_end_matches('/');
+    let rest = path.strip_prefix(root)?;
+    if rest.is_empty() {
+        Some("")
+    } else {
+        rest.strip_prefix('/')
+    }
+}
+
+fn join(root: &str, rest: &str) -> String {
+    if rest.is_empty() {
+        root.to_string()
+    } else {
+        format!("{}/{rest}", root.trim_end_matches('/'))
     }
 }
 
@@ -109,27 +144,33 @@ pub fn expand_portable(ctx: &PathCtx, portable: &str) -> String {
     }
 }
 
-/// The single seam mapping a project (or repo) checkout path from another
-/// device to this one. Wave 1: expand `~`, else keep the path as given.
-/// Wave 2 adds the git remote URL / project name fallbacks here.
+/// The single seam mapping a path from another device to this one: a path
+/// under a mapped project root (matched by path, git remote URL or name at
+/// bootstrap, or set by hand) moves under the local root; anything else is
+/// `expand_portable`.
 pub fn map_project_path(ctx: &PathCtx, portable: &str) -> String {
+    for (synced, local) in &ctx.project_map {
+        if let Some(rest) = under(portable, synced) {
+            return join(local, rest);
+        }
+    }
     expand_portable(ctx, portable)
 }
 
-fn local_path(ctx: &PathCtx, spec: &TableSpec, col: &str, portable: &str) -> String {
-    match (spec.name, col) {
-        ("projects", "path") | ("repos", "path") => map_project_path(ctx, portable),
-        ("runs", "output_path") | ("runs", "input_path") => map_in_project(ctx, portable),
-        _ => expand_portable(ctx, portable),
-    }
+/// A file inside a project's `.devdy/` folder follows the project's mapping;
+/// `map_project_path` already maps anything under a mapped root.
+pub fn map_in_project(ctx: &PathCtx, portable: &str) -> String {
+    map_project_path(ctx, portable)
 }
 
-/// A file inside a project's `.devdy/` folder follows the project's mapping.
-pub fn map_in_project(ctx: &PathCtx, portable: &str) -> String {
-    match portable.find("/.devdy/") {
-        Some(i) if i > 0 => format!("{}{}", map_project_path(ctx, &portable[..i]), &portable[i..]),
-        _ => expand_portable(ctx, portable),
+/// Inverse of `map_project_path`: what this device sends for a local path.
+pub fn portable_path(ctx: &PathCtx, path: &str) -> String {
+    for (synced, local) in &ctx.project_map {
+        if let Some(rest) = under(path, local) {
+            return join(synced, rest);
+        }
     }
+    to_portable(ctx, path)
 }
 
 /// A local row (all columns) -> the wire form.
@@ -138,7 +179,7 @@ pub fn encode_row(ctx: &PathCtx, spec: &TableSpec, row: Map<String, Value>) -> M
         .filter(|(c, _)| !spec.is_skipped(c))
         .map(|(c, v)| match v {
             Value::String(s) if spec.is_path(&c) => {
-                let p = to_portable(ctx, &s);
+                let p = portable_path(ctx, &s);
                 (c, Value::String(p))
             }
             v => (c, v),
@@ -151,7 +192,7 @@ pub fn decode_row(ctx: &PathCtx, spec: &TableSpec, row: &Map<String, Value>) -> 
     row.iter()
         .filter(|(c, _)| !spec.is_skipped(c))
         .map(|(c, v)| match v {
-            Value::String(s) if spec.is_path(c) => (c.clone(), Value::String(local_path(ctx, spec, c, s))),
+            Value::String(s) if spec.is_path(c) => (c.clone(), Value::String(map_project_path(ctx, s))),
             v => (c.clone(), v.clone()),
         })
         .collect()
@@ -333,6 +374,26 @@ mod tests {
         assert_eq!(other, "~/.claude/projects/-Users-alicex-p/s.jsonl");
         assert_eq!(to_portable(&a, "/Users/alice/w/-Users-alice-x"), "~/w/-Users-alice-x");
         assert_eq!(expand_portable(&b, "~/w/~-x"), "/Users/bob/w/~-x");
+    }
+
+    #[test]
+    fn project_map_rewrites_paths_both_ways() {
+        let b = PathCtx::with_home("/Users/bob").with_project_map([
+            ("~/Workspace/devdy".to_string(), "/Users/bob/code/devdy".to_string()),
+            ("~/Workspace".to_string(), "/Volumes/w".to_string()),
+        ]);
+        assert_eq!(map_project_path(&b, "~/Workspace/devdy"), "/Users/bob/code/devdy");
+        assert_eq!(map_project_path(&b, "~/Workspace/devdy/.devdy/runs/r.md"), "/Users/bob/code/devdy/.devdy/runs/r.md");
+        assert_eq!(map_project_path(&b, "~/Workspace/devdy2"), "/Volumes/w/devdy2");
+        assert_eq!(map_project_path(&b, "~/Other"), "/Users/bob/Other");
+        assert_eq!(portable_path(&b, "/Users/bob/code/devdy/.devdy/runs/r.md"), "~/Workspace/devdy/.devdy/runs/r.md");
+        assert_eq!(portable_path(&b, "/Users/bob/code/devdyx"), "~/code/devdyx");
+        assert_eq!(portable_path(&b, "/Volumes/w"), "~/Workspace");
+        let runs = spec("runs").unwrap();
+        let wire = json!({"id": "r", "output_path": "~/Workspace/devdy/.devdy/runs/r.md"});
+        let local = decode_row(&b, runs, wire.as_object().unwrap());
+        assert_eq!(local["output_path"], "/Users/bob/code/devdy/.devdy/runs/r.md");
+        assert_eq!(encode_row(&b, runs, local)["output_path"], "~/Workspace/devdy/.devdy/runs/r.md");
     }
 
     #[test]
