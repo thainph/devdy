@@ -5,11 +5,16 @@
 //! - `source`: todo source link normalisation (pure, BR-02)
 //! - `validate`: todo field checks (pure, BR-01)
 //! - `settings`: `focus.*` rows of the settings table (§5.2)
+//! - `scheduler`: reminder decisions (pure) + the 60 s tick (§3.4, BR-07)
+//! - `capacity` (pure, BR-08) / `calendar` (Google fetch + cache, §3.5)
 //! - `source_content`, `github`, `ai_util`: kept from Project Pulse for the AI
 //!   commands of phase P3
 
 pub mod ai_util;
+pub mod calendar;
+pub mod capacity;
 pub mod github;
+pub mod scheduler;
 pub mod score;
 pub mod settings;
 pub mod source;

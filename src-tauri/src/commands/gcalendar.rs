@@ -772,6 +772,113 @@ fn normalize_dt(dt: Option<&EventDateTime>) -> (String, bool) {
     }
 }
 
+// ---- Busy time (Focus capacity, docs/focus-board-spec.md BR-08) ------------
+
+#[derive(Deserialize)]
+struct BusyEventsResponse {
+    #[serde(default)]
+    items: Vec<BusyEventEntry>,
+}
+
+#[derive(Deserialize)]
+struct BusyEventEntry {
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    start: Option<EventDateTime>,
+    #[serde(default)]
+    end: Option<EventDateTime>,
+    #[serde(default)]
+    status: Option<String>,
+    /// `transparent` = shows as free.
+    #[serde(default)]
+    transparency: Option<String>,
+    #[serde(default)]
+    attendees: Vec<BusyAttendee>,
+}
+
+#[derive(Deserialize)]
+struct BusyAttendee {
+    #[serde(default, rename = "self")]
+    is_self: bool,
+    #[serde(default, rename = "responseStatus")]
+    response_status: Option<String>,
+}
+
+/// One event of a calendar as the Focus capacity reads it. `start` / `end`
+/// are RFC3339 (`dateTime`) or `YYYY-MM-DD` for all-day events.
+#[derive(Debug, Clone)]
+pub(crate) struct BusyEvent {
+    pub start: String,
+    pub end: String,
+    pub all_day: bool,
+    pub title: String,
+    pub transparent: bool,
+    /// The account's own attendee entry declined it.
+    pub declined: bool,
+}
+
+/// The default Google account (`is_default`, else the first by label).
+pub(crate) async fn default_google_account(db: &Db) -> Option<String> {
+    selected_accounts(db, None)
+        .await
+        .ok()?
+        .into_iter()
+        .next()
+        .map(|(id, _)| id)
+}
+
+/// Events of `calendar_id` (`primary` allowed) in `[time_min, time_max)`,
+/// cancelled ones left out. Errors never carry the access token.
+pub(crate) async fn fetch_busy_events(
+    account_id: &str,
+    calendar_id: &str,
+    time_min: &str,
+    time_max: &str,
+) -> Result<Vec<BusyEvent>, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let url = format!("{EVENTS_BASE}/{}/events", urlencoding_component(calendar_id));
+    let resp: BusyEventsResponse = send_authed(&client, account_id, |tok| {
+        client.get(&url).bearer_auth(tok).query(&[
+            ("timeMin", time_min),
+            ("timeMax", time_max),
+            ("singleEvents", "true"),
+            ("orderBy", "startTime"),
+            ("maxResults", "250"),
+        ])
+    })
+    .await
+    .map_err(|e| format!("events request failed for '{calendar_id}': {e}"))?
+    .error_for_status()
+    .map_err(|e| format!("events rejected for '{calendar_id}': {}", e.status().map(|s| s.to_string()).unwrap_or_default()))?
+    .json()
+    .await
+    .map_err(|e| format!("Failed to parse events for '{calendar_id}': {e}"))?;
+    Ok(resp
+        .items
+        .into_iter()
+        .filter(|e| e.status.as_deref() != Some("cancelled"))
+        .filter_map(|e| {
+            let (start, all_day) = normalize_dt(e.start.as_ref());
+            let (end, _) = normalize_dt(e.end.as_ref());
+            (!start.is_empty() && !end.is_empty()).then(|| BusyEvent {
+                start,
+                end,
+                all_day,
+                title: e.summary.unwrap_or_default(),
+                transparent: e.transparency.as_deref() == Some("transparent"),
+                declined: e
+                    .attendees
+                    .iter()
+                    .any(|a| a.is_self && a.response_status.as_deref() == Some("declined")),
+            })
+        })
+        .collect())
+}
+
 /// Percent-encode a path component (calendar ids can contain `@`, `#`, etc.).
 fn urlencoding_component(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 3);
