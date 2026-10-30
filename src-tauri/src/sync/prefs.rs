@@ -578,7 +578,8 @@ pub async fn screen(conn: &mut SqliteConnection, ops: Vec<Op>) -> Result<Screene
         .fetch_optional(&mut *conn)
         .await
         .map_err(err)?;
-    if new_enabled.as_deref() != Some("1") {
+    // Taken by default since 0068; '0' = the old opt-in behaviour.
+    if new_enabled.as_deref() == Some("0") {
         for op in ops.iter().filter(|o| o.tbl == "projects" && o.kind == OpKind::Upsert) {
             let Some(id) = op.pk.as_str() else { continue };
             let known: bool = sqlx::query_scalar(
@@ -954,10 +955,11 @@ mod tests {
         pool
     }
 
-    /// A device with the production default: synced projects start unselected.
+    /// A device where synced projects start unselected (opt-in, as the
+    /// filters below need).
     async fn device(name: &str, home: &str) -> (Db, SqliteSyncStore) {
         let db = mem_db().await;
-        exec(&db, &format!("DELETE FROM sync_state WHERE key = '{SYNCED_PROJECT_ENABLED_KEY}'")).await;
+        exec(&db, &format!("UPDATE sync_state SET value = '0' WHERE key = '{SYNCED_PROJECT_ENABLED_KEY}'")).await;
         let store = SqliteSyncStore::new(db.clone(), name.into()).with_paths(PathCtx::with_home(home));
         (db, store)
     }
@@ -995,6 +997,22 @@ mod tests {
         exec(&db_a, "INSERT INTO note_runs (note_id, run_id, project_id, source, linked_at) VALUES ('n2', 'r1', 'p1', 'manual', 'x')").await;
         let ops = push(&a).await;
         (db_a, a, ops)
+    }
+
+    /// The production default (no opt-in key): a project from another device
+    /// is taken with its folder, and its rows come in with it; one created
+    /// here is selected without folder sync.
+    #[tokio::test]
+    async fn synced_projects_are_taken_with_their_folder_by_default() {
+        let (_db_a, _a, ops) = source_with_project().await;
+        let (db_b, b) = device("b", "/Users/b").await;
+        exec(&db_b, &format!("DELETE FROM sync_state WHERE key = '{SYNCED_PROJECT_ENABLED_KEY}'")).await;
+        let r = b.apply_remote(ops).await.unwrap();
+        assert_eq!(r.skipped_older, 0);
+        assert_eq!(count(&db_b, "SELECT enabled + folder FROM sync_project_prefs WHERE project_id = 'p1'").await, 2);
+        assert_eq!(count(&db_b, "SELECT COUNT(*) FROM runs").await, 1);
+        exec(&db_b, "INSERT INTO projects (id, name, path, created_at) VALUES ('mine', 'mine', '/Users/b/w/mine', 'x')").await;
+        assert_eq!(scalar(&db_b, "SELECT enabled || folder FROM sync_project_prefs WHERE project_id = 'mine'").await.as_deref(), Some("10"));
     }
 
     #[tokio::test]
