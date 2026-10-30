@@ -30,6 +30,16 @@ export interface SyncDevice {
   last_seen: number | null
   is_self: boolean
   is_leader: boolean
+  /** Created the group: the only device the relay lets remove others. */
+  is_creator: boolean
+}
+
+/** A device asking to join this one's group (`sync://join-request`). */
+export interface JoinRequest {
+  request_id: string
+  device_name: string
+  /** Unix millis after which it is denied unanswered. */
+  expires_at: number
 }
 
 /** A project on this machine and where it lives (Rust `sync::bootstrap::ProjectMapping`). */
@@ -158,4 +168,45 @@ export function sortDevices(list: SyncDevice[]): SyncDevice[] {
 /** Short device label: its name, else the start of its id. */
 export function deviceLabel(d: Pick<SyncDevice, 'id' | 'name'>): string {
   return d.name.trim() || d.id.slice(0, 8)
+}
+
+/** The group creator, when known (groups made by older builds have none). */
+export function groupCreator(list: SyncDevice[]): SyncDevice | null {
+  return list.find((d) => d.is_creator) ?? null
+}
+
+/**
+ * Whether this device may remove others: it created the group, or no creator
+ * is recorded (older group; the relay still has the last word).
+ */
+export function canRemoveDevices(list: SyncDevice[]): boolean {
+  const creator = groupCreator(list)
+  return !creator || creator.is_self
+}
+
+/** Time left until `expiresAt` (unix millis) as `m:ss`, never negative. */
+export function countdown(expiresAt: number | null | undefined, now: number = Date.now()): string {
+  if (expiresAt == null || !Number.isFinite(expiresAt)) return '0:00'
+  const s = Math.max(0, Math.ceil((expiresAt - now) / 1000))
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+}
+
+/** Join / create failure codes the backend prefixes its messages with. */
+export const JOIN_ERROR_CODES = [
+  'host_offline',
+  'wrong_password',
+  'host_not_in_group',
+  'host_unsupported',
+  'not_accepting',
+  'declined',
+  'busy',
+  'relay_not_configured',
+  'relay_error',
+] as const
+export type JoinErrorCode = (typeof JOIN_ERROR_CODES)[number]
+
+/** The known failure code at the start of a join error, else null (show it raw). */
+export function joinErrorCode(message: unknown): JoinErrorCode | null {
+  const m = String(message ?? '').trim()
+  return JOIN_ERROR_CODES.find((c) => m === c || m.startsWith(`${c}:`)) ?? null
 }

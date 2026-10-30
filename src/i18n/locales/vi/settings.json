@@ -505,7 +505,7 @@
     },
     "join": {
       "title": "Tham gia nhóm đồng bộ",
-      "help": "Làm trên máy khác: nhập tên thiết bị và mật khẩu chính của một máy đã ở trong nhóm (đặt trong phần Điều khiển từ xa của máy đó). Máy đó phải đang trực tuyến.",
+      "help": "Làm trên máy khác: nhập tên thiết bị và mật khẩu chính của một máy đã ở trong nhóm (đặt trong phần Điều khiển từ xa của máy đó). Trên máy đó, mở Cài đặt → Đồng bộ → Chấp nhận thiết bị mới trước, rồi cho phép yêu cầu tại đó.",
       "alias": "Tên thiết bị của máy kia",
       "aliasInvalid": "Tên thiết bị chỉ gồm chữ thường, số và dấu gạch ngang.",
       "password": "Mật khẩu chính của máy đó",
@@ -539,7 +539,8 @@
         "git_remote": "cùng git remote",
         "name": "cùng tên",
         "new": "mới"
-      }
+      },
+      "waiting": "Đang chờ máy kia chấp thuận…"
     },
     "status": {
       "lastPush": "Đẩy lần cuối",
@@ -567,9 +568,13 @@
       "removed": "Đã gỡ {name}",
       "confirmRemove": {
         "title": "Gỡ thiết bị?",
-        "message": "{name} sẽ không thể đồng bộ nữa. Dữ liệu trên máy đó vẫn giữ nguyên.",
+        "message": "{name} sẽ không thể đồng bộ nữa. Dữ liệu trên máy đó vẫn giữ nguyên; máy đó vẫn giữ khoá nhóm cũ nhưng không thể truy cập dữ liệu của nhóm trên relay nữa.",
         "confirmLabel": "Gỡ"
-      }
+      },
+      "creator": "Đã tạo nhóm",
+      "removeHelp": "Thiết bị bị gỡ vẫn giữ bản sao khoá nhóm nhưng không thể truy cập dữ liệu của nhóm trên relay nữa (phiên bản này chưa đổi khoá).",
+      "onlyCreator": "Chỉ thiết bị đã tạo nhóm ({name}) mới gỡ được thiết bị.",
+      "onlyCreatorError": "Chỉ thiết bị đã tạo nhóm mới gỡ được thiết bị khác."
     },
     "projects": {
       "title": "Thư mục dự án trên máy này",
@@ -597,6 +602,34 @@
         "title": "Rời nhóm đồng bộ?",
         "message": "Máy này sẽ ngừng đồng bộ. Dữ liệu trên máy vẫn giữ nguyên; để tham gia lại bạn cần tên và mật khẩu chính của một thiết bị khác.",
         "confirmLabel": "Rời nhóm"
+      }
+    },
+    "relayMissing": "Máy này chưa có relay riêng: hãy đặt URL và token relay trong Cài đặt → Điều khiển từ xa trước.",
+    "errors": {
+      "host_offline": "Không có máy nào trả lời ở tên thiết bị đó. Kiểm tra tên và máy đó có đang trực tuyến không.",
+      "wrong_password": "Sai mật khẩu chính.",
+      "host_not_in_group": "Máy đó không ở trong nhóm đồng bộ nào.",
+      "host_unsupported": "Devdy trên máy đó quá cũ để thêm thiết bị. Hãy cập nhật trước.",
+      "not_accepting": "Máy đó chưa nhận thiết bị mới. Mở Cài đặt → Đồng bộ → Chấp nhận thiết bị mới trên máy đó rồi thử lại.",
+      "declined": "Yêu cầu đã bị từ chối (hoặc không được trả lời kịp) trên máy đó.",
+      "busy": "Máy đó đang xử lý một yêu cầu tham gia khác. Thử lại sau giây lát.",
+      "relay_not_configured": "Máy này chưa có relay riêng: hãy đặt URL và token relay trong Cài đặt → Điều khiển từ xa trước.",
+      "relay_error": "Máy đó không kết nối được relay. Hãy thử lại."
+    },
+    "accept": {
+      "title": "Chấp nhận thiết bị mới",
+      "help": "Để thêm một máy, mở mục này trong 5 phút rồi bấm Tham gia trên máy kia. Bạn xác nhận từng yêu cầu tại đây; giữ trang này mở cho đến khi xong.",
+      "button": "Chấp nhận thiết bị mới",
+      "open": "Đang chấp nhận thiết bị mới — còn {time}",
+      "cancel": "Dừng",
+      "allowed": "{name} giờ có thể hoàn tất tham gia",
+      "denied": "Đã từ chối yêu cầu",
+      "request": {
+        "title": "Cho phép “{name}” tham gia đồng bộ?",
+        "message": "Máy đó sẽ nhận khoá nhóm và mọi thứ được đồng bộ (kể cả bí mật khi bật đồng bộ bí mật). Chỉ cho phép máy bạn đang thiết lập ngay lúc này.",
+        "allow": "Cho phép",
+        "deny": "Từ chối",
+        "expires": "{time}"
       }
     }
   }

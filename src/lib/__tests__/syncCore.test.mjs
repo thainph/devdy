@@ -5,6 +5,10 @@ import assert from 'node:assert/strict'
 import {
   DISABLED_STATUS,
   ageParts,
+  canRemoveDevices,
+  countdown,
+  groupCreator,
+  joinErrorCode,
   deviceLabel,
   missingProjects,
   sortDevices,
@@ -79,4 +83,30 @@ test('sortDevices puts this device first, then the leader, then by name', () => 
 test('deviceLabel falls back to the id prefix', () => {
   assert.equal(deviceLabel({ id: 'abcdef1234', name: ' Mac mini ' }), 'Mac mini')
   assert.equal(deviceLabel({ id: 'abcdef1234', name: '' }), 'abcdef12')
+})
+
+const dev = (id, over) => ({ id, name: id, last_seen: null, is_self: false, is_leader: false, is_creator: false, ...over })
+
+test('only the creator removes devices; unknown creator leaves it to the relay', () => {
+  const me = dev('me', { is_self: true })
+  assert.equal(canRemoveDevices([me, dev('mini')]), true)
+  assert.equal(groupCreator([me, dev('mini')]), null)
+  assert.equal(canRemoveDevices([{ ...me, is_creator: true }, dev('mini')]), true)
+  assert.equal(canRemoveDevices([me, dev('mini', { is_creator: true })]), false)
+  assert.equal(groupCreator([me, dev('mini', { is_creator: true })]).id, 'mini')
+})
+
+test('countdown renders m:ss and never goes negative', () => {
+  assert.equal(countdown(300_000, 0), '5:00')
+  assert.equal(countdown(61_500, 0), '1:02')
+  assert.equal(countdown(5_000, 9_000), '0:00')
+  assert.equal(countdown(null, 0), '0:00')
+})
+
+test('joinErrorCode picks the backend code prefix', () => {
+  assert.equal(joinErrorCode('wrong_password'), 'wrong_password')
+  assert.equal(joinErrorCode('not_accepting: open Settings'), 'not_accepting')
+  assert.equal(joinErrorCode('relay_not_configured: relay URL is not set'), 'relay_not_configured')
+  assert.equal(joinErrorCode('network: connect timeout'), null)
+  assert.equal(joinErrorCode(undefined), null)
 })
