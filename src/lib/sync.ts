@@ -54,6 +54,8 @@ export const syncResyncAll = () => invoke<number>('sync_resync_all')
 export const syncBootstrapPending = () => invoke<boolean>('sync_bootstrap_pending')
 export const syncBootstrapPreview = () => invoke<BootstrapPreview>('sync_bootstrap_preview')
 export const syncBootstrapCommit = () => invoke<BootstrapReport>('sync_bootstrap_commit')
+/** The relay lost ops this device already pulled (`relay_behind`): stop and merge again. */
+export const syncRebootstrap = () => invoke<void>('sync_rebootstrap')
 export const syncProjectMappingList = () => invoke<ProjectMapping[]>('sync_project_mapping_list')
 export const syncProjectMappingSet = (projectId: string, localPath: string) =>
   invoke<ProjectMapping>('sync_project_mapping_set', { projectId, localPath })

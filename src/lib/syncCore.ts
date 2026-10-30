@@ -238,6 +238,10 @@ export const SYNC_ERROR_CODES = [
   'relay_not_configured',
   'relay_error',
   'sync_bootstrap_runs_live',
+  'sync_bootstrap_not_pending',
+  'sync_bootstrap_in_progress',
+  'auth_failed',
+  'relay_behind',
   'ticket_required',
   'ticket_invalid',
   'group_exists',
@@ -249,6 +253,8 @@ export type SyncErrorCode = (typeof SYNC_ERROR_CODES)[number]
 
 /** Codes the relay sends; the backend wraps them ("relay rejected this device: device_revoked"). */
 const RELAY_CODES: readonly SyncErrorCode[] = [
+  'auth_failed',
+  'relay_behind',
   'ticket_required',
   'ticket_invalid',
   'group_exists',

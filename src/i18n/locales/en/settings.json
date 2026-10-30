@@ -585,6 +585,10 @@
       "choose": "Choose folder",
       "change": "Change"
     },
+    "rebootstrap": {
+      "button": "Merge with the group again",
+      "busy": "Merging again…"
+    },
     "resync": {
       "button": "Re-sync everything",
       "hint": "Upload this machine's full state again",
@@ -622,7 +626,11 @@
       "group_exists": "That sync group already exists on the relay.",
       "forbidden": "Only the device that created the group can remove devices.",
       "quota_exceeded": "The relay storage quota for this group is full.",
-      "device_revoked": "This device was removed from the sync group. Leave the group, then join again."
+      "device_revoked": "This device was removed from the sync group. Leave the group, then join again.",
+      "sync_bootstrap_not_pending": "There is no merge waiting on this machine.",
+      "sync_bootstrap_in_progress": "Sync is merging this machine's data. Try again in a moment.",
+      "auth_failed": "The relay refused this machine's relay token. Check the relay URL and token in Settings → Remote Control.",
+      "relay_behind": "The relay lost changes this machine already received (it was restored from a backup). Sync is stopped until this machine merges with the group again."
     },
     "accept": {
       "title": "Accept a new device",
