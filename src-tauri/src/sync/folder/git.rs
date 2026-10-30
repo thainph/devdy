@@ -309,3 +309,27 @@ pub fn clear_hidden_flags(dir: &Path, env: Vec<(&str, String)>, only_present: bo
     }
     Ok(())
 }
+
+/// Gitlink (submodule) paths of a tree, repo-relative.
+pub fn tree_gitlinks(dir: &Path, tree: &str) -> Result<std::collections::HashSet<String>, String> {
+    let out = run(dir, &["ls-tree", "-r", "-z", "--full-tree", tree])?;
+    Ok(out
+        .split(|b| *b == 0)
+        .filter_map(|r| {
+            let r = String::from_utf8_lossy(r);
+            let (meta, path) = r.split_once('\t')?;
+            meta.starts_with("160000 ").then(|| path.to_string())
+        })
+        .collect())
+}
+
+/// Full names of all refs under `refs/heads` and `refs/remotes`.
+pub fn ref_names(dir: &Path) -> Result<Vec<String>, String> {
+    let out = run(dir, &["for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes"])?;
+    Ok(String::from_utf8_lossy(&out).lines().map(|s| s.to_string()).collect())
+}
+
+/// `name` is a valid full ref name.
+pub fn ref_format_ok(dir: &Path, name: &str) -> bool {
+    exec(dir, &["check-ref-format", name], Opts::default()).map(|o| o.ok).unwrap_or(false)
+}

@@ -638,6 +638,8 @@ async fn a_tree_writing_into_a_local_only_repo_skips_the_repo() {
     let dst = t.path().join("dst");
     git(t.path(), &["clone", "-q", src.to_str().unwrap(), dst.to_str().unwrap()]);
     commit(&src, "inner/x.txt", "source\n", "c2");
+    write(&src, "a.txt", b"dirty on source\n");
+    write(&src, "notes.txt", b"untracked on source\n");
     let inner = dst.join("inner");
     fs::create_dir_all(&inner).unwrap();
     git(&inner, &["init", "-q"]);
@@ -648,6 +650,8 @@ async fn a_tree_writing_into_a_local_only_repo_skips_the_repo() {
     assert!(!inner.join("x.txt").exists());
     assert_eq!(git(&inner, &["status", "--porcelain"]), "");
     assert_eq!(git(&dst, &["rev-parse", "HEAD"]), c1, "repo left as it was");
+    assert_eq!(read(&dst, "a.txt"), b"a\n", "its dirty files are not written either");
+    assert!(!dst.join("notes.txt").exists());
 }
 
 #[tokio::test]
@@ -818,7 +822,7 @@ async fn a_failed_switch_puts_the_repo_back() {
         edit: |m| m.repos[0].index_patch = base64::engine::general_purpose::STANDARD.encode(b"diff --git a/zz b/zz\nthis is not a patch\n"),
     }));
     let err = run(&recv, &opts(&dst)).await.unwrap_err();
-    assert!(err.contains("put back as it was") && err.contains("backup:"), "{err}");
+    assert!(err.contains("were put back as they were") && err.contains("backup:"), "{err}");
     assert_eq!(git(&dst, &["symbolic-ref", "--short", "HEAD"]), "main");
     assert_eq!(git(&dst, &["rev-parse", "HEAD"]), c1);
     assert!(git(&dst, &["branch", "--list", "feature"]).is_empty());
@@ -895,4 +899,102 @@ async fn lfs_pointers_keep_local_real_content() {
     assert_eq!(read(&dst, "other.bin"), pointer(b"not here").into_bytes());
     assert!(rep.skipped.iter().any(|s| s.path == "other.bin" && s.reason == "lfs"), "{:?}", rep.skipped);
     assert!(!rep.skipped.iter().any(|s| s.path == "big.bin"));
+}
+
+#[tokio::test]
+async fn a_ref_clash_leaves_the_repo_untouched() {
+    let t = tempdir();
+    let src = t.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    git(&src, &["init", "-q"]);
+    let c1 = commit(&src, "a.txt", "one\n", "c1");
+    let dst = t.path().join("dst");
+    let mut o = opts(&dst);
+    o.excludes = vec!["conf/x.local".into()];
+    let (recv, _) = link_to(&src);
+    run(&recv, &o).await.unwrap();
+    // Here: branch `feature` and an excluded local file; the source tracks
+    // that file and has `feature/x` (cannot coexist with `feature`).
+    git(&dst, &["branch", "feature"]);
+    write(&dst, "conf/x.local", b"MY SECRET\n");
+    git(&src, &["checkout", "-q", "-b", "other"]);
+    commit(&src, "conf/x.local", "committed\n", "c2");
+    git(&src, &["branch", "feature/x"]);
+    let rep = run(&recv, &o).await.unwrap();
+    assert!(rep.skipped.iter().any(|s| s.path.is_empty() && s.reason == "ref_conflict"), "{:?}", rep.skipped);
+    assert_eq!(read(&dst, "conf/x.local"), b"MY SECRET\n");
+    assert_eq!(git(&dst, &["symbolic-ref", "--short", "HEAD"]), "main");
+    assert_eq!(git(&dst, &["rev-parse", "HEAD"]), c1);
+    assert!(git(&dst, &["branch", "--list", "other"]).is_empty());
+}
+
+#[tokio::test]
+async fn a_failed_switch_returns_the_files_it_replaced() {
+    let t = tempdir();
+    let src = t.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    git(&src, &["init", "-q"]);
+    let c1 = commit(&src, "a.txt", "a\n", "c1");
+    let dst = t.path().join("dst");
+    git(t.path(), &["clone", "-q", src.to_str().unwrap(), dst.to_str().unwrap()]);
+    commit(&src, "conf/x.local", "committed\n", "c2");
+    write(&dst, "conf/x.local", b"MY SECRET\n");
+    let mut o = opts(&dst);
+    o.excludes = vec!["conf/x.local".into()];
+    let (recv, srcl) = pair("recv", "src");
+    let inner = Arc::new(FolderSource::new(Arc::new(MapRoots(src.clone()))));
+    use base64::Engine;
+    srcl.add_handler(Arc::new(Tamper {
+        inner,
+        edit: |m| m.repos[0].index_patch = base64::engine::general_purpose::STANDARD.encode(b"diff --git a/zz b/zz\nnot a patch\n"),
+    }));
+    let err = run(&recv, &o).await.unwrap_err();
+    assert!(err.contains("were put back as they were"), "{err}");
+    assert!(err.contains(".devdy/sync-backup"), "names the folder backup: {err}");
+    assert_eq!(read(&dst, "conf/x.local"), b"MY SECRET\n");
+    assert_eq!(git(&dst, &["rev-parse", "HEAD"]), c1);
+    assert_eq!(git(&dst, &["status", "--porcelain"]), "?? .devdy/\n?? conf/", "as before the sync");
+}
+
+#[tokio::test]
+async fn repos_with_submodules_are_synced() {
+    let t = tempdir();
+    let s = t.path().join("src");
+    fs::create_dir_all(&s).unwrap();
+    git(&s, &["init", "-q"]);
+    let c1 = commit(&s, "a.txt", "one\n", "c1");
+    git(&s, &["update-index", "--add", "--cacheinfo", &format!("160000,{c1},vendor/lib")]);
+    git(&s, &["commit", "-q", "-m", "sub"]);
+    let dst = t.path().join("dst");
+    let (recv, _) = link_to(&s);
+    run(&recv, &opts(&dst)).await.unwrap();
+    assert!(dst.join("vendor/lib").is_dir(), "gitlink dir");
+    commit(&s, "b.txt", "two\n", "c3");
+    write(&s, "a.txt", b"dirty on source\n");
+    let rep = run(&recv, &opts(&dst)).await.unwrap();
+    assert!(!rep.skipped.iter().any(|x| x.reason == "path_conflict"), "{:?}", rep.skipped);
+    assert_eq!(git(&dst, &["rev-parse", "HEAD"]), git(&s, &["rev-parse", "HEAD"]));
+    assert_eq!(read(&dst, "a.txt"), b"dirty on source\n");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_path_backed_up_twice_does_not_fail() {
+    let t = tempdir();
+    let s = t.path().join("src");
+    fs::create_dir_all(&s).unwrap();
+    git(&s, &["init", "-q"]);
+    commit(&s, "a.txt", "one\n", "c1");
+    std::os::unix::fs::symlink("a.txt", s.join("cur")).unwrap();
+    git(&s, &["add", "cur"]);
+    git(&s, &["commit", "-q", "-m", "link"]);
+    let dst = t.path().join("dst");
+    write(&dst, "a.txt", b"old copy\n");
+    std::os::unix::fs::symlink("a.txt", dst.join("cur")).unwrap();
+    let (recv, _) = link_to(&s);
+    let rep = run(&recv, &opts(&dst)).await.unwrap();
+    let bk = dst.canonicalize().unwrap().join(backup::FOLDER).join(&rep.backup.ts);
+    assert_eq!(fs::read_link(bk.join("cur")).unwrap(), PathBuf::from("a.txt"));
+    assert_eq!(read(&bk, "a.txt"), b"old copy\n");
+    assert_eq!(read(&dst, "a.txt"), b"one\n");
 }

@@ -174,11 +174,24 @@ pub struct Content {
     pub size: u64,
 }
 
+/// Temporary files (bundles), deleted on drop — also when the request is
+/// aborted while the manifest is being built.
+#[derive(Default)]
+pub struct TempFiles(pub Vec<PathBuf>);
+
+impl Drop for TempFiles {
+    fn drop(&mut self) {
+        for t in &self.0 {
+            let _ = fs::remove_file(t);
+        }
+    }
+}
+
 pub struct Built {
     pub manifest: Manifest,
     pub contents: HashMap<String, Content>,
-    /// Bundle files to delete once no longer served.
-    pub temps: Vec<PathBuf>,
+    /// Bundle files, deleted once no longer served.
+    pub temps: TempFiles,
 }
 
 pub fn build(root: &Path, req: &ManifestRequest, tmp_dir: &Path) -> Result<Built, String> {
@@ -187,27 +200,19 @@ pub fn build(root: &Path, req: &ManifestRequest, tmp_dir: &Path) -> Result<Built
     }
     let ex = Excludes::new(&req.excludes, req.case_insensitive)?;
     let sc = scan::scan(root, &ex, req.max_file_bytes)?;
-    let mut built = Built { manifest: Manifest { v: MANIFEST_VERSION, ..Default::default() }, contents: HashMap::new(), temps: vec![] };
-    let res = (|| {
-        for f in &sc.files {
-            let entry = local_entry(root, &f.rel, &f.kind)?;
-            if entry.link.is_none() {
-                built.contents.insert(entry.sha256.clone(), Content { path: root.join(&f.rel), size: entry.size });
-            }
-            built.manifest.files.push(entry);
+    let mut built = Built { manifest: Manifest { v: MANIFEST_VERSION, ..Default::default() }, contents: HashMap::new(), temps: TempFiles::default() };
+    // On error `built` (and its bundle files) is dropped.
+    for f in &sc.files {
+        let entry = local_entry(root, &f.rel, &f.kind)?;
+        if entry.link.is_none() {
+            built.contents.insert(entry.sha256.clone(), Content { path: root.join(&f.rel), size: entry.size });
         }
-        built.manifest.skipped = sc.skipped.clone();
-        for r in &sc.repos {
-            let rm = repo_manifest(root, &r.rel, req, &ex, tmp_dir, &mut built)?;
-            built.manifest.repos.push(rm);
-        }
-        Ok(())
-    })();
-    if let Err(e) = res {
-        for t in &built.temps {
-            let _ = fs::remove_file(t);
-        }
-        return Err(e);
+        built.manifest.files.push(entry);
+    }
+    built.manifest.skipped = sc.skipped.clone();
+    for r in &sc.repos {
+        let rm = repo_manifest(root, &r.rel, req, &ex, tmp_dir, &mut built)?;
+        built.manifest.repos.push(rm);
     }
     Ok(built)
 }
@@ -341,7 +346,7 @@ fn repo_manifest(root: &Path, rel: &str, req: &ManifestRequest, ex: &Excludes, t
         }
         return Err(format!("git bundle failed: {}", o.stderr.lines().next().unwrap_or("")));
     }
-    built.temps.push(file.clone());
+    built.temps.0.push(file.clone());
     let sha = scan::sha256_file(&file)?;
     let size = fs::metadata(&file).map_err(|e| format!("bundle: {e}"))?.len();
     built.contents.insert(sha.clone(), Content { path: file, size });

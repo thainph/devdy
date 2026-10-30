@@ -1,6 +1,6 @@
 //! Source side: serves `folder_manifest` and `folder_fetch`.
 
-use super::manifest::{self, Content, ManifestRequest};
+use super::manifest::{self, Content, ManifestRequest, TempFiles};
 use super::{blocking, KIND_FETCH, KIND_MANIFEST, REPLY_CHUNK, REPLY_FETCH_DONE, REPLY_MANIFEST};
 use crate::sync::peer::{PeerHandler, PeerLink, Reply, MAX_BLOB_PLAINTEXT};
 use async_trait::async_trait;
@@ -47,16 +47,36 @@ pub struct Chunk {
     pub blobs: Vec<String>,
 }
 
-/// Contents of the last manifest built for one receiver + project.
+/// Contents of the last manifest built for one receiver + project (its
+/// bundle files go with it).
 struct Served {
     contents: HashMap<String, Content>,
-    temps: Vec<PathBuf>,
+    _temps: TempFiles,
 }
 
-impl Drop for Served {
+/// Blobs uploaded but not handed to the receiver yet: released if the
+/// request is aborted (or fails) before they are.
+struct Pending {
+    link: Arc<dyn PeerLink>,
+    shas: Vec<String>,
+}
+
+impl Pending {
+    fn handed_over(mut self) -> Vec<String> {
+        std::mem::take(&mut self.shas)
+    }
+}
+
+impl Drop for Pending {
     fn drop(&mut self) {
-        for t in &self.temps {
-            let _ = std::fs::remove_file(t);
+        if self.shas.is_empty() {
+            return;
+        }
+        let (link, shas) = (self.link.clone(), std::mem::take(&mut self.shas));
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            rt.spawn(async move {
+                let _ = link.blob_release(&shas).await;
+            });
         }
     }
 }
@@ -86,17 +106,11 @@ impl FolderSource {
             manifest::build(&root, &req2, &tmp)
         })
         .await?;
-        let served = Arc::new(Served { contents: built.contents, temps: built.temps });
+        let served = Arc::new(Served { contents: built.contents, _temps: built.temps });
         let json = serde_json::to_vec(&built.manifest).map_err(|e| e.to_string())?;
-        let mut blobs = Vec::new();
+        let mut pending = Pending { link: link.clone(), shas: Vec::new() };
         for part in json.chunks(MAX_BLOB_PLAINTEXT) {
-            match link.blob_put(part.to_vec()).await {
-                Ok(sha) => blobs.push(sha),
-                Err(e) => {
-                    let _ = link.blob_release(&blobs).await;
-                    return Err(e);
-                }
-            }
+            pending.shas.push(link.blob_put(part.to_vec()).await?);
         }
         let bundles: serde_json::Map<String, Value> = built
             .manifest
@@ -105,7 +119,9 @@ impl FolderSource {
             .filter_map(|r| r.bundle.as_ref().map(|b| (r.path.clone(), json!({ "sha256": b.sha256, "size": b.size }))))
             .collect();
         self.served.lock().unwrap().insert(key, served);
-        reply.send(REPLY_MANIFEST, json!({ "manifest_blobs": blobs, "bundles": bundles }), true).await
+        reply.send(REPLY_MANIFEST, json!({ "manifest_blobs": pending.shas, "bundles": bundles }), true).await?;
+        pending.handed_over();
+        Ok(())
     }
 
     async fn fetch(&self, link: &Arc<dyn PeerLink>, from: &str, body: Value, reply: &Arc<dyn Reply>) -> Result<(), String> {
@@ -127,37 +143,28 @@ impl FolderSource {
             if it.offset.checked_add(it.len).is_none_or(|end| end > c.size) {
                 return Err(format!("bad range for {}", short(&it.sha)));
             }
-            let blobs = upload_range(link, c, it.offset, it.len).await?;
-            let chunk = Chunk { sha: it.sha, offset: it.offset, len: it.len, blobs: blobs.clone() };
-            if let Err(e) = reply.send(REPLY_CHUNK, serde_json::to_value(&chunk).unwrap(), false).await {
-                let _ = link.blob_release(&blobs).await;
-                return Err(e);
-            }
+            let pending = upload_range(link, c, it.offset, it.len).await?;
+            let chunk = Chunk { sha: it.sha, offset: it.offset, len: it.len, blobs: pending.shas.clone() };
+            reply.send(REPLY_CHUNK, serde_json::to_value(&chunk).unwrap(), false).await?;
+            pending.handed_over();
         }
         reply.send(REPLY_FETCH_DONE, json!({}), true).await
     }
 }
 
-async fn upload_range(link: &Arc<dyn PeerLink>, c: &Content, offset: u64, len: u64) -> Result<Vec<String>, String> {
+/// Reads only (the source's files are never written); the blobs are
+/// released unless handed over.
+async fn upload_range(link: &Arc<dyn PeerLink>, c: &Content, offset: u64, len: u64) -> Result<Pending, String> {
     let changed = || "a file changed on the source during the sync; sync again".to_string();
     let mut f = tokio::fs::File::open(&c.path).await.map_err(|_| changed())?;
     f.seek(std::io::SeekFrom::Start(offset)).await.map_err(|_| changed())?;
-    let mut blobs = Vec::new();
+    let mut blobs = Pending { link: link.clone(), shas: Vec::new() };
     let mut left = len;
     while left > 0 {
         let n = left.min(MAX_BLOB_PLAINTEXT as u64) as usize;
         let mut buf = vec![0u8; n];
-        let res = match f.read_exact(&mut buf).await {
-            Ok(_) => link.blob_put(buf).await,
-            Err(_) => Err(changed()),
-        };
-        match res {
-            Ok(sha) => blobs.push(sha),
-            Err(e) => {
-                let _ = link.blob_release(&blobs).await;
-                return Err(e);
-            }
-        }
+        f.read_exact(&mut buf).await.map_err(|_| changed())?;
+        blobs.shas.push(link.blob_put(buf).await?);
         left -= n as u64;
     }
     Ok(blobs)
@@ -183,5 +190,29 @@ impl PeerHandler for FolderSource {
             tracing::warn!(event = "folder_sync_serve_failed", kind = %kind, error = %e);
             let _ = reply.error(e).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sync::peer::testing::pair;
+
+    #[tokio::test]
+    async fn blobs_not_handed_over_are_released() {
+        let (a, _b) = pair("a", "b");
+        let link: Arc<dyn PeerLink> = a.clone();
+        let mut p = Pending { link: link.clone(), shas: vec![] };
+        p.shas.push(link.blob_put(b"x".to_vec()).await.unwrap());
+        let kept = Pending { link: link.clone(), shas: vec![link.blob_put(b"y".to_vec()).await.unwrap()] };
+        drop(p); // e.g. the handler task aborted mid-batch
+        assert_eq!(kept.handed_over().len(), 1);
+        for _ in 0..50 {
+            if a.blob_count() == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(a.blob_count(), 1, "only the handed-over blob is left");
     }
 }
