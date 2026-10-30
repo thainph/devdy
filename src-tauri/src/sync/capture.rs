@@ -4,7 +4,10 @@
 //! `node:sqlite`, so the SQL may only use core SQLite functions.
 //!
 //! The triggers stay silent while `sync_apply_guard.active = 1` (remote ops
-//! being applied), so applied ops are never echoed back.
+//! being applied), so applied ops are never echoed back, and while this
+//! device is in no sync group (`sync_state.member` != '1'), so the outbox does
+//! not grow forever: creating a group queues every row (`enqueue_all`) and
+//! joining one queues the local-only rows (bootstrap merge).
 
 use sha2::{Digest, Sha256};
 use sqlx::Row;
@@ -16,10 +19,14 @@ use crate::db::Db;
 /// left the registry) can be found and dropped.
 const PREFIX: &str = "sync_cap_";
 const HASH_KEY: &str = "capture_hash";
+/// `sync_state` key: '1' while this device is in a sync group (set on create /
+/// join before the rows are queued, cleared on leave).
+pub const MEMBER_KEY: &str = "member";
 
 /// Wall time in ms, computed in SQL.
 const NOW_MS: &str = "CAST((julianday('now') - 2440587.5) * 86400000.0 AS INTEGER)";
-const GUARD_OFF: &str = "COALESCE((SELECT active FROM sync_apply_guard WHERE id = 1), 0) = 0";
+const GUARD_OFF: &str = "COALESCE((SELECT active FROM sync_apply_guard WHERE id = 1), 0) = 0 \
+    AND EXISTS (SELECT 1 FROM sync_state WHERE key = 'member' AND value = '1')";
 
 fn filter_sql(spec: &TableSpec, row: &str) -> Option<String> {
     let f = spec.filter?;
@@ -91,6 +98,50 @@ pub fn spec_hash() -> String {
         h.update([0u8]);
     }
     hex::encode(h.finalize())
+}
+
+/// Mark this device in / out of a sync group. Leaving drops the outbox: what
+/// was not pushed belongs to no group any more (a later join queues the
+/// local-only rows again).
+// Wired by pair/bootstrap (create / join / leave).
+#[cfg_attr(not(test), allow(dead_code))]
+pub async fn set_member(db: &Db, member: bool) -> Result<(), String> {
+    let err = |e: sqlx::Error| e.to_string();
+    let mut tx = db.begin().await.map_err(err)?;
+    sqlx::query("INSERT INTO sync_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .bind(MEMBER_KEY)
+        .bind(if member { "1" } else { "0" })
+        .execute(&mut *tx)
+        .await
+        .map_err(err)?;
+    if !member {
+        sqlx::query("DELETE FROM sync_outbox").execute(&mut *tx).await.map_err(err)?;
+    }
+    tx.commit().await.map_err(err)
+}
+
+/// Startup: a device that synced before the membership flag existed (it has
+/// a pull cursor or pushed / applied rows) is a member; any other device
+/// without the flag drops what the triggers queued before they were gated.
+pub async fn settle_membership(db: &Db) -> Result<(), String> {
+    let err = |e: sqlx::Error| e.to_string();
+    let mut tx = db.begin().await.map_err(err)?;
+    sqlx::query(
+        "INSERT INTO sync_state (key, value) SELECT ?, '1' \
+         WHERE NOT EXISTS (SELECT 1 FROM sync_state WHERE key = ?) \
+           AND (EXISTS (SELECT 1 FROM sync_state WHERE key = 'pull_cursor') OR EXISTS (SELECT 1 FROM sync_rows))",
+    )
+    .bind(MEMBER_KEY)
+    .bind(MEMBER_KEY)
+    .execute(&mut *tx)
+    .await
+    .map_err(err)?;
+    sqlx::query("DELETE FROM sync_outbox WHERE NOT EXISTS (SELECT 1 FROM sync_state WHERE key = ? AND value = '1')")
+        .bind(MEMBER_KEY)
+        .execute(&mut *tx)
+        .await
+        .map_err(err)?;
+    tx.commit().await.map_err(err)
 }
 
 /// (Re)create the capture triggers when the registry changed since the last

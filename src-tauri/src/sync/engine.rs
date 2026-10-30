@@ -346,10 +346,7 @@ async fn serve(
                 }
                 // While a refused push backs off, pending ops alone do not
                 // trigger a cycle.
-                backoff.due() && match ctx.store.pending(1).await {
-                    Ok(p) => !p.is_empty(),
-                    Err(_) => false,
-                }
+                backoff.due() && ctx.store.has_pending().await.unwrap_or(false)
             }
             _ = periodic.tick() => true,
         };
