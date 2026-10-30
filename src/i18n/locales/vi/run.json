@@ -203,5 +203,19 @@
     "comfortable": "Thoáng",
     "compact": "Gọn",
     "dense": "Dày"
+  },
+  "syncOwner": {
+    "anotherDevice": "thiết bị khác",
+    "badgeTitle": "Thuộc {device}",
+    "runningOn": "Đang chạy trên {device} — theo dõi tại đây; có thể tiếp tục session khi nó rảnh.",
+    "lastRanOn": "Lần chạy gần nhất trên {device}.",
+    "continueHere": "Tiếp tục tại đây",
+    "gitMismatchTitle": "Working tree khác nhau",
+    "gitMismatchMessage": "Session này chạy lần cuối trên {device} ở commit {recordedHead} ({recordedState}).\nCheckout trên máy này đang ở {localHead} ({localState}).\n\nAgent sẽ làm việc với file trên máy này. Vẫn tiếp tục tại đây?",
+    "clean": "sạch",
+    "dirty": "có thay đổi chưa commit",
+    "unknown": "không rõ",
+    "noRepo": "không có git repository",
+    "transcriptMissing": "Transcript của session chưa đồng bộ về máy này — tin nhắn tiếp theo sẽ bắt đầu hội thoại mới, không có ngữ cảnh trước đó."
   }
 }
