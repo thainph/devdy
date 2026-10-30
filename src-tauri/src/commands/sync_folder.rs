@@ -5,97 +5,63 @@
 //! a time, ending every project with a `sync://folder` event whose phase is
 //! `done`, `error` or `skipped`; `sync_folder_cancel` stops it.
 //!
-//! The functions marked INTEGRATION are the seams to the engine / prefs
-//! workers' code.
+//! Folder options come from `sync::prefs`; requests go through the sync
+//! engine's `PeerLink`.
 
+use crate::commands::sync::SyncManager;
 use crate::db::Db;
-use crate::runs::RunRegistry;
+use crate::sync::prefs;
 use crate::sync::folder::apply::{self, ApplyReport};
 use crate::sync::folder::handler::{FolderSource, RootResolver};
 use crate::sync::folder::plan::FolderPreview;
-use crate::sync::folder::{Cancel, FolderOptions, FolderProgress, ProgressSink, DEFAULT_MAX_FILE_MB, EVENT};
+use crate::sync::folder::{Cancel, FolderOptions, FolderProgress, ProgressSink, EVENT};
 use crate::sync::peer::{PeerHandler, PeerLink};
 use async_trait::async_trait;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+
 /// The running apply, if any.
 static ACTIVE: Mutex<Option<Cancel>> = Mutex::new(None);
 
-/// INTEGRATION (engine): the live peer link of the running sync engine.
-/// TODO(integrator): return the engine's `PeerLink` (e.g. from `SyncManager`).
-async fn peer_link(_app: &AppHandle) -> Result<Arc<dyn PeerLink>, String> {
-    Err("sync is not connected".into())
+/// The live peer link of the running sync engine.
+async fn peer_link(app: &AppHandle) -> Result<Arc<dyn PeerLink>, String> {
+    let manager = app.try_state::<SyncManager>().ok_or("sync_not_connected")?;
+    manager.peer_link().await.ok_or_else(|| "sync_not_connected".into())
 }
 
-/// INTEGRATION (engine): the source-side handler; register it with
-/// `SyncManager::register_peer_handler(folder_handler(db))` before start.
-#[allow(dead_code)] // TODO(integrator): remove once registered.
+/// The source-side handler, registered with the `SyncManager` at startup.
 pub fn folder_handler(db: Db) -> Arc<dyn PeerHandler> {
     Arc::new(FolderSource::new(Arc::new(DbRoots(db))))
 }
 
-#[allow(dead_code)] // TODO(integrator): see `folder_handler`.
 struct DbRoots(Db);
 
 #[async_trait]
 impl RootResolver for DbRoots {
-    /// INTEGRATION (prefs): the project's folder on this (source) machine.
-    /// TODO(integrator): use `prefs::project_pref(db, id).local_path` when set.
+    /// The project's folder on this (source) machine.
     async fn root(&self, project_id: &str) -> Result<PathBuf, String> {
-        let path: Option<String> = sqlx::query_scalar("SELECT path FROM projects WHERE id = ?")
-            .bind(project_id)
-            .fetch_optional(&self.0)
-            .await
-            .map_err(|e| e.to_string())?;
-        match path.filter(|p| !p.trim().is_empty()) {
-            Some(p) => Ok(PathBuf::from(p)),
-            None => Err("this project has no folder on the source device".into()),
+        let pref = prefs::project_pref(&self.0, project_id).await?;
+        if pref.local_path.trim().is_empty() || !pref.exists {
+            return Err("this project has no folder on the source device".into());
         }
+        Ok(PathBuf::from(pref.local_path))
     }
 }
 
-/// INTEGRATION (prefs): name + folder sync options of a project on this
-/// (receiving) machine; `None` when it has no local path.
-/// TODO(integrator): build from `prefs::project_pref(db, id)` (local_path,
-/// excludes, default_excludes, max_file_mb) instead of `projects.path`.
-async fn folder_options(db: &Db, project_id: &str) -> Result<(String, Option<FolderOptions>), String> {
-    let row: Option<(String, String)> = sqlx::query_as("SELECT name, path FROM projects WHERE id = ?")
-        .bind(project_id)
-        .fetch_optional(db)
-        .await
-        .map_err(|e| e.to_string())?;
-    let Some((name, path)) = row else { return Ok((String::new(), None)) };
-    let opts = (!path.trim().is_empty()).then(|| FolderOptions {
+/// Name + folder sync options of a project on this (receiving) machine
+/// (`None` when it has no local path), and whether one of its sessions runs here.
+async fn folder_options(db: &Db, project_id: &str) -> Result<(String, Option<FolderOptions>, bool), String> {
+    let pref = prefs::project_pref(db, project_id).await?;
+    let opts = (!pref.local_path.trim().is_empty()).then(|| FolderOptions {
         project_id: project_id.to_string(),
-        local_root: PathBuf::from(path),
-        excludes: vec![],
-        default_excludes: true,
-        max_file_mb: DEFAULT_MAX_FILE_MB,
+        local_root: PathBuf::from(&pref.local_path),
+        excludes: pref.excludes.clone(),
+        default_excludes: pref.default_excludes,
+        max_file_mb: pref.max_file_mb.max(0) as u64,
     });
-    Ok((name, opts))
-}
-
-/// INTEGRATION (prefs): a session of this project runs on this machine.
-/// TODO(integrator): may be replaced by `ProjectPref::running_here`.
-async fn running_here(app: &AppHandle, db: &Db, project_id: &str) -> bool {
-    let ids: Vec<String> = match app.try_state::<RunRegistry>() {
-        Some(r) => r.lock().await.keys().cloned().collect(),
-        None => return false,
-    };
-    for id in ids {
-        let hit: Option<i64> = sqlx::query_scalar("SELECT 1 FROM runs WHERE id = ? AND project_id = ?")
-            .bind(&id)
-            .bind(project_id)
-            .fetch_optional(db)
-            .await
-            .unwrap_or(None);
-        if hit.is_some() {
-            return true;
-        }
-    }
-    false
+    Ok((pref.name, opts, pref.running_here))
 }
 
 async fn online_link(app: &AppHandle, source_device: &str) -> Result<Arc<dyn PeerLink>, String> {
@@ -120,12 +86,12 @@ pub async fn sync_folder_preview(
     let link = online_link(&app, &source_device).await?;
     let mut out = Vec::new();
     for pid in project_ids {
-        let (name, opts) = folder_options(&db, &pid).await?;
+        let (name, opts, running) = folder_options(&db, &pid).await?;
         let Some(opts) = opts else {
             out.push(skipped_preview(&pid, name, "no_local_path"));
             continue;
         };
-        if running_here(&app, &db, &pid).await {
+        if running {
             out.push(skipped_preview(&pid, name, "running_session"));
             continue;
         }
@@ -178,9 +144,9 @@ pub async fn sync_folder_apply(
                 finish(pid, "error", Some("cancelled".into()));
                 continue;
             }
-            let opts = match folder_options(&db, pid).await {
-                Ok((_, Some(o))) => o,
-                Ok((_, None)) => {
+            let (opts, running) = match folder_options(&db, pid).await {
+                Ok((_, Some(o), running)) => (o, running),
+                Ok((_, None, _)) => {
                     finish(pid, "skipped", Some("no_local_path".into()));
                     continue;
                 }
@@ -189,13 +155,16 @@ pub async fn sync_folder_apply(
                     continue;
                 }
             };
-            if running_here(&app, &db, pid).await {
+            if running {
                 finish(pid, "skipped", Some("running_session".into()));
                 continue;
             }
             match apply::apply(link.clone(), &source_device, &opts, sink.clone(), cancel.clone()).await {
                 Ok(ApplyReport { backup, .. }) => {
-                    // TODO(integrator): record `prefs` last_backup_at = backup.ts.
+                    let now = chrono::Utc::now().to_rfc3339();
+                    if let Err(e) = prefs::set_last_backup_at(&db, pid, &now).await {
+                        tracing::warn!(event = "folder_sync_backup_time_failed", error = %e);
+                    }
                     finish(pid, "done", Some(format!("backup: {}", backup.describe())));
                 }
                 Err(e) => {

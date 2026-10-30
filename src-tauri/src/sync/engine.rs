@@ -144,7 +144,6 @@ pub struct Timing {
     pub rejected_retry: Duration,
     /// Cap of the exponential backoff (from `backoff_min`) during which blob
     /// uploads through the [`PeerLink`] fail fast after the relay refused one.
-    #[allow(dead_code)] // read by the link's blob uploads (folder sync)
     pub push_backoff_max: Duration,
     pub pull_limit: u64,
     /// A request fails after this long without any reply (each one resets it).
@@ -195,7 +194,6 @@ struct Pending {
 /// Blob uploads through the link the relay refused (quota): fail fast for
 /// a while instead of sending every chunk to be refused.
 #[derive(Default)]
-#[allow(dead_code)] // the link's blob uploads (folder sync)
 struct BlobRefusal {
     backoff: PushBackoff,
     code: Option<String>,
@@ -215,7 +213,6 @@ struct Shared {
     /// Serialises local store work: serving a flush, pulling for a sync. Never
     /// held while waiting on another device.
     work: tokio::sync::Mutex<()>,
-    #[allow(dead_code)] // the link's blob uploads (folder sync)
     blob_refusal: Mutex<BlobRefusal>,
 }
 
@@ -840,13 +837,11 @@ async fn run_from(
 
 /// Delay before uploading again after the relay refused an upload.
 #[derive(Default)]
-#[allow(dead_code)] // the link's blob uploads (folder sync)
 struct PushBackoff {
     delay: Option<Duration>,
     until: Option<Instant>,
 }
 
-#[allow(dead_code)] // the link's blob uploads (folder sync)
 impl PushBackoff {
     fn due(&self) -> bool {
         self.until.is_none_or(|t| Instant::now() >= t)

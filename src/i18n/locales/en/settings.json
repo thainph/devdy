@@ -652,7 +652,10 @@
       "auth_failed": "The relay refused this machine's relay token. Check the relay URL and token in Settings → Remote Control.",
       "relay_behind": "The relay lost changes this machine already received (it was restored from a backup). Sync is stopped until this machine merges with the group again.",
       "sync_leave_handoff_pending": "This device leads the group's background jobs or created the group, and the relay could not be reached to hand that on.",
-      "peer_offline": "The source machine is offline — open Devdy on it and try again."
+      "peer_offline": "The source machine is offline — open Devdy on it and try again.",
+      "peer_paused": "Sync is paused on the source machine. Resume it there, then try again.",
+      "peer_timeout": "The source machine did not answer in time. Check that it is awake and online, then try again.",
+      "sync_not_connected": "This machine is not connected to the relay yet. Wait a moment and try again."
     },
     "accept": {
       "title": "Accept a new device",

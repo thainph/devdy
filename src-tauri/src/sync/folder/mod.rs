@@ -14,14 +14,8 @@
 
 pub mod apply;
 pub mod backup;
-// The source side is only reached once the engine registers
-// `commands::sync_folder::folder_handler`.
-// TODO(integrator): drop these allows after wiring it.
-#[allow(dead_code)]
 pub mod git;
-#[allow(dead_code)]
 pub mod handler;
-#[allow(dead_code)]
 pub mod manifest;
 pub mod paths;
 pub mod plan;
@@ -51,22 +45,8 @@ pub const EVENT: &str = "sync://folder";
 pub const BATCH_BYTES: u64 = 256 * 1024 * 1024;
 /// Backups kept per repo / project folder.
 pub const KEEP_BACKUPS: usize = 5;
-pub const DEFAULT_MAX_FILE_MB: u64 = 500;
-/// Default excludes (O6). TODO(integrator): same list as `prefs::DEFAULT_EXCLUDES`.
-pub const DEFAULT_EXCLUDES: &[&str] = &[
-    "node_modules",
-    "target",
-    "dist",
-    "build",
-    ".next",
-    ".nuxt",
-    ".venv",
-    "venv",
-    "__pycache__",
-    ".gradle",
-    "Pods",
-    ".DS_Store",
-];
+/// Default excludes (O6).
+pub use crate::sync::prefs::DEFAULT_EXCLUDES;
 /// Always excluded, whatever the settings.
 pub const ALWAYS_EXCLUDES: &[&str] = &[".git", ".devdy/"];
 

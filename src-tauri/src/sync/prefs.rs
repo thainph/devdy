@@ -53,7 +53,6 @@ pub const CATEGORIES: &[&str] =
 
 /// Folder sync excludes on by default (`default_excludes`), on top of `.git`
 /// internals and `.devdy/`, which are always excluded.
-#[allow(dead_code)] // folder sync
 pub const DEFAULT_EXCLUDES: &[&str] = &[
     "node_modules",
     "target",
