@@ -803,7 +803,10 @@
         "hideDetails": "Ẩn danh sách file",
         "listOverwrite": "Ghi đè",
         "listAdd": "Thêm",
-        "listDelete": "Xoá"
+        "listDelete": "Xoá",
+        "rewound": "branch {branch} sẽ bị lùi lại; tip cũ được giữ ở devdy-sync-backup/…",
+        "skippedItems": "Bỏ qua ({n})",
+        "truncated": "Danh sách bị cắt: hiện {shown}/{total}"
       },
       "skipped": {
         "no_local_path": "chưa chọn thư mục",
@@ -835,7 +838,23 @@
       "viewBackup": "Xem backup",
       "retry": "Thử lại",
       "close": "Đóng",
-      "done": "Xong"
+      "done": "Xong",
+      "skipItem": {
+        "too_large": "quá lớn",
+        "symlink_outside": "symlink trỏ ra ngoài dự án",
+        "submodule": "submodule",
+        "git_link": "git link",
+        "non_utf8": "tên không phải UTF-8",
+        "repo_only_here": "repo chỉ có trên máy này",
+        "path_conflict": "xung đột đường dẫn",
+        "unsafe_path": "đường dẫn không an toàn",
+        "no_repo_here": "máy này không có repo",
+        "branch_in_worktree": "branch đang checkout ở worktree khác",
+        "lfs": "Git LFS"
+      },
+      "applyFiles": "Sync {n} dự án · {files} thay đổi file",
+      "planChanged": "Thư mục nguồn đã thay đổi sau lần xem trước này nên không ghi gì vượt quá nó. Xem lại bản xem trước mới rồi xác nhận lại.",
+      "review": "Xem lại"
     },
     "indicator": {
       "lastSync": "Lần cuối: {ago}",

@@ -803,7 +803,10 @@
         "hideDetails": "Hide file list",
         "listOverwrite": "Overwritten",
         "listAdd": "Added",
-        "listDelete": "Deleted"
+        "listDelete": "Deleted",
+        "rewound": "branch {branch} will be moved back; its old tip is kept in devdy-sync-backup/…",
+        "skippedItems": "Left alone ({n})",
+        "truncated": "List truncated: showing {shown} of {total}"
       },
       "skipped": {
         "no_local_path": "no folder chosen",
@@ -835,7 +838,23 @@
       "viewBackup": "View backup",
       "retry": "Retry",
       "close": "Close",
-      "done": "Done"
+      "done": "Done",
+      "skipItem": {
+        "too_large": "too large",
+        "symlink_outside": "symlink outside the project",
+        "submodule": "submodule",
+        "git_link": "git link",
+        "non_utf8": "non-UTF-8 name",
+        "repo_only_here": "repo only on this machine",
+        "path_conflict": "path conflict",
+        "unsafe_path": "unsafe path",
+        "no_repo_here": "no repo here",
+        "branch_in_worktree": "branch checked out in another worktree",
+        "lfs": "Git LFS"
+      },
+      "applyFiles": "Sync {n} project(s) · {files} file change(s)",
+      "planChanged": "The source folder changed after this preview, so nothing beyond it was written. Review the new preview and confirm again.",
+      "review": "Review again"
     },
     "indicator": {
       "lastSync": "Last: {ago}",
