@@ -10,7 +10,6 @@ use crate::runs::RunRegistry;
 use crate::sync::bootstrap::{self, BootstrapPreview, BootstrapReport, ProjectMapping, RemoteState};
 use crate::sync::codec::PathCtx;
 use crate::sync::crypto::SyncKeys;
-use crate::sync::engine::RelayBlobs;
 use crate::sync::store::SqliteSyncStore;
 use crate::sync::transport::Connection;
 use tauri::{AppHandle, Manager, State};
@@ -22,7 +21,7 @@ fn paths(app: &AppHandle) -> Result<PathCtx, String> {
     Ok(PathCtx::from_env().with_app_data(data))
 }
 
-/// A connection to the group (blobs come over it too) and its keys.
+/// A connection to the group and its keys.
 async fn open_group(db: &Db) -> Result<(Connection, SyncKeys), String> {
     let sync = crate::secrets::get_sync_secrets().ok_or("this device is not in a sync group")?;
     let params = crate::sync::pair::connect_params(db, &sync).await?;
@@ -79,10 +78,10 @@ fn refuse_if_live(live: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// Merge the group state into this device (re-key, LWW apply, files and
-/// Keychain items, queue the local-only rows), then start syncing. Refused
-/// while a run is live, and when no merge is pending. Run starts are blocked
-/// for the whole commit (`bootstrap::refuse_if_committing`).
+/// Merge the group state into this device (re-key, LWW apply, park files and
+/// Keychain items for the engine, queue the local-only rows), then start
+/// syncing. Refused while a run is live, and when no merge is pending. Run
+/// starts are blocked for the whole commit (`bootstrap::refuse_if_committing`).
 #[tauri::command]
 pub async fn sync_bootstrap_commit(
     app: AppHandle,
@@ -108,8 +107,7 @@ pub async fn sync_bootstrap_commit(
     let store = SqliteSyncStore::new(db.clone(), sync.device_id.clone())
         .with_paths(paths.clone())
         .with_secrets(std::sync::Arc::new(crate::sync::secrets::KeychainBackend));
-    let blobs = RelayBlobs::new(&conn, &keys);
-    let report = bootstrap::commit(db, &store, &paths, remote, &git, &blobs).await?;
+    let report = bootstrap::commit(db, &store, &paths, remote, &git).await?;
     drop(conn);
     drop(guard);
     let tables: Vec<String> = report.preview.tables.iter().map(|t| t.tbl.clone()).collect();

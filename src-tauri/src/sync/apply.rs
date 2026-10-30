@@ -84,6 +84,27 @@ pub async fn apply_ops(
     clock: &mut HlcClock,
     ops: Vec<Op>,
 ) -> Result<ApplyReport, String> {
+    let (mut report, new_alias) = apply_batch(db, paths, clock, ops).await?;
+    if new_alias && report.deferred > 0 {
+        // A row held back for a parent under an id this batch just re-keyed
+        // can go now; on a quiet group nothing else would retry it soon.
+        let (again, _) = apply_batch(db, paths, clock, Vec::new()).await?;
+        report.applied += again.applied;
+        report.skipped_older += again.skipped_older;
+        report.conflicts += again.conflicts;
+        report.deferred = again.deferred;
+    }
+    Ok(report)
+}
+
+/// One pass over `ops` and the deferred ones; also tells whether it recorded
+/// a new alias.
+async fn apply_batch(
+    db: &Db,
+    paths: &PathCtx,
+    clock: &mut HlcClock,
+    ops: Vec<Op>,
+) -> Result<(ApplyReport, bool), String> {
     // Ops deferred by earlier calls are retried first, so a newer incoming op on
     // the same row still wins by HLC.
     let mut all: Vec<Op> = sqlx::query_scalar::<_, String>("SELECT op FROM sync_deferred")
@@ -142,6 +163,7 @@ pub async fn apply_ops(
         let mut applied: HashMap<RowKey, RowKey> = HashMap::new();
         let mut touched: BTreeSet<&'static str> = BTreeSet::new();
         let mut aliases = load_aliases(&mut tx).await?;
+        let aliases_before = aliases.len();
         for op in &candidates {
             let key = (op.tbl.clone(), op.pk_key());
             if fk_blocked.contains(&key) {
@@ -208,8 +230,9 @@ pub async fn apply_ops(
             .await
             .map_err(err)?;
         clock.save(&mut tx).await?;
+        let new_alias = aliases.len() > aliases_before;
         tx.commit().await.map_err(err)?;
-        return Ok(report);
+        return Ok((report, new_alias));
     }
 }
 
@@ -292,15 +315,21 @@ async fn apply_one(
     }
     let mut op = op.clone();
     let mut merged = false;
+    let mut redirected = false;
     if op.kind == OpKind::Upsert {
+        let sent_as = op.pk_key();
         follow_aliases(spec, &mut op, aliases);
+        redirected = op.pk_key() != sent_as;
         merged = reconcile_unique(conn, paths, spec, &mut op, aliases).await?;
     }
     let key = op.pk_key();
     let outcome = apply_row(conn, paths, spec, &op, &key).await?;
-    if merged {
-        // The sender still has its row under the losing id: push ours (the
-        // merged result) so it re-keys too, whichever version won here.
+    // The sender still has its row under the losing id: push ours (the merged
+    // result) so it re-keys too, whichever version won here. An upsert of a
+    // losing id that wins here also replaced whatever the survivor had queued
+    // (the merge's own push included): the relay only learns the result if
+    // it is queued again.
+    if merged || (redirected && outcome != Outcome::Skipped) {
         sqlx::query(
             "INSERT INTO sync_outbox (tbl, pk, op, changed_at) SELECT ?, ?, 'U', 0 \
              WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = ? AND pk = ?)",
@@ -708,7 +737,24 @@ async fn apply_alias(
             .await
             .map_err(err)?;
         if read_row(conn, spec, &new).await?.is_some() {
+            // The loser may have changed here after the sender folded it (a
+            // later edit, local or pulled): the newer of the two rows is the
+            // content, as it is wherever that edit lands on the survivor.
+            let carry = if loser_is_newer(conn, spec, &old_key, &new_key).await? {
+                read_row(conn, spec, &op.pk).await?
+            } else {
+                None
+            };
             fold_into(conn, spec, &op.pk, &new, false).await?;
+            if let Some(mut row) = carry {
+                for (col, v) in spec.pk.iter().zip(pk_values(spec, &new)?) {
+                    row.insert((*col).to_string(), v);
+                }
+                upsert_row(conn, spec, &row).await?;
+                // Pushed with a fresh HLC, so the sender adopts it too.
+                queue_outbox(conn, spec.name, &new_key, "U", wall_ms() as i64).await?;
+                tracing::info!(event = "sync_alias_carry", tbl = spec.name);
+            }
         } else if survivor_deleted == Some(1) {
             delete_row(conn, spec, &op.pk).await?;
         } else {
@@ -737,6 +783,32 @@ async fn apply_alias(
     .await
     .map_err(err)?;
     Ok((Outcome::Applied, (spec.name.to_string(), old_key)))
+}
+
+/// Whether the row under `loser` changed after the one under `survivor` (by
+/// last known HLC, an unpushed local change counting as of its time).
+async fn loser_is_newer(conn: &mut SqliteConnection, spec: &TableSpec, loser: &str, survivor: &str) -> Result<bool, String> {
+    let mut stamps = Vec::with_capacity(2);
+    for key in [loser, survivor] {
+        let synced: Option<Hlc> = sqlx::query_scalar::<_, String>("SELECT hlc FROM sync_rows WHERE tbl = ? AND pk = ?")
+            .bind(spec.name)
+            .bind(key)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(err)?
+            .and_then(|s| s.parse().ok());
+        let local: Option<i64> = sqlx::query_scalar("SELECT MAX(changed_at) FROM sync_outbox WHERE tbl = ? AND pk = ?")
+            .bind(spec.name)
+            .bind(key)
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(err)?;
+        // A local change goes out with an HLC above its time and above
+        // anything seen so far.
+        let local = local.filter(|c| *c > 0).map(|c| Hlc::new(c as u64, u16::MAX, ""));
+        stamps.push(synced.max(local));
+    }
+    Ok(stamps[0] > stamps[1])
 }
 
 /// sha256 of a note body (JSON-encoded, so NULL and "" differ).
