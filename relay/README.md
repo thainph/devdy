@@ -81,7 +81,7 @@ time. The relay only stores ciphertext and never logs op blobs or blob data.
 | `blob_put{sha, data}` | Device → Relay | `data` = base64 of the sealed bytes, `sha` = lowercase hex sha256 of those bytes (verified). Idempotent. → `blob_ack{sha}`. Errors: `sha_mismatch`, `too_large`, `quota_exceeded`. |
 | `blob_get{sha}` | Device → Relay | → `blob_data{sha, data}` or `error{blob_not_found}`. |
 | `blob_release{shas}` | Device → Relay | The uploading device no longer references these blobs (at most 1000 per frame). Only blobs that device uploaded are marked; anything else is ignored. → `blob_released{released}` (how many were marked). |
-| `sync_revoke{device_id, successor?}` | Device → Relay | A device may revoke itself; only the group's creator may revoke another device (else `forbidden`). The revoked device's live connections get `error{device_revoked}` and close, its hello fails from then on (with or without a ticket). When the **creator revokes itself** the role moves to `successor` if that is an active member, else to the oldest active member (registration time, ties by device id); no member left = no creator. → `control{code:"ok"}`. |
+| `sync_revoke{device_id, successor?}` | Device → Relay | A device may revoke itself; only the group's creator may revoke another device (else `forbidden`). The revoked device's live connections get `error{device_revoked}` and close, its hello fails from then on (with or without a ticket). When the **creator revokes itself** the role moves to `successor` if that is an active member, else to the oldest active member (registration time, ties by device id); no member left = the group and all its data are deleted (see *Abandoned groups*). → `control{code:"ok"}`. |
 | `sync_group_info{creator_device}` | Relay → other devices | Sent to the group's other connected devices when the creator role moved; devices that were offline learn it from their next `sync_welcome`. |
 | `sync_peers{}` | Device → Relay | On-demand sync (design `on-demand-sync` §1). → `sync_peers{devices:[device_id, ...]}`: the group's devices with a live sync connection, excluding the caller (deduplicated, sorted). |
 | `sync_peer_send{to_device, data}` | Device → Relay | Forward `data` (base64 of a message sealed with the group key) to `to_device`'s most recent live connection in the **same group**, as `sync_peer_msg`. → `sync_peer_ack{}` once queued for the target. Errors: `peer_offline` (no live connection, revoked, not a member, the sender itself, or the target's queue did not drain within 60 s — that target is then disconnected), `too_large` (`data` longer than the base64 of `RELAY_SYNC_MAX_BLOB_BYTES`), `bad_request` (missing `to_device` / `data`). Never stored, never logged. |
@@ -128,6 +128,30 @@ with `sqlite3 "$RELAY_SYNC_DB" ".backup '/path/sync-$(date +%F).db'"`
 (safe while the relay runs). The content is end-to-end encrypted, but the file
 is the only server-side copy of every group's history; devices keep full local
 copies, so losing it means re-uploading, not data loss.
+
+**Abandoned groups.** When a `sync_revoke` leaves a group without any
+non-revoked device (the last member revoked, or revoking itself), the whole
+group is deleted in the same transaction: its ops, blobs, devices, epochs,
+invites and the group row. Every store request runs in its own transaction on
+the store's single connection, so this never interleaves with a push or hello
+of that group, and a group with at least one active device is never touched.
+A later `sync_hello` for it gets `group_not_found` (with `create=true` it
+starts a new, empty group). Each relay start also purges every group that has
+no active device left (groups left before purging existed) and logs only the
+count, `event="sync_groups_purged" groups=N`.
+
+Deleted pages are reused by later writes but do not shrink the file by
+themselves: a store created by this version uses incremental auto-vacuum, so a
+purge hands its pages back to the file system right away (`PRAGMA
+incremental_vacuum`); an older store keeps its size. No blocking full `VACUUM`
+runs on a revoke. To shrink an older store once, start the relay with
+`RELAY_SYNC_VACUUM_ON_START=1`: after the startup purge it runs `VACUUM`
+(which also switches the file to incremental auto-vacuum), logs
+`event="sync_vacuum" before_bytes after_bytes`, and serves only once it is
+done. It rewrites the whole file, so it needs free disk space about the size
+of the live data (also in the service's private `/tmp`) and takes a while on a
+large store; a failure is logged (`sync_vacuum_failed`) and the relay starts
+anyway. Remove the variable again afterwards.
 
 ## Operations (sync store)
 
@@ -184,6 +208,7 @@ Keep the env file and the store outside anything a release replaces.
 | `RELAY_SYNC_DB` | no | — | SQLite file of the sync store (e.g. `/var/lib/devdy-relay/sync.db`). Unset = sync disabled (`error{sync_disabled}`). |
 | `RELAY_SYNC_MAX_GROUP_BYTES` | no | `2147483648` | Storage cap per sync group (op blobs + blobs). Over it → `quota_exceeded`. |
 | `RELAY_SYNC_MAX_BLOB_BYTES` | no | `4194368` | Largest blob (sealed bytes, 4 MiB + 64); an op blob may be at most the base64 size of this. |
+| `RELAY_SYNC_VACUUM_ON_START` | no | — | `1` = run a one-time `VACUUM` of the sync store at startup, after abandoned groups are purged (see *Abandoned groups*). Leave unset normally. |
 | `RUST_LOG` | no | `info` | Log level (metadata only; payloads never logged). |
 
 No secret is ever hardcoded or committed (SEC-001).
