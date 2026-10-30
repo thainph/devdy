@@ -2,9 +2,9 @@
 //! last-writer-wins by HLC, tombstones for deletes, FK-safe out-of-order apply.
 //!
 //! Two devices can create "the same thing" independently after pairing (a
-//! skill with the same name, the same imported CLI session, the same Pulse
-//! watch): an incoming row whose pk is new here but that clashes with a local
-//! row on another UNIQUE key is reconciled the same way on every device,
+//! skill with the same name, the same imported CLI session): an incoming row
+//! whose pk is new here but that clashes with a local row on another UNIQUE
+//! key is reconciled the same way on every device,
 //! whatever the arrival order: the row with the lower id survives. A local
 //! loser is re-keyed to the incoming id (children, outbox, Keychain items
 //! follow; the moved rows are queued for push so the relay log drops the old
@@ -123,6 +123,10 @@ async fn apply_batch(
         clock.observe(&op.hlc);
         if op.schema > SCHEMA_VERSION {
             to_defer.push((op, format!("schema newer than local ({SCHEMA_VERSION})")));
+            continue;
+        }
+        if schema::RETIRED_TABLES.contains(&op.tbl.as_str()) {
+            base.skipped_older += 1;
             continue;
         }
         let Some(spec) = schema::spec(&op.tbl) else {

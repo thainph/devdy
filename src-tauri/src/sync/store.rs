@@ -1007,6 +1007,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retired_and_unknown_tables_and_columns_are_tolerated() {
+        let (db_b, b) = device("b", "/Users/b").await;
+        let far = 9_000_000_000_000;
+        // An older peer still sends Pulse rows: skipped, never parked.
+        let watch = upsert(
+            "pulse_watches",
+            json!("pw-1"),
+            Hlc::new(far, 0, "a"),
+            json!({"id": "pw-1", "project_id": "p1", "source_type": "github_issue", "source_ref": "o/r#1"}),
+        );
+        let r = b.apply_remote(vec![watch]).await.unwrap();
+        assert_eq!((r.applied, r.skipped_older, r.deferred), (0, 1, 0));
+        // A table this build does not know yet is parked for a later upgrade.
+        let future = upsert("focus_future", json!("x"), Hlc::new(far, 1, "a"), json!({"id": "x"}));
+        assert_eq!(b.apply_remote(vec![future]).await.unwrap().deferred, 1);
+        assert_eq!(scalar(&db_b, "SELECT reason FROM sync_deferred").await.unwrap(), "unknown table");
+        // Columns this build does not have are dropped; an old peer's todo
+        // (no Focus columns) gets the column defaults.
+        let todo = upsert(
+            "todos",
+            json!("t1"),
+            Hlc::new(far, 2, "a"),
+            json!({"id": "t1", "text": "x", "done": 0, "position": 0, "created_at": "x", "colour": "red"}),
+        );
+        assert_eq!(b.apply_remote(vec![todo]).await.unwrap().applied, 1);
+        assert_eq!(scalar(&db_b, "SELECT status || '/' || priority FROM todos WHERE id = 't1'").await.unwrap(), "todo/2");
+        // Focus columns and day plans travel.
+        let todo = upsert(
+            "todos",
+            json!("t2"),
+            Hlc::new(far, 3, "a"),
+            json!({"id": "t2", "text": "y", "done": 0, "position": 0, "created_at": "x",
+                   "due_time": "15:00", "priority": 1, "estimate_min": 90, "status": "doing"}),
+        );
+        let plan = upsert(
+            "focus_day_plans",
+            json!("2026-10-30"),
+            Hlc::new(far, 4, "a"),
+            json!({"date": "2026-10-30", "plan_json": "{}", "created_at": "x"}),
+        );
+        assert_eq!(b.apply_remote(vec![todo, plan]).await.unwrap().applied, 2);
+        assert_eq!(
+            scalar(&db_b, "SELECT due_time || '/' || priority || '/' || estimate_min || '/' || status FROM todos WHERE id = 't2'").await.unwrap(),
+            "15:00/1/90/doing"
+        );
+        assert_eq!(scalar(&db_b, "SELECT plan_json FROM focus_day_plans").await.unwrap(), "{}");
+    }
+
+    #[tokio::test]
     async fn delete_vs_update_race() {
         let (db_a, a) = device("a", "/Users/a").await;
         let (db_b, b) = device("b", "/Users/b").await;
@@ -1231,7 +1280,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn same_cli_session_and_pulse_watch_converge() {
+    async fn same_cli_session_converges() {
         for a_first in [true, false] {
             let (db_a, a, db_b, b) = paired().await;
             // The same external session imported on both machines; b's row
@@ -1240,14 +1289,6 @@ mod tests {
             exec(&db_a, "INSERT INTO notes (id, title, position, created_at, updated_at) VALUES ('n1', 'n', 0, 'x', 'x')").await;
             exec(&db_a, "INSERT INTO note_runs (note_id, run_id, project_id, source, linked_at) VALUES ('n1', 'run-z', 'p1', 'manual', 'x')").await;
             exec(&db_b, "INSERT INTO runs (id, project_id, type, engine, session_id, created_at) VALUES ('run-a', 'p1', 'session', 'claude', 'sess', 'b')").await;
-            for (db, id) in [(&db_a, "pw-a"), (&db_b, "pw-b")] {
-                exec(db, &format!(
-                    "INSERT INTO pulse_watches (id, project_id, source_type, source_ref, source_url, added_via, created_at, updated_at) \
-                     VALUES ('{id}', 'p1', 'github_issue', 'o/r#1', 'u', 'button', 'x', 'x')"
-                ))
-                .await;
-            }
-            exec(&db_b, "INSERT INTO pulse_digests (id, watch_id, content_hash, status, ball, created_at) VALUES ('pd', 'pw-b', 'h', 'on_track', 'me', 'x')").await;
             if a_first {
                 sync(&a, &b).await;
             } else {
@@ -1257,8 +1298,6 @@ mod tests {
             for db in [&db_a, &db_b] {
                 assert_eq!(rows(db, "SELECT id FROM runs").await, vec!["run-a"], "a_first={a_first}");
                 assert_eq!(rows(db, "SELECT note_id || '/' || run_id FROM note_runs").await, vec!["n1/run-a"]);
-                assert_eq!(rows(db, "SELECT id FROM pulse_watches").await, vec!["pw-a"]);
-                assert_eq!(rows(db, "SELECT watch_id FROM pulse_digests").await, vec!["pw-a"]);
             }
         }
     }

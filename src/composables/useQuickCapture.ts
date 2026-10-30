@@ -11,6 +11,7 @@
 // prefill event and is merged through adoptDraft, which only fills fields that
 // are still empty — an in-flight capture is never clobbered.
 import { ref } from 'vue'
+import { emptyTodoDraft, type TodoDraft } from '@/lib/focus'
 
 export type QuickCaptureTab = 'todo' | 'note'
 
@@ -45,6 +46,9 @@ const tab = ref<QuickCaptureTab>('todo')
 const todoText = ref('')
 const noteTitle = ref('')
 const noteContent = ref('')
+// The todo's Focus fields (deadline, priority, estimate, source — spec §3.1); its
+// `text` / `projectId` are unused, the fields above carry them.
+const todoMeta = ref<TodoDraft>(emptyTodoDraft())
 
 // The project the capture is filed under — seeded from the opening context, then
 // freely editable in the form. `runId` is the run it was captured from and is
@@ -96,6 +100,7 @@ export function useQuickCapture() {
   function clearDraft(saved: QuickCaptureTab) {
     if (saved === 'todo') {
       todoText.value = ''
+      todoMeta.value = emptyTodoDraft()
     } else {
       noteTitle.value = ''
       noteContent.value = ''
@@ -157,6 +162,7 @@ export function useQuickCapture() {
     open,
     tab,
     todoText,
+    todoMeta,
     noteTitle,
     noteContent,
     projectId,

@@ -1,8 +1,11 @@
 ---
-status: draft
+status: superseded
+superseded_by: docs/focus-board-spec.md
 version: v2
 date: 2026-10-22
 ---
+
+> **Superseded** by [Focus board](focus-board-spec.md): Project Pulse was removed (migration 0067 drops the `pulse_*` tables); its link normalisation, GitHub issue fetch, source content builder and one-shot AI engine moved to `src-tauri/src/focus/`.
 
 # Spec: Project Pulse v2 — theo dõi Slack thread & GitHub issue, tổng hợp tiến độ
 

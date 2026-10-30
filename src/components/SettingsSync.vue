@@ -11,7 +11,7 @@
 // - Data: categories this machine receives (SyncDataTab). - Projects: per-project selection,
 //   folder mapping and folder sync (SyncProjectsTab).
 // - Devices: devices (rename this one, remove others — creator only —, pick the leader that runs
-//   Pulse / Slack polling) and "Accept a new device" (5 min window + Allow / Deny per request,
+//   Slack polling) and "Accept a new device" (5 min window + Allow / Deny per request,
 //   closed when this page goes away so a request is never left unseen).
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'

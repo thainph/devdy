@@ -6,9 +6,9 @@
 //!   disabled category are skipped. `secrets` is the existing
 //!   `sync_secrets_enabled` toggle (it also stops this machine's own pushes).
 //! - Projects (`sync_project_prefs.enabled`): project-scoped rows (any row
-//!   with a `project_id`, rows under a run / note / todo / Slack thread / Pulse
-//!   watch / repo of the project) and the run logs / transcripts of an
-//!   unselected project are skipped. The `projects` rows themselves always
+//!   with a `project_id`, rows under a run / note / todo / Slack thread / repo
+//!   of the project) and the run logs / transcripts of an unselected project
+//!   are skipped. The `projects` rows themselves always
 //!   apply, so every project shows in the list.
 //! - A row of an enabled category pointing (declared FK) at a row of a disabled
 //!   category that is not here: a nullable reference is cut to NULL (and put
@@ -51,7 +51,7 @@ pub const SESSIONS: &str = "sessions";
 
 /// Category ids, in UI order.
 pub const CATEGORIES: &[&str] =
-    &["config", "accounts", SECRETS, "servers", "mcp", "library", "notes", "slack", "pulse", SESSIONS];
+    &["config", "accounts", SECRETS, "servers", "mcp", "library", "notes", "slack", SESSIONS];
 
 /// Folder sync excludes on by default (`default_excludes`), on top of `.git`
 /// internals and `.devdy/`, which are always excluded.
@@ -103,6 +103,7 @@ pub static TABLE_CATEGORIES: &[(&str, &str)] = &[
     ("todos", "notes"),
     ("note_runs", "notes"),
     ("todo_runs", "notes"),
+    ("focus_day_plans", "notes"),
     ("slack_identities", "slack"),
     ("slack_users", "slack"),
     ("slack_channels", "slack"),
@@ -110,8 +111,6 @@ pub static TABLE_CATEGORIES: &[(&str, &str)] = &[
     ("slack_messages", "slack"),
     ("slack_files", "slack"),
     ("slack_thread_runs", "slack"),
-    ("pulse_watches", "pulse"),
-    ("pulse_digests", "pulse"),
     ("runs", SESSIONS),
     ("run_usage", SESSIONS),
     ("deleted_sessions", SESSIONS),
@@ -119,7 +118,7 @@ pub static TABLE_CATEGORIES: &[(&str, &str)] = &[
 
 /// Project-scoped tables (single `id` pk, a `project_id` column) whose rows
 /// others point at: a child belongs to its parent's project too.
-const SCOPED_PARENTS: &[&str] = &["runs", "notes", "todos", "slack_threads", "pulse_watches", "repos"];
+const SCOPED_PARENTS: &[&str] = &["runs", "notes", "todos", "slack_threads", "repos"];
 
 /// Category of a synced table; `None` = always on.
 pub fn table_category(tbl: &str) -> Option<&'static str> {

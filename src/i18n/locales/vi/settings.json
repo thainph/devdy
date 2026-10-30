@@ -17,7 +17,8 @@
     "prompts": "Mẫu Prompt",
     "inbox": "Inbox API",
     "azure": "Tài khoản Azure",
-    "backup": "Đồng bộ & Sao lưu"
+    "backup": "Đồng bộ & Sao lưu",
+    "focus": "Focus"
   },
   "general": {
     "theme": "Giao diện",
@@ -418,7 +419,7 @@
   },
   "backup": {
     "title": "Sao lưu ra file",
-    "help": "Xuất toàn bộ cấu hình Devdy ra một file và nhập trên máy khác: cài đặt, prompt đã lưu, thư viện Skills / Rules kèm nhóm, MCP server, VPS server, tài khoản (GitHub, GitLab, AWS, Azure, Google, Claude), ghi chú / todo và Slack thread (kèm bản dịch; file đính kèm được tải lại) và project (repo, Skills / Rules / nhóm, MCP và VPS server đã bật, tài khoản gắn kèm, mục theo dõi Pulse). Lịch sử session vẫn ở máy này.",
+    "help": "Xuất toàn bộ cấu hình Devdy ra một file và nhập trên máy khác: cài đặt, prompt đã lưu, thư viện Skills / Rules kèm nhóm, MCP server, VPS server, tài khoản (GitHub, GitLab, AWS, Azure, Google, Claude), ghi chú / todo và Slack thread (kèm bản dịch; file đính kèm được tải lại) và project (repo, Skills / Rules / nhóm, MCP và VPS server đã bật, tài khoản gắn kèm). Lịch sử session vẫn ở máy này.",
     "export": {
       "title": "Xuất",
       "includeSecrets": "Kèm secret (mã hoá)",
@@ -473,8 +474,7 @@
       "notes": "Ghi chú",
       "todos": "Todo",
       "slackThreads": "Slack thread",
-      "projects": "Project",
-      "pulseWatches": "Theo dõi Pulse"
+      "projects": "Project"
     }
   },
   "sync": {
@@ -558,7 +558,7 @@
     },
     "devices": {
       "title": "Thiết bị",
-      "leaderHelp": "Thiết bị được chọn chạy các tác vụ đơn lẻ (quét Pulse, tải lại Slack) để chúng không chạy hai lần. Thay đổi có hiệu lực ngay.",
+      "leaderHelp": "Thiết bị được chọn chạy các tác vụ đơn lẻ (tải lại Slack) để chúng không chạy hai lần. Thay đổi có hiệu lực ngay.",
       "leader": "Máy chủ trì",
       "noLeader": "Không có máy chủ trì — mọi thiết bị đều chạy",
       "thisDevice": "Máy này",
@@ -626,7 +626,7 @@
       },
       "handoff": {
         "title": "Rời nhóm mà không chuyển giao vai trò?",
-        "message": "Máy này đang chạy các tác vụ nền của nhóm (Pulse, quét Slack) hoặc là máy tạo nhóm, và không kết nối được relay để chuyển vai trò đó cho thiết bị khác. Nếu rời nhóm bây giờ, các thiết bị còn lại sẽ vẫn chờ máy này: hãy chọn máy dẫn mới trên một thiết bị khác sau đó. Kết nối mạng lại (và bỏ tạm dừng đồng bộ) để chuyển giao đúng cách.",
+        "message": "Máy này đang chạy các tác vụ nền của nhóm (quét Slack) hoặc là máy tạo nhóm, và không kết nối được relay để chuyển vai trò đó cho thiết bị khác. Nếu rời nhóm bây giờ, các thiết bị còn lại sẽ vẫn chờ máy này: hãy chọn máy dẫn mới trên một thiết bị khác sau đó. Kết nối mạng lại (và bỏ tạm dừng đồng bộ) để chuyển giao đúng cách.",
         "confirmLabel": "Vẫn rời nhóm"
       }
     },
@@ -743,15 +743,11 @@
         },
         "notes": {
           "label": "Notes & Todos",
-          "hint": "Ghi chú, việc cần làm và liên kết phiên"
+          "hint": "Ghi chú, việc cần làm, kế hoạch ngày Focus và liên kết phiên"
         },
         "slack": {
           "label": "Slack threads",
           "hint": "Thread Slack đã lưu"
-        },
-        "pulse": {
-          "label": "Pulse",
-          "hint": "Issue và PR đang theo dõi"
         },
         "sessions": {
           "label": "Sessions",

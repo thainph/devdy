@@ -536,7 +536,7 @@ async fn full_fetch_translate_and_view() {
     );
     assert_eq!(v.summary.team_id.as_deref(), Some("T1"));
     assert_eq!(v.summary.channel.as_deref(), Some("ch-c0b83ghdtfg"));
-    // auth.test's user_id is remembered per workspace (Project Pulse).
+    // auth.test's user_id is remembered per workspace.
     let me: Option<String> =
         sqlx::query_scalar("SELECT user_id FROM slack_identities WHERE team_id = 'T1'")
             .fetch_optional(&env.db)

@@ -173,7 +173,6 @@ export const SYNC_CATEGORIES: readonly SyncCategory[] = [
   { id: 'library' },
   { id: 'notes' },
   { id: 'slack' },
-  { id: 'pulse' },
   { id: 'sessions' },
 ]
 

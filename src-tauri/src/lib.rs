@@ -3,12 +3,12 @@ mod azure_sandbox;
 mod commands;
 mod conductor;
 mod db;
+mod focus;
 mod github;
 mod gitlab;
 mod inbox_api;
 mod item_links;
 mod procs;
-mod pulse;
 mod remote;
 mod runs;
 mod secrets;
@@ -120,9 +120,13 @@ use commands::slack_threads::{
     rename_slack_thread, reorder_slack_threads, retranslate_slack_thread, set_slack_thread_project,
     translate_slack_reply, unlink_slack_thread_run,
 };
-use commands::pulse::{
-    pulse_is_watched, pulse_move_watch, pulse_overview, pulse_refresh, pulse_set_screen_open,
-    pulse_unwatch, pulse_watch,
+use commands::focus::{
+    focus_board, focus_refresh_calendar, focus_settings_get, focus_settings_set,
+    focus_take_open_todo,
+};
+use commands::focus_ai::{
+    focus_ai_analyze, focus_ai_cancel, focus_ai_plan_today, focus_ai_suggest, focus_day_plan_get,
+    focus_plan_to_calendar, focus_start_with_ai, focus_suggest_actual,
 };
 use commands::item_links::{link_item_run, list_item_runs, list_run_items, unlink_item_run};
 use commands::notes::{
@@ -130,7 +134,7 @@ use commands::notes::{
 };
 use commands::todos::{
     add_todo, clear_completed_todos, delete_todo, delete_todos, list_todos, reorder_todos,
-    set_todo_due_date, set_todo_project, toggle_todo, update_todo,
+    set_todo_due_date, set_todo_project, toggle_todo, update_todo, update_todo_fields,
 };
 use commands::vps_servers::{
     create_vps_server, delete_vps_server, list_project_servers, list_vps_servers,
@@ -197,6 +201,7 @@ pub fn run() {
         // its labels follow the app language; this only routes clicks back.
         .on_menu_event(commands::app_menu::on_menu_event)
         .manage(commands::app_menu::AppMenuState::default())
+        .manage(commands::focus_ai::FocusAiState::default())
         .setup(|app| {
             use tauri::Manager;
             let app_data_dir = app
@@ -331,15 +336,8 @@ pub fn run() {
                     },
                 );
             }
-            // Project Pulse: resolves watches / requests written by the MCP
-            // sidecar (and kicked by the pulse commands).
-            let pulse_state = pulse::PulseState::for_app(
-                app.handle(),
-                app.state::<db::Db>().inner().clone(),
-                slack_state.clone(),
-            );
-            pulse_state.start_poller();
-            app.manage(pulse_state);
+            // Focus reminders (focus::scheduler): a 60 s tick while the app runs.
+            focus::scheduler::start(app.handle().clone(), app.state::<db::Db>().inner().clone());
             app.manage(MascotSpeakState::default());
             app.manage(BalanceGuard::default());
             app.manage(new_registry());
@@ -700,6 +698,20 @@ pub fn run() {
             add_todo,
             toggle_todo,
             update_todo,
+            update_todo_fields,
+            focus_board,
+            focus_settings_get,
+            focus_settings_set,
+            focus_refresh_calendar,
+            focus_take_open_todo,
+            focus_ai_suggest,
+            focus_ai_analyze,
+            focus_ai_plan_today,
+            focus_day_plan_get,
+            focus_plan_to_calendar,
+            focus_ai_cancel,
+            focus_start_with_ai,
+            focus_suggest_actual,
             delete_todo,
             delete_todos,
             clear_completed_todos,
@@ -734,13 +746,6 @@ pub fn run() {
             unlink_slack_thread_run,
             list_slack_thread_runs,
             list_run_slack_threads,
-            pulse_watch,
-            pulse_unwatch,
-            pulse_move_watch,
-            pulse_is_watched,
-            pulse_overview,
-            pulse_refresh,
-            pulse_set_screen_open,
             link_item_run,
             unlink_item_run,
             list_item_runs,

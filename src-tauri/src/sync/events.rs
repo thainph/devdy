@@ -40,6 +40,10 @@ pub fn rows_applied(app: &AppHandle, tables: &[String]) {
     if !tables.is_empty() {
         let _ = app.emit(ROWS_APPLIED, serde_json::json!({ "tables": tables }));
     }
+    // The Focus board and the todo list listen to their own events.
+    if tables.iter().any(|t| matches!(t.as_str(), "todos" | "todo_runs" | "focus_day_plans")) {
+        crate::focus::emit_todos_changed(app);
+    }
 }
 
 pub fn app_notifier(app: AppHandle) -> Notifier {
