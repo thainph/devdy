@@ -1,13 +1,16 @@
 //! Device-to-device requests for on-demand sync (design:
-//! .workspace/docs/03-design/on-demand-sync.md §3).
+//! .workspace/docs/03-design/on-demand-sync.md, §P "relay is a pipe").
 //!
-//! The receiving device asks a source device to do something (flush its
-//! outbox, describe a project folder, upload file contents) and gets one or
-//! more replies back. Messages travel as sealed `sync_peer_send` /
-//! `sync_peer_msg` frames through the relay; bulk data goes through sealed
-//! blobs. The engine implements [`PeerLink`] over the live relay connection
-//! and dispatches incoming requests to the registered [`PeerHandler`]s;
-//! [`testing::pair`] links two in-memory ends for tests.
+//! A group has two devices; either one asks, the other answers. The asking
+//! device sends a request (changes since a cursor, a file range, a project
+//! folder manifest…) and gets one or more replies back. Messages travel as
+//! sealed `sync_peer_send` / `sync_peer_msg` frames through the relay, which
+//! only forwards them: it stores nothing. Bulk data travels inside replies,
+//! cut into chunks of at most [`CHUNK_SIZE`] bytes ([`encode_chunk`] /
+//! [`decode_chunk`]); the asker requests the next chunks as it writes the
+//! previous ones. The engine implements [`PeerLink`] over the live relay
+//! connection and dispatches incoming requests to the registered
+//! [`PeerHandler`]s; [`testing::pair`] links two in-memory ends for tests.
 
 // `#[async_trait]` marks the boxed futures `#[must_use]` a second time.
 #![allow(clippy::double_must_use)]
@@ -52,16 +55,46 @@ pub trait PeerLink: Send + Sync {
     /// Send a request to `to`. Fails right away with `peer_offline` when the
     /// device is not connected.
     async fn request(&self, to: &str, kind: &str, body: Value) -> Result<Replies, String>;
-    /// Seal and upload `plaintext` (≤ [`MAX_BLOB_PLAINTEXT`]); returns the blob sha.
-    async fn blob_put(&self, plaintext: Vec<u8>) -> Result<String, String>;
-    /// Download and open a blob.
-    async fn blob_get(&self, sha: &str) -> Result<Vec<u8>, String>;
-    /// Free blobs on the relay once they are no longer needed.
-    async fn blob_release(&self, shas: &[String]) -> Result<(), String>;
+    /// TRANSITIONAL (relay blob store is being removed): do not use in new
+    /// code; send data inside replies instead. Removed after the p2p merge.
+    async fn blob_put(&self, _plaintext: Vec<u8>) -> Result<String, String> {
+        Err(NO_BLOB_STORE.into())
+    }
+    /// TRANSITIONAL, see [`PeerLink::blob_put`].
+    async fn blob_get(&self, _sha: &str) -> Result<Vec<u8>, String> {
+        Err(NO_BLOB_STORE.into())
+    }
+    /// TRANSITIONAL, see [`PeerLink::blob_put`].
+    async fn blob_release(&self, _shas: &[String]) -> Result<(), String> {
+        Ok(())
+    }
 }
 
-/// Largest plaintext per blob (sealing adds 40 bytes; the relay takes 4 MiB + 64).
+/// Error of the transitional blob methods.
+pub const NO_BLOB_STORE: &str = "blob_store_removed";
+
+/// TRANSITIONAL: largest plaintext per relay blob.
 pub const MAX_BLOB_PLAINTEXT: usize = 4 * 1024 * 1024;
+
+/// Largest piece of file content in one reply. One reply (base64 chunk inside
+/// the JSON message, sealed, base64 again) stays far below the relay's frame
+/// cap (`RELAY_SYNC_MAX_BLOB_BYTES`, 4 MiB + 64, as base64).
+pub const CHUNK_SIZE: usize = 1024 * 1024;
+
+/// How many chunk requests an asker keeps in flight per transfer.
+pub const CHUNK_WINDOW: usize = 4;
+
+/// Chunk bytes as a reply body field (`"data"`).
+pub fn encode_chunk(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// The bytes of a `"data"` field written by [`encode_chunk`].
+pub fn decode_chunk(data: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.decode(data).map_err(|e| format!("bad chunk: {e}"))
+}
 
 /// Sends the replies of one incoming request.
 #[async_trait]
