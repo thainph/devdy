@@ -22,6 +22,8 @@
 //! - `run_usage_baseline`: per-run parse baseline derived from the local run
 //!   logs (rebuilt by `model_usage::rebuild_from_logs`).
 //! - `slack_legacy_orphans`: one-off migration bookkeeping.
+//! - `sync_project_prefs`, `sync_skipped_rows`, `sync_stripped_refs`: this
+//!   machine's selective sync choices and their bookkeeping (`sync::prefs`).
 //! - `sqlite_sequence`, `_sqlx_migrations`: SQLite / sqlx internals.
 //! - `project_skills_new` does not exist any more (0006 renamed it).
 //! - `settings` rows whose key is not in `PORTABLE_SETTING_KEYS` nor matches
@@ -187,6 +189,9 @@ pub static EXCLUDED_TABLES: &[&str] = &[
     "todo_notifications",
     "run_usage_baseline",
     "slack_legacy_orphans",
+    "sync_project_prefs",
+    "sync_skipped_rows",
+    "sync_stripped_refs",
     "sqlite_sequence",
     "_sqlx_migrations",
 ];

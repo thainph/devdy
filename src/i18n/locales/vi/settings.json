@@ -480,7 +480,7 @@
   "sync": {
     "title": "Đồng bộ",
     "short": "Đồng bộ",
-    "help": "Giữ một trạng thái Devdy chung giữa các máy của bạn: cài đặt, thư viện, ghi chú / việc cần làm, thread Slack, dự án và phiên làm việc. Mọi dữ liệu đi qua relay của bạn, mã hoá đầu-cuối, và vẫn đồng bộ khi máy kia đang tắt. Code trong working tree không được đồng bộ — việc đó vẫn do git đảm nhận.",
+    "help": "Giữ một trạng thái Devdy chung giữa các máy của bạn: cài đặt, thư viện, ghi chú / việc cần làm, thread Slack, dự án và phiên làm việc — và nếu muốn, cả thư mục dự án. Không có gì tự đồng bộ: bấm Sync trên máy cần nhận, trong lúc máy nguồn đang mở Devdy. Mọi dữ liệu đi qua relay của bạn, mã hoá đầu-cuối.",
     "state": {
       "disabled": "Tắt",
       "connecting": "Đang kết nối…",
@@ -575,7 +575,8 @@
       },
       "creator": "Đã tạo nhóm",
       "removeHelp": "Thiết bị bị gỡ vẫn giữ bản sao khoá nhóm nhưng không thể truy cập dữ liệu của nhóm trên relay nữa (phiên bản này chưa đổi khoá).",
-      "onlyCreator": "Chỉ thiết bị đã tạo nhóm ({name}) mới gỡ được thiết bị."
+      "onlyCreator": "Chỉ thiết bị đã tạo nhóm ({name}) mới gỡ được thiết bị.",
+      "leaderPending": "{name} chưa xác nhận đã nhận chạy các tác vụ nền (có thể đang offline). Máy này sẽ tiếp tục chạy chúng cho đến khi máy kia xác nhận."
     },
     "projects": {
       "title": "Thư mục dự án trên máy này",
@@ -583,7 +584,22 @@
       "empty": "Không có dự án cần ánh xạ.",
       "notHere": "Chưa có trên máy này",
       "choose": "Chọn thư mục",
-      "change": "Đổi"
+      "change": "Đổi",
+      "tabHelp": "Máy này nhận những dự án nào, và thư mục của chúng nằm ở đâu trên máy này. Đồng bộ thư mục làm thư mục giống hệt máy nguồn (branch, commit, thay đổi chưa commit, các file khác) sau khi xem trước.",
+      "colSync": "Sync",
+      "colProject": "Dự án",
+      "colLocal": "Thư mục trên máy này",
+      "colFolder": "Thư mục",
+      "pick": "Chọn…",
+      "more": "Cài đặt sync của dự án",
+      "remapped": "đã ánh xạ",
+      "runningHere": "đang có session chạy ở đây",
+      "folderNeedsSync": "Bật Sync trước",
+      "state": {
+        "ok": "✓ có",
+        "create": "+ tạo (chưa có — sẽ clone)",
+        "pick": "⚠ chọn thư mục"
+      }
     },
     "rebootstrap": {
       "button": "Gộp lại với nhóm",
@@ -622,7 +638,7 @@
       "host_unsupported": "Devdy trên máy đó quá cũ để thêm thiết bị. Hãy cập nhật trước.",
       "not_accepting": "Máy đó chưa nhận thiết bị mới. Mở Cài đặt → Đồng bộ → Chấp nhận thiết bị mới trên máy đó rồi thử lại.",
       "declined": "Yêu cầu đã bị từ chối hoặc không được trả lời kịp trên máy đó.",
-      "busy": "Máy đó đang xử lý một yêu cầu tham gia khác. Thử lại sau giây lát.",
+      "busy": "Máy đó đang bận xử lý các yêu cầu khác. Thử lại sau giây lát.",
       "relay_not_configured": "Máy này chưa có relay riêng: hãy đặt URL và token relay trong Cài đặt → Điều khiển từ xa trước.",
       "relay_error": "Máy đó không kết nối được relay. Hãy thử lại.",
       "sync_bootstrap_runs_live": "Hãy dừng các phiên đang chạy trên máy này trước khi hợp nhất.",
@@ -636,7 +652,11 @@
       "sync_bootstrap_in_progress": "Đồng bộ đang gộp dữ liệu của máy này. Hãy thử lại sau giây lát.",
       "auth_failed": "Relay từ chối token relay của máy này. Hãy kiểm tra URL và token relay trong Cài đặt → Remote Control.",
       "relay_behind": "Relay đã mất các thay đổi mà máy này đã nhận (relay được khôi phục từ bản sao lưu). Đồng bộ tạm dừng cho tới khi máy này gộp lại với nhóm.",
-      "sync_leave_handoff_pending": "Máy này đang chạy các tác vụ nền của nhóm hoặc là máy tạo nhóm, và không kết nối được relay để chuyển giao vai trò đó."
+      "sync_leave_handoff_pending": "Máy này đang chạy các tác vụ nền của nhóm hoặc là máy tạo nhóm, và chưa chuyển giao được vai trò đó (không kết nối được relay hoặc máy leader mới).",
+      "peer_offline": "Máy nguồn đang offline — mở Devdy trên máy đó rồi thử lại.",
+      "peer_paused": "Máy nguồn đang tạm dừng sync. Bật lại sync trên máy đó rồi thử lại.",
+      "peer_timeout": "Máy nguồn không phản hồi kịp. Kiểm tra máy đó đang thức và có mạng, rồi thử lại.",
+      "sync_not_connected": "Máy này chưa kết nối tới relay. Đợi một chút rồi thử lại."
     },
     "accept": {
       "title": "Chấp nhận thiết bị mới",
@@ -666,6 +686,180 @@
         "too_large": "Quá lớn",
         "bad_request": "Bị từ chối"
       }
+    },
+    "tabs": {
+      "overview": "Tổng quan",
+      "data": "Dữ liệu",
+      "projects": "Dự án",
+      "devices": "Thiết bị"
+    },
+    "ondemand": {
+      "header": "Đồng bộ theo yêu cầu: chỉ chạy khi bạn bấm Sync",
+      "source": "Máy nguồn",
+      "online": "online",
+      "offline": "offline",
+      "noSource": "Nhóm chưa có máy nào khác. Thêm máy trong tab Thiết bị.",
+      "syncFrom": "Sync từ {name}",
+      "includeFolders": "Kèm thư mục dự án ({n} dự án bật)",
+      "offlineHelp": "{name} đang offline — mở Devdy trên máy đó rồi thử lại",
+      "last": "Lần sync gần nhất: {ago} · từ {name} · {result}",
+      "lastNever": "Lần sync gần nhất: chưa có",
+      "resultOk": "thành công",
+      "resultFailed": "thất bại",
+      "lastData": "Dữ liệu: {n} thay đổi",
+      "lastProjects": "Dự án: {ok}/{total}",
+      "lastProjectErrors": "{n} lỗi",
+      "pending": "Thay đổi chờ gửi: {n} (sẽ gửi khi máy khác Sync từ máy này)",
+      "pauseHelp": "Đang tạm dừng: máy này không trả lời yêu cầu Sync từ máy khác."
+    },
+    "data": {
+      "help": "Những gì máy này nhận khi bạn bấm Sync.",
+      "selectAll": "Chọn tất cả",
+      "note": "Bật một mục sẽ tải lại toàn bộ mục đó ở lần Sync tới. Tắt một mục vẫn giữ dữ liệu đang có trên máy này.",
+      "categories": {
+        "config": {
+          "label": "Cấu hình chung",
+          "hint": "Cài đặt ứng dụng dùng chung cho mọi máy"
+        },
+        "accounts": {
+          "label": "Tài khoản",
+          "hint": "Tài khoản GitHub, GitLab, AWS, Azure, Google, Claude"
+        },
+        "secrets": {
+          "label": "Kèm token/secret",
+          "hint": "Giá trị trong Keychain, niêm phong bằng khoá nhóm"
+        },
+        "servers": {
+          "label": "VPS & playbooks",
+          "hint": "Server, deploy playbook, liên kết với dự án"
+        },
+        "mcp": {
+          "label": "MCP servers",
+          "hint": "Cấu hình MCP server và lựa chọn theo dự án"
+        },
+        "library": {
+          "label": "Library",
+          "hint": "Skills, rules và nhóm"
+        },
+        "notes": {
+          "label": "Notes & Todos",
+          "hint": "Ghi chú, việc cần làm, kế hoạch ngày Focus và liên kết phiên"
+        },
+        "slack": {
+          "label": "Slack threads",
+          "hint": "Thread Slack đã lưu"
+        },
+        "sessions": {
+          "label": "Sessions",
+          "hint": "Lịch sử phiên, usage và transcript"
+        }
+      }
+    },
+    "projectDialog": {
+      "title": "{name} — cài đặt sync",
+      "localPath": "Thư mục trên máy này",
+      "choose": "Chọn",
+      "excludes": "Loại trừ",
+      "defaultExcludes": "Mặc định: {list}",
+      "extra": "Mẫu thêm (mỗi dòng một mẫu, kiểu gitignore)",
+      "maxSize": "Bỏ qua file lớn hơn",
+      "maxInvalid": "Nhập số MB nguyên (1–100000).",
+      "lastBackup": "Backup gần nhất: {ago}",
+      "lastBackupNever": "Chưa có backup",
+      "openBackup": "Mở thư mục backup",
+      "cancel": "Huỷ",
+      "save": "Lưu",
+      "saved": "Đã lưu"
+    },
+    "run": {
+      "title": "Sync từ {name}",
+      "phase": {
+        "requesting": "Đang yêu cầu {name} gửi thay đổi…",
+        "flushing": "{name} đang gửi thay đổi (đã gửi {n})…",
+        "pulling": "Đang tải thay đổi…",
+        "applying": "Đang áp dụng thay đổi…",
+        "done": "Đã nhận dữ liệu",
+        "error": "Sync thất bại"
+      },
+      "dataDone": "✓ Dữ liệu: {n} thay đổi đã nhận",
+      "previewLoading": "Đang kiểm tra thư mục dự án…",
+      "previewTitle": "Thư mục dự án",
+      "noFolders": "Chưa có dự án nào bật đồng bộ thư mục.",
+      "preview": {
+        "branch": "{from} → {to} {'@'}{sha}",
+        "detached": "detached",
+        "commits": "nhận {n} commit chưa push",
+        "staged": "{n} file đang staged",
+        "files": "ghi đè {overwrite} · thêm {add} · xoá {del} · tải {size}",
+        "localChanges": "Máy này có {n} file sửa chưa commit → sẽ backup trước",
+        "tooLarge": "{n} file vượt giới hạn dung lượng sẽ bị bỏ qua",
+        "create": "(mới) clone {n} repo · tải {size}",
+        "noop": "Đã giống hệt",
+        "details": "Xem chi tiết danh sách file",
+        "hideDetails": "Ẩn danh sách file",
+        "listOverwrite": "Ghi đè",
+        "listAdd": "Thêm",
+        "listDelete": "Xoá",
+        "rewound": "branch {branch} sẽ bị lùi lại; tip cũ được giữ ở devdy-sync-backup/…",
+        "skippedItems": "Bỏ qua ({n})",
+        "truncated": "Danh sách bị cắt: hiện {shown}/{total}"
+      },
+      "skipped": {
+        "no_local_path": "chưa chọn thư mục",
+        "running_session": "đang có session chạy trên máy này",
+        "other": "bỏ qua: {reason}"
+      },
+      "totals": "Tổng: tải {size}",
+      "totalsBackup": "backup tự động trước khi ghi",
+      "cancel": "Huỷ",
+      "apply": "Sync {n} dự án",
+      "background": "Chạy nền",
+      "stop": "Dừng (chạy tiếp lần sau)",
+      "folderPhase": {
+        "manifest": "Đang đọc thư mục nguồn…",
+        "backup": "Đang backup…",
+        "git": "Đang cập nhật git…",
+        "files": "Đang tải file…",
+        "cleanup": "Đang dọn dẹp…",
+        "done": "Xong",
+        "error": "Lỗi",
+        "skipped": "Bỏ qua"
+      },
+      "waiting": "Đang chờ…",
+      "eta": "còn ~{eta}",
+      "files": "{done}/{total} file",
+      "ready": "✓ {n} dự án sẵn sàng",
+      "stopped": "Đã dừng — lần Sync sau sẽ chạy tiếp từ chỗ dừng.",
+      "openProject": "Mở dự án",
+      "viewBackup": "Xem backup",
+      "retry": "Thử lại",
+      "close": "Đóng",
+      "done": "Xong",
+      "skipItem": {
+        "too_large": "quá lớn",
+        "symlink_outside": "symlink trỏ ra ngoài dự án",
+        "submodule": "submodule",
+        "git_link": "git link",
+        "non_utf8": "tên không phải UTF-8",
+        "repo_only_here": "repo chỉ có trên máy này",
+        "path_conflict": "xung đột đường dẫn",
+        "unsafe_path": "đường dẫn không an toàn",
+        "no_repo_here": "máy này không có repo",
+        "branch_in_worktree": "branch đang checkout ở worktree khác",
+        "lfs": "Git LFS",
+        "changed_since_preview": "đã thay đổi sau lần xem trước — giữ nguyên",
+        "ref_conflict": "trùng tên branch — giữ nguyên repo"
+      },
+      "applyFiles": "Sync {n} dự án · {files} thay đổi file",
+      "planChanged": "Thư mục nguồn đã thay đổi sau lần xem trước này nên không ghi gì vượt quá nó. Xem lại bản xem trước mới rồi xác nhận lại.",
+      "review": "Xem lại"
+    },
+    "indicator": {
+      "lastSync": "Lần cuối: {ago}",
+      "syncNow": "Sync ngay",
+      "settings": "Cài đặt sync",
+      "syncing": "Đang sync… {n}%",
+      "noSource": "Chưa có máy nguồn"
     }
   }
 }

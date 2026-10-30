@@ -544,7 +544,11 @@ async fn dispatch(
         | FrameType::BlobGet
         | FrameType::BlobData
         | FrameType::BlobRelease
-        | FrameType::BlobReleased => {
+        | FrameType::BlobReleased
+        | FrameType::SyncPeers
+        | FrameType::SyncPeerSend
+        | FrameType::SyncPeerAck
+        | FrameType::SyncPeerMsg => {
             tracing::debug!(event = "ignored_inbound_control", conn = conn_id);
             false
         }

@@ -218,7 +218,10 @@ pub async fn clear_pending(db: &Db) -> Result<(), String> {
 /// cleared last: a crash before that resumes at the merge step.
 pub async fn prepare_new_group(db: &Db) -> Result<usize, String> {
     let device = super::ensure_device(db).await?;
-    SqliteSyncStore::new(db.clone(), device).set_cursor(0).await?;
+    let store = SqliteSyncStore::new(db.clone(), device);
+    // A pending selective-sync reset would make `set_cursor` a no-op.
+    store.pull_start().await?;
+    store.set_cursor(0).await?;
     super::set_member(db, true).await?;
     let n = enqueue_all(db).await?;
     clear_pending(db).await?;
@@ -1075,6 +1078,9 @@ pub async fn commit(
     // every log and transcript here would hold run starts for minutes.
     store.park_extra(extra).await?;
     run_dir_moves(db, home).await?;
+    // The merge read the whole log: a pending selective-sync reset is moot
+    // (and would make `set_cursor` a no-op).
+    store.pull_start().await?;
     store.set_cursor(state.last_seq).await?;
     clear_pending(db).await?;
     let mut preview = merged.preview;
@@ -1124,11 +1130,13 @@ pub async fn project_mappings(db: &Db, home: &PathCtx) -> Result<Vec<ProjectMapp
 /// Point a synced project at its checkout on this machine: records the
 /// mapping and moves every local path under the old root (projects, repos,
 /// runs, ...) to the new one, without pushing anything (the synced form of
-/// those paths does not change).
+/// those paths does not change). The folder may not exist yet (folder sync
+/// creates it), but must not be a file.
 pub async fn set_project_mapping(db: &Db, home: &PathCtx, project_id: &str, local_path: &str) -> Result<ProjectMapping, String> {
     let local_path = local_path.trim_end_matches('/');
-    if !Path::new(local_path).is_absolute() || !Path::new(local_path).is_dir() {
-        return Err(format!("not a folder on this machine: {local_path}"));
+    let p = Path::new(local_path);
+    if !p.is_absolute() || p.components().any(|c| matches!(c, std::path::Component::ParentDir)) || (p.exists() && !p.is_dir()) {
+        return Err(format!("not a folder path on this machine: {local_path}"));
     }
     let mut map = load_project_map(db).await?;
     let ctx = home.clone().with_project_map(map.clone());
@@ -1500,7 +1508,15 @@ mod tests {
         assert_eq!(scalar(&db, "SELECT output_path FROM runs").await.unwrap(), format!("{home}/code/devdy/.devdy/runs/r.md"));
         assert_eq!(scalar(&db, "SELECT input_path FROM runs").await.unwrap(), format!("{home}/w/devdy2/in"), "sibling prefix untouched");
         assert!(store.pending(10).await.unwrap().is_empty());
-        assert!(set_project_mapping(&db, &ctx, "p", "/definitely/not/here").await.is_err());
+        assert!(set_project_mapping(&db, &ctx, "p", "relative/here").await.is_err());
+        assert!(set_project_mapping(&db, &ctx, "p", &format!("{home}/code/../x")).await.is_err());
+        std::fs::write(home_dir.join("file"), "x").unwrap();
+        assert!(set_project_mapping(&db, &ctx, "p", &format!("{home}/file")).await.is_err());
+        // A folder that folder sync will create.
+        let later = format!("{home}/later/devdy");
+        let m = set_project_mapping(&db, &ctx, "p", &later).await.unwrap();
+        assert_eq!((m.mapped, m.on_this_machine, m.path.as_str()), (true, false, later.as_str()));
+        assert_eq!(scalar(&db, "SELECT output_path FROM runs").await.unwrap(), format!("{later}/.devdy/runs/r.md"));
         std::fs::remove_dir_all(&home_dir).ok();
     }
 
@@ -1666,16 +1682,7 @@ mod tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, body).unwrap();
         };
-        let fast = Timing {
-            outbox_poll: Duration::from_millis(50),
-            periodic: Duration::from_secs(3600),
-            kick_debounce: Duration::from_millis(10),
-            backoff_min: Duration::from_millis(50),
-            backoff_max: Duration::from_millis(200),
-            rejected_retry: Duration::from_secs(3600),
-            push_backoff_max: Duration::from_millis(400),
-            pull_limit: 500,
-        };
+        let fast = Timing::fast();
         let file_timing = crate::sync::files::Timing { quick: Duration::from_millis(50), full: Duration::from_millis(150) };
         let keys = SyncKeys::derive(&generate_group_key()).unwrap();
         let relay = TestRelay::start().await;
@@ -1743,13 +1750,19 @@ mod tests {
                 Box::pin(async move { count(&db, "SELECT COUNT(*) FROM sync_outbox").await == 0 })
             }
         };
-        eventually("M uploaded", outbox_empty(&db_m)).await;
-        let files_up = || -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
-            let relay = relay.clone();
-            Box::pin(async move { relay.blob_counts().0 >= 5 })
+        // On demand: M uploads when asked to flush.
+        let flushed = |engine: &SyncEngine, db: &Db, blobs: usize| {
+            let (h, db, relay) = (engine.handle(), db.clone(), relay.clone());
+            move || -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
+                let (h, db, relay) = (h.clone(), db.clone(), relay.clone());
+                Box::pin(async move {
+                    h.flush_outbox().await.is_ok()
+                        && count(&db, "SELECT COUNT(*) FROM sync_outbox").await == 0
+                        && relay.blob_counts().0 >= blobs
+                })
+            }
         };
-        eventually("M's files on the relay", files_up).await;
-        eventually("M's file ops pushed", outbox_empty(&db_m)).await;
+        eventually("M uploaded its rows and files", flushed(&engine_m, &db_m, 5)).await;
 
         // ---- B: the MacBook, with its own (overlapping) data ----
         let db_b = mem_db().await;
@@ -1853,10 +1866,12 @@ mod tests {
         drop(conn_b);
         let engine_b = SyncEngine::start(params(&dev_b), keys.clone(), Arc::new(store_b), quiet.clone(), false, fast.clone());
         let got_note = || -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
-            let db = db_m.clone();
-            Box::pin(async move { count(&db, "SELECT COUNT(*) FROM notes WHERE id = 'no-B'").await == 1 })
+            let (db, m, dev_b) = (db_m.clone(), engine_m.handle(), dev_b.clone());
+            Box::pin(async move {
+                m.run_from(&dev_b, &|_, _| {}).await.is_ok() && count(&db, "SELECT COUNT(*) FROM notes WHERE id = 'no-B'").await == 1
+            })
         };
-        eventually("B's note on M", got_note).await;
+        eventually("B's note on M after syncing from B", got_note).await;
         eventually("B pushed", outbox_empty(&db_b)).await;
         tokio::time::sleep(Duration::from_millis(300)).await;
         for (tbl, id) in [("projects", "pr-M"), ("skills", "sk-M"), ("claude_accounts", "ca-M"), ("github_accounts", "gh-M"), ("servers", "sv-M"), ("runs", "rn-M"), ("notes", "no-M")] {

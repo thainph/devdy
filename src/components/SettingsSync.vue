@@ -1,23 +1,28 @@
 <script setup lang="ts">
-// Settings → Sync: two-way sync of the whole Devdy state between this user's machines over the
+// Settings → Sync: on-demand sync of the Devdy state between this user's machines over the
 // relay (E2E encrypted). Not in a group → create one, or join another device's group with its
 // device name + master password (that device must have "Accept a new device" open and approve the
 // request; both need their own relay config). Joined but not merged (`sync_bootstrap_pending`, also after an
 // app restart) → the merge step: preview (totals, per table, project matches) then commit, which
-// starts the engine. In a group → status, sync now / pause, secrets toggle, devices (rename this
-// one, remove others — creator only —, pick the leader that runs Slack polling), project folders for this
-// machine, changes the relay refused (parked, with Retry), "merge again" when the relay lost ops (`relay_behind`), re-sync, leave,
-// and "Accept a new device" (5 min window + Allow / Deny per request,
-// closed when this page goes away so a request is never left unseen).
+// starts the engine. In a group → four tabs:
+// - Overview: source device (+ online), "Sync from <device>" (opens the Sync dialog, optionally with
+//   project folders), last sync, changes waiting to be sent, pause, changes the relay refused
+//   (parked, with Retry), "merge again" when the relay lost ops (`relay_behind`), re-sync, leave.
+// - Data: categories this machine receives (SyncDataTab). - Projects: per-project selection,
+//   folder mapping and folder sync (SyncProjectsTab).
+// - Devices: devices (rename this one, remove others — creator only —, pick the leader that runs
+//   Slack polling) and "Accept a new device" (5 min window + Allow / Deny per request,
+//   closed when this page goes away so a request is never left unseen).
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { open } from '@tauri-apps/plugin-dialog'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import {
-  AlertTriangle, Crown, FolderOpen, Loader2, LogIn, LogOut, Pause, Pencil, Play, Plus, RefreshCw, RotateCcw, Trash2, UserPlus,
-  Users,
+  AlertTriangle, ChevronRight, Crown, Loader2, LogIn, LogOut, Pause, Pencil, Play, Plus, RefreshCw, RotateCcw, Trash2,
+  UserPlus, Users,
 } from 'lucide-vue-next'
-import { Badge, Button, Card, Input } from '@/components/ui'
+import { AppSelect, Badge, Button, Card, Input } from '@/components/ui'
+import SyncDataTab from '@/components/SyncDataTab.vue'
+import SyncProjectsTab from '@/components/SyncProjectsTab.vue'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useSyncStore } from '@/stores/sync'
@@ -36,27 +41,21 @@ import {
   syncJoinRespond,
   syncRelayReady,
   missingProjects,
-  sortDevices,
   syncBootstrapCommit,
   syncBootstrapPreview,
   syncCreateGroup,
   syncDeviceRename,
-  syncDevicesList,
-  syncGetSecrets,
   syncJoin,
   syncLeave,
-  syncNow,
   syncParkedList,
   syncParkedRetry,
   syncPause,
-  syncProjectMappingList,
-  syncProjectMappingSet,
   syncRebootstrap,
   syncResyncAll,
   syncRevokeDevice,
   syncSetLeader,
-  syncSetSecrets,
   SYNC_DOT_CLASS,
+  folderProjects,
   syncErrorCode,
   syncStateKey,
   syncTone,
@@ -66,7 +65,6 @@ import {
   type BootstrapReport,
   type JoinRequest,
   type ParkedRow,
-  type ProjectMapping,
   type SyncDevice,
 } from '@/lib/sync'
 import { DEVICE_ALIAS_RE } from '@/lib/remoteLogin'
@@ -79,7 +77,7 @@ const store = useSyncStore()
 const status = computed(() => store.status)
 const paired = computed(() => status.value.state !== 'disabled')
 const mergePending = computed(() => store.mergePending)
-const tone = computed(() => syncTone(status.value, mergePending.value))
+const tone = computed(() => syncTone(status.value, mergePending.value, store.busy))
 
 // Relative times ("3 min ago") re-render on this clock.
 const now = ref(Date.now())
@@ -184,18 +182,39 @@ async function commitBootstrap() {
 }
 
 // ---- In a group ----
-const busyNow = ref(false)
-const busyPause = ref(false)
-const secrets = ref(true)
-const busySecrets = ref(false)
+type Tab = 'overview' | 'data' | 'projects' | 'devices'
+const TABS: Tab[] = ['overview', 'data', 'projects', 'devices']
+const tab = ref<Tab>('overview')
 
-const devices = ref<SyncDevice[]>([])
+const busyPause = ref(false)
+
+const devices = computed(() => store.devices)
 const renaming = ref(false)
 const newName = ref('')
 const busyDevice = ref<string | null>(null)
 
-const mappings = ref<ProjectMapping[]>([])
-const busyMapping = ref<string | null>(null)
+// ---- Overview: source device + Sync ----
+const otherDevices = computed(() => devices.value.filter((d) => !d.is_self))
+const sourceOptions = computed(() => otherDevices.value.map((d) => ({ value: d.id, label: deviceLabel(d) })))
+const source = computed(() => store.source)
+const sourceName = computed(() => store.deviceName(source.value))
+const sourceOnline = computed(() => store.isOnline(source.value))
+const folderCount = computed(() => folderProjects(store.prefs?.projects ?? []).length)
+const lastRun = computed(() => store.lastRun)
+let peersTimer: ReturnType<typeof setInterval> | null = null
+
+async function changeSource(id: string) {
+  if (!id || id === source.value) return
+  try {
+    await store.setSource(id)
+  } catch (e) {
+    toast.error(errorText(e))
+  }
+}
+
+function syncFromSource() {
+  void store.syncFrom(source.value, store.includeFolders)
+}
 
 const parked = ref<ParkedRow[]>([])
 const retrying = ref(false)
@@ -268,18 +287,9 @@ async function answer(allow: boolean) {
 
 async function loadDevices() {
   try {
-    devices.value = sortDevices(await syncDevicesList())
+    await store.loadDevices()
   } catch (e) {
-    devices.value = []
-    toast.error(errorText(e))
-  }
-}
-
-async function loadMappings() {
-  try {
-    mappings.value = await syncProjectMappingList()
-  } catch (e) {
-    mappings.value = []
+    store.devices = []
     toast.error(errorText(e))
   }
 }
@@ -307,25 +317,9 @@ function parkedReason(reason: string): string {
   return te(key) ? t(key) : reason
 }
 
-async function loadSecrets() {
-  secrets.value = await syncGetSecrets().catch(() => true)
-}
-
 async function loadPaired() {
   if (!paired.value) return
-  await Promise.all([loadDevices(), loadMappings(), loadSecrets(), loadParked()])
-}
-
-async function runNow() {
-  if (busyNow.value) return
-  busyNow.value = true
-  try {
-    await syncNow()
-  } catch (e) {
-    toast.error(errorText(e))
-  } finally {
-    busyNow.value = false
-  }
+  await Promise.all([loadDevices(), loadParked(), store.loadPrefs().catch(() => {}), store.refreshPeers()])
 }
 
 async function togglePause() {
@@ -337,20 +331,6 @@ async function togglePause() {
     toast.error(errorText(e))
   } finally {
     busyPause.value = false
-  }
-}
-
-async function toggleSecrets() {
-  if (busySecrets.value) return
-  busySecrets.value = true
-  const next = !secrets.value
-  try {
-    await syncSetSecrets(next)
-    secrets.value = next
-  } catch (e) {
-    toast.error(errorText(e))
-  } finally {
-    busySecrets.value = false
   }
 }
 
@@ -398,26 +378,16 @@ async function setLeader(id: string | null) {
   if (id === leaderId.value) return
   busyDevice.value = id ?? 'none'
   try {
-    await syncSetLeader(id)
+    const confirmed = await syncSetLeader(id)
     await loadDevices()
+    if (!confirmed) {
+      const next = devices.value.find((d) => d.id === id)
+      toast.info(t('settings.sync.devices.leaderPending', { name: next ? deviceLabel(next) : id ?? '' }))
+    }
   } catch (e) {
     toast.error(errorText(e))
   } finally {
     busyDevice.value = null
-  }
-}
-
-async function pickFolder(p: ProjectMapping) {
-  const selected = await open({ directory: true, multiple: false, title: p.name })
-  if (!selected || Array.isArray(selected)) return
-  busyMapping.value = p.project_id
-  try {
-    await syncProjectMappingSet(p.project_id, selected)
-    await loadMappings()
-  } catch (e) {
-    toast.error(errorText(e))
-  } finally {
-    busyMapping.value = null
   }
 }
 
@@ -482,8 +452,8 @@ async function leave() {
     })
     if (revoked === null) return
     await store.refresh()
-    devices.value = []
-    mappings.value = []
+    store.devices = []
+    store.prefs = null
     parked.value = []
     preview.value = null
     previewError.value = ''
@@ -508,6 +478,10 @@ watch(
 
 onMounted(async () => {
   clock = setInterval(() => (now.value = Date.now()), 30_000)
+  // Who is online, for the source dot (only while in a group).
+  peersTimer = setInterval(() => {
+    if (paired.value && !mergePending.value) void store.refreshPeers()
+  }, 20_000)
   unlisteners.push(
     await onSyncJoinRequest((r) => {
       joinRequest.value = r
@@ -530,6 +504,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (clock) clearInterval(clock)
+  if (peersTimer) clearInterval(peersTimer)
   for (const u of unlisteners) u()
   // Nobody would see a join request any more: stop accepting.
   if (acceptUntil.value !== null) void syncAcceptClose().catch(() => {})
@@ -673,251 +648,270 @@ onUnmounted(() => {
 
     <!-- In a group -->
     <template v-else>
-      <section class="space-y-3">
-        <div class="grid grid-cols-3 gap-2 text-xs">
-          <div class="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
-            <p class="text-[10px] uppercase tracking-wider text-muted-foreground">{{ t('settings.sync.status.lastPush') }}</p>
-            <p class="mt-0.5">{{ ago(status.last_push) }}</p>
+      <div class="flex border-b border-border/60 text-xs font-medium" role="tablist">
+        <button
+          v-for="id in TABS"
+          :key="id"
+          type="button"
+          role="tab"
+          :aria-selected="tab === id"
+          class="px-3 py-2 transition-colors cursor-pointer"
+          :class="tab === id ? 'text-foreground border-b-2 border-primary' : 'text-muted-foreground hover:text-foreground'"
+          @click="tab = id"
+        >
+          {{ t(`settings.sync.tabs.${id}`) }}
+        </button>
+      </div>
+
+      <!-- Overview -->
+      <template v-if="tab === 'overview'">
+        <section class="space-y-3">
+          <p class="text-xs font-medium">{{ t('settings.sync.ondemand.header') }}</p>
+          <p v-if="!otherDevices.length" class="text-[11px] text-muted-foreground">{{ t('settings.sync.ondemand.noSource') }}</p>
+          <template v-else>
+            <div class="flex items-center gap-2">
+              <span class="shrink-0 text-xs text-muted-foreground">{{ t('settings.sync.ondemand.source') }}</span>
+              <AppSelect
+                class="w-56"
+                :model-value="source ?? ''"
+                :options="sourceOptions"
+                :disabled="store.busy"
+                @update:model-value="changeSource"
+              />
+              <span class="flex items-center gap-1 text-[11px] text-muted-foreground">
+                <span class="h-2 w-2 rounded-full" :class="sourceOnline ? 'bg-emerald-500' : 'bg-muted-foreground/40'" />
+                {{ sourceOnline ? t('settings.sync.ondemand.online') : t('settings.sync.ondemand.offline') }}
+              </span>
+            </div>
+            <div class="space-y-2.5 rounded-lg border border-border/60 bg-muted/20 p-3">
+              <Button size="sm" :disabled="!source || !sourceOnline" @click="store.busy ? (store.dialogOpen = true) : syncFromSource()">
+                <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': store.busy }" :stroke-width="1.75" />
+                {{ t('settings.sync.ondemand.syncFrom', { name: sourceName }) }}
+              </Button>
+              <p v-if="source && !sourceOnline" class="text-[11px] text-amber-600 dark:text-amber-400">
+                {{ t('settings.sync.ondemand.offlineHelp', { name: sourceName }) }}
+              </p>
+              <label class="flex cursor-pointer items-center gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  class="accent-primary"
+                  :checked="store.includeFolders"
+                  @change="store.setIncludeFolders(($event.target as HTMLInputElement).checked)"
+                >
+                {{ t('settings.sync.ondemand.includeFolders', { n: folderCount }) }}
+              </label>
+            </div>
+          </template>
+          <div class="space-y-1 text-[11px] text-muted-foreground">
+            <p v-if="!lastRun">{{ t('settings.sync.ondemand.lastNever') }}</p>
+            <template v-else>
+              <p>
+                {{ t('settings.sync.ondemand.last', {
+                  ago: ago(lastRun.at),
+                  name: store.deviceName(lastRun.source_device),
+                  result: lastRun.ok ? t('settings.sync.ondemand.resultOk') : t('settings.sync.ondemand.resultFailed'),
+                }) }}
+                <template v-if="lastRun.ok || lastRun.projects_total">
+                  — {{ t('settings.sync.ondemand.lastData', { n: lastRun.applied }) }}
+                  <template v-if="lastRun.projects_total">
+                    · {{ t('settings.sync.ondemand.lastProjects', { ok: lastRun.projects_ok, total: lastRun.projects_total }) }}
+                  </template>
+                </template>
+              </p>
+              <p v-if="lastRun.error" class="break-words text-destructive">{{ errorText(lastRun.error) }}</p>
+              <details v-if="lastRun.project_errors.length">
+                <summary class="flex cursor-pointer list-none items-center gap-0.5 text-destructive">
+                  <ChevronRight class="h-3 w-3" :stroke-width="1.75" />
+                  {{ t('settings.sync.ondemand.lastProjectErrors', { n: lastRun.project_errors.length }) }}
+                </summary>
+                <ul class="mt-1 space-y-0.5 pl-4">
+                  <li v-for="e in lastRun.project_errors" :key="e.project_id" class="break-words">
+                    <span class="text-foreground">{{ e.name }}</span>: {{ errorText(e.message) }}
+                  </li>
+                </ul>
+              </details>
+            </template>
+            <p>{{ t('settings.sync.ondemand.pending', { n: status.pending }) }}</p>
+            <p v-if="status.paused" class="text-amber-600 dark:text-amber-400">{{ t('settings.sync.ondemand.pauseHelp') }}</p>
           </div>
-          <div class="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
-            <p class="text-[10px] uppercase tracking-wider text-muted-foreground">{{ t('settings.sync.status.lastPull') }}</p>
-            <p class="mt-0.5">{{ ago(status.last_pull) }}</p>
-          </div>
-          <div class="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
-            <p class="text-[10px] uppercase tracking-wider text-muted-foreground">{{ t('settings.sync.status.pending') }}</p>
-            <p class="mt-0.5 tabular-nums">{{ status.pending }}</p>
-          </div>
-        </div>
-        <p v-if="status.last_error && status.state !== 'online'" class="break-words text-[11px] text-destructive">
-          {{ errorText(status.last_error) }}
-        </p>
-        <Button v-if="relayBehind" variant="outline" size="sm" :disabled="rebootstrapping" @click="rebootstrap">
-          <RotateCcw class="h-3.5 w-3.5" :class="{ 'animate-spin': rebootstrapping }" :stroke-width="1.75" />
-          {{ rebootstrapping ? t('settings.sync.rebootstrap.busy') : t('settings.sync.rebootstrap.button') }}
-        </Button>
-        <div class="flex flex-wrap items-center gap-2">
-          <Button size="sm" :disabled="busyNow || status.paused" @click="runNow">
-            <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': busyNow }" :stroke-width="1.75" />
-            {{ t('settings.sync.status.now') }}
+          <p v-if="status.last_error && status.state !== 'online'" class="break-words text-[11px] text-destructive">
+            {{ errorText(status.last_error) }}
+          </p>
+          <Button v-if="relayBehind" variant="outline" size="sm" :disabled="rebootstrapping" @click="rebootstrap">
+            <RotateCcw class="h-3.5 w-3.5" :class="{ 'animate-spin': rebootstrapping }" :stroke-width="1.75" />
+            {{ rebootstrapping ? t('settings.sync.rebootstrap.busy') : t('settings.sync.rebootstrap.button') }}
+          </Button>
+        </section>
+
+        <!-- Changes the relay refused for good -->
+        <section v-if="status.parked > 0 || parked.length" class="space-y-2 rounded-lg border border-orange-500/40 bg-orange-500/5 p-3">
+          <label class="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+            <AlertTriangle class="h-3 w-3 text-orange-500" :stroke-width="1.75" />
+            {{ t('settings.sync.parked.title') }}
+            <Badge variant="secondary">{{ Math.max(status.parked, parked.length) }}</Badge>
+          </label>
+          <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.parked.help') }}</p>
+          <ul v-if="parked.length" class="max-h-48 divide-y divide-border/60 overflow-y-auto rounded-md border border-border/60">
+            <li v-for="r in parked" :key="`${r.tbl}:${r.pk}`" class="flex items-center gap-2 px-2.5 py-1.5 text-xs">
+              <span class="shrink-0 font-mono text-muted-foreground">{{ r.tbl }}</span>
+              <span class="min-w-0 flex-1 truncate font-mono" :title="r.pk">{{ r.pk }}</span>
+              <Badge variant="secondary">{{ parkedReason(r.reason) }}</Badge>
+              <span class="shrink-0 text-[11px] text-muted-foreground">{{ t('settings.sync.parked.when', { ago: ago(r.parked_at) }) }}</span>
+            </li>
+          </ul>
+          <p v-if="status.parked > parked.length && parked.length" class="text-[11px] text-muted-foreground">
+            {{ t('settings.sync.parked.more', { n: parked.length }) }}
+          </p>
+          <Button variant="outline" size="sm" :disabled="retrying" @click="retryParked">
+            <component :is="retrying ? Loader2 : RotateCcw" class="h-3.5 w-3.5" :class="{ 'animate-spin': retrying }" :stroke-width="1.75" />
+            {{ t('settings.sync.parked.retry') }}
+          </Button>
+        </section>
+
+        <div class="border-t border-border/60" />
+
+        <section class="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            :disabled="resyncing"
+            :title="t('settings.sync.resync.hint')"
+            @click="resyncAll"
+          >
+            <component :is="resyncing ? Loader2 : RotateCcw" class="h-3.5 w-3.5" :class="{ 'animate-spin': resyncing }" :stroke-width="1.75" />
+            {{ t('settings.sync.resync.button') }}
           </Button>
           <Button variant="outline" size="sm" :disabled="busyPause" @click="togglePause">
             <component :is="status.paused ? Play : Pause" class="h-3.5 w-3.5" :stroke-width="1.75" />
             {{ status.paused ? t('settings.sync.status.resume') : t('settings.sync.status.pause') }}
           </Button>
-        </div>
-      </section>
-
-      <!-- Changes the relay refused for good -->
-      <section v-if="status.parked > 0 || parked.length" class="space-y-2 rounded-lg border border-orange-500/40 bg-orange-500/5 p-3">
-        <label class="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-          <AlertTriangle class="h-3 w-3 text-orange-500" :stroke-width="1.75" />
-          {{ t('settings.sync.parked.title') }}
-          <Badge variant="secondary">{{ Math.max(status.parked, parked.length) }}</Badge>
-        </label>
-        <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.parked.help') }}</p>
-        <ul v-if="parked.length" class="max-h-48 divide-y divide-border/60 overflow-y-auto rounded-md border border-border/60">
-          <li v-for="r in parked" :key="`${r.tbl}:${r.pk}`" class="flex items-center gap-2 px-2.5 py-1.5 text-xs">
-            <span class="shrink-0 font-mono text-muted-foreground">{{ r.tbl }}</span>
-            <span class="min-w-0 flex-1 truncate font-mono" :title="r.pk">{{ r.pk }}</span>
-            <Badge variant="secondary">{{ parkedReason(r.reason) }}</Badge>
-            <span class="shrink-0 text-[11px] text-muted-foreground">{{ t('settings.sync.parked.when', { ago: ago(r.parked_at) }) }}</span>
-          </li>
-        </ul>
-        <p v-if="status.parked > parked.length && parked.length" class="text-[11px] text-muted-foreground">
-          {{ t('settings.sync.parked.more', { n: parked.length }) }}
-        </p>
-        <Button variant="outline" size="sm" :disabled="retrying" @click="retryParked">
-          <component :is="retrying ? Loader2 : RotateCcw" class="h-3.5 w-3.5" :class="{ 'animate-spin': retrying }" :stroke-width="1.75" />
-          {{ t('settings.sync.parked.retry') }}
-        </Button>
-      </section>
-
-      <div class="flex items-center justify-between gap-4 rounded-lg border border-border/60 bg-muted/20 px-3.5 py-3">
-        <div class="min-w-0">
-          <p class="text-sm font-medium text-foreground">{{ t('settings.sync.secrets.label') }}</p>
-          <p class="mt-0.5 text-[11px] text-muted-foreground">{{ t('settings.sync.secrets.hint') }}</p>
-        </div>
-        <button
-          type="button"
-          role="switch"
-          :aria-checked="secrets"
-          :aria-label="t('settings.sync.secrets.label')"
-          :disabled="busySecrets"
-          class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:opacity-50"
-          :class="secrets ? 'bg-primary' : 'bg-muted'"
-          @click="toggleSecrets"
-        >
-          <span
-            class="inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform"
-            :class="secrets ? 'translate-x-6' : 'translate-x-1'"
-          />
-        </button>
-      </div>
-
-      <div class="border-t border-border/60" />
-
-      <!-- Accept a new device -->
-      <section class="space-y-3">
-        <label class="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-          <UserPlus class="h-3 w-3" :stroke-width="1.75" />
-          {{ t('settings.sync.accept.title') }}
-        </label>
-        <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.accept.help') }}</p>
-        <div v-if="acceptUntil === null">
-          <Button variant="outline" size="sm" :disabled="acceptBusy" @click="openAccept">
-            <component :is="acceptBusy ? Loader2 : UserPlus" class="h-3.5 w-3.5" :class="{ 'animate-spin': acceptBusy }" :stroke-width="1.75" />
-            {{ t('settings.sync.accept.button') }}
+          <Button variant="destructive" size="sm" class="ml-auto" :disabled="leaving" @click="leave">
+            <component :is="leaving ? Loader2 : LogOut" class="h-3.5 w-3.5" :class="{ 'animate-spin': leaving }" :stroke-width="1.75" />
+            {{ t('settings.sync.leave.button') }}
           </Button>
-        </div>
-        <template v-else>
-          <div class="flex flex-wrap items-center gap-2 rounded-lg border border-sky-500/40 bg-sky-500/5 px-3 py-2">
-            <Loader2 class="h-3.5 w-3.5 animate-spin text-sky-500" :stroke-width="1.75" />
-            <span class="text-xs">{{ t('settings.sync.accept.open', { time: countdown(acceptUntil, tick) }) }}</span>
-            <Button variant="ghost" size="xs" class="ml-auto" @click="closeAccept">{{ t('settings.sync.accept.cancel') }}</Button>
-          </div>
-          <div
-            v-if="joinRequest"
-            role="alertdialog"
-            class="space-y-2 rounded-lg border border-amber-500/50 bg-amber-500/5 p-3"
-          >
-            <p class="text-sm font-medium">{{ t('settings.sync.accept.request.title', { name: joinRequest.device_name }) }}</p>
-            <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.accept.request.message') }}</p>
-            <div class="flex flex-wrap items-center gap-2">
-              <Button size="sm" :disabled="answering" @click="answer(true)">{{ t('settings.sync.accept.request.allow') }}</Button>
-              <Button variant="outline" size="sm" :disabled="answering" @click="answer(false)">
-                {{ t('settings.sync.accept.request.deny') }}
-              </Button>
-              <span class="ml-auto text-[11px] tabular-nums text-muted-foreground">
-                {{ t('settings.sync.accept.request.expires', { time: countdown(joinRequest.expires_at, tick) }) }}
-              </span>
-            </div>
-          </div>
-        </template>
-      </section>
+        </section>
+      </template>
 
-      <div class="border-t border-border/60" />
+      <SyncDataTab v-else-if="tab === 'data'" />
+      <SyncProjectsTab v-else-if="tab === 'projects'" />
 
-      <!-- Devices + leader -->
-      <section class="space-y-3">
-        <label class="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-          <Users class="h-3 w-3" :stroke-width="1.75" />
-          {{ t('settings.sync.devices.title') }}
-        </label>
-        <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.devices.leaderHelp') }}</p>
-        <p class="text-[11px] text-muted-foreground">
-          {{ canRemove ? t('settings.sync.devices.removeHelp')
-            : t('settings.sync.devices.onlyCreator', { name: creator ? deviceLabel(creator) : '' }) }}
-        </p>
-        <ul class="divide-y divide-border/60 rounded-lg border border-border/60">
-          <li v-for="d in devices" :key="d.id" class="flex items-center gap-2 px-3 py-2">
-            <input
-              type="radio"
-              name="sync-leader"
-              class="accent-primary"
-              :checked="d.is_leader"
-              :disabled="busyDevice !== null"
-              :aria-label="t('settings.sync.devices.leader')"
-              @change="setLeader(d.id)"
-            >
-            <div class="min-w-0 flex-1">
-              <div v-if="d.is_self && renaming" class="flex items-center gap-1.5">
-                <Input v-model="newName" class="h-7" maxlength="64" @keydown.enter="saveRename" @keydown.esc="renaming = false" />
-                <Button size="xs" :disabled="!newName.trim() || busyDevice !== null" @click="saveRename">
-                  {{ t('settings.sync.devices.save') }}
-                </Button>
-                <Button variant="ghost" size="xs" @click="renaming = false">{{ t('settings.sync.devices.cancel') }}</Button>
-              </div>
-              <template v-else>
-                <p class="flex items-center gap-1.5 truncate text-sm">
-                  {{ deviceLabel(d) }}
-                  <Badge v-if="d.is_self" variant="secondary">{{ t('settings.sync.devices.thisDevice') }}</Badge>
-                  <Crown v-if="d.is_leader" class="h-3 w-3 text-amber-500" :stroke-width="2" :title="t('settings.sync.devices.leader')" />
-                  <Badge v-if="d.is_creator" variant="secondary">{{ t('settings.sync.devices.creator') }}</Badge>
-                </p>
-                <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.devices.lastSeen', { ago: ago(d.last_seen) }) }}</p>
-              </template>
-            </div>
-            <Button
-              v-if="d.is_self && !renaming"
-              variant="ghost"
-              size="xs"
-              :title="t('settings.sync.devices.rename')"
-              @click="startRename"
-            >
-              <Pencil class="h-3 w-3" :stroke-width="1.75" />
-            </Button>
-            <Button
-              v-if="!d.is_self && canRemove"
-              variant="ghost"
-              size="xs"
-              :disabled="busyDevice !== null"
-              :title="t('settings.sync.devices.remove')"
-              @click="removeDevice(d)"
-            >
-              <component :is="busyDevice === d.id ? Loader2 : Trash2" class="h-3 w-3" :class="{ 'animate-spin': busyDevice === d.id }" :stroke-width="1.75" />
-            </Button>
-          </li>
-          <li class="flex items-center gap-2 px-3 py-2">
-            <input
-              type="radio"
-              name="sync-leader"
-              class="accent-primary"
-              :checked="leaderId === null"
-              :disabled="busyDevice !== null"
-              @change="setLeader(null)"
-            >
-            <span class="text-xs text-muted-foreground">{{ t('settings.sync.devices.noLeader') }}</span>
-          </li>
-        </ul>
-      </section>
-
-      <div class="border-t border-border/60" />
-
-      <!-- Project folders on this machine -->
-      <section class="space-y-3">
-        <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-          {{ t('settings.sync.projects.title') }}
-        </label>
-        <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.projects.help') }}</p>
-        <p v-if="!mappings.length" class="text-[11px] text-muted-foreground">{{ t('settings.sync.projects.empty') }}</p>
-        <ul v-else class="divide-y divide-border/60 rounded-lg border border-border/60">
-          <li v-for="p in mappings" :key="p.project_id" class="flex items-center gap-2 px-3 py-2">
-            <div class="min-w-0 flex-1">
-              <p class="truncate text-sm">{{ p.name }}</p>
-              <p
-                class="truncate font-mono text-[11px]"
-                :class="p.on_this_machine ? 'text-muted-foreground' : 'text-amber-600 dark:text-amber-400'"
-                :title="p.on_this_machine ? p.path : p.synced_path"
+      <!-- Devices -->
+      <template v-else>
+        <!-- Devices + leader -->
+        <section class="space-y-3">
+          <label class="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+            <Users class="h-3 w-3" :stroke-width="1.75" />
+            {{ t('settings.sync.devices.title') }}
+          </label>
+          <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.devices.leaderHelp') }}</p>
+          <p class="text-[11px] text-muted-foreground">
+            {{ canRemove ? t('settings.sync.devices.removeHelp')
+              : t('settings.sync.devices.onlyCreator', { name: creator ? deviceLabel(creator) : '' }) }}
+          </p>
+          <ul class="divide-y divide-border/60 rounded-lg border border-border/60">
+            <li v-for="d in devices" :key="d.id" class="flex items-center gap-2 px-3 py-2">
+              <input
+                type="radio"
+                name="sync-leader"
+                class="accent-primary"
+                :checked="d.is_leader"
+                :disabled="busyDevice !== null"
+                :aria-label="t('settings.sync.devices.leader')"
+                @change="setLeader(d.id)"
               >
-                {{ p.on_this_machine ? p.path : t('settings.sync.projects.notHere') }}
-              </p>
-            </div>
-            <Button variant="outline" size="xs" :disabled="busyMapping !== null" @click="pickFolder(p)">
-              <component :is="busyMapping === p.project_id ? Loader2 : FolderOpen" class="h-3 w-3" :class="{ 'animate-spin': busyMapping === p.project_id }" :stroke-width="1.75" />
-              {{ p.on_this_machine ? t('settings.sync.projects.change') : t('settings.sync.projects.choose') }}
+              <div class="min-w-0 flex-1">
+                <div v-if="d.is_self && renaming" class="flex items-center gap-1.5">
+                  <Input v-model="newName" class="h-7" maxlength="64" @keydown.enter="saveRename" @keydown.esc="renaming = false" />
+                  <Button size="xs" :disabled="!newName.trim() || busyDevice !== null" @click="saveRename">
+                    {{ t('settings.sync.devices.save') }}
+                  </Button>
+                  <Button variant="ghost" size="xs" @click="renaming = false">{{ t('settings.sync.devices.cancel') }}</Button>
+                </div>
+                <template v-else>
+                  <p class="flex items-center gap-1.5 truncate text-sm">
+                    {{ deviceLabel(d) }}
+                    <Badge v-if="d.is_self" variant="secondary">{{ t('settings.sync.devices.thisDevice') }}</Badge>
+                    <Crown v-if="d.is_leader" class="h-3 w-3 text-amber-500" :stroke-width="2" :title="t('settings.sync.devices.leader')" />
+                    <Badge v-if="d.is_creator" variant="secondary">{{ t('settings.sync.devices.creator') }}</Badge>
+                  </p>
+                  <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.devices.lastSeen', { ago: ago(d.last_seen) }) }}</p>
+                </template>
+              </div>
+              <Button
+                v-if="d.is_self && !renaming"
+                variant="ghost"
+                size="xs"
+                :title="t('settings.sync.devices.rename')"
+                @click="startRename"
+              >
+                <Pencil class="h-3 w-3" :stroke-width="1.75" />
+              </Button>
+              <Button
+                v-if="!d.is_self && canRemove"
+                variant="ghost"
+                size="xs"
+                :disabled="busyDevice !== null"
+                :title="t('settings.sync.devices.remove')"
+                @click="removeDevice(d)"
+              >
+                <component :is="busyDevice === d.id ? Loader2 : Trash2" class="h-3 w-3" :class="{ 'animate-spin': busyDevice === d.id }" :stroke-width="1.75" />
+              </Button>
+            </li>
+            <li class="flex items-center gap-2 px-3 py-2">
+              <input
+                type="radio"
+                name="sync-leader"
+                class="accent-primary"
+                :checked="leaderId === null"
+                :disabled="busyDevice !== null"
+                @change="setLeader(null)"
+              >
+              <span class="text-xs text-muted-foreground">{{ t('settings.sync.devices.noLeader') }}</span>
+            </li>
+          </ul>
+        </section>
+
+        <div class="border-t border-border/60" />
+
+        <!-- Accept a new device -->
+        <section class="space-y-3">
+          <label class="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+            <UserPlus class="h-3 w-3" :stroke-width="1.75" />
+            {{ t('settings.sync.accept.title') }}
+          </label>
+          <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.accept.help') }}</p>
+          <div v-if="acceptUntil === null">
+            <Button variant="outline" size="sm" :disabled="acceptBusy" @click="openAccept">
+              <component :is="acceptBusy ? Loader2 : UserPlus" class="h-3.5 w-3.5" :class="{ 'animate-spin': acceptBusy }" :stroke-width="1.75" />
+              {{ t('settings.sync.accept.button') }}
             </Button>
-          </li>
-        </ul>
-      </section>
-
-      <div class="border-t border-border/60" />
-
-      <section class="flex flex-wrap items-center gap-2">
-        <Button
-          variant="outline"
-          size="sm"
-          :disabled="resyncing"
-          :title="t('settings.sync.resync.hint')"
-          @click="resyncAll"
-        >
-          <component :is="resyncing ? Loader2 : RotateCcw" class="h-3.5 w-3.5" :class="{ 'animate-spin': resyncing }" :stroke-width="1.75" />
-          {{ t('settings.sync.resync.button') }}
-        </Button>
-        <Button variant="destructive" size="sm" class="ml-auto" :disabled="leaving" @click="leave">
-          <component :is="leaving ? Loader2 : LogOut" class="h-3.5 w-3.5" :class="{ 'animate-spin': leaving }" :stroke-width="1.75" />
-          {{ t('settings.sync.leave.button') }}
-        </Button>
-      </section>
+          </div>
+          <template v-else>
+            <div class="flex flex-wrap items-center gap-2 rounded-lg border border-sky-500/40 bg-sky-500/5 px-3 py-2">
+              <Loader2 class="h-3.5 w-3.5 animate-spin text-sky-500" :stroke-width="1.75" />
+              <span class="text-xs">{{ t('settings.sync.accept.open', { time: countdown(acceptUntil, tick) }) }}</span>
+              <Button variant="ghost" size="xs" class="ml-auto" @click="closeAccept">{{ t('settings.sync.accept.cancel') }}</Button>
+            </div>
+            <div
+              v-if="joinRequest"
+              role="alertdialog"
+              class="space-y-2 rounded-lg border border-amber-500/50 bg-amber-500/5 p-3"
+            >
+              <p class="text-sm font-medium">{{ t('settings.sync.accept.request.title', { name: joinRequest.device_name }) }}</p>
+              <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.accept.request.message') }}</p>
+              <div class="flex flex-wrap items-center gap-2">
+                <Button size="sm" :disabled="answering" @click="answer(true)">{{ t('settings.sync.accept.request.allow') }}</Button>
+                <Button variant="outline" size="sm" :disabled="answering" @click="answer(false)">
+                  {{ t('settings.sync.accept.request.deny') }}
+                </Button>
+                <span class="ml-auto text-[11px] tabular-nums text-muted-foreground">
+                  {{ t('settings.sync.accept.request.expires', { time: countdown(joinRequest.expires_at, tick) }) }}
+                </span>
+              </div>
+            </div>
+          </template>
+        </section>
+      </template>
     </template>
 
     <!-- Result of the first-join merge -->

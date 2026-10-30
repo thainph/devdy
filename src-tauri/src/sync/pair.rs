@@ -240,9 +240,10 @@ pub async fn forget_group_state(db: &Db) -> Result<(), String> {
     ] {
         sqlx::query(sql).execute(&mut *tx).await.map_err(e)?;
     }
-    sqlx::query("DELETE FROM sync_state WHERE key IN (?, ?) OR substr(key, 1, ?) = ?")
+    sqlx::query("DELETE FROM sync_state WHERE key IN (?, ?, ?) OR substr(key, 1, ?) = ?")
         .bind(super::store::CURSOR_KEY)
         .bind(super::store::RELAY_MARK_KEY)
+        .bind(super::prefs::CURSOR_RESET_KEY)
         .bind(super::secrets::HASH_PREFIX.len() as i64)
         .bind(super::secrets::HASH_PREFIX)
         .execute(&mut *tx)
