@@ -625,6 +625,51 @@ fn run_row_files(paths: &PathCtx, row: RunFileRow, codex: &HashMap<String, PathB
     }
 }
 
+/// The run log / transcript `path` is, if it belongs to a run (matched by
+/// recorded path, log name or session id). A Codex rollout joins the index.
+async fn kicked_run_file(
+    conn: &mut SqliteConnection,
+    paths: &PathCtx,
+    state: &mut ScanState,
+    path: &Path,
+) -> Result<Vec<Tracked>, String> {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else { return Ok(Vec::new()) };
+    let stem = name.strip_suffix(".log").or_else(|| name.strip_suffix(".jsonl")).unwrap_or(name);
+    let thread = stem.strip_prefix("rollout-").and_then(|s| s.get(20..));
+    let local = path.to_string_lossy();
+    let rows: Vec<RunFileRow> = sqlx::query_as(
+        "SELECT r.id, r.engine, r.session_id, r.output_path, r.transcript_path, p.path AS project_path, \
+                a.config_dir, COALESCE(r.status = 'running', 0) AS live \
+         FROM runs r JOIN projects p ON p.id = r.project_id \
+         LEFT JOIN claude_accounts a ON a.id = r.claude_account_id \
+         WHERE r.output_path = ?1 OR r.transcript_path = ?1 OR r.id = ?2 OR r.session_id IN (?2, ?3)",
+    )
+    .bind(local.as_ref())
+    .bind(stem)
+    .bind(thread.unwrap_or(stem))
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(err)?;
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    if let Some(id) = thread {
+        let mut index = (*state.codex_index).clone();
+        index.insert(id.to_string(), path.to_path_buf());
+        state.codex_index = std::sync::Arc::new(index);
+    }
+    let (ctx, codex, want) = (paths.clone(), state.codex_index.clone(), path.to_path_buf());
+    blocking(move || {
+        let mut out = Vec::new();
+        for row in rows {
+            run_row_files(&ctx, row, &codex, &mut out);
+        }
+        out.retain(|t| t.local == want);
+        out
+    })
+    .await
+}
+
 /// Every file this device currently tracks.
 async fn collect(
     db: &Db,
@@ -763,6 +808,38 @@ async fn queue(conn: &mut SqliteConnection, kind: FileKind, portable: &str, op: 
         .await
         .map_err(err)?;
     Ok(done.last_insert_rowid())
+}
+
+/// A per-id app-data folder (`old_seg` = `/<dir>/<old id>`) is being renamed
+/// to `new_seg` (a re-keyed row, `bootstrap::run_dir_moves`): its file
+/// records follow, so the next scan finds them unchanged instead of
+/// uploading everything again, and are queued under their new paths (the
+/// relay only has them under the old ones). A record whose new path is
+/// already tracked is dropped.
+pub async fn move_dir_records(conn: &mut SqliteConnection, old_seg: &str, new_seg: &str) -> Result<(), String> {
+    use super::bootstrap::{moved_path_sql, under_dir_sql};
+    let (in_path, in_local) = (under_dir_sql("path"), under_dir_sql("local_path"));
+    let sql = format!(
+        "UPDATE OR IGNORE sync_files SET path = {}, local_path = CASE WHEN {in_local} THEN {} ELSE local_path END WHERE {in_path}",
+        moved_path_sql("path"),
+        moved_path_sql("local_path"),
+    );
+    sqlx::query(&sql).bind(old_seg).bind(new_seg).execute(&mut *conn).await.map_err(err)?;
+    sqlx::query(&format!("DELETE FROM sync_files WHERE {in_path}")).bind(old_seg).execute(&mut *conn).await.map_err(err)?;
+    let sql = format!("UPDATE sync_files SET local_path = {} WHERE {in_local}", moved_path_sql("local_path"));
+    sqlx::query(&sql).bind(old_seg).bind(new_seg).execute(&mut *conn).await.map_err(err)?;
+    // `?1` is the new folder now.
+    let moved: Vec<(String, String)> = sqlx::query_as(&format!("SELECT kind, path FROM sync_files WHERE deleted = 0 AND {in_path}"))
+        .bind(new_seg)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(err)?;
+    for (kind, path) in moved {
+        if let Some(kind) = FileKind::parse(&kind) {
+            queue(conn, kind, &path, "U").await?;
+        }
+    }
+    Ok(())
 }
 
 /// The new version of a file no longer uses `old` chunks: those this device
@@ -1097,6 +1174,10 @@ pub async fn stage(
                     // Kicked by the session watcher: being written right now.
                     tracked.push(Tracked { kind, local: p.clone(), portable, live: true });
                 }
+            } else {
+                // Not tracked yet (a run that ended before any scan, a new
+                // Codex rollout the index has not seen): find its run.
+                tracked.extend(kicked_run_file(&mut conn, paths, state, p).await?);
             }
         }
         tracked = dedup_tracked(tracked);
@@ -2368,6 +2449,36 @@ pub(crate) mod tests {
         assert_eq!(fresh.due(&t, false), Some(ScanMode::Full));
         assert_eq!(fresh.due(&t, false), None);
         assert_eq!(fresh.due(&t, true), Some(ScanMode::Quick));
+    }
+
+    /// L3: a kick for a file no scan has recorded yet (a short run that
+    /// ended before the next scan, a Codex rollout created after the last
+    /// full scan) is staged by the quick scan, not 60 s later.
+    #[tokio::test]
+    async fn quick_scan_stages_kicked_files_it_never_saw() {
+        let home = tempdir();
+        let db = mem_db().await;
+        let paths = ctx(home.path());
+        let blobs = MemBlobs::default();
+        let mut st = eager();
+        assert_eq!(stage(&db, &paths, &blobs, &mut st, ScanMode::Full, false).await.unwrap(), 0);
+        let short = add_run(&db, home.path(), "short", "done").await;
+        fs::write(&short, b"done already").unwrap();
+        sqlx::query("INSERT INTO runs (id, project_id, type, status, engine, session_id, created_at) VALUES ('cx', 'p1', 'session', 'running', 'codex', 'th-1', 'x')")
+            .execute(&db)
+            .await
+            .unwrap();
+        let rollout = home.path().join(".codex/sessions/2026/10/30/rollout-2026-10-30T10-00-00-th-1.jsonl");
+        fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+        fs::write(&rollout, b"{}\n").unwrap();
+        let stray = home.path().join("elsewhere.jsonl");
+        fs::write(&stray, b"{}\n").unwrap();
+        for p in [&short, &rollout, &stray] {
+            kick(p);
+        }
+        assert_eq!(stage(&db, &paths, &blobs, &mut st, ScanMode::Quick, false).await.unwrap(), 2);
+        let kinds: Vec<String> = sqlx::query_scalar("SELECT kind FROM sync_files ORDER BY kind").fetch_all(&db).await.unwrap();
+        assert_eq!(kinds, vec!["codex_rollout", "run_log"]);
     }
 
     #[tokio::test]

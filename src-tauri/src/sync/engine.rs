@@ -1411,6 +1411,55 @@ mod tests {
         }
     }
 
+    /// Review 3 H1: two upserts of a merged-away id reach A in one pull (B's
+    /// and C's concurrent edits of B's copy of a skill A also has under a
+    /// lower id). The second one, redirected to A's id, must not drop the
+    /// merge's push of the survivor: every device, and one joining later,
+    /// ends up with the skill under A's id and the newest edit.
+    #[tokio::test]
+    async fn two_upserts_of_a_merged_id_in_one_pull_keep_the_survivor() {
+        let relay = TestRelay::start().await;
+        relay.create_group("g1");
+        let a = manual_side(&relay, "dev-a").await;
+        let b = manual_side(&relay, "dev-b").await;
+        let c = manual_side(&relay, "dev-c").await;
+        let exec = |db: &crate::db::Db, sql: &'static str| {
+            let db = db.clone();
+            async move { sqlx::query(sql).execute(&db).await.unwrap() }
+        };
+        let skills = |db: &crate::db::Db| {
+            let db = db.clone();
+            async move {
+                sqlx::query_scalar::<_, String>("SELECT id || ':' || description FROM skills").fetch_all(&db).await.unwrap()
+            }
+        };
+        let pause = || tokio::time::sleep(Duration::from_millis(5));
+        exec(&a.0, "INSERT INTO skills (id, name, description, source_path, updated_at) VALUES ('sk-1', 'review', 'from a', '/s', 'x')").await;
+        pause().await;
+        exec(&b.0, "INSERT INTO skills (id, name, description, source_path, updated_at) VALUES ('sk-2', 'review', 'from b', '/s', 'x')").await;
+        push_side(&b).await;
+        pull_side(&c).await;
+        pause().await;
+        exec(&b.0, "UPDATE skills SET description = 'b again' WHERE id = 'sk-2'").await;
+        push_side(&b).await;
+        pause().await;
+        // C edits without having pulled B's second edit: the relay keeps both.
+        exec(&c.0, "UPDATE skills SET description = 'from c' WHERE id = 'sk-2'").await;
+        push_side(&c).await;
+        assert_eq!(relay.op_count(), 2);
+
+        pull_side(&a).await;
+        assert_eq!(skills(&a.0).await, vec!["sk-1:from c"]);
+        push_side(&a).await;
+        pull_side(&b).await;
+        pull_side(&c).await;
+        let d = manual_side(&relay, "dev-d").await;
+        pull_side(&d).await;
+        for (name, side) in [("a", &a), ("b", &b), ("c", &c), ("d (joined later)", &d)] {
+            assert_eq!(skills(&side.0).await, vec!["sk-1:from c"], "device {name}");
+        }
+    }
+
     /// Finding #1, the exact scenario: B edits a row while offline (older
     /// HLC), A edits it later and pushes, then B pushes its older edit before
     /// it has pulled A's. Real stores, cycle steps driven by hand so the race
