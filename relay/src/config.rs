@@ -68,6 +68,9 @@ pub struct Config {
     /// Largest blob (decoded, sealed bytes); an op's base64 blob is capped at
     /// the base64 length of this.
     pub sync_max_blob_bytes: usize,
+    /// `RELAY_SYNC_VACUUM_ON_START=1`: one-time `VACUUM` of the sync store at
+    /// startup, after abandoned groups are purged.
+    pub sync_vacuum_on_start: bool,
 }
 
 impl Config {
@@ -119,6 +122,10 @@ impl Config {
         };
         let sync_max_group_bytes = parse_u64("RELAY_SYNC_MAX_GROUP_BYTES", 2 * 1024 * 1024 * 1024)?;
         let sync_max_blob_bytes = parse_u64("RELAY_SYNC_MAX_BLOB_BYTES", 4 * 1024 * 1024 + 64)? as usize;
+        let sync_vacuum_on_start = matches!(
+            std::env::var("RELAY_SYNC_VACUUM_ON_START").as_deref().map(str::trim),
+            Ok("1" | "true")
+        );
 
         Ok(Config {
             bind,
@@ -132,6 +139,7 @@ impl Config {
             sync_db,
             sync_max_group_bytes,
             sync_max_blob_bytes,
+            sync_vacuum_on_start,
         })
     }
 }

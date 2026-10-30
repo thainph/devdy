@@ -21,6 +21,9 @@ struct Opts {
     sync: bool,
     max_group_bytes: u64,
     rate_limit_max: u32,
+    /// Store file (default: a fresh temp file).
+    db: Option<PathBuf>,
+    vacuum_on_start: bool,
 }
 
 impl Default for Opts {
@@ -29,6 +32,8 @@ impl Default for Opts {
             sync: true,
             max_group_bytes: 2 * 1024 * 1024 * 1024,
             rate_limit_max: 1000,
+            db: None,
+            vacuum_on_start: false,
         }
     }
 }
@@ -47,9 +52,10 @@ async fn start(opts: Opts) -> String {
         peer_liveness_timeout: Duration::from_secs(45),
         max_rooms: 256,
         max_message_bytes: 32 * 1024 * 1024,
-        sync_db: opts.sync.then(temp_db),
+        sync_db: opts.sync.then(|| opts.db.unwrap_or_else(temp_db)),
         sync_max_group_bytes: opts.max_group_bytes,
         sync_max_blob_bytes: 4 * 1024 * 1024 + 64,
+        sync_vacuum_on_start: opts.vacuum_on_start,
     };
     let (handle, accept_loop) = devdy_relay::server::serve(config).await.expect("relay must bind");
     tokio::spawn(accept_loop);
@@ -659,4 +665,161 @@ async fn peer_send_too_large() {
     let e = recv(&mut a).await;
     assert_eq!((e["code"].as_str(), e["id"].as_u64()), (Some("too_large"), Some(3)));
     assert!(recv_within(&mut b, Duration::from_millis(300)).await.is_none());
+}
+
+/// Rows stored for `group` in each per-group table, and whether its row exists.
+fn stored(db: &PathBuf, group: &str) -> (Vec<i64>, bool) {
+    let c = rusqlite::Connection::open(db).unwrap();
+    let counts = ["ops", "blobs", "devices", "epochs", "invites"]
+        .iter()
+        .map(|t| {
+            c.query_row(&format!("SELECT COUNT(*) FROM {t} WHERE group_id = ?1"), [group], |r| r.get(0))
+                .unwrap()
+        })
+        .collect();
+    let exists = c
+        .query_row("SELECT EXISTS (SELECT 1 FROM groups WHERE id = ?1)", [group], |r| r.get(0))
+        .unwrap();
+    (counts, exists)
+}
+
+fn file_bytes(db: &PathBuf) -> i64 {
+    let c = rusqlite::Connection::open(db).unwrap();
+    c.query_row("SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()", [], |r| r.get(0))
+        .unwrap()
+}
+
+/// Ops, a blob and an open invite in the group `ws` belongs to.
+async fn fill(ws: &mut Ws, blob_bytes: usize) {
+    assert_eq!(push(ws, json!([{ "key": "k1", "blob": "AA" }, { "key": "k2", "blob": "BB" }])).await["t"], "sync_ack");
+    let data: Vec<u8> = (0..blob_bytes).map(|i| (i % 251) as u8).collect();
+    send(ws, json!({ "t": "blob_put", "sha": sha_hex(&data), "data": b64(&data) })).await;
+    assert_eq!(recv(ws).await["t"], "blob_ack");
+    send(ws, json!({ "t": "sync_invite", "ticket_hash": sha_hex(b"unused"), "ttl_secs": 60 })).await;
+    assert_eq!(recv(ws).await["code"], "ok");
+}
+
+/// The next frame that is not a `sync_notify`.
+async fn recv_skip_notify(ws: &mut Ws) -> Value {
+    loop {
+        let f = recv(ws).await;
+        if f["t"] != "sync_notify" {
+            return f;
+        }
+    }
+}
+
+async fn revoke_self(ws: &mut Ws, device: &str) {
+    send(ws, json!({ "t": "sync_revoke", "device_id": device })).await;
+    assert_eq!(recv(ws).await["code"], "ok");
+    assert_eq!(recv(ws).await["code"], "device_revoked");
+}
+
+#[tokio::test]
+async fn last_device_leaving_purges_the_group() {
+    let db = temp_db();
+    let url = start(Opts { db: Some(db.clone()), ..Default::default() }).await;
+    let mut a = hello(&url, "a", true).await;
+    let mut b = join(&url, &mut a, "b").await;
+    fill(&mut a, 1024).await;
+    let mut other = hello_group(&url, "grp-2", "z").await;
+    fill(&mut other, 1024).await;
+    let other_before = stored(&db, "grp-2");
+
+    // The creator revokes b, then leaves itself: nobody is left.
+    send(&mut a, json!({ "t": "sync_revoke", "device_id": "b" })).await;
+    assert_eq!(recv(&mut a).await["code"], "ok");
+    assert_eq!(recv_skip_notify(&mut b).await["code"], "device_revoked");
+    assert!(stored(&db, GROUP).1, "a is still active");
+    revoke_self(&mut a, "a").await;
+
+    assert_eq!(stored(&db, GROUP), (vec![0; 5], false), "ops, blobs, devices, epochs, invites, group");
+    assert_eq!(stored(&db, "grp-2"), other_before, "other groups are untouched");
+    let (mut ws, r) = hello_raw(&url, "a", "tok-a", false).await;
+    assert_eq!(r["code"], "group_not_found");
+    assert_closed(&mut ws).await;
+}
+
+#[tokio::test]
+async fn revoking_one_of_two_devices_deletes_nothing() {
+    let db = temp_db();
+    let url = start(Opts { db: Some(db.clone()), ..Default::default() }).await;
+    let mut a = hello(&url, "a", true).await;
+    let mut b = join(&url, &mut a, "b").await;
+    fill(&mut a, 1024).await;
+    let before = stored(&db, GROUP);
+
+    // A member leaving, then the creator leaving while a member remains.
+    let mut c = join(&url, &mut a, "c").await;
+    revoke_self(&mut c, "c").await;
+    send(&mut a, json!({ "t": "sync_revoke", "device_id": "a", "successor": "b" })).await;
+    assert_eq!(recv(&mut a).await["code"], "ok");
+    assert_eq!(recv_skip_notify(&mut b).await["creator_device"], "b");
+
+    let (counts, exists) = stored(&db, GROUP);
+    assert!(exists);
+    assert_eq!(counts[..2], before.0[..2], "ops and blobs kept");
+    assert_eq!(counts[2], 3, "a, b and c rows kept (revoked ones pin their ids)");
+    let page = pull(&mut b, 0, 0).await;
+    assert_eq!(seqs(&page), vec![1, 2]);
+    assert_eq!(push(&mut b, json!([{ "key": "k3", "blob": "CC" }])).await["t"], "sync_ack");
+}
+
+#[tokio::test]
+async fn startup_purges_groups_without_an_active_device() {
+    let db = temp_db();
+    let url = start(Opts { db: Some(db.clone()), ..Default::default() }).await;
+    let mut a = hello(&url, "a", true).await;
+    let _b = join(&url, &mut a, "b").await;
+    fill(&mut a, 1024).await;
+    let mut z = hello_group(&url, "grp-2", "z").await;
+    fill(&mut z, 1024).await;
+    let kept = stored(&db, "grp-2");
+    // A group every device left before purging existed.
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute("UPDATE devices SET revoked = 1 WHERE group_id = ?1", [GROUP])
+        .unwrap();
+    assert!(stored(&db, GROUP).1);
+
+    let url = start(Opts { db: Some(db.clone()), ..Default::default() }).await;
+    assert_eq!(stored(&db, GROUP), (vec![0; 5], false));
+    let (counts, exists) = stored(&db, "grp-2");
+    assert!(exists);
+    assert_eq!(counts[..3], kept.0[..3], "active group's ops, blobs and devices kept");
+    let (_, r) = hello_raw(&url, "a", "tok-a", false).await;
+    assert_eq!(r["code"], "group_not_found");
+    let mut z = hello_group(&url, "grp-2", "z").await;
+    assert_eq!(seqs(&pull(&mut z, 0, 0).await), vec![1, 2]);
+}
+
+#[tokio::test]
+async fn vacuum_on_start_shrinks_and_keeps_serving() {
+    let db = temp_db();
+    let url = start(Opts { db: Some(db.clone()), ..Default::default() }).await;
+    let mut a = hello(&url, "a", true).await;
+    fill(&mut a, 1024 * 1024).await;
+    let mut z = hello_group(&url, "grp-2", "z").await;
+    fill(&mut z, 1024 * 1024).await;
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute("UPDATE devices SET revoked = 1 WHERE group_id = ?1", [GROUP])
+        .unwrap();
+    let before = file_bytes(&db);
+
+    let url = start(Opts { db: Some(db.clone()), vacuum_on_start: true, ..Default::default() }).await;
+    let after = file_bytes(&db);
+    assert!(after < before - 512 * 1024, "{before} -> {after}");
+    let mode: i64 = rusqlite::Connection::open(&db)
+        .unwrap()
+        .query_row("PRAGMA auto_vacuum", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(mode, 2, "switched to incremental auto-vacuum");
+
+    // Still serving; a later purge now gives its pages back.
+    let mut z = hello_group(&url, "grp-2", "z").await;
+    assert_eq!(seqs(&pull(&mut z, 0, 0).await), vec![1, 2]);
+    revoke_self(&mut z, "z").await;
+    assert_eq!(stored(&db, "grp-2"), (vec![0; 5], false));
+    assert!(file_bytes(&db) < after - 512 * 1024, "incremental vacuum after the purge");
 }
