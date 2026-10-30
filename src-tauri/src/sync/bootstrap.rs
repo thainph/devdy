@@ -224,7 +224,10 @@ pub async fn clear_pending(db: &Db) -> Result<(), String> {
 /// cleared last: a crash before that resumes at the merge step.
 pub async fn prepare_new_group(db: &Db) -> Result<usize, String> {
     let device = super::ensure_device(db).await?;
-    SqliteSyncStore::new(db.clone(), device).set_cursor(0).await?;
+    let store = SqliteSyncStore::new(db.clone(), device);
+    // A pending selective-sync reset would make `set_cursor` a no-op.
+    store.pull_start().await?;
+    store.set_cursor(0).await?;
     super::set_member(db, true).await?;
     let n = enqueue_all(db).await?;
     clear_pending(db).await?;
@@ -1081,6 +1084,9 @@ pub async fn commit(
     // every log and transcript here would hold run starts for minutes.
     store.park_extra(extra).await?;
     run_dir_moves(db, home).await?;
+    // The merge read the whole log: a pending selective-sync reset is moot
+    // (and would make `set_cursor` a no-op).
+    store.pull_start().await?;
     store.set_cursor(state.last_seq).await?;
     clear_pending(db).await?;
     let mut preview = merged.preview;
