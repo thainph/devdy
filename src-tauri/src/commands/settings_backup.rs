@@ -1606,10 +1606,11 @@ pub async fn import_settings_backup(
     .await)
 }
 
-// ---- LAN transfer --------------------------------------------------------------
+// ---- Device transfer -----------------------------------------------------------
 
-/// A backup carried over the end-to-end encrypted LAN channel (`lan_sync`). The channel itself is
-/// the protection, so the secrets travel as a plain payload inside it: no password, no Argon2.
+/// A backup carried over an end-to-end encrypted device channel. The channel itself is the
+/// protection, so the secrets travel as a plain payload inside it: no password, no Argon2.
+#[allow(dead_code)] // reused by two-way sync bootstrap
 #[derive(Serialize, Deserialize)]
 struct Transfer {
     bundle: Bundle,
@@ -1618,8 +1619,10 @@ struct Transfer {
 }
 
 /// A transfer received from another machine, parsed and waiting for the user to import it.
+#[allow(dead_code)] // reused by two-way sync bootstrap
 pub struct ReceivedBackup(Transfer);
 
+#[allow(dead_code)] // reused by two-way sync bootstrap
 impl ReceivedBackup {
     pub fn parse(raw: &[u8]) -> Result<Self, String> {
         let transfer: Transfer = serde_json::from_slice(raw)
@@ -1635,7 +1638,8 @@ impl ReceivedBackup {
     }
 }
 
-/// The whole configuration of this machine, serialized for a LAN transfer.
+/// The whole configuration of this machine, serialized for a device transfer.
+#[allow(dead_code)] // reused by two-way sync bootstrap
 pub async fn export_transfer(
     app: &AppHandle,
     db: &Db,
@@ -1649,6 +1653,7 @@ pub async fn export_transfer(
     serde_json::to_vec(&transfer).map_err(|e| e.to_string())
 }
 
+#[allow(dead_code)] // reused by two-way sync bootstrap
 pub async fn import_received(
     app: &AppHandle,
     db: &Db,
@@ -1671,7 +1676,7 @@ pub async fn import_received(
     .await
 }
 
-/// Merge `bundle` into this machine (shared by the file import and the LAN transfer).
+/// Merge `bundle` into this machine (shared by the file import and the device transfer).
 async fn apply_bundle(
     app: &AppHandle,
     db: &Db,
