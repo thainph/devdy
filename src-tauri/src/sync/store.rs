@@ -284,6 +284,13 @@ impl SyncStore for SqliteSyncStore {
         let with_secrets = self.secrets_on().await?;
         let paths = self.paths_now().await?;
         state.tail_idle = self.file_timing.tail_idle();
+        if mode == files::ScanMode::Full {
+            // Retry pulled ops that failed earlier (or were parked by the
+            // first-join merge) even when nothing new arrives; before the
+            // scans, so a group version lands before a local copy of the
+            // same file or item is taken for a new local change.
+            self.apply_remote_extra(Vec::new(), blobs).await?;
+        }
         files::stage(&self.db, &paths, blobs, &mut state, mode, with_secrets).await?;
         drop(state);
         if mode == files::ScanMode::Full {
@@ -294,8 +301,6 @@ impl SyncStore for SqliteSyncStore {
                     tracing::warn!(event = "sync_secret_scan_failed", error = %e);
                 }
             }
-            // Retry pulled ops that failed earlier even when nothing new arrives.
-            self.apply_remote_extra(Vec::new(), blobs).await?;
         }
         Ok(())
     }
@@ -500,6 +505,32 @@ impl SyncStore for SqliteSyncStore {
 }
 
 impl SqliteSyncStore {
+    /// Queue pulled `file` / `secret` ops in `sync_extra_deferred` without
+    /// applying them (the newest per item wins); the engine applies them on
+    /// its next full scan or pull.
+    pub async fn park_extra(&self, ops: Vec<Op>) -> Result<usize, String> {
+        let mut tx = self.db.begin().await.map_err(err)?;
+        let mut n = 0;
+        for op in ops {
+            let json = serde_json::to_string(&op).map_err(|e| e.to_string())?;
+            n += sqlx::query(
+                "INSERT INTO sync_extra_deferred (tbl, pk, op, reason, attempts, deferred_at) VALUES (?, ?, ?, 'not fetched yet', 0, ?) \
+                 ON CONFLICT(tbl, pk) DO UPDATE SET op = excluded.op, reason = excluded.reason, attempts = 0, deferred_at = excluded.deferred_at \
+                 WHERE json_extract(excluded.op, '$.hlc') > json_extract(sync_extra_deferred.op, '$.hlc')",
+            )
+            .bind(&op.tbl)
+            .bind(op.pk_key())
+            .bind(json)
+            .bind(wall_ms() as i64)
+            .execute(&mut *tx)
+            .await
+            .map_err(err)?
+            .rows_affected() as usize;
+        }
+        tx.commit().await.map_err(err)?;
+        Ok(n)
+    }
+
     /// The op for a DB row change; `None` = a filtered row (never sent).
     async fn db_entry(
         &self,
@@ -1131,6 +1162,59 @@ mod tests {
             json!({"id": "sk-2", "name": "review", "description": "", "source_path": "/s", "updated_at": "x"}));
         a.apply_remote(vec![late]).await.unwrap();
         assert!(rows(&db_a, "SELECT id FROM skills").await.is_empty());
+    }
+
+    fn alias_op(tbl: &str, old: &str, to: &str, hlc: Hlc) -> Op {
+        Op {
+            v: OP_VERSION, schema: SCHEMA_VERSION, hlc, tbl: tbl.into(), pk: json!(old), kind: OpKind::Delete,
+            row: Some(serde_json::Map::from_iter([(apply::ALIAS_FIELD.to_string(), json!(to))])),
+        }
+    }
+
+    /// M4: the loser of a fold changed here after the sender folded it: its
+    /// newer content lands on the survivor and is pushed, instead of being
+    /// dropped with the loser row.
+    #[tokio::test]
+    async fn alias_fold_keeps_a_newer_loser_edit() {
+        let (db_a, a, db_b, b) = paired().await;
+        skill(&db_a, "sk-1", "x").await;
+        skill(&db_a, "sk-2", "y").await;
+        exec(&db_a, "INSERT INTO project_skills (project_id, skill_id, applied_at) VALUES ('p1', 'sk-2', 'x')").await;
+        converge(&a, &b).await;
+        // Folded on another device a moment ago...
+        let folded_at = Hlc::new(wall_ms(), 0, "c");
+        // ...while b edited the loser (not pushed yet).
+        exec(&db_b, "UPDATE skills SET description = 'late edit' WHERE id = 'sk-2'").await;
+        exec(&db_b, "UPDATE sync_outbox SET changed_at = changed_at + 5000").await;
+        b.apply_remote(vec![alias_op("skills", "sk-2", "sk-1", folded_at.clone())]).await.unwrap();
+        assert_eq!(rows(&db_b, "SELECT id || ':' || description FROM skills").await, vec!["sk-1:late edit"]);
+        assert_eq!(rows(&db_b, "SELECT skill_id FROM project_skills").await, vec!["sk-1"]);
+        let out: Vec<Op> = b.pending(100).await.unwrap().into_iter().map(|(_, o)| o).collect();
+        let up = out.iter().find(|o| o.pk == json!("sk-1")).expect("survivor pushed");
+        assert_eq!(up.row.as_ref().unwrap()["description"], json!("late edit"));
+
+        // An older loser is simply folded: the survivor keeps its content.
+        let (_, _, db_c, c) = paired().await;
+        skill(&db_c, "sk-1", "x").await;
+        skill(&db_c, "sk-2", "y").await;
+        exec(&db_c, "UPDATE skills SET description = 'survivor' WHERE id = 'sk-1'").await;
+        exec(&db_c, "UPDATE sync_outbox SET changed_at = changed_at + 5000 WHERE pk = '\"sk-1\"'").await;
+        c.apply_remote(vec![alias_op("skills", "sk-2", "sk-1", folded_at)]).await.unwrap();
+        assert_eq!(rows(&db_c, "SELECT id || ':' || description FROM skills").await, vec!["sk-1:survivor"]);
+    }
+
+    /// L1: a row whose parent arrives under an id the same batch re-keys is
+    /// applied in that batch, not left deferred until some later op.
+    #[tokio::test]
+    async fn child_of_an_aliased_parent_applies_in_the_same_batch() {
+        let (db_b, b) = device("b", "/Users/b").await;
+        add_project(&db_b, "p-1", "/Users/b/w/x").await;
+        let at = Hlc::new(wall_ms(), 0, "a");
+        let repo = upsert("repos", json!("r-1"), at.clone(),
+            json!({"id": "r-1", "project_id": "p-2", "name": "x", "path": "/Users/b/w/x", "created_at": "x"}));
+        let r = b.apply_remote(vec![repo, alias_op("projects", "p-2", "p-1", at)]).await.unwrap();
+        assert_eq!(r.deferred, 0, "{r:?}");
+        assert_eq!(rows(&db_b, "SELECT id || '>' || project_id FROM repos").await, vec!["r-1>p-1"]);
     }
 
     #[tokio::test]

@@ -30,7 +30,7 @@ use super::codec::{bind_value, decode_row, expand_portable, map_project_path, pk
 use super::crypto::SyncKeys;
 use super::op::{canonical_json, Op, OpKind};
 use super::schema::{self, lit, pk_sql, q, TableSpec, SYNCED_TABLES};
-use super::store::{is_extra_tbl, ApplyReport, BlobIo, SqliteSyncStore, SyncStore};
+use super::store::{is_extra_tbl, ApplyReport, SqliteSyncStore, SyncStore};
 use super::transport::Connection;
 use crate::db::Db;
 
@@ -48,12 +48,12 @@ const APPLY_CHUNK: usize = 500;
 const DIR_MOVES_KEY: &str = "dir_moves";
 
 /// Folders under app data named after a row id, which follow the row when it
-/// is re-keyed: `(table, folder, column holding a path into it)`.
-pub static DIR_KEYED: &[(&str, &str, Option<&str>)] = &[
-    ("claude_accounts", "claude-accounts", Some("config_dir")),
-    ("azure_accounts", "azure-accounts", None),
-    ("servers", "server-keys", Some("private_key_path")),
-    ("projects", "aws-projects", None),
+/// is re-keyed: `(table, folder)`.
+pub static DIR_KEYED: &[(&str, &str)] = &[
+    ("claude_accounts", "claude-accounts"),
+    ("azure_accounts", "azure-accounts"),
+    ("servers", "server-keys"),
+    ("projects", "aws-projects"),
 ];
 
 /// Set while a first-join merge is being committed: run starts are refused
@@ -840,7 +840,7 @@ pub async fn rekey(conn: &mut SqliteConnection, spec: &TableSpec, old: &Value, n
         .map_err(err)?;
     super::secrets::queue_key_move(conn, spec.name, old, new).await?;
     if let (Some(from), Some(to)) = (old.as_str(), new.as_str()) {
-        queue_dir_move(conn, spec.name, pk_col, from, to).await?;
+        queue_dir_move(conn, spec.name, from, to, opts.repush).await?;
     }
     if opts.repush {
         queue_push(conn, spec.name, &old_key, "D", now).await?;
@@ -900,21 +900,32 @@ async fn save_dir_moves(conn: &mut SqliteConnection, moves: &[DirMove]) -> Resul
 }
 
 /// The row `from` of `tbl` (already re-keyed to `to`) owns a folder under app
-/// data named after its id: point its path column at the new folder name and
-/// queue the folder rename for after the transaction ([`run_dir_moves`]).
-async fn queue_dir_move(conn: &mut SqliteConnection, tbl: &str, pk_col: &str, from: &str, to: &str) -> Result<(), String> {
-    let Some((_, dir, col)) = DIR_KEYED.iter().find(|(t, _, _)| *t == tbl) else { return Ok(()) };
-    if let Some(col) = col {
-        let (old_seg, new_seg) = (format!("/{dir}/{from}"), format!("/{dir}/{to}"));
-        let sql = format!(
-            "UPDATE {t} SET {c} = substr({c}, 1, instr({c}, ?1) - 1) || ?2 || substr({c}, instr({c}, ?1) + length(?1)) \
-             WHERE {k} = ?3 AND (instr({c}, ?1 || '/') > 0 OR substr({c}, -length(?1)) = ?1)",
-            t = q(tbl),
-            c = q(col),
-            k = q(pk_col),
-        );
-        sqlx::query(&sql).bind(&old_seg).bind(&new_seg).bind(to).execute(&mut *conn).await.map_err(err)?;
+/// data named after its id: point every path into that folder at the new
+/// folder name (the row's own path column, run logs and transcripts, file
+/// records...) and queue the folder rename for after the transaction
+/// ([`run_dir_moves`]). With `repush` the rewritten synced rows are queued for
+/// push, so the relay stops handing out the old paths.
+async fn queue_dir_move(conn: &mut SqliteConnection, tbl: &str, from: &str, to: &str, repush: bool) -> Result<(), String> {
+    let Some((_, dir)) = DIR_KEYED.iter().find(|(t, _)| *t == tbl) else { return Ok(()) };
+    let (old_seg, new_seg) = (format!("/{dir}/{from}"), format!("/{dir}/{to}"));
+    let now = wall_ms() as i64;
+    for spec in SYNCED_TABLES {
+        for col in spec.path_cols {
+            let cond = under_dir_sql(col);
+            let moved: Vec<String> = if repush {
+                let sql = format!("SELECT {} FROM {} WHERE {cond}", pk_sql(spec, &q(spec.name)), q(spec.name));
+                sqlx::query_scalar(&sql).bind(&old_seg).fetch_all(&mut *conn).await.map_err(err)?
+            } else {
+                Vec::new()
+            };
+            let sql = format!("UPDATE {} SET {} = {} WHERE {cond}", q(spec.name), q(col), moved_path_sql(col));
+            sqlx::query(&sql).bind(&old_seg).bind(&new_seg).execute(&mut *conn).await.map_err(err)?;
+            for pk in moved {
+                queue_push(conn, spec.name, &pk, "U", now).await?;
+            }
+        }
     }
+    super::files::move_dir_records(conn, &old_seg, &new_seg).await?;
     let mut moves = load_dir_moves(conn).await?;
     let m = DirMove { dir: dir.to_string(), from: from.into(), to: to.into() };
     if !moves.contains(&m) {
@@ -922,6 +933,24 @@ async fn queue_dir_move(conn: &mut SqliteConnection, tbl: &str, pk_col: &str, fr
         save_dir_moves(conn, &moves).await?;
     }
     Ok(())
+}
+
+/// SQL condition: column `col` is the folder `?1` (`/<dir>/<id>`) or a path
+/// inside it.
+pub(crate) fn under_dir_sql(col: &str) -> String {
+    let c = q(col);
+    format!("(instr({c}, ?1 || '/') > 0 OR substr({c}, -length(?1)) = ?1)")
+}
+
+/// SQL value: column `col` (matching [`under_dir_sql`]) with the folder `?1`
+/// replaced by `?2`.
+pub(crate) fn moved_path_sql(col: &str) -> String {
+    let c = q(col);
+    format!(
+        "CASE WHEN instr({c}, ?1 || '/') > 0 \
+         THEN substr({c}, 1, instr({c}, ?1 || '/') - 1) || ?2 || substr({c}, instr({c}, ?1 || '/') + length(?1)) \
+         ELSE substr({c}, 1, length({c}) - length(?1)) || ?2 END"
+    )
 }
 
 /// Rename the queued per-id folders under `paths.app_data` (a login, Azure
@@ -1012,9 +1041,9 @@ fn apply_order(mut ops: Vec<Op>) -> Vec<Op> {
 }
 
 /// Run the first-join merge for real: re-key + project map (one guarded
-/// transaction), LWW-apply the group's rows in chunks, then its files and
-/// Keychain items (`blobs` fetches their content), queue the local-only rows,
-/// and continue pulling after it. The engine must not be running; the caller
+/// transaction), LWW-apply the group's rows in chunks, park its files and
+/// Keychain items for the engine to fetch, queue the local-only rows, and
+/// continue pulling after it. The engine must not be running; the caller
 /// holds [`begin_commit`]. Safe to run again after a crash: the pending flag
 /// is cleared last and a second merge finds the rows already re-keyed.
 pub async fn commit(
@@ -1023,7 +1052,6 @@ pub async fn commit(
     home: &PathCtx,
     state: RemoteState,
     git: &HashMap<String, String>,
-    blobs: &dyn BlobIo,
 ) -> Result<BootstrapReport, String> {
     let mut tx = begin_guarded(db).await?;
     let merged = merge(&mut tx, home, &state.ops, git).await?;
@@ -1048,14 +1076,10 @@ pub async fn commit(
     for chunk in apply_order(rows).chunks(APPLY_CHUNK) {
         add_report(&mut applied, &store.apply_remote(chunk.to_vec()).await?);
     }
-    let mut extra_report = ApplyReport::default();
-    for chunk in extra.chunks(APPLY_CHUNK) {
-        add_report(&mut extra_report, &store.apply_remote_extra(chunk.to_vec(), blobs).await?);
-    }
-    applied.applied += extra_report.applied;
-    applied.skipped_older += extra_report.skipped_older;
-    applied.conflicts += extra_report.conflicts;
-    applied.deferred += extra_report.deferred;
+    // Files and Keychain items are fetched by the engine once syncing runs
+    // (its first full scan retries parked ops before scanning): downloading
+    // every log and transcript here would hold run starts for minutes.
+    store.park_extra(extra).await?;
     run_dir_moves(db, home).await?;
     store.set_cursor(state.last_seq).await?;
     clear_pending(db).await?;
@@ -1164,7 +1188,6 @@ mod tests {
     use crate::sync::op::OP_VERSION;
     use crate::sync::SCHEMA_VERSION;
     use serde_json::json;
-    use crate::sync::files::tests::MemBlobs;
     use sqlx::sqlite::SqlitePoolOptions;
 
     async fn mem_db() -> Db {
@@ -1309,7 +1332,7 @@ mod tests {
         }
         assert_eq!(table(&p, "settings").matched, 1);
 
-        let report = commit(&db_b, &b, &home_b, state, &git, &MemBlobs::default()).await.unwrap();
+        let report = commit(&db_b, &b, &home_b, state, &git).await.unwrap();
         assert_eq!(report.applied.deferred, 0, "{report:?}");
         assert_eq!(count(&db_b, "SELECT COUNT(*) FROM pragma_foreign_key_check").await, 0);
         // Every parent got a's id...
@@ -1448,7 +1471,7 @@ mod tests {
         assert_eq!(by["p-away"], (None, "/Users/bob/w/away"));
         assert!(!p.projects.iter().find(|m| m.remote_id == "p-away").unwrap().on_this_machine);
 
-        commit(&db_b, &b, &home_b, state, &git, &MemBlobs::default()).await.unwrap();
+        commit(&db_b, &b, &home_b, state, &git).await.unwrap();
         assert_eq!(scalar(&db_b, "SELECT path FROM projects WHERE id = 'p-git'").await.unwrap(), "/Volumes/code/devdy");
         assert_eq!(scalar(&db_b, "SELECT name FROM projects WHERE id = 'p-path'").await.unwrap(), "same-path", "remote row wins");
         assert_eq!(scalar(&db_b, "SELECT path FROM projects WHERE id = 'p-name'").await.unwrap(), "/Users/bob/elsewhere/notes");
@@ -1593,7 +1616,7 @@ mod tests {
         exec(&db_b, "INSERT INTO notes (id, title, content, position, created_at, updated_at) VALUES ('n', 'T', 'b-body', 0, 'x', 'x')").await;
         exec(&db_b, "DELETE FROM sync_outbox").await; // edited before sync existed
         let state = group_state(&a).await;
-        let r = commit(&db_b, &b, &home_b, state, &HashMap::new(), &MemBlobs::default()).await.unwrap();
+        let r = commit(&db_b, &b, &home_b, state, &HashMap::new()).await.unwrap();
         assert_eq!(r.applied.conflicts, 1);
         assert_eq!(note(&db_b, "n").await, "a-body");
         assert_eq!(scalar(&db_b, "SELECT content FROM notes WHERE id != 'n'").await.unwrap(), "b-body");
@@ -1787,9 +1810,14 @@ mod tests {
             .with_paths(ctx_b.clone())
             .with_secrets(kc_b.clone())
             .with_file_timing(file_timing.clone());
-        let report = commit(&db_b, &store_b, &ctx_b, state, &git, &RelayBlobs::new(&conn_b, &keys)).await.unwrap();
+        let report = commit(&db_b, &store_b, &ctx_b, state, &git).await.unwrap();
         assert_eq!(report.applied.deferred, 0, "{report:?}");
         assert!(!is_pending(&db_b).await.unwrap());
+        // M7: files and Keychain items are left to the engine; its first
+        // full scan fetches them.
+        assert!(count(&db_b, "SELECT COUNT(*) FROM sync_extra_deferred").await >= 5);
+        assert!(!skill_b.join("refs/a.md").exists(), "nothing downloaded by the merge");
+        store_b.stage(&RelayBlobs::new(&conn_b, &keys)).await.unwrap();
         assert_eq!(count(&db_b, "SELECT COUNT(*) FROM sync_extra_deferred").await, 0);
 
         // Matched rows took M's ids; B's own rows follow them.
@@ -1887,7 +1915,7 @@ mod tests {
         // Children first in the log: the chunks still land parents first.
         state.ops.reverse();
         mark_joined(&db_b).await.unwrap();
-        let r = commit(&db_b, &b, &home_b, state, &HashMap::new(), &MemBlobs::default()).await.unwrap();
+        let r = commit(&db_b, &b, &home_b, state, &HashMap::new()).await.unwrap();
         assert_eq!((r.applied.applied, r.applied.deferred), (1201, 0), "{r:?}");
         assert_eq!(count(&db_b, "SELECT COUNT(*) FROM todos WHERE project_id = 'p'").await, 1200);
         assert!(!is_pending(&db_b).await.unwrap());
@@ -1906,6 +1934,18 @@ mod tests {
         exec(&db_a, "INSERT INTO claude_accounts (id, label, config_dir, created_at) VALUES ('ca-A', 'max', '/elsewhere', 'x')").await;
         exec(&db_b, "INSERT INTO azure_accounts (id, label, created_at) VALUES ('az-B', 'az', 'x')").await;
         exec(&db_b, &format!("INSERT INTO claude_accounts (id, label, config_dir, created_at) VALUES ('ca-B', 'max', '{h}/data/claude-accounts/ca-B', 'x')")).await;
+        // M3: other paths into the folder (a run's transcript, its file
+        // record) follow it too; a sibling id sharing the prefix does not.
+        let transcript = format!("{h}/data/claude-accounts/ca-B/projects/-w-p/s1.jsonl");
+        exec(&db_b, &format!("INSERT INTO projects (id, name, path, created_at) VALUES ('pr-B', 'p', '{h}/w/p', 'x')")).await;
+        exec(&db_b, &format!(
+            "INSERT INTO runs (id, project_id, type, engine, session_id, transcript_path, output_path, created_at) \
+             VALUES ('rn-B', 'pr-B', 'session', 'claude', 's1', '{transcript}', '{h}/data/claude-accounts/ca-Bx/o.log', 'x')"
+        )).await;
+        exec(&db_b, &format!(
+            "INSERT INTO sync_files (kind, path, local_path, size, sha256) \
+             VALUES ('claude_transcript', '@data/claude-accounts/ca-B/projects/-w-p/s1.jsonl', '{transcript}', 3, 'abc')"
+        )).await;
         exec(&db_b, "DELETE FROM sync_outbox").await;
         for (dir, id) in [("azure-accounts", "az-B"), ("claude-accounts", "ca-B")] {
             std::fs::create_dir_all(data.join(dir).join(id)).unwrap();
@@ -1918,11 +1958,20 @@ mod tests {
 
         preview(&db_b, &ctx_b, &state, &HashMap::new()).await.unwrap();
         assert!(data.join("claude-accounts/ca-B").is_dir(), "preview moves nothing");
-        commit(&db_b, &b, &ctx_b, state, &HashMap::new(), &MemBlobs::default()).await.unwrap();
+        commit(&db_b, &b, &ctx_b, state, &HashMap::new()).await.unwrap();
         assert_eq!(std::fs::read_to_string(data.join("azure-accounts/az-A/login")).unwrap(), "az-B");
         assert_eq!(std::fs::read_to_string(data.join("claude-accounts/ca-A/login")).unwrap(), "ca-B");
         assert!(!data.join("claude-accounts/ca-B").exists());
         assert_eq!(scalar(&db_b, "SELECT config_dir FROM claude_accounts").await.unwrap(), format!("{h}/data/claude-accounts/ca-A"));
+        let moved = format!("{h}/data/claude-accounts/ca-A/projects/-w-p/s1.jsonl");
+        assert_eq!(scalar(&db_b, "SELECT transcript_path FROM runs").await.unwrap(), moved);
+        assert_eq!(scalar(&db_b, "SELECT output_path FROM runs").await.unwrap(), format!("{h}/data/claude-accounts/ca-Bx/o.log"));
+        assert_eq!(
+            scalar(&db_b, "SELECT path || ' ' || local_path FROM sync_files").await.unwrap(),
+            format!("@data/claude-accounts/ca-A/projects/-w-p/s1.jsonl {moved}")
+        );
+        // The record goes out under its new path.
+        assert_eq!(count(&db_b, "SELECT COUNT(*) FROM sync_outbox WHERE tbl = 'file' AND instr(pk, 'ca-A/projects') > 0").await, 1);
         assert_eq!(count(&db_b, "SELECT COUNT(*) FROM sync_state WHERE key = 'dir_moves' AND value != '[]'").await, 0);
         std::fs::remove_dir_all(&home).ok();
     }
