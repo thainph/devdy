@@ -70,6 +70,11 @@ pub trait SyncStore: Send + Sync {
     async fn apply_remote(&self, ops: Vec<Op>) -> Result<ApplyReport, String>;
     async fn cursor(&self) -> Result<u64, String>; // last pulled relay seq
     async fn set_cursor(&self, seq: u64) -> Result<(), String>;
+    /// A pull cursor reset (selective sync turned something on) is waiting
+    /// for the next pull: the cursor reads 0 until then.
+    async fn cursor_reset_pending(&self) -> Result<bool, String> {
+        Ok(false)
+    }
     /// The cursor a pull starts from (also ends a pending reset, which kept
     /// earlier pulls from writing over it).
     async fn pull_start(&self) -> Result<u64, String> {
@@ -602,6 +607,15 @@ impl SyncStore for SqliteSyncStore {
             .map_err(err)?;
         tx.commit().await.map_err(err)?;
         Ok(v.and_then(|s| s.parse().ok()).unwrap_or(0))
+    }
+
+    async fn cursor_reset_pending(&self) -> Result<bool, String> {
+        let v: Option<String> = sqlx::query_scalar("SELECT value FROM sync_state WHERE key = ?")
+            .bind(prefs::CURSOR_RESET_KEY)
+            .fetch_optional(&self.db)
+            .await
+            .map_err(err)?;
+        Ok(v.is_some())
     }
 
     /// A no-op while a reset is pending (`prefs`): a pull that started before

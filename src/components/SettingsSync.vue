@@ -77,7 +77,7 @@ const store = useSyncStore()
 const status = computed(() => store.status)
 const paired = computed(() => status.value.state !== 'disabled')
 const mergePending = computed(() => store.mergePending)
-const tone = computed(() => syncTone(status.value, mergePending.value))
+const tone = computed(() => syncTone(status.value, mergePending.value, store.busy))
 
 // Relative times ("3 min ago") re-render on this clock.
 const now = ref(Date.now())
