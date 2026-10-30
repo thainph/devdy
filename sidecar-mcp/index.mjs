@@ -376,13 +376,13 @@ const tools = {
 
   todos_set_due: {
     description:
-      'Set a todo\'s deadline (due="YYYY-MM-DD", a local date, plus optional due_time="HH:MM"), or clear both by omitting due / passing "".',
+      'Set a todo\'s deadline (due="YYYY-MM-DD", a local date, plus optional due_time="HH:MM"; leave due_time out to keep the current time, "" for all day), or clear both by omitting due / passing "".',
     inputSchema: {
       type: 'object',
       properties: {
         id: { type: 'string' },
         due: { type: 'string', description: 'YYYY-MM-DD; omit or "" to clear' },
-        due_time: { type: 'string', description: 'HH:MM 24 h; omit for an all-day deadline' },
+        due_time: { type: 'string', description: 'HH:MM 24 h; omit to keep the current time, "" for all day' },
       },
       required: ['id'],
     },

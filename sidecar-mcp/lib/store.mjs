@@ -554,14 +554,17 @@ export function updateTodo({ id, text, priority, estimate, estimate_min, status,
 }
 
 /**
- * Set a todo's deadline (`YYYY-MM-DD`, optional `HH:MM` time), or clear both
- * with an empty / null due.
+ * Set a todo's deadline (`YYYY-MM-DD`, optional `HH:MM` time; no time key
+ * keeps the current one), or clear both with an empty / null due.
  */
 export function setTodoDue({ id, due, due_time } = {}) {
-  requireTodo(id);
+  const row = requireTodo(id);
   const dueDate = normDue(due);
-  const dueTime = normDueTime(due_time);
-  if (dueTime && !dueDate) throw new Error('due_time needs a due date');
+  // Like the app: no due_time key keeps the current time (dropped with the
+  // date); null / "" makes it an all-day deadline.
+  const kept = due_time === undefined ? db().prepare('SELECT due_time FROM todos WHERE id = ?').get(row.id).due_time : null;
+  const dueTime = dueDate ? (due_time === undefined ? kept : normDueTime(due_time)) : null;
+  if (normDueTime(due_time ?? null) && !dueDate) throw new Error('due_time needs a due date');
   db()
     .prepare('UPDATE todos SET due_date = ?, due_time = ?, updated_at = ? WHERE id = ?')
     .run(dueDate, dueTime, nowRfc3339(), id);
