@@ -11,7 +11,7 @@ use super::manifest::{is_sha256, FileEntry, Manifest, ManifestRequest, RepoManif
 use super::paths::{self, Excludes, Speller};
 use super::plan::{self, Expected, FolderPreview, Plan};
 use super::scan::{self, SkipItem};
-use super::transfer::{self, Downloader};
+use super::transfer::{self, Downloader, Transfer};
 use super::{blocking, Cancel, FolderOptions, FolderProgress, ProgressSink};
 use crate::sync::peer::PeerLink;
 use futures_util::future::BoxFuture;
@@ -23,6 +23,9 @@ use std::sync::{Arc, Mutex};
 
 /// Staging area for downloads and atomic writes (always excluded).
 pub const STAGING: &str = ".devdy/sync-tmp";
+/// Partly downloaded contents, kept across syncs to resume them (removed
+/// once a sync completes).
+pub const PARTIAL: &str = ".devdy/sync-partial";
 /// Sha256 of empty content.
 const EMPTY_SHA: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
@@ -73,7 +76,7 @@ async fn local_state(opts: &FolderOptions) -> Result<Local, String> {
     Ok(Local { root, ci, ex, scan })
 }
 
-async fn fetch_manifest(link: &Arc<dyn PeerLink>, source: &str, opts: &FolderOptions, local: &Local) -> Result<Manifest, String> {
+async fn fetch_manifest(link: &Arc<dyn PeerLink>, source: &str, opts: &FolderOptions, local: &Local, cancel: &Cancel) -> Result<(Manifest, Transfer), String> {
     let (root, sc) = (local.root.clone(), local.scan.clone());
     let have = blocking(move || Ok(plan::repos_have(&root, &sc))).await?;
     let req = ManifestRequest {
@@ -84,7 +87,7 @@ async fn fetch_manifest(link: &Arc<dyn PeerLink>, source: &str, opts: &FolderOpt
         with_bundles: true,
         case_insensitive: local.ci,
     };
-    transfer::request_manifest(link, source, &req).await
+    transfer::request_manifest(link, source, &req, cancel).await
 }
 
 async fn make_plan(opts: &FolderOptions, local: &Local, m: Manifest) -> Result<(Manifest, Plan), String> {
@@ -107,8 +110,9 @@ pub async fn preview(link: Arc<dyn PeerLink>, source: &str, opts: &FolderOptions
 /// [`ApplyGuard::expected`]).
 pub async fn preview_expected(link: Arc<dyn PeerLink>, source: &str, opts: &FolderOptions) -> Result<(FolderPreview, Expected), String> {
     let local = local_state(opts).await?;
-    let m = fetch_manifest(&link, source, opts, &local).await?;
+    let (m, transfer) = fetch_manifest(&link, source, opts, &local, &Cancel::default()).await?;
     // Bundles were built for their size only; apply asks for a fresh manifest.
+    drop(transfer);
     let (_, p) = make_plan(opts, &local, m).await?;
     let e = p.expected();
     Ok((p.preview, e))
@@ -147,7 +151,8 @@ pub async fn apply(
     let mut em = Emitter { sink, base: FolderProgress { project_id: opts.project_id.clone(), ..Default::default() } };
     em.phase("manifest");
     let local = local_state(opts).await?;
-    let m = fetch_manifest(&link, source, opts, &local).await?;
+    // Ends the transfer on the source (its bundles go) however apply ends.
+    let (m, transfer) = fetch_manifest(&link, source, opts, &local, &cancel).await?;
     let (m, plan) = make_plan(opts, &local, m).await?;
     if let Some(e) = &guard.expected {
         plan.check_expected(e)?;
@@ -167,10 +172,14 @@ pub async fn apply(
         if let Some(pc) = &guard.precheck {
             pc().await?;
         }
-        run_after_backup(&link, source, &local, &root, m, plan, &mut em, &cancel, &mut report).await
+        run_after_backup(&link, source, &transfer, &local, &root, m, plan, &mut em, &cancel, &mut report).await
     }
     .await;
+    drop(transfer);
     let _ = fs::remove_dir_all(root.join(STAGING));
+    if res.is_ok() {
+        let _ = fs::remove_dir_all(root.join(PARTIAL));
+    }
     if let Err(e) = res {
         // The git phase may have added files to the backup since.
         note_folder(&mut report, &root);
@@ -212,6 +221,7 @@ fn note_folder(report: &mut ApplyReport, root: &Path) {
 async fn run_after_backup(
     link: &Arc<dyn PeerLink>,
     source: &str,
+    transfer: &Transfer,
     local: &Local,
     root: &Path,
     m: Arc<Manifest>,
@@ -221,10 +231,9 @@ async fn run_after_backup(
     report: &mut ApplyReport,
 ) -> Result<(), String> {
     cancel.check()?;
-    let project_id = em.base.project_id.clone();
     let staging = root.join(STAGING);
     let _ = fs::remove_dir_all(&staging);
-    let mut dl = Downloader::new(&staging)?;
+    let mut dl = Downloader::new(&staging, &root.join(PARTIAL))?;
 
     // The git phase reverts dirty files: keep the ones that already have
     // the source's content so they are not downloaded again.
@@ -248,8 +257,8 @@ async fn run_after_backup(
             b.done_bytes += n;
             sink(&b);
         };
-        dl.fetch(link, source, &project_id, &bundles, cancel, &mut on_progress, &mut |_, _| Ok(())).await?;
-        report.bytes_downloaded += base.lock().unwrap().done_bytes;
+        dl.fetch(link, source, transfer, &bundles, cancel, &mut on_progress, &mut |_, _| Ok(())).await?;
+        report.bytes_downloaded = dl.downloaded;
         em.base.done_bytes = em.base.total_bytes;
     }
     let mut skipped_repos: Vec<String> = Vec::new();
@@ -360,10 +369,10 @@ async fn run_after_backup(
                 wanted.push((sha.clone(), *size));
             }
         }
-        let res = dl.fetch(link, source, &project_id, &wanted, cancel, &mut on_progress, &mut on_done).await;
+        let res = dl.fetch(link, source, transfer, &wanted, cancel, &mut on_progress, &mut on_done).await;
         let st = state.lock().unwrap();
         report.files_written += st.1;
-        report.bytes_downloaded += st.0.done_bytes;
+        report.bytes_downloaded = dl.downloaded;
         report.skipped.extend(st.2.iter().cloned());
         em.base = st.0.clone();
         res?;

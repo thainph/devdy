@@ -1,12 +1,12 @@
 //! End-to-end folder sync over `peer::testing::pair` with real `git`.
 
 use super::apply::{self, ApplyReport};
-use super::handler::{FolderSource, RootResolver};
+use super::handler::{FolderSource, ManifestReady, RootResolver};
 use super::manifest::{FileEntry, Manifest, MANIFEST_VERSION};
 use super::{backup, Cancel, FolderOptions, FolderProgress, ProgressSink, KIND_MANIFEST, REPLY_MANIFEST};
 use crate::sync::files::tests::{tempdir, TempDir};
 use crate::sync::peer::testing::{pair, MemLink};
-use crate::sync::peer::{PeerHandler, PeerLink, Reply};
+use crate::sync::peer::{decode_chunk, encode_chunk, PeerHandler, PeerLink, Reply, CHUNK_SIZE};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -211,7 +211,7 @@ async fn fresh_clone_from_bundle() {
     assert!(pv.add.iter().all(|f| !f.path.starts_with("node_modules")));
     assert!(pv.skipped_items.iter().any(|s| s.path == "escape-link" && s.reason == "symlink_outside"));
     assert!(!dst.exists(), "preview must not write");
-    assert_eq!(recv.blob_count(), 0, "preview releases its blobs");
+    assert_eq!(recv.blob_count(), 0, "no relay blobs");
 
     let rep = run(&recv, &opts(&dst)).await.unwrap();
     assert_same(&src, &dst);
@@ -220,7 +220,7 @@ async fn fresh_clone_from_bundle() {
     assert!(!dst.join("escape-link").exists());
     assert!(!dst.join(apply::STAGING).exists());
     assert!(rep.bytes_downloaded > 0);
-    assert_eq!(recv.blob_count(), 0, "every blob released");
+    assert_eq!(recv.blob_count(), 0, "no relay blobs");
 
     // A second sync has nothing to download.
     let pv = preview(&recv, &opts(&dst)).await;
@@ -396,10 +396,15 @@ impl PeerHandler for EvilSource {
     fn kinds(&self) -> &'static [&'static str] {
         &[KIND_MANIFEST]
     }
-    async fn handle(&self, link: Arc<dyn PeerLink>, _from: String, _kind: String, _body: Value, reply: Arc<dyn Reply>) {
-        let sha = link.blob_put(serde_json::to_vec(&self.0).unwrap()).await.unwrap();
-        let _ = reply.send(REPLY_MANIFEST, json!({ "manifest_blobs": [sha], "bundles": {} }), true).await;
+    async fn handle(&self, _link: Arc<dyn PeerLink>, _from: String, _kind: String, _body: Value, reply: Arc<dyn Reply>) {
+        let _ = reply.send(REPLY_MANIFEST, ready("evil", &self.0), true).await;
     }
+}
+
+/// A `folder_manifest_ready` reply carrying all of `m` inline.
+fn ready(transfer: &str, m: &Manifest) -> Value {
+    let json = serde_json::to_vec(m).unwrap();
+    json!({ "transfer": transfer, "manifest": { "sha256": sha_hex(&json), "size": json.len() }, "data": encode_chunk(&json) })
 }
 
 #[tokio::test]
@@ -461,7 +466,7 @@ async fn resumes_after_a_partial_transfer() {
     let dst = t.path().join("dst");
     const MB: usize = 1024 * 1024;
     for (i, name) in ["a.bin", "b.bin", "c.bin"].iter().enumerate() {
-        write(&src, name, &vec![i as u8 + 1; 5 * MB]); // > one blob each
+        write(&src, name, &vec![i as u8 + 1; 5 * MB]); // > one chunk each
     }
     let (recv, _) = link_to(&src);
     let l: Arc<dyn PeerLink> = recv.clone();
@@ -482,7 +487,9 @@ async fn resumes_after_a_partial_transfer() {
 
     let (s, ev) = sink();
     let rep = apply::apply(l, "src", &opts(&dst), s, Cancel::default(), Default::default()).await.unwrap();
-    assert_eq!(rep.bytes_downloaded, (10 * MB) as u64, "the finished file is not fetched again");
+    // Chunks of b.bin already in flight may have been kept too.
+    assert!(rep.bytes_downloaded <= (10 * MB) as u64, "the finished file is not fetched again");
+    assert!(!dst.join(apply::PARTIAL).exists());
     assert_eq!(tree(&dst, &[]), tree(&src, &[]));
     let phases: Vec<String> = ev.lock().unwrap().iter().map(|p| p.phase.clone()).collect::<Vec<_>>();
     let mut uniq = phases.clone();
@@ -834,7 +841,7 @@ impl Reply for Capture {
 #[async_trait]
 impl PeerHandler for Tamper {
     fn kinds(&self) -> &'static [&'static str] {
-        &[KIND_MANIFEST, super::KIND_FETCH]
+        &[KIND_MANIFEST, super::KIND_FETCH, super::KIND_DONE]
     }
     async fn handle(&self, link: Arc<dyn PeerLink>, from: String, kind: String, body: Value, reply: Arc<dyn Reply>) {
         if kind != KIND_MANIFEST {
@@ -843,16 +850,10 @@ impl PeerHandler for Tamper {
         let cap = Arc::new(Capture(Mutex::new(vec![])));
         self.inner.handle(link.clone(), from, kind, body, cap.clone()).await;
         let (_, b) = cap.0.lock().unwrap()[0].clone();
-        let blobs: Vec<String> = serde_json::from_value(b["manifest_blobs"].clone()).unwrap();
-        let mut bytes = vec![];
-        for x in &blobs {
-            bytes.extend(link.blob_get(x).await.unwrap());
-        }
-        link.blob_release(&blobs).await.unwrap();
-        let mut m: Manifest = serde_json::from_slice(&bytes).unwrap();
+        let r: ManifestReady = serde_json::from_value(b).unwrap();
+        let mut m: Manifest = serde_json::from_slice(&decode_chunk(&r.data).unwrap()).unwrap();
         (self.edit)(&mut m);
-        let sha = link.blob_put(serde_json::to_vec(&m).unwrap()).await.unwrap();
-        let _ = reply.send(REPLY_MANIFEST, json!({ "manifest_blobs": [sha], "bundles": {} }), true).await;
+        let _ = reply.send(REPLY_MANIFEST, ready(&r.transfer, &m), true).await;
     }
 }
 
@@ -1055,4 +1056,185 @@ async fn a_path_backed_up_twice_does_not_fail() {
     assert_eq!(fs::read_link(bk.join("cur")).unwrap(), PathBuf::from("a.txt"));
     assert_eq!(read(&bk, "a.txt"), b"old copy\n");
     assert_eq!(read(&dst, "a.txt"), b"one\n");
+}
+
+// ---- inline chunks (the relay stores nothing)
+
+/// Incompressible bytes (xorshift).
+fn noise(n: usize, seed: u64) -> Vec<u8> {
+    let mut x = seed | 1;
+    (0..n)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u8
+        })
+        .collect()
+}
+
+async fn until(what: &str, f: impl Fn() -> bool) {
+    for _ in 0..500 {
+        if f() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("timed out waiting for {what}");
+}
+
+#[tokio::test]
+async fn a_large_file_resumes_mid_file_after_cancel() {
+    let t = tempdir();
+    let src = t.path().join("src");
+    let dst = t.path().join("dst");
+    let big = noise(5 * CHUNK_SIZE + 12345, 7); // > 3 chunks
+    write(&src, "big.bin", &big);
+    let (recv, _) = link_to(&src);
+    let l: Arc<dyn PeerLink> = recv.clone();
+
+    // Stop after the first chunk of the file.
+    let cancel = Cancel::default();
+    let c2 = cancel.clone();
+    let s: ProgressSink = Arc::new(move |p: &FolderProgress| {
+        if p.phase == "files" && p.done_bytes >= CHUNK_SIZE as u64 {
+            c2.cancel();
+        }
+    });
+    let err = apply::apply(l.clone(), "src", &opts(&dst), s, cancel, Default::default()).await.unwrap_err();
+    assert!(err.contains("cancelled"), "{err}");
+    assert!(!dst.join("big.bin").exists());
+    let part = dst.join(apply::PARTIAL).join(format!("{}.part", sha_hex(&big)));
+    let kept = fs::metadata(&part).unwrap().len();
+    assert!(kept >= CHUNK_SIZE as u64 && kept < big.len() as u64, "{kept}");
+
+    let rep = run(&recv, &opts(&dst)).await.unwrap();
+    assert_eq!(rep.bytes_downloaded, big.len() as u64 - kept, "resumed where it stopped");
+    assert_eq!(read(&dst, "big.bin"), big);
+    assert!(!dst.join(apply::PARTIAL).exists());
+    assert_eq!(recv.blob_count(), 0, "no relay blobs");
+}
+
+#[tokio::test]
+async fn a_corrupt_partial_is_not_trusted() {
+    let t = tempdir();
+    let src = t.path().join("src");
+    let dst = t.path().join("dst");
+    let big = noise(2 * CHUNK_SIZE + 1, 3);
+    write(&src, "big.bin", &big);
+    write(&dst, &format!("{}/{}.part", apply::PARTIAL, sha_hex(&big)), &vec![0u8; CHUNK_SIZE]);
+    let (recv, _) = link_to(&src);
+    let err = run(&recv, &opts(&dst)).await.unwrap_err();
+    assert!(err.contains("failed verification"), "{err}");
+    // The bad prefix is gone: the next sync fetches it all.
+    let rep = run(&recv, &opts(&dst)).await.unwrap();
+    assert_eq!(rep.bytes_downloaded, big.len() as u64);
+    assert_eq!(read(&dst, "big.bin"), big);
+}
+
+#[tokio::test]
+async fn a_bundle_larger_than_a_chunk() {
+    let t = tempdir();
+    let src = t.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    git(&src, &["init", "-q"]);
+    write(&src, "blob.dat", &noise(3 * CHUNK_SIZE, 11));
+    git(&src, &["add", "blob.dat"]);
+    git(&src, &["commit", "-q", "-m", "big"]);
+    let dst = t.path().join("dst");
+    let (recv, _) = link_to(&src);
+    let pv = preview(&recv, &opts(&dst)).await;
+    assert!(pv.repos[0].bundle_bytes > 2 * CHUNK_SIZE as u64, "{}", pv.repos[0].bundle_bytes);
+    let rep = run(&recv, &opts(&dst)).await.unwrap();
+    assert!(rep.bytes_downloaded > 2 * CHUNK_SIZE as u64);
+    assert_eq!(git(&dst, &["rev-parse", "HEAD"]), git(&src, &["rev-parse", "HEAD"]));
+    assert_eq!(read(&dst, "blob.dat"), read(&src, "blob.dat"));
+    assert_eq!(status(&dst), status(&src));
+    assert_eq!(recv.blob_count(), 0, "no relay blobs");
+}
+
+/// A source repo with one commit to bundle; (receiver link, source handler, bundle dir).
+fn bundling_source(t: &TempDir, ttl: std::time::Duration) -> (Arc<MemLink>, Arc<FolderSource>, PathBuf, PathBuf) {
+    let src = t.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    git(&src, &["init", "-q"]);
+    commit(&src, "a.txt", "a\n", "c1");
+    let tmp = t.path().join("bundles");
+    let (recv, srcl) = pair("recv", "src");
+    let fs_ = Arc::new(FolderSource::with(Arc::new(MapRoots(src.clone())), tmp.clone(), ttl));
+    srcl.add_handler(fs_.clone());
+    (recv, fs_, src, tmp)
+}
+
+fn count(dir: &Path) -> usize {
+    fs::read_dir(dir).map(|d| d.count()).unwrap_or(0)
+}
+
+#[tokio::test]
+async fn bundles_live_only_while_their_transfer_runs() {
+    let long = std::time::Duration::from_secs(3600);
+    // Done after a successful apply.
+    let t = tempdir();
+    let (recv, source, _, tmp) = bundling_source(&t, long);
+    let dst = t.path().join("dst");
+    run(&recv, &opts(&dst)).await.unwrap();
+    until("transfer ended", || source.transfers() == 0 && count(&tmp) == 0).await;
+
+    // Done after a cancelled apply.
+    let t = tempdir();
+    let (recv, source, _, tmp) = bundling_source(&t, long);
+    let dst = t.path().join("dst");
+    let cancel = Cancel::default();
+    let c2 = cancel.clone();
+    let seen = Arc::new(Mutex::new(0usize));
+    let (seen2, tmp2) = (seen.clone(), tmp.clone());
+    let s: ProgressSink = Arc::new(move |p: &FolderProgress| {
+        if p.phase == "backup" {
+            *seen2.lock().unwrap() = count(&tmp2);
+            c2.cancel();
+        }
+    });
+    let l: Arc<dyn PeerLink> = recv.clone();
+    let err = apply::apply(l, "src", &opts(&dst), s, cancel, Default::default()).await.unwrap_err();
+    assert!(err.contains("cancelled"), "{err}");
+    assert_eq!(*seen.lock().unwrap(), 1, "the bundle exists during the transfer");
+    until("transfer ended", || source.transfers() == 0 && count(&tmp) == 0).await;
+
+    // Dropped when idle (the receiver went away without a word).
+    let t = tempdir();
+    let (recv, source, _, tmp) = bundling_source(&t, std::time::Duration::from_millis(200));
+    let l: Arc<dyn PeerLink> = recv.clone();
+    let req = super::manifest::ManifestRequest { project_id: "p1".into(), max_file_bytes: u64::MAX, with_bundles: true, ..Default::default() };
+    let (m, transfer) = super::transfer::request_manifest(&l, "src", &req, &Cancel::default()).await.unwrap();
+    assert!(m.repos[0].bundle.is_some());
+    std::mem::forget(transfer);
+    assert_eq!((source.transfers(), count(&tmp)), (1, 1));
+    until("idle transfer dropped", || source.transfers() == 0 && count(&tmp) == 0).await;
+
+    // A fetch for an ended transfer fails cleanly.
+    let item = super::handler::FetchItem { sha: m.repos[0].bundle.clone().unwrap().sha256, offset: 0, len: 1 };
+    let mut rx = l.request("src", super::KIND_FETCH, json!({ "transfer": "gone", "items": [item] })).await.unwrap();
+    assert!(rx.recv().await.unwrap().unwrap_err().contains("start the sync again"));
+}
+
+#[tokio::test]
+async fn oversized_fetches_are_refused() {
+    let t = tempdir();
+    let (recv, _, _, _) = bundling_source(&t, std::time::Duration::from_secs(3600));
+    let l: Arc<dyn PeerLink> = recv.clone();
+    let req = super::manifest::ManifestRequest { project_id: "p1".into(), max_file_bytes: u64::MAX, with_bundles: true, ..Default::default() };
+    let (m, transfer) = super::transfer::request_manifest(&l, "src", &req, &Cancel::default()).await.unwrap();
+    let b = m.repos[0].bundle.clone().unwrap();
+    let ask = |items: Value| {
+        let l = l.clone();
+        let id = transfer.id.clone();
+        async move { l.request("src", super::KIND_FETCH, json!({ "transfer": id, "items": items })).await.unwrap().recv().await.unwrap() }
+    };
+    let too_much = json!([{ "sha": b.sha256, "offset": 0, "len": CHUNK_SIZE + 1 }]);
+    assert!(ask(too_much).await.unwrap_err().contains("too much"));
+    let past_end = json!([{ "sha": b.sha256, "offset": b.size, "len": 1 }]);
+    assert!(ask(past_end).await.unwrap_err().contains("bad range"));
+    let (kind, body) = ask(json!([{ "sha": b.sha256, "offset": 0, "len": b.size }])).await.unwrap();
+    assert_eq!(kind, super::REPLY_CHUNK);
+    assert_eq!(decode_chunk(body["chunks"][0]["data"].as_str().unwrap()).unwrap().len() as u64, b.size);
 }
