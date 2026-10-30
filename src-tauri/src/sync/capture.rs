@@ -119,6 +119,16 @@ pub async fn set_member(db: &Db, member: bool) -> Result<(), String> {
     tx.commit().await.map_err(err)
 }
 
+/// Whether this device is flagged as a group member.
+pub async fn is_member(db: &Db) -> Result<bool, String> {
+    let v: Option<String> = sqlx::query_scalar("SELECT value FROM sync_state WHERE key = ?")
+        .bind(MEMBER_KEY)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(v.as_deref() == Some("1"))
+}
+
 /// Startup: a device that synced before the membership flag existed (it has
 /// a pull cursor or pushed / applied rows) is a member; any other device
 /// without the flag drops what the triggers queued before they were gated.

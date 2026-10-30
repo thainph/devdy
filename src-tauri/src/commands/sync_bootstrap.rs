@@ -126,6 +126,8 @@ pub async fn sync_rebootstrap(app: AppHandle, db: State<'_, Db>, state: State<'_
     }
     state.stop().await;
     bootstrap::mark_joined(db.inner()).await?;
+    // The merge re-reads the relay as it is now; its epoch becomes the reference.
+    crate::sync::store::clear_relay_mark(db.inner()).await?;
     use tauri::Emitter;
     let _ = app.emit(crate::sync::engine::STATUS_EVENT, crate::sync::engine::SyncStatus::disabled());
     Ok(())

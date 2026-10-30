@@ -754,4 +754,61 @@ mod tests {
         assert!(parse_transcript(&f, "/proj").is_none());
         let _ = fs::remove_file(&f);
     }
+
+    /// Review-3 M2: a session synced from another device, continued here
+    /// ("Continue here" + a resumed turn): the transcript grows past the size
+    /// sync last wrote, but the run's log is this device's drain output, so
+    /// the importer must not rebuild it from the transcript.
+    #[tokio::test]
+    async fn continued_session_log_is_not_rebuilt_from_its_transcript() {
+        let db = sqlx::sqlite::SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        crate::sync::install(&db).await.unwrap();
+        let proj = std::env::temp_dir().join(format!("devdy-m2-{}", uuid::Uuid::new_v4().simple()));
+        let runs_dir = proj.join(".devdy").join("runs");
+        fs::create_dir_all(&runs_dir).unwrap();
+        let log = runs_dir.join("r1.log");
+        let cwd = proj.to_string_lossy().to_string();
+        let turn = |text: &str| {
+            format!(
+                "{}\n{}\n",
+                serde_json::json!({"type": "user", "cwd": cwd, "message": {"role": "user", "content": text}}),
+                serde_json::json!({"type": "assistant", "message": {"role": "assistant", "model": "m", "content": [{"type": "text", "text": "ok"}]}})
+            )
+        };
+        let transcript = proj.join("s1.jsonl");
+        fs::write(&transcript, turn("first, on the other device")).unwrap();
+        let mirrored = fs::metadata(&transcript).unwrap().len() as i64;
+        sqlx::query("INSERT INTO projects (id, name, path, created_at) VALUES ('p1', 'P', ?, 'x')")
+            .bind(proj.to_string_lossy().as_ref())
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO runs (id, project_id, type, status, engine, session_id, created_at, output_path, transcript_path, \
+             transcript_synced_size, owner_device) VALUES ('r1', 'p1', 'session', 'done', 'claude', 's1', 'x', ?, ?, ?, 'other')",
+        )
+        .bind(log.to_string_lossy().as_ref())
+        .bind(transcript.to_string_lossy().as_ref())
+        .bind(mirrored)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        // Continue here: claim, the resumed turn appends to the transcript,
+        // the drain writes the merged log (stderr, resume marker, cost…).
+        crate::sync::sessions::claim(&db, "r1", &proj.to_string_lossy()).await.unwrap();
+        let mut f = fs::OpenOptions::new().append(true).open(&transcript).unwrap();
+        f.write_all(turn("second, continued here").as_bytes()).unwrap();
+        drop(f);
+        let merged = "merged log: first turn\n[resumed]\nsecond turn\ncost line\n";
+        fs::write(&log, merged).unwrap();
+
+        let path = proj.to_string_lossy().to_string();
+        upsert_session_run_core(&db, "p1", "P", &path, "s1", "claude", &transcript, parse_transcript, true)
+            .await
+            .unwrap();
+        assert_eq!(fs::read_to_string(&log).unwrap(), merged);
+        let _ = fs::remove_dir_all(&proj);
+    }
 }

@@ -216,6 +216,64 @@ async fn forget_group_settings(db: &Db) -> Result<(), String> {
     Ok(())
 }
 
+/// Review-3 H2: the sync bookkeeping of a group this machine is leaving (or
+/// left without it being cleared): row HLCs, the pull cursor and relay mark,
+/// deferred / parked ops, relay blob references and the last synced secret
+/// hashes all describe that group's relay log. Kept, they would make the next
+/// group's rows look older than what is here (skipped), its seqs look
+/// already pulled, and local files / secrets look already uploaded. File
+/// records stay (the session watcher still knows which files sync wrote) but
+/// lose their synced version, so the next group gets them uploaded again.
+/// Past device ids stay: runs owned by them are still this machine's.
+pub async fn forget_group_state(db: &Db) -> Result<(), String> {
+    let e = |e: sqlx::Error| e.to_string();
+    let mut tx = db.begin().await.map_err(e)?;
+    for sql in [
+        "DELETE FROM sync_rows",
+        "DELETE FROM sync_deferred",
+        "DELETE FROM sync_extra_deferred",
+        "DELETE FROM sync_parked",
+        "DELETE FROM sync_blob_release",
+        "DELETE FROM sync_blobs",
+        "DELETE FROM sync_files WHERE deleted = 1",
+        "UPDATE sync_files SET sha256 = '', local_sha256 = NULL, chunks_json = '[]', hlc = NULL, hash_state = NULL, mtime = 0",
+    ] {
+        sqlx::query(sql).execute(&mut *tx).await.map_err(e)?;
+    }
+    sqlx::query("DELETE FROM sync_state WHERE key IN (?, ?) OR substr(key, 1, ?) = ?")
+        .bind(super::store::CURSOR_KEY)
+        .bind(super::store::RELAY_MARK_KEY)
+        .bind(super::secrets::HASH_PREFIX.len() as i64)
+        .bind(super::secrets::HASH_PREFIX)
+        .execute(&mut *tx)
+        .await
+        .map_err(e)?;
+    tx.commit().await.map_err(e)
+}
+
+/// Review-3 L5: line the membership flag up with the Keychain at startup. A
+/// crash inside [`leave`] (Keychain entry gone, flag still set) finishes the
+/// leave locally; one inside [`enter_group`] before the Keychain write is the
+/// same state. A group in the Keychain without the flag (capture was off, so
+/// local changes were never queued) is merged again.
+pub async fn reconcile_membership(db: &Db, in_keychain: bool) -> Result<(), String> {
+    match (in_keychain, super::capture::is_member(db).await?) {
+        (false, true) => {
+            tracing::warn!(event = "sync_membership_reconciled", member = false);
+            super::set_member(db, false).await?;
+            forget_group_settings(db).await?;
+            forget_group_state(db).await?;
+            super::bootstrap::clear_pending(db).await
+        }
+        (true, false) => {
+            tracing::warn!(event = "sync_membership_reconciled", member = true);
+            super::set_member(db, true).await?;
+            super::bootstrap::mark_joined(db).await
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Relay URL + host token from Remote Control's config. `sync` adds the
 /// token an older build handed over at join, for memberships made then.
 async fn relay_endpoint(db: &Db, sync: Option<&SyncSecrets>) -> Result<(String, String), String> {
@@ -266,6 +324,8 @@ async fn hello(params: &ConnectParams, create: bool, ticket: Option<&str>) -> Re
 /// the relay, and only once it accepted switch this machine's device id and
 /// store the group.
 async fn enter_group(db: &Db, sync: &SyncSecrets, params: &ConnectParams, create: bool, ticket: Option<&str>) -> Result<(), String> {
+    // Anything an earlier membership left behind (H2).
+    forget_group_state(db).await?;
     super::set_member(db, true).await?;
     super::bootstrap::mark_joined(db).await?;
     if let Err(e) = hello(params, create, ticket).await {
@@ -369,6 +429,7 @@ pub async fn leave(db: &Db, successor: Option<&str>) -> Result<bool, String> {
         tracing::warn!(event = "sync_leave_cleanup_failed", error = %e);
     }
     super::set_member(db, false).await?;
+    forget_group_state(db).await?;
     super::bootstrap::clear_pending(db).await?;
     tracing::info!(event = "sync_group_left", revoked);
     Ok(revoked)
@@ -1080,6 +1141,85 @@ mod tests {
         assert!(left.is_empty(), "{left:?}");
         let queued: Vec<String> = sqlx::query_scalar("SELECT pk FROM sync_outbox WHERE tbl = 'settings'").fetch_all(&db).await.unwrap();
         assert_eq!(queued, vec!["\"theme\"".to_string()], "no delete pushed, nothing left queued for the old group");
+    }
+
+    /// Review-3 H2: after leaving, a row the next group sends with an older
+    /// HLC than the old group's must still apply, its seqs must be pulled
+    /// from the start, and local files / secrets must go up again.
+    #[tokio::test]
+    async fn leaving_forgets_the_old_groups_bookkeeping() {
+        use crate::sync::clock::Hlc;
+        use crate::sync::store::{SqliteSyncStore, SyncStore};
+        let db = mem_db().await;
+        let store = SqliteSyncStore::new(db.clone(), "me".into());
+        let todo = |hlc: Hlc, text: &str| crate::sync::op::Op {
+            v: crate::sync::op::OP_VERSION,
+            schema: crate::sync::SCHEMA_VERSION,
+            hlc,
+            tbl: "todos".into(),
+            pk: json!("t1"),
+            kind: crate::sync::op::OpKind::Upsert,
+            row: json!({"id": "t1", "text": text, "done": 0, "position": 0, "created_at": "x"}).as_object().cloned(),
+        };
+        // Old group: a far-future HLC for t1, a cursor, a relay mark, file and secret state.
+        store.apply_remote(vec![todo(Hlc::new(9_000_000_000_000, 0, "old-peer"), "old group")]).await.unwrap();
+        store.set_cursor(500).await.unwrap();
+        let mark = crate::sync::transport::RelayMark { epoch: "e".into(), seen: 500 };
+        store.set_relay_mark(&mark).await.unwrap();
+        for sql in [
+            "INSERT INTO sync_files (kind, path, local_path, size, sha256, chunks_json, mtime, hlc, origin) \
+             VALUES ('run_log', 'p', '/tmp/x.log', 10, 'abc', '[{\"blob\":\"b1\"}]', 5, 'h', 'remote')",
+            "INSERT INTO sync_blobs (chunk_sha, blob_sha, len, uploaded_at) VALUES ('c', 'b1', 10, 0)",
+            "INSERT INTO sync_state (key, value) VALUES ('secret_hash:{}', 'h')",
+            "INSERT INTO sync_parked (tbl, pk, reason, parked_at) VALUES ('todos', '\"t9\"', 'too_large', 0)",
+        ] {
+            sqlx::query(sql).execute(&db).await.unwrap();
+        }
+
+        crate::sync::set_member(&db, false).await.unwrap();
+        forget_group_state(&db).await.unwrap();
+        crate::sync::set_member(&db, true).await.unwrap();
+
+        assert_eq!(store.cursor().await.unwrap(), 0);
+        assert_eq!(store.relay_mark().await.unwrap(), None);
+        let r = store.apply_remote(vec![todo(Hlc::new(1_000, 0, "new-peer"), "new group")]).await.unwrap();
+        assert_eq!(r.applied, 1, "{r:?}");
+        let text: String = sqlx::query_scalar("SELECT text FROM todos WHERE id = 't1'").fetch_one(&db).await.unwrap();
+        assert_eq!(text, "new group");
+        let (sha, chunks, origin): (String, String, String) =
+            sqlx::query_as("SELECT sha256, chunks_json, origin FROM sync_files").fetch_one(&db).await.unwrap();
+        assert_eq!((sha.as_str(), chunks.as_str(), origin.as_str()), ("", "[]", "remote"));
+        for t in ["sync_blobs", "sync_parked"] {
+            let n: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {t}")).fetch_one(&db).await.unwrap();
+            assert_eq!(n, 0, "{t}");
+        }
+        let hashes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_state WHERE key LIKE 'secret_hash:%'").fetch_one(&db).await.unwrap();
+        assert_eq!(hashes, 0);
+    }
+
+    /// Review-3 L5: the membership flag follows the Keychain after a crash.
+    #[tokio::test]
+    async fn membership_is_reconciled_with_the_keychain() {
+        let db = mem_db().await;
+        let store = crate::sync::store::SqliteSyncStore::new(db.clone(), "me".into());
+        use crate::sync::store::SyncStore;
+        // Crash inside leave: Keychain entry gone, still flagged, old cursor.
+        store.set_cursor(42).await.unwrap();
+        assert!(crate::sync::capture::is_member(&db).await.unwrap());
+        reconcile_membership(&db, false).await.unwrap();
+        assert!(!crate::sync::capture::is_member(&db).await.unwrap());
+        assert_eq!(store.cursor().await.unwrap(), 0, "the leave finished locally");
+        sqlx::query("INSERT INTO todos (id, text, position, created_at) VALUES ('t1', 'x', 0, 'x')").execute(&db).await.unwrap();
+        assert!(store.pending(10).await.unwrap().is_empty(), "no capture outside a group");
+
+        // In the Keychain but not flagged: capture back on, merge again.
+        reconcile_membership(&db, true).await.unwrap();
+        assert!(crate::sync::capture::is_member(&db).await.unwrap());
+        assert!(crate::sync::bootstrap::is_pending(&db).await.unwrap());
+        // Consistent states are left alone.
+        crate::sync::bootstrap::clear_pending(&db).await.unwrap();
+        reconcile_membership(&db, true).await.unwrap();
+        assert!(!crate::sync::bootstrap::is_pending(&db).await.unwrap());
     }
 
     #[tokio::test]
