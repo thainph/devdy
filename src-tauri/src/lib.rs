@@ -150,7 +150,8 @@ use remote::fs_bridge::{
 use remote::ipc::{remote_bridge_batch, remote_bridge_ready};
 use remote::RemoteState;
 use commands::sync::{
-    sync_create_group, sync_join, sync_leave, sync_now, sync_pause, sync_set_secrets, sync_status,
+    sync_create_group, sync_device_rename, sync_devices_list, sync_join, sync_leave, sync_now,
+    sync_get_secrets, sync_pause, sync_revoke_device, sync_set_leader, sync_set_secrets, sync_status,
     SyncManager,
 };
 use runs::broker::approver::ModalApproverResolver;
@@ -306,10 +307,19 @@ pub fn run() {
             app.manage(slack_state.clone());
             {
                 let slack_state = slack_state.clone();
-                tauri::async_runtime::spawn(async move {
-                    slack_state.startup_recover().await;
-                    slack_state.start_worker();
+                tauri::async_runtime::spawn({
+                    let slack_state = slack_state.clone();
+                    async move { slack_state.start_worker() }
                 });
+                // Re-queueing unfinished threads is a singleton job (sync D6):
+                // only the leader device does it, again when it becomes leader.
+                sync::leader::watch_leadership(
+                    app.state::<db::Db>().inner().clone(),
+                    move || {
+                        let slack_state = slack_state.clone();
+                        async move { slack_state.startup_recover().await }
+                    },
+                );
             }
             // Project Pulse: resolves watches / requests written by the MCP
             // sidecar (and kicked by the pulse commands).
@@ -441,6 +451,7 @@ pub fn run() {
                     if let Err(e) = sync_manager.start(&app_handle, &db_for_sync).await {
                         tracing::warn!(event = "sync_autostart_failed", error = %e);
                     }
+                    sync::leader::mark_ready();
                 });
             }
 
@@ -734,6 +745,11 @@ pub fn run() {
             sync_pause,
             sync_now,
             sync_set_secrets,
+            sync_get_secrets,
+            sync_devices_list,
+            sync_device_rename,
+            sync_revoke_device,
+            sync_set_leader,
             remote_bridge_ready,
             remote_bridge_batch,
             remote_fs_list,

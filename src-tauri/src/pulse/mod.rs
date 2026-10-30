@@ -332,11 +332,17 @@ impl PulseState {
 
     /// One poller step: process the queue when kicked or when a session is
     /// running / the Pulse screen is open. Returns whether it processed.
+    ///
+    /// Background polling is a singleton job (sync D6): on a device that is
+    /// not the sync leader it only serves this device's own MCP requests
+    /// (`pulse_requests` is machine-local) and the watches they ask to
+    /// resolve; synced pending watches are left to the leader.
     pub async fn tick(&self, kicked: bool) -> bool {
         if !kicked && !self.should_poll().await {
             return false;
         }
-        self.process_pending().await;
+        let all = kicked || crate::sync::leader::is_leader(&self.inner.db).await;
+        self.process(all).await;
         true
     }
 
@@ -429,10 +435,30 @@ impl PulseState {
     /// requests: a `refresh` request gets `done_at` only once every watch in
     /// its scope finished refreshing; a `resolve` request once its watch is
     /// no longer pending. Returns the ids of the watches started.
+    #[cfg(test)]
     pub async fn process_pending(&self) -> Vec<String> {
+        self.process(true).await
+    }
+
+    /// `process_pending`; `all_watches = false` resolves only the pending
+    /// watches named by an open local `resolve` request.
+    pub(crate) async fn process(&self, all_watches: bool) -> Vec<String> {
         let _guard = self.inner.busy.lock().await;
         let db = &self.inner.db;
         let mut started: Vec<String> = Vec::new();
+        let requested: Option<HashSet<String>> = if all_watches {
+            None
+        } else {
+            Some(
+                store::open_requests(db)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|r| r.kind == "resolve")
+                    .filter_map(|r| r.watch_id)
+                    .collect(),
+            )
+        };
         match store::pending_watches(db).await {
             Ok(watches) => {
                 let fresh: Vec<Watch> = {
@@ -440,6 +466,7 @@ impl PulseState {
                     watches
                         .into_iter()
                         .filter(|w| !inflight.contains_key(&w.id))
+                        .filter(|w| requested.as_ref().is_none_or(|ids| ids.contains(&w.id)))
                         .collect()
                 };
                 started.extend(fresh.iter().map(|w| w.id.clone()));

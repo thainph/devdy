@@ -14,6 +14,7 @@ pub mod store;
 
 pub mod crypto;
 pub mod engine;
+pub mod leader;
 pub mod pair;
 pub mod transport;
 #[cfg(test)]
