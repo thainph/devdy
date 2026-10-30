@@ -850,7 +850,8 @@
         "unsafe_path": "unsafe path",
         "no_repo_here": "no repo here",
         "branch_in_worktree": "branch checked out in another worktree",
-        "lfs": "Git LFS"
+        "lfs": "Git LFS",
+        "changed_since_preview": "changed since the preview — left as is"
       },
       "applyFiles": "Sync {n} project(s) · {files} file change(s)",
       "planChanged": "The source folder changed after this preview, so nothing beyond it was written. Review the new preview and confirm again.",
