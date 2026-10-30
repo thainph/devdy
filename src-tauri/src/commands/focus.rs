@@ -237,7 +237,13 @@ pub async fn focus_board(app: AppHandle, db: State<'_, Db>) -> Result<Board, Str
     let now = chrono::Local::now();
     let wh = settings.work_hours();
     let mut board = build_board(todos, now, &wh, settings.calibration_enabled, &samples);
-    match crate::focus::calendar::today_events(db, &settings, Some(app)).await {
+    match crate::focus::calendar::today_events(
+        db,
+        &settings,
+        Some(app),
+        crate::focus::calendar::BOARD_WAIT,
+    )
+    .await {
         Ok(events) => {
             let events = crate::focus::calendar::to_local(&events);
             board.capacity = Some(capacity_for(&board, &now, &wh, &events));

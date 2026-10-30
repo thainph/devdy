@@ -279,7 +279,8 @@
       "no_plan": "Chưa có kế hoạch cho ngày này.",
       "calendar_failed": "Một số block không tạo được trên Google Calendar.",
       "ai_invalid_answer": "Không dùng được câu trả lời của AI. Hãy thử lại.",
-      "unknown": "Yêu cầu AI thất bại: {detail}"
+      "unknown": "Yêu cầu AI thất bại: {detail}",
+      "calendar_unavailable": "Không đọc được Google Calendar hôm nay nên kế hoạch có thể trùng lịch họp. Thử lại sau giây lát (hoặc làm mới lịch)."
     }
   },
   "plan": {

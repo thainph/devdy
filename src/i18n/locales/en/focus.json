@@ -279,7 +279,8 @@
       "no_plan": "There is no plan for this day.",
       "calendar_failed": "Some blocks could not be added to Google Calendar.",
       "ai_invalid_answer": "The AI answer could not be used. Try again.",
-      "unknown": "AI request failed: {detail}"
+      "unknown": "AI request failed: {detail}",
+      "calendar_unavailable": "Couldn't read today's Google Calendar, so the plan could miss your meetings. Try again in a moment (or refresh the calendar)."
     }
   },
   "plan": {
