@@ -38,7 +38,8 @@ RestartSec=2s
 StartLimitIntervalSec=0
 
 # Resource limits (NFR-002/CON-02): keep the relay small.
-MemoryMax=128M
+# 256M leaves room for sync traffic (8 MiB pull pages, 4 MiB blobs).
+MemoryMax=256M
 CPUQuota=50%
 TasksMax=256
 LimitNOFILE=8192
@@ -46,6 +47,8 @@ LimitNOFILE=8192
 # Hardening (SEC-010): least privilege, no new privileges, read-only FS.
 NoNewPrivileges=true
 ProtectSystem=strict
+# Two-way sync: the directory holding RELAY_SYNC_DB must be writable.
+ReadWritePaths=/projects/relay/shared
 ProtectHome=true
 PrivateTmp=true
 PrivateDevices=true

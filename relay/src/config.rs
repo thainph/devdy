@@ -60,9 +60,29 @@ pub struct Config {
     /// Largest WebSocket message accepted. tokio-tungstenite otherwise defaults
     /// to 64 MiB, which is far above anything this protocol sends.
     pub max_message_bytes: usize,
+    /// Two-way sync store (`RELAY_SYNC_DB`). `None` = sync disabled: every
+    /// sync frame is answered with `error{sync_disabled}`.
+    pub sync_db: Option<std::path::PathBuf>,
+    /// Per-group storage cap (ops + blobs), bytes.
+    pub sync_max_group_bytes: u64,
+    /// Largest blob (decoded, sealed bytes); an op's base64 blob is capped at
+    /// the base64 length of this.
+    pub sync_max_blob_bytes: usize,
 }
 
 impl Config {
+    /// Largest WebSocket message actually accepted: `max_message_bytes`, but
+    /// never too small for one `blob_put` of a maximum-size blob (base64 plus
+    /// envelope) while sync is enabled.
+    pub fn effective_max_message_bytes(&self) -> usize {
+        if self.sync_db.is_some() {
+            let blob_frame = self.sync_max_blob_bytes.div_ceil(3) * 4 + 64 * 1024;
+            self.max_message_bytes.max(blob_frame)
+        } else {
+            self.max_message_bytes
+        }
+    }
+
     /// Default bind address when `RELAY_BIND` is unset (localhost, port 8787).
     pub const DEFAULT_BIND: &'static str = "127.0.0.1:8787";
 
@@ -93,6 +113,13 @@ impl Config {
         // while still halving the tokio-tungstenite default.
         let max_message_bytes = parse_u64("RELAY_MAX_MESSAGE_BYTES", 32 * 1024 * 1024)? as usize;
 
+        let sync_db = match std::env::var("RELAY_SYNC_DB") {
+            Ok(v) if !v.trim().is_empty() => Some(std::path::PathBuf::from(v.trim())),
+            _ => None,
+        };
+        let sync_max_group_bytes = parse_u64("RELAY_SYNC_MAX_GROUP_BYTES", 2 * 1024 * 1024 * 1024)?;
+        let sync_max_blob_bytes = parse_u64("RELAY_SYNC_MAX_BLOB_BYTES", 4 * 1024 * 1024 + 64)? as usize;
+
         Ok(Config {
             bind,
             host_token,
@@ -102,6 +129,9 @@ impl Config {
             peer_liveness_timeout,
             max_rooms,
             max_message_bytes,
+            sync_db,
+            sync_max_group_bytes,
+            sync_max_blob_bytes,
         })
     }
 }

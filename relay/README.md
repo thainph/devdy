@@ -64,6 +64,41 @@ Model (deliberately minimal — reconnect = re-join):
   attempts and answers a correct one with a full session link + token. The
   relay just routes; `room_ready` to the Host carries `slot` so it can tell.
 
+## Two-way sync store
+
+Same binary, same `/ws` endpoint, but a **separate connection** from Remote
+Control (design: `two-way-sync` §3 / §9.2). Devices of a sync group push sealed
+ops and pull them back by cursor, so they never need to be online at the same
+time. The relay only stores ciphertext and never logs op blobs or blob data.
+
+| `t` | Direction | Purpose |
+|---|---|---|
+| `sync_hello{auth_token, group_id, device_id, device_token, create?}` | Device → Relay | First frame. `auth_token` = `RELAY_HOST_TOKEN`. `create=true` creates the group (an existing group is just a hello). An unknown device is registered on first hello (TOFU on `sha256(device_token)`); a known one must match. → `sync_welcome{last_seq}` or `error{auth_failed\|group_not_found\|device_revoked\|sync_disabled}` and the connection closes. |
+| `sync_push{items:[{key, blob}]}` | Device → Relay | Relay assigns per-group monotonic `seq`s, deletes older ops with the same `key`, all or nothing. → `sync_ack{last_seq}`. Errors: `quota_exceeded`, `too_large`. |
+| `sync_notify{last_seq}` | Relay → other devices | Sent to every other connected device of the group after a push. |
+| `sync_pull{after_seq, limit}` | Device → Relay | → `sync_ops{items:[{seq, device_id, blob}], last_seq, more}`. At most 500 ops / ~8 MiB per page. Set the cursor to `last_seq` and pull again while `more`. |
+| `blob_put{sha, data}` | Device → Relay | `data` = base64 of the sealed bytes, `sha` = lowercase hex sha256 of those bytes (verified). Idempotent. → `blob_ack{sha}`. Errors: `sha_mismatch`, `too_large`, `quota_exceeded`. |
+| `blob_get{sha}` | Device → Relay | → `blob_data{sha, data}` or `error{blob_not_found}`. |
+| `sync_revoke{device_id}` | Device → Relay | Any device of the group revokes a device (itself included); its live connections get `error{device_revoked}` and close, its hello fails from then on. → `control{code:"ok"}`. |
+
+After `sync_welcome` only these frames and `keepalive` are accepted on the
+connection (anything else → `error{forbidden}`); sync frames on a Remote
+Control connection are refused the same way. An optional `id` on any request
+is echoed on its response or error. Push/pull/blob frames are not rate limited
+(an initial upload sends many); `sync_hello`/`sync_revoke` count as control
+frames. While sync is enabled the WebSocket message limit is raised, if
+needed, to fit one maximum-size `blob_put`.
+
+**Storage.** SQLite file at `RELAY_SYNC_DB`; in production
+`/projects/relay/shared/sync.db` (survives releases; the directory must be
+writable by the `devdyrelay` user — `ReadWritePaths=` in the unit). Tables:
+`groups` (head seq + byte usage), `devices`, `ops`, `blobs`. It runs in WAL
+mode, so a copy of the `.db` file alone is not a consistent backup — back up
+with `sqlite3 /projects/relay/shared/sync.db ".backup '/path/sync-$(date +%F).db'"`
+(safe while the relay runs). The content is end-to-end encrypted, but the file
+is the only server-side copy of every group's history; devices keep full local
+copies, so losing it means re-uploading, not data loss.
+
 ## Configuration (environment)
 
 | Variable | Required | Default | Meaning |
@@ -76,6 +111,9 @@ Model (deliberately minimal — reconnect = re-join):
 | `RELAY_PEER_LIVENESS_TIMEOUT_SECS` | no | `45` | Close a connection that sent no bytes (frames, pongs) for this long. |
 | `RELAY_MAX_ROOMS` | no | `256` | Ceiling on listeners + rooms. Everything dies with its connection; this only guards against a misbehaving Host. |
 | `RELAY_MAX_MESSAGE_BYTES` | no | `33554432` | Largest WebSocket message accepted (32 MiB). Must stay above the worst legitimate frame: a 10 MiB image base64'd into the payload and then again into the ciphertext lands near 18 MiB. |
+| `RELAY_SYNC_DB` | no | — | SQLite file of the sync store (production: `/projects/relay/shared/sync.db`). Unset = sync disabled (`error{sync_disabled}`). |
+| `RELAY_SYNC_MAX_GROUP_BYTES` | no | `2147483648` | Storage cap per sync group (op blobs + blobs). Over it → `quota_exceeded`. |
+| `RELAY_SYNC_MAX_BLOB_BYTES` | no | `4194368` | Largest blob (sealed bytes, 4 MiB + 64); an op blob may be at most the base64 size of this. |
 | `RUST_LOG` | no | `info` | Log level (metadata only; payloads never logged). |
 
 No secret is ever hardcoded or committed (SEC-001).
@@ -99,8 +137,15 @@ cargo build --release --target x86_64-unknown-linux-musl
 # -> target/x86_64-unknown-linux-musl/release/devdy-relay
 ```
 
+Or without a local musl toolchain:
+
+```bash
+docker run --rm -v "$PWD":/home/rust/src messense/rust-musl-cross:x86_64-musl cargo build --release
+```
+
 (The default glibc build also works if the VPS glibc matches; musl removes that
-coupling. The crate has no C runtime dependencies of its own.)
+coupling. SQLite is compiled in via `rusqlite`'s `bundled` feature, so no
+system libsqlite is needed.)
 
 ## Deploy (Topology B)
 
@@ -125,7 +170,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now devdy-relay
 
 ## Scope note (Unit U1)
 
-This crate implements the relay only: the WSS server, control frames, room
+This crate implements the relay (and the two-way sync store) only: the WSS server, control frames, room
 lifecycle, `room_id` routing of opaque envelopes, auth, pairing TTL,
 `MAX_CONTROLLER=1`, revoke, coarse rate-limit, and structured logging.
 

@@ -42,6 +42,22 @@ pub enum FrameType {
     PermissionRequest,
     Cmd,
     Control,
+
+    // Two-way sync (design two-way-sync §9.2). A sync connection opens with
+    // `sync_hello` and from then on carries only these frames + keepalive;
+    // their bodies are parsed by `sync.rs`, never logged.
+    SyncHello,
+    SyncWelcome,
+    SyncPush,
+    SyncAck,
+    SyncPull,
+    SyncOps,
+    SyncNotify,
+    SyncRevoke,
+    BlobPut,
+    BlobAck,
+    BlobGet,
+    BlobData,
 }
 
 /// The outermost envelope the relay can observe (SRS §5.1).
@@ -226,6 +242,22 @@ pub enum ErrorCode {
     Forbidden,
     /// Too many frames in the rate-limit window.
     RateLimited,
+    /// The relay runs without `RELAY_SYNC_DB`.
+    SyncDisabled,
+    /// `sync_hello` for an unknown group without `create`.
+    GroupNotFound,
+    /// The device was revoked (`sync_revoke`).
+    DeviceRevoked,
+    /// The group would exceed `RELAY_SYNC_MAX_GROUP_BYTES`.
+    QuotaExceeded,
+    /// `blob_get` for a sha the group does not hold.
+    BlobNotFound,
+    /// `blob_put` data does not hash to the given sha.
+    ShaMismatch,
+    /// A blob or op exceeds `RELAY_SYNC_MAX_BLOB_BYTES`.
+    TooLarge,
+    /// The sync store failed (details only in the relay log).
+    Internal,
 }
 
 impl ErrorCode {
@@ -241,6 +273,14 @@ impl ErrorCode {
             ErrorCode::Superseded => "superseded",
             ErrorCode::Forbidden => "forbidden",
             ErrorCode::RateLimited => "rate_limited",
+            ErrorCode::SyncDisabled => "sync_disabled",
+            ErrorCode::GroupNotFound => "group_not_found",
+            ErrorCode::DeviceRevoked => "device_revoked",
+            ErrorCode::QuotaExceeded => "quota_exceeded",
+            ErrorCode::BlobNotFound => "blob_not_found",
+            ErrorCode::ShaMismatch => "sha_mismatch",
+            ErrorCode::TooLarge => "too_large",
+            ErrorCode::Internal => "internal",
         }
     }
 }
