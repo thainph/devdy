@@ -247,3 +247,14 @@ DROP TABLE IF EXISTS pulse_watches;
 - `ItemListWindow` (tab Todo) vẫn giữ làm danh sách nhanh; có thể gộp vào Focus ở bản sau.
 - Thông báo khi app đóng: không có (app phải chạy). Có thể cân nhắc launch-at-login sau.
 - Nhiều máy sync: mỗi máy tự nhắc → có thể nhận trùng trên 2 máy (chấp nhận ở v1).
+
+## 10. Ghi chú triển khai P1 (backend)
+
+- **Diễn giải công thức** (`focus::score`):
+  - `aging = min(phút_làm_việc(created_at → now) / 4, 480)` — dùng phút **làm việc** để khớp chú thích "cũ 4 ngày ≈ thêm 1 ngày làm việc".
+  - Không hạn: `slack = 5 × độ dài ngày làm việc` (không trừ estimate, đúng như BR-05).
+  - Todo `done` có `score = 0`, `reasons = [{kind: "done"}]`, không có `start_by`. Todo done không có `completed_at` (dữ liệu cũ) không hiện trên bảng.
+- **Lý do (`reasons`)** là dữ liệu có cấu trúc `{ kind, value }` để UI tự dịch: `doing`, `waiting`, `snoozed` (value `YYYY-MM-DDTHH:MM` giờ địa phương), `overdue` (phút đồng hồ đã quá hạn), `due` (`YYYY-MM-DDTHH:MM` giờ địa phương), `work_left` (phút làm việc còn lại), `late_by` (phút thiếu nếu bắt đầu ngay), `no_due`, `estimate` / `estimate_missing` (phút hiệu dụng), `priority` (chỉ khi ≠ 2), `age_days` (khi ≥ 2 ngày), `done`.
+- **Nguồn (BR-02)**: Slack team = phần host trước `.slack.com`; link DM Slack được lưu như `url`; PR GitHub dùng chung dạng `github:o/r#n` với issue. Vector dùng chung Rust/MCP: `src-tauri/src/focus/source_vectors.json`.
+- **Sync**: bản ghi `pulse_*` từ máy bản cũ bị bỏ qua (không đưa vào `sync_deferred`); cột lạ bị bỏ qua sẵn trong `codec::upsert_row`.
+- **Settings**: các key `focus.*` (trừ `focus.calendar_*`) nằm trong `PORTABLE_SETTING_KEYS` (backup + sync). Backup cài đặt mang theo các cột Focus của todo.
