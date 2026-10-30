@@ -511,25 +511,83 @@ async fn detached_head_and_offline_source() {
 }
 
 #[test]
-fn keeps_five_backups() {
+fn keeps_five_backups_that_hold_data() {
     let t = tempdir();
     let d = t.path();
     git(d, &["init", "-q"]);
     commit(d, "a.txt", "1\n", "c");
+    let head = git(d, &["rev-parse", "HEAD"]);
     for i in 0..7 {
         let ts = format!("20260101-00000{i}-000");
+        write(d, "a.txt", format!("dirty {i}\n").as_bytes());
         assert!(backup::backup_repo(d, &ts).unwrap().is_some());
-        backup::backup_branch_tip(d, &ts, "main", &git(d, &["rev-parse", "HEAD"])).unwrap();
+        // A rewound tip only this backup still reaches.
+        let lost = git(d, &["commit-tree", &format!("{head}^{{tree}}"), "-p", &head, "-m", &format!("lost {i}")]);
+        backup::backup_branch_tip(d, &ts, "main", &lost).unwrap();
         backup::backup_files(d, &ts, &["a.txt".into()]).unwrap();
     }
+    // Newer backups holding nothing (as older builds made them): they must
+    // not push a useful one out, and go themselves.
+    for i in 0..3 {
+        backup::backup_branch_tip(d, &format!("20260102-00000{i}-000"), "main", &head).unwrap();
+    }
+    let before = git(d, &["status", "--porcelain"]);
     backup::prune_repo(d).unwrap();
     backup::prune_folder(d).unwrap();
     let refs = git(d, &["for-each-ref", "--format=%(refname:short)", "refs/heads/devdy-sync-backup/"]);
     assert_eq!(refs.lines().count(), 10, "{refs}");
-    assert!(!refs.contains("20260101-000000") && !refs.contains("20260101-000001"));
+    for i in 2..7 {
+        assert!(refs.contains(&format!("20260101-00000{i}-000")), "{refs}");
+    }
+    assert!(!refs.contains("20260102") && !refs.contains("20260101-000000") && !refs.contains("20260101-000001"));
     assert_eq!(fs::read_dir(d.join(backup::FOLDER)).unwrap().count(), 5);
     // The checked-out branch, index and worktree are untouched.
-    assert_eq!(git(d, &["status", "--porcelain"]), "?? .devdy/");
+    assert_eq!(git(d, &["status", "--porcelain"]), before);
+    assert_eq!(git(d, &["rev-parse", "HEAD"]), head);
+}
+
+#[test]
+fn no_backup_when_nothing_would_be_lost() {
+    let t = tempdir();
+    let d = t.path();
+    git(d, &["init", "-q"]);
+    let c1 = commit(d, "a.txt", "1\n", "c1");
+    assert!(backup::backup_repo(d, "20260101-000000-000").unwrap().is_none(), "clean");
+    // Staged only.
+    write(d, "a.txt", b"2\n");
+    git(d, &["add", "a.txt"]);
+    assert!(backup::backup_repo(d, "20260101-000001-000").unwrap().is_some(), "staged change");
+    git(d, &["reset", "-q", "--hard"]);
+    // Clean, but HEAD is a detached commit no ref reaches.
+    git(d, &["checkout", "-q", "--detach"]);
+    commit(d, "b.txt", "b\n", "detached");
+    assert!(backup::backup_repo(d, "20260101-000002-000").unwrap().is_some(), "unreachable HEAD");
+    git(d, &["checkout", "-q", &c1]);
+    assert!(backup::backup_repo(d, "20260101-000003-000").unwrap().is_none(), "detached on a reachable commit");
+    let refs = git(d, &["for-each-ref", "--format=%(refname:short)", "refs/heads/devdy-sync-backup/"]);
+    assert_eq!(refs.lines().count(), 2, "{refs}");
+}
+
+#[tokio::test]
+async fn a_useful_backup_survives_later_noop_syncs() {
+    let t = tempdir();
+    let src = t.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    git(&src, &["init", "-q"]);
+    commit(&src, "a.txt", "a\n", "c1");
+    let dst = t.path().join("dst");
+    git(t.path(), &["clone", "-q", src.to_str().unwrap(), dst.to_str().unwrap()]);
+    write(&dst, "a.txt", b"local edit\n");
+    let (recv, _) = link_to(&src);
+    let first = run(&recv, &opts(&dst)).await.unwrap();
+    let bk = format!("devdy-sync-backup/{}", first.backup.ts);
+    for _ in 0..7 {
+        let rep = run(&recv, &opts(&dst)).await.unwrap();
+        assert!(rep.backup.repos.is_empty() && rep.backup.folder.is_none(), "nothing to back up: {:?}", rep.backup);
+    }
+    let refs = git(&dst, &["for-each-ref", "--format=%(refname:short)", "refs/heads/devdy-sync-backup/"]);
+    assert_eq!(refs, bk);
+    assert_eq!(git(&dst, &["show", &format!("{bk}:a.txt")]), "local edit");
 }
 
 // ---- regressions (review findings)

@@ -192,8 +192,8 @@ fn take_backup(root: &Path, m: &Manifest, plan: &Plan) -> Result<BackupInfo, Str
         if let Some(commits) = backup::backup_repo(&dir, &ts)? {
             info.repos.push(rel.clone());
             info.commits.insert(rel.clone(), commits);
-            backup::prune_repo(&dir)?;
         }
+        backup::prune_repo(&dir)?;
     }
     info.folder = backup::backup_files(root, &ts, &plan.backup_files)?;
     backup::prune_folder(root)?;
