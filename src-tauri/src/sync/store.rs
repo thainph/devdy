@@ -353,10 +353,15 @@ impl SyncStore for SqliteSyncStore {
         let mut clock = guard.clone().ok_or("clock not loaded")?;
         let paths = self.paths_now().await?;
         let tables: std::collections::BTreeSet<String> = ops.iter().map(|o| o.tbl.clone()).collect();
+        let runs: Vec<String> =
+            ops.iter().filter(|o| o.tbl == "runs").filter_map(|o| o.pk.as_str().map(str::to_string)).collect();
         let report = apply::apply_ops(&self.db, &paths, &mut clock, ops).await?;
         *guard = Some(clock);
         if report.applied > 0 {
             self.notice(Notice::RowsApplied(tables.into_iter().collect()));
+            if !runs.is_empty() {
+                self.notice(Notice::RunsApplied(runs));
+            }
         }
         Ok(report)
     }
