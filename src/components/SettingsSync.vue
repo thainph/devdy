@@ -5,7 +5,7 @@
 // request; both need their own relay config). Joined but not merged (`sync_bootstrap_pending`, also after an
 // app restart) → the merge step: preview (totals, per table, project matches) then commit, which
 // starts the engine. In a group → status, sync now / pause, secrets toggle, devices (rename this
-// one, remove others — creator only —, pick the leader that runs Pulse / Slack polling), project folders for this
+// one, remove others — creator only —, pick the leader that runs Slack polling), project folders for this
 // machine, changes the relay refused (parked, with Retry), "merge again" when the relay lost ops (`relay_behind`), re-sync, leave,
 // and "Accept a new device" (5 min window + Allow / Deny per request,
 // closed when this page goes away so a request is never left unseen).

@@ -8,7 +8,6 @@ export type ProcKind =
   | 'run'
   | 'translate'
   | 'slack_translate'
-  | 'pulse_digest'
   | 'mascot'
   | 'probe'
   | 'mcp_test'

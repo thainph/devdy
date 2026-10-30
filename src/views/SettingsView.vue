@@ -6,7 +6,7 @@ import {
   Cpu, Palette, FileText, ShieldAlert, Sparkles, Github, Gitlab, Cloud, CloudCog,
   CheckCircle2, AlertTriangle, Trash2, Plus, Pencil, Gauge, Radio,
   RefreshCw, Loader2, BadgeCheck, Server, HardDrive, Bot, RotateCcw, UserCircle,
-  LogIn, Star, ChevronDown, ArrowRightLeft, Inbox, GripVertical, ArchiveRestore,
+  LogIn, Star, ChevronDown, ArrowRightLeft, Inbox, GripVertical, ArchiveRestore, Target,
 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
@@ -17,6 +17,7 @@ import MascotStars from '@/components/MascotStars.vue'
 import MascotBubble from '@/components/MascotBubble.vue'
 import RemoteControlSettings from '@/components/remote/RemoteControlSettings.vue'
 import InboxApiSettings from '@/components/InboxApiSettings.vue'
+import FocusSettings from '@/components/FocusSettings.vue'
 import SettingsBackup from '@/components/SettingsBackup.vue'
 import SettingsSync from '@/components/SettingsSync.vue'
 import { useConfirm } from '@/composables/useConfirm'
@@ -440,6 +441,7 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null
 const SECTIONS = [
   { id: 'general', labelKey: 'settings.sections.general', icon: Palette },
   { id: 'mascot', labelKey: 'settings.sections.mascot', icon: Bot },
+  { id: 'focus', labelKey: 'settings.sections.focus', icon: Target },
   { id: 'github', labelKey: 'settings.sections.github', icon: Github },
   { id: 'gitlab', labelKey: 'settings.sections.gitlab', icon: Gitlab },
   { id: 'aws', labelKey: 'settings.sections.aws', icon: Cloud },
@@ -2911,6 +2913,11 @@ watch(() => settings.value.language, (v) => {
         <!-- Remote Control (wider than the max-w-lg forms to fit the audit table) -->
         <div v-show="!loading && activeSection === 'remote'" class="max-w-3xl">
           <RemoteControlSettings />
+        </div>
+
+        <!-- Focus board: working hours. Mounted only while shown so it reads the live settings. -->
+        <div v-if="!loading && activeSection === 'focus'" class="max-w-lg">
+          <FocusSettings />
         </div>
 
         <!-- Inbox API for the Chrome extension (Slack thread links + translation). Mounted only while

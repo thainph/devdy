@@ -120,7 +120,7 @@ function rawLabelFor(windowLabel: string, osTitle: string): string {
   if (windowLabel === 'slack-threads') return meaningful || t('slackThread.window.title')
   if (windowLabel === 'pr-inbox') return meaningful || t('prInbox.window.title')
   if (windowLabel === 'calendar') return meaningful || t('calendar.window.title')
-  if (windowLabel === 'pulse') return meaningful || t('pulse.window.title')
+  if (windowLabel === 'focus') return meaningful || t('focus.window.title')
   // Unknown / future window kind: best effort — its title, else the raw label.
   return meaningful || windowLabel
 }

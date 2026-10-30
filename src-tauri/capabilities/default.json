@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window and pop-out (file viewer + permission + todo/note capture + todo list + note list + gantt + mascot + Slack threads + PR inbox + calendar + pulse) windows, and their remote-desktop counterparts (remote-*)",
+  "description": "Capability for the main window and pop-out (file viewer + permission + todo/note capture + todo list + note list + gantt + mascot + Slack threads + PR inbox + calendar + focus) windows, and their remote-desktop counterparts (remote-*)",
   "windows": [
     "main",
     "fileviewer-*",
@@ -15,7 +15,7 @@
     "slack-threads",
     "pr-inbox",
     "calendar",
-    "pulse",
+    "focus",
     "remote-bridge",
     "remote-desktop",
     "remote-*"
