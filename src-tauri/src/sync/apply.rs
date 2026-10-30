@@ -136,6 +136,13 @@ async fn apply_batch(
         }
         candidates.push(op);
     }
+    // Selective sync: what this machine does not take (never deferred).
+    let screened = {
+        let mut conn = db.acquire().await.map_err(err)?;
+        super::prefs::screen(&mut conn, candidates).await?
+    };
+    base.skipped_older += screened.skipped;
+    let mut candidates = screened.keep;
     // Parents first for upserts, then aliases (parents first, so their
     // children move before any delete), children first for deletes.
     candidates.sort_by_key(|op| {
