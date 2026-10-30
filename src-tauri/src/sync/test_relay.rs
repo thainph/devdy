@@ -1,20 +1,20 @@
-//! Test-only in-process relay implementing the §9.2 sync subset (hello with
-//! join tickets, invite, push with cursor-aware per-key supersede, paginated
-//! pull, notify, revoke, blobs, keepalive echo) over a real WebSocket on
-//! 127.0.0.1, with the relay's semantics: `id` echoed on replies,
-//! `sync_ops.last_seq` = last returned seq while `more` else the head, a
-//! failed hello closes the socket, revoke answers `control{code:"ok"}` (only
-//! the creator may revoke others) and kicks the revoked device's connections,
-//! and a creator revoking itself hands the role to its `successor` (if active)
-//! or the earliest-registered active device, announced with `sync_group_info`
-//! and carried by every `sync_welcome` as `creator_device`. Peer messages
-//! (`sync_peers`, `sync_peer_send` → `sync_peer_msg` on the target's most
-//! recent connection + `sync_peer_ack`, `peer_offline` / `too_large`) follow
-//! the relay contract of on-demand sync.
+//! Test-only in-process relay mirroring the pipe relay of on-demand sync
+//! (on-demand-sync.md §P1) over a real WebSocket on 127.0.0.1: it stores no
+//! data, only who may connect. Hello with join tickets (a third active device
+//! of a group → `group_full`), invite, revoke (only the creator may revoke
+//! others; the revoked device's connections are kicked; a creator revoking
+//! itself hands the role to its `successor` if active, else the
+//! earliest-registered active device, announced with `sync_group_info` and
+//! carried by every `sync_welcome` as `creator_device`), `sync_peers`, and
+//! `sync_peer_send` (forwarded as `sync_peer_msg` to the target's most recent
+//! connection, then `sync_peer_ack`; `peer_offline` / `too_large`), keepalive
+//! echo. `id` is echoed on replies, a failed hello closes the socket, the
+//! removed store frames answer `unsupported`.
 //!
 //! Groups made with [`TestRelay::create_group`] are *open* (any device
-//! registers on first hello) so engine tests need no pairing; groups created
-//! by a `create` hello require tickets like the real relay.
+//! registers on first hello, still at most two) so engine tests need no
+//! pairing; groups created by a `create` hello require tickets like the real
+//! relay.
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -26,12 +26,11 @@ use tokio_tungstenite::tungstenite::Message;
 
 /// Internal outbound marker: close this connection.
 const CLOSE: &str = "\u{0}close";
+/// Active devices a group takes.
+const MAX_DEVICES: usize = 2;
 
 #[derive(Default, Clone)]
-pub struct Group {
-    head: u64,
-    /// (seq, device_id, key, blob)
-    ops: Vec<(u64, String, String, String)>,
+struct Group {
     devices: HashMap<String, String>,
     /// Device ids in registration order (creator succession).
     joined: Vec<String>,
@@ -41,17 +40,11 @@ pub struct Group {
     open: bool,
     /// sha256 hex of open join tickets.
     invites: HashSet<String>,
-    blobs: HashMap<String, String>,
-    released: usize,
-    /// Store epoch → the group's head in it (the relay's `epochs` table).
-    epochs: HashMap<String, u64>,
 }
 
 impl Group {
-    fn bump(&mut self, epoch: &str) -> u64 {
-        self.head += 1;
-        self.epochs.insert(epoch.to_string(), self.head);
-        self.head
+    fn active(&self) -> usize {
+        self.devices.keys().filter(|d| !self.revoked.contains(*d)).count()
     }
 }
 
@@ -62,21 +55,9 @@ struct State {
     conns: HashMap<u64, (String, String, mpsc::UnboundedSender<String>)>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
     hellos: usize,
-    /// (device, limit) of every pull.
-    pulls: Vec<(String, u64)>,
-    /// Every push attempt, by device.
-    pushes: Vec<String>,
-    /// `too_large` for any pushed blob longer than this.
-    max_blob: Option<usize>,
-    /// device → error code its pushes get.
-    fail_pushes: HashMap<String, String>,
-    /// Every `blob_put` attempt, by device.
-    blob_puts: Vec<String>,
-    /// device → error code its blob uploads get.
-    fail_blob_puts: HashMap<String, String>,
+    /// (from, to, data chars) of every forwarded peer message.
+    forwarded: Vec<(String, String, usize)>,
     next_conn: u64,
-    /// The store's current epoch (new on every [`TestRelay::restart`]).
-    epoch: String,
 }
 
 #[derive(Clone)]
@@ -91,7 +72,7 @@ impl TestRelay {
     pub async fn start() -> TestRelay {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let state = Arc::new(Mutex::new(State { epoch: "epoch-0".into(), ..Default::default() }));
+        let state = Arc::new(Mutex::new(State::default()));
         let st = state.clone();
         tokio::spawn(async move {
             while let Ok((tcp, _)) = listener.accept().await {
@@ -121,93 +102,13 @@ impl TestRelay {
         s.groups.entry(group.into()).or_default().revoked.insert(device.into());
     }
 
-    /// Store a raw op as if `device` had pushed it.
-    pub fn inject(&self, group: &str, device: &str, blob: &str) {
-        let mut s = self.state.lock().unwrap();
-        let epoch = s.epoch.clone();
-        let g = s.groups.entry(group.into()).or_default();
-        let seq = g.bump(&epoch);
-        g.ops.push((seq, device.into(), format!("k{seq}"), blob.into()));
-    }
-
-    /// A copy of a group's stored state (a backup of the relay's store).
-    pub fn snapshot(&self, group: &str) -> Group {
-        self.state.lock().unwrap().groups.get(group).cloned().unwrap_or_default()
-    }
-
-    /// The relay process restarts: a new store epoch, connections dropped.
-    pub fn restart(&self) {
-        self.drop_all();
-        let mut s = self.state.lock().unwrap();
-        s.epoch = format!("epoch-{}", uuid::Uuid::new_v4().simple());
-    }
-
-    /// The relay is restored from `backup` (and restarted).
-    pub fn restore(&self, group: &str, backup: Group) {
-        self.state.lock().unwrap().groups.insert(group.into(), backup);
-        self.restart();
-    }
-
-    pub fn op_count(&self) -> usize {
-        self.state.lock().unwrap().groups.values().map(|g| g.ops.len()).sum()
-    }
-
-    pub fn head(&self) -> u64 {
-        self.state.lock().unwrap().groups.values().map(|g| g.head).max().unwrap_or(0)
-    }
-
-    pub fn stored_blobs(&self) -> Vec<String> {
-        let s = self.state.lock().unwrap();
-        s.groups.values().flat_map(|g| g.ops.iter().map(|o| o.3.clone())).collect()
-    }
-
-    /// Blobs currently stored / released so far, over all groups.
-    pub fn blob_counts(&self) -> (usize, usize) {
-        let s = self.state.lock().unwrap();
-        (s.groups.values().map(|g| g.blobs.len()).sum(), s.groups.values().map(|g| g.released).sum())
-    }
-
     pub fn hello_count(&self) -> usize {
         self.state.lock().unwrap().hellos
     }
 
-    /// Limits of every pull `device` made.
-    pub fn pulls_of(&self, device: &str) -> Vec<u64> {
-        let s = self.state.lock().unwrap();
-        s.pulls.iter().filter(|p| p.0 == device).map(|p| p.1).collect()
-    }
-
-    /// Refuse pushes carrying a blob longer than `n` chars with `too_large`.
-    pub fn reject_blobs_over(&self, n: usize) {
-        self.state.lock().unwrap().max_blob = Some(n);
-    }
-
-    /// Answer every push of `device` with `error{code}` (`None` = stop).
-    pub fn fail_pushes_of(&self, device: &str, code: Option<&str>) {
-        let mut s = self.state.lock().unwrap();
-        match code {
-            Some(c) => s.fail_pushes.insert(device.into(), c.into()),
-            None => s.fail_pushes.remove(device),
-        };
-    }
-
-    /// Answer every `blob_put` of `device` with `error{code}` (`None` = stop).
-    pub fn fail_blob_puts_of(&self, device: &str, code: Option<&str>) {
-        let mut s = self.state.lock().unwrap();
-        match code {
-            Some(c) => s.fail_blob_puts.insert(device.into(), c.into()),
-            None => s.fail_blob_puts.remove(device),
-        };
-    }
-
-    /// `blob_put` attempts (accepted or not) `device` made.
-    pub fn blob_put_attempts(&self, device: &str) -> usize {
-        self.state.lock().unwrap().blob_puts.iter().filter(|d| *d == device).count()
-    }
-
-    /// Push attempts (accepted or not) `device` made.
-    pub fn push_attempts(&self, device: &str) -> usize {
-        self.state.lock().unwrap().pushes.iter().filter(|d| *d == device).count()
+    /// Peer messages forwarded from `from` (requests and replies alike).
+    pub fn forwarded_from(&self, from: &str) -> usize {
+        self.state.lock().unwrap().forwarded.iter().filter(|f| f.0 == from).count()
     }
 
     /// Kill every open socket (relay restart / network drop).
@@ -232,10 +133,7 @@ fn error(code: &str) -> Value {
     json!({ "t": "error", "code": code })
 }
 
-async fn serve_conn(
-    ws: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
-    state: Arc<Mutex<State>>,
-) {
+async fn serve_conn(ws: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>, state: Arc<Mutex<State>>) {
     // One task owns both halves, so aborting it (drop_all) closes the socket.
     let (mut sink, mut stream) = ws.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
@@ -294,7 +192,6 @@ fn handle_inner(
 ) -> Option<Value> {
     let s_ = |k: &str| f[k].as_str().unwrap_or_default().to_string();
     let mut s = state.lock().unwrap();
-    let cur_epoch = s.epoch.clone();
     let t = f["t"].as_str().unwrap_or_default();
     if t == "keepalive" {
         return Some(json!({ "t": "keepalive", "room_id": "" }));
@@ -321,83 +218,39 @@ fn handle_inner(
         match g.devices.get(&did) {
             Some(known) if *known != tok => return Some(error("auth_failed")),
             Some(_) => {}
-            None if g.open => {
-                g.devices.insert(did.clone(), tok);
-                g.joined.push(did.clone());
-            }
             None if create => return Some(error("group_exists")),
-            None => {
-                let Some(ticket) = f["ticket"].as_str() else {
-                    return Some(error("ticket_required"));
-                };
-                if !g.invites.remove(&sha_hex(ticket)) {
-                    return Some(error("ticket_invalid"));
+            None if g.open => {
+                if g.active() >= MAX_DEVICES {
+                    return Some(error("group_full"));
                 }
                 g.devices.insert(did.clone(), tok);
                 g.joined.push(did.clone());
             }
+            None => {
+                let Some(ticket) = f["ticket"].as_str() else {
+                    return Some(error("ticket_required"));
+                };
+                if !g.invites.contains(&sha_hex(ticket)) {
+                    return Some(error("ticket_invalid"));
+                }
+                // A valid ticket is kept for when there is room again.
+                if g.active() >= MAX_DEVICES {
+                    return Some(error("group_full"));
+                }
+                g.invites.remove(&sha_hex(ticket));
+                g.devices.insert(did.clone(), tok);
+                g.joined.push(did.clone());
+            }
         }
-        let (head, creator) = (g.head, g.creator.clone());
-        g.epochs.entry(cur_epoch.clone()).or_insert(head);
-        let known_head = f["known_epoch"].as_str().and_then(|e| g.epochs.get(e).copied());
-        let epoch = cur_epoch;
+        let creator = g.creator.clone();
         s.conns.insert(conn_id, (gid.clone(), did.clone(), tx.clone()));
         *me = Some((gid, did));
-        return Some(json!({
-            "t": "sync_welcome", "last_seq": head, "creator_device": creator,
-            "epoch": epoch, "known_head": known_head,
-        }));
+        return Some(json!({ "t": "sync_welcome", "creator_device": creator }));
     }
     let Some((gid, did)) = me.clone() else {
         return Some(error("forbidden"));
     };
     match t {
-        "sync_push" => {
-            s.pushes.push(did.clone());
-            if let Some(code) = s.fail_pushes.get(&did) {
-                return Some(error(code));
-            }
-            let items = f["items"].as_array().cloned().unwrap_or_default();
-            if let Some(max) = s.max_blob {
-                if items.iter().any(|i| i["blob"].as_str().unwrap_or_default().len() > max) {
-                    return Some(error("too_large"));
-                }
-            }
-            let epoch = cur_epoch;
-            let g = s.groups.get_mut(&gid)?;
-            let base = f["base_seq"].as_u64().unwrap_or(0);
-            for item in items {
-                let key = item["key"].as_str().unwrap_or_default().to_string();
-                let blob = item["blob"].as_str().unwrap_or_default().to_string();
-                let seq = g.bump(&epoch);
-                // Only ops the pusher has seen (or pushed itself) are superseded.
-                g.ops.retain(|o| o.2 != key || (o.0 > base && o.1 != did));
-                g.ops.push((seq, did.clone(), key, blob));
-            }
-            let head = g.head;
-            let notify = json!({ "t": "sync_notify", "last_seq": head }).to_string();
-            for (id, (cg, _, ctx)) in &s.conns {
-                if *id != conn_id && *cg == gid {
-                    let _ = ctx.send(notify.clone());
-                }
-            }
-            Some(json!({ "t": "sync_ack", "last_seq": head }))
-        }
-        "sync_pull" => {
-            let after = f["after_seq"].as_u64().unwrap_or(0);
-            let limit = f["limit"].as_u64().unwrap_or(500);
-            s.pulls.push((did.clone(), limit));
-            let g = s.groups.get(&gid)?;
-            let newer: Vec<_> = g.ops.iter().filter(|o| o.0 > after).collect();
-            let page: Vec<Value> = newer
-                .iter()
-                .take(limit as usize)
-                .map(|o| json!({ "seq": o.0, "device_id": o.1, "key": o.2, "blob": o.3 }))
-                .collect();
-            let more = newer.len() > page.len();
-            let last_seq = if more { page.last().map(|p| p["seq"].as_u64().unwrap()).unwrap() } else { g.head };
-            Some(json!({ "t": "sync_ops", "items": page, "last_seq": last_seq, "more": more }))
-        }
         "sync_invite" => {
             let ttl = f["ttl_secs"].as_u64().unwrap_or(600);
             if ttl == 0 || ttl > 600 || s_("ticket_hash").len() != 64 {
@@ -435,26 +288,6 @@ fn handle_inner(
             }
             Some(json!({ "t": "control", "code": "ok" }))
         }
-        "blob_put" => {
-            s.blob_puts.push(did.clone());
-            if let Some(code) = s.fail_blob_puts.get(&did) {
-                return Some(error(code));
-            }
-            let sha = s_("sha");
-            s.groups.get_mut(&gid)?.blobs.insert(sha.clone(), s_("data"));
-            Some(json!({ "t": "blob_ack", "sha": sha }))
-        }
-        "blob_release" => {
-            // Immediate here (the real relay waits out a grace period).
-            let g = s.groups.get_mut(&gid)?;
-            let shas: Vec<String> = f["shas"]
-                .as_array()
-                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
-                .unwrap_or_default();
-            let n = shas.iter().filter(|sha| g.blobs.remove(*sha).is_some()).count();
-            g.released += n;
-            Some(json!({ "t": "blob_released", "released": n }))
-        }
         "sync_peers" => {
             let revoked = &s.groups.get(&gid)?.revoked;
             let mut devices: Vec<String> = s
@@ -488,19 +321,15 @@ fn handle_inner(
             let Some(target) = target else {
                 return Some(error("peer_offline"));
             };
+            let len = data.len();
             let msg = json!({ "t": "sync_peer_msg", "from_device": did, "data": data }).to_string();
             if target.send(msg).is_err() {
                 return Some(error("peer_offline"));
             }
+            s.forwarded.push((did, to, len));
             Some(json!({ "t": "sync_peer_ack" }))
         }
-        "blob_get" => {
-            let sha = s_("sha");
-            match s.groups.get(&gid)?.blobs.get(&sha) {
-                Some(d) => Some(json!({ "t": "blob_data", "sha": sha, "data": d })),
-                None => Some(error("blob_not_found")),
-            }
-        }
+        "sync_push" | "sync_pull" | "blob_put" | "blob_get" | "blob_release" => Some(error("unsupported")),
         _ => Some(error("bad_request")),
     }
 }

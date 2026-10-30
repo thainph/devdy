@@ -60,27 +60,23 @@ pub struct Config {
     /// Largest WebSocket message accepted. tokio-tungstenite otherwise defaults
     /// to 64 MiB, which is far above anything this protocol sends.
     pub max_message_bytes: usize,
-    /// Two-way sync store (`RELAY_SYNC_DB`). `None` = sync disabled: every
-    /// sync frame is answered with `error{sync_disabled}`.
+    /// Sync group store (`RELAY_SYNC_DB`): groups, devices, join tickets only.
+    /// `None` = sync disabled: every sync frame is answered with
+    /// `error{sync_disabled}`.
     pub sync_db: Option<std::path::PathBuf>,
-    /// Per-group storage cap (ops + blobs), bytes.
-    pub sync_max_group_bytes: u64,
-    /// Largest blob (decoded, sealed bytes); an op's base64 blob is capped at
-    /// the base64 length of this.
-    pub sync_max_blob_bytes: usize,
-    /// `RELAY_SYNC_VACUUM_ON_START=1`: one-time `VACUUM` of the sync store at
-    /// startup, after abandoned groups are purged.
-    pub sync_vacuum_on_start: bool,
+    /// Largest peer message (`RELAY_SYNC_MAX_BLOB_BYTES`, sealed bytes); a
+    /// `sync_peer_send` `data` is capped at the base64 length of this.
+    pub sync_max_peer_bytes: usize,
 }
 
 impl Config {
     /// Largest WebSocket message actually accepted: `max_message_bytes`, but
-    /// never too small for one `blob_put` of a maximum-size blob (base64 plus
+    /// never too small for one maximum-size `sync_peer_send` (base64 plus
     /// envelope) while sync is enabled.
     pub fn effective_max_message_bytes(&self) -> usize {
         if self.sync_db.is_some() {
-            let blob_frame = self.sync_max_blob_bytes.div_ceil(3) * 4 + 64 * 1024;
-            self.max_message_bytes.max(blob_frame)
+            let peer_frame = self.sync_max_peer_bytes.div_ceil(3) * 4 + 64 * 1024;
+            self.max_message_bytes.max(peer_frame)
         } else {
             self.max_message_bytes
         }
@@ -120,12 +116,8 @@ impl Config {
             Ok(v) if !v.trim().is_empty() => Some(std::path::PathBuf::from(v.trim())),
             _ => None,
         };
-        let sync_max_group_bytes = parse_u64("RELAY_SYNC_MAX_GROUP_BYTES", 2 * 1024 * 1024 * 1024)?;
-        let sync_max_blob_bytes = parse_u64("RELAY_SYNC_MAX_BLOB_BYTES", 4 * 1024 * 1024 + 64)? as usize;
-        let sync_vacuum_on_start = matches!(
-            std::env::var("RELAY_SYNC_VACUUM_ON_START").as_deref().map(str::trim),
-            Ok("1" | "true")
-        );
+        // Name kept from the former blob store: it now caps one peer message.
+        let sync_max_peer_bytes = parse_u64("RELAY_SYNC_MAX_BLOB_BYTES", 4 * 1024 * 1024 + 64)? as usize;
 
         Ok(Config {
             bind,
@@ -137,9 +129,7 @@ impl Config {
             max_rooms,
             max_message_bytes,
             sync_db,
-            sync_max_group_bytes,
-            sync_max_blob_bytes,
-            sync_vacuum_on_start,
+            sync_max_peer_bytes,
         })
     }
 }

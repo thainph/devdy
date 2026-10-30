@@ -8,16 +8,31 @@
 export interface SyncRunReport {
   pulled: number
   applied: number
+  /** This device's position in the source's change feed. */
   last_seq: number
+  /** Pages of changes received. */
+  pages?: number
+  /** File content bytes read from the source. */
+  bytes?: number
+  /** File / Keychain items still to fetch (retried by the next Sync). */
+  pending_files?: number
 }
 
-/** `flushing`: the source is pushing its changes (`message` = how many so far). */
-export type SyncRunPhase = 'requesting' | 'flushing' | 'pulling' | 'applying' | 'done' | 'error'
+/** `flushing` is no longer sent (the source serves its change feed directly). */
+export type SyncRunPhase = 'requesting' | 'pulling' | 'applying' | 'done' | 'error'
 
 /** `sync://run` payload. */
 export interface SyncRunEvent {
   phase: SyncRunPhase
   message?: string | null
+  /** Pages / ops of changes received so far. */
+  pages?: number
+  ops?: number
+  /** File contents read so far / to read. */
+  done_bytes?: number
+  total_bytes?: number
+  files_done?: number
+  files_total?: number
 }
 
 // ---- §3 selective: sync_prefs_* ----
@@ -564,4 +579,28 @@ export function pickSource(
   const others = devices.filter((d) => !d.is_self)
   if (saved && others.some((d) => d.id === saved)) return saved
   return others.find((d) => online?.includes(d.id))?.id ?? others[0]?.id ?? null
+}
+
+/** What a `sync://run` event says about progress: file bytes once contents
+ *  are being read, else the changes received so far. */
+export type RunProgress =
+  | { kind: 'files'; done: number; total: number; filesDone: number; filesTotal: number; percent: number }
+  | { kind: 'ops'; ops: number }
+  | null
+
+export function runProgress(e: SyncRunEvent | null | undefined): RunProgress {
+  if (!e) return null
+  const total = e.total_bytes ?? 0
+  if (total > 0) {
+    const done = Math.min(e.done_bytes ?? 0, total)
+    return {
+      kind: 'files',
+      done,
+      total,
+      filesDone: e.files_done ?? 0,
+      filesTotal: e.files_total ?? 0,
+      percent: Math.floor((done / total) * 100),
+    }
+  }
+  return e.ops ? { kind: 'ops', ops: e.ops } : null
 }

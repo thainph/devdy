@@ -1,6 +1,8 @@
 //! Selective sync (on-demand-sync.md §3): what this machine takes from the
 //! group. Everything here is machine-local and filters on the RECEIVER, when
-//! pulled ops are applied — the senders push everything.
+//! pulled ops are applied. The asker also sends its disabled categories and
+//! unselected projects with every `changes` request, so the source leaves
+//! those ops out of its pages ([`ServeFilter`]).
 //!
 //! - Categories (`sync_categories_off`, a JSON array in `settings`): ops of a
 //!   disabled category are skipped. `secrets` is the existing
@@ -15,8 +17,9 @@
 //!   back when the row is pushed), a required one skips the row.
 //!
 //! A skipped op leaves no trace in `sync_rows`, so enabling a category or
-//! selecting a project resets the pull cursor to 0: the next Sync re-pulls the
-//! whole log, and apply is LWW-idempotent for what is already here.
+//! selecting a project resets the cursors in the other devices' feeds to 0:
+//! the next Sync re-pulls the whole feed, and apply is LWW-idempotent for
+//! what is already here.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -30,7 +33,7 @@ use super::codec::{read_row, PathCtx};
 use super::files::{self, FileKind};
 use super::op::{Op, OpKind};
 use super::schema::{self, q, SYNCED_SETTING_PREFIXES};
-use super::store::CURSOR_KEY;
+use super::store::CURSOR_PREFIX;
 use crate::db::Db;
 
 /// `settings` key: default source device of the Sync button (machine-local).
@@ -38,7 +41,7 @@ pub const SOURCE_KEY: &str = "sync_source_device";
 /// `settings` key: JSON array of disabled category ids (machine-local; never
 /// holds `secrets`, which lives in `secrets::SETTING`).
 pub const CATEGORIES_OFF_KEY: &str = "sync_categories_off";
-/// `sync_state` flag: the pull cursor was reset and no pull started since.
+/// `sync_state` flag: the feed cursors were reset and no pull started since.
 pub const CURSOR_RESET_KEY: &str = "pull_cursor_reset";
 /// `sync_state` flag set by migration 0066 until [`seed`] ran.
 const SEED_KEY: &str = "prefs_seed_pending";
@@ -166,20 +169,22 @@ async fn put_setting(conn: &mut SqliteConnection, key: &str, value: Option<&str>
     Ok(())
 }
 
-/// Next pull starts from the beginning of the group log. The pending flag
-/// keeps a pull already running from writing its own cursor over the reset
-/// (`SqliteSyncStore::set_cursor`); the next pull clears it when it starts
-/// (`SyncStore::pull_start`).
+/// The next pull from any device starts from the beginning of its feed. The
+/// pending flag keeps a pull already running from writing its own cursor over
+/// the reset (`SqliteSyncStore::set_cursor`); the next pull clears it when it
+/// starts (`SyncStore::cursor_start`).
 async fn reset_cursor(conn: &mut SqliteConnection) -> Result<(), String> {
-    for key in [CURSOR_KEY, CURSOR_RESET_KEY] {
-        let value = if key == CURSOR_KEY { "0" } else { "1" };
-        sqlx::query("INSERT INTO sync_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-            .bind(key)
-            .bind(value)
-            .execute(&mut *conn)
-            .await
-            .map_err(err)?;
-    }
+    sqlx::query("DELETE FROM sync_state WHERE substr(key, 1, ?) = ?")
+        .bind(CURSOR_PREFIX.len() as i64)
+        .bind(CURSOR_PREFIX)
+        .execute(&mut *conn)
+        .await
+        .map_err(err)?;
+    sqlx::query("INSERT INTO sync_state (key, value) VALUES (?, '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .bind(CURSOR_RESET_KEY)
+        .execute(&mut *conn)
+        .await
+        .map_err(err)?;
     Ok(())
 }
 
@@ -480,6 +485,71 @@ impl Filter {
 
     pub fn category_off(&self, cat: &str) -> bool {
         self.off.contains(cat)
+    }
+
+    /// `(skip_categories, skip_projects)` of a `changes` request.
+    pub fn lists(&self) -> (Vec<String>, Vec<String>) {
+        let mut off: Vec<String> = self.off.iter().cloned().collect();
+        let mut projects: Vec<String> = self.unselected.iter().cloned().collect();
+        off.sort();
+        projects.sort();
+        (off, projects)
+    }
+}
+
+/// What the asking device does not take, as the source applies it to the
+/// pages it serves (the asker filters again when applying).
+#[derive(Debug, Default)]
+pub struct ServeFilter {
+    off: HashSet<String>,
+    projects: HashSet<String>,
+}
+
+impl ServeFilter {
+    pub fn new(categories: &[String], projects: &[String]) -> Self {
+        ServeFilter {
+            off: categories.iter().filter(|c| CATEGORIES.contains(&c.as_str())).cloned().collect(),
+            projects: projects.iter().cloned().collect(),
+        }
+    }
+
+    pub fn category_off(&self, cat: &str) -> bool {
+        self.off.contains(cat)
+    }
+
+    /// Whether `op` (built from this device's data) is left out. The project
+    /// of a deleted row is unknown here: deletes always go.
+    pub async fn skips(&self, conn: &mut SqliteConnection, db: &Db, paths: &PathCtx, op: &Op) -> Result<bool, String> {
+        if self.off.is_empty() && self.projects.is_empty() {
+            return Ok(false);
+        }
+        if op.tbl == super::secrets::TBL {
+            return Ok(self.category_off(SECRETS));
+        }
+        if op.tbl == files::TBL {
+            let kind = op.pk.get("kind").and_then(Value::as_str).and_then(FileKind::parse);
+            let (Some(kind), Some(portable)) = (kind, op.pk.get("path").and_then(Value::as_str)) else { return Ok(false) };
+            let cat = file_category(kind);
+            if self.category_off(cat) {
+                return Ok(true);
+            }
+            if cat != SESSIONS || self.projects.is_empty() || op.kind == OpKind::Delete {
+                return Ok(false);
+            }
+            return Ok(file_project(db, paths, kind, portable, op).await.is_some_and(|p| self.projects.contains(&p)));
+        }
+        if op_category(op).is_some_and(|c| self.category_off(c)) {
+            return Ok(true);
+        }
+        if self.projects.is_empty() || op.tbl == "projects" || op.kind == OpKind::Delete || schema::spec(&op.tbl).is_none() {
+            return Ok(false);
+        }
+        let mut values = op.row.clone().unwrap_or_default();
+        if let Value::Object(pk) = &op.pk {
+            values.extend(pk.clone());
+        }
+        let projects = row_projects(conn, &op.tbl, &values, &HashMap::new()).await?;
+        Ok(projects.iter().any(|p| self.projects.contains(p)))
     }
 }
 
@@ -1019,7 +1089,7 @@ mod tests {
     async fn unselected_synced_project_is_listed_but_its_rows_are_skipped() {
         let (_db_a, _a, ops) = source_with_project().await;
         let (db_b, b) = device("b", "/Users/b").await;
-        exec(&db_b, "INSERT INTO sync_state (key, value) VALUES ('pull_cursor', '42')").await;
+        exec(&db_b, "INSERT INTO sync_state (key, value) VALUES ('peer_cursor:a', '42')").await;
 
         let r = b.apply_remote(ops.clone()).await.unwrap();
         // projects + the global note; the run, its usage, the p1 note and the
@@ -1039,7 +1109,7 @@ mod tests {
         let patch = ProjectPrefPatch { enabled: Some(true), ..Default::default() };
         let p = set_project_pref(&db_b, &PathCtx::with_home("/Users/b"), "p1", patch).await.unwrap();
         assert!(p.enabled);
-        assert_eq!(b.cursor().await.unwrap(), 0);
+        assert_eq!(b.cursor("a").await.unwrap(), 0);
         assert_eq!(count(&db_b, "SELECT COUNT(*) FROM sync_skipped_rows").await, 0);
         let r = b.apply_remote(ops.clone()).await.unwrap();
         assert_eq!(r, ApplyReport { applied: 4, skipped_older: 2, conflicts: 0, deferred: 0 });
@@ -1111,11 +1181,11 @@ mod tests {
         assert_eq!(scalar(&db_b, "SELECT value FROM settings WHERE key = 'sync_leader_device'").await.as_deref(), Some("a"));
         assert_eq!(scalar(&db_b, "SELECT value FROM settings WHERE key = 'theme'").await.as_deref(), Some("system"));
 
-        b.set_cursor(42).await.unwrap();
+        b.set_cursor("a", 42).await.unwrap();
         set_categories_off(&db_b, &["config".into(), "notes".into()]).await.unwrap();
-        assert_eq!(b.cursor().await.unwrap(), 42, "nothing enabled: cursor kept");
+        assert_eq!(b.cursor("a").await.unwrap(), 42, "nothing enabled: cursor kept");
         set_categories_off(&db_b, &["config".into()]).await.unwrap();
-        assert_eq!(b.cursor().await.unwrap(), 0);
+        assert_eq!(b.cursor("a").await.unwrap(), 0);
         let r = b.apply_remote(ops).await.unwrap();
         assert_eq!((r.applied, r.skipped_older), (1, 2));
         assert_eq!(count(&db_b, "SELECT COUNT(*) FROM todos").await, 1);
@@ -1289,30 +1359,30 @@ mod tests {
         set_categories_off(&db_b, &[]).await.unwrap();
         crate::sync::bootstrap::prepare_new_group(&db_b).await.unwrap();
         assert_eq!(pending(db_b.clone()).await, 0);
-        b.set_cursor(5).await.unwrap();
-        assert_eq!(b.cursor().await.unwrap(), 5);
+        b.set_cursor("a", 5).await.unwrap();
+        assert_eq!(b.cursor("a").await.unwrap(), 5);
     }
 
     #[tokio::test]
     async fn a_cursor_reset_survives_a_pull_in_flight() {
         let (db_b, b) = device("b", "/Users/b").await;
-        b.set_cursor(42).await.unwrap();
+        b.set_cursor("a", 42).await.unwrap();
         set_categories_off(&db_b, &["notes".into()]).await.unwrap();
         set_categories_off(&db_b, &[]).await.unwrap();
-        assert_eq!(b.cursor().await.unwrap(), 0);
+        assert_eq!(b.cursor("a").await.unwrap(), 0);
         // A pull that started before the reset writes its next cursor: ignored.
-        b.set_cursor(99).await.unwrap();
-        assert_eq!(b.cursor().await.unwrap(), 0);
+        b.set_cursor("a", 99).await.unwrap();
+        assert_eq!(b.cursor("a").await.unwrap(), 0);
         // The next pull starts from 0 and owns the cursor again.
-        assert_eq!(b.pull_start().await.unwrap(), 0);
-        b.set_cursor(7).await.unwrap();
-        assert_eq!(b.cursor().await.unwrap(), 7);
+        assert_eq!(b.cursor_start("a").await.unwrap(), 0);
+        b.set_cursor("a", 7).await.unwrap();
+        assert_eq!(b.cursor("a").await.unwrap(), 7);
         let patch = ProjectPrefPatch { enabled: Some(true), ..Default::default() };
         exec(&db_b, "INSERT INTO projects (id, name, path, created_at) VALUES ('p', 'p', '/x', 'x')").await;
         exec(&db_b, "UPDATE sync_project_prefs SET enabled = 0").await;
         set_project_pref(&db_b, &PathCtx::with_home("/Users/b"), "p", patch).await.unwrap();
-        b.set_cursor(8).await.unwrap();
-        assert_eq!(b.cursor().await.unwrap(), 0);
+        b.set_cursor("a", 8).await.unwrap();
+        assert_eq!(b.cursor("a").await.unwrap(), 0);
     }
 
     fn file_op(kind: &str, path: &str) -> Op {

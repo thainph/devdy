@@ -20,6 +20,8 @@
 //! The grant is `{group_id, group_key, ticket}`; the host first announces the
 //! ticket's hash to the relay (`sync_invite`), and the joiner's first hello
 //! carries the ticket — the relay registers unknown devices only that way.
+//! A group has at most two devices: a host that already knows another
+//! device refuses with `group_full` (the relay refuses a third hello too).
 //! The relay host token is never handed over: the joiner needs its own relay
 //! URL + token (Remote Control settings).
 
@@ -74,6 +76,8 @@ pub enum JoinError {
     Declined,
     /// The host is already answering another join request.
     Busy,
+    /// The host's group already has its two devices.
+    GroupFull,
     Other(String),
 }
 
@@ -92,6 +96,9 @@ impl std::fmt::Display for JoinError {
             ),
             JoinError::Declined => f.write_str("declined: the request was declined on that machine"),
             JoinError::Busy => f.write_str("busy: that machine is answering another join request"),
+            JoinError::GroupFull => f.write_str(
+                "group_full: that machine's sync group already has two devices; remove one there first",
+            ),
             JoinError::Other(e) => f.write_str(e),
         }
     }
@@ -217,13 +224,13 @@ async fn forget_group_settings(db: &Db) -> Result<(), String> {
 }
 
 /// Review-3 H2: the sync bookkeeping of a group this machine is leaving (or
-/// left without it being cleared): row HLCs, the pull cursor and relay mark,
-/// deferred / parked ops, relay blob references and the last synced secret
-/// hashes all describe that group's relay log. Kept, they would make the next
-/// group's rows look older than what is here (skipped), its seqs look
-/// already pulled, and local files / secrets look already uploaded. File
+/// left without it being cleared): row HLCs (and with them the change feed),
+/// the cursors in the other device's feed, deferred / parked ops and the last
+/// synced secret hashes all describe that group. Kept, they would make the
+/// next group's rows look older than what is here (skipped), its feed look
+/// already pulled, and local files / secrets look already offered. File
 /// records stay (the session watcher still knows which files sync wrote) but
-/// lose their synced version, so the next group gets them uploaded again.
+/// lose their synced version, so the next group gets them offered again.
 /// Past device ids stay: runs owned by them are still this machine's.
 pub async fn forget_group_state(db: &Db) -> Result<(), String> {
     let e = |e: sqlx::Error| e.to_string();
@@ -233,19 +240,18 @@ pub async fn forget_group_state(db: &Db) -> Result<(), String> {
         "DELETE FROM sync_deferred",
         "DELETE FROM sync_extra_deferred",
         "DELETE FROM sync_parked",
-        "DELETE FROM sync_blob_release",
-        "DELETE FROM sync_blobs",
+        "DELETE FROM sync_feed",
         "DELETE FROM sync_files WHERE deleted = 1",
         "UPDATE sync_files SET sha256 = '', local_sha256 = NULL, chunks_json = '[]', hlc = NULL, hash_state = NULL, mtime = 0",
     ] {
         sqlx::query(sql).execute(&mut *tx).await.map_err(e)?;
     }
-    sqlx::query("DELETE FROM sync_state WHERE key IN (?, ?, ?) OR substr(key, 1, ?) = ?")
-        .bind(super::store::CURSOR_KEY)
-        .bind(super::store::RELAY_MARK_KEY)
+    sqlx::query("DELETE FROM sync_state WHERE key = ? OR substr(key, 1, ?) = ? OR substr(key, 1, ?) = ?")
         .bind(super::prefs::CURSOR_RESET_KEY)
         .bind(super::secrets::HASH_PREFIX.len() as i64)
         .bind(super::secrets::HASH_PREFIX)
+        .bind(super::store::CURSOR_PREFIX.len() as i64)
+        .bind(super::store::CURSOR_PREFIX)
         .execute(&mut *tx)
         .await
         .map_err(e)?;
@@ -408,7 +414,11 @@ pub async fn join(db: &Db, alias: &str, password: String, device_name: &str) -> 
         device_id: sync.device_id.clone(),
         device_token: sync.device_token.clone(),
     };
-    enter_group(db, &sync, &params, false, Some(&grant.ticket)).await?;
+    // The relay refuses a third device even when the host did not know of
+    // the second one yet.
+    enter_group(db, &sync, &params, false, Some(&grant.ticket)).await.map_err(|e| {
+        if e.ends_with(super::transport::GROUP_FULL) { JoinError::GroupFull.to_string() } else { e }
+    })?;
     tracing::info!(event = "sync_group_joined");
     Ok(sync)
 }
@@ -575,6 +585,11 @@ pub async fn host_join(db: &Db, app: &tauri::AppHandle, proof: &[u8], on_pending
         Some(s) => connect_params(db, s).await.ok(),
         None => None,
     };
+    // Another device's record: the group has its two devices already.
+    let full = match &sync {
+        Some(s) => super::leader::list_devices(db, &s.device_id).await.is_ok_and(|d| d.iter().any(|d| !d.is_self)),
+        None => false,
+    };
     let emit = |e: HostEvent| {
         let _ = match e {
             HostEvent::Request(r) => app.emit(JOIN_REQUEST_EVENT, r),
@@ -584,19 +599,23 @@ pub async fn host_join(db: &Db, app: &tauri::AppHandle, proof: &[u8], on_pending
             HostEvent::Window(w) => app.emit(ACCEPT_WINDOW_EVENT, json!({ "expires_at": w })),
         };
     };
-    decide_join(sync.as_ref(), params, &requested_name(proof), emit, on_pending).await
+    decide_join(sync.as_ref(), params, full, &requested_name(proof), emit, on_pending).await
 }
 
 /// [`host_join`] without the Keychain / app: `params` connects as this host
-/// (to announce the ticket).
+/// (to announce the ticket); `group_full`: the group has its two devices.
 pub async fn decide_join(
     sync: Option<&SyncSecrets>,
     params: Option<ConnectParams>,
+    group_full: bool,
     name: &str,
     emit: impl Fn(HostEvent),
     on_pending: impl FnOnce(),
 ) -> HostOutcome {
     let Some(sync) = sync else { return denied("not_in_group", name) };
+    if group_full {
+        return denied("group_full", name);
+    }
     let Some(remaining) = ({
         let a = accept();
         a.until.map(|(_, at)| at.saturating_duration_since(Instant::now()))
@@ -806,6 +825,7 @@ fn denial(reason: &str) -> JoinError {
         "not_accepting" => JoinError::NotAccepting,
         "declined" => JoinError::Declined,
         "busy" => JoinError::Busy,
+        "group_full" => JoinError::GroupFull,
         "relay_error" => JoinError::Other("relay_error: that machine could not reach the relay".into()),
         other => JoinError::Other(format!("denied: {other}")),
     }
@@ -994,10 +1014,10 @@ mod tests {
         let quiet = |_: HostEvent| {};
 
         close_accept_window();
-        let out = decide_join(Some(&sync), Some(host.clone()), "Air", quiet, || {}).await;
+        let out = decide_join(Some(&sync), Some(host.clone()), false, "Air", quiet, || {}).await;
         assert!(!out.granted);
         assert_eq!(out.reply["reason"], "not_accepting");
-        assert_eq!(decide_join(None, None, "Air", quiet, || {}).await.reply["reason"], "not_in_group");
+        assert_eq!(decide_join(None, None, false, "Air", quiet, || {}).await.reply["reason"], "not_in_group");
 
         // Declined by the user.
         open_accept_window();
@@ -1010,14 +1030,14 @@ mod tests {
             }
         };
         let mut told = false;
-        let out = decide_join(Some(&sync), Some(host.clone()), "Air", answer(false), || told = true).await;
+        let out = decide_join(Some(&sync), Some(host.clone()), false, "Air", answer(false), || told = true).await;
         assert!(told, "the joiner is told to wait");
         assert_eq!(out.reply["reason"], "declined");
         assert!(out.detail.contains("Air"));
         assert!(accept_window_expires().is_some(), "a refusal keeps the window open");
 
         // Approved: the ticket is announced first and works exactly once.
-        let out = decide_join(Some(&sync), Some(host.clone()), "Air", answer(true), || {}).await;
+        let out = decide_join(Some(&sync), Some(host.clone()), false, "Air", answer(true), || {}).await;
         assert!(out.granted, "{:?}", out.reply);
         assert!(out.reply.get("relay_token").is_none());
         assert!(accept_window_expires().is_none(), "one device per window");
@@ -1028,6 +1048,20 @@ mod tests {
         let none = connect(&params(&relay, "g-1", "dev-other"), false, None).await.err();
         assert_eq!(none, Some(TransportError::Rejected("ticket_required".into())));
 
+        // A host that already has its second device refuses before asking.
+        open_accept_window();
+        let mut asked = false;
+        let out = decide_join(Some(&sync), Some(host.clone()), true, "Third", quiet, || asked = true).await;
+        assert_eq!((out.granted, out.reply["reason"].as_str()), (false, Some("group_full")));
+        assert!(!asked, "the user is not bothered");
+        assert_eq!(denial("group_full"), JoinError::GroupFull);
+        // The relay refuses a third device even with a valid ticket.
+        let (etx, _erx) = tokio::sync::mpsc::unbounded_channel();
+        let host_conn = Connection::connect(&host, false, etx).await.unwrap();
+        host_conn.sync_invite(&sha256_hex("t3"), 60).await.unwrap();
+        let third = connect(&params(&relay, "g-1", "dev-third"), false, Some("t3")).await.err();
+        assert_eq!(third, Some(TransportError::Rejected("group_full".into())));
+
         // Closing the window denies a request still waiting for an answer.
         open_accept_window();
         let closer = |e: HostEvent| {
@@ -1035,7 +1069,7 @@ mod tests {
                 close_accept_window();
             }
         };
-        let out = decide_join(Some(&sync), Some(host.clone()), "Air", closer, || {}).await;
+        let out = decide_join(Some(&sync), Some(host.clone()), false, "Air", closer, || {}).await;
         assert_eq!(out.reply["reason"], "declined");
         assert!(respond_join("nope", true).is_err());
     }
@@ -1162,15 +1196,12 @@ mod tests {
             kind: crate::sync::op::OpKind::Upsert,
             row: json!({"id": "t1", "text": text, "done": 0, "position": 0, "created_at": "x"}).as_object().cloned(),
         };
-        // Old group: a far-future HLC for t1, a cursor, a relay mark, file and secret state.
+        // Old group: a far-future HLC for t1, a cursor, file and secret state.
         store.apply_remote(vec![todo(Hlc::new(9_000_000_000_000, 0, "old-peer"), "old group")]).await.unwrap();
-        store.set_cursor(500).await.unwrap();
-        let mark = crate::sync::transport::RelayMark { epoch: "e".into(), seen: 500 };
-        store.set_relay_mark(&mark).await.unwrap();
+        store.set_cursor("old-peer", 500).await.unwrap();
         for sql in [
             "INSERT INTO sync_files (kind, path, local_path, size, sha256, chunks_json, mtime, hlc, origin) \
-             VALUES ('run_log', 'p', '/tmp/x.log', 10, 'abc', '[{\"blob\":\"b1\"}]', 5, 'h', 'remote')",
-            "INSERT INTO sync_blobs (chunk_sha, blob_sha, len, uploaded_at) VALUES ('c', 'b1', 10, 0)",
+             VALUES ('run_log', 'p', '/tmp/x.log', 10, 'abc', '[{\"sha\":\"c\",\"len\":10}]', 5, 'h', 'remote')",
             "INSERT INTO sync_state (key, value) VALUES ('secret_hash:{}', 'h')",
             "INSERT INTO sync_parked (tbl, pk, reason, parked_at) VALUES ('todos', '\"t9\"', 'too_large', 0)",
         ] {
@@ -1181,8 +1212,9 @@ mod tests {
         forget_group_state(&db).await.unwrap();
         crate::sync::set_member(&db, true).await.unwrap();
 
-        assert_eq!(store.cursor().await.unwrap(), 0);
-        assert_eq!(store.relay_mark().await.unwrap(), None);
+        assert_eq!(store.cursor("old-peer").await.unwrap(), 0);
+        let feed: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_feed").fetch_one(&db).await.unwrap();
+        assert_eq!(feed, 0, "the old group's feed is gone with its row versions");
         let r = store.apply_remote(vec![todo(Hlc::new(1_000, 0, "new-peer"), "new group")]).await.unwrap();
         assert_eq!(r.applied, 1, "{r:?}");
         let text: String = sqlx::query_scalar("SELECT text FROM todos WHERE id = 't1'").fetch_one(&db).await.unwrap();
@@ -1190,7 +1222,7 @@ mod tests {
         let (sha, chunks, origin): (String, String, String) =
             sqlx::query_as("SELECT sha256, chunks_json, origin FROM sync_files").fetch_one(&db).await.unwrap();
         assert_eq!((sha.as_str(), chunks.as_str(), origin.as_str()), ("", "[]", "remote"));
-        for t in ["sync_blobs", "sync_parked"] {
+        for t in ["sync_parked"] {
             let n: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {t}")).fetch_one(&db).await.unwrap();
             assert_eq!(n, 0, "{t}");
         }
@@ -1205,11 +1237,11 @@ mod tests {
         let store = crate::sync::store::SqliteSyncStore::new(db.clone(), "me".into());
         use crate::sync::store::SyncStore;
         // Crash inside leave: Keychain entry gone, still flagged, old cursor.
-        store.set_cursor(42).await.unwrap();
+        store.set_cursor("peer", 42).await.unwrap();
         assert!(crate::sync::capture::is_member(&db).await.unwrap());
         reconcile_membership(&db, false).await.unwrap();
         assert!(!crate::sync::capture::is_member(&db).await.unwrap());
-        assert_eq!(store.cursor().await.unwrap(), 0, "the leave finished locally");
+        assert_eq!(store.cursor("peer").await.unwrap(), 0, "the leave finished locally");
         sqlx::query("INSERT INTO todos (id, text, position, created_at) VALUES ('t1', 'x', 0, 'x')").execute(&db).await.unwrap();
         assert!(store.pending(10).await.unwrap().is_empty(), "no capture outside a group");
 

@@ -7,17 +7,17 @@
 //! key is reconciled the same way on every device,
 //! whatever the arrival order: the row with the lower id survives. A local
 //! loser is re-keyed to the incoming id (children, outbox, Keychain items
-//! follow; the moved rows are queued for push so the relay log drops the old
-//! id); an incoming loser is merged into the local row. Either way the content
+//! follow; the moved rows are queued for the change feed so the other device
+//! drops the old id); an incoming loser is merged into the local row. Either way the content
 //! is settled by last-writer-wins, and the decision is kept as an alias
 //! (`sync_state` `alias:<tbl>:<old pk>`) that redirects later upserts and
 //! references carrying the old id. The same rule settles a row that already
 //! exists here and is renamed into a clash: the loser is folded into the
 //! survivor (children move, the loser row goes).
 //!
-//! The losing id is pushed as an alias op: a Delete whose row is
-//! `{"_alias_of": <surviving pk>}` (same relay key as the old id's ops, so it
-//! supersedes them). A receiver re-keys its own row under the old id to the
+//! The losing id is served as an alias op: a Delete whose row is
+//! `{"_alias_of": <surviving pk>}` (the old id's feed entry, so it supersedes
+//! its earlier versions). A receiver re-keys its own row under the old id to the
 //! survivor (or folds it into the survivor it already has) instead of
 //! deleting it, so children are never cascaded away, whatever order or pull
 //! page the re-keyed rows arrive in. A v1 receiver reads it as a plain Delete.

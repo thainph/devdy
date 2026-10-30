@@ -24,6 +24,8 @@
 //! - `slack_legacy_orphans`: one-off migration bookkeeping.
 //! - `sync_project_prefs`, `sync_skipped_rows`, `sync_stripped_refs`: this
 //!   machine's selective sync choices and their bookkeeping (`sync::prefs`).
+//! - `sync_feed`: this device's change feed (`sync::feed`), served to the
+//!   other device.
 //! - `sqlite_sequence`, `_sqlx_migrations`: SQLite / sqlx internals.
 //! - `project_skills_new` does not exist any more (0006 renamed it).
 //! - `settings` rows whose key is not in `PORTABLE_SETTING_KEYS` nor matches
@@ -192,6 +194,7 @@ pub static EXCLUDED_TABLES: &[&str] = &[
     "sync_project_prefs",
     "sync_skipped_rows",
     "sync_stripped_refs",
+    "sync_feed",
     "sqlite_sequence",
     "_sqlx_migrations",
 ];

@@ -544,9 +544,9 @@
       "waiting": "Waiting for approval on the other machine…"
     },
     "status": {
-      "lastPush": "Last push",
+      "lastPush": "Last served",
       "lastPull": "Last pull",
-      "pending": "Pending",
+      "pending": "Not downloaded yet",
       "now": "Sync now",
       "pause": "Pause",
       "resume": "Resume",
@@ -709,7 +709,7 @@
       "lastData": "Data: {n} changes",
       "lastProjects": "Projects: {ok}/{total}",
       "lastProjectErrors": "{n} error(s)",
-      "pending": "Changes waiting to be sent: {n} (sent when another machine syncs from this one)",
+      "pending": "{n} items not downloaded yet — the next Sync continues",
       "pauseHelp": "Paused: this machine does not answer Sync requests from other devices.",
       "receives": "Receives:",
       "receivesData": "{n} data types",
@@ -779,9 +779,8 @@
     "run": {
       "title": "Sync from {name}",
       "phase": {
-        "requesting": "Asking {name} to send its changes…",
-        "flushing": "{name} is sending its changes ({n} so far)…",
-        "pulling": "Downloading changes…",
+        "requesting": "Asking {name}…",
+        "pulling": "Downloading from {name}…",
         "applying": "Applying changes…",
         "done": "Data received",
         "error": "Sync failed"
@@ -833,7 +832,7 @@
       },
       "waiting": "Waiting…",
       "eta": "~{eta} left",
-      "files": "{done}/{total} files",
+      "files": "{done} / {total} · {n}/{m} files · {p}%",
       "ready": "✓ {n} project(s) ready",
       "stopped": "Stopped — the next Sync continues where it left off.",
       "openProject": "Open project",
@@ -859,7 +858,8 @@
       "applyFiles": "Sync {n} project(s) · {files} file change(s)",
       "planChanged": "The source folder changed after this preview, so nothing beyond it was written. Review the new preview and confirm again.",
       "review": "Review again",
-      "skippedTitle": "Skipped ({n})"
+      "skippedTitle": "Skipped ({n})",
+      "ops": "{n} changes"
     },
     "indicator": {
       "lastSync": "Last: {ago}",
