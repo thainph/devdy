@@ -58,6 +58,8 @@ pub enum FrameType {
     BlobAck,
     BlobGet,
     BlobData,
+    BlobRelease,
+    BlobReleased,
 }
 
 /// The outermost envelope the relay can observe (SRS §5.1).

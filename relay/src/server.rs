@@ -540,7 +540,9 @@ async fn dispatch(
         | FrameType::BlobPut
         | FrameType::BlobAck
         | FrameType::BlobGet
-        | FrameType::BlobData => {
+        | FrameType::BlobData
+        | FrameType::BlobRelease
+        | FrameType::BlobReleased => {
             tracing::debug!(event = "ignored_inbound_control", conn = conn_id);
             false
         }
