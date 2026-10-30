@@ -1,9 +1,9 @@
 //! Background push/pull loop (design §3, §9.3).
 //!
 //! One task per configured group. It keeps a relay connection up (reconnect
-//! with capped backoff, like `remote::agent`) and runs a sync cycle — push
-//! every pending outbox op, then pull until `!more`, applying through the
-//! [`SyncStore`] — whenever:
+//! with capped backoff, like `remote::agent`) and runs a sync cycle — pull
+//! until `!more`, applying through the [`SyncStore`], then push every pending
+//! outbox op with the pull cursor as `base_seq` — whenever:
 //! - it (re)connects,
 //! - [`SyncEngine::kick`] is called (debounced), or the 2 s outbox poll sees
 //!   pending ops,
@@ -13,6 +13,13 @@
 //! Each cycle first lets the store `stage` its non-DB sources (file chunks go
 //! up as sealed blobs through [`RelayBlobs`]); pulled `file` / `secret` ops
 //! are routed to `apply_remote_extra`, everything else to `apply_remote`.
+//!
+//! Pulling first means a push is always built on top of everything the relay
+//! had, and a push failure never stops pulls. An op the relay can never take
+//! (larger than [`MAX_OP_BLOB_CHARS`], or refused as `too_large` /
+//! `bad_request`) is parked (`SyncStore::park`) instead of blocking the queue;
+//! any other refused push (quota, relay trouble) backs off exponentially up to
+//! [`Timing::push_backoff_max`] while pulls go on.
 //!
 //! Status is published through a callback (the app emits it as
 //! `sync://status`). Op contents, blobs and keys are never logged.
@@ -26,12 +33,15 @@ use super::transport::{ConnectParams, Connection, Event, TransportError, WireIte
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch, Notify};
 
 pub const STATUS_EVENT: &str = "sync://status";
 const PUSH_BATCH: usize = 500;
 const PUSH_BATCH_BYTES: usize = 4 * 1024 * 1024;
+/// Largest sealed op (base64 chars) worth sending: the relay's default cap,
+/// base64 of `RELAY_SYNC_MAX_BLOB_BYTES` (4 MiB + 64). Bigger ops are parked.
+pub const MAX_OP_BLOB_CHARS: usize = (4 * 1024 * 1024 + 64usize).div_ceil(3) * 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -52,6 +62,9 @@ pub struct SyncStatus {
     pub last_pull: Option<i64>,
     /// Ops waiting to be pushed (capped at one push batch).
     pub pending: usize,
+    /// Rows whose latest change the relay permanently refused (not synced
+    /// until they change again).
+    pub parked: u64,
     pub last_error: Option<String>,
 }
 
@@ -63,6 +76,7 @@ impl SyncStatus {
             last_push: None,
             last_pull: None,
             pending: 0,
+            parked: 0,
             last_error: None,
         }
     }
@@ -78,6 +92,9 @@ pub struct Timing {
     pub backoff_max: Duration,
     /// After a fatal rejection (revoked, bad token) retry this rarely.
     pub rejected_retry: Duration,
+    /// Cap of the exponential backoff (from `backoff_min`) between pushes the
+    /// relay refused.
+    pub push_backoff_max: Duration,
     pub pull_limit: u64,
 }
 
@@ -90,6 +107,7 @@ impl Default for Timing {
             backoff_min: Duration::from_secs(1),
             backoff_max: Duration::from_secs(15),
             rejected_retry: Duration::from_secs(300),
+            push_backoff_max: Duration::from_secs(600),
             pull_limit: 500,
         }
     }
@@ -278,7 +296,8 @@ async fn serve(
     periodic.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     periodic.tick().await;
 
-    if !cycle_reporting(ctx, conn).await {
+    let mut backoff = PushBackoff::default();
+    if !cycle_reporting(ctx, conn, &mut backoff, true).await {
         return;
     }
     loop {
@@ -293,7 +312,10 @@ async fn serve(
                 Some(Event::Closed) | None => return,
             },
             _ = ctx.shared.kick.notified() => {
-                if !ctx.shared.kick_now.swap(false, Ordering::SeqCst) {
+                if ctx.shared.kick_now.swap(false, Ordering::SeqCst) {
+                    // "Sync now" retries a refused push right away.
+                    backoff.reset();
+                } else {
                     tokio::time::sleep(ctx.timing.kick_debounce).await;
                 }
                 true
@@ -303,22 +325,72 @@ async fn serve(
                 if let Err(e) = ctx.store.stage(&blobs).await {
                     tracing::debug!(event = "sync_stage_failed", error = %e);
                 }
-                match ctx.store.pending(1).await {
+                // While a refused push backs off, pending ops alone do not
+                // trigger a cycle.
+                backoff.due() && match ctx.store.pending(1).await {
                     Ok(p) => !p.is_empty(),
                     Err(_) => false,
                 }
             }
             _ = periodic.tick() => true,
         };
-        if run_cycle && !cycle_reporting(ctx, conn).await {
-            return;
+        if run_cycle {
+            let push = backoff.due();
+            if !cycle_reporting(ctx, conn, &mut backoff, push).await {
+                return;
+            }
         }
     }
 }
 
+/// Delay before pushing again after the relay refused a push.
+#[derive(Default)]
+struct PushBackoff {
+    delay: Option<Duration>,
+    until: Option<Instant>,
+}
+
+impl PushBackoff {
+    fn due(&self) -> bool {
+        self.until.is_none_or(|t| Instant::now() >= t)
+    }
+
+    fn reset(&mut self) {
+        *self = PushBackoff::default();
+    }
+
+    /// Back off `backoff_min`, then twice as long each time, up to `max`.
+    fn failed(&mut self, min: Duration, max: Duration) -> Duration {
+        let d = self.delay.map_or(min, |d| (d * 2).min(max));
+        self.delay = Some(d);
+        self.until = Some(Instant::now() + d);
+        d
+    }
+}
+
 /// Run a cycle and record the outcome. `false` = the connection is unusable.
-async fn cycle_reporting(ctx: &Ctx, conn: &Connection) -> bool {
-    match cycle(ctx, conn).await {
+async fn cycle_reporting(ctx: &Ctx, conn: &Connection, backoff: &mut PushBackoff, push: bool) -> bool {
+    let (pulled, pushed) = cycle(ctx, conn, push).await;
+    match &pushed {
+        Some(Ok(())) => backoff.reset(),
+        Some(Err(e)) if !is_dead(e) => {
+            let wait = backoff.failed(ctx.timing.backoff_min, ctx.timing.push_backoff_max);
+            tracing::info!(event = "sync_push_backoff", secs = wait.as_secs());
+        }
+        _ => {}
+    }
+    if let Ok(parked) = ctx.store.parked_count().await {
+        ctx.shared.update(|s| s.parked = parked);
+    }
+    // A dead socket decides first; then the push error (it is what the user
+    // is waiting on), then the pull's.
+    let outcome = match (pulled, pushed) {
+        (Err(e), _) if is_dead(&e) => Err(e),
+        (_, Some(Err(e))) => Err(e),
+        (Err(e), _) => Err(e),
+        _ => Ok(()),
+    };
+    match outcome {
         Ok(()) => {
             ctx.shared.update(|s| {
                 s.state = SyncState::Online;
@@ -363,6 +435,11 @@ impl From<TransportError> for CycleError {
     }
 }
 
+/// The connection is unusable (as opposed to one refused request).
+fn is_dead(e: &CycleError) -> bool {
+    matches!(e, CycleError::Transport(t) if !matches!(t, TransportError::Relay(_)))
+}
+
 /// Sealed relay blobs over this connection (file chunks).
 pub struct RelayBlobs<'a> {
     conn: &'a Connection,
@@ -391,12 +468,29 @@ impl BlobIo for RelayBlobs<'_> {
     }
 }
 
-async fn cycle(ctx: &Ctx, conn: &Connection) -> Result<(), CycleError> {
+/// Stage, pull, then (when `push`) push and release blobs. Returns the pull
+/// outcome (a staging error counts as one) and the push outcome when it ran.
+async fn cycle(
+    ctx: &Ctx,
+    conn: &Connection,
+    push: bool,
+) -> (Result<(), CycleError>, Option<Result<(), CycleError>>) {
     let blobs = RelayBlobs { conn, keys: &ctx.keys };
-    ctx.store.stage(&blobs).await.map_err(CycleError::Store)?;
-    push_all(ctx, conn).await?;
-    release_blobs(ctx, conn).await?;
-    pull_all(ctx, conn, &blobs).await
+    let staged = ctx.store.stage(&blobs).await.map_err(CycleError::Store);
+    let pulled = pull_all(ctx, conn, &blobs).await;
+    if pulled.as_ref().is_err_and(is_dead) {
+        return (pulled, None);
+    }
+    let pushed = if push {
+        let r = match push_all(ctx, conn).await {
+            Ok(()) => release_blobs(ctx, conn).await,
+            Err(e) => Err(e),
+        };
+        Some(r)
+    } else {
+        None
+    };
+    (pulled.and(staged), pushed)
 }
 
 /// Most shas per `blob_release` (the relay's cap).
@@ -423,43 +517,83 @@ async fn release_blobs(ctx: &Ctx, conn: &Connection) -> Result<(), CycleError> {
     }
 }
 
-/// The largest prefix of `ops` that fits one push (≥ 1 op), sealed.
-fn build_push(keys: &SyncKeys, ops: &[(i64, Op)]) -> Result<(Vec<WireItem>, i64), CycleError> {
-    let mut items = Vec::new();
+/// One push: sealed items with their outbox seqs, plus the ops too large to
+/// ever send.
+#[derive(Default)]
+struct PushBatch {
+    items: Vec<(i64, WireItem)>,
+    oversized: Vec<i64>,
+}
+
+/// Seal the largest prefix of `ops` that fits one push (≥ 1 op when any is
+/// sendable); oversized ops on the way are set aside for parking.
+fn build_push(keys: &SyncKeys, ops: &[(i64, Op)]) -> Result<PushBatch, CycleError> {
+    let mut batch = PushBatch::default();
     let mut bytes = 0usize;
-    let mut last_seq = 0i64;
     for (seq, op) in ops {
-        let blob = keys
+        let (key, blob) = keys
             .seal_op(op)
             .map_err(|e| CycleError::Store(format!("cannot seal op: {e}")))?;
-        let key = keys.op_key(&op.tbl, &op.pk);
+        if blob.len() > MAX_OP_BLOB_CHARS {
+            batch.oversized.push(*seq);
+            continue;
+        }
         let size = blob.len() + key.len() + 32;
-        if !items.is_empty() && bytes + size > PUSH_BATCH_BYTES {
+        if !batch.items.is_empty() && bytes + size > PUSH_BATCH_BYTES {
             break;
         }
         bytes += size;
-        last_seq = *seq;
-        items.push(WireItem {
-            key: Some(key),
-            blob,
-            ..Default::default()
-        });
+        let item = WireItem { key: Some(key), blob, ..Default::default() };
+        batch.items.push((*seq, item));
     }
-    Ok((items, last_seq))
+    Ok(batch)
+}
+
+/// Relay refusals that are about the op itself: retrying never helps.
+fn is_op_rejection(code: &str) -> bool {
+    matches!(code, "too_large" | "bad_request")
+}
+
+async fn park(ctx: &Ctx, seq: i64, reason: &str) -> Result<(), CycleError> {
+    tracing::warn!(event = "sync_op_parked", reason = %reason);
+    ctx.store.park(seq, reason).await.map_err(CycleError::Store)
 }
 
 async fn push_all(ctx: &Ctx, conn: &Connection) -> Result<(), CycleError> {
     let mut pushed_any = false;
+    // Everything up to the cursor was applied before these ops were read.
+    let base = ctx.store.cursor().await.map_err(CycleError::Store)?;
     loop {
         let ops = ctx.store.pending(PUSH_BATCH).await.map_err(CycleError::Store)?;
         ctx.shared.update(|s| s.pending = ops.len());
         if ops.is_empty() {
             break;
         }
-        let (items, up_to) = build_push(&ctx.keys, &ops)?;
-        let n = items.len();
-        conn.push(items).await?;
-        ctx.store.mark_pushed(up_to).await.map_err(CycleError::Store)?;
+        let batch = build_push(&ctx.keys, &ops)?;
+        for seq in &batch.oversized {
+            park(ctx, *seq, "too_large").await?;
+        }
+        if batch.items.is_empty() {
+            continue;
+        }
+        let up_to = batch.items.last().map_or(0, |(seq, _)| *seq);
+        let n = batch.items.len();
+        let (seqs, items): (Vec<i64>, Vec<WireItem>) = batch.items.into_iter().unzip();
+        match conn.push(items.clone(), base).await {
+            Ok(_) => ctx.store.mark_pushed(up_to).await.map_err(CycleError::Store)?,
+            // One op spoils the whole (all-or-nothing) batch: send them one by
+            // one so only the culprit is parked.
+            Err(TransportError::Relay(code)) if is_op_rejection(&code) => {
+                for (seq, item) in seqs.into_iter().zip(items) {
+                    match conn.push(vec![item], base).await {
+                        Ok(_) => ctx.store.mark_pushed(seq).await.map_err(CycleError::Store)?,
+                        Err(TransportError::Relay(code)) if is_op_rejection(&code) => park(ctx, seq, &code).await?,
+                        Err(e) => return Err(e.into()),
+                    }
+                }
+            }
+            Err(e) => return Err(e.into()),
+        }
         pushed_any = true;
         tracing::debug!(event = "sync_pushed", ops = n);
     }
@@ -482,11 +616,11 @@ async fn pull_all(ctx: &Ctx, conn: &Connection, blobs: &RelayBlobs<'_>) -> Resul
             if item.device_id.as_deref() == Some(ctx.params.device_id.as_str()) {
                 continue; // our own push coming back
             }
-            match ctx.keys.open_op(&item.blob) {
-                Ok(op) => ops.push(op),
-                // Tampered or foreign: nothing can ever open it, so skip it
-                // rather than wedge the cursor.
-                Err(_) => undecryptable += 1,
+            // Tampered, foreign or filed under another row's key: nothing can
+            // ever open it, so skip it rather than wedge the cursor.
+            match item.key.as_deref().map(|k| ctx.keys.open_op(&item.blob, k)) {
+                Some(Ok(op)) => ops.push(op),
+                _ => undecryptable += 1,
             }
         }
         // Rows first: a file op never depends on them, but a run's row
@@ -553,6 +687,7 @@ mod tests {
         next_seq: i64,
         applied: Vec<Op>,
         cursor: u64,
+        parked: Vec<(String, String)>,
     }
 
     impl FakeStore {
@@ -576,6 +711,9 @@ mod tests {
         }
         fn cursor(&self) -> u64 {
             self.inner.lock().unwrap().cursor
+        }
+        fn parked(&self) -> Vec<(String, String)> {
+            self.inner.lock().unwrap().parked.clone()
         }
     }
 
@@ -603,6 +741,16 @@ mod tests {
             self.inner.lock().unwrap().cursor = seq;
             Ok(())
         }
+        async fn park(&self, seq: i64, reason: &str) -> Result<(), String> {
+            let mut g = self.inner.lock().unwrap();
+            let pos = g.outbox.iter().position(|(s, _)| *s == seq).ok_or("no such op")?;
+            let (_, op) = g.outbox.remove(pos);
+            g.parked.push((op.pk.as_str().unwrap_or_default().to_string(), reason.to_string()));
+            Ok(())
+        }
+        async fn parked_count(&self) -> Result<u64, String> {
+            Ok(self.inner.lock().unwrap().parked.len() as u64)
+        }
     }
 
     fn op(tbl: &str, id: &str, title: &str) -> Op {
@@ -625,6 +773,7 @@ mod tests {
             backoff_min: Duration::from_millis(50),
             backoff_max: Duration::from_millis(200),
             rejected_retry: Duration::from_secs(3600),
+            push_backoff_max: Duration::from_millis(400),
             pull_limit: 500,
         }
     }
@@ -893,12 +1042,189 @@ mod tests {
         let k = keys();
         let big = "x".repeat(PUSH_BATCH_BYTES / 3);
         let ops: Vec<(i64, Op)> = (1..=5).map(|i| (i, op("notes", &format!("n{i}"), &big))).collect();
-        let (items, up_to) = build_push(&k, &ops).unwrap();
-        assert_eq!(items.len(), 2);
-        assert_eq!(up_to, 2);
-        // A single oversized op still goes out alone.
-        let huge = vec![(9, op("notes", "n9", &"y".repeat(PUSH_BATCH_BYTES * 2)))];
-        let (items, up_to) = build_push(&k, &huge).unwrap();
-        assert_eq!((items.len(), up_to), (1, 9));
+        let b = build_push(&k, &ops).unwrap();
+        assert_eq!(b.items.iter().map(|i| i.0).collect::<Vec<_>>(), vec![1, 2]);
+        assert!(b.oversized.is_empty());
+        // An op over the batch budget but under the relay's cap goes out alone.
+        let alone = vec![
+            (8, op("notes", "n8", &"y".repeat(PUSH_BATCH_BYTES * 3 / 4 + 1000))),
+            (9, op("notes", "n9", "small")),
+        ];
+        assert_eq!(build_push(&k, &alone).unwrap().items.iter().map(|i| i.0).collect::<Vec<_>>(), vec![8]);
+        // One the relay would refuse is set aside, the rest still batches.
+        let huge = vec![
+            (9, op("notes", "n9", &"y".repeat(MAX_OP_BLOB_CHARS))),
+            (10, op("notes", "n10", "small")),
+        ];
+        let b = build_push(&k, &huge).unwrap();
+        assert_eq!(b.oversized, vec![9]);
+        assert_eq!(b.items.iter().map(|i| i.0).collect::<Vec<_>>(), vec![10]);
+    }
+
+    #[test]
+    fn push_backoff_doubles_up_to_the_cap() {
+        let mut b = PushBackoff::default();
+        assert!(b.due());
+        let (min, max) = (Duration::from_secs(1), Duration::from_secs(5));
+        let waits: Vec<u64> = (0..5).map(|_| b.failed(min, max).as_secs()).collect();
+        assert_eq!(waits, vec![1, 2, 4, 5, 5]);
+        assert!(!b.due());
+        b.reset();
+        assert!(b.due());
+    }
+
+    /// Finding #4: an op the relay refuses for good is parked; the rest of
+    /// the queue goes out, and pulls never stop.
+    #[tokio::test]
+    async fn refused_op_is_parked_and_sync_goes_on() {
+        let relay = TestRelay::start().await;
+        relay.create_group("g1");
+        relay.reject_blobs_over(2000);
+        let a = device(&relay, "dev-a", fast());
+        let b = device(&relay, "dev-b", fast());
+        b.store.add("notes", "n1", "small 1");
+        b.store.add("notes", "big", &"x".repeat(4000));
+        b.store.add("notes", "n2", "small 2");
+        b.engine.kick();
+        eventually("b's outbox drained", || b.store.outbox_len() == 0).await;
+        assert_eq!(b.store.parked(), vec![("big".to_string(), "too_large".to_string())]);
+        eventually("a got the rest", || a.store.applied_titles() == vec!["small 1", "small 2"]).await;
+        eventually("parked in status", || b.engine.status().parked == 1).await;
+        // B still pulls.
+        a.store.add("notes", "n3", "from a");
+        a.engine.kick();
+        eventually("b pulled", || b.store.applied_titles() == vec!["from a"]).await;
+        a.engine.stop().await;
+        b.engine.stop().await;
+    }
+
+    /// Finding #4: a push refused for a non-op reason (quota) backs off
+    /// instead of re-sending every poll, while pulls go on.
+    #[tokio::test]
+    async fn refused_push_backs_off_and_pulls_continue() {
+        let relay = TestRelay::start().await;
+        relay.create_group("g1");
+        let a = device(&relay, "dev-a", fast());
+        let b = device(&relay, "dev-b", fast());
+        eventually("online", || b.engine.status().state == SyncState::Online).await;
+        relay.fail_pushes_of("dev-b", Some("quota_exceeded"));
+        b.store.add("notes", "n1", "stuck");
+        b.engine.kick();
+        eventually("error", || b.engine.status().last_error.is_some_and(|e| e.contains("quota_exceeded"))).await;
+        let start = relay.push_attempts("dev-b");
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        let tries = relay.push_attempts("dev-b") - start;
+        // Poll every 50 ms would be ~24; backoff 50→100→200→400→400… is ≤ 6.
+        assert!(tries <= 6, "{tries} pushes in 1.2 s");
+        a.store.add("notes", "n2", "from a");
+        a.engine.kick();
+        eventually("b pulled anyway", || b.store.applied_titles() == vec!["from a"]).await;
+        relay.fail_pushes_of("dev-b", None);
+        eventually("pushed after recovery", || b.store.outbox_len() == 0).await;
+        eventually("a got it", || a.store.applied_titles() == vec!["stuck"]).await;
+        a.engine.stop().await;
+        b.engine.stop().await;
+    }
+
+    #[tokio::test]
+    async fn sqlite_store_parks_until_the_row_changes_again() {
+        use crate::sync::files::tests::mem_db;
+        use crate::sync::store::SqliteSyncStore;
+        let db = mem_db().await;
+        let store = SqliteSyncStore::new(db.clone(), "dev-a".into());
+        let exec = |sql: &'static str| {
+            let db = db.clone();
+            async move { sqlx::query(sql).execute(&db).await.unwrap() }
+        };
+        exec("INSERT INTO todos (id, text, position, created_at) VALUES ('t1', 'huge', 0, 'x'), ('t2', 'ok', 1, 'x')").await;
+        let pending = store.pending(10).await.unwrap();
+        let seq = pending.iter().find(|(_, o)| o.pk == serde_json::json!("t1")).unwrap().0;
+        store.park(seq, "too_large").await.unwrap();
+        assert_eq!(store.parked_count().await.unwrap(), 1);
+        let left: Vec<_> = store.pending(10).await.unwrap().into_iter().map(|(_, o)| o.pk).collect();
+        assert_eq!(left, vec![serde_json::json!("t2")]);
+        // A newer change is queued and, once pushed, clears the record.
+        exec("UPDATE todos SET text = 'small' WHERE id = 't1'").await;
+        let up_to = store.pending(10).await.unwrap().iter().map(|(s, _)| *s).max().unwrap();
+        assert_eq!(store.parked_count().await.unwrap(), 1);
+        store.mark_pushed(up_to).await.unwrap();
+        assert_eq!(store.parked_count().await.unwrap(), 0);
+    }
+
+    /// Finding #1, the exact scenario: B edits a row while offline (older
+    /// HLC), A edits it later and pushes, then B pushes its older edit before
+    /// it has pulled A's. Real stores, cycle steps driven by hand so the race
+    /// is deterministic. Everyone — including a device joining afterwards —
+    /// must end up with A's newer edit.
+    #[tokio::test]
+    async fn offline_stale_push_converges() {
+        use crate::sync::files::tests::mem_db;
+        use crate::sync::store::SqliteSyncStore;
+
+        let relay = TestRelay::start().await;
+        relay.create_group("g1");
+        let mut sides = Vec::new();
+        for id in ["dev-a", "dev-b", "dev-c"] {
+            let db = mem_db().await;
+            let store: Arc<dyn SyncStore> = Arc::new(SqliteSyncStore::new(db.clone(), id.into()));
+            let (tx, _rx) = mpsc::unbounded_channel();
+            let conn = Connection::connect(&params(&relay, id), false, tx).await.unwrap();
+            let ctx = Ctx {
+                params: params(&relay, id),
+                keys: keys(),
+                store,
+                shared: Arc::new(Shared {
+                    status: Mutex::new(SyncStatus::disabled()),
+                    sink: Arc::new(|_: &SyncStatus| {}),
+                    kick: Notify::new(),
+                    kick_now: AtomicBool::new(false),
+                    paused: watch::channel(false).0,
+                }),
+                timing: fast(),
+            };
+            sides.push((db, ctx, conn));
+        }
+        let title = |db: &crate::db::Db| {
+            let db = db.clone();
+            async move {
+                sqlx::query_scalar::<_, String>("SELECT text FROM todos WHERE id = 't1'")
+                    .fetch_one(&db)
+                    .await
+                    .unwrap()
+            }
+        };
+        let exec = |db: &crate::db::Db, sql: &'static str| {
+            let db = db.clone();
+            async move { sqlx::query(sql).execute(&db).await.unwrap() }
+        };
+        async fn push(side: &(crate::db::Db, Ctx, Connection)) -> Result<(), CycleError> {
+            push_all(&side.1, &side.2).await
+        }
+        async fn pull(side: &(crate::db::Db, Ctx, Connection)) -> Result<(), CycleError> {
+            let blobs = RelayBlobs { conn: &side.2, keys: &side.1.keys };
+            pull_all(&side.1, &side.2, &blobs).await
+        }
+
+        // A creates the row; B has it.
+        exec(&sides[0].0, "INSERT INTO todos (id, text, position, created_at) VALUES ('t1', 'v0', 0, 'x')").await;
+        push(&sides[0]).await.unwrap();
+        pull(&sides[1]).await.unwrap();
+        assert_eq!(title(&sides[1].0).await, "v0");
+
+        // B offline edits first (older HLC), A edits later and pushes.
+        exec(&sides[1].0, "UPDATE todos SET text = 'from B (t=100)' WHERE id = 't1'").await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        exec(&sides[0].0, "UPDATE todos SET text = 'from A (t=200)' WHERE id = 't1'").await;
+        push(&sides[0]).await.unwrap();
+        // B comes back and pushes before pulling (the race the relay must survive).
+        push(&sides[1]).await.unwrap();
+        assert_eq!(relay.op_count(), 2, "A's unseen op is kept next to B's stale one");
+
+        pull(&sides[0]).await.unwrap();
+        pull(&sides[1]).await.unwrap();
+        pull(&sides[2]).await.unwrap();
+        for (i, (db, _, _)) in sides.iter().enumerate() {
+            assert_eq!(title(db).await, "from A (t=200)", "device {i}");
+        }
     }
 }

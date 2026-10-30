@@ -54,6 +54,7 @@ pub enum FrameType {
     SyncOps,
     SyncNotify,
     SyncRevoke,
+    SyncInvite,
     BlobPut,
     BlobAck,
     BlobGet,
@@ -260,6 +261,13 @@ pub enum ErrorCode {
     TooLarge,
     /// The sync store failed (details only in the relay log).
     Internal,
+    /// `sync_hello{create}` for a group that already exists, from a device it
+    /// does not know.
+    GroupExists,
+    /// `sync_hello` from a device unknown to the group, without a join ticket.
+    TicketRequired,
+    /// The join ticket is unknown, expired or already used.
+    TicketInvalid,
 }
 
 impl ErrorCode {
@@ -283,6 +291,9 @@ impl ErrorCode {
             ErrorCode::ShaMismatch => "sha_mismatch",
             ErrorCode::TooLarge => "too_large",
             ErrorCode::Internal => "internal",
+            ErrorCode::GroupExists => "group_exists",
+            ErrorCode::TicketRequired => "ticket_required",
+            ErrorCode::TicketInvalid => "ticket_invalid",
         }
     }
 }
