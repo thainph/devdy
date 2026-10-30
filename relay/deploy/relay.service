@@ -38,7 +38,7 @@ RestartSec=2s
 StartLimitIntervalSec=0
 
 # Resource limits (NFR-002/CON-02): keep the relay small.
-# 256M leaves room for sync traffic (8 MiB pull pages, 4 MiB blobs).
+# 256M leaves room for forwarded sync messages (up to 4 MiB each, 16 MiB queued per target).
 MemoryMax=256M
 CPUQuota=50%
 TasksMax=256

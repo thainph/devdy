@@ -1,13 +1,16 @@
 //! Device-to-device requests for on-demand sync (design:
-//! .workspace/docs/03-design/on-demand-sync.md §3).
+//! .workspace/docs/03-design/on-demand-sync.md, §P "relay is a pipe").
 //!
-//! The receiving device asks a source device to do something (flush its
-//! outbox, describe a project folder, upload file contents) and gets one or
-//! more replies back. Messages travel as sealed `sync_peer_send` /
-//! `sync_peer_msg` frames through the relay; bulk data goes through sealed
-//! blobs. The engine implements [`PeerLink`] over the live relay connection
-//! and dispatches incoming requests to the registered [`PeerHandler`]s;
-//! [`testing::pair`] links two in-memory ends for tests.
+//! A group has two devices; either one asks, the other answers. The asking
+//! device sends a request (changes since a cursor, a file range, a project
+//! folder manifest…) and gets one or more replies back. Messages travel as
+//! sealed `sync_peer_send` / `sync_peer_msg` frames through the relay, which
+//! only forwards them: it stores nothing. Bulk data travels inside replies,
+//! cut into chunks of at most [`CHUNK_SIZE`] bytes ([`encode_chunk`] /
+//! [`decode_chunk`]); the asker requests the next chunks as it writes the
+//! previous ones. The engine implements [`PeerLink`] over the live relay
+//! connection and dispatches incoming requests to the registered
+//! [`PeerHandler`]s; [`testing::pair`] links two in-memory ends for tests.
 
 // `#[async_trait]` marks the boxed futures `#[must_use]` a second time.
 #![allow(clippy::double_must_use)]
@@ -24,7 +27,7 @@ pub struct PeerMsg {
     pub v: u32,
     /// Unique per message.
     pub id: String,
-    /// Request kind (e.g. `ops_flush`, `folder_manifest`), or a reply kind.
+    /// Request kind (e.g. `changes`, `folder_manifest`), or a reply kind.
     pub kind: String,
     /// Set on replies: the `id` of the request answered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -52,16 +55,27 @@ pub trait PeerLink: Send + Sync {
     /// Send a request to `to`. Fails right away with `peer_offline` when the
     /// device is not connected.
     async fn request(&self, to: &str, kind: &str, body: Value) -> Result<Replies, String>;
-    /// Seal and upload `plaintext` (≤ [`MAX_BLOB_PLAINTEXT`]); returns the blob sha.
-    async fn blob_put(&self, plaintext: Vec<u8>) -> Result<String, String>;
-    /// Download and open a blob.
-    async fn blob_get(&self, sha: &str) -> Result<Vec<u8>, String>;
-    /// Free blobs on the relay once they are no longer needed.
-    async fn blob_release(&self, shas: &[String]) -> Result<(), String>;
 }
 
-/// Largest plaintext per blob (sealing adds 40 bytes; the relay takes 4 MiB + 64).
-pub const MAX_BLOB_PLAINTEXT: usize = 4 * 1024 * 1024;
+/// Largest piece of file content in one reply. One reply (base64 chunk inside
+/// the JSON message, sealed, base64 again) stays far below the relay's frame
+/// cap (`RELAY_SYNC_MAX_BLOB_BYTES`, 4 MiB + 64, as base64).
+pub const CHUNK_SIZE: usize = 1024 * 1024;
+
+/// How many chunk requests an asker keeps in flight per transfer.
+pub const CHUNK_WINDOW: usize = 4;
+
+/// Chunk bytes as a reply body field (`"data"`).
+pub fn encode_chunk(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// The bytes of a `"data"` field written by [`encode_chunk`].
+pub fn decode_chunk(data: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.decode(data).map_err(|e| format!("bad chunk: {e}"))
+}
 
 /// Sends the replies of one incoming request.
 #[async_trait]
@@ -87,15 +101,11 @@ pub trait PeerHandler: Send + Sync {
 #[cfg(test)]
 pub mod testing {
     use super::*;
-    use std::collections::HashMap;
     use std::sync::Mutex;
-
-    type Blobs = Arc<Mutex<HashMap<String, Vec<u8>>>>;
 
     pub struct MemLink {
         pub me: String,
         pub other: String,
-        blobs: Blobs,
         handlers: Arc<Mutex<Vec<Arc<dyn PeerHandler>>>>,
         other_link: Mutex<Option<Arc<MemLink>>>,
         pub online: Arc<std::sync::atomic::AtomicBool>,
@@ -104,10 +114,6 @@ pub mod testing {
     impl MemLink {
         pub fn add_handler(&self, h: Arc<dyn PeerHandler>) {
             self.handlers.lock().unwrap().push(h);
-        }
-        /// Blobs still held by the fake relay.
-        pub fn blob_count(&self) -> usize {
-            self.blobs.lock().unwrap().len()
         }
     }
 
@@ -157,37 +163,16 @@ pub mod testing {
             });
             Ok(rx)
         }
-        async fn blob_put(&self, plaintext: Vec<u8>) -> Result<String, String> {
-            if plaintext.len() > MAX_BLOB_PLAINTEXT {
-                return Err("too_large".into());
-            }
-            use sha2::Digest;
-            let sha = hex::encode(sha2::Sha256::digest(&plaintext));
-            self.blobs.lock().unwrap().insert(sha.clone(), plaintext);
-            Ok(sha)
-        }
-        async fn blob_get(&self, sha: &str) -> Result<Vec<u8>, String> {
-            self.blobs.lock().unwrap().get(sha).cloned().ok_or_else(|| "blob_not_found".into())
-        }
-        async fn blob_release(&self, shas: &[String]) -> Result<(), String> {
-            let mut b = self.blobs.lock().unwrap();
-            for s in shas {
-                b.remove(s);
-            }
-            Ok(())
-        }
     }
 
     /// `(a, b)`: a request sent from `a` is served by `b`'s handlers and vice
-    /// versa; both share one fake blob store.
+    /// versa.
     pub fn pair(a: &str, b: &str) -> (Arc<MemLink>, Arc<MemLink>) {
-        let blobs: Blobs = Default::default();
         let online = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let mk = |me: &str, other: &str| {
             Arc::new(MemLink {
                 me: me.into(),
                 other: other.into(),
-                blobs: blobs.clone(),
                 handlers: Default::default(),
                 other_link: Mutex::new(None),
                 online: online.clone(),

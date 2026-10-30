@@ -767,7 +767,7 @@ onUnmounted(() => {
                 </ul>
               </details>
             </template>
-            <p>{{ t('settings.sync.ondemand.pending', { n: status.pending }) }}</p>
+            <p v-if="status.pending">{{ t('settings.sync.ondemand.pending', { n: status.pending }) }}</p>
             <p v-if="status.paused" class="text-amber-600 dark:text-amber-400">{{ t('settings.sync.ondemand.pauseHelp') }}</p>
           </div>
           <p v-if="status.last_error && status.state !== 'online'" class="break-words text-[11px] text-destructive">

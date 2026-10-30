@@ -73,7 +73,7 @@ export const syncProjectMappingSet = (projectId: string, localPath: string) =>
   invoke<ProjectMapping>('sync_project_mapping_set', { projectId, localPath })
 
 // ---- On-demand sync (docs/03-design/on-demand-sync.md §2–§4) ----
-/** Ask `sourceDevice` to push its outbox, then pull + apply it here. Fails with `peer_offline`. */
+/** Pull `sourceDevice`'s changes (and the files they need) straight from it and apply them here. Fails with `peer_offline`. */
 export const syncRun = (sourceDevice: string) => invoke<SyncRunReport>('sync_run', { sourceDevice })
 /** Other devices of the group with a live relay connection. */
 export const syncPeersOnline = () => invoke<string[]>('sync_peers_online')
