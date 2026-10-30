@@ -19,10 +19,12 @@ import {
  * board, the drawer and the "+ Todo" forms make.
  *
  * The board is recomputed by the backend, so writes simply refetch it: right
- * after our own writes, on `focus:changed` / `item:changed` (the backend emits
- * both after every todo write — ours, other windows', MCP's — so the Todos
- * window refetches too; `item:changed` also covers session links) and every
- * 60 s so the relative times stay true.
+ * after our own writes, on `focus:changed` / `item:changed` and every 60 s so
+ * the relative times stay true. The backend emits both events after every
+ * todo write made through its commands (any window, the AI), after sync
+ * applies todo rows, and — for writes that bypass it, like the MCP sidecar
+ * writing SQLite directly — on the next 60 s reminder tick that sees the
+ * table changed.
  */
 const REFRESH_MS = 60_000
 /** The two events of one write arrive together: one refetch for both. */

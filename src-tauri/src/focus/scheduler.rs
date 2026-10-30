@@ -352,8 +352,6 @@ pub const OPEN_TODO_EVENT: &str = "focus:open-todo";
 /// Sent to the main window when the Focus window must be created (only the
 /// frontend knows its URL / options, `src/lib/focusWindow.ts`).
 pub const OPEN_WINDOW_EVENT: &str = "focus:open-window";
-/// Overdue / today / doing counts, every tick (tray badge).
-pub const COUNTS_EVENT: &str = "focus:counts";
 /// Label of the Focus window.
 pub const FOCUS_WINDOW: &str = "focus";
 const TICK: std::time::Duration = std::time::Duration::from_secs(60);
@@ -442,16 +440,46 @@ async fn language(db: &crate::db::Db) -> String {
         .unwrap_or_else(|| "en".into())
 }
 
-/// One reminder pass: push the counts, decide, record, notify.
+/// A cheap fingerprint of the `todos` table: row count, newest
+/// `updated_at` / `created_at` and sums that move on (un)done / reorder.
+/// Writes that bypass the app's commands (the MCP sidecar) show up as a
+/// different value on the next tick.
+pub async fn todos_signature(db: &crate::db::Db) -> Result<String, String> {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) || '|' || COALESCE(MAX(updated_at), '') || '|' || \
+                COALESCE(MAX(created_at), '') || '|' || COALESCE(SUM(done), 0) || '|' || \
+                COALESCE(SUM(position), 0) FROM todos",
+    )
+    .fetch_one(db)
+    .await
+    .map_err(|e| e.to_string())
+}
+
+fn last_signature() -> &'static std::sync::Mutex<Option<String>> {
+    static S: std::sync::OnceLock<std::sync::Mutex<Option<String>>> = std::sync::OnceLock::new();
+    S.get_or_init(Default::default)
+}
+
+/// Whether the table changed since the previous call (false on the first).
+pub fn signature_changed(sig: String) -> bool {
+    let Ok(mut last) = last_signature().lock() else { return false };
+    let changed = last.as_ref().is_some_and(|l| *l != sig);
+    *last = Some(sig);
+    changed
+}
+
+/// One reminder pass: refresh the boards after outside writes, decide,
+/// record, notify.
 pub async fn tick(app: &tauri::AppHandle, db: &crate::db::Db) -> Result<usize, String> {
-    use crate::commands::focus::{board_inputs, counts, rank_todos, to_local};
-    use tauri::Emitter;
+    use crate::commands::focus::{board_inputs, rank_todos, to_local};
+    if signature_changed(todos_signature(db).await?) {
+        super::emit_todos_changed(app);
+    }
     let (settings, todos, samples) = board_inputs(db).await?;
     let now = chrono::Local::now();
     let tz = now.timezone();
     let wh = settings.work_hours();
     let ranking = rank_todos(todos, &now, &wh, settings.calibration_enabled, &samples);
-    let _ = app.emit(COUNTS_EVENT, counts(&ranking.rows));
     if !settings.notify_enabled {
         return Ok(0);
     }
@@ -634,6 +662,37 @@ mod tests {
         let early = SchedItem { effective_due: Some(at("2026-10-28 08:00")), has_due_time: true, ..item("c") };
         let n = decide(at("2026-10-28 09:00"), &s, std::slice::from_ref(&early), &Fired::new(), "en");
         assert_eq!(kinds(&n), vec![("overdue", "c")]);
+    }
+
+    #[tokio::test]
+    async fn todos_signature_moves_on_outside_writes() {
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        let exec = |sql: &'static str| {
+            let db = db.clone();
+            async move { sqlx::query(sql).execute(&db).await.unwrap() }
+        };
+        let empty = todos_signature(&db).await.unwrap();
+        exec("INSERT INTO todos (id, text, done, position, created_at, updated_at) VALUES ('a', 'x', 0, 0, 'c1', 'u1')").await;
+        let one = todos_signature(&db).await.unwrap();
+        assert_ne!(empty, one);
+        // MCP-style write: a newer updated_at.
+        exec("UPDATE todos SET text = 'y', updated_at = 'u2' WHERE id = 'a'").await;
+        let two = todos_signature(&db).await.unwrap();
+        assert_ne!(one, two);
+        // Synced row with an older updated_at but done flipped.
+        exec("UPDATE todos SET done = 1, updated_at = 'u0' WHERE id = 'a'").await;
+        assert_ne!(two, todos_signature(&db).await.unwrap());
+        exec("DELETE FROM todos").await;
+        assert_eq!(empty, todos_signature(&db).await.unwrap());
+        // The tick refreshes only on a change after the first look.
+        assert!(!signature_changed("s1".into()));
+        assert!(!signature_changed("s1".into()));
+        assert!(signature_changed("s2".into()));
     }
 
     #[test]
