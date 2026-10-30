@@ -211,7 +211,6 @@ async fn fresh_clone_from_bundle() {
     assert!(pv.add.iter().all(|f| !f.path.starts_with("node_modules")));
     assert!(pv.skipped_items.iter().any(|s| s.path == "escape-link" && s.reason == "symlink_outside"));
     assert!(!dst.exists(), "preview must not write");
-    assert_eq!(recv.blob_count(), 0, "no relay blobs");
 
     let rep = run(&recv, &opts(&dst)).await.unwrap();
     assert_same(&src, &dst);
@@ -220,7 +219,6 @@ async fn fresh_clone_from_bundle() {
     assert!(!dst.join("escape-link").exists());
     assert!(!dst.join(apply::STAGING).exists());
     assert!(rep.bytes_downloaded > 0);
-    assert_eq!(recv.blob_count(), 0, "no relay blobs");
 
     // A second sync has nothing to download.
     let pv = preview(&recv, &opts(&dst)).await;
@@ -1112,7 +1110,6 @@ async fn a_large_file_resumes_mid_file_after_cancel() {
     assert_eq!(rep.bytes_downloaded, big.len() as u64 - kept, "resumed where it stopped");
     assert_eq!(read(&dst, "big.bin"), big);
     assert!(!dst.join(apply::PARTIAL).exists());
-    assert_eq!(recv.blob_count(), 0, "no relay blobs");
 }
 
 #[tokio::test]
@@ -1150,7 +1147,6 @@ async fn a_bundle_larger_than_a_chunk() {
     assert_eq!(git(&dst, &["rev-parse", "HEAD"]), git(&src, &["rev-parse", "HEAD"]));
     assert_eq!(read(&dst, "blob.dat"), read(&src, "blob.dat"));
     assert_eq!(status(&dst), status(&src));
-    assert_eq!(recv.blob_count(), 0, "no relay blobs");
 }
 
 /// A source repo with one commit to bundle; (receiver link, source handler, bundle dir).

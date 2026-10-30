@@ -27,7 +27,7 @@ pub struct PeerMsg {
     pub v: u32,
     /// Unique per message.
     pub id: String,
-    /// Request kind (e.g. `ops_flush`, `folder_manifest`), or a reply kind.
+    /// Request kind (e.g. `changes`, `folder_manifest`), or a reply kind.
     pub kind: String,
     /// Set on replies: the `id` of the request answered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -55,26 +55,7 @@ pub trait PeerLink: Send + Sync {
     /// Send a request to `to`. Fails right away with `peer_offline` when the
     /// device is not connected.
     async fn request(&self, to: &str, kind: &str, body: Value) -> Result<Replies, String>;
-    /// TRANSITIONAL (relay blob store is being removed): do not use in new
-    /// code; send data inside replies instead. Removed after the p2p merge.
-    async fn blob_put(&self, _plaintext: Vec<u8>) -> Result<String, String> {
-        Err(NO_BLOB_STORE.into())
-    }
-    /// TRANSITIONAL, see [`PeerLink::blob_put`].
-    async fn blob_get(&self, _sha: &str) -> Result<Vec<u8>, String> {
-        Err(NO_BLOB_STORE.into())
-    }
-    /// TRANSITIONAL, see [`PeerLink::blob_put`].
-    async fn blob_release(&self, _shas: &[String]) -> Result<(), String> {
-        Ok(())
-    }
 }
-
-/// Error of the transitional blob methods.
-pub const NO_BLOB_STORE: &str = "blob_store_removed";
-
-/// TRANSITIONAL: largest plaintext per relay blob.
-pub const MAX_BLOB_PLAINTEXT: usize = 4 * 1024 * 1024;
 
 /// Largest piece of file content in one reply. One reply (base64 chunk inside
 /// the JSON message, sealed, base64 again) stays far below the relay's frame
@@ -120,15 +101,11 @@ pub trait PeerHandler: Send + Sync {
 #[cfg(test)]
 pub mod testing {
     use super::*;
-    use std::collections::HashMap;
     use std::sync::Mutex;
-
-    type Blobs = Arc<Mutex<HashMap<String, Vec<u8>>>>;
 
     pub struct MemLink {
         pub me: String,
         pub other: String,
-        blobs: Blobs,
         handlers: Arc<Mutex<Vec<Arc<dyn PeerHandler>>>>,
         other_link: Mutex<Option<Arc<MemLink>>>,
         pub online: Arc<std::sync::atomic::AtomicBool>,
@@ -137,10 +114,6 @@ pub mod testing {
     impl MemLink {
         pub fn add_handler(&self, h: Arc<dyn PeerHandler>) {
             self.handlers.lock().unwrap().push(h);
-        }
-        /// Blobs still held by the fake relay.
-        pub fn blob_count(&self) -> usize {
-            self.blobs.lock().unwrap().len()
         }
     }
 
@@ -190,37 +163,16 @@ pub mod testing {
             });
             Ok(rx)
         }
-        async fn blob_put(&self, plaintext: Vec<u8>) -> Result<String, String> {
-            if plaintext.len() > MAX_BLOB_PLAINTEXT {
-                return Err("too_large".into());
-            }
-            use sha2::Digest;
-            let sha = hex::encode(sha2::Sha256::digest(&plaintext));
-            self.blobs.lock().unwrap().insert(sha.clone(), plaintext);
-            Ok(sha)
-        }
-        async fn blob_get(&self, sha: &str) -> Result<Vec<u8>, String> {
-            self.blobs.lock().unwrap().get(sha).cloned().ok_or_else(|| "blob_not_found".into())
-        }
-        async fn blob_release(&self, shas: &[String]) -> Result<(), String> {
-            let mut b = self.blobs.lock().unwrap();
-            for s in shas {
-                b.remove(s);
-            }
-            Ok(())
-        }
     }
 
     /// `(a, b)`: a request sent from `a` is served by `b`'s handlers and vice
-    /// versa; both share one fake blob store.
+    /// versa.
     pub fn pair(a: &str, b: &str) -> (Arc<MemLink>, Arc<MemLink>) {
-        let blobs: Blobs = Default::default();
         let online = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let mk = |me: &str, other: &str| {
             Arc::new(MemLink {
                 me: me.into(),
                 other: other.into(),
-                blobs: blobs.clone(),
                 handlers: Default::default(),
                 other_link: Mutex::new(None),
                 online: online.clone(),

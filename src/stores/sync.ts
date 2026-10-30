@@ -34,6 +34,7 @@ import {
   type SyncDevice,
   type SyncPrefs,
   type SyncRunPhase,
+  type SyncRunEvent,
   type SyncRunReport,
   type SyncStatus,
 } from '@/lib/sync'
@@ -87,6 +88,7 @@ export const useSyncStore = defineStore('sync', () => {
     source: '',
     phase: null as SyncRunPhase | null,
     phaseMessage: null as string | null,
+    event: null as SyncRunEvent | null,
     report: null as SyncRunReport | null,
     error: null as string | null,
     previews: [] as FolderPreview[],
@@ -188,6 +190,7 @@ export const useSyncStore = defineStore('sync', () => {
       stage: 'idle',
       source: '',
       phase: null,
+      event: null,
       phaseMessage: null,
       report: null,
       error: null,
@@ -352,6 +355,7 @@ export const useSyncStore = defineStore('sync', () => {
           if (run.stage !== 'data') return
           run.phase = e.phase
           run.phaseMessage = e.message ?? null
+          run.event = e
         }).catch(() => null),
         onSyncFolder(onFolder).catch(() => null),
       ])

@@ -544,9 +544,9 @@
       "waiting": "Đang chờ máy kia chấp thuận…"
     },
     "status": {
-      "lastPush": "Đẩy lần cuối",
+      "lastPush": "Phục vụ lần cuối",
       "lastPull": "Kéo lần cuối",
-      "pending": "Đang chờ",
+      "pending": "Chưa tải xong",
       "now": "Đồng bộ ngay",
       "pause": "Tạm dừng",
       "resume": "Tiếp tục",
@@ -709,7 +709,7 @@
       "lastData": "Dữ liệu: {n} thay đổi",
       "lastProjects": "Dự án: {ok}/{total}",
       "lastProjectErrors": "{n} lỗi",
-      "pending": "Thay đổi chờ gửi: {n} (sẽ gửi khi máy khác Sync từ máy này)",
+      "pending": "Còn {n} mục chưa tải xong — tải tiếp ở lần Sync sau",
       "pauseHelp": "Đang tạm dừng: máy này không trả lời yêu cầu Sync từ máy khác.",
       "receives": "Nhận:",
       "receivesData": "{n} loại dữ liệu",
@@ -779,9 +779,8 @@
     "run": {
       "title": "Sync từ {name}",
       "phase": {
-        "requesting": "Đang yêu cầu {name} gửi thay đổi…",
-        "flushing": "{name} đang gửi thay đổi (đã gửi {n})…",
-        "pulling": "Đang tải thay đổi…",
+        "requesting": "Đang hỏi {name}…",
+        "pulling": "Đang tải từ {name}…",
         "applying": "Đang áp dụng thay đổi…",
         "done": "Đã nhận dữ liệu",
         "error": "Sync thất bại"
@@ -833,7 +832,7 @@
       },
       "waiting": "Đang chờ…",
       "eta": "còn ~{eta}",
-      "files": "{done}/{total} file",
+      "files": "{done} / {total} · {n}/{m} file · {p}%",
       "ready": "✓ {n} dự án sẵn sàng",
       "stopped": "Đã dừng — lần Sync sau sẽ chạy tiếp từ chỗ dừng.",
       "openProject": "Mở dự án",
@@ -859,7 +858,8 @@
       "applyFiles": "Sync {n} dự án · {files} thay đổi file",
       "planChanged": "Thư mục nguồn đã thay đổi sau lần xem trước này nên không ghi gì vượt quá nó. Xem lại bản xem trước mới rồi xác nhận lại.",
       "review": "Xem lại",
-      "skippedTitle": "Bỏ qua ({n})"
+      "skippedTitle": "Bỏ qua ({n})",
+      "ops": "{n} thay đổi"
     },
     "indicator": {
       "lastSync": "Lần cuối: {ago}",

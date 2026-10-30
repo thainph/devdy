@@ -28,6 +28,7 @@ import {
   isTruncated,
   previewIsNoop,
   previewTotals,
+  runProgress,
   summarizePreview,
   syncErrorCode,
   type FolderPreview,
@@ -41,6 +42,7 @@ const store = useSyncStore()
 const run = store.run
 
 const sourceName = computed(() => store.deviceName(run.source))
+const progress = computed(() => runProgress(run.event))
 const offline = computed(() => syncErrorCode(run.error) === 'peer_offline')
 
 function errorText(e: unknown): string {
@@ -189,7 +191,11 @@ async function viewBackup(id: string) {
       <section class="space-y-1.5">
         <p v-if="run.stage === 'data'" class="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Loader2 class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
-          {{ t(`settings.sync.run.phase.${run.phase ?? 'requesting'}`, { name: sourceName, n: run.phaseMessage ?? 0 }) }}
+          {{ t(`settings.sync.run.phase.${run.phase ?? 'requesting'}`, { name: sourceName }) }}
+          <span v-if="progress?.kind === 'files'" class="tabular-nums">
+            {{ t('settings.sync.run.files', { done: formatBytes(progress.done), total: formatBytes(progress.total), n: progress.filesDone, m: progress.filesTotal, p: progress.percent }) }}
+          </span>
+          <span v-else-if="progress?.kind === 'ops'" class="tabular-nums">{{ t('settings.sync.run.ops', { n: progress.ops }) }}</span>
         </p>
         <p v-else-if="run.report" class="text-xs text-emerald-600 dark:text-emerald-400">
           {{ t('settings.sync.run.dataDone', { n: run.report.applied }) }}
