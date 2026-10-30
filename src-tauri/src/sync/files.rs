@@ -130,6 +130,21 @@ struct Record {
     deleted: bool,
     /// 'local' (authored here) or 'remote' (written by sync).
     origin: String,
+    /// Size / sha256 of the file on disk when sync rewrote it (transcript cwd),
+    /// else `None`: the file is the synced content.
+    local_size: Option<u64>,
+    local_sha256: Option<String>,
+}
+
+impl Record {
+    /// Size of the recorded version as it is on disk here.
+    fn disk_size(&self) -> u64 {
+        self.local_size.unwrap_or(self.size)
+    }
+
+    fn disk_sha(&self) -> &str {
+        self.local_sha256.as_deref().unwrap_or(&self.sha256)
+    }
 }
 
 // ---- Scan cadence ------------------------------------------------------------
@@ -398,7 +413,8 @@ async fn collect(
 
 async fn load_record(conn: &mut SqliteConnection, kind: FileKind, portable: &str) -> Result<Option<Record>, String> {
     let row = sqlx::query(
-        "SELECT local_path, size, sha256, chunks_json, mtime, mode, deleted, origin FROM sync_files WHERE kind = ? AND path = ?",
+        "SELECT local_path, size, sha256, chunks_json, mtime, mode, deleted, origin, local_size, local_sha256 \
+         FROM sync_files WHERE kind = ? AND path = ?",
     )
     .bind(kind.as_str())
     .bind(portable)
@@ -414,6 +430,8 @@ async fn load_record(conn: &mut SqliteConnection, kind: FileKind, portable: &str
         mode: r.get("mode"),
         deleted: r.get::<i64, _>("deleted") != 0,
         origin: r.get("origin"),
+        local_size: r.get::<Option<i64>, _>("local_size").map(|n| n.max(0) as u64),
+        local_sha256: r.get("local_sha256"),
     }))
 }
 
@@ -438,7 +456,7 @@ async fn save_record(
          ON CONFLICT(kind, path) DO UPDATE SET local_path = excluded.local_path, size = excluded.size, \
            sha256 = excluded.sha256, chunks_json = excluded.chunks_json, mtime = excluded.mtime, \
            mode = excluded.mode, hlc = COALESCE(excluded.hlc, sync_files.hlc), deleted = excluded.deleted, \
-           origin = excluded.origin",
+           origin = excluded.origin, local_size = NULL, local_sha256 = NULL",
     )
     .bind(kind.as_str())
     .bind(portable)
@@ -454,6 +472,20 @@ async fn save_record(
     .execute(&mut *conn)
     .await
     .map_err(err)?;
+    Ok(())
+}
+
+/// Record that the file on disk is a rewrite of the synced content (after
+/// [`save_record`], which clears it).
+async fn set_local_view(conn: &mut SqliteConnection, kind: FileKind, portable: &str, size: u64, sha: &str) -> Result<(), String> {
+    sqlx::query("UPDATE sync_files SET local_size = ?, local_sha256 = ? WHERE kind = ? AND path = ?")
+        .bind(size as i64)
+        .bind(sha)
+        .bind(kind.as_str())
+        .bind(portable)
+        .execute(&mut *conn)
+        .await
+        .map_err(err)?;
     Ok(())
 }
 
@@ -660,7 +692,7 @@ async fn stage_one(db: &Db, blobs: &dyn BlobIo, t: &Tracked) -> Result<bool, Sta
     let rec = load_record(&mut conn, t.kind, &t.portable).await.map_err(local)?;
     let local_str = t.local.to_string_lossy();
     if let Some(r) = &rec {
-        if !r.deleted && r.size == meta.len() && r.mtime == mtime && r.local_path == local_str {
+        if !r.deleted && r.disk_size() == meta.len() && r.mtime == mtime && r.local_path == local_str {
             return Ok(false);
         }
     }
@@ -670,7 +702,9 @@ async fn stage_one(db: &Db, blobs: &dyn BlobIo, t: &Tracked) -> Result<bool, Sta
         FileKind::Library => file_mode(&meta),
         _ => None,
     };
-    let unchanged = rec.as_ref().is_some_and(|r| !r.deleted && r.sha256 == content.sha256);
+    // A rewritten transcript compares by what sync wrote to disk: identical =
+    // not a local change, even though it differs from the synced content.
+    let unchanged = rec.as_ref().is_some_and(|r| !r.deleted && r.disk_sha() == content.sha256);
     let mut tx = sqlx::Connection::begin(&mut *conn).await.map_err(|e| local(e.to_string()))?;
     if unchanged {
         // Touched but identical (or moved): remember the new stat, keep origin.
@@ -861,7 +895,11 @@ pub async fn apply_op(db: &Db, paths: &PathCtx, blobs: &dyn BlobIo, op: &Op) -> 
     let outcome = match op.kind {
         OpKind::Upsert => {
             let row = op.row.as_ref().ok_or("upsert without row")?;
-            write_remote(db, blobs, kind, &portable, &path, rec.as_ref(), &parse_row(row)?, op).await?
+            let roots = match kind {
+                FileKind::ClaudeTranscript | FileKind::CodexRollout => project_roots(db, paths).await?,
+                _ => Vec::new(),
+            };
+            write_remote(db, blobs, kind, &portable, &path, rec.as_ref(), &parse_row(row)?, op, &roots).await?
         }
         OpKind::Delete => remove_remote(db, kind, &portable, &path, rec.as_ref()).await?,
     };
@@ -894,7 +932,7 @@ pub async fn apply_op(db: &Db, paths: &PathCtx, blobs: &dyn BlobIo, op: &Op) -> 
 /// Whether the file at `path` is exactly the version sync last recorded.
 fn matches_record(path: &Path, rec: Option<&Record>) -> bool {
     let Some(r) = rec.filter(|r| !r.deleted && r.local_path == path.to_string_lossy()) else { return false };
-    fs::metadata(path).is_ok_and(|m| m.len() == r.size && mtime_ms(&m) == r.mtime)
+    fs::metadata(path).is_ok_and(|m| m.len() == r.disk_size() && mtime_ms(&m) == r.mtime)
 }
 
 enum Placement {
@@ -912,6 +950,9 @@ enum Placement {
 
 fn decide(kind: FileKind, path: &Path, rec: Option<&Record>, inc: &Incoming, op_millis: u64) -> Placement {
     let Ok(meta) = fs::metadata(path) else { return Placement::Replace };
+    if rec.is_some_and(|r| r.sha256 == inc.sha256 && r.local_sha256.is_some()) && matches_record(path, rec) {
+        return Placement::Same;
+    }
     if meta.len() == inc.size && sha_of_prefix(path, inc.size).as_deref() == Some(inc.sha256.as_str()) {
         return Placement::Same;
     }
@@ -960,7 +1001,9 @@ async fn assemble(
     inc: &Incoming,
     tmp: &Path,
 ) -> Result<Content, String> {
-    let reusable: HashMap<usize, (u64, u64)> = match rec.filter(|_| matches_record(path, rec)) {
+    // Chunks are reused from the local copy only when it is the synced content
+    // byte for byte (not a cwd-rewritten transcript).
+    let reusable: HashMap<usize, (u64, u64)> = match rec.filter(|r| r.local_sha256.is_none() && matches_record(path, rec)) {
         Some(r) => {
             let mut off = 0u64;
             r.chunks
@@ -1019,6 +1062,7 @@ async fn write_remote(
     rec: Option<&Record>,
     inc: &Incoming,
     op: &Op,
+    roots: &[(String, String)],
 ) -> Result<Outcome, String> {
     let mut placement = decide(kind, path, rec, inc, op.hlc.millis);
     let mode = match kind {
@@ -1029,9 +1073,21 @@ async fn write_remote(
         return Ok(Outcome::Skipped);
     }
     if let Placement::Same = placement {
+        let mut conn = db.acquire().await.map_err(err)?;
+        if let Some(r) = rec.filter(|r| r.local_sha256.is_some()) {
+            // Already written (cwd-rewritten) by sync: only the version moves.
+            sqlx::query("UPDATE sync_files SET hlc = ? WHERE kind = ? AND path = ?")
+                .bind(op.hlc.to_string())
+                .bind(kind.as_str())
+                .bind(portable)
+                .execute(&mut *conn)
+                .await
+                .map_err(err)?;
+            debug_assert_eq!(r.sha256, inc.sha256);
+            return Ok(Outcome::Applied);
+        }
         let meta = fs::metadata(path).map_err(|e| e.to_string())?;
         let content = Content { size: inc.size, sha256: inc.sha256.clone(), chunks: chunk_refs_of(path, inc)? };
-        let mut conn = db.acquire().await.map_err(err)?;
         save_record(&mut conn, kind, portable, path, Some((&content, mtime_ms(&meta))), mode, Some(&op.hlc), "remote").await?;
         return Ok(Outcome::Applied);
     }
@@ -1048,21 +1104,33 @@ async fn write_remote(
             return Err(e);
         }
     };
+    let finish = |e: String| {
+        let _ = fs::remove_file(&tmp);
+        e
+    };
+    // The sender's cwd -> this device's project path. From here on `tmp` is
+    // what lands on disk; `content` stays the synced version.
+    let local_view = match kind {
+        FileKind::ClaudeTranscript | FileKind::CodexRollout => rewrite_file_cwds(&tmp, roots).map_err(finish)?,
+        _ => None,
+    };
+    let disk_size = local_view.as_ref().map_or(content.size, |(n, _)| *n);
     // A diverged append-only file whose content is a prefix of the incoming
-    // one was simply behind.
+    // one was simply behind; one the incoming version is a prefix of is ahead.
     if matches!(placement, Placement::Sibling) && kind.append_only() {
         let local_len = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-        if local_len < inc.size && sha_of_prefix(path, local_len) == sha_of_prefix(&tmp, local_len) {
+        let common = local_len.min(disk_size);
+        if sha_of_prefix(path, common) == sha_of_prefix(&tmp, common) {
+            if local_len > disk_size {
+                let _ = fs::remove_file(&tmp);
+                return Ok(Outcome::Skipped);
+            }
             placement = Placement::Replace;
         }
     }
     if let Some(m) = mode {
         set_mode(&tmp, m);
     }
-    let finish = |e: String| {
-        let _ = fs::remove_file(&tmp);
-        e
-    };
     match placement {
         Placement::Sibling => {
             let sib = sibling_path(path, &op.hlc.device);
@@ -1081,6 +1149,9 @@ async fn write_remote(
             save_record(&mut conn, kind, portable, path, Some((&content, mtime)), mode, Some(&op.hlc), "remote")
                 .await
                 .map_err(finish)?;
+            if let Some((n, sha)) = &local_view {
+                set_local_view(&mut conn, kind, portable, *n, sha).await.map_err(finish)?;
+            }
             if let Err(e) = fs::rename(&tmp, path) {
                 let _ = sqlx::query("DELETE FROM sync_files WHERE kind = ? AND path = ?")
                     .bind(kind.as_str())
@@ -1090,11 +1161,161 @@ async fn write_remote(
                 return Err(finish(format!("{}: {e}", path.display())));
             }
             if matches!(kind, FileKind::ClaudeTranscript | FileKind::CodexRollout) {
-                mark_transcript_mirrored(&mut conn, path, content.size).await?;
+                mark_transcript_mirrored(&mut conn, path, disk_size).await?;
             }
             Ok(Outcome::Applied)
         }
     }
+}
+
+// ---- cwd rewrite -------------------------------------------------------------------
+
+/// JSON keys holding the session's working directory in Claude transcripts
+/// (`cwd` on every line, `attachment.snapshot.workingDirectory`) and Codex
+/// rollouts (`session_meta` / `turn_context` / `world_state` /
+/// `thread_settings` `cwd`, plus the `runtime_workspace_roots` arrays).
+const CWD_KEYS: &[&str] = &["cwd", "workingDirectory"];
+const CWD_LIST_KEYS: &[&str] = &["runtime_workspace_roots"];
+
+/// Local project roots with their synced form: `(synced, local)`.
+async fn project_roots(db: &Db, paths: &PathCtx) -> Result<Vec<(String, String)>, String> {
+    let rows: Vec<String> = sqlx::query_scalar("SELECT path FROM projects").fetch_all(db).await.map_err(err)?;
+    let mut roots: Vec<(String, String)> = rows
+        .into_iter()
+        .filter(|p| !p.is_empty())
+        .map(|p| (portable_path(paths, &p), p))
+        .collect();
+    roots.sort_by_key(|(synced, _)| std::cmp::Reverse(synced.len()));
+    Ok(roots)
+}
+
+/// Where a working directory of another device lives here: under one of the
+/// project roots, matched by the synced form: `~/w/p` matches `<X>/w/p` for
+/// the leftmost absolute `<X>` (the sender's home, which we don't know),
+/// longest root first. `None` = leave it (already local, or unknown).
+pub(crate) fn map_foreign_dir(v: &str, roots: &[(String, String)]) -> Option<String> {
+    let under = |v: &str, root: &str| v == root || v.strip_prefix(root).is_some_and(|r| r.starts_with('/'));
+    if roots.iter().any(|(_, local)| under(v, local)) {
+        return None;
+    }
+    for (synced, local) in roots {
+        if let Some(tail) = synced.strip_prefix('~').filter(|t| t.starts_with('/')) {
+            let mut from = 0;
+            while let Some(i) = v[from..].find(tail).map(|i| i + from) {
+                let rest = &v[i + tail.len()..];
+                if (rest.is_empty() || rest.starts_with('/')) && i > 0 && v.starts_with('/') {
+                    return Some(format!("{local}{rest}"));
+                }
+                from = i + 1;
+            }
+        } else if synced.starts_with('/') && under(v, synced) {
+            return Some(format!("{local}{}", &v[synced.len()..]));
+        }
+    }
+    None
+}
+
+/// End (exclusive) of the JSON string literal starting at `at` (a `"`).
+fn string_end(b: &[u8], at: usize) -> Option<usize> {
+    let mut i = at + 1;
+    while i < b.len() {
+        match b[i] {
+            b'\\' => i += 2,
+            b'"' => return Some(i + 1),
+            b'\n' => return None,
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+fn skip_ws(b: &[u8], mut i: usize) -> usize {
+    while i < b.len() && matches!(b[i], b' ' | b'\t') {
+        i += 1;
+    }
+    i
+}
+
+/// Rewrite the cwd values of a JSONL text in place, touching only those string
+/// literals (key order, spacing and every other byte stay as they are, so a
+/// prefix of a file rewrites to a prefix of the rewritten file).
+pub(crate) fn rewrite_cwds(text: &[u8], roots: &[(String, String)]) -> Option<Vec<u8>> {
+    if roots.is_empty() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(text.len());
+    let mut changed = false;
+    let mut copied = 0;
+    let mut i = 0;
+    let mut replace = |out: &mut Vec<u8>, copied: &mut usize, start: usize, end: usize| {
+        let Ok(old) = serde_json::from_slice::<String>(&text[start..end]) else { return };
+        let Some(new) = map_foreign_dir(&old, roots) else { return };
+        let Ok(lit) = serde_json::to_string(&new) else { return };
+        out.extend_from_slice(&text[*copied..start]);
+        out.extend_from_slice(lit.as_bytes());
+        *copied = end;
+        changed = true;
+    };
+    while i < text.len() {
+        if text[i] != b'"' {
+            i += 1;
+            continue;
+        }
+        let Some(key_end) = string_end(text, i) else {
+            i += 1;
+            continue;
+        };
+        let key = &text[i + 1..key_end - 1];
+        let colon = skip_ws(text, key_end);
+        if colon >= text.len() || text[colon] != b':' {
+            i = key_end;
+            continue;
+        }
+        let v = skip_ws(text, colon + 1);
+        let is_cwd = CWD_KEYS.iter().any(|k| k.as_bytes() == key);
+        let is_list = CWD_LIST_KEYS.iter().any(|k| k.as_bytes() == key);
+        if is_cwd && text.get(v) == Some(&b'"') {
+            match string_end(text, v) {
+                Some(end) => {
+                    replace(&mut out, &mut copied, v, end);
+                    i = end;
+                }
+                None => i = v + 1,
+            }
+        } else if is_list && text.get(v) == Some(&b'[') {
+            let mut j = skip_ws(text, v + 1);
+            while text.get(j) == Some(&b'"') {
+                let Some(end) = string_end(text, j) else { break };
+                replace(&mut out, &mut copied, j, end);
+                j = skip_ws(text, end);
+                if text.get(j) == Some(&b',') {
+                    j = skip_ws(text, j + 1);
+                }
+            }
+            i = j.max(v + 1);
+        } else {
+            i = colon + 1;
+        }
+    }
+    if !changed {
+        return None;
+    }
+    out.extend_from_slice(&text[copied..]);
+    Some(out)
+}
+
+/// Rewrite `tmp` in place; returns the new size + sha256 when it changed.
+fn rewrite_file_cwds(tmp: &Path, roots: &[(String, String)]) -> Result<Option<(u64, String)>, String> {
+    if roots.is_empty() {
+        return Ok(None);
+    }
+    let io = |e: std::io::Error| format!("{}: {e}", tmp.display());
+    let text = fs::read(tmp).map_err(io)?;
+    let Some(new) = rewrite_cwds(&text, roots) else { return Ok(None) };
+    let mut f = fs::File::create(tmp).map_err(io)?;
+    f.write_all(&new).map_err(io)?;
+    f.sync_all().map_err(io)?;
+    Ok(Some((new.len() as u64, hex::encode(Sha256::digest(&new)))))
 }
 
 /// Chunk refs for a local file already identical to the incoming version.
@@ -1191,7 +1412,7 @@ pub async fn run_of_op(db: &Db, paths: &PathCtx, op: &Op) -> Option<String> {
 pub async fn written_by_sync(db: &Db, path: &Path) -> bool {
     let Ok(meta) = fs::metadata(path) else { return false };
     let size: Option<i64> = sqlx::query_scalar(
-        "SELECT size FROM sync_files WHERE local_path = ? AND origin = 'remote' AND deleted = 0",
+        "SELECT COALESCE(local_size, size) FROM sync_files WHERE local_path = ? AND origin = 'remote' AND deleted = 0",
     )
     .bind(path.to_string_lossy().as_ref())
     .fetch_optional(db)
@@ -1557,6 +1778,124 @@ pub(crate) mod tests {
         assert!(!written_by_sync(&db_b, &tb).await);
         // A's own scanned file is not "written by sync".
         assert!(!written_by_sync(&db_a, &ta).await);
+    }
+
+    fn transcript_lines(cwd: &str, turns: usize) -> String {
+        let cwd = serde_json::to_string(cwd).unwrap();
+        let mut out = String::new();
+        for n in 0..turns {
+            out += &format!(
+                "{{\"type\":\"user\",\"cwd\":{cwd},\"sessionId\":\"s-r1\",\"message\":{{\"role\":\"user\",\"content\":\"q{n} {{\\\"cwd\\\":\\\"/x\\\"}}\"}}}}\n\
+                 {{\"type\":\"assistant\",\"cwd\":{cwd},\"message\":{{\"role\":\"assistant\",\"model\":\"m\",\"content\":[{{\"type\":\"text\",\"text\":\"a{n}\"}}]}}}}\n"
+            );
+        }
+        out
+    }
+
+    #[test]
+    fn cwd_rewrite_touches_only_cwd_literals() {
+        let roots = vec![("~/w/p".to_string(), "/Users/bob/code/p".to_string())];
+        assert_eq!(map_foreign_dir("/Users/alice/w/p", &roots).as_deref(), Some("/Users/bob/code/p"));
+        assert_eq!(map_foreign_dir("/Users/alice/w/p/sub", &roots).as_deref(), Some("/Users/bob/code/p/sub"));
+        assert_eq!(map_foreign_dir("/Users/alice/w/pp", &roots), None);
+        assert_eq!(map_foreign_dir("/Users/bob/code/p", &roots), None, "already local");
+        assert_eq!(map_foreign_dir("w/p", &roots), None);
+        let abs = vec![("/opt/w/p".to_string(), "/srv/p".to_string())];
+        assert_eq!(map_foreign_dir("/opt/w/p/x", &abs).as_deref(), Some("/srv/p/x"));
+        assert_eq!(map_foreign_dir("/mnt/opt/w/p", &abs), None);
+
+        // Claude: top-level cwd + snapshot.workingDirectory; escaped JSON in content is left alone.
+        let claude = "{\"type\":\"user\",\"cwd\":\"/Users/alice/w/p\",\"message\":{\"content\":\"{\\\"cwd\\\":\\\"/Users/alice/w/p\\\"}\"}}\n\
+                      {\"attachment\":{\"snapshot\":{\"workingDirectory\": \"/Users/alice/w/p/a\"}},\"path\":\"/Users/alice/w/p/f.rs\"}\n";
+        let out = String::from_utf8(rewrite_cwds(claude.as_bytes(), &roots).unwrap()).unwrap();
+        assert_eq!(
+            out,
+            "{\"type\":\"user\",\"cwd\":\"/Users/bob/code/p\",\"message\":{\"content\":\"{\\\"cwd\\\":\\\"/Users/alice/w/p\\\"}\"}}\n\
+             {\"attachment\":{\"snapshot\":{\"workingDirectory\": \"/Users/bob/code/p/a\"}},\"path\":\"/Users/alice/w/p/f.rs\"}\n"
+        );
+        // Codex: session_meta / turn_context / thread_settings cwd and the roots arrays.
+        let codex = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"t\",\"cwd\":\"/Users/alice/w/p\",\"runtime_workspace_roots\":[\"/Users/alice/w/p\", \"/tmp\"]}}\n\
+                     {\"type\":\"turn_context\",\"payload\":{\"cwd\":\"/Users/alice/w/p\",\"model\":\"m\"}}\n\
+                     {\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_settings_applied\",\"thread_settings\":{\"cwd\":\"/Users/alice/w/p\",\"runtime_workspace_roots\":[]}}}\n";
+        let out = String::from_utf8(rewrite_cwds(codex.as_bytes(), &roots).unwrap()).unwrap();
+        assert_eq!(out, codex.replace("/Users/alice/w/p", "/Users/bob/code/p"));
+        // Nothing to map: untouched.
+        assert!(rewrite_cwds(b"{\"cwd\":\"/elsewhere\"}\n", &roots).is_none());
+        assert!(rewrite_cwds(claude.as_bytes(), &[]).is_none());
+        // A prefix of the file rewrites to a prefix of the rewritten file.
+        let full = rewrite_cwds(codex.as_bytes(), &roots).unwrap();
+        let cut = codex.find("{\"type\":\"turn_context\"").unwrap();
+        assert!(full.starts_with(&rewrite_cwds(&codex.as_bytes()[..cut], &roots).unwrap()));
+    }
+
+    #[tokio::test]
+    async fn transcript_cwd_is_rewritten_and_not_pushed_back() {
+        let (ha, hb) = (tempdir(), tempdir());
+        let (db_a, db_b) = (mem_db().await, mem_db().await);
+        let (pa, pb) = (ctx(ha.path()), ctx(hb.path()));
+        let blobs = MemBlobs::default();
+        let project_a = ha.path().join("w/p");
+        let project_b = hb.path().join("w/p");
+        let enc = crate::commands::sessions::encode_project_dir(&project_a.to_string_lossy());
+        let ta = ha.path().join(".claude/projects").join(enc).join("s-r1.jsonl");
+        fs::create_dir_all(ta.parent().unwrap()).unwrap();
+        fs::write(&ta, transcript_lines(&project_a.to_string_lossy(), 1)).unwrap();
+        add_run(&db_a, ha.path(), "r1", "done").await;
+        let mut st = ScanState::default();
+        stage(&db_a, &pa, &blobs, &mut st, ScanMode::Full, false).await.unwrap();
+        let portable = to_portable(&pa, &ta.to_string_lossy());
+        let t = Tracked { kind: FileKind::ClaudeTranscript, local: ta.clone(), portable: portable.clone() };
+        let op = op_for(&db_a, &t, 1_000, "dev-a").await;
+
+        // B has the project (at its own path) but not the runs row yet.
+        sqlx::query("INSERT INTO projects (id, name, path, created_at) VALUES ('p1', 'p', ?, 'x')")
+            .bind(project_b.to_string_lossy().as_ref())
+            .execute(&db_b)
+            .await
+            .unwrap();
+        assert_eq!(apply_op(&db_b, &pb, &blobs, &op).await.unwrap(), Outcome::Applied);
+        let tb = localize(&pb, FileKind::ClaudeTranscript, &portable).unwrap();
+        let on_b = fs::read_to_string(&tb).unwrap();
+        assert_eq!(on_b, transcript_lines(&project_b.to_string_lossy(), 1), "cwd follows B's project path");
+        assert!(written_by_sync(&db_b, &tb).await);
+
+        // The on-open reconcile / get_run_log path must not import it as a new
+        // session (it would: the rewritten cwd matches B's project).
+        let pb_path = project_b.to_string_lossy().into_owned();
+        assert!(crate::commands::sessions::parse_transcript(&tb, &pb_path).is_some());
+        let out = crate::commands::sessions::upsert_session_run_core(
+            &db_b, "p1", "p", &pb_path, "s-r1", "claude", &tb, crate::commands::sessions::parse_transcript, true,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(out, crate::commands::sessions::SyncOutcome::Skipped));
+        let runs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runs").fetch_one(&db_b).await.unwrap();
+        assert_eq!(runs, 0, "no duplicate session imported");
+
+        // The rewritten file is not a local change: nothing is pushed back.
+        add_run(&db_b, hb.path(), "r1", "done").await;
+        let mut st_b = ScanState::default();
+        assert_eq!(stage(&db_b, &pb, &blobs, &mut st_b, ScanMode::Full, false).await.unwrap(), 0);
+        assert!(outbox_files(&db_b).await.is_empty());
+
+        // A appends: B replaces (no conflict copy) and rewrites again.
+        fs::write(&ta, transcript_lines(&project_a.to_string_lossy(), 2)).unwrap();
+        stage(&db_a, &pa, &blobs, &mut st, ScanMode::Full, false).await.unwrap();
+        let op2 = op_for(&db_a, &t, 2_000, "dev-a").await;
+        assert_eq!(apply_op(&db_b, &pb, &blobs, &op2).await.unwrap(), Outcome::Applied);
+        assert_eq!(fs::read_to_string(&tb).unwrap(), transcript_lines(&project_b.to_string_lossy(), 2));
+        let siblings = fs::read_dir(tb.parent().unwrap()).unwrap().flatten().count();
+        assert_eq!(siblings, 1, "no conflict sibling");
+        assert_eq!(stage(&db_b, &pb, &blobs, &mut st_b, ScanMode::Full, false).await.unwrap(), 0);
+        let mirrored: Option<i64> =
+            sqlx::query_scalar("SELECT transcript_synced_size FROM runs WHERE id = 'r1'").fetch_one(&db_b).await.unwrap();
+        assert_eq!(mirrored, Some(fs::metadata(&tb).unwrap().len() as i64), "local size counts as mirrored");
+
+        // Continued on B: B's version (with B's cwd) is pushed as a change.
+        let mut more = fs::read_to_string(&tb).unwrap();
+        more += &transcript_lines(&pb_path, 1);
+        fs::write(&tb, more).unwrap();
+        assert_eq!(stage(&db_b, &pb, &blobs, &mut st_b, ScanMode::Full, false).await.unwrap(), 1);
     }
 
     #[tokio::test]
