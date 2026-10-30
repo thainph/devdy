@@ -29,7 +29,10 @@ import { openUrl } from '@tauri-apps/plugin-opener'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { remotePathsForDrop } from '@/lib/remoteUpload'
-import { RUN_LOG_UPDATED_EVENT, ownerLabel, runOwnership, shortHead, type RemoteRunOwner } from '@/lib/runOwnership'
+import {
+  RUN_HANDED_OFF_EVENT, RUN_LOG_UPDATED_EVENT, ownerLabel, runOwnership, shortHead, syncPercent,
+  type RemoteRunOwner, type SyncGap,
+} from '@/lib/runOwnership'
 import { onSyncRowsApplied } from '@/lib/sync'
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
 import {
@@ -40,7 +43,7 @@ import {
   X, Paperclip,
   ShieldQuestion, MessageCircleQuestion,
   Pin, Shield, Pencil, Check, Github, Gitlab, UserCircle,
-  HardDrive, Cloud, CloudCog, Radio, Languages, StickyNote, ListTodo, FolderTree, Loader2,
+  HardDrive, Cloud, CloudCog, Radio, Languages, StickyNote, ListTodo, FolderTree, Loader2, RefreshCw,
   MoreHorizontal, Search, Network, ChevronLeft, ChevronRight,
   Plus, AlignJustify, Rows2, Rows3, Rows4, CircleDashed, ArrowUpDown, Laptop
 } from 'lucide-vue-next'
@@ -737,6 +740,10 @@ const currentOwnerName = computed(() =>
   currentOwner.value ? ownerLabel(currentOwner.value, t('run.syncOwner.anotherDevice')) : '',
 )
 const takingOver = ref(false)
+// The owner's final log/transcript are still arriving: shown with Retry and
+// "Continue anyway" instead of the plain "Continue here".
+const takeOverSyncing = ref<SyncGap | null>(null)
+watch(currentRunId, () => { takeOverSyncing.value = null })
 
 function remoteOwnerOf(runId: string): RemoteRunOwner | undefined {
   return runsStore.remoteOwners.get(runId)
@@ -778,13 +785,25 @@ function onSyncLogUpdated(runId: string) {
   }, 500)
 }
 
-async function handleTakeOver() {
+// Another device continued a session whose sidecar was live here; the local
+// sidecar was stopped.
+let handedOffUnlisten: UnlistenFn | null = null
+function onRunHandedOff(payload: { run_id: string; device_name: string | null }) {
+  const device = payload.device_name?.trim() || t('run.syncOwner.anotherDevice')
+  toast.info(t('run.syncOwner.continuedOn', { device }))
+  void runsStore.refreshMeta(projectId.value).catch(() => {})
+  void runsStore.fetchRemoteOwners(projectId.value)
+}
+
+async function handleTakeOver(skipSync = false) {
   const id = currentRunId.value
   if (!id || takingOver.value) return
   const device = currentOwnerName.value
   takingOver.value = true
   try {
-    let result = await runsStore.takeOverRun(id)
+    let result = await runsStore.takeOverRun(id, false, skipSync)
+    takeOverSyncing.value = !result.taken && result.syncing ? result.syncing : null
+    if (takeOverSyncing.value) return
     if (!result.taken && result.mismatch) {
       const { recorded, local } = result.mismatch
       const unknown = t('run.syncOwner.unknown')
@@ -803,7 +822,7 @@ async function handleTakeOver() {
         variant: 'primary',
       })
       if (!ok) return
-      result = await runsStore.takeOverRun(id, true)
+      result = await runsStore.takeOverRun(id, true, skipSync)
     }
     if (!result.taken) return
     if (!result.transcript_available) toast.info(t('run.syncOwner.transcriptMissing'))
@@ -1980,6 +1999,10 @@ onMounted(async () => {
     if (event.payload?.run_id) onSyncLogUpdated(event.payload.run_id)
   })
   syncRowsUnlisten = await onSyncRowsApplied(handleSyncRowsApplied)
+  handedOffUnlisten = await listen<{ run_id: string; device_name: string | null }>(
+    RUN_HANDED_OFF_EVENT,
+    (event) => { if (event.payload?.run_id) onRunHandedOff(event.payload) },
+  )
 
   sessionsChangedUnlisten = await listen<{ project_id: string; run_id?: string }>(
     'sessions:changed',
@@ -2064,6 +2087,8 @@ onUnmounted(() => {
   if (syncLogTimer) clearTimeout(syncLogTimer)
   syncRowsUnlisten?.()
   syncRowsUnlisten = null
+  handedOffUnlisten?.()
+  handedOffUnlisten = null
   if (syncRowsTimer) clearTimeout(syncRowsTimer)
   syncRowsTimer = null
   syncLogTimer = null
@@ -4640,6 +4665,28 @@ function handleRefInput(val: string) {
               <Loader2 class="inline h-3 w-3 mr-1 animate-spin text-muted-foreground" :stroke-width="2" />
               {{ t('run.syncOwner.runningOn', { device: currentOwnerName }) }}
             </span>
+            <template v-else-if="takeOverSyncing">
+              <span class="flex-1 min-w-0 truncate text-muted-foreground">
+                {{ t('run.syncOwner.stillSyncing', { device: currentOwnerName, percent: syncPercent(takeOverSyncing) }) }}
+              </span>
+              <button
+                type="button"
+                class="shrink-0 flex items-center gap-1 rounded-md border border-border px-2.5 h-7 text-xs font-medium hover:bg-muted transition-colors cursor-pointer disabled:opacity-50"
+                :disabled="takingOver"
+                @click="handleTakeOver(true)"
+              >
+                {{ t('run.syncOwner.continueAnyway') }}
+              </button>
+              <button
+                type="button"
+                class="shrink-0 flex items-center gap-1 rounded-md bg-primary px-2.5 h-7 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors cursor-pointer disabled:opacity-50"
+                :disabled="takingOver"
+                @click="handleTakeOver()"
+              >
+                <component :is="takingOver ? Loader2 : RefreshCw" class="h-3.5 w-3.5" :class="{ 'animate-spin': takingOver }" :stroke-width="2" />
+                {{ t('run.syncOwner.retry') }}
+              </button>
+            </template>
             <template v-else>
               <span class="flex-1 min-w-0 truncate text-muted-foreground">
                 {{ t('run.syncOwner.lastRanOn', { device: currentOwnerName }) }}
@@ -4648,7 +4695,7 @@ function handleRefInput(val: string) {
                 type="button"
                 class="shrink-0 flex items-center gap-1 rounded-md bg-primary px-2.5 h-7 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors cursor-pointer disabled:opacity-50"
                 :disabled="takingOver"
-                @click="handleTakeOver"
+                @click="handleTakeOver()"
               >
                 <component :is="takingOver ? Loader2 : Play" class="h-3.5 w-3.5" :class="{ 'animate-spin': takingOver }" :stroke-width="2" />
                 {{ t('run.syncOwner.continueHere') }}

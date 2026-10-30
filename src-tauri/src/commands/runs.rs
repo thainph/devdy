@@ -1077,6 +1077,22 @@ pub async fn cancel_run(
     cancel_run_inner(registry.inner(), db.inner(), &run_id, true).await
 }
 
+/// Remove a run from the registry and kill its sidecar; false when it was not
+/// live here. Writes nothing: the drain sees the missing entry as a cancel.
+pub(crate) async fn stop_local_sidecar(registry: &RunRegistry, run_id: &str) -> bool {
+    let handle = registry.lock().await.remove(run_id);
+    let Some(mut handles) = handle else { return false };
+    // Kill the whole process group (node sidecar + claude/codex CLI), then
+    // reap the node handle. Group kill prevents an orphaned CLI lingering.
+    // The stored group id, not `child.id()`: once the drain has reaped the
+    // sidecar, `id()` is None while its CLI/MCP descendants may live on.
+    if let Some(pgid) = handles.pgid {
+        kill_process_group(pgid);
+    }
+    let _ = handles.child.kill().await;
+    true
+}
+
 /// Core of [`cancel_run`] over concrete refs so the Remote Control host agent
 /// (FR-009 `cancel_run`) can reuse it without a Tauri `State`.
 ///
@@ -1089,25 +1105,10 @@ pub(crate) async fn cancel_run_inner(
     stamp_activity: bool,
 ) -> Result<(), String> {
     let run_id = run_id.to_string();
-    let handle = {
-        let mut reg = registry.lock().await;
-        reg.remove(&run_id)
-    };
     // Not running here: marking it cancelled would clobber (via sync) the
     // device that is actually running it.
-    if handle.is_none() {
+    if !stop_local_sidecar(registry, &run_id).await {
         crate::sync::sessions::ensure_not_held_elsewhere(db, &run_id).await?;
-    }
-
-    if let Some(mut handles) = handle {
-        // Kill the whole process group (node sidecar + claude/codex CLI), then
-        // reap the node handle. Group kill prevents an orphaned CLI lingering.
-        // The stored group id, not `child.id()`: once the drain has reaped the
-        // sidecar, `id()` is None while its CLI/MCP descendants may live on.
-        if let Some(pgid) = handles.pgid {
-            kill_process_group(pgid);
-        }
-        let _ = handles.child.kill().await;
     }
 
     let cancelled_at = chrono::Utc::now().to_rfc3339();

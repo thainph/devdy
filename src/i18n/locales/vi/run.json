@@ -216,6 +216,10 @@
     "dirty": "có thay đổi chưa commit",
     "unknown": "không rõ",
     "noRepo": "không có git repository",
-    "transcriptMissing": "Transcript của session chưa đồng bộ về máy này — tin nhắn tiếp theo sẽ bắt đầu hội thoại mới, không có ngữ cảnh trước đó."
+    "transcriptMissing": "Transcript của session chưa đồng bộ về máy này — tin nhắn tiếp theo sẽ bắt đầu hội thoại mới, không có ngữ cảnh trước đó.",
+    "stillSyncing": "Đang đồng bộ output cuối cùng từ {device} ({percent}%).",
+    "retry": "Thử lại",
+    "continueAnyway": "Vẫn tiếp tục",
+    "continuedOn": "Session này đã được tiếp tục trên {device}; đã dừng ở máy này."
   }
 }
