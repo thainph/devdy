@@ -177,19 +177,26 @@ pub async fn sync_leave(
     db: State<'_, Db>,
     state: State<'_, SyncManager>,
 ) -> Result<bool, String> {
-    // Hand the leader role on and drop this device's record while the engine
-    // can still push it.
+    // Hand the leader / creator roles on and drop this device's record while
+    // the engine can still push it; the relay is told the creator's successor.
+    let mut successor = None;
     if let Some(sync) = crate::secrets::get_sync_secrets() {
         if state.engine.lock().await.is_some() {
             match leader::on_leave(db.inner(), &sync.device_id).await {
-                Ok(()) => state.flush(Duration::from_secs(5)).await,
+                Ok(next) => {
+                    successor = next;
+                    state.flush(Duration::from_secs(5)).await;
+                }
                 Err(e) => tracing::warn!(event = "sync_leave_handover_failed", error = %e),
             }
+        }
+        if successor.is_none() && leader::creator(db.inner()).await.as_deref() == Some(sync.device_id.as_str()) {
+            successor = leader::leave_successor(db.inner(), &sync.device_id).await;
         }
     }
     crate::sync::pair::close_accept_window();
     state.stop().await;
-    let revoked = crate::sync::pair::leave(db.inner()).await?;
+    let revoked = crate::sync::pair::leave(db.inner(), successor.as_deref()).await?;
     emit_disabled(&app);
     Ok(revoked)
 }

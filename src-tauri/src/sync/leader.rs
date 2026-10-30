@@ -7,10 +7,19 @@
 //! - `sync_device_name:<device id>` = `{"name", "last_seen"}`, one row per
 //!   device, written only by that device (so concurrent edits never collide).
 //!   The settings filter accepts the prefix (`schema::SYNCED_SETTING_PREFIXES`).
-//! - `sync_group_creator` = the device that created the group. The relay lets
-//!   only that device remove others; the UI reads this to explain it. The
+//! - `sync_group_creator` = the device that may remove others (the relay
+//!   enforces it; the UI reads this to explain it). It starts as the device
+//!   that created the group; when that device leaves, the relay moves the role
+//!   to the successor it names (or the oldest remaining member) and tells
+//!   every device (`sync_welcome` / `sync_group_info` → [`set_creator`]). The
 //!   creator starts as leader, and removing / losing the leader hands the role
-//!   to the remover or the creator so singleton jobs never stop silently.
+//!   on (remover, creator, or the leaver's successor) so singleton jobs never
+//!   stop silently.
+//!
+//! Leader hand-overs are decided by one device only — the remover, or the
+//! leaving leader itself — and the only automatic claim ([`heal_leader`]) is
+//! made by the relay-designated creator, so two devices never both take the
+//! role.
 //!
 //! Whether this device is in a group comes from the running engine
 //! (`set_sync_active`), not the Keychain, so the check is cheap enough for a
@@ -116,6 +125,16 @@ pub async fn is_leader(db: &Db) -> bool {
 
 pub async fn creator(db: &Db) -> Option<String> {
     setting(db, KEY_CREATOR).await.filter(|c| !c.trim().is_empty())
+}
+
+/// The relay named `device_id` the group's creator. Written only when it
+/// differs, so devices that agree add no ops.
+pub async fn set_creator(db: &Db, device_id: &str) -> Result<(), String> {
+    let id = device_id.trim();
+    if id.is_empty() || creator(db).await.as_deref() == Some(id) {
+        return Ok(());
+    }
+    put_setting(db, KEY_CREATOR, id).await
 }
 
 /// This device just created the group: it is the creator and the leader.
@@ -252,15 +271,37 @@ pub async fn forget_device(db: &Db, device_id: &str, by: &str) -> Result<(), Str
     Ok(())
 }
 
-/// This device is leaving: drop its record, and hand the leader role to the
-/// creator (or clear it when the creator is the one leaving).
-pub async fn on_leave(db: &Db, me: &str) -> Result<(), String> {
+/// The device a leaving `me` hands its roles to: among the other known
+/// devices, the one seen most recently (likeliest to be alive), ties by id.
+/// Deterministic, and only the leaving device evaluates it.
+pub async fn leave_successor(db: &Db, me: &str) -> Option<String> {
+    let devices = list_devices(db, me).await.ok()?;
+    devices
+        .into_iter()
+        .filter(|d| !d.is_self)
+        .max_by(|a, b| a.last_seen.cmp(&b.last_seen).then_with(|| b.id.cmp(&a.id)))
+        .map(|d| d.id)
+}
+
+/// This device is leaving: drop its record and hand its roles on. If it is the
+/// creator, the role goes to [`leave_successor`] (returned, for the relay's
+/// `sync_revoke{successor}`); if it leads, the leader role goes to the
+/// (new) creator, else the successor — cleared only when no device is left.
+pub async fn on_leave(db: &Db, me: &str) -> Result<Option<String>, String> {
+    let successor = leave_successor(db, me).await;
+    let creator = creator(db).await;
+    let am_creator = creator.as_deref() == Some(me);
+    if am_creator {
+        if let Some(next) = &successor {
+            put_setting(db, KEY_CREATOR, next).await?;
+        }
+    }
     delete_setting(db, &name_key(me)).await?;
     if leader(db).await.as_deref() == Some(me) {
-        let next = creator(db).await.filter(|c| c != me);
-        set_leader(db, next.as_deref()).await?;
+        let next = if am_creator { successor.clone() } else { creator.filter(|c| c != me) };
+        set_leader(db, next.or_else(|| successor.clone()).as_deref()).await?;
     }
-    Ok(())
+    Ok(successor.filter(|_| am_creator))
 }
 
 /// The creator takes the leader role back when the leader's device record is
@@ -393,12 +434,12 @@ mod tests {
 
         // The leader leaves: the role goes back to the creator.
         set_leader(&db, Some("mini")).await.unwrap();
-        on_leave(&db, "mini").await.unwrap();
+        assert_eq!(on_leave(&db, "mini").await.unwrap(), None, "not the creator: no successor to name");
         assert_eq!(leader(&db).await.as_deref(), Some("me"));
         assert!(record(&db, "mini").await.is_none());
 
-        // The creator leaving clears it.
-        on_leave(&db, "me").await.unwrap();
+        // The last device leaving clears it.
+        assert_eq!(on_leave(&db, "me").await.unwrap(), None);
         assert!(leader(&db).await.is_none());
 
         // A leader whose record vanished is healed by the creator only.
@@ -408,6 +449,38 @@ mod tests {
         assert!(heal_leader(&db, "me").await.unwrap());
         assert_eq!(leader(&db).await.as_deref(), Some("me"));
         assert!(!heal_leader(&db, "me").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn creator_leaving_hands_both_roles_to_one_successor() {
+        let db = db().await;
+        claim_group(&db, "me").await.unwrap();
+        touch_self(&db, "me", "MacBook").await.unwrap();
+        for (id, seen) in [("old", 1), ("fresh-b", 9), ("fresh-a", 9)] {
+            write_record(&db, id, &DeviceRecord { name: id.into(), last_seen: Some(seen) }).await.unwrap();
+        }
+        // Most recently seen wins, ties by id: the same answer on every call.
+        assert_eq!(leave_successor(&db, "me").await.as_deref(), Some("fresh-a"));
+        assert_eq!(on_leave(&db, "me").await.unwrap().as_deref(), Some("fresh-a"));
+        assert_eq!(creator(&db).await.as_deref(), Some("fresh-a"));
+        assert_eq!(leader(&db).await.as_deref(), Some("fresh-a"), "leader is never cleared while devices remain");
+
+        // A non-creator leader leaving while the creator is unknown: successor.
+        sqlx::query("DELETE FROM settings WHERE key = ?").bind(KEY_CREATOR).execute(&db).await.unwrap();
+        assert_eq!(on_leave(&db, "fresh-a").await.unwrap(), None);
+        assert_eq!(leader(&db).await.as_deref(), Some("fresh-b"));
+
+        // The relay's word on the creator is stored; agreeing writes nothing.
+        set_creator(&db, "old").await.unwrap();
+        assert_eq!(creator(&db).await.as_deref(), Some("old"));
+        let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_outbox").fetch_one(&db).await.unwrap();
+        set_creator(&db, "old").await.unwrap();
+        let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_outbox").fetch_one(&db).await.unwrap();
+        assert_eq!(before, after);
+        // The new creator heals a leader whose record is gone.
+        set_leader(&db, Some("fresh-a")).await.unwrap();
+        assert!(heal_leader(&db, "old").await.unwrap());
+        assert_eq!(leader(&db).await.as_deref(), Some("old"));
     }
 
     #[tokio::test]

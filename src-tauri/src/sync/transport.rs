@@ -8,8 +8,9 @@
 //!
 //! Requests are strictly sequential (one in flight per connection) and carry
 //! an `id` the relay echoes on the reply or error, which is how replies are
-//! matched; a reply without an `id` is matched by type. `sync_notify` is the
-//! only unsolicited frame and is surfaced as an [`Event`]. Payloads (`blob`,
+//! matched; a reply without an `id` is matched by type. The unsolicited
+//! `sync_notify` / `sync_group_info` frames (and the welcome's
+//! `creator_device`) are surfaced as [`Event`]s. Payloads (`blob`,
 //! `data`) and tokens are never logged.
 
 use futures_util::{SinkExt, StreamExt};
@@ -91,6 +92,12 @@ pub struct Frame {
     pub code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// `sync_welcome` / `sync_group_info`: the device that may revoke others.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creator_device: Option<String>,
+    /// `sync_revoke` of the creator by itself: who takes the creator role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub successor: Option<String>,
     /// Keepalive frames share the Remote Control envelope, which carries one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub room_id: Option<String>,
@@ -175,6 +182,8 @@ pub const MAX_TICKET_TTL_SECS: u64 = 600;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     Notify(u64),
+    /// The group's creator per the relay (on welcome, and when it moves).
+    Creator(String),
     Closed,
 }
 
@@ -257,7 +266,12 @@ impl Connection {
                     continue;
                 };
                 match frame.t.as_str() {
-                    "sync_welcome" => return Ok(()),
+                    "sync_welcome" => {
+                        if let Some(c) = frame.creator_device.filter(|c| !c.is_empty()) {
+                            let _ = events.send(Event::Creator(c));
+                        }
+                        return Ok(());
+                    }
                     "error" => {
                         let code = frame.code.unwrap_or_else(|| "error".into());
                         return Err(if is_fatal_code(&code) {
@@ -318,6 +332,11 @@ impl Connection {
                         match frame.t.as_str() {
                             "sync_notify" => {
                                 let _ = events.send(Event::Notify(frame.last_seq.unwrap_or(0)));
+                            }
+                            "sync_group_info" => {
+                                if let Some(c) = frame.creator_device.filter(|c| !c.is_empty()) {
+                                    let _ = events.send(Event::Creator(c));
+                                }
                             }
                             "keepalive" => {}
                             t => {
@@ -454,8 +473,16 @@ impl Connection {
     /// `sync_revoke{device_id}` → `control{code:"ok"}`. A device may revoke
     /// itself; only the group's creator may revoke another (`forbidden`).
     pub async fn revoke(&self, device_id: &str) -> Result<(), TransportError> {
+        self.revoke_with(device_id, None).await
+    }
+
+    /// [`Connection::revoke`] naming the device that takes the creator role
+    /// when the creator revokes itself (the relay falls back to the oldest
+    /// active member when `successor` is not one).
+    pub async fn revoke_with(&self, device_id: &str, successor: Option<&str>) -> Result<(), TransportError> {
         let mut f = Frame::new("sync_revoke");
         f.device_id = Some(device_id.to_string());
+        f.successor = successor.map(str::to_string);
         let r = self.request_within(f, &["control"], Duration::from_secs(10)).await?;
         match r.code.as_deref() {
             Some("ok") => Ok(()),
@@ -583,7 +610,12 @@ mod tests {
         drop(c);
 
         a.revoke("b").await.unwrap();
-        let ev = tokio::time::timeout(Duration::from_secs(5), rx_b.recv()).await.unwrap();
+        let ev = loop {
+            match tokio::time::timeout(Duration::from_secs(5), rx_b.recv()).await.unwrap() {
+                Some(Event::Creator(_)) => continue,
+                other => break other,
+            }
+        };
         drop(b);
         assert_eq!(ev, Some(Event::Closed));
         let (tx, _rx) = mpsc::unbounded_channel();
@@ -596,6 +628,27 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         let err = Connection::connect(&bad, false, tx).await.err();
         assert_eq!(err, Some(TransportError::Rejected("auth_failed".into())));
+    }
+
+    async fn recv(rx: &mut mpsc::UnboundedReceiver<Event>) -> Option<Event> {
+        tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn creator_leaving_hands_the_role_to_its_successor() {
+        let relay = crate::sync::test_relay::TestRelay::start().await;
+        let (tx_a, mut rx_a) = mpsc::unbounded_channel();
+        let a = Connection::connect(&params(&relay, "a"), true, tx_a).await.unwrap();
+        assert_eq!(recv(&mut rx_a).await, Some(Event::Creator("a".into())), "welcome names the creator");
+        let (_b, mut rx_b) = join(&relay, &a, "b").await;
+        let (c, mut rx_c) = join(&relay, &a, "c").await;
+        assert_eq!(recv(&mut rx_b).await, Some(Event::Creator("a".into())));
+        assert_eq!(recv(&mut rx_c).await, Some(Event::Creator("a".into())));
+
+        let _ = a.revoke_with("a", Some("c")).await;
+        assert_eq!(recv(&mut rx_b).await, Some(Event::Creator("c".into())));
+        assert_eq!(recv(&mut rx_c).await, Some(Event::Creator("c".into())));
+        c.revoke("b").await.unwrap();
     }
 
     #[tokio::test]

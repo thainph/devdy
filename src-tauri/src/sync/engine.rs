@@ -314,6 +314,12 @@ async fn serve(
             }
             ev = events.recv() => match ev {
                 Some(Event::Notify(_)) => true,
+                Some(Event::Creator(c)) => {
+                    if let Err(e) = ctx.store.set_group_creator(&c).await {
+                        tracing::warn!(event = "sync_creator_store_failed", error = %e);
+                    }
+                    false
+                }
                 Some(Event::Closed) | None => return,
             },
             _ = ctx.shared.kick.notified() => {
