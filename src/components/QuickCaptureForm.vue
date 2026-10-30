@@ -15,6 +15,8 @@ import { useTodosStore } from '@/stores/todos'
 import { useNotesStore } from '@/stores/notes'
 import { useProjectsStore } from '@/stores/projects'
 import { useQuickCapture, type QuickCaptureTab } from '@/composables/useQuickCapture'
+import TodoMetaFields from '@/components/focus/TodoMetaFields.vue'
+import { draftToInput } from '@/lib/focus'
 
 const props = withDefaults(defineProps<{ autofocus?: boolean }>(), { autofocus: true })
 
@@ -32,6 +34,7 @@ const projects = useProjectsStore()
 const {
   tab,
   todoText,
+  todoMeta,
   noteTitle,
   noteContent,
   projectId,
@@ -60,9 +63,12 @@ const effectiveRunId = computed(() =>
     : null,
 )
 
+// The todo's add_todo args (null while the estimate can't be read).
+const todoInput = computed(() => draftToInput({ ...todoMeta.value, text: todoText.value }))
+
 const canSubmit = computed(() =>
   tab.value === 'todo'
-    ? todoText.value.trim().length > 0
+    ? !!todoInput.value
     : noteTitle.value.trim().length > 0 || noteContent.value.trim().length > 0,
 )
 
@@ -88,7 +94,8 @@ async function submit() {
   const project = projectId.value || null
   try {
     if (savedTab === 'todo') {
-      await todos.add(todoText.value, project, effectiveRunId.value)
+      const { dueDate, dueTime, priority, estimateMin, sourceUrl } = todoInput.value!
+      await todos.add(todoText.value, project, effectiveRunId.value, { dueDate, dueTime, priority, estimateMin, sourceUrl })
       toast.success(t('item.todoAdded'))
     } else {
       await notes.add(noteTitle.value, noteContent.value, project, effectiveRunId.value)
@@ -133,9 +140,10 @@ defineExpose({ submit, canSubmit, saving, focus: focusFirstField })
       <Textarea
         ref="todoRef"
         v-model="todoText"
-        class="min-h-[8rem] flex-1"
+        class="min-h-[6rem] flex-1"
         :placeholder="t('item.todoPlaceholder')"
       />
+      <TodoMetaFields v-model="todoMeta" class="shrink-0" />
     </template>
 
     <!-- Note -->

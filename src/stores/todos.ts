@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@/lib/tauri'
 import { ref } from 'vue'
+import type { AddTodoInput } from '@/lib/focus'
 
 /**
  * Global "quick note" todo list, persisted in the app SQLite DB (todos table)
@@ -41,11 +42,18 @@ export const useTodosStore = defineStore('todos', () => {
     }
   }
 
-  async function add(text: string, projectId?: string | null, runId?: string | null) {
+  /** `extra` carries the Focus fields of the "+ Todo" form (deadline time, priority, estimate, source). */
+  async function add(
+    text: string,
+    projectId?: string | null,
+    runId?: string | null,
+    extra: Omit<AddTodoInput, 'text' | 'projectId' | 'runId'> = {},
+  ) {
     const trimmed = text.trim()
     if (!trimmed) return
     try {
       const todo = await invoke<Todo>('add_todo', {
+        ...extra,
         text: trimmed,
         projectId: projectId ?? null,
         // The session it was written in becomes a `captured` link.
