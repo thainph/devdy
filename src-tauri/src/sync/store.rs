@@ -527,6 +527,64 @@ async fn drop_entries(conn: &mut sqlx::SqliteConnection, tbl: &str, pk: &str, up
     Ok(())
 }
 
+/// One parked row (`sync_parked`), for Settings → Sync.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ParkedRow {
+    pub tbl: String,
+    /// The primary key, readable: the id, or `k=v, k=v` for composite keys.
+    pub pk: String,
+    /// Why the relay refused it (`too_large`, `bad_request`).
+    pub reason: String,
+    /// Unix millis.
+    pub parked_at: i64,
+}
+
+/// Canonical pk JSON (`"id"` or `{"a":1,"b":"x"}`) as a short label.
+fn pk_summary(pk: &str) -> String {
+    let plain = |v: &Value| match v {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    match serde_json::from_str::<Value>(pk) {
+        Ok(Value::Object(m)) => m.iter().map(|(k, v)| format!("{k}={}", plain(v))).collect::<Vec<_>>().join(", "),
+        Ok(v) => plain(&v),
+        Err(_) => pk.to_string(),
+    }
+}
+
+/// The newest parked rows (at most `limit`).
+pub async fn parked_list(db: &Db, limit: usize) -> Result<Vec<ParkedRow>, String> {
+    let rows: Vec<(String, String, String, i64)> = sqlx::query_as(
+        "SELECT tbl, pk, reason, parked_at FROM sync_parked ORDER BY parked_at DESC, tbl, pk LIMIT ?",
+    )
+    .bind(limit as i64)
+    .fetch_all(db)
+    .await
+    .map_err(err)?;
+    Ok(rows
+        .into_iter()
+        .map(|(tbl, pk, reason, parked_at)| ParkedRow { tbl, pk: pk_summary(&pk), reason, parked_at })
+        .collect())
+}
+
+/// Queue every parked row for push again (the current row decides what goes
+/// out) and forget the records. Returns how many were queued. A row the relay
+/// still refuses is parked again on the next push.
+pub async fn parked_retry(db: &Db) -> Result<usize, String> {
+    let mut tx = db.begin().await.map_err(err)?;
+    let n = sqlx::query(
+        "INSERT INTO sync_outbox (tbl, pk, op, changed_at) SELECT tbl, pk, 'U', ? FROM sync_parked ORDER BY parked_at",
+    )
+    .bind(wall_ms() as i64)
+    .execute(&mut *tx)
+    .await
+    .map_err(err)?
+    .rows_affected();
+    sqlx::query("DELETE FROM sync_parked").execute(&mut *tx).await.map_err(err)?;
+    tx.commit().await.map_err(err)?;
+    Ok(n as usize)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1019,6 +1077,36 @@ mod tests {
         *kc_b.broken.lock().unwrap() = false;
         assert_eq!(crate::sync::secrets::run_key_moves(&db_b, kc_b.clone()).await.unwrap(), 1);
         assert_eq!(kc_b.get("github", "gh-0").as_deref(), Some("kept"));
+    }
+
+    #[test]
+    fn pk_summary_reads_plain_and_composite_keys() {
+        assert_eq!(pk_summary(r#""t1""#), "t1");
+        assert_eq!(pk_summary(r#"{"a":1,"b":"x"}"#), "a=1, b=x");
+        assert_eq!(pk_summary("not json"), "not json");
+    }
+
+    #[tokio::test]
+    async fn parked_rows_are_listed_and_retried() {
+        let db = mem_db().await;
+        let store = SqliteSyncStore::new(db.clone(), "dev-a".into());
+        sqlx::query("INSERT INTO todos (id, text, position, created_at) VALUES ('t1', 'huge', 0, 'x')")
+            .execute(&db)
+            .await
+            .unwrap();
+        let seq = store.pending(10).await.unwrap()[0].0;
+        store.park(seq, "too_large").await.unwrap();
+        assert!(store.pending(10).await.unwrap().is_empty());
+
+        let list = parked_list(&db, 50).await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!((list[0].tbl.as_str(), list[0].pk.as_str(), list[0].reason.as_str()), ("todos", "t1", "too_large"));
+
+        assert_eq!(parked_retry(&db).await.unwrap(), 1);
+        assert_eq!(store.parked_count().await.unwrap(), 0);
+        let again: Vec<_> = store.pending(10).await.unwrap().into_iter().map(|(_, o)| o.pk).collect();
+        assert_eq!(again, vec![json!("t1")]);
+        assert_eq!(parked_retry(&db).await.unwrap(), 0);
     }
 
 }

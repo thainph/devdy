@@ -3,11 +3,12 @@ import { computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useSyncStore } from '@/stores/sync'
-import { ageParts, syncStateKey, syncTone } from '@/lib/syncCore'
+import { SYNC_DOT_CLASS, ageParts, syncErrorCode, syncStateKey, syncTone } from '@/lib/syncCore'
 import { isRemoteMode } from '@/lib/ipc/remote'
 
 /**
- * Sidebar-footer dot for two-way sync: colour = state, tooltip = state + last pull + pending.
+ * Sidebar-footer dot for two-way sync: colour = state, tooltip = state + last pull + pending +
+ * refused (parked) changes + the last error.
  * Hidden while this device is not in a sync group and in remote-desktop windows (it would show
  * the other machine's state). Click opens Settings → Sync.
  */
@@ -20,14 +21,6 @@ const enabled = !isRemoteMode()
 const status = computed(() => store.status)
 const tone = computed(() => syncTone(status.value, store.mergePending))
 
-const DOT: Record<string, string> = {
-  off: 'bg-muted-foreground/40',
-  ok: 'bg-emerald-500',
-  busy: 'bg-sky-500',
-  warn: 'bg-amber-500',
-  error: 'bg-destructive',
-}
-
 const tooltip = computed(() => {
   const s = status.value
   const { unit, n } = ageParts(s.last_pull)
@@ -36,7 +29,11 @@ const tooltip = computed(() => {
     `${t('settings.sync.status.lastPull')}: ${t(`settings.sync.ago.${unit}`, { n })}`,
   ]
   if (s.pending) parts.push(`${t('settings.sync.status.pending')}: ${s.pending}`)
-  if (s.last_error && s.state !== 'online') parts.push(s.last_error)
+  if (s.parked) parts.push(t('settings.sync.parked.tooltip', { n: s.parked }))
+  if (s.last_error && s.state !== 'online') {
+    const code = syncErrorCode(s.last_error)
+    parts.push(code ? t(`settings.sync.errors.${code}`) : s.last_error)
+  }
   return parts.join('\n')
 })
 
@@ -60,11 +57,11 @@ onMounted(() => {
   >
     <span class="relative flex h-2 w-2">
       <span
-        v-if="tone === 'busy'"
+        v-if="tone === 'syncing'"
         class="absolute inline-flex h-full w-full rounded-full opacity-60 animate-ping"
-        :class="DOT[tone]"
+        :class="SYNC_DOT_CLASS[tone]"
       />
-      <span class="relative inline-flex h-2 w-2 rounded-full" :class="DOT[tone]" />
+      <span class="relative inline-flex h-2 w-2 rounded-full" :class="SYNC_DOT_CLASS[tone]" />
     </span>
     {{ t('settings.sync.short') }}
   </button>
