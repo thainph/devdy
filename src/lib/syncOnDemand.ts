@@ -103,7 +103,7 @@ export interface SkipItem {
   path: string
   /** `too_large` | `symlink_outside` | `submodule` | `git_link` | `non_utf8` | `repo_only_here` |
    *  `path_conflict` | `unsafe_path` | `no_repo_here` | `branch_in_worktree` | `lfs` |
-   *  `changed_since_preview` | other. */
+   *  `changed_since_preview` | `ref_conflict` | other. */
   reason: string
   size?: number | null
 }

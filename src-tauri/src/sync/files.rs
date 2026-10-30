@@ -3059,7 +3059,9 @@ pub(crate) mod tests {
         let mut st = ScanState::default();
         assert_eq!(st.tail_idle, TAIL_IDLE);
         assert_eq!(Timing::default().tail_idle(), Duration::from_secs(10));
-        st.tail_idle = Duration::from_millis(600);
+        // Wide enough that the quick rescan below stays inside half of it
+        // even when the whole suite runs in parallel.
+        st.tail_idle = Duration::from_secs(3);
 
         // Only a partial chunk, just written: nothing goes up yet.
         fs::write(&log, b"turn 1\n").unwrap();
@@ -3079,7 +3081,7 @@ pub(crate) mod tests {
 
         // Stopped growing for half the idle time: the tail goes up. Its
         // mtime is irrelevant (a fresh one does not hold it back).
-        tokio::time::sleep(Duration::from_millis(350)).await;
+        tokio::time::sleep(Duration::from_millis(1600)).await;
         fs::File::options().append(true).open(&log).unwrap().set_modified(std::time::SystemTime::now()).unwrap();
         assert_eq!(stage(&db, &p, &blobs, &mut st, ScanMode::Quick, false).await.unwrap(), 1);
         let rec = record(&db, FileKind::RunLog, portable).await;

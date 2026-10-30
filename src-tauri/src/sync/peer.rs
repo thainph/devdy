@@ -9,6 +9,9 @@
 //! and dispatches incoming requests to the registered [`PeerHandler`]s;
 //! [`testing::pair`] links two in-memory ends for tests.
 
+// `#[async_trait]` marks the boxed futures `#[must_use]` a second time.
+#![allow(clippy::double_must_use)]
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
