@@ -67,6 +67,9 @@ pub const LEADER_SYNCED: &str = "leader_synced";
 pub const STILL_WORKING: &str = "still_working";
 /// Too many requests of that device in flight here.
 pub const PEER_BUSY: &str = "busy";
+/// The requester gave up on its request `reply_to` (dropped the replies or
+/// timed out): the source stops serving it.
+pub const PEER_CANCEL: &str = "cancel";
 /// Requests of one device served at once; more are answered [`PEER_BUSY`].
 const MAX_SERVED_PER_PEER: usize = 4;
 /// The other device has no live relay connection (the relay's code).
@@ -238,6 +241,8 @@ struct Shared {
     flush_done: AtomicU64,
     /// Requests being served, per requesting device.
     serving: Mutex<HashMap<String, usize>>,
+    /// Tasks serving requests, by (requester, request id), to abort them.
+    served: Mutex<HashMap<(String, String), tokio::task::AbortHandle>>,
 }
 
 impl Shared {
@@ -256,6 +261,7 @@ impl Shared {
             blob_refusal: Mutex::new(BlobRefusal::default()),
             flush_done: AtomicU64::new(0),
             serving: Mutex::new(HashMap::new()),
+            served: Mutex::new(HashMap::new()),
         }
     }
 
@@ -571,6 +577,12 @@ fn on_peer_msg(ctx: &Arc<Ctx>, from: String, data: &str) {
         tracing::warn!(event = "sync_peer_msg_invalid");
         return;
     };
+    if msg.kind == PEER_CANCEL {
+        if let Some(id) = msg.reply_to.as_deref() {
+            abort_served(ctx, &from, id);
+        }
+        return;
+    }
     if let Some(to) = msg.reply_to.clone() {
         let Ok(mut pending) = ctx.shared.pending.lock() else { return };
         match pending.get(&to) {
@@ -594,10 +606,45 @@ fn on_peer_msg(ctx: &Arc<Ctx>, from: String, data: &str) {
         });
         return;
     };
-    tokio::spawn(async move {
+    let key = (from.clone(), msg.id.clone());
+    let entry = ServedEntry { ctx: ctx.clone(), key: key.clone() };
+    // Registered under the lock, so a task ending at once still finds (and
+    // removes) its entry. Aborting drops the slot and the entry with the task.
+    let shared = ctx.shared.clone();
+    let Ok(mut served) = shared.served.lock() else { return };
+    let task = tokio::spawn(async move {
+        let _held = (slot, entry);
         serve_request(ctx, from, msg).await;
-        drop(slot);
     });
+    served.insert(key, task.abort_handle());
+}
+
+/// Stop serving `from`'s request `id` (it gave up, or cannot be reached).
+fn abort_served(ctx: &Ctx, from: &str, id: &str) {
+    let handle = ctx
+        .shared
+        .served
+        .lock()
+        .ok()
+        .and_then(|mut s| s.remove(&(from.to_string(), id.to_string())));
+    if let Some(h) = handle {
+        tracing::info!(event = "sync_peer_request_aborted");
+        h.abort();
+    }
+}
+
+/// A served request's entry in `Shared::served`; removed on drop.
+struct ServedEntry {
+    ctx: Arc<Ctx>,
+    key: (String, String),
+}
+
+impl Drop for ServedEntry {
+    fn drop(&mut self) {
+        if let Ok(mut s) = self.ctx.shared.served.lock() {
+            s.remove(&self.key);
+        }
+    }
 }
 
 /// One of the [`MAX_SERVED_PER_PEER`] requests a device may have served here
@@ -723,7 +770,12 @@ impl Reply for PeerReply {
             last,
             body,
         };
-        send_peer(&self.ctx, &self.to, &msg).await
+        let sent = send_peer(&self.ctx, &self.to, &msg).await;
+        if sent.as_ref().is_err_and(|e| e == PEER_OFFLINE) {
+            // The requester is gone: stop working for it.
+            abort_served(&self.ctx, &self.to, &self.reply_to);
+        }
+        sent
     }
 }
 
@@ -753,19 +805,25 @@ async fn request(ctx: &Arc<Ctx>, to: &str, kind: &str, body: Value) -> Result<Re
         return Err(e);
     }
     let (out_tx, out_rx) = mpsc::channel(64);
-    let ctx = ctx.clone();
+    let (ctx, to) = (ctx.clone(), to.to_string());
     tokio::spawn(async move {
-        loop {
-            let m = match tokio::time::timeout(ctx.timing.peer_timeout, in_rx.recv()).await {
-                Ok(Some(m)) => m,
-                Ok(None) => {
-                    let _ = out_tx.send(Err("peer connection lost".into())).await;
-                    break;
-                }
-                Err(_) => {
-                    let _ = out_tx.send(Err(PEER_TIMEOUT.into())).await;
-                    break;
-                }
+        // Whether the stream ended before the source's `last` reply while the
+        // source may still be working on it.
+        let gave_up = loop {
+            let m = tokio::select! {
+                r = tokio::time::timeout(ctx.timing.peer_timeout, in_rx.recv()) => match r {
+                    Ok(Some(m)) => m,
+                    Ok(None) => {
+                        let _ = out_tx.send(Err("peer connection lost".into())).await;
+                        break false;
+                    }
+                    Err(_) => {
+                        let _ = out_tx.send(Err(PEER_TIMEOUT.into())).await;
+                        break true;
+                    }
+                },
+                // The requester dropped the replies.
+                _ = out_tx.closed() => break true,
             };
             let end = m.last || m.kind == ERROR_KIND;
             let item = if m.kind == ERROR_KIND {
@@ -773,11 +831,27 @@ async fn request(ctx: &Arc<Ctx>, to: &str, kind: &str, body: Value) -> Result<Re
             } else {
                 Ok((m.kind, m.body))
             };
-            if out_tx.send(item).await.is_err() || end {
-                break;
+            if out_tx.send(item).await.is_err() {
+                break !end;
+            }
+            if end {
+                break false;
+            }
+        };
+        forget(&ctx, &id);
+        if gave_up {
+            let cancel = PeerMsg {
+                v: PEER_MSG_VERSION,
+                id: new_msg_id(),
+                kind: PEER_CANCEL.to_string(),
+                reply_to: Some(id),
+                last: true,
+                body: Value::Null,
+            };
+            if let Err(e) = send_peer(&ctx, &to, &cancel).await {
+                tracing::debug!(event = "sync_peer_cancel_failed", error = %e);
             }
         }
-        forget(&ctx, &id);
     });
     Ok(out_rx)
 }
@@ -962,7 +1036,9 @@ async fn run_from(
         }
     }
     let cursor = ctx.store.cursor().await?;
-    if cursor < last_seq {
+    // Selective sync turned a category / project on meanwhile: the cursor was
+    // reset to 0 and the next sync pulls everything again.
+    if cursor < last_seq && !ctx.store.cursor_reset_pending().await? {
         return Err(format!("the relay is behind the source (at {cursor}, flushed up to {last_seq})"));
     }
     Ok(SyncRunReport { pulled: counts.pulled, applied: counts.applied, last_seq })
@@ -1335,6 +1411,8 @@ mod tests {
         stage_blobs: bool,
         /// Every `stage` takes this long (a big backlog).
         stage_delay: Option<Duration>,
+        /// A selective-sync cursor reset is pending: `set_cursor` is a no-op.
+        reset_pending: bool,
     }
 
     impl FakeStore {
@@ -1393,8 +1471,14 @@ mod tests {
             Ok(self.inner.lock().unwrap().cursor)
         }
         async fn set_cursor(&self, seq: u64) -> Result<(), String> {
-            self.inner.lock().unwrap().cursor = seq;
+            let mut g = self.inner.lock().unwrap();
+            if !g.reset_pending {
+                g.cursor = seq;
+            }
             Ok(())
+        }
+        async fn cursor_reset_pending(&self) -> Result<bool, String> {
+            Ok(self.inner.lock().unwrap().reset_pending)
         }
         async fn park(&self, seq: i64, reason: &str) -> Result<(), String> {
             let mut g = self.inner.lock().unwrap();
@@ -2244,6 +2328,126 @@ mod tests {
         );
         engine_b.stop().await;
         drop((home_a, home_b));
+    }
+
+    /// Review C: selective sync reset the cursor during the pull; the sync
+    /// still succeeds (the next one pulls everything again).
+    #[tokio::test]
+    async fn a_cursor_reset_during_a_sync_is_not_reported_as_relay_behind() {
+        let relay = TestRelay::start().await;
+        relay.create_group("g1");
+        let a = device(&relay, "dev-a", fast());
+        let b = device(&relay, "dev-b", fast());
+        online(&[&a, &b]).await;
+        a.store.add("notes", "n1", "one");
+        b.store.inner.lock().unwrap().reset_pending = true;
+        let report = b.sync_from("dev-a").await.unwrap();
+        assert_eq!((report.applied, report.last_seq), (1, 1));
+        assert_eq!(b.store.cursor(), 0, "left for the next sync to re-pull");
+        a.engine.stop().await;
+        b.engine.stop().await;
+    }
+
+    #[tokio::test]
+    async fn sqlite_store_reports_a_pending_cursor_reset() {
+        use crate::sync::files::tests::mem_db;
+        use crate::sync::store::SqliteSyncStore;
+        let db = mem_db().await;
+        let store = SqliteSyncStore::new(db.clone(), "dev-a".into());
+        assert!(!store.cursor_reset_pending().await.unwrap());
+        sqlx::query("INSERT INTO sync_state (key, value) VALUES (?, '1')")
+            .bind(crate::sync::prefs::CURSOR_RESET_KEY)
+            .execute(&db)
+            .await
+            .unwrap();
+        assert!(store.cursor_reset_pending().await.unwrap());
+    }
+
+    /// Sets the flag when dropped (the handler's task was aborted).
+    struct OnDrop(Arc<std::sync::atomic::AtomicBool>);
+
+    impl Drop for OnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Never finishes on its own; `chatty` sends a non-last reply every 30 ms.
+    struct Endless {
+        dropped: Arc<std::sync::atomic::AtomicBool>,
+        chatty: bool,
+    }
+
+    #[async_trait]
+    impl PeerHandler for Endless {
+        fn kinds(&self) -> &'static [&'static str] {
+            &["endless"]
+        }
+        async fn handle(&self, _link: Arc<dyn PeerLink>, _from: String, _kind: String, _body: Value, reply: Arc<dyn Reply>) {
+            let _guard = OnDrop(self.dropped.clone());
+            loop {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                if self.chatty {
+                    let _ = reply.send("tick", json!({}), false).await;
+                }
+            }
+        }
+    }
+
+    fn endless(b: &Device, chatty: bool) -> Arc<std::sync::atomic::AtomicBool> {
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        b.handlers.write().unwrap().push(Arc::new(Endless { dropped: dropped.clone(), chatty }));
+        dropped
+    }
+
+    fn nothing_served(d: &Device) -> bool {
+        let shared = &d.engine.handle().ctx.shared;
+        shared.serving.lock().unwrap().is_empty() && shared.served.lock().unwrap().is_empty()
+    }
+
+    /// Review D: a request the requester gave up on — replies dropped, or
+    /// timed out — is cancelled on the source: its task is aborted and its
+    /// slot freed.
+    #[tokio::test]
+    async fn abandoned_requests_are_cancelled_on_the_source() {
+        let relay = TestRelay::start().await;
+        relay.create_group("g1");
+        let mut t = fast();
+        t.peer_timeout = Duration::from_millis(300);
+        let a = device(&relay, "dev-a", t);
+        let b = device(&relay, "dev-b", fast());
+        online(&[&a, &b]).await;
+        let dropped = endless(&b, false);
+
+        let replies = a.link().request("dev-b", "endless", json!({})).await.unwrap();
+        eventually("served", || !nothing_served(&b)).await;
+        drop(replies);
+        eventually("aborted after the drop", || dropped.load(Ordering::SeqCst) && nothing_served(&b)).await;
+
+        dropped.store(false, Ordering::SeqCst);
+        let got = collect(a.link().request("dev-b", "endless", json!({})).await.unwrap()).await;
+        assert_eq!(got, vec![Err(PEER_TIMEOUT.to_string())]);
+        eventually("aborted after the timeout", || dropped.load(Ordering::SeqCst) && nothing_served(&b)).await;
+        a.engine.stop().await;
+        b.engine.stop().await;
+    }
+
+    /// Review D: a reply that cannot reach the requester (gone) stops the work.
+    #[tokio::test]
+    async fn work_for_a_requester_that_is_gone_stops() {
+        let relay = TestRelay::start().await;
+        relay.create_group("g1");
+        let a = device(&relay, "dev-a", fast());
+        let b = device(&relay, "dev-b", fast());
+        online(&[&a, &b]).await;
+        let dropped = endless(&b, true);
+        let replies = a.link().request("dev-b", "endless", json!({})).await.unwrap();
+        eventually("served", || !nothing_served(&b)).await;
+        // The requester disappears without cancelling (crash / quit).
+        std::mem::forget(replies);
+        a.engine.stop().await;
+        eventually("aborted", || dropped.load(Ordering::SeqCst) && nothing_served(&b)).await;
+        b.engine.stop().await;
     }
 
     type Side = (crate::db::Db, Ctx, Connection);
