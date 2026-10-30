@@ -1,34 +1,47 @@
-//! Core <-> client boundary (design §9.3). The sync engine only talks to
-//! `SyncStore`; `SqliteSyncStore` is the real implementation over Devdy's DB.
+//! Core <-> client boundary (design §9.3, on-demand-sync.md §P2). The sync
+//! engine and the change feed only talk to `SyncStore`; `SqliteSyncStore` is
+//! the real implementation over Devdy's DB.
+//!
+//! Local changes land in `sync_outbox` (capture triggers, file and Keychain
+//! scans) and are *stamped* before the feed is read: each changed row gets
+//! a fresh HLC no older than the change in `sync_rows`, which moves it to the
+//! end of the change feed (`sync_feed`, kept by triggers on `sync_rows`, so
+//! rows applied from the other device move there too). The outbox is just
+//! "changes not stamped yet" now; nothing is pushed anywhere.
+
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{Mutex, MutexGuard};
 
-use super::clock::{wall_ms, HlcClock};
+use super::clock::{wall_ms, Hlc, HlcClock};
 use super::codec::{encode_row, read_row, PathCtx};
-use super::op::{Op, OpKind, OP_VERSION};
 use super::events::{Notice, Notifier};
-use super::transport::RelayMark;
+use super::feed::{ChangesPage, ChangesReq, FileReadReq, FileScope};
+use super::files::FileSource;
+use super::op::{Op, OpKind, OP_VERSION};
 use super::{apply, files, prefs, schema, secrets, SCHEMA_VERSION};
 use crate::db::Db;
 
-pub const CURSOR_KEY: &str = "pull_cursor";
-/// `sync_state` key of the relay history mark (`transport::RelayMark`, JSON).
-pub const RELAY_MARK_KEY: &str = "relay_mark";
+/// `sync_state` key prefix of the cursor in another device's change feed
+/// (`peer_cursor:<device id>`).
+pub const CURSOR_PREFIX: &str = "peer_cursor:";
 /// A pulled file/secret op that keeps failing is dropped after this many tries.
 const MAX_EXTRA_ATTEMPTS: i64 = 50;
+/// Outbox rows stamped per transaction.
+const STAMP_BATCH: usize = 500;
+/// Largest op (JSON) a page carries: a sealed reply must stay below the
+/// relay's frame cap (4 MiB + 64 as base64).
+pub const MAX_OP_BYTES: usize = 2_560 * 1024;
+/// A `changes` request continuing the previous page of the same asker within
+/// this long does not rescan the files.
+const CONTINUE_WITHIN: Duration = Duration::from_secs(600);
 
-/// Forget the relay history mark: the next connection adopts the relay's
-/// epoch as it is (after a re-merge with a relay that lost ops).
-pub async fn clear_relay_mark(db: &Db) -> Result<(), String> {
-    sqlx::query("DELETE FROM sync_state WHERE key = ?")
-        .bind(RELAY_MARK_KEY)
-        .execute(db)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
+fn cursor_key(source: &str) -> String {
+    format!("{CURSOR_PREFIX}{source}")
 }
 
 /// Ops whose `tbl` is not a DB table (§9b): routed to `files` / `secrets`,
@@ -37,134 +50,57 @@ pub fn is_extra_tbl(tbl: &str) -> bool {
     tbl == files::TBL || tbl == secrets::TBL
 }
 
-/// The relay's sealed blob store as file sync uses it. The engine implements
-/// it over its connection (sealing with the group key); tests use a fake.
-#[allow(clippy::double_must_use)]
-#[async_trait]
-pub trait BlobIo: Send + Sync {
-    /// Seal and upload one plaintext chunk; returns the sealed blob's sha.
-    async fn put(&self, plaintext: &[u8]) -> Result<String, String>;
-    /// Download, verify and open one blob.
-    async fn get(&self, blob_sha: &str) -> Result<Vec<u8>, String>;
-}
-
-// async_trait's generated futures trip clippy::double_must_use (as elsewhere).
-#[allow(clippy::double_must_use)]
-/// Which files a flush uploads (sync is on-demand: the requester says what it
-/// wants). Rows queued in the outbox always go.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StageScope {
-    /// Every changed file (library, keys, run logs, CLI transcripts).
-    #[default]
-    All,
-    /// Everything but run logs and CLI transcripts (the bulk of the data).
-    NoSessions,
-    /// No file scan at all: rows only.
-    Nothing,
-}
-
 // `#[async_trait]` marks the boxed futures `#[must_use]` a second time.
 #[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait SyncStore: Send + Sync {
-    async fn pending(&self, limit: usize) -> Result<Vec<(i64 /*outbox seq*/, Op)>, String>;
-    /// Whether anything waits in the outbox (cheap; polled every few seconds).
-    async fn has_pending(&self) -> Result<bool, String> {
-        Ok(!self.pending(1).await?.is_empty())
-    }
-    async fn mark_pushed(&self, up_to_outbox_seq: i64) -> Result<(), String>;
-    /// [`SyncStore::pending`] restricted to rows of `tbls` (DB tables only).
-    async fn pending_in(&self, _tbls: &[&str], _limit: usize) -> Result<Vec<(i64, Op)>, String> {
-        Ok(Vec::new())
-    }
-    /// Those ops (from [`SyncStore::pending_in`]) were pushed: drop their
-    /// rows' outbox entries up to their seqs, leaving everything else queued.
-    async fn mark_ops_pushed(&self, _ops: &[(i64, Op)]) -> Result<(), String> {
-        Ok(())
-    }
+    /// Serve `changes` to device `from`: one page of this device's change
+    /// feed (non-DB sources rescanned first, unless the request continues the
+    /// previous page).
+    async fn changes(&self, from: &str, req: &ChangesReq) -> Result<ChangesPage, String>;
+    /// Serve `file_read`: a range of a tracked file (`feed::FILE_CHANGED` /
+    /// `feed::FILE_GONE` when that version is not here).
+    async fn read_file(&self, req: &FileReadReq) -> Result<Vec<u8>, String>;
+    /// Apply DB row ops from the other device (LWW, selective filters).
     async fn apply_remote(&self, ops: Vec<Op>) -> Result<ApplyReport, String>;
-    async fn cursor(&self) -> Result<u64, String>; // last pulled relay seq
-    async fn set_cursor(&self, seq: u64) -> Result<(), String>;
-    /// A pull cursor reset (selective sync turned something on) is waiting
-    /// for the next pull: the cursor reads 0 until then.
-    async fn cursor_reset_pending(&self) -> Result<bool, String> {
-        Ok(false)
-    }
-    /// The cursor a pull starts from (also ends a pending reset, which kept
-    /// earlier pulls from writing over it).
-    async fn pull_start(&self) -> Result<u64, String> {
-        self.cursor().await
-    }
-
-    /// Scan the non-DB sources that are due (files, Keychain), upload file
-    /// chunks and queue `file` / `secret` ops into the outbox. Called before
-    /// every push and on the outbox poll; cheap when nothing is due.
-    async fn stage(&self, _blobs: &dyn BlobIo) -> Result<(), String> {
-        Ok(())
-    }
-
-    /// [`SyncStore::stage`] limited to what the requesting device asked for.
-    async fn stage_scoped(&self, blobs: &dyn BlobIo, scope: StageScope) -> Result<(), String> {
-        match scope {
-            StageScope::Nothing => Ok(()),
-            StageScope::All | StageScope::NoSessions => self.stage(blobs).await,
-        }
-    }
-
-    /// Relay blobs this device stopped using whose release is due.
-    async fn releasable_blobs(&self, _limit: usize) -> Result<Vec<String>, String> {
-        Ok(Vec::new())
-    }
-
-    /// The relay took the release of `shas` (or never will): forget them.
-    async fn blobs_released(&self, _shas: &[String]) -> Result<(), String> {
-        Ok(())
-    }
-
-    /// Apply pulled `file` / `secret` ops (and retry earlier failed ones).
-    async fn apply_remote_extra(&self, ops: Vec<Op>, _blobs: &dyn BlobIo) -> Result<ApplyReport, String> {
-        Ok(ApplyReport { skipped_older: ops.len(), ..Default::default() })
-    }
-
-    /// The relay will never take the pending op at `outbox_seq` (too large,
-    /// malformed): drop that row's outbox entries up to it and record why, so
-    /// it stops blocking the push queue.
-    async fn park(&self, _outbox_seq: i64, _reason: &str) -> Result<(), String> {
-        Err("this store cannot park ops".into())
-    }
-
-    /// Rows whose latest change was parked.
-    async fn parked_count(&self) -> Result<u64, String> {
-        Ok(0)
-    }
-
+    /// File `file` / `secret` ops to fetch / apply later (the newest per
+    /// item wins). Returns how many were filed.
+    async fn park_extra(&self, ops: Vec<Op>) -> Result<usize, String>;
+    /// `(content bytes, items)` of the filed ops `scope` would fetch.
+    async fn extra_to_fetch(&self, scope: FileScope) -> Result<(u64, usize), String>;
+    /// Fetch / apply the filed ops in `scope` (contents read from `src`);
+    /// `on_item` runs after each one. Failures stay filed for the next try.
+    async fn fetch_extra(
+        &self,
+        src: &dyn FileSource,
+        scope: FileScope,
+        on_item: &(dyn Fn() + Send + Sync),
+    ) -> Result<ApplyReport, String>;
+    /// This device's position in `source`'s change feed.
+    async fn cursor(&self, source: &str) -> Result<u64, String>;
+    /// A no-op while a cursor reset is pending (see [`SyncStore::cursor_start`]).
+    async fn set_cursor(&self, source: &str, seq: u64) -> Result<(), String>;
+    /// The cursor a pull from `source` starts from; ends a pending reset
+    /// (selective sync turned something on), which kept pulls already
+    /// running from writing over it.
+    async fn cursor_start(&self, source: &str) -> Result<u64, String>;
+    /// `(skip_categories, skip_projects)` this device asks with.
+    async fn ask_filter(&self) -> Result<(Vec<String>, Vec<String>), String>;
     /// The relay named the group's creator (welcome, or the role moved).
     async fn set_group_creator(&self, _device_id: &str) -> Result<(), String> {
         Ok(())
     }
-
-    /// The relay store epoch this device last synced in and the highest seq
-    /// it saw there (restore detection, `Connection::check_history`).
-    async fn relay_mark(&self) -> Result<Option<RelayMark>, String> {
-        Ok(None)
-    }
-
-    async fn set_relay_mark(&self, _mark: &RelayMark) -> Result<(), String> {
-        Ok(())
-    }
-
-    /// This device saw relay seq `seq` (pulled, or acked for its push).
-    async fn note_relay_seq(&self, _seq: u64) -> Result<(), String> {
-        Ok(())
+    /// Rows too large to ever be served.
+    async fn parked_count(&self) -> Result<u64, String> {
+        Ok(0)
     }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
 pub struct ApplyReport {
     pub applied: usize,
-    /// Older than what we have, beaten by a newer unpushed local change, or a
-    /// machine-local setting.
+    /// Older than what we have, beaten by a newer unstamped local change, or
+    /// a machine-local setting.
     pub skipped_older: usize,
     pub conflicts: usize,
     /// Ops parked in `sync_deferred` after this call (retried on the next one).
@@ -175,14 +111,22 @@ pub struct SqliteSyncStore {
     db: Db,
     device_id: String,
     paths: PathCtx,
-    /// Loaded lazily from `sync_state`; the lock also serialises pending/apply.
+    /// Loaded lazily from `sync_state`; the lock also serialises stamping and
+    /// applying.
     clock: Mutex<Option<HlcClock>>,
     /// Keychain access for `secret` ops; `None` = secrets are not synced.
     secrets: Option<secrets::Backend>,
-    file_timing: files::Timing,
     scan: Mutex<files::ScanState>,
     /// Tells the UI what was applied (`None` in tests / bootstrap).
     notify: Option<Notifier>,
+    /// Per asking device: the `next` of the last page served with `more`.
+    serve_marks: std::sync::Mutex<HashMap<String, (u64, Instant)>>,
+    /// Tests: bytes served by `read_file`; reads from this offset on fail
+    /// (a transfer cut midway).
+    #[cfg(test)]
+    pub served_bytes: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    pub fail_reads_from: std::sync::Mutex<Option<u64>>,
 }
 
 fn err(e: sqlx::Error) -> String {
@@ -197,13 +141,21 @@ impl SqliteSyncStore {
             paths: PathCtx::from_env(),
             clock: Mutex::new(None),
             secrets: None,
-            file_timing: files::Timing::default(),
             scan: Mutex::new(files::ScanState::default()),
             notify: None,
+            serve_marks: Default::default(),
+            #[cfg(test)]
+            served_bytes: Default::default(),
+            #[cfg(test)]
+            fail_reads_from: Default::default(),
         }
     }
 
-    /// Pending ops, oldest first: of every row, or only of rows in `only`.
+    /// Unstamped changes coalesced per row, oldest first (of every row, or
+    /// only of rows in `only`), each with a fresh HLC no older than the
+    /// change, recorded in `sync_rows` (which moves the row to the end of the
+    /// change feed). The op carries the CURRENT row, or a Delete when it is
+    /// gone. [`SqliteSyncStore::mark_pushed`] drops the entries.
     async fn pending_filtered(&self, limit: usize, only: Option<&[&str]>) -> Result<Vec<(i64, Op)>, String> {
         if let Some(t) = only {
             // Polled while pushes back off: stay cheap when nothing waits.
@@ -286,6 +238,216 @@ impl SqliteSyncStore {
         Ok(out)
     }
 
+    /// [`SqliteSyncStore::pending_filtered`] of every row.
+    pub async fn pending(&self, limit: usize) -> Result<Vec<(i64, Op)>, String> {
+        self.pending_filtered(limit, None).await
+    }
+
+    /// Whether anything waits to be stamped.
+    pub async fn has_pending(&self) -> Result<bool, String> {
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM sync_outbox)").fetch_one(&self.db).await.map_err(err)
+    }
+
+    /// Those ops (from [`SqliteSyncStore::pending`]) are stamped: drop the
+    /// outbox entries up to `up_to_outbox_seq`.
+    pub async fn mark_pushed(&self, up_to_outbox_seq: i64) -> Result<(), String> {
+        sqlx::query("DELETE FROM sync_outbox WHERE seq <= ?")
+            .bind(up_to_outbox_seq)
+            .execute(&self.db)
+            .await
+            .map_err(err)?;
+        Ok(())
+    }
+
+    /// Stamp every local change waiting in the outbox. Returns how many rows.
+    pub async fn stamp(&self) -> Result<usize, String> {
+        let mut n = 0;
+        let mut idle = 0;
+        loop {
+            let ops = self.pending(STAMP_BATCH).await?;
+            if let Some((last, _)) = ops.last() {
+                self.mark_pushed(*last).await?;
+                n += ops.len();
+                continue;
+            }
+            // Whole batches of filtered rows come back empty; a secret
+            // queued while the Keychain was read waits for the next round.
+            idle += 1;
+            if idle > 3 || !self.has_pending().await? {
+                return Ok(n);
+            }
+        }
+    }
+
+    /// Rescan the non-DB sources in `scope` (files, Keychain).
+    async fn scan(&self, scope: FileScope) -> Result<(), String> {
+        if scope == FileScope::Nothing {
+            return Ok(());
+        }
+        let with_secrets = self.secrets_on().await?;
+        let paths = self.paths_now().await?;
+        let mut state = self.scan.lock().await;
+        state.skip_sessions = scope == FileScope::NoSessions;
+        files::scan(&self.db, &paths, &mut state, with_secrets).await?;
+        drop(state);
+        // Keychain moves left over by an earlier re-key (Keychain locked...).
+        self.move_secrets().await;
+        if let (Some(backend), true) = (&self.secrets, with_secrets) {
+            if let Err(e) = secrets::scan(&self.db, backend.clone()).await {
+                tracing::warn!(event = "sync_secret_scan_failed", error = %e);
+            }
+        }
+        Ok(())
+    }
+
+    /// The op of one feed entry as it is now; `None` = not served (filtered
+    /// row, secrets off, unknown table).
+    #[allow(clippy::too_many_arguments)]
+    async fn feed_op(
+        &self,
+        conn: &mut sqlx::SqliteConnection,
+        paths: &PathCtx,
+        keychain: Option<&std::collections::BTreeMap<secrets::SecretId, String>>,
+        with_secrets: bool,
+        tbl: &str,
+        pk_text: &str,
+        hlc: Hlc,
+        deleted: bool,
+    ) -> Result<Option<Op>, String> {
+        let Ok(pk) = serde_json::from_str::<Value>(pk_text) else { return Ok(None) };
+        let entry = match tbl {
+            files::TBL => files::pending_row(conn, &pk, with_secrets).await?,
+            secrets::TBL if !with_secrets => None,
+            secrets::TBL if deleted => Some((OpKind::Delete, None)),
+            secrets::TBL => keychain.and_then(|items| secrets::pending_row(items, &pk)),
+            _ => match schema::spec(tbl) {
+                Some(spec) => self.db_entry(conn, paths, spec, pk_text, pk.clone()).await?.map(|(_, e)| e),
+                None => None,
+            },
+        };
+        Ok(entry.map(|(kind, row)| Op { v: OP_VERSION, schema: SCHEMA_VERSION, hlc, tbl: tbl.to_string(), pk, kind, row }))
+    }
+
+    /// One page of the change feed after `req.since` for `from`.
+    async fn page(&self, from: &str, req: &ChangesReq) -> Result<ChangesPage, String> {
+        let paths = self.paths_now().await?;
+        let skip = prefs::ServeFilter::new(&req.skip_categories, &req.skip_projects);
+        let with_secrets = self.secrets_on().await? && !skip.category_off(prefs::SECRETS);
+        let since = req.since.min(i64::MAX as u64) as i64;
+        let secret_rows: bool = with_secrets
+            && sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM sync_feed WHERE tbl = ? AND seq > ?)")
+                .bind(secrets::TBL)
+                .bind(since)
+                .fetch_one(&self.db)
+                .await
+                .map_err(err)?;
+        // The Keychain is read outside any transaction (it may prompt).
+        let keychain = match (&self.secrets, secret_rows) {
+            (Some(backend), true) => {
+                let b = backend.clone();
+                Some(tokio::task::spawn_blocking(move || b.list()).await.map_err(|e| e.to_string())??)
+            }
+            _ => None,
+        };
+        let mut conn = self.db.acquire().await.map_err(err)?;
+        let mut page = ChangesPage { ops: Vec::new(), next: req.since, more: false };
+        let mut bytes = 0usize;
+        let mut served: Vec<(String, String)> = Vec::new();
+        let mut too_large: Vec<(String, String)> = Vec::new();
+        'feed: loop {
+            let rows: Vec<(i64, String, String, String, i64)> = sqlx::query_as(
+                "SELECT f.seq, f.tbl, f.pk, r.hlc, r.deleted FROM sync_feed f \
+                 JOIN sync_rows r ON r.tbl = f.tbl AND r.pk = f.pk WHERE f.seq > ? ORDER BY f.seq LIMIT 200",
+            )
+            .bind(page.next.min(i64::MAX as u64) as i64)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(err)?;
+            if rows.is_empty() {
+                break;
+            }
+            for (seq, tbl, pk_text, hlc, deleted) in rows {
+                let seq = seq.max(0) as u64;
+                let Ok(hlc) = hlc.parse::<Hlc>() else {
+                    page.next = seq;
+                    continue;
+                };
+                // The asker's own version: it has it (or something newer).
+                if hlc.device == from {
+                    page.next = seq;
+                    continue;
+                }
+                let op = self.feed_op(&mut conn, &paths, keychain.as_ref(), with_secrets, &tbl, &pk_text, hlc, deleted != 0).await?;
+                let Some(op) = op else {
+                    page.next = seq;
+                    continue;
+                };
+                if skip.skips(&mut conn, &self.db, &paths, &op).await? {
+                    page.next = seq;
+                    continue;
+                }
+                let size = serde_json::to_vec(&op).map(|v| v.len()).unwrap_or(usize::MAX);
+                if size > MAX_OP_BYTES {
+                    tracing::warn!(event = "sync_op_too_large", tbl = %tbl);
+                    too_large.push((tbl, pk_text));
+                    page.next = seq;
+                    continue;
+                }
+                if !page.ops.is_empty() && bytes + size > req.max_bytes {
+                    break 'feed;
+                }
+                bytes += size;
+                page.ops.push(op);
+                served.push((tbl, pk_text));
+                page.next = seq;
+                if page.ops.len() >= req.max_ops {
+                    break 'feed;
+                }
+            }
+        }
+        page.more = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM sync_feed WHERE seq > ?)")
+            .bind(page.next.min(i64::MAX as u64) as i64)
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(err)?;
+        if !too_large.is_empty() || !served.is_empty() {
+            let mut tx = sqlx::Connection::begin(&mut *conn).await.map_err(err)?;
+            for (tbl, pk) in &too_large {
+                sqlx::query("INSERT OR REPLACE INTO sync_parked (tbl, pk, reason, parked_at) VALUES (?, ?, 'too_large', ?)")
+                    .bind(tbl)
+                    .bind(pk)
+                    .bind(wall_ms() as i64)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(err)?;
+            }
+            for (tbl, pk) in &served {
+                sqlx::query("DELETE FROM sync_parked WHERE tbl = ? AND pk = ?")
+                    .bind(tbl)
+                    .bind(pk)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(err)?;
+            }
+            tx.commit().await.map_err(err)?;
+        }
+        Ok(page)
+    }
+
+    /// Filed extra ops (newest first per item is already guaranteed) in
+    /// `scope`, with their attempt counts.
+    async fn filed_extra(&self, scope: FileScope) -> Result<Vec<(Op, i64)>, String> {
+        let rows: Vec<(String, i64)> = sqlx::query_as("SELECT op, attempts FROM sync_extra_deferred ORDER BY deferred_at")
+            .fetch_all(&self.db)
+            .await
+            .map_err(err)?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(s, n)| Some((serde_json::from_str::<Op>(&s).ok()?, n)))
+            .filter(|(op, _)| in_scope(op, scope))
+            .collect())
+    }
+
     pub fn with_notifier(mut self, notify: Notifier) -> Self {
         self.notify = Some(notify);
         self
@@ -299,12 +461,6 @@ impl SqliteSyncStore {
 
     pub fn with_secrets(mut self, backend: secrets::Backend) -> Self {
         self.secrets = Some(backend);
-        self
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn with_file_timing(mut self, timing: files::Timing) -> Self {
-        self.file_timing = timing;
         self
     }
 
@@ -358,243 +514,39 @@ impl SqliteSyncStore {
 
 #[async_trait]
 impl SyncStore for SqliteSyncStore {
-    /// Outbox entries coalesced per row (the op carries the CURRENT row, or a
-    /// Delete when it is gone), each with a fresh HLC no older than the change.
-    async fn pending(&self, limit: usize) -> Result<Vec<(i64, Op)>, String> {
-        self.pending_filtered(limit, None).await
-    }
-
-    async fn pending_in(&self, tbls: &[&str], limit: usize) -> Result<Vec<(i64, Op)>, String> {
-        if tbls.iter().any(|t| is_extra_tbl(t)) {
-            return Err("pending_in takes DB tables only".into());
+    async fn changes(&self, from: &str, req: &ChangesReq) -> Result<ChangesPage, String> {
+        let continuing = self
+            .serve_marks
+            .lock()
+            .ok()
+            .and_then(|m| m.get(from).copied())
+            .is_some_and(|(next, at)| next == req.since && at.elapsed() < CONTINUE_WITHIN);
+        if !continuing {
+            self.scan(req.files).await?;
         }
-        self.pending_filtered(limit, Some(tbls)).await
-    }
-
-    async fn mark_ops_pushed(&self, ops: &[(i64, Op)]) -> Result<(), String> {
-        let mut tx = self.db.begin().await.map_err(err)?;
-        for (seq, op) in ops {
-            let pk = op.pk_key();
-            sqlx::query(
-                "DELETE FROM sync_parked WHERE tbl = ? AND pk = ? AND EXISTS \
-                 (SELECT 1 FROM sync_outbox o WHERE o.tbl = sync_parked.tbl AND o.pk = sync_parked.pk AND o.seq <= ?)",
-            )
-            .bind(&op.tbl)
-            .bind(&pk)
-            .bind(seq)
-            .execute(&mut *tx)
-            .await
-            .map_err(err)?;
-            drop_entries(&mut tx, &op.tbl, &pk, *seq).await?;
-        }
-        tx.commit().await.map_err(err)
-    }
-
-    async fn has_pending(&self) -> Result<bool, String> {
-        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM sync_outbox)").fetch_one(&self.db).await.map_err(err)
-    }
-
-    async fn stage(&self, blobs: &dyn BlobIo) -> Result<(), String> {
-        self.stage_scoped(blobs, StageScope::All).await
-    }
-
-    async fn stage_scoped(&self, blobs: &dyn BlobIo, scope: StageScope) -> Result<(), String> {
-        if scope == StageScope::Nothing {
-            return Ok(());
-        }
-        let mut state = self.scan.lock().await;
-        // Sync is on-demand: a flush was asked for, so scan everything (the
-        // timers only record when that was).
-        let _ = state.due(&self.file_timing, files::has_kicks());
-        let mode = files::ScanMode::Full;
-        state.skip_sessions = scope == StageScope::NoSessions;
-        let with_secrets = self.secrets_on().await?;
-        let paths = self.paths_now().await?;
-        state.tail_idle = self.file_timing.tail_idle();
-        if mode == files::ScanMode::Full {
-            // Retry pulled ops that failed earlier (or were parked by the
-            // first-join merge) even when nothing new arrives; before the
-            // scans, so a group version lands before a local copy of the
-            // same file or item is taken for a new local change.
-            self.apply_remote_extra(Vec::new(), blobs).await?;
-        }
-        files::stage(&self.db, &paths, blobs, &mut state, mode, with_secrets).await?;
-        drop(state);
-        if mode == files::ScanMode::Full {
-            // Keychain moves left over by an earlier re-key (Keychain locked...).
-            self.move_secrets().await;
-            if let (Some(backend), true) = (&self.secrets, with_secrets) {
-                if let Err(e) = secrets::scan(&self.db, backend.clone()).await {
-                    tracing::warn!(event = "sync_secret_scan_failed", error = %e);
-                }
+        self.stamp().await?;
+        let page = self.page(from, req).await?;
+        if let Ok(mut m) = self.serve_marks.lock() {
+            if page.more {
+                m.insert(from.to_string(), (page.next, Instant::now()));
+            } else {
+                m.remove(from);
             }
         }
-        Ok(())
+        Ok(page)
     }
 
-    async fn apply_remote_extra(&self, ops: Vec<Op>, blobs: &dyn BlobIo) -> Result<ApplyReport, String> {
+    async fn read_file(&self, req: &FileReadReq) -> Result<Vec<u8>, String> {
+        #[cfg(test)]
+        if self.fail_reads_from.lock().unwrap().is_some_and(|from| req.offset >= from) {
+            return Err("connection lost".into());
+        }
+        let paths = self.paths_now().await?;
         let with_keys = self.secrets_on().await?;
-        let mut guard = self.clock().await?;
-        let mut clock = guard.clone().ok_or("clock not loaded")?;
-        let paths = self.paths_now().await?;
-        let parked: Vec<(String, i64)> = sqlx::query_as("SELECT op, attempts FROM sync_extra_deferred")
-            .fetch_all(&self.db)
-            .await
-            .map_err(err)?;
-        // Newest op per (tbl, pk); a parked op keeps its attempt count.
-        let mut latest: std::collections::BTreeMap<(String, String), (Op, i64)> = Default::default();
-        let incoming = ops.into_iter().map(|o| (o, 0));
-        let parked = parked.into_iter().filter_map(|(s, n)| Some((serde_json::from_str::<Op>(&s).ok()?, n)));
-        for (op, attempts) in parked.chain(incoming) {
-            let key = (op.tbl.clone(), op.pk_key());
-            match latest.get(&key) {
-                Some((kept, _)) if kept.hlc >= op.hlc => {}
-                _ => {
-                    latest.insert(key, (op, attempts));
-                }
-            }
-        }
-        let mut report = ApplyReport::default();
-        let mut failed: Vec<(Op, i64, String)> = Vec::new();
-        let mut grown_runs = std::collections::BTreeSet::new();
-        let filter = {
-            let mut conn = self.db.acquire().await.map_err(err)?;
-            prefs::Filter::load(&mut conn).await?
-        };
-        for (_, (op, attempts)) in latest {
-            clock.observe(&op.hlc);
-            if op.schema > SCHEMA_VERSION {
-                failed.push((op, attempts, format!("schema newer than local ({SCHEMA_VERSION})")));
-                continue;
-            }
-            // Selective sync: dropped, not deferred (re-pulled once enabled).
-            if op.tbl == files::TBL && prefs::skip_file(&self.db, &filter, &paths, &op).await? {
-                report.skipped_older += 1;
-                continue;
-            }
-            let result = match op.tbl.as_str() {
-                files::TBL => files::apply_op(&self.db, &paths, blobs, &op, with_keys).await.map(|o| match o {
-                    files::Outcome::Applied => (1, 0, 0),
-                    files::Outcome::Skipped => (0, 1, 0),
-                    files::Outcome::Conflict => (1, 0, 1),
-                }),
-                secrets::TBL => match &self.secrets {
-                    Some(b) => secrets::apply_op(&self.db, b.clone(), &op).await.map(|o| match o {
-                        secrets::Outcome::Applied => (1, 0, 0),
-                        secrets::Outcome::Skipped => (0, 1, 0),
-                    }),
-                    None => Ok((0, 1, 0)),
-                },
-                _ => Ok((0, 1, 0)),
-            };
-            if matches!(result, Ok((1, _, 0))) && self.notify.is_some() && op.tbl == files::TBL {
-                if let Some(run) = files::run_of_op(&self.db, &paths, &op).await {
-                    grown_runs.insert(run);
-                }
-            }
-            match result {
-                Ok((a, s, c)) => {
-                    report.applied += a;
-                    report.skipped_older += s;
-                    report.conflicts += c;
-                }
-                Err(e) => failed.push((op, attempts + 1, e)),
-            }
-        }
-        let mut tx = self.db.begin().await.map_err(err)?;
-        sqlx::query("DELETE FROM sync_extra_deferred").execute(&mut *tx).await.map_err(err)?;
-        for (op, attempts, reason) in failed {
-            if attempts > MAX_EXTRA_ATTEMPTS {
-                tracing::warn!(event = "sync_extra_op_dropped", tbl = %op.tbl, reason = %reason);
-                continue;
-            }
-            sqlx::query(
-                "INSERT INTO sync_extra_deferred (tbl, pk, op, reason, attempts, deferred_at) VALUES (?, ?, ?, ?, ?, ?)",
-            )
-            .bind(&op.tbl)
-            .bind(op.pk_key())
-            .bind(serde_json::to_string(&op).map_err(|e| e.to_string())?)
-            .bind(reason)
-            .bind(attempts)
-            .bind(wall_ms() as i64)
-            .execute(&mut *tx)
-            .await
-            .map_err(err)?;
-            report.deferred += 1;
-        }
-        clock.save(&mut tx).await?;
-        tx.commit().await.map_err(err)?;
-        *guard = Some(clock);
-        for run in grown_runs {
-            self.notice(Notice::RunLogUpdated(run));
-        }
-        Ok(report)
-    }
-
-    async fn releasable_blobs(&self, limit: usize) -> Result<Vec<String>, String> {
-        files::releasable_blobs(&self.db, limit).await
-    }
-
-    async fn blobs_released(&self, shas: &[String]) -> Result<(), String> {
-        files::forget_released(&self.db, shas).await
-    }
-
-    async fn mark_pushed(&self, up_to_outbox_seq: i64) -> Result<(), String> {
-        let mut tx = self.db.begin().await.map_err(err)?;
-        // A newer change of a parked row went out: it is no longer stuck.
-        sqlx::query(
-            "DELETE FROM sync_parked WHERE EXISTS (SELECT 1 FROM sync_outbox o \
-             WHERE o.tbl = sync_parked.tbl AND o.pk = sync_parked.pk AND o.seq <= ?)",
-        )
-        .bind(up_to_outbox_seq)
-        .execute(&mut *tx)
-        .await
-        .map_err(err)?;
-        files::releases_pushed(&mut tx, up_to_outbox_seq).await?;
-        sqlx::query("DELETE FROM sync_outbox WHERE seq <= ?")
-            .bind(up_to_outbox_seq)
-            .execute(&mut *tx)
-            .await
-            .map_err(err)?;
-        tx.commit().await.map_err(err)
-    }
-
-    async fn park(&self, outbox_seq: i64, reason: &str) -> Result<(), String> {
-        let mut tx = self.db.begin().await.map_err(err)?;
-        let row: Option<(String, String)> = sqlx::query_as("SELECT tbl, pk FROM sync_outbox WHERE seq = ?")
-            .bind(outbox_seq)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(err)?;
-        let Some((tbl, pk)) = row else { return Ok(()) };
-        sqlx::query("INSERT OR REPLACE INTO sync_parked (tbl, pk, reason, parked_at) VALUES (?, ?, ?, ?)")
-            .bind(&tbl)
-            .bind(&pk)
-            .bind(reason)
-            .bind(wall_ms() as i64)
-            .execute(&mut *tx)
-            .await
-            .map_err(err)?;
-        sqlx::query("DELETE FROM sync_outbox WHERE tbl = ? AND pk = ? AND seq <= ?")
-            .bind(&tbl)
-            .bind(&pk)
-            .bind(outbox_seq)
-            .execute(&mut *tx)
-            .await
-            .map_err(err)?;
-        tx.commit().await.map_err(err)
-    }
-
-    async fn parked_count(&self) -> Result<u64, String> {
-        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_parked")
-            .fetch_one(&self.db)
-            .await
-            .map_err(err)?;
-        Ok(n as u64)
-    }
-
-    async fn set_group_creator(&self, device_id: &str) -> Result<(), String> {
-        super::leader::set_creator(&self.db, device_id).await
+        let bytes = files::read_range(&self.db, &paths, req, with_keys).await?;
+        #[cfg(test)]
+        self.served_bytes.fetch_add(bytes.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        Ok(bytes)
     }
 
     async fn apply_remote(&self, ops: Vec<Op>) -> Result<ApplyReport, String> {
@@ -619,49 +571,138 @@ impl SyncStore for SqliteSyncStore {
         Ok(report)
     }
 
-    async fn cursor(&self) -> Result<u64, String> {
+    async fn park_extra(&self, ops: Vec<Op>) -> Result<usize, String> {
+        self.file_extra(ops).await
+    }
+
+    async fn extra_to_fetch(&self, scope: FileScope) -> Result<(u64, usize), String> {
+        let ops = self.filed_extra(scope).await?;
+        let bytes = ops.iter().map(|(op, _)| super::feed::file_op_size(op)).sum();
+        Ok((bytes, ops.len()))
+    }
+
+    async fn fetch_extra(
+        &self,
+        src: &dyn FileSource,
+        scope: FileScope,
+        on_item: &(dyn Fn() + Send + Sync),
+    ) -> Result<ApplyReport, String> {
+        let with_keys = self.secrets_on().await?;
+        let paths = self.paths_now().await?;
+        let filter = {
+            let mut conn = self.db.acquire().await.map_err(err)?;
+            prefs::Filter::load(&mut conn).await?
+        };
+        let mut report = ApplyReport::default();
+        let mut grown_runs = std::collections::BTreeSet::new();
+        for (op, attempts) in self.filed_extra(scope).await? {
+            {
+                let mut guard = self.clock().await?;
+                if let Some(c) = guard.as_mut() {
+                    c.observe(&op.hlc);
+                }
+            }
+            let result = if op.schema > SCHEMA_VERSION {
+                Err(format!("schema newer than local ({SCHEMA_VERSION})"))
+            } else if op.tbl == files::TBL && prefs::skip_file(&self.db, &filter, &paths, &op).await? {
+                // Selective sync: dropped, not deferred (re-pulled once enabled).
+                Ok((0, 1, 0))
+            } else {
+                match op.tbl.as_str() {
+                    files::TBL => files::apply_op(&self.db, &paths, src, &op, with_keys).await.map(|o| match o {
+                        files::Outcome::Applied => (1, 0, 0),
+                        files::Outcome::Skipped => (0, 1, 0),
+                        files::Outcome::Conflict => (1, 0, 1),
+                    }),
+                    secrets::TBL => match &self.secrets {
+                        Some(b) => secrets::apply_op(&self.db, b.clone(), &op).await.map(|o| match o {
+                            secrets::Outcome::Applied => (1, 0, 0),
+                            secrets::Outcome::Skipped => (0, 1, 0),
+                        }),
+                        None => Ok((0, 1, 0)),
+                    },
+                    _ => Ok((0, 1, 0)),
+                }
+            };
+            if matches!(result, Ok((1, _, 0))) && self.notify.is_some() && op.tbl == files::TBL {
+                if let Some(run) = files::run_of_op(&self.db, &paths, &op).await {
+                    grown_runs.insert(run);
+                }
+            }
+            let key = op.pk_key();
+            match result {
+                Ok((a, s, c)) => {
+                    report.applied += a;
+                    report.skipped_older += s;
+                    report.conflicts += c;
+                    self.unfile(&op.tbl, &key, &op.hlc).await?;
+                }
+                // That version is gone on the source: the newer op comes
+                // with the next Sync.
+                Err(e) if files::is_superseded(&e) => {
+                    report.skipped_older += 1;
+                    self.unfile(&op.tbl, &key, &op.hlc).await?;
+                }
+                Err(e) if attempts + 1 > MAX_EXTRA_ATTEMPTS => {
+                    tracing::warn!(event = "sync_extra_op_dropped", tbl = %op.tbl, reason = %e);
+                    self.unfile(&op.tbl, &key, &op.hlc).await?;
+                }
+                Err(e) => {
+                    tracing::debug!(event = "sync_extra_op_deferred", tbl = %op.tbl, reason = %e);
+                    sqlx::query("UPDATE sync_extra_deferred SET attempts = ?, reason = ?, deferred_at = ? WHERE tbl = ? AND pk = ?")
+                        .bind(attempts + 1)
+                        .bind(&e)
+                        .bind(wall_ms() as i64)
+                        .bind(&op.tbl)
+                        .bind(&key)
+                        .execute(&self.db)
+                        .await
+                        .map_err(err)?;
+                    report.deferred += 1;
+                }
+            }
+            on_item();
+        }
+        {
+            let mut guard = self.clock().await?;
+            if let Some(c) = guard.as_mut() {
+                let mut conn = self.db.acquire().await.map_err(err)?;
+                c.save(&mut conn).await?;
+            }
+        }
+        for run in grown_runs {
+            self.notice(Notice::RunLogUpdated(run));
+        }
+        Ok(report)
+    }
+
+    async fn cursor(&self, source: &str) -> Result<u64, String> {
         let v: Option<String> = sqlx::query_scalar("SELECT value FROM sync_state WHERE key = ?")
-            .bind(CURSOR_KEY)
+            .bind(cursor_key(source))
             .fetch_optional(&self.db)
             .await
             .map_err(err)?;
         Ok(v.and_then(|s| s.parse().ok()).unwrap_or(0))
     }
 
-    async fn pull_start(&self) -> Result<u64, String> {
-        let mut tx = self.db.begin().await.map_err(err)?;
+    async fn cursor_start(&self, source: &str) -> Result<u64, String> {
         sqlx::query("DELETE FROM sync_state WHERE key = ?")
             .bind(prefs::CURSOR_RESET_KEY)
-            .execute(&mut *tx)
+            .execute(&self.db)
             .await
             .map_err(err)?;
-        let v: Option<String> = sqlx::query_scalar("SELECT value FROM sync_state WHERE key = ?")
-            .bind(CURSOR_KEY)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(err)?;
-        tx.commit().await.map_err(err)?;
-        Ok(v.and_then(|s| s.parse().ok()).unwrap_or(0))
-    }
-
-    async fn cursor_reset_pending(&self) -> Result<bool, String> {
-        let v: Option<String> = sqlx::query_scalar("SELECT value FROM sync_state WHERE key = ?")
-            .bind(prefs::CURSOR_RESET_KEY)
-            .fetch_optional(&self.db)
-            .await
-            .map_err(err)?;
-        Ok(v.is_some())
+        self.cursor(source).await
     }
 
     /// A no-op while a reset is pending (`prefs`): a pull that started before
     /// it must not move the cursor past ops it filtered out.
-    async fn set_cursor(&self, seq: u64) -> Result<(), String> {
+    async fn set_cursor(&self, source: &str, seq: u64) -> Result<(), String> {
         sqlx::query(
             "INSERT INTO sync_state (key, value) SELECT ?1, ?2 \
              WHERE NOT EXISTS (SELECT 1 FROM sync_state WHERE key = ?3) \
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         )
-        .bind(CURSOR_KEY)
+        .bind(cursor_key(source))
         .bind(seq.to_string())
         .bind(prefs::CURSOR_RESET_KEY)
         .execute(&self.db)
@@ -670,49 +711,42 @@ impl SyncStore for SqliteSyncStore {
         Ok(())
     }
 
-    async fn relay_mark(&self) -> Result<Option<RelayMark>, String> {
-        let v: Option<String> = sqlx::query_scalar("SELECT value FROM sync_state WHERE key = ?")
-            .bind(RELAY_MARK_KEY)
-            .fetch_optional(&self.db)
+    async fn ask_filter(&self) -> Result<(Vec<String>, Vec<String>), String> {
+        let mut conn = self.db.acquire().await.map_err(err)?;
+        Ok(prefs::Filter::load(&mut conn).await?.lists())
+    }
+
+    async fn set_group_creator(&self, device_id: &str) -> Result<(), String> {
+        super::leader::set_creator(&self.db, device_id).await
+    }
+
+    async fn parked_count(&self) -> Result<u64, String> {
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_parked")
+            .fetch_one(&self.db)
             .await
             .map_err(err)?;
-        Ok(v.and_then(|s| serde_json::from_str(&s).ok()))
+        Ok(n as u64)
     }
+}
 
-    async fn set_relay_mark(&self, mark: &RelayMark) -> Result<(), String> {
-        let value = serde_json::to_string(mark).map_err(|e| e.to_string())?;
-        sqlx::query(
-            "INSERT INTO sync_state (key, value) VALUES (?, ?) \
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        )
-        .bind(RELAY_MARK_KEY)
-        .bind(value)
-        .execute(&self.db)
-        .await
-        .map_err(err)?;
-        Ok(())
+/// Whether a filed op is fetched by a pull with `scope`.
+fn in_scope(op: &Op, scope: FileScope) -> bool {
+    if op.tbl != files::TBL {
+        return true;
     }
-
-    async fn note_relay_seq(&self, seq: u64) -> Result<(), String> {
-        sqlx::query(
-            "UPDATE sync_state SET value = json_set(value, '$.seen', ?) \
-             WHERE key = ? AND json_valid(value) AND COALESCE(json_extract(value, '$.seen'), 0) < ?",
-        )
-        .bind(seq as i64)
-        .bind(RELAY_MARK_KEY)
-        .bind(seq as i64)
-        .execute(&self.db)
-        .await
-        .map_err(err)?;
-        Ok(())
+    let kind = op.pk.get("kind").and_then(Value::as_str).and_then(files::FileKind::parse);
+    match scope {
+        FileScope::All => true,
+        FileScope::NoSessions => !kind.is_some_and(files::FileKind::is_session),
+        FileScope::Nothing => false,
     }
 }
 
 impl SqliteSyncStore {
-    /// Queue pulled `file` / `secret` ops in `sync_extra_deferred` without
-    /// applying them (the newest per item wins); the engine applies them on
-    /// its next full scan or pull.
-    pub async fn park_extra(&self, ops: Vec<Op>) -> Result<usize, String> {
+    /// File pulled `file` / `secret` ops in `sync_extra_deferred` without
+    /// applying them (the newest per item wins); a pull fetches them after
+    /// its pages.
+    async fn file_extra(&self, ops: Vec<Op>) -> Result<usize, String> {
         let mut tx = self.db.begin().await.map_err(err)?;
         let mut n = 0;
         for op in ops {
@@ -733,6 +767,18 @@ impl SqliteSyncStore {
         }
         tx.commit().await.map_err(err)?;
         Ok(n)
+    }
+
+    /// Forget a filed op (done, or dropped) unless a newer one replaced it.
+    async fn unfile(&self, tbl: &str, pk: &str, hlc: &Hlc) -> Result<(), String> {
+        sqlx::query("DELETE FROM sync_extra_deferred WHERE tbl = ? AND pk = ? AND json_extract(op, '$.hlc') <= ?")
+            .bind(tbl)
+            .bind(pk)
+            .bind(hlc.to_string())
+            .execute(&self.db)
+            .await
+            .map_err(err)?;
+        Ok(())
     }
 
     /// The op for a DB row change; `None` = a filtered row (never sent).
@@ -848,7 +894,6 @@ pub async fn parked_retry(db: &Db) -> Result<usize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sync::clock::Hlc;
     use serde_json::json;
     use sqlx::sqlite::SqlitePoolOptions;
 
@@ -1257,9 +1302,10 @@ mod tests {
         exec(&db, "UPDATE todos SET text = 'y'").await;
         let ops = reopened.pending(10).await.unwrap();
         assert!(ops[0].1.hlc > far, "persisted clock orders local edits after observed ones");
-        assert_eq!(reopened.cursor().await.unwrap(), 0);
-        reopened.set_cursor(42).await.unwrap();
-        assert_eq!(store.cursor().await.unwrap(), 42);
+        assert_eq!(reopened.cursor("peer").await.unwrap(), 0);
+        reopened.set_cursor("peer", 42).await.unwrap();
+        assert_eq!(store.cursor("peer").await.unwrap(), 42);
+        assert_eq!(store.cursor("other").await.unwrap(), 0, "one cursor per source device");
     }
     /// Exchange ops both ways until neither side has anything left to push.
     async fn converge(a: &SqliteSyncStore, b: &SqliteSyncStore) {
@@ -1533,7 +1579,7 @@ mod tests {
         assert!(outbox(&db).await.is_empty());
         assert_eq!(scalar(&db, "SELECT value FROM sync_state WHERE key = 'member'").await, None);
         // ...while a device that already synced keeps capturing.
-        store.set_cursor(7).await.unwrap();
+        store.set_cursor("peer", 7).await.unwrap();
         exec(&db, "INSERT INTO sync_outbox (tbl, pk, op, changed_at) VALUES ('todos', '\"t1\"', 'U', 1)").await;
         crate::sync::capture::settle_membership(&db).await.unwrap();
         assert_eq!(outbox(&db).await.len(), 1);
@@ -1551,23 +1597,93 @@ mod tests {
     async fn parked_rows_are_listed_and_retried() {
         let db = mem_db().await;
         let store = SqliteSyncStore::new(db.clone(), "dev-a".into());
-        sqlx::query("INSERT INTO todos (id, text, position, created_at) VALUES ('t1', 'huge', 0, 'x')")
+        let huge = "x".repeat(MAX_OP_BYTES + 1);
+        sqlx::query("INSERT INTO todos (id, text, position, created_at) VALUES ('t1', ?, 0, 'x'), ('t2', 'small', 1, 'x')")
+            .bind(&huge)
             .execute(&db)
             .await
             .unwrap();
-        let seq = store.pending(10).await.unwrap()[0].0;
-        store.park(seq, "too_large").await.unwrap();
-        assert!(store.pending(10).await.unwrap().is_empty());
+        let page = store.changes("peer", &ChangesReq::new(0)).await.unwrap();
+        let served: Vec<Value> = page.ops.iter().map(|o| o.pk.clone()).collect();
+        assert_eq!(served, vec![json!("t2")], "too large for a reply: left out, the rest goes");
+        assert!(!page.more);
+        assert_eq!(store.parked_count().await.unwrap(), 1);
 
         let list = parked_list(&db, 50).await.unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!((list[0].tbl.as_str(), list[0].pk.as_str(), list[0].reason.as_str()), ("todos", "t1", "too_large"));
 
+        // Retried once it is small enough: served and no longer parked.
+        exec(&db, "UPDATE todos SET text = 'trimmed' WHERE id = 't1'").await;
+        exec(&db, "DELETE FROM sync_outbox").await;
         assert_eq!(parked_retry(&db).await.unwrap(), 1);
+        let again = store.changes("peer", &ChangesReq::new(page.next)).await.unwrap();
+        assert_eq!(again.ops.iter().map(|o| o.pk.clone()).collect::<Vec<_>>(), vec![json!("t1")]);
         assert_eq!(store.parked_count().await.unwrap(), 0);
-        let again: Vec<_> = store.pending(10).await.unwrap().into_iter().map(|(_, o)| o.pk).collect();
-        assert_eq!(again, vec![json!("t1")]);
         assert_eq!(parked_retry(&db).await.unwrap(), 0);
     }
 
+    /// The change feed: one entry per row with its latest state (deletes as
+    /// tombstones), in change order, local edits and applied rows alike;
+    /// paged by count and bytes.
+    #[tokio::test]
+    async fn the_change_feed_keeps_the_latest_state_per_row() {
+        let (db_a, a) = device("a", "/Users/a").await;
+        exec(&db_a, "INSERT INTO todos (id, text, position, created_at) VALUES ('t1', 'x', 0, 'x'), ('t2', 'z', 1, 'x')").await;
+        exec(&db_a, "UPDATE todos SET text = 'y' WHERE id = 't1'").await;
+        exec(&db_a, "DELETE FROM todos WHERE id = 't2'").await;
+        let page = a.changes("b", &ChangesReq::new(0)).await.unwrap();
+        let got: Vec<(Value, OpKind)> = page.ops.iter().map(|o| (o.pk.clone(), o.kind)).collect();
+        assert_eq!(got, vec![(json!("t1"), OpKind::Upsert), (json!("t2"), OpKind::Delete)]);
+        assert_eq!(page.ops[0].row.as_ref().unwrap()["text"], "y");
+        assert!(outbox(&db_a).await.is_empty(), "stamped");
+        assert!(!page.more);
+        // Nothing new after `next`.
+        let empty = a.changes("b", &ChangesReq::new(page.next)).await.unwrap();
+        assert!(empty.ops.is_empty() && empty.next == page.next);
+
+        // A row applied from the other device enters the feed too (for the
+        // other device's asks it is its own version: not served back).
+        let far = Hlc::new(9_000_000_000_000, 0, "b");
+        a.apply_remote(vec![upsert("todos", json!("t3"), far, json!({"id": "t3", "text": "from b", "done": 0, "position": 2, "created_at": "x"}))])
+            .await
+            .unwrap();
+        let to_b = a.changes("b", &ChangesReq::new(page.next)).await.unwrap();
+        assert!(to_b.ops.is_empty() && to_b.next > page.next, "skipped, but the cursor moves on");
+        let to_c = a.changes("c", &ChangesReq::new(page.next)).await.unwrap();
+        assert_eq!(to_c.ops.iter().map(|o| o.pk.clone()).collect::<Vec<_>>(), vec![json!("t3")]);
+
+        // Paging: by count, then by bytes (at least one op per page).
+        for i in 0..5 {
+            exec(&db_a, &format!("INSERT INTO notes (id, title, content, position, created_at, updated_at) VALUES ('n{i}', 't', '{}', {i}, 'x', 'x')", "c".repeat(400))).await;
+        }
+        let small = ChangesReq { max_ops: 2, ..ChangesReq::new(to_c.next) };
+        let p1 = a.changes("c", &small.clone().clamped()).await.unwrap();
+        assert_eq!((p1.ops.len(), p1.more), (2, true));
+        let tight = ChangesReq { max_bytes: 10, ..ChangesReq::new(p1.next) };
+        let p2 = a.changes("c", &tight.clamped()).await.unwrap();
+        assert_eq!((p2.ops.len(), p2.more), (1, true));
+        let rest = a.changes("c", &ChangesReq::new(p2.next)).await.unwrap();
+        assert_eq!((rest.ops.len(), rest.more), (2, false));
+    }
+
+    /// Cursors per source device; a selective-sync reset clears them all and
+    /// keeps a pull that started before it from writing its cursor back.
+    #[tokio::test]
+    async fn cursor_resets_hold_until_the_next_pull_starts() {
+        let (db, store) = device("b", "/Users/b").await;
+        store.set_cursor("a", 42).await.unwrap();
+        assert_eq!(store.cursor_start("a").await.unwrap(), 42);
+        crate::sync::prefs::set_categories_off(&db, &["notes".to_string()]).await.unwrap();
+        assert_eq!(store.cursor("a").await.unwrap(), 42, "turning something off keeps the cursor");
+        crate::sync::prefs::set_categories_off(&db, &[]).await.unwrap();
+        assert_eq!(store.cursor("a").await.unwrap(), 0);
+        store.set_cursor("a", 99).await.unwrap();
+        assert_eq!(store.cursor("a").await.unwrap(), 0, "a pull from before the reset does not move it");
+        assert_eq!(store.cursor_start("a").await.unwrap(), 0);
+        store.set_cursor("a", 7).await.unwrap();
+        assert_eq!(store.cursor("a").await.unwrap(), 7);
+        let (off, projects) = store.ask_filter().await.unwrap();
+        assert!(off.is_empty() && projects.is_empty());
+    }
 }
