@@ -38,6 +38,7 @@ pub mod stats;
 pub mod storage;
 pub mod sync;
 pub mod sync_bootstrap;
+pub mod sync_folder;
 pub mod sync_prefs;
 pub mod todos;
 pub mod translate;
