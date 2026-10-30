@@ -173,6 +173,9 @@ impl SqliteSyncStore {
     /// Move the Keychain items of rows re-keyed by apply or by the bootstrap
     /// merge (which applies through `apply_remote` too).
     async fn move_secrets(&self) {
+        if let Err(e) = super::bootstrap::run_dir_moves(&self.db, &self.paths).await {
+            tracing::warn!(event = "sync_dir_move_failed", error = %e);
+        }
         let Some(backend) = &self.secrets else { return };
         if let Err(e) = secrets::run_key_moves(&self.db, backend.clone()).await {
             tracing::warn!(event = "sync_secret_move_failed", error = %e);

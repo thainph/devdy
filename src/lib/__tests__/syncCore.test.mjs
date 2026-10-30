@@ -114,6 +114,7 @@ test('syncErrorCode picks the backend code prefix', () => {
   assert.equal(syncErrorCode('declined: the request was declined on that machine'), 'declined')
   assert.equal(syncErrorCode('relay_not_configured: relay URL is not set'), 'relay_not_configured')
   assert.equal(syncErrorCode('sync_bootstrap_runs_live: 2 session(s) still running'), 'sync_bootstrap_runs_live')
+  assert.equal(syncErrorCode('sync_bootstrap_not_pending: this device has no merge waiting'), 'sync_bootstrap_not_pending')
   assert.equal(syncErrorCode('network: connect timeout'), null)
   assert.equal(syncErrorCode(undefined), null)
   assert.equal(syncErrorCode(''), null)
@@ -128,7 +129,9 @@ test('syncErrorCode finds relay codes wrapped by the backend', () => {
   assert.equal(syncErrorCode('relay error: forbidden'), 'forbidden')
   // Whole codes only.
   assert.equal(syncErrorCode('relay error: not_forbidden_x'), null)
-  assert.equal(syncErrorCode('relay rejected this device: auth_failed'), null)
+  assert.equal(syncErrorCode('relay rejected this device: auth_failed'), 'auth_failed')
+  assert.equal(syncErrorCode('relay rejected this device: relay_behind'), 'relay_behind')
+  assert.equal(syncErrorCode('relay rejected this device: ticket_invalid_x'), null)
 })
 
 test('syncErrorCode maps known phrases without a code', () => {
