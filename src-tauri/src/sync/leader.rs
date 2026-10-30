@@ -109,7 +109,9 @@ pub async fn observe_change(db: &Db, me: &str) -> Result<Option<String>, String>
     let now = leader(db).await;
     let seen = state(db, SEEN_KEY).await;
     if seen.as_deref() != now.as_deref() {
-        if let (Some(_), Some(new)) = (seen.as_deref().filter(|s| *s == me), now.as_deref().filter(|n| *n != me)) {
+        // No leader means every device runs the jobs, so this one held the role too.
+        let held_here = seen.as_deref().is_none_or(|s| s == me);
+        if let (true, Some(new)) = (held_here, now.as_deref().filter(|n| *n != me)) {
             put_state(db, HANDOFF_KEY, Some(new)).await?;
         }
         put_state(db, SEEN_KEY, now.as_deref()).await?;
@@ -524,6 +526,19 @@ mod tests {
         set_leader(&db, Some("c")).await.unwrap();
         assert_eq!(observe_change(&db, &me).await.unwrap(), None);
         assert_eq!(handoff_pending(&db).await, None);
+    }
+
+    /// With no leader every device runs the jobs, so naming one hands them
+    /// over from here too.
+    #[tokio::test]
+    async fn naming_a_first_leader_is_a_hand_off() {
+        let db = db().await;
+        let me = my_device_id(&db).await.unwrap();
+        set_leader(&db, None).await.unwrap();
+        assert_eq!(observe_change(&db, &me).await.unwrap(), None);
+        set_leader(&db, Some("b")).await.unwrap();
+        assert_eq!(observe_change(&db, &me).await.unwrap().as_deref(), Some("b"));
+        assert!(keeps_jobs(handoff_pending(&db).await.as_deref(), leader(&db).await.as_deref()));
     }
 
     #[test]
