@@ -7,7 +7,9 @@ import {
   BUCKET_ORDER,
   FILTER_NONE,
   calibrationHint,
+  draftToInput,
   dueLabel,
+  emptyTodoDraft,
   filterItems,
   formatEstimate,
   fromLocalInput,
@@ -229,6 +231,22 @@ test('suggestActualMin: wall time since start unless > 3× estimate', () => {
   assert.equal(suggestActualMin({ started_at: started, estimate_min: 20 }, NOW), null)
   assert.equal(suggestActualMin({ started_at: null, estimate_min: 60 }, NOW), null)
   assert.equal(suggestActualMin({ started_at: started, estimate_min: null }, NOW), null)
+})
+
+test('draftToInput maps the capture form to add_todo args', () => {
+  assert.equal(draftToInput(emptyTodoDraft()), null)
+  assert.equal(draftToInput(emptyTodoDraft({ text: 'x', estimate: 'soon' })), null)
+  assert.deepEqual(
+    draftToInput(emptyTodoDraft({ text: '  Fix  ', dueTime: '15:00', estimate: '1h30', sourceUrl: ' https://x.y ' }), 'r1'),
+    {
+      text: 'Fix', projectId: null, runId: 'r1', dueDate: null, dueTime: null, priority: 2,
+      estimateMin: 90, sourceUrl: 'https://x.y',
+    },
+  )
+  const withDue = draftToInput(emptyTodoDraft({ text: 'a', projectId: 'p', dueDate: '2026-11-02', dueTime: '15:00', priority: 1 }))
+  assert.equal(withDue.dueTime, '15:00')
+  assert.equal(withDue.projectId, 'p')
+  assert.equal(withDue.estimateMin, null)
 })
 
 test('source helpers', () => {
