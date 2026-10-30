@@ -1,10 +1,12 @@
-//! Two-way sync over the relay (design: .workspace/docs/03-design/two-way-sync.md).
+//! Two-way sync over the relay (design: .workspace/docs/03-design/two-way-sync.md,
+//! on-demand-sync.md §P: the relay only forwards between the two devices).
 //!
 //! Core: table registry, trigger-based change capture into `sync_outbox`, HLC,
-//! row codec, and `SqliteSyncStore` — the only thing the sync engine talks to.
-//! Client: crypto, relay transport, push/pull engine and pairing.
-//! Non-DB ops: `files` (library, run logs, transcripts, keys) and `secrets`
-//! (Keychain items).
+//! row codec, the change feed (`feed`, served from `sync_feed`), and
+//! `SqliteSyncStore` — the only thing the sync engine talks to.
+//! Client: crypto, relay transport, the engine (connection + requests) and
+//! pairing. Non-DB ops: `files` (library, run logs, transcripts, keys) and
+//! `secrets` (Keychain items).
 
 pub mod apply;
 pub mod bootstrap;
@@ -12,6 +14,7 @@ pub mod capture;
 pub mod clock;
 pub mod codec;
 pub mod events;
+pub mod feed;
 pub mod op;
 pub mod schema;
 pub mod sessions;
@@ -34,7 +37,7 @@ mod test_relay;
 use crate::db::Db;
 
 /// Highest migration this build knows; ops from a newer schema are deferred.
-pub const SCHEMA_VERSION: u32 = 68;
+pub const SCHEMA_VERSION: u32 = 69;
 
 /// This machine's sync device id, created on first use.
 pub async fn ensure_device(db: &Db) -> Result<String, String> {

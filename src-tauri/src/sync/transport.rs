@@ -6,13 +6,15 @@
 //! wake-from-sleep re-dial). One [`Connection`] = one authenticated socket;
 //! reconnecting is the engine's job.
 //!
-//! Requests are strictly sequential (one in flight per connection) and carry
-//! an `id` the relay echoes on the reply or error, which is how replies are
-//! matched; a reply without an `id` is matched by type. The unsolicited
-//! `sync_notify` / `sync_group_info` / `sync_peer_msg` frames (and the
-//! welcome's `creator_device`) are surfaced as [`Event`]s, so a message from
-//! another device never waits behind a request in flight. Payloads (`blob`,
-//! `data`) and tokens are never logged.
+//! The relay stores no data (on-demand-sync.md §P1): it authenticates the
+//! devices of a group (at most two) and forwards sealed `sync_peer_send` /
+//! `sync_peer_msg` frames between them. Requests are strictly sequential (one
+//! in flight per connection) and carry an `id` the relay echoes on the reply
+//! or error, which is how replies are matched; a reply without an `id` is
+//! matched by type. The unsolicited `sync_group_info` / `sync_peer_msg`
+//! frames (and the welcome's `creator_device`) are surfaced as [`Event`]s, so
+//! a message from another device never waits behind a request in flight.
+//! Payloads (`data`) and tokens are never logged.
 
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -32,18 +34,6 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// `sync_peer_send`: the relay acks once the target's socket took the
 /// message, which may take up to 60 s with a slow target.
 const PEER_SEND_TIMEOUT: Duration = Duration::from_secs(75);
-
-/// One item of `sync_push.items` / `sync_ops.items`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct WireItem {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub seq: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub device_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub key: Option<String>,
-    pub blob: String,
-}
 
 /// Every sync frame, both directions. Only the fields of a given `t` are set.
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -70,28 +60,9 @@ pub struct Frame {
     pub ticket_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ttl_secs: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub items: Option<Vec<WireItem>>,
-    /// `sync_push`: the pusher's pull cursor; the relay only drops older
-    /// same-key ops at or below it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub base_seq: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_seq: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub after_seq: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub limit: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub more: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sha: Option<String>,
+    /// `sync_peer_send` / `sync_peer_msg`: base64 sealed `PeerMsg`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub shas: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub released: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -105,16 +76,6 @@ pub struct Frame {
     /// Keepalive frames share the Remote Control envelope, which carries one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub room_id: Option<String>,
-    /// `sync_hello`: the relay store epoch this device last synced in.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub known_epoch: Option<String>,
-    /// `sync_welcome`: the relay store's current epoch (absent on old relays).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub epoch: Option<String>,
-    /// `sync_welcome`: the head the store recorded for `known_epoch` (absent:
-    /// not asked, or an epoch this store never had).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub known_head: Option<u64>,
     /// `sync_peer_send`: the device the sealed `data` goes to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to_device: Option<String>,
@@ -140,9 +101,7 @@ impl std::fmt::Debug for Frame {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Frame")
             .field("t", &self.t)
-            .field("items", &self.items.as_ref().map(Vec::len))
-            .field("last_seq", &self.last_seq)
-            .field("more", &self.more)
+            .field("data", &self.data.as_ref().map(String::len))
             .field("code", &self.code)
             .finish_non_exhaustive()
     }
@@ -194,21 +153,12 @@ fn is_fatal_code(code: &str) -> bool {
             | "device_revoked"
             | "forbidden"
             | "sync_disabled"
+            | "group_full"
     )
 }
 
-/// [`Connection::check_history`]'s code: the relay's log lacks ops this
-/// device saw (needs a re-merge, `sync_rebootstrap`).
-pub const RELAY_BEHIND: &str = "relay_behind";
-
-/// What this device knows of the relay store's history: the store epoch it
-/// last synced in and the highest seq it saw there (pulled, or acked for its
-/// own push). See the relay's `new_store_epoch`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RelayMark {
-    pub epoch: String,
-    pub seen: u64,
-}
+/// The relay's refusal of a third device in a group.
+pub const GROUP_FULL: &str = "group_full";
 
 /// Longest join ticket lifetime the relay accepts.
 #[allow(dead_code)] // pairing (join tickets)
@@ -217,7 +167,6 @@ pub const MAX_TICKET_TTL_SECS: u64 = 600;
 /// Unsolicited things the connection reports to its owner.
 #[derive(Clone, PartialEq, Eq)]
 pub enum Event {
-    Notify(u64),
     /// The group's creator per the relay (on welcome, and when it moves).
     Creator(String),
     /// `sync_peer_msg`: base64 sealed data another device of the group sent.
@@ -229,7 +178,6 @@ pub enum Event {
 impl std::fmt::Debug for Event {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Event::Notify(seq) => f.debug_tuple("Notify").field(seq).finish(),
             Event::Creator(c) => f.debug_tuple("Creator").field(c).finish(),
             Event::PeerMsg { from, data } => f
                 .debug_struct("PeerMsg")
@@ -265,12 +213,6 @@ pub struct Connection {
     request_lock: Mutex<()>,
     next_id: std::sync::atomic::AtomicU64,
     task: tokio::task::JoinHandle<()>,
-    /// The group's `last_seq` the relay announced in `sync_welcome`.
-    head: u64,
-    /// The store epoch from `sync_welcome` (`None`: a relay without epochs).
-    epoch: Option<String>,
-    /// The head the store recorded for the epoch the hello presented.
-    known_head: Option<u64>,
 }
 
 impl Drop for Connection {
@@ -280,8 +222,9 @@ impl Drop for Connection {
 }
 
 impl Connection {
-    /// Dial, send `sync_hello`, wait for `sync_welcome`. Events (notify,
-    /// closed) go to `events` for the lifetime of the connection.
+    /// Dial, send `sync_hello`, wait for `sync_welcome`. Events (peer
+    /// messages, creator, closed) go to `events` for the lifetime of the
+    /// connection.
     pub async fn connect(
         params: &ConnectParams,
         create: bool,
@@ -300,24 +243,13 @@ impl Connection {
         ticket: Option<&str>,
         events: mpsc::UnboundedSender<Event>,
     ) -> Result<Connection, TransportError> {
-        Self::dial(params, create, ticket, None, events).await
-    }
-
-    /// [`Connection::connect`] presenting the store epoch this device last
-    /// synced in, so [`Connection::check_history`] can tell a restored store.
-    pub async fn connect_known(
-        params: &ConnectParams,
-        known_epoch: Option<&str>,
-        events: mpsc::UnboundedSender<Event>,
-    ) -> Result<Connection, TransportError> {
-        Self::dial(params, false, None, known_epoch, events).await
+        Self::dial(params, create, ticket, events).await
     }
 
     async fn dial(
         params: &ConnectParams,
         create: bool,
         ticket: Option<&str>,
-        known_epoch: Option<&str>,
         events: mpsc::UnboundedSender<Event>,
     ) -> Result<Connection, TransportError> {
         let dial = tokio::time::timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(&params.relay_url));
@@ -337,11 +269,10 @@ impl Connection {
             hello.create = Some(true);
         }
         hello.ticket = ticket.map(str::to_string);
-        hello.known_epoch = known_epoch.map(str::to_string);
         send_frame(&mut sink, &hello).await?;
 
         // Wait for the hello verdict, ignoring anything else (keepalive echoes).
-        let (head, epoch, known_head) = tokio::time::timeout(REQUEST_TIMEOUT, async {
+        tokio::time::timeout(REQUEST_TIMEOUT, async {
             while let Some(msg) = stream.next().await {
                 let Some(frame) = parse(msg.map_err(|e| TransportError::Network(e.to_string()))?) else {
                     continue;
@@ -351,7 +282,7 @@ impl Connection {
                         if let Some(c) = frame.creator_device.filter(|c| !c.is_empty()) {
                             let _ = events.send(Event::Creator(c));
                         }
-                        return Ok((frame.last_seq.unwrap_or(0), frame.epoch.filter(|e| !e.is_empty()), frame.known_head));
+                        return Ok(());
                     }
                     "error" => {
                         let code = frame.code.unwrap_or_else(|| "error".into());
@@ -411,9 +342,6 @@ impl Connection {
                         if matches!(msg, Message::Close(_)) { break; }
                         let Some(frame) = parse(msg) else { continue };
                         match frame.t.as_str() {
-                            "sync_notify" => {
-                                let _ = events.send(Event::Notify(frame.last_seq.unwrap_or(0)));
-                            }
                             "sync_group_info" => {
                                 if let Some(c) = frame.creator_device.filter(|c| !c.is_empty()) {
                                     let _ = events.send(Event::Creator(c));
@@ -449,9 +377,6 @@ impl Connection {
             request_lock: Mutex::new(()),
             next_id: std::sync::atomic::AtomicU64::new(1),
             task,
-            head,
-            epoch,
-            known_head,
         })
     }
 
@@ -461,36 +386,6 @@ impl Connection {
         if let Ok(mut w) = self.waiter.try_lock() {
             w.take();
         }
-    }
-
-    /// N15 / M6: a relay that lost ops this device saw (restored from a
-    /// backup) hands their seqs out again: pulling on would skip them, and
-    /// pushing with the cursor as `base_seq` would let it drop ops this
-    /// device never saw. Sync must stop until the device merges again.
-    ///
-    /// `mark` is what this device recorded at its last sync (connected with
-    /// [`Connection::connect_known`]). Lost ops show as a head below what was
-    /// seen, or — once other devices pushed the head past it again — as a
-    /// store that does not know the device's epoch or recorded a lower head
-    /// for it. Returns the mark to record from now on (`None` on a relay
-    /// without epochs, where only the head can be compared).
-    pub fn check_history(&self, cursor: u64, mark: Option<&RelayMark>) -> Result<Option<RelayMark>, TransportError> {
-        let behind = || Err(TransportError::Rejected(RELAY_BEHIND.into()));
-        let seen = mark.map_or(cursor, |m| m.seen.max(cursor));
-        if self.head < seen {
-            return behind();
-        }
-        if let (Some(m), Some(_)) = (mark, &self.epoch) {
-            if self.known_head.is_none_or(|h| h < m.seen) {
-                return behind();
-            }
-        }
-        Ok(self.epoch.clone().map(|epoch| RelayMark { epoch, seen }))
-    }
-
-    /// Send `frame` and wait for its reply (one of `expect`, or an `error`).
-    async fn request(&self, frame: Frame, expect: &'static [&'static str]) -> Result<Frame, TransportError> {
-        self.request_within(frame, expect, REQUEST_TIMEOUT).await
     }
 
     async fn request_within(
@@ -525,56 +420,6 @@ impl Connection {
             });
         }
         Ok(reply)
-    }
-
-    /// `sync_push` → the relay's `last_seq` after storing the items.
-    /// `base_seq` is this device's pull cursor: everything up to it was
-    /// applied before these ops were built.
-    pub async fn push(&self, items: Vec<WireItem>, base_seq: u64) -> Result<u64, TransportError> {
-        let mut f = Frame::new("sync_push");
-        f.items = Some(items);
-        f.base_seq = Some(base_seq);
-        let ack = self.request(f, &["sync_ack"]).await?;
-        Ok(ack.last_seq.unwrap_or(0))
-    }
-
-    /// `sync_pull` → `(items, last_seq, more)`.
-    pub async fn pull(&self, after_seq: u64, limit: u64) -> Result<(Vec<WireItem>, u64, bool), TransportError> {
-        let mut f = Frame::new("sync_pull");
-        f.after_seq = Some(after_seq);
-        f.limit = Some(limit);
-        let ops = self.request(f, &["sync_ops"]).await?;
-        Ok((
-            ops.items.unwrap_or_default(),
-            ops.last_seq.unwrap_or(0),
-            ops.more.unwrap_or(false),
-        ))
-    }
-
-    /// `blob_put` of already-sealed bytes (base64 `data`). Used by file sync.
-    #[allow(dead_code)]
-    pub async fn blob_put(&self, sha: &str, data_b64: String) -> Result<(), TransportError> {
-        let mut f = Frame::new("blob_put");
-        f.sha = Some(sha.to_string());
-        f.data = Some(data_b64);
-        self.request(f, &["blob_ack"]).await.map(|_| ())
-    }
-
-    /// `blob_get` → base64 sealed bytes; `Relay("blob_not_found")` when absent.
-    #[allow(dead_code)]
-    pub async fn blob_get(&self, sha: &str) -> Result<String, TransportError> {
-        let mut f = Frame::new("blob_get");
-        f.sha = Some(sha.to_string());
-        let r = self.request(f, &["blob_data"]).await?;
-        r.data.ok_or_else(|| TransportError::Relay("bad_blob".into()))
-    }
-
-    /// `blob_release{shas}` → how many the relay marked for deletion.
-    pub async fn blob_release(&self, shas: &[String]) -> Result<u64, TransportError> {
-        let mut f = Frame::new("blob_release");
-        f.shas = Some(shas.to_vec());
-        let r = self.request(f, &["blob_released"]).await?;
-        Ok(r.released.unwrap_or(0))
     }
 
     /// `sync_peers` → the group's other devices with a live connection.
@@ -654,20 +499,16 @@ mod tests {
 
     #[test]
     fn frames_use_the_contract_field_names() {
-        let mut f = Frame::new("sync_pull");
-        f.after_seq = Some(4);
-        f.limit = Some(500);
+        let mut f = Frame::new("sync_peer_send");
+        f.to_device = Some("b".into());
+        f.data = Some("c2VhbGVk".into());
         assert_eq!(
             serde_json::to_value(&f).unwrap(),
-            serde_json::json!({ "t": "sync_pull", "after_seq": 4, "limit": 500 })
+            serde_json::json!({ "t": "sync_peer_send", "to_device": "b", "data": "c2VhbGVk" })
         );
-        let ops: Frame = serde_json::from_str(
-            r#"{"t":"sync_ops","items":[{"seq":5,"device_id":"d","blob":"AA=="}],"last_seq":5,"more":false,"room_id":""}"#,
-        )
-        .unwrap();
-        let items = ops.items.unwrap();
-        assert_eq!(items[0].seq, Some(5));
-        assert_eq!(items[0].blob, "AA==");
+        // A welcome without the old store fields parses.
+        let w: Frame = serde_json::from_str(r#"{"t":"sync_welcome","creator_device":"a","room_id":""}"#).unwrap();
+        assert_eq!(w.creator_device.as_deref(), Some("a"));
     }
 
     #[test]
@@ -675,9 +516,9 @@ mod tests {
         let mut f = Frame::new("sync_hello");
         f.auth_token = Some("relay-secret".into());
         f.device_token = Some("device-secret".into());
-        f.items = Some(vec![WireItem { blob: "sealed-blob".into(), ..Default::default() }]);
+        f.data = Some("sealed-data".into());
         let s = format!("{f:?}");
-        assert!(!s.contains("secret") && !s.contains("sealed-blob"), "{s}");
+        assert!(!s.contains("secret") && !s.contains("sealed-data"), "{s}");
     }
 
     fn params(relay: &crate::sync::test_relay::TestRelay, device: &str) -> ConnectParams {
@@ -693,63 +534,6 @@ mod tests {
     fn sha_hex(s: &str) -> String {
         use sha2::Digest as _;
         hex::encode(sha2::Sha256::digest(s.as_bytes()))
-    }
-
-    #[tokio::test]
-    async fn a_relay_behind_the_cursor_is_refused() {
-        let relay = crate::sync::test_relay::TestRelay::start().await;
-        relay.create_group("g");
-        relay.inject("g", "x", "b1");
-        relay.inject("g", "x", "b2");
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let conn = Connection::connect(&params(&relay, "d"), false, tx).await.unwrap();
-        let behind = Err(TransportError::Rejected(RELAY_BEHIND.into()));
-        assert!(conn.check_history(2, None).is_ok());
-        assert!(conn.check_history(0, None).is_ok());
-        // Restored from a backup older than what this device pulled.
-        assert_eq!(conn.check_history(7, None), behind);
-    }
-
-    /// Review-3 M6: the relay is restored from a backup, then another device
-    /// pushes its head past this device's cursor before this device comes
-    /// back. The head alone no longer shows the loss; the epoch does. A plain
-    /// relay restart is not mistaken for a restore.
-    #[tokio::test]
-    async fn a_restored_relay_is_refused_even_after_its_head_moved_on() {
-        let relay = crate::sync::test_relay::TestRelay::start().await;
-        relay.create_group("g");
-        relay.inject("g", "x", "b1");
-        let backup = relay.snapshot("g");
-        relay.inject("g", "x", "b2");
-        relay.inject("g", "x", "b3");
-        let connect = |mark: Option<RelayMark>| {
-            let p = params(&relay, "d");
-            async move {
-                let (tx, _rx) = mpsc::unbounded_channel();
-                let conn = Connection::connect_known(&p, mark.as_ref().map(|m| m.epoch.as_str()), tx).await.unwrap();
-                conn.check_history(3, mark.as_ref())
-            }
-        };
-        // This device pulled up to 3.
-        let mark = connect(None).await.unwrap().expect("the relay has epochs");
-        assert_eq!(mark.seen, 3);
-        // A restart keeps the history: accepted, the new epoch is adopted.
-        relay.restart();
-        let restarted = connect(Some(mark.clone())).await.unwrap().unwrap();
-        assert_ne!(restarted.epoch, mark.epoch);
-        assert_eq!(restarted.seen, 3);
-
-        // Restored to seq 1; another device pushes the head to 5.
-        relay.restore("g", backup);
-        for b in ["n2", "n3", "n4", "n5"] {
-            relay.inject("g", "y", b);
-        }
-        assert_eq!(relay.head(), 5);
-        let behind = Err(TransportError::Rejected(RELAY_BEHIND.into()));
-        assert_eq!(connect(Some(restarted)).await, behind, "epoch unknown to the restored store");
-        // Restored within the epoch this device synced in: its head there is lower.
-        let restored_mark = RelayMark { epoch: mark.epoch.clone(), seen: 3 };
-        assert_eq!(connect(Some(restored_mark)).await, behind);
     }
 
     #[tokio::test]
@@ -785,12 +569,29 @@ mod tests {
         relay: &crate::sync::test_relay::TestRelay,
         creator: &Connection,
         device: &str,
-    ) -> (Connection, mpsc::UnboundedReceiver<Event>) {
+    ) -> Result<(Connection, mpsc::UnboundedReceiver<Event>), TransportError> {
         let ticket = format!("ticket-{device}");
         creator.sync_invite(&sha_hex(&ticket), 60).await.unwrap();
         let (tx, rx) = mpsc::unbounded_channel();
-        let c = Connection::connect_with_ticket(&params(relay, device), false, Some(&ticket), tx).await.unwrap();
-        (c, rx)
+        let c = Connection::connect_with_ticket(&params(relay, device), false, Some(&ticket), tx).await?;
+        Ok((c, rx))
+    }
+
+    #[tokio::test]
+    async fn a_group_takes_two_devices() {
+        let relay = crate::sync::test_relay::TestRelay::start().await;
+        let (tx_a, _rx_a) = mpsc::unbounded_channel();
+        let a = Connection::connect(&params(&relay, "a"), true, tx_a).await.unwrap();
+        let (b, _rx_b) = join(&relay, &a, "b").await.unwrap();
+        let full = join(&relay, &a, "c").await.err();
+        assert_eq!(full, Some(TransportError::Rejected(GROUP_FULL.into())));
+        // Known devices still connect.
+        let (tx, _rx) = mpsc::unbounded_channel();
+        assert!(Connection::connect(&params(&relay, "b"), false, tx).await.is_ok());
+        // Once one leaves, there is room again.
+        drop(b);
+        a.revoke("b").await.unwrap();
+        assert!(join(&relay, &a, "c").await.is_ok());
     }
 
     #[tokio::test]
@@ -798,11 +599,9 @@ mod tests {
         let relay = crate::sync::test_relay::TestRelay::start().await;
         let (tx_a, _rx_a) = mpsc::unbounded_channel();
         let a = Connection::connect(&params(&relay, "a"), true, tx_a).await.unwrap();
-        let (b, mut rx_b) = join(&relay, &a, "b").await;
-        let (c, _rx_c) = join(&relay, &a, "c").await;
+        let (b, mut rx_b) = join(&relay, &a, "b").await.unwrap();
         // Only the creator revokes others.
-        assert_eq!(c.revoke("b").await.err(), Some(TransportError::Rejected("forbidden".into())));
-        drop(c);
+        assert_eq!(b.revoke("a").await.err(), Some(TransportError::Rejected("forbidden".into())));
 
         a.revoke("b").await.unwrap();
         let ev = loop {
@@ -835,35 +634,27 @@ mod tests {
         let (tx_a, mut rx_a) = mpsc::unbounded_channel();
         let a = Connection::connect(&params(&relay, "a"), true, tx_a).await.unwrap();
         assert_eq!(recv(&mut rx_a).await, Some(Event::Creator("a".into())), "welcome names the creator");
-        let (_b, mut rx_b) = join(&relay, &a, "b").await;
-        let (c, mut rx_c) = join(&relay, &a, "c").await;
+        let (b, mut rx_b) = join(&relay, &a, "b").await.unwrap();
         assert_eq!(recv(&mut rx_b).await, Some(Event::Creator("a".into())));
-        assert_eq!(recv(&mut rx_c).await, Some(Event::Creator("a".into())));
 
-        let _ = a.revoke_with("a", Some("c")).await;
-        assert_eq!(recv(&mut rx_b).await, Some(Event::Creator("c".into())));
-        assert_eq!(recv(&mut rx_c).await, Some(Event::Creator("c".into())));
-        c.revoke("b").await.unwrap();
+        let _ = a.revoke_with("a", Some("b")).await;
+        assert_eq!(recv(&mut rx_b).await, Some(Event::Creator("b".into())));
+        // The new creator lets a new device in.
+        assert!(join(&relay, &b, "c").await.is_ok());
     }
 
     #[tokio::test]
-    async fn blobs_roundtrip_and_missing_is_a_relay_error() {
+    async fn store_frames_are_unsupported() {
         let relay = crate::sync::test_relay::TestRelay::start().await;
+        relay.create_group("g");
         let (tx, _rx) = mpsc::unbounded_channel();
-        let c = Connection::connect(&params(&relay, "a"), true, tx).await.unwrap();
-        let keys = crate::sync::crypto::SyncKeys::derive(&[1u8; 32]).unwrap();
-        let sealed = keys.seal_bytes(b"file body");
-        let sha = crate::sync::crypto::blob_sha(&sealed);
-        use base64::Engine as _;
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&sealed);
-        c.blob_put(&sha, b64.clone()).await.unwrap();
-        assert_eq!(c.blob_get(&sha).await.unwrap(), b64);
-        assert_eq!(c.blob_get("00").await.err(), Some(TransportError::Relay("blob_not_found".into())));
-        let mut push = Frame::new("sync_push");
-        push.base_seq = Some(3);
-        assert_eq!(serde_json::to_value(&push).unwrap(), serde_json::json!({ "t": "sync_push", "base_seq": 3 }));
+        let c = Connection::connect(&params(&relay, "a"), false, tx).await.unwrap();
+        for t in ["sync_push", "sync_pull", "blob_put", "blob_get", "blob_release"] {
+            let r = c.request_within(Frame::new(t), &["never"], Duration::from_secs(5)).await.err();
+            assert_eq!(r, Some(TransportError::Relay("unsupported".into())), "{t}");
+        }
         // The connection is still usable after an error reply.
-        assert_eq!(c.pull(0, 10).await.unwrap().0.len(), 0);
+        assert_eq!(c.peers().await.unwrap(), Vec::<String>::new());
     }
 
     #[tokio::test]
@@ -891,25 +682,19 @@ mod tests {
         assert_eq!(a.peer_send("a", "eA==".into()).await.err(), offline, "not to itself");
         let big = "x".repeat((4 * 1024 * 1024 + 64usize).div_ceil(3) * 4 + 1);
         assert_eq!(a.peer_send("b", big).await.err(), Some(TransportError::Relay("too_large".into())));
-        let mut f = Frame::new("sync_peer_send");
-        f.to_device = Some("b".into());
-        assert_eq!(
-            serde_json::to_value(&f).unwrap(),
-            serde_json::json!({ "t": "sync_peer_send", "to_device": "b" })
-        );
     }
 
     #[test]
     fn replies_match_by_echoed_id_first() {
         let (tx, _rx) = oneshot::channel();
-        let w = Waiter { id: 7, expect: &["sync_ack"], reply: tx };
-        let mut f = Frame::new("sync_ack");
+        let w = Waiter { id: 7, expect: &["sync_peer_ack"], reply: tx };
+        let mut f = Frame::new("sync_peer_ack");
         assert!(w.wants(&f), "no id: matched by type");
         f.id = Some(7.into());
         assert!(w.wants(&f));
         f.id = Some(6.into());
         assert!(!w.wants(&f), "stale reply for an earlier request");
-        assert!(!w.wants(&Frame::new("sync_ops")));
+        assert!(!w.wants(&Frame::new("sync_peers")));
         assert!(w.wants(&Frame::new("error")));
     }
 
@@ -918,6 +703,7 @@ mod tests {
         assert!(is_fatal_code("device_revoked"));
         assert!(is_fatal_code("auth_failed"));
         assert!(is_fatal_code("ticket_required") && is_fatal_code("ticket_invalid") && is_fatal_code("group_exists"));
+        assert!(is_fatal_code(GROUP_FULL));
         assert!(!is_fatal_code("rate_limited"));
     }
 }

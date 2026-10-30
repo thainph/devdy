@@ -1,6 +1,7 @@
 //! Two-way sync commands (design §3, §7), used by Settings → Sync. Sync is
-//! on demand (on-demand-sync.md §2): `sync_run` pulls from one source device,
-//! which flushes its outbox when asked; nothing moves on its own.
+//! on demand (on-demand-sync.md §2, §P): `sync_run` pulls the other device's
+//! change feed and the files it needs straight from it (the relay only
+//! forwards); nothing moves on its own.
 //!
 //! Group secrets live in the Keychain (`secrets::SyncSecrets`). The pause and
 //! "sync secrets" flags are machine-local `settings` keys (`sync_paused`,
@@ -9,12 +10,13 @@
 
 use crate::db::Db;
 use crate::sync::engine::{
-    EngineHandle, PeerHandlers, RunPhase, StatusSink, SyncEngine, SyncRunReport, SyncState, SyncStatus, Timing,
-    RUN_EVENT, STATUS_EVENT,
+    EngineHandle, PeerHandlers, RunPhase, RunProgress, StatusSink, SyncEngine, SyncRunReport, SyncState, SyncStatus,
+    Timing, RUN_EVENT, STATUS_EVENT,
 };
+use crate::sync::feed::{FileScope, PullOptions};
 use crate::sync::peer::{PeerHandler, PeerLink};
 use crate::sync::leader::{self, DeviceInfo};
-use crate::sync::store::{self, ParkedRow, SqliteSyncStore, StageScope, SyncStore};
+use crate::sync::store::{self, ParkedRow, SqliteSyncStore, SyncStore};
 use crate::sync::transport::{Connection, TransportError};
 use serde_json::json;
 use std::sync::Arc;
@@ -57,7 +59,7 @@ impl SyncManager {
         self.engine.lock().await.as_ref().map(SyncEngine::handle)
     }
 
-    /// Requests / blobs to the other devices, while the engine runs.
+    /// Requests to the other device, while the engine runs.
     pub async fn peer_link(&self) -> Option<Arc<dyn PeerLink>> {
         self.handle().await.map(|h| h.link())
     }
@@ -72,7 +74,7 @@ impl SyncManager {
         let Some(sync) = crate::secrets::get_sync_secrets() else {
             return Ok(());
         };
-        // Joined but not merged yet: pushing now would send local ids.
+        // Joined but not merged yet: serving now would hand out local ids.
         if crate::sync::bootstrap::is_pending(db).await? {
             return Ok(());
         }
@@ -163,16 +165,14 @@ impl SyncManager {
         }
     }
 
-    /// Push what is queued now, waiting at most `wait`. Returns whether it
-    /// went out (false: offline, paused, or no engine).
-    async fn flush(&self, wait: Duration) -> bool {
-        let Some(h) = self.handle().await else { return false };
-        // Leaving / handing a role on only needs rows (who leads, who left).
-        let rows_only = crate::sync::store::StageScope::Nothing;
-        matches!(tokio::time::timeout(wait, h.flush_outbox(rows_only)).await, Ok(Ok(_)))
+    /// The other device of the group, when it is connected now.
+    async fn online_peer(&self) -> Option<String> {
+        let h = self.handle().await?;
+        h.online_peers().await.ok()?.into_iter().next()
     }
 
-    /// Tell `to` it leads now and wait (at most `wait`) until it synced that.
+    /// Tell `to` it leads now (or simply: to pull from this device) and wait
+    /// (at most `wait`) until it synced that.
     async fn notify_leader(&self, to: &str, wait: Duration) -> bool {
         let Some(h) = self.handle().await else { return false };
         matches!(tokio::time::timeout(wait, h.notify_leader(to)).await, Ok(Ok(())))
@@ -271,19 +271,20 @@ pub async fn sync_join(
     Ok(state.status().await)
 }
 
-/// `sync_leave` refused: this device holds the leader / creator role and its
-/// hand-off could not be pushed (offline). Leaving anyway (`force`) leaves
-/// the other devices waiting on a departed leader.
+/// `sync_leave` refused: this device holds the leader / creator role and the
+/// other device could not take the hand-off (offline). Leaving anyway
+/// (`force`) leaves it waiting on a departed leader.
 pub const LEAVE_HANDOFF_PENDING: &str = "sync_leave_handoff_pending";
 
-/// How long leaving waits for the relay to take the role hand-off.
-const LEAVE_PUSH_WAIT: Duration = Duration::from_secs(10);
-/// How long leaving waits for the new leader to sync the hand-off.
+/// How long leaving waits for the relay connection.
+const LEAVE_CONNECT_WAIT: Duration = Duration::from_secs(10);
+/// How long leaving waits for the other device to pull the hand-off.
 const LEAVE_LEADER_WAIT: Duration = Duration::from_secs(60);
 
-/// Review-3 M5: whether leaving may go on. The hand-off rides the outbox,
-/// which leaving clears, so a role holder whose hand-off did not reach the
-/// relay must not leave silently.
+/// Review-3 M5: whether leaving may go on. The relay keeps nothing, so the
+/// hand-off only reaches the other device when it pulls it from this one
+/// before it leaves: a role holder whose hand-off was not pulled must not
+/// leave silently.
 fn leave_gate(holds_role: bool, handed_off: bool, force: bool) -> Result<(), String> {
     if holds_role && !handed_off && !force {
         return Err(format!(
@@ -297,8 +298,9 @@ fn leave_gate(holds_role: bool, handed_off: bool, force: bool) -> Result<(), Str
 /// Leave the group: revoke this device on the relay and wipe the Keychain
 /// entry. Returns whether the relay confirmed the revoke (false = offline;
 /// the local membership is gone either way). A device holding the leader /
-/// creator role first pushes the hand-off (resuming a paused engine for it)
-/// and refuses with [`LEAVE_HANDOFF_PENDING`] when that fails, unless `force`.
+/// creator role first has the other device pull the hand-off from it
+/// (resuming a paused engine for that) and refuses with
+/// [`LEAVE_HANDOFF_PENDING`] when that fails, unless `force`.
 #[tauri::command]
 pub async fn sync_leave(
     app: AppHandle,
@@ -308,7 +310,8 @@ pub async fn sync_leave(
 ) -> Result<bool, String> {
     let force = force.unwrap_or(false);
     // Hand the leader / creator roles on and drop this device's record while
-    // the engine can still push it; the relay is told the creator's successor.
+    // the other device can still pull it; the relay is told the creator's
+    // successor.
     let mut successor = None;
     if let Some(sync) = crate::secrets::get_sync_secrets() {
         let me = sync.device_id.as_str();
@@ -319,18 +322,21 @@ pub async fn sync_leave(
             state.set_engine_paused(false).await;
         }
         // Without a role, only this device's own record is at stake.
-        let online = state.wait_online(if holds_role { LEAVE_PUSH_WAIT } else { LEAVE_PUSH_WAIT / 2 }).await;
+        let online = state.wait_online(if holds_role { LEAVE_CONNECT_WAIT } else { LEAVE_CONNECT_WAIT / 2 }).await;
         let mut handed_off = false;
-        let was_leader = leader::leader(db.inner()).await.as_deref() == Some(me);
         if online {
             match leader::on_leave(db.inner(), me).await {
                 Ok(next) => {
                     successor = next;
-                    handed_off = state.flush(LEAVE_PUSH_WAIT).await;
-                    // The new leader must take the role before this device
-                    // (which stops the jobs here) is gone.
+                    // The other device (the new leader, if any) takes the
+                    // role and this device's departure by pulling them now,
+                    // before this device (which stops the jobs here) is gone.
                     let new_leader = leader::leader(db.inner()).await.filter(|l| l != me);
-                    if let (true, true, Some(to)) = (handed_off, was_leader, new_leader) {
+                    let to = match new_leader {
+                        Some(l) => Some(l),
+                        None => state.online_peer().await,
+                    };
+                    if let Some(to) = to {
                         handed_off = state.notify_leader(&to, LEAVE_LEADER_WAIT).await;
                     }
                 }
@@ -338,7 +344,7 @@ pub async fn sync_leave(
             }
         }
         if let Err(e) = leave_gate(holds_role, handed_off, force) {
-            // Still a member: whatever was queued goes out once back online.
+            // Still a member: the other device pulls the hand-off later.
             if paused {
                 state.set_engine_paused(true).await;
             }
@@ -382,19 +388,22 @@ pub async fn sync_now(state: State<'_, SyncManager>) -> Result<(), String> {
     }
 }
 
-/// Payload of `sync://run`.
+/// Payload of `sync://run`: the phase plus pages / ops received and file
+/// bytes / items read so far.
 #[derive(Debug, Clone, serde::Serialize)]
 struct RunEvent {
     phase: RunPhase,
     #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<String>,
+    #[serde(flatten)]
+    progress: RunProgress,
 }
 
-/// Manual sync from `source_device`: it pushes its outbox, this device pulls
-/// and applies (one direction). Progress goes out as `sync://run`. Errors are
-/// returned as is; `peer_offline` (the source is not running Devdy / not
-/// connected), `peer_paused`, `peer_timeout` and `sync_not_connected` are
-/// bare codes.
+/// Manual sync from `source_device`: this device pulls its change feed page
+/// by page and the files it takes chunk by chunk, applying as it goes (one
+/// direction). Progress goes out as `sync://run`. Errors are returned as is;
+/// `peer_offline` (the source is not running Devdy / not connected),
+/// `peer_paused`, `peer_timeout` and `sync_not_connected` are bare codes.
 #[tauri::command]
 pub async fn sync_run(
     app: AppHandle,
@@ -402,25 +411,29 @@ pub async fn sync_run(
     state: State<'_, SyncManager>,
     source_device: String,
 ) -> Result<SyncRunReport, String> {
-    let emit = |phase: RunPhase, message: Option<String>| {
-        let _ = app.emit(RUN_EVENT, RunEvent { phase, message });
+    let emit = |phase: RunPhase, message: Option<String>, progress: &RunProgress| {
+        let _ = app.emit(RUN_EVENT, RunEvent { phase, message, progress: progress.clone() });
     };
-    // Session files are the bulk of the data: the source uploads them only
+    // Session files are the bulk of the data: the source rescans them only
     // when this device takes sessions.
     let sessions_off = {
         let mut conn = db.acquire().await.map_err(|e| e.to_string())?;
         crate::sync::prefs::categories_off(&mut conn).await?.iter().any(|c| c == "sessions")
     };
-    let scope = if sessions_off { StageScope::NoSessions } else { StageScope::All };
+    let scope = if sessions_off { FileScope::NoSessions } else { FileScope::All };
+    let opts = PullOptions { files: scope, fetch: scope };
     let result = match state.handle().await {
-        Some(h) => h.run_from(&source_device, scope, &|p, m| emit(p, m)).await,
+        Some(h) => h.run_from(&source_device, opts, &|p, progress| emit(p, None, progress)).await,
         None => Err("this device is not in a sync group".into()),
     };
     // A leader change may have arrived.
     state.handoff_kick.notify_one();
     match &result {
-        Ok(_) => emit(RunPhase::Done, None),
-        Err(e) => emit(RunPhase::Error, Some(e.clone())),
+        Ok(r) => {
+            let done = RunProgress { pages: r.pages, ops: r.pulled as u64, done_bytes: r.bytes, total_bytes: r.bytes, ..Default::default() };
+            emit(RunPhase::Done, None, &done)
+        }
+        Err(e) => emit(RunPhase::Error, Some(e.clone()), &RunProgress::default()),
     }
     result
 }
@@ -596,14 +609,14 @@ pub async fn sync_join_respond(request_id: String, allow: bool) -> Result<(), St
 /// How many parked rows `sync_parked_list` returns at most.
 const PARKED_LIST_LIMIT: usize = 200;
 
-/// Rows whose latest change the relay permanently refused (newest first).
+/// Rows too large to be served to the other device (newest first).
 #[tauri::command]
 pub async fn sync_parked_list(db: State<'_, Db>) -> Result<Vec<ParkedRow>, String> {
     store::parked_list(db.inner(), PARKED_LIST_LIMIT).await
 }
 
-/// Queue the parked rows for push again (they go out with the next flush);
-/// returns how many. Rows the relay still refuses are parked again.
+/// Queue the parked rows again (offered with the next Sync); returns how
+/// many. Rows still too large are parked again.
 #[tauri::command]
 pub async fn sync_parked_retry(db: State<'_, Db>, state: State<'_, SyncManager>) -> Result<usize, String> {
     let n = store::parked_retry(db.inner()).await?;
