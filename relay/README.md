@@ -79,20 +79,38 @@ time. The relay only stores ciphertext and never logs op blobs or blob data.
 | `sync_pull{after_seq, limit}` | Device → Relay | → `sync_ops{items:[{seq, device_id, blob}], last_seq, more}`. At most 500 ops / ~8 MiB per page. Set the cursor to `last_seq` and pull again while `more`. |
 | `blob_put{sha, data}` | Device → Relay | `data` = base64 of the sealed bytes, `sha` = lowercase hex sha256 of those bytes (verified). Idempotent. → `blob_ack{sha}`. Errors: `sha_mismatch`, `too_large`, `quota_exceeded`. |
 | `blob_get{sha}` | Device → Relay | → `blob_data{sha, data}` or `error{blob_not_found}`. |
+| `blob_release{shas}` | Device → Relay | The uploading device no longer references these blobs (at most 1000 per frame). Only blobs that device uploaded are marked; anything else is ignored. → `blob_released{released}` (how many were marked). |
 | `sync_revoke{device_id}` | Device → Relay | Any device of the group revokes a device (itself included); its live connections get `error{device_revoked}` and close, its hello fails from then on. → `control{code:"ok"}`. |
 
 After `sync_welcome` only these frames and `keepalive` are accepted on the
 connection (anything else → `error{forbidden}`); sync frames on a Remote
 Control connection are refused the same way. An optional `id` on any request
-is echoed on its response or error. Push/pull/blob frames are not rate limited
+is echoed on its response or error. Push/pull/blob frames (including
+`blob_release`) are not rate limited
 (an initial upload sends many); `sync_hello`/`sync_revoke` count as control
 frames. While sync is enabled the WebSocket message limit is raised, if
 needed, to fit one maximum-size `blob_put`.
 
+**Blob GC.** Ops are sealed, so the relay cannot see which blobs an op
+references; the devices tell it. File sync re-uploads the last (partial)
+chunk of a growing log on every append, which leaves the previous tail blob
+unused once the new manifest op has superseded the old one (same key). The
+device that uploaded it sends `blob_release` for it after the new manifest
+was pushed (and only when no other file of that device still uses the chunk).
+The relay records the release and deletes the blob 24 h later
+(`BLOB_RELEASE_GRACE_SECS`), lazily on that group's next `blob_release` or
+`sync_hello` — no background task. Until then the blob can still be fetched,
+so a device that pulled the superseded op a moment earlier still finishes its
+download (it gets the newer op on its next pull anyway). A `blob_put` of a
+released sha cancels the release. Blobs stored before GC existed have no
+recorded uploader and can be released by any device of the group. Freed bytes
+are taken off the group's quota usage.
+
 **Storage.** SQLite file at `RELAY_SYNC_DB`; in production
 `/projects/relay/shared/sync.db` (survives releases; the directory must be
 writable by the `devdyrelay` user — `ReadWritePaths=` in the unit). Tables:
-`groups` (head seq + byte usage), `devices`, `ops`, `blobs`. It runs in WAL
+`groups` (head seq + byte usage), `devices`, `ops`, `blobs` (with uploader
+and release time; older databases get those columns added at startup). It runs in WAL
 mode, so a copy of the `.db` file alone is not a consistent backup — back up
 with `sqlite3 /projects/relay/shared/sync.db ".backup '/path/sync-$(date +%F).db'"`
 (safe while the relay runs). The content is end-to-end encrypted, but the file

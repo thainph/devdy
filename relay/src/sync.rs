@@ -12,6 +12,13 @@
 //! blob frames and keepalives. After a push, the other connected devices of
 //! the group get `sync_notify` so they pull right away.
 //!
+//! Blob GC: ops are sealed, so the relay can't tell which blobs are still
+//! referenced. The device that uploaded a blob tells it instead
+//! (`blob_release`, once the op that stopped using it is stored); a released
+//! blob is deleted [`BLOB_RELEASE_GRACE_SECS`] later, lazily on the group's
+//! next `blob_release` or hello. Until then it can still be fetched (a device
+//! that pulled the older op just before it was superseded).
+//!
 //! SQLite is synchronous: every store call runs on the blocking pool, behind a
 //! single connection mutex (which also serialises seq assignment per group).
 
@@ -36,6 +43,10 @@ pub const PULL_MAX_OPS: usize = 500;
 pub const PULL_MAX_BYTES: usize = 8 * 1024 * 1024;
 /// Longest accepted `group_id` / `device_id` / op `key`.
 const MAX_ID_LEN: usize = 128;
+/// How long a released blob stays fetchable before it is deleted.
+pub const BLOB_RELEASE_GRACE_SECS: i64 = 24 * 3600;
+/// Most shas accepted by one `blob_release`.
+const MAX_RELEASE: usize = 1000;
 
 /// Frames handled by the sync module.
 pub fn is_sync_frame(t: FrameType) -> bool {
@@ -53,6 +64,8 @@ pub fn is_sync_frame(t: FrameType) -> bool {
             | FrameType::BlobAck
             | FrameType::BlobGet
             | FrameType::BlobData
+            | FrameType::BlobRelease
+            | FrameType::BlobReleased
     )
 }
 
@@ -61,7 +74,11 @@ pub fn is_sync_frame(t: FrameType) -> bool {
 pub fn is_sync_data_frame(t: FrameType) -> bool {
     matches!(
         t,
-        FrameType::SyncPush | FrameType::SyncPull | FrameType::BlobPut | FrameType::BlobGet
+        FrameType::SyncPush
+            | FrameType::SyncPull
+            | FrameType::BlobPut
+            | FrameType::BlobGet
+            | FrameType::BlobRelease
     )
 }
 
@@ -82,6 +99,7 @@ struct Request {
     limit: Option<u64>,
     sha: Option<String>,
     data: Option<String>,
+    shas: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -170,9 +188,16 @@ CREATE TABLE IF NOT EXISTS blobs (
     group_id    TEXT NOT NULL REFERENCES groups(id),
     sha         TEXT NOT NULL,
     data        BLOB NOT NULL,
+    -- Uploader (NULL: stored before blob GC existed, any device may release).
+    device_id   TEXT,
+    -- Unix secs of the uploader's blob_release; deleted after the grace period.
+    released_at INTEGER,
     PRIMARY KEY (group_id, sha)
 );
 ";
+
+/// Columns added after the first release of the store (existing databases).
+const BLOB_COLUMNS: &[(&str, &str)] = &[("device_id", "TEXT"), ("released_at", "INTEGER")];
 
 /// Open (creating if needed) the sync database.
 pub fn open_db(path: &Path) -> rusqlite::Result<Connection> {
@@ -182,7 +207,23 @@ pub fn open_db(path: &Path) -> rusqlite::Result<Connection> {
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.execute_batch(SCHEMA)?;
+    upgrade(&conn)?;
     Ok(conn)
+}
+
+fn upgrade(conn: &Connection) -> rusqlite::Result<()> {
+    let have: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('blobs')")?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (col, ty) in BLOB_COLUMNS {
+        if !have.iter().any(|c| c == col) {
+            conn.execute_batch(&format!("ALTER TABLE blobs ADD COLUMN {col} {ty};"))?;
+        }
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_blobs_released ON blobs(group_id, released_at) WHERE released_at IS NOT NULL;",
+    )
 }
 
 fn now_secs() -> i64 {
@@ -281,6 +322,7 @@ pub fn hello(
             }
         }
     }
+    gc_blobs(&tx, group, now_secs())?;
     let (head, _) = group_head(&tx, group)?;
     tx.commit()?;
     Ok(head)
@@ -410,15 +452,21 @@ pub fn blob_put(
         )
         .optional()?
         .is_some();
-    if !exists {
+    if exists {
+        // Uploaded again: in use after all.
+        tx.execute(
+            "UPDATE blobs SET released_at = NULL WHERE group_id = ?1 AND sha = ?2",
+            params![group, sha],
+        )?;
+    } else {
         let (_, bytes) = group_head(&tx, group)?;
         let bytes = bytes + data.len() as u64;
         if bytes > limits.max_group_bytes {
             return Err(SyncError::Code(ErrorCode::QuotaExceeded, "group storage quota exceeded"));
         }
         tx.execute(
-            "INSERT INTO blobs (group_id, sha, data) VALUES (?1, ?2, ?3)",
-            params![group, sha, data],
+            "INSERT INTO blobs (group_id, sha, data, device_id) VALUES (?1, ?2, ?3, ?4)",
+            params![group, sha, data, device],
         )?;
         tx.execute("UPDATE groups SET bytes = ?2 WHERE id = ?1", params![group, bytes as i64])?;
     }
@@ -438,6 +486,50 @@ pub fn blob_get(conn: &mut Connection, group: &str, device: &str, sha: &str) -> 
         .optional()?;
     let data = data.ok_or(SyncError::Code(ErrorCode::BlobNotFound, "blob not found"))?;
     Ok(base64::engine::general_purpose::STANDARD.encode(data))
+}
+
+/// `blob_release{shas}`: the uploader no longer references these blobs. Marks
+/// the ones it uploaded (unknown / other devices' shas are ignored), then
+/// deletes the group's blobs released more than the grace period before `now`.
+/// Returns how many were marked.
+pub fn blob_release(conn: &mut Connection, group: &str, device: &str, shas: &[String], now: i64) -> SyncResult<usize> {
+    if shas.len() > MAX_RELEASE {
+        return Err(SyncError::Code(ErrorCode::TooLarge, "too many shas"));
+    }
+    let tx = conn.transaction()?;
+    ensure_active(&tx, group, device)?;
+    let mut marked = 0;
+    for sha in shas.iter().filter(|s| valid_sha(s)) {
+        marked += tx.execute(
+            "UPDATE blobs SET released_at = ?4 WHERE group_id = ?1 AND sha = ?2 AND released_at IS NULL \
+             AND (device_id IS NULL OR device_id = ?3)",
+            params![group, sha, device, now],
+        )?;
+    }
+    gc_blobs(&tx, group, now)?;
+    tx.commit()?;
+    Ok(marked)
+}
+
+/// Delete the group's blobs released before `now - grace`, freeing their bytes.
+fn gc_blobs(conn: &Connection, group: &str, now: i64) -> SyncResult<usize> {
+    let cutoff = now - BLOB_RELEASE_GRACE_SECS;
+    let freed: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(length(data)), 0) FROM blobs WHERE group_id = ?1 AND released_at IS NOT NULL AND released_at <= ?2",
+        params![group, cutoff],
+        |r| r.get(0),
+    )?;
+    let n = conn.execute(
+        "DELETE FROM blobs WHERE group_id = ?1 AND released_at IS NOT NULL AND released_at <= ?2",
+        params![group, cutoff],
+    )?;
+    if n > 0 {
+        conn.execute(
+            "UPDATE groups SET bytes = MAX(0, bytes - ?2) WHERE id = ?1",
+            params![group, freed],
+        )?;
+    }
+    Ok(n)
 }
 
 /// `sync_revoke`: mark `target` revoked. A device not seen yet is recorded as
@@ -674,6 +766,12 @@ impl SyncHub {
                 let data = self.call(move |c| blob_get(c, &g, &d, &sha2)).await?;
                 send_json(out, json!({ "t": "blob_data", "sha": sha, "data": data }), id);
             }
+            FrameType::BlobRelease => {
+                let shas = req.shas.ok_or_else(|| bad("missing shas"))?;
+                let n = self.call(move |c| blob_release(c, &g, &d, &shas, now_secs())).await?;
+                tracing::debug!(event = "blob_release", conn = conn_id, released = n);
+                send_json(out, json!({ "t": "blob_released", "released": n }), id);
+            }
             FrameType::SyncRevoke => {
                 let target = req.device_id.unwrap_or_default();
                 if !valid_id(&target) {
@@ -765,6 +863,7 @@ mod tests {
     fn mem() -> Connection {
         let c = Connection::open_in_memory().unwrap();
         c.execute_batch(SCHEMA).unwrap();
+        upgrade(&c).unwrap();
         c
     }
 
@@ -805,6 +904,69 @@ mod tests {
             Err(SyncError::Code(ErrorCode::QuotaExceeded, _))
         ));
         assert_eq!(group_head(&c, "g").unwrap(), (0, 0));
+    }
+
+    fn put(c: &mut Connection, device: &str, data: &[u8]) -> String {
+        let sha = sha256_hex(data);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(data);
+        blob_put(c, LIMITS, "g", device, &sha, &b64).unwrap();
+        sha
+    }
+
+    #[test]
+    fn released_blobs_are_deleted_after_the_grace_period() {
+        let mut c = mem();
+        hello(&mut c, "g", "a", "h", true).unwrap();
+        hello(&mut c, "g", "b", "h", false).unwrap();
+        let old = put(&mut c, "a", b"tail v1");
+        let kept = put(&mut c, "a", b"chunk 0");
+        let theirs = put(&mut c, "b", b"other");
+        assert_eq!(group_head(&c, "g").unwrap().1, 19);
+
+        // Only the uploader releases; bad / unknown shas are ignored.
+        let t0 = 1_000_000;
+        let shas = vec![old.clone(), theirs.clone(), "nope".into(), "0".repeat(64)];
+        assert_eq!(blob_release(&mut c, "g", "a", &shas, t0).unwrap(), 1);
+        assert_eq!(blob_release(&mut c, "g", "a", &shas, t0).unwrap(), 0, "already released");
+        // Still fetchable during the grace period.
+        assert!(blob_get(&mut c, "g", "b", &old).is_ok());
+        blob_release(&mut c, "g", "b", &[], t0 + BLOB_RELEASE_GRACE_SECS - 1).unwrap();
+        assert!(blob_get(&mut c, "g", "b", &old).is_ok());
+
+        blob_release(&mut c, "g", "b", &[], t0 + BLOB_RELEASE_GRACE_SECS).unwrap();
+        assert!(matches!(
+            blob_get(&mut c, "g", "b", &old),
+            Err(SyncError::Code(ErrorCode::BlobNotFound, _))
+        ));
+        assert!(blob_get(&mut c, "g", "a", &kept).is_ok());
+        assert!(blob_get(&mut c, "g", "a", &theirs).is_ok());
+        assert_eq!(group_head(&c, "g").unwrap().1, 12, "freed bytes leave the quota");
+
+        // Uploading a released blob again revives it.
+        let again = put(&mut c, "a", b"again");
+        blob_release(&mut c, "g", "a", std::slice::from_ref(&again), t0).unwrap();
+        put(&mut c, "a", b"again");
+        blob_release(&mut c, "g", "a", &[], t0 + 2 * BLOB_RELEASE_GRACE_SECS).unwrap();
+        assert!(blob_get(&mut c, "g", "a", &again).is_ok());
+    }
+
+    #[test]
+    fn upgrade_adds_the_gc_columns_to_an_old_store() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE groups (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, last_seq INTEGER NOT NULL DEFAULT 0, bytes INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE blobs (group_id TEXT NOT NULL, sha TEXT NOT NULL, data BLOB NOT NULL, PRIMARY KEY (group_id, sha));
+             INSERT INTO groups (id, created_at) VALUES ('g', 0);
+             INSERT INTO blobs (group_id, sha, data) VALUES ('g', 's', x'00');",
+        )
+        .unwrap();
+        c.execute_batch(SCHEMA).unwrap();
+        upgrade(&c).unwrap();
+        upgrade(&c).unwrap();
+        let (dev, rel): (Option<String>, Option<i64>) = c
+            .query_row("SELECT device_id, released_at FROM blobs", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!((dev, rel), (None, None));
     }
 
     #[test]
