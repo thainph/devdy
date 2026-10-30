@@ -25,6 +25,12 @@
 //! queued replies exceed [`MAX_QUEUED_REPLY_BYTES`] is not served another one
 //! until its socket drains (and is closed if it never does).
 //!
+//! On-demand sync (design `on-demand-sync` §1): `sync_peer_send` forwards an
+//! opaque sealed message to another live device of the same group as
+//! `sync_peer_msg`; `sync_peers` lists those devices. Peer messages are never
+//! stored nor logged. A target whose queue does not drain is closed as too
+//! slow, and the sender gets `peer_offline`.
+//!
 //! Blob GC: ops are sealed, so the relay can't tell which blobs are still
 //! referenced. The device that uploaded a blob tells it instead
 //! (`blob_release`, once the op that stopped using it is stored); a released
@@ -91,11 +97,17 @@ pub fn is_sync_frame(t: FrameType) -> bool {
             | FrameType::BlobData
             | FrameType::BlobRelease
             | FrameType::BlobReleased
+            | FrameType::SyncPeers
+            | FrameType::SyncPeerSend
+            | FrameType::SyncPeerAck
+            | FrameType::SyncPeerMsg
     )
 }
 
 /// Sync frames that carry data and are therefore exempt from the control-frame
-/// rate limit (an initial upload legitimately sends thousands of them).
+/// rate limit (an initial upload legitimately sends thousands of them; a
+/// folder sync answers a request with many `sync_peer_send` replies). Their
+/// volume is bounded by the slow-consumer protection instead.
 pub fn is_sync_data_frame(t: FrameType) -> bool {
     matches!(
         t,
@@ -104,6 +116,7 @@ pub fn is_sync_data_frame(t: FrameType) -> bool {
             | FrameType::BlobPut
             | FrameType::BlobGet
             | FrameType::BlobRelease
+            | FrameType::SyncPeerSend
     )
 }
 
@@ -135,6 +148,8 @@ struct Request {
     /// `sync_hello`: the store epoch the device last synced in (see
     /// [`new_store_epoch`]); the welcome reports that epoch's head.
     known_epoch: Option<String>,
+    /// `sync_peer_send`: the device to forward `data` to.
+    to_device: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1110,8 +1125,83 @@ impl SyncHub {
                 tracing::info!(event = "sync_invite", conn = conn_id, group = %s.group_id);
                 send_json(out, json!({ "t": "control", "code": "ok" }), id);
             }
+            FrameType::SyncPeers => {
+                let devices = self.peers(&s.group_id, &s.device_id);
+                send_json(out, json!({ "t": "sync_peers", "devices": devices }), id);
+            }
+            FrameType::SyncPeerSend => {
+                let to = req.to_device.unwrap_or_default();
+                let data = req.data.unwrap_or_default();
+                if !valid_id(&to) || data.is_empty() {
+                    return Err(bad("to_device and data are required"));
+                }
+                if data.len() > limits.max_op_chars() {
+                    return Err(SyncError::Code(ErrorCode::TooLarge, "peer message too large"));
+                }
+                self.peer_send(conn_id, s, &to, data).await?;
+                send_json(out, json!({ "t": "sync_peer_ack" }), id);
+            }
             _ => {}
         }
+        Ok(())
+    }
+
+    /// Device ids of the group's live connections other than `device`, sorted.
+    fn peers(&self, group: &str, device: &str) -> Vec<String> {
+        let live = self.live.lock().unwrap_or_else(|p| p.into_inner());
+        let ids: std::collections::BTreeSet<&str> = live
+            .get(group)
+            .into_iter()
+            .flatten()
+            .map(|c| c.device_id.as_str())
+            .filter(|d| *d != device)
+            .collect();
+        ids.into_iter().map(str::to_string).collect()
+    }
+
+    /// Forward `data` to `to`'s most recent live connection in the sender's
+    /// group as `sync_peer_msg`. `peer_offline` when there is none, the target
+    /// is revoked / not a member, or its queue never drains (it is then closed
+    /// as too slow).
+    async fn peer_send(&self, conn_id: ConnId, s: &SyncSession, to: &str, data: String) -> SyncResult<()> {
+        const OFFLINE: SyncError = SyncError::Code(ErrorCode::PeerOffline, "peer is not connected");
+        if to == s.device_id {
+            return Err(OFFLINE);
+        }
+        let (g, d, t) = (s.group_id.clone(), s.device_id.clone(), to.to_string());
+        let target_active = self
+            .call(move |c| {
+                ensure_active(c, &g, &d)?;
+                match ensure_active(c, &g, &t) {
+                    Ok(()) => Ok(true),
+                    Err(SyncError::Code(..)) => Ok(false),
+                    Err(e) => Err(e),
+                }
+            })
+            .await?;
+        if !target_active {
+            return Err(OFFLINE);
+        }
+        let target = {
+            let live = self.live.lock().unwrap_or_else(|p| p.into_inner());
+            live.get(&s.group_id)
+                .and_then(|conns| conns.iter().rev().find(|c| c.device_id == to))
+                .map(|c| (c.conn, c.out.clone()))
+        };
+        let Some((target_conn, target_out)) = target else {
+            return Err(OFFLINE);
+        };
+        if drained(&target_out).await.is_err() {
+            tracing::warn!(event = "sync_conn_too_slow", conn = target_conn);
+            target_out.close();
+            return Err(OFFLINE);
+        }
+        let bytes = data.len();
+        let text = json!({ "t": "sync_peer_msg", "from_device": s.device_id, "data": data }).to_string();
+        if target_out.send_text(text).is_err() {
+            return Err(OFFLINE);
+        }
+        tracing::debug!(event = "sync_peer_send", conn = conn_id, to_conn = target_conn, bytes);
         Ok(())
     }
 
@@ -1163,7 +1253,7 @@ impl SyncHub {
 
 /// Frame types a device may send after `sync_hello`.
 fn is_client_frame(t: FrameType) -> bool {
-    is_sync_data_frame(t) || matches!(t, FrameType::SyncRevoke | FrameType::SyncInvite)
+    is_sync_data_frame(t) || matches!(t, FrameType::SyncRevoke | FrameType::SyncInvite | FrameType::SyncPeers)
 }
 
 fn error_code(e: &SyncError) -> ErrorCode {

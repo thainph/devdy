@@ -530,3 +530,133 @@ async fn sync_and_remote_control_frames_do_not_mix() {
     .await;
     assert_eq!(recv(&mut host).await["code"], "forbidden");
 }
+
+async fn hello_group(url: &str, group: &str, device: &str) -> Ws {
+    let (mut ws, _) = connect_async(url).await.expect("connect");
+    send(
+        &mut ws,
+        json!({ "t": "sync_hello", "auth_token": TEST_TOKEN, "group_id": group,
+                "device_id": device, "device_token": format!("tok-{device}"), "create": true }),
+    )
+    .await;
+    assert_eq!(recv(&mut ws).await["t"], "sync_welcome");
+    ws
+}
+
+async fn peers(ws: &mut Ws) -> Vec<String> {
+    send(ws, json!({ "t": "sync_peers", "id": "p" })).await;
+    let r = recv(ws).await;
+    assert_eq!((r["t"].as_str(), r["id"].as_str()), (Some("sync_peers"), Some("p")), "got {r}");
+    r["devices"].as_array().unwrap().iter().map(|d| d.as_str().unwrap().to_string()).collect()
+}
+
+#[tokio::test]
+async fn peer_send_forwards_and_acks() {
+    let url = start(Opts::default()).await;
+    let mut a = hello(&url, "a", true).await;
+    let mut b = join(&url, &mut a, "b").await;
+    // A second, older connection of b: the most recent one gets the message.
+    let mut b2 = hello(&url, "b", false).await;
+
+    send(&mut a, json!({ "t": "sync_peer_send", "id": 9, "to_device": "b", "data": "c2VhbGVk" })).await;
+    let ack = recv(&mut a).await;
+    assert_eq!((ack["t"].as_str(), ack["id"].as_u64()), (Some("sync_peer_ack"), Some(9)), "got {ack}");
+    let msg = recv(&mut b2).await;
+    assert_eq!(msg["t"], "sync_peer_msg");
+    assert_eq!(msg["from_device"], "a");
+    assert_eq!(msg["data"], "c2VhbGVk");
+    assert!(msg.get("id").is_none(), "no id on a forwarded message: {msg}");
+    assert!(recv_within(&mut b, Duration::from_millis(300)).await.is_none());
+
+    // And back.
+    send(&mut b2, json!({ "t": "sync_peer_send", "id": "r", "to_device": "a", "data": "cmVwbHk=" })).await;
+    assert_eq!(recv(&mut b2).await["t"], "sync_peer_ack");
+    let msg = recv(&mut a).await;
+    assert_eq!((msg["from_device"].as_str(), msg["data"].as_str()), (Some("b"), Some("cmVwbHk=")));
+
+    // Missing fields.
+    send(&mut a, json!({ "t": "sync_peer_send", "id": 1, "data": "eA==" })).await;
+    let e = recv(&mut a).await;
+    assert_eq!((e["code"].as_str(), e["id"].as_u64()), (Some("bad_request"), Some(1)));
+    send(&mut a, json!({ "t": "sync_peer_send", "to_device": "b" })).await;
+    assert_eq!(recv(&mut a).await["code"], "bad_request");
+}
+
+#[tokio::test]
+async fn peer_send_to_offline_or_foreign_device_fails() {
+    let url = start(Opts::default()).await;
+    let mut a = hello(&url, "a", true).await;
+    let b = join(&url, &mut a, "b").await;
+    drop(b);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Registered but not connected.
+    send(&mut a, json!({ "t": "sync_peer_send", "id": 2, "to_device": "b", "data": "eA==" })).await;
+    let e = recv(&mut a).await;
+    assert_eq!((e["t"].as_str(), e["code"].as_str(), e["id"].as_u64()), (Some("error"), Some("peer_offline"), Some(2)));
+    // Unknown device and self.
+    for to in ["nobody", "a"] {
+        send(&mut a, json!({ "t": "sync_peer_send", "to_device": to, "data": "eA==" })).await;
+        assert_eq!(recv(&mut a).await["code"], "peer_offline", "to {to}");
+    }
+    // A live device of another group.
+    let mut x = hello_group(&url, "grp-2", "x").await;
+    send(&mut a, json!({ "t": "sync_peer_send", "to_device": "x", "data": "eA==" })).await;
+    assert_eq!(recv(&mut a).await["code"], "peer_offline");
+    assert!(recv_within(&mut x, Duration::from_millis(300)).await.is_none());
+    // Same device id in another group is a different device.
+    let mut b_other = hello_group(&url, "grp-3", "b").await;
+    send(&mut a, json!({ "t": "sync_peer_send", "to_device": "b", "data": "eA==" })).await;
+    assert_eq!(recv(&mut a).await["code"], "peer_offline");
+    assert!(recv_within(&mut b_other, Duration::from_millis(300)).await.is_none());
+
+    // Revoked device.
+    let mut c = join(&url, &mut a, "c").await;
+    send(&mut a, json!({ "t": "sync_revoke", "device_id": "c" })).await;
+    assert_eq!(recv(&mut a).await["code"], "ok");
+    send(&mut a, json!({ "t": "sync_peer_send", "to_device": "c", "data": "eA==" })).await;
+    assert_eq!(recv(&mut a).await["code"], "peer_offline");
+    assert_eq!(recv(&mut c).await["code"], "device_revoked");
+}
+
+#[tokio::test]
+async fn sync_peers_lists_live_group_devices() {
+    let url = start(Opts::default()).await;
+    let mut a = hello(&url, "a", true).await;
+    assert!(peers(&mut a).await.is_empty());
+    let b = join(&url, &mut a, "b").await;
+    let _b2 = hello(&url, "b", false).await;
+    let _c = join(&url, &mut a, "c").await;
+    let _a2 = hello(&url, "a", false).await;
+    let _other = hello_group(&url, "grp-2", "z").await;
+    assert_eq!(peers(&mut a).await, vec!["b", "c"], "deduped, caller and other groups excluded");
+    drop(b);
+    drop(_b2);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(peers(&mut a).await, vec!["c"]);
+
+    // Peer frames need a hello first.
+    let (mut ws, _) = connect_async(&url).await.unwrap();
+    send(&mut ws, json!({ "t": "sync_peers" })).await;
+    assert_eq!(recv(&mut ws).await["code"], "forbidden");
+    send(&mut ws, json!({ "t": "sync_peer_send", "to_device": "a", "data": "eA==" })).await;
+    assert_eq!(recv(&mut ws).await["code"], "forbidden");
+}
+
+#[tokio::test]
+async fn peer_send_too_large() {
+    let url = start(Opts::default()).await;
+    let mut a = hello(&url, "a", true).await;
+    let mut b = join(&url, &mut a, "b").await;
+    // Exactly the base64 of the max blob passes; one more char does not.
+    let max_chars = (4 * 1024 * 1024 + 64usize).div_ceil(3) * 4;
+    let data = "A".repeat(max_chars);
+    send(&mut a, json!({ "t": "sync_peer_send", "to_device": "b", "data": data })).await;
+    assert_eq!(recv(&mut a).await["t"], "sync_peer_ack");
+    assert_eq!(recv(&mut b).await["data"].as_str().map(str::len), Some(max_chars));
+    let data = "A".repeat(max_chars + 1);
+    send(&mut a, json!({ "t": "sync_peer_send", "id": 3, "to_device": "b", "data": data })).await;
+    let e = recv(&mut a).await;
+    assert_eq!((e["code"].as_str(), e["id"].as_u64()), (Some("too_large"), Some(3)));
+    assert!(recv_within(&mut b, Duration::from_millis(300)).await.is_none());
+}
