@@ -3,14 +3,27 @@
 //! Devices of a sync group push sealed ops and pull them back by cursor; the
 //! relay keeps them in SQLite (`RELAY_SYNC_DB`) so devices never have to be
 //! online at the same time. Everything the relay stores is ciphertext: an op
-//! is an opaque base64 `blob` plus a keyed hash `key` (later ops with the same
-//! key supersede earlier ones), a file is an opaque blob addressed by the
-//! sha256 of its sealed bytes. Op blobs and blob data are NEVER logged.
+//! is an opaque base64 `blob` plus a keyed hash `key`, a file is an opaque blob
+//! addressed by the sha256 of its sealed bytes. Op blobs and blob data are
+//! NEVER logged.
+//!
+//! Supersede: a push carries the pusher's pull cursor `base_seq`. An older op
+//! with the same key is deleted only when the pusher had already pulled it
+//! (`seq <= base_seq`) or pushed it itself; otherwise both are kept, so an
+//! offline device's stale op can never erase a newer one it has not seen (the
+//! devices resolve the pair by HLC).
 //!
 //! A sync connection opens with `sync_hello` (shared `RELAY_HOST_TOKEN` +
-//! per-device token, TOFU on first hello) and from then on carries only sync /
-//! blob frames and keepalives. After a push, the other connected devices of
-//! the group get `sync_notify` so they pull right away.
+//! per-device token) and from then on carries only sync / blob frames and
+//! keepalives. The device that creates a group is registered on that hello;
+//! any other device joins with a one-time ticket a member registered first
+//! (`sync_invite`), after which its token hash is pinned. After a push, the
+//! other connected devices of the group get `sync_notify` so they pull right
+//! away.
+//!
+//! Replies to `sync_pull` / `blob_get` can be MiBs, so a connection whose
+//! queued replies exceed [`MAX_QUEUED_REPLY_BYTES`] is not served another one
+//! until its socket drains (and is closed if it never does).
 //!
 //! Blob GC: ops are sealed, so the relay can't tell which blobs are still
 //! referenced. The device that uploaded a blob tells it instead
@@ -47,6 +60,16 @@ const MAX_ID_LEN: usize = 128;
 pub const BLOB_RELEASE_GRACE_SECS: i64 = 24 * 3600;
 /// Most shas accepted by one `blob_release`.
 const MAX_RELEASE: usize = 1000;
+/// Longest lifetime of a join ticket.
+pub const MAX_TICKET_TTL_SECS: u64 = 600;
+/// Most live (unexpired, unused) join tickets per group.
+const MAX_LIVE_TICKETS: i64 = 16;
+/// Queued reply bytes above which a connection gets no further pull / blob
+/// reply until its socket drains.
+pub const MAX_QUEUED_REPLY_BYTES: usize = 16 * 1024 * 1024;
+/// How long a connection may sit above [`MAX_QUEUED_REPLY_BYTES`] before it is
+/// closed as too slow.
+const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Frames handled by the sync module.
 pub fn is_sync_frame(t: FrameType) -> bool {
@@ -60,6 +83,7 @@ pub fn is_sync_frame(t: FrameType) -> bool {
             | FrameType::SyncOps
             | FrameType::SyncNotify
             | FrameType::SyncRevoke
+            | FrameType::SyncInvite
             | FrameType::BlobPut
             | FrameType::BlobAck
             | FrameType::BlobGet
@@ -94,7 +118,11 @@ struct Request {
     device_id: Option<String>,
     device_token: Option<String>,
     create: Option<bool>,
+    ticket: Option<String>,
+    ticket_hash: Option<String>,
+    ttl_secs: Option<u64>,
     items: Option<Vec<PushItem>>,
+    base_seq: Option<u64>,
     after_seq: Option<u64>,
     limit: Option<u64>,
     sha: Option<String>,
@@ -113,6 +141,7 @@ pub struct PushItem {
 pub struct PulledOp {
     pub seq: u64,
     pub device_id: String,
+    pub key: String,
     pub blob: String,
 }
 
@@ -132,6 +161,8 @@ pub struct PullPage {
 pub enum SyncError {
     Code(ErrorCode, &'static str),
     Db(rusqlite::Error),
+    /// The connection did not drain its queued replies in time: close it.
+    TooSlow,
 }
 
 impl From<rusqlite::Error> for SyncError {
@@ -165,7 +196,10 @@ CREATE TABLE IF NOT EXISTS groups (
     id          TEXT PRIMARY KEY,
     created_at  INTEGER NOT NULL,
     last_seq    INTEGER NOT NULL DEFAULT 0,
-    bytes       INTEGER NOT NULL DEFAULT 0
+    bytes       INTEGER NOT NULL DEFAULT 0,
+    -- The device whose hello created the group: the only one that may revoke
+    -- other devices.
+    creator_device TEXT
 );
 CREATE TABLE IF NOT EXISTS devices (
     group_id    TEXT NOT NULL REFERENCES groups(id),
@@ -181,8 +215,7 @@ CREATE TABLE IF NOT EXISTS ops (
     device_id   TEXT NOT NULL,
     key         TEXT NOT NULL,
     blob        TEXT NOT NULL,
-    PRIMARY KEY (group_id, seq),
-    UNIQUE (group_id, key)
+    PRIMARY KEY (group_id, seq)
 );
 CREATE TABLE IF NOT EXISTS blobs (
     group_id    TEXT NOT NULL REFERENCES groups(id),
@@ -193,6 +226,13 @@ CREATE TABLE IF NOT EXISTS blobs (
     -- Unix secs of the uploader's blob_release; deleted after the grace period.
     released_at INTEGER,
     PRIMARY KEY (group_id, sha)
+);
+CREATE TABLE IF NOT EXISTS invites (
+    group_id    TEXT NOT NULL REFERENCES groups(id),
+    ticket_hash TEXT NOT NULL,
+    expires_at  INTEGER NOT NULL,
+    used        INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (group_id, ticket_hash)
 );
 ";
 
@@ -211,18 +251,59 @@ pub fn open_db(path: &Path) -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
-fn upgrade(conn: &Connection) -> rusqlite::Result<()> {
-    let have: Vec<String> = conn
-        .prepare("SELECT name FROM pragma_table_info('blobs')")?
+fn columns(conn: &Connection, table: &str) -> rusqlite::Result<Vec<String>> {
+    conn.prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))?
         .query_map([], |r| r.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
+        .collect()
+}
+
+fn upgrade(conn: &Connection) -> rusqlite::Result<()> {
+    let have = columns(conn, "blobs")?;
     for (col, ty) in BLOB_COLUMNS {
         if !have.iter().any(|c| c == col) {
             conn.execute_batch(&format!("ALTER TABLE blobs ADD COLUMN {col} {ty};"))?;
         }
     }
+    if !columns(conn, "groups")?.iter().any(|c| c == "creator_device") {
+        conn.execute_batch("ALTER TABLE groups ADD COLUMN creator_device TEXT;")?;
+    }
+    // Groups created before the column existed: the earliest registered device
+    // (pre-revoked placeholders have no token) is taken as the creator.
     conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_blobs_released ON blobs(group_id, released_at) WHERE released_at IS NOT NULL;",
+        "UPDATE groups SET creator_device = (
+             SELECT d.device_id FROM devices d
+             WHERE d.group_id = groups.id AND d.token_hash != ''
+             ORDER BY d.created_at, d.rowid LIMIT 1)
+         WHERE creator_device IS NULL;",
+    )?;
+    // Ops used to be UNIQUE per key (unconditional supersede); same-key ops may
+    // now coexist. SQLite cannot drop a constraint, so rebuild the table.
+    let ops_sql: String = conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'ops'",
+        [],
+        |r| r.get(0),
+    )?;
+    if ops_sql.contains("UNIQUE") {
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE ops_new (
+                 group_id    TEXT NOT NULL REFERENCES groups(id),
+                 seq         INTEGER NOT NULL,
+                 device_id   TEXT NOT NULL,
+                 key         TEXT NOT NULL,
+                 blob        TEXT NOT NULL,
+                 PRIMARY KEY (group_id, seq)
+             );
+             INSERT INTO ops_new (group_id, seq, device_id, key, blob)
+                 SELECT group_id, seq, device_id, key, blob FROM ops;
+             DROP TABLE ops;
+             ALTER TABLE ops_new RENAME TO ops;
+             COMMIT;",
+        )?;
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_blobs_released ON blobs(group_id, released_at) WHERE released_at IS NOT NULL;
+         CREATE INDEX IF NOT EXISTS idx_ops_key ON ops(group_id, key);",
     )
 }
 
@@ -278,63 +359,122 @@ fn ensure_active(conn: &Connection, group: &str, device: &str) -> SyncResult<()>
     }
 }
 
-/// `sync_hello`: create the group (`create`), register an unknown device
-/// (TOFU on the token hash) or check a known one. Returns the group head.
-pub fn hello(
-    conn: &mut Connection,
-    group: &str,
-    device: &str,
-    token_hash: &str,
-    create: bool,
-) -> SyncResult<u64> {
+/// What a `sync_hello` presents besides the group and device ids.
+#[derive(Debug, Clone, Copy)]
+pub struct HelloAuth<'a> {
+    /// sha256 hex of the device token.
+    pub token_hash: &'a str,
+    pub create: bool,
+    /// sha256 hex of the join ticket, if one was sent.
+    pub ticket_hash: Option<&'a str>,
+}
+
+/// `sync_hello`: create the group (`create`, the device becomes its creator),
+/// register an unknown device that presents a valid join ticket, or check a
+/// known one's token. Returns the group head.
+pub fn hello(conn: &mut Connection, group: &str, device: &str, auth: HelloAuth, now: i64) -> SyncResult<u64> {
     let tx = conn.transaction()?;
     let exists: bool = tx
         .query_row("SELECT 1 FROM groups WHERE id = ?1", params![group], |_| Ok(()))
         .optional()?
         .is_some();
-    if !exists {
-        if !create {
-            return Err(SyncError::Code(ErrorCode::GroupNotFound, "unknown sync group"));
-        }
-        tx.execute(
-            "INSERT INTO groups (id, created_at) VALUES (?1, ?2)",
-            params![group, now_secs()],
-        )?;
-    }
-    let known: Option<(String, bool)> = tx
-        .query_row(
+    let known: Option<(String, bool)> = if exists {
+        tx.query_row(
             "SELECT token_hash, revoked FROM devices WHERE group_id = ?1 AND device_id = ?2",
             params![group, device],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
-        .optional()?;
+        .optional()?
+    } else {
+        None
+    };
     match known {
-        None => {
-            tx.execute(
-                "INSERT INTO devices (group_id, device_id, token_hash, created_at) VALUES (?1, ?2, ?3, ?4)",
-                params![group, device, token_hash, now_secs()],
-            )?;
-        }
         Some((_, true)) => return Err(SyncError::Code(ErrorCode::DeviceRevoked, "device revoked")),
         Some((stored, false)) => {
-            if !crate::server::constant_time_eq(&stored, token_hash) {
+            if !crate::server::constant_time_eq(&stored, auth.token_hash) {
                 return Err(SyncError::Code(ErrorCode::AuthFailed, "invalid device token"));
             }
         }
+        None if !exists => {
+            if !auth.create {
+                return Err(SyncError::Code(ErrorCode::GroupNotFound, "unknown sync group"));
+            }
+            tx.execute(
+                "INSERT INTO groups (id, created_at, creator_device) VALUES (?1, ?2, ?3)",
+                params![group, now, device],
+            )?;
+            register(&tx, group, device, auth.token_hash, now)?;
+        }
+        None => {
+            if auth.create {
+                return Err(SyncError::Code(ErrorCode::GroupExists, "sync group already exists"));
+            }
+            let ticket = auth
+                .ticket_hash
+                .ok_or(SyncError::Code(ErrorCode::TicketRequired, "a join ticket is required"))?;
+            let used = tx.execute(
+                "UPDATE invites SET used = 1 WHERE group_id = ?1 AND ticket_hash = ?2 AND used = 0 AND expires_at > ?3",
+                params![group, ticket, now],
+            )?;
+            if used == 0 {
+                return Err(SyncError::Code(ErrorCode::TicketInvalid, "join ticket invalid, expired or used"));
+            }
+            register(&tx, group, device, auth.token_hash, now)?;
+        }
     }
-    gc_blobs(&tx, group, now_secs())?;
+    gc_blobs(&tx, group, now)?;
     let (head, _) = group_head(&tx, group)?;
     tx.commit()?;
     Ok(head)
 }
 
-/// `sync_push`: assign seqs, drop older ops with the same key, enforce the
-/// group quota. All or nothing. Returns the new head.
+fn register(conn: &Connection, group: &str, device: &str, token_hash: &str, now: i64) -> SyncResult<()> {
+    conn.execute(
+        "INSERT INTO devices (group_id, device_id, token_hash, created_at) VALUES (?1, ?2, ?3, ?4)",
+        params![group, device, token_hash, now],
+    )?;
+    Ok(())
+}
+
+/// `sync_invite`: a member registers a one-time join ticket (by hash) valid for
+/// `ttl_secs`. Expired / used tickets of the group are pruned on the way.
+pub fn invite(conn: &mut Connection, group: &str, device: &str, ticket_hash: &str, ttl_secs: u64, now: i64) -> SyncResult<()> {
+    if !valid_sha(ticket_hash) {
+        return Err(bad("ticket_hash must be 64 lowercase hex chars"));
+    }
+    if ttl_secs == 0 || ttl_secs > MAX_TICKET_TTL_SECS {
+        return Err(bad("ttl_secs must be 1..=600"));
+    }
+    let tx = conn.transaction()?;
+    ensure_active(&tx, group, device)?;
+    tx.execute(
+        "DELETE FROM invites WHERE group_id = ?1 AND (used = 1 OR expires_at <= ?2)",
+        params![group, now],
+    )?;
+    let live: i64 = tx.query_row("SELECT COUNT(*) FROM invites WHERE group_id = ?1", params![group], |r| r.get(0))?;
+    if live >= MAX_LIVE_TICKETS {
+        return Err(SyncError::Code(ErrorCode::QuotaExceeded, "too many open join tickets"));
+    }
+    let inserted = tx.execute(
+        "INSERT INTO invites (group_id, ticket_hash, expires_at) VALUES (?1, ?2, ?3) ON CONFLICT DO NOTHING",
+        params![group, ticket_hash, now + ttl_secs as i64],
+    )?;
+    if inserted == 0 {
+        return Err(bad("ticket already registered"));
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// `sync_push`: assign seqs, drop the older ops with the same key that the
+/// pusher has seen (`seq <= base_seq`) or pushed itself, enforce the group
+/// quota. All or nothing. Returns the new head.
 pub fn push(
     conn: &mut Connection,
     limits: Limits,
     group: &str,
     device: &str,
+    base_seq: u64,
     items: &[PushItem],
 ) -> SyncResult<u64> {
     for it in items {
@@ -348,20 +488,16 @@ pub fn push(
     let tx = conn.transaction()?;
     ensure_active(&tx, group, device)?;
     let (mut seq, mut bytes) = group_head(&tx, group)?;
+    let base = base_seq.min(i64::MAX as u64) as i64;
     for it in items {
-        let old: Option<i64> = tx
-            .query_row(
-                "SELECT length(CAST(blob AS BLOB)) FROM ops WHERE group_id = ?1 AND key = ?2",
-                params![group, it.key],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if let Some(len) = old {
-            tx.execute(
-                "DELETE FROM ops WHERE group_id = ?1 AND key = ?2",
-                params![group, it.key],
-            )?;
-            bytes = bytes.saturating_sub(len as u64);
+        const SEEN: &str = "group_id = ?1 AND key = ?2 AND (seq <= ?3 OR device_id = ?4)";
+        let old: i64 = tx.query_row(
+            &format!("SELECT COALESCE(SUM(length(CAST(blob AS BLOB))), 0) FROM ops WHERE {SEEN}"),
+            params![group, it.key, base, device],
+            |r| r.get(0),
+        )?;
+        if tx.execute(&format!("DELETE FROM ops WHERE {SEEN}"), params![group, it.key, base, device])? > 0 {
+            bytes = bytes.saturating_sub(old as u64);
         }
         bytes += it.blob.len() as u64;
         if bytes > limits.max_group_bytes {
@@ -392,12 +528,12 @@ pub fn pull(conn: &mut Connection, group: &str, device: &str, after_seq: u64, li
     let mut more = false;
     {
         let mut stmt = tx.prepare(
-            "SELECT seq, device_id, blob FROM ops WHERE group_id = ?1 AND seq > ?2 ORDER BY seq",
+            "SELECT seq, device_id, key, blob FROM ops WHERE group_id = ?1 AND seq > ?2 ORDER BY seq",
         )?;
         let mut rows = stmt.query(params![group, after_seq.min(i64::MAX as u64) as i64])?;
         let mut page_bytes = 0usize;
         while let Some(row) = rows.next()? {
-            let blob: String = row.get(2)?;
+            let blob: String = row.get(3)?;
             if items.len() >= limit || (!items.is_empty() && page_bytes + blob.len() > PULL_MAX_BYTES) {
                 more = true;
                 break;
@@ -406,6 +542,7 @@ pub fn pull(conn: &mut Connection, group: &str, device: &str, after_seq: u64, li
             items.push(PulledOp {
                 seq: row.get::<_, i64>(0)? as u64,
                 device_id: row.get(1)?,
+                key: row.get(2)?,
                 blob,
             });
         }
@@ -532,11 +669,22 @@ fn gc_blobs(conn: &Connection, group: &str, now: i64) -> SyncResult<usize> {
     Ok(n)
 }
 
-/// `sync_revoke`: mark `target` revoked. A device not seen yet is recorded as
-/// revoked, so it can never register later.
+/// `sync_revoke`: mark `target` revoked. A device may revoke itself; only the
+/// group's creator may revoke another one. A device not seen yet is recorded
+/// as revoked, so it can never register later.
 pub fn revoke(conn: &mut Connection, group: &str, device: &str, target: &str) -> SyncResult<()> {
     let tx = conn.transaction()?;
     ensure_active(&tx, group, device)?;
+    if target != device {
+        let creator: Option<String> = tx.query_row(
+            "SELECT creator_device FROM groups WHERE id = ?1",
+            params![group],
+            |r| r.get(0),
+        )?;
+        if creator.as_deref() != Some(device) {
+            return Err(SyncError::Code(ErrorCode::Forbidden, "only the group creator can revoke another device"));
+        }
+    }
     tx.execute(
         "INSERT INTO devices (group_id, device_id, token_hash, revoked, created_at) VALUES (?1, ?2, '', 1, ?3)
          ON CONFLICT (group_id, device_id) DO UPDATE SET revoked = 1",
@@ -651,6 +799,10 @@ impl SyncHub {
                 };
                 match self.request(conn_id, out, &s, t, req).await {
                     Ok(()) => false,
+                    Err(SyncError::TooSlow) => {
+                        tracing::warn!(event = "sync_conn_too_slow", conn = conn_id);
+                        true
+                    }
                     Err(e) => {
                         let revoked = matches!(e, SyncError::Code(ErrorCode::DeviceRevoked, _));
                         send_sync_error(out, id, e);
@@ -689,8 +841,18 @@ impl SyncHub {
         }
         let token_hash = sha256_hex(token.as_bytes());
         let create = req.create.unwrap_or(false);
+        let ticket_hash = req.ticket.filter(|t| !t.is_empty()).map(|t| sha256_hex(t.as_bytes()));
         let (g, d) = (group.clone(), device.clone());
-        let head = self.call(move |c| hello(c, &g, &d, &token_hash, create)).await?;
+        let head = self
+            .call(move |c| {
+                let auth = HelloAuth {
+                    token_hash: &token_hash,
+                    create,
+                    ticket_hash: ticket_hash.as_deref(),
+                };
+                hello(c, &g, &d, auth, now_secs())
+            })
+            .await?;
         self.live
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -725,10 +887,11 @@ impl SyncHub {
             FrameType::SyncPush => {
                 let items = req.items.ok_or_else(|| bad("missing items"))?;
                 let n = items.len();
+                let base = req.base_seq.unwrap_or(0);
                 let head = if n == 0 {
                     self.call(move |c| Ok(group_head(c, &g)?.0)).await?
                 } else {
-                    self.call(move |c| push(c, limits, &g, &d, &items)).await?
+                    self.call(move |c| push(c, limits, &g, &d, base, &items)).await?
                 };
                 tracing::debug!(event = "sync_push", conn = conn_id, ops = n, last_seq = head);
                 send_json(out, json!({ "t": "sync_ack", "last_seq": head }), id);
@@ -737,6 +900,7 @@ impl SyncHub {
                 }
             }
             FrameType::SyncPull => {
+                drained(out).await?;
                 let after = req.after_seq.unwrap_or(0);
                 let limit = req.limit.unwrap_or(0).min(PULL_MAX_OPS as u64) as usize;
                 let page = self.call(move |c| pull(c, &g, &d, after, limit)).await?;
@@ -744,7 +908,7 @@ impl SyncHub {
                 let items: Vec<Value> = page
                     .items
                     .into_iter()
-                    .map(|op| json!({ "seq": op.seq, "device_id": op.device_id, "blob": op.blob }))
+                    .map(|op| json!({ "seq": op.seq, "device_id": op.device_id, "key": op.key, "blob": op.blob }))
                     .collect();
                 send_json(
                     out,
@@ -761,6 +925,7 @@ impl SyncHub {
                 send_json(out, json!({ "t": "blob_ack", "sha": sha }), id);
             }
             FrameType::BlobGet => {
+                drained(out).await?;
                 let sha = req.sha.ok_or_else(|| bad("missing sha"))?;
                 let sha2 = sha.clone();
                 let data = self.call(move |c| blob_get(c, &g, &d, &sha2)).await?;
@@ -782,6 +947,13 @@ impl SyncHub {
                 tracing::info!(event = "sync_revoke", conn = conn_id, group = %s.group_id, device = %target);
                 send_json(out, json!({ "t": "control", "code": "ok" }), id);
                 self.kick(&s.group_id, &target);
+            }
+            FrameType::SyncInvite => {
+                let hash = req.ticket_hash.ok_or_else(|| bad("missing ticket_hash"))?;
+                let ttl = req.ttl_secs.unwrap_or(MAX_TICKET_TTL_SECS);
+                self.call(move |c| invite(c, &g, &d, &hash, ttl, now_secs())).await?;
+                tracing::info!(event = "sync_invite", conn = conn_id, group = %s.group_id);
+                send_json(out, json!({ "t": "control", "code": "ok" }), id);
             }
             _ => {}
         }
@@ -825,14 +997,29 @@ impl SyncHub {
 
 /// Frame types a device may send after `sync_hello`.
 fn is_client_frame(t: FrameType) -> bool {
-    is_sync_data_frame(t) || t == FrameType::SyncRevoke
+    is_sync_data_frame(t) || matches!(t, FrameType::SyncRevoke | FrameType::SyncInvite)
 }
 
 fn error_code(e: &SyncError) -> ErrorCode {
     match e {
         SyncError::Code(c, _) => *c,
-        SyncError::Db(_) => ErrorCode::Internal,
+        SyncError::Db(_) | SyncError::TooSlow => ErrorCode::Internal,
     }
+}
+
+/// Wait until the connection's queued replies are under
+/// [`MAX_QUEUED_REPLY_BYTES`] before producing another large one. Requests of
+/// a connection are handled one at a time, so this bounds what one client can
+/// pin in relay memory by not reading its socket.
+async fn drained(out: &Outbound) -> SyncResult<()> {
+    let deadline = tokio::time::Instant::now() + DRAIN_TIMEOUT;
+    while out.queued_text_bytes() > MAX_QUEUED_REPLY_BYTES {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(SyncError::TooSlow);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    Ok(())
 }
 
 fn send_json(out: &Outbound, mut v: Value, id: Option<Value>) {
@@ -853,6 +1040,7 @@ fn send_sync_error(out: &Outbound, id: Option<Value>, e: SyncError) {
             tracing::error!(event = "sync_db_error", error = %err);
             send_error(out, id, ErrorCode::Internal, "sync store error");
         }
+        SyncError::TooSlow => send_error(out, id, ErrorCode::Internal, "connection too slow"),
     }
 }
 
@@ -872,6 +1060,21 @@ mod tests {
         max_blob_bytes: 100,
     };
 
+    fn auth(token_hash: &str, create: bool) -> HelloAuth<'_> {
+        HelloAuth { token_hash, create, ticket_hash: None }
+    }
+
+    /// Create group `g` with `a` as creator and join `others` with tickets.
+    fn group(c: &mut Connection, others: &[&str]) {
+        hello(c, "g", "a", auth("h", true), 0).unwrap();
+        for (i, d) in others.iter().enumerate() {
+            let ticket = sha256_hex(format!("ticket-{i}").as_bytes());
+            invite(c, "g", "a", &ticket, 60, 0).unwrap();
+            let a = HelloAuth { token_hash: "h", create: false, ticket_hash: Some(&ticket) };
+            hello(c, "g", d, a, 1).unwrap();
+        }
+    }
+
     fn item(key: &str, blob: &str) -> PushItem {
         PushItem {
             key: key.into(),
@@ -882,25 +1085,90 @@ mod tests {
     #[test]
     fn supersede_keeps_byte_accounting() {
         let mut c = mem();
-        hello(&mut c, "g", "a", "h", true).unwrap();
-        assert_eq!(push(&mut c, LIMITS, "g", "a", &[item("k1", "aaaa"), item("k2", "bb")]).unwrap(), 2);
-        assert_eq!(push(&mut c, LIMITS, "g", "a", &[item("k1", "c")]).unwrap(), 3);
+        group(&mut c, &[]);
+        assert_eq!(push(&mut c, LIMITS, "g", "a", 0, &[item("k1", "aaaa"), item("k2", "bb")]).unwrap(), 2);
+        // Own earlier op: superseded whatever the cursor.
+        assert_eq!(push(&mut c, LIMITS, "g", "a", 0, &[item("k1", "c")]).unwrap(), 3);
         assert_eq!(group_head(&c, "g").unwrap(), (3, 3));
         let page = pull(&mut c, "g", "a", 0, 0).unwrap();
         let seqs: Vec<u64> = page.items.iter().map(|o| o.seq).collect();
         assert_eq!(seqs, vec![2, 3]);
         assert!(!page.more);
         assert_eq!(page.last_seq, 3);
+        assert_eq!(page.items[1].key, "k1");
+    }
+
+    #[test]
+    fn unseen_op_of_another_device_is_kept() {
+        let mut c = mem();
+        group(&mut c, &["b"]);
+        // B pulled up to 0, then A pushed k1 at seq 1.
+        push(&mut c, LIMITS, "g", "a", 0, &[item("k1", "new")]).unwrap();
+        // B's stale push (base 0) must not erase A's op it never saw.
+        push(&mut c, LIMITS, "g", "b", 0, &[item("k1", "old")]).unwrap();
+        let blobs: Vec<String> = pull(&mut c, "g", "a", 0, 0).unwrap().items.into_iter().map(|o| o.blob).collect();
+        assert_eq!(blobs, vec!["new", "old"]);
+        assert_eq!(group_head(&c, "g").unwrap(), (2, 6));
+        // Once B has pulled past seq 2 its next push replaces both.
+        push(&mut c, LIMITS, "g", "b", 2, &[item("k1", "x")]).unwrap();
+        let page = pull(&mut c, "g", "a", 0, 0).unwrap();
+        assert_eq!(page.items.iter().map(|o| o.seq).collect::<Vec<_>>(), vec![3]);
+        assert_eq!(group_head(&c, "g").unwrap(), (3, 1));
+    }
+
+    #[test]
+    fn joining_needs_a_valid_unused_ticket() {
+        let mut c = mem();
+        hello(&mut c, "g", "a", auth("ha", true), 100).unwrap();
+        let tick = |s: &str| sha256_hex(s.as_bytes());
+        fn with(t: &str) -> HelloAuth<'_> {
+            HelloAuth { token_hash: "hb", create: false, ticket_hash: Some(t) }
+        }
+        let code = |r: SyncResult<u64>| match r {
+            Err(SyncError::Code(c, _)) => c.as_str(),
+            Ok(_) => "ok",
+            Err(_) => "db",
+        };
+        assert_eq!(code(hello(&mut c, "g", "b", auth("hb", false), 100)), "ticket_required");
+        assert_eq!(code(hello(&mut c, "g", "b", with(&tick("t1")), 100)), "ticket_invalid");
+        assert_eq!(code(hello(&mut c, "g", "b", auth("hb", true), 100)), "group_exists");
+        // Creator retrying its create hello is fine.
+        assert_eq!(code(hello(&mut c, "g", "a", auth("ha", true), 100)), "ok");
+
+        invite(&mut c, "g", "a", &tick("t1"), 60, 100).unwrap();
+        assert!(invite(&mut c, "g", "a", &tick("t1"), 60, 100).is_err(), "duplicate");
+        assert!(invite(&mut c, "g", "a", &tick("t2"), 601, 100).is_err(), "ttl capped");
+        assert!(invite(&mut c, "g", "nobody", &tick("t2"), 60, 100).is_err(), "members only");
+        invite(&mut c, "g", "a", &tick("t2"), 10, 100).unwrap();
+        // Expired.
+        assert_eq!(code(hello(&mut c, "g", "c", with(&tick("t2")), 110)), "ticket_invalid");
+        assert_eq!(code(hello(&mut c, "g", "b", with(&tick("t1")), 101)), "ok");
+        // Used: a second device cannot reuse it.
+        assert_eq!(code(hello(&mut c, "g", "c", with(&tick("t1")), 102)), "ticket_invalid");
+        // The joined device now authenticates with its token alone.
+        assert_eq!(code(hello(&mut c, "g", "b", auth("hb", false), 103)), "ok");
+        assert_eq!(code(hello(&mut c, "g", "b", auth("other", false), 103)), "auth_failed");
+    }
+
+    #[test]
+    fn only_the_creator_revokes_others() {
+        let mut c = mem();
+        group(&mut c, &["b", "c"]);
+        assert!(matches!(revoke(&mut c, "g", "b", "c"), Err(SyncError::Code(ErrorCode::Forbidden, _))));
+        assert!(matches!(revoke(&mut c, "g", "b", "a"), Err(SyncError::Code(ErrorCode::Forbidden, _))));
+        revoke(&mut c, "g", "b", "b").unwrap();
+        revoke(&mut c, "g", "a", "c").unwrap();
+        assert!(matches!(ensure_active(&c, "g", "c"), Err(SyncError::Code(ErrorCode::DeviceRevoked, _))));
     }
 
     #[test]
     fn failed_push_is_all_or_nothing() {
         let mut c = mem();
-        hello(&mut c, "g", "a", "h", true).unwrap();
+        group(&mut c, &[]);
         let big = "x".repeat(100);
         let items: Vec<PushItem> = (0..11).map(|i| item(&format!("k{i}"), &big)).collect();
         assert!(matches!(
-            push(&mut c, LIMITS, "g", "a", &items),
+            push(&mut c, LIMITS, "g", "a", 0, &items),
             Err(SyncError::Code(ErrorCode::QuotaExceeded, _))
         ));
         assert_eq!(group_head(&c, "g").unwrap(), (0, 0));
@@ -916,8 +1184,7 @@ mod tests {
     #[test]
     fn released_blobs_are_deleted_after_the_grace_period() {
         let mut c = mem();
-        hello(&mut c, "g", "a", "h", true).unwrap();
-        hello(&mut c, "g", "b", "h", false).unwrap();
+        group(&mut c, &["b"]);
         let old = put(&mut c, "a", b"tail v1");
         let kept = put(&mut c, "a", b"chunk 0");
         let theirs = put(&mut c, "b", b"other");
@@ -951,12 +1218,16 @@ mod tests {
     }
 
     #[test]
-    fn upgrade_adds_the_gc_columns_to_an_old_store() {
-        let c = Connection::open_in_memory().unwrap();
+    fn upgrade_migrates_an_old_store() {
+        let mut c = Connection::open_in_memory().unwrap();
         c.execute_batch(
             "CREATE TABLE groups (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, last_seq INTEGER NOT NULL DEFAULT 0, bytes INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE devices (group_id TEXT NOT NULL, device_id TEXT NOT NULL, token_hash TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, PRIMARY KEY (group_id, device_id));
+             CREATE TABLE ops (group_id TEXT NOT NULL, seq INTEGER NOT NULL, device_id TEXT NOT NULL, key TEXT NOT NULL, blob TEXT NOT NULL, PRIMARY KEY (group_id, seq), UNIQUE (group_id, key));
              CREATE TABLE blobs (group_id TEXT NOT NULL, sha TEXT NOT NULL, data BLOB NOT NULL, PRIMARY KEY (group_id, sha));
-             INSERT INTO groups (id, created_at) VALUES ('g', 0);
+             INSERT INTO groups (id, created_at, last_seq, bytes) VALUES ('g', 0, 1, 1);
+             INSERT INTO devices VALUES ('g', 'x', '', 1, 0), ('g', 'b', 'hb', 0, 5), ('g', 'a', 'ha', 0, 3);
+             INSERT INTO ops VALUES ('g', 1, 'a', 'k', 'z');
              INSERT INTO blobs (group_id, sha, data) VALUES ('g', 's', x'00');",
         )
         .unwrap();
@@ -967,16 +1238,41 @@ mod tests {
             .query_row("SELECT device_id, released_at FROM blobs", [], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap();
         assert_eq!((dev, rel), (None, None));
+        let creator: String = c.query_row("SELECT creator_device FROM groups", [], |r| r.get(0)).unwrap();
+        assert_eq!(creator, "a", "earliest real device");
+        // Same-key ops may now coexist.
+        push(&mut c, LIMITS, "g", "b", 0, &[item("k", "y")]).unwrap();
+        assert_eq!(pull(&mut c, "g", "a", 0, 0).unwrap().items.len(), 2);
     }
 
     #[test]
     fn revoke_before_first_hello_blocks_tofu() {
         let mut c = mem();
-        hello(&mut c, "g", "a", "h", true).unwrap();
+        group(&mut c, &[]);
         revoke(&mut c, "g", "a", "b").unwrap();
         assert!(matches!(
-            hello(&mut c, "g", "b", "h2", false),
+            hello(&mut c, "g", "b", auth("h2", false), 0),
             Err(SyncError::Code(ErrorCode::DeviceRevoked, _))
         ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn big_replies_wait_for_the_socket_to_drain() {
+        let (out, mut rx) = crate::room::outbound_channel();
+        assert!(drained(&out).await.is_ok());
+        out.send_text("x".repeat(MAX_QUEUED_REPLY_BYTES + 1)).unwrap();
+        assert_eq!(out.queued_text_bytes(), MAX_QUEUED_REPLY_BYTES + 1);
+        // Never drains: the connection is given up on.
+        assert!(matches!(drained(&out).await, Err(SyncError::TooSlow)));
+        // Drains while waiting: served.
+        out.send_text("y".into()).unwrap();
+        let reader = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            rx.recv().await;
+            rx
+        });
+        assert!(drained(&out).await.is_ok());
+        assert_eq!(out.queued_text_bytes(), 1);
+        drop(reader.await.unwrap());
     }
 }
