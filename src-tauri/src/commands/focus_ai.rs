@@ -848,47 +848,52 @@ pub async fn focus_start_with_ai(
         .clone()
         .ok_or("project_required: pick a project for this todo first")?;
     let run = crate::commands::runs::create_session_run(db.clone(), project_id, None).await?;
-    let title = crate::focus::ai_util::truncate(&first_line(&todo.text), 80);
-    sqlx::query("UPDATE runs SET title = ? WHERE id = ?")
-        .bind(&title)
-        .bind(&run.id)
-        .execute(&pool)
+    let prompt = ai::start_prompt(
+        &todo.id,
+        &todo.text,
+        todo.source_url.as_deref(),
+        todo.ai_plan.as_deref(),
+    );
+    let started = async {
+        let title = crate::focus::ai_util::truncate(&first_line(&todo.text), 80);
+        sqlx::query("UPDATE runs SET title = ? WHERE id = ?")
+            .bind(&title)
+            .bind(&run.id)
+            .execute(&pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        let payload = crate::commands::runs::StartRunPayload {
+            run_id: run.id.clone(),
+            engine_override: None,
+            permission_mode_override: None,
+            prompt_override: Some(prompt),
+            model_override: None,
+            images: Vec::new(),
+            override_budget: false,
+            append_system_prompt: None,
+            conductor_token: None,
+        };
+        crate::commands::runs::start_run_inner(
+            app.clone(),
+            pool.clone(),
+            registry.inner().clone(),
+            payload,
+        )
         .await
-        .map_err(|e| e.to_string())?;
-    let payload = crate::commands::runs::StartRunPayload {
-        run_id: run.id.clone(),
-        engine_override: None,
-        permission_mode_override: None,
-        prompt_override: Some(ai::start_prompt(
-            &todo.id,
-            &todo.text,
-            todo.source_url.as_deref(),
-            todo.ai_plan.as_deref(),
-        )),
-        model_override: None,
-        images: Vec::new(),
-        override_budget: false,
-        append_system_prompt: None,
-        conductor_token: None,
-    };
-    crate::commands::runs::start_run_inner(
-        app.clone(),
-        pool.clone(),
-        registry.inner().clone(),
-        payload,
-    )
-    .await?;
-    item_links::link(
-        &pool,
-        ItemKind::Todo,
-        &todo_id,
-        &run.id,
-        "created_from_item",
-    )
-    .await
-    .map_err(String::from)?;
+    }
+    .await;
+    if let Err(e) = started {
+        // Nothing ran: don't leave an empty session behind.
+        discard_run(&pool, &run.id).await;
+        return Err(e);
+    }
+    // The session is running from here on: a bookkeeping failure is logged,
+    // the caller still gets the run to open.
+    if let Err(e) = item_links::link(&pool, ItemKind::Todo, &todo_id, &run.id, "created_from_item").await {
+        tracing::warn!(event = "focus_start_link_failed", run_id = %run.id, error = %String::from(e));
+    }
     let now = chrono::Utc::now().to_rfc3339();
-    sqlx::query(
+    if let Err(e) = sqlx::query(
         "UPDATE todos SET status = 'doing', started_at = COALESCE(started_at, ?), updated_at = ? \
          WHERE id = ? AND done = 0",
     )
@@ -897,9 +902,23 @@ pub async fn focus_start_with_ai(
     .bind(&todo_id)
     .execute(&pool)
     .await
-    .map_err(|e| e.to_string())?;
+    {
+        tracing::warn!(event = "focus_start_status_failed", run_id = %run.id, error = %e);
+    }
     crate::focus::emit_todos_changed(&app);
     Ok(run.id)
+}
+
+/// Remove a session row that never started (and its conductor session row).
+async fn discard_run(db: &Db, run_id: &str) {
+    for sql in [
+        "DELETE FROM conductor_sessions WHERE id = ?",
+        "DELETE FROM runs WHERE id = ?",
+    ] {
+        if let Err(e) = sqlx::query(sql).bind(run_id).execute(db).await {
+            tracing::warn!(event = "focus_start_discard_failed", run_id = %run_id, error = %e);
+        }
+    }
 }
 
 // ── BR-11 ───────────────────────────────────────────────────────────────────
@@ -967,6 +986,27 @@ mod tests {
         assert!(state.cancel("r1").await);
         assert!(task.await.unwrap_err().is_cancelled());
         state.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_failed_start_leaves_no_session_row() {
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        sqlx::query("INSERT INTO projects (id, name, path, created_at) VALUES ('p', 'p', '/tmp/p', 'c')")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO runs (id, project_id, type, created_at) VALUES ('r', 'p', 'session', 'c')")
+            .execute(&db)
+            .await
+            .unwrap();
+        discard_run(&db, "r").await;
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runs").fetch_one(&db).await.unwrap();
+        assert_eq!(n, 0);
     }
 
     #[test]
