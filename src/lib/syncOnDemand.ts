@@ -102,7 +102,8 @@ export interface SkipItem {
   /** Relative to the project root. */
   path: string
   /** `too_large` | `symlink_outside` | `submodule` | `git_link` | `non_utf8` | `repo_only_here` |
-   *  `path_conflict` | `unsafe_path` | `no_repo_here` | other. */
+   *  `path_conflict` | `unsafe_path` | `no_repo_here` | `branch_in_worktree` | `lfs` |
+   *  `changed_since_preview` | other. */
   reason: string
   size?: number | null
 }
@@ -437,7 +438,7 @@ export function defaultSelection(list: readonly FolderPreview[]): string[] {
  */
 export function isPlanChanged(message: unknown): boolean {
   const m = String(message ?? '').toLowerCase()
-  return /(^|[^a-z_])(plan_changed|plan_grew|preview_stale|preview_changed)($|[^a-z_])/.test(m) ||
+  return /(^|[^a-z_])(plan_changed|preview_required|plan_grew|preview_stale|preview_changed)($|[^a-z_])/.test(m) ||
     m.includes('beyond the confirmed preview') || m.includes('preview is out of date')
 }
 
