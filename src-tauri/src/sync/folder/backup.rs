@@ -29,6 +29,10 @@ pub struct BackupInfo {
     pub repos: Vec<String>,
     /// Copied non-git files, when any.
     pub folder: Option<PathBuf>,
+    /// Repo → (worktree commit, index commit) of the backup, to restore a
+    /// repo whose switch failed half-way.
+    #[serde(skip)]
+    pub commits: std::collections::BTreeMap<String, (String, Option<String>)>,
 }
 
 impl BackupInfo {
@@ -59,9 +63,10 @@ pub fn new_ts() -> String {
 }
 
 /// Commit the repo's current worktree + index state onto
-/// `devdy-sync-backup/<ts>`. No-op (false) for a repo without commits and
-/// without anything staged or tracked.
-pub fn backup_repo(dir: &Path, ts: &str) -> Result<bool, String> {
+/// `devdy-sync-backup/<ts>`. Returns (worktree commit, index commit); `None`
+/// for a repo without commits and without anything staged or tracked.
+/// Edits hidden by assume-unchanged / skip-worktree are included.
+pub fn backup_repo(dir: &Path, ts: &str) -> Result<Option<(String, Option<String>)>, String> {
     let head = git::head(dir);
     let gdir = git::git_dir(dir)?;
     let real_index = gdir.join("index");
@@ -71,6 +76,9 @@ pub fn backup_repo(dir: &Path, ts: &str) -> Result<bool, String> {
     }
     let env = || vec![("GIT_INDEX_FILE", tmp_index.to_string_lossy().to_string())];
     let wt_tree = (|| {
+        // `add -u` skips entries flagged assume-unchanged / skip-worktree:
+        // clear the flags (temp index only) where the file is here.
+        git::clear_hidden_flags(dir, env(), true)?;
         git::run_with(dir, &["add", "-u", "--", "."], Opts { env: env(), ..Default::default() })?;
         git::run_with(dir, &["write-tree"], Opts { env: env(), ..Default::default() })
     })();
@@ -80,10 +88,11 @@ pub fn backup_repo(dir: &Path, ts: &str) -> Result<bool, String> {
     // The real index as its own commit (impossible with unresolved conflicts).
     let index_tree = git::text(dir, &["write-tree"]).ok();
     if head.is_none() && wt_tree == empty && index_tree.as_deref().is_none_or(|t| t == empty) {
-        return Ok(false);
+        return Ok(None);
     }
     let branch = git::current_branch(dir).unwrap_or_else(|| "detached HEAD".into());
     let mut parents: Vec<String> = head.iter().cloned().collect();
+    let mut index_commit = None;
     if let Some(t) = index_tree {
         let mut args = vec!["commit-tree".to_string(), t];
         for p in &parents {
@@ -91,7 +100,9 @@ pub fn backup_repo(dir: &Path, ts: &str) -> Result<bool, String> {
         }
         args.extend(["-m".into(), format!("devdy sync backup: index of {branch}")]);
         let a: Vec<&str> = args.iter().map(String::as_str).collect();
-        parents.push(git::text(dir, &a)?);
+        let c = git::text(dir, &a)?;
+        index_commit = Some(c.clone());
+        parents.push(c);
     }
     let mut args = vec!["commit-tree".to_string(), wt_tree];
     for p in &parents {
@@ -101,7 +112,7 @@ pub fn backup_repo(dir: &Path, ts: &str) -> Result<bool, String> {
     let a: Vec<&str> = args.iter().map(String::as_str).collect();
     let commit = git::text(dir, &a)?;
     git::run(dir, &["update-ref", &format!("refs/heads/{BRANCH_PREFIX}{ts}"), &commit])?;
-    Ok(true)
+    Ok(Some((commit, index_commit)))
 }
 
 /// Keep `old` (a branch tip about to be rewound) on a backup branch.
@@ -128,30 +139,48 @@ pub fn prune_repo(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Copy `rels` (non-git files, root-relative) into
-/// `<root>/.devdy/sync-backup/<ts>/`. Returns the folder when anything was
-/// copied.
+/// Copy `rels` (root-relative files, symlinks or whole directories, never
+/// following symlinks) into `<root>/.devdy/sync-backup/<ts>/`. Returns the
+/// folder when anything was copied.
 pub fn backup_files(root: &Path, ts: &str, rels: &[String]) -> Result<Option<PathBuf>, String> {
-    if rels.is_empty() {
-        return Ok(None);
-    }
     let dest_root = root.join(FOLDER).join(ts);
+    let mut any = false;
     for rel in rels {
         paths::check_rel(rel)?;
+        paths::check_parents(root, rel)?;
         let src = root.join(rel);
         let Ok(m) = fs::symlink_metadata(&src) else { continue };
-        let dst = dest_root.join(rel);
-        if let Some(parent) = dst.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("backup dir: {e}"))?;
-        }
-        if m.file_type().is_symlink() {
-            paths::make_symlink(&paths::read_link(&src)?, &dst)?;
-        } else if m.is_file() {
-            // A real copy (a clone on APFS), independent of later edits.
-            fs::copy(&src, &dst).map_err(|e| format!("backup {rel}: {e}"))?;
+        if m.is_dir() {
+            for e in walkdir::WalkDir::new(&src).follow_links(false) {
+                let e = e.map_err(|e| format!("backup {rel}: {e}"))?;
+                if e.file_type().is_dir() {
+                    continue;
+                }
+                let sub = e.path().strip_prefix(root).map_err(|_| "backup: path outside the root")?;
+                copy_one(e.path(), &dest_root.join(sub))?;
+                any = true;
+            }
+        } else {
+            copy_one(&src, &dest_root.join(rel))?;
+            any = true;
         }
     }
-    Ok(Some(dest_root))
+    Ok(any.then_some(dest_root))
+}
+
+fn copy_one(src: &Path, dst: &Path) -> Result<(), String> {
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("backup dir: {e}"))?;
+    }
+    let m = fs::symlink_metadata(src).map_err(|e| format!("backup: {e}"))?;
+    if m.file_type().is_symlink() {
+        paths::make_symlink(&paths::read_link(src)?, dst)
+    } else if m.is_file() {
+        // A real copy (a clone on APFS), independent of later edits.
+        fs::copy(src, dst).map(|_| ()).map_err(|e| format!("backup: {e}"))
+    } else {
+        Ok(())
+    }
 }
 
 pub fn prune_folder(root: &Path) -> Result<(), String> {

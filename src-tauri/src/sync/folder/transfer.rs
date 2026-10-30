@@ -2,7 +2,7 @@
 //! batches (≤ [`BATCH_BYTES`]) into a staging dir, verifying sha256.
 
 use super::handler::{short, Chunk, FetchItem, FetchRequest};
-use super::manifest::{Manifest, ManifestRequest};
+use super::manifest::{is_sha256, Manifest, ManifestRequest};
 use super::{Cancel, BATCH_BYTES, KIND_FETCH, KIND_MANIFEST, REPLY_CHUNK, REPLY_FETCH_DONE, REPLY_MANIFEST};
 use crate::sync::peer::PeerLink;
 use serde_json::Value;
@@ -62,8 +62,21 @@ impl Downloader {
         Ok(Self { staging: staging.to_path_buf(), partial: HashMap::new() })
     }
 
-    pub fn done_path(&self, sha: &str) -> PathBuf {
-        self.staging.join(sha)
+    /// `<staging>/<sha><suffix>`: only for well-formed content ids, and
+    /// always a direct child of the staging dir.
+    fn child(&self, sha: &str, suffix: &str) -> Result<PathBuf, String> {
+        if !is_sha256(sha) {
+            return Err("bad content id".into());
+        }
+        let p = self.staging.join(format!("{sha}{suffix}"));
+        if p.parent() != Some(self.staging.as_path()) {
+            return Err("bad content id".into());
+        }
+        Ok(p)
+    }
+
+    pub fn done_path(&self, sha: &str) -> Result<PathBuf, String> {
+        self.child(sha, "")
     }
 
     /// Fetch `wanted` (sha → size) from the source. `on_progress(bytes)` after
@@ -79,6 +92,10 @@ impl Downloader {
         on_progress: &mut (dyn FnMut(u64) + Send),
         on_done: &mut (dyn FnMut(&str, &Path) -> Result<(), String> + Send),
     ) -> Result<(), String> {
+        let sizes: HashMap<&str, u64> = wanted.iter().map(|(s, n)| (s.as_str(), *n)).collect();
+        for (sha, _) in wanted {
+            self.child(sha, "")?;
+        }
         for batch in batches(wanted) {
             cancel.check()?;
             let req = FetchRequest { project_id: project_id.into(), items: batch.clone(), shas: vec![] };
@@ -106,7 +123,7 @@ impl Downloader {
                 let _ = link.blob_release(&chunk.blobs).await;
                 res?;
                 next += 1;
-                let size = wanted.iter().find(|(s, _)| *s == chunk.sha).map(|(_, n)| *n).unwrap_or(0);
+                let size = sizes.get(chunk.sha.as_str()).copied().unwrap_or(0);
                 if chunk.offset + chunk.len == size {
                     let p = self.finish(&chunk.sha, size)?;
                     on_done(&chunk.sha, &p)?;
@@ -121,7 +138,7 @@ impl Downloader {
 
     async fn take_chunk(&mut self, link: &Arc<dyn PeerLink>, c: &Chunk, cancel: &Cancel, on_progress: &mut (dyn FnMut(u64) + Send)) -> Result<(), String> {
         if c.offset == 0 {
-            let path = self.staging.join(format!("{}.part", c.sha));
+            let path = self.child(&c.sha, ".part")?;
             let file = std::fs::File::create(&path).map_err(|e| format!("staging: {e}"))?;
             self.partial.insert(c.sha.clone(), Partial { file, hasher: Sha256::new(), written: 0 });
         }
@@ -148,13 +165,13 @@ impl Downloader {
     fn finish(&mut self, sha: &str, size: u64) -> Result<PathBuf, String> {
         let p = self.partial.remove(sha).ok_or("missing content")?;
         drop(p.file);
-        let part = self.staging.join(format!("{sha}.part"));
+        let part = self.child(sha, ".part")?;
         let got = hex::encode(p.hasher.finalize());
         if got != sha || p.written != size {
             let _ = std::fs::remove_file(&part);
             return Err(format!("content {} failed verification (changed on the source?); sync again", short(sha)));
         }
-        let done = self.done_path(sha);
+        let done = self.done_path(sha)?;
         std::fs::rename(&part, &done).map_err(|e| format!("staging: {e}"))?;
         Ok(done)
     }
@@ -193,6 +210,15 @@ pub fn batches_of(wanted: &[(String, u64)], cap: u64) -> Vec<Vec<FetchItem>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn staging_paths_stay_in_the_staging_dir() {
+        let d = Downloader { staging: PathBuf::from("/tmp/stage"), partial: HashMap::new() };
+        for bad in ["../../etc/passwd", "/etc/passwd", "", "ab", &"A".repeat(64), &format!("{}/x", "a".repeat(62))] {
+            assert!(d.done_path(bad).is_err(), "{bad}");
+        }
+        assert_eq!(d.done_path(&"a".repeat(64)).unwrap(), PathBuf::from("/tmp/stage").join("a".repeat(64)));
+    }
 
     #[test]
     fn batches_respect_cap_and_split_large_contents() {

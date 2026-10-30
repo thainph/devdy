@@ -13,17 +13,43 @@ use crate::db::Db;
 use crate::sync::prefs;
 use crate::sync::folder::apply::{self, ApplyReport};
 use crate::sync::folder::handler::{FolderSource, RootResolver};
-use crate::sync::folder::plan::FolderPreview;
+use crate::sync::folder::plan::{Expected, FolderPreview};
 use crate::sync::folder::{Cancel, FolderOptions, FolderProgress, ProgressSink, EVENT};
 use crate::sync::peer::{PeerHandler, PeerLink};
 use async_trait::async_trait;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 
 /// The running apply, if any.
 static ACTIVE: Mutex<Option<Cancel>> = Mutex::new(None);
+
+/// What each (source, project) preview committed to; apply refuses to
+/// delete or replace more than that.
+static PREVIEWED: LazyLock<Mutex<HashMap<(String, String), Expected>>> = LazyLock::new(Default::default);
+
+/// Clears [`ACTIVE`] when the apply task ends, even by panic.
+struct ActiveGuard;
+
+impl ActiveGuard {
+    fn take() -> Result<(Self, Cancel), String> {
+        let mut active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
+        if active.is_some() {
+            return Err("a folder sync is already running".into());
+        }
+        let c = Cancel::default();
+        *active = Some(c.clone());
+        Ok((ActiveGuard, c))
+    }
+}
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        *ACTIVE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
 
 /// The live peer link of the running sync engine.
 async fn peer_link(app: &AppHandle) -> Result<Arc<dyn PeerLink>, String> {
@@ -95,8 +121,9 @@ pub async fn sync_folder_preview(
             out.push(skipped_preview(&pid, name, "running_session"));
             continue;
         }
-        match apply::preview(link.clone(), &source_device, &opts).await {
-            Ok(mut p) => {
+        match apply::preview_expected(link.clone(), &source_device, &opts).await {
+            Ok((mut p, expected)) => {
+                PREVIEWED.lock().unwrap_or_else(|e| e.into_inner()).insert((source_device.clone(), pid.clone()), expected);
                 p.name = name;
                 out.push(p);
             }
@@ -121,17 +148,10 @@ pub async fn sync_folder_apply(
     project_ids: Vec<String>,
 ) -> Result<(), String> {
     let link = online_link(&app, &source_device).await?;
-    let cancel = {
-        let mut active = ACTIVE.lock().unwrap();
-        if active.is_some() {
-            return Err("a folder sync is already running".into());
-        }
-        let c = Cancel::default();
-        *active = Some(c.clone());
-        c
-    };
+    let (active, cancel) = ActiveGuard::take()?;
     let db = db.inner().clone();
     tauri::async_runtime::spawn(async move {
+        let _active = active;
         let emitter = app.clone();
         let sink: ProgressSink = Arc::new(move |p: &FolderProgress| {
             let _ = emitter.emit(EVENT, p);
@@ -159,7 +179,24 @@ pub async fn sync_folder_apply(
                 finish(pid, "skipped", Some("running_session".into()));
                 continue;
             }
-            match apply::apply(link.clone(), &source_device, &opts, sink.clone(), cancel.clone()).await {
+            let Some(expected) = PREVIEWED.lock().unwrap_or_else(|e| e.into_inner()).remove(&(source_device.clone(), pid.clone())) else {
+                finish(pid, "error", Some("preview_required: preview the folder sync first".into()));
+                continue;
+            };
+            // A session may have started here since the preview.
+            let (db2, pid2) = (db.clone(), pid.clone());
+            let precheck: apply::Precheck = Arc::new(move || {
+                let (db, pid) = (db2.clone(), pid2.clone());
+                Box::pin(async move {
+                    match prefs::project_pref(&db, &pid).await {
+                        Ok(p) if p.running_here => Err("running_session: a session of this project started meanwhile".into()),
+                        Ok(_) => Ok(()),
+                        Err(e) => Err(e),
+                    }
+                })
+            });
+            let guard = apply::ApplyGuard { expected: Some(expected), precheck: Some(precheck) };
+            match apply::apply(link.clone(), &source_device, &opts, sink.clone(), cancel.clone(), guard).await {
                 Ok(ApplyReport { backup, .. }) => {
                     let now = chrono::Utc::now().to_rfc3339();
                     if let Err(e) = prefs::set_last_backup_at(&db, pid, &now).await {
@@ -173,15 +210,30 @@ pub async fn sync_folder_apply(
                 }
             }
         }
-        *ACTIVE.lock().unwrap() = None;
     });
     Ok(())
 }
 
 #[tauri::command]
 pub fn sync_folder_cancel() -> Result<(), String> {
-    if let Some(c) = ACTIVE.lock().unwrap().as_ref() {
+    if let Some(c) = ACTIVE.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         c.cancel();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn active_slot_is_freed_even_on_panic() {
+        let r = std::panic::catch_unwind(|| {
+            let (_g, _c) = ActiveGuard::take().unwrap();
+            assert!(ActiveGuard::take().is_err(), "one apply at a time");
+            panic!("apply task died");
+        });
+        assert!(r.is_err());
+        let (_g, _c) = ActiveGuard::take().expect("slot freed by the guard");
+    }
 }

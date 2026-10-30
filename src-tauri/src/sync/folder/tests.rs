@@ -85,7 +85,7 @@ fn sink() -> (ProgressSink, Events) {
 async fn run(link: &Arc<MemLink>, o: &FolderOptions) -> Result<ApplyReport, String> {
     let (s, _) = sink();
     let l: Arc<dyn PeerLink> = link.clone();
-    apply::apply(l, "src", o, s, Cancel::default()).await
+    apply::apply(l, "src", o, s, Cancel::default(), Default::default()).await
 }
 
 async fn preview(link: &Arc<MemLink>, o: &FolderOptions) -> super::plan::FolderPreview {
@@ -419,7 +419,7 @@ async fn path_traversal_is_rejected() {
         let err = apply::preview(l.clone(), "src", &opts(&dst)).await.unwrap_err();
         assert!(err.contains("unsafe path"), "{bad}: {err}");
         let (s, _) = sink();
-        let err = apply::apply(l, "src", &opts(&dst), s, Cancel::default()).await.unwrap_err();
+        let err = apply::apply(l, "src", &opts(&dst), s, Cancel::default(), Default::default()).await.unwrap_err();
         assert!(err.contains("unsafe path"), "{bad}: {err}");
     }
     // Escaping symlink targets are rejected too.
@@ -474,14 +474,14 @@ async fn resumes_after_a_partial_transfer() {
             c2.cancel();
         }
     });
-    let err = apply::apply(l.clone(), "src", &opts(&dst), s, cancel).await.unwrap_err();
+    let err = apply::apply(l.clone(), "src", &opts(&dst), s, cancel, Default::default()).await.unwrap_err();
     assert!(err.contains("cancelled") && err.contains("backup:"), "{err}");
     assert_eq!(read(&dst, "a.bin"), vec![1u8; 5 * MB]);
     assert!(!dst.join("c.bin").exists());
     assert!(!dst.join(apply::STAGING).exists());
 
     let (s, ev) = sink();
-    let rep = apply::apply(l, "src", &opts(&dst), s, Cancel::default()).await.unwrap();
+    let rep = apply::apply(l, "src", &opts(&dst), s, Cancel::default(), Default::default()).await.unwrap();
     assert_eq!(rep.bytes_downloaded, (10 * MB) as u64, "the finished file is not fetched again");
     assert_eq!(tree(&dst, &[]), tree(&src, &[]));
     let phases: Vec<String> = ev.lock().unwrap().iter().map(|p| p.phase.clone()).collect::<Vec<_>>();
@@ -518,7 +518,7 @@ fn keeps_five_backups() {
     commit(d, "a.txt", "1\n", "c");
     for i in 0..7 {
         let ts = format!("20260101-00000{i}-000");
-        assert!(backup::backup_repo(d, &ts).unwrap());
+        assert!(backup::backup_repo(d, &ts).unwrap().is_some());
         backup::backup_branch_tip(d, &ts, "main", &git(d, &["rev-parse", "HEAD"])).unwrap();
         backup::backup_files(d, &ts, &["a.txt".into()]).unwrap();
     }
@@ -530,4 +530,369 @@ fn keeps_five_backups() {
     assert_eq!(fs::read_dir(d.join(backup::FOLDER)).unwrap().count(), 5);
     // The checked-out branch, index and worktree are untouched.
     assert_eq!(git(d, &["status", "--porcelain"]), "?? .devdy/");
+}
+
+// ---- regressions (review findings)
+
+async fn run_with(link: &Arc<MemLink>, o: &FolderOptions, s: ProgressSink, guard: apply::ApplyGuard) -> Result<ApplyReport, String> {
+    let l: Arc<dyn PeerLink> = link.clone();
+    apply::apply(l, "src", o, s, Cancel::default(), guard).await
+}
+
+fn evil(m: Manifest) -> Arc<MemLink> {
+    let (recv, src) = pair("recv", "src");
+    src.add_handler(Arc::new(EvilSource(m)));
+    recv
+}
+
+fn sha_hex(data: &[u8]) -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(data))
+}
+
+#[tokio::test]
+async fn malformed_content_ids_are_rejected() {
+    let t = tempdir();
+    let dst = t.path().join("dst");
+    write(&dst, "x.txt", b"x\n");
+    let file = |sha: &str| FileEntry { path: "f.txt".into(), size: 5, mode: 0o644, sha256: sha.into(), ..Default::default() };
+    let mut cases = vec![];
+    for bad in ["../../x.txt", "/etc/passwd", "", &"A".repeat(64), &format!("{}/..", "a".repeat(61))] {
+        cases.push(Manifest { v: MANIFEST_VERSION, files: vec![file(bad)], ..Default::default() });
+        cases.push(Manifest {
+            v: MANIFEST_VERSION,
+            repos: vec![super::manifest::RepoManifest { path: "r".into(), dirty: vec![FileEntry { path: "r/f".into(), ..file(bad) }], ..Default::default() }],
+            ..Default::default()
+        });
+        cases.push(Manifest {
+            v: MANIFEST_VERSION,
+            repos: vec![super::manifest::RepoManifest {
+                path: "r".into(),
+                bundle: Some(super::manifest::BundleRef { sha256: bad.into(), size: 1 }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+    }
+    for m in cases {
+        let recv = evil(m);
+        let l: Arc<dyn PeerLink> = recv.clone();
+        let err = apply::preview(l.clone(), "src", &opts(&dst)).await.unwrap_err();
+        assert!(err.contains("bad content id"), "{err}");
+        let (s, _) = sink();
+        assert!(apply::apply(l, "src", &opts(&dst), s, Cancel::default(), Default::default()).await.unwrap_err().contains("bad content id"));
+    }
+    assert_eq!(fs::read_dir(&dst).unwrap().count(), 1);
+}
+
+#[tokio::test]
+async fn symlink_chains_and_paths_through_links_are_rejected() {
+    let t = tempdir();
+    let dst = t.path().join("dst");
+    let link = |p: &str, to: &str| FileEntry { path: p.into(), link: Some(to.into()), ..Default::default() };
+    let chain = Manifest { v: MANIFEST_VERSION, files: vec![link("a/l1", ".."), link("a/l2", "l1/..")], ..Default::default() };
+    let l: Arc<dyn PeerLink> = evil(chain);
+    assert!(apply::preview(l, "src", &opts(&dst)).await.unwrap_err().contains("unsafe symlink"));
+    let through = Manifest {
+        v: MANIFEST_VERSION,
+        files: vec![link("a/l1", ".."), FileEntry { path: "a/l1/x".into(), size: 1, mode: 0o644, sha256: "a".repeat(64), ..Default::default() }],
+        ..Default::default()
+    };
+    let l: Arc<dyn PeerLink> = evil(through);
+    assert!(apply::preview(l, "src", &opts(&dst)).await.unwrap_err().contains("through a symlink"));
+}
+
+#[tokio::test]
+async fn git_collisions_with_untracked_and_excluded_paths_are_backed_up() {
+    let t = tempdir();
+    let src = t.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    git(&src, &["init", "-q"]);
+    commit(&src, "a.txt", "a\n", "c1");
+    let dst = t.path().join("dst");
+    git(t.path(), &["clone", "-q", src.to_str().unwrap(), dst.to_str().unwrap()]);
+    commit(&src, "conf/.env.local", "source env\n", "env");
+    commit(&src, "build", "build file\n", "build");
+    // Receiver: an excluded local file and a default-excluded dir in the way.
+    write(&dst, "conf/.env.local", b"mine\n");
+    write(&dst, "build/keep.txt", b"keep\n");
+    let mut o = opts(&dst);
+    o.excludes = vec!["conf/.env.local".into()];
+    let (recv, _) = link_to(&src);
+    let rep = run(&recv, &o).await.unwrap();
+    assert_eq!(read(&dst, "conf/.env.local"), b"source env\n");
+    assert_eq!(read(&dst, "build"), b"build file\n");
+    let bk = dst.canonicalize().unwrap().join(backup::FOLDER).join(&rep.backup.ts);
+    assert_eq!(read(&bk, "conf/.env.local"), b"mine\n");
+    assert_eq!(read(&bk, "build/keep.txt"), b"keep\n");
+    assert_eq!(rep.backup.folder.as_deref(), Some(bk.as_path()));
+}
+
+#[tokio::test]
+async fn a_tree_writing_into_a_local_only_repo_skips_the_repo() {
+    let t = tempdir();
+    let src = t.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    git(&src, &["init", "-q"]);
+    let c1 = commit(&src, "a.txt", "a\n", "c1");
+    let dst = t.path().join("dst");
+    git(t.path(), &["clone", "-q", src.to_str().unwrap(), dst.to_str().unwrap()]);
+    commit(&src, "inner/x.txt", "source\n", "c2");
+    let inner = dst.join("inner");
+    fs::create_dir_all(&inner).unwrap();
+    git(&inner, &["init", "-q"]);
+    commit(&inner, "y.txt", "mine\n", "inner");
+    let (recv, _) = link_to(&src);
+    let rep = run(&recv, &opts(&dst)).await.unwrap();
+    assert!(rep.skipped.iter().any(|s| s.path.is_empty() && s.reason == "path_conflict"), "{:?}", rep.skipped);
+    assert!(!inner.join("x.txt").exists());
+    assert_eq!(git(&inner, &["status", "--porcelain"]), "");
+    assert_eq!(git(&dst, &["rev-parse", "HEAD"]), c1, "repo left as it was");
+}
+
+#[tokio::test]
+async fn cleanup_deletes_only_planned_unchanged_files() {
+    let t = tempdir();
+    let src = t.path().join("src");
+    let dst = t.path().join("dst");
+    write(&src, "a.txt", b"a\n");
+    write(&dst, "old.txt", b"old\n");
+    write(&dst, "old2.txt", b"old2\n");
+    let d2 = dst.clone();
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let s: ProgressSink = Arc::new(move |p: &FolderProgress| {
+        if p.phase == "files" && !done.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            // Created / edited after planning (an editor, a session, ...).
+            write(&d2, "late.txt", b"late\n");
+            write(&d2, "old2.txt", b"edited meanwhile\n");
+        }
+    });
+    let (recv, _) = link_to(&src);
+    let rep = run_with(&recv, &opts(&dst), s, Default::default()).await.unwrap();
+    assert!(!dst.join("old.txt").exists());
+    assert_eq!(read(&dst, "old2.txt"), b"edited meanwhile\n");
+    assert_eq!(read(&dst, "late.txt"), b"late\n");
+    assert!(rep.skipped.iter().any(|s| s.path == "old2.txt" && s.reason == "changed_since_preview"));
+}
+
+#[tokio::test]
+async fn precheck_and_plan_growth_stop_before_any_change() {
+    let t = tempdir();
+    let src = t.path().join("src");
+    let dst = t.path().join("dst");
+    write(&src, "a.txt", b"a\n");
+    write(&dst, "old.txt", b"old\n");
+    let (recv, _) = link_to(&src);
+
+    // A session started meanwhile.
+    let pc: apply::Precheck = Arc::new(|| Box::pin(async { Err("running_session: started meanwhile".to_string()) }));
+    let (s, _) = sink();
+    let err = run_with(&recv, &opts(&dst), s, apply::ApplyGuard { precheck: Some(pc), ..Default::default() }).await.unwrap_err();
+    assert!(err.contains("running_session"), "{err}");
+    assert!(dst.join("old.txt").exists() && !dst.join("a.txt").exists());
+
+    // More would be deleted than the preview showed.
+    let l: Arc<dyn PeerLink> = recv.clone();
+    let (_, expected) = apply::preview_expected(l, "src", &opts(&dst)).await.unwrap();
+    write(&dst, "new-here.txt", b"created after the preview\n");
+    let (s, _) = sink();
+    let guard = apply::ApplyGuard { expected: Some(expected.clone()), ..Default::default() };
+    let err = run_with(&recv, &opts(&dst), s, guard).await.unwrap_err();
+    assert!(err.starts_with("plan_changed:"), "{err}");
+    assert!(dst.join("new-here.txt").exists() && !dst.join("a.txt").exists());
+
+    // As confirmed: goes through.
+    fs::remove_file(dst.join("new-here.txt")).unwrap();
+    let (s, _) = sink();
+    run_with(&recv, &opts(&dst), s, apply::ApplyGuard { expected: Some(expected), ..Default::default() }).await.unwrap();
+    assert!(!dst.join("old.txt").exists() && dst.join("a.txt").exists());
+}
+
+#[tokio::test]
+async fn case_only_differences_take_the_source_spelling() {
+    let t = tempdir();
+    if !super::paths::case_insensitive(t.path()) {
+        return; // case-sensitive volume: nothing to test
+    }
+    let src = t.path().join("src");
+    let dst = t.path().join("dst");
+    write(&src, "foo.txt", b"new\n");
+    write(&src, "docs/a.md", b"new doc\n");
+    write(&dst, "Foo.txt", b"old\n");
+    write(&dst, "Docs/a.md", b"old doc\n");
+    let (recv, _) = link_to(&src);
+    let pv = preview(&recv, &opts(&dst)).await;
+    assert!(pv.delete.is_empty(), "{:?}", pv.delete);
+    run(&recv, &opts(&dst)).await.unwrap();
+    let mut names: Vec<String> = fs::read_dir(&dst).unwrap().filter_map(|e| e.ok()?.file_name().into_string().ok()).filter(|n| n != ".devdy").collect();
+    names.sort();
+    assert_eq!(names, vec!["docs", "foo.txt"]);
+    assert_eq!(read(&dst, "foo.txt"), b"new\n");
+    assert_eq!(read(&dst, "docs/a.md"), b"new doc\n");
+}
+
+#[tokio::test]
+async fn hidden_edits_are_backed_up_and_the_switch_succeeds() {
+    for flag in ["--assume-unchanged", "--skip-worktree"] {
+        let t = tempdir();
+        let src = t.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        git(&src, &["init", "-q"]);
+        commit(&src, "cfg", "base\n", "c1");
+        git(&src, &["checkout", "-q", "-b", "other"]);
+        let other = commit(&src, "cfg", "other\n", "c2");
+        let dst = t.path().join("dst");
+        git(t.path(), &["clone", "-q", "-b", "main", src.to_str().unwrap(), dst.to_str().unwrap()]);
+        git(&dst, &["update-index", flag, "cfg"]);
+        write(&dst, "cfg", b"LOCAL\n");
+        let (recv, _) = link_to(&src);
+        let rep = run(&recv, &opts(&dst)).await.unwrap();
+        assert_eq!(git(&dst, &["rev-parse", "HEAD"]), other);
+        assert_eq!(read(&dst, "cfg"), b"other\n", "{flag}");
+        assert_eq!(git(&dst, &["show", &format!("devdy-sync-backup/{}:cfg", rep.backup.ts)]), "LOCAL", "{flag}");
+    }
+}
+
+/// Wraps the real source and edits the manifest it serves.
+struct Tamper {
+    inner: Arc<FolderSource>,
+    edit: fn(&mut Manifest),
+}
+
+struct Capture(Mutex<Vec<(String, Value)>>);
+
+#[async_trait]
+impl Reply for Capture {
+    async fn send(&self, kind: &str, body: Value, _last: bool) -> Result<(), String> {
+        self.0.lock().unwrap().push((kind.to_string(), body));
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl PeerHandler for Tamper {
+    fn kinds(&self) -> &'static [&'static str] {
+        &[KIND_MANIFEST, super::KIND_FETCH]
+    }
+    async fn handle(&self, link: Arc<dyn PeerLink>, from: String, kind: String, body: Value, reply: Arc<dyn Reply>) {
+        if kind != KIND_MANIFEST {
+            return self.inner.handle(link, from, kind, body, reply).await;
+        }
+        let cap = Arc::new(Capture(Mutex::new(vec![])));
+        self.inner.handle(link.clone(), from, kind, body, cap.clone()).await;
+        let (_, b) = cap.0.lock().unwrap()[0].clone();
+        let blobs: Vec<String> = serde_json::from_value(b["manifest_blobs"].clone()).unwrap();
+        let mut bytes = vec![];
+        for x in &blobs {
+            bytes.extend(link.blob_get(x).await.unwrap());
+        }
+        link.blob_release(&blobs).await.unwrap();
+        let mut m: Manifest = serde_json::from_slice(&bytes).unwrap();
+        (self.edit)(&mut m);
+        let sha = link.blob_put(serde_json::to_vec(&m).unwrap()).await.unwrap();
+        let _ = reply.send(REPLY_MANIFEST, json!({ "manifest_blobs": [sha], "bundles": {} }), true).await;
+    }
+}
+
+#[tokio::test]
+async fn a_failed_switch_puts_the_repo_back() {
+    let t = tempdir();
+    let src = t.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    git(&src, &["init", "-q"]);
+    let c1 = commit(&src, "a.txt", "a\n", "c1");
+    let dst = t.path().join("dst");
+    git(t.path(), &["clone", "-q", src.to_str().unwrap(), dst.to_str().unwrap()]);
+    git(&src, &["checkout", "-q", "-b", "feature"]);
+    commit(&src, "a.txt", "feature\n", "c2");
+    write(&dst, "a.txt", b"local edit\n");
+    write(&dst, "b.txt", b"staged here\n");
+    git(&dst, &["add", "b.txt"]);
+    let before = status(&dst);
+
+    let (recv, srcl) = pair("recv", "src");
+    let inner = Arc::new(FolderSource::new(Arc::new(MapRoots(src.clone()))));
+    use base64::Engine;
+    srcl.add_handler(Arc::new(Tamper {
+        inner,
+        edit: |m| m.repos[0].index_patch = base64::engine::general_purpose::STANDARD.encode(b"diff --git a/zz b/zz\nthis is not a patch\n"),
+    }));
+    let err = run(&recv, &opts(&dst)).await.unwrap_err();
+    assert!(err.contains("put back as it was") && err.contains("backup:"), "{err}");
+    assert_eq!(git(&dst, &["symbolic-ref", "--short", "HEAD"]), "main");
+    assert_eq!(git(&dst, &["rev-parse", "HEAD"]), c1);
+    assert!(git(&dst, &["branch", "--list", "feature"]).is_empty());
+    assert_eq!(read(&dst, "a.txt"), b"local edit\n");
+    assert_eq!(status(&dst), before);
+}
+
+#[tokio::test]
+async fn excluded_tracked_paths_keep_their_committed_content() {
+    let t = tempdir();
+    let src = t.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    git(&src, &["init", "-q"]);
+    commit(&src, "secret/x", "base\n", "c1");
+    commit(&src, "secret/y", "y\n", "c2");
+    write(&src, "secret/x", b"source dirty\n");
+    fs::remove_file(src.join("secret/y")).unwrap();
+    let dst = t.path().join("dst");
+    let mut o = opts(&dst);
+    o.excludes = vec!["secret/".into()];
+    let (recv, _) = link_to(&src);
+    run(&recv, &o).await.unwrap();
+    assert_eq!(read(&dst, "secret/x"), b"base\n");
+    assert_eq!(read(&dst, "secret/y"), b"y\n");
+}
+
+#[tokio::test]
+async fn branches_checked_out_in_linked_worktrees_are_left_alone() {
+    let t = tempdir();
+    let src = t.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    git(&src, &["init", "-q"]);
+    commit(&src, "a.txt", "a\n", "c1");
+    git(&src, &["branch", "feature"]);
+    let dst = t.path().join("dst");
+    git(t.path(), &["clone", "-q", src.to_str().unwrap(), dst.to_str().unwrap()]);
+    git(&dst, &["branch", "feature", "origin/feature"]);
+    let wt = t.path().join("wt");
+    git(&dst, &["worktree", "add", "-q", wt.to_str().unwrap(), "feature"]);
+    let old_feature = git(&dst, &["rev-parse", "feature"]);
+    git(&src, &["checkout", "-q", "feature"]);
+    let new_feature = commit(&src, "f.txt", "f\n", "f1");
+
+    let (recv, _) = link_to(&src);
+    let pv = preview(&recv, &opts(&dst)).await;
+    assert!(pv.skipped_items.iter().any(|s| s.path == "feature" && s.reason == "branch_in_worktree"), "{:?}", pv.skipped_items);
+    let rep = run(&recv, &opts(&dst)).await.unwrap();
+    assert!(rep.skipped.iter().any(|s| s.path == "feature" && s.reason == "branch_in_worktree"));
+    assert_eq!(git(&dst, &["rev-parse", "feature"]), old_feature);
+    assert_eq!(git(&dst, &["rev-parse", "HEAD"]), new_feature, "detached on the source's commit");
+    assert_eq!(git(&wt, &["symbolic-ref", "--short", "HEAD"]), "feature");
+    assert_eq!(git(&wt, &["status", "--porcelain"]), "");
+}
+
+#[tokio::test]
+async fn lfs_pointers_keep_local_real_content() {
+    let t = tempdir();
+    let src = t.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    git(&src, &["init", "-q"]);
+    let real = b"real large file content\n".to_vec();
+    let pointer = |data: &[u8]| format!("version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n", sha_hex(data), data.len());
+    write(&src, ".gitattributes", b"*.bin filter=lfs diff=lfs merge=lfs -text\n");
+    write(&src, "big.bin", pointer(&real).as_bytes());
+    write(&src, "other.bin", pointer(b"not here").as_bytes());
+    // Commit the pointer texts as they are (no LFS filter involved).
+    git(&src, &["-c", "filter.lfs.clean=cat", "-c", "filter.lfs.smudge=cat", "-c", "filter.lfs.process=", "-c", "filter.lfs.required=false", "add", "."]);
+    git(&src, &["-c", "filter.lfs.clean=cat", "-c", "filter.lfs.process=", "-c", "filter.lfs.required=false", "commit", "-q", "-m", "lfs"]);
+    let dst = t.path().join("dst");
+    write(&dst, "big.bin", &real);
+    let (recv, _) = link_to(&src);
+    let rep = run(&recv, &opts(&dst)).await.unwrap();
+    assert_eq!(read(&dst, "big.bin"), real);
+    assert_eq!(read(&dst, "other.bin"), pointer(b"not here").into_bytes());
+    assert!(rep.skipped.iter().any(|s| s.path == "other.bin" && s.reason == "lfs"), "{:?}", rep.skipped);
+    assert!(!rep.skipped.iter().any(|s| s.path == "big.bin"));
 }
