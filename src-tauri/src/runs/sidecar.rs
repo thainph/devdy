@@ -22,7 +22,7 @@ use crate::runs::liveness::{
 use crate::runs::permission::PermissionRequestEvent;
 use crate::runs::RunRegistry;
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -337,6 +337,95 @@ pub fn kill_process_group(pid: u32) -> bool {
 /// Drain the sidecar's stdout/stderr until EOF, bridging events to the frontend
 /// and persisting the stream-json log. On EOF, updates the run row and emits
 /// `run:done:<run_id>`. Shared by both `start_run` and `resume_run`.
+/// Writes a run's log buffer (append-only: lines are only ever pushed) to
+/// disk: only the bytes it gained since the last flush are appended, nothing
+/// is written while it is unchanged. A fresh log (not a resume) replaces
+/// whatever file was there atomically (temp + rename) on the first flush; a
+/// failed append is cut back and redone on the next one.
+struct LogFlusher {
+    path: PathBuf,
+    /// Bytes of the file before the buffer (the log of a resumed run).
+    base: u64,
+    /// Bytes of the buffer on disk.
+    written: usize,
+    /// The file must be replaced first (fresh log).
+    fresh: bool,
+    /// An append may have left a partial write behind.
+    torn: bool,
+}
+
+impl LogFlusher {
+    fn new(path: PathBuf, merge_existing: bool) -> Self {
+        let mut base = if merge_existing { std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) } else { 0 };
+        // A log that ends mid-line (its writer was killed, or a synced copy
+        // stopped short) would glue the resumed turn's first line onto the
+        // fragment: end that line first (review-3 L2).
+        if base > 0 && !ends_with_newline(&path) && Self::append_newline(&path).is_ok() {
+            base += 1;
+        }
+        LogFlusher { path, base, written: 0, fresh: !merge_existing, torn: false }
+    }
+
+    fn append_newline(path: &Path) -> std::io::Result<()> {
+        let mut f = std::fs::OpenOptions::new().append(true).open(path)?;
+        std::io::Write::write_all(&mut f, b"\n")
+    }
+
+    fn flush(&mut self, buf: &str) {
+        let buf = buf.as_bytes();
+        if self.fresh {
+            if self.replace(buf).is_ok() {
+                (self.fresh, self.written) = (false, buf.len());
+            }
+            return;
+        }
+        // Nothing new (the buffer only ever grows).
+        if buf.len() <= self.written && !self.torn {
+            return;
+        }
+        if self.torn {
+            let cut = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&self.path)
+                .and_then(|f| f.set_len(self.base + self.written as u64));
+            if cut.is_err() {
+                return;
+            }
+            self.torn = false;
+        }
+        let appended = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .and_then(|mut f| std::io::Write::write_all(&mut f, buf.get(self.written..).unwrap_or_default()));
+        match appended {
+            Ok(()) => self.written = self.written.max(buf.len()),
+            Err(_) => self.torn = true,
+        }
+    }
+
+    fn replace(&self, bytes: &[u8]) -> std::io::Result<()> {
+        let name = self.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let tmp = self.path.with_file_name(format!(".{name}.flush-tmp"));
+        std::fs::write(&tmp, bytes)?;
+        std::fs::rename(&tmp, &self.path).inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })
+    }
+}
+
+/// Whether the file's last byte is a newline (false when unreadable).
+fn ends_with_newline(path: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut last = [0u8; 1];
+    std::fs::File::open(path)
+        .and_then(|mut f| {
+            f.seek(SeekFrom::End(-1))?;
+            f.read_exact(&mut last)
+        })
+        .is_ok_and(|()| last[0] == b'\n')
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn drain_sidecar(
     app: AppHandle,
@@ -544,33 +633,23 @@ pub async fn drain_sidecar(
         }
     }
 
-    // Incremental persistence: snapshot any pre-existing on-disk log once (for
-    // resumes), then periodically flush `prefix + buf` to disk while the run
-    // streams. This lets the frontend recover partial output after an app
-    // restart mid-run, instead of only seeing the log once the run finishes.
-    let existing_prefix = if merge_existing_log {
-        std::fs::read_to_string(&log_path).unwrap_or_default()
-    } else {
-        String::new()
-    };
-    let flush_to_disk = |buf: &str| {
-        if merge_existing_log {
-            let mut merged = String::with_capacity(existing_prefix.len() + buf.len());
-            merged.push_str(&existing_prefix);
-            merged.push_str(buf);
-            let _ = std::fs::write(&log_path, merged);
-        } else {
-            let _ = std::fs::write(&log_path, buf);
-        }
-    };
+    // Incremental persistence: append what the buffer gained to the on-disk
+    // log while the run streams (after the existing log of a resumed run).
+    // This lets the frontend recover partial output after an app restart
+    // mid-run, instead of only seeing the log once the run finishes, and lets
+    // sync see the log grow (and go idle) instead of a rewrite every tick.
+    let mut log_file = LogFlusher::new(log_path.clone(), merge_existing_log);
     let mut flush_tick = tokio::time::interval(std::time::Duration::from_millis(500));
     flush_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
             _ = flush_tick.tick() => {
-                let buf = log_buf.lock().await;
-                flush_to_disk(&buf);
+                // Not once another device took the run over: the log is its now.
+                if !crate::sync::sessions::is_handed_off(&run_id) {
+                    let buf = log_buf.lock().await;
+                    log_file.flush(&buf);
+                }
             }
             // Watchdog: surface long waits (notices only), and detect the one
             // definitive hang the drain can see itself — the sidecar process has
@@ -1074,12 +1153,12 @@ pub async fn drain_sidecar(
         );
     }
 
-    // Final authoritative persist (captures anything appended since the last
-    // periodic flush). Uses the prefix snapshot rather than re-reading the file,
-    // because the periodic flush has already written `prefix + buf` to disk.
-    {
+    // Final persist (anything appended since the last periodic flush).
+    // Not when another device took the run over: the log is its now.
+    let handed_off = crate::sync::sessions::is_handed_off(&run_id);
+    if !handed_off {
         let buf = log_buf.lock().await;
-        flush_to_disk(&buf);
+        log_file.flush(&buf);
     }
 
     // The sidecar is gone, so any request it was blocked on can never be answered.
@@ -1122,18 +1201,26 @@ pub async fn drain_sidecar(
     // A turn finishing is not user activity, so it must not float the run in
     // History. last_activity_at is only pinned to the run's existing sort key
     // (old row values) so the new finished_at can't take over the COALESCE.
-    let _ = sqlx::query(
-        "UPDATE runs SET status = ?, finished_at = ?, \
-         last_activity_at = COALESCE(last_activity_at, finished_at, started_at, created_at, ?), \
-         output_path = ? WHERE id = ?",
-    )
-    .bind(final_status)
-    .bind(&finished_at)
-    .bind(&finished_at)
-    .bind(log_path.to_string_lossy().as_ref())
-    .bind(&run_id)
-    .execute(&db_pool)
-    .await;
+    // Only while this device owns the run: after a take-over the row is the
+    // new owner's, and a 'cancelled' here would sync back over it.
+    if !handed_off {
+        let _ = sqlx::query(&format!(
+            "UPDATE runs SET status = ?, finished_at = ?, \
+             last_activity_at = COALESCE(last_activity_at, finished_at, started_at, created_at, ?), \
+             output_path = ? WHERE id = ? AND {}",
+            crate::sync::sessions::OWNED_HERE
+        ))
+        .bind(final_status)
+        .bind(&finished_at)
+        .bind(&finished_at)
+        .bind(log_path.to_string_lossy().as_ref())
+        .bind(&run_id)
+        .execute(&db_pool)
+        .await;
+        // The sidecar is gone: other devices may continue the session now.
+        crate::sync::sessions::release(&db_pool, &run_id).await;
+    }
+    crate::sync::sessions::clear_handed_off(&run_id);
 
     if let Some(bus) = &remote_bus {
         bus.publish(crate::remote::RemoteRunEvent::Done {
@@ -1789,6 +1876,94 @@ pub(crate) async fn insert_usage_from_result(
     .await;
 
     res.is_ok()
+}
+
+#[cfg(test)]
+mod log_flusher_tests {
+    use super::{ends_with_newline, LogFlusher};
+
+    fn tmp(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("devdy-log-flush-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join(name)
+    }
+
+    fn stamp(p: &std::path::Path) -> (u64, std::time::SystemTime) {
+        let m = std::fs::metadata(p).unwrap();
+        (m.len(), m.modified().unwrap())
+    }
+
+    #[test]
+    fn fresh_log_replaces_then_only_appends_when_grown() {
+        let p = tmp("r1.log");
+        std::fs::write(&p, "stale from an earlier run\n").unwrap();
+        let mut f = LogFlusher::new(p.clone(), false);
+        let mut buf = String::from("line 1\n");
+        f.flush(&buf);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "line 1\n");
+        // Unchanged buffer: the file is not touched (mtime/size stay).
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::File::options().append(true).open(&p).unwrap().set_modified(old).unwrap();
+        let before = stamp(&p);
+        f.flush(&buf);
+        f.flush(&buf);
+        assert_eq!(stamp(&p), before);
+        // Grown: only the new bytes are appended (same inode, never shorter).
+        #[cfg(unix)]
+        let ino = std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&p).unwrap());
+        buf.push_str("line 2\n");
+        f.flush(&buf);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "line 1\nline 2\n");
+        #[cfg(unix)]
+        assert_eq!(std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&p).unwrap()), ino);
+        assert!(!p.with_file_name(".r1.log.flush-tmp").exists());
+    }
+
+    #[test]
+    fn resumed_log_appends_after_the_existing_one() {
+        let p = tmp("r2.log");
+        std::fs::write(&p, "turn 1\n").unwrap();
+        let mut f = LogFlusher::new(p.clone(), true);
+        let mut buf = String::new();
+        f.flush(&buf);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "turn 1\n");
+        buf.push_str("--- resumed ---\nturn 2\n");
+        f.flush(&buf);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "turn 1\n--- resumed ---\nturn 2\n");
+        // A torn append is cut back to what was flushed, then redone.
+        f.torn = true;
+        std::fs::write(&p, "turn 1\n--- resumed ---\nturn 2\ngarbage").unwrap();
+        buf.push_str("turn 3\n");
+        f.flush(&buf);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "turn 1\n--- resumed ---\nturn 2\nturn 3\n");
+    }
+
+    /// Review-3 L2: resuming onto a log that ends mid-line starts on a new
+    /// line instead of gluing the first new line onto the fragment.
+    #[test]
+    fn resumed_log_cut_mid_line_starts_on_a_new_line() {
+        let p = tmp("r3.log");
+        std::fs::write(&p, "turn 1\n{\"type\":\"assi").unwrap();
+        let mut f = LogFlusher::new(p.clone(), true);
+        let mut buf = String::from("--- resumed ---\n");
+        f.flush(&buf);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "turn 1\n{\"type\":\"assi\n--- resumed ---\n");
+        // The cut-back of a torn append keeps that newline.
+        f.torn = true;
+        buf.push_str("turn 2\n");
+        f.flush(&buf);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "turn 1\n{\"type\":\"assi\n--- resumed ---\nturn 2\n");
+        // A complete log or an empty / missing one gets nothing added.
+        let q = tmp("r4.log");
+        std::fs::write(&q, "turn 1\n").unwrap();
+        LogFlusher::new(q.clone(), true);
+        assert_eq!(std::fs::read_to_string(&q).unwrap(), "turn 1\n");
+        let e = tmp("r5.log");
+        std::fs::write(&e, "").unwrap();
+        LogFlusher::new(e.clone(), true);
+        assert_eq!(std::fs::read_to_string(&e).unwrap(), "");
+        assert!(!ends_with_newline(&tmp("missing.log")));
+    }
 }
 
 #[cfg(test)]

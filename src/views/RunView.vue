@@ -29,6 +29,11 @@ import { openUrl } from '@tauri-apps/plugin-opener'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { remotePathsForDrop } from '@/lib/remoteUpload'
+import {
+  RUN_HANDED_OFF_EVENT, RUN_LOG_UPDATED_EVENT, ownerLabel, runOwnership, shortHead, syncPercent,
+  type RemoteRunOwner, type SyncGap,
+} from '@/lib/runOwnership'
+import { onSyncRowsApplied } from '@/lib/sync'
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
 import {
   Play, Square, GitPullRequest, Bug,
@@ -38,9 +43,9 @@ import {
   X, Paperclip,
   ShieldQuestion, MessageCircleQuestion,
   Pin, Shield, Pencil, Check, Github, Gitlab, UserCircle,
-  HardDrive, Cloud, CloudCog, Radio, Languages, StickyNote, ListTodo, FolderTree, Loader2,
+  HardDrive, Cloud, CloudCog, Radio, Languages, StickyNote, ListTodo, FolderTree, Loader2, RefreshCw,
   MoreHorizontal, Search, Network, ChevronLeft, ChevronRight,
-  Plus, AlignJustify, Rows2, Rows3, Rows4, CircleDashed, ArrowUpDown
+  Plus, AlignJustify, Rows2, Rows3, Rows4, CircleDashed, ArrowUpDown, Laptop
 } from 'lucide-vue-next'
 import { onClickOutside } from '@vueuse/core'
 import AppSelect from '@/components/AppSelect.vue'
@@ -718,6 +723,117 @@ const inputContentError = ref<string | null>(null)
 const inputContentLoading = ref(false)
 
 const currentRun = computed(() => runsStore.runs.find(r => r.id === currentRunId.value))
+
+// ── Cross-device sessions ──────────────────────────────────────────────────
+// A synced run owned by another device is read-only here while that device
+// runs it (its log streams in via sync), and offers "Continue here" once it is
+// idle or its lease ran out. `ownerNow` ticks so an expired lease is noticed
+// without a backend round-trip; row changes (status, lease released) arrive as
+// `sync://rows-applied`.
+const ownerNow = ref(Date.now())
+let ownerTimer: ReturnType<typeof setInterval> | null = null
+const currentOwner = computed(() =>
+  currentRunId.value ? runsStore.remoteOwners.get(currentRunId.value) : undefined,
+)
+const currentOwnership = computed(() => runOwnership(currentOwner.value, ownerNow.value))
+const currentOwnerName = computed(() =>
+  currentOwner.value ? ownerLabel(currentOwner.value, t('run.syncOwner.anotherDevice')) : '',
+)
+const takingOver = ref(false)
+// The owner's final log/transcript are still arriving: shown with Retry and
+// "Continue anyway" instead of the plain "Continue here".
+const takeOverSyncing = ref<SyncGap | null>(null)
+watch(currentRunId, () => { takeOverSyncing.value = null })
+
+function remoteOwnerOf(runId: string): RemoteRunOwner | undefined {
+  return runsStore.remoteOwners.get(runId)
+}
+
+function onOwnerTick() {
+  ownerNow.value = Date.now()
+}
+
+// Synced `runs` rows landed (another device started / finished a turn, or a
+// new session): refresh the list and the owners. Debounced like log appends.
+let syncRowsUnlisten: UnlistenFn | null = null
+let syncRowsTimer: ReturnType<typeof setTimeout> | null = null
+function handleSyncRowsApplied(tables: string[]) {
+  if (!tables.includes('runs') || syncRowsTimer) return
+  syncRowsTimer = setTimeout(() => {
+    syncRowsTimer = null
+    void runsStore.refreshMeta(projectId.value).catch(() => {})
+    void runsStore.fetchRemoteOwners(projectId.value)
+  }, 500)
+}
+
+// Synced log appends: refresh the list (status, owners) and re-read the open
+// log. Debounced — appends of a live remote session arrive every few seconds.
+let syncLogUnlisten: UnlistenFn | null = null
+let syncLogTimer: ReturnType<typeof setTimeout> | null = null
+const syncLogRuns = new Set<string>()
+function onSyncLogUpdated(runId: string) {
+  syncLogRuns.add(runId)
+  if (syncLogTimer) return
+  syncLogTimer = setTimeout(() => {
+    syncLogTimer = null
+    const ids = new Set(syncLogRuns)
+    syncLogRuns.clear()
+    if (![...ids].some((id) => runsStore.runs.some((r) => r.id === id))) return
+    void runsStore.refreshMeta(projectId.value).catch(() => {})
+    void runsStore.fetchRemoteOwners(projectId.value)
+    if (currentRunId.value && ids.has(currentRunId.value)) void refreshViewedRunOnFocus(true)
+  }, 500)
+}
+
+// Another device continued a session whose sidecar was live here; the local
+// sidecar was stopped.
+let handedOffUnlisten: UnlistenFn | null = null
+function onRunHandedOff(payload: { run_id: string; device_name: string | null }) {
+  const device = payload.device_name?.trim() || t('run.syncOwner.anotherDevice')
+  toast.info(t('run.syncOwner.continuedOn', { device }))
+  void runsStore.refreshMeta(projectId.value).catch(() => {})
+  void runsStore.fetchRemoteOwners(projectId.value)
+}
+
+async function handleTakeOver(skipSync = false) {
+  const id = currentRunId.value
+  if (!id || takingOver.value) return
+  const device = currentOwnerName.value
+  takingOver.value = true
+  try {
+    let result = await runsStore.takeOverRun(id, false, skipSync)
+    takeOverSyncing.value = !result.taken && result.syncing ? result.syncing : null
+    if (takeOverSyncing.value) return
+    if (!result.taken && result.mismatch) {
+      const { recorded, local } = result.mismatch
+      const unknown = t('run.syncOwner.unknown')
+      const state = (dirty: boolean | null) =>
+        dirty == null ? unknown : dirty ? t('run.syncOwner.dirty') : t('run.syncOwner.clean')
+      const ok = await confirm({
+        title: t('run.syncOwner.gitMismatchTitle'),
+        message: t('run.syncOwner.gitMismatchMessage', {
+          device,
+          recordedHead: shortHead(recorded.head, unknown),
+          recordedState: state(recorded.dirty),
+          localHead: shortHead(local.head, t('run.syncOwner.noRepo')),
+          localState: state(local.dirty),
+        }),
+        confirmLabel: t('run.syncOwner.continueHere'),
+        variant: 'primary',
+      })
+      if (!ok) return
+      result = await runsStore.takeOverRun(id, true, skipSync)
+    }
+    if (!result.taken) return
+    if (!result.transcript_available) toast.info(t('run.syncOwner.transcriptMissing'))
+    await runsStore.refreshMeta(projectId.value)
+  } catch (e) {
+    toast.error(String(e))
+  } finally {
+    takingOver.value = false
+  }
+}
+
 const currentIsSession = computed(() => currentRun.value?.run_type === 'session')
 
 watch(
@@ -912,9 +1028,12 @@ watch(conductorAnchorId, (id) => {
 }, { immediate: true })
 // Keep worker permission prompts flowing: listen to each running worker so its
 // queue populates (and the sidebar's ⚠ flag lights up) even before it's opened.
+// Not a worker another device runs: it would count as running here (tray badge).
 watch(conductorWorkers, (ws) => {
   for (const w of ws) {
-    if (w.status === 'running') void live.startListening(w.worker_id, projectId.value)
+    if (w.status === 'running' && !runsStore.remoteOwners.has(w.worker_id)) {
+      void live.startListening(w.worker_id, projectId.value)
+    }
   }
 }, { immediate: true })
 
@@ -1875,6 +1994,16 @@ onMounted(async () => {
   // Live mirror: the backend watches the shared Claude transcript store and
   // emits this when a session changes (new turns from the CLI / VS Code, or a
   // brand-new external session). Refetch the list and reload the viewed run.
+  ownerTimer = setInterval(onOwnerTick, 5000)
+  syncLogUnlisten = await listen<{ run_id: string }>(RUN_LOG_UPDATED_EVENT, (event) => {
+    if (event.payload?.run_id) onSyncLogUpdated(event.payload.run_id)
+  })
+  syncRowsUnlisten = await onSyncRowsApplied(handleSyncRowsApplied)
+  handedOffUnlisten = await listen<{ run_id: string; device_name: string | null }>(
+    RUN_HANDED_OFF_EVENT,
+    (event) => { if (event.payload?.run_id) onRunHandedOff(event.payload) },
+  )
+
   sessionsChangedUnlisten = await listen<{ project_id: string; run_id?: string }>(
     'sessions:changed',
     (event) => {
@@ -1953,6 +2082,18 @@ onUnmounted(() => {
   window.removeEventListener('keydown', onTurnNavKey)
   sessionsChangedUnlisten?.()
   sessionsChangedUnlisten = null
+  syncLogUnlisten?.()
+  syncLogUnlisten = null
+  if (syncLogTimer) clearTimeout(syncLogTimer)
+  syncRowsUnlisten?.()
+  syncRowsUnlisten = null
+  handedOffUnlisten?.()
+  handedOffUnlisten = null
+  if (syncRowsTimer) clearTimeout(syncRowsTimer)
+  syncRowsTimer = null
+  syncLogTimer = null
+  if (ownerTimer) clearInterval(ownerTimer)
+  ownerTimer = null
   dragDropUnlisten?.()
   dragDropUnlisten = null
   remoteUnlisteners.forEach((fn) => fn())
@@ -4012,6 +4153,15 @@ function handleRefInput(val: string) {
                   >
                     <Network class="h-3 w-3" :stroke-width="1.75" />{{ runWorkerCount(run) }}
                   </span>
+                  <!-- Owned by another device (cross-device sync). -->
+                  <span
+                    v-if="remoteOwnerOf(run.id)"
+                    class="flex shrink-0 items-center gap-0.5 max-w-[6rem] text-[10px] text-sky-500"
+                    :title="t('run.syncOwner.badgeTitle', { device: ownerLabel(remoteOwnerOf(run.id)!, t('run.syncOwner.anotherDevice')) })"
+                  >
+                    <Laptop class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+                    <span class="truncate">{{ ownerLabel(remoteOwnerOf(run.id)!, t('run.syncOwner.anotherDevice')) }}</span>
+                  </span>
                   <!-- Remote-control marker: a phone is driving (green, pulsing) or
                        a link is waiting for one (amber) on THIS session. Lets the
                        user spot the remotely-controlled session in the list. -->
@@ -4504,6 +4654,55 @@ function handleRefInput(val: string) {
           v-if="composerVisible"
           class="border-t border-border bg-card/40 px-3 py-2 shrink-0"
         >
+          <!-- Session owned by another device: read-only while it runs there,
+               "Continue here" once it is idle. -->
+          <div
+            v-if="currentOwnership !== 'local'"
+            class="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-xs"
+          >
+            <Laptop class="h-4 w-4 shrink-0 text-sky-500" :stroke-width="1.75" />
+            <span v-if="currentOwnership === 'remote-running'" class="flex-1 min-w-0 truncate">
+              <Loader2 class="inline h-3 w-3 mr-1 animate-spin text-muted-foreground" :stroke-width="2" />
+              {{ t('run.syncOwner.runningOn', { device: currentOwnerName }) }}
+            </span>
+            <template v-else-if="takeOverSyncing">
+              <span class="flex-1 min-w-0 truncate text-muted-foreground">
+                {{ t('run.syncOwner.stillSyncing', { device: currentOwnerName, percent: syncPercent(takeOverSyncing) }) }}
+              </span>
+              <button
+                type="button"
+                class="shrink-0 flex items-center gap-1 rounded-md border border-border px-2.5 h-7 text-xs font-medium hover:bg-muted transition-colors cursor-pointer disabled:opacity-50"
+                :disabled="takingOver"
+                @click="handleTakeOver(true)"
+              >
+                {{ t('run.syncOwner.continueAnyway') }}
+              </button>
+              <button
+                type="button"
+                class="shrink-0 flex items-center gap-1 rounded-md bg-primary px-2.5 h-7 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors cursor-pointer disabled:opacity-50"
+                :disabled="takingOver"
+                @click="handleTakeOver()"
+              >
+                <component :is="takingOver ? Loader2 : RefreshCw" class="h-3.5 w-3.5" :class="{ 'animate-spin': takingOver }" :stroke-width="2" />
+                {{ t('run.syncOwner.retry') }}
+              </button>
+            </template>
+            <template v-else>
+              <span class="flex-1 min-w-0 truncate text-muted-foreground">
+                {{ t('run.syncOwner.lastRanOn', { device: currentOwnerName }) }}
+              </span>
+              <button
+                type="button"
+                class="shrink-0 flex items-center gap-1 rounded-md bg-primary px-2.5 h-7 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors cursor-pointer disabled:opacity-50"
+                :disabled="takingOver"
+                @click="handleTakeOver()"
+              >
+                <component :is="takingOver ? Loader2 : Play" class="h-3.5 w-3.5" :class="{ 'animate-spin': takingOver }" :stroke-width="2" />
+                {{ t('run.syncOwner.continueHere') }}
+              </button>
+            </template>
+          </div>
+          <template v-else>
           <RunAttentionBanner
             v-if="currentStatus === 'running' && session?.attention.length"
             :notices="session.attention"
@@ -4792,6 +4991,7 @@ function handleRefInput(val: string) {
               </div>
             </div>
           </div>
+          </template>
         </div>
       </div>
 

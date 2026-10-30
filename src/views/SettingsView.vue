@@ -18,7 +18,7 @@ import MascotBubble from '@/components/MascotBubble.vue'
 import RemoteControlSettings from '@/components/remote/RemoteControlSettings.vue'
 import InboxApiSettings from '@/components/InboxApiSettings.vue'
 import SettingsBackup from '@/components/SettingsBackup.vue'
-import SettingsLanSync from '@/components/SettingsLanSync.vue'
+import SettingsSync from '@/components/SettingsSync.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useDragSort } from '@/composables/useDragSort'
@@ -453,7 +453,7 @@ const SECTIONS = [
   { id: 'remote', labelKey: 'settings.sections.remote', icon: Radio },
   { id: 'inbox', labelKey: 'settings.sections.inbox', icon: Inbox },
   { id: 'prompts', labelKey: 'settings.sections.prompts', icon: FileText },
-  { id: 'backup', labelKey: 'settings.sections.backup', icon: ArchiveRestore },
+  { id: 'sync', labelKey: 'settings.sections.backup', icon: ArchiveRestore },
 ] as const
 const activeSection = ref<(typeof SECTIONS)[number]['id']>('general')
 
@@ -461,7 +461,8 @@ const activeSection = ref<(typeof SECTIONS)[number]['id']>('general')
 // the "Settings" buttons on the MCP Servers screen's built-in cards).
 const route = useRoute()
 function applySectionFromRoute() {
-  const target = route.query.section
+  // `backup` was the section's id before two-way sync.
+  const target = route.query.section === 'backup' ? 'sync' : route.query.section
   if (typeof target === 'string' && SECTIONS.some(s => s.id === target)) {
     activeSection.value = target as (typeof SECTIONS)[number]['id']
   }
@@ -2918,9 +2919,9 @@ watch(() => settings.value.language, (v) => {
           <InboxApiSettings />
         </div>
 
-        <!-- Pull the whole configuration from another machine on the LAN, or export / import it as a file. -->
-        <div v-if="!loading && activeSection === 'backup'" class="max-w-lg space-y-4">
-          <SettingsLanSync />
+        <!-- Two-way sync between this user's machines, then the offline file backup. -->
+        <div v-if="!loading && activeSection === 'sync'" class="max-w-lg space-y-4">
+          <SettingsSync />
           <SettingsBackup />
         </div>
       </div>
