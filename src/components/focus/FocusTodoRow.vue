@@ -2,14 +2,15 @@
 // One todo on the Focus board (spec §3.2): ✓ checkbox · project chip · title ·
 // relative due / start-by label · `~2h` estimate ("?" when missing) · P1 badge ·
 // source icon (opens the link) · linked sessions; hovering shows the actions
-// (▶ start / back to to-do, ⏸ snooze, ⏳ waiting, edit, delete). The tooltip
+// (▶ start / back to to-do, ⏸ snooze, ⏳ waiting, ✨ analyze, 🚀 start with AI,
+// edit, delete). The tooltip
 // explains why it ranks here (BR-05). Click → detail drawer.
 //
 // `row` is the full-width line of the "by time" view; `card` the narrow
 // two-line form of the project / week columns.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Check, Hourglass, Link as LinkIcon, Pencil, Play, Trash2, Undo2 } from 'lucide-vue-next'
+import { Check, Hourglass, Link as LinkIcon, Loader2, Pencil, Play, Rocket, Sparkles, Trash2, Undo2 } from 'lucide-vue-next'
 import { Button } from '@/components/ui'
 import { useProjectsStore } from '@/stores/projects'
 import { firstLine } from '@/lib/itemText'
@@ -17,6 +18,7 @@ import { formatEstimate, projectHue, sourceShortLabel, type FocusItem } from '@/
 import FocusSnoozeMenu from './FocusSnoozeMenu.vue'
 import { SOURCE_ICON } from './sourceIcon'
 import { useFocusActions } from './useFocusActions'
+import { useFocusAiActions } from './useFocusAiActions'
 import { useFocusText } from './useFocusText'
 
 const props = withDefaults(
@@ -37,6 +39,7 @@ const emit = defineEmits<{ open: [id: string] }>()
 const { t } = useI18n()
 const projects = useProjectsStore()
 const actions = useFocusActions()
+const aiActions = useFocusAiActions()
 const text = useFocusText()
 
 const todo = computed(() => props.item.todo)
@@ -141,6 +144,12 @@ const DUE_TONE = {
       >
         <LinkIcon class="h-3 w-3" :stroke-width="1.75" />{{ todo.linked_run_count }}
       </span>
+      <Loader2
+        v-if="aiActions.analyzing(todo)"
+        class="h-3 w-3 animate-spin text-primary"
+        :stroke-width="2"
+        :aria-label="t('focus.ai.analyzing')"
+      />
     </div>
 
     <!-- Hover actions -->
@@ -171,6 +180,25 @@ const DUE_TONE = {
         <Undo2 class="h-3.5 w-3.5" :stroke-width="1.75" />
       </Button>
       <FocusSnoozeMenu :todo="todo" />
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        :disabled="aiActions.analyzing(todo)"
+        :title="t('focus.ai.analyze')"
+        :aria-label="t('focus.ai.analyze')"
+        @click="aiActions.analyze(todo)"
+      >
+        <Sparkles class="h-3.5 w-3.5" :stroke-width="1.75" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        :title="t('focus.ai.start')"
+        :aria-label="t('focus.ai.start')"
+        @click="aiActions.startWithAi(todo)"
+      >
+        <Rocket class="h-3.5 w-3.5" :stroke-width="1.75" />
+      </Button>
       <Button
         v-if="todo.status !== 'waiting'"
         variant="ghost"

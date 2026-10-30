@@ -5,6 +5,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   BUCKET_ORDER,
+  aiErrorCode,
+  applySuggestion,
+  blockMinutes,
   FILTER_NONE,
   calibrationHint,
   draftToInput,
@@ -23,7 +26,6 @@ import {
   snoozePresets,
   sourceShortLabel,
   spanOf,
-  suggestActualMin,
   toLocalInput,
   topItems,
   weekDays,
@@ -249,12 +251,27 @@ test('parseReason falls back to unknown for new kinds or bad values', () => {
   assert.deepEqual(parseReason({ kind: 'due', value: 'soon' }), { kind: 'unknown', name: 'due', value: 'soon' })
 })
 
-test('suggestActualMin: wall time since start unless > 3× estimate', () => {
-  const started = new Date(NOW - 90 * 60_000).toISOString()
-  assert.equal(suggestActualMin({ started_at: started, estimate_min: 60 }, NOW), 90)
-  assert.equal(suggestActualMin({ started_at: started, estimate_min: 20 }, NOW), null)
-  assert.equal(suggestActualMin({ started_at: null, estimate_min: 60 }, NOW), null)
-  assert.equal(suggestActualMin({ started_at: started, estimate_min: null }, NOW), null)
+test('applySuggestion fills the form without overwriting the user', () => {
+  const s = { title: 'Gửi báo cáo', due_date: '2026-10-30', due_time: '17:00', due_evidence: 'x', priority: 1, estimate_min: 90, reason: '' }
+  assert.deepEqual(applySuggestion(emptyTodoDraft({ sourceUrl: 'u' }), s), emptyTodoDraft({
+    sourceUrl: 'u', text: 'Gửi báo cáo', dueDate: '2026-10-30', dueTime: '17:00', priority: 1, estimate: '1h30',
+  }))
+  const mine = applySuggestion(emptyTodoDraft({ text: 'Mine', dueDate: '2026-11-02' }), s)
+  assert.equal(mine.text, 'Mine')
+  assert.equal(mine.dueDate, '2026-11-02')
+  assert.equal(mine.dueTime, '')
+  assert.equal(applySuggestion(emptyTodoDraft(), { ...s, due_date: null, due_time: null }).dueDate, '')
+})
+
+test('aiErrorCode splits coded command errors', () => {
+  assert.deepEqual(aiErrorCode('project_required: pick a project'), { code: 'project_required', detail: 'pick a project' })
+  assert.deepEqual(aiErrorCode('cancelled'), { code: 'cancelled', detail: '' })
+  assert.deepEqual(aiErrorCode(new Error('Boom')), { code: null, detail: 'Boom' })
+})
+
+test('blockMinutes', () => {
+  assert.equal(blockMinutes({ start: '10:05', end: '11:30' }), 85)
+  assert.equal(blockMinutes({ start: '11:00', end: '10:00' }), 0)
 })
 
 test('draftToInput maps the capture form to add_todo args', () => {

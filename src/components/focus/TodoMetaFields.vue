@@ -4,8 +4,8 @@
 // created from, shown as a removable chip. Shared by QuickCaptureForm (item window)
 // and TodoCaptureModal (the "+ Todo" buttons). The host owns the draft.
 //
-// The `suggest` slot is where P3's "✨ Suggest" (AI fills the form) goes; nothing
-// renders there yet.
+// The `suggest` slot hosts "✨ Suggest" (FocusAiSuggestButton, AI fills the form)
+// where the host offers it.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { X } from 'lucide-vue-next'
