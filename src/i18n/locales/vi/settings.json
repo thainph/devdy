@@ -851,7 +851,8 @@
         "no_repo_here": "máy này không có repo",
         "branch_in_worktree": "branch đang checkout ở worktree khác",
         "lfs": "Git LFS",
-        "changed_since_preview": "đã thay đổi sau lần xem trước — giữ nguyên"
+        "changed_since_preview": "đã thay đổi sau lần xem trước — giữ nguyên",
+        "ref_conflict": "trùng tên branch — giữ nguyên repo"
       },
       "applyFiles": "Sync {n} dự án · {files} thay đổi file",
       "planChanged": "Thư mục nguồn đã thay đổi sau lần xem trước này nên không ghi gì vượt quá nó. Xem lại bản xem trước mới rồi xác nhận lại.",
