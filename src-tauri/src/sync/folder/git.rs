@@ -240,3 +240,72 @@ pub fn empty_tree(dir: &Path) -> Result<String, String> {
     let out = run_with(dir, &["hash-object", "-t", "tree", "--stdin"], Opts { stdin: Some(b""), ..Default::default() })?;
     Ok(String::from_utf8_lossy(&out).trim().to_string())
 }
+
+/// Branches checked out in the repo's *other* linked worktrees (moving them
+/// would change those worktrees' HEAD under them).
+pub fn branches_checked_out_elsewhere(dir: &Path) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let Ok(raw) = run(dir, &["worktree", "list", "--porcelain"]) else { return out };
+    let me = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    for block in String::from_utf8_lossy(&raw).split("\n\n") {
+        let mut wt = None;
+        let mut branch = None;
+        for line in block.lines() {
+            if let Some(p) = line.strip_prefix("worktree ") {
+                wt = Some(std::path::PathBuf::from(p));
+            } else if let Some(b) = line.strip_prefix("branch refs/heads/") {
+                branch = Some(b.to_string());
+            }
+        }
+        if let (Some(wt), Some(b)) = (wt, branch) {
+            if wt.canonicalize().unwrap_or(wt) != me {
+                out.insert(b);
+            }
+        }
+    }
+    out
+}
+
+/// Paths (files, symlinks, gitlinks) of a tree, repo-relative.
+pub fn tree_paths(dir: &Path, tree: &str) -> Result<Vec<String>, String> {
+    let out = run(dir, &["ls-tree", "-r", "-z", "--name-only", "--full-tree", tree])?;
+    Ok(out.split(|b| *b == 0).filter(|r| !r.is_empty()).map(|r| String::from_utf8_lossy(r).to_string()).collect())
+}
+
+/// Paths of `paths` whose `filter` attribute (as of `tree`) is `lfs`.
+/// Empty when git cannot tell (`check-attr --source` needs git ≥ 2.40).
+pub fn lfs_paths(dir: &Path, tree: &str, paths: &[String]) -> Vec<String> {
+    if paths.is_empty() {
+        return vec![];
+    }
+    let input: Vec<u8> = paths.iter().flat_map(|p| p.bytes().chain(std::iter::once(0))).collect();
+    let Ok(out) = run_with(dir, &["check-attr", &format!("--source={tree}"), "-z", "--stdin", "filter"], Opts { stdin: Some(&input), ..Default::default() })
+    else {
+        return vec![];
+    };
+    let f: Vec<&[u8]> = out.split(|b| *b == 0).collect();
+    f.chunks(3).filter(|c| c.len() == 3 && c[2] == b"lfs").map(|c| String::from_utf8_lossy(c[0]).to_string()).collect()
+}
+
+/// Clear assume-unchanged / skip-worktree flags (they hide worktree edits
+/// from `add -u` and make `read-tree -u` refuse). `only_present`: only for
+/// paths that exist in the worktree.
+pub fn clear_hidden_flags(dir: &Path, env: Vec<(&str, String)>, only_present: bool) -> Result<(), String> {
+    let listed = run_with(dir, &["ls-files", "-v", "-z"], Opts { env: env.clone(), ..Default::default() })?;
+    let mut hidden = Vec::new();
+    for rec in listed.split(|b| *b == 0).filter(|r| r.len() > 2) {
+        let (tag, path) = (rec[0], &rec[2..]);
+        let flagged = tag.is_ascii_lowercase() || tag == b'S';
+        if flagged && (!only_present || std::fs::symlink_metadata(dir.join(String::from_utf8_lossy(path).as_ref())).is_ok()) {
+            hidden.extend_from_slice(path);
+            hidden.push(0);
+        }
+    }
+    if !hidden.is_empty() {
+        // With --stdin only the last flag option applies: one call each.
+        for flag in ["--no-assume-unchanged", "--no-skip-worktree"] {
+            run_with(dir, &["update-index", flag, "-z", "--stdin"], Opts { env: env.clone(), stdin: Some(&hidden) })?;
+        }
+    }
+    Ok(())
+}

@@ -120,25 +120,83 @@ pub fn repos_have(root: &Path, sc: &Scan) -> BTreeMap<String, Vec<String>> {
     out
 }
 
+/// What a receiver-only file looked like when planned; it is deleted only
+/// if it still looks the same.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Stat {
+    pub size: u64,
+    pub mtime: Option<std::time::SystemTime>,
+    pub link: Option<String>,
+}
+
+impl Stat {
+    fn of(f: &LocalFile) -> Self {
+        match &f.kind {
+            LocalKind::File { size, .. } => Stat { size: *size, mtime: f.mtime, link: None },
+            LocalKind::Symlink { target } => Stat { size: 0, mtime: f.mtime, link: Some(target.clone()) },
+        }
+    }
+
+    /// The entry at `abs` is still the one planned.
+    pub fn unchanged(&self, abs: &Path) -> bool {
+        let Ok(m) = fs::symlink_metadata(abs) else { return false };
+        match &self.link {
+            Some(t) => m.file_type().is_symlink() && paths::read_link(abs).ok().as_deref() == Some(t.as_str()),
+            None => m.is_file() && m.len() == self.size && m.modified().ok() == self.mtime,
+        }
+    }
+}
+
+/// The destructive part of a plan, as confirmed in the preview.
+#[derive(Debug, Clone, Default)]
+pub struct Expected {
+    pub deletes: HashSet<String>,
+    /// Existing non-git files replaced or deleted (backed up).
+    pub replaced: HashSet<String>,
+}
+
 /// Everything the apply needs to know besides the manifest.
 #[derive(Debug, Default)]
 pub struct Plan {
     pub preview: FolderPreview,
+    /// Case-insensitive volume.
+    pub ci: bool,
     /// Manifest repos to apply (indexes).
     pub repos: Vec<usize>,
     /// Paths (and everything below) that are never touched.
     pub blocked: Vec<String>,
     /// Non-git files of this machine that will be replaced or deleted.
     pub backup_files: Vec<String>,
-    /// Receiver-only non-git files (deleted in cleanup).
-    pub deletes: HashSet<String>,
-    /// Paths the cleanup keeps (everything the source has or skipped).
+    /// Receiver-only non-git files (deleted in cleanup if unchanged).
+    pub deletes: HashMap<String, Stat>,
+    /// Folded paths the source has (or skipped): never deleted.
     pub keep: HashSet<String>,
 }
 
 impl Plan {
     pub fn is_blocked(&self, rel: &str) -> bool {
         self.blocked.iter().any(|b| paths::is_under(rel, b))
+    }
+
+    /// A planned receiver-only file, still as planned.
+    pub fn deletable(&self, root: &Path, rel: &str) -> bool {
+        self.deletes.get(rel).is_some_and(|st| st.unchanged(&root.join(rel)))
+    }
+
+    pub fn expected(&self) -> Expected {
+        Expected { deletes: self.deletes.keys().cloned().collect(), replaced: self.backup_files.iter().cloned().collect() }
+    }
+
+    /// Fail when this plan would delete or replace more than `e` (the preview).
+    pub fn check_expected(&self, e: &Expected) -> Result<(), String> {
+        let more = self.deletes.keys().filter(|d| !e.deletes.contains(*d)).count()
+            + self.backup_files.iter().filter(|f| !e.replaced.contains(*f) && !self.deletes.contains_key(*f)).count();
+        if more > 0 {
+            return Err(format!(
+                "plan_changed: the project folder changed since the preview ({more} more file(s) would be replaced or deleted); preview again"
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -164,8 +222,9 @@ fn patch_files(r: &RepoManifest) -> u64 {
     p.split(|b| *b == b'\n').filter(|l| l.starts_with(b"diff --git ")).count() as u64
 }
 
-pub fn plan(root: &Path, project_id: &str, m: &Manifest, sc: &Scan, ex: &Excludes) -> Result<Plan, String> {
-    let mut p = Plan::default();
+pub fn plan(root: &Path, project_id: &str, m: &Manifest, sc: &Scan, ex: &Excludes, ci: bool) -> Result<Plan, String> {
+    let mut p = Plan { ci, ..Default::default() };
+    let fold = |s: &str| paths::fold(s, ci);
     let pv = &mut p.preview;
     pv.project_id = project_id.to_string();
     pv.local_path = root.to_string_lossy().to_string();
@@ -206,22 +265,27 @@ pub fn plan(root: &Path, project_id: &str, m: &Manifest, sc: &Scan, ex: &Exclude
         if let Some(l) = &local {
             p.preview.local_changes.extend(l.changes.iter().map(|c| if r.path.is_empty() { c.clone() } else { format!("{}/{c}", r.path) }));
         }
-        p.preview.repos.push(repo_preview(&dir, r, local.as_ref()));
+        let (rp, busy) = repo_preview(&dir, r, local.as_ref());
+        p.preview.repos.push(rp);
+        for b in busy {
+            let path = if r.path.is_empty() { b } else { format!("{}:{b}", r.path) };
+            p.preview.skipped_items.push(SkipItem::new(path, "branch_in_worktree"));
+        }
         if let Some(b) = &r.bundle {
             need.insert(b.sha256.clone(), b.size);
         }
         for d in r.dirty.iter().filter(|d| !d.deleted) {
-            p.keep.insert(d.path.clone());
-            if d.link.is_none() && d.size > 0 && !identical(root, &d.path, d, false) {
+            p.keep.insert(fold(&d.path));
+            if d.link.is_none() && d.size > 0 && !ex.is_excluded(&d.path, false) && !identical(root, &d.path, d, false) {
                 need.insert(d.sha256.clone(), d.size);
             }
         }
     }
 
-    let local: HashMap<&str, &LocalFile> = sc.files.iter().map(|f| (f.rel.as_str(), f)).collect();
+    let local: HashMap<String, &str> = sc.files.iter().map(|f| (fold(&f.rel), f.rel.as_str())).collect();
     let pv = &mut p.preview;
     for f in &m.files {
-        p.keep.insert(f.path.clone());
+        p.keep.insert(fold(&f.path));
         if p.blocked.iter().any(|b| paths::is_under(&f.path, b)) || ex.is_excluded(&f.path, false) {
             continue;
         }
@@ -233,8 +297,8 @@ pub fn plan(root: &Path, project_id: &str, m: &Manifest, sc: &Scan, ex: &Exclude
                     continue;
                 }
                 push_capped(&mut pv.overwrite, &mut pv.overwrite_count, &f.path, f.size);
-                if local.contains_key(f.path.as_str()) {
-                    p.backup_files.push(f.path.clone());
+                if let Some(l) = local.get(&fold(&f.path)) {
+                    p.backup_files.push(l.to_string());
                 }
             }
         }
@@ -243,22 +307,22 @@ pub fn plan(root: &Path, project_id: &str, m: &Manifest, sc: &Scan, ex: &Exclude
         }
     }
     for s in &m.skipped {
-        p.keep.insert(s.path.clone());
+        p.keep.insert(fold(&s.path));
     }
-    let dirty_paths: HashSet<&str> = m.repos.iter().flat_map(|r| r.dirty.iter().map(|d| d.path.as_str())).collect();
+    let dirty_paths: HashSet<String> = m.repos.iter().flat_map(|r| r.dirty.iter().map(|d| fold(&d.path))).collect();
     for f in &sc.files {
         if p.blocked.iter().any(|b| paths::is_under(&f.rel, b)) {
             continue;
         }
-        if !p.keep.contains(&f.rel) {
+        if !p.keep.contains(&fold(&f.rel)) {
             let size = match &f.kind {
                 LocalKind::File { size, .. } => *size,
                 LocalKind::Symlink { .. } => 0,
             };
             push_capped(&mut pv.delete, &mut pv.delete_count, &f.rel, size);
-            p.deletes.insert(f.rel.clone());
+            p.deletes.insert(f.rel.clone(), Stat::of(f));
             p.backup_files.push(f.rel.clone());
-        } else if dirty_paths.contains(f.rel.as_str()) {
+        } else if dirty_paths.contains(&fold(&f.rel)) {
             // Untracked here, tracked (and modified) on the source.
             p.backup_files.push(f.rel.clone());
         }
@@ -269,7 +333,9 @@ pub fn plan(root: &Path, project_id: &str, m: &Manifest, sc: &Scan, ex: &Exclude
     Ok(p)
 }
 
-fn repo_preview(dir: &Path, r: &RepoManifest, local: Option<&LocalRepo>) -> RepoPreview {
+/// The repo's preview, and the source branches checked out in another
+/// worktree here (left alone).
+fn repo_preview(dir: &Path, r: &RepoManifest, local: Option<&LocalRepo>) -> (RepoPreview, Vec<String>) {
     let mut rp = RepoPreview {
         path: r.path.clone(),
         clone: local.is_none(),
@@ -281,7 +347,9 @@ fn repo_preview(dir: &Path, r: &RepoManifest, local: Option<&LocalRepo>) -> Repo
         bundle_bytes: r.bundle.as_ref().map(|b| b.size).unwrap_or(0),
         ..Default::default()
     };
-    let Some(l) = local else { return rp };
+    let Some(l) = local else { return (rp, vec![]) };
+    let elsewhere = git::branches_checked_out_elsewhere(dir);
+    let busy: Vec<String> = r.branches.keys().filter(|b| elsewhere.contains(*b) && l.branches.get(*b) != r.branches.get(*b)).cloned().collect();
     rp.branch_from = l.branch.clone();
     rp.head_from = l.head.clone();
     for (name, sha) in &r.branches {
@@ -299,5 +367,5 @@ fn repo_preview(dir: &Path, r: &RepoManifest, local: Option<&LocalRepo>) -> Repo
             _ => {}
         }
     }
-    rp
+    (rp, busy)
 }

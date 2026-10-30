@@ -19,6 +19,7 @@ pub enum LocalKind {
 pub struct LocalFile {
     pub rel: String,
     pub kind: LocalKind,
+    pub mtime: Option<std::time::SystemTime>,
 }
 
 #[derive(Debug, Clone)]
@@ -32,7 +33,8 @@ pub struct ScanRepo {
 pub struct SkipItem {
     pub path: String,
     /// `too_large` | `symlink_outside` | `submodule` | `git_link` | `non_utf8`
-    /// | `repo_only_here` | `path_conflict` | `unsafe_path` | `no_repo_here`.
+    /// | `repo_only_here` | `path_conflict` | `unsafe_path` | `branch_in_worktree`
+    /// | `lfs` | `changed_since_preview`.
     pub reason: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
@@ -52,12 +54,6 @@ pub struct Scan {
     pub skipped: Vec<SkipItem>,
     /// Directories not walked (submodules, linked worktrees): never touched.
     pub blocked: Vec<String>,
-}
-
-impl Scan {
-    pub fn is_blocked(&self, rel: &str) -> bool {
-        self.blocked.iter().any(|b| paths::is_under(rel, b))
-    }
 }
 
 struct RepoCtx {
@@ -131,11 +127,12 @@ pub fn scan(root: &Path, ex: &Excludes, max_bytes: u64) -> Result<Scan, String> 
                     continue;
                 }
                 let target = paths::read_link(&e.path())?;
-                if !paths::symlink_target_ok(&crel, &target) {
+                if !paths::symlink_target_ok_with(&crel, &target, &|p| paths::is_symlink_at(root, p)) {
                     out.skipped.push(SkipItem::new(crel, "symlink_outside"));
                     continue;
                 }
-                out.files.push(LocalFile { rel: crel, kind: LocalKind::Symlink { target } });
+                let mtime = fs::symlink_metadata(e.path()).ok().and_then(|m| m.modified().ok());
+                out.files.push(LocalFile { rel: crel, kind: LocalKind::Symlink { target }, mtime });
             } else if ft.is_file() {
                 if tracked || ex.is_excluded(&crel, false) {
                     continue;
@@ -145,7 +142,7 @@ pub fn scan(root: &Path, ex: &Excludes, max_bytes: u64) -> Result<Scan, String> 
                     out.skipped.push(SkipItem { path: crel, reason: "too_large".into(), size: Some(m.len()) });
                     continue;
                 }
-                out.files.push(LocalFile { rel: crel, kind: LocalKind::File { size: m.len(), mode: paths::mode_of(&m) } });
+                out.files.push(LocalFile { rel: crel, kind: LocalKind::File { size: m.len(), mode: paths::mode_of(&m) }, mtime: m.modified().ok() });
             }
         }
     }

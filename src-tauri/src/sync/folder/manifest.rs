@@ -28,6 +28,9 @@ pub struct ManifestRequest {
     /// Build bundles (apply); a preview only needs the commit counts.
     #[serde(default)]
     pub with_bundles: bool,
+    /// The receiver's volume ignores case: match excludes that way.
+    #[serde(default)]
+    pub case_insensitive: bool,
 }
 
 /// A file (or symlink) with its content address. Paths are root-relative.
@@ -109,8 +112,14 @@ pub struct Manifest {
     pub skipped: Vec<SkipItem>,
 }
 
+/// A content id: lowercase hex sha256 (it names staging files).
+pub fn is_sha256(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 impl Manifest {
-    /// Reject anything that would leave the receiver's root.
+    /// Reject anything that would leave the receiver's root or name a file
+    /// outside the staging area.
     pub fn validate(&self) -> Result<(), String> {
         if self.v != MANIFEST_VERSION {
             return Err(format!("unsupported folder manifest version {}", self.v));
@@ -123,13 +132,35 @@ impl Manifest {
                     return Err(format!("unsafe path {:?}: outside its repo", d.path));
                 }
             }
-        }
-        for f in self.files.iter().chain(self.repos.iter().flat_map(|r| r.dirty.iter())) {
-            paths::check_rel(&f.path)?;
-            if let Some(t) = &f.link {
-                if !paths::symlink_target_ok(&f.path, t) {
-                    return Err(format!("unsafe symlink {:?}", f.path));
+            if let Some(b) = &r.bundle {
+                if !is_sha256(&b.sha256) {
+                    return Err(format!("bad content id for the bundle of {:?}", r.path));
                 }
+            }
+        }
+        let all = || self.files.iter().chain(self.repos.iter().flat_map(|r| r.dirty.iter()));
+        let links: std::collections::HashSet<&str> = all().filter(|f| f.link.is_some()).map(|f| f.path.as_str()).collect();
+        let is_link = |p: &str| links.contains(p);
+        for f in all() {
+            paths::check_rel(&f.path)?;
+            let mut prefix = String::new();
+            for part in f.path.split('/').collect::<Vec<_>>().split_last().map(|(_, rest)| rest.to_vec()).unwrap_or_default() {
+                if !prefix.is_empty() {
+                    prefix.push('/');
+                }
+                prefix.push_str(part);
+                if is_link(&prefix) {
+                    return Err(format!("unsafe path {:?}: through a symlink", f.path));
+                }
+            }
+            match &f.link {
+                Some(t) => {
+                    if !paths::symlink_target_ok_with(&f.path, t, &is_link) {
+                        return Err(format!("unsafe symlink {:?}", f.path));
+                    }
+                }
+                None if !f.deleted && !is_sha256(&f.sha256) => return Err(format!("bad content id for {:?}", f.path)),
+                None => {}
             }
         }
         Ok(())
@@ -154,7 +185,7 @@ pub fn build(root: &Path, req: &ManifestRequest, tmp_dir: &Path) -> Result<Built
     if !root.is_dir() {
         return Err("project folder is missing on the source device".into());
     }
-    let ex = Excludes::new(&req.excludes)?;
+    let ex = Excludes::new(&req.excludes, req.case_insensitive)?;
     let sc = scan::scan(root, &ex, req.max_file_bytes)?;
     let mut built = Built { manifest: Manifest { v: MANIFEST_VERSION, ..Default::default() }, contents: HashMap::new(), temps: vec![] };
     let res = (|| {
@@ -167,7 +198,7 @@ pub fn build(root: &Path, req: &ManifestRequest, tmp_dir: &Path) -> Result<Built
         }
         built.manifest.skipped = sc.skipped.clone();
         for r in &sc.repos {
-            let rm = repo_manifest(root, &r.rel, req, tmp_dir, &mut built)?;
+            let rm = repo_manifest(root, &r.rel, req, &ex, tmp_dir, &mut built)?;
             built.manifest.repos.push(rm);
         }
         Ok(())
@@ -194,7 +225,7 @@ fn local_entry(root: &Path, rel: &str, kind: &LocalKind) -> Result<FileEntry, St
     })
 }
 
-fn repo_manifest(root: &Path, rel: &str, req: &ManifestRequest, tmp_dir: &Path, built: &mut Built) -> Result<RepoManifest, String> {
+fn repo_manifest(root: &Path, rel: &str, req: &ManifestRequest, ex: &Excludes, tmp_dir: &Path, built: &mut Built) -> Result<RepoManifest, String> {
     let dir = paths::join(root, rel);
     let head = git::head(&dir);
     let mut rm = RepoManifest {
@@ -237,6 +268,10 @@ fn repo_manifest(root: &Path, rel: &str, req: &ManifestRequest, tmp_dir: &Path, 
     while let (Some(status), Some(p)) = (it.next(), it.next()) {
         let p = String::from_utf8_lossy(p).to_string();
         let full = if rel.is_empty() { p } else { format!("{rel}/{p}") };
+        // The receiver never touches excluded paths, tracked or not.
+        if ex.is_excluded(&full, false) {
+            continue;
+        }
         let abs = root.join(&full);
         let entry = match (status.first(), fs::symlink_metadata(&abs)) {
             (_, Err(_)) => FileEntry { path: full, deleted: true, ..Default::default() },
@@ -245,7 +280,7 @@ fn repo_manifest(root: &Path, rel: &str, req: &ManifestRequest, tmp_dir: &Path, 
             (Some(b'D'), Ok(_)) => continue,
             (_, Ok(m)) if m.file_type().is_symlink() => {
                 let target = paths::read_link(&abs)?;
-                if !paths::symlink_target_ok(&full, &target) {
+                if !paths::symlink_target_ok_with(&full, &target, &|p| paths::is_symlink_at(root, p)) {
                     built.manifest.skipped.push(SkipItem::new(full, "symlink_outside"));
                     continue;
                 }
