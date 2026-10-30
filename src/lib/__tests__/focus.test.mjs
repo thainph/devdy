@@ -305,3 +305,13 @@ test('source helpers', () => {
   assert.equal(sourceShortLabel('gitlab', 'gitlab:g/p!8'), '!8')
   assert.equal(sourceShortLabel('slack', 'slack:T/C/1.2'), null)
 })
+
+test('rebaseForm takes changes for untouched fields only', async () => {
+  const { rebaseForm } = await import('../focus.ts')
+  const base = { text: 'Fix', status: 'todo', priority: 2, estimate: '1h' }
+  const form = { ...base, estimate: '2h' } // the user edited the estimate
+  const next = { ...base, status: 'doing', estimate: '30m' } // Start with AI + another window
+  assert.deepEqual(rebaseForm(form, base, next), { text: 'Fix', status: 'doing', priority: 2, estimate: '2h' })
+  // Nothing edited: the form becomes the new todo (not dirty).
+  assert.deepEqual(rebaseForm(base, base, next), next)
+})

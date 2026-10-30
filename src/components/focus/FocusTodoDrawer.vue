@@ -17,10 +17,12 @@ import {
   formatEstimate,
   fromLocalInput,
   parseEstimate,
+  rebaseForm,
   sourceShortLabel,
   toLocalInput,
   type AiApply,
   type FocusItem,
+  type FocusTodo,
   type TodoDraft,
   type TodoPatch,
   type TodoStatus,
@@ -52,22 +54,69 @@ const aiEstimate = ref<number | null>(null)
 
 const todo = computed(() => props.item?.todo ?? null)
 
+/** Every editable field of the form, flat (for `rebaseForm`). */
+interface DrawerForm extends TodoDraft {
+  [key: string]: unknown
+  status: TodoStatus
+  snoozedUntil: string
+  remindAt: string
+  actual: string
+}
+
+function formOf(td: FocusTodo): DrawerForm {
+  return {
+    ...emptyTodoDraft({
+      text: td.text,
+      projectId: td.project_id ?? '',
+      dueDate: td.due_date ?? '',
+      dueTime: td.due_time ?? '',
+      priority: td.priority,
+      estimate: formatEstimate(td.estimate_min),
+    }),
+    status: td.status,
+    snoozedUntil: toLocalInput(td.snoozed_until),
+    remindAt: toLocalInput(td.remind_at),
+    actual: formatEstimate(td.actual_min),
+  }
+}
+
+function currentForm(): DrawerForm {
+  return {
+    ...draft.value,
+    status: status.value,
+    snoozedUntil: snoozedUntil.value,
+    remindAt: remindAt.value,
+    actual: actual.value,
+  }
+}
+
+function setForm(f: DrawerForm) {
+  const { status: st, snoozedUntil: sn, remindAt: rm, actual: ac, ...d } = f
+  draft.value = d as TodoDraft
+  status.value = st
+  snoozedUntil.value = sn
+  remindAt.value = rm
+  actual.value = ac
+}
+
+/** The form as last loaded from the todo (what "untouched" means). */
+let base: DrawerForm | null = null
+
 function reset() {
   const td = todo.value
   if (!td) return
-  draft.value = emptyTodoDraft({
-    text: td.text,
-    projectId: td.project_id ?? '',
-    dueDate: td.due_date ?? '',
-    dueTime: td.due_time ?? '',
-    priority: td.priority,
-    estimate: formatEstimate(td.estimate_min),
-  })
-  status.value = td.status
-  snoozedUntil.value = toLocalInput(td.snoozed_until)
-  remindAt.value = toLocalInput(td.remind_at)
-  actual.value = formatEstimate(td.actual_min)
+  base = formOf(td)
+  setForm(base)
   aiEstimate.value = null
+}
+
+/** Same todo refreshed (e.g. status → doing after Start with AI): untouched fields follow it. */
+function rebase() {
+  const td = todo.value
+  if (!td || !base) return
+  const next = formOf(td)
+  setForm(rebaseForm(currentForm(), base, next))
+  base = next
 }
 
 /** "Apply" in the AI panel fills the form; the drawer's Save stores it (BR-09). */
@@ -85,8 +134,12 @@ function onAiApply(a: AiApply) {
   draft.value = d
 }
 
-// A different todo → load it; the same one refreshed by the board keeps the edit.
+// A different todo → load it; the same one refreshed by the board keeps the
+// user's edits and takes every other change.
 watch(() => todo.value?.id, reset, { immediate: true })
+watch(todo, (td, prev) => {
+  if (td && prev && td.id === prev.id) rebase()
+})
 
 const projectId = computed({
   get: () => draft.value.projectId || null,

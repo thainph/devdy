@@ -94,7 +94,7 @@ pub async fn load_todos(db: &Db) -> Result<Vec<Todo>, String> {
     Ok(rows.iter().map(row_to_todo).collect())
 }
 
-pub async fn get_todo(db: &Db, id: &str) -> Result<Todo, String> {
+pub async fn get_todo<'e, E: sqlx::SqliteExecutor<'e>>(db: E, id: &str) -> Result<Todo, String> {
     let row = sqlx::query(&format!(
         "SELECT {TODO_COLS}, {} FROM todos t WHERE t.id = ?",
         item_links::linked_count_sql(ItemKind::Todo, "t")
@@ -274,37 +274,72 @@ pub async fn update_todo_fields(
     id: String,
     patch: Map<String, Value>,
 ) -> Result<Todo, String> {
-    let db = db.inner();
-    let current = get_todo(db, &id).await?;
+    // Read, patch and write under the write lock, and only the columns the
+    // patch touches: a concurrent writer (an AI plan landing, the MCP sidecar,
+    // sync) keeps its own columns.
+    let mut tx = db
+        .inner()
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| e.to_string())?;
+    let current = get_todo(&mut *tx, &id).await?;
     let t = apply_patch(&current, &patch, &now())?;
-    sqlx::query(
-        "UPDATE todos SET text = ?, project_id = ?, due_date = ?, due_time = ?, priority = ?, \
-         estimate_min = ?, estimate_source = ?, status = ?, snoozed_until = ?, remind_at = ?, \
-         ai_plan = ?, actual_min = ?, done = ?, started_at = ?, completed_at = ?, updated_at = ? \
-         WHERE id = ?",
-    )
-    .bind(&t.text)
-    .bind(&t.project_id)
-    .bind(&t.due_date)
-    .bind(&t.due_time)
-    .bind(t.priority)
-    .bind(t.estimate_min)
-    .bind(&t.estimate_source)
-    .bind(&t.status)
-    .bind(&t.snoozed_until)
-    .bind(&t.remind_at)
-    .bind(&t.ai_plan)
-    .bind(t.actual_min)
-    .bind(t.done)
-    .bind(&t.started_at)
-    .bind(&t.completed_at)
-    .bind(&t.updated_at)
-    .bind(&id)
-    .execute(db)
-    .await
-    .map_err(|e| e.to_string())?;
+    let cols = written_columns(&current, &t, &patch);
+    let sets: Vec<String> = cols.iter().map(|c| format!("{c} = ?")).collect();
+    let sql = format!("UPDATE todos SET {} WHERE id = ?", sets.join(", "));
+    let mut q = sqlx::query(&sql);
+    for c in &cols {
+        q = match *c {
+            "text" => q.bind(t.text.clone()),
+            "project_id" => q.bind(t.project_id.clone()),
+            "due_date" => q.bind(t.due_date.clone()),
+            "due_time" => q.bind(t.due_time.clone()),
+            "priority" => q.bind(t.priority),
+            "estimate_min" => q.bind(t.estimate_min),
+            "estimate_source" => q.bind(t.estimate_source.clone()),
+            "status" => q.bind(t.status.clone()),
+            "snoozed_until" => q.bind(t.snoozed_until.clone()),
+            "remind_at" => q.bind(t.remind_at.clone()),
+            "ai_plan" => q.bind(t.ai_plan.clone()),
+            "actual_min" => q.bind(t.actual_min),
+            "done" => q.bind(t.done),
+            "started_at" => q.bind(t.started_at.clone()),
+            "completed_at" => q.bind(t.completed_at.clone()),
+            "updated_at" => q.bind(t.updated_at.clone()),
+            other => unreachable!("column {other}"),
+        };
+    }
+    q.bind(&id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())?;
     focus::emit_todos_changed(&app);
     Ok(t)
+}
+
+/// Columns `update_todo_fields` writes for `patch`: the patched ones plus
+/// what they drag along (`estimate_source`, a cleared `due_time`,
+/// `completed_at` / `status` on (un)done, `started_at` on doing) and
+/// `updated_at`.
+pub fn written_columns(cur: &Todo, new: &Todo, patch: &Map<String, Value>) -> Vec<&'static str> {
+    let mut cols: Vec<&'static str> = PATCH_KEYS
+        .iter()
+        .copied()
+        .filter(|k| patch.contains_key(*k))
+        .collect();
+    let mut add = |c: &'static str, when: bool| {
+        if when && !cols.contains(&c) {
+            cols.push(c);
+        }
+    };
+    add("estimate_source", new.estimate_source != cur.estimate_source);
+    add("due_time", new.due_time != cur.due_time);
+    add("completed_at", new.completed_at != cur.completed_at);
+    add("status", new.status != cur.status);
+    add("started_at", new.started_at != cur.started_at);
+    add("updated_at", true);
+    cols
 }
 
 pub const PATCH_KEYS: [&str; 13] = [
@@ -599,5 +634,52 @@ mod tests {
         .unwrap();
         assert_eq!(snoozed.snoozed_until.as_deref(), Some("2026-10-28T14:00:00+07:00"));
         assert_eq!(snoozed.status, "waiting");
+    }
+
+    #[test]
+    fn only_patched_and_derived_columns_are_written() {
+        let cols = |p: Value| {
+            let p = patch(p);
+            let cur = todo();
+            let new = apply_patch(&cur, &p, NOW).unwrap();
+            written_columns(&cur, &new, &p)
+        };
+        assert_eq!(cols(json!({ "priority": 1 })), vec!["priority", "updated_at"]);
+        assert_eq!(cols(json!({ "ai_plan": "x" })), vec!["ai_plan", "updated_at"]);
+        assert_eq!(
+            cols(json!({ "estimate_min": 30 })),
+            vec!["estimate_min", "estimate_source", "updated_at"]
+        );
+        assert_eq!(cols(json!({ "due_date": null })), vec!["due_date", "due_time", "updated_at"]);
+        assert_eq!(
+            cols(json!({ "status": "doing" })),
+            vec!["status", "started_at", "updated_at"]
+        );
+        assert_eq!(cols(json!({ "done": true })), vec!["done", "completed_at", "updated_at"]);
+    }
+
+    #[tokio::test]
+    async fn a_patch_keeps_a_concurrent_writers_columns() {
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        sqlx::query("INSERT INTO todos (id, text, done, position, created_at) VALUES ('t1', 'x', 0, 0, 'c')")
+            .execute(&db)
+            .await
+            .unwrap();
+        // The drawer read the todo before an AI plan landed...
+        let stale = get_todo(&db, "t1").await.unwrap();
+        sqlx::query("UPDATE todos SET ai_plan = 'plan' WHERE id = 't1'")
+            .execute(&db)
+            .await
+            .unwrap();
+        // ...and saves only its priority: written columns come from the patch.
+        let p = patch(json!({ "priority": 3 }));
+        let new = apply_patch(&stale, &p, NOW).unwrap();
+        assert_eq!(written_columns(&stale, &new, &p), vec!["priority", "updated_at"]);
+        assert_eq!(get_todo(&db, "t1").await.unwrap().ai_plan.as_deref(), Some("plan"));
     }
 }
