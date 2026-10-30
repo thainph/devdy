@@ -99,6 +99,29 @@ async fn hello(url: &str, device: &str, create: bool) -> Ws {
     ws
 }
 
+/// Join `device` to the group with a ticket that `member` registers.
+async fn join(url: &str, member: &mut Ws, device: &str) -> Ws {
+    let ticket = format!("ticket-for-{device}");
+    send(member, json!({ "t": "sync_invite", "ticket_hash": sha_hex(ticket.as_bytes()), "ttl_secs": 60 })).await;
+    let ack = recv(member).await;
+    assert_eq!((ack["t"].as_str(), ack["code"].as_str()), (Some("control"), Some("ok")), "got {ack}");
+    let (ws, reply) = hello_ticket(url, device, &ticket).await;
+    assert_eq!(reply["t"], "sync_welcome", "got {reply}");
+    ws
+}
+
+async fn hello_ticket(url: &str, device: &str, ticket: &str) -> (Ws, Value) {
+    let (mut ws, _) = connect_async(url).await.expect("connect");
+    send(
+        &mut ws,
+        json!({ "t": "sync_hello", "auth_token": TEST_TOKEN, "group_id": GROUP,
+                "device_id": device, "device_token": format!("tok-{device}"), "ticket": ticket }),
+    )
+    .await;
+    let reply = recv(&mut ws).await;
+    (ws, reply)
+}
+
 async fn push(ws: &mut Ws, items: Value) -> Value {
     send(ws, json!({ "t": "sync_push", "items": items })).await;
     recv(ws).await
@@ -137,7 +160,7 @@ async fn sync_disabled_without_db() {
 }
 
 #[tokio::test]
-async fn hello_create_tofu_and_auth() {
+async fn hello_create_ticket_and_auth() {
     let url = start(Opts::default()).await;
 
     // Unknown group without create.
@@ -157,10 +180,24 @@ async fn hello_create_tofu_and_auth() {
     assert_closed(&mut ws).await;
 
     let mut a = hello(&url, "a", true).await;
-    // Second device: TOFU on first hello, then the same token works again.
-    let b = hello(&url, "b", false).await;
+    // An unknown device needs a ticket; create=true does not bypass it.
+    let (mut x, r) = hello_raw(&url, "x", "tok-x", false).await;
+    assert_eq!(r["code"], "ticket_required");
+    assert_closed(&mut x).await;
+    let (mut x, r) = hello_raw(&url, "x", "tok-x", true).await;
+    assert_eq!(r["code"], "group_exists");
+    assert_closed(&mut x).await;
+    let (mut x, r) = hello_ticket(&url, "x", "made-up").await;
+    assert_eq!(r["code"], "ticket_invalid");
+    assert_closed(&mut x).await;
+    // Second device joins with a ticket, then its token alone works again.
+    let b = join(&url, &mut a, "b").await;
     drop(b);
     let _b = hello(&url, "b", false).await;
+    // The ticket was one-time.
+    let (mut x, r) = hello_ticket(&url, "x", "ticket-for-b").await;
+    assert_eq!(r["code"], "ticket_invalid");
+    assert_closed(&mut x).await;
     // Known device, wrong token.
     let (mut bad, r) = hello_raw(&url, "b", "stolen", false).await;
     assert_eq!(r["code"], "auth_failed");
@@ -180,7 +217,10 @@ async fn welcome_carries_last_seq() {
     let url = start(Opts::default()).await;
     let mut a = hello(&url, "a", true).await;
     push(&mut a, json!([{ "key": "k1", "blob": "AA" }, { "key": "k2", "blob": "BB" }])).await;
-    let (_, r) = hello_raw(&url, "b", "tok-b", false).await;
+    let ticket = "t-b";
+    send(&mut a, json!({ "t": "sync_invite", "ticket_hash": sha_hex(ticket.as_bytes()), "ttl_secs": 60 })).await;
+    assert_eq!(recv(&mut a).await["code"], "ok");
+    let (_, r) = hello_ticket(&url, "b", ticket).await;
     assert_eq!(r["t"], "sync_welcome");
     assert_eq!(r["last_seq"], 2);
 }
@@ -189,7 +229,7 @@ async fn welcome_carries_last_seq() {
 async fn push_ack_notify_pull() {
     let url = start(Opts::default()).await;
     let mut a = hello(&url, "a", true).await;
-    let mut b = hello(&url, "b", false).await;
+    let mut b = join(&url, &mut a, "b").await;
 
     send(
         &mut a,
@@ -211,6 +251,7 @@ async fn push_ack_notify_pull() {
     assert_eq!(seqs(&page), vec![1, 2]);
     assert_eq!(page["items"][0]["device_id"], "a");
     assert_eq!(page["items"][0]["blob"], "b3AxCg==");
+    assert_eq!(page["items"][0]["key"], "k1");
     assert_eq!(page["last_seq"], 2);
     assert_eq!(page["more"], false);
 
@@ -235,6 +276,33 @@ async fn push_supersedes_by_key() {
     assert_eq!(seqs(&page), vec![2, 3]);
     assert_eq!(page["items"][1]["blob"], "v2");
     assert_eq!(page["last_seq"], 3);
+}
+
+/// Finding #1: a device that was offline pushes an older edit of a row after
+/// another device pushed a newer one. The relay must keep the newer op until
+/// the stale pusher has pulled it.
+#[tokio::test]
+async fn stale_push_does_not_erase_an_unseen_op() {
+    let url = start(Opts::default()).await;
+    let mut a = hello(&url, "a", true).await;
+    let mut b = join(&url, &mut a, "b").await;
+    // A pushes t=200 at seq 1; B has only pulled up to 0.
+    assert_eq!(push_base(&mut a, 0, json!([{ "key": "row", "blob": "t200" }])).await["last_seq"], 1);
+    let _ = recv(&mut b).await; // notify
+    assert_eq!(push_base(&mut b, 0, json!([{ "key": "row", "blob": "t100" }])).await["last_seq"], 2);
+    assert_eq!(recv(&mut a).await["t"], "sync_notify");
+    let page = pull(&mut a, 0, 0).await;
+    let blobs: Vec<&str> = page["items"].as_array().unwrap().iter().map(|i| i["blob"].as_str().unwrap()).collect();
+    assert_eq!(blobs, vec!["t200", "t100"], "both kept; devices resolve by HLC");
+    // A has seen seq 2 now; its next edit replaces both.
+    push_base(&mut a, 2, json!([{ "key": "row", "blob": "t300" }])).await;
+    assert_eq!(recv(&mut b).await["t"], "sync_notify");
+    assert_eq!(seqs(&pull(&mut b, 0, 0).await), vec![3]);
+}
+
+async fn push_base(ws: &mut Ws, base: u64, items: Value) -> Value {
+    send(ws, json!({ "t": "sync_push", "base_seq": base, "items": items })).await;
+    recv(ws).await
 }
 
 #[tokio::test]
@@ -297,7 +365,7 @@ async fn data_frames_are_not_rate_limited() {
 async fn blob_put_get() {
     let url = start(Opts::default()).await;
     let mut a = hello(&url, "a", true).await;
-    let mut b = hello(&url, "b", false).await;
+    let mut b = join(&url, &mut a, "b").await;
 
     // A full 4 MiB sealed chunk fits in one frame.
     let data: Vec<u8> = (0..4 * 1024 * 1024 + 64).map(|i| (i % 251) as u8).collect();
@@ -332,7 +400,7 @@ async fn blob_put_get() {
 async fn blob_release_is_acked_and_uploader_only() {
     let url = start(Opts::default()).await;
     let mut a = hello(&url, "a", true).await;
-    let mut b = hello(&url, "b", false).await;
+    let mut b = join(&url, &mut a, "b").await;
     let sha = sha_hex(b"tail");
     send(&mut a, json!({ "t": "blob_put", "sha": sha, "data": b64(b"tail") })).await;
     assert_eq!(recv(&mut a).await["t"], "blob_ack");
@@ -378,7 +446,7 @@ async fn group_quota_is_enforced() {
 async fn revoke_closes_and_blocks_the_device() {
     let url = start(Opts::default()).await;
     let mut a = hello(&url, "a", true).await;
-    let mut b = hello(&url, "b", false).await;
+    let mut b = join(&url, &mut a, "b").await;
 
     send(&mut a, json!({ "t": "sync_revoke", "device_id": "b" })).await;
     let ack = recv(&mut a).await;
@@ -387,6 +455,10 @@ async fn revoke_closes_and_blocks_the_device() {
 
     let e = recv(&mut b).await;
     assert_eq!(e["code"], "device_revoked");
+    // A ticket does not let a revoked device back in.
+    let (mut b3, r) = hello_ticket(&url, "b", "anything").await;
+    assert_eq!(r["code"], "device_revoked");
+    assert_closed(&mut b3).await;
     assert_closed(&mut b).await;
 
     let (mut b2, r) = hello_raw(&url, "b", "tok-b", false).await;
@@ -395,6 +467,19 @@ async fn revoke_closes_and_blocks_the_device() {
 
     // The revoked device no longer gets notifications; a still works.
     assert_eq!(push(&mut a, json!([{ "key": "k", "blob": "x" }])).await["t"], "sync_ack");
+
+    // A non-creator may only revoke itself.
+    let mut c = join(&url, &mut a, "c").await;
+    let mut d = join(&url, &mut a, "d").await;
+    send(&mut c, json!({ "t": "sync_revoke", "device_id": "d" })).await;
+    assert_eq!(recv(&mut c).await["code"], "forbidden");
+    send(&mut c, json!({ "t": "sync_revoke", "device_id": "c" })).await;
+    let mut codes = Vec::new();
+    while let Some(f) = recv_within(&mut c, Duration::from_secs(2)).await {
+        codes.push(f["code"].as_str().unwrap_or_default().to_string());
+    }
+    assert!(codes.contains(&"ok".to_string()) || codes.contains(&"device_revoked".to_string()), "{codes:?}");
+    assert_eq!(push(&mut d, json!([{ "key": "k2", "blob": "y" }])).await["t"], "sync_ack");
 }
 
 #[tokio::test]

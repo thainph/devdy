@@ -65,6 +65,18 @@ pub trait SyncStore: Send + Sync {
     async fn apply_remote_extra(&self, ops: Vec<Op>, _blobs: &dyn BlobIo) -> Result<ApplyReport, String> {
         Ok(ApplyReport { skipped_older: ops.len(), ..Default::default() })
     }
+
+    /// The relay will never take the pending op at `outbox_seq` (too large,
+    /// malformed): drop that row's outbox entries up to it and record why, so
+    /// it stops blocking the push queue.
+    async fn park(&self, _outbox_seq: i64, _reason: &str) -> Result<(), String> {
+        Err("this store cannot park ops".into())
+    }
+
+    /// Rows whose latest change was parked.
+    async fn parked_count(&self) -> Result<u64, String> {
+        Ok(0)
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
@@ -340,12 +352,56 @@ impl SyncStore for SqliteSyncStore {
     }
 
     async fn mark_pushed(&self, up_to_outbox_seq: i64) -> Result<(), String> {
+        let mut tx = self.db.begin().await.map_err(err)?;
+        // A newer change of a parked row went out: it is no longer stuck.
+        sqlx::query(
+            "DELETE FROM sync_parked WHERE EXISTS (SELECT 1 FROM sync_outbox o \
+             WHERE o.tbl = sync_parked.tbl AND o.pk = sync_parked.pk AND o.seq <= ?)",
+        )
+        .bind(up_to_outbox_seq)
+        .execute(&mut *tx)
+        .await
+        .map_err(err)?;
         sqlx::query("DELETE FROM sync_outbox WHERE seq <= ?")
             .bind(up_to_outbox_seq)
-            .execute(&self.db)
+            .execute(&mut *tx)
             .await
             .map_err(err)?;
-        Ok(())
+        tx.commit().await.map_err(err)
+    }
+
+    async fn park(&self, outbox_seq: i64, reason: &str) -> Result<(), String> {
+        let mut tx = self.db.begin().await.map_err(err)?;
+        let row: Option<(String, String)> = sqlx::query_as("SELECT tbl, pk FROM sync_outbox WHERE seq = ?")
+            .bind(outbox_seq)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(err)?;
+        let Some((tbl, pk)) = row else { return Ok(()) };
+        sqlx::query("INSERT OR REPLACE INTO sync_parked (tbl, pk, reason, parked_at) VALUES (?, ?, ?, ?)")
+            .bind(&tbl)
+            .bind(&pk)
+            .bind(reason)
+            .bind(wall_ms() as i64)
+            .execute(&mut *tx)
+            .await
+            .map_err(err)?;
+        sqlx::query("DELETE FROM sync_outbox WHERE tbl = ? AND pk = ? AND seq <= ?")
+            .bind(&tbl)
+            .bind(&pk)
+            .bind(outbox_seq)
+            .execute(&mut *tx)
+            .await
+            .map_err(err)?;
+        tx.commit().await.map_err(err)
+    }
+
+    async fn parked_count(&self) -> Result<u64, String> {
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_parked")
+            .fetch_one(&self.db)
+            .await
+            .map_err(err)?;
+        Ok(n as u64)
     }
 
     async fn apply_remote(&self, ops: Vec<Op>) -> Result<ApplyReport, String> {

@@ -57,8 +57,20 @@ pub struct Frame {
     pub device_token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub create: Option<bool>,
+    /// `sync_hello` of a device joining an existing group: the one-time ticket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<String>,
+    /// `sync_invite`: hex sha256 of the ticket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_secs: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub items: Option<Vec<WireItem>>,
+    /// `sync_push`: the pusher's pull cursor; the relay only drops older
+    /// same-key ops at or below it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_seq: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seq: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -144,9 +156,20 @@ impl std::fmt::Display for TransportError {
 fn is_fatal_code(code: &str) -> bool {
     matches!(
         code,
-        "auth_failed" | "group_not_found" | "device_revoked" | "forbidden" | "sync_disabled"
+        "auth_failed"
+            | "group_not_found"
+            | "group_exists"
+            | "ticket_required"
+            | "ticket_invalid"
+            | "device_revoked"
+            | "forbidden"
+            | "sync_disabled"
     )
 }
+
+/// Longest join ticket lifetime the relay accepts.
+#[allow(dead_code)] // pairing (join tickets)
+pub const MAX_TICKET_TTL_SECS: u64 = 600;
 
 /// Unsolicited things the connection reports to its owner.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,6 +218,19 @@ impl Connection {
         create: bool,
         events: mpsc::UnboundedSender<Event>,
     ) -> Result<Connection, TransportError> {
+        Self::connect_with_ticket(params, create, None, events).await
+    }
+
+    /// [`Connection::connect`] for a device not yet registered in an existing
+    /// group: `ticket` is the one-time join ticket a member registered with
+    /// [`Connection::sync_invite`]. Once welcomed the device is known and later
+    /// connections need no ticket.
+    pub async fn connect_with_ticket(
+        params: &ConnectParams,
+        create: bool,
+        ticket: Option<&str>,
+        events: mpsc::UnboundedSender<Event>,
+    ) -> Result<Connection, TransportError> {
         let dial = tokio::time::timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(&params.relay_url));
         let ws = match dial.await {
             Ok(Ok((ws, _))) => ws,
@@ -211,6 +247,7 @@ impl Connection {
         if create {
             hello.create = Some(true);
         }
+        hello.ticket = ticket.map(str::to_string);
         send_frame(&mut sink, &hello).await?;
 
         // Wait for the hello verdict, ignoring anything else (keepalive echoes).
@@ -350,9 +387,12 @@ impl Connection {
     }
 
     /// `sync_push` → the relay's `last_seq` after storing the items.
-    pub async fn push(&self, items: Vec<WireItem>) -> Result<u64, TransportError> {
+    /// `base_seq` is this device's pull cursor: everything up to it was
+    /// applied before these ops were built.
+    pub async fn push(&self, items: Vec<WireItem>, base_seq: u64) -> Result<u64, TransportError> {
         let mut f = Frame::new("sync_push");
         f.items = Some(items);
+        f.base_seq = Some(base_seq);
         let ack = self.request(f, &["sync_ack"]).await?;
         Ok(ack.last_seq.unwrap_or(0))
     }
@@ -396,7 +436,23 @@ impl Connection {
         Ok(r.released.unwrap_or(0))
     }
 
-    /// `sync_revoke{device_id}` → `control{code:"ok"}`.
+    /// `sync_invite{ticket_hash, ttl_secs}` → `control{code:"ok"}`: register a
+    /// one-time join ticket (`ticket_hash` = lowercase hex sha256 of the
+    /// ticket, `ttl_secs` ≤ [`MAX_TICKET_TTL_SECS`]).
+    #[allow(dead_code)] // pairing (join tickets)
+    pub async fn sync_invite(&self, ticket_hash: &str, ttl_secs: u64) -> Result<(), TransportError> {
+        let mut f = Frame::new("sync_invite");
+        f.ticket_hash = Some(ticket_hash.to_string());
+        f.ttl_secs = Some(ttl_secs);
+        let r = self.request_within(f, &["control"], Duration::from_secs(10)).await?;
+        match r.code.as_deref() {
+            Some("ok") => Ok(()),
+            other => Err(TransportError::Relay(other.unwrap_or("unexpected reply").to_string())),
+        }
+    }
+
+    /// `sync_revoke{device_id}` → `control{code:"ok"}`. A device may revoke
+    /// itself; only the group's creator may revoke another (`forbidden`).
     pub async fn revoke(&self, device_id: &str) -> Result<(), TransportError> {
         let mut f = Frame::new("sync_revoke");
         f.device_id = Some(device_id.to_string());
@@ -469,16 +525,66 @@ mod tests {
         }
     }
 
+    fn sha_hex(s: &str) -> String {
+        use sha2::Digest as _;
+        hex::encode(sha2::Sha256::digest(s.as_bytes()))
+    }
+
+    #[tokio::test]
+    async fn joining_an_existing_group_takes_a_one_time_ticket() {
+        let relay = crate::sync::test_relay::TestRelay::start().await;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let a = Connection::connect(&params(&relay, "a"), true, tx).await.unwrap();
+        let join = |device: &'static str, ticket: Option<&'static str>, create: bool| {
+            let p = params(&relay, device);
+            async move {
+                let (tx, _rx) = mpsc::unbounded_channel();
+                Connection::connect_with_ticket(&p, create, ticket, tx).await.map(drop).err()
+            }
+        };
+        let rejected = |c: &str| Some(TransportError::Rejected(c.into()));
+        assert_eq!(join("b", None, false).await, rejected("ticket_required"));
+        assert_eq!(join("b", None, true).await, rejected("group_exists"));
+        assert_eq!(join("b", Some("t1"), false).await, rejected("ticket_invalid"));
+
+        a.sync_invite(&sha_hex("t1"), 60).await.unwrap();
+        assert_eq!(join("b", Some("t1"), false).await, None);
+        assert_eq!(join("c", Some("t1"), false).await, rejected("ticket_invalid"), "one use");
+        // Known now: no ticket needed.
+        assert_eq!(join("b", None, false).await, None);
+        assert_eq!(
+            a.sync_invite(&sha_hex("t2"), MAX_TICKET_TTL_SECS + 1).await.err(),
+            Some(TransportError::Relay("bad_request".into()))
+        );
+    }
+
+    /// Connect `device` to group `g` (created by `creator`) with a fresh ticket.
+    async fn join(
+        relay: &crate::sync::test_relay::TestRelay,
+        creator: &Connection,
+        device: &str,
+    ) -> (Connection, mpsc::UnboundedReceiver<Event>) {
+        let ticket = format!("ticket-{device}");
+        creator.sync_invite(&sha_hex(&ticket), 60).await.unwrap();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let c = Connection::connect_with_ticket(&params(relay, device), false, Some(&ticket), tx).await.unwrap();
+        (c, rx)
+    }
+
     #[tokio::test]
     async fn revoke_kicks_the_device_and_blocks_its_hello() {
         let relay = crate::sync::test_relay::TestRelay::start().await;
         let (tx_a, _rx_a) = mpsc::unbounded_channel();
         let a = Connection::connect(&params(&relay, "a"), true, tx_a).await.unwrap();
-        let (tx_b, mut rx_b) = mpsc::unbounded_channel();
-        let _b = Connection::connect(&params(&relay, "b"), false, tx_b).await.unwrap();
+        let (b, mut rx_b) = join(&relay, &a, "b").await;
+        let (c, _rx_c) = join(&relay, &a, "c").await;
+        // Only the creator revokes others.
+        assert_eq!(c.revoke("b").await.err(), Some(TransportError::Rejected("forbidden".into())));
+        drop(c);
 
         a.revoke("b").await.unwrap();
         let ev = tokio::time::timeout(Duration::from_secs(5), rx_b.recv()).await.unwrap();
+        drop(b);
         assert_eq!(ev, Some(Event::Closed));
         let (tx, _rx) = mpsc::unbounded_channel();
         let again = Connection::connect(&params(&relay, "b"), false, tx).await.err();
@@ -505,6 +611,9 @@ mod tests {
         c.blob_put(&sha, b64.clone()).await.unwrap();
         assert_eq!(c.blob_get(&sha).await.unwrap(), b64);
         assert_eq!(c.blob_get("00").await.err(), Some(TransportError::Relay("blob_not_found".into())));
+        let mut push = Frame::new("sync_push");
+        push.base_seq = Some(3);
+        assert_eq!(serde_json::to_value(&push).unwrap(), serde_json::json!({ "t": "sync_push", "base_seq": 3 }));
         // The connection is still usable after an error reply.
         assert_eq!(c.pull(0, 10).await.unwrap().0.len(), 0);
     }
@@ -527,6 +636,7 @@ mod tests {
     fn fatal_codes() {
         assert!(is_fatal_code("device_revoked"));
         assert!(is_fatal_code("auth_failed"));
+        assert!(is_fatal_code("ticket_required") && is_fatal_code("ticket_invalid") && is_fatal_code("group_exists"));
         assert!(!is_fatal_code("rate_limited"));
     }
 }

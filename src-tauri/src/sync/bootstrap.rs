@@ -263,7 +263,7 @@ pub async fn fetch_group_state(conn: &Connection, keys: &SyncKeys) -> Result<Rem
         let mut next = cursor;
         for item in items {
             next = next.max(item.seq.unwrap_or(0));
-            match keys.open_op(&item.blob) {
+            match keys.open_op(&item.blob, item.key.as_deref().unwrap_or_default()) {
                 Ok(op) => ops.push(op),
                 Err(_) => undecryptable += 1,
             }
