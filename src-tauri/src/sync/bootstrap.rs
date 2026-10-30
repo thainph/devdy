@@ -2,17 +2,19 @@
 //! merge of a device that already has data, and the project path mapping.
 //!
 //! - **Full upload** ([`enqueue_all`]): every synced row goes into
-//!   `sync_outbox`; used when this device creates a group and by "Re-sync
-//!   everything".
-//! - **First join** ([`preview`] / [`commit`]): the whole group state is
-//!   pulled into memory (never applied blindly), every remote row is matched
+//!   `sync_outbox` (and so into the change feed, with a fresh HLC); used when
+//!   this device creates a group and by "Re-sync everything".
+//! - **First join** ([`preview`] / [`commit`]): the whole state of the device
+//!   that granted the join is read from its change feed (`changes{since: 0}`,
+//!   [`fetch_group_state`]) into memory (never applied blindly), every remote row is matched
 //!   to a local one by pk, then by natural key (`TableSpec::natural_key`;
 //!   projects by path → git remote → name), and a matched local row with a
 //!   different id is **re-keyed** to the remote id together with every row
 //!   pointing at it ([`REFS`]), in one guarded transaction. Then the remote
 //!   rows are applied with the normal LWW engine (a local row only wins when
-//!   it has an unpushed change newer than the remote op) and the local-only
-//!   rows are queued for push. `preview` runs the same merge and rolls back.
+//!   it has an unstamped change newer than the remote op) and the local-only
+//!   rows are queued (the other device takes them with its next Sync).
+//!   `preview` runs the same merge and rolls back.
 //! - **Project mapping**: a project that lives somewhere else on this machine
 //!   is mapped from its synced (portable) root to the local root, kept as JSON
 //!   in `sync_state.project_path_map`; `codec::map_project_path` /
@@ -27,11 +29,11 @@ use sqlx::{Row, SqliteConnection};
 
 use super::clock::wall_ms;
 use super::codec::{bind_value, decode_row, expand_portable, map_project_path, pk_of_row, portable_path, table_columns, PathCtx};
-use super::crypto::SyncKeys;
+use super::feed::{ChangesPage, ChangesReq, FileScope, CHANGES, CHANGES_PAGE};
 use super::op::{canonical_json, Op, OpKind};
+use super::peer::PeerLink;
 use super::schema::{self, lit, pk_sql, q, TableSpec, SYNCED_TABLES};
 use super::store::{is_extra_tbl, ApplyReport, SqliteSyncStore, SyncStore};
-use super::transport::Connection;
 use crate::db::Db;
 
 /// `sync_state` key: JSON object `{ "<synced portable root>": "<local root>" }`.
@@ -39,7 +41,6 @@ pub const PROJECT_MAP_KEY: &str = "project_path_map";
 /// `sync_state` key: "1" between joining a group and committing the merge;
 /// the engine does not start meanwhile (it would push rows with local ids).
 pub const PENDING_KEY: &str = "bootstrap_pending";
-const PULL_LIMIT: u64 = 500;
 /// Remote ops applied per write transaction by [`commit`] (a long write
 /// transaction would starve the other writers, e.g. `sidecar-mcp`).
 const APPLY_CHUNK: usize = 500;
@@ -202,7 +203,7 @@ pub async fn is_pending(db: &Db) -> Result<bool, String> {
 }
 
 /// Just joined a group (or about to): hold the engine until the merge is
-/// committed. Also used to re-merge with a relay that lost ops (N15).
+/// committed. Also used to merge again with the other device on request.
 pub async fn mark_joined(db: &Db) -> Result<(), String> {
     let mut conn = db.acquire().await.map_err(err)?;
     set_state(&mut conn, PENDING_KEY, "1").await
@@ -213,16 +214,17 @@ pub async fn clear_pending(db: &Db) -> Result<(), String> {
     set_state(&mut conn, PENDING_KEY, "0").await
 }
 
-/// This device just created a group: it is the reference state, so upload
-/// everything from the start of the (empty) group's log. The pending flag is
-/// cleared last: a crash before that resumes at the merge step.
+/// This device just created a group: it is the reference state, so every row
+/// goes into its change feed. The pending flag is cleared last: a crash
+/// before that resumes at the merge step.
 pub async fn prepare_new_group(db: &Db) -> Result<usize, String> {
-    let device = super::ensure_device(db).await?;
-    let store = SqliteSyncStore::new(db.clone(), device);
-    // A pending selective-sync reset would make `set_cursor` a no-op.
-    store.pull_start().await?;
-    store.set_cursor(0).await?;
     super::set_member(db, true).await?;
+    // No cursor in a new group: a pending selective-sync reset is moot.
+    sqlx::query("DELETE FROM sync_state WHERE key = ?")
+        .bind(super::prefs::CURSOR_RESET_KEY)
+        .execute(db)
+        .await
+        .map_err(err)?;
     let n = enqueue_all(db).await?;
     clear_pending(db).await?;
     Ok(n)
@@ -240,9 +242,9 @@ fn filter_where(spec: &TableSpec) -> String {
     }
 }
 
-/// Queue every synced row (settings: portable keys only) for push. Returns
-/// the number of rows queued. The push gives each a fresh HLC, so this
-/// device's version of every row wins on the others.
+/// Queue every synced row (settings: portable keys only) for the change feed.
+/// Returns the number of rows queued. Stamping gives each a fresh HLC, so
+/// this device's version of every row wins on the other one.
 pub async fn enqueue_all(db: &Db) -> Result<usize, String> {
     let now = wall_ms() as i64;
     let mut tx = db.begin().await.map_err(err)?;
@@ -277,12 +279,16 @@ async fn read_all(conn: &mut SqliteConnection, spec: &TableSpec) -> Result<Vec<M
 
 // ---- group state ----------------------------------------------------------------
 
-/// The whole group log, newest op per row, held in memory.
+/// The whole state of the other device, newest op per row, held in memory.
 #[derive(Debug, Clone, Default)]
 pub struct RemoteState {
     pub ops: Vec<Op>,
-    /// Pull cursor to continue from once the merge is committed.
+    /// The device it was read from.
+    pub source: String,
+    /// Its feed position to continue from once the merge is committed.
     pub last_seq: u64,
+    /// Kept for the preview's shape: peer messages that do not open are
+    /// dropped by the engine, so this stays 0.
     pub undecryptable: usize,
 }
 
@@ -300,35 +306,39 @@ impl RemoteState {
         }
         let mut ops: Vec<Op> = latest.into_values().collect();
         ops.sort_by(|a, b| a.hlc.cmp(&b.hlc));
-        RemoteState { ops, last_seq, undecryptable: 0 }
+        RemoteState { ops, source: String::new(), last_seq, undecryptable: 0 }
     }
 }
 
-/// Pull the group log from the start (own ops included: a re-joining device
-/// gets its old rows back).
-pub async fn fetch_group_state(conn: &Connection, keys: &SyncKeys) -> Result<RemoteState, String> {
+/// Read `source`'s whole change feed (`changes{since: 0}`): rows, library and
+/// keys rescanned (session logs and transcripts, often GBs, are listed from
+/// what its feed already has and fetched by a later Sync). Nothing filtered:
+/// the merge sees everything, the store applies the selective filters.
+pub async fn fetch_group_state(link: &dyn PeerLink, source: &str) -> Result<RemoteState, String> {
     let mut cursor = 0u64;
     let mut ops = Vec::new();
-    let mut undecryptable = 0;
     loop {
-        let (items, last_seq, more) = conn.pull(cursor, PULL_LIMIT).await.map_err(|e| e.to_string())?;
-        let mut next = cursor;
-        for item in items {
-            next = next.max(item.seq.unwrap_or(0));
-            match keys.open_op(&item.blob, item.key.as_deref().unwrap_or_default()) {
-                Ok(op) => ops.push(op),
-                Err(_) => undecryptable += 1,
+        let req = ChangesReq { files: FileScope::NoSessions, ..ChangesReq::new(cursor) };
+        let body = serde_json::to_value(&req).map_err(|e| e.to_string())?;
+        let mut replies = link.request(source, CHANGES, body).await?;
+        let page = loop {
+            match replies.recv().await {
+                Some(Ok((kind, body))) if kind == CHANGES_PAGE => break body,
+                Some(Ok(_)) => continue,
+                Some(Err(e)) => return Err(e),
+                None => return Err("peer connection lost".into()),
             }
-        }
-        next = next.max(last_seq);
-        let stalled = next == cursor;
-        cursor = next;
-        if !more || stalled {
+        };
+        let page: ChangesPage = serde_json::from_value(page).map_err(|e| format!("bad changes page: {e}"))?;
+        ops.extend(page.ops);
+        let stalled = page.next <= cursor;
+        cursor = page.next.max(cursor);
+        if !page.more || stalled {
             break;
         }
     }
     let mut state = RemoteState::from_ops(ops, cursor);
-    state.undecryptable = undecryptable;
+    state.source = source.to_string();
     Ok(state)
 }
 
@@ -1038,9 +1048,9 @@ fn apply_order(mut ops: Vec<Op>) -> Vec<Op> {
 }
 
 /// Run the first-join merge for real: re-key + project map (one guarded
-/// transaction), LWW-apply the group's rows in chunks, park its files and
-/// Keychain items for the engine to fetch, queue the local-only rows, and
-/// continue pulling after it. The engine must not be running; the caller
+/// transaction), LWW-apply the source's rows in chunks, file its files and
+/// Keychain items to fetch, queue the local-only rows, and continue pulling
+/// after it. The engine must not be running; the caller
 /// holds [`begin_commit`]. Safe to run again after a crash: the pending flag
 /// is cleared last and a second merge finds the rows already re-keyed.
 pub async fn commit(
@@ -1073,15 +1083,15 @@ pub async fn commit(
     for chunk in apply_order(rows).chunks(APPLY_CHUNK) {
         add_report(&mut applied, &store.apply_remote(chunk.to_vec()).await?);
     }
-    // Files and Keychain items are fetched by the engine once syncing runs
-    // (its first full scan retries parked ops before scanning): downloading
-    // every log and transcript here would hold run starts for minutes.
+    // Files and Keychain items are fetched after the commit (library and
+    // keys) or by the next Sync (sessions): downloading every log and
+    // transcript here would hold run starts for minutes.
     store.park_extra(extra).await?;
     run_dir_moves(db, home).await?;
-    // The merge read the whole log: a pending selective-sync reset is moot
+    // The merge read the whole feed: a pending selective-sync reset is moot
     // (and would make `set_cursor` a no-op).
-    store.pull_start().await?;
-    store.set_cursor(state.last_seq).await?;
+    store.cursor_start(&state.source).await?;
+    store.set_cursor(&state.source, state.last_seq).await?;
     clear_pending(db).await?;
     let mut preview = merged.preview;
     preview.undecryptable = state.undecryptable;
@@ -1218,7 +1228,7 @@ mod tests {
         sqlx::query_scalar(sql).fetch_one(db).await.unwrap()
     }
 
-    /// Everything `store` has to push, as the group state a joiner downloads.
+    /// Everything `store` has unstamped, as the state a joiner reads.
     async fn group_state(store: &SqliteSyncStore) -> RemoteState {
         let ops = store.pending(100_000).await.unwrap();
         if let Some((seq, _)) = ops.last() {
@@ -1371,7 +1381,7 @@ mod tests {
         let pushed: HashSet<&str> = ops.iter().map(|(_, o)| o.tbl.as_str()).collect();
         assert!(pushed.contains("runs") && pushed.contains("notes") && !pushed.contains("projects"), "{pushed:?}");
         assert!(!is_pending(&db_b).await.unwrap());
-        assert_eq!(b.cursor().await.unwrap(), 42);
+        assert_eq!(b.cursor("").await.unwrap(), 42);
 
         // Keychain items keyed by a re-keyed id follow it (this store has no
         // Keychain: the moves stay queued until one runs them).
@@ -1657,13 +1667,16 @@ mod tests {
     /// The real first run: the Mac mini (M) has everything and creates the
     /// group on the relay; a MacBook (B, other home, other app data, some of
     /// the same things under other ids, plus its own) joins, previews and
-    /// commits the merge. Rows, files and Keychain items arrive under B's
-    /// paths, B's matching rows take M's ids (with their per-id folders), and
-    /// M loses nothing.
+    /// commits the merge, reading M's state straight from M (the relay only
+    /// forwards). Rows, files and Keychain items arrive under B's paths, B's
+    /// matching rows take M's ids (with their per-id folders), and M loses
+    /// nothing.
     #[tokio::test]
     async fn first_run_end_to_end_over_the_relay() {
         use crate::sync::crypto::{generate_group_key, SyncKeys};
-        use crate::sync::engine::{RelayBlobs, StatusSink, SyncEngine, SyncStatus, Timing};
+        use crate::sync::engine::{PeerHandlers, StatusSink, SyncEngine, SyncState, SyncStatus, Timing};
+        use crate::sync::feed::{ChangesReq, FileScope, PeerFiles, PullOptions};
+        use crate::sync::transport::Connection;
         use crate::sync::files::tests::{mem_db, tempdir};
         use crate::sync::secrets::tests::FakeKeychain;
         use crate::sync::test_relay::TestRelay;
@@ -1683,7 +1696,6 @@ mod tests {
             std::fs::write(p, body).unwrap();
         };
         let fast = Timing::fast();
-        let file_timing = crate::sync::files::Timing { quick: Duration::from_millis(50), full: Duration::from_millis(150) };
         let keys = SyncKeys::derive(&generate_group_key()).unwrap();
         let relay = TestRelay::start().await;
         let params = |device: &str| ConnectParams {
@@ -1733,16 +1745,14 @@ mod tests {
         }
         kc_m.put("github", "gh-M", "ghp_from_M");
 
-        // M creates the group: registers as its creator and uploads everything.
+        // M creates the group: registers as its creator, every row goes into
+        // its change feed.
         let dev_m = crate::sync::ensure_device(&db_m).await.unwrap();
         let (etx, _erx) = tokio::sync::mpsc::unbounded_channel();
         let conn_m = Connection::connect(&params(&dev_m), true, etx).await.unwrap();
         prepare_new_group(&db_m).await.unwrap();
-        let store_m = SqliteSyncStore::new(db_m.clone(), dev_m.clone())
-            .with_paths(ctx_m.clone())
-            .with_secrets(kc_m.clone())
-            .with_file_timing(file_timing.clone());
-        let engine_m = SyncEngine::start(params(&dev_m), keys.clone(), Arc::new(store_m), quiet.clone(), false, fast.clone());
+        let store_m = Arc::new(SqliteSyncStore::new(db_m.clone(), dev_m.clone()).with_paths(ctx_m.clone()).with_secrets(kc_m.clone()));
+        let engine_m = SyncEngine::start(params(&dev_m), keys.clone(), store_m.clone(), quiet.clone(), false, fast.clone());
         let outbox_empty = |db: &Db| {
             let db = db.clone();
             move || -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
@@ -1750,19 +1760,10 @@ mod tests {
                 Box::pin(async move { count(&db, "SELECT COUNT(*) FROM sync_outbox").await == 0 })
             }
         };
-        // On demand: M uploads when asked to flush.
-        let flushed = |engine: &SyncEngine, db: &Db, blobs: usize| {
-            let (h, db, relay) = (engine.handle(), db.clone(), relay.clone());
-            move || -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
-                let (h, db, relay) = (h.clone(), db.clone(), relay.clone());
-                Box::pin(async move {
-                    h.flush_outbox(crate::sync::store::StageScope::All).await.is_ok()
-                        && count(&db, "SELECT COUNT(*) FROM sync_outbox").await == 0
-                        && relay.blob_counts().0 >= blobs
-                })
-            }
-        };
-        eventually("M uploaded its rows and files", flushed(&engine_m, &db_m, 5)).await;
+        // M's files are versioned when it first serves its feed (before B's
+        // own copies are written below).
+        store_m.changes("someone", &ChangesReq::new(0)).await.unwrap();
+        assert_eq!(count(&db_m, "SELECT COUNT(*) FROM sync_outbox").await, 0);
 
         // ---- B: the MacBook, with its own (overlapping) data ----
         let db_b = mem_db().await;
@@ -1788,16 +1789,29 @@ mod tests {
         exec(&db_b, "DELETE FROM sync_outbox").await;
         kc_b.put("github", "gh-B", "ghp_from_B");
 
-        // B joins with a ticket M announced, and holds the engine.
+        // B joins with a ticket M announced; its engine stays paused (it
+        // serves nothing before the merge) and reads M's feed.
         let ticket = "first-run-ticket";
         conn_m.sync_invite(&hex::encode(sha2::Sha256::digest(ticket.as_bytes())), 60).await.unwrap();
         let dev_b = crate::sync::ensure_device(&db_b).await.unwrap();
         let (etx, _erx) = tokio::sync::mpsc::unbounded_channel();
         let conn_b = Connection::connect_with_ticket(&params(&dev_b), false, Some(ticket), etx).await.unwrap();
+        drop(conn_b);
         mark_joined(&db_b).await.unwrap();
+        let store_b = Arc::new(SqliteSyncStore::new(db_b.clone(), dev_b.clone()).with_paths(ctx_b.clone()).with_secrets(kc_b.clone()));
+        let merging = SyncEngine::start_with(params(&dev_b), keys.clone(), store_b.clone(), quiet.clone(), true, fast.clone(), PeerHandlers::default());
+        assert!(merging.handle().wait_connected(Duration::from_secs(10)).await);
+        eventually("M online for B", || {
+            let h = merging.handle();
+            Box::pin(async move { h.online_peers().await.is_ok_and(|p| !p.is_empty()) })
+        })
+        .await;
+        let source = merging.handle().online_peers().await.unwrap().remove(0);
+        assert_eq!(source, dev_m);
+        let link = merging.handle().link();
 
-        let state = fetch_group_state(&conn_b, &keys).await.unwrap();
-        assert_eq!(state.undecryptable, 0);
+        let state = fetch_group_state(link.as_ref(), &source).await.unwrap();
+        assert_eq!((state.undecryptable, state.source.as_str()), (0, dev_m.as_str()));
         let git = HashMap::new();
         let p = preview(&db_b, &ctx_b, &state, &git).await.unwrap();
         let by: HashMap<&str, Option<&str>> = p.projects.iter().map(|m| (m.remote_id.as_str(), m.matched_by.as_deref())).collect();
@@ -1808,19 +1822,31 @@ mod tests {
         }
         assert_eq!(scalar(&db_b, "SELECT id FROM projects").await.unwrap(), "pr-B", "preview writes nothing");
 
-        let store_b = SqliteSyncStore::new(db_b.clone(), dev_b.clone())
-            .with_paths(ctx_b.clone())
-            .with_secrets(kc_b.clone())
-            .with_file_timing(file_timing.clone());
+        let last_seq = state.last_seq;
         let report = commit(&db_b, &store_b, &ctx_b, state, &git).await.unwrap();
         assert_eq!(report.applied.deferred, 0, "{report:?}");
         assert!(!is_pending(&db_b).await.unwrap());
-        // M7: files and Keychain items are left to the engine; its first
-        // full scan fetches them.
-        assert!(count(&db_b, "SELECT COUNT(*) FROM sync_extra_deferred").await >= 5);
+        assert_eq!(store_b.cursor(&dev_m).await.unwrap(), last_seq, "B goes on from where the merge read");
+        // M7: files and Keychain items are filed, not read by the merge
+        // itself; library files, keys and Keychain items come right after.
+        assert!(count(&db_b, "SELECT COUNT(*) FROM sync_extra_deferred").await >= 4);
         assert!(!skill_b.join("refs/a.md").exists(), "nothing downloaded by the merge");
-        store_b.stage(&RelayBlobs::new(&conn_b, &keys)).await.unwrap();
-        assert_eq!(count(&db_b, "SELECT COUNT(*) FROM sync_extra_deferred").await, 0);
+        let files = PeerFiles::new(link.clone(), &source);
+        let fetched = store_b.fetch_extra(&files, FileScope::NoSessions, &|| {}).await.unwrap();
+        assert!(fetched.applied >= 4, "{fetched:?}");
+        assert_eq!(store_b.extra_to_fetch(FileScope::NoSessions).await.unwrap().1, 0);
+        assert_eq!(store_b.extra_to_fetch(FileScope::All).await.unwrap().1, 2, "the log and transcript wait for a Sync");
+        merging.stop().await;
+
+        // Then B syncs for real: session files (logs, transcripts) too.
+        let engine_b = SyncEngine::start(params(&dev_b), keys.clone(), store_b.clone(), quiet.clone(), false, fast.clone());
+        assert!(engine_b.handle().wait_connected(Duration::from_secs(10)).await);
+        let synced = || -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
+            let (h, dev_m) = (engine_b.handle(), dev_m.clone());
+            Box::pin(async move { h.run_from(&dev_m, PullOptions::all(), &|_, _| {}).await.is_ok_and(|r| r.pending_files == 0) })
+        };
+        eventually("B synced its session files from M", synced).await;
+        assert_eq!(engine_b.status().state, SyncState::Online);
 
         // Matched rows took M's ids; B's own rows follow them.
         for (tbl, id) in [("projects", "pr-M"), ("skills", "sk-M"), ("claude_accounts", "ca-M"), ("github_accounts", "gh-M")] {
@@ -1862,17 +1888,15 @@ mod tests {
         assert_eq!(kc_b.get("github", "gh-M").as_deref(), Some("ghp_from_M"));
         assert_eq!(kc_b.get("github", "gh-B"), None);
 
-        // B syncs on: M gets B's own rows and loses nothing.
-        drop(conn_b);
-        let engine_b = SyncEngine::start(params(&dev_b), keys.clone(), Arc::new(store_b), quiet.clone(), false, fast.clone());
+        // M syncs from B: it gets B's own rows and loses nothing.
         let got_note = || -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
             let (db, m, dev_b) = (db_m.clone(), engine_m.handle(), dev_b.clone());
             Box::pin(async move {
-                m.run_from(&dev_b, crate::sync::store::StageScope::All, &|_, _| {}).await.is_ok() && count(&db, "SELECT COUNT(*) FROM notes WHERE id = 'no-B'").await == 1
+                m.run_from(&dev_b, PullOptions::all(), &|_, _| {}).await.is_ok() && count(&db, "SELECT COUNT(*) FROM notes WHERE id = 'no-B'").await == 1
             })
         };
         eventually("B's note on M after syncing from B", got_note).await;
-        eventually("B pushed", outbox_empty(&db_b)).await;
+        eventually("B stamped what it served", outbox_empty(&db_b)).await;
         tokio::time::sleep(Duration::from_millis(300)).await;
         for (tbl, id) in [("projects", "pr-M"), ("skills", "sk-M"), ("claude_accounts", "ca-M"), ("github_accounts", "gh-M"), ("servers", "sv-M"), ("runs", "rn-M"), ("notes", "no-M")] {
             assert_eq!(count(&db_m, &format!("SELECT COUNT(*) FROM {tbl} WHERE id = '{id}'")).await, 1, "{tbl} {id} kept on M");

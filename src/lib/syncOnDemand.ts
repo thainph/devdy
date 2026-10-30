@@ -8,16 +8,31 @@
 export interface SyncRunReport {
   pulled: number
   applied: number
+  /** This device's position in the source's change feed. */
   last_seq: number
+  /** Pages of changes received. */
+  pages?: number
+  /** File content bytes read from the source. */
+  bytes?: number
+  /** File / Keychain items still to fetch (retried by the next Sync). */
+  pending_files?: number
 }
 
-/** `flushing`: the source is pushing its changes (`message` = how many so far). */
+/** `flushing` is no longer sent (the source serves its change feed directly). */
 export type SyncRunPhase = 'requesting' | 'flushing' | 'pulling' | 'applying' | 'done' | 'error'
 
 /** `sync://run` payload. */
 export interface SyncRunEvent {
   phase: SyncRunPhase
   message?: string | null
+  /** Pages / ops of changes received so far. */
+  pages?: number
+  ops?: number
+  /** File contents read so far / to read. */
+  done_bytes?: number
+  total_bytes?: number
+  files_done?: number
+  files_total?: number
 }
 
 // ---- §3 selective: sync_prefs_* ----

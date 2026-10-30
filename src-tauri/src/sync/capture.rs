@@ -3,11 +3,14 @@
 //! Rust hooks) are required because sidecar-mcp writes the same DB directly via
 //! `node:sqlite`, so the SQL may only use core SQLite functions.
 //!
-//! The triggers stay silent while `sync_apply_guard.active = 1` (remote ops
-//! being applied), so applied ops are never echoed back, and while this
-//! device is in no sync group (`sync_state.member` != '1'), so the outbox does
-//! not grow forever: creating a group queues every row (`enqueue_all`) and
-//! joining one queues the local-only rows (bootstrap merge).
+//! The outbox holds local changes not stamped into the change feed yet
+//! (`SqliteSyncStore::stamp`, run before the feed is served). The triggers
+//! stay silent while `sync_apply_guard.active = 1` (remote ops being applied:
+//! they enter the feed with their own HLC through `sync_rows`), and while
+//! this device is in no sync group (`sync_state.member` != '1'), so the
+//! outbox does not grow forever: creating a group queues every row
+//! (`enqueue_all`) and joining one queues the local-only rows (bootstrap
+//! merge).
 
 use sha2::{Digest, Sha256};
 use sqlx::Row;
@@ -101,7 +104,7 @@ pub fn spec_hash() -> String {
 }
 
 /// Mark this device in / out of a sync group. Leaving drops the outbox: what
-/// was not pushed belongs to no group any more (a later join queues the
+/// was not stamped belongs to no group any more (a later join queues the
 /// local-only rows again).
 // Wired by pair/bootstrap (create / join / leave).
 pub async fn set_member(db: &Db, member: bool) -> Result<(), String> {
@@ -130,7 +133,7 @@ pub async fn is_member(db: &Db) -> Result<bool, String> {
 }
 
 /// Startup: a device that synced before the membership flag existed (it has
-/// a pull cursor or pushed / applied rows) is a member; any other device
+/// a feed cursor or stamped / applied rows) is a member; any other device
 /// without the flag drops what the triggers queued before they were gated.
 pub async fn settle_membership(db: &Db) -> Result<(), String> {
     let err = |e: sqlx::Error| e.to_string();
@@ -138,10 +141,12 @@ pub async fn settle_membership(db: &Db) -> Result<(), String> {
     sqlx::query(
         "INSERT INTO sync_state (key, value) SELECT ?, '1' \
          WHERE NOT EXISTS (SELECT 1 FROM sync_state WHERE key = ?) \
-           AND (EXISTS (SELECT 1 FROM sync_state WHERE key = 'pull_cursor') OR EXISTS (SELECT 1 FROM sync_rows))",
+           AND (EXISTS (SELECT 1 FROM sync_state WHERE substr(key, 1, ?) = ?) OR EXISTS (SELECT 1 FROM sync_rows))",
     )
     .bind(MEMBER_KEY)
     .bind(MEMBER_KEY)
+    .bind(super::store::CURSOR_PREFIX.len() as i64)
+    .bind(super::store::CURSOR_PREFIX)
     .execute(&mut *tx)
     .await
     .map_err(err)?;

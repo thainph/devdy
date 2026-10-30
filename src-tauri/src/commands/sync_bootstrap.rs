@@ -1,17 +1,21 @@
-//! Bootstrap commands for two-way sync (design §5): full re-upload, the
+//! Bootstrap commands for two-way sync (design §5): "re-sync everything", the
 //! first-join merge preview/commit, and the project path mapping.
 //!
 //! After `sync_join` the engine stays off (`bootstrap::PENDING_KEY`) until
-//! `sync_bootstrap_commit` has merged the group state into this device.
+//! `sync_bootstrap_commit` has merged the other device's state into this one.
+//! The merge reads it straight from that device (`changes{since: 0}`, on-demand
+//! sync §P2): it is online, it just granted the join.
 
 use crate::commands::sync::SyncManager;
 use crate::db::Db;
 use crate::runs::RunRegistry;
 use crate::sync::bootstrap::{self, BootstrapPreview, BootstrapReport, ProjectMapping, RemoteState};
 use crate::sync::codec::PathCtx;
-use crate::sync::crypto::SyncKeys;
-use crate::sync::store::SqliteSyncStore;
-use crate::sync::transport::Connection;
+use crate::sync::engine::{PeerHandlers, StatusSink, SyncEngine, Timing};
+use crate::sync::feed::{FileScope, PeerFiles};
+use crate::sync::store::{SqliteSyncStore, SyncStore};
+use std::sync::Arc;
+use std::time::Duration;
 use tauri::{AppHandle, Manager, State};
 
 /// Home + app data: `@data/...` paths (library, Claude config dirs, managed
@@ -21,34 +25,55 @@ fn paths(app: &AppHandle) -> Result<PathCtx, String> {
     Ok(PathCtx::from_env().with_app_data(data))
 }
 
-/// How long a device being flushed may stay silent (it sends progress
-/// replies while it pushes).
-const FLUSH_IDLE: std::time::Duration = std::time::Duration::from_secs(120);
+/// How long the merge waits for the relay connection.
+const CONNECT_WAIT: Duration = Duration::from_secs(20);
 
-/// A connection to the group and its keys, after every online device pushed
-/// its outbox: sync is on-demand, so the relay only holds what devices were
-/// asked for, and the merge must see the group's full state.
-async fn open_group(db: &Db) -> Result<(Connection, SyncKeys), String> {
+fn store_of(db: &Db, device_id: &str, paths: PathCtx) -> SqliteSyncStore {
+    SqliteSyncStore::new(db.clone(), device_id.to_string())
+        .with_paths(paths)
+        .with_secrets(Arc::new(crate::sync::secrets::KeychainBackend))
+}
+
+/// A paused engine (it serves nothing: this device's ids are not merged yet)
+/// to read the other device's feed with, and that device's id.
+async fn open_group(db: &Db, paths: PathCtx) -> Result<(SyncEngine, String), String> {
     let sync = crate::secrets::get_sync_secrets().ok_or("this device is not in a sync group")?;
     let params = crate::sync::pair::connect_params(db, &sync).await?;
     let keys = crate::sync::pair::keys_of(&sync)?;
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let conn = Connection::connect(&params, false, tx).await.map_err(|e| e.to_string())?;
-    // Rows, library and keys only: session logs and transcripts (often GBs)
-    // come with a later Sync that asks for them.
-    let scope = crate::sync::store::StageScope::NoSessions;
-    let flushed = crate::sync::engine::flush_online_peers(&conn, &mut rx, &keys, scope, FLUSH_IDLE).await?;
-    tracing::info!(event = "sync_join_flushed", devices = flushed.len());
-    Ok((conn, keys))
+    let store: Arc<dyn SyncStore> = Arc::new(store_of(db, &sync.device_id, paths));
+    let quiet: StatusSink = Arc::new(|_| {});
+    let engine = SyncEngine::start_with(params, keys, store, quiet, true, Timing::default(), PeerHandlers::default());
+    let h = engine.handle();
+    if !h.wait_connected(CONNECT_WAIT).await {
+        let e = h.status().last_error.unwrap_or_else(|| "relay unreachable".into());
+        engine.stop().await;
+        return Err(e);
+    }
+    let peers = h.online_peers().await;
+    match peers.map(|p| p.into_iter().next()) {
+        Ok(Some(source)) => Ok((engine, source)),
+        Ok(None) => {
+            engine.stop().await;
+            Err("peer_offline: the device that added this one must be online (Devdy running) to merge".into())
+        }
+        Err(e) => {
+            engine.stop().await;
+            Err(e)
+        }
+    }
 }
 
-/// The whole group log, downloaded into memory.
-async fn group_state(db: &Db) -> Result<RemoteState, String> {
-    let (conn, keys) = open_group(db).await?;
-    bootstrap::fetch_group_state(&conn, &keys).await
+/// The other device's whole state, read into memory.
+async fn group_state(db: &Db, paths: PathCtx) -> Result<RemoteState, String> {
+    let (engine, source) = open_group(db, paths).await?;
+    let state = bootstrap::fetch_group_state(engine.handle().link().as_ref(), &source).await;
+    engine.stop().await;
+    state
 }
 
-/// "Re-sync everything": queue every synced row for push. Returns the count.
+/// "Re-sync everything": every synced row gets a fresh version in this
+/// device's change feed (the other device takes them with its next Sync).
+/// Returns the count.
 #[tauri::command]
 pub async fn sync_resync_all(db: State<'_, Db>, state: State<'_, SyncManager>) -> Result<usize, String> {
     let n = bootstrap::enqueue_all(db.inner()).await?;
@@ -70,9 +95,10 @@ pub async fn sync_bootstrap_pending(db: State<'_, Db>) -> Result<bool, String> {
 #[tauri::command]
 pub async fn sync_bootstrap_preview(app: AppHandle, db: State<'_, Db>) -> Result<BootstrapPreview, String> {
     let db = db.inner();
-    let state = group_state(db).await?;
+    let paths = paths(&app)?;
+    let state = group_state(db, paths.clone()).await?;
     let git = bootstrap::local_git_remotes(db).await?;
-    bootstrap::preview(db, &paths(&app)?, &state, &git).await
+    bootstrap::preview(db, &paths, &state, &git).await
 }
 
 /// Error code the UI shows as "stop the running sessions first".
@@ -89,9 +115,10 @@ fn refuse_if_live(live: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// Merge the group state into this device (re-key, LWW apply, park files and
-/// Keychain items for the engine, queue the local-only rows), then start
-/// syncing. Refused while a run is live, and when no merge is pending. Run
+/// Merge the other device's state into this one (re-key, LWW apply, file its
+/// files and Keychain items, queue the local-only rows), fetch the library
+/// files, keys and Keychain items from it (session files come with the next
+/// Sync), then start syncing. Refused while a run is live, and when no merge is pending. Run
 /// starts are blocked for the whole commit (`bootstrap::refuse_if_committing`).
 #[tauri::command]
 pub async fn sync_bootstrap_commit(
@@ -109,17 +136,27 @@ pub async fn sync_bootstrap_commit(
     refuse_if_live(registry.lock().await.len())?;
     state.stop().await;
     let paths = paths(&app)?;
-    let (conn, keys) = open_group(db).await?;
-    let remote = bootstrap::fetch_group_state(&conn, &keys).await?;
-    let git = bootstrap::local_git_remotes(db).await?;
-    // The download and git scan take a while: a run started just before the
-    // guard may have registered since.
-    refuse_if_live(registry.lock().await.len())?;
-    let store = SqliteSyncStore::new(db.clone(), sync.device_id.clone())
-        .with_paths(paths.clone())
-        .with_secrets(std::sync::Arc::new(crate::sync::secrets::KeychainBackend));
-    let report = bootstrap::commit(db, &store, &paths, remote, &git).await?;
-    drop(conn);
+    let (engine, source) = open_group(db, paths.clone()).await?;
+    let link = engine.handle().link();
+    let merged = async {
+        let remote = bootstrap::fetch_group_state(link.as_ref(), &source).await?;
+        let git = bootstrap::local_git_remotes(db).await?;
+        // The download and git scan take a while: a run started just before
+        // the guard may have registered since.
+        refuse_if_live(registry.lock().await.len())?;
+        let store = store_of(db, &sync.device_id, paths.clone());
+        let report = bootstrap::commit(db, &store, &paths, remote, &git).await?;
+        // Small and needed right away: library files, keys, Keychain items.
+        // What fails stays filed for the next Sync.
+        let files = PeerFiles::new(link.clone(), &source);
+        if let Err(e) = store.fetch_extra(&files, FileScope::NoSessions, &|| {}).await {
+            tracing::warn!(event = "sync_join_files_failed", error = %e);
+        }
+        Ok::<_, String>(report)
+    }
+    .await;
+    engine.stop().await;
+    let report = merged?;
     drop(guard);
     let tables: Vec<String> = report.preview.tables.iter().map(|t| t.tbl.clone()).collect();
     crate::sync::events::rows_applied(&app, &tables);
@@ -127,9 +164,9 @@ pub async fn sync_bootstrap_commit(
     Ok(report)
 }
 
-/// The relay lost ops this device already pulled (restored from a backup,
-/// `relay_behind`): stop syncing and go through the merge step again, which
-/// re-reads the whole group and pushes what the relay no longer has.
+/// Merge again: stop syncing and go through the merge step, which re-reads
+/// the other device's whole state (no relay store can fall behind any more;
+/// kept for a merge the user asks for).
 #[tauri::command]
 pub async fn sync_rebootstrap(app: AppHandle, db: State<'_, Db>, state: State<'_, SyncManager>) -> Result<(), String> {
     if crate::secrets::get_sync_secrets().is_none() {
@@ -137,8 +174,6 @@ pub async fn sync_rebootstrap(app: AppHandle, db: State<'_, Db>, state: State<'_
     }
     state.stop().await;
     bootstrap::mark_joined(db.inner()).await?;
-    // The merge re-reads the relay as it is now; its epoch becomes the reference.
-    crate::sync::store::clear_relay_mark(db.inner()).await?;
     use tauri::Emitter;
     let _ = app.emit(crate::sync::engine::STATUS_EVENT, crate::sync::engine::SyncStatus::disabled());
     Ok(())
