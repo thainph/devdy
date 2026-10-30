@@ -78,6 +78,11 @@ pub enum FileKind {
 }
 
 impl FileKind {
+    /// Session files: run logs and CLI transcripts (the bulk of the data).
+    pub fn is_session(self) -> bool {
+        matches!(self, FileKind::RunLog | FileKind::ClaudeTranscript | FileKind::CodexRollout)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             FileKind::Library => "library",
@@ -382,6 +387,9 @@ pub struct ScanState {
     tail_pending: BTreeSet<Tracked>,
     tail_holds: HashMap<PathBuf, TailHold>,
     pub tail_idle: Duration,
+    /// This scan leaves run logs and CLI transcripts out (the receiver did
+    /// not ask for sessions); the next full scan without it picks them up.
+    pub skip_sessions: bool,
 }
 
 impl Default for ScanState {
@@ -393,6 +401,7 @@ impl Default for ScanState {
             tail_pending: BTreeSet::new(),
             tail_holds: HashMap::new(),
             tail_idle: TAIL_IDLE,
+            skip_sessions: false,
         }
     }
 }
@@ -1158,7 +1167,8 @@ pub async fn stage(
     mode: ScanMode,
     with_keys: bool,
 ) -> Result<usize, String> {
-    let kicked = take_kicks();
+    // Kicks are all session files: keep them for a scan that takes those.
+    let kicked = if state.skip_sessions { Default::default() } else { take_kicks() };
     let mut tracked = collect(db, paths, mode, state, with_keys).await?;
     if !kicked.is_empty() {
         let mut conn = db.acquire().await.map_err(err)?;
@@ -1181,6 +1191,9 @@ pub async fn stage(
             }
         }
         tracked = dedup_tracked(tracked);
+    }
+    if state.skip_sessions {
+        tracked.retain(|t| !t.kind.is_session());
     }
     let mut queued = 0;
     let mut tail_pending = BTreeSet::new();
@@ -2373,6 +2386,22 @@ pub(crate) mod tests {
     /// Partial tails go up at once (the deferral has its own test).
     fn eager() -> ScanState {
         ScanState { tail_idle: Duration::ZERO, ..Default::default() }
+    }
+
+    /// A flush that does not take sessions leaves run logs for a later one.
+    #[tokio::test]
+    async fn a_scan_without_sessions_leaves_run_logs() {
+        let h = tempdir();
+        let db = mem_db().await;
+        let p = ctx(h.path());
+        let blobs = MemBlobs::default();
+        let log = add_run(&db, h.path(), "r1", "done").await;
+        fs::write(&log, b"turn 1\n").unwrap();
+        let mut st = ScanState { skip_sessions: true, ..eager() };
+        assert_eq!(stage(&db, &p, &blobs, &mut st, ScanMode::Full, false).await.unwrap(), 0);
+        assert_eq!(*blobs.puts.lock().unwrap(), 0);
+        st.skip_sessions = false;
+        assert_eq!(stage(&db, &p, &blobs, &mut st, ScanMode::Full, false).await.unwrap(), 1);
     }
 
     fn mb(n: usize, byte: u8) -> Vec<u8> {

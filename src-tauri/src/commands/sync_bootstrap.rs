@@ -34,7 +34,10 @@ async fn open_group(db: &Db) -> Result<(Connection, SyncKeys), String> {
     let keys = crate::sync::pair::keys_of(&sync)?;
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let conn = Connection::connect(&params, false, tx).await.map_err(|e| e.to_string())?;
-    let flushed = crate::sync::engine::flush_online_peers(&conn, &mut rx, &keys, FLUSH_IDLE).await?;
+    // Rows, library and keys only: session logs and transcripts (often GBs)
+    // come with a later Sync that asks for them.
+    let scope = crate::sync::store::StageScope::NoSessions;
+    let flushed = crate::sync::engine::flush_online_peers(&conn, &mut rx, &keys, scope, FLUSH_IDLE).await?;
     tracing::info!(event = "sync_join_flushed", devices = flushed.len());
     Ok((conn, keys))
 }

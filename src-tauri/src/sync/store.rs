@@ -50,6 +50,22 @@ pub trait BlobIo: Send + Sync {
 
 // async_trait's generated futures trip clippy::double_must_use (as elsewhere).
 #[allow(clippy::double_must_use)]
+/// Which files a flush uploads (sync is on-demand: the requester says what it
+/// wants). Rows queued in the outbox always go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StageScope {
+    /// Every changed file (library, keys, run logs, CLI transcripts).
+    #[default]
+    All,
+    /// Everything but run logs and CLI transcripts (the bulk of the data).
+    NoSessions,
+    /// No file scan at all: rows only.
+    Nothing,
+}
+
+// `#[async_trait]` marks the boxed futures `#[must_use]` a second time.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait SyncStore: Send + Sync {
     async fn pending(&self, limit: usize) -> Result<Vec<(i64 /*outbox seq*/, Op)>, String>;
@@ -86,6 +102,14 @@ pub trait SyncStore: Send + Sync {
     /// every push and on the outbox poll; cheap when nothing is due.
     async fn stage(&self, _blobs: &dyn BlobIo) -> Result<(), String> {
         Ok(())
+    }
+
+    /// [`SyncStore::stage`] limited to what the requesting device asked for.
+    async fn stage_scoped(&self, blobs: &dyn BlobIo, scope: StageScope) -> Result<(), String> {
+        match scope {
+            StageScope::Nothing => Ok(()),
+            StageScope::All | StageScope::NoSessions => self.stage(blobs).await,
+        }
     }
 
     /// Relay blobs this device stopped using whose release is due.
@@ -371,8 +395,19 @@ impl SyncStore for SqliteSyncStore {
     }
 
     async fn stage(&self, blobs: &dyn BlobIo) -> Result<(), String> {
+        self.stage_scoped(blobs, StageScope::All).await
+    }
+
+    async fn stage_scoped(&self, blobs: &dyn BlobIo, scope: StageScope) -> Result<(), String> {
+        if scope == StageScope::Nothing {
+            return Ok(());
+        }
         let mut state = self.scan.lock().await;
-        let Some(mode) = state.due(&self.file_timing, files::has_kicks()) else { return Ok(()) };
+        // Sync is on-demand: a flush was asked for, so scan everything (the
+        // timers only record when that was).
+        let _ = state.due(&self.file_timing, files::has_kicks());
+        let mode = files::ScanMode::Full;
+        state.skip_sessions = scope == StageScope::NoSessions;
         let with_secrets = self.secrets_on().await?;
         let paths = self.paths_now().await?;
         state.tail_idle = self.file_timing.tail_idle();

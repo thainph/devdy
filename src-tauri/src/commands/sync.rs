@@ -14,7 +14,7 @@ use crate::sync::engine::{
 };
 use crate::sync::peer::{PeerHandler, PeerLink};
 use crate::sync::leader::{self, DeviceInfo};
-use crate::sync::store::{self, ParkedRow, SqliteSyncStore, SyncStore};
+use crate::sync::store::{self, ParkedRow, SqliteSyncStore, StageScope, SyncStore};
 use crate::sync::transport::{Connection, TransportError};
 use serde_json::json;
 use std::sync::Arc;
@@ -167,7 +167,9 @@ impl SyncManager {
     /// went out (false: offline, paused, or no engine).
     async fn flush(&self, wait: Duration) -> bool {
         let Some(h) = self.handle().await else { return false };
-        matches!(tokio::time::timeout(wait, h.flush_outbox()).await, Ok(Ok(_)))
+        // Leaving / handing a role on only needs rows (who leads, who left).
+        let rows_only = crate::sync::store::StageScope::Nothing;
+        matches!(tokio::time::timeout(wait, h.flush_outbox(rows_only)).await, Ok(Ok(_)))
     }
 
     /// Tell `to` it leads now and wait (at most `wait`) until it synced that.
@@ -396,14 +398,22 @@ struct RunEvent {
 #[tauri::command]
 pub async fn sync_run(
     app: AppHandle,
+    db: State<'_, Db>,
     state: State<'_, SyncManager>,
     source_device: String,
 ) -> Result<SyncRunReport, String> {
     let emit = |phase: RunPhase, message: Option<String>| {
         let _ = app.emit(RUN_EVENT, RunEvent { phase, message });
     };
+    // Session files are the bulk of the data: the source uploads them only
+    // when this device takes sessions.
+    let sessions_off = {
+        let mut conn = db.acquire().await.map_err(|e| e.to_string())?;
+        crate::sync::prefs::categories_off(&mut conn).await?.iter().any(|c| c == "sessions")
+    };
+    let scope = if sessions_off { StageScope::NoSessions } else { StageScope::All };
     let result = match state.handle().await {
-        Some(h) => h.run_from(&source_device, &|p, m| emit(p, m)).await,
+        Some(h) => h.run_from(&source_device, scope, &|p, m| emit(p, m)).await,
         None => Err("this device is not in a sync group".into()),
     };
     // A leader change may have arrived.
