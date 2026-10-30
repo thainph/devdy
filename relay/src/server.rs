@@ -30,7 +30,7 @@ use crate::config::Config;
 use crate::protocol::{Envelope, ErrorCode, FrameType};
 use crate::ratelimit::RateLimiter;
 use crate::room::{ConnId, JoinOutcome, Notice, OutFrame, Outbound, RoomRegistry};
-use crate::sync::{Limits, SyncHub, SyncSession};
+use crate::sync::{SyncHub, SyncSession};
 
 /// Shared server state.
 pub struct Shared {
@@ -42,11 +42,7 @@ pub struct Shared {
 
 impl Shared {
     fn new(config: Config) -> std::io::Result<Self> {
-        let limits = Limits {
-            max_group_bytes: config.sync_max_group_bytes,
-            max_blob_bytes: config.sync_max_blob_bytes,
-        };
-        let sync = SyncHub::open(config.sync_db.as_deref(), limits, config.sync_vacuum_on_start)
+        let sync = SyncHub::open(config.sync_db.as_deref(), config.sync_max_peer_bytes)
             .map_err(|e| std::io::Error::other(format!("sync db: {e}")))?;
         Ok(Shared {
             config,
@@ -114,7 +110,7 @@ enum Role {
     Unknown,
     Host,
     Controller,
-    /// Welcomed by `sync_hello`: only sync/blob frames and keepalives.
+    /// Welcomed by `sync_hello`: only sync frames and keepalives.
     Sync,
 }
 
@@ -302,7 +298,7 @@ async fn handle_connection(
             continue;
         }
 
-        // Sync connection: sync/blob frames go to the sync store; nothing of
+        // Sync connection: sync frames go to the sync hub; nothing of
         // Remote Control is reachable from it (and vice versa).
         if role == Role::Sync || crate::sync::is_sync_frame(env.t) {
             let close = match (role, env.t) {
@@ -531,24 +527,24 @@ async fn dispatch(
         // Sync frames are handled before `dispatch` (see the read loop).
         FrameType::SyncHello
         | FrameType::SyncWelcome
+        | FrameType::SyncRevoke
+        | FrameType::SyncInvite
+        | FrameType::SyncGroupInfo
+        | FrameType::SyncPeers
+        | FrameType::SyncPeerSend
+        | FrameType::SyncPeerAck
+        | FrameType::SyncPeerMsg
         | FrameType::SyncPush
         | FrameType::SyncAck
         | FrameType::SyncPull
         | FrameType::SyncOps
         | FrameType::SyncNotify
-        | FrameType::SyncRevoke
-        | FrameType::SyncInvite
-        | FrameType::SyncGroupInfo
         | FrameType::BlobPut
         | FrameType::BlobAck
         | FrameType::BlobGet
         | FrameType::BlobData
         | FrameType::BlobRelease
-        | FrameType::BlobReleased
-        | FrameType::SyncPeers
-        | FrameType::SyncPeerSend
-        | FrameType::SyncPeerAck
-        | FrameType::SyncPeerMsg => {
+        | FrameType::BlobReleased => {
             tracing::debug!(event = "ignored_inbound_control", conn = conn_id);
             false
         }

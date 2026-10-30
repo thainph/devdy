@@ -64,127 +64,65 @@ Model (deliberately minimal — reconnect = re-join):
   attempts and answers a correct one with a full session link + token. The
   relay just routes; `room_ready` to the Host carries `slot` so it can tell.
 
-## Two-way sync store
+## Sync groups (the relay is a pipe)
 
 Same binary, same `/ws` endpoint, but a **separate connection** from Remote
-Control (design: `two-way-sync` §3 / §9.2). Devices of a sync group push sealed
-ops and pull them back by cursor, so they never need to be online at the same
-time. The relay only stores ciphertext and never logs op blobs or blob data.
+Control (design: `on-demand-sync` §P1). The relay **stores no sync data** — no
+ops, no blobs, no history, no quota. It only authenticates the devices of a
+sync group and forwards sealed messages between the two online devices of that
+group; either device asks, the other answers. Messages are never stored and
+never logged.
+
+A group has **at most 2 active (non-revoked) devices**.
 
 | `t` | Direction | Purpose |
 |---|---|---|
-| `sync_hello{auth_token, group_id, device_id, device_token, create?, ticket?, known_epoch?}` | Device → Relay | First frame. `auth_token` = `RELAY_HOST_TOKEN`. `create=true` on an unknown group creates it and registers this device as its **creator**. A known device must match its pinned `sha256(device_token)` (`create=true` from a known device is an idempotent hello). An unknown device joins an existing group only with a one-time `ticket` registered by a member (`sync_invite`); `create=true` from it → `group_exists`. `known_epoch` = the store epoch the device last synced in (see *Store epochs*). → `sync_welcome{last_seq, creator_device, epoch, known_head}` (`known_head`: the head this store recorded for `known_epoch`, `null` when not asked or unknown) or `error{auth_failed\|group_not_found\|group_exists\|ticket_required\|ticket_invalid\|device_revoked\|sync_disabled}` and the connection closes. |
+| `sync_hello{auth_token, group_id, device_id, device_token, create?, ticket?}` | Device → Relay | First frame. `auth_token` = `RELAY_HOST_TOKEN`. `create=true` on an unknown group creates it and registers this device as its **creator**. A known device must match its pinned `sha256(device_token)` (`create=true` from a known device is an idempotent hello). An unknown device joins an existing group only with a one-time `ticket` registered by a member (`sync_invite`), and only while the group has fewer than 2 active devices; `create=true` from it → `group_exists`. → `sync_welcome{creator_device}` or `error{auth_failed\|group_not_found\|group_exists\|ticket_required\|ticket_invalid\|group_full\|device_revoked\|sync_disabled}` and the connection closes. `group_full` is only reported to a device holding a valid ticket, and the ticket stays unused. |
 | `sync_invite{ticket_hash, ttl_secs}` | Device → Relay | A member registers a join ticket: `ticket_hash` = lowercase hex `sha256(ticket)`, `ttl_secs` 1..600 (default 600). The ticket itself travels device→device, never to the relay before the joiner's hello. One use; at most 16 open per group (expired/used ones are pruned). → `control{code:"ok"}`. Errors: `bad_request`, `quota_exceeded`. |
-| `sync_push{base_seq, items:[{key, blob}]}` | Device → Relay | `base_seq` = the pusher's pull cursor (missing = 0). Relay assigns per-group monotonic `seq`s; an older op with the same `key` is deleted only if `seq <= base_seq` (the pusher had pulled it) or the pusher stored it itself — otherwise both are kept and devices resolve them by HLC. All or nothing. → `sync_ack{last_seq}`. Errors: `quota_exceeded`, `too_large`. |
-| `sync_notify{last_seq}` | Relay → other devices | Sent to every other connected device of the group after a push. |
-| `sync_pull{after_seq, limit}` | Device → Relay | → `sync_ops{items:[{seq, device_id, key, blob}], last_seq, more}`. At most 500 ops / ~8 MiB per page. Set the cursor to `last_seq` and pull again while `more`. |
-| `blob_put{sha, data}` | Device → Relay | `data` = base64 of the sealed bytes, `sha` = lowercase hex sha256 of those bytes (verified). Idempotent. → `blob_ack{sha}`. Errors: `sha_mismatch`, `too_large`, `quota_exceeded`. |
-| `blob_get{sha}` | Device → Relay | → `blob_data{sha, data}` or `error{blob_not_found}`. |
-| `blob_release{shas}` | Device → Relay | The uploading device no longer references these blobs (at most 1000 per frame). Only blobs that device uploaded are marked; anything else is ignored. → `blob_released{released}` (how many were marked). |
-| `sync_revoke{device_id, successor?}` | Device → Relay | A device may revoke itself; only the group's creator may revoke another device (else `forbidden`). The revoked device's live connections get `error{device_revoked}` and close, its hello fails from then on (with or without a ticket). When the **creator revokes itself** the role moves to `successor` if that is an active member, else to the oldest active member (registration time, ties by device id); no member left = the group and all its data are deleted (see *Abandoned groups*). → `control{code:"ok"}`. |
+| `sync_revoke{device_id, successor?}` | Device → Relay | A device may revoke itself; only the group's creator may revoke another device (else `forbidden`). The revoked device's live connections get `error{device_revoked}` and close, its hello fails from then on (with or without a ticket), and its slot is free for a new device. When the **creator revokes itself** the role moves to `successor` if that is an active member, else to the oldest active member (registration time, ties by device id); no member left = the group is deleted (see *Abandoned groups*). → `control{code:"ok"}`. |
 | `sync_group_info{creator_device}` | Relay → other devices | Sent to the group's other connected devices when the creator role moved; devices that were offline learn it from their next `sync_welcome`. |
-| `sync_peers{}` | Device → Relay | On-demand sync (design `on-demand-sync` §1). → `sync_peers{devices:[device_id, ...]}`: the group's devices with a live sync connection, excluding the caller (deduplicated, sorted). |
+| `sync_peers{}` | Device → Relay | → `sync_peers{devices:[device_id, ...]}`: the group's devices with a live sync connection, excluding the caller (deduplicated, sorted). |
 | `sync_peer_send{to_device, data}` | Device → Relay | Forward `data` (base64 of a message sealed with the group key) to `to_device`'s most recent live connection in the **same group**, as `sync_peer_msg`. → `sync_peer_ack{}` once queued for the target. Errors: `peer_offline` (no live connection, revoked, not a member, the sender itself, or the target's queue did not drain within 60 s — that target is then disconnected), `too_large` (`data` longer than the base64 of `RELAY_SYNC_MAX_BLOB_BYTES`), `bad_request` (missing `to_device` / `data`). Never stored, never logged. |
 | `sync_peer_msg{from_device, data}` | Relay → target device | A forwarded `sync_peer_send` (no `id`). |
+
+Removed with the old relay store: `sync_push`, `sync_ack`, `sync_pull`,
+`sync_ops`, `sync_notify`, `blob_put`, `blob_ack`, `blob_get`, `blob_data`,
+`blob_release`, `blob_released`. Any of them → `error{code:"unsupported"}`
+(the connection stays open).
 
 After `sync_welcome` only these frames and `keepalive` are accepted on the
 connection (anything else → `error{forbidden}`); sync frames on a Remote
 Control connection are refused the same way. An optional `id` on any request
-is echoed on its response or error. Push/pull/blob frames (including
-`blob_release`) and `sync_peer_send` are not rate limited
-(an initial upload, or a folder sync's replies, send many);
-`sync_hello`/`sync_invite`/`sync_revoke`/`sync_peers` count as control frames. A connection's requests are handled one at a time, and a
-`sync_pull` / `blob_get` is only served once the replies still queued for that
-socket are under 16 MiB (`MAX_QUEUED_REPLY_BYTES`); a client that stops reading
-for 60 s is disconnected. While sync is enabled the WebSocket message limit is raised, if
-needed, to fit one maximum-size `blob_put`.
-
-**Blob GC.** Ops are sealed, so the relay cannot see which blobs an op
-references; the devices tell it. File sync re-uploads the last (partial)
-chunk of a growing log on every append, which leaves the previous tail blob
-unused once the new manifest op has superseded the old one (same key). The
-device that uploaded it sends `blob_release` for it after the new manifest
-was pushed (and only when no other file of that device still uses the chunk).
-The relay records the release and deletes the blob 24 h later
-(`BLOB_RELEASE_GRACE_SECS`), lazily on that group's next `blob_release` or
-`sync_hello` — no background task. Until then the blob can still be fetched,
-so a device that pulled the superseded op a moment earlier still finishes its
-download (it gets the newer op on its next pull anyway). A `blob_put` of a
-released sha cancels the release. Blobs stored before GC existed have no
-recorded uploader and can be released by any device of the group. Freed bytes
-are taken off the group's quota usage.
+is echoed on its response or error. `sync_peer_send` is not rate limited (a
+folder sync answers with many messages); every other sync frame counts as a
+control frame. A target is only given another message once the frames still
+queued for its socket are under 16 MiB (`MAX_QUEUED_REPLY_BYTES`); a target
+that stops reading for 60 s is disconnected. While sync is enabled the
+WebSocket message limit is raised, if needed, to fit one maximum-size
+`sync_peer_send`.
 
 **Storage.** SQLite file at `RELAY_SYNC_DB`, e.g. `/var/lib/devdy-relay/sync.db`
 (keep it outside the release directory; the directory must be writable by the
-relay's service user — `ReadWritePaths=` in the unit). Tables:
-`groups` (head seq + byte usage + creator device), `devices`, `ops`, `blobs`
-(with uploader and release time), `invites` (ticket hashes), `store_epoch`
-(the current epoch) and `epochs` (each group's head per epoch). Older databases are
-upgraded at startup: missing columns are added, `creator_device` is set to the
-group's earliest active registered device, and `ops` is rebuilt without its old
-`UNIQUE(group_id, key)` constraint. It runs in WAL
-mode, so a copy of the `.db` file alone is not a consistent backup — back up
-with `sqlite3 "$RELAY_SYNC_DB" ".backup '/path/sync-$(date +%F).db'"`
-(safe while the relay runs). The content is end-to-end encrypted, but the file
-is the only server-side copy of every group's history; devices keep full local
-copies, so losing it means re-uploading, not data loss.
+relay's service user — `ReadWritePaths=` in the unit). It holds only what
+authentication needs: `groups` (creator device), `devices` (pinned token
+hashes, revoked flags — a revoked id can never register again) and `invites`
+(join ticket hashes). No sync data ever reaches it. Older databases are
+upgraded at startup: `creator_device` is added if missing (set to the group's
+earliest active registered device), and the tables of the former op / blob
+store (`ops`, `blobs`, `epochs`, `store_epoch`, plus the `last_seq` / `bytes`
+columns of `groups`) are dropped, followed by one `VACUUM`. That runs once,
+before the relay serves, and logs only the sizes,
+`event="sync_store_migrated" before_bytes after_bytes` (a failed `VACUUM` is
+logged as `sync_vacuum_failed` and the relay starts anyway; the freed pages are
+reused). The file runs in WAL mode; losing it only means devices pair again.
 
 **Abandoned groups.** When a `sync_revoke` leaves a group without any
-non-revoked device (the last member revoked, or revoking itself), the whole
-group is deleted in the same transaction: its ops, blobs, devices, epochs,
-invites and the group row. Every store request runs in its own transaction on
-the store's single connection, so this never interleaves with a push or hello
-of that group, and a group with at least one active device is never touched.
-A later `sync_hello` for it gets `group_not_found` (with `create=true` it
-starts a new, empty group). Each relay start also purges every group that has
-no active device left (groups left before purging existed) and logs only the
-count, `event="sync_groups_purged" groups=N`.
-
-Deleted pages are reused by later writes but do not shrink the file by
-themselves: a store created by this version uses incremental auto-vacuum, so a
-purge hands its pages back to the file system right away (`PRAGMA
-incremental_vacuum`); an older store keeps its size. No blocking full `VACUUM`
-runs on a revoke. To shrink an older store once, start the relay with
-`RELAY_SYNC_VACUUM_ON_START=1`: after the startup purge it runs `VACUUM`
-(which also switches the file to incremental auto-vacuum), logs
-`event="sync_vacuum" before_bytes after_bytes`, and serves only once it is
-done. It rewrites the whole file, so it needs free disk space about the size
-of the live data (also in the service's private `/tmp`) and takes a while on a
-large store; a failure is logged (`sync_vacuum_failed`) and the relay starts
-anyway. Remove the variable again afterwards.
-
-## Operations (sync store)
-
-**Backup.** `sync.db` runs in WAL mode, so copying the file alone can give a
-torn copy. Use SQLite's online backup, which is safe while the relay runs:
-
-```bash
-sqlite3 "$RELAY_SYNC_DB" ".backup '<BACKUP_DIR>/sync-$(date +%F).db'"
-```
-
-(e.g. from a daily cron, keeping a few days). The content
-is end-to-end encrypted, so backups are as safe to store as the live file; the
-devices hold full local copies, so losing the store costs a re-upload, not data.
-
-**Store epochs.** Every time the relay opens the store (each start) it picks a
-new random *epoch* and records, per group, the head `seq` reached in each epoch
-(updated in the same transaction as every push). A device remembers the epoch it
-last synced in and the highest `seq` it has seen there (pulled, or acked for its
-own push), presents the epoch as `known_epoch` on hello and compares
-`known_head` with what it saw. A plain restart keeps the history, so the old
-epoch's head is still there and the device moves on to the new epoch.
-
-**Restoring an older backup.** The restored store's head `seq` is lower than
-what devices already saw, the ops pushed after the backup are gone, and the
-next pushes reuse their seqs. A device detects this on its next `sync_welcome`
-— the restored store does not know the epoch the device synced in, or recorded
-a lower head for it; a head below the device's own cursor shows it too — even
-after other devices have pushed the head past that cursor again. It then stops
-syncing and asks the user to merge again (re-read the group and re-upload what
-the relay lost) instead of pulling from a cursor that now points at different
-ops. Stop the relay before replacing the database file, and restore only when
-the store is lost or corrupt; the creator recorded in the backup applies again
-(devices are told on their next welcome).
+non-revoked device (the last member revoked, or revoking itself), the group is
+deleted in the same transaction: its devices, invites and the group row (a few
+small rows). A later `sync_hello` for it gets `group_not_found` (with
+`create=true` it starts a new group). Each relay start also purges every group
+that has no active device left and logs only the count,
+`event="sync_groups_purged" groups=N`.
 
 **Server setup.** With the hardened unit in `deploy/relay.service`
 (`ProtectSystem=strict`), the store's directory must be listed in
@@ -205,10 +143,8 @@ Keep the env file and the store outside anything a release replaces.
 | `RELAY_PEER_LIVENESS_TIMEOUT_SECS` | no | `45` | Close a connection that sent no bytes (frames, pongs) for this long. |
 | `RELAY_MAX_ROOMS` | no | `256` | Ceiling on listeners + rooms. Everything dies with its connection; this only guards against a misbehaving Host. |
 | `RELAY_MAX_MESSAGE_BYTES` | no | `33554432` | Largest WebSocket message accepted (32 MiB). Must stay above the worst legitimate frame: a 10 MiB image base64'd into the payload and then again into the ciphertext lands near 18 MiB. |
-| `RELAY_SYNC_DB` | no | — | SQLite file of the sync store (e.g. `/var/lib/devdy-relay/sync.db`). Unset = sync disabled (`error{sync_disabled}`). |
-| `RELAY_SYNC_MAX_GROUP_BYTES` | no | `2147483648` | Storage cap per sync group (op blobs + blobs). Over it → `quota_exceeded`. |
-| `RELAY_SYNC_MAX_BLOB_BYTES` | no | `4194368` | Largest blob (sealed bytes, 4 MiB + 64); an op blob may be at most the base64 size of this. |
-| `RELAY_SYNC_VACUUM_ON_START` | no | — | `1` = run a one-time `VACUUM` of the sync store at startup, after abandoned groups are purged (see *Abandoned groups*). Leave unset normally. |
+| `RELAY_SYNC_DB` | no | — | SQLite file of the sync group store (groups, devices, join tickets; e.g. `/var/lib/devdy-relay/sync.db`). Unset = sync disabled (`error{sync_disabled}`). |
+| `RELAY_SYNC_MAX_BLOB_BYTES` | no | `4194368` | Max peer message: largest sealed `sync_peer_send` message (4 MiB + 64); its base64 `data` may be at most the base64 size of this, else `too_large`. (Name kept from the former blob store.) |
 | `RUST_LOG` | no | `info` | Log level (metadata only; payloads never logged). |
 
 No secret is ever hardcoded or committed (SEC-001).
@@ -265,7 +201,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now devdy-relay
 
 ## Scope note (Unit U1)
 
-This crate implements the relay (and the two-way sync store) only: the WSS server, control frames, room
+This crate implements the relay (and sync group auth + forwarding) only: the WSS server, control frames, room
 lifecycle, `room_id` routing of opaque envelopes, auth, pairing TTL,
 `MAX_CONTROLLER=1`, revoke, coarse rate-limit, and structured logging.
 
