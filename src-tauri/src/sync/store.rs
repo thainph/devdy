@@ -70,6 +70,11 @@ pub trait SyncStore: Send + Sync {
     async fn apply_remote(&self, ops: Vec<Op>) -> Result<ApplyReport, String>;
     async fn cursor(&self) -> Result<u64, String>; // last pulled relay seq
     async fn set_cursor(&self, seq: u64) -> Result<(), String>;
+    /// The cursor a pull starts from (also ends a pending reset, which kept
+    /// earlier pulls from writing over it).
+    async fn pull_start(&self) -> Result<u64, String> {
+        self.cursor().await
+    }
 
     /// Scan the non-DB sources that are due (files, Keychain), upload file
     /// chunks and queue `file` / `secret` ops into the outbox. Called before
@@ -560,6 +565,8 @@ impl SyncStore for SqliteSyncStore {
         let runs: Vec<String> =
             ops.iter().filter(|o| o.tbl == "runs").filter_map(|o| o.pk.as_str().map(str::to_string)).collect();
         let report = apply::apply_ops(&self.db, &paths, &mut clock, ops).await?;
+        // Cut references whose parent just arrived.
+        prefs::settle_stripped(&self.db).await?;
         *guard = Some(clock);
         drop(guard);
         self.move_secrets().await;
@@ -581,13 +588,33 @@ impl SyncStore for SqliteSyncStore {
         Ok(v.and_then(|s| s.parse().ok()).unwrap_or(0))
     }
 
+    async fn pull_start(&self) -> Result<u64, String> {
+        let mut tx = self.db.begin().await.map_err(err)?;
+        sqlx::query("DELETE FROM sync_state WHERE key = ?")
+            .bind(prefs::CURSOR_RESET_KEY)
+            .execute(&mut *tx)
+            .await
+            .map_err(err)?;
+        let v: Option<String> = sqlx::query_scalar("SELECT value FROM sync_state WHERE key = ?")
+            .bind(CURSOR_KEY)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(err)?;
+        tx.commit().await.map_err(err)?;
+        Ok(v.and_then(|s| s.parse().ok()).unwrap_or(0))
+    }
+
+    /// A no-op while a reset is pending (`prefs`): a pull that started before
+    /// it must not move the cursor past ops it filtered out.
     async fn set_cursor(&self, seq: u64) -> Result<(), String> {
         sqlx::query(
-            "INSERT INTO sync_state (key, value) VALUES (?, ?) \
+            "INSERT INTO sync_state (key, value) SELECT ?1, ?2 \
+             WHERE NOT EXISTS (SELECT 1 FROM sync_state WHERE key = ?3) \
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         )
         .bind(CURSOR_KEY)
         .bind(seq.to_string())
+        .bind(prefs::CURSOR_RESET_KEY)
         .execute(&self.db)
         .await
         .map_err(err)?;
