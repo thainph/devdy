@@ -48,7 +48,7 @@ LimitNOFILE=8192
 NoNewPrivileges=true
 ProtectSystem=strict
 # Two-way sync: the directory holding RELAY_SYNC_DB must be writable.
-ReadWritePaths=/projects/relay/shared
+ReadWritePaths=/var/lib/devdy-relay
 ProtectHome=true
 PrivateTmp=true
 PrivateDevices=true

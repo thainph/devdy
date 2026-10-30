@@ -111,16 +111,16 @@ released sha cancels the release. Blobs stored before GC existed have no
 recorded uploader and can be released by any device of the group. Freed bytes
 are taken off the group's quota usage.
 
-**Storage.** SQLite file at `RELAY_SYNC_DB`; in production
-`/projects/relay/shared/sync.db` (survives releases; the directory must be
-writable by the `devdyrelay` user — `ReadWritePaths=` in the unit). Tables:
+**Storage.** SQLite file at `RELAY_SYNC_DB`, e.g. `/var/lib/devdy-relay/sync.db`
+(keep it outside the release directory; the directory must be writable by the
+relay's service user — `ReadWritePaths=` in the unit). Tables:
 `groups` (head seq + byte usage + creator device), `devices`, `ops`, `blobs`
 (with uploader and release time), `invites` (ticket hashes). Older databases are
 upgraded at startup: missing columns are added, `creator_device` is set to the
 group's earliest active registered device, and `ops` is rebuilt without its old
 `UNIQUE(group_id, key)` constraint. It runs in WAL
 mode, so a copy of the `.db` file alone is not a consistent backup — back up
-with `sqlite3 /projects/relay/shared/sync.db ".backup '/path/sync-$(date +%F).db'"`
+with `sqlite3 "$RELAY_SYNC_DB" ".backup '/path/sync-$(date +%F).db'"`
 (safe while the relay runs). The content is end-to-end encrypted, but the file
 is the only server-side copy of every group's history; devices keep full local
 copies, so losing it means re-uploading, not data loss.
@@ -131,10 +131,10 @@ copies, so losing it means re-uploading, not data loss.
 torn copy. Use SQLite's online backup, which is safe while the relay runs:
 
 ```bash
-sqlite3 /projects/relay/shared/sync.db ".backup '/projects/relay/backup/sync-$(date +%F).db'"
+sqlite3 "$RELAY_SYNC_DB" ".backup '<BACKUP_DIR>/sync-$(date +%F).db'"
 ```
 
-(e.g. from a daily cron of the `deploy` user, keeping a few days). The content
+(e.g. from a daily cron, keeping a few days). The content
 is end-to-end encrypted, so backups are as safe to store as the live file; the
 devices hold full local copies, so losing the store costs a re-upload, not data.
 
@@ -146,34 +146,12 @@ own cursor), stops syncing and asks the user to re-bootstrap the group
 different ops. Restore only when the store is lost or corrupt; the creator
 recorded in the backup applies again (devices are told on their next welcome).
 
-**VPS setup** (relay deployed by `deploy` under `/projects/relay`, unit
-overridden by `/etc/systemd/system/devdy-relay.service.d/projects.conf`, env
-file `/projects/relay/shared/relay.env`):
-
-```bash
-# 1. Let the sandboxed unit write the store's directory (ProtectSystem=strict).
-sudo tee /etc/systemd/system/devdy-relay.service.d/sync.conf >/dev/null <<'UNIT'
-[Service]
-ReadWritePaths=/projects/relay/shared
-MemoryMax=256M
-UNIT
-
-# 2. devdyrelay must create sync.db and its -wal/-shm files there. Group-write
-#    with the sticky bit: it can add its own files but not replace or delete
-#    deploy's (relay.env, binaries).
-sudo chgrp devdyrelay /projects/relay/shared
-sudo chmod 1775 /projects/relay/shared
-# (an existing store must belong to it as well)
-# sudo chown devdyrelay:devdyrelay /projects/relay/shared/sync.db*
-
-# 3. Enable sync in the env file.
-echo 'RELAY_SYNC_DB=/projects/relay/shared/sync.db' | sudo -u deploy tee -a /projects/relay/shared/relay.env
-
-sudo systemctl daemon-reload && sudo systemctl restart devdy-relay
-journalctl -u devdy-relay -n 20   # expect event="sync_store" enabled=true
-```
-
-Releases only replace `current`; `shared/` (env + store) survives them.
+**Server setup.** With the hardened unit in `deploy/relay.service`
+(`ProtectSystem=strict`), the store's directory must be listed in
+`ReadWritePaths=` and be writable by the service user, which creates `sync.db`
+and its `-wal`/`-shm` files there. Then set `RELAY_SYNC_DB` in the env file,
+restart the service and look for `event="sync_store" enabled=true` in the log.
+Keep the env file and the store outside anything a release replaces.
 
 ## Configuration (environment)
 
@@ -187,7 +165,7 @@ Releases only replace `current`; `shared/` (env + store) survives them.
 | `RELAY_PEER_LIVENESS_TIMEOUT_SECS` | no | `45` | Close a connection that sent no bytes (frames, pongs) for this long. |
 | `RELAY_MAX_ROOMS` | no | `256` | Ceiling on listeners + rooms. Everything dies with its connection; this only guards against a misbehaving Host. |
 | `RELAY_MAX_MESSAGE_BYTES` | no | `33554432` | Largest WebSocket message accepted (32 MiB). Must stay above the worst legitimate frame: a 10 MiB image base64'd into the payload and then again into the ciphertext lands near 18 MiB. |
-| `RELAY_SYNC_DB` | no | — | SQLite file of the sync store (production: `/projects/relay/shared/sync.db`). Unset = sync disabled (`error{sync_disabled}`). |
+| `RELAY_SYNC_DB` | no | — | SQLite file of the sync store (e.g. `/var/lib/devdy-relay/sync.db`). Unset = sync disabled (`error{sync_disabled}`). |
 | `RELAY_SYNC_MAX_GROUP_BYTES` | no | `2147483648` | Storage cap per sync group (op blobs + blobs). Over it → `quota_exceeded`. |
 | `RELAY_SYNC_MAX_BLOB_BYTES` | no | `4194368` | Largest blob (sealed bytes, 4 MiB + 64); an op blob may be at most the base64 size of this. |
 | `RUST_LOG` | no | `info` | Log level (metadata only; payloads never logged). |
