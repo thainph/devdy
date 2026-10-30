@@ -495,18 +495,12 @@ pub struct RelayBlobs<'a> {
 }
 
 impl<'a> RelayBlobs<'a> {
-    fn new(conn: &'a Connection, keys: &'a SyncKeys) -> Self {
+    pub fn new(conn: &'a Connection, keys: &'a SyncKeys) -> Self {
         RelayBlobs { conn, keys, put_error: Mutex::new(None) }
     }
 
     fn take_put_error(&self) -> Option<TransportError> {
         self.put_error.lock().ok()?.take()
-    }
-}
-
-impl<'a> RelayBlobs<'a> {
-    pub fn new(conn: &'a Connection, keys: &'a SyncKeys) -> Self {
-        RelayBlobs { conn, keys }
     }
 }
 
