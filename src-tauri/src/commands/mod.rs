@@ -8,6 +8,7 @@ pub mod codex_sessions;
 pub mod file_tree_watcher;
 pub mod files;
 pub mod focus;
+pub mod focus_ai;
 pub mod gcalendar;
 pub mod github;
 pub mod github_accounts;
