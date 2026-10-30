@@ -136,6 +136,14 @@ async fn apply_batch(
         }
         candidates.push(op);
     }
+    // Selective sync: what this machine does not take (never deferred).
+    let screened = {
+        let mut conn = db.acquire().await.map_err(err)?;
+        super::prefs::screen(&mut conn, candidates).await?
+    };
+    base.skipped_older += screened.skipped;
+    let stripped = screened.stripped;
+    let mut candidates = screened.keep;
     // Parents first for upserts, then aliases (parents first, so their
     // children move before any delete), children first for deletes.
     candidates.sort_by_key(|op| {
@@ -224,6 +232,11 @@ async fn apply_batch(
         }
         to_defer.extend(failed);
         report.deferred = write_deferred(&mut tx, std::mem::take(&mut to_defer)).await?;
+        for op_key in applied.values() {
+            if let Some(cut) = stripped.get(op_key) {
+                super::prefs::record_stripped(&mut tx, &op_key.0, &op_key.1, cut.as_ref()).await?;
+            }
+        }
 
         sqlx::query("UPDATE sync_apply_guard SET active = 0 WHERE id = 1")
             .execute(&mut *tx)
