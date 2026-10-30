@@ -1,12 +1,8 @@
-//! Two-way sync (design: .workspace/docs/03-design/two-way-sync.md).
+//! Two-way sync over the relay (design: .workspace/docs/03-design/two-way-sync.md).
 //!
-//! Core (this wave): table registry, trigger-based change capture into
-//! `sync_outbox`, HLC, row codec, and `SqliteSyncStore` — the only thing the
-//! sync engine talks to.
-
-// The engine (transport / crypto / pairing) consumes the store; until it is
-// wired in, parts of the core are only exercised by tests.
-#![allow(dead_code)]
+//! Core: table registry, trigger-based change capture into `sync_outbox`, HLC,
+//! row codec, and `SqliteSyncStore` — the only thing the sync engine talks to.
+//! Client: crypto, relay transport, push/pull engine and pairing.
 
 pub mod apply;
 pub mod capture;
@@ -15,6 +11,13 @@ pub mod codec;
 pub mod op;
 pub mod schema;
 pub mod store;
+
+pub mod crypto;
+pub mod engine;
+pub mod pair;
+pub mod transport;
+#[cfg(test)]
+mod test_relay;
 
 use crate::db::Db;
 

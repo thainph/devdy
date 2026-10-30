@@ -91,6 +91,7 @@ impl HlcClock {
         HlcClock { device: device.into(), millis: 0, counter: 0 }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn device(&self) -> &str {
         &self.device
     }
@@ -101,6 +102,7 @@ impl HlcClock {
     }
 
     /// A new HLC for a local event happening now.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn now(&mut self) -> Hlc {
         self.tick_at(wall_ms())
     }

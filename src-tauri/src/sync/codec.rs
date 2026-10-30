@@ -20,6 +20,7 @@ impl PathCtx {
         PathCtx { home: std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default() }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn with_home(home: impl Into<PathBuf>) -> Self {
         PathCtx { home: home.into() }
     }
@@ -109,6 +110,7 @@ pub fn pk_values(spec: &TableSpec, pk: &Value) -> Result<Vec<Value>, String> {
 }
 
 /// Builds the pk value of a row from its columns (the inverse of `pk_values`).
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn pk_of_row(spec: &TableSpec, row: &Map<String, Value>) -> Option<Value> {
     if let [only] = spec.pk {
         return row.get(*only).cloned();

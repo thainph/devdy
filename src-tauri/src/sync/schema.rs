@@ -155,6 +155,7 @@ pub static SYNCED_TABLES: &[TableSpec] = &[
 ];
 
 /// Tables deliberately left out (see the module docs for the reasons).
+#[cfg_attr(not(test), allow(dead_code))]
 pub static EXCLUDED_TABLES: &[&str] = &[
     "remote_audit",
     "conductor_sessions",
