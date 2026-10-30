@@ -3,6 +3,8 @@
 //! Core: table registry, trigger-based change capture into `sync_outbox`, HLC,
 //! row codec, and `SqliteSyncStore` — the only thing the sync engine talks to.
 //! Client: crypto, relay transport, push/pull engine and pairing.
+//! Non-DB ops: `files` (library, run logs, transcripts, keys) and `secrets`
+//! (Keychain items).
 
 pub mod apply;
 pub mod capture;
@@ -11,6 +13,9 @@ pub mod codec;
 pub mod op;
 pub mod schema;
 pub mod store;
+
+pub mod files;
+pub mod secrets;
 
 pub mod crypto;
 pub mod engine;
@@ -22,7 +27,7 @@ mod test_relay;
 use crate::db::Db;
 
 /// Highest migration this build knows; ops from a newer schema are deferred.
-pub const SCHEMA_VERSION: u32 = 55;
+pub const SCHEMA_VERSION: u32 = 56;
 
 /// This machine's sync device id, created on first use.
 pub async fn ensure_device(db: &Db) -> Result<String, String> {
