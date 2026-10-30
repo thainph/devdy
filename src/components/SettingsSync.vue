@@ -6,14 +6,15 @@
 // app restart) → the merge step: preview (totals, per table, project matches) then commit, which
 // starts the engine. In a group → status, sync now / pause, secrets toggle, devices (rename this
 // one, remove others — creator only —, pick the leader that runs Pulse / Slack polling), project folders for this
-// machine, re-sync, leave, and "Accept a new device" (5 min window + Allow / Deny per request,
+// machine, changes the relay refused (parked, with Retry), re-sync, leave, and "Accept a new device" (5 min window + Allow / Deny per request,
 // closed when this page goes away so a request is never left unseen).
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { open } from '@tauri-apps/plugin-dialog'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import {
-  Crown, FolderOpen, Loader2, LogIn, LogOut, Pause, Pencil, Play, Plus, RefreshCw, RotateCcw, Trash2, UserPlus, Users,
+  AlertTriangle, Crown, FolderOpen, Loader2, LogIn, LogOut, Pause, Pencil, Play, Plus, RefreshCw, RotateCcw, Trash2, UserPlus,
+  Users,
 } from 'lucide-vue-next'
 import { Badge, Button, Card, Input } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
@@ -25,7 +26,6 @@ import {
   countdown,
   deviceLabel,
   groupCreator,
-  joinErrorCode,
   onSyncAcceptWindow,
   onSyncJoinRequest,
   onSyncJoinResolved,
@@ -45,6 +45,8 @@ import {
   syncJoin,
   syncLeave,
   syncNow,
+  syncParkedList,
+  syncParkedRetry,
   syncPause,
   syncProjectMappingList,
   syncProjectMappingSet,
@@ -52,6 +54,8 @@ import {
   syncRevokeDevice,
   syncSetLeader,
   syncSetSecrets,
+  SYNC_DOT_CLASS,
+  syncErrorCode,
   syncStateKey,
   syncTone,
   tableRows,
@@ -59,12 +63,13 @@ import {
   type BootstrapPreview,
   type BootstrapReport,
   type JoinRequest,
+  type ParkedRow,
   type ProjectMapping,
   type SyncDevice,
 } from '@/lib/sync'
 import { DEVICE_ALIAS_RE } from '@/lib/remoteLogin'
 
-const { t } = useI18n()
+const { t, te } = useI18n()
 const { toast } = useToast()
 const { confirm } = useConfirm()
 const store = useSyncStore()
@@ -83,17 +88,9 @@ function ago(ms: number | null | undefined): string {
   return t(`settings.sync.ago.${unit}`, { n })
 }
 
-const DOT: Record<string, string> = {
-  off: 'bg-muted-foreground/40',
-  ok: 'bg-emerald-500',
-  busy: 'bg-sky-500',
-  warn: 'bg-amber-500',
-  error: 'bg-destructive',
-}
-
 /** Backend errors with a known code get a translated message. */
 function errorText(e: unknown): string {
-  const code = joinErrorCode(e)
+  const code = syncErrorCode(e)
   return code ? t(`settings.sync.errors.${code}`) : String(e)
 }
 
@@ -161,7 +158,7 @@ async function loadPreview() {
     preview.value = await syncBootstrapPreview()
   } catch (e) {
     preview.value = null
-    previewError.value = String(e)
+    previewError.value = errorText(e)
   } finally {
     previewLoading.value = false
   }
@@ -178,7 +175,7 @@ async function commitBootstrap() {
     toast.success(t('settings.sync.join.done'))
     await loadPaired()
   } catch (e) {
-    toast.error(String(e))
+    toast.error(errorText(e))
   } finally {
     committing.value = false
   }
@@ -197,6 +194,9 @@ const busyDevice = ref<string | null>(null)
 
 const mappings = ref<ProjectMapping[]>([])
 const busyMapping = ref<string | null>(null)
+
+const parked = ref<ParkedRow[]>([])
+const retrying = ref(false)
 
 const resyncing = ref(false)
 const leaving = ref(false)
@@ -238,7 +238,7 @@ async function openAccept() {
   try {
     setAcceptUntil(await syncAcceptOpen())
   } catch (e) {
-    toast.error(String(e))
+    toast.error(errorText(e))
   } finally {
     acceptBusy.value = false
   }
@@ -257,7 +257,7 @@ async function answer(allow: boolean) {
     await syncJoinRespond(req.request_id, allow)
     if (!allow) toast.info(t('settings.sync.accept.denied'))
   } catch (e) {
-    toast.error(String(e))
+    toast.error(errorText(e))
   } finally {
     answering.value = false
     if (joinRequest.value?.request_id === req.request_id) joinRequest.value = null
@@ -269,7 +269,7 @@ async function loadDevices() {
     devices.value = sortDevices(await syncDevicesList())
   } catch (e) {
     devices.value = []
-    toast.error(String(e))
+    toast.error(errorText(e))
   }
 }
 
@@ -278,8 +278,31 @@ async function loadMappings() {
     mappings.value = await syncProjectMappingList()
   } catch (e) {
     mappings.value = []
-    toast.error(String(e))
+    toast.error(errorText(e))
   }
+}
+
+async function loadParked() {
+  parked.value = await syncParkedList().catch(() => [])
+}
+
+async function retryParked() {
+  if (retrying.value) return
+  retrying.value = true
+  try {
+    const n = await syncParkedRetry()
+    toast.success(t('settings.sync.parked.retried', { n }))
+    await loadParked()
+  } catch (e) {
+    toast.error(errorText(e))
+  } finally {
+    retrying.value = false
+  }
+}
+
+function parkedReason(reason: string): string {
+  const key = `settings.sync.parked.reason.${reason}`
+  return te(key) ? t(key) : reason
 }
 
 async function loadSecrets() {
@@ -288,7 +311,7 @@ async function loadSecrets() {
 
 async function loadPaired() {
   if (!paired.value) return
-  await Promise.all([loadDevices(), loadMappings(), loadSecrets()])
+  await Promise.all([loadDevices(), loadMappings(), loadSecrets(), loadParked()])
 }
 
 async function runNow() {
@@ -297,7 +320,7 @@ async function runNow() {
   try {
     await syncNow()
   } catch (e) {
-    toast.error(String(e))
+    toast.error(errorText(e))
   } finally {
     busyNow.value = false
   }
@@ -309,7 +332,7 @@ async function togglePause() {
   try {
     store.set(await syncPause(!status.value.paused))
   } catch (e) {
-    toast.error(String(e))
+    toast.error(errorText(e))
   } finally {
     busyPause.value = false
   }
@@ -323,7 +346,7 @@ async function toggleSecrets() {
     await syncSetSecrets(next)
     secrets.value = next
   } catch (e) {
-    toast.error(String(e))
+    toast.error(errorText(e))
   } finally {
     busySecrets.value = false
   }
@@ -343,7 +366,7 @@ async function saveRename() {
     renaming.value = false
     await loadDevices()
   } catch (e) {
-    toast.error(String(e))
+    toast.error(errorText(e))
   } finally {
     busyDevice.value = null
   }
@@ -363,7 +386,7 @@ async function removeDevice(d: SyncDevice) {
     toast.success(t('settings.sync.devices.removed', { name: deviceLabel(d) }))
     await loadDevices()
   } catch (e) {
-    toast.error(String(e).startsWith('only the device that created') ? t('settings.sync.devices.onlyCreatorError') : String(e))
+    toast.error(errorText(e))
   } finally {
     busyDevice.value = null
   }
@@ -376,7 +399,7 @@ async function setLeader(id: string | null) {
     await syncSetLeader(id)
     await loadDevices()
   } catch (e) {
-    toast.error(String(e))
+    toast.error(errorText(e))
   } finally {
     busyDevice.value = null
   }
@@ -390,7 +413,7 @@ async function pickFolder(p: ProjectMapping) {
     await syncProjectMappingSet(p.project_id, selected)
     await loadMappings()
   } catch (e) {
-    toast.error(String(e))
+    toast.error(errorText(e))
   } finally {
     busyMapping.value = null
   }
@@ -408,7 +431,7 @@ async function resyncAll() {
     const n = await syncResyncAll()
     toast.success(t('settings.sync.resync.done', { n }))
   } catch (e) {
-    toast.error(String(e))
+    toast.error(errorText(e))
   } finally {
     resyncing.value = false
   }
@@ -429,6 +452,7 @@ async function leave() {
     await store.refresh()
     devices.value = []
     mappings.value = []
+    parked.value = []
     preview.value = null
     previewError.value = ''
     commitReport.value = null
@@ -436,11 +460,19 @@ async function leave() {
     else toast.info(t('settings.sync.leave.offline'))
     relayReady.value = await syncRelayReady().catch(() => false)
   } catch (e) {
-    toast.error(String(e))
+    toast.error(errorText(e))
   } finally {
     leaving.value = false
   }
 }
+
+// The engine re-counts parked rows every cycle: keep the list in step.
+watch(
+  () => status.value.parked,
+  (n, old) => {
+    if (paired.value && n !== old) void loadParked()
+  },
+)
 
 onMounted(async () => {
   clock = setInterval(() => (now.value = Date.now()), 30_000)
@@ -479,7 +511,7 @@ onUnmounted(() => {
       <RefreshCw class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
       <span class="text-xs font-semibold">{{ t('settings.sync.title') }}</span>
       <span class="ml-auto flex items-center gap-1.5 text-[11px] text-muted-foreground">
-        <span class="h-2 w-2 rounded-full" :class="DOT[tone]" />
+        <span class="h-2 w-2 rounded-full" :class="SYNC_DOT_CLASS[tone]" />
         {{ t(`settings.sync.state.${syncStateKey(status, mergePending)}`) }}
       </span>
     </template>
@@ -625,7 +657,7 @@ onUnmounted(() => {
           </div>
         </div>
         <p v-if="status.last_error && status.state !== 'online'" class="break-words text-[11px] text-destructive">
-          {{ status.last_error }}
+          {{ errorText(status.last_error) }}
         </p>
         <div class="flex flex-wrap items-center gap-2">
           <Button size="sm" :disabled="busyNow || status.paused" @click="runNow">
@@ -637,6 +669,31 @@ onUnmounted(() => {
             {{ status.paused ? t('settings.sync.status.resume') : t('settings.sync.status.pause') }}
           </Button>
         </div>
+      </section>
+
+      <!-- Changes the relay refused for good -->
+      <section v-if="status.parked > 0 || parked.length" class="space-y-2 rounded-lg border border-orange-500/40 bg-orange-500/5 p-3">
+        <label class="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+          <AlertTriangle class="h-3 w-3 text-orange-500" :stroke-width="1.75" />
+          {{ t('settings.sync.parked.title') }}
+          <Badge variant="secondary">{{ Math.max(status.parked, parked.length) }}</Badge>
+        </label>
+        <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.parked.help') }}</p>
+        <ul v-if="parked.length" class="max-h-48 divide-y divide-border/60 overflow-y-auto rounded-md border border-border/60">
+          <li v-for="r in parked" :key="`${r.tbl}:${r.pk}`" class="flex items-center gap-2 px-2.5 py-1.5 text-xs">
+            <span class="shrink-0 font-mono text-muted-foreground">{{ r.tbl }}</span>
+            <span class="min-w-0 flex-1 truncate font-mono" :title="r.pk">{{ r.pk }}</span>
+            <Badge variant="secondary">{{ parkedReason(r.reason) }}</Badge>
+            <span class="shrink-0 text-[11px] text-muted-foreground">{{ t('settings.sync.parked.when', { ago: ago(r.parked_at) }) }}</span>
+          </li>
+        </ul>
+        <p v-if="status.parked > parked.length && parked.length" class="text-[11px] text-muted-foreground">
+          {{ t('settings.sync.parked.more', { n: parked.length }) }}
+        </p>
+        <Button variant="outline" size="sm" :disabled="retrying" @click="retryParked">
+          <component :is="retrying ? Loader2 : RotateCcw" class="h-3.5 w-3.5" :class="{ 'animate-spin': retrying }" :stroke-width="1.75" />
+          {{ t('settings.sync.parked.retry') }}
+        </Button>
       </section>
 
       <div class="flex items-center justify-between gap-4 rounded-lg border border-border/60 bg-muted/20 px-3.5 py-3">

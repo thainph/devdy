@@ -197,6 +197,11 @@ impl SyncEngine {
         self.shared.kick.notify_one();
     }
 
+    /// Parked rows changed outside a cycle (retry): show the new count now.
+    pub fn set_parked(&self, parked: u64) {
+        self.shared.update(|s| s.parked = parked);
+    }
+
     pub fn set_paused(&self, paused: bool) {
         self.shared.paused.send_replace(paused);
         self.shared.update(|s| s.paused = paused);

@@ -8,7 +8,7 @@
 use crate::db::Db;
 use crate::sync::engine::{StatusSink, SyncEngine, SyncStatus, Timing, STATUS_EVENT};
 use crate::sync::leader::{self, DeviceInfo};
-use crate::sync::store::{SqliteSyncStore, SyncStore};
+use crate::sync::store::{self, ParkedRow, SqliteSyncStore, SyncStore};
 use crate::sync::transport::{Connection, TransportError};
 use serde_json::json;
 use std::sync::Arc;
@@ -354,4 +354,25 @@ pub async fn sync_accept_state() -> Result<Option<i64>, String> {
 #[tauri::command]
 pub async fn sync_join_respond(request_id: String, allow: bool) -> Result<(), String> {
     crate::sync::pair::respond_join(&request_id, allow)
+}
+
+/// How many parked rows `sync_parked_list` returns at most.
+const PARKED_LIST_LIMIT: usize = 200;
+
+/// Rows whose latest change the relay permanently refused (newest first).
+#[tauri::command]
+pub async fn sync_parked_list(db: State<'_, Db>) -> Result<Vec<ParkedRow>, String> {
+    store::parked_list(db.inner(), PARKED_LIST_LIMIT).await
+}
+
+/// Queue the parked rows for push again; returns how many. Rows the relay
+/// still refuses are parked again.
+#[tauri::command]
+pub async fn sync_parked_retry(db: State<'_, Db>, state: State<'_, SyncManager>) -> Result<usize, String> {
+    let n = store::parked_retry(db.inner()).await?;
+    if let Some(e) = state.engine.lock().await.as_ref() {
+        e.set_parked(0);
+        e.sync_now();
+    }
+    Ok(n)
 }

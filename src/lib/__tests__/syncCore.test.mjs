@@ -8,7 +8,7 @@ import {
   canRemoveDevices,
   countdown,
   groupCreator,
-  joinErrorCode,
+  syncErrorCode,
   deviceLabel,
   missingProjects,
   sortDevices,
@@ -20,21 +20,26 @@ import {
 
 const st = (over) => ({ ...DISABLED_STATUS, state: 'online', ...over })
 
-test('syncTone maps state, pause and backlog to a dot colour', () => {
+test('syncTone gives each state its own dot, most urgent first', () => {
   assert.equal(syncTone(null), 'off')
   assert.equal(syncTone(DISABLED_STATUS), 'off')
   assert.equal(syncTone(st()), 'ok')
-  assert.equal(syncTone(st({ pending: 3 })), 'busy')
-  assert.equal(syncTone(st({ state: 'connecting' })), 'busy')
-  assert.equal(syncTone(st({ state: 'offline' })), 'warn')
-  assert.equal(syncTone(st({ paused: true })), 'warn')
+  assert.equal(syncTone(st({ pending: 3 })), 'syncing')
+  assert.equal(syncTone(st({ state: 'connecting' })), 'syncing')
+  assert.equal(syncTone(st({ parked: 2 })), 'parked')
+  assert.equal(syncTone(st({ parked: 2, pending: 3 })), 'parked')
+  assert.equal(syncTone(st({ state: 'offline', parked: 2 })), 'offline')
+  assert.equal(syncTone(st({ state: 'offline', paused: true })), 'paused')
   assert.equal(syncTone(st({ state: 'error', paused: true })), 'error')
+  assert.equal(syncTone(st({ state: 'error' }), true), 'merge')
 })
 
 test('syncStateKey prefers "paused" over the connection state', () => {
   assert.equal(syncStateKey(undefined), 'disabled')
   assert.equal(syncStateKey(st({ state: 'offline', paused: true })), 'paused')
   assert.equal(syncStateKey(st({ state: 'connecting' })), 'connecting')
+  assert.equal(syncStateKey(st({ parked: 1 })), 'parked')
+  assert.equal(syncStateKey(st({ state: 'error', parked: 1 })), 'error')
 })
 
 test('ageParts buckets elapsed time', () => {
@@ -69,7 +74,7 @@ test('missingProjects keeps synced projects not on this machine', () => {
 })
 
 test('a pending first-join merge overrides the disabled state', () => {
-  assert.equal(syncTone(DISABLED_STATUS, true), 'warn')
+  assert.equal(syncTone(DISABLED_STATUS, true), 'merge')
   assert.equal(syncStateKey(DISABLED_STATUS, true), 'mergePending')
   assert.equal(syncStateKey(DISABLED_STATUS, false), 'disabled')
 })
@@ -103,10 +108,31 @@ test('countdown renders m:ss and never goes negative', () => {
   assert.equal(countdown(null, 0), '0:00')
 })
 
-test('joinErrorCode picks the backend code prefix', () => {
-  assert.equal(joinErrorCode('wrong_password'), 'wrong_password')
-  assert.equal(joinErrorCode('not_accepting: open Settings'), 'not_accepting')
-  assert.equal(joinErrorCode('relay_not_configured: relay URL is not set'), 'relay_not_configured')
-  assert.equal(joinErrorCode('network: connect timeout'), null)
-  assert.equal(joinErrorCode(undefined), null)
+test('syncErrorCode picks the backend code prefix', () => {
+  assert.equal(syncErrorCode('wrong_password'), 'wrong_password')
+  assert.equal(syncErrorCode('not_accepting: open Settings'), 'not_accepting')
+  assert.equal(syncErrorCode('declined: the request was declined on that machine'), 'declined')
+  assert.equal(syncErrorCode('relay_not_configured: relay URL is not set'), 'relay_not_configured')
+  assert.equal(syncErrorCode('sync_bootstrap_runs_live: 2 session(s) still running'), 'sync_bootstrap_runs_live')
+  assert.equal(syncErrorCode('network: connect timeout'), null)
+  assert.equal(syncErrorCode(undefined), null)
+  assert.equal(syncErrorCode(''), null)
+})
+
+test('syncErrorCode finds relay codes wrapped by the backend', () => {
+  assert.equal(syncErrorCode('relay rejected this device: device_revoked'), 'device_revoked')
+  assert.equal(syncErrorCode('relay rejected this device: ticket_invalid'), 'ticket_invalid')
+  assert.equal(syncErrorCode('relay rejected this device: ticket_required'), 'ticket_required')
+  assert.equal(syncErrorCode('relay rejected this device: group_exists'), 'group_exists')
+  assert.equal(syncErrorCode('relay error: quota_exceeded'), 'quota_exceeded')
+  assert.equal(syncErrorCode('relay error: forbidden'), 'forbidden')
+  // Whole codes only.
+  assert.equal(syncErrorCode('relay error: not_forbidden_x'), null)
+  assert.equal(syncErrorCode('relay rejected this device: auth_failed'), null)
+})
+
+test('syncErrorCode maps known phrases without a code', () => {
+  assert.equal(syncErrorCode('only the device that created the group can remove other devices'), 'forbidden')
+  assert.equal(syncErrorCode('relay not configured'), 'relay_not_configured')
+  assert.equal(syncErrorCode(new Error('Relay not configured')), 'relay_not_configured')
 })
