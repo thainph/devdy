@@ -79,9 +79,9 @@ test('labels: remote pop-outs never share a label with local windows', () => {
   assert.equal(toRemoteLabel('remote-session-1ab'), 'remote-session-1ab')
   assert.equal(fromRemoteLabel('remote-desktop'), 'main')
   assert.equal(fromRemoteLabel('remote-fileviewer-x'), 'fileviewer-x')
-  assert.equal(fromRemoteLabel('pulse'), 'pulse')
-  assert.ok(isRemoteLabel('remote-pulse'))
-  assert.ok(!isRemoteLabel('pulse'))
+  assert.equal(fromRemoteLabel('focus'), 'focus')
+  assert.ok(isRemoteLabel('remote-focus'))
+  assert.ok(!isRemoteLabel('focus'))
   assert.equal(busEventName('item:changed'), 'remote-desktop:bus:item:changed')
 })
 
@@ -104,7 +104,7 @@ test('errors cross the mux as data', () => {
 
 test('invokes are queued until the owner welcomes the peer, then forwarded', async () => {
   const { client, addPeer } = setup()
-  const { core, peer } = addPeer('remote-pulse')
+  const { core, peer } = addPeer('remote-focus')
   const p = core.invoke('list_projects', { a: 1 })
   assert.equal(client.invokes.length, 0)
   peer.hello()

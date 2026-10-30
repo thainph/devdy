@@ -3,7 +3,7 @@ import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useProjectsStore } from '@/stores/projects'
-import { usePulseStore } from '@/stores/pulse'
+import { useFocusStore } from '@/stores/focus'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
@@ -33,7 +33,7 @@ import PrInboxWindow from '@/views/PrInboxWindow.vue'
 import { PR_INBOX_WINDOW_OPEN_ROUTE, type PrInboxWindowOpenRoute } from '@/lib/prInboxWindow'
 import CalendarWindow from '@/views/CalendarWindow.vue'
 import { CALENDAR_WINDOW_OPEN_ROUTE, type CalendarWindowOpenRoute } from '@/lib/calendarWindow'
-import PulseWindow from '@/views/PulseWindow.vue'
+import FocusWindow from '@/views/FocusWindow.vue'
 import {
   SLACK_API_RECEIVED,
   type SlackApiReceived,
@@ -85,7 +85,7 @@ const isGanttWindow = new URLSearchParams(window.location.search).get('ganttWind
 const isSlackWindow = new URLSearchParams(window.location.search).get('slackWindow') === '1'
 const isPrInboxWindow = new URLSearchParams(window.location.search).get('prInboxWindow') === '1'
 const isCalendarWindow = new URLSearchParams(window.location.search).get('calendarWindow') === '1'
-const isPulseWindow = new URLSearchParams(window.location.search).get('pulseWindow') === '1'
+const isFocusWindow = new URLSearchParams(window.location.search).get('focusWindow') === '1'
 const isMascotWindow = new URLSearchParams(window.location.search).get('mascotWindow') === '1'
 // A session pop-out is different from the bare pop-outs above: it reuses the full
 // RunView (routed to one run) with the app chrome hidden, so it still needs the
@@ -103,14 +103,14 @@ const isPopoutWindow =
   isSlackWindow ||
   isPrInboxWindow ||
   isCalendarWindow ||
-  isPulseWindow ||
+  isFocusWindow ||
   isMascotWindow
 
 const route = useRoute()
 const router = useRouter()
 const projectsStore = useProjectsStore()
-// Pulse overview for the sidebar badge (number of 🔴 projects); stored data only.
-const pulseStore = usePulseStore()
+// Focus board for the sidebar badge (number of overdue todos).
+const focusStore = useFocusStore()
 const appSettings = useAppSettingsStore()
 const tabsStore = useWorkspaceTabsStore()
 const uiLayout = useUILayoutStore()
@@ -575,7 +575,7 @@ onMounted(async () => {
     }
     return
   }
-  void pulseStore.start()
+  void focusStore.start()
   // Tracked background processes: counts for the sidebar row + tray, and the
   // first snapshot the startup orphan prompt waits on.
   void bgProcs.start()
@@ -762,12 +762,12 @@ onMounted(async () => {
   <!-- THE Calendar window: the Calendar screen on its own OS window. -->
   <CalendarWindow v-else-if="isCalendarWindow" />
 
-  <!-- THE Pulse window: the Project Pulse screen on its own OS window. -->
-  <PulseWindow v-else-if="isPulseWindow" />
+  <!-- THE Focus window: the Focus board on its own OS window. -->
+  <FocusWindow v-else-if="isFocusWindow" />
 
   <!-- Pop-out Gantt window: bare Gantt chart on its own OS window. -->
   <!-- Gantt pop-out: the board plus the dialog / toast hosts its row menu
-       (watch in Pulse) needs, like PrInboxWindow. -->
+       ("+ Todo") needs, like PrInboxWindow. -->
   <div
     v-else-if="isGanttWindow"
     class="flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground"
@@ -926,11 +926,11 @@ onMounted(async () => {
                 <component :is="item.icon" class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
                 <span class="flex-1 truncate">{{ item.label }}</span>
                 <span
-                  v-if="item.path === '/pulse' && pulseStore.redCount > 0"
+                  v-if="item.path === '/focus' && focusStore.overdueCount > 0"
                   class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-medium text-white leading-none"
-                  :title="t('pulse.health.red')"
+                  :title="t('focus.buckets.overdue')"
                 >
-                  {{ pulseStore.redCount }}
+                  {{ focusStore.overdueCount }}
                 </span>
                 <span
                   v-if="item.path === '/projects' && (projectsStore.conflicts.length + projectsStore.ruleConflicts.length) > 0"
