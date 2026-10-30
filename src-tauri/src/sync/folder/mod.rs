@@ -3,10 +3,17 @@
 //!
 //! - Source: [`handler::FolderSource`] serves `folder_manifest` (walk the
 //!   folder, describe every git repo + non-git file, bundle the commits the
-//!   receiver lacks) and `folder_fetch` (upload contents by sha256, in ranges).
+//!   receiver lacks) and `folder_fetch` (content ranges by sha256, sent
+//!   inline in the reply); `folder_done` ends a transfer.
 //! - Receiver: [`apply::preview`] (no writes) and [`apply::apply`]: backup →
 //!   git (bundle fetch, refs, checkout, index patch) → files (receiver-driven
-//!   batches, sha-verified atomic writes) → cleanup (receiver-only files).
+//!   chunk requests, sha-verified atomic writes) → cleanup (receiver-only files).
+//!
+//! Wire (design §P3, the relay only forwards): every byte travels inside peer
+//! replies, in pieces of at most [`CHUNK_SIZE`](crate::sync::peer::CHUNK_SIZE).
+//! The manifest JSON, the git bundles and the file contents are all contents
+//! of one *transfer* the source keeps (with its bundle files) until
+//! `folder_done`, a newer manifest for the same project, or [`IDLE_TTL`].
 //!
 //! Safety: every path stays under the mapped root (`paths`), excluded paths
 //! are never touched, git runs without hooks or network (`git`), file
@@ -32,17 +39,20 @@ use std::sync::Arc;
 /// Request kinds served on the source.
 pub const KIND_MANIFEST: &str = "folder_manifest";
 pub const KIND_FETCH: &str = "folder_fetch";
+pub const KIND_DONE: &str = "folder_done";
 /// Reply kinds.
 pub const REPLY_MANIFEST: &str = "folder_manifest_ready";
 pub const REPLY_CHUNK: &str = "folder_chunk";
-pub const REPLY_FETCH_DONE: &str = "folder_fetch_done";
+pub const REPLY_DONE: &str = "folder_done_ok";
 
 /// Progress event (`FolderProgress`).
 pub const EVENT: &str = "sync://folder";
 
-/// Most content bytes requested by one `folder_fetch` (keeps the relay's
-/// per-group blob cap out of reach).
-pub const BATCH_BYTES: u64 = 256 * 1024 * 1024;
+/// Most ranges in one `folder_fetch` (their total stays ≤ `CHUNK_SIZE`).
+pub const MAX_FETCH_ITEMS: usize = 256;
+/// A transfer nobody asked anything of for this long is dropped on the
+/// source (with its bundle files).
+pub const IDLE_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 /// Backups kept per repo / project folder.
 pub const KEEP_BACKUPS: usize = 5;
 /// Default excludes (O6).
