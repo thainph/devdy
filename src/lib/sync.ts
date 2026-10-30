@@ -2,7 +2,9 @@
 // and the `sync://*` events.
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from '@/lib/tauri'
-import type { BootstrapPreview, BootstrapReport, JoinRequest, ProjectMapping, SyncDevice, SyncStatus } from '@/lib/syncCore'
+import type {
+  BootstrapPreview, BootstrapReport, JoinRequest, ParkedRow, ProjectMapping, SyncDevice, SyncStatus,
+} from '@/lib/syncCore'
 
 export * from '@/lib/syncCore'
 
@@ -29,6 +31,10 @@ export const syncPause = (paused: boolean) => invoke<SyncStatus>('sync_pause', {
 export const syncNow = () => invoke<void>('sync_now')
 export const syncGetSecrets = () => invoke<boolean>('sync_get_secrets')
 export const syncSetSecrets = (enabled: boolean) => invoke<void>('sync_set_secrets', { enabled })
+/** Rows the relay permanently refused, newest first. */
+export const syncParkedList = () => invoke<ParkedRow[]>('sync_parked_list')
+/** Queue the parked rows for push again; resolves to the count. */
+export const syncParkedRetry = () => invoke<number>('sync_parked_retry')
 
 export const syncDevicesList = () => invoke<SyncDevice[]>('sync_devices_list')
 export const syncDeviceRename = (name: string) => invoke<void>('sync_device_rename', { name })

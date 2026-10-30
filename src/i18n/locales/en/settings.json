@@ -488,7 +488,8 @@
       "offline": "Offline",
       "error": "Error",
       "paused": "Paused",
-      "mergePending": "Merge pending"
+      "mergePending": "Merge pending",
+      "parked": "Some changes not synced"
     },
     "ago": {
       "never": "never",
@@ -548,7 +549,8 @@
       "pending": "Pending",
       "now": "Sync now",
       "pause": "Pause",
-      "resume": "Resume"
+      "resume": "Resume",
+      "parked": "Not synced"
     },
     "secrets": {
       "label": "Sync secrets",
@@ -573,8 +575,7 @@
       },
       "creator": "Created the group",
       "removeHelp": "A removed device keeps its copy of the group key but can no longer reach the group's data on the relay (the key is not rotated in this version).",
-      "onlyCreator": "Only the device that created the group ({name}) can remove devices.",
-      "onlyCreatorError": "Only the device that created the group can remove other devices."
+      "onlyCreator": "Only the device that created the group ({name}) can remove devices."
     },
     "projects": {
       "title": "Project folders on this machine",
@@ -611,10 +612,17 @@
       "host_not_in_group": "That machine is not in a sync group.",
       "host_unsupported": "That machine's Devdy is too old to add devices. Update it first.",
       "not_accepting": "That machine is not accepting new devices. Open Settings → Sync → Accept a new device on it, then try again.",
-      "declined": "The request was declined (or not answered in time) on that machine.",
+      "declined": "The request was declined or not answered in time on that machine.",
       "busy": "That machine is answering another join request. Try again in a moment.",
       "relay_not_configured": "This machine has no relay of its own yet: set the relay URL and token in Settings → Remote Control first.",
-      "relay_error": "That machine could not reach the relay. Try again."
+      "relay_error": "That machine could not reach the relay. Try again.",
+      "sync_bootstrap_runs_live": "Stop running sessions on this machine before merging.",
+      "ticket_required": "The relay needs a join ticket from a device already in the group. Ask that device to accept this one again.",
+      "ticket_invalid": "The join ticket expired or was already used. Join again.",
+      "group_exists": "That sync group already exists on the relay.",
+      "forbidden": "Only the device that created the group can remove devices.",
+      "quota_exceeded": "The relay storage quota for this group is full.",
+      "device_revoked": "This device was removed from the sync group. Leave the group, then join again."
     },
     "accept": {
       "title": "Accept a new device",
@@ -630,6 +638,19 @@
         "allow": "Allow",
         "deny": "Deny",
         "expires": "{time}"
+      }
+    },
+    "parked": {
+      "title": "Changes the relay refused",
+      "help": "The relay permanently refused these changes (too large or malformed), so they are not synced and no longer block the others. Editing the row again queues it as usual; Retry sends the current version now.",
+      "retry": "Retry",
+      "retried": "Queued {n} change(s) again",
+      "tooltip": "{n} change(s) refused by the relay",
+      "when": "Parked {ago}",
+      "more": "Showing the newest {n}.",
+      "reason": {
+        "too_large": "Too large",
+        "bad_request": "Rejected"
       }
     }
   }
