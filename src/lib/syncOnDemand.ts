@@ -82,7 +82,11 @@ export interface RepoPreview {
   /** The source's current branch (null = detached). */
   branch_to: string | null
   /** The source's HEAD sha. */
-  head: string
+  head: string | null
+  /** HEAD here (null = no repo / unborn). */
+  head_from?: string | null
+  /** Local branches whose commits leave the branch (old tips kept on `devdy-sync-backup/…` branches). */
+  branches_rewound?: string[]
   /** Commits this machine lacks, shipped as a bundle. */
   commits: number
   /** Staged files restored from the index patch. */
@@ -90,6 +94,16 @@ export interface RepoPreview {
   /** Tracked files with uncommitted changes copied as-is. */
   dirty: number
   bundle_bytes: number
+}
+
+/** Something folder sync leaves alone (Rust `scan::SkipItem`). */
+export interface SkipItem {
+  /** Relative to the project root. */
+  path: string
+  /** `too_large` | `symlink_outside` | `submodule` | `git_link` | `non_utf8` | `repo_only_here` |
+   *  `path_conflict` | `unsafe_path` | `no_repo_here` | other. */
+  reason: string
+  size?: number | null
 }
 
 /** `sync_folder_preview` item (Rust `FolderPreview`): what applying would do, nothing written yet. */
@@ -102,13 +116,19 @@ export interface FolderPreview {
   /** Why it is skipped: `no_local_path` | `running_session` | other; null = not skipped. */
   skipped: string | null
   repos: RepoPreview[]
+  /** Non-git files; each list is capped (the backend keeps the first 2000), `*_count` are exact. */
   overwrite: PreviewFile[]
   add: PreviewFile[]
   delete: PreviewFile[]
+  overwrite_count?: number
+  add_count?: number
+  delete_count?: number
   /** This machine's uncommitted / receiver-only changes that get backed up first. */
   local_changes: string[]
   /** Files over `max_file_mb`, not transferred. */
   too_large: PreviewFile[]
+  /** Other things left alone (submodules, symlinks outside, receiver-only repos, path conflicts…). */
+  skipped_items?: SkipItem[]
   /** Bytes to download (file contents + bundles). */
   download_bytes: number
   error?: string | null
@@ -303,6 +323,12 @@ export interface BranchChange {
   sha: string
 }
 
+/** Local branches moved back (their commits stay on a `devdy-sync-backup/…` branch). */
+export interface RewoundBranches {
+  repo: string
+  branches: string[]
+}
+
 export interface PreviewSummary {
   skipped: string | null
   create: boolean
@@ -319,6 +345,21 @@ export interface PreviewSummary {
   /** This machine's own changes backed up first. */
   localChanges: number
   tooLarge: number
+  rewound: RewoundBranches[]
+  skippedItems: number
+  /** Some file list holds fewer entries than its exact count. */
+  truncated: boolean
+}
+
+/** Exact file count of a list: the backend's `*_count` when present, else the list length. */
+export function fileCount(list: readonly PreviewFile[] | null | undefined, count: number | null | undefined): number {
+  const n = list?.length ?? 0
+  return typeof count === 'number' && Number.isFinite(count) ? Math.max(count, n) : n
+}
+
+/** The list shows fewer entries than there are (capped by the backend). */
+export function isTruncated(list: readonly PreviewFile[] | null | undefined, count: number | null | undefined): boolean {
+  return fileCount(list, count) > (list?.length ?? 0)
 }
 
 export const shortSha = (sha: string | null | undefined): string => (sha ?? '').slice(0, 7)
@@ -330,23 +371,30 @@ export function summarizePreview(p: FolderPreview): PreviewSummary {
     create: !!p.create,
     clones: repos.filter((r) => r.clone).length,
     branches: repos
-      .filter((r) => !r.clone && (r.branch_from !== r.branch_to || r.commits > 0))
+      .filter((r) =>
+        !r.clone && (r.branch_from !== r.branch_to || r.commits > 0 || (!!r.head_from && !!r.head && r.head_from !== r.head)))
       .map((r) => ({ repo: r.path, from: r.branch_from, to: r.branch_to, sha: shortSha(r.head) })),
     commits: repos.reduce((a, r) => a + (r.commits || 0), 0),
     staged: repos.reduce((a, r) => a + (r.staged || 0), 0),
-    overwrite: p.overwrite?.length ?? 0,
-    add: p.add?.length ?? 0,
-    delete: p.delete?.length ?? 0,
+    overwrite: fileCount(p.overwrite, p.overwrite_count),
+    add: fileCount(p.add, p.add_count),
+    delete: fileCount(p.delete, p.delete_count),
     bytes: p.download_bytes || 0,
     localChanges: p.local_changes?.length ?? 0,
     tooLarge: p.too_large?.length ?? 0,
+    rewound: repos
+      .filter((r) => (r.branches_rewound?.length ?? 0) > 0)
+      .map((r) => ({ repo: r.path, branches: [...(r.branches_rewound ?? [])] })),
+    skippedItems: p.skipped_items?.length ?? 0,
+    truncated: isTruncated(p.overwrite, p.overwrite_count) || isTruncated(p.add, p.add_count) ||
+      isTruncated(p.delete, p.delete_count),
   }
 }
 
 /** Nothing to change in this project (already identical). */
 export function previewIsNoop(s: PreviewSummary): boolean {
   return !s.create && !s.clones && !s.branches.length && !s.commits && !s.staged && !s.overwrite && !s.add &&
-    !s.delete && !s.bytes
+    !s.delete && !s.bytes && !s.rewound.length
 }
 
 export function canApplyPreview(p: FolderPreview): boolean {
@@ -358,18 +406,38 @@ export function previewTotals(list: readonly FolderPreview[], selected: readonly
   count: number
   bytes: number
   backup: boolean
+  /** Exact file changes (overwrite + add + delete) over the checked projects. */
+  files: number
 } {
   const picked = list.filter((p) => canApplyPreview(p) && selected.includes(p.project_id))
   return {
     count: picked.length,
     bytes: picked.reduce((a, p) => a + (p.download_bytes || 0), 0),
-    backup: picked.some((p) => (p.local_changes?.length ?? 0) > 0 || (p.overwrite?.length ?? 0) > 0 || (p.delete?.length ?? 0) > 0),
+    backup: picked.some((p) =>
+      (p.local_changes?.length ?? 0) > 0 || fileCount(p.overwrite, p.overwrite_count) > 0 ||
+      fileCount(p.delete, p.delete_count) > 0 ||
+      (p.repos ?? []).some((r) => (r.branches_rewound?.length ?? 0) > 0)),
+    files: picked.reduce(
+      (a, p) => a + fileCount(p.overwrite, p.overwrite_count) + fileCount(p.add, p.add_count) +
+        fileCount(p.delete, p.delete_count),
+      0,
+    ),
   }
 }
 
 /** Projects checked by default in the preview: every applicable one. */
 export function defaultSelection(list: readonly FolderPreview[]): string[] {
   return list.filter(canApplyPreview).map((p) => p.project_id)
+}
+
+/**
+ * Apply refused because the source's folder changed beyond the confirmed preview (the folder
+ * worker aborts instead of writing more than was shown): the UI offers "Review" (preview again).
+ */
+export function isPlanChanged(message: unknown): boolean {
+  const m = String(message ?? '').toLowerCase()
+  return /(^|[^a-z_])(plan_changed|plan_grew|preview_stale|preview_changed)($|[^a-z_])/.test(m) ||
+    m.includes('beyond the confirmed preview') || m.includes('preview is out of date')
 }
 
 // ---- Last run (machine-local, kept by the store) ----

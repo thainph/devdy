@@ -14,8 +14,11 @@ import {
   folderPercent,
   folderProjects,
   formatBytes,
+  fileCount,
   formatEta,
   isFolderFinal,
+  isPlanChanged,
+  isTruncated,
   isRemapped,
   localFolderState,
   overallPercent,
@@ -189,6 +192,57 @@ test('summarizePreview tolerates missing lists', () => {
   assert.deepEqual(s.branches, [])
 })
 
+test('summarizePreview uses the exact counts, not the capped lists', () => {
+  const capped = Array.from({ length: 3 }, (_, i) => ({ path: `f${i}`, size: 1 }))
+  const s = summarizePreview(preview({
+    overwrite: capped, overwrite_count: 12,
+    add: capped, add_count: 3,
+    delete: capped, delete_count: 50_000,
+  }))
+  assert.deepEqual([s.overwrite, s.add, s.delete], [12, 3, 50_000])
+  assert.equal(s.truncated, true)
+  assert.equal(summarizePreview(preview({ add: capped, add_count: 3 })).truncated, false)
+  assert.equal(fileCount(capped, undefined), 3)
+  assert.equal(fileCount(capped, 1), 3)
+  assert.equal(fileCount(null, 7), 7)
+  assert.equal(isTruncated(capped, 4), true)
+  assert.equal(isTruncated(capped, 3), false)
+  assert.equal(isTruncated(capped, null), false)
+})
+
+test('summarizePreview reports a same-branch rewind and skipped items', () => {
+  const s = summarizePreview(preview({
+    repos: [repo({ head: 'aaaaaaa1', head_from: 'bbbbbbb2', branches_rewound: ['main'] }), repo({ path: 'lib' })],
+    skipped_items: [{ path: 'vendor/x', reason: 'submodule' }, { path: 'big.bin', reason: 'too_large', size: 9 }],
+  }))
+  assert.deepEqual(s.branches, [{ repo: '', from: 'main', to: 'main', sha: 'aaaaaaa' }])
+  assert.deepEqual(s.rewound, [{ repo: '', branches: ['main'] }])
+  assert.equal(s.skippedItems, 2)
+  assert.equal(previewIsNoop(s), false)
+  const same = summarizePreview(preview({ repos: [repo({ head: 'abc', head_from: 'abc' })] }))
+  assert.equal(previewIsNoop(same), true)
+  // A rewound branch other than the checked-out one still counts as a change.
+  assert.equal(previewIsNoop(summarizePreview(preview({ repos: [repo({ branches_rewound: ['old'] })] }))), false)
+})
+
+test('previewTotals sums exact file counts and backs up rewound branches', () => {
+  const list = [
+    preview({ project_id: 'a', add: [{ path: 'x', size: 1 }], add_count: 4000, delete_count: 10 }),
+    preview({ project_id: 'b', repos: [repo({ branches_rewound: ['main'] })] }),
+  ]
+  assert.deepEqual(previewTotals(list, ['a']), { count: 1, bytes: 0, backup: true, files: 4010 })
+  assert.deepEqual(previewTotals(list, ['b']), { count: 1, bytes: 0, backup: true, files: 0 })
+})
+
+test('isPlanChanged spots the apply abort for a grown plan', () => {
+  assert.equal(isPlanChanged('plan_changed'), true)
+  assert.equal(isPlanChanged('folder apply failed: plan_changed: 3 more files'), true)
+  assert.equal(isPlanChanged('preview_stale'), true)
+  assert.equal(isPlanChanged('The plan grew beyond the confirmed preview'), true)
+  assert.equal(isPlanChanged('peer_offline'), false)
+  assert.equal(isPlanChanged(null), false)
+})
+
 test('previewTotals / defaultSelection skip skipped and failed projects', () => {
   const list = [
     preview({ project_id: 'a', download_bytes: 10, local_changes: ['x'] }),
@@ -198,8 +252,8 @@ test('previewTotals / defaultSelection skip skipped and failed projects', () => 
   ]
   assert.equal(canApplyPreview(list[2]), false)
   assert.deepEqual(defaultSelection(list), ['a', 'b'])
-  assert.deepEqual(previewTotals(list, ['a', 'b', 'c']), { count: 2, bytes: 30, backup: true })
-  assert.deepEqual(previewTotals(list, ['b']), { count: 1, bytes: 20, backup: false })
+  assert.deepEqual(previewTotals(list, ['a', 'b', 'c']), { count: 2, bytes: 30, backup: true, files: 0 })
+  assert.deepEqual(previewTotals(list, ['b']), { count: 1, bytes: 20, backup: false, files: 0 })
 })
 
 test('parseLastRun round-trips and rejects junk', () => {
