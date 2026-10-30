@@ -101,6 +101,16 @@ pub struct Frame {
     /// Keepalive frames share the Remote Control envelope, which carries one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub room_id: Option<String>,
+    /// `sync_hello`: the relay store epoch this device last synced in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub known_epoch: Option<String>,
+    /// `sync_welcome`: the relay store's current epoch (absent on old relays).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<String>,
+    /// `sync_welcome`: the head the store recorded for `known_epoch` (absent:
+    /// not asked, or an epoch this store never had).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub known_head: Option<u64>,
 }
 
 impl Frame {
@@ -174,9 +184,18 @@ fn is_fatal_code(code: &str) -> bool {
     )
 }
 
-/// [`Connection::check_not_behind`]'s code: the relay's log is older than
-/// this device's cursor (needs a re-merge, `sync_rebootstrap`).
+/// [`Connection::check_history`]'s code: the relay's log lacks ops this
+/// device saw (needs a re-merge, `sync_rebootstrap`).
 pub const RELAY_BEHIND: &str = "relay_behind";
+
+/// What this device knows of the relay store's history: the store epoch it
+/// last synced in and the highest seq it saw there (pulled, or acked for its
+/// own push). See the relay's `new_store_epoch`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayMark {
+    pub epoch: String,
+    pub seen: u64,
+}
 
 /// Longest join ticket lifetime the relay accepts.
 #[allow(dead_code)] // pairing (join tickets)
@@ -217,6 +236,10 @@ pub struct Connection {
     task: tokio::task::JoinHandle<()>,
     /// The group's `last_seq` the relay announced in `sync_welcome`.
     head: u64,
+    /// The store epoch from `sync_welcome` (`None`: a relay without epochs).
+    epoch: Option<String>,
+    /// The head the store recorded for the epoch the hello presented.
+    known_head: Option<u64>,
 }
 
 impl Drop for Connection {
@@ -246,6 +269,26 @@ impl Connection {
         ticket: Option<&str>,
         events: mpsc::UnboundedSender<Event>,
     ) -> Result<Connection, TransportError> {
+        Self::dial(params, create, ticket, None, events).await
+    }
+
+    /// [`Connection::connect`] presenting the store epoch this device last
+    /// synced in, so [`Connection::check_history`] can tell a restored store.
+    pub async fn connect_known(
+        params: &ConnectParams,
+        known_epoch: Option<&str>,
+        events: mpsc::UnboundedSender<Event>,
+    ) -> Result<Connection, TransportError> {
+        Self::dial(params, false, None, known_epoch, events).await
+    }
+
+    async fn dial(
+        params: &ConnectParams,
+        create: bool,
+        ticket: Option<&str>,
+        known_epoch: Option<&str>,
+        events: mpsc::UnboundedSender<Event>,
+    ) -> Result<Connection, TransportError> {
         let dial = tokio::time::timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(&params.relay_url));
         let ws = match dial.await {
             Ok(Ok((ws, _))) => ws,
@@ -263,10 +306,11 @@ impl Connection {
             hello.create = Some(true);
         }
         hello.ticket = ticket.map(str::to_string);
+        hello.known_epoch = known_epoch.map(str::to_string);
         send_frame(&mut sink, &hello).await?;
 
         // Wait for the hello verdict, ignoring anything else (keepalive echoes).
-        let head = tokio::time::timeout(REQUEST_TIMEOUT, async {
+        let (head, epoch, known_head) = tokio::time::timeout(REQUEST_TIMEOUT, async {
             while let Some(msg) = stream.next().await {
                 let Some(frame) = parse(msg.map_err(|e| TransportError::Network(e.to_string()))?) else {
                     continue;
@@ -276,7 +320,7 @@ impl Connection {
                         if let Some(c) = frame.creator_device.filter(|c| !c.is_empty()) {
                             let _ = events.send(Event::Creator(c));
                         }
-                        return Ok(frame.last_seq.unwrap_or(0));
+                        return Ok((frame.last_seq.unwrap_or(0), frame.epoch.filter(|e| !e.is_empty()), frame.known_head));
                     }
                     "error" => {
                         let code = frame.code.unwrap_or_else(|| "error".into());
@@ -370,18 +414,34 @@ impl Connection {
             next_id: std::sync::atomic::AtomicU64::new(1),
             task,
             head,
+            epoch,
+            known_head,
         })
     }
 
-    /// N15: a relay whose head is behind this device's pull cursor lost ops
-    /// (restored from a backup): pulling on would skip the seqs it hands out
-    /// again, and pushing with that cursor as `base_seq` would let it drop ops
-    /// this device never saw. Sync must stop until the device merges again.
-    pub fn check_not_behind(&self, cursor: u64) -> Result<(), TransportError> {
-        if self.head < cursor {
-            return Err(TransportError::Rejected(RELAY_BEHIND.into()));
+    /// N15 / M6: a relay that lost ops this device saw (restored from a
+    /// backup) hands their seqs out again: pulling on would skip them, and
+    /// pushing with the cursor as `base_seq` would let it drop ops this
+    /// device never saw. Sync must stop until the device merges again.
+    ///
+    /// `mark` is what this device recorded at its last sync (connected with
+    /// [`Connection::connect_known`]). Lost ops show as a head below what was
+    /// seen, or — once other devices pushed the head past it again — as a
+    /// store that does not know the device's epoch or recorded a lower head
+    /// for it. Returns the mark to record from now on (`None` on a relay
+    /// without epochs, where only the head can be compared).
+    pub fn check_history(&self, cursor: u64, mark: Option<&RelayMark>) -> Result<Option<RelayMark>, TransportError> {
+        let behind = || Err(TransportError::Rejected(RELAY_BEHIND.into()));
+        let seen = mark.map_or(cursor, |m| m.seen.max(cursor));
+        if self.head < seen {
+            return behind();
         }
-        Ok(())
+        if let (Some(m), Some(_)) = (mark, &self.epoch) {
+            if self.known_head.is_none_or(|h| h < m.seen) {
+                return behind();
+            }
+        }
+        Ok(self.epoch.clone().map(|epoch| RelayMark { epoch, seen }))
     }
 
     /// Send `frame` and wait for its reply (one of `expect`, or an `error`).
@@ -583,10 +643,53 @@ mod tests {
         relay.inject("g", "x", "b2");
         let (tx, _rx) = mpsc::unbounded_channel();
         let conn = Connection::connect(&params(&relay, "d"), false, tx).await.unwrap();
-        assert_eq!(conn.check_not_behind(2), Ok(()));
-        assert_eq!(conn.check_not_behind(0), Ok(()));
+        let behind = Err(TransportError::Rejected(RELAY_BEHIND.into()));
+        assert!(conn.check_history(2, None).is_ok());
+        assert!(conn.check_history(0, None).is_ok());
         // Restored from a backup older than what this device pulled.
-        assert_eq!(conn.check_not_behind(7), Err(TransportError::Rejected(RELAY_BEHIND.into())));
+        assert_eq!(conn.check_history(7, None), behind);
+    }
+
+    /// Review-3 M6: the relay is restored from a backup, then another device
+    /// pushes its head past this device's cursor before this device comes
+    /// back. The head alone no longer shows the loss; the epoch does. A plain
+    /// relay restart is not mistaken for a restore.
+    #[tokio::test]
+    async fn a_restored_relay_is_refused_even_after_its_head_moved_on() {
+        let relay = crate::sync::test_relay::TestRelay::start().await;
+        relay.create_group("g");
+        relay.inject("g", "x", "b1");
+        let backup = relay.snapshot("g");
+        relay.inject("g", "x", "b2");
+        relay.inject("g", "x", "b3");
+        let connect = |mark: Option<RelayMark>| {
+            let p = params(&relay, "d");
+            async move {
+                let (tx, _rx) = mpsc::unbounded_channel();
+                let conn = Connection::connect_known(&p, mark.as_ref().map(|m| m.epoch.as_str()), tx).await.unwrap();
+                conn.check_history(3, mark.as_ref())
+            }
+        };
+        // This device pulled up to 3.
+        let mark = connect(None).await.unwrap().expect("the relay has epochs");
+        assert_eq!(mark.seen, 3);
+        // A restart keeps the history: accepted, the new epoch is adopted.
+        relay.restart();
+        let restarted = connect(Some(mark.clone())).await.unwrap().unwrap();
+        assert_ne!(restarted.epoch, mark.epoch);
+        assert_eq!(restarted.seen, 3);
+
+        // Restored to seq 1; another device pushes the head to 5.
+        relay.restore("g", backup);
+        for b in ["n2", "n3", "n4", "n5"] {
+            relay.inject("g", "y", b);
+        }
+        assert_eq!(relay.head(), 5);
+        let behind = Err(TransportError::Rejected(RELAY_BEHIND.into()));
+        assert_eq!(connect(Some(restarted)).await, behind, "epoch unknown to the restored store");
+        // Restored within the epoch this device synced in: its head there is lower.
+        let restored_mark = RelayMark { epoch: mark.epoch.clone(), seen: 3 };
+        assert_eq!(connect(Some(restored_mark)).await, behind);
     }
 
     #[tokio::test]

@@ -216,12 +216,18 @@ pub async fn ensure_not_held_elsewhere(db: &Db, run_id: &str) -> Result<(), Stri
 /// The run (re)started here: take ownership and a fresh lease now (a run
 /// another device owned moves to the next ownership epoch), then record
 /// the working tree's git state in the background (git can be slow).
+///
+/// The run's log is this device's drain output from now on: the transcript
+/// size last mirrored (machine-local; set when sync wrote the transcript) is
+/// dropped, or the session importer would take the resumed turn's growth for
+/// work done outside Devdy and rebuild the merged log from the transcript
+/// (review-3 M2).
 pub async fn claim(db: &Db, run_id: &str, cwd: &str) -> Result<(), String> {
     let me = local_device(db).await?;
     sqlx::query(
         "UPDATE runs SET owner_epoch = owner_epoch + (COALESCE(owner_device, '') NOT IN ('', ?)), \
          owner_device = ?, device_name = ?, lease_until = ?, \
-         final_log_size = NULL, final_transcript_size = NULL WHERE id = ?",
+         final_log_size = NULL, final_transcript_size = NULL, transcript_synced_size = NULL WHERE id = ?",
     )
         .bind(&me.id)
         .bind(&me.id)
@@ -243,6 +249,32 @@ pub async fn claim(db: &Db, run_id: &str, cwd: &str) -> Result<(), String> {
             .await;
     });
     Ok(())
+}
+
+/// Review-3 L6: this device is about to write a run another device owns but
+/// no longer drives (its lease expired here, checked by the caller): take the
+/// ownership first, in the next epoch, like a take-over. A bare status write
+/// at the old epoch could be undone by the old owner's next renewal (newer
+/// HLC, same epoch) or undo a take-over made elsewhere meanwhile. Returns
+/// whether the run moved here.
+pub async fn adopt_orphan(db: &Db, run_id: &str) -> Result<bool, String> {
+    let me = local_device(db).await?;
+    let moved = sqlx::query(
+        "UPDATE runs SET owner_epoch = owner_epoch + 1, owner_device = ?, device_name = ?, lease_until = NULL \
+         WHERE id = ? AND COALESCE(owner_device, '') NOT IN ('', ?)",
+    )
+    .bind(&me.id)
+    .bind(&me.name)
+    .bind(run_id)
+    .bind(&me.id)
+    .execute(db)
+    .await
+    .map_err(|e| e.to_string())?
+    .rows_affected();
+    if moved > 0 {
+        receipts().forget(run_id);
+    }
+    Ok(moved > 0)
 }
 
 /// Best-effort [`claim`] for the run pipeline: a failure only loses the
@@ -341,16 +373,27 @@ pub const OWNED_HERE: &str =
 /// this device's runs any more. Leftover `running` rows become `cancelled` and
 /// their leases are dropped — but only for runs owned here (or never owned, from
 /// before sync): a run another device is running must not be touched, or the
-/// change would sync back and clobber it.
+/// change would sync back and clobber it. Dropping a lease goes through
+/// [`release`], so the final log / transcript sizes a device taking the run
+/// over waits for are recorded as for any ended run (review-3 L4).
 pub async fn reconcile_startup(db: &Db) -> Result<(), sqlx::Error> {
     const MINE: &str = OWNED_HERE;
+    let leased: Vec<String> = sqlx::query_scalar(&format!(
+        "SELECT id FROM runs WHERE (status = 'running' OR lease_until IS NOT NULL) AND {MINE}"
+    ))
+    .fetch_all(db)
+    .await?;
     sqlx::query(&format!(
-        "UPDATE runs SET status = 'cancelled', finished_at = ?, lease_until = NULL \
+        "UPDATE runs SET status = 'cancelled', finished_at = ? \
          WHERE status = 'running' AND {MINE}"
     ))
     .bind(Utc::now().to_rfc3339())
     .execute(db)
     .await?;
+    for id in &leased {
+        release(db, id).await;
+    }
+    // Whatever release left (a never-owned run with a stray lease…).
     sqlx::query(&format!("UPDATE runs SET lease_until = NULL WHERE lease_until IS NOT NULL AND {MINE}"))
         .execute(db)
         .await?;
@@ -667,7 +710,7 @@ pub async fn take_over(
             let now = Utc::now().to_rfc3339();
             sqlx::query(
                 "UPDATE runs SET owner_epoch = owner_epoch + (COALESCE(owner_device, '') NOT IN ('', ?)), \
-                 owner_device = ?, device_name = ?, lease_until = NULL, \
+                 owner_device = ?, device_name = ?, lease_until = NULL, transcript_synced_size = NULL, \
                  finished_at = CASE WHEN status = 'running' THEN ? ELSE finished_at END, \
                  status = CASE WHEN status = 'running' THEN 'cancelled' ELSE status END \
                  WHERE id = ?",
@@ -1054,6 +1097,66 @@ mod tests {
         // the wall-clock value says.
         received_long_ago("crr-x", &lease);
         ensure_not_held_elsewhere(&db, "crr-x").await.unwrap();
+    }
+
+    /// Review-3 M2: a run continued here no longer counts its transcript as
+    /// mirrored by sync, so the importer leaves the drain's log alone.
+    #[tokio::test]
+    async fn claiming_drops_the_mirrored_transcript_size() {
+        let db = mem_db().await;
+        add_run(&db, "m2", "done", Some("mini"), None).await;
+        exec(&db, "UPDATE runs SET transcript_synced_size = 100 WHERE id = 'm2'").await;
+        claim(&db, "m2", "/nonexistent/p1").await.unwrap();
+        assert_eq!(col(&db, "m2", "transcript_synced_size").await, None);
+
+        add_run(&db, "m2-t", "done", Some("mini"), None).await;
+        exec(&db, "UPDATE runs SET transcript_synced_size = 100 WHERE id = 'm2-t'").await;
+        assert!(take_over(&db, "m2-t", false, true, true).await.unwrap().taken);
+        assert_eq!(col(&db, "m2-t", "transcript_synced_size").await, None);
+    }
+
+    /// Review-3 L4: a run left running by a crash is released at startup like
+    /// any ended run: final sizes recorded, lease dropped.
+    #[tokio::test]
+    async fn startup_reconcile_records_final_sizes() {
+        let db = mem_db().await;
+        let log = temp_file("l4.log", 7);
+        add_run(&db, "l4", "running", Some("me"), Some(&future())).await;
+        sqlx::query("UPDATE runs SET output_path = ? WHERE id = 'l4'")
+            .bind(log.to_string_lossy().as_ref())
+            .execute(&db)
+            .await
+            .unwrap();
+        // A remote-owned running run is not touched.
+        let lease = future();
+        add_run(&db, "l4-x", "running", Some("mini"), Some(&lease)).await;
+        reconcile_startup(&db).await.unwrap();
+        assert_eq!(col(&db, "l4", "status").await.as_deref(), Some("cancelled"));
+        assert_eq!(col(&db, "l4", "lease_until").await, None);
+        assert_eq!(col(&db, "l4", "final_log_size").await.as_deref(), Some("7"));
+        assert_eq!(col(&db, "l4-x", "status").await.as_deref(), Some("running"));
+        assert_eq!(col(&db, "l4-x", "lease_until").await, Some(lease));
+    }
+
+    /// Review-3 L6: cancelling a run whose remote owner's lease expired here
+    /// moves it to this device in the next epoch, so the old owner's later
+    /// renewals (same epoch, newer HLC) cannot bring the run back.
+    #[tokio::test]
+    async fn cancelling_an_orphaned_remote_run_takes_it_over() {
+        let db = mem_db().await;
+        let lease = future();
+        add_run(&db, "l6", "running", Some("mini"), Some(&lease)).await;
+        received_long_ago("l6", &lease);
+        let registry: RunRegistry = Default::default();
+        crate::commands::runs::cancel_run_inner(&registry, &db, "l6", true).await.unwrap();
+        assert_eq!(col(&db, "l6", "status").await.as_deref(), Some("cancelled"));
+        assert_eq!(col(&db, "l6", "owner_device").await.as_deref(), Some("me"));
+        assert_eq!(col(&db, "l6", "owner_epoch").await.as_deref(), Some("1"));
+        assert_eq!(col(&db, "l6", "lease_until").await, None);
+        // Not ours to adopt: own and never-owned runs stay as they are.
+        add_run(&db, "l6-own", "done", Some("me"), None).await;
+        assert!(!adopt_orphan(&db, "l6-own").await.unwrap());
+        assert_eq!(col(&db, "l6-own", "owner_epoch").await.as_deref(), Some("0"));
     }
 
     #[tokio::test]

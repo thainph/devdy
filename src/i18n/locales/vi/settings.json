@@ -607,6 +607,11 @@
         "title": "Rời nhóm đồng bộ?",
         "message": "Máy này sẽ ngừng đồng bộ. Dữ liệu trên máy vẫn giữ nguyên; để tham gia lại bạn cần tên và mật khẩu chính của một thiết bị khác.",
         "confirmLabel": "Rời nhóm"
+      },
+      "handoff": {
+        "title": "Rời nhóm mà không chuyển giao vai trò?",
+        "message": "Máy này đang chạy các tác vụ nền của nhóm (Pulse, quét Slack) hoặc là máy tạo nhóm, và không kết nối được relay để chuyển vai trò đó cho thiết bị khác. Nếu rời nhóm bây giờ, các thiết bị còn lại sẽ vẫn chờ máy này: hãy chọn máy dẫn mới trên một thiết bị khác sau đó. Kết nối mạng lại (và bỏ tạm dừng đồng bộ) để chuyển giao đúng cách.",
+        "confirmLabel": "Vẫn rời nhóm"
       }
     },
     "relayMissing": "Máy này chưa có relay riêng: hãy đặt URL và token relay trong Cài đặt → Điều khiển từ xa trước.",
@@ -630,7 +635,8 @@
       "sync_bootstrap_not_pending": "Máy này không có bước gộp dữ liệu nào đang chờ.",
       "sync_bootstrap_in_progress": "Đồng bộ đang gộp dữ liệu của máy này. Hãy thử lại sau giây lát.",
       "auth_failed": "Relay từ chối token relay của máy này. Hãy kiểm tra URL và token relay trong Cài đặt → Remote Control.",
-      "relay_behind": "Relay đã mất các thay đổi mà máy này đã nhận (relay được khôi phục từ bản sao lưu). Đồng bộ tạm dừng cho tới khi máy này gộp lại với nhóm."
+      "relay_behind": "Relay đã mất các thay đổi mà máy này đã nhận (relay được khôi phục từ bản sao lưu). Đồng bộ tạm dừng cho tới khi máy này gộp lại với nhóm.",
+      "sync_leave_handoff_pending": "Máy này đang chạy các tác vụ nền của nhóm hoặc là máy tạo nhóm, và không kết nối được relay để chuyển giao vai trò đó."
     },
     "accept": {
       "title": "Chấp nhận thiết bị mới",

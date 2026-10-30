@@ -73,7 +73,7 @@ time. The relay only stores ciphertext and never logs op blobs or blob data.
 
 | `t` | Direction | Purpose |
 |---|---|---|
-| `sync_hello{auth_token, group_id, device_id, device_token, create?, ticket?}` | Device → Relay | First frame. `auth_token` = `RELAY_HOST_TOKEN`. `create=true` on an unknown group creates it and registers this device as its **creator**. A known device must match its pinned `sha256(device_token)` (`create=true` from a known device is an idempotent hello). An unknown device joins an existing group only with a one-time `ticket` registered by a member (`sync_invite`); `create=true` from it → `group_exists`. → `sync_welcome{last_seq, creator_device}` or `error{auth_failed\|group_not_found\|group_exists\|ticket_required\|ticket_invalid\|device_revoked\|sync_disabled}` and the connection closes. |
+| `sync_hello{auth_token, group_id, device_id, device_token, create?, ticket?, known_epoch?}` | Device → Relay | First frame. `auth_token` = `RELAY_HOST_TOKEN`. `create=true` on an unknown group creates it and registers this device as its **creator**. A known device must match its pinned `sha256(device_token)` (`create=true` from a known device is an idempotent hello). An unknown device joins an existing group only with a one-time `ticket` registered by a member (`sync_invite`); `create=true` from it → `group_exists`. `known_epoch` = the store epoch the device last synced in (see *Store epochs*). → `sync_welcome{last_seq, creator_device, epoch, known_head}` (`known_head`: the head this store recorded for `known_epoch`, `null` when not asked or unknown) or `error{auth_failed\|group_not_found\|group_exists\|ticket_required\|ticket_invalid\|device_revoked\|sync_disabled}` and the connection closes. |
 | `sync_invite{ticket_hash, ttl_secs}` | Device → Relay | A member registers a join ticket: `ticket_hash` = lowercase hex `sha256(ticket)`, `ttl_secs` 1..600 (default 600). The ticket itself travels device→device, never to the relay before the joiner's hello. One use; at most 16 open per group (expired/used ones are pruned). → `control{code:"ok"}`. Errors: `bad_request`, `quota_exceeded`. |
 | `sync_push{base_seq, items:[{key, blob}]}` | Device → Relay | `base_seq` = the pusher's pull cursor (missing = 0). Relay assigns per-group monotonic `seq`s; an older op with the same `key` is deleted only if `seq <= base_seq` (the pusher had pulled it) or the pusher stored it itself — otherwise both are kept and devices resolve them by HLC. All or nothing. → `sync_ack{last_seq}`. Errors: `quota_exceeded`, `too_large`. |
 | `sync_notify{last_seq}` | Relay → other devices | Sent to every other connected device of the group after a push. |
@@ -115,7 +115,8 @@ are taken off the group's quota usage.
 (keep it outside the release directory; the directory must be writable by the
 relay's service user — `ReadWritePaths=` in the unit). Tables:
 `groups` (head seq + byte usage + creator device), `devices`, `ops`, `blobs`
-(with uploader and release time), `invites` (ticket hashes). Older databases are
+(with uploader and release time), `invites` (ticket hashes), `store_epoch`
+(the current epoch) and `epochs` (each group's head per epoch). Older databases are
 upgraded at startup: missing columns are added, `creator_device` is set to the
 group's earliest active registered device, and `ops` is rebuilt without its old
 `UNIQUE(group_id, key)` constraint. It runs in WAL
@@ -138,13 +139,25 @@ sqlite3 "$RELAY_SYNC_DB" ".backup '<BACKUP_DIR>/sync-$(date +%F).db'"
 is end-to-end encrypted, so backups are as safe to store as the live file; the
 devices hold full local copies, so losing the store costs a re-upload, not data.
 
+**Store epochs.** Every time the relay opens the store (each start) it picks a
+new random *epoch* and records, per group, the head `seq` reached in each epoch
+(updated in the same transaction as every push). A device remembers the epoch it
+last synced in and the highest `seq` it has seen there (pulled, or acked for its
+own push), presents the epoch as `known_epoch` on hello and compares
+`known_head` with what it saw. A plain restart keeps the history, so the old
+epoch's head is still there and the device moves on to the new epoch.
+
 **Restoring an older backup.** The restored store's head `seq` is lower than
-the cursors devices already pulled to, and the ops pushed after the backup are
-gone. A device detects this on its next `sync_welcome` (`last_seq` below its
-own cursor), stops syncing and asks the user to re-bootstrap the group
-(rejoin / re-upload) instead of pulling from a cursor that now points at
-different ops. Restore only when the store is lost or corrupt; the creator
-recorded in the backup applies again (devices are told on their next welcome).
+what devices already saw, the ops pushed after the backup are gone, and the
+next pushes reuse their seqs. A device detects this on its next `sync_welcome`
+— the restored store does not know the epoch the device synced in, or recorded
+a lower head for it; a head below the device's own cursor shows it too — even
+after other devices have pushed the head past that cursor again. It then stops
+syncing and asks the user to merge again (re-read the group and re-upload what
+the relay lost) instead of pulling from a cursor that now points at different
+ops. Stop the relay before replacing the database file, and restore only when
+the store is lost or corrupt; the creator recorded in the backup applies again
+(devices are told on their next welcome).
 
 **Server setup.** With the hardened unit in `deploy/relay.service`
 (`ProtectSystem=strict`), the store's directory must be listed in

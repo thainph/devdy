@@ -132,6 +132,9 @@ struct Request {
     /// `sync_revoke` of the creator by itself: the device it hands the
     /// creator role to (ignored unless an active member).
     successor: Option<String>,
+    /// `sync_hello`: the store epoch the device last synced in (see
+    /// [`new_store_epoch`]); the welcome reports that epoch's head.
+    known_epoch: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -231,6 +234,22 @@ CREATE TABLE IF NOT EXISTS blobs (
     released_at INTEGER,
     PRIMARY KEY (group_id, sha)
 );
+-- The store's current epoch: a random id replaced every time the store is
+-- opened (relay start). A store restored from a backup therefore never
+-- reuses the epoch it is running in.
+CREATE TABLE IF NOT EXISTS store_epoch (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    epoch       TEXT NOT NULL
+);
+-- Highest seq a group reached in each epoch, updated in the push transaction.
+-- A device remembers (epoch, highest seq it has seen); if this store reports
+-- a lower head for that epoch, or does not know it, the store lost ops.
+CREATE TABLE IF NOT EXISTS epochs (
+    group_id    TEXT NOT NULL REFERENCES groups(id),
+    epoch       TEXT NOT NULL,
+    head        INTEGER NOT NULL,
+    PRIMARY KEY (group_id, epoch)
+);
 CREATE TABLE IF NOT EXISTS invites (
     group_id    TEXT NOT NULL REFERENCES groups(id),
     ticket_hash TEXT NOT NULL,
@@ -252,7 +271,30 @@ pub fn open_db(path: &Path) -> rusqlite::Result<Connection> {
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.execute_batch(SCHEMA)?;
     upgrade(&conn)?;
+    new_store_epoch(&conn)?;
     Ok(conn)
+}
+
+/// Epochs of a group kept for devices that last synced in them; one is added
+/// per relay start the group sees a hello in.
+const MAX_EPOCHS_PER_GROUP: i64 = 1000;
+
+/// Start a new store epoch (every open). Restore detection (design §9.2,
+/// "store epochs"): seqs are only comparable within one store history, and a
+/// restored backup rewinds `last_seq`, so the seqs it hands out next collide
+/// with ones devices already saw. Each device keeps (epoch, highest seq seen)
+/// and presents the epoch on hello; the welcome returns the head this store
+/// recorded for it. A store without that epoch, or with a lower head for it,
+/// is missing ops the device saw: the device stops and merges again. This
+/// holds even after other devices pushed the head back past the device's
+/// cursor, which a plain `head < cursor` check misses.
+pub fn new_store_epoch(conn: &Connection) -> rusqlite::Result<String> {
+    let epoch = uuid::Uuid::new_v4().simple().to_string();
+    conn.execute(
+        "INSERT INTO store_epoch (id, epoch) VALUES (1, ?1) ON CONFLICT(id) DO UPDATE SET epoch = excluded.epoch",
+        params![epoch],
+    )?;
+    Ok(epoch)
 }
 
 fn columns(conn: &Connection, table: &str) -> rusqlite::Result<Vec<String>> {
@@ -372,6 +414,8 @@ pub struct HelloAuth<'a> {
     pub create: bool,
     /// sha256 hex of the join ticket, if one was sent.
     pub ticket_hash: Option<&'a str>,
+    /// The store epoch the device last synced in.
+    pub known_epoch: Option<&'a str>,
 }
 
 /// `sync_hello`: create the group (`create`, the device becomes its creator),
@@ -430,8 +474,31 @@ pub fn hello(conn: &mut Connection, group: &str, device: &str, auth: HelloAuth, 
     gc_blobs(&tx, group, now)?;
     let (last_seq, _) = group_head(&tx, group)?;
     let creator = group_creator(&tx, group)?;
+    tx.execute(
+        "INSERT INTO epochs (group_id, epoch, head) SELECT ?1, epoch, ?2 FROM store_epoch WHERE true \
+         ON CONFLICT(group_id, epoch) DO NOTHING",
+        params![group, last_seq as i64],
+    )?;
+    tx.execute(
+        "DELETE FROM epochs WHERE group_id = ?1 AND rowid NOT IN \
+         (SELECT rowid FROM epochs WHERE group_id = ?1 ORDER BY rowid DESC LIMIT ?2)",
+        params![group, MAX_EPOCHS_PER_GROUP],
+    )?;
+    let epoch: Option<String> = tx
+        .query_row("SELECT epoch FROM store_epoch WHERE id = 1", [], |r| r.get(0))
+        .optional()?;
+    let known_head: Option<i64> = match auth.known_epoch {
+        Some(e) => tx
+            .query_row(
+                "SELECT head FROM epochs WHERE group_id = ?1 AND epoch = ?2",
+                params![group, e],
+                |r| r.get(0),
+            )
+            .optional()?,
+        None => None,
+    };
     tx.commit()?;
-    Ok(Welcome { last_seq, creator })
+    Ok(Welcome { last_seq, creator, epoch, known_head: known_head.map(|h| h as u64) })
 }
 
 /// What `sync_welcome` tells a device.
@@ -440,6 +507,11 @@ pub struct Welcome {
     pub last_seq: u64,
     /// The device allowed to revoke others (`None`: every member left).
     pub creator: Option<String>,
+    /// The store's current epoch.
+    pub epoch: Option<String>,
+    /// The head this store recorded for the hello's `known_epoch` (`None`:
+    /// not asked, or an epoch this store never saw).
+    pub known_head: Option<u64>,
 }
 
 fn group_creator(conn: &Connection, group: &str) -> SyncResult<Option<String>> {
@@ -533,6 +605,11 @@ pub fn push(
     tx.execute(
         "UPDATE groups SET last_seq = ?2, bytes = ?3 WHERE id = ?1",
         params![group, seq as i64, bytes as i64],
+    )?;
+    tx.execute(
+        "INSERT INTO epochs (group_id, epoch, head) SELECT ?1, epoch, ?2 FROM store_epoch WHERE true \
+         ON CONFLICT(group_id, epoch) DO UPDATE SET head = excluded.head",
+        params![group, seq as i64],
     )?;
     tx.commit()?;
     Ok(seq)
@@ -843,7 +920,13 @@ impl SyncHub {
                         tracing::info!(event = "sync_welcome", conn = conn_id, group = %s.group_id, device = %s.device_id);
                         send_json(
                             out,
-                            json!({ "t": "sync_welcome", "last_seq": w.last_seq, "creator_device": w.creator }),
+                            json!({
+                                "t": "sync_welcome",
+                                "last_seq": w.last_seq,
+                                "creator_device": w.creator,
+                                "epoch": w.epoch,
+                                "known_head": w.known_head,
+                            }),
                             id,
                         );
                         *session = Some(s);
@@ -907,6 +990,7 @@ impl SyncHub {
         let token_hash = sha256_hex(token.as_bytes());
         let create = req.create.unwrap_or(false);
         let ticket_hash = req.ticket.filter(|t| !t.is_empty()).map(|t| sha256_hex(t.as_bytes()));
+        let known_epoch = req.known_epoch.filter(|e| valid_id(e));
         let (g, d) = (group.clone(), device.clone());
         let welcome = self
             .call(move |c| {
@@ -914,6 +998,7 @@ impl SyncHub {
                     token_hash: &token_hash,
                     create,
                     ticket_hash: ticket_hash.as_deref(),
+                    known_epoch: known_epoch.as_deref(),
                 };
                 hello(c, &g, &d, auth, now_secs())
             })
@@ -1142,7 +1227,7 @@ mod tests {
     };
 
     fn auth(token_hash: &str, create: bool) -> HelloAuth<'_> {
-        HelloAuth { token_hash, create, ticket_hash: None }
+        HelloAuth { token_hash, create, ticket_hash: None, known_epoch: None }
     }
 
     /// Create group `g` with `a` as creator and join `others` with tickets.
@@ -1151,7 +1236,7 @@ mod tests {
         for (i, d) in others.iter().enumerate() {
             let ticket = sha256_hex(format!("ticket-{i}").as_bytes());
             invite(c, "g", "a", &ticket, 60, 0).unwrap();
-            let a = HelloAuth { token_hash: "h", create: false, ticket_hash: Some(&ticket) };
+            let a = HelloAuth { token_hash: "h", create: false, ticket_hash: Some(&ticket), known_epoch: None };
             hello(c, "g", d, a, 1).unwrap();
         }
     }
@@ -1203,7 +1288,7 @@ mod tests {
         hello(&mut c, "g", "a", auth("ha", true), 100).unwrap();
         let tick = |s: &str| sha256_hex(s.as_bytes());
         fn with(t: &str) -> HelloAuth<'_> {
-            HelloAuth { token_hash: "hb", create: false, ticket_hash: Some(t) }
+            HelloAuth { token_hash: "hb", create: false, ticket_hash: Some(t), known_epoch: None }
         }
         let code = |r: SyncResult<Welcome>| match r {
             Err(SyncError::Code(c, _)) => c.as_str(),
@@ -1350,6 +1435,53 @@ mod tests {
         // Same-key ops may now coexist.
         push(&mut c, LIMITS, "g", "b", 0, &[item("k", "y")]).unwrap();
         assert_eq!(pull(&mut c, "g", "a", 0, 0).unwrap().items.len(), 2);
+    }
+
+    /// Review-3 M6: a store restored from a backup is caught through the
+    /// device's (epoch, seen seq) even after another device pushed its head
+    /// past that seq again; a plain restart is not mistaken for a restore.
+    #[test]
+    fn restored_store_is_detected_through_epochs() {
+        let dir = std::env::temp_dir().join(format!("devdy-relay-epoch-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (live, backup) = (dir.join("sync.db"), dir.join("backup.db"));
+        let known = |c: &mut Connection, device: &str, token: &str, epoch: &str| {
+            let a = HelloAuth { token_hash: token, create: false, ticket_hash: None, known_epoch: Some(epoch) };
+            hello(c, "g", device, a, 0).unwrap()
+        };
+
+        let mut c = open_db(&live).unwrap();
+        let w = hello(&mut c, "g", "a", auth("ha", true), 0).unwrap();
+        let e1 = w.epoch.clone().unwrap();
+        invite(&mut c, "g", "a", &sha256_hex(b"t"), 60, 0).unwrap();
+        let tb = sha256_hex(b"t");
+        hello(&mut c, "g", "b", HelloAuth { token_hash: "hb", create: false, ticket_hash: Some(&tb), known_epoch: None }, 0).unwrap();
+        push(&mut c, LIMITS, "g", "a", 0, &[item("k1", "x")]).unwrap();
+        drop(c);
+        std::fs::copy(&live, &backup).unwrap();
+
+        // Restart: a new epoch; the old one is still known with its head.
+        let mut c = open_db(&live).unwrap();
+        let w = known(&mut c, "a", "ha", &e1);
+        let e2 = w.epoch.clone().unwrap();
+        assert_ne!(e1, e2);
+        assert_eq!(w.known_head, Some(1));
+        assert_eq!(push(&mut c, LIMITS, "g", "a", 1, &[item("k2", "y"), item("k3", "z")]).unwrap(), 3);
+        // A device's own epoch reports the live head.
+        assert_eq!(known(&mut c, "a", "ha", &e2).known_head, Some(3));
+        drop(c);
+
+        // Restore the backup (head 1) and let b push the head past 3.
+        std::fs::copy(&backup, &live).unwrap();
+        let mut c = open_db(&live).unwrap();
+        let w = known(&mut c, "b", "hb", &e1);
+        assert_eq!((w.last_seq, w.known_head), (1, Some(1)), "b only saw seq 1: nothing lost for it");
+        push(&mut c, LIMITS, "g", "b", 1, &[item("k4", "1"), item("k5", "2"), item("k6", "3")]).unwrap();
+        let w = known(&mut c, "a", "ha", &e2);
+        assert!(w.last_seq >= 3, "the head alone no longer shows the loss");
+        assert_eq!(w.known_head, None, "a synced in an epoch this store never saw");
+        drop(c);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

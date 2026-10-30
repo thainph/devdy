@@ -240,6 +240,7 @@ export const SYNC_ERROR_CODES = [
   'sync_bootstrap_runs_live',
   'sync_bootstrap_not_pending',
   'sync_bootstrap_in_progress',
+  'sync_leave_handoff_pending',
   'auth_failed',
   'relay_behind',
   'ticket_required',
