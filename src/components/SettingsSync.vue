@@ -4,12 +4,13 @@
 // device name + master password (that device must have "Accept a new device" open and approve the
 // request; both need their own relay config). Joined but not merged (`sync_bootstrap_pending`, also after an
 // app restart) → the merge step: preview (totals, per table, project matches) then commit, which
-// starts the engine. In a group → four tabs:
-// - Overview: source device (+ online), "Sync from <device>" (opens the Sync dialog, optionally with
-//   project folders), last sync, changes waiting to be sent, pause, changes the relay refused
-//   (parked, with Retry), "merge again" when the relay lost ops (`relay_behind`), re-sync, leave.
-// - Data: categories this machine receives (SyncDataTab). - Projects: per-project selection,
-//   folder mapping and folder sync (SyncProjectsTab).
+// starts the engine. In a group → three tabs:
+// - Overview: source device (picked automatically when obvious, a selector only with 2+ other
+//   devices), "Sync from <device>" (opens the Sync dialog: data + the "data + folder" projects),
+//   a summary of what is received, the data categories (collapsed, SyncDataSection), then — less
+//   prominent — last sync, changes waiting to be sent, changes the relay refused (parked, with
+//   Retry), "merge again" when the relay lost ops (`relay_behind`), re-sync, pause, leave.
+// - Projects: per-project mode (off / data / data + folder) and folder (SyncProjectsTab).
 // - Devices: devices (rename this one, remove others — creator only —, pick the leader that runs
 //   Slack polling) and "Accept a new device" (5 min window + Allow / Deny per request,
 //   closed when this page goes away so a request is never left unseen).
@@ -21,7 +22,7 @@ import {
   UserPlus, Users,
 } from 'lucide-vue-next'
 import { AppSelect, Badge, Button, Card, Input } from '@/components/ui'
-import SyncDataTab from '@/components/SyncDataTab.vue'
+import SyncDataSection from '@/components/SyncDataSection.vue'
 import SyncProjectsTab from '@/components/SyncProjectsTab.vue'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
@@ -54,6 +55,7 @@ import {
   syncResyncAll,
   syncRevokeDevice,
   syncSetLeader,
+  SYNC_CATEGORY_IDS,
   SYNC_DOT_CLASS,
   folderProjects,
   syncErrorCode,
@@ -182,8 +184,8 @@ async function commitBootstrap() {
 }
 
 // ---- In a group ----
-type Tab = 'overview' | 'data' | 'projects' | 'devices'
-const TABS: Tab[] = ['overview', 'data', 'projects', 'devices']
+type Tab = 'overview' | 'projects' | 'devices'
+const TABS: Tab[] = ['overview', 'projects', 'devices']
 const tab = ref<Tab>('overview')
 
 const busyPause = ref(false)
@@ -199,7 +201,10 @@ const sourceOptions = computed(() => otherDevices.value.map((d) => ({ value: d.i
 const source = computed(() => store.source)
 const sourceName = computed(() => store.deviceName(source.value))
 const sourceOnline = computed(() => store.isOnline(source.value))
+const projectCount = computed(() => (store.prefs?.projects ?? []).filter((p) => p.enabled).length)
 const folderCount = computed(() => folderProjects(store.prefs?.projects ?? []).length)
+const categoryCount = computed(() => SYNC_CATEGORY_IDS.filter((id) => !store.categoriesOff.includes(id)).length)
+const dataOpen = ref(false)
 const lastRun = computed(() => store.lastRun)
 let peersTimer: ReturnType<typeof setInterval> | null = null
 
@@ -213,7 +218,7 @@ async function changeSource(id: string) {
 }
 
 function syncFromSource() {
-  void store.syncFrom(source.value, store.includeFolders)
+  void store.syncFrom(source.value)
 }
 
 const parked = ref<ParkedRow[]>([])
@@ -329,7 +334,10 @@ function parkedReason(reason: string): string {
 
 async function loadPaired() {
   if (!paired.value) return
-  await Promise.all([loadDevices(), loadParked(), store.loadPrefs().catch(() => {}), store.refreshPeers()])
+  await Promise.all([
+    loadDevices(), loadParked(), store.loadPrefs().catch(() => {}), store.refreshPeers(), store.loadSecrets(),
+  ])
+  await store.ensureSource()
 }
 
 async function togglePause() {
@@ -676,7 +684,7 @@ onUnmounted(() => {
       <!-- Overview -->
       <template v-if="tab === 'overview'">
         <section class="space-y-3">
-          <p class="text-xs font-medium">{{ t('settings.sync.ondemand.header') }}</p>
+          <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.ondemand.header') }}</p>
           <div v-if="!otherDevices.length" class="space-y-2">
             <p class="text-[11px] text-muted-foreground">{{ t('settings.sync.ondemand.noSource') }}</p>
             <Button variant="outline" size="sm" :disabled="acceptBusy" @click="openAcceptHere">
@@ -684,40 +692,52 @@ onUnmounted(() => {
               {{ t('settings.sync.accept.button') }}
             </Button>
           </div>
-          <template v-else>
-            <div class="flex items-center gap-2">
-              <span class="shrink-0 text-xs text-muted-foreground">{{ t('settings.sync.ondemand.source') }}</span>
+          <div v-else class="space-y-2.5 rounded-lg border border-border/60 bg-muted/20 p-3">
+            <div class="flex min-w-0 items-center gap-2 text-xs">
+              <span class="shrink-0 text-muted-foreground">{{ t('settings.sync.ondemand.source') }}:</span>
               <AppSelect
+                v-if="otherDevices.length > 1"
                 class="w-56"
                 :model-value="source ?? ''"
                 :options="sourceOptions"
                 :disabled="store.busy"
                 @update:model-value="changeSource"
               />
-              <span class="flex items-center gap-1 text-[11px] text-muted-foreground">
+              <span v-else class="min-w-0 truncate font-medium">{{ sourceName }}</span>
+              <span class="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
                 <span class="h-2 w-2 rounded-full" :class="sourceOnline ? 'bg-emerald-500' : 'bg-muted-foreground/40'" />
                 {{ sourceOnline ? t('settings.sync.ondemand.online') : t('settings.sync.ondemand.offline') }}
               </span>
             </div>
-            <div class="space-y-2.5 rounded-lg border border-border/60 bg-muted/20 p-3">
-              <Button size="sm" :disabled="!source || !sourceOnline" @click="store.busy ? (store.dialogOpen = true) : syncFromSource()">
-                <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': store.busy }" :stroke-width="1.75" />
-                {{ t('settings.sync.ondemand.syncFrom', { name: sourceName }) }}
-              </Button>
-              <p v-if="source && !sourceOnline" class="text-[11px] text-amber-600 dark:text-amber-400">
-                {{ t('settings.sync.ondemand.offlineHelp', { name: sourceName }) }}
-              </p>
-              <label class="flex cursor-pointer items-center gap-2 text-xs">
-                <input
-                  type="checkbox"
-                  class="accent-primary"
-                  :checked="store.includeFolders"
-                  @change="store.setIncludeFolders(($event.target as HTMLInputElement).checked)"
-                >
-                {{ t('settings.sync.ondemand.includeFolders', { n: folderCount }) }}
-              </label>
-            </div>
-          </template>
+            <Button
+              size="md"
+              class="w-full"
+              :disabled="!source || (!sourceOnline && !store.busy)"
+              @click="store.busy ? (store.dialogOpen = true) : syncFromSource()"
+            >
+              <RefreshCw class="h-4 w-4" :class="{ 'animate-spin': store.busy }" :stroke-width="1.75" />
+              {{ t('settings.sync.ondemand.syncFrom', { name: sourceName }) }}
+            </Button>
+            <p v-if="source && !sourceOnline" class="text-[11px] text-amber-600 dark:text-amber-400">
+              {{ t('settings.sync.ondemand.offlineHelp', { name: sourceName }) }}
+            </p>
+            <p class="flex flex-wrap items-center gap-x-1 text-[11px] text-muted-foreground">
+              {{ t('settings.sync.ondemand.receives') }}
+              <button type="button" class="underline-offset-2 hover:text-foreground hover:underline" @click="dataOpen = true">
+                {{ t('settings.sync.ondemand.receivesData', { n: categoryCount }) }}
+              </button>
+              <span>·</span>
+              <button type="button" class="underline-offset-2 hover:text-foreground hover:underline" @click="tab = 'projects'">
+                {{ t('settings.sync.ondemand.receivesProjects', { n: projectCount, k: folderCount }) }}
+              </button>
+              <span>·</span>
+              <button type="button" class="flex items-center text-primary hover:underline" @click="tab = 'projects'">
+                {{ t('settings.sync.ondemand.edit') }}
+                <ChevronRight class="h-3 w-3" :stroke-width="1.75" />
+              </button>
+            </p>
+          </div>
+          <SyncDataSection v-model:open="dataOpen" />
           <div class="space-y-1 text-[11px] text-muted-foreground">
             <p v-if="!lastRun">{{ t('settings.sync.ondemand.lastNever') }}</p>
             <template v-else>
@@ -808,7 +828,6 @@ onUnmounted(() => {
         </section>
       </template>
 
-      <SyncDataTab v-else-if="tab === 'data'" />
       <SyncProjectsTab v-else-if="tab === 'projects'" />
 
       <!-- Devices -->
