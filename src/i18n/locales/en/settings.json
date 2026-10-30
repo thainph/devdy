@@ -17,7 +17,7 @@
     "prompts": "Prompt Templates",
     "inbox": "Inbox API",
     "azure": "Azure Accounts",
-    "backup": "Backup & Sync"
+    "backup": "Sync & Backup"
   },
   "general": {
     "theme": "Theme",
@@ -417,7 +417,7 @@
     "deleteMessage": "Delete this Azure account and its sign-in session? Projects linked to it will be unlinked."
   },
   "backup": {
-    "title": "Backup & Sync",
+    "title": "File backup",
     "help": "Export your whole Devdy setup to one file and import it on another machine: app settings, saved prompts, the Skills / Rules library with groups, MCP servers, VPS servers, accounts (GitHub, GitLab, AWS, Azure, Google, Claude), notes / todos and Slack threads (with translations; attachments are downloaded again) and projects (repos, enabled Skills / Rules / groups, MCP and VPS servers, linked accounts, Pulse watches). Session history stays on this machine.",
     "export": {
       "title": "Export",
@@ -475,6 +475,105 @@
       "slackThreads": "Slack threads",
       "projects": "Projects",
       "pulseWatches": "Pulse watches"
+    }
+  },
+  "sync": {
+    "title": "Sync",
+    "short": "Sync",
+    "help": "Keep one shared Devdy state across your machines: settings, library, notes / todos, Slack threads, projects and sessions. Everything goes through your relay end-to-end encrypted and syncs even when the other machine is off. Code in your working trees is not synced — that stays git's job.",
+    "unavailable": "Not available in this build yet.",
+    "state": {
+      "disabled": "Off",
+      "connecting": "Connecting…",
+      "online": "Online",
+      "offline": "Offline",
+      "error": "Error",
+      "paused": "Paused"
+    },
+    "ago": {
+      "never": "never",
+      "now": "just now",
+      "minutes": "{n} min ago",
+      "hours": "{n} h ago",
+      "days": "{n} d ago"
+    },
+    "create": {
+      "title": "Create a sync group",
+      "help": "On your first machine. Uses the relay configured in Remote Control.",
+      "button": "Create sync group",
+      "done": "Sync group created"
+    },
+    "join": {
+      "title": "Join a sync group",
+      "help": "On another machine: enter the device name and master password of a machine already in the group (both set in its Remote Control settings). That machine must be online.",
+      "alias": "Device name of the other machine",
+      "aliasInvalid": "Device names use lowercase letters, digits and dashes.",
+      "password": "Its master password",
+      "button": "Join",
+      "done": "Joined the sync group",
+      "previewTitle": "Merge preview",
+      "previewHelp": "What the first sync brings in and how it matches this machine's existing data. Nothing local is deleted.",
+      "previewEmpty": "Nothing to merge.",
+      "commit": "Merge and start syncing",
+      "reportTitle": "Merged"
+    },
+    "status": {
+      "lastPush": "Last push",
+      "lastPull": "Last pull",
+      "pending": "Pending",
+      "now": "Sync now",
+      "pause": "Pause",
+      "resume": "Resume"
+    },
+    "secrets": {
+      "label": "Sync secrets",
+      "hint": "Tokens and passwords from the Keychain, sealed with the group key. Turn off to keep them on this machine only."
+    },
+    "devices": {
+      "title": "Devices",
+      "leaderHelp": "The selected device runs singleton jobs (Pulse polling, Slack re-fetch) so they don't run twice. Changes apply right away.",
+      "leader": "Leader",
+      "noLeader": "No leader — every device runs them",
+      "thisDevice": "This device",
+      "lastSeen": "Seen {ago}",
+      "rename": "Rename this device",
+      "save": "Save",
+      "cancel": "Cancel",
+      "remove": "Remove from group",
+      "removed": "Removed {name}",
+      "confirmRemove": {
+        "title": "Remove device?",
+        "message": "{name} will no longer be able to sync. Its local data stays on it.",
+        "confirmLabel": "Remove"
+      }
+    },
+    "projects": {
+      "title": "Project folders on this machine",
+      "help": "Projects from your other machines and where they live here. Pick a folder for those not on this machine yet.",
+      "empty": "No projects to map.",
+      "notHere": "Not on this machine",
+      "choose": "Choose folder",
+      "change": "Change"
+    },
+    "resync": {
+      "button": "Re-sync everything",
+      "hint": "Upload this machine's full state again",
+      "done": "Full re-sync started",
+      "confirm": {
+        "title": "Re-sync everything?",
+        "message": "This machine's whole state is uploaded again. Useful after a long time offline or if devices drifted apart.",
+        "confirmLabel": "Re-sync"
+      }
+    },
+    "leave": {
+      "button": "Leave group",
+      "done": "Left the sync group",
+      "offline": "Left the sync group (the relay could not be reached; remove this device from another one)",
+      "confirm": {
+        "title": "Leave the sync group?",
+        "message": "This machine stops syncing. Its local data stays; to join again you need another device's name and master password.",
+        "confirmLabel": "Leave"
+      }
     }
   }
 }

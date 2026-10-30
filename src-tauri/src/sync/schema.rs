@@ -24,17 +24,30 @@
 //! - `slack_legacy_orphans`: one-off migration bookkeeping.
 //! - `sqlite_sequence`, `_sqlx_migrations`: SQLite / sqlx internals.
 //! - `project_skills_new` does not exist any more (0006 renamed it).
-//! - `settings` rows whose key is not in `PORTABLE_SETTING_KEYS` (CLI paths,
-//!   `remote_*`, window/UI state, ...).
+//! - `settings` rows whose key is not in `PORTABLE_SETTING_KEYS` nor matches
+//!   `SYNCED_SETTING_PREFIXES` (CLI paths, `remote_*`, window/UI state, ...).
 
 use crate::commands::settings::PORTABLE_SETTING_KEYS;
 
-/// Only rows whose `col` value is one of `allowed` are synced.
+/// Only rows whose `col` value is one of `allowed`, or starts with one of
+/// `prefixes`, are synced.
 #[derive(Debug, Clone, Copy)]
 pub struct RowFilter {
     pub col: &'static str,
     pub allowed: &'static [&'static str],
+    pub prefixes: &'static [&'static str],
 }
+
+impl RowFilter {
+    pub fn accepts(&self, v: &str) -> bool {
+        self.allowed.contains(&v) || self.prefixes.iter().any(|p| v.starts_with(p))
+    }
+}
+
+/// Sync-only settings, outside `PORTABLE_SETTING_KEYS` so file backups don't
+/// carry them (see `sync::leader`): the leader device, and one name record per
+/// device (a prefix, so each device writes only its own row).
+pub const SYNCED_SETTING_PREFIXES: &[&str] = &["sync_leader_device", "sync_device_name:"];
 
 #[derive(Debug, Clone, Copy)]
 pub struct TableSpec {
@@ -67,8 +80,13 @@ impl TableSpec {
         self.natural_key = cols;
         self
     }
-    const fn filter(mut self, col: &'static str, allowed: &'static [&'static str]) -> Self {
-        self.filter = Some(RowFilter { col, allowed });
+    const fn filter(
+        mut self,
+        col: &'static str,
+        allowed: &'static [&'static str],
+        prefixes: &'static [&'static str],
+    ) -> Self {
+        self.filter = Some(RowFilter { col, allowed, prefixes });
         self
     }
 
@@ -84,7 +102,7 @@ impl TableSpec {
     pub fn accepts(&self, value: Option<&str>) -> bool {
         match self.filter {
             None => true,
-            Some(f) => value.is_some_and(|v| f.allowed.contains(&v)),
+            Some(f) => value.is_some_and(|v| f.accepts(v)),
         }
     }
 
@@ -99,7 +117,7 @@ const LABEL: &[&str] = &["label"];
 const NAME: &[&str] = &["name"];
 
 pub static SYNCED_TABLES: &[TableSpec] = &[
-    TableSpec::new("settings", &["key"]).filter("key", PORTABLE_SETTING_KEYS),
+    TableSpec::new("settings", &["key"]).filter("key", PORTABLE_SETTING_KEYS, SYNCED_SETTING_PREFIXES),
     // Account metadata only; tokens live in the Keychain (secrets channel).
     TableSpec::new("github_accounts", ID).natural(LABEL),
     TableSpec::new("gitlab_accounts", ID).natural(LABEL),
@@ -220,6 +238,10 @@ mod tests {
         assert!(s.accepts(Some("theme")));
         assert!(!s.accepts(Some("claude_path")));
         assert!(!s.accepts(None));
+        assert!(s.accepts(Some("sync_leader_device")));
+        assert!(s.accepts(Some("sync_device_name:abc")));
+        assert!(!s.accepts(Some("sync_paused")));
+        assert!(!s.accepts(Some("sync_secrets_enabled")));
         assert!(spec("notes").unwrap().accepts(None));
     }
 
