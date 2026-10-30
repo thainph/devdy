@@ -435,6 +435,7 @@ impl SlackThreadsState {
     }
 
     /// A job for `id` is queued or running.
+    #[allow(dead_code)] // Focus AI (P3) waits on a Slack refresh with it.
     pub fn is_queued(&self, id: &str) -> bool {
         self.queue
             .lock()

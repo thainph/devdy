@@ -381,7 +381,7 @@ pub async fn sync_revoke_device(
     Ok(())
 }
 
-/// Pick the device that runs singleton jobs (Pulse / Slack polling); `None`
+/// Pick the device that runs singleton jobs (Slack recovery); `None`
 /// lets every device run them. Takes effect on the next poll, no restart.
 #[tauri::command]
 pub async fn sync_set_leader(

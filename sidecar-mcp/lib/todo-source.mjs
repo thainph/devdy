@@ -1,27 +1,19 @@
-// Source normalisation for Project Pulse (docs/project-pulse-spec.md BR-02).
+// Todo source normalisation (docs/focus-board-spec.md BR-02).
 //
-// Mirror of src-tauri/src/pulse/source.rs (and the Slack link parser in
+// Mirror of src-tauri/src/focus/source.rs (and the Slack link parser in
 // src-tauri/src/slack_threads/link.rs): both sides run the shared vectors in
-// src-tauri/src/pulse/source_vectors.json, so keep them in lockstep.
+// src-tauri/src/focus/source_vectors.json, so keep them in lockstep.
 //
-//   Slack thread link            → slack        `<channel_id>:<thread_ts>`
-//   github.com/<o>/<r>/issues/<n> | <o>/<r>#<n> → github_issue `<o>/<r>#<n>` (lowercase)
-//   bare #<n>                    → needs exactly one GitHub repo in the project
+//   Slack thread link (a reply → its root)        → slack  `slack:<team>/<channel>/<ts>`
+//   github.com/<o>/<r>/(issues|pull)/<n> | <o>/<r>#<n> → github `github:<o>/<r>#<n>` (lowercase)
+//   <host>/<path>/-/(issues|merge_requests)/<n>    → gitlab `gitlab:<path>#<n>` / `!<n>`
+//   run:<id> | devdy://run/<id>                    → run    `run:<id>`
+//   any other http(s) URL                          → url    (no ref)
+//
+// The URL is kept as given (trimmed, `<…>` unwrapped); anything else throws.
 
-export const INVALID_SOURCE_MESSAGE = 'only Slack thread or GitHub issue links are supported';
-const DM_UNSUPPORTED_MESSAGE = 'direct-message threads are not supported';
-
-/** Error carried to the AI as "<code>: <detail>". */
-export class PulseError extends Error {
-  constructor(code, detail) {
-    super(`${code}: ${detail}`);
-    this.code = code;
-    this.detail = detail;
-  }
-}
-
-const invalid = (detail = INVALID_SOURCE_MESSAGE) => new PulseError('invalid_source', detail);
-const repoAmbiguous = () => new PulseError('repo_ambiguous', 'write the issue as owner/repo#number');
+export const INVALID_SOURCE_MESSAGE =
+  'invalid source: expected a link (Slack thread, GitHub/GitLab issue or PR, run:<id>, or an http(s) URL)';
 
 // ---- Slack (port of slack_threads/link.rs) ----------------------------------------
 
@@ -103,79 +95,82 @@ export function parseSlackThreadLink(input) {
   };
 }
 
-// ---- GitHub ------------------------------------------------------------------------
+// ---- Normalise -----------------------------------------------------------------------
 
 const isOwner = (s) => s.length > 0 && s.length <= 39 && !s.startsWith('-') && /^[A-Za-z0-9-]+$/.test(s);
 const isRepo = (s) => s.length > 0 && s.length <= 100 && s !== '.' && s !== '..' && /^[A-Za-z0-9._-]+$/.test(s);
-const issueNumber = (s) => {
-  if (!/^[0-9]{1,10}$/.test(s)) return null;
+const isRunId = (s) => s.length > 0 && s.length <= 64 && /^[A-Za-z0-9_-]+$/.test(s);
+const number = (s) => {
+  if (!/^[0-9]{1,10}$/.test(s ?? '')) return null;
   const n = Number(s);
   return n > 0 ? n : null;
 };
+const githubRef = (owner, repo, n) => `github:${owner.toLowerCase()}/${repo.toLowerCase()}#${n}`;
 
-function githubSource(owner, repo, n) {
-  const o = owner.toLowerCase();
-  const r = repo.toLowerCase();
-  return { source_type: 'github_issue', source_ref: `${o}/${r}#${n}`, source_url: `https://github.com/${o}/${r}/issues/${n}` };
+/** `[host, segments]` of an http(s) URL (query / fragment dropped), or null. */
+function httpParts(s) {
+  const sp = splitOnce(s, '://');
+  if (!sp || !['https', 'http'].includes(sp[0].toLowerCase())) return null;
+  const rest = sp[1].split(/[?#]/)[0];
+  const [host, path] = splitOnce(rest, '/') ?? [rest, ''];
+  if (!host || /\s/.test(host)) return null;
+  return [host.toLowerCase(), path.split('/').filter(Boolean)];
 }
 
-/** Source, a thrown PulseError, or null when the input isn't a github.com link. */
-function parseGithubUrl(s) {
-  let rest = s;
-  const schemeSplit = splitOnce(s, '://');
-  if (schemeSplit) {
-    if (!['https', 'http'].includes(schemeSplit[0].toLowerCase())) return null;
-    rest = schemeSplit[1];
-  }
-  rest = rest.split(/[?#]/)[0];
-  const hp = splitOnce(rest, '/');
-  if (!hp) return null;
-  const host = hp[0].toLowerCase();
+function githubFromUrl(host, segs) {
   if (host !== 'github.com' && host !== 'www.github.com') return null;
-  const path = hp[1].endsWith('/') ? hp[1].slice(0, -1) : hp[1];
-  const parts = path.split('/');
-  if (parts.length !== 4) throw invalid();
-  const [owner, repo, kind, number] = parts;
-  if (kind === 'pull') throw invalid('pull requests are not supported (use the PR inbox); link a GitHub issue');
-  const n = issueNumber(number);
-  if (n && kind === 'issues' && isOwner(owner) && isRepo(repo)) return githubSource(owner, repo, n);
-  throw invalid();
+  const [owner, repo, kind, n] = segs;
+  if (segs.length < 4 || !['issues', 'pull'].includes(kind) || !isOwner(owner) || !isRepo(repo)) return null;
+  const num = number(n);
+  return num ? githubRef(owner, repo, num) : null;
 }
 
-function parseGithubShort(s, projectRepos) {
-  const hash = s.lastIndexOf('#');
-  if (hash < 0) return null;
-  const head = s.slice(0, hash);
-  const n = issueNumber(s.slice(hash + 1));
-  if (!n) return null;
-  if (!head) {
-    const repos = [...new Set(projectRepos.map((r) => String(r).trim().toLowerCase()).filter(Boolean))];
-    if (repos.length !== 1) throw repoAmbiguous();
-    const or = splitOnce(repos[0], '/');
-    if (or && isOwner(or[0]) && isRepo(or[1])) return githubSource(or[0], or[1], n);
-    throw repoAmbiguous();
-  }
-  const or = splitOnce(head, '/');
-  if (!or || !isOwner(or[0]) || !isRepo(or[1])) return null;
-  return githubSource(or[0], or[1], n);
+function gitlabFromUrl(segs) {
+  const dash = segs.indexOf('-');
+  if (dash <= 0) return null;
+  const sep = { issues: '#', merge_requests: '!' }[segs[dash + 1]];
+  const n = number(segs[dash + 2]);
+  if (!sep || !n) return null;
+  return `gitlab:${segs.slice(0, dash).join('/').toLowerCase()}${sep}${n}`;
 }
 
 /**
- * Normalise a pasted link / reference → `{ source_type, source_ref, source_url }`;
- * throws PulseError `invalid_source` / `repo_ambiguous`. `projectRepos`
- * (`owner/repo`) only matters for a bare `#<n>`.
+ * Normalise a todo's source link → `{ source_type, source_ref, source_url }`,
+ * or null for an empty input; throws Error(INVALID_SOURCE_MESSAGE) otherwise.
  */
-export function parseSource(input, projectRepos = []) {
+export function normalizeSource(input) {
   let s = String(input ?? '').trim();
   if (s.startsWith('<') && s.endsWith('>')) s = s.slice(1, -1).trim();
-  if (!s) throw invalid();
+  if (!s) return null;
+  const found = (source_type, source_ref = null) => ({ source_type, source_ref, source_url: s });
+
+  for (const prefix of ['run:', 'devdy://run/', 'devdy://runs/']) {
+    if (s.startsWith(prefix)) {
+      const id = s.slice(prefix.length).replace(/\/+$/, '');
+      if (!isRunId(id)) throw new Error(INVALID_SOURCE_MESSAGE);
+      return found('run', `run:${id}`);
+    }
+  }
   try {
     const l = parseSlackThreadLink(s);
-    return { source_type: 'slack', source_ref: `${l.channelId}:${l.threadTs}`, source_url: l.canonicalUrl };
-  } catch (e) {
-    if (e.message === 'dm') throw invalid(DM_UNSUPPORTED_MESSAGE);
+    const team = l.host.endsWith('.slack.com') ? l.host.slice(0, -'.slack.com'.length) : l.host;
+    return found('slack', `slack:${team}/${l.channelId}/${l.threadTs}`);
+  } catch {
+    // Not a Slack thread (a DM link stays a plain URL).
   }
-  const gh = parseGithubUrl(s) ?? parseGithubShort(s, projectRepos);
-  if (gh) return gh;
-  throw invalid();
+  const parts = httpParts(s);
+  if (parts) {
+    const ref = githubFromUrl(...parts);
+    if (ref) return found('github', ref);
+    const gl = gitlabFromUrl(parts[1]);
+    if (gl) return found('gitlab', gl);
+    return found('url');
+  }
+  const hash = s.lastIndexOf('#');
+  if (hash >= 0) {
+    const or = splitOnce(s.slice(0, hash), '/');
+    const n = number(s.slice(hash + 1));
+    if (or && n && isOwner(or[0]) && isRepo(or[1])) return found('github', githubRef(or[0], or[1], n));
+  }
+  throw new Error(INVALID_SOURCE_MESSAGE);
 }

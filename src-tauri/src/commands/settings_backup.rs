@@ -5,7 +5,7 @@
 //! library (file contents included) with their groups, MCP servers, VPS servers, account metadata
 //! (GitHub, GitLab, AWS, Azure, Google, Claude), notes / todos and Slack threads (messages and
 //! translations; attachments are re-downloaded) and projects with their repos, enabled
-//! Skills / Rules / groups / MCP / VPS servers, account links and Pulse watches. Sessions and
+//! Skills / Rules / groups / MCP / VPS servers, account links. Sessions and
 //! usage history stay on the machine.
 //!
 //! Secrets (PATs, MCP env/header VALUEs, Google OAuth client + refresh tokens, SSH passphrases and
@@ -161,8 +161,6 @@ struct ProjectEntry {
     mcp_servers: Vec<String>,
     #[serde(default)]
     servers: Vec<ProjectServerEntry>,
-    #[serde(default)]
-    pulse_watches: Vec<PulseWatchEntry>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -195,54 +193,6 @@ struct ProjectServerEntry {
     /// VPS server label.
     server: String,
     role: String,
-}
-
-#[derive(Serialize, Deserialize)]
-struct PulseWatchEntry {
-    id: String,
-    source_type: String,
-    source_ref: String,
-    source_url: String,
-    #[serde(default)]
-    title: Option<String>,
-    #[serde(default)]
-    active: bool,
-    added_via: String,
-    #[serde(default)]
-    checked_at: Option<String>,
-    #[serde(default)]
-    board_json: Option<String>,
-    created_at: String,
-    updated_at: String,
-    #[serde(default)]
-    digests: Vec<PulseDigestEntry>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct PulseDigestEntry {
-    id: String,
-    content_hash: String,
-    status: String,
-    ball: String,
-    #[serde(default)]
-    ball_since: Option<String>,
-    #[serde(default)]
-    summary: String,
-    #[serde(default)]
-    next_action: Option<String>,
-    #[serde(default)]
-    deadlines: String,
-    #[serde(default)]
-    decisions: String,
-    #[serde(default)]
-    open_questions: String,
-    #[serde(default)]
-    truncated: bool,
-    #[serde(default)]
-    model: Option<String>,
-    #[serde(default)]
-    source_closed: bool,
-    created_at: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -402,6 +352,45 @@ struct TodoEntry {
     due_date: Option<String>,
     #[serde(default)]
     project: Option<ProjectRef>,
+    /// Focus columns (`TODO_FOCUS_COLS`), nulls left out.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    focus: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Focus columns of `todos` (migration 0067) carried by a backup.
+const TODO_FOCUS_COLS: [&str; 16] = [
+    "due_time",
+    "priority",
+    "estimate_min",
+    "estimate_source",
+    "status",
+    "snoozed_until",
+    "remind_at",
+    "source_type",
+    "source_ref",
+    "source_url",
+    "started_at",
+    "completed_at",
+    "actual_min",
+    "ai_plan",
+    "ai_analyzed_at",
+    "updated_at",
+];
+
+/// `json_object(...)` of the Focus columns of todo row `t`.
+fn todo_focus_sql() -> String {
+    let args: Vec<String> = TODO_FOCUS_COLS
+        .iter()
+        .map(|c| format!("'{c}', t.{c}"))
+        .collect();
+    format!("json_object({})", args.join(", "))
+}
+
+fn todo_focus_of(json: &str) -> serde_json::Map<String, serde_json::Value> {
+    let mut m: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(json).unwrap_or_default();
+    m.retain(|_, v| !v.is_null());
+    m
 }
 
 /// A fetched Slack thread with its messages (original + Vietnamese) and file metadata. File
@@ -635,10 +624,6 @@ impl Bundle {
             ("todos", self.todos.len()),
             ("slackThreads", self.slack_threads.len()),
             ("projects", self.projects.len()),
-            (
-                "pulseWatches",
-                self.projects.iter().map(|p| p.pulse_watches.len()).sum(),
-            ),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
@@ -1106,11 +1091,12 @@ async fn collect(
         project: project_of(row),
     })
     .collect();
-    let todos = sqlx::query(
+    let todos = sqlx::query(&format!(
         "SELECT t.id, t.text, t.done, t.position, t.created_at, t.due_date, \
-                p.name AS project_name, p.path AS project_path \
+                {} AS focus_json, p.name AS project_name, p.path AS project_path \
          FROM todos t LEFT JOIN projects p ON p.id = t.project_id ORDER BY t.position",
-    )
+        todo_focus_sql()
+    ))
     .fetch_all(db)
     .await
     .map_err(err)?
@@ -1123,6 +1109,7 @@ async fn collect(
         created_at: row.get("created_at"),
         due_date: row.get("due_date"),
         project: project_of(row),
+        focus: todo_focus_of(row.get("focus_json")),
     })
     .collect();
 
@@ -1269,60 +1256,6 @@ async fn collect_projects(db: &Db) -> Result<Vec<ProjectEntry>, String> {
             role: r.get("role"),
         })
         .collect();
-        let mut pulse_watches = Vec::new();
-        for w in sqlx::query(
-            "SELECT id, source_type, source_ref, source_url, title, active, added_via, checked_at, \
-                    board_json, created_at, updated_at \
-             FROM pulse_watches WHERE project_id = ? ORDER BY created_at",
-        )
-        .bind(&id)
-        .fetch_all(db)
-        .await
-        .map_err(err)?
-        {
-            let watch_id: String = w.get("id");
-            let digests = sqlx::query(
-                "SELECT id, content_hash, status, ball, ball_since, summary, next_action, deadlines, \
-                        decisions, open_questions, truncated, model, source_closed, created_at \
-                 FROM pulse_digests WHERE watch_id = ? ORDER BY created_at",
-            )
-            .bind(&watch_id)
-            .fetch_all(db)
-            .await
-            .map_err(err)?
-            .iter()
-            .map(|d| PulseDigestEntry {
-                id: d.get("id"),
-                content_hash: d.get("content_hash"),
-                status: d.get("status"),
-                ball: d.get("ball"),
-                ball_since: d.get("ball_since"),
-                summary: d.get("summary"),
-                next_action: d.get("next_action"),
-                deadlines: d.get("deadlines"),
-                decisions: d.get("decisions"),
-                open_questions: d.get("open_questions"),
-                truncated: d.get::<i64, _>("truncated") != 0,
-                model: d.get("model"),
-                source_closed: d.get::<i64, _>("source_closed") != 0,
-                created_at: d.get("created_at"),
-            })
-            .collect();
-            pulse_watches.push(PulseWatchEntry {
-                id: watch_id,
-                source_type: w.get("source_type"),
-                source_ref: w.get("source_ref"),
-                source_url: w.get("source_url"),
-                title: w.get("title"),
-                active: w.get::<i64, _>("active") != 0,
-                added_via: w.get("added_via"),
-                checked_at: w.get("checked_at"),
-                board_json: w.get("board_json"),
-                created_at: w.get("created_at"),
-                updated_at: w.get("updated_at"),
-                digests,
-            });
-        }
         out.push(ProjectEntry {
             id,
             name: row.get("name"),
@@ -1347,7 +1280,6 @@ async fn collect_projects(db: &Db) -> Result<Vec<ProjectEntry>, String> {
             rule_groups,
             mcp_servers,
             servers,
-            pulse_watches,
         });
     }
     Ok(out)
@@ -1809,30 +1741,6 @@ async fn apply_bundle(
             }
         }
         crate::slack_threads::emit_all_changed(&app);
-    }
-
-    // Pulse watches last: a Slack watch points at its (now imported) thread.
-    let mut pulse_pending = false;
-    for (index, project_id) in &project_ids {
-        for watch in &bundle.projects[*index].pulse_watches {
-            let result =
-                import_pulse_watch(db, project_id, watch)
-                    .await
-                    .map(|(outcome, pending)| {
-                        pulse_pending |= pending;
-                        outcome
-                    });
-            report.record(
-                "pulseWatches",
-                watch.title.as_deref().unwrap_or(&watch.source_ref),
-                result,
-            );
-        }
-    }
-    if pulse_pending {
-        if let Some(pulse) = app.try_state::<crate::pulse::PulseState>() {
-            pulse.kick();
-        }
     }
 
     report
@@ -2548,6 +2456,40 @@ async fn import_note(db: &Db, entry: &NoteEntry) -> Result<Upsert, String> {
     Ok(Upsert::Created)
 }
 
+/// Write the backup's Focus columns over todo `id` (missing keys = column
+/// default / null). A backup from before Focus (no columns) leaves the row
+/// alone. Returns whether anything changed.
+async fn import_todo_focus(db: &Db, id: &str, focus: &serde_json::Map<String, serde_json::Value>) -> Result<bool, String> {
+    if focus.is_empty() {
+        return Ok(false);
+    }
+    let before: String = sqlx::query_scalar(&format!("SELECT {} FROM todos t WHERE t.id = ?", todo_focus_sql()))
+        .bind(id)
+        .fetch_one(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut want = focus.clone();
+    want.retain(|k, v| TODO_FOCUS_COLS.contains(&k.as_str()) && !v.is_null());
+    want.entry("priority").or_insert(2.into());
+    want.entry("status").or_insert("todo".into());
+    if todo_focus_of(&before) == want {
+        return Ok(false);
+    }
+    let sets: Vec<String> = TODO_FOCUS_COLS.iter().map(|c| format!("{c} = ?")).collect();
+    let sql = format!("UPDATE todos SET {} WHERE id = ?", sets.join(", "));
+    let mut q = sqlx::query(&sql);
+    for c in TODO_FOCUS_COLS {
+        q = match want.get(c) {
+            Some(serde_json::Value::Number(n)) => q.bind(n.as_i64()),
+            Some(serde_json::Value::String(v)) => q.bind(v.clone()),
+            Some(v) => q.bind(v.to_string()),
+            None => q.bind(None::<String>),
+        };
+    }
+    q.bind(id).execute(db).await.map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 async fn import_todo(db: &Db, entry: &TodoEntry) -> Result<Upsert, String> {
     let project_id = resolve_project(db, &entry.project).await;
     let exists = id_by(db, "todos", "id", &entry.id).await?.is_some();
@@ -2575,7 +2517,8 @@ async fn import_todo(db: &Db, entry: &TodoEntry) -> Result<Upsert, String> {
         .map_err(|e| e.to_string())?
         .rows_affected()
             > 0;
-        return Ok(if changed {
+        let focus_changed = import_todo_focus(db, &entry.id, &entry.focus).await?;
+        return Ok(if changed || focus_changed {
             Upsert::Updated
         } else {
             Upsert::Unchanged
@@ -2595,6 +2538,7 @@ async fn import_todo(db: &Db, entry: &TodoEntry) -> Result<Upsert, String> {
     .execute(db)
     .await
     .map_err(|e| e.to_string())?;
+    import_todo_focus(db, &entry.id, &entry.focus).await?;
     Ok(Upsert::Created)
 }
 
@@ -3137,95 +3081,6 @@ async fn import_project(
     Ok((outcome, id, warnings))
 }
 
-/// Match by source (type + ref). A new Slack watch points at the local copy of its thread, or
-/// waits for Pulse to resolve it. Returns whether Pulse has resolving to do.
-async fn import_pulse_watch(
-    db: &Db,
-    project_id: &str,
-    entry: &PulseWatchEntry,
-) -> Result<(Upsert, bool), String> {
-    let err = |e: sqlx::Error| e.to_string();
-    let existing: Option<String> =
-        sqlx::query_scalar("SELECT id FROM pulse_watches WHERE source_type = ? AND source_ref = ?")
-            .bind(&entry.source_type)
-            .bind(&entry.source_ref)
-            .fetch_optional(db)
-            .await
-            .map_err(err)?;
-    let (watch_id, mut outcome, pending) = match existing {
-        Some(id) => (id, Upsert::Unchanged, false),
-        None => {
-            let thread_id: Option<String> = match entry.source_ref.split_once(':') {
-                Some((channel, ts)) if entry.source_type == "slack" => sqlx::query_scalar(
-                    "SELECT id FROM slack_threads WHERE channel_id = ? AND thread_ts = ?",
-                )
-                .bind(channel)
-                .bind(ts)
-                .fetch_optional(db)
-                .await
-                .map_err(err)?,
-                _ => None,
-            };
-            let pending = entry.source_type == "slack" && thread_id.is_none();
-            let id = free_id(db, "pulse_watches", &entry.id).await;
-            sqlx::query(
-                "INSERT INTO pulse_watches (id, project_id, source_type, source_ref, source_url, \
-                 slack_thread_id, title, active, added_via, resolve_status, checked_at, board_json, \
-                 created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            )
-            .bind(&id)
-            .bind(project_id)
-            .bind(&entry.source_type)
-            .bind(&entry.source_ref)
-            .bind(&entry.source_url)
-            .bind(&thread_id)
-            .bind(&entry.title)
-            .bind(entry.active as i64)
-            .bind(&entry.added_via)
-            .bind(if pending { "pending" } else { "ready" })
-            .bind(&entry.checked_at)
-            .bind(&entry.board_json)
-            .bind(&entry.created_at)
-            .bind(&entry.updated_at)
-            .execute(db)
-            .await
-            .map_err(err)?;
-            (id, Upsert::Created, pending && entry.active)
-        }
-    };
-    for d in &entry.digests {
-        let inserted = sqlx::query(
-            "INSERT OR IGNORE INTO pulse_digests (id, watch_id, content_hash, status, ball, ball_since, \
-             summary, next_action, deadlines, decisions, open_questions, truncated, model, \
-             source_closed, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&d.id)
-        .bind(&watch_id)
-        .bind(&d.content_hash)
-        .bind(&d.status)
-        .bind(&d.ball)
-        .bind(&d.ball_since)
-        .bind(&d.summary)
-        .bind(&d.next_action)
-        .bind(if d.deadlines.is_empty() { "[]" } else { &d.deadlines })
-        .bind(if d.decisions.is_empty() { "[]" } else { &d.decisions })
-        .bind(if d.open_questions.is_empty() { "[]" } else { &d.open_questions })
-        .bind(d.truncated as i64)
-        .bind(&d.model)
-        .bind(d.source_closed as i64)
-        .bind(&d.created_at)
-        .execute(db)
-        .await
-        .map_err(err)?
-        .rows_affected()
-            > 0;
-        if inserted && outcome == Upsert::Unchanged {
-            outcome = Upsert::Updated;
-        }
-    }
-    Ok((outcome, pending))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3306,9 +3161,23 @@ mod tests {
             created_at: "c".into(),
             due_date: Some("2026-11-05".into()),
             project: None,
+            focus: serde_json::json!({ "due_time": "15:00", "priority": 1, "estimate_min": 90 })
+                .as_object()
+                .unwrap()
+                .clone(),
         };
         assert_eq!(import_todo(&db, &todo).await.unwrap(), Upsert::Created);
         assert_eq!(import_todo(&db, &todo).await.unwrap(), Upsert::Unchanged);
+        let row: (Option<String>, i64, Option<i64>, String) = sqlx::query_as(
+            "SELECT due_time, priority, estimate_min, status FROM todos WHERE id = 't1'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(row, (Some("15:00".into()), 1, Some(90), "todo".into()));
+        let mut edited = todo;
+        edited.focus.insert("priority".into(), 3.into());
+        assert_eq!(import_todo(&db, &edited).await.unwrap(), Upsert::Updated);
     }
 
     #[tokio::test]
@@ -3537,11 +3406,6 @@ mod tests {
             "INSERT INTO servers (id, label, host, username, auth_method, created_at) \
              VALUES ('s1', 'prod', 'h', 'root', 'agent', 'c')",
             "INSERT INTO project_servers (project_id, server_id, role, created_at) VALUES ('p1', 's1', 'production', 'c')",
-            "INSERT INTO pulse_watches (id, project_id, source_type, source_ref, source_url, added_via, \
-             resolve_status, created_at, updated_at) VALUES ('w1', 'p1', 'github_issue', 'o/r#1', 'u', \
-             'button', 'ready', 'c', 'u')",
-            "INSERT INTO pulse_digests (id, watch_id, content_hash, status, ball, summary, created_at) \
-             VALUES ('g1', 'w1', 'h', 'on_track', 'me', 'all good', 'c')",
         ] {
             sqlx::query(sql).execute(&source).await.unwrap();
         }
@@ -3588,21 +3452,6 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(links, (1, 1, 1));
-
-        let watch = &entry.pulse_watches[0];
-        assert_eq!(
-            import_pulse_watch(&target, &id, watch).await.unwrap(),
-            (Upsert::Created, false)
-        );
-        assert_eq!(
-            import_pulse_watch(&target, &id, watch).await.unwrap(),
-            (Upsert::Unchanged, false)
-        );
-        let digests: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pulse_digests")
-            .fetch_one(&target)
-            .await
-            .unwrap();
-        assert_eq!(digests, 1);
 
         // Second import: matched by path, nothing new.
         let (outcome, again, _) = import_project(&target, entry, false).await.unwrap();
