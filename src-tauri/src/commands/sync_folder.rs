@@ -198,9 +198,11 @@ pub async fn sync_folder_apply(
             let guard = apply::ApplyGuard { expected: Some(expected), precheck: Some(precheck) };
             match apply::apply(link.clone(), &source_device, &opts, sink.clone(), cancel.clone(), guard).await {
                 Ok(ApplyReport { backup, .. }) => {
-                    let now = chrono::Utc::now().to_rfc3339();
-                    if let Err(e) = prefs::set_last_backup_at(&db, pid, &now).await {
-                        tracing::warn!(event = "folder_sync_backup_time_failed", error = %e);
+                    if !backup.repos.is_empty() || backup.folder.is_some() {
+                        let now = chrono::Utc::now().to_rfc3339();
+                        if let Err(e) = prefs::set_last_backup_at(&db, pid, &now).await {
+                            tracing::warn!(event = "folder_sync_backup_time_failed", error = %e);
+                        }
                     }
                     finish(pid, "done", Some(format!("backup: {}", backup.describe())));
                 }
