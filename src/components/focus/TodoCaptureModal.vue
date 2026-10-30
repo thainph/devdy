@@ -12,6 +12,7 @@ import { useFocusStore } from '@/stores/focus'
 import { useProjectsStore } from '@/stores/projects'
 import { draftToInput, emptyTodoDraft, type TodoDraft, type TodoPrefill } from '@/lib/focus'
 import TodoMetaFields from './TodoMetaFields.vue'
+import FocusAiSuggestButton from './FocusAiSuggestButton.vue'
 
 const props = defineProps<{ open: boolean; prefill?: TodoPrefill | null }>()
 const emit = defineEmits<{ close: []; saved: [id: string] }>()
@@ -86,7 +87,11 @@ function onKeydown(e: KeyboardEvent) {
         <label class="block text-[11px] font-medium text-muted-foreground">{{ t('focus.capture.project') }}</label>
         <ProjectSelect v-model="projectId" variant="default" size="sm" />
       </div>
-      <TodoMetaFields v-model="draft" />
+      <TodoMetaFields v-model="draft">
+        <template #suggest>
+          <FocusAiSuggestButton v-model="draft" />
+        </template>
+      </TodoMetaFields>
     </div>
     <template #footer>
       <span class="mr-auto text-[11px] text-muted-foreground/70">⌘/Ctrl + Enter</span>

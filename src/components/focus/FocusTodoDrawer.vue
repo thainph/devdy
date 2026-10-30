@@ -1,16 +1,16 @@
 <script setup lang="ts">
 // Detail drawer of one todo (spec §3.2): every field editable — title, project,
 // status, deadline (date + time), priority, estimate, snooze, reminder, actual
-// time — plus the source link, linked sessions and the AI plan (read-only until
-// P3's analysis). Save sends only what changed (`update_todo_fields`).
-import { computed, onMounted, ref, watch } from 'vue'
+// time — plus the source link, linked sessions and the AI section (FocusAiPanel:
+// analyze, start with AI, the editable plan). Save sends only what changed
+// (`update_todo_fields`); an estimate applied from the AI is saved as `ai`.
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Check, ExternalLink, Link as LinkIcon, Trash2, Undo2, X } from 'lucide-vue-next'
 import { AppSelect, Button, Drawer, Input, Textarea } from '@/components/ui'
 import ProjectSelect from '@/components/ProjectSelect.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
-import { useMarkdown } from '@/lib/markdown'
 import { useFocusStore } from '@/stores/focus'
 import {
   emptyTodoDraft,
@@ -19,12 +19,14 @@ import {
   parseEstimate,
   sourceShortLabel,
   toLocalInput,
+  type AiApply,
   type FocusItem,
   type TodoDraft,
   type TodoPatch,
   type TodoStatus,
 } from '@/lib/focus'
 import TodoMetaFields from './TodoMetaFields.vue'
+import FocusAiPanel from './FocusAiPanel.vue'
 import { SOURCE_ICON } from './sourceIcon'
 import { useFocusActions } from './useFocusActions'
 import { useFocusText } from './useFocusText'
@@ -38,7 +40,6 @@ const { confirm } = useConfirm()
 const store = useFocusStore()
 const actions = useFocusActions()
 const { stamp } = useFocusText()
-const { renderText, loadMarkdown } = useMarkdown()
 
 const draft = ref<TodoDraft>(emptyTodoDraft())
 const status = ref<TodoStatus>('todo')
@@ -46,6 +47,8 @@ const snoozedUntil = ref('')
 const remindAt = ref('')
 const actual = ref('')
 const saving = ref(false)
+/** Minutes last applied from an AI analysis: saved with `estimate_source = 'ai'` while unchanged. */
+const aiEstimate = ref<number | null>(null)
 
 const todo = computed(() => props.item?.todo ?? null)
 
@@ -64,11 +67,26 @@ function reset() {
   snoozedUntil.value = toLocalInput(td.snoozed_until)
   remindAt.value = toLocalInput(td.remind_at)
   actual.value = formatEstimate(td.actual_min)
+  aiEstimate.value = null
+}
+
+/** "Apply" in the AI panel fills the form; the drawer's Save stores it (BR-09). */
+function onAiApply(a: AiApply) {
+  const d = { ...draft.value }
+  if (a.estimateMin != null) {
+    d.estimate = formatEstimate(a.estimateMin)
+    aiEstimate.value = a.estimateMin
+  }
+  if (a.priority) d.priority = a.priority
+  if (a.dueDate) {
+    d.dueDate = a.dueDate
+    d.dueTime = a.dueTime ?? ''
+  }
+  draft.value = d
 }
 
 // A different todo → load it; the same one refreshed by the board keeps the edit.
 watch(() => todo.value?.id, reset, { immediate: true })
-onMounted(loadMarkdown)
 
 const projectId = computed({
   get: () => draft.value.projectId || null,
@@ -94,8 +112,11 @@ const patch = computed<TodoPatch | null>(() => {
   const dueTime = d.dueDate && d.dueTime ? d.dueTime : null
   if (d.dueDate && dueTime !== td.due_time) p.due_time = dueTime
   if (d.priority !== td.priority) p.priority = d.priority
-  // The backend marks a set estimate `estimate_source = 'user'` itself.
-  if (estimate !== td.estimate_min) p.estimate_min = estimate
+  // The backend marks a set estimate `estimate_source = 'user'` itself, unless told it came from the AI.
+  if (estimate !== td.estimate_min) {
+    p.estimate_min = estimate
+    if (estimate != null && estimate === aiEstimate.value) p.estimate_source = 'ai'
+  }
   if (status.value !== td.status) p.status = status.value
   const snooze = fromLocalInput(snoozedUntil.value)
   if (snooze !== (td.snoozed_until ? fromLocalInput(toLocalInput(td.snoozed_until)) : null)) p.snoozed_until = snooze
@@ -243,14 +264,7 @@ function onKeydown(e: KeyboardEvent) {
         </span>
       </div>
 
-      <!-- AI plan (written by P3's "Analyze"; read-only here) -->
-      <section v-if="todo.ai_plan" class="space-y-1">
-        <h4 class="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-          {{ t('focus.drawer.aiPlan') }}
-          <span v-if="todo.ai_analyzed_at" class="ml-1 normal-case tracking-normal">· {{ t('focus.drawer.aiAnalyzedAt', { time: stamp(todo.ai_analyzed_at) }) }}</span>
-        </h4>
-        <div class="markdown-output rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-sm" v-html="renderText(todo.ai_plan)" />
-      </section>
+      <FocusAiPanel :todo="todo" @apply="onAiApply" />
 
       <div class="space-y-0.5 text-[11px] text-muted-foreground">
         <p>{{ t('focus.drawer.created', { time: stamp(todo.created_at) }) }}</p>
