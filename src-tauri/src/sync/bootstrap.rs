@@ -1130,11 +1130,13 @@ pub async fn project_mappings(db: &Db, home: &PathCtx) -> Result<Vec<ProjectMapp
 /// Point a synced project at its checkout on this machine: records the
 /// mapping and moves every local path under the old root (projects, repos,
 /// runs, ...) to the new one, without pushing anything (the synced form of
-/// those paths does not change).
+/// those paths does not change). The folder may not exist yet (folder sync
+/// creates it), but must not be a file.
 pub async fn set_project_mapping(db: &Db, home: &PathCtx, project_id: &str, local_path: &str) -> Result<ProjectMapping, String> {
     let local_path = local_path.trim_end_matches('/');
-    if !Path::new(local_path).is_absolute() || !Path::new(local_path).is_dir() {
-        return Err(format!("not a folder on this machine: {local_path}"));
+    let p = Path::new(local_path);
+    if !p.is_absolute() || p.components().any(|c| matches!(c, std::path::Component::ParentDir)) || (p.exists() && !p.is_dir()) {
+        return Err(format!("not a folder path on this machine: {local_path}"));
     }
     let mut map = load_project_map(db).await?;
     let ctx = home.clone().with_project_map(map.clone());
@@ -1511,7 +1513,15 @@ mod tests {
         assert_eq!(scalar(&db, "SELECT output_path FROM runs").await.unwrap(), format!("{home}/code/devdy/.devdy/runs/r.md"));
         assert_eq!(scalar(&db, "SELECT input_path FROM runs").await.unwrap(), format!("{home}/w/devdy2/in"), "sibling prefix untouched");
         assert!(store.pending(10).await.unwrap().is_empty());
-        assert!(set_project_mapping(&db, &ctx, "p", "/definitely/not/here").await.is_err());
+        assert!(set_project_mapping(&db, &ctx, "p", "relative/here").await.is_err());
+        assert!(set_project_mapping(&db, &ctx, "p", &format!("{home}/code/../x")).await.is_err());
+        std::fs::write(home_dir.join("file"), "x").unwrap();
+        assert!(set_project_mapping(&db, &ctx, "p", &format!("{home}/file")).await.is_err());
+        // A folder that folder sync will create.
+        let later = format!("{home}/later/devdy");
+        let m = set_project_mapping(&db, &ctx, "p", &later).await.unwrap();
+        assert_eq!((m.mapped, m.on_this_machine, m.path.as_str()), (true, false, later.as_str()));
+        assert_eq!(scalar(&db, "SELECT output_path FROM runs").await.unwrap(), format!("{later}/.devdy/runs/r.md"));
         std::fs::remove_dir_all(&home_dir).ok();
     }
 
