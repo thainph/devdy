@@ -505,7 +505,7 @@
     },
     "join": {
       "title": "Join a sync group",
-      "help": "On another machine: enter the device name and master password of a machine already in the group (both set in its Remote Control settings). That machine must be online.",
+      "help": "On another machine: enter the device name and master password of a machine already in the group (both set in its Remote Control settings). On that machine, open Settings → Sync → Accept a new device first, then allow the request there.",
       "alias": "Device name of the other machine",
       "aliasInvalid": "Device names use lowercase letters, digits and dashes.",
       "password": "Its master password",
@@ -539,7 +539,8 @@
         "git_remote": "same git remote",
         "name": "same name",
         "new": "new"
-      }
+      },
+      "waiting": "Waiting for approval on the other machine…"
     },
     "status": {
       "lastPush": "Last push",
@@ -567,9 +568,13 @@
       "removed": "Removed {name}",
       "confirmRemove": {
         "title": "Remove device?",
-        "message": "{name} will no longer be able to sync. Its local data stays on it.",
+        "message": "{name} will no longer be able to sync. Its local data stays on it, and it keeps the old group key but can no longer reach the group's data on the relay.",
         "confirmLabel": "Remove"
-      }
+      },
+      "creator": "Created the group",
+      "removeHelp": "A removed device keeps its copy of the group key but can no longer reach the group's data on the relay (the key is not rotated in this version).",
+      "onlyCreator": "Only the device that created the group ({name}) can remove devices.",
+      "onlyCreatorError": "Only the device that created the group can remove other devices."
     },
     "projects": {
       "title": "Project folders on this machine",
@@ -597,6 +602,34 @@
         "title": "Leave the sync group?",
         "message": "This machine stops syncing. Its local data stays; to join again you need another device's name and master password.",
         "confirmLabel": "Leave"
+      }
+    },
+    "relayMissing": "This machine has no relay of its own yet: set the relay URL and token in Settings → Remote Control first.",
+    "errors": {
+      "host_offline": "No machine answered on that device name. Check the name and that it is online.",
+      "wrong_password": "Wrong master password.",
+      "host_not_in_group": "That machine is not in a sync group.",
+      "host_unsupported": "That machine's Devdy is too old to add devices. Update it first.",
+      "not_accepting": "That machine is not accepting new devices. Open Settings → Sync → Accept a new device on it, then try again.",
+      "declined": "The request was declined (or not answered in time) on that machine.",
+      "busy": "That machine is answering another join request. Try again in a moment.",
+      "relay_not_configured": "This machine has no relay of its own yet: set the relay URL and token in Settings → Remote Control first.",
+      "relay_error": "That machine could not reach the relay. Try again."
+    },
+    "accept": {
+      "title": "Accept a new device",
+      "help": "To add a machine, open this for 5 minutes, then start Join on the other machine. You confirm each request here; keep this page open until it is done.",
+      "button": "Accept a new device",
+      "open": "Accepting a new device — {time} left",
+      "cancel": "Stop",
+      "allowed": "{name} can now finish joining",
+      "denied": "Request denied",
+      "request": {
+        "title": "Allow “{name}” to join sync?",
+        "message": "It gets the group key and everything that syncs (including secrets when secret sync is on). Only allow a machine you are setting up right now.",
+        "allow": "Allow",
+        "deny": "Deny",
+        "expires": "{time}"
       }
     }
   }

@@ -792,11 +792,11 @@ pub struct SyncSecrets {
     pub group_key: String,
     /// Bearer token this device authenticates to the relay's sync store with.
     pub device_token: String,
-    /// Stable sync device id. Kept here until sync-core's `sync_device` table
-    /// is available; `sync::pair::device_id` prefers that table.
+    /// This membership's sync device id (fresh per create / join, mirrored
+    /// in the `sync_device` row; see `sync::pair::new_membership_device`).
     pub device_id: String,
-    /// Relay host token handed over at join, used when this device has no
-    /// Remote Control token of its own.
+    /// Relay host token an older build handed over at join; read only for
+    /// those memberships. New joins need this device's own relay token.
     #[serde(default)]
     pub relay_token: Option<String>,
 }
