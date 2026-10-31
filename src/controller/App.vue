@@ -29,8 +29,9 @@ import ControllerHeader from './components/ControllerHeader.vue'
 import HeaderButton from './components/HeaderButton.vue'
 import ConnectionBadge from './components/ConnectionBadge.vue'
 import PushSheet from './components/PushSheet.vue'
+import ThemeSheet from './components/ThemeSheet.vue'
 import { AppSelect } from '@/components/ui'
-import { Bell, BellOff, RefreshCw, X } from 'lucide-vue-next'
+import { Bell, BellOff, Palette, RefreshCw, X } from 'lucide-vue-next'
 import { createDataStore } from './dataStore'
 import { setAppearance } from './appearance'
 import { createPushStore } from './pushStore'
@@ -575,6 +576,7 @@ function refreshTab(): void {
 
 const pushOpen = ref(false)
 const pushOn = computed(() => push.ui() === 'on')
+const themeOpen = ref(false)
 
 /** Open the Inbox from a session (the "another run needs you" banner). */
 function openInbox(): void {
@@ -880,6 +882,9 @@ function onRequestFiles(): void {
         <Bell v-if="pushOn" class="h-4 w-4" :stroke-width="2" />
         <BellOff v-else class="h-4 w-4" :stroke-width="2" />
       </HeaderButton>
+      <HeaderButton v-if="tab === 'project'" :label="t('controller.theme.title')" @click="themeOpen = true">
+        <Palette class="h-4 w-4" :stroke-width="2" />
+      </HeaderButton>
       <HeaderButton :label="t('controller.browser.refresh')" @click="refreshTab">
         <RefreshCw class="h-4 w-4" :stroke-width="2" />
       </HeaderButton>
@@ -952,6 +957,7 @@ function onRequestFiles(): void {
         @clear-error="data.clearError()"
       />
       <PushSheet v-if="hasPush && pushOpen" :push="push" @close="pushOpen = false" />
+      <ThemeSheet v-if="themeOpen" @close="themeOpen = false" />
     </div>
     <BottomTabBar :tab="tab" :inbox-count="inboxCount" :hidden="hiddenTabs" @update:tab="onTab" />
   </div>

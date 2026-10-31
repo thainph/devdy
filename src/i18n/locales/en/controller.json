@@ -274,5 +274,14 @@
       "host": "The desktop did not accept this device — check your connection and try again.",
       "test": "The test notification could not be sent."
     }
+  },
+  "theme": {
+    "title": "Appearance",
+    "mode": "Theme",
+    "palette": "Color palette",
+    "followHost": "Same as desktop",
+    "followHostValue": "Same as desktop ({value})",
+    "hint": "Only changes this device — the desktop keeps its own look.",
+    "close": "Close"
   }
 }
