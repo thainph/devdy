@@ -19,7 +19,7 @@ import type { AuthState, ConnStatus, ControllerConnection } from '@/controller/c
 import type { SessionLinkPayload, StreamPayload } from '@/controller/protocol'
 import { IpcCore } from './ipcCore'
 
-/** Live connection state for the remote-desktop banner. */
+/** Live connection state for the remote-desktop link dot (composables/useRemoteDesktopLink.ts). */
 export interface RemoteIpcState {
   status: Ref<ConnStatus>
   auth: Ref<AuthState | null>
