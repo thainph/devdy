@@ -15,7 +15,7 @@ use crate::commands::{mcp, notes, projects, rules, settings, todos};
 use crate::db::Db;
 use crate::item_links::{self, ItemKind};
 use crate::remote::command::RejectReason;
-use crate::remote::handler::{accept, command_ack, reject, send_payload, HandlerCtx};
+use crate::remote::handler::{accept, command_ack, command_ack_item, reject, send_payload, HandlerCtx};
 use crate::remote::protocol::{
     BuiltinToggle, CmdPayload, NoteInfo, StreamPayload, TodoInfo, ToggleItem,
 };
@@ -292,9 +292,9 @@ pub async fn handle(ctx: &HandlerCtx, cmd: &CmdPayload) {
         _ => Err(Failure::Rejected(RejectReason::NotAllowed)),
     };
     match result {
-        Ok(()) => {
+        Ok(created) => {
             accept(ctx, action, None, None).await;
-            command_ack(ctx, cmd, true, None).await;
+            command_ack_item(ctx, cmd, created).await;
         }
         Err(Failure::Rejected(reason)) => {
             reject(ctx, action, None, reason).await;
@@ -323,14 +323,15 @@ impl From<RejectReason> for Failure {
     }
 }
 
-type DataResult = Result<(), Failure>;
+/// `Ok(Some(id))` names the todo / note an add created (echoed in the ack).
+type DataResult = Result<Option<String>, Failure>;
 
 /// A project id the action names must exist (a typo must not file a todo
 /// under a phantom project).
 async fn require_project(ctx: &HandlerCtx, project_id: Option<&str>) -> DataResult {
     match project_id {
         Some(pid) if !exists(&ctx.db, "projects", pid).await => Err(RejectReason::NotFound.into()),
-        _ => Ok(()),
+        _ => Ok(None),
     }
 }
 
@@ -343,7 +344,7 @@ async fn send_todo_list(ctx: &HandlerCtx) -> DataResult {
         },
     )
     .await;
-    Ok(())
+    Ok(None)
 }
 
 async fn todo_list(ctx: &HandlerCtx) -> DataResult {
@@ -365,11 +366,12 @@ async fn todo_add(ctx: &HandlerCtx, cmd: &CmdPayload) -> DataResult {
         due_date,
         ..Default::default()
     };
-    todos::add_todo_inner(&ctx.app, &ctx.db, input)
+    let todo = todos::add_todo_inner(&ctx.app, &ctx.db, input)
         .await
         .map_err(Failure::Failed)?;
     // Push the fresh list so the phone shows the write without a round trip.
-    send_todo_list(ctx).await
+    send_todo_list(ctx).await?;
+    Ok(Some(todo.id))
 }
 
 async fn require_todo(ctx: &HandlerCtx, cmd: &CmdPayload) -> Result<String, Failure> {
@@ -427,7 +429,7 @@ async fn note_list(ctx: &HandlerCtx, cmd: &CmdPayload) -> DataResult {
         },
     )
     .await;
-    Ok(())
+    Ok(None)
 }
 
 /// Desktop note views refetch on `item:changed` (the desktop UI broadcasts it
@@ -446,11 +448,11 @@ async fn note_add(ctx: &HandlerCtx, cmd: &CmdPayload) -> DataResult {
     }
     let project_id = optional_id(cmd.project_id.as_deref())?;
     require_project(ctx, project_id.as_deref()).await?;
-    notes::add_note_inner(&ctx.db, title, content, project_id, None)
+    let note = notes::add_note_inner(&ctx.db, title, content, project_id, None)
         .await
         .map_err(Failure::Failed)?;
     notes_changed(ctx);
-    Ok(())
+    Ok(Some(note.id))
 }
 
 async fn note_update(ctx: &HandlerCtx, cmd: &CmdPayload) -> DataResult {
@@ -478,7 +480,7 @@ async fn note_update(ctx: &HandlerCtx, cmd: &CmdPayload) -> DataResult {
             .map_err(Failure::Failed)?;
     }
     notes_changed(ctx);
-    Ok(())
+    Ok(None)
 }
 
 async fn note_delete(ctx: &HandlerCtx, cmd: &CmdPayload) -> DataResult {
@@ -490,7 +492,7 @@ async fn note_delete(ctx: &HandlerCtx, cmd: &CmdPayload) -> DataResult {
         .await
         .map_err(Failure::Failed)?;
     notes_changed(ctx);
-    Ok(())
+    Ok(None)
 }
 
 async fn send_toggles(ctx: &HandlerCtx, project_id: &str) -> DataResult {
@@ -498,7 +500,7 @@ async fn send_toggles(ctx: &HandlerCtx, project_id: &str) -> DataResult {
         .await
         .map_err(Failure::Failed)?;
     send_payload(ctx, payload).await;
-    Ok(())
+    Ok(None)
 }
 
 async fn require_project_id(ctx: &HandlerCtx, cmd: &CmdPayload) -> Result<String, Failure> {
@@ -621,6 +623,31 @@ mod tests {
         assert_eq!(search_query(Some("   ")), Ok(None));
         assert_eq!(search_query(None), Ok(None));
         assert_eq!(search_query(Some(&"q".repeat(MAX_QUERY + 1))), Err(RejectReason::Malformed));
+    }
+
+    #[test]
+    fn create_ack_names_the_new_item() {
+        let ack = StreamPayload::CommandAck {
+            command_id: "c1".into(),
+            action: "note_add".into(),
+            accepted: true,
+            reason: None,
+            run_id: None,
+            item_id: Some("n1".into()),
+        };
+        let v = serde_json::to_value(&ack).unwrap();
+        assert_eq!(v["item_id"], "n1");
+        assert!(v.get("run_id").is_none());
+        // Other acks keep their old shape.
+        let plain = StreamPayload::CommandAck {
+            command_id: "c2".into(),
+            action: "todo_toggle".into(),
+            accepted: true,
+            reason: None,
+            run_id: None,
+            item_id: None,
+        };
+        assert!(serde_json::to_value(&plain).unwrap().get("item_id").is_none());
     }
 
     #[test]

@@ -9,7 +9,7 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ChevronLeft, Loader2, Plus, Search, X } from 'lucide-vue-next'
+import { Loader2, Plus, Search, X } from 'lucide-vue-next'
 import { AppSelect } from '@/components/ui'
 import { relativeAge } from '@/lib/itemText'
 import { noteDisplayTitle, noteListPreview } from '@/lib/remoteTodos'
@@ -23,7 +23,6 @@ const props = defineProps<{
   projectId: string | null
   query: string
   error: string | null
-  showBack?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -31,7 +30,6 @@ const emit = defineEmits<{
   filter: [projectId: string | null, query: string]
   open: [note: NoteInfo]
   new: []
-  back: []
   'clear-error': []
 }>()
 
@@ -63,16 +61,8 @@ const searching = computed(() => search.value.trim().length > 0)
 </script>
 
 <template>
-  <div class="relative flex h-dvh min-h-0 flex-col bg-background text-foreground">
+  <div class="relative flex h-full min-h-0 flex-col bg-background text-foreground">
     <header class="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-border">
-      <button
-        v-if="showBack"
-        class="inline-flex items-center justify-center h-7 w-7 -ml-1 shrink-0 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-        :title="t('controller.data.back')"
-        @click="emit('back')"
-      >
-        <ChevronLeft class="h-4 w-4" :stroke-width="2" />
-      </button>
       <h1 class="text-base font-semibold">{{ t('controller.notes.title') }}</h1>
       <AppSelect
         v-model="projectFilter"
@@ -152,7 +142,7 @@ const searching = computed(() => search.value.trim().length > 0)
     </main>
 
     <button
-      class="absolute right-5 bottom-[max(1.5rem,env(safe-area-inset-bottom))] z-10 grid h-14 w-14 place-items-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/40 active:scale-95 transition cursor-pointer"
+      class="absolute right-5 bottom-5 z-10 grid h-14 w-14 place-items-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/40 active:scale-95 transition cursor-pointer"
       :title="t('controller.notes.add')"
       :aria-label="t('controller.notes.add')"
       @click="emit('new')"

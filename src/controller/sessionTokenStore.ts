@@ -12,17 +12,18 @@
  * `link_secret + session_secret`, so the Controller must hold BOTH to reconstruct
  * the same key. Therefore `localStorage` here holds the reconnect secrets
  * (`link_secret` + `token`). Exposure is bounded by:
- *   - a 3h SLIDING idle window enforced here (a stale entry is cleared on load);
- *   - host-side deletion (idle > 3h at the Host → its record is gone → the
- *     reconnect frame can't be opened → we fall back to OTP);
- *   - every command remaining `allow_once`-gated at the Host regardless.
+ *   - a 7-day SLIDING idle window enforced here (a stale entry is cleared on
+ *     load), slid on every command sent;
+ *   - host-side deletion (idle > 7 days at the Host, or kick / revoke / end
+ *     session at the desktop → its record is gone → the reconnect frame can't
+ *     be opened → we fall back to OTP).
  * The OTP itself is NEVER stored.
  */
 
 const STORAGE_KEY = 'devdy.controller.session.v1'
 
-/** Sliding idle window: 3 hours (mirrors the Host `IDLE_TTL_SECS`). */
-export const IDLE_TTL_MS = 3 * 60 * 60 * 1000
+/** Sliding idle window: 7 days (mirrors the Host `IDLE_TTL_SECS`). */
+export const IDLE_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
 /** Everything needed to re-attach a bound session without an OTP. */
 export interface SessionToken {
@@ -68,7 +69,7 @@ export function save(token: Omit<SessionToken, 'last_used_at'>): void {
 
 /**
  * Load a still-fresh token, or `null` if absent/malformed/idle-expired. An
- * idle-expired token (`now - last_used_at > 3h`) is cleared as a side effect.
+ * idle-expired token (`now - last_used_at > 7 days`) is cleared as a side effect.
  */
 export function load(): SessionToken | null {
   let raw: string | null

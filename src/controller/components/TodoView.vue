@@ -12,7 +12,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ChevronLeft, Loader2, Plus, RefreshCw, X } from 'lucide-vue-next'
+import { Loader2, Plus, RefreshCw, X } from 'lucide-vue-next'
 import { AppSelect } from '@/components/ui'
 import { localYmd } from '@/lib/todoDue'
 import {
@@ -36,8 +36,6 @@ const props = defineProps<{
   busy: boolean
   /** The last refused write, already translated. */
   error: string | null
-  /** Show a back chevron (when not reached from a tab bar). */
-  showBack?: boolean
   save: (input: TodoSave) => Promise<boolean>
   remove: (id: string) => Promise<boolean>
 }>()
@@ -45,7 +43,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   toggle: [id: string]
   refresh: []
-  back: []
   'clear-error': []
 }>()
 
@@ -136,16 +133,8 @@ async function onDelete(id: string): Promise<void> {
 </script>
 
 <template>
-  <div class="relative flex h-dvh min-h-0 flex-col bg-background text-foreground">
+  <div class="relative flex h-full min-h-0 flex-col bg-background text-foreground">
     <header class="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-border">
-      <button
-        v-if="showBack"
-        class="inline-flex items-center justify-center h-7 w-7 -ml-1 shrink-0 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-        :title="t('controller.data.back')"
-        @click="emit('back')"
-      >
-        <ChevronLeft class="h-4 w-4" :stroke-width="2" />
-      </button>
       <h1 class="text-base font-semibold">{{ t('controller.todo.title') }}</h1>
       <div class="ml-auto flex min-w-0 items-center gap-1.5">
         <AppSelect v-model="projectFilter" size="xs" variant="outline" class="w-40 max-w-full" :options="projectOptions" />
@@ -266,7 +255,7 @@ async function onDelete(id: string): Promise<void> {
     </main>
 
     <button
-      class="absolute right-5 bottom-[max(1.5rem,env(safe-area-inset-bottom))] z-10 grid h-14 w-14 place-items-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/40 active:scale-95 transition cursor-pointer"
+      class="absolute right-5 bottom-5 z-10 grid h-14 w-14 place-items-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/40 active:scale-95 transition cursor-pointer"
       :title="t('controller.todo.add')"
       :aria-label="t('controller.todo.add')"
       @click="openNew"

@@ -22,6 +22,7 @@ import {
   type StreamState,
 } from '@/lib/streamEvents'
 import type { RateLimitWindows } from '@/stores/liveRuns'
+import { dequeuePending, dropRun, enqueuePending, headOf, retainPending } from '@/lib/remoteInbox'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
 import type {
   ClaudeAccountChoice,
@@ -158,6 +159,11 @@ export interface RunStoreState {
    * watching must queue up as a badge, not overwrite the one they are looking at.
    */
   pendingByRun: Record<string, PermissionRequest>
+  /** Every open prompt per run, oldest first (`pendingByRun` is each head). A
+   * run may have several at once (parallel tool calls); the Inbox lists all. */
+  pendingQueues: Record<string, PermissionRequest[]>
+  /** request id → when this Controller first saw it (ms), for Inbox order. */
+  pendingSeenAt: Record<string, number>
   /** Transient advisory from the Host (e.g. "already handled"). */
   notice: string | null
   /** Slash commands the Host advertises for the bound run (composer palette). */
@@ -196,6 +202,8 @@ export function createRunStore() {
     runList: [],
     projectList: [],
     pendingByRun: {},
+    pendingQueues: {},
+    pendingSeenAt: {},
     notice: null,
     slashCommands: [],
     engineModelOptions: [],
@@ -208,6 +216,19 @@ export function createRunStore() {
     claudeAccount: null,
     claudeAccounts: [],
   })
+
+  // Request ids re-sent since `beginPendingSync` (null when not syncing).
+  let resent: Set<string> | null = null
+
+  /** Replace the prompt queues and re-derive the per-run heads. */
+  function setQueues(next: Record<string, PermissionRequest[]>): void {
+    state.pendingQueues = next
+    state.pendingByRun = headOf(next)
+    const live = new Set(Object.values(next).flat().map((p) => p.request_id))
+    for (const id of Object.keys(state.pendingSeenAt)) {
+      if (!live.has(id)) delete state.pendingSeenAt[id]
+    }
+  }
 
   function ensureRun(runId: string): RunView {
     let run = state.runs[runId]
@@ -256,13 +277,19 @@ export function createRunStore() {
         }
         break
       case 'permission_request':
-        state.pendingByRun[payload.run_id] = {
-          run_id: payload.run_id,
-          request_id: payload.request_id,
-          tool_name: payload.tool,
-          tool_input: payload.input,
-          cwd: payload.cwd ?? null,
+        if (!(payload.request_id in state.pendingSeenAt)) {
+          state.pendingSeenAt[payload.request_id] = Date.now()
         }
+        setQueues(
+          enqueuePending(state.pendingQueues, {
+            run_id: payload.run_id,
+            request_id: payload.request_id,
+            tool_name: payload.tool,
+            tool_input: payload.input,
+            cwd: payload.cwd ?? null,
+          }),
+        )
+        resent?.add(payload.request_id)
         ensureRun(payload.run_id).status = 'running'
         // Deliberately NOT stealing focus: with multi-run the Host forwards
         // prompts from every run, and yanking the user out of what they are
@@ -273,7 +300,15 @@ export function createRunStore() {
         // Reflect the new status in the browse list too, if present.
         {
           const info = state.runList.find((r) => r.id === payload.run_id)
-          if (info) info.status = payload.status
+          if (info) {
+            info.status = payload.status
+            // Stamp it so the Inbox's "since last visit" sees it finish now.
+            info.updated_at = new Date().toISOString()
+          }
+          // A finished run asks nothing any more.
+          if (state.pendingQueues[payload.run_id]) {
+            setQueues(dropRun(state.pendingQueues, payload.run_id))
+          }
         }
         break
       case 'slash_command_list':
@@ -325,18 +360,17 @@ export function createRunStore() {
         // A "notice" often means a permission was resolved elsewhere; clear the
         // stale prompt so the Controller isn't stuck on a handled request.
         if (/already handled/i.test(payload.text)) {
-          if (payload.run_id) delete state.pendingByRun[payload.run_id]
-          else state.pendingByRun = {}
+          if (payload.run_id) {
+            setQueues(dropRun(state.pendingQueues, payload.run_id))
+          } else setQueues({})
         }
         break
       case 'permission_resolved':
-        if (state.pendingByRun[payload.run_id]?.request_id === payload.request_id) {
-          // Accepted means the Host delivered the decision. "already_handled"
-          // also resolves this exact stale prompt. A delivery failure stays
-          // visible so the user can retry.
-          if (payload.accepted || payload.reason === 'already_handled') {
-            delete state.pendingByRun[payload.run_id]
-          }
+        // Accepted means the Host delivered the decision. "already_handled"
+        // also resolves this exact stale prompt. A delivery failure stays
+        // visible so the user can retry.
+        if (payload.accepted || payload.reason === 'already_handled') {
+          setQueues(dequeuePending(state.pendingQueues, payload.run_id, payload.request_id))
         }
         if (!payload.accepted && payload.reason === 'delivery_failed') {
           state.notice = 'Host chưa nhận được phản hồi permission — hãy thử lại.'
@@ -444,7 +478,19 @@ export function createRunStore() {
   }
 
   function clearPending(runId: string): void {
-    delete state.pendingByRun[runId]
+    setQueues(dropRun(state.pendingQueues, runId))
+  }
+
+  /** A `list_pending` was just sent: collect the prompts the Host re-sends. */
+  function beginPendingSync(): void {
+    resent = new Set()
+  }
+
+  /** Its ack arrived (after every re-sent prompt): drop prompts the Host no
+   * longer has — they were answered elsewhere while this device was away. */
+  function endPendingSync(accepted: boolean): void {
+    if (accepted && resent) setQueues(retainPending(state.pendingQueues, resent))
+    resent = null
   }
 
   /** The prompt awaiting an answer for `runId`, if any. */
@@ -469,6 +515,9 @@ export function createRunStore() {
     state.runList = []
     state.projectList = []
     state.pendingByRun = {}
+    state.pendingQueues = {}
+    state.pendingSeenAt = {}
+    resent = null
     state.notice = null
     state.slashCommands = []
     state.engineModelOptions = []
@@ -486,6 +535,8 @@ export function createRunStore() {
     setActiveRun,
     clearActiveRun,
     clearPending,
+    beginPendingSync,
+    endPendingSync,
     pendingFor,
     pendingElsewhere,
     clearNotice,

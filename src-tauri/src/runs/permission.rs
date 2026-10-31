@@ -83,6 +83,12 @@ pub fn pending_for(run_id: &str) -> Vec<PendingPermission> {
     map.get(run_id).cloned().unwrap_or_default()
 }
 
+/// Snapshot of every open request across all runs (oldest first per run).
+pub fn all_pending() -> Vec<PendingPermission> {
+    let map = pending_store().lock().unwrap_or_else(|e| e.into_inner());
+    map.values().flatten().cloned().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,5 +121,20 @@ mod tests {
 
         clear_pending(run);
         assert!(pending_for(run).is_empty());
+    }
+
+    #[test]
+    fn all_pending_spans_every_run() {
+        let (r1, r2) = ("test-run-all-pending-1", "test-run-all-pending-2");
+        track_pending(evt(r1, "x1"));
+        track_pending(evt(r2, "x2"));
+        let ids: Vec<String> = all_pending()
+            .into_iter()
+            .filter(|p| p.event.run_id == r1 || p.event.run_id == r2)
+            .map(|p| p.event.request_id)
+            .collect();
+        assert!(ids.contains(&"x1".to_string()) && ids.contains(&"x2".to_string()));
+        clear_pending(r1);
+        clear_pending(r2);
     }
 }

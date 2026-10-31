@@ -6,7 +6,7 @@
  *
  * Writes go through the `save` / `remove` props so the editor only moves on
  * once the Host accepted them. After saving an existing note it shows what was
- * saved; a new note returns to the list (the Host does not echo the new id).
+ * saved; a new note is re-opened under the id the Host's ack carries.
  */
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -25,11 +25,14 @@ const props = defineProps<{
   busy: boolean
   error: string | null
   renderText: (md: string) => string
-  save: (input: NoteSave) => Promise<boolean>
+  /** Resolves to the note as stored, or null when refused. */
+  save: (input: NoteSave) => Promise<NoteInfo | null>
   remove: (id: string) => Promise<boolean>
 }>()
 
 const emit = defineEmits<{
+  /** A new note was saved; show it. */
+  created: [note: NoteInfo]
   back: []
   'clear-error': []
 }>()
@@ -99,19 +102,20 @@ async function submit(): Promise<void> {
     return
   }
   localError.value = null
-  const ok = await props.save({
+  const stored = await props.save({
     id: props.note?.id ?? null,
     title: title.value,
     content: content.value,
     projectId: projectId.value,
   })
-  if (!ok) return
+  if (!stored) return
   if (!props.note) {
-    emit('back')
+    // A new note: the parent re-opens the editor on it (in View).
+    if (stored.id) emit('created', stored)
+    else emit('back')
     return
   }
-  // The Host trims both, so show what it stored.
-  shown.value = { title: title.value.trim(), content: content.value.trim(), projectId: projectId.value }
+  shown.value = { title: stored.title, content: stored.content, projectId: stored.project_id ?? '' }
   resetForm()
   mode.value = 'view'
 }

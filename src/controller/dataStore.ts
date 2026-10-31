@@ -100,19 +100,24 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
   }
 
   /** Send a write and resolve to whether the Host accepted it. */
-  function write(cmd: CmdPayload): Promise<boolean> {
+  async function write(cmd: CmdPayload): Promise<boolean> {
+    return (await writeAck(cmd)).ok
+  }
+
+  /** {@link write}, also yielding the id an add created. */
+  function writeAck(cmd: CmdPayload): Promise<{ ok: boolean; itemId: string | null }> {
     state.error = null
     return new Promise((resolve) => {
-      const sent = send(cmd, (accepted, reason) => {
+      const sent = send(cmd, (accepted, reason, _runId, itemId) => {
         state.pending = Math.max(0, state.pending - 1)
         if (!accepted) state.error = describeError(reason ?? null)
-        resolve(accepted)
+        resolve({ ok: accepted, itemId: itemId ?? null })
       })
       if (sent) {
         state.pending += 1
       } else {
         state.error = describeError('not_connected')
-        resolve(false)
+        resolve({ ok: false, itemId: null })
       }
     })
   }
@@ -158,21 +163,34 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
     send(noteListCmd(projectId, query))
   }
 
-  async function saveNote(input: NoteSave): Promise<boolean> {
-    let ok: boolean
+  /** Save a note; resolves to the note as stored (null when refused), so the
+   * editor can show a just-created note under its new id. */
+  async function saveNote(input: NoteSave): Promise<NoteInfo | null> {
+    const saved = (id: string): NoteInfo => ({
+      id,
+      title: input.title.trim(),
+      content: input.content.trim(),
+      project_id: input.projectId || null,
+      updated_at: new Date().toISOString(),
+    })
     if (!input.id) {
-      ok = await write(noteAddCmd({ title: input.title, content: input.content, projectId: input.projectId }))
-    } else {
-      const current = state.notes?.find((n) => n.id === input.id)
-      const patch: NotePatchWire = {}
-      if (!current || current.title !== input.title) patch.title = input.title
-      if (!current || current.content !== input.content) patch.content = input.content
-      if (!current || (current.project_id ?? '') !== input.projectId) patch.project_id = input.projectId || null
-      if (Object.keys(patch).length === 0) return true
-      ok = await write(noteUpdateCmd(input.id, patch))
+      const { ok, itemId } = await writeAck(
+        noteAddCmd({ title: input.title, content: input.content, projectId: input.projectId }),
+      )
+      if (!ok) return null
+      loadNotes()
+      // An id-less ack (an older Host) still saved it: '' sends the editor back to the list.
+      return saved(itemId ?? '')
     }
-    if (ok) loadNotes()
-    return ok
+    const current = state.notes?.find((n) => n.id === input.id)
+    const patch: NotePatchWire = {}
+    if (!current || current.title !== input.title) patch.title = input.title
+    if (!current || current.content !== input.content) patch.content = input.content
+    if (!current || (current.project_id ?? '') !== input.projectId) patch.project_id = input.projectId || null
+    if (Object.keys(patch).length === 0) return saved(input.id)
+    if (!(await write(noteUpdateCmd(input.id, patch)))) return null
+    loadNotes()
+    return saved(input.id)
   }
 
   async function deleteNote(id: string): Promise<boolean> {

@@ -101,6 +101,14 @@ fn to_payload(ev: RemoteRunEvent) -> StreamPayload {
             // and rides the DB-backed `send_run_meta` push instead.
             claude_account_id: None,
         },
+        RemoteRunEvent::PermissionResolved { run_id, request_id } => {
+            StreamPayload::PermissionResolved {
+                run_id,
+                request_id,
+                accepted: true,
+                reason: Some("resolved_on_host".to_string()),
+            }
+        }
     }
 }
 
@@ -825,6 +833,21 @@ mod tests {
             multi_run,
             batch_output: false,
         }
+    }
+
+    #[test]
+    fn host_side_resolution_maps_to_an_accepted_permission_resolved() {
+        let payload = to_payload(RemoteRunEvent::PermissionResolved {
+            run_id: "r_1".to_string(),
+            request_id: "p_1".to_string(),
+        });
+        let StreamPayload::PermissionResolved { run_id, request_id, accepted, reason } = payload
+        else {
+            panic!("expected permission_resolved");
+        };
+        assert_eq!((run_id.as_str(), request_id.as_str()), ("r_1", "p_1"));
+        assert!(accepted, "the Controller only drops accepted resolutions");
+        assert_eq!(reason.as_deref(), Some("resolved_on_host"));
     }
 
     #[tokio::test]

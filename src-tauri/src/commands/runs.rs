@@ -1269,11 +1269,19 @@ pub struct RespondPermissionPayload {
 
 #[tauri::command]
 pub async fn respond_permission(
+    app: AppHandle,
     registry: State<'_, RunRegistry>,
     broker_approvals: State<'_, crate::runs::BrokerApprovals>,
     payload: RespondPermissionPayload,
 ) -> Result<(), String> {
-    respond_permission_inner(registry.inner(), broker_approvals.inner(), payload).await
+    let (run_id, request_id) = (payload.run_id.clone(), payload.request_id.clone());
+    respond_permission_inner(registry.inner(), broker_approvals.inner(), payload).await?;
+    // Answered here: a paired phone still shows the prompt (its Inbox lists
+    // every run's), so tell it to drop it. No-op with Remote Control off.
+    if let Some(bus) = app.try_state::<crate::remote::RemoteBus>() {
+        bus.publish(crate::remote::RemoteRunEvent::PermissionResolved { run_id, request_id });
+    }
+    Ok(())
 }
 
 /// Core of [`respond_permission`] over concrete refs so background tasks (the

@@ -7,14 +7,10 @@
  * to RUN_LIST_MAX runs. A flat list of that many rows is unusable on a phone, so
  * this drills down: projects first, then that project's runs.
  *
- * Two things deliberately escape the drill-down:
- *
- *  - **Runs awaiting a decision** are pinned to the top of the project list.
- *    They are the only thing actually blocking work on the Host, and burying one
- *    two taps deep inside a project would defeat the reason the Host forwards
- *    prompts for runs the user is not watching.
- *  - **Search** matches across every project at once, because the run you want
- *    is often easier to name than to locate.
+ * Runs awaiting a decision live in the Inbox tab (every prompt, answerable in
+ * place); here they only keep a badge and sort first. **Search** escapes the
+ * drill-down: it matches across every project at once, because the run you want
+ * is often easier to name than to locate.
  *
  * Backend-agnostic like the other controller views: state in via props, intent
  * out via events. The selected project lives in the PARENT so it survives
@@ -23,8 +19,8 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  AlertTriangle, ChevronLeft, ChevronRight, FileText, FolderGit2, ListTodo, Loader2, Plus,
-  RefreshCw, Search, ShieldCheck, SlidersHorizontal, Wifi, WifiOff, X,
+  AlertTriangle, ChevronLeft, ChevronRight, FolderGit2, Loader2, Plus, RefreshCw,
+  Search, ShieldCheck, Wifi, WifiOff, X,
 } from 'lucide-vue-next'
 import type { ConnStatus } from '../connection'
 import type { ProjectInfo, RunInfo } from '../protocol'
@@ -49,20 +45,11 @@ const emit = defineEmits<{
   refresh: []
   disconnect: []
   'update:selectedProjectId': [projectId: string | null]
-  /** Open the Todo / Note / project-switch screen. */
-  'open-data': [screen: 'todo' | 'notes' | 'project']
 }>()
 
 const { t } = useI18n()
 
 const isActive = computed(() => props.status === 'connected')
-
-// Entry points to the data screens until the bottom tab bar replaces them.
-const dataEntries = computed(() => [
-  { screen: 'todo' as const, icon: ListTodo, label: t('controller.data.openTodo') },
-  { screen: 'notes' as const, icon: FileText, label: t('controller.data.openNotes') },
-  { screen: 'project' as const, icon: SlidersHorizontal, label: t('controller.data.openProject') },
-])
 const shortFp = computed(() => (props.hostFingerprint ? props.hostFingerprint.slice(0, 12) : ''))
 const pending = computed(() => new Set(props.pendingRunIds))
 
@@ -109,9 +96,6 @@ const projectRows = computed(() => {
   return [...byId.values()].sort((a, b) => Number(b.pending > 0) - Number(a.pending > 0))
 })
 
-/** Runs awaiting a decision, across every project — pinned above the projects. */
-const waitingRuns = computed(() => props.runs.filter((r) => pending.value.has(r.id)))
-
 const selectedProject = computed(() =>
   props.selectedProjectId ? projectRows.value.find((p) => p.id === props.selectedProjectId) : undefined,
 )
@@ -155,7 +139,7 @@ function backToProjects(): void {
 </script>
 
 <template>
-  <div class="flex h-dvh min-h-0 flex-col bg-background text-foreground">
+  <div class="flex h-full min-h-0 flex-col bg-background text-foreground">
     <!-- Top bar: mirrors SessionView so the two screens read as one app. -->
     <header class="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-border">
       <span
@@ -179,16 +163,6 @@ function backToProjects(): void {
         <ShieldCheck class="h-3 w-3 text-emerald-500" :stroke-width="2" /> {{ shortFp }}…
       </span>
       <div class="ml-auto flex items-center gap-1.5">
-        <button
-          v-for="d in dataEntries"
-          :key="d.screen"
-          class="inline-flex items-center justify-center h-7 w-7 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-          :title="d.label"
-          :aria-label="d.label"
-          @click="emit('open-data', d.screen)"
-        >
-          <component :is="d.icon" class="h-4 w-4" :stroke-width="2" />
-        </button>
         <button
           class="inline-flex items-center justify-center h-7 w-7 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
           :title="t('controller.browser.refresh')"
@@ -268,29 +242,6 @@ function backToProjects(): void {
           {{ isActive ? t('controller.browser.empty') : t('controller.browser.loading') }}
         </p>
 
-        <!-- Anything blocked on a decision jumps the hierarchy. -->
-        <section v-if="waitingRuns.length">
-          <h2
-            class="px-3 py-1.5 bg-amber-500/10 text-[10px] font-medium uppercase tracking-wider text-amber-600 dark:text-amber-400 border-b border-border/40"
-          >
-            {{ t('controller.browser.needsApprovalSection') }}
-          </h2>
-          <button
-            v-for="run in waitingRuns"
-            :key="'w-' + run.id"
-            class="w-full flex items-center gap-2.5 px-3 py-2.5 text-left border-b border-border/40 hover:bg-accent transition-colors cursor-pointer"
-            :title="t('controller.browser.openRun')"
-            @click="emit('open', run.id)"
-          >
-            <AlertTriangle class="shrink-0 h-4 w-4 text-amber-500" :stroke-width="2" />
-            <span class="min-w-0 flex-1">
-              <span class="block text-sm truncate">{{ runTitle(run) }}</span>
-              <span class="block text-[10px] text-foreground/45 truncate">{{ projectName(run) }}</span>
-            </span>
-            <ChevronRight class="shrink-0 h-4 w-4 text-foreground/30" :stroke-width="2" />
-          </button>
-        </section>
-
         <button
           v-for="p in projectRows"
           :key="p.id"
@@ -313,6 +264,9 @@ function backToProjects(): void {
           </span>
           <ChevronRight class="shrink-0 h-4 w-4 text-foreground/30" :stroke-width="2" />
         </button>
+        <p v-if="pendingRunIds.length" class="px-3 py-3 text-center text-[11px] text-foreground/45">
+          {{ t('controller.browser.pendingInInbox') }}
+        </p>
       </template>
 
       <!-- ── Level 2 (or search results): runs ────────────────────────────── -->

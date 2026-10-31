@@ -10,7 +10,7 @@
  */
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ChevronLeft, Loader2, X } from 'lucide-vue-next'
+import { Loader2, X } from 'lucide-vue-next'
 import { AppSelect } from '@/components/ui'
 import type { ProjectInfo, ProjectTogglesKind, ToggleItem, ToggleKind } from '../protocol'
 
@@ -21,14 +21,12 @@ const props = defineProps<{
   /** The project shown; owned by the parent so it survives leaving the screen. */
   projectId: string | null
   error: string | null
-  showBack?: boolean
 }>()
 
 const emit = defineEmits<{
   /** Show (and fetch) this project's switches. */
   select: [projectId: string]
   set: [kind: ToggleKind, itemId: string | null, enabled: boolean]
-  back: []
   'clear-error': []
 }>()
 
@@ -76,16 +74,8 @@ const sections = computed<{ kind: ToggleKind; label: string; items: ToggleItem[]
 </script>
 
 <template>
-  <div class="relative flex h-dvh min-h-0 flex-col bg-background text-foreground">
+  <div class="relative flex h-full min-h-0 flex-col bg-background text-foreground">
     <header class="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-border">
-      <button
-        v-if="showBack"
-        class="inline-flex items-center justify-center h-7 w-7 -ml-1 shrink-0 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-        :title="t('controller.data.back')"
-        @click="emit('back')"
-      >
-        <ChevronLeft class="h-4 w-4" :stroke-width="2" />
-      </button>
       <h1 class="text-base font-semibold">{{ t('controller.projectToggles.title') }}</h1>
     </header>
 

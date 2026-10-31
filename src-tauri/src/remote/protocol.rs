@@ -225,6 +225,9 @@ pub enum StreamPayload {
         /// `start_run` that created a new session: the new run's id.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         run_id: Option<String>,
+        /// `todo_add` / `note_add`: the new item's id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        item_id: Option<String>,
     },
     /// Correlated permission outcome so an old response cannot clear a newer
     /// pending request in the Controller UI.
@@ -579,7 +582,7 @@ pub struct CmdPayload {
     pub run_id: Option<String>,
     #[serde(default)]
     pub request_id: Option<String>,
-    /// `respond_permission`: `allow_once` | `deny_once` only (BR-016/AC-17).
+    /// `respond_permission`: `allow_once` | `deny_once` | `allow_always` | `deny_always` (BR-016/AC-17).
     #[serde(default)]
     pub decision: Option<String>,
     /// `respond_permission` for `AskUserQuestion`: the selected answers
