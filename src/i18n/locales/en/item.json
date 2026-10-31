@@ -50,7 +50,11 @@
     "deleteNoteMessage": "Remove this note?",
     "discardTitle": "Discard changes",
     "discardMessage": "Leave the editor and drop the unsaved changes?",
-    "discard": "Discard"
+    "discard": "Discard",
+    "deleteNoteFolderTitle": "Delete note folder",
+    "deleteNoteFolderMessage": "Delete the {n} note shown in “{folder}” (matching the current filters)? This cannot be undone. | Delete the {n} notes shown in “{folder}” (matching the current filters)? This cannot be undone.",
+    "deleteTodoFolderTitle": "Delete todo folder",
+    "deleteTodoFolderMessage": "Delete the {n} task shown in “{folder}” (matching the current filters)? This cannot be undone. | Delete the {n} tasks shown in “{folder}” (matching the current filters)? This cannot be undone."
   },
   "emptyTodoHint": "Add one with New Todo, or let the AI add it through the todos tools.",
   "emptyNoteHint": "Write one with New Note, or let the AI save it through the notes tools.",
@@ -88,5 +92,8 @@
   "dueTomorrow": "Due tomorrow",
   "dueInDays": "Due in {n} days",
   "overdueDays": "Overdue by {n} day | Overdue by {n} days",
-  "dueOn": "Due {date}"
+  "dueOn": "Due {date}",
+  "deleteFolder": "Delete folder",
+  "deleteFolderFailed": "Could not delete the folder: {error}",
+  "folderDeleted": "Deleted {n} item | Deleted {n} items"
 }

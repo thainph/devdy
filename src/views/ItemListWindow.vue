@@ -296,6 +296,40 @@ async function remove() {
   announce()
 }
 
+/**
+ * Delete a folder as the sidebar shows it: the items of the project (null =
+ * "No project") that pass the current filters and search — hidden ones stay.
+ */
+async function removeGroup(projectId: string | null, label: string) {
+  const ids = visibleRows.value.filter((r) => (r.projectId ?? null) === projectId).map((r) => r.id)
+  if (!ids.length) return
+  const isNote = kind === 'note'
+  const ok = await confirm({
+    title: isNote ? t('item.confirm.deleteNoteFolderTitle') : t('item.confirm.deleteTodoFolderTitle'),
+    message: isNote
+      ? t('item.confirm.deleteNoteFolderMessage', { n: ids.length, folder: label }, ids.length)
+      : t('item.confirm.deleteTodoFolderMessage', { n: ids.length, folder: label }, ids.length),
+    confirmLabel: t('common.delete'),
+    variant: 'destructive',
+  })
+  if (!ok) return
+  const gone = new Set(ids)
+  if (selectedId.value && gone.has(selectedId.value)) {
+    // The open item goes too: its unsaved draft is dropped with it (confirmed above).
+    editing.value = false
+    renaming.value = false
+    selectedId.value = visibleRows.value.find((r) => !gone.has(r.id))?.id ?? null
+    void loadLinks()
+  }
+  const store = isNote ? notes : todos
+  store.error = null
+  if (isNote) await notes.removeMany(ids)
+  else await todos.removeMany(ids)
+  if (store.error) toast.error(t('item.deleteFolderFailed', { error: store.error }))
+  else toast.success(t('item.folderDeleted', { n: ids.length }, ids.length))
+  announce()
+}
+
 /** Move the selected note into the vault (the vault must be unlocked), then show it there. */
 async function makeSecret() {
   const it = item.value
@@ -527,6 +561,7 @@ onBeforeUnmount(() => {
       @select="select"
       @add="openCreate"
       @toggle-done="toggleDone"
+      @delete-group="removeGroup"
       @toggle-pin="togglePin"
       @reload="reloadAll"
       @retry="reloadAll"
