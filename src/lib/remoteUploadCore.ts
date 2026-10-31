@@ -11,6 +11,8 @@ export interface LocalFileStat {
   name: string
   size: number
   is_dir: boolean
+  /** Unix permission bits (`null` elsewhere). */
+  mode?: number | null
   error: string | null
 }
 

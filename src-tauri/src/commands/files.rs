@@ -59,8 +59,8 @@ pub struct FileContent {
 /// preview it. `file_path` may be absolute or relative to the project root; the
 /// resolved path must land inside the project or one of the allowed outside
 /// roots (see [`preview_allows`]) — anything else (`/etc`, another user's home,
-/// …) is refused. A remote desktop (the bridge webview) gets its own, narrower
-/// rules instead ([`RemoteFs`]).
+/// …) is refused. A remote desktop (the bridge webview) gets its own rules
+/// instead ([`RemoteFs`]).
 #[tauri::command]
 pub async fn read_project_file(
     webview: tauri::Webview,
@@ -613,7 +613,7 @@ pub async fn rename_entry(
             .parent()
             .ok_or_else(|| "Could not determine parent directory".to_string())?;
         let dest = parent.join(&new_name);
-        fs_policy::write(policy.as_ref(), &src)?;
+        fs_policy::change(policy.as_ref(), &src)?;
         fs_policy::write(policy.as_ref(), &dest)?;
         if dest == src {
             return Ok(rel_of(&root, &dest));
@@ -640,7 +640,7 @@ pub async fn delete_entry(
     tokio::task::spawn_blocking(move || {
         let root = canonical_root(&project_path)?;
         let target = resolve_existing(&root, &rel_path)?;
-        fs_policy::write(policy.as_ref(), &target)?;
+        fs_policy::change(policy.as_ref(), &target)?;
         if target == root {
             return Err("Cannot delete the project root".to_string());
         }
@@ -708,7 +708,7 @@ pub async fn move_entry(
             .ok_or_else(|| "Invalid source name".to_string())?;
         let dest = dir.join(&name);
         if let Some(p) = policy.as_ref() {
-            p.write(&src)?;
+            p.change(&src)?;
             p.tree(&src)?;
             p.write(&dest)?;
         }
@@ -928,9 +928,9 @@ mod tests {
         assert!(err.contains("outside the project"), "unexpected error: {err}");
     }
 
-    /// A remote desktop only reaches its allowlist: a registered project (not
-    /// HOME, even if registered), and never a credential store or a hook inside
-    /// it — whatever `..`, links or `project_path` it passes.
+    /// A remote desktop only reaches its allowlist: HOME (and projects), never
+    /// a credential store nor anything outside — whatever `..`, links or
+    /// `project_path` it passes.
     #[cfg(unix)]
     #[test]
     fn a_remote_caller_is_held_to_its_allowlist() {
@@ -938,10 +938,12 @@ mod tests {
         let base = std::env::temp_dir().canonicalize().unwrap().join(format!("devdy-viewer-sec-{}", uuid::Uuid::new_v4()));
         let home = base.join("home");
         std::fs::create_dir_all(home.join(".ssh")).unwrap();
-        std::fs::create_dir_all(home.join("proj/.git/hooks")).unwrap();
+        std::fs::create_dir_all(home.join("proj")).unwrap();
+        std::fs::create_dir_all(base.join("outside")).unwrap();
         std::fs::write(home.join(".ssh/id_rsa"), "KEY").unwrap();
         std::fs::write(home.join("proj/a.txt"), "ok").unwrap();
-        std::fs::write(home.join("notes.txt"), "private").unwrap();
+        std::fs::write(home.join("notes.txt"), "mine").unwrap();
+        std::fs::write(base.join("outside/x.txt"), "other").unwrap();
         std::os::unix::fs::symlink(home.join(".ssh/id_rsa"), home.join("proj/link")).unwrap();
         let roots = Roots { writable: vec![home.join("proj"), home.clone()], ..Roots::default() };
         let policy = RemoteFs::new(roots, Some(&home), crate::remote::guard::SecretPaths::new(Some(&home), None));
@@ -951,15 +953,14 @@ mod tests {
 
         assert_eq!(read_within(proj, "a.txt", Some(&policy)).unwrap().content, "ok");
         assert!(write_within(proj, "a.txt", "edited", Some(&policy)).is_ok());
-        for f in ["../.ssh/id_rsa", "link", "../notes.txt"] {
+        // HOME is reachable, its credential stores are not.
+        assert_eq!(read_within(home_s, "notes.txt", Some(&policy)).unwrap().content, "mine");
+        assert!(list_dir_inner(home_s, "", Some(&policy)).is_ok());
+        for f in ["../.ssh/id_rsa", "link", "../../outside/x.txt"] {
             assert!(read_within(proj, f, Some(&policy)).unwrap_err().contains("remote desktop"), "{f}");
             assert!(write_within(proj, f, "PWNED", Some(&policy)).is_err(), "{f}");
         }
-        // `project_path` = HOME is not a way out (HOME is never a root).
         assert!(read_within(home_s, ".ssh/id_rsa", Some(&policy)).is_err());
-        assert!(read_within(home_s, "notes.txt", Some(&policy)).is_err());
-        assert!(list_dir_inner(home_s, "", Some(&policy)).is_err());
-        assert!(list_dir_inner(proj, "", Some(&policy)).is_ok());
         // The local UI is unaffected.
         assert_eq!(read_within(home_s, ".ssh/id_rsa", None).unwrap().content, "KEY");
         assert_eq!(std::fs::read_to_string(home.join(".ssh/id_rsa")).unwrap(), "KEY");

@@ -14,7 +14,6 @@ mod runs;
 mod secret_vault;
 mod secrets;
 mod slack_threads;
-mod sync;
 
 use commands::app_menu::set_app_menu;
 use commands::tray::set_tray_menu;
@@ -135,7 +134,7 @@ use commands::notes::{
     add_note, delete_note, delete_notes, list_notes, reorder_notes, set_note_project, update_note,
 };
 use commands::secret_vault::{
-    secret_note_copy, secret_note_create, secret_note_delete, secret_note_from_note, secret_note_reveal, secret_note_set_project,
+    rd_copy_secret, secret_note_copy, secret_note_create, secret_note_delete, secret_note_from_note, secret_note_reveal, secret_note_set_project,
     secret_note_update, secret_notes_list, secret_notes_reorder, secret_vault_change_password, secret_vault_lock,
     secret_vault_merge_old, secret_vault_setup, secret_vault_status, secret_vault_touch, secret_vault_unlock, secret_vault_unlock_recovery,
 };
@@ -160,21 +159,6 @@ use remote::fs_bridge::{
 };
 use remote::ipc::{remote_bridge_batch, remote_bridge_ready};
 use remote::RemoteState;
-use commands::sync::{
-    sync_create_group, sync_devices_list, sync_join, sync_leave, sync_now,
-    sync_get_secrets, sync_pause, sync_revoke_device, sync_set_leader, sync_set_secrets, sync_status,
-    sync_accept_close, sync_accept_open, sync_accept_state, sync_join_respond, sync_parked_list,
-    sync_parked_retry, sync_relay_ready,
-    sync_peers_online, sync_run,
-    SyncManager,
-};
-use sync::sessions::{sync_run_owners, sync_take_over_run};
-use commands::sync_folder::{sync_folder_apply, sync_folder_cancel, sync_folder_preview};
-use commands::sync_bootstrap::{
-    sync_bootstrap_commit, sync_bootstrap_pending, sync_bootstrap_preview, sync_project_mapping_list, sync_rebootstrap,
-    sync_project_mapping_set, sync_resync_all,
-};
-use commands::sync_prefs::{sync_prefs_get, sync_prefs_set_categories, sync_prefs_set_source, sync_project_pref_set};
 use runs::broker::approver::ModalApproverResolver;
 use runs::broker::{start_broker, ApproverResolver, BrokerConfig};
 use runs::{new_broker_approvals, new_broker_runs, new_registry, RunRegistry};
@@ -221,6 +205,8 @@ pub fn run() {
                 .expect("Failed to create rules dir");
             commands::project_links::set_backup_root(app_data_dir.join("legacy-backups"));
             commands::mcp_packages::set_root(app_data_dir.join("mcp-packages"));
+            // Unfinished file-transfer writes and their temp files (both sides).
+            remote::upload::spawn_sweeper(app.handle().clone());
 
             // Persist logs so the credential broker's audit trail and its
             // "broker unreachable / accept error" warnings are actually recorded.
@@ -252,11 +238,6 @@ pub fn run() {
             let db_path = app_data_dir.join("data.db");
             let db = tauri::async_runtime::block_on(db::init_db(&db_path))
                 .expect("Failed to initialize database");
-            // Sync change capture: device id + triggers (rebuilt only when the
-            // table registry changed). A failure must not block startup.
-            if let Err(e) = tauri::async_runtime::block_on(sync::install(&db)) {
-                eprintln!("[sync] install failed: {e}");
-            }
             // One-time, off the startup path: re-derive the usage ledger from
             // run logs (reads every log, so it can take a while).
             {
@@ -333,15 +314,8 @@ pub fn run() {
                     let slack_state = slack_state.clone();
                     async move { slack_state.start_worker() }
                 });
-                // Re-queueing unfinished threads is a singleton job (sync D6):
-                // only the leader device does it, again when it becomes leader.
-                sync::leader::watch_leadership(
-                    app.state::<db::Db>().inner().clone(),
-                    move || {
-                        let slack_state = slack_state.clone();
-                        async move { slack_state.startup_recover().await }
-                    },
-                );
+                // Re-queue threads a previous session left unfinished.
+                tauri::async_runtime::spawn(async move { slack_state.startup_recover().await });
             }
             // Focus reminders (focus::scheduler): a 60 s tick while the app runs.
             focus::scheduler::start(app.handle().clone(), app.state::<db::Db>().inner().clone());
@@ -453,33 +427,6 @@ pub fn run() {
                             tracing::warn!(event = "remote_autostart_failed", error = %e);
                         }
                     }
-                });
-            }
-
-            // Two-way sync: start the background engine when this device is in
-            // a sync group (group secrets live in the Keychain).
-            let sync_manager = SyncManager::default();
-            sync_manager.register_peer_handler(commands::sync_folder::folder_handler(
-                app.state::<db::Db>().inner().clone(),
-            ));
-            app.manage(sync_manager.clone());
-            // Keep the leases of this device's live runs fresh (cross-device sessions).
-            sync::sessions::spawn_heartbeat(
-                app.state::<db::Db>().inner().clone(),
-                app.state::<RunRegistry>().inner().clone(),
-            );
-            {
-                let app_handle = app.handle().clone();
-                let db_for_sync = app_handle.state::<db::Db>().inner().clone();
-                tauri::async_runtime::spawn(async move {
-                    let in_group = secrets::get_sync_secrets().is_some();
-                    if let Err(e) = sync::pair::reconcile_membership(&db_for_sync, in_group).await {
-                        tracing::warn!(event = "sync_membership_reconcile_failed", error = %e);
-                    }
-                    if let Err(e) = sync_manager.start(&app_handle, &db_for_sync).await {
-                        tracing::warn!(event = "sync_autostart_failed", error = %e);
-                    }
-                    sync::leader::mark_ready();
                 });
             }
 
@@ -754,6 +701,7 @@ pub fn run() {
             secret_note_delete,
             secret_notes_reorder,
             secret_note_from_note,
+            rd_copy_secret,
             get_inbox_api_info,
             regenerate_inbox_api_token,
             set_inbox_api_enabled,
@@ -798,42 +746,6 @@ pub fn run() {
             remote::push::commands::remote_push_remove,
             remote::push::commands::remote_push_set_events,
             remote::push::commands::remote_push_test,
-            sync_status,
-            sync_create_group,
-            sync_join,
-            sync_leave,
-            sync_pause,
-            sync_now,
-            sync_run,
-            sync_peers_online,
-            sync_set_secrets,
-            sync_run_owners,
-            sync_take_over_run,
-            sync_folder_preview,
-            sync_folder_apply,
-            sync_folder_cancel,
-            sync_get_secrets,
-            sync_devices_list,
-            sync_revoke_device,
-            sync_set_leader,
-            sync_relay_ready,
-            sync_accept_open,
-            sync_accept_close,
-            sync_accept_state,
-            sync_join_respond,
-            sync_parked_list,
-            sync_parked_retry,
-            sync_resync_all,
-            sync_bootstrap_pending,
-            sync_bootstrap_preview,
-            sync_bootstrap_commit,
-            sync_rebootstrap,
-            sync_project_mapping_list,
-            sync_project_mapping_set,
-            sync_prefs_get,
-            sync_prefs_set_source,
-            sync_prefs_set_categories,
-            sync_project_pref_set,
             remote_bridge_ready,
             remote_bridge_batch,
             remote_fs_list,
@@ -853,6 +765,22 @@ pub fn run() {
             remote::upload::remote_upload_abort,
             remote::upload::stat_local_files,
             remote::upload::read_local_file_chunk,
+            remote::fs_bridge::remote_fs_mkdir,
+            remote::fs_bridge::remote_fs_rename,
+            remote::fs_bridge::remote_fs_delete,
+            remote::fs_bridge::remote_fs_walk,
+            remote::fs_bridge::remote_fs_hash,
+            remote::transfer::local_fs_home,
+            remote::transfer::local_fs_list,
+            remote::transfer::local_fs_mkdir,
+            remote::transfer::local_fs_rename,
+            remote::transfer::local_fs_delete,
+            remote::transfer::local_fs_walk,
+            remote::transfer::local_fs_hash,
+            remote::transfer::local_fs_write_begin,
+            remote::transfer::local_fs_write_chunk,
+            remote::transfer::local_fs_write_finish,
+            remote::transfer::local_fs_write_abort,
             procs::commands::list_background_processes,
             procs::commands::stop_background_processes,
             procs::commands::kill_background_process,
@@ -895,8 +823,13 @@ pub fn run() {
                 }
                 // Exits that bypass the question (macOS Dock Quit, logout) still
                 // get the cleanup; a second run after a confirmed quit is cheap.
+                // A File Transfer window closed mid-copy: drop its partial files.
+                tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::Destroyed, .. } => {
+                    remote::transfer::on_webview_destroyed(&label);
+                }
                 tauri::RunEvent::Exit => {
                     procs::quit::on_exit(app_handle);
+                    remote::upload::abort_all_writes();
                 }
                 _ => {}
             }

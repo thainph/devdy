@@ -1,4 +1,4 @@
-// Wire types for Settings → Backup & Sync (file backup). Mirrors
+// Wire types for Settings → Devices → Backup (file backup). Mirrors
 // `src-tauri/src/commands/settings_backup.rs`.
 
 export interface BackupInfo {

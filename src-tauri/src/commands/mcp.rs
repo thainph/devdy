@@ -566,7 +566,10 @@ pub async fn set_project_mcp_server_enabled(
 // ---- Import / export -------------------------------------------------------
 
 #[tauri::command]
-pub async fn export_mcp_server(db: State<'_, Db>, id: String, path: String) -> Result<(), String> {
+pub async fn export_mcp_server(webview: tauri::Webview, db: State<'_, Db>, id: String, path: String) -> Result<(), String> {
+    // A remote desktop writes only where it may.
+    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
+    let path = crate::remote::fs_policy::write(policy.as_ref(), std::path::Path::new(&path))?;
     let server = get_mcp_server(db, id.clone()).await?;
     // Export INCLUDES secret VALUEs (user-initiated to a chosen file).
     let secret = secrets::get_mcp_secrets(&id);
@@ -587,7 +590,9 @@ pub async fn export_mcp_server(db: State<'_, Db>, id: String, path: String) -> R
 }
 
 #[tauri::command]
-pub async fn import_mcp_server(db: State<'_, Db>, path: String) -> Result<McpServer, String> {
+pub async fn import_mcp_server(webview: tauri::Webview, db: State<'_, Db>, path: String) -> Result<McpServer, String> {
+    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
+    let path = crate::remote::fs_policy::read(policy.as_ref(), std::path::Path::new(&path))?;
     let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
     let export: McpServerExport =
         serde_json::from_str(&raw).map_err(|e| format!("Invalid MCP export file: {}", e))?;

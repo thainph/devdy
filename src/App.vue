@@ -18,10 +18,7 @@ import PermissionWindowManager from '@/components/PermissionWindowManager.vue'
 import CalendarReminder from '@/components/CalendarReminder.vue'
 import WorkspaceTabs from '@/components/WorkspaceTabs.vue'
 import ActiveRunsDock from '@/components/ActiveRunsDock.vue'
-import ActiveRemoteDock from '@/components/ActiveRemoteDock.vue'
-import RemoteDesktopIndicator from '@/components/RemoteDesktopIndicator.vue'
-import SyncIndicator from '@/components/SyncIndicator.vue'
-import SyncDialog from '@/components/SyncDialog.vue'
+import RemoteIndicator from '@/components/RemoteIndicator.vue'
 import FileViewerWindow from '@/views/FileViewerWindow.vue'
 import PermissionWindow from '@/views/PermissionWindow.vue'
 import ThemeDecorations from '@/components/ThemeDecorations.vue'
@@ -38,6 +35,7 @@ import { PR_INBOX_WINDOW_OPEN_ROUTE, type PrInboxWindowOpenRoute } from '@/lib/p
 import CalendarWindow from '@/views/CalendarWindow.vue'
 import { CALENDAR_WINDOW_OPEN_ROUTE, type CalendarWindowOpenRoute } from '@/lib/calendarWindow'
 import FocusWindow from '@/views/FocusWindow.vue'
+import FileTransferWindow from '@/views/FileTransferWindow.vue'
 import {
   SLACK_API_RECEIVED,
   type SlackApiReceived,
@@ -59,7 +57,7 @@ import { useChatDraftsStore } from '@/stores/chatDrafts'
 import { useToast } from '@/composables/useToast'
 import { openItemCreateWindow } from '@/lib/itemWindow'
 import { openItemListWindow } from '@/lib/itemListWindow'
-import { canOpenSecretNotes, openSecretNotesWindow } from '@/lib/secretNotesWindow'
+import { openSecretNotesWindow } from '@/lib/secretNotesWindow'
 import { applyAppMenu, isMenuActionBound, listenMenuActions, registerMenuAction } from '@/lib/appMenu'
 import { openPath, openUrl } from '@tauri-apps/plugin-opener'
 import { appDataDir, join } from '@tauri-apps/api/path'
@@ -93,6 +91,7 @@ const isPrInboxWindow = new URLSearchParams(window.location.search).get('prInbox
 const isCalendarWindow = new URLSearchParams(window.location.search).get('calendarWindow') === '1'
 const isFocusWindow = new URLSearchParams(window.location.search).get('focusWindow') === '1'
 const isMascotWindow = new URLSearchParams(window.location.search).get('mascotWindow') === '1'
+const isFileTransferWindow = new URLSearchParams(window.location.search).get('fileTransferWindow') === '1'
 // A session pop-out is different from the bare pop-outs above: it reuses the full
 // RunView (routed to one run) with the app chrome hidden, so it still needs the
 // stores + router — only the sidebar / nav / docks / app-wide notifiers are cut.
@@ -111,7 +110,8 @@ const isPopoutWindow =
   isPrInboxWindow ||
   isCalendarWindow ||
   isFocusWindow ||
-  isMascotWindow
+  isMascotWindow ||
+  isFileTransferWindow
 
 const route = useRoute()
 const router = useRouter()
@@ -791,6 +791,9 @@ onMounted(async () => {
   <!-- THE Focus window: the Focus board on its own OS window. -->
   <FocusWindow v-else-if="isFocusWindow" />
 
+  <!-- THE File Transfer window (remote desktop only): this machine ⇄ the controlled Devdy. -->
+  <FileTransferWindow v-else-if="isFileTransferWindow" />
+
   <!-- Pop-out Gantt window: bare Gantt chart on its own OS window. -->
   <!-- Gantt pop-out: the board plus the dialog / toast hosts its row menu
        ("+ Todo") needs, like PrInboxWindow. -->
@@ -909,9 +912,8 @@ onMounted(async () => {
                   <span class="flex-1 truncate text-left">{{ t('item.navNotes') }}</span>
                 </button>
 
-                <!-- Secret notes: their own window, on this machine only. -->
+                <!-- Secret notes: their own window. -->
                 <button
-                  v-if="canOpenSecretNotes()"
                   type="button"
                   class="relative flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors cursor-pointer select-none text-muted-foreground hover:text-foreground hover:bg-accent/50"
                   :title="t('secretNotes.nav')"
@@ -986,13 +988,10 @@ onMounted(async () => {
           <!-- Warning row while processes outlive their session -->
           <BackgroundProcessesDock />
 
-          <!-- Active Remote Control session (phone paired to a run) -->
-          <ActiveRemoteDock />
-
           <!-- Version footer -->
           <div class="flex items-center justify-between gap-2 px-4 py-3 border-t border-border/50">
             <p v-if="appVersion" class="text-[10px] text-muted-foreground/50 font-mono">v{{ appVersion }}</p>
-            <SyncIndicator />
+            <RemoteIndicator />
           </div>
         </div>
       </aside>
@@ -1043,12 +1042,9 @@ onMounted(async () => {
     <!-- App-wide toast host (see useToast) -->
     <ToastHost />
 
-    <!-- On-demand Sync dialog (opened from Settings → Sync and the sidebar indicator) -->
-    <SyncDialog />
-
-    <!-- "Being controlled from another Devdy" pill + kill switch. Lives outside
-         the sidebar so it stays visible when the sidebar is hidden. -->
-    <RemoteDesktopIndicator />
+    <!-- Sidebar hidden: the Remote Control dot moves to a corner while another
+         Devdy drives this one, so that warning is never invisible. -->
+    <RemoteIndicator v-if="!sidebarVisible" floating />
 
     <!-- App-wide side-by-side image comparison (banner + picker + compare view) -->
     <ImageCompareHost />

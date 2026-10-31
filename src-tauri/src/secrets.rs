@@ -66,13 +66,16 @@ struct SecretStore {
     /// on first read (see `take_legacy_google`). Never written anymore.
     #[serde(default)]
     google: Option<GoogleTokens>,
-    /// Two-way sync group membership (group key + this device's relay token).
-    #[serde(default)]
-    sync: Option<SyncSecrets>,
     /// Secret notes: sealed data only, never a plaintext title or content (see
     /// `crate::secret_vault`).
     #[serde(default)]
     secret_vault: crate::secret_vault::VaultData,
+    /// Two-way sync membership (group key + relay token) written by builds
+    /// before sync was removed. Only its presence is recorded — the value is
+    /// discarded while parsing — and it is never written back, so the next
+    /// persist drops it (see [`drop_legacy_sync`]).
+    #[serde(default, rename = "sync", skip_serializing)]
+    legacy_sync: Option<serde::de::IgnoredAny>,
     /// Per-process guard: `"<provider>:<account_id>"` keys we already attempted to
     /// migrate from a legacy per-account item. A denied or missing legacy read is
     /// recorded here so it is NEVER retried within the same run — otherwise a
@@ -82,8 +85,7 @@ struct SecretStore {
     tried_legacy: std::collections::HashSet<String>,
     /// The Keychain item exists but could not be read (access denied, bad
     /// JSON): this in-memory store is an empty stand-in and must never be
-    /// written back or listed for sync, or it would wipe the real item (and
-    /// sync would push deletes to the other devices).
+    /// written back, or it would wipe the real item.
     #[serde(skip)]
     unreadable: bool,
 }
@@ -127,12 +129,14 @@ fn provider_tag(provider: &Provider) -> &'static str {
 }
 
 /// Load the store into the cache if not already loaded. This is the ONLY place
-/// that may trigger a Keychain password prompt.
+/// that may trigger a Keychain password prompt (besides `loaded_strict`).
 fn ensure_loaded(guard: &mut Option<SecretStore>) {
     if guard.is_some() {
         return;
     }
-    *guard = Some(read_store().unwrap_or_else(|_| SecretStore { unreadable: true, ..Default::default() }));
+    let mut store = read_store().unwrap_or_else(|_| SecretStore { unreadable: true, ..Default::default() });
+    drop_legacy_sync(&mut store);
+    *guard = Some(store);
 }
 
 /// The Keychain item, or an empty store when there is none yet. Fails when it
@@ -147,8 +151,8 @@ fn read_store() -> Result<SecretStore> {
 
 /// A debug build without its own item yet starts from a copy of the release
 /// app's (saved under its own service on the first write), so existing
-/// accounts keep working in `pnpm dev`. Not the sync membership nor the remote
-/// session: the dev app would pose as the release one. Never in tests.
+/// accounts keep working in `pnpm dev`. Not the remote session: the dev app
+/// would pose as the release one. Never in tests.
 #[cfg(all(debug_assertions, not(test)))]
 fn seed_from_release() -> SecretStore {
     let mut store: SecretStore = Entry::new(SERVICE_NAME, STORE_KEY)
@@ -156,7 +160,6 @@ fn seed_from_release() -> SecretStore {
         .and_then(|e| e.get_password().ok())
         .and_then(|json| serde_json::from_str(&json).ok())
         .unwrap_or_default();
-    store.sync = None;
     store.remote.session = None;
     store
 }
@@ -182,6 +185,21 @@ fn persist(store: &SecretStore) -> Result<()> {
     let json = serde_json::to_string(store)?;
     store_entry()?.set_password(&json)?;
     Ok(())
+}
+
+/// Rewrite the store without the removed two-way sync membership, so its group
+/// key does not linger in the Keychain. Runs right after the store is first
+/// loaded (no extra Keychain read); a no-op when there is none. Never fails the
+/// caller: errors are logged without any secret value.
+fn drop_legacy_sync(store: &mut SecretStore) {
+    if store.unreadable || store.legacy_sync.is_none() {
+        return;
+    }
+    store.legacy_sync = None;
+    match persist(store) {
+        Ok(()) => tracing::info!(event = "legacy_sync_secrets_dropped"),
+        Err(e) => tracing::warn!(event = "legacy_sync_secrets_drop_failed", error = %e),
+    }
 }
 
 /// Read a legacy per-account item and remove it (one-time migration). Returns the
@@ -871,101 +889,16 @@ pub fn delete_remote_session() -> Result<()> {
     persist(store)
 }
 
-// ---- Two-way sync -----------------------------------------------------------
-//
-// The sync group key and this device's relay token live in the SAME
-// consolidated Keychain item (one prompt per reinstall). SQLite never holds them.
+// ---- Secret notes vault -------------------------------------------------------
 
-/// This device's membership of a sync group.
-#[derive(Serialize, Deserialize, Clone)]
-pub struct SyncSecrets {
-    pub group_id: String,
-    /// 32-byte group key, hex.
-    pub group_key: String,
-    /// Bearer token this device authenticates to the relay's sync store with.
-    pub device_token: String,
-    /// This membership's sync device id (fresh per create / join, mirrored
-    /// in the `sync_device` row; see `sync::pair::new_membership_device`).
-    pub device_id: String,
-    /// Relay host token an older build handed over at join; read only for
-    /// those memberships. New joins need this device's own relay token.
-    #[serde(default)]
-    pub relay_token: Option<String>,
-}
-
-/// Persist (or replace) the sync group membership.
-pub fn set_sync_secrets(sync: &SyncSecrets) -> Result<()> {
-    let mut guard = CACHE.lock().map_err(|_| anyhow!("secret cache poisoned"))?;
-    ensure_loaded(&mut guard);
-    let store = guard.as_mut().expect("store loaded");
-    store.sync = Some(sync.clone());
-    persist(store)
-}
-
-/// The sync group membership, if this device is in a group.
-pub fn get_sync_secrets() -> Option<SyncSecrets> {
-    let mut guard = CACHE.lock().ok()?;
-    ensure_loaded(&mut guard);
-    guard.as_ref().and_then(|store| store.sync.clone())
-}
-
-/// Forget the sync group membership (leave). No-op if absent.
-pub fn delete_sync_secrets() -> Result<()> {
-    let mut guard = CACHE.lock().map_err(|_| anyhow!("secret cache poisoned"))?;
-    ensure_loaded(&mut guard);
-    let store = guard.as_mut().expect("store loaded");
-    store.sync = None;
-    persist(store)
-}
-
-// ---- Two-way sync: generic item view ------------------------------------------
-//
-// `sync::secrets` replicates Keychain content between the devices of a sync
-// group as `(service, account) -> value` items. Structured entries travel as
-// their JSON. Never listed (machine-local): the sync membership itself, every
-// Remote Control credential (relay host token, session, master password) and
-// legacy Google tokens.
-
-/// Item services that sync, with how their accounts are keyed.
-const SYNC_SERVICES: &[&str] = &[
-    "github",
-    "gitlab",
-    "mcp",
-    "servers",
-    "aws",
-    "google_client",
-    "google_accounts",
-    "secret_vault",
-    "secret_notes",
-];
-const SINGLE_ACCOUNT: &str = "default";
-
-/// `(table, item service)`: Keychain items whose account is the id of a row of
-/// that table. A sync re-key of such a row moves the item along with it.
-pub const ROW_KEYED_SERVICES: &[(&str, &str)] = &[
-    ("github_accounts", "github"),
-    ("gitlab_accounts", "gitlab"),
-    ("mcp_servers", "mcp"),
-    ("servers", "servers"),
-    ("aws_accounts", "aws"),
-    ("google_accounts", "google_accounts"),
-];
-
-/// Whether `(service, account)` is an item sync may read or write.
-pub fn is_sync_item(service: &str, account: &str) -> bool {
-    match service {
-        "google_client" | "secret_vault" => account == SINGLE_ACCOUNT,
-        s => SYNC_SERVICES.contains(&s) && !account.is_empty(),
-    }
-}
-
-/// Load the store for sync, failing (instead of defaulting to empty) when the
-/// Keychain item exists but cannot be read.
-/// An earlier read that failed is retried here (an explicit user or sync
-/// action), never answered from the empty stand-in.
-fn loaded_for_sync(guard: &mut Option<SecretStore>) -> Result<&mut SecretStore> {
+/// Load the store, failing (instead of defaulting to empty) when the Keychain
+/// item exists but cannot be read.
+/// An earlier read that failed is retried here (an explicit user action),
+/// never answered from the empty stand-in.
+fn loaded_strict(guard: &mut Option<SecretStore>) -> Result<&mut SecretStore> {
     if guard.as_ref().is_none_or(|s| s.unreadable) {
         let mut store = read_store()?;
+        drop_legacy_sync(&mut store);
         if let Some(old) = guard.as_ref() {
             store.tried_legacy = old.tried_legacy.clone();
         }
@@ -973,81 +906,6 @@ fn loaded_for_sync(guard: &mut Option<SecretStore>) -> Result<&mut SecretStore> 
     }
     Ok(guard.as_mut().expect("store loaded"))
 }
-
-/// Every syncable item as `(service, account, value)`.
-pub fn sync_items() -> Result<Vec<(String, String, String)>> {
-    let mut guard = CACHE.lock().map_err(|_| anyhow!("secret cache poisoned"))?;
-    let store = loaded_for_sync(&mut guard)?;
-    let mut out = Vec::new();
-    let mut push = |service: &str, account: &str, value: String| {
-        out.push((service.to_string(), account.to_string(), value));
-    };
-    for (id, v) in &store.github {
-        push("github", id, v.clone());
-    }
-    for (id, v) in &store.gitlab {
-        push("gitlab", id, v.clone());
-    }
-    for (id, v) in &store.mcp {
-        push("mcp", id, serde_json::to_string(v)?);
-    }
-    for (id, v) in &store.servers {
-        push("servers", id, serde_json::to_string(v)?);
-    }
-    for (id, v) in &store.aws {
-        push("aws", id, serde_json::to_string(v)?);
-    }
-    if let Some(c) = &store.google_client {
-        push("google_client", SINGLE_ACCOUNT, serde_json::to_string(c)?);
-    }
-    for (id, v) in &store.google_accounts {
-        push("google_accounts", id, v.clone());
-    }
-    if let Some(h) = &store.secret_vault.header {
-        push("secret_vault", SINGLE_ACCOUNT, serde_json::to_string(h)?);
-    }
-    for (id, v) in &store.secret_vault.notes {
-        push("secret_notes", id, serde_json::to_string(v)?);
-    }
-    Ok(out)
-}
-
-/// Store (`Some`) or remove (`None`) one syncable item.
-pub fn sync_set_item(service: &str, account: &str, value: Option<&str>) -> Result<()> {
-    if !is_sync_item(service, account) {
-        return Err(anyhow!("not a synced keychain item"));
-    }
-    let mut guard = CACHE.lock().map_err(|_| anyhow!("secret cache poisoned"))?;
-    let store = loaded_for_sync(&mut guard)?;
-    let id = account.to_string();
-    match (service, value) {
-        ("github", Some(v)) => drop(store.github.insert(id, v.to_string())),
-        ("github", None) => drop(store.github.remove(&id)),
-        ("gitlab", Some(v)) => drop(store.gitlab.insert(id, v.to_string())),
-        ("gitlab", None) => drop(store.gitlab.remove(&id)),
-        ("mcp", Some(v)) => drop(store.mcp.insert(id, serde_json::from_str(v)?)),
-        ("mcp", None) => drop(store.mcp.remove(&id)),
-        ("servers", Some(v)) => drop(store.servers.insert(id, serde_json::from_str(v)?)),
-        ("servers", None) => drop(store.servers.remove(&id)),
-        ("aws", Some(v)) => drop(store.aws.insert(id, serde_json::from_str(v)?)),
-        ("aws", None) => drop(store.aws.remove(&id)),
-        ("google_client", v) => store.google_client = v.map(serde_json::from_str).transpose()?,
-        ("google_accounts", Some(v)) => drop(store.google_accounts.insert(id, v.to_string())),
-        ("google_accounts", None) => drop(store.google_accounts.remove(&id)),
-        ("secret_vault", Some(v)) => store.secret_vault.apply_synced_header(serde_json::from_str(v)?),
-        // A vault is never removed: its notes would become unreadable.
-        ("secret_vault", None) => return Ok(()),
-        ("secret_notes", Some(v)) => {
-            store.secret_vault.notes.insert(id, serde_json::from_str(v)?);
-            store.secret_vault.drop_unused_old_headers();
-        }
-        ("secret_notes", None) => drop(store.secret_vault.notes.remove(&id)),
-        _ => return Err(anyhow!("not a synced keychain item")),
-    }
-    persist(store)
-}
-
-// ---- Secret notes vault -------------------------------------------------------
 
 /// Run `f` on the vault data. With `write`, the result is persisted only when `f`
 /// succeeds. Fails (rather than starting from an empty store) when the Keychain
@@ -1057,7 +915,7 @@ pub fn with_vault<R>(
     f: impl FnOnce(&mut crate::secret_vault::VaultData) -> Result<R, String>,
 ) -> Result<R, String> {
     let mut guard = CACHE.lock().map_err(|_| "secret cache poisoned".to_string())?;
-    let store = loaded_for_sync(&mut guard).map_err(|e| e.to_string())?;
+    let store = loaded_strict(&mut guard).map_err(|e| e.to_string())?;
     if !write {
         let mut data = store.secret_vault.clone();
         return f(&mut data);
@@ -1070,4 +928,22 @@ pub fn with_vault<R>(
         return Err(format!("keychain write failed: {e}"));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_legacy_sync_membership_is_noticed_and_never_written_back() {
+        let json = r#"{"github":{"a1":"pat"},"sync":{"group_id":"g","group_key":"k","device_token":"t","device_id":"d"}}"#;
+        let store: SecretStore = serde_json::from_str(json).unwrap();
+        assert!(store.legacy_sync.is_some());
+        let out = serde_json::to_string(&store).unwrap();
+        assert!(!out.contains("\"sync\"") && !out.contains("group_key"), "{out}");
+        assert_eq!(store.github.get("a1").map(String::as_str), Some("pat"));
+
+        let clean: SecretStore = serde_json::from_str(&out).unwrap();
+        assert!(clean.legacy_sync.is_none());
+    }
 }

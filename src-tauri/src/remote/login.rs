@@ -84,10 +84,8 @@ pub fn login_psk(password: &str) -> [u8; 32] {
     psk
 }
 
-/// The login PSK for `password`, uncached. Used by the client side (sync
-/// join), which must not keep another machine's password around. Slow: run it
-/// off the async runtime.
-pub fn derive_login_psk(password: &str) -> [u8; 32] {
+/// The login PSK for `password`, uncached. Slow: run it off the async runtime.
+fn derive_login_psk(password: &str) -> [u8; 32] {
     derive_effective_psk(LOGIN_LINK_SECRET, &stretch(password))
 }
 

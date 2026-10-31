@@ -21,12 +21,12 @@
     "authTokenHint": "Lưu trong keychain của hệ điều hành, không bao giờ lưu dạng thô trên đĩa.",
     "deviceName": "Tên thiết bị này",
     "deviceNamePlaceholder": "vd. mac-mini",
-    "deviceNameHint": "Chữ thường, số và '-' (tối đa 32 ký tự). Nhập tên này cùng mật khẩu chính để đăng nhập vào máy này (từ Devdy khác hoặc web controller) hoặc để tham gia nhóm đồng bộ của nó; nhóm đồng bộ hiển thị máy này bằng tên này. Giúp nhiều host dùng chung một relay.",
+    "deviceNameHint": "Chữ thường, số và '-' (tối đa 32 ký tự). Nhập tên này cùng mật khẩu chính để đăng nhập vào máy này (từ Devdy khác hoặc web controller). Giúp nhiều host dùng chung một relay.",
     "masterPassword": "Mật khẩu chính",
     "set": "(đã đặt)",
     "masterPasswordReplace": "Nhập mật khẩu mới để thay thế mật khẩu hiện tại",
     "masterPasswordSet": "Đặt mật khẩu để bỏ qua OTP mỗi lần",
-    "masterPasswordHint": "Nhập mật khẩu này trên điện thoại thay cho mã OTP, và trên máy khác khi tham gia nhóm đồng bộ của máy này. Lưu trong keychain của hệ điều hành. Cố định — chỉ dùng nếu bạn là người dùng duy nhất. Đổi hoặc xoá mật khẩu sẽ đăng xuất mọi thiết bị đã đăng nhập.",
+    "masterPasswordHint": "Nhập mật khẩu này trên điện thoại hoặc Devdy khác thay cho mã OTP. Lưu trong keychain của hệ điều hành. Cố định — chỉ dùng nếu bạn là người dùng duy nhất. Đổi hoặc xoá mật khẩu sẽ đăng xuất mọi thiết bị đã đăng nhập.",
     "saveSettings": "Lưu cài đặt",
     "hostLabel": "host: {id}",
     "perRunHint": "Phiên điều khiển từ xa giờ được tạo theo từng run: mở một run và nhấn nút {remote} trên thanh công cụ để tạo link. Nhập {masterPassword} (nếu đã đặt) hoặc mã OTP trên điện thoại để kết nối.",
@@ -66,7 +66,7 @@
     },
     "identity": {
       "title": "Thiết bị này & Relay",
-      "intro": "Dùng chung cho Điều khiển từ xa và Đồng bộ. Máy Devdy khác nhập tên thiết bị và mật khẩu chính này để điều khiển máy này hoặc để tham gia nhóm đồng bộ của nó; nhóm đồng bộ cũng hiển thị máy này bằng đúng tên đó."
+      "intro": "Dùng cho Điều khiển từ xa. Devdy khác hoặc web controller nhập tên thiết bị và mật khẩu chính này để điều khiển máy này."
     }
   },
   "session": {
@@ -91,7 +91,6 @@
     "createNewLink": "Tạo link mới",
     "expired": "Phiên đã hết hạn",
     "errorOccurred": "Đã xảy ra lỗi",
-    "noRunOpen": "Không có run nào đang mở.",
     "copyFailed": "Không thể copy vào clipboard",
     "disabledTitle": "Remote Control đang tắt",
     "disabledDesc": "Remote Control chưa được bật. Bật lên để tạo link cho điện thoại.",
@@ -129,7 +128,9 @@
       "superseded": "Thiết bị khác đã giành quyền điều khiển",
       "reconnect": "Kết nối lại",
       "signInAgain": "Đăng nhập lại",
-      "signOut": "Đăng xuất"
+      "signOut": "Đăng xuất",
+      "files": "Tệp",
+      "filesHint": "Chép tệp giữa máy này và Devdy đang điều khiển"
     },
     "upload": {
       "progress": "Đang chép {name} sang Devdy đang điều khiển… {percent}%",

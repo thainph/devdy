@@ -18,6 +18,8 @@ export interface FsEntry {
   size: number
   /** Unix milliseconds. */
   modified: number | null
+  /** Unix permission bits (`null` elsewhere; absent from older hosts). */
+  mode?: number | null
 }
 
 /** A directory listing (`remote_fs_list`); `truncated` when the directory had

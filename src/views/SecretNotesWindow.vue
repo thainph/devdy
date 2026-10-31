@@ -13,8 +13,9 @@
 //
 // No vault → setup (then the recovery key, shown once); locked → unlock with the
 // password or the recovery key (which then asks for a new password). Secret notes
-// are not in the notes table, so no MCP tool, agent or remote controller reads
-// them, and the backend refuses every other webview (this window only).
+// are not in the notes table, so no MCP tool or agent reads them, and the backend
+// refuses every other webview (this window only — and the Remote Control bridge,
+// which a paired remote desktop's own Secret notes window drives).
 //
 // A note's content is fetched only on Reveal / Edit and hidden again after
 // REVEAL_SECS or when the window loses focus; Copy happens in the backend (cleared

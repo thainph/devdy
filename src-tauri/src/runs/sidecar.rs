@@ -357,9 +357,9 @@ struct LogFlusher {
 impl LogFlusher {
     fn new(path: PathBuf, merge_existing: bool) -> Self {
         let mut base = if merge_existing { std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) } else { 0 };
-        // A log that ends mid-line (its writer was killed, or a synced copy
-        // stopped short) would glue the resumed turn's first line onto the
-        // fragment: end that line first (review-3 L2).
+        // A log that ends mid-line (its writer was killed) would glue the
+        // resumed turn's first line onto the fragment: end that line first
+        // (review-3 L2).
         if base > 0 && !ends_with_newline(&path) && Self::append_newline(&path).is_ok() {
             base += 1;
         }
@@ -636,8 +636,7 @@ pub async fn drain_sidecar(
     // Incremental persistence: append what the buffer gained to the on-disk
     // log while the run streams (after the existing log of a resumed run).
     // This lets the frontend recover partial output after an app restart
-    // mid-run, instead of only seeing the log once the run finishes, and lets
-    // sync see the log grow (and go idle) instead of a rewrite every tick.
+    // mid-run, instead of only seeing the log once the run finishes.
     let mut log_file = LogFlusher::new(log_path.clone(), merge_existing_log);
     let mut flush_tick = tokio::time::interval(std::time::Duration::from_millis(500));
     flush_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -645,11 +644,8 @@ pub async fn drain_sidecar(
     loop {
         tokio::select! {
             _ = flush_tick.tick() => {
-                // Not once another device took the run over: the log is its now.
-                if !crate::sync::sessions::is_handed_off(&run_id) {
-                    let buf = log_buf.lock().await;
-                    log_file.flush(&buf);
-                }
+                let buf = log_buf.lock().await;
+                log_file.flush(&buf);
             }
             // Watchdog: surface long waits (notices only), and detect the one
             // definitive hang the drain can see itself — the sidecar process has
@@ -1168,9 +1164,7 @@ pub async fn drain_sidecar(
     }
 
     // Final persist (anything appended since the last periodic flush).
-    // Not when another device took the run over: the log is its now.
-    let handed_off = crate::sync::sessions::is_handed_off(&run_id);
-    if !handed_off {
+    {
         let buf = log_buf.lock().await;
         log_file.flush(&buf);
     }
@@ -1215,26 +1209,18 @@ pub async fn drain_sidecar(
     // A turn finishing is not user activity, so it must not float the run in
     // History. last_activity_at is only pinned to the run's existing sort key
     // (old row values) so the new finished_at can't take over the COALESCE.
-    // Only while this device owns the run: after a take-over the row is the
-    // new owner's, and a 'cancelled' here would sync back over it.
-    if !handed_off {
-        let _ = sqlx::query(&format!(
-            "UPDATE runs SET status = ?, finished_at = ?, \
-             last_activity_at = COALESCE(last_activity_at, finished_at, started_at, created_at, ?), \
-             output_path = ? WHERE id = ? AND {}",
-            crate::sync::sessions::OWNED_HERE
-        ))
-        .bind(final_status)
-        .bind(&finished_at)
-        .bind(&finished_at)
-        .bind(log_path.to_string_lossy().as_ref())
-        .bind(&run_id)
-        .execute(&db_pool)
-        .await;
-        // The sidecar is gone: other devices may continue the session now.
-        crate::sync::sessions::release(&db_pool, &run_id).await;
-    }
-    crate::sync::sessions::clear_handed_off(&run_id);
+    let _ = sqlx::query(
+        "UPDATE runs SET status = ?, finished_at = ?, \
+         last_activity_at = COALESCE(last_activity_at, finished_at, started_at, created_at, ?), \
+         output_path = ? WHERE id = ?",
+    )
+    .bind(final_status)
+    .bind(&finished_at)
+    .bind(&finished_at)
+    .bind(log_path.to_string_lossy().as_ref())
+    .bind(&run_id)
+    .execute(&db_pool)
+    .await;
 
     if let Some(bus) = &remote_bus {
         bus.publish(crate::remote::RemoteRunEvent::Done {

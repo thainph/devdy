@@ -21,12 +21,12 @@
     "authTokenHint": "Stored in the OS keychain, never on disk in cleartext.",
     "deviceName": "This device name",
     "deviceNamePlaceholder": "e.g. mac-mini",
-    "deviceNameHint": "Lowercase letters, digits and '-' (up to 32). Entered with the master password to sign in to this machine (another Devdy or the web controller) or to join its sync group; the sync group shows this machine under it. Lets several hosts share one relay.",
+    "deviceNameHint": "Lowercase letters, digits and '-' (up to 32). Entered with the master password to sign in to this machine (another Devdy or the web controller). Lets several hosts share one relay.",
     "masterPassword": "Master password",
     "set": "(set)",
     "masterPasswordReplace": "Enter a new password to replace the current one",
     "masterPasswordSet": "Set a password to skip the OTP each time",
-    "masterPasswordHint": "Enter it on your phone instead of the OTP code, and on another machine joining this one's sync group. Stored in the OS keychain. Fixed — only use it if you are the sole user. Changing or clearing it signs out every device signed in so far.",
+    "masterPasswordHint": "Enter it on your phone or another Devdy instead of the OTP code. Stored in the OS keychain. Fixed — only use it if you are the sole user. Changing or clearing it signs out every device signed in so far.",
     "saveSettings": "Save settings",
     "hostLabel": "host: {id}",
     "perRunHint": "Remote sessions are now created per run: open a run and click the {remote} button in the toolbar to generate a link. Enter your {masterPassword} (if set) or the OTP code on your phone to connect.",
@@ -66,7 +66,7 @@
     },
     "identity": {
       "title": "This device & relay",
-      "intro": "Shared by Remote Control and Sync. Another Devdy enters this device name and master password both to control this machine and to join its sync group, and the sync group lists this machine under the same name."
+      "intro": "Used by Remote Control. Another Devdy or the web controller enters this device name and master password to control this machine."
     }
   },
   "session": {
@@ -91,7 +91,6 @@
     "createNewLink": "Create new link",
     "expired": "Session expired",
     "errorOccurred": "An error occurred",
-    "noRunOpen": "No run is currently open.",
     "copyFailed": "Could not copy to clipboard",
     "disabledTitle": "Remote Control is off",
     "disabledDesc": "Remote Control isn't enabled yet. Turn it on to create a link for your phone.",
@@ -129,7 +128,9 @@
       "superseded": "Taken over by another device",
       "reconnect": "Reconnect",
       "signInAgain": "Sign in again",
-      "signOut": "Sign out"
+      "signOut": "Sign out",
+      "files": "Files",
+      "filesHint": "Copy files between this computer and the controlled Devdy"
     },
     "upload": {
       "progress": "Copying {name} to the controlled Devdy… {percent}%",

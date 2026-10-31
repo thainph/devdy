@@ -29,11 +29,6 @@ import { openUrl } from '@tauri-apps/plugin-opener'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { remotePathsForDrop } from '@/lib/remoteUpload'
-import {
-  RUN_HANDED_OFF_EVENT, RUN_LOG_UPDATED_EVENT, ownerLabel, runOwnership, shortHead, syncPercent,
-  type RemoteRunOwner, type SyncGap,
-} from '@/lib/runOwnership'
-import { onSyncRowsApplied } from '@/lib/sync'
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
 import {
   Play, Square, GitPullRequest, Bug,
@@ -43,9 +38,9 @@ import {
   X, Paperclip,
   ShieldQuestion, MessageCircleQuestion,
   Pin, Shield, Pencil, Check, Github, Gitlab, UserCircle,
-  HardDrive, Cloud, CloudCog, Radio, Languages, StickyNote, ListTodo, FolderTree, Loader2, RefreshCw,
+  HardDrive, Cloud, CloudCog, Languages, StickyNote, ListTodo, FolderTree, Loader2,
   MoreHorizontal, Search, Network, ChevronLeft, ChevronRight,
-  Plus, AlignJustify, Rows2, Rows3, Rows4, CircleDashed, ArrowUpDown, Laptop
+  Plus, AlignJustify, Rows2, Rows3, Rows4, CircleDashed, ArrowUpDown
 } from 'lucide-vue-next'
 import { onClickOutside } from '@vueuse/core'
 import AppSelect from '@/components/AppSelect.vue'
@@ -100,8 +95,6 @@ import {
   type ImageAttachment,
 } from '@/lib/streamEvents'
 import { MODEL_OPTIONS, PERMISSION_MODE_OPTIONS, resolvePermissionMode, withCurrentModel, combinedModelOptions, engineForModel } from '@/lib/engineOptions'
-import RemoteSessionModal from '@/components/remote/RemoteSessionModal.vue'
-import { useRemoteControlStore } from '@/stores/remoteControl'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -112,7 +105,6 @@ const live = useLiveRunsStore()
 const conductorStore = useConductorStore()
 const tabsStore = useWorkspaceTabsStore()
 const draftsStore = useChatDraftsStore()
-const remoteControlStore = useRemoteControlStore()
 const ghStore = useGithubAccountsStore()
 const glStore = useGitlabAccountsStore()
 const serversStore = useServersStore()
@@ -456,53 +448,6 @@ function scrollActiveSessionIntoView() {
     if (el) el.scrollIntoView({ block: 'nearest' })
   })
 }
-// Remote-control modal: create a per-run link + OTP to drive this run from a phone.
-const remoteModalOpen = ref(false)
-// Remote state for the CURRENTLY viewed run, derived reactively from the global
-// status. A paired phone drives EVERY run, so "is a phone attached" is a
-// property of the session while "is it looking at this run" is per run.
-// Deriving with computeds — instead of a ref refreshed imperatively — means
-// switching sessions re-evaluates against THIS run's id immediately.
-const remoteStatus = computed(() => remoteControlStore.status)
-/** A phone has completed auth, so it can drive this (and any other) run. */
-const remotePaired = computed(() => !!remoteStatus.value?.session_authenticated)
-/** A pairing link exists but no phone has completed auth yet. */
-const remoteWaiting = computed(
-  () => !!remoteStatus.value?.bound_run_id && !remotePaired.value,
-)
-/** The paired phone is looking at THIS run right now. */
-const remoteActive = computed(
-  () => remotePaired.value && remoteStatus.value?.focus_run_id === currentRunId.value,
-)
-/**
- * Remote-state marker for the History list, so the user can tell AT A GLANCE
- * where the phone is without opening anything:
- *   success → the phone is looking at that run right now;
- *   warning → a pairing link exists but no phone has connected yet.
- */
-const remoteRowMarker = computed<
-  { runId: string; tone: 'success' | 'warning'; title: string } | null
->(() => {
-  const st = remoteStatus.value
-  if (!st) return null
-  if (st.session_authenticated && st.focus_run_id) {
-    return { runId: st.focus_run_id, tone: 'success', title: t('run.remoteRowDriving') }
-  }
-  if (st.bound_run_id) {
-    return { runId: st.bound_run_id, tone: 'warning', title: t('run.remoteRowWaiting') }
-  }
-  return null
-})
-/** State-aware tooltip for the Remote button. */
-const remoteButtonTitle = computed(() => {
-  if (!currentRunId.value) return t('run.remoteBtnSelectRun')
-  if (remoteActive.value) return t('run.remoteBtnActive')
-  if (remotePaired.value) return t('run.remoteBtnPaired')
-  if (remoteWaiting.value) return t('run.remoteBtnBoundHere')
-  return t('run.remoteBtnDefault')
-})
-const remoteUnlisteners: UnlistenFn[] = []
-
 // ── Remote meta sync ────────────────────────────────────────────────────────
 // The composer's engine / model / permission-mode selection is the single source
 // of truth shared with a remote controller. Local edits are pushed to the backend
@@ -552,15 +497,6 @@ watch(
   { immediate: true },
 )
 
-async function refreshRemoteActive(): Promise<void> {
-  // Pull the latest global status into the store; the computeds above re-derive
-  // this run's remote state from it (button dot + chip).
-  try {
-    await remoteControlStore.refreshStatus()
-  } catch {
-    // ignore — a stale status just means no remote indicator
-  }
-}
 const viewingLogRunId = ref<string | null>(null)
 const viewingLog = ref<string>('')
 
@@ -737,133 +673,6 @@ const inputContentError = ref<string | null>(null)
 const inputContentLoading = ref(false)
 
 const currentRun = computed(() => runsStore.runs.find(r => r.id === currentRunId.value))
-
-// ── Cross-device sessions ──────────────────────────────────────────────────
-// A synced run owned by another device is read-only here while that device
-// runs it (its log streams in via sync), and offers "Continue here" once it is
-// idle or its lease ran out. `ownerNow` ticks so an expired lease is noticed
-// without a backend round-trip; row changes (status, lease released) arrive as
-// `sync://rows-applied`.
-const ownerNow = ref(Date.now())
-let ownerTimer: ReturnType<typeof setInterval> | null = null
-const currentOwner = computed(() =>
-  currentRunId.value ? runsStore.remoteOwners.get(currentRunId.value) : undefined,
-)
-const currentOwnership = computed(() => runOwnership(currentOwner.value, ownerNow.value))
-const currentOwnerName = computed(() =>
-  currentOwner.value ? ownerLabel(currentOwner.value, t('run.syncOwner.anotherDevice')) : '',
-)
-const takingOver = ref(false)
-// The owner's final log/transcript are still missing after syncing from it:
-// shown with "Sync from <owner>" and "Continue anyway" instead of the plain
-// "Continue here".
-const takeOverSyncing = ref<SyncGap | null>(null)
-watch(currentRunId, () => { takeOverSyncing.value = null })
-
-function remoteOwnerOf(runId: string): RemoteRunOwner | undefined {
-  return runsStore.remoteOwners.get(runId)
-}
-
-function onOwnerTick() {
-  ownerNow.value = Date.now()
-}
-
-// Synced `runs` rows landed (another device started / finished a turn, or a
-// new session): refresh the list and the owners. Debounced like log appends.
-let syncRowsUnlisten: UnlistenFn | null = null
-let syncRowsTimer: ReturnType<typeof setTimeout> | null = null
-function handleSyncRowsApplied(tables: string[]) {
-  if (!tables.includes('runs') || syncRowsTimer) return
-  syncRowsTimer = setTimeout(() => {
-    syncRowsTimer = null
-    void runsStore.refreshMeta(projectId.value).catch(() => {})
-    void runsStore.fetchRemoteOwners(projectId.value)
-  }, 500)
-}
-
-// Synced log appends: refresh the list (status, owners) and re-read the open
-// log. Debounced — appends of a live remote session arrive every few seconds.
-let syncLogUnlisten: UnlistenFn | null = null
-let syncLogTimer: ReturnType<typeof setTimeout> | null = null
-const syncLogRuns = new Set<string>()
-function onSyncLogUpdated(runId: string) {
-  syncLogRuns.add(runId)
-  if (syncLogTimer) return
-  syncLogTimer = setTimeout(() => {
-    syncLogTimer = null
-    const ids = new Set(syncLogRuns)
-    syncLogRuns.clear()
-    if (![...ids].some((id) => runsStore.runs.some((r) => r.id === id))) return
-    void runsStore.refreshMeta(projectId.value).catch(() => {})
-    void runsStore.fetchRemoteOwners(projectId.value)
-    if (currentRunId.value && ids.has(currentRunId.value)) void refreshViewedRunOnFocus(true)
-  }, 500)
-}
-
-// Another device continued a session whose sidecar was live here; the local
-// sidecar was stopped.
-let handedOffUnlisten: UnlistenFn | null = null
-function onRunHandedOff(payload: { run_id: string; device_name: string | null }) {
-  const device = payload.device_name?.trim() || t('run.syncOwner.anotherDevice')
-  toast.info(t('run.syncOwner.continuedOn', { device }))
-  void runsStore.refreshMeta(projectId.value).catch(() => {})
-  void runsStore.fetchRemoteOwners(projectId.value)
-}
-
-async function handleTakeOver(skipSync = false) {
-  const id = currentRunId.value
-  if (!id || takingOver.value) return
-  const device = currentOwnerName.value
-  takingOver.value = true
-  try {
-    // The backend syncs from the owner first, so the decision uses its current
-    // lease. An unreachable owner may still be running the session: ask.
-    let staleOk = false
-    let result = await runsStore.takeOverRun(id, false, skipSync)
-    if (!result.taken && result.owner_unreachable) {
-      const ok = await confirm({
-        title: t('run.syncOwner.unreachableTitle', { device }),
-        message: t('run.syncOwner.unreachableMessage', { device }),
-        confirmLabel: t('run.syncOwner.continueHere'),
-        variant: 'primary',
-      })
-      if (!ok) return
-      staleOk = true
-      result = await runsStore.takeOverRun(id, false, skipSync, true)
-    }
-    takeOverSyncing.value = !result.taken && result.syncing ? result.syncing : null
-    if (takeOverSyncing.value) return
-    if (!result.taken && result.mismatch) {
-      const { recorded, local } = result.mismatch
-      const unknown = t('run.syncOwner.unknown')
-      const state = (dirty: boolean | null) =>
-        dirty == null ? unknown : dirty ? t('run.syncOwner.dirty') : t('run.syncOwner.clean')
-      const ok = await confirm({
-        title: t('run.syncOwner.gitMismatchTitle'),
-        message: t('run.syncOwner.gitMismatchMessage', {
-          device,
-          recordedHead: shortHead(recorded.head, unknown),
-          recordedState: state(recorded.dirty),
-          localHead: shortHead(local.head, t('run.syncOwner.noRepo')),
-          localState: state(local.dirty),
-        }),
-        confirmLabel: t('run.syncOwner.continueHere'),
-        variant: 'primary',
-      })
-      if (!ok) return
-      result = await runsStore.takeOverRun(id, true, skipSync, staleOk)
-    }
-    if (!result.taken) return
-    if (!result.transcript_available) toast.info(t('run.syncOwner.transcriptMissing'))
-    await runsStore.refreshMeta(projectId.value)
-  } catch (e) {
-    toast.error(String(e))
-    // E.g. still running on the owner: show what the sync brought.
-    void runsStore.fetchRemoteOwners(projectId.value)
-  } finally {
-    takingOver.value = false
-  }
-}
 
 const currentIsSession = computed(() => currentRun.value?.run_type === 'session')
 
@@ -1059,10 +868,9 @@ watch(conductorAnchorId, (id) => {
 }, { immediate: true })
 // Keep worker permission prompts flowing: listen to each running worker so its
 // queue populates (and the sidebar's ⚠ flag lights up) even before it's opened.
-// Not a worker another device runs: it would count as running here (tray badge).
 watch(conductorWorkers, (ws) => {
   for (const w of ws) {
-    if (w.status === 'running' && !runsStore.remoteOwners.has(w.worker_id)) {
+    if (w.status === 'running') {
       void live.startListening(w.worker_id, projectId.value)
     }
   }
@@ -1976,18 +1784,6 @@ onMounted(async () => {
   window.addEventListener('keydown', onTurnNavKey)
   setupMentionBridge()
 
-  // Remote-control live indicator: reflect whether a phone is actively driving
-  // THIS run, updated by the host agent events (and an initial status read).
-  refreshRemoteActive()
-  for (const evt of [
-    'remote://connection-authenticated',
-    'remote://disconnected',
-    'remote://auth-failed',
-    'remote://session-expired',
-  ]) {
-    remoteUnlisteners.push(await listen(evt, () => refreshRemoteActive()))
-  }
-
   // Drag-and-drop files into the composer. Tauri intercepts OS file drops at the
   // native layer (dragDropEnabled defaults on), so the webview's HTML5 `drop`
   // carries no paths — we must use the native event, which gives absolute paths.
@@ -2025,16 +1821,6 @@ onMounted(async () => {
   // Live mirror: the backend watches the shared Claude transcript store and
   // emits this when a session changes (new turns from the CLI / VS Code, or a
   // brand-new external session). Refetch the list and reload the viewed run.
-  ownerTimer = setInterval(onOwnerTick, 5000)
-  syncLogUnlisten = await listen<{ run_id: string }>(RUN_LOG_UPDATED_EVENT, (event) => {
-    if (event.payload?.run_id) onSyncLogUpdated(event.payload.run_id)
-  })
-  syncRowsUnlisten = await onSyncRowsApplied(handleSyncRowsApplied)
-  handedOffUnlisten = await listen<{ run_id: string; device_name: string | null }>(
-    RUN_HANDED_OFF_EVENT,
-    (event) => { if (event.payload?.run_id) onRunHandedOff(event.payload) },
-  )
-
   sessionsChangedUnlisten = await listen<{ project_id: string; run_id?: string }>(
     'sessions:changed',
     (event) => {
@@ -2113,22 +1899,8 @@ onUnmounted(() => {
   window.removeEventListener('keydown', onTurnNavKey)
   sessionsChangedUnlisten?.()
   sessionsChangedUnlisten = null
-  syncLogUnlisten?.()
-  syncLogUnlisten = null
-  if (syncLogTimer) clearTimeout(syncLogTimer)
-  syncRowsUnlisten?.()
-  syncRowsUnlisten = null
-  handedOffUnlisten?.()
-  handedOffUnlisten = null
-  if (syncRowsTimer) clearTimeout(syncRowsTimer)
-  syncRowsTimer = null
-  syncLogTimer = null
-  if (ownerTimer) clearInterval(ownerTimer)
-  ownerTimer = null
   dragDropUnlisten?.()
   dragDropUnlisten = null
-  remoteUnlisteners.forEach((fn) => fn())
-  remoteUnlisteners.length = 0
   metaUnlisten?.()
   metaUnlisten = null
   mentionUnlisten?.()
@@ -3823,15 +3595,6 @@ function handleRefInput(val: string) {
               :aria-label="t('run.moreActions')"
             >
               <MoreHorizontal class="h-4 w-4" :stroke-width="2" />
-              <!-- The phone is looking at THIS run: keep that visible from the header. -->
-              <span
-                v-if="remoteActive"
-                class="absolute -right-0.5 -top-0.5 flex h-2.5 w-2.5"
-                :aria-label="t('run.remoteConnecting')"
-              >
-                <span class="absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-75 animate-ping" />
-                <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-background" />
-              </span>
             </Button>
           </template>
           <div class="min-w-[15rem]">
@@ -3863,20 +3626,6 @@ function handleRefInput(val: string) {
             </template>
 
             <DropdownSeparator />
-            <DropdownItem :disabled="!currentRunId" :title="remoteButtonTitle" @click="remoteModalOpen = true">
-              <Radio
-                class="h-3.5 w-3.5 shrink-0"
-                :class="remoteActive ? 'text-emerald-500' : remotePaired ? 'text-emerald-500/50' : ''"
-                :stroke-width="1.75"
-              />
-              <span class="flex-1">{{ t('run.remote') }}</span>
-              <span
-                v-if="remoteActive || remotePaired"
-                class="h-1.5 w-1.5 shrink-0 rounded-full"
-                :class="remoteActive ? 'bg-emerald-500' : 'bg-emerald-500/50'"
-                :aria-label="remoteButtonTitle"
-              />
-            </DropdownItem>
             <DropdownItem
               :title="uiLayout.focusMode ? t('run.exitFocusMode') : t('run.enterFocusMode')"
               @click="uiLayout.toggleFocus()"
@@ -4187,30 +3936,6 @@ function handleRefInput(val: string) {
                     :title="t('conductor.workerCountShort', { n: runWorkerCount(run) })"
                   >
                     <Network class="h-3 w-3" :stroke-width="1.75" />{{ runWorkerCount(run) }}
-                  </span>
-                  <!-- Owned by another device (cross-device sync). -->
-                  <span
-                    v-if="remoteOwnerOf(run.id)"
-                    class="flex shrink-0 items-center gap-0.5 max-w-[6rem] text-[10px] text-sky-500"
-                    :title="t('run.syncOwner.badgeTitle', { device: ownerLabel(remoteOwnerOf(run.id)!, t('run.syncOwner.anotherDevice')) })"
-                  >
-                    <Laptop class="h-3 w-3 shrink-0" :stroke-width="1.75" />
-                    <span class="truncate">{{ ownerLabel(remoteOwnerOf(run.id)!, t('run.syncOwner.anotherDevice')) }}</span>
-                  </span>
-                  <!-- Remote-control marker: a phone is driving (green, pulsing) or
-                       a link is waiting for one (amber) on THIS session. Lets the
-                       user spot the remotely-controlled session in the list. -->
-                  <span
-                    v-if="remoteRowMarker && remoteRowMarker.runId === run.id"
-                    class="relative flex h-4 w-4 shrink-0 items-center justify-center"
-                    :class="remoteRowMarker.tone === 'success' ? 'text-emerald-500' : 'text-amber-500'"
-                    :title="remoteRowMarker.title"
-                  >
-                    <span
-                      v-if="remoteRowMarker.tone === 'success'"
-                      class="absolute inset-0 animate-ping rounded-full bg-emerald-500/30"
-                    />
-                    <Radio class="relative h-3.5 w-3.5" :stroke-width="2" />
                   </span>
                   <!-- Animated attention marker: this run is waiting for a
                        permission / question answer (replaces the floating toast). -->
@@ -4689,55 +4414,6 @@ function handleRefInput(val: string) {
           v-if="composerVisible"
           class="border-t border-border bg-card/40 px-3 py-2 shrink-0"
         >
-          <!-- Session owned by another device: read-only while it runs there,
-               "Continue here" once it is idle. -->
-          <div
-            v-if="currentOwnership !== 'local'"
-            class="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-xs"
-          >
-            <Laptop class="h-4 w-4 shrink-0 text-sky-500" :stroke-width="1.75" />
-            <span v-if="currentOwnership === 'remote-running'" class="flex-1 min-w-0 truncate">
-              <Loader2 class="inline h-3 w-3 mr-1 animate-spin text-muted-foreground" :stroke-width="2" />
-              {{ t('run.syncOwner.runningOn', { device: currentOwnerName }) }}
-            </span>
-            <template v-else-if="takeOverSyncing">
-              <span class="flex-1 min-w-0 truncate text-muted-foreground">
-                {{ t('run.syncOwner.stillSyncing', { device: currentOwnerName, percent: syncPercent(takeOverSyncing) }) }}
-              </span>
-              <button
-                type="button"
-                class="shrink-0 flex items-center gap-1 rounded-md border border-border px-2.5 h-7 text-xs font-medium hover:bg-muted transition-colors cursor-pointer disabled:opacity-50"
-                :disabled="takingOver"
-                @click="handleTakeOver(true)"
-              >
-                {{ t('run.syncOwner.continueAnyway') }}
-              </button>
-              <button
-                type="button"
-                class="shrink-0 flex items-center gap-1 rounded-md bg-primary px-2.5 h-7 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors cursor-pointer disabled:opacity-50"
-                :disabled="takingOver"
-                @click="handleTakeOver()"
-              >
-                <component :is="takingOver ? Loader2 : RefreshCw" class="h-3.5 w-3.5" :class="{ 'animate-spin': takingOver }" :stroke-width="2" />
-                {{ t('run.syncOwner.syncFrom', { device: currentOwnerName }) }}
-              </button>
-            </template>
-            <template v-else>
-              <span class="flex-1 min-w-0 truncate text-muted-foreground">
-                {{ t('run.syncOwner.lastRanOn', { device: currentOwnerName }) }}
-              </span>
-              <button
-                type="button"
-                class="shrink-0 flex items-center gap-1 rounded-md bg-primary px-2.5 h-7 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors cursor-pointer disabled:opacity-50"
-                :disabled="takingOver"
-                @click="handleTakeOver()"
-              >
-                <component :is="takingOver ? Loader2 : Play" class="h-3.5 w-3.5" :class="{ 'animate-spin': takingOver }" :stroke-width="2" />
-                {{ t('run.syncOwner.continueHere') }}
-              </button>
-            </template>
-          </div>
-          <template v-else>
           <RunAttentionBanner
             v-if="currentStatus === 'running' && session?.attention.length"
             :notices="session.attention"
@@ -5026,7 +4702,6 @@ function handleRefInput(val: string) {
               </div>
             </div>
           </div>
-          </template>
         </div>
       </div>
 
@@ -5167,15 +4842,6 @@ function handleRefInput(val: string) {
         </Button>
       </template>
     </Modal>
-
-    <!-- Remote control: create a per-run link + OTP so a phone can drive this run -->
-    <RemoteSessionModal
-      v-if="remoteModalOpen"
-      :open="remoteModalOpen"
-      :run-id="currentRunId"
-      @close="remoteModalOpen = false; refreshRemoteActive()"
-      @open-settings="remoteModalOpen = false; router.push({ name: 'settings', query: { section: 'remote' } })"
-    />
 
     <!-- Floating actions for a text selection in the AI-result output: translate
          it, or keep it as a note filed under this run.

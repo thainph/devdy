@@ -551,7 +551,7 @@ async fn handle_login_frame(
             let opened = Session::new(&psk, &l.keypair, &controller_pub)
                 .ok()
                 .and_then(|s| s.open(&cipher).ok().map(|pt| (s, pt)));
-            let Some((session, proof)) = opened else {
+            let Some((session, _)) = opened else {
                 if let Ok(mut f) = crate::remote::login::FAILURES.lock() {
                     f.record_failure(Instant::now());
                 }
@@ -561,28 +561,6 @@ async fn handle_login_frame(
                 *login = None;
                 return;
             };
-            // Password proven. Another Devdy joining this one's sync group asks
-            // for the group key instead of a Remote Control session. The
-            // password is not enough: the user must have opened "Accept a new
-            // device" and approve this request, so answer off the agent loop.
-            if crate::sync::pair::is_sync_join(&proof) {
-                *login = None;
-                let (out_tx, seq, db, app) = (out_tx.clone(), seq.clone(), deps.db.clone(), deps.app.clone());
-                tokio::spawn(async move {
-                    let tell_wait = || {
-                        let c = session.seal(serde_json::json!({ "kind": "sync_pending" }).to_string().as_bytes());
-                        let _ = out_tx.send(Envelope::data(FrameType::Stream, &room_id, c, seq.next()));
-                    };
-                    let outcome = crate::sync::pair::host_join(&db, &app, &proof, tell_wait).await;
-                    let c = session.seal(outcome.reply.to_string().as_bytes());
-                    let _ = out_tx.send(Envelope::data(FrameType::Stream, &room_id, c, seq.next()));
-                    let _ = out_tx.send(Envelope::revoke(room_id.clone()));
-                    let result = if outcome.granted { audit::RESULT_ACCEPTED } else { audit::RESULT_REJECTED };
-                    audit::audit(&db, None, Some(&room_id), None, "sync_join", result, Some(&outcome.detail)).await;
-                    tracing::info!(event = "remote_sync_join", room_id = %room_id, granted = outcome.granted);
-                });
-                return;
-            }
             // Hand out a full session link + token; mint a
             // session when none is bound or the bound one cannot be re-entered
             // (no link secret: persisted before it was stored).
@@ -623,19 +601,25 @@ async fn ensure_grantable_session(deps: &AgentDeps) -> Option<StreamPayload> {
     };
     let run_id = match current_run {
         Some(r) => r,
-        None => sqlx::query_scalar::<_, String>(
-            "SELECT id FROM runs ORDER BY COALESCE(last_activity_at, finished_at, started_at, created_at) DESC LIMIT 1",
-        )
-        .fetch_optional(&deps.db)
-        .await
-        .ok()
-        .flatten()?,
+        None => latest_run_id(&deps.db).await?,
     };
     let fresh = crate::remote::session::generate(&run_id).ok()?;
     let _ = crate::secrets::delete_remote_session();
     let grant = grant_of(&fresh);
     *deps.bound.lock().await = Some(fresh);
     Some(grant)
+}
+
+/// The most recently active run: where a controller lands when no run was
+/// picked for it.
+pub(crate) async fn latest_run_id(db: &Db) -> Option<String> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT id FROM runs ORDER BY COALESCE(last_activity_at, finished_at, started_at, created_at) DESC LIMIT 1",
+    )
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten()
 }
 
 fn grant_of(b: &BoundSession) -> StreamPayload {

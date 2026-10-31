@@ -1,8 +1,7 @@
 <script setup lang="ts">
-// Settings → Devices & Sync, top card: what Remote Control and Sync share — the relay
-// (URL + auth token), this device's name and its master password. Another device enters
-// that name + password both to drive this one and to join its sync group, and the sync
-// group lists this device under the same name.
+// Settings → Devices, top card: what Remote Control uses — the relay (URL + auth token),
+// this device's name and its master password. Another device enters that name + password
+// to drive this one.
 import { onMounted, ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Button, Input, Card } from '@/components/ui'

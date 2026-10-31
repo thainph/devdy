@@ -120,11 +120,6 @@ pub(crate) async fn start_run_inner(
     let db = &db;
     let registry = &registry;
 
-    // No new sidecar while a sync merge re-keys ids (sync_bootstrap_commit).
-    crate::sync::bootstrap::refuse_if_committing()?;
-    // Another device may be running this (synced) session right now.
-    crate::sync::sessions::ensure_not_held_elsewhere(db, &payload.run_id).await?;
-
     // Load run + project info
     let run_row = sqlx::query(
         "SELECT r.id, r.project_id, r.type, r.ref_number, r.input_path, r.output_path, r.engine, r.status, r.claude_account_id,
@@ -368,8 +363,6 @@ pub(crate) async fn start_run_inner(
     .execute(db)
     .await
     .map_err(|e| e.to_string())?;
-    // This device now owns the run; the lease is renewed while the sidecar lives.
-    crate::sync::sessions::claim_logged(db, &payload.run_id, &project_path).await;
 
     // Build extra args vec
     let extra: Vec<String> = extra_args
@@ -1107,13 +1100,7 @@ pub(crate) async fn cancel_run_inner(
     stamp_activity: bool,
 ) -> Result<(), String> {
     let run_id = run_id.to_string();
-    // Not running here: marking it cancelled would clobber (via sync) the
-    // device that is actually running it.
-    if !stop_local_sidecar(registry, &run_id).await {
-        crate::sync::sessions::ensure_not_held_elsewhere(db, &run_id).await?;
-        // Its owner is gone: take the run over before writing it (L6).
-        crate::sync::sessions::adopt_orphan(db, &run_id).await?;
-    }
+    stop_local_sidecar(registry, &run_id).await;
 
     let cancelled_at = chrono::Utc::now().to_rfc3339();
     let sql = if stamp_activity {
@@ -1128,7 +1115,6 @@ pub(crate) async fn cancel_run_inner(
         .execute(db)
         .await
         .map_err(|e| e.to_string())?;
-    crate::sync::sessions::release(db, &run_id).await;
 
     Ok(())
 }
@@ -1167,7 +1153,6 @@ pub(crate) async fn send_user_message_inner(
     stamp_activity: bool,
 ) -> Result<(), String> {
     use sqlx::Row;
-    crate::sync::sessions::ensure_not_held_elsewhere(db, &payload.run_id).await?;
     // A follow-up turn consumes tokens like any other, so gate it too — against
     // the guardrail for this run's engine and its assigned Claude account.
     let run_meta = sqlx::query("SELECT engine, claude_account_id FROM runs WHERE id = ?")
@@ -2728,14 +2713,27 @@ pub(crate) async fn delete_run_tree(
         if let Some(c) = conductor {
             c.unregister_session(worker_id);
         }
-        outcome.deleted += 1;
+        outcome.deleted_ids.push(worker_id.clone());
     }
     outcome.leftover_files.extend(delete_single_run(db, registry, run_id).await?);
     if let Some(c) = conductor {
         c.unregister_session(run_id);
     }
-    outcome.deleted += 1;
+    outcome.deleted_ids.push(run_id.to_string());
+    outcome.deleted = outcome.deleted_ids.len() as u32;
     Ok(outcome)
+}
+
+/// Drop the Remote Control audit entries of deleted runs — only when the
+/// person at this machine deleted them: from a remote desktop (the bridge) the
+/// trace of what it did stays.
+pub(crate) async fn prune_run_audit(webview: &tauri::Webview, db: &sqlx::SqlitePool, run_ids: &[String]) {
+    if crate::remote::guard::from_remote_bridge(webview) {
+        return;
+    }
+    for id in run_ids {
+        let _ = crate::remote::audit::delete_for_run(db, id).await;
+    }
 }
 
 /// Result of [`delete_run_tree`].
@@ -2743,6 +2741,8 @@ pub(crate) async fn delete_run_tree(
 pub(crate) struct DeleteOutcome {
     /// Runs deleted (the session plus its workers).
     pub deleted: u32,
+    /// Their ids.
+    pub deleted_ids: Vec<String>,
     /// Engine transcript paths that could not be removed from disk.
     pub leftover_files: Vec<String>,
 }
@@ -2842,9 +2842,6 @@ async fn delete_single_run(
     let runs_dir = Path::new(&project_path).join(".devdy").join("runs");
     let _ = fs::remove_file(runs_dir.join(format!("{}.log", run_id)));
     let _ = fs::remove_dir_all(runs_dir.join(run_id));
-
-    // Remote Control audit entries about this run go with it.
-    let _ = crate::remote::audit::delete_for_run(db, run_id).await;
 
     // Also delete every engine transcript of the session — in every Claude
     // account store (a switched account holds its own copy) plus subagent data —
@@ -2960,6 +2957,7 @@ fn remove_paths(paths: &[PathBuf]) -> Vec<String> {
 #[tauri::command]
 pub async fn delete_run(
     app: AppHandle,
+    webview: tauri::Webview,
     db: State<'_, Db>,
     registry: State<'_, RunRegistry>,
     run_id: String,
@@ -2972,6 +2970,7 @@ pub async fn delete_run(
         &run_id,
     )
     .await?;
+    prune_run_audit(&webview, db.inner(), &outcome.deleted_ids).await;
     crate::slack_threads::emit_all_changed(&app);
     crate::item_links::emit_changed(&app, None);
     Ok(outcome.leftover_files)
@@ -3249,6 +3248,7 @@ pub async fn set_run_protected(
 #[tauri::command]
 pub async fn delete_all_runs(
     app: AppHandle,
+    webview: tauri::Webview,
     db: State<'_, Db>,
     registry: State<'_, RunRegistry>,
     project_id: String,
@@ -3281,6 +3281,7 @@ pub async fn delete_all_runs(
         .await
         {
             deleted += outcome.deleted;
+            prune_run_audit(&webview, db.inner(), &outcome.deleted_ids).await;
             for path in outcome.leftover_files {
                 eprintln!("[delete_all_runs] could not remove transcript {path}");
             }
@@ -3351,9 +3352,6 @@ pub(crate) async fn resume_run_with(
     stamp_activity: bool,
 ) -> Result<(), String> {
     use sqlx::Row;
-
-    crate::sync::bootstrap::refuse_if_committing()?;
-    crate::sync::sessions::ensure_not_held_elsewhere(db.inner(), &run_id).await?;
 
     let row = sqlx::query(
         "SELECT r.engine, r.status, r.session_id, r.transcript_path, r.project_id, r.claude_account_id, p.path as project_path
@@ -3541,7 +3539,6 @@ pub(crate) async fn resume_run_with(
         .execute(db.inner())
         .await
         .map_err(|e| e.to_string())?;
-    crate::sync::sessions::claim_logged(db.inner(), &run_id, &project_path).await;
 
     let (node_bin, sidecar_script) = if engine == "codex" {
         resolve_codex_sidecar(&app, &node_path, &codex_sidecar_path)?

@@ -10,7 +10,7 @@
 //! - each note's title + content sealed with the DEK (XChaCha20-Poly1305, the
 //!   AAD binds vault id + note id). Project, position and dates stay in clear.
 //!
-//! So reading the Keychain (an agent running `security`, a sync peer, a backup
+//! So reading the Keychain (an agent running `security`, a backup
 //! file) yields ciphertext. The DEK only lives in this process while the vault
 //! is unlocked and is wiped on lock: explicit, after `AUTO_LOCK` idle, or when
 //! the header it belongs to is replaced. Idle time is wall-clock, so time
@@ -78,8 +78,7 @@ pub const DEFAULT_KDF: KdfParams = KdfParams { opslimit: 3, memlimit: 64 * 1024 
 pub struct VaultData {
     #[serde(default)]
     pub header: Option<VaultHeader>,
-    /// Headers replaced by sync or met in a backup import, kept until their
-    /// notes are merged. Machine-local (never synced).
+    /// Headers met in a backup import, kept until their notes are merged.
     #[serde(default)]
     pub old_headers: Vec<VaultHeader>,
     #[serde(default)]
@@ -136,23 +135,6 @@ pub struct SecretNoteMeta {
 }
 
 impl VaultData {
-    /// A header arriving from a sync peer. A different vault replaces the
-    /// current one; the current header is kept while notes still need it.
-    /// A header never changes under the same id (a new password is a new
-    /// vault), so a different one with this id is refused.
-    pub fn apply_synced_header(&mut self, incoming: VaultHeader) {
-        if let Some(cur) = self.header.take() {
-            if cur.vault_id == incoming.vault_id {
-                self.header = Some(cur);
-                return;
-            }
-            self.keep_old(cur);
-        }
-        self.old_headers.retain(|h| h.vault_id != incoming.vault_id);
-        self.header = Some(incoming);
-        self.drop_unused_old_headers();
-    }
-
     fn keep_old(&mut self, h: VaultHeader) {
         if !self.old_headers.iter().any(|o| o.vault_id == h.vault_id) {
             self.old_headers.push(h);
@@ -263,7 +245,7 @@ fn parse_recovery(text: &str) -> Option<Zeroizing<Key>> {
     as_key(&bytes).ok()
 }
 
-/// Bound the KDF cost a header may ask for: headers arrive by sync and backups.
+/// Bound the KDF cost a header may ask for: headers arrive in backups.
 fn check_params(h: &VaultHeader) -> Result<(), String> {
     if h.kdf != KDF_NAME || !(1..=10).contains(&h.opslimit) || !(8 * 1024..=1024 * 1024 * 1024).contains(&h.memlimit) {
         return Err(E_CORRUPT.into());
@@ -368,7 +350,7 @@ fn meta(id: &str, n: &SealedNote, title: String) -> SecretNoteMeta {
 pub fn list(data: &VaultData, dek: &Key) -> Result<Vec<SecretNoteMeta>, String> {
     let Some(vault_id) = data.current_id() else { return Ok(Vec::new()) };
     let mut out = Vec::new();
-    // A note that does not open (damaged in sync, crafted import) is left out
+    // A note that does not open (damaged, crafted import) is left out
     // rather than hiding every other one.
     for (id, n) in data.notes.iter().filter(|(_, n)| n.vault_id == vault_id) {
         if let Ok(plain) = open_note(dek, id, n) {
@@ -769,26 +751,6 @@ mod tests {
     }
 
     #[test]
-    fn a_synced_vault_keeps_the_replaced_one_until_merged() {
-        let (mut mine, my_dek, _) = vault("mine password");
-        create(&mut mine, &my_dek, "mine", "m", None).unwrap();
-        let (mut theirs, their_dek, _) = vault("their password");
-        let t = create(&mut theirs, &their_dek, "theirs", "t", None).unwrap();
-        // Their header and note arrive by sync.
-        mine.apply_synced_header(theirs.header.clone().unwrap());
-        mine.notes.insert(t.id.clone(), theirs.notes[&t.id].clone());
-        assert_eq!(mine.legacy_count(), 1);
-        assert_eq!(list(&mine, &their_dek).unwrap().len(), 1);
-        assert_eq!(merge_old(&mut mine, &their_dek, "nope nope").err().as_deref(), Some(E_WRONG_PASSWORD));
-        assert_eq!(merge_old(&mut mine, &their_dek, "mine password").unwrap(), 1);
-        assert_eq!(mine.legacy_count(), 0);
-        assert!(mine.old_headers.is_empty());
-        let titles: Vec<String> = list(&mine, &their_dek).unwrap().into_iter().map(|m| m.title).collect();
-        assert_eq!(titles.len(), 2);
-        assert!(titles.contains(&"mine".to_string()));
-    }
-
-    #[test]
     fn rotate_re_seals_under_a_new_vault() {
         let (mut data, dek, old_recovery) = vault("correct horse");
         let m = create(&mut data, &dek, "t", "secret", None).unwrap();
@@ -805,17 +767,13 @@ mod tests {
     }
 
     #[test]
-    fn a_same_id_header_is_not_replaced_and_bad_notes_are_skipped() {
+    fn bad_notes_are_skipped() {
         let (mut data, dek, _) = vault("correct horse");
         create(&mut data, &dek, "good", "g", None).unwrap();
         let bad = create(&mut data, &dek, "bad", "b", None).unwrap();
         data.notes.get_mut(&bad.id).unwrap().ciphertext = B64.encode([0u8; 40]);
         let titles: Vec<String> = list(&data, &dek).unwrap().into_iter().map(|m| m.title).collect();
         assert_eq!(titles, vec!["good".to_string()]);
-        let mut tampered = data.header.clone().unwrap();
-        tampered.wrapped = B64.encode([1u8; 48]);
-        data.apply_synced_header(tampered);
-        assert!(unwrap_password(data.header.as_ref().unwrap(), "correct horse").is_ok());
     }
 
     #[test]

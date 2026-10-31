@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { invoke } from '@/lib/tauri'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 
 /**
  * Host-side Remote Control state. Wraps the `remote_*` Tauri commands from the
@@ -140,11 +141,12 @@ export const useRemoteControlStore = defineStore('remoteControl', () => {
   }
 
   /**
-   * Create a per-run remote session link and return the payload ONCE. The
+   * Create a remote session link (landing on `runId`, or the latest run when
+   * null) and return the payload ONCE. The
    * caller renders it as a QR / copy link; the `link_secret` is not kept in the
    * store. Supersedes any existing bound session on the host side.
    */
-  async function createSessionLink(runId: string): Promise<SessionLink> {
+  async function createSessionLink(runId: string | null): Promise<SessionLink> {
     const link = await invoke<SessionLink>('remote_create_session_link', { runId })
     await refreshStatus()
     return link
@@ -188,6 +190,55 @@ export const useRemoteControlStore = defineStore('remoteControl', () => {
     await refreshStatus()
   }
 
+  // ── Live status for always-visible indicators ──────────────────────────────
+  // One feed however many indicators are mounted: the remote:// lifecycle events
+  // refresh at once, a light poll covers missed events (mounted mid-session) and
+  // relay connectivity, which has no event of its own.
+  let watchers = 0
+  let pollTimer: ReturnType<typeof setInterval> | null = null
+  let unlisteners: UnlistenFn[] = []
+  let feedGen = 0
+
+  async function startFeed(): Promise<void> {
+    const gen = ++feedGen
+    const refresh = () => refreshStatus().catch(() => {})
+    void refresh()
+    pollTimer = setInterval(refresh, 8000)
+    const fns = await Promise.all(
+      [
+        'remote://controller-requested-session',
+        'remote://connection-authenticated',
+        'remote://auth-failed',
+        'remote://disconnected',
+        'remote://session-expired',
+        'remote://desktop-attached',
+        'remote://desktop-detached',
+      ].map((ev) => listen(ev, refresh)),
+    )
+    // Stopped (or restarted) while the listeners were being registered.
+    if (gen !== feedGen) fns.forEach((un) => un())
+    else unlisteners = fns
+  }
+
+  function stopFeed(): void {
+    feedGen++
+    if (pollTimer) clearInterval(pollTimer)
+    pollTimer = null
+    unlisteners.forEach((un) => un())
+    unlisteners = []
+  }
+
+  /** Keep `status` fresh while the returned stop function has not been called. */
+  function watchStatus(): () => void {
+    if (watchers++ === 0) void startFeed()
+    let stopped = false
+    return () => {
+      if (stopped) return
+      stopped = true
+      if (--watchers === 0) stopFeed()
+    }
+  }
+
   return {
     status,
     audit,
@@ -205,5 +256,6 @@ export const useRemoteControlStore = defineStore('remoteControl', () => {
     kickController,
     setMasterPassword,
     setDeviceAlias,
+    watchStatus,
   }
 })

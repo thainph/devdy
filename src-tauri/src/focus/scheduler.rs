@@ -1,8 +1,8 @@
 //! Focus reminders (docs/focus-board-spec.md §3.4, BR-07): a 60 s tick that
 //! decides which notifications are due (`decide`, pure) and shows them as ONE
 //! clickable macOS notification (`compose`, pure). The I/O wrapper (`start`)
-//! reads the board, records what fired in `todo_notifications` (local, not
-//! synced) and routes a click to the Focus window.
+//! reads the board, records what fired in `todo_notifications` and routes a
+//! click to the Focus window.
 //!
 //! Rules:
 //! - `remind` (user-set `remind_at`) fires any time; every other kind only
@@ -684,7 +684,7 @@ mod tests {
         exec("UPDATE todos SET text = 'y', updated_at = 'u2' WHERE id = 'a'").await;
         let two = todos_signature(&db).await.unwrap();
         assert_ne!(one, two);
-        // Synced row with an older updated_at but done flipped.
+        // A row written elsewhere with an older updated_at but done flipped.
         exec("UPDATE todos SET done = 1, updated_at = 'u0' WHERE id = 'a'").await;
         assert_ne!(two, todos_signature(&db).await.unwrap());
         exec("DELETE FROM todos").await;

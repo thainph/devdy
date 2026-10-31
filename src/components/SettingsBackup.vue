@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Settings → "Backup & Sync": export the whole Devdy configuration (settings, Skills/Rules
+// Settings → Devices → Backup: export the whole Devdy configuration (settings, Skills/Rules
 // library, MCP + VPS servers, account metadata, notes/todos, Slack threads, projects) into one file and import it
 // on another machine. Secrets only travel when the user sets a password (sealed backend-side with
 // Argon2id + XChaCha20-Poly1305). Import merges by name and never deletes local items.

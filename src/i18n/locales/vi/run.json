@@ -1,11 +1,4 @@
 {
-  "remoteRowDriving": "Điện thoại đang xem run này",
-  "remoteRowWaiting": "Đã tạo link remote — đang chờ điện thoại kết nối",
-  "remoteBtnSelectRun": "Chọn một run để điều khiển từ điện thoại",
-  "remoteBtnActive": "Điện thoại đang xem run này — bấm để xem trạng thái",
-  "remoteBtnBoundHere": "Đã tạo link cho run này — bấm để xem QR / trạng thái",
-  "remoteBtnPaired": "Đã ghép điện thoại, điều khiển được mọi run — bấm để xem trạng thái",
-  "remoteBtnDefault": "Điều khiển run này từ điện thoại",
   "budgetConfirmMessage": "Đã vượt ngân sách (plan) cho chu kỳ hiện tại.\nVẫn tiếp tục?",
   "budgetExceededTitle": "Vượt ngân sách",
   "continue": "Tiếp tục",
@@ -49,8 +42,6 @@
   "labelIssue": "Issue",
   "labelPr": "PR",
   "projectFallback": "Project",
-  "remoteConnecting": "Đang kết nối",
-  "remote": "Remote",
   "openProjectIn": "Mở project bằng…",
   "open": "Mở",
   "folder": "Thư mục",
@@ -203,25 +194,5 @@
     "comfortable": "Thoáng",
     "compact": "Gọn",
     "dense": "Dày"
-  },
-  "syncOwner": {
-    "anotherDevice": "thiết bị khác",
-    "badgeTitle": "Thuộc {device}",
-    "runningOn": "Đang chạy trên {device} — theo dõi tại đây; có thể tiếp tục session khi nó rảnh.",
-    "lastRanOn": "Lần chạy gần nhất trên {device}.",
-    "continueHere": "Tiếp tục tại đây",
-    "gitMismatchTitle": "Working tree khác nhau",
-    "gitMismatchMessage": "Session này chạy lần cuối trên {device} ở commit {recordedHead} ({recordedState}).\nCheckout trên máy này đang ở {localHead} ({localState}).\n\nAgent sẽ làm việc với file trên máy này. Vẫn tiếp tục tại đây?",
-    "clean": "sạch",
-    "dirty": "có thay đổi chưa commit",
-    "unknown": "không rõ",
-    "noRepo": "không có git repository",
-    "transcriptMissing": "Transcript của session chưa đồng bộ về máy này — tin nhắn tiếp theo sẽ bắt đầu hội thoại mới, không có ngữ cảnh trước đó.",
-    "stillSyncing": "Vẫn còn thiếu một phần output cuối cùng từ {device} ({percent}%).",
-    "continueAnyway": "Vẫn tiếp tục",
-    "continuedOn": "Session này đã được tiếp tục trên {device}; đã dừng ở máy này.",
-    "syncFrom": "Sync từ {device}",
-    "unreachableTitle": "Không kết nối được {device}",
-    "unreachableMessage": "Devdy trên {device} đang offline hoặc không phản hồi, nên máy này không kiểm tra được phiên còn đang chạy ở đó hay không. Nếu còn, cả hai máy sẽ cùng làm trên một phiên.\n\nVẫn tiếp tục ở đây?"
   }
 }
