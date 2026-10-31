@@ -25,7 +25,9 @@
 
 import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { writeSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync, writeSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
 
 // --- Orphan guard ------------------------------------------------------------
 // Devdy spawns this sidecar as the leader of its own process group and says so
@@ -345,6 +347,36 @@ try {
   }) + '\n')
   process.exit(1)
 }
+// Agents never read the macOS Keychain through the `security` CLI: Devdy's item
+// holds PATs / tokens (and the sealed secret notes vault). Codex applies the
+// execpolicy rules under $CODEX_HOME/rules in every approval mode, bypass
+// included (verified with codex-cli 0.165), so keep Devdy's rule file there —
+// like the Claude sidecar's disallowedTools. User-level on purpose: a project's
+// `.codex/rules` would land in the user's repo. Best effort: a write failure is
+// reported, the session still starts.
+const KEYCHAIN_RULES_FILE = 'devdy-keychain.rules'
+const KEYCHAIN_RULES = `# Managed by Devdy: agents never read the macOS Keychain. Rewritten on every Devdy Codex session.
+prefix_rule(
+    pattern = ["security", ["find-generic-password", "find-internet-password", "dump-keychain", "export"]],
+    decision = "forbidden",
+    justification = "Devdy: agents never read the macOS Keychain",
+)
+`
+
+function ensureKeychainRules(env) {
+  const file = join(env.CODEX_HOME || join(homedir(), '.codex'), 'rules', KEYCHAIN_RULES_FILE)
+  try {
+    if (readFileSync(file, 'utf8') === KEYCHAIN_RULES) return
+  } catch { /* missing: write it */ }
+  try {
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, KEYCHAIN_RULES)
+  } catch (e) {
+    note(`⚠ Could not install Devdy's Keychain rule for Codex (${file}): ${e?.message || e}`, 'warn')
+  }
+}
+ensureKeychainRules(mcpConfig.env || process.env)
+
 const codex = spawn(CODEX_BIN, [...mcpConfig.args, 'app-server'], { cwd: CWD, stdio: ['pipe', 'pipe', 'pipe'], env: mcpConfig.env })
 let rpcId = 1
 const pending = new Map() // request id → resolve

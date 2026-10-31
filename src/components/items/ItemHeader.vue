@@ -12,8 +12,8 @@
 // project name truncates.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Check, Pencil, X } from 'lucide-vue-next'
-import { Button, DatePicker } from '@/components/ui'
+import { Check, LockKeyhole, Pencil, X } from 'lucide-vue-next'
+import { Button, DatePicker, DropdownItem } from '@/components/ui'
 import InlineRenameInput from '@/components/InlineRenameInput.vue'
 import ProjectSelect from '@/components/ProjectSelect.vue'
 import CopyMarkdownButton from '@/components/CopyMarkdownButton.vue'
@@ -38,6 +38,8 @@ const props = defineProps<{
   saving: boolean
   /** Copy ID just fired: its icon becomes a tick. */
   copiedId: boolean
+  /** A note can move into the secret notes vault (local windows only). */
+  canMakeSecret?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -55,6 +57,7 @@ const emit = defineEmits<{
   linkRun: [runId: string]
   newSession: []
   copyId: []
+  makeSecret: []
   delete: []
 }>()
 
@@ -250,7 +253,12 @@ const newSessionLabel = computed(() =>
           @new-session="emit('newSession')"
           @copy-id="emit('copyId')"
           @delete="emit('delete')"
-        />
+        >
+          <DropdownItem v-if="note && canMakeSecret" @click="emit('makeSecret')">
+            <LockKeyhole class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ t('secretNotes.makeSecret.action') }}
+          </DropdownItem>
+        </DetailActionsMenu>
       </template>
     </div>
   </div>
