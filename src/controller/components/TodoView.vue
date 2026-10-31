@@ -12,8 +12,7 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Loader2, Plus, RefreshCw, X } from 'lucide-vue-next'
-import { AppSelect } from '@/components/ui'
+import { Loader2, Plus, X } from 'lucide-vue-next'
 import { localYmd } from '@/lib/todoDue'
 import {
   countTodos,
@@ -25,8 +24,6 @@ import {
   todoGroup,
   type TodoTab,
 } from '@/lib/remoteTodos'
-import ControllerHeader from './ControllerHeader.vue'
-import HeaderButton from './HeaderButton.vue'
 import SearchField from './SearchField.vue'
 import type { ProjectInfo, TodoInfo } from '../protocol'
 
@@ -50,7 +47,7 @@ const emit = defineEmits<{
 
 const { t, locale } = useI18n()
 
-/** Project filter ('' = every project). */
+/** Project filter ('' = every project), picked in the tab header. */
 const projectFilter = defineModel<string>('projectId', { required: true })
 const tab = defineModel<TodoTab>('tab', { required: true })
 const query = defineModel<string>('query', { required: true })
@@ -77,11 +74,6 @@ onBeforeUnmount(() => {
   if (tick) clearInterval(tick)
   document.removeEventListener('visibilitychange', onVisibility)
 })
-
-const projectOptions = computed(() => [
-  { value: '', label: t('controller.data.allProjects') },
-  ...props.projects.map((p) => ({ value: p.id, label: p.name })),
-])
 
 const projectNames = computed(() => new Map(props.projects.map((p) => [p.id, p.name])))
 
@@ -124,12 +116,6 @@ const CHIP_TONES: Record<string, string> = {
 
 <template>
   <div class="relative flex h-full min-h-0 flex-col bg-background text-foreground">
-    <ControllerHeader :title="t('controller.todo.title')">
-      <AppSelect v-model="projectFilter" size="xs" variant="outline" class="w-36 max-w-full" :options="projectOptions" />
-      <HeaderButton :label="t('controller.browser.refresh')" @click="emit('refresh')">
-        <RefreshCw class="h-4 w-4" :stroke-width="2" />
-      </HeaderButton>
-    </ControllerHeader>
 
     <div
       v-if="error"

@@ -13,24 +13,18 @@
  * is often easier to name than to locate.
  *
  * Backend-agnostic like the other controller views: state in via props, intent
- * out via events. The selected project lives in the PARENT so it survives
- * opening a run and coming back.
+ * out via events. The selected project lives in the PARENT (the tab header's
+ * project dropdown drives it) so it survives opening a run and coming back.
  */
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { AlertTriangle, ChevronLeft, ChevronRight, FolderGit2, Plus, RefreshCw, X } from 'lucide-vue-next'
-import ConnectionBadge from './ConnectionBadge.vue'
-import ControllerHeader from './ControllerHeader.vue'
-import HeaderButton from './HeaderButton.vue'
+import { AlertTriangle, ChevronRight, FolderGit2, Plus } from 'lucide-vue-next'
 import SearchField from './SearchField.vue'
 import type { ConnStatus } from '../connection'
 import type { ProjectInfo, RunInfo } from '../protocol'
 
 const props = defineProps<{
   status: ConnStatus
-  live: boolean
-  hostFingerprint: string | null
-  statusLabel: string
   runs: RunInfo[]
   projects: ProjectInfo[]
   /** Run ids awaiting a permission decision. */
@@ -43,8 +37,6 @@ const emit = defineEmits<{
   open: [runId: string]
   /** Start a new session in this project. */
   'new-session': [projectId: string]
-  refresh: []
-  disconnect: []
   'update:selectedProjectId': [projectId: string | null]
 }>()
 
@@ -96,9 +88,16 @@ const projectRows = computed(() => {
   return [...byId.values()].sort((a, b) => Number(b.pending > 0) - Number(a.pending > 0))
 })
 
-const selectedProject = computed(() =>
-  props.selectedProjectId ? projectRows.value.find((p) => p.id === props.selectedProjectId) : undefined,
-)
+/** The project picked in the header — also one with no session yet, so a
+ * first session can be started there. */
+const selectedProject = computed(() => {
+  const id = props.selectedProjectId
+  if (!id) return undefined
+  const row = projectRows.value.find((p) => p.id === id)
+  if (row) return row
+  const p = props.projects.find((x) => x.id === id)
+  return p ? { id: p.id, name: p.name, total: 0, pending: 0 } : undefined
+})
 
 /** What the run list shows: search hits across everything, else the open
  * project's runs. */
@@ -130,57 +129,10 @@ function statusDotClass(run: RunInfo): string {
   return 'bg-foreground/25'
 }
 
-/** Leaving a project also clears a search, so Back always means "one level up"
- * rather than sometimes landing on a filtered list the user forgot about. */
-function backToProjects(): void {
-  query.value = ''
-  emit('update:selectedProjectId', null)
-}
 </script>
 
 <template>
-  <div class="flex h-full min-h-0 flex-col bg-background text-foreground">
-    <ControllerHeader :title="t('controller.browser.title')">
-      <template #badge>
-        <ConnectionBadge :status="status" :live="live" :status-label="statusLabel" :host-fingerprint="hostFingerprint" />
-      </template>
-      <HeaderButton :label="t('controller.browser.refresh')" @click="emit('refresh')">
-        <RefreshCw class="h-4 w-4" :stroke-width="2" />
-      </HeaderButton>
-      <HeaderButton :label="t('controller.session.disconnect')" @click="emit('disconnect')">
-        <X class="h-4 w-4" :stroke-width="2" />
-      </HeaderButton>
-    </ControllerHeader>
-
-    <!-- Title row: doubles as the level-up control once inside a project. -->
-    <div class="shrink-0 flex items-center gap-1 px-3 py-1.5 border-b border-border/60">
-      <button
-        v-if="selectedProject && !searching"
-        class="inline-flex items-center justify-center h-6 w-6 -ml-1 shrink-0 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-        :title="t('controller.browser.backToProjects')"
-        @click="backToProjects"
-      >
-        <ChevronLeft class="h-4 w-4" :stroke-width="2" />
-      </button>
-      <p class="text-xs font-medium truncate">
-        {{
-          searching
-            ? t('controller.browser.search')
-            : selectedProject
-              ? selectedProject.name
-              : t('controller.browser.projectsTitle')
-        }}
-      </p>
-      <button
-        v-if="selectedProject && !searching"
-        class="ml-auto inline-flex items-center gap-1 h-6 shrink-0 rounded-md px-2 text-xs text-foreground/70 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-        :disabled="!isActive"
-        @click="emit('new-session', selectedProject.id)"
-      >
-        <Plus class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('controller.browser.newSession') }}
-      </button>
-    </div>
-
+  <div class="relative flex h-full min-h-0 flex-col bg-background text-foreground">
     <!-- Search spans every project, so it is available at both levels. -->
     <SearchField
       v-model="query"
@@ -188,7 +140,7 @@ function backToProjects(): void {
       :clear-label="t('controller.browser.clearSearch')"
     />
 
-    <main class="flex-1 min-h-0 overflow-auto">
+    <main class="flex-1 min-h-0 overflow-auto" :class="selectedProject && !searching ? 'pb-24' : ''">
       <!-- ── Level 1: projects ────────────────────────────────────────────── -->
       <template v-if="showingProjects">
         <p v-if="!projectRows.length" class="px-3 py-8 text-center text-sm text-foreground/50">
@@ -254,5 +206,16 @@ function backToProjects(): void {
         </button>
       </template>
     </main>
+
+    <button
+      v-if="selectedProject && !searching"
+      class="absolute right-5 bottom-5 z-10 grid h-14 w-14 place-items-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/40 active:scale-95 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+      :title="t('controller.browser.newSession')"
+      :aria-label="t('controller.browser.newSession')"
+      :disabled="!isActive"
+      @click="emit('new-session', selectedProject.id)"
+    >
+      <Plus class="h-6 w-6" :stroke-width="2.25" />
+    </button>
   </div>
 </template>
