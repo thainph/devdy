@@ -28,6 +28,12 @@ const DEFAULT_PROTOCOL = '2025-06-18';
 
 const log = (...a) => process.stderr.write(`[devdy-mcp] ${a.join(' ')}\n`);
 const firstLine = (s = '') => String(s).split('\n').find((l) => l.trim()) || '';
+// Result of notes_set_project / todos_set_project: `Note abc is now in project "Devdy" (id).`
+const movedLine = (kind, r) => {
+  const where = r.project_id ? `in project "${r.project_name ?? r.project_id}" (${r.project_id})` : 'global (no project)';
+  const what = r.ids.length === 1 ? `${kind[0].toUpperCase()}${kind.slice(1)} ${r.ids[0]} is` : `${r.ids.length} ${kind}s are`;
+  return `${what} now ${where}.`;
+};
 // One todo as a list line: `- [ ] text · due 2026-10-30 15:00 · P1 · ~2h · doing · …  (id)`.
 const todoLine = (t) => {
   const bits = [];
@@ -105,13 +111,14 @@ const tools = {
 
   notes_create: {
     description:
-      'Create a new quick note. Links to the current project by default; pass scope="global" for a project-less note. Use this to persist decisions, specs or context for later sessions.',
+      'Create a new quick note. Links to the current project by default; pass project="<id or name>" for another project, or scope="global" for a project-less note. Use this to persist decisions, specs or context for later sessions.',
     inputSchema: {
       type: 'object',
       properties: {
         content: { type: 'string', description: 'Markdown body' },
         title: { type: 'string', description: 'Optional short title' },
         scope: { type: 'string', enum: ['project', 'global'] },
+        project: { type: 'string', description: 'Project id or name (see projects_list); overrides scope' },
       },
       required: ['content'],
     },
@@ -196,19 +203,17 @@ const tools = {
 
   notes_set_project: {
     description:
-      'Link a note to the current project, or detach it with scope="global" (which also drops the run backlink).',
+      'Move one or more notes to a project: project="<id or name>" (see projects_list), the current project by default, or no project with scope="global". Session links are kept. A batch is all or nothing.',
     inputSchema: {
       type: 'object',
       properties: {
         id: { type: 'string' },
+        ids: { type: 'array', items: { type: 'string' }, description: 'Bulk move' },
         scope: { type: 'string', enum: ['project', 'global'] },
+        project: { type: 'string', description: 'Project id or name (see projects_list); overrides scope' },
       },
-      required: ['id'],
     },
-    handler: (a) => {
-      const r = store.setNoteProject(a);
-      return `Note ${r.id} is now ${r.project_id ? `linked to project ${r.project_id}` : 'global (no project)'}.`;
-    },
+    handler: (a) => movedLine('note', store.setNoteProject(a)),
   },
 
   notes_reorder: {
@@ -354,12 +359,13 @@ const tools = {
 
   todos_add: {
     description:
-      'Add a todo. Links to the current project by default; pass scope="global" for a project-less task. Optional: deadline due="YYYY-MM-DD" (+ due_time="HH:MM", 24 h), priority 1–3 or "P1".."P3" (default 2), estimate ("30m", "2h", "1h30" or minutes, 5–2400), source_url (Slack thread, GitHub/GitLab issue or PR, run:<id>, or any URL). Use this to capture follow-up work that surfaces during a session; open Focus in Devdy for the recommended order.',
+      'Add a todo. Links to the current project by default; pass project="<id or name>" for another project, or scope="global" for a project-less task. Optional: deadline due="YYYY-MM-DD" (+ due_time="HH:MM", 24 h), priority 1–3 or "P1".."P3" (default 2), estimate ("30m", "2h", "1h30" or minutes, 5–2400), source_url (Slack thread, GitHub/GitLab issue or PR, run:<id>, or any URL). Use this to capture follow-up work that surfaces during a session; open Focus in Devdy for the recommended order.',
     inputSchema: {
       type: 'object',
       properties: {
         text: { type: 'string' },
         scope: { type: 'string', enum: ['project', 'global'] },
+        project: { type: 'string', description: 'Project id or name (see projects_list); overrides scope' },
         due: { type: 'string', description: 'Deadline, YYYY-MM-DD (local date)' },
         due_time: { type: 'string', description: 'Deadline time, HH:MM 24 h (needs due)' },
         priority: { type: ['integer', 'string'], description: '1 (high) – 3 (low), or "P1".."P3"; default 2' },
@@ -458,19 +464,17 @@ const tools = {
 
   todos_set_project: {
     description:
-      'Link a todo to the current project, or detach it with scope="global" (which also drops the run backlink).',
+      'Move one or more todos to a project: project="<id or name>" (see projects_list), the current project by default, or no project with scope="global". Session links are kept. A batch is all or nothing.',
     inputSchema: {
       type: 'object',
       properties: {
         id: { type: 'string' },
+        ids: { type: 'array', items: { type: 'string' }, description: 'Bulk move' },
         scope: { type: 'string', enum: ['project', 'global'] },
+        project: { type: 'string', description: 'Project id or name (see projects_list); overrides scope' },
       },
-      required: ['id'],
     },
-    handler: (a) => {
-      const r = store.setTodoProject(a);
-      return `Todo ${r.id} is now ${r.project_id ? `linked to project ${r.project_id}` : 'global (no project)'}.`;
-    },
+    handler: (a) => movedLine('todo', store.setTodoProject(a)),
   },
 
   todos_reorder: {

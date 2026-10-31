@@ -190,6 +190,39 @@ out = await drive([['undo', 'todos_done', { id: plain }]]);
 const u = row(plain);
 check(u.done === 0 && u.completed_at === null && u.status === 'todo', 'todos_done: undo clears completed_at, back to todo');
 
+// ---- Moving todos / notes between projects -----------------------------------------
+
+db.prepare("INSERT INTO projects (id, name, path, created_at) VALUES ('proj-2', 'Other App', '/tmp/proj-2', ?)").run(T0);
+db.prepare("INSERT INTO projects (id, name, path, created_at) VALUES ('dup-a', 'Twin', '/tmp/a', ?)").run(T0);
+db.prepare("INSERT INTO projects (id, name, path, created_at) VALUES ('dup-b', 'Twin', '/tmp/b', ?)").run(T0);
+out = await drive([
+  ['by-name', 'todos_set_project', { id: full, project: 'other app' }],
+  ['bulk-id', 'todos_set_project', { ids: [plain, 'old'], project: 'proj-2' }],
+  ['missing', 'todos_set_project', { ids: [full, 'nope'], scope: 'global' }],
+  ['unknown', 'todos_set_project', { id: full, project: 'Ghost' }],
+  ['ambiguous', 'todos_set_project', { id: full, project: 'Twin' }],
+  ['add-other', 'todos_add', { text: 'Elsewhere', project: 'Other App' }],
+  ['note-add', 'notes_create', { content: 'Spec', project: 'proj-2' }],
+]);
+check(out['by-name'] === `Todo ${full} is now in project "Other App" (proj-2).` && row(full).project_id === 'proj-2',
+  'todos_set_project: project by case-insensitive name');
+check(out['bulk-id'] === '2 todos are now in project "Other App" (proj-2).' && row('old').project_id === 'proj-2',
+  'todos_set_project: bulk by project id');
+check(out.missing.includes('todo not found: nope') && row(full).project_id === 'proj-2', 'todos_set_project: unknown id rolls the batch back');
+check(out.unknown.includes('no project matches "Ghost"'), 'todos_set_project: unknown project rejected');
+check(out.ambiguous.includes('matches 2 projects'), 'todos_set_project: ambiguous name rejected');
+check(row(idOf(out['add-other'])).project_id === 'proj-2', 'todos_add: project overrides the current one');
+const noteId = /Created note ([0-9a-f-]{36})/.exec(out['note-add'])?.[1];
+const noteProject = () => db.prepare('SELECT project_id FROM notes WHERE id = ?').get(noteId).project_id;
+check(noteProject() === 'proj-2', 'notes_create: project overrides the current one');
+out = await drive([
+  ['note-home', 'notes_set_project', { id: noteId }],
+  ['note-global', 'todos_set_project', { id: full, scope: 'global' }],
+]);
+check(out['note-home'] === `Note ${noteId} is now in project "proj" (${PROJECT}).` && noteProject() === PROJECT,
+  'notes_set_project: back to the current project');
+check(row(full).project_id === null && out['note-global'].includes('global (no project)'), 'todos_set_project: scope=global detaches');
+
 db.close();
 rmSync(appData, { recursive: true, force: true });
 if (failures.length) {
