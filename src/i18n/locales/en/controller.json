@@ -220,9 +220,18 @@
     "builtinHint": "Notes, todos, sessions…",
     "builtinGlobal": "Applies to every project",
     "none": "None installed.",
-    "footer": "Env, tokens and accounts can only be changed on the desktop.",
+    "footer": "Env, tokens and login details can only be changed on the desktop.",
     "enable": "Turn on {name}",
-    "disable": "Turn off {name}"
+    "disable": "Turn off {name}",
+    "servers": "Servers",
+    "claudeAccount": "Claude account",
+    "github": "GitHub account",
+    "gitlab": "GitLab account",
+    "aws": "AWS account",
+    "azure": "Azure account",
+    "defaultAccount": "Default account",
+    "claudeFollowDefault": "Using the default account ({name}).",
+    "claudeFollowDefaultNone": "Using the default Claude setup."
   },
   "push": {
     "title": "Notifications",

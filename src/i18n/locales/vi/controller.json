@@ -220,9 +220,18 @@
     "builtinHint": "Notes, todos, sessions…",
     "builtinGlobal": "Áp dụng cho mọi project",
     "none": "Chưa cài mục nào.",
-    "footer": "Cấu hình env / token / account chỉ sửa trên máy tính.",
+    "footer": "Env, token và thông tin đăng nhập chỉ sửa trên máy tính.",
     "enable": "Bật {name}",
-    "disable": "Tắt {name}"
+    "disable": "Tắt {name}",
+    "servers": "Server",
+    "claudeAccount": "Account Claude",
+    "github": "Account GitHub",
+    "gitlab": "Account GitLab",
+    "aws": "Account AWS",
+    "azure": "Account Azure",
+    "defaultAccount": "Account mặc định",
+    "claudeFollowDefault": "Đang dùng account mặc định ({name}).",
+    "claudeFollowDefaultNone": "Đang dùng cấu hình Claude mặc định."
   },
   "push": {
     "title": "Thông báo",

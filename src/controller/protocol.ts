@@ -471,8 +471,14 @@ export interface BuiltinToggle {
   global: boolean
 }
 
-/** What is switched on for one project. Never carries server config, env /
- * header values, tokens or accounts. */
+/** One managed Claude account as a project switch: `enabled` when the project
+ * is linked to it, `is_default` for the default it otherwise follows. */
+export interface ClaudeAccountToggle extends ToggleItem {
+  is_default: boolean
+}
+
+/** What is switched on for one project. Names + on/off only — never server
+ * config, hosts, logins, env / header values or tokens. */
 export interface ProjectTogglesKind {
   kind: 'project_toggles'
   project_id: string
@@ -480,6 +486,20 @@ export interface ProjectTogglesKind {
   skills: ToggleItem[]
   rules: ToggleItem[]
   builtin_devdy: BuiltinToggle
+  servers: ToggleItem[]
+  github_accounts: ToggleItem[]
+  gitlab_accounts: ToggleItem[]
+  aws_accounts: ToggleItem[]
+  azure_accounts: ToggleItem[]
+  /** At most one enabled; none means the project follows the default. */
+  claude_accounts: ClaudeAccountToggle[]
+}
+
+/** The desktop's theme (`light` / `dark` / `system`) + named color palette. */
+export interface AppearanceKind {
+  kind: 'appearance'
+  theme: string
+  color_theme: string
 }
 
 /** One full note (`note_get`). */
@@ -532,6 +552,7 @@ export type StreamPayload =
   | ProjectTogglesKind
   | NoteKind
   | PushConfigKind
+  | AppearanceKind
 
 /**
  * Narrow a decoded stream payload. Returns `null` for anything with an
@@ -784,8 +805,25 @@ export function parseStreamPayload(json: unknown): StreamPayload | null {
         skills: items(o.skills),
         rules: items(o.rules),
         builtin_devdy: { enabled: b.enabled !== false, global: b.global !== false },
+        servers: items(o.servers),
+        github_accounts: items(o.github_accounts),
+        gitlab_accounts: items(o.gitlab_accounts),
+        aws_accounts: items(o.aws_accounts),
+        azure_accounts: items(o.azure_accounts),
+        claude_accounts: (Array.isArray(o.claude_accounts) ? o.claude_accounts : [])
+          .filter(isToggleItem)
+          .map((i) => ({
+            id: i.id,
+            name: i.name,
+            enabled: i.enabled,
+            is_default: (i as unknown as Record<string, unknown>).is_default === true,
+          })),
       }
     }
+    case 'appearance':
+      return typeof o.theme === 'string' && typeof o.color_theme === 'string'
+        ? { kind: 'appearance', theme: o.theme, color_theme: o.color_theme }
+        : null
     default:
       return null
   }
@@ -1030,7 +1068,17 @@ export interface NotePatchWire {
 }
 
 /** `project_toggle_set` kinds; `builtin_mcp` is the app-wide `devdy` server. */
-export type ToggleKind = 'skill' | 'rule' | 'mcp' | 'builtin_mcp'
+export type ToggleKind =
+  | 'skill'
+  | 'rule'
+  | 'mcp'
+  | 'builtin_mcp'
+  | 'server'
+  | 'github_account'
+  | 'gitlab_account'
+  | 'aws_account'
+  | 'azure_account'
+  | 'claude_account'
 
 /** Advertise coalesced output batches ({@link OutputBatchKind}). */
 export const FEATURE_OUTPUT_BATCH = 'output_batch'

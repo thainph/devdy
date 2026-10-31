@@ -1205,6 +1205,9 @@ async fn try_authenticate_first_frame(
         // Push the initial subscription usage badges (Claude + Codex) so the
         // controller shows plan utilization from the first frame.
         crate::remote::forwarder::send_plan_usage(&deps.db, &session, &room_id, out_tx, &**seq, &run_id).await;
+
+        // The desktop's theme, so the controller matches its colors.
+        crate::remote::forwarder::send_appearance(&deps.db, &session, &room_id, out_tx, &**seq).await;
     }
 
     let ctx = Arc::new(HandlerCtx {

@@ -25,6 +25,7 @@ import NoteListView from './components/NoteListView.vue'
 import NoteEditorView from './components/NoteEditorView.vue'
 import ProjectTogglesView from './components/ProjectTogglesView.vue'
 import { createDataStore } from './dataStore'
+import { setAppearance } from './appearance'
 import { createPushStore } from './pushStore'
 import BottomTabBar, { type ControllerTab } from './components/BottomTabBar.vue'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
@@ -337,6 +338,7 @@ function startConnection(secret: SecretSource | null): void {
     store.apply(p)
     data.apply(p)
     push.apply(p)
+    if (p.kind === 'appearance') setAppearance(p)
   })
   conn.value = c
   void c.connect()

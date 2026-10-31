@@ -279,14 +279,21 @@ pub async fn set_project_claude_account(
     project_id: String,
     account_id: Option<String>,
 ) -> Result<(), String> {
-    let account_id = account_id.and_then(|v| {
-        let v = v.trim().to_string();
-        (!v.is_empty()).then_some(v)
-    });
+    set_project_account(db.inner(), &project_id, account_id.as_deref()).await
+}
+
+/// Link `project_id` to one managed account, or back to the default with
+/// `None` / a blank id.
+pub async fn set_project_account(
+    db: &Db,
+    project_id: &str,
+    account_id: Option<&str>,
+) -> Result<(), String> {
+    let account_id = account_id.map(str::trim).filter(|v| !v.is_empty());
     sqlx::query("UPDATE projects SET claude_account_id = ? WHERE id = ?")
         .bind(account_id)
         .bind(project_id)
-        .execute(db.inner())
+        .execute(db)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())

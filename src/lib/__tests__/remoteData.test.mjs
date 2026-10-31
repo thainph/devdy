@@ -113,3 +113,48 @@ test('a refused switch re-fetches only while that project is still shown', async
   await new Promise((r) => setTimeout(r, 0))
   assert.equal(sent.length, before, 'no re-fetch of p1 while p2 is shown')
 })
+
+test('project_toggles carries servers + accounts; an older Host sends none', () => {
+  const p = parseStreamPayload({
+    kind: 'project_toggles', project_id: 'p1', mcp_servers: [], skills: [], rules: [],
+    builtin_devdy: { enabled: true, global: true },
+    servers: [{ id: 'v1', name: 'prod', enabled: true }],
+    github_accounts: [{ id: 'g1', name: 'work', enabled: false }, { id: 'bad' }],
+    claude_accounts: [{ id: 'c1', name: 'main', enabled: false, is_default: true }],
+  })
+  assert.deepEqual(p.servers, [{ id: 'v1', name: 'prod', enabled: true }])
+  assert.deepEqual(p.github_accounts.map((a) => a.id), ['g1'])
+  assert.deepEqual(p.claude_accounts, [{ id: 'c1', name: 'main', enabled: false, is_default: true }])
+  const old = parseStreamPayload({
+    kind: 'project_toggles', project_id: 'p1', mcp_servers: [], skills: [], rules: [], builtin_devdy: {},
+  })
+  for (const k of ['servers', 'github_accounts', 'gitlab_accounts', 'aws_accounts', 'azure_accounts', 'claude_accounts']) {
+    assert.deepEqual(old[k], [], k)
+  }
+})
+
+test('switching a Claude account on switches the others off', () => {
+  const { sent, send } = fakeSend()
+  const data = createDataStore(send, (r) => `err:${r}`)
+  data.loadToggles('p1')
+  data.apply(parseStreamPayload({
+    kind: 'project_toggles', project_id: 'p1', mcp_servers: [], skills: [], rules: [], builtin_devdy: {},
+    servers: [{ id: 'v1', name: 'prod', enabled: false }],
+    claude_accounts: [
+      { id: 'c1', name: 'main', enabled: true, is_default: true },
+      { id: 'c2', name: 'alt', enabled: false, is_default: false },
+    ],
+  }))
+  data.setToggle('claude_account', 'c2', true)
+  assert.deepEqual(data.state.toggles.claude_accounts.map((a) => a.enabled), [false, true])
+  assert.equal(sent.at(-1).cmd.toggle_kind, 'claude_account')
+  data.setToggle('server', 'v1', true)
+  assert.equal(data.state.toggles.servers[0].enabled, true)
+})
+
+test('appearance needs both fields', () => {
+  assert.deepEqual(parseStreamPayload({ kind: 'appearance', theme: 'dark', color_theme: 'ocean' }), {
+    kind: 'appearance', theme: 'dark', color_theme: 'ocean',
+  })
+  assert.equal(parseStreamPayload({ kind: 'appearance', theme: 'dark' }), null)
+})

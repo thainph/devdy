@@ -1,9 +1,13 @@
 <script setup lang="ts">
 /**
  * Per-project switches on the phone Controller (spec §2.B3): pick a project,
- * then turn MCP servers, skills and rules on or off for it. Switches only — the
- * Host never sends env / header values, tokens or accounts, and those stay
- * editable on the desktop alone.
+ * then turn MCP servers, skills, rules, VPS servers and git / cloud / Claude
+ * accounts on or off for it. Switches only — the Host sends ids and names,
+ * never env / header values, hosts, logins or tokens, and those stay editable
+ * on the desktop alone.
+ *
+ * A project uses at most one Claude account: switching one on moves the link
+ * there, switching it off returns the project to the default account.
  *
  * The built-in `devdy` MCP server is an app-wide setting today; while the Host
  * reports it `global`, its row says so, since flipping it changes every project.
@@ -12,7 +16,7 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Loader2, X } from 'lucide-vue-next'
 import { AppSelect } from '@/components/ui'
-import type { ProjectInfo, ProjectTogglesKind, ToggleItem, ToggleKind } from '../protocol'
+import type { ClaudeAccountToggle, ProjectInfo, ProjectTogglesKind, ToggleItem, ToggleKind } from '../protocol'
 
 const props = defineProps<{
   projects: ProjectInfo[]
@@ -64,15 +68,48 @@ const projectOptions = computed(() =>
 /** Only show switches that belong to the selected project. */
 const current = computed(() => (props.toggles?.project_id === selected.value ? props.toggles : null))
 
-const sections = computed<{ kind: ToggleKind; label: string; items: ToggleItem[] }[]>(() => {
+interface Section {
+  kind: ToggleKind
+  label: string
+  items: (ToggleItem | ClaudeAccountToggle)[]
+  /** A line above the rows (the Claude section says which account applies). */
+  hint?: string
+}
+
+const sections = computed<Section[]>(() => {
   const tg = current.value
   if (!tg) return []
-  return [
+  const all: Section[] = [
     { kind: 'mcp', label: t('controller.projectToggles.mcp'), items: tg.mcp_servers },
     { kind: 'skill', label: t('controller.projectToggles.skills'), items: tg.skills },
     { kind: 'rule', label: t('controller.projectToggles.rules'), items: tg.rules },
+    { kind: 'server', label: t('controller.projectToggles.servers'), items: tg.servers },
+    {
+      kind: 'claude_account',
+      label: t('controller.projectToggles.claudeAccount'),
+      items: tg.claude_accounts,
+      hint: claudeHint(tg.claude_accounts),
+    },
+    { kind: 'github_account', label: t('controller.projectToggles.github'), items: tg.github_accounts },
+    { kind: 'gitlab_account', label: t('controller.projectToggles.gitlab'), items: tg.gitlab_accounts },
+    { kind: 'aws_account', label: t('controller.projectToggles.aws'), items: tg.aws_accounts },
+    { kind: 'azure_account', label: t('controller.projectToggles.azure'), items: tg.azure_accounts },
   ]
+  // Accounts nobody set up would only add empty boxes.
+  return all.filter((s) => s.items.length || ['mcp', 'skill', 'rule', 'server'].includes(s.kind))
 })
+
+function claudeHint(accounts: ClaudeAccountToggle[]): string | undefined {
+  if (accounts.some((a) => a.enabled)) return undefined
+  const def = accounts.find((a) => a.is_default)
+  return def
+    ? t('controller.projectToggles.claudeFollowDefault', { name: def.name })
+    : t('controller.projectToggles.claudeFollowDefaultNone')
+}
+
+function isDefaultAccount(item: ToggleItem | ClaudeAccountToggle): boolean {
+  return 'is_default' in item && item.is_default
+}
 </script>
 
 <template>
@@ -158,12 +195,24 @@ const sections = computed<{ kind: ToggleKind; label: string; items: ToggleItem[]
                 </button>
               </div>
 
+              <p
+                v-if="s.hint"
+                class="px-3 py-2 border-b border-border/60 last:border-b-0 text-[11px] text-muted-foreground"
+              >
+                {{ s.hint }}
+              </p>
+
               <div
                 v-for="item in s.items"
                 :key="item.id"
                 class="flex items-center gap-2.5 px-3 py-2.5 border-b border-border/60 last:border-b-0"
               >
-                <p class="min-w-0 flex-1 truncate text-sm font-medium">{{ item.name }}</p>
+                <div class="min-w-0 flex-1">
+                  <p class="truncate text-sm font-medium">{{ item.name }}</p>
+                  <p v-if="isDefaultAccount(item)" class="truncate text-[11px] text-muted-foreground">
+                    {{ t('controller.projectToggles.defaultAccount') }}
+                  </p>
+                </div>
                 <button
                   type="button"
                   role="switch"

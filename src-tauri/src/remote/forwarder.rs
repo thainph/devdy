@@ -655,6 +655,34 @@ pub async fn send_plan_usage(
     }
 }
 
+/// Seal + send the desktop's theme + color palette so the Controller renders
+/// with the same look. Unset keys fall back to the desktop defaults.
+pub async fn send_appearance(
+    db: &Db,
+    session: &Session,
+    room_id: &str,
+    out: &OutboundTx,
+    seq: &SeqCounter,
+) {
+    let read = |key: &'static str, fallback: &'static str| async move {
+        sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+            .bind(key)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| fallback.to_string())
+    };
+    let payload = StreamPayload::Appearance {
+        theme: read("theme", "system").await,
+        color_theme: read("color_theme", "default").await,
+    };
+    if let Some(env) = seal_stream(session, room_id, &payload, seq.next()) {
+        let _ = out.send(env);
+    }
+}
+
 /// List files under the bound run's project path (bounded, relative paths). Skips
 /// dot-directories (e.g. `.git`, `.devdy`) and caps the result to keep the link
 /// light. Used for @mention completion in the controller composer.

@@ -194,12 +194,24 @@ pub async fn set_project_cloud_account_enabled(
     enabled: bool,
 ) -> Result<(), String> {
     let p = cloud_provider(&provider)?;
-    set_enabled(db.inner(), p, &project_id, &account_id, enabled).await?;
+    set_cloud_enabled(&app, db.inner(), p, &project_id, &account_id, enabled).await
+}
+
+/// [`set_enabled`] for an AWS / Azure account, then refresh what depends on the
+/// project's default cloud account.
+pub async fn set_cloud_enabled(
+    app: &AppHandle,
+    db: &Db,
+    p: Provider,
+    project_id: &str,
+    account_id: &str,
+    enabled: bool,
+) -> Result<(), String> {
+    set_enabled(db, p, project_id, account_id, enabled).await?;
     // The default may have changed: the AWS sandbox pins its region.
     if p.default_column == AWS.default_column {
         if let Ok(app_data_dir) = app.path().app_data_dir() {
-            crate::aws_sandbox::write_project_aws_config(db.inner(), &app_data_dir, &project_id)
-                .await;
+            crate::aws_sandbox::write_project_aws_config(db, &app_data_dir, project_id).await;
         }
     }
     Ok(())

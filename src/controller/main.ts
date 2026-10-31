@@ -5,7 +5,11 @@ import { createApp } from 'vue'
 import '@/assets/main.css'
 import { i18n } from '@/i18n'
 import App from './App.vue'
+import { restoreAppearance } from './appearance'
 import { registerControllerServiceWorker } from './pushStore'
+
+// Start in the desktop's last-seen colors (the Host re-sends them on pairing).
+restoreAppearance()
 
 // Framework-independent error surface (requirement: never fail silently). If
 // anything throws — including a failed dynamic import / chunk 404, or a bug that
