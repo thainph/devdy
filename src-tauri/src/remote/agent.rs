@@ -1091,6 +1091,7 @@ async fn try_authenticate_first_frame(
         run_id: run_id.clone(),
         rendezvous_code,
         idle_expires_at: idle_expires,
+        host_features: crate::remote::protocol::HOST_FEATURES.iter().map(|f| f.to_string()).collect(),
     };
     if let Ok(json) = serde_json::to_vec(&token_payload) {
         let c = session.seal(&json);

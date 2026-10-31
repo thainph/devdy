@@ -592,16 +592,21 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
       // request_id. Idempotent — a no-op if it was already removed.
       // `remember` means the remote chose Always: store the standing choice the
       // same way the desktop's own Always buttons do.
-      await listen<{ request_id: string; remember?: 'allow' | 'deny' }>(`run:permission_resolved:${runId}`, (event) => {
-        const { request_id, remember } = event.payload
-        const i = s.permissionQueue.findIndex((p) => p.request_id === request_id)
-        const tool = i !== -1 ? s.permissionQueue[i].tool_name : null
-        if (tool && tool !== 'MCP' && tool !== 'AskUserQuestion' && tool !== 'ExitPlanMode') {
-          if (remember === 'allow') rememberAllowedTool(runId, tool)
-          else if (remember === 'deny') rememberDeniedTool(runId, tool)
-        }
-        if (i !== -1) s.permissionQueue.splice(i, 1)
-      }),
+      await listen<{ request_id: string; remember?: 'allow' | 'deny'; tool_name?: string }>(
+        `run:permission_resolved:${runId}`,
+        (event) => {
+          const { request_id, remember, tool_name } = event.payload
+          const i = s.permissionQueue.findIndex((p) => p.request_id === request_id)
+          // The Host names the tool with an Always, so the choice is kept even
+          // when this window never queued the prompt (or already dropped it).
+          const tool = tool_name ?? (i !== -1 ? s.permissionQueue[i].tool_name : null)
+          if (tool && tool !== 'MCP' && tool !== 'AskUserQuestion' && tool !== 'ExitPlanMode') {
+            if (remember === 'allow') rememberAllowedTool(runId, tool)
+            else if (remember === 'deny') rememberDeniedTool(runId, tool)
+          }
+          if (i !== -1) s.permissionQueue.splice(i, 1)
+        },
+      ),
     )
 
     // If stopListening ran while we were awaiting the listen() calls, its slot

@@ -17,7 +17,8 @@ use crate::item_links::{self, ItemKind};
 use crate::remote::command::RejectReason;
 use crate::remote::handler::{accept, command_ack, command_ack_item, reject, send_payload, HandlerCtx};
 use crate::remote::protocol::{
-    BuiltinToggle, CmdPayload, NoteInfo, StreamPayload, TodoInfo, ToggleItem,
+    BuiltinToggle, CmdPayload, NoteInfo, NoteSummary, StreamPayload, TodoInfo, ToggleItem,
+    NOTE_PREVIEW_CHARS,
 };
 use serde_json::{Map, Value};
 use sqlx::Row;
@@ -193,6 +194,17 @@ fn todo_info(t: todos::Todo) -> TodoInfo {
     }
 }
 
+/// A list row: the body cut to a preview (on a char boundary).
+pub fn note_summary(n: notes::Note) -> NoteSummary {
+    NoteSummary {
+        preview: n.content.chars().take(NOTE_PREVIEW_CHARS).collect(),
+        id: n.id,
+        title: n.title,
+        project_id: n.project_id,
+        updated_at: n.updated_at,
+    }
+}
+
 fn note_info(n: notes::Note) -> NoteInfo {
     NoteInfo {
         id: n.id,
@@ -284,6 +296,7 @@ pub async fn handle(ctx: &HandlerCtx, cmd: &CmdPayload) {
         "todo_toggle" => todo_toggle(ctx, cmd).await,
         "todo_delete" => todo_delete(ctx, cmd).await,
         "note_list" | "note_search" => note_list(ctx, cmd).await,
+        "note_get" => note_get(ctx, cmd).await,
         "note_add" => note_add(ctx, cmd).await,
         "note_update" => note_update(ctx, cmd).await,
         "note_delete" => note_delete(ctx, cmd).await,
@@ -423,12 +436,22 @@ async fn note_list(ctx: &HandlerCtx, cmd: &CmdPayload) -> DataResult {
     send_payload(
         ctx,
         StreamPayload::NoteList {
-            notes: list.into_iter().map(note_info).collect(),
+            notes: list.into_iter().map(note_summary).collect(),
             project_id,
             query,
         },
     )
     .await;
+    Ok(None)
+}
+
+/// `note_get`: one full note for the editor.
+async fn note_get(ctx: &HandlerCtx, cmd: &CmdPayload) -> DataResult {
+    let id = valid_id(cmd.item_id.as_deref())?;
+    let note = notes::get_note(&ctx.db, &id)
+        .await
+        .map_err(|_| Failure::Rejected(RejectReason::NotFound))?;
+    send_payload(ctx, StreamPayload::Note { note: note_info(note) }).await;
     Ok(None)
 }
 
@@ -648,6 +671,24 @@ mod tests {
             item_id: None,
         };
         assert!(serde_json::to_value(&plain).unwrap().get("item_id").is_none());
+    }
+
+    #[test]
+    fn note_list_rows_carry_a_bounded_preview_only() {
+        let long = "é".repeat(NOTE_PREVIEW_CHARS + 50);
+        let row = note_summary(notes::Note {
+            id: "n1".into(),
+            title: "T".into(),
+            content: long,
+            project_id: None,
+            position: 0,
+            created_at: "c".into(),
+            updated_at: "u".into(),
+            linked_run_count: 0,
+        });
+        assert_eq!(row.preview.chars().count(), NOTE_PREVIEW_CHARS);
+        let v = serde_json::to_value(&row).unwrap();
+        assert!(v.get("content").is_none(), "the list never carries the full body");
     }
 
     #[test]

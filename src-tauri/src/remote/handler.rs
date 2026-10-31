@@ -45,6 +45,17 @@ struct PermissionResolved {
     /// the standing per-project choice exactly as its own Always buttons do.
     #[serde(skip_serializing_if = "Option::is_none")]
     remember: Option<&'static str>,
+    /// The request's tool, so the desktop can store that choice even when its
+    /// own copy of the prompt is gone (never queued, or already dropped).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_name: Option<String>,
+}
+
+/// Whether an Always answer for `tool` can become a standing per-tool choice on
+/// the desktop. Mirrors `liveRuns.ts`: MCP (server-wide), AskUserQuestion and
+/// ExitPlanMode always reach the user; a broker prompt is once-only.
+pub(crate) fn remember_applies(tool: &str, once_only: bool) -> bool {
+    !once_only && !matches!(tool, "MCP" | "AskUserQuestion" | "ExitPlanMode")
 }
 
 /// Everything a handler needs to execute a command and reply on the room.
@@ -240,6 +251,17 @@ async fn permission_resolved(
     accepted: bool,
     reason: Option<&str>,
 ) {
+    permission_resolved_full(ctx, run_id, request_id, accepted, reason, None).await;
+}
+
+async fn permission_resolved_full(
+    ctx: &HandlerCtx,
+    run_id: String,
+    request_id: String,
+    accepted: bool,
+    reason: Option<&str>,
+    remembered: Option<bool>,
+) {
     send_payload(
         ctx,
         StreamPayload::PermissionResolved {
@@ -247,6 +269,7 @@ async fn permission_resolved(
             request_id,
             accepted,
             reason: reason.map(str::to_string),
+            remembered,
         },
     )
     .await;
@@ -468,6 +491,26 @@ async fn handle_respond_permission(ctx: &HandlerCtx, cmd: &CmdPayload) {
         }
     };
 
+    // A broker prompt (a credential use: gh / ssh / aws …) is once-only — on
+    // the phone exactly as on the desktop there is no standing Always for it.
+    if remember {
+        let once_only = ctx.broker_approvals.lock().await.contains_key(&request_id)
+            || crate::runs::permission::peek_pending(&run_id, &request_id)
+                .is_some_and(|p| p.event.once_only);
+        if once_only {
+            reject(ctx, action, Some(&run_id), RejectReason::RememberNotAllowed).await;
+            permission_resolved(
+                ctx,
+                run_id,
+                request_id,
+                false,
+                Some(RejectReason::RememberNotAllowed.as_str()),
+            )
+            .await;
+            return;
+        }
+    }
+
     // BR-009/AC-10: idempotent by request_id. A duplicate (already answered by
     // the Owner at the Host, or a re-sent frame) is dropped, not re-applied.
     {
@@ -516,7 +559,7 @@ async fn handle_respond_permission(ctx: &HandlerCtx, cmd: &CmdPayload) {
     )
     .await
     {
-        Ok(()) => {
+        Ok(request) => {
             // The audit row names the scope, so a standing grant made from a
             // phone is traceable (remote_audit is remote-only by definition).
             let scope = remember.then_some(if internal == "allow" {
@@ -525,12 +568,21 @@ async fn handle_respond_permission(ctx: &HandlerCtx, cmd: &CmdPayload) {
                 "deny_always"
             });
             accept(ctx, action, Some(&run_id), scope).await;
-            permission_resolved(
+            // An Always is kept by the desktop UI (per-project standing choice);
+            // say whether it could be — it needs a tool it applies to and the
+            // main window to store it.
+            let remembered = remember.then(|| {
+                use tauri::Manager;
+                remember_applies(&request.tool_name, request.once_only)
+                    && ctx.app.get_webview_window("main").is_some()
+            });
+            permission_resolved_full(
                 ctx,
                 run_id.clone(),
                 request_id.clone(),
                 true,
                 None,
+                remembered,
             )
             .await;
             // Tell the local desktop UI the request is resolved so it drops the
@@ -542,8 +594,15 @@ async fn handle_respond_permission(ctx: &HandlerCtx, cmd: &CmdPayload) {
                 PermissionResolved {
                     request_id: request_id.clone(),
                     remember: remember.then_some(internal),
+                    tool_name: remember.then(|| request.tool_name.clone()),
                 },
             );
+        }
+        Err(e) if e == crate::commands::runs::PERMISSION_ALREADY_HANDLED => {
+            // Answered (or withdrawn) elsewhere first — typically on the desktop.
+            // Nothing reached the sidecar; keep the claim so a re-send is a dup.
+            reject(ctx, action, Some(&run_id), RejectReason::Duplicate).await;
+            permission_resolved(ctx, run_id, request_id, false, Some("already_handled")).await;
         }
         Err(e) => {
             // Delivery did not reach a resolver, so this request has not been
@@ -928,6 +987,7 @@ async fn handle_list_pending(ctx: &HandlerCtx, cmd: &CmdPayload) {
                 tool: ev.tool_name,
                 input: ev.tool_input,
                 cwd: ev.cwd,
+                once_only: ev.once_only,
             },
         )
         .await;
@@ -1099,5 +1159,33 @@ mod tests {
             assert!(is_local_only_command(name), "{name}");
         }
         assert!(!is_local_only_command("list_notes"));
+    }
+
+    #[test]
+    fn always_applies_only_to_per_tool_prompts() {
+        assert!(remember_applies("Bash", false));
+        assert!(remember_applies("mcp__devdy__notes_list", false));
+        for tool in ["MCP", "AskUserQuestion", "ExitPlanMode"] {
+            assert!(!remember_applies(tool, false), "{tool}");
+        }
+        assert!(!remember_applies("gh", true), "broker prompts are once-only");
+    }
+
+    #[test]
+    fn desktop_resolved_event_names_the_tool_for_always() {
+        let v = serde_json::to_value(PermissionResolved {
+            request_id: "r1".into(),
+            remember: Some("allow"),
+            tool_name: Some("Bash".into()),
+        })
+        .unwrap();
+        assert_eq!(v, serde_json::json!({ "request_id": "r1", "remember": "allow", "tool_name": "Bash" }));
+        let once = serde_json::to_value(PermissionResolved {
+            request_id: "r2".into(),
+            remember: None,
+            tool_name: None,
+        })
+        .unwrap();
+        assert_eq!(once, serde_json::json!({ "request_id": "r2" }));
     }
 }

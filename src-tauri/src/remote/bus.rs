@@ -30,6 +30,8 @@ pub enum RemoteRunEvent {
         tool: String,
         input: Value,
         cwd: Option<String>,
+        /// A broker prompt: once-only, never Always.
+        once_only: bool,
     },
     /// The run finished (was `run:done:<id>`).
     Done { run_id: String, status: String },

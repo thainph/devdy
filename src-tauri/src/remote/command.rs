@@ -23,7 +23,7 @@ pub const CMD_RATE_WINDOW: Duration = Duration::from_secs(60);
 /// The actions a Controller is allowed to invoke (FR-009). `list_runs` is a
 /// read-only browse of run metadata (added for full desktop parity — the trust
 /// boundary is device approval, not per-run share).
-pub const ALLOW_LIST: [&str; 27] = [
+pub const ALLOW_LIST: [&str; 28] = [
     "respond_permission",
     "start_run",
     "request_history",
@@ -56,11 +56,12 @@ pub const ALLOW_LIST: [&str; 27] = [
     "note_delete",
     "project_toggles_get",
     "project_toggle_set",
+    "note_get",
 ];
 
 /// The data actions: allow-listed, but only for a Controller that advertised
 /// [`crate::remote::protocol::FEATURE_DATA`].
-pub const DATA_ACTIONS: [&str; 12] = [
+pub const DATA_ACTIONS: [&str; 13] = [
     "todo_list",
     "todo_add",
     "todo_update",
@@ -73,6 +74,7 @@ pub const DATA_ACTIONS: [&str; 12] = [
     "note_delete",
     "project_toggles_get",
     "project_toggle_set",
+    "note_get",
 ];
 
 /// Whether `action` is one of the [`DATA_ACTIONS`].
@@ -97,7 +99,7 @@ pub fn is_allowed_action(action: &str) -> bool {
 /// Browsing costs the Controller several of these per screen (open a run: list
 /// + history + meta + usage + files). Charging them to the 30/min command
 /// budget would make normal navigation trip the abuse limiter.
-pub const READ_ONLY_ACTIONS: [&str; 14] = [
+pub const READ_ONLY_ACTIONS: [&str; 15] = [
     "request_history",
     "list_runs",
     "list_projects",
@@ -115,6 +117,7 @@ pub const READ_ONLY_ACTIONS: [&str; 14] = [
     "note_list",
     "note_search",
     "project_toggles_get",
+    "note_get",
 ];
 
 /// Whether `action` only reads state (and so uses the browse budget).
@@ -193,6 +196,8 @@ pub enum RejectReason {
     WrongRun,
     /// A data action named a todo / note / project / switch that does not exist.
     NotFound,
+    /// Always (allow_always / deny_always) on a once-only broker prompt.
+    RememberNotAllowed,
 }
 
 impl RejectReason {
@@ -207,6 +212,7 @@ impl RejectReason {
             RejectReason::Unauthorized => "unauthorized",
             RejectReason::WrongRun => "wrong_run",
             RejectReason::NotFound => "not_found",
+            RejectReason::RememberNotAllowed => "remember_not_allowed",
         }
     }
 }
@@ -381,6 +387,7 @@ mod tests {
             "note_delete",
             "project_toggles_get",
             "project_toggle_set",
+            "note_get",
         ] {
             assert!(is_allowed_action(a), "{a} should be allowed");
             assert!(is_data_action(a), "{a} is a data action");
@@ -409,7 +416,7 @@ mod tests {
 
     #[test]
     fn data_reads_and_writes_use_the_right_budget() {
-        for a in ["todo_list", "note_list", "note_search", "project_toggles_get"] {
+        for a in ["todo_list", "note_list", "note_search", "project_toggles_get", "note_get"] {
             assert!(is_read_only_action(a), "{a} only reads");
         }
         for a in [

@@ -79,12 +79,14 @@ fn to_payload(ev: RemoteRunEvent) -> StreamPayload {
             tool,
             input,
             cwd,
+            once_only,
         } => StreamPayload::PermissionRequest {
             run_id,
             request_id,
             tool,
             input,
             cwd,
+            once_only,
         },
         RemoteRunEvent::Done { run_id, status } => StreamPayload::Done { run_id, status },
         RemoteRunEvent::Meta {
@@ -107,6 +109,7 @@ fn to_payload(ev: RemoteRunEvent) -> StreamPayload {
                 request_id,
                 accepted: true,
                 reason: Some("resolved_on_host".to_string()),
+                remembered: None,
             }
         }
     }
@@ -372,7 +375,8 @@ pub async fn build_run_list(db: &Db, only_run_id: Option<&str>) -> Vec<RunInfo> 
     const COLUMNS: &str = "SELECT r.id AS id, r.project_id AS project_id, p.name AS project_name,
                 r.title AS title, r.type AS run_type, r.ref_number AS ref_number,
                 r.status AS status, r.engine AS engine, r.created_at AS created_at,
-                COALESCE(r.last_activity_at, r.finished_at, r.started_at, r.created_at) AS updated_at
+                COALESCE(r.last_activity_at, r.finished_at, r.started_at, r.created_at) AS updated_at,
+                r.finished_at AS finished_at
          FROM runs r JOIN projects p ON p.id = r.project_id";
     let rows = match only_run_id {
         Some(run_id) => sqlx::query(&format!("{COLUMNS} WHERE r.id = ?"))
@@ -397,6 +401,7 @@ pub async fn build_run_list(db: &Db, only_run_id: Option<&str>) -> Vec<RunInfo> 
             engine: r.get("engine"),
             created_at: r.get("created_at"),
             updated_at: r.get("updated_at"),
+            finished_at: r.get("finished_at"),
         })
         .collect()
 }
@@ -841,7 +846,7 @@ mod tests {
             run_id: "r_1".to_string(),
             request_id: "p_1".to_string(),
         });
-        let StreamPayload::PermissionResolved { run_id, request_id, accepted, reason } = payload
+        let StreamPayload::PermissionResolved { run_id, request_id, accepted, reason, .. } = payload
         else {
             panic!("expected permission_resolved");
         };

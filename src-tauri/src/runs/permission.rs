@@ -31,6 +31,10 @@ pub struct PermissionRequestEvent {
     /// Short noun phrase for the action (e.g. "Read file"), for compact UI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// A broker prompt (gh / glab / ssh / aws / az / terraform): it can only be
+    /// answered once — there is no standing Always for a credential use.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub once_only: bool,
 }
 
 /// A permission request the sidecar is still blocked on.
@@ -71,6 +75,39 @@ pub fn resolve_pending(run_id: &str, request_id: &str) -> bool {
     removed
 }
 
+/// Claim a request for answering: remove and return it, or None when it was
+/// already answered (by the desktop, a phone, a standing choice) or withdrawn.
+/// Exactly one answer wins; a loser must not reach the sidecar.
+pub fn take_pending(run_id: &str, request_id: &str) -> Option<PendingPermission> {
+    let mut map = pending_store().lock().unwrap_or_else(|e| e.into_inner());
+    let list = map.get_mut(run_id)?;
+    let i = list.iter().position(|p| p.event.request_id == request_id)?;
+    let taken = list.remove(i);
+    if list.is_empty() {
+        map.remove(run_id);
+    }
+    Some(taken)
+}
+
+/// Put back a request whose answer could not be delivered, so it can be retried.
+pub fn restore_pending(p: PendingPermission) {
+    let mut map = pending_store().lock().unwrap_or_else(|e| e.into_inner());
+    let list = map.entry(p.event.run_id.clone()).or_default();
+    if !list.iter().any(|x| x.event.request_id == p.event.request_id) {
+        list.push(p);
+        list.sort_by_key(|x| x.requested_at);
+    }
+}
+
+/// A still-open request, without claiming it.
+pub fn peek_pending(run_id: &str, request_id: &str) -> Option<PendingPermission> {
+    let map = pending_store().lock().unwrap_or_else(|e| e.into_inner());
+    map.get(run_id)?
+        .iter()
+        .find(|p| p.event.request_id == request_id)
+        .cloned()
+}
+
 /// Drop every open request of a run whose sidecar has exited.
 pub fn clear_pending(run_id: &str) {
     let mut map = pending_store().lock().unwrap_or_else(|e| e.into_inner());
@@ -104,6 +141,7 @@ mod tests {
             title: None,
             description: None,
             display_name: None,
+            once_only: false,
         }
     }
 
@@ -121,6 +159,20 @@ mod tests {
 
         clear_pending(run);
         assert!(pending_for(run).is_empty());
+    }
+
+    #[test]
+    fn only_one_claim_wins_and_a_failed_delivery_can_be_retried() {
+        let run = "test-run-claim";
+        track_pending(evt(run, "a"));
+        let first = take_pending(run, "a").expect("first claim wins");
+        assert!(take_pending(run, "a").is_none(), "a second answer must lose");
+        assert!(peek_pending(run, "a").is_none());
+        restore_pending(first);
+        assert!(peek_pending(run, "a").is_some(), "restored for a retry");
+        assert!(take_pending(run, "a").is_some());
+        assert!(take_pending(run, "missing").is_none());
+        clear_pending(run);
     }
 
     #[test]
