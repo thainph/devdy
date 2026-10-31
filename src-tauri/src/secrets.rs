@@ -166,6 +166,14 @@ fn seed_from_release() -> SecretStore {
     SecretStore::default()
 }
 
+/// Whether a legacy per-item secret may be moved into the store now. The move
+/// deletes the legacy item, so not while the store cannot be written back (the
+/// value would be lost), nor from a debug build (those items are the release
+/// app's).
+fn may_migrate_legacy(store: &SecretStore) -> bool {
+    !store.unreadable && !cfg!(debug_assertions)
+}
+
 /// Persist the whole store back to the single Keychain item.
 fn persist(store: &SecretStore) -> Result<()> {
     if store.unreadable {
@@ -254,7 +262,7 @@ fn get_pat(provider: Provider, account_id: &str) -> Result<String> {
     // git op). `legacy_exists` is metadata-only (no prompt), so a non-existent
     // legacy item costs nothing and never shows a dialog.
     let marker = format!("{}:{}", provider_tag(&provider), account_id);
-    if store.tried_legacy.insert(marker) && legacy_exists(&provider, account_id) {
+    if may_migrate_legacy(store) && store.tried_legacy.insert(marker) && legacy_exists(&provider, account_id) {
         if let Some(pat) = take_legacy(&provider, account_id) {
             map_of_mut(store, &provider).insert(account_id.to_string(), pat.clone());
             let _ = persist(store);
@@ -423,7 +431,7 @@ pub fn get_mcp_secrets(server_id: &str) -> McpSecrets {
     // when the legacy item actually exists — the existence check is
     // metadata-only so a missing item never shows a dialog.
     let marker = format!("mcp:{}", server_id);
-    if store.tried_legacy.insert(marker) && legacy_mcp_exists(server_id) {
+    if may_migrate_legacy(store) && store.tried_legacy.insert(marker) && legacy_mcp_exists(server_id) {
         if let Some(secret) = take_legacy_mcp(server_id) {
             store.mcp.insert(server_id.to_string(), secret.clone());
             let _ = persist(store);
