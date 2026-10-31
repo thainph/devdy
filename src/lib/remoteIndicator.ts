@@ -42,3 +42,44 @@ export const REMOTE_DOT_CLASS: Record<RemoteTone, string> = {
 export function isControlled(tone: RemoteTone): boolean {
   return tone === 'phone' || tone === 'desktop'
 }
+
+/** Whether a phone / web controller (not another Devdy) is signed in. The bound
+ * session is authenticated for either kind; the relay admits one Controller at
+ * a time, so a remote desktop attached means the phone is not. */
+export function phoneControlled(s: RemoteDotStatus | null | undefined): boolean {
+  return !!s?.session_authenticated && !s.desktop_controlled
+}
+
+// ── Controlling side ────────────────────────────────────────────────────────
+// A remote-desktop window shows its own link to the controlled Devdy in the
+// same sidebar spot (components/remote/RemoteDesktopIndicator.vue).
+
+/** The `RemoteIpcState` values the controlling-side dot reads (lib/ipc/remote.ts). */
+export interface DesktopLinkState {
+  status: string
+  auth: string | null
+  superseded: boolean
+}
+
+/**
+ * - `connected`: signed in to the controlled Devdy
+ * - `connecting`: joining / reconnecting
+ * - `failed`: signed out by the host, or a connection error
+ * - `superseded`: another device took the session over (the relay admits one
+ *   Controller at a time); only a deliberate reconnect takes it back
+ */
+export type DesktopLinkTone = 'connected' | 'connecting' | 'failed' | 'superseded'
+
+export function desktopLinkTone(s: DesktopLinkState): DesktopLinkTone {
+  if (s.superseded) return 'superseded'
+  if (s.auth === 'failed' || s.status === 'error') return 'failed'
+  if (s.status === 'connected' && s.auth === 'authenticated') return 'connected'
+  return 'connecting'
+}
+
+export const DESKTOP_LINK_DOT_CLASS: Record<DesktopLinkTone, string> = {
+  connected: 'bg-emerald-500',
+  connecting: 'bg-amber-500 animate-pulse',
+  failed: 'bg-destructive',
+  superseded: 'bg-muted-foreground',
+}

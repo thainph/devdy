@@ -19,6 +19,8 @@ import CalendarReminder from '@/components/CalendarReminder.vue'
 import WorkspaceTabs from '@/components/WorkspaceTabs.vue'
 import ActiveRunsDock from '@/components/ActiveRunsDock.vue'
 import RemoteIndicator from '@/components/RemoteIndicator.vue'
+import RemoteDesktopIndicator from '@/components/remote/RemoteDesktopIndicator.vue'
+import RemoteDesktopAlert from '@/components/remote/RemoteDesktopAlert.vue'
 import FileViewerWindow from '@/views/FileViewerWindow.vue'
 import PermissionWindow from '@/views/PermissionWindow.vue'
 import ThemeDecorations from '@/components/ThemeDecorations.vue'
@@ -991,7 +993,10 @@ onMounted(async () => {
           <!-- Version footer -->
           <div class="flex items-center justify-between gap-2 px-4 py-3 border-t border-border/50">
             <p v-if="appVersion" class="text-[10px] text-muted-foreground/50 font-mono">v{{ appVersion }}</p>
+            <!-- This machine's Remote Control dot, or (remote-desktop window) the
+                 link to the controlled Devdy; each hides itself elsewhere. -->
             <RemoteIndicator />
+            <RemoteDesktopIndicator />
           </div>
         </div>
       </aside>
@@ -1042,9 +1047,13 @@ onMounted(async () => {
     <!-- App-wide toast host (see useToast) -->
     <ToastHost />
 
-    <!-- Sidebar hidden: the Remote Control dot moves to a corner while another
-         Devdy drives this one, so that warning is never invisible. -->
+    <!-- Sidebar hidden: the Remote Control dot moves to a corner while a
+         Controller drives this one, so that warning is never invisible; in a
+         remote-desktop window, the link dot does. -->
     <RemoteIndicator v-if="!sidebarVisible" floating />
+    <RemoteDesktopIndicator v-if="!sidebarVisible" floating />
+    <!-- Remote-desktop window: shown only while the link is down -->
+    <RemoteDesktopAlert />
 
     <!-- App-wide side-by-side image comparison (banner + picker + compare view) -->
     <ImageCompareHost />

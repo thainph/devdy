@@ -4,8 +4,9 @@
  * The main one (`remote-desktop`, see lib/remoteDesktopWindow.ts): without a
  * stored sign-in it shows the password login; with one it connects the IPC shim
  * to the controlled Devdy FIRST (any invoke/listen made before that would hit
- * this machine's backend), then mounts the normal app plus the "Controlling …"
- * banner, and serves that one connection to its pop-outs (lib/ipc/mux.ts).
+ * this machine's backend), then mounts the normal app (its sidebar shows the
+ * link: components/remote/RemoteDesktopIndicator.vue) and serves that one
+ * connection to its pop-outs (lib/ipc/mux.ts).
  *
  * A pop-out opened from a remote window (`remote-…` label, lib/ipc/windows.ts)
  * has no connection of its own: its shim talks to the controlled Devdy through
@@ -22,7 +23,6 @@ import { REMOTE_OWNER_LABEL, isRemoteLabel } from './lib/ipc/windows'
 import { installRemoteDiagnostics } from './lib/ipc/diagnostics'
 import { loadRemoteDesktopSession, saveRemoteDesktopSession } from './lib/remoteDesktopSession'
 import RemoteDesktopLogin from './components/remote/RemoteDesktopLogin.vue'
-import RemoteDesktopBanner from './components/remote/RemoteDesktopBanner.vue'
 
 /** Signed out: pop-outs of the previous sign-in have nothing to talk to. */
 async function closeRemotePopouts(): Promise<void> {
@@ -61,9 +61,4 @@ export function bootRemoteDesktop(mountApp: () => App): void {
   void installResyncReload().catch(() => {})
   void startMuxHost(client).catch((e) => console.error('[remoteDesktop] pop-out link failed', e))
   mountApp()
-
-  const host = document.createElement('div')
-  host.id = 'remote-desktop-banner'
-  document.body.appendChild(host)
-  createApp(RemoteDesktopBanner, { client, device: session.device }).use(i18n).mount(host)
 }

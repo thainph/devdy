@@ -9,7 +9,7 @@ import { popoverContent } from '@/components/ui/calendarStyles'
 import { useEscapeClose } from '@/composables/useEscapeClose'
 import { useToast } from '@/composables/useToast'
 import { useRemoteControlStore } from '@/stores/remoteControl'
-import { REMOTE_DOT_CLASS, isControlled, remoteTone } from '@/lib/remoteIndicator'
+import { REMOTE_DOT_CLASS, isControlled, phoneControlled, remoteTone } from '@/lib/remoteIndicator'
 import { isRemoteMode } from '@/lib/ipc/remote'
 import RemoteSessionModal from '@/components/remote/RemoteSessionModal.vue'
 
@@ -19,11 +19,14 @@ import RemoteSessionModal from '@/components/remote/RemoteSessionModal.vue'
  * cuts the controller off and rotates its session token away, so it has to sign in
  * again), "Pair a device…" and a Settings link.
  *
- * `floating`: the same dot pinned to a corner while the sidebar is hidden, shown only
- * while another Devdy drives this one, so that warning is never invisible.
+ * `floating`: the bare dot pinned to a corner while the sidebar is hidden, shown only
+ * while a Controller (another Devdy or a phone / web) drives this one, so that warning
+ * is never invisible. The relay admits one Controller at a time, so the popover shows
+ * one of the two.
  *
  * Hidden while Remote Control is off, and in remote-desktop windows (every call there
- * goes to the controlled machine: it would show its state and let it kick itself).
+ * goes to the controlled machine: it would show its state and let it kick itself; the
+ * link dot there is components/remote/RemoteDesktopIndicator.vue).
  */
 
 const props = defineProps<{ floating?: boolean }>()
@@ -46,7 +49,7 @@ const status = computed(() => store.status)
 const tone = computed(() => remoteTone(status.value))
 const visible = computed(() => {
   if (!enabled || tone.value === 'off') return false
-  return props.floating ? tone.value === 'desktop' : true
+  return props.floating ? isControlled(tone.value) : true
 })
 
 const desktopSince = computed(() => {
@@ -67,7 +70,7 @@ const tooltip = computed(() => {
   const s = status.value
   const parts = [`${t('misc.remoteIndicator.title')}: ${relayLine.value}`]
   if (s?.desktop_controlled) parts.push(t('misc.remoteIndicator.desktopSince', { time: desktopSince.value }))
-  if (s?.session_authenticated) parts.push(t('misc.remoteIndicator.controller'))
+  if (phoneControlled(s)) parts.push(t('misc.remoteIndicator.controller'))
   return parts.join('\n')
 })
 
@@ -112,7 +115,10 @@ onBeforeUnmount(() => stopWatch?.())
       <button
         type="button"
         class="flex items-center gap-1.5 rounded px-1 text-[10px] text-muted-foreground/70 hover:text-foreground"
-        :class="floating && 'fixed bottom-3 left-3 z-[90] border border-amber-500/40 bg-background/95 px-2 py-1 shadow-lg backdrop-blur'"
+        :class="floating && [
+          'fixed bottom-3 left-3 z-[90] border bg-background/95 p-1.5 shadow-lg backdrop-blur',
+          tone === 'desktop' ? 'border-amber-500/40' : 'border-emerald-500/40',
+        ]"
         :title="tooltip"
         :aria-label="tooltip"
       >
@@ -124,7 +130,7 @@ onBeforeUnmount(() => stopWatch?.())
           />
           <span class="relative inline-flex h-2 w-2 rounded-full" :class="REMOTE_DOT_CLASS[tone]" />
         </span>
-        <span>{{ label }}</span>
+        <span v-if="!floating">{{ label }}</span>
       </button>
     </PopoverTrigger>
     <PopoverPortal>
@@ -148,7 +154,7 @@ onBeforeUnmount(() => stopWatch?.())
             <MonitorSmartphone class="h-3.5 w-3.5 shrink-0" :stroke-width="2" />
             {{ t('misc.remoteIndicator.desktopSince', { time: desktopSince }) }}
           </p>
-          <p v-if="status?.session_authenticated" class="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
+          <p v-if="phoneControlled(status)" class="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
             <Smartphone class="h-3.5 w-3.5 shrink-0" :stroke-width="2" />
             {{ t('misc.remoteIndicator.controller') }}
           </p>
