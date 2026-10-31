@@ -19,7 +19,7 @@
 //! 6-digit OTP shown on the desktop; the first sealed frame is opened by trying
 //! `KDF(link_secret, session_secret)` (reconnect) then `KDF(link_secret, otp)`
 //! (pairing) — whichever opens authenticates the session. On success the host
-//! mints a durable session token (sliding 3h idle).
+//! mints a durable session token (sliding 7-day idle).
 
 use crate::db::Db;
 use crate::remote::audit;
@@ -79,8 +79,11 @@ const LIVENESS_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 /// the socket is certainly dead by then, so re-dial straight away.
 const SLEEP_JUMP: Duration = Duration::from_secs(20);
 
-/// Sliding idle window for a remote session token: 3 hours of inactivity.
-pub const IDLE_TTL_SECS: u64 = 3 * 3600;
+/// Sliding idle window for a remote session token: 7 days of inactivity. The
+/// phone is a "check and lock" companion, so re-typing an OTP after every
+/// screen lock defeats it; kick / revoke / end session at the desktop still
+/// end it at once.
+pub const IDLE_TTL_SECS: u64 = 7 * 24 * 3600;
 
 /// Current wall-clock time as Unix seconds (0 if the clock is before the epoch).
 pub fn now_unix() -> u64 {

@@ -7,7 +7,7 @@
 //! to real I/O:
 //!   - allow-list gate (AC-12)
 //!   - rate-limit 30/min (AC-18)
-//!   - `respond_permission`: once-only decisions + idempotency (AC-10/AC-17)
+//!   - `respond_permission`: explicit-scope decisions + idempotency (AC-10/AC-17)
 //!   - `start_run`: permission mode FORCED to default (AC-11)
 //!   - `cancel_run`, `send_chat_message`, `request_history`
 //!
@@ -40,6 +40,10 @@ use tokio::sync::Mutex as TokioMutex;
 #[derive(Debug, Clone, Serialize)]
 struct PermissionResolved {
     request_id: String,
+    /// `allow` / `deny` when the Controller chose Always: the desktop stores
+    /// the standing per-project choice exactly as its own Always buttons do.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remember: Option<&'static str>,
 }
 
 /// Everything a handler needs to execute a command and reply on the room.
@@ -76,7 +80,7 @@ pub struct HandlerCtx {
 impl HandlerCtx {
     /// Slide the idle window forward (only on an accepted inbound command, never
     /// on forwarded output). Also refreshes the persisted session credential so
-    /// a reconnect within 3h skips the OTP.
+    /// a reconnect within the idle window skips the OTP.
     fn slide_idle(&self) {
         let deadline = now_unix() + IDLE_TTL_SECS;
         // Persisting hits the Keychain; a remote desktop issues many calls a
@@ -318,6 +322,7 @@ pub async fn handle(ctx: &HandlerCtx, cmd: CmdPayload) {
         "list_project_files" => handle_list_project_files(ctx, &cmd).await,
         "open_run" => handle_open_run(ctx, &cmd).await,
         "close_run" => handle_close_run(ctx, &cmd).await,
+        "list_pending" => handle_list_pending(ctx, &cmd).await,
         // Unreachable: allow-list already gated. Defensive audit.
         _ => reject(ctx, action, run_id.as_deref(), RejectReason::NotAllowed).await,
     }
@@ -419,9 +424,9 @@ async fn handle_respond_permission(ctx: &HandlerCtx, cmd: &CmdPayload) {
     };
     let decision = cmd.decision.as_deref().unwrap_or("");
 
-    // BR-016/SEC-011/AC-17: only allow_once / deny_once; reject remember +
-    // anything else, and map to the internal allow/deny.
-    let internal = match map_remote_decision(decision) {
+    // BR-016/SEC-011/AC-17: the scope must be explicit (once / always); map to
+    // the internal allow/deny + remember flag, reject anything else.
+    let (internal, remember) = match map_remote_decision(decision) {
         Ok(d) => d,
         Err(reason) => {
             reject(ctx, action, Some(&run_id), reason).await;
@@ -463,14 +468,12 @@ async fn handle_respond_permission(ctx: &HandlerCtx, cmd: &CmdPayload) {
         request_id: request_id.clone(),
         decision: internal.to_string(),
         reason: None,
-        // AskUserQuestion answers ride alongside an allow_once decision; the
-        // decision gate above already enforced once-only (BR-016/AC-17), so
-        // forwarding answers never relaxes it.
+        // AskUserQuestion answers ride alongside an allow_once decision.
         answers: cmd.answers.clone(),
         response: None,
-        // Remote decisions are once-only by design (BR-016/AC-17): never opt a
-        // remote answer into an engine-side "for this session" approval cache.
-        remember: false,
+        // Always from the phone is the desktop's Always: the engine may cache
+        // the approval for the session (codex `acceptForSession`).
+        remember,
     };
     match crate::commands::runs::respond_permission_inner(
         &ctx.registry,
@@ -480,7 +483,14 @@ async fn handle_respond_permission(ctx: &HandlerCtx, cmd: &CmdPayload) {
     .await
     {
         Ok(()) => {
-            accept(ctx, action, Some(&run_id), None).await;
+            // The audit row names the scope, so a standing grant made from a
+            // phone is traceable (remote_audit is remote-only by definition).
+            let scope = remember.then_some(if internal == "allow" {
+                "allow_always"
+            } else {
+                "deny_always"
+            });
+            accept(ctx, action, Some(&run_id), scope).await;
             permission_resolved(
                 ctx,
                 run_id.clone(),
@@ -497,6 +507,7 @@ async fn handle_respond_permission(ctx: &HandlerCtx, cmd: &CmdPayload) {
                 &event,
                 PermissionResolved {
                     request_id: request_id.clone(),
+                    remember: remember.then_some(internal),
                 },
             );
         }
@@ -860,6 +871,35 @@ async fn handle_list_runs(ctx: &HandlerCtx) {
     )
     .await;
     accept(ctx, action, None, None).await;
+}
+
+/// Re-send every permission prompt still open on this Host as ordinary
+/// `permission_request` frames. Live prompts that fired while the phone was
+/// locked went nowhere; this is how its Inbox catches up. The command ack goes
+/// out after the frames (same ordered channel), so the Controller can drop any
+/// prompt it holds that was not re-sent.
+async fn handle_list_pending(ctx: &HandlerCtx, cmd: &CmdPayload) {
+    let action = "list_pending";
+    let only = ctx.list_filter();
+    for p in crate::runs::permission::all_pending() {
+        let ev = p.event;
+        if only.is_some_and(|rid| rid != ev.run_id) {
+            continue;
+        }
+        send_payload(
+            ctx,
+            StreamPayload::PermissionRequest {
+                run_id: ev.run_id,
+                request_id: ev.request_id,
+                tool: ev.tool_name,
+                input: ev.tool_input,
+                cwd: ev.cwd,
+            },
+        )
+        .await;
+    }
+    accept(ctx, action, None, None).await;
+    command_ack(ctx, cmd, true, None).await;
 }
 
 /// Open a run: start streaming its transcript and push everything the composer

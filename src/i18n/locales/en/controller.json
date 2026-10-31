@@ -50,7 +50,8 @@
     "idle": "Idle",
     "verifiedFingerprint": "Verified host fingerprint: {fp}",
     "decodeErrorsTitle": "Some frames could not be decrypted/parsed",
-    "disconnect": "Disconnect"
+    "disconnect": "Disconnect",
+    "newest": "Newest"
   },
   "otp": {
     "title": "Enter password or code",
@@ -103,6 +104,28 @@
     "noResults": "No run matches that.",
     "noRuns": "No runs in this project yet.",
     "runCount": "{count} run | {count} runs",
-    "needsApprovalSection": "Waiting for you"
+    "pendingInInbox": "Runs waiting for a decision are in the Inbox tab."
+  },
+  "tabs": {
+    "inbox": "Inbox",
+    "runs": "Runs",
+    "todo": "Todo",
+    "note": "Notes",
+    "project": "Project"
+  },
+  "inbox": {
+    "title": "Inbox",
+    "waiting": "Waiting for you · {count}",
+    "nothingWaiting": "Nothing is waiting for you.",
+    "sinceLastVisit": "Since your last visit",
+    "noneFinished": "No run finished since then.",
+    "finishedOk": "finished {ago}",
+    "finishedFailed": "failed {ago}",
+    "unread": "New",
+    "loading": "Loading…"
+  },
+  "placeholder": {
+    "title": "Coming soon",
+    "body": "Todos, notes and per-project switches are on their way to the phone."
   }
 }

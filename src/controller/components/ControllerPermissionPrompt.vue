@@ -1,11 +1,16 @@
 <script setup lang="ts">
 /**
- * Controller-side permission prompt (FR-006/FR-007). Deliberately a slim,
- * self-contained component rather than reusing the app's `PermissionPrompt.vue`
- * verbatim, because that one exposes "Allow always" / "Deny always" buttons —
- * which are FORBIDDEN from a Controller (BR-016 / SEC-011 / AC-17). Here the
- * ONLY two decisions are Allow once and Deny once, so the forbidden decision is
- * not even representable in the UI.
+ * Controller-side permission prompt (FR-006/FR-007). A slim, touch-first
+ * counterpart of the app's `PermissionPrompt.vue` (no keyboard hints, no plan
+ * review). Decisions carry an explicit scope (BR-016 / SEC-011 / AC-17 v1.2):
+ * `*_once` for this call, `*_always` for the desktop's per-project standing
+ * choice, keyed by tool name exactly like the desktop's Always buttons.
+ *
+ * Two layouts:
+ *  - `session` (default): fills the bottom of the session view; Deny / Allow
+ *    plus a separate full-width "Always allow … for this project" row.
+ *  - `inbox`: a card in the Inbox list with a 2×2 grid (Deny, Allow, Always
+ *    deny, Always allow) and a context line naming the run.
  *
  * For `AskUserQuestion` there is no "allow/deny" — Claude is asking the user to
  * pick from structured options. We mirror the desktop `PermissionPrompt.vue`
@@ -17,7 +22,7 @@
  */
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ShieldAlert, FileEdit, HelpCircle, Check, X } from 'lucide-vue-next'
+import { ShieldAlert, FileEdit, HelpCircle, Check, CheckCheck, Ban, ChevronRight, X } from 'lucide-vue-next'
 import { Button } from '@/components/ui'
 
 const { t } = useI18n()
@@ -25,10 +30,21 @@ import DiffView from '@/components/DiffView.vue'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
 import type { QuestionAnswers, RemoteDecision } from '../protocol'
 
-const props = defineProps<{ request: PermissionRequest }>()
+const props = withDefaults(
+  defineProps<{
+    request: PermissionRequest
+    variant?: 'session' | 'inbox'
+    /** Inbox only: which run is asking (project · run · age). */
+    context?: string
+  }>(),
+  { variant: 'session', context: '' },
+)
+const inbox = computed(() => props.variant === 'inbox')
 const emit = defineEmits<{
   decide: [decision: RemoteDecision]
   answer: [answers: QuestionAnswers]
+  /** Inbox only: the context line was tapped — open the asking run. */
+  open: []
 }>()
 
 function asObject(v: unknown): Record<string, unknown> {
@@ -132,6 +148,17 @@ function submitAnswers(): void {
 }
 
 // --- Generic tool permission (Edit/Write/Bash/…) ---------------------------
+// "Always" needs a stable key, as on the desktop: bare `MCP` (an engine that
+// could not name the server/tool) would allow every MCP call, and a plan review
+// is not a tool to remember. Those stay once-only.
+const canRemember = computed(
+  () => !['MCP', 'ExitPlanMode', 'AskUserQuestion'].includes(props.request.tool_name),
+)
+// Codex keys Google MCP prompts on the whole server (Drive + Gmail + Calendar).
+const broadRememberWarning = computed(
+  () => canRemember.value && props.request.tool_name === 'mcp__google',
+)
+
 interface DiffPart {
   before: string
   after: string
@@ -180,12 +207,17 @@ const inputPreview = computed(() => {
 
 <template>
   <div
-    class="flex h-full min-h-0 flex-col border-t-2 bg-card"
-    :class="isQuestions ? 'border-t-indigo-500/70' : 'border-t-amber-400/70'"
+    class="flex min-h-0 flex-col bg-card"
+    :class="[
+      inbox ? 'rounded-lg border border-border border-l-2' : 'h-full border-t-2',
+      inbox
+        ? isQuestions ? 'border-l-indigo-500/70' : 'border-l-amber-400/70'
+        : isQuestions ? 'border-t-indigo-500/70' : 'border-t-amber-400/70',
+    ]"
     role="dialog"
     :aria-label="isQuestions ? t('permission.controller.questionAria') : t('permission.controller.requestAria')"
   >
-    <div class="flex items-start gap-2.5 px-4 py-3 border-b border-border shrink-0">
+    <div class="flex items-start gap-2.5 border-b border-border shrink-0" :class="inbox ? 'px-3 py-2.5' : 'px-4 py-3'">
       <component
         :is="isQuestions ? HelpCircle : hasDiff ? FileEdit : ShieldAlert"
         class="h-5 w-5 mt-0.5 shrink-0"
@@ -196,7 +228,16 @@ const inputPreview = computed(() => {
         <h2 class="text-sm font-medium text-foreground">
           {{ isQuestions ? t('permission.controller.questionTitle') : t('permission.controller.requestTitle') }}
         </h2>
-        <p class="text-xs text-foreground/60 mt-0.5">
+        <button
+          v-if="inbox && context"
+          type="button"
+          class="flex w-full items-center gap-0.5 text-left text-xs text-foreground/60 mt-0.5 hover:text-foreground cursor-pointer"
+          @click="emit('open')"
+        >
+          <span class="truncate">{{ context }}</span>
+          <ChevronRight class="h-3 w-3 shrink-0" :stroke-width="2" />
+        </button>
+        <p v-else class="text-xs text-foreground/60 mt-0.5">
           <template v-if="isQuestions">{{ t('permission.controller.questionHint') }}</template>
           <template v-else>
             {{ t('permission.controller.requestHint') }}
@@ -206,7 +247,11 @@ const inputPreview = computed(() => {
     </div>
 
     <!-- AskUserQuestion: structured options (single/multi select + Other). -->
-    <div v-if="isQuestions" class="flex-1 min-h-0 px-4 py-4 space-y-4 overflow-auto">
+    <div
+      v-if="isQuestions"
+      class="flex-1 min-h-0 space-y-4 overflow-auto"
+      :class="inbox ? 'px-3 py-3 max-h-[50dvh]' : 'px-4 py-4'"
+    >
       <div v-for="(q, qi) in questions" :key="qi" class="space-y-2">
         <div class="flex items-center gap-2 flex-wrap">
           <span
@@ -263,7 +308,11 @@ const inputPreview = computed(() => {
     </div>
 
     <!-- Generic tool permission. -->
-    <div v-else class="flex-1 min-h-0 px-4 py-4 space-y-3 overflow-auto">
+    <div
+      v-else
+      class="flex-1 min-h-0 space-y-3 overflow-auto"
+      :class="inbox ? 'px-3 py-3 max-h-[40dvh]' : 'px-4 py-4'"
+    >
       <div class="flex items-center gap-2 flex-wrap">
         <span class="text-[10px] uppercase tracking-wider text-foreground/40">{{ t('permission.tool') }}</span>
         <span class="font-mono text-sm text-indigo-600 dark:text-indigo-300">{{ request.tool_name }}</span>
@@ -289,27 +338,62 @@ const inputPreview = computed(() => {
         <summary class="px-3 py-2 text-xs text-foreground/60 cursor-pointer select-none">{{ t('permission.fullInput') }}</summary>
         <pre class="px-3 pb-2 text-[11px] font-mono text-foreground/70 whitespace-pre-wrap break-words max-h-80 overflow-auto">{{ inputPreview }}</pre>
       </details>
+
+      <p v-if="broadRememberWarning" class="text-[11px] text-amber-600 dark:text-amber-400">
+        {{ t('permission.broadScopeWarning') }}
+      </p>
     </div>
 
-    <!-- AskUserQuestion submits `answers` (with allow_once); other tools get the
-         ONLY two Controller decisions: Allow once / Deny once (AC-17 / BR-016). -->
-    <div class="px-4 py-3 border-t border-border shrink-0 flex flex-col gap-2 sm:flex-row sm:justify-end">
-      <template v-if="isQuestions">
-        <Button variant="destructive" class="w-full sm:w-auto" @click="emit('decide', 'deny_once')">
-          <X class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.controller.cancel') }}
+    <!-- AskUserQuestion submits `answers` (with allow_once). Other tools: an
+         explicit scope on every decision (AC-17 / BR-016 v1.2). -->
+    <div v-if="isQuestions" class="border-t border-border shrink-0 flex flex-col gap-2 sm:flex-row sm:justify-end" :class="inbox ? 'px-3 py-2.5' : 'px-4 py-3'">
+      <Button variant="destructive" class="w-full sm:w-auto" @click="emit('decide', 'deny_once')">
+        <X class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.controller.cancel') }}
+      </Button>
+      <Button variant="primary" :disabled="!canSubmit" class="w-full sm:w-auto" @click="submitAnswers">
+        <Check class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.submit') }}
+      </Button>
+    </div>
+
+    <!-- Inbox: the whole decision set at a glance. -->
+    <div v-else-if="inbox" class="px-3 py-2.5 border-t border-border shrink-0 grid grid-cols-2 gap-2">
+      <Button variant="destructive" class="w-full" @click="emit('decide', 'deny_once')">
+        <X class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.deny') }}
+      </Button>
+      <Button variant="primary" class="w-full" @click="emit('decide', 'allow_once')">
+        <Check class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.allow') }}
+      </Button>
+      <template v-if="canRemember">
+        <Button variant="outline" class="w-full" :title="t('permission.denyAlwaysTitle')" @click="emit('decide', 'deny_always')">
+          <Ban class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.denyAlways') }}
         </Button>
-        <Button variant="primary" :disabled="!canSubmit" class="w-full sm:w-auto" @click="submitAnswers">
-          <Check class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.submit') }}
+        <Button variant="outline" class="w-full" :title="t('permission.allowAlwaysTitle')" @click="emit('decide', 'allow_always')">
+          <CheckCheck class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.controller.allowAlways') }}
         </Button>
       </template>
-      <template v-else>
+    </div>
+
+    <!-- Session: the two everyday answers, with Always on its own row so it is
+         never hit by accident. -->
+    <div v-else class="px-4 py-3 border-t border-border shrink-0 flex flex-col gap-2">
+      <div class="grid grid-cols-2 gap-2 sm:flex sm:justify-end">
         <Button variant="destructive" class="w-full sm:w-auto" @click="emit('decide', 'deny_once')">
-          <X class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.controller.denyOnce') }}
+          <X class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.deny') }}
         </Button>
         <Button variant="primary" class="w-full sm:w-auto" @click="emit('decide', 'allow_once')">
-          <Check class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.controller.allowOnce') }}
+          <Check class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.allow') }}
         </Button>
-      </template>
+      </div>
+      <Button
+        v-if="canRemember"
+        variant="outline"
+        class="w-full min-w-0"
+        :title="t('permission.allowAlwaysTitle')"
+        @click="emit('decide', 'allow_always')"
+      >
+        <CheckCheck class="h-3.5 w-3.5 shrink-0" :stroke-width="2" />
+        <span class="truncate">{{ t('permission.controller.allowAlwaysFor', { tool: request.tool_name }) }}</span>
+      </Button>
     </div>
   </div>
 </template>

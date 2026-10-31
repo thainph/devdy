@@ -669,11 +669,11 @@ function isRunInfo(v: unknown): v is RunInfo {
 // ---- Commands the Controller may send (SRS §5.2 / FR-009 allow-list) ----
 
 /**
- * The only permission decisions a Controller may ever send (BR-016/SEC-011/
- * AC-17). "allow_always"/"deny_always" are NOT representable here by design —
- * they can only be set by the Owner at the Host.
+ * The permission decisions a Controller may send (BR-016/SEC-011/AC-17 v1.2).
+ * The scope is always explicit: `*_once` answers this request only, `*_always`
+ * takes the desktop's "remember" path (standing per-project choice).
  */
-export type RemoteDecision = 'allow_once' | 'deny_once'
+export type RemoteDecision = 'allow_once' | 'deny_once' | 'allow_always' | 'deny_always'
 
 /**
  * AskUserQuestion answers: `{ question text: selected answer }`. Multiple
@@ -716,6 +716,8 @@ export interface CmdPayload {
     | 'ipc_invoke'
     | 'ipc_listen'
     | 'ipc_unlisten'
+    // Inbox: re-send every open permission prompt.
+    | 'list_pending'
   /** Per-send correlation id used for Host delivery acknowledgement. */
   command_id?: string
   run_id?: string
@@ -813,6 +815,12 @@ export function ipcHelloCmd(authMode: AuthMode): CmdPayload {
 
 export function listRunsCmd(): CmdPayload {
   return { kind: 'cmd', action: 'list_runs' }
+}
+
+/** `list_pending` — the Host re-sends every open prompt as `permission_request`
+ * frames, then acks (so prompts it did not re-send are stale). */
+export function listPendingCmd(): CmdPayload {
+  return { kind: 'cmd', action: 'list_pending' }
 }
 
 /** `list_projects` — refresh the project groupings in the run browser. */

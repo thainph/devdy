@@ -50,7 +50,8 @@
     "idle": "Chờ",
     "verifiedFingerprint": "Fingerprint host đã xác minh: {fp}",
     "decodeErrorsTitle": "Một số frame không thể giải mã/phân tích",
-    "disconnect": "Ngắt kết nối"
+    "disconnect": "Ngắt kết nối",
+    "newest": "Mới nhất"
   },
   "otp": {
     "title": "Nhập mật khẩu hoặc mã",
@@ -103,6 +104,28 @@
     "noResults": "Không có run nào khớp.",
     "noRuns": "Dự án này chưa có run nào.",
     "runCount": "{count} run",
-    "needsApprovalSection": "Đang chờ bạn"
+    "pendingInInbox": "Run đang chờ quyền nằm ở tab Cần xử lý."
+  },
+  "tabs": {
+    "inbox": "Cần xử lý",
+    "runs": "Runs",
+    "todo": "Todo",
+    "note": "Note",
+    "project": "Project"
+  },
+  "inbox": {
+    "title": "Cần xử lý",
+    "waiting": "Đang chờ bạn · {count}",
+    "nothingWaiting": "Không có việc nào đang chờ bạn.",
+    "sinceLastVisit": "Kể từ lần mở trước",
+    "noneFinished": "Chưa có run nào xong kể từ đó.",
+    "finishedOk": "xong {ago}",
+    "finishedFailed": "lỗi {ago}",
+    "unread": "Mới",
+    "loading": "Đang tải…"
+  },
+  "placeholder": {
+    "title": "Sắp có",
+    "body": "Todo, note và công tắc theo project sẽ sớm có trên điện thoại."
   }
 }

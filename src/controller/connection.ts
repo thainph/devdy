@@ -188,6 +188,8 @@ export class ControllerConnection {
   private seq = 0
   /** Set once the first drop starts the reconnect window; null while stable. */
   private reconnectDeadline: number | null = null
+  /** Last time {@link slideStoredToken} wrote (ms). */
+  private tokenTouchedAt = 0
   private backoff = BACKOFF_BASE_MS
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private closedByUser = false
@@ -406,7 +408,18 @@ export class ControllerConnection {
       if (pending) clearTimeout(pending.timer)
       this.pendingCommandAcks.delete(commandId)
     }
+    if (sent) this.slideStoredToken()
     return sent
+  }
+
+  /** The Host slides its idle window on every accepted command; slide the
+   * stored token's in step (throttled — it is a localStorage write). */
+  private slideStoredToken(): void {
+    if (this.opts.ipc || this.secret?.mode !== 'session') return
+    const now = Date.now()
+    if (now - this.tokenTouchedAt < 60_000) return
+    this.tokenTouchedAt = now
+    tokenStore.touch()
   }
 
   /** Every path that drops the session (close, reconnect, auth failure) goes

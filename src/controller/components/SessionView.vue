@@ -10,7 +10,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  AlertTriangle, ChevronLeft, Loader2, ShieldCheck, Wifi, WifiOff, X,
+  AlertTriangle, ArrowDown, ChevronLeft, Loader2, ShieldCheck, Wifi, WifiOff, X,
 } from 'lucide-vue-next'
 import StreamLog from '@/components/StreamLog.vue'
 import type { StreamEntry } from '@/lib/streamEvents'
@@ -28,6 +28,8 @@ import type {
 } from '../protocol'
 
 const props = defineProps<{
+  /** The run (or draft) on screen; a change re-pins the view to the bottom. */
+  runKey: string | null
   title: string
   status: ConnStatus
   live: boolean
@@ -66,8 +68,9 @@ const props = defineProps<{
   claudeAccount: string | null
   /** Every managed Claude account with its own usage (desktop badge parity). */
   claudeAccounts: ClaudeAccountUsage[]
-  /** Other runs awaiting a permission decision. Surfaced as a tappable banner so
-   * a prompt in a run the user is not watching is never silently queued. */
+  /** Other runs awaiting a permission decision. Surfaced as a tappable banner
+   * (to the Inbox) so a prompt in a run the user is not watching is never
+   * silently queued. */
   pendingElsewhere: string[]
 }>()
 
@@ -78,6 +81,7 @@ const emit = defineEmits<{
   answer: [answers: QuestionAnswers]
   disconnect: []
   back: []
+  openInbox: []
   clearNotice: []
   'update:engine': [value: string]
   'update:model': [value: string]
@@ -170,8 +174,53 @@ watch(
   },
 )
 
-onMounted(() => window.addEventListener('pointerup', onWindowPointerUp))
-onUnmounted(() => window.removeEventListener('pointerup', onWindowPointerUp))
+/** Land on the newest message: on open, on switching run and after a history
+ * replay (which swaps the whole entries array, often from empty). */
+function pinToBottom(): void {
+  stickToBottom.value = true
+  void nextTick(() => {
+    scrollToBottom()
+    // Markdown / images may lay out a frame later; the ResizeObserver keeps up
+    // after that, this covers the first paint.
+    requestAnimationFrame(scrollToBottom)
+  })
+}
+
+watch(() => props.runKey, pinToBottom)
+watch(
+  () => props.entries,
+  (next, prev) => {
+    if (!prev?.length && next.length) pinToBottom()
+  },
+)
+
+/** Jump back down from the floating "Newest" button. */
+function jumpToNewest(): void {
+  stickToBottom.value = true
+  scrollToBottom()
+}
+
+// Content grows without a scroll event (Markdown rendering, images, a tool
+// result expanding) and the viewport shrinks when the permission prompt opens.
+// Either way: if the user was at the bottom, keep them there.
+const contentEl = ref<HTMLElement | null>(null)
+let resizeObserver: ResizeObserver | null = null
+
+onMounted(() => {
+  window.addEventListener('pointerup', onWindowPointerUp)
+  if (typeof ResizeObserver !== 'undefined') {
+    resizeObserver = new ResizeObserver(() => {
+      if (shouldAutoScroll()) scrollToBottom()
+    })
+    if (mainEl.value) resizeObserver.observe(mainEl.value)
+    if (contentEl.value) resizeObserver.observe(contentEl.value)
+  }
+  pinToBottom()
+})
+onUnmounted(() => {
+  window.removeEventListener('pointerup', onWindowPointerUp)
+  resizeObserver?.disconnect()
+})
 </script>
 
 <template>
@@ -241,7 +290,7 @@ onUnmounted(() => window.removeEventListener('pointerup', onWindowPointerUp))
     <button
       v-if="pendingElsewhere.length"
       class="shrink-0 w-full px-3 py-1.5 text-xs flex items-center justify-center gap-2 bg-amber-500/15 text-amber-600 dark:text-amber-400 hover:bg-amber-500/25 transition-colors cursor-pointer"
-      @click="emit('back')"
+      @click="emit('openInbox')"
     >
       <AlertTriangle class="h-3.5 w-3.5" :stroke-width="2" />
       {{ t('controller.browser.pendingElsewhere', pendingElsewhere.length) }}
@@ -268,14 +317,25 @@ onUnmounted(() => window.removeEventListener('pointerup', onWindowPointerUp))
     </div>
 
     <!-- Stream -->
-    <main
-      ref="mainEl"
-      class="flex-1 min-h-0 overflow-auto px-3 py-3"
-      @scroll="onScroll"
-      @pointerdown="onStreamPointerDown"
-    >
-      <StreamLog :entries="entries" :running="running" :render-text="renderText" />
-    </main>
+    <div class="relative flex-1 min-h-0 flex flex-col">
+      <main
+        ref="mainEl"
+        class="flex-1 min-h-0 overflow-auto px-3 py-3"
+        @scroll="onScroll"
+        @pointerdown="onStreamPointerDown"
+      >
+        <div ref="contentEl">
+          <StreamLog :entries="entries" :running="running" :render-text="renderText" />
+        </div>
+      </main>
+      <button
+        v-if="!stickToBottom && entries.length"
+        class="absolute bottom-3 left-1/2 -translate-x-1/2 inline-flex items-center gap-1 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground shadow-md hover:bg-accent transition-colors cursor-pointer"
+        @click="jumpToNewest"
+      >
+        <ArrowDown class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('controller.session.newest') }}
+      </button>
+    </div>
 
     <!-- Usage / context status bar (mirrors the desktop ContextMeter). -->
     <SessionUsageBar

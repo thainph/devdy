@@ -6,9 +6,10 @@
  *   2. Otherwise: LinkEntryView → connect + wait for the Host OTP gate →
  *      OtpEntryView → on success (session_token) → the link's run.
  *
- * Once paired, the device can drive EVERY run on the Host (SRS BR-005 v1.1), so
- * the session screen has a run browser behind it. The link's run is what we land
- * on; from there the user moves freely.
+ * Once paired, the device can drive EVERY run on the Host (SRS BR-005 v1.1).
+ * Behind the session screen sit bottom tabs — Inbox (every prompt waiting, runs
+ * finished since the last visit) · Runs · Todo · Note · Project. A fresh link
+ * pairing lands on the link's run; re-opening the app lands on the Inbox.
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -18,6 +19,19 @@ import LinkEntryView from './components/LinkEntryView.vue'
 import OtpEntryView from './components/OtpEntryView.vue'
 import SessionView from './components/SessionView.vue'
 import RunBrowserView from './components/RunBrowserView.vue'
+import InboxView from './components/InboxView.vue'
+import BottomTabBar, { type ControllerTab } from './components/BottomTabBar.vue'
+import ControllerPlaceholderView from './components/ControllerPlaceholderView.vue'
+import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
+import {
+  aggregatePending,
+  leaveVisit,
+  markRead,
+  parseVisitState,
+  pendingCount,
+  startVisit,
+  type VisitState,
+} from '@/lib/remoteInbox'
 import type { ComposerTurn } from './components/SessionComposer.vue'
 import { ControllerConnection, type AuthState, type ConnStatus, type SecretSource } from './connection'
 import { createRunStore } from './runStore'
@@ -25,6 +39,7 @@ import * as tokenStore from './sessionTokenStore'
 import type { LoginGrant } from './login'
 import {
   cancelRunCmd,
+  listPendingCmd,
   listProjectFilesCmd,
   listProjectsCmd,
   listRunsCmd,
@@ -50,6 +65,13 @@ type Phase = 'link' | 'otp' | 'session'
 const phase = ref<Phase>('link')
 
 const link = ref<SessionLinkPayload | null>(null)
+
+// Bottom tab while no session is open. The Inbox is the home screen.
+const tab = ref<ControllerTab>('inbox')
+// Whether the first authentication opens the link's run. True for a link just
+// scanned (that run is what the QR was for); false when re-opening the app on a
+// stored token, which should land on the Inbox instead of an old run.
+let landOnLinkRun = true
 
 // Mirrored connection state (local refs for the template).
 const status = ref<ConnStatus>('idle')
@@ -185,6 +207,7 @@ onMounted(() => {
       link_secret: token.link_secret,
     }
     tokenStore.touch()
+    landOnLinkRun = !!hashLink
     startConnection({ mode: 'session', token: token.token })
     phase.value = 'session'
   }
@@ -206,6 +229,8 @@ function parseHashLink(): SessionLinkPayload | null {
 
 onBeforeUnmount(() => {
   conn.value?.close()
+  document.removeEventListener('visibilitychange', onVisibility)
+  window.removeEventListener('pagehide', onPageHide)
 })
 
 /** Parsed a link (from hash or paste) — connect IMMEDIATELY (join + pubkey
@@ -213,6 +238,7 @@ onBeforeUnmount(() => {
  * session key is derived later, once the user submits the OTP. */
 function onLink(payload: SessionLinkPayload): void {
   link.value = payload
+  landOnLinkRun = true
   phase.value = 'otp'
   startConnection(null)
 }
@@ -222,6 +248,8 @@ function onLink(payload: SessionLinkPayload): void {
 function onGranted(grant: LoginGrant): void {
   tokenStore.save({ ...grant.link, token: grant.token })
   link.value = grant.link
+  // A password login is "find my host", not "open this run".
+  landOnLinkRun = false
   phase.value = 'session'
   startConnection({ mode: 'session', token: grant.token })
 }
@@ -293,6 +321,7 @@ function openRun(id: string): void {
   // Remember where this run lives so Back lands on its project, not the root.
   const info = store.state.runList.find((r) => r.id === id)
   if (info) browserProjectId.value = info.project_id
+  saveVisit(markRead(visit.value, id))
   draftProjectId.value = null
   store.setActiveRun(id)
   conn.value?.openRun(id)
@@ -313,6 +342,72 @@ function refreshRuns(): void {
   conn.value?.sendCommand(listProjectsCmd())
 }
 
+// ── inbox ───────────────────────────────────────────────────────────────────
+/** Re-pull every open prompt (live ones that fired while this device was away
+ * went nowhere) plus the run list the "since last visit" section reads. */
+function syncInbox(): void {
+  const c = conn.value
+  if (!c) return
+  store.beginPendingSync()
+  const sent = c.sendCommand(listPendingCmd(), (accepted) => store.endPendingSync(accepted))
+  if (!sent) store.endPendingSync(false)
+  refreshRuns()
+}
+
+const inboxPending = computed(() =>
+  aggregatePending(store.state.pendingQueues, store.state.pendingSeenAt),
+)
+const inboxCount = computed(() => pendingCount(store.state.pendingQueues))
+
+// "Since last visit" bookkeeping, persisted across reloads.
+const VISIT_KEY = 'devdy.controller.inbox.v1'
+function loadVisit(): VisitState {
+  try {
+    return parseVisitState(localStorage.getItem(VISIT_KEY))
+  } catch {
+    return parseVisitState(null)
+  }
+}
+const visit = ref<VisitState>(startVisit(loadVisit(), Date.now()))
+function saveVisit(next: VisitState): void {
+  visit.value = next
+  try {
+    localStorage.setItem(VISIT_KEY, JSON.stringify(next))
+  } catch {
+    // Storage unavailable: the Inbox still works for this visit.
+  }
+}
+saveVisit(visit.value)
+const sinceMs = computed(() => visit.value.anchor ?? Date.now())
+
+function onVisibility(): void {
+  if (document.visibilityState === 'hidden') {
+    saveVisit(leaveVisit(visit.value, Date.now()))
+    return
+  }
+  saveVisit(startVisit(visit.value, Date.now()))
+  // The connection re-dials itself on wake; once live, catch up right away.
+  if (auth.value === 'authenticated' && status.value === 'connected') syncInbox()
+}
+function onPageHide(): void {
+  saveVisit(leaveVisit(visit.value, Date.now()))
+}
+document.addEventListener('visibilitychange', onVisibility)
+window.addEventListener('pagehide', onPageHide)
+
+function onTab(next: ControllerTab): void {
+  tab.value = next
+  if (next === 'inbox') syncInbox()
+  else if (next === 'runs') refreshRuns()
+}
+
+/** Open the Inbox from a session (the "another run needs you" banner). */
+function openInbox(): void {
+  tab.value = 'inbox'
+  backToBrowser()
+  syncInbox()
+}
+
 // Land on the link's run when the session first authenticates — the Host has
 // already subscribed us to it, so this only decides what the UI shows.
 //
@@ -325,10 +420,22 @@ watch(
     if (v !== 'authenticated' || !link.value) return
     const active = store.state.activeRunId
     if (!active) {
-      store.setActiveRun(link.value.run_id)
+      if (landOnLinkRun) store.setActiveRun(link.value.run_id)
+      landOnLinkRun = false
     } else if (active !== link.value.run_id) {
       conn.value?.openRun(active)
     }
+  },
+)
+
+// Each time the session becomes usable (first pairing AND every reconnect —
+// `auth` stays `authenticated` across a re-dial, `status` does not): prompts
+// that fired while the socket was down never arrived, and ones this device
+// holds may have been answered at the desktop meanwhile.
+watch(
+  () => status.value === 'connected' && auth.value === 'authenticated',
+  (ready) => {
+    if (ready) syncInbox()
   },
 )
 const entries = computed(() => runView.value?.entries ?? [])
@@ -507,24 +614,20 @@ function onCancel(): void {
   if (!conn.value?.sendCommand(cancelRunCmd(id))) warnNotSent()
 }
 
-function onDecide(decision: RemoteDecision): void {
-  const req = pending.value
-  if (!req) return
-  if (!conn.value?.sendCommand(respondPermissionCmd(req.run_id, req.request_id, decision))) {
+/** Answer one prompt. It stays on screen until the Host confirms the
+ * sidecar/broker accepted it (`permission_resolved`). */
+function respond(req: PermissionRequest, decision: RemoteDecision, answers?: QuestionAnswers): void {
+  if (!conn.value?.sendCommand(respondPermissionCmd(req.run_id, req.request_id, decision, answers))) {
     warnNotSent()
-    return
   }
-  // Keep the prompt until the Host confirms the sidecar/broker accepted it.
+}
+
+function onDecide(decision: RemoteDecision): void {
+  if (pending.value) respond(pending.value, decision)
 }
 
 function onAnswer(answers: QuestionAnswers): void {
-  const req = pending.value
-  if (!req) return
-  if (!conn.value?.sendCommand(respondPermissionCmd(req.run_id, req.request_id, 'allow_once', answers))) {
-    warnNotSent()
-    return
-  }
-  // Keep the prompt until the Host confirms the sidecar/broker accepted it.
+  if (pending.value) respond(pending.value, 'allow_once', answers)
 }
 
 function onRequestFiles(): void {
@@ -544,25 +647,51 @@ function onRequestFiles(): void {
     @otp="onOtp"
   />
 
-  <RunBrowserView
-    v-else-if="!runId && !draftProjectId"
-    :status="status"
-    :live="live"
-    :host-fingerprint="hostFp"
-    :status-label="browserStatusLabel"
-    :runs="store.state.runList"
-    :projects="store.state.projectList"
-    :pending-run-ids="Object.keys(store.state.pendingByRun)"
-    :selected-project-id="browserProjectId"
-    @update:selected-project-id="browserProjectId = $event"
-    @open="openRun"
-    @new-session="startNewSession"
-    @refresh="refreshRuns"
-    @disconnect="disconnect"
-  />
+  <div v-else-if="!runId && !draftProjectId" class="flex h-dvh min-h-0 flex-col">
+    <div class="flex-1 min-h-0">
+      <InboxView
+        v-if="tab === 'inbox'"
+        :status="status"
+        :live="live"
+        :host-fingerprint="hostFp"
+        :status-label="browserStatusLabel"
+        :pending="inboxPending"
+        :pending-seen-at="store.state.pendingSeenAt"
+        :runs="store.state.runList"
+        :projects="store.state.projectList"
+        :since-ms="sinceMs"
+        :read-ids="visit.read"
+        @decide="respond"
+        @answer="(req, answers) => respond(req, 'allow_once', answers)"
+        @open="openRun"
+        @refresh="syncInbox"
+        @disconnect="disconnect"
+      />
+      <RunBrowserView
+        v-else-if="tab === 'runs'"
+        :status="status"
+        :live="live"
+        :host-fingerprint="hostFp"
+        :status-label="browserStatusLabel"
+        :runs="store.state.runList"
+        :projects="store.state.projectList"
+        :pending-run-ids="Object.keys(store.state.pendingByRun)"
+        :selected-project-id="browserProjectId"
+        @update:selected-project-id="browserProjectId = $event"
+        @open="openRun"
+        @new-session="startNewSession"
+        @refresh="refreshRuns"
+        @disconnect="disconnect"
+      />
+      <!-- Todo / Note / Project ship separately; one shared stand-in for now. -->
+      <ControllerPlaceholderView v-else :title="t(`controller.tabs.${tab}`)" />
+    </div>
+    <BottomTabBar :tab="tab" :inbox-count="inboxCount" @update:tab="onTab" />
+  </div>
 
   <SessionView
     v-else
+    :run-key="runId ?? (draftProjectId ? `draft:${draftProjectId}` : null)"
     :title="title"
     :status="status"
     :live="live"
@@ -598,6 +727,7 @@ function onRequestFiles(): void {
     @answer="onAnswer"
     @disconnect="disconnect"
     @back="backToBrowser"
+    @open-inbox="openInbox"
     @clear-notice="store.clearNotice()"
     @update:engine="onEngine"
     @update:model="onModel"

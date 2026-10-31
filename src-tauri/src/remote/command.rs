@@ -2,9 +2,10 @@
 //!
 //! These functions hold ZERO I/O so they are directly unit-testable and cover
 //! the security-critical AC:
-//! - AC-12 (FR-009): allow-list — only 5 actions accepted; others rejected.
-//! - AC-17 (BR-016/SEC-011): a remote `respond_permission` may only be
-//!   `allow_once`/`deny_once`; `allow_always`/`deny_always` are rejected.
+//! - AC-12 (FR-009): allow-list — only listed actions accepted; others rejected.
+//! - AC-17 (BR-016/SEC-011 v1.2): a remote `respond_permission` must name its
+//!   scope explicitly: `allow_once`/`deny_once`, or `allow_always`/`deny_always`
+//!   (the desktop's per-project "remember" path). Anything else is rejected.
 //! - A remote `start_run` / `set_run_meta` may set any permission mode the
 //!   desktop can (parity by explicit product decision; the trust boundary is
 //!   device approval, not a locked-down remote mode).
@@ -22,7 +23,7 @@ pub const CMD_RATE_WINDOW: Duration = Duration::from_secs(60);
 /// The actions a Controller is allowed to invoke (FR-009). `list_runs` is a
 /// read-only browse of run metadata (added for full desktop parity — the trust
 /// boundary is device approval, not per-run share).
-pub const ALLOW_LIST: [&str; 14] = [
+pub const ALLOW_LIST: [&str; 15] = [
     "respond_permission",
     "start_run",
     "request_history",
@@ -38,6 +39,9 @@ pub const ALLOW_LIST: [&str; 14] = [
     // Navigation between runs; refused unless the client advertised multi_run.
     "open_run",
     "close_run",
+    // Re-send every still-open permission prompt (the phone's Inbox after a
+    // screen lock, when the live frames went nowhere).
+    "list_pending",
 ];
 
 /// Whether `action` is in the frozen allow-list (AC-12).
@@ -51,7 +55,7 @@ pub fn is_allowed_action(action: &str) -> bool {
 /// Browsing costs the Controller several of these per screen (open a run: list
 /// + history + meta + usage + files). Charging them to the 30/min command
 /// budget would make normal navigation trip the abuse limiter.
-pub const READ_ONLY_ACTIONS: [&str; 9] = [
+pub const READ_ONLY_ACTIONS: [&str; 10] = [
     "request_history",
     "list_runs",
     "list_projects",
@@ -62,6 +66,7 @@ pub const READ_ONLY_ACTIONS: [&str; 9] = [
     // Navigation: changes only what this session streams, never run state.
     "open_run",
     "close_run",
+    "list_pending",
 ];
 
 /// Whether `action` only reads state (and so uses the browse budget).
@@ -101,18 +106,20 @@ impl CommandRateLimiter {
 }
 
 /// Map a remote permission decision string onto the internal
-/// `respond_permission` decision (`allow`/`deny`), enforcing BR-016/SEC-011.
+/// `respond_permission` decision (`allow`/`deny`) plus its `remember` flag
+/// (BR-016/SEC-011).
 ///
-/// Only `allow_once` and `deny_once` are accepted from a Controller. The
-/// "remember" variants (`allow_always`/`deny_always`) — and anything else —
-/// return `Err`, so a remote device can never persist a permission grant
-/// (AC-17). Plain `allow`/`deny` are also refused: a remote caller must be
-/// explicit about the one-time scope.
-pub fn map_remote_decision(decision: &str) -> Result<&'static str, RejectReason> {
+/// A Controller must be explicit about scope: `allow_once`/`deny_once` answer
+/// this request only; `allow_always`/`deny_always` take the same "remember"
+/// path as the desktop's Always buttons (standing per-project choice + the
+/// engine's session cache). Plain `allow`/`deny` and anything else are refused
+/// (AC-17).
+pub fn map_remote_decision(decision: &str) -> Result<(&'static str, bool), RejectReason> {
     match decision {
-        "allow_once" => Ok("allow"),
-        "deny_once" => Ok("deny"),
-        "allow_always" | "deny_always" => Err(RejectReason::RememberNotAllowed),
+        "allow_once" => Ok(("allow", false)),
+        "deny_once" => Ok(("deny", false)),
+        "allow_always" => Ok(("allow", true)),
+        "deny_always" => Ok(("deny", true)),
         _ => Err(RejectReason::BadDecision),
     }
 }
@@ -122,8 +129,6 @@ pub fn map_remote_decision(decision: &str) -> Result<&'static str, RejectReason>
 pub enum RejectReason {
     /// Action not in the allow-list (AC-12).
     NotAllowed,
-    /// Decision was `allow_always`/`deny_always` (AC-17).
-    RememberNotAllowed,
     /// Decision string was not a recognized one-time decision.
     BadDecision,
     /// `request_id` already answered (AC-10).
@@ -145,7 +150,6 @@ impl RejectReason {
     pub fn as_str(self) -> &'static str {
         match self {
             RejectReason::NotAllowed => "action_not_allowed",
-            RejectReason::RememberNotAllowed => "remember_not_allowed",
             RejectReason::BadDecision => "bad_decision",
             RejectReason::Duplicate => "duplicate_request",
             RejectReason::RateLimited => "rate_limited",
@@ -304,6 +308,7 @@ mod tests {
             "list_plan_usage",
             "open_run",
             "close_run",
+            "list_pending",
         ] {
             assert!(is_allowed_action(a), "{a} should be allowed");
         }
@@ -323,28 +328,22 @@ mod tests {
         }
     }
 
-    // ---- AC-17: reject allow_always / deny_always from a Controller ----
+    // ---- AC-17: explicit-scope decisions only ----
     #[test]
     fn remote_decision_maps_once_variants() {
-        assert_eq!(map_remote_decision("allow_once"), Ok("allow"));
-        assert_eq!(map_remote_decision("deny_once"), Ok("deny"));
+        assert_eq!(map_remote_decision("allow_once"), Ok(("allow", false)));
+        assert_eq!(map_remote_decision("deny_once"), Ok(("deny", false)));
     }
 
     #[test]
-    fn remote_decision_rejects_remember_variants() {
-        assert_eq!(
-            map_remote_decision("allow_always"),
-            Err(RejectReason::RememberNotAllowed)
-        );
-        assert_eq!(
-            map_remote_decision("deny_always"),
-            Err(RejectReason::RememberNotAllowed)
-        );
+    fn remote_decision_maps_always_variants_to_remember() {
+        assert_eq!(map_remote_decision("allow_always"), Ok(("allow", true)));
+        assert_eq!(map_remote_decision("deny_always"), Ok(("deny", true)));
     }
 
     #[test]
     fn remote_decision_rejects_bare_and_unknown() {
-        // Even plain allow/deny must be explicit-once from remote.
+        // Even plain allow/deny must name their scope from remote.
         assert_eq!(map_remote_decision("allow"), Err(RejectReason::BadDecision));
         assert_eq!(map_remote_decision("deny"), Err(RejectReason::BadDecision));
         assert_eq!(map_remote_decision("ask"), Err(RejectReason::BadDecision));
