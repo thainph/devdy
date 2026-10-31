@@ -11,9 +11,9 @@
 //!
 //! Listing shows names anywhere except inside credential stores (Devdy's app
 //! data, `~/.ssh`, cloud CLI logins, …, [`crate::remote::guard::SecretPaths`]).
-//! Reading is held to the remote desktop's allowlist (projects, uploads,
-//! transcripts, [`crate::remote::fs_policy::RemoteFs`]): the remote desktop
-//! must not be a way to copy files off this machine.
+//! Reading is held to the remote desktop's allowlist (HOME, mounted volumes,
+//! projects, uploads, [`crate::remote::fs_policy::RemoteFs`]): never a
+//! credential store, nor system files outside it.
 
 use std::fs::{self, Metadata};
 use std::io::{Read, Seek, SeekFrom};

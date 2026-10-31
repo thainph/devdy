@@ -279,6 +279,8 @@ async fn run_oauth(
     let client = reqwest::Client::new();
     let token: TokenResponse = client
         .post(TOKEN_ENDPOINT)
+        // Bounded like the redirect wait above: the login never hangs for good.
+        .timeout(std::time::Duration::from_secs(30))
         .form(&[
             ("client_id", client_id),
             ("client_secret", client_secret),

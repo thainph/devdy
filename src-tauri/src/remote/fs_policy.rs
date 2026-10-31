@@ -4,56 +4,64 @@
 //! ([`crate::remote::guard::from_remote_bridge`]) goes through a [`RemoteFs`]:
 //! an ALLOWLIST, not a denylist — a path is usable only under
 //!
-//! - a registered Devdy project or repo root (from the DB), read + write;
-//! - the remote upload dir, read + write;
-//! - session transcripts (`~/.claude/projects`, `~/.codex/sessions`, …),
-//!   Slack thread downloads and the log folder, read only;
+//! - HOME, read + write;
+//! - a mounted volume (`/Volumes/*`, macOS), read + write;
+//! - a registered Devdy project or repo root (from the DB) and the remote upload
+//!   dir, read + write — they may live outside HOME;
+//! - Devdy's log folder and Slack thread downloads, read only: the log is the
+//!   trace a Controller must not erase;
 //!
-//! and, inside those, never a credential store ([`SecretPaths`]) nor — for a
-//! write — a file a tool executes or loads as config ([`is_exec_config`]:
-//! `.git/hooks`, `.claude/`, `.mcp.json`, …). Exports may only land in
-//! Downloads or the upload dir.
+//! and, inside those, never a credential store ([`SecretPaths`]: `~/.ssh`,
+//! cloud CLI logins, Devdy's app data, …). Exports may land anywhere writable.
+//!
+//! A paired remote desktop has full control (it runs agents, edits settings
+//! and accounts), so the files a tool executes or loads as config (`.git/hooks`,
+//! `.claude/`, `.mcp.json`) are writable like any other: refusing them would
+//! not keep code from running here, only get in the user's way.
 //!
 //! Roots are matched by identity ((device, inode) of the target's ancestors),
 //! so `..`, symlinks, case and the `/System/Volumes/Data` firmlink cannot
-//! reach outside them. A root at or above HOME (or `/`) is ignored: it would
-//! open everything.
+//! reach outside them; the closest root decides (a read-only folder inside
+//! HOME stays read-only). A project root above HOME (`/`, `/Users`) is
+//! ignored: it would open everything.
 
 use std::path::{Path, PathBuf};
 
 use tauri::{Manager, Runtime, Webview};
 
 use crate::db::Db;
-use crate::remote::guard::{from_remote_bridge, strip_data_volume, FileId, SecretPaths};
+use crate::remote::guard::{from_remote_bridge, FileId, SecretPaths};
 
 /// Most entries a copied / moved / imported tree may hold before the check
 /// gives up (and refuses).
 const MAX_TREE_ENTRIES: usize = 50_000;
 
+/// Where macOS mounts external / network volumes. The boot volume's entry
+/// there is a symlink to `/`, resolved (and so not matched) before the check.
+#[cfg(target_os = "macos")]
+const VOLUMES: &str = "/Volumes";
+
 /// A root, by identity.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Root {
     id: FileId,
+    writable: bool,
 }
 
 /// One remote caller's view of the file system (see module docs).
 #[derive(Debug, Clone)]
 pub struct RemoteFs {
-    writable: Vec<Root>,
-    read_only: Vec<Root>,
-    export: Vec<Root>,
+    roots: Vec<Root>,
     secrets: SecretPaths,
 }
 
 /// Roots a [`RemoteFs`] is built from.
 #[derive(Debug, Default)]
 pub struct Roots {
-    /// Project / repo roots and the upload dir.
+    /// HOME, mounted volumes, project / repo roots and the upload dir.
     pub writable: Vec<PathBuf>,
-    /// Transcripts, Slack downloads, logs.
+    /// Logs, Slack downloads.
     pub read_only: Vec<PathBuf>,
-    /// Where exports may be written (Downloads, the upload dir).
-    pub export: Vec<PathBuf>,
 }
 
 fn refused(raw: &Path, why: &str) -> String {
@@ -63,27 +71,24 @@ fn refused(raw: &Path, why: &str) -> String {
 
 impl RemoteFs {
     pub fn new(roots: Roots, home: Option<&Path>, secrets: SecretPaths) -> Self {
-        // HOME and everything above it: a root there would allow everything.
+        // Above HOME: a root there would open other users' homes, or `/`.
         let too_wide: Vec<FileId> = home
-            .map(|h| h.ancestors().filter_map(FileId::of).collect())
+            .map(|h| h.ancestors().skip(1).filter_map(FileId::of).collect())
             .unwrap_or_default();
-        let build = |paths: Vec<PathBuf>| -> Vec<Root> {
+        let build = |paths: Vec<PathBuf>, writable: bool| -> Vec<Root> {
             paths
                 .into_iter()
                 .filter_map(|p| {
                     let path = p.canonicalize().ok()?;
                     let id = FileId::of(&path)?;
                     let wide = too_wide.contains(&id) || path.parent().is_none();
-                    (!wide).then_some(Root { id })
+                    (!wide).then_some(Root { id, writable })
                 })
                 .collect()
         };
-        RemoteFs {
-            writable: build(roots.writable),
-            read_only: build(roots.read_only),
-            export: build(roots.export),
-            secrets,
-        }
+        let mut all = build(roots.read_only, false);
+        all.extend(build(roots.writable, true));
+        RemoteFs { roots: all, secrets }
     }
 
     /// The policy for a call from `webview`, or `None` when it is not the
@@ -100,18 +105,11 @@ impl RemoteFs {
         let paths = app.path();
         let home = paths.home_dir().ok();
         let app_data = paths.app_data_dir().ok();
-        let uploads = crate::remote::upload::uploads_root(app).ok();
         let mut roots = Roots { writable: projects.into_iter().map(PathBuf::from).collect(), ..Roots::default() };
-        roots.writable.extend(uploads.clone());
-        roots.export.extend(uploads);
-        if let Some(home) = &home {
-            for d in [".claude/projects", ".codex/sessions", ".codex/archived_sessions"] {
-                roots.read_only.push(home.join(d));
-            }
-        }
-        if let Ok(dl) = paths.download_dir() {
-            roots.export.push(dl);
-        }
+        roots.writable.extend(home.clone());
+        #[cfg(target_os = "macos")]
+        roots.writable.push(PathBuf::from(VOLUMES));
+        roots.writable.extend(crate::remote::upload::uploads_root(app).ok());
         if let Some(data) = &app_data {
             roots.read_only.extend([data.join("slack-threads"), data.join("logs")]);
         }
@@ -119,13 +117,13 @@ impl RemoteFs {
         Ok(Some(Self::new(roots, home.as_deref(), secrets)))
     }
 
-    /// The root `canonical` lies in, and its path relative to that root.
-    fn locate<'a>(roots: &'a [Root], canonical: &Path) -> Option<(&'a Root, PathBuf)> {
+    /// The closest root `canonical` lies in.
+    fn locate(&self, canonical: &Path) -> Option<Root> {
         for ancestor in canonical.ancestors() {
             let Some(id) = FileId::of(ancestor) else { continue };
-            if let Some(root) = roots.iter().find(|r| r.id == id) {
-                let rel = canonical.strip_prefix(ancestor).map(Path::to_path_buf).unwrap_or_default();
-                return Some((root, rel));
+            // Read-only first: a folder registered both ways stays read-only.
+            if let Some(root) = self.roots.iter().filter(|r| r.id == id).min_by_key(|r| r.writable) {
+                return Some(*root);
             }
         }
         None
@@ -134,9 +132,8 @@ impl RemoteFs {
     /// An existing path, resolved, that the caller may read.
     pub fn read(&self, raw: &Path) -> Result<PathBuf, String> {
         let canonical = raw.canonicalize().map_err(|_| format!("not found: {}", raw.display()))?;
-        let all: Vec<Root> = self.writable.iter().chain(&self.read_only).copied().collect();
-        if Self::locate(&all, &canonical).is_none() {
-            return Err(refused(raw, "outside the projects, not reachable"));
+        if self.locate(&canonical).is_none() {
+            return Err(refused(raw, "outside HOME and the projects, not reachable"));
         }
         if self.secrets.denies(&canonical) {
             return Err(refused(raw, "a credential store, not readable"));
@@ -145,52 +142,35 @@ impl RemoteFs {
     }
 
     /// `raw` (existing or about to be created) resolved, when the caller may
-    /// create / change / remove it.
+    /// create / change / remove it — exports included.
     pub fn write(&self, raw: &Path) -> Result<PathBuf, String> {
-        self.write_in(&self.writable, raw)
-    }
-
-    /// A file an export may create: in Downloads or the upload dir only.
-    pub fn export(&self, raw: &Path) -> Result<PathBuf, String> {
-        self.write_in(&self.export, raw)
-    }
-
-    fn write_in(&self, roots: &[Root], raw: &Path) -> Result<PathBuf, String> {
         let resolved = resolve_for_write(raw).ok_or_else(|| format!("not found: {}", raw.display()))?;
-        let Some((_, rel)) = Self::locate(roots, &resolved) else {
-            return Err(refused(raw, "outside the projects, not writable"));
-        };
+        match self.locate(&resolved) {
+            None => return Err(refused(raw, "outside HOME and the projects, not writable")),
+            Some(root) if !root.writable => return Err(refused(raw, "read only")),
+            Some(_) => {}
+        }
         if self.secrets.denies(&resolved) {
             return Err(refused(raw, "a credential store, not writable"));
-        }
-        if is_exec_config(&rel) {
-            return Err(refused(raw, "a hook / tool config, not writable"));
         }
         Ok(resolved)
     }
 
     /// Before copying / moving the tree at `src` (already checked itself):
-    /// every entry must be readable (a link inside could point at a credential
-    /// store — copies follow links), and none may be a hook / tool config
-    /// (copying it in would plant one).
+    /// every entry must be readable — a link inside could point at a
+    /// credential store, and copies follow links.
     pub fn tree(&self, src: &Path) -> Result<(), String> {
-        let name = src.file_name().map(PathBuf::from).unwrap_or_default();
-        let mut stack = vec![(src.to_path_buf(), name)];
+        let mut stack = vec![src.to_path_buf()];
         let mut seen = 0usize;
-        while let Some((path, rel)) = stack.pop() {
+        while let Some(path) = stack.pop() {
             seen += 1;
             if seen > MAX_TREE_ENTRIES {
                 return Err(refused(src, "too many entries to check"));
             }
-            if is_exec_config(&rel) {
-                return Err(refused(&path, "a hook / tool config, not copyable"));
-            }
             let canonical = self.read(&path)?;
             if canonical.is_dir() {
                 let entries = std::fs::read_dir(&canonical).map_err(|e| format!("read directory: {e}"))?;
-                for entry in entries.flatten() {
-                    stack.push((entry.path(), rel.join(entry.file_name())));
-                }
+                stack.extend(entries.flatten().map(|entry| entry.path()));
             }
         }
         Ok(())
@@ -206,30 +186,6 @@ fn resolve_for_write(raw: &Path) -> Option<PathBuf> {
     let name = raw.file_name()?;
     let parent = raw.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
     Some(parent.canonicalize().ok()?.join(name))
-}
-
-/// Whether a path (relative to its root) is something a tool runs or loads as
-/// config, so writing it means code execution on this machine: git hooks and
-/// config (`core.hooksPath`, `core.fsmonitor`), Claude / Codex project config
-/// (hooks, MCP servers), `.mcp.json`, VS Code tasks. Also the bare `.git` /
-/// `.vscode` folders: renaming a folder to one of those would plant the rest.
-pub fn is_exec_config(rel: &Path) -> bool {
-    let parts: Vec<String> = strip_data_volume(rel)
-        .components()
-        .filter_map(|c| match c {
-            std::path::Component::Normal(s) => Some(s.to_string_lossy().to_lowercase()),
-            _ => None,
-        })
-        .collect();
-    let any = |names: &[&str]| parts.iter().any(|p| names.contains(&p.as_str()));
-    if any(&[".claude", ".codex", ".mcp.json"]) {
-        return true;
-    }
-    let pair = |a: &str, b: &[&str]| parts.windows(2).any(|w| w[0] == a && b.contains(&w[1].as_str()));
-    if pair(".git", &["hooks", "config"]) || pair(".vscode", &["tasks.json"]) {
-        return true;
-    }
-    matches!(parts.last().map(String::as_str), Some(".git" | ".vscode"))
 }
 
 /// `Ok(path)` unchanged for a local caller, else `policy.read(path)`.
@@ -257,6 +213,8 @@ mod tests {
         base: PathBuf,
         home: PathBuf,
         proj: PathBuf,
+        /// A stand-in for a mounted volume (`/Volumes/USB`).
+        volumes: PathBuf,
         fs: RemoteFs,
     }
 
@@ -270,114 +228,143 @@ mod tests {
         let base = std::env::temp_dir().canonicalize().unwrap().join(format!("devdy-rfs-{}", uuid::Uuid::new_v4()));
         let home = base.join("home");
         let proj = home.join("work/proj");
+        let volumes = base.join("Volumes");
+        let app_data = home.join("Library/Application Support/vn.papay.devdy");
         for d in [
             proj.join("src"),
             proj.join(".git/hooks"),
+            proj.join(".claude"),
             home.join(".ssh"),
             home.join("Downloads"),
             home.join("Documents"),
             home.join(".claude/projects/p"),
+            app_data.join("logs"),
+            app_data.join("server-keys"),
+            volumes.join("USB/photos"),
+            base.join("outside"),
             base.join("uploads"),
+            base.join("elsewhere-proj"),
         ] {
             fs::create_dir_all(d).unwrap();
         }
-        for f in ["work/proj/src/a.rs", "work/proj/.env", ".ssh/id_rsa", "Documents/private.txt", ".claude/projects/p/s.jsonl"] {
+        for f in [
+            "work/proj/src/a.rs",
+            "work/proj/.env",
+            ".ssh/id_rsa",
+            "Documents/private.txt",
+            ".claude/projects/p/s.jsonl",
+            ".netrc",
+            "Library/Application Support/vn.papay.devdy/logs/devdy.log",
+            "Library/Application Support/vn.papay.devdy/server-keys/k",
+        ] {
             fs::write(home.join(f), b"x").unwrap();
         }
+        fs::write(volumes.join("USB/photos/a.jpg"), b"x").unwrap();
+        fs::write(base.join("outside/x.txt"), b"x").unwrap();
+        fs::write(base.join("elsewhere-proj/main.rs"), b"x").unwrap();
         let roots = Roots {
-            // HOME itself registered as a project must not open HOME.
-            writable: vec![proj.clone(), home.clone(), PathBuf::from("/"), base.join("uploads")],
-            read_only: vec![home.join(".claude/projects")],
-            export: vec![home.join("Downloads"), base.join("uploads")],
+            // A project above HOME (here: the temp base) must not open it all.
+            writable: vec![
+                proj.clone(),
+                home.clone(),
+                volumes.clone(),
+                base.join("elsewhere-proj"),
+                base.clone(),
+                PathBuf::from("/"),
+                base.join("uploads"),
+            ],
+            read_only: vec![app_data.join("logs")],
         };
-        let fs = RemoteFs::new(roots, Some(&home), SecretPaths::new(Some(&home), None));
-        Fx { base, home, proj, fs }
+        let fs = RemoteFs::new(roots, Some(&home), SecretPaths::new(Some(&home), Some(&app_data)));
+        Fx { base, home, proj, volumes, fs }
     }
 
     #[test]
-    fn reads_only_inside_the_allowed_roots() {
+    fn home_files_are_readable_and_writable() {
         let f = fx();
-        assert!(f.fs.read(&f.proj.join("src/a.rs")).is_ok());
-        assert!(f.fs.read(&f.proj.join(".env")).is_ok());
-        assert!(f.fs.read(&f.home.join(".claude/projects/p/s.jsonl")).is_ok());
-        for p in [f.home.join("Documents/private.txt"), f.home.join(".ssh/id_rsa"), PathBuf::from("/etc/hosts")] {
-            assert!(f.fs.read(&p).unwrap_err().starts_with("permission denied"), "{}", p.display());
+        for p in [f.proj.join("src/a.rs"), f.proj.join(".env"), f.home.join("Documents/private.txt"), f.home.join(".claude/projects/p/s.jsonl")] {
+            assert!(f.fs.read(&p).is_ok(), "{}", p.display());
+            assert!(f.fs.write(&p).is_ok(), "{}", p.display());
         }
-        // `..` out of the project.
-        assert!(f.fs.read(&f.proj.join("../../Documents/private.txt")).is_err());
-        // Read-only roots are not writable.
-        assert!(f.fs.write(&f.home.join(".claude/projects/p/new.jsonl")).is_err());
+        assert!(f.fs.write(&f.home.join("Documents/new.txt")).is_ok());
+        assert!(f.fs.write(&f.home.join(".zshrc")).is_ok());
+    }
+
+    #[test]
+    fn credential_stores_are_refused() {
+        let f = fx();
+        for p in [
+            f.home.join(".ssh/id_rsa"),
+            f.home.join(".ssh"),
+            f.home.join(".netrc"),
+            f.home.join("Library/Application Support/vn.papay.devdy/server-keys/k"),
+        ] {
+            assert!(f.fs.read(&p).unwrap_err().starts_with("permission denied"), "{}", p.display());
+            assert!(f.fs.write(&p).is_err(), "{}", p.display());
+        }
+        assert!(f.fs.write(&f.home.join(".ssh/authorized_keys")).is_err());
+        // `..` from a project.
+        assert!(f.fs.read(&f.proj.join("../../.ssh/id_rsa")).is_err());
+    }
+
+    #[test]
+    fn outside_home_only_volumes_and_projects() {
+        let f = fx();
+        assert!(f.fs.read(&f.volumes.join("USB/photos/a.jpg")).is_ok());
+        assert!(f.fs.write(&f.volumes.join("USB/photos/b.jpg")).is_ok());
+        assert!(f.fs.read(&f.base.join("elsewhere-proj/main.rs")).is_ok());
+        assert!(f.fs.write(&f.base.join("uploads/s.zip")).is_ok());
+        for p in [f.base.join("outside/x.txt"), PathBuf::from("/etc/hosts")] {
+            assert!(f.fs.read(&p).unwrap_err().starts_with("permission denied"), "{}", p.display());
+            assert!(f.fs.write(&p).is_err(), "{}", p.display());
+        }
+        assert!(f.fs.write(&f.base.join("outside/new.txt")).is_err());
+    }
+
+    #[test]
+    fn the_log_folder_stays_read_only() {
+        let f = fx();
+        let log = f.home.join("Library/Application Support/vn.papay.devdy/logs/devdy.log");
+        assert!(f.fs.read(&log).is_ok());
+        assert!(f.fs.write(&log).unwrap_err().contains("read only"));
+        assert!(f.fs.write(&log.with_file_name("new.log")).is_err());
+    }
+
+    #[test]
+    fn tool_config_is_writable_under_full_control() {
+        let f = fx();
+        for rel in [".git/hooks/pre-commit", ".git/config", ".claude/settings.json", ".mcp.json"] {
+            assert!(f.fs.write(&f.proj.join(rel)).is_ok(), "{rel}");
+        }
+        assert!(f.fs.tree(&f.proj).is_ok());
     }
 
     #[cfg(unix)]
     #[test]
-    fn links_out_of_a_project_are_followed_then_refused() {
+    fn links_into_a_credential_store_are_followed_then_refused() {
         let f = fx();
         std::os::unix::fs::symlink(f.home.join(".ssh"), f.proj.join("keys")).unwrap();
-        std::os::unix::fs::symlink(f.home.join("Documents/private.txt"), f.proj.join("doc.png")).unwrap();
+        std::os::unix::fs::symlink(f.home.join(".ssh/id_rsa"), f.home.join("Documents/key.png")).unwrap();
+        std::os::unix::fs::symlink(f.base.join("outside/x.txt"), f.proj.join("out.txt")).unwrap();
         assert!(f.fs.read(&f.proj.join("keys/id_rsa")).is_err());
-        assert!(f.fs.read(&f.proj.join("doc.png")).is_err());
+        assert!(f.fs.read(&f.home.join("Documents/key.png")).is_err());
         assert!(f.fs.write(&f.proj.join("keys/new")).is_err());
+        assert!(f.fs.read(&f.proj.join("out.txt")).is_err());
         // A tree holding such a link cannot be copied.
         assert!(f.fs.tree(&f.proj).is_err());
-        fs::remove_file(f.proj.join("keys")).unwrap();
-        fs::remove_file(f.proj.join("doc.png")).unwrap();
+        assert!(f.fs.tree(&f.proj.join("src")).is_ok());
     }
 
     #[test]
     fn the_data_volume_alias_of_a_root_is_the_same_root() {
         let f = fx();
-        let alias = Path::new("/System/Volumes/Data").join(f.proj.join("src/a.rs").strip_prefix("/").unwrap());
-        if alias.exists() {
+        let alias = |p: PathBuf| Path::new("/System/Volumes/Data").join(p.strip_prefix("/").unwrap());
+        let file = alias(f.proj.join("src/a.rs"));
+        if file.exists() {
             // macOS: matched by identity, not by the literal prefix.
-            assert!(f.fs.read(&alias).is_ok());
-            let doc = Path::new("/System/Volumes/Data").join(f.home.join("Documents/private.txt").strip_prefix("/").unwrap());
-            assert!(f.fs.read(&doc).is_err());
+            assert!(f.fs.read(&file).is_ok());
+            assert!(f.fs.read(&alias(f.home.join(".ssh/id_rsa"))).is_err());
         }
-    }
-
-    #[test]
-    fn writes_never_plant_hooks_or_tool_config() {
-        let f = fx();
-        assert!(f.fs.write(&f.proj.join("src/new.rs")).is_ok());
-        assert!(f.fs.write(&f.proj.join("src/a.rs")).is_ok());
-        for rel in [
-            ".git/hooks/pre-commit",
-            ".git/hooks",
-            ".git/config",
-            ".git",
-            ".claude/settings.json",
-            ".claude",
-            "src/.claude/settings.local.json",
-            ".mcp.json",
-            ".codex/config.toml",
-            ".vscode/tasks.json",
-            ".vscode",
-            ".GIT/HOOKS/post-checkout",
-        ] {
-            assert!(f.fs.write(&f.proj.join(rel)).is_err(), "{rel}");
-        }
-        // Not under a root at all.
-        assert!(f.fs.write(&f.home.join("Documents/x.txt")).is_err());
-        assert!(f.fs.write(&f.home.join(".zshrc")).is_err());
-    }
-
-    #[test]
-    fn copying_a_tree_with_tool_config_is_refused() {
-        let f = fx();
-        assert!(f.fs.tree(&f.proj.join("src")).is_ok());
-        // The project root holds `.git/hooks`.
-        assert!(f.fs.tree(&f.proj).is_err());
-    }
-
-    #[test]
-    fn exports_go_to_downloads_or_uploads_only() {
-        let f = fx();
-        assert!(f.fs.export(&f.home.join("Downloads/rule.md")).is_ok());
-        assert!(f.fs.export(&f.base.join("uploads/s.zip")).is_ok());
-        assert!(f.fs.export(&f.proj.join("rule.md")).is_err());
-        assert!(f.fs.export(&f.home.join(".zshrc")).is_err());
-        assert!(f.fs.export(&f.home.join("Downloads/.claude")).is_err());
     }
 
     #[test]

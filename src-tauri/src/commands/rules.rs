@@ -438,9 +438,9 @@ pub async fn export_rule(
     dest_path: String,
 ) -> Result<(), String> {
     use sqlx::Row;
-    // A remote desktop exports into Downloads / the upload dir only.
+    // A remote desktop exports anywhere it may write.
     let dest_path = match crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await? {
-        Some(p) => p.export(Path::new(&dest_path))?.to_string_lossy().into_owned(),
+        Some(p) => p.write(Path::new(&dest_path))?.to_string_lossy().into_owned(),
         None => dest_path,
     };
     let row = sqlx::query("SELECT source_path FROM rules WHERE id = ?")
