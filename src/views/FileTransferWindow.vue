@@ -109,7 +109,12 @@ async function transfer(direction: Direction, entries: FsEntry[], destDir: strin
       resolver: new ConflictResolver(askConflict),
     })
     for (const f of plan.failed) {
-      const error = f.error === 'too_many_entries' ? t('fileTransfer.errors.tooMany') : f.error
+      const error =
+        f.error === 'too_many_entries'
+          ? t('fileTransfer.errors.tooMany')
+          : f.error === 'unsafe_name'
+            ? t('fileTransfer.errors.unsafeName')
+            : f.error
       toast.error(t('fileTransfer.errors.planFailed', { name: f.name, error }), 6000)
     }
     if (plan.canceled) return
@@ -215,17 +220,20 @@ onMounted(async () => {
   }
 })
 
-// Closing the window mid-copy: drop the partial files (best effort; the
-// controlled side also discards writes left idle for 10 minutes).
+// Closing the window mid-copy: send the abort of every write under way (best
+// effort — a closing page may not get the calls out). Backstops: this
+// machine drops the writes of a destroyed window, and both machines sweep
+// writes idle for 10 minutes and our temp files older than an hour
+// (src-tauri/src/remote/upload.rs).
 function onUnload() {
-  queue.cancelAll()
+  queue.shutdown()
 }
 window.addEventListener('beforeunload', onUnload)
 
 onBeforeUnmount(() => {
   unlistenDrop?.()
   window.removeEventListener('beforeunload', onUnload)
-  queue.cancelAll()
+  queue.shutdown()
 })
 </script>
 

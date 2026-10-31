@@ -56,6 +56,7 @@
     "fileChanged": "Tệp đã thay đổi trong lúc đang chép.",
     "integrity": "Kiểm tra toàn vẹn thất bại: bản chép không khớp bản gốc (SHA-256).",
     "tooMany": "thư mục có quá nhiều mục (hơn 10.000)",
-    "planFailed": "Không chép được {name}: {error}"
+    "planFailed": "Không chép được {name}: {error}",
+    "unsafeName": "tên không hợp lệ (rỗng, “.”, “..”, hoặc chứa dấu phân cách / ký tự điều khiển) — bị từ chối"
   }
 }

@@ -22,6 +22,8 @@ import {
   planTransfer,
   queueProgress,
   relParent,
+  safeName,
+  safeRel,
   wireBytes,
   writeConflict,
 } from '../fileTransferCore.ts'
@@ -89,7 +91,7 @@ test('the conflict resolver remembers "apply to all"', async () => {
 
 const walk = {
   entries: [
-    { rel: 'a.txt', is_dir: false, size: 5 },
+    { rel: 'a.txt', is_dir: false, size: 5, mode: 0o755 },
     { rel: 'sub', is_dir: true, size: 0 },
     { rel: 'sub/b.bin', is_dir: false, size: 7 },
   ],
@@ -99,15 +101,32 @@ const walk = {
 }
 
 test('a folder plan creates the tree, then copies its files', () => {
-  const { dirs, jobs } = planFolder('down', '/b/proj', 'C:\\dl\\proj', walk, 'fail')
-  assert.deepEqual(dirs, ['C:\\dl\\proj', 'C:\\dl\\proj\\sub'])
+  const { dirs, jobs } = planFolder('down', '/b/proj', 'C:\\dl', 'proj', walk, 'fail')
+  assert.deepEqual(dirs, ['proj', 'proj/sub'])
   assert.deepEqual(
-    jobs.map((j) => [j.src, j.destDir, j.name, j.size, j.label]),
+    jobs.map((j) => [j.src, j.destRoot, j.destRel, j.destDir, j.name, j.size, j.mode, j.label]),
     [
-      ['/b/proj/a.txt', 'C:\\dl\\proj', 'a.txt', 5, 'proj/a.txt'],
-      ['/b/proj/sub/b.bin', 'C:\\dl\\proj\\sub', 'b.bin', 7, 'proj/sub/b.bin'],
+      ['/b/proj/a.txt', 'C:\\dl', 'proj', 'C:\\dl\\proj', 'a.txt', 5, 0o755, 'proj/a.txt'],
+      ['/b/proj/sub/b.bin', 'C:\\dl', 'proj/sub', 'C:\\dl\\proj\\sub', 'b.bin', 7, null, 'proj/sub/b.bin'],
     ],
   )
+})
+
+test('names and walk paths from the other side must be plain names', () => {
+  for (const ok of ['a', '.env', 'a b', 'résumé.pdf', '...']) assert.equal(safeName(ok), ok)
+  for (const bad of ['', '.', '..', 'a/b', 'a\\b', 'a\u0000b', 'a\nb', '\u007f']) {
+    assert.throws(() => safeName(bad), /unsafe_name/, JSON.stringify(bad))
+  }
+  assert.equal(safeRel('a/b/c.txt'), 'a/b/c.txt')
+  for (const bad of ['../x', 'a/../../x', '/etc/passwd', 'a//b', 'a/', 'a\\..\\x', 'a/./b', '']) {
+    assert.throws(() => safeRel(bad), /unsafe_name/, bad)
+  }
+  const evil = (rel) => ({ entries: [{ rel, is_dir: false, size: 1 }], total_bytes: 1, truncated: false, skipped: 0 })
+  for (const rel of ['../../Library/LaunchAgents/x.plist', '/abs', 'ok/../../x']) {
+    assert.throws(() => planFolder('down', '/b/p', '/Users/me/dl', 'p', evil(rel), 'fail'), /unsafe_name/)
+    assert.throws(() => planFolder('up', '/a/p', '/home/b', 'p', evil(rel), 'fail'), /unsafe_name/)
+  }
+  assert.throws(() => planFolder('down', '/b/p', '/dl', '..', evil('x'), 'fail'), /unsafe_name/)
 })
 
 function entry(name, is_dir, size = 0) {
@@ -121,7 +140,7 @@ function planDeps(existing, answers) {
     deps: {
       walk: async (path) => (path.endsWith('huge') ? { ...walk, truncated: true } : walk),
       list: async () => existing.map((n) => entry(n, false)),
-      mkdir: async (p) => made.push(p),
+      mkdir: async (root, rel) => made.push(`${root}/${rel}`),
       resolver: new ConflictResolver(async () => answers.shift() ?? null),
     },
   }
@@ -164,6 +183,13 @@ test('a merged folder overwrites inside; a cancelled prompt queues nothing; huge
   assert.equal(none.canceled, true)
   assert.equal(none.jobs.length, 0)
 
+  // A name from the other side that is not a plain name is refused, the rest goes on.
+  const evil = planDeps([], [])
+  const refused = await planTransfer('down', [entry('..', true), entry('a/b', false, 1), entry('fine', false, 1)], '/dest', evil.deps)
+  assert.deepEqual(refused.failed.map((f) => [f.name, f.error]), [['..', 'unsafe_name'], ['a/b', 'unsafe_name']])
+  assert.deepEqual(refused.jobs.map((j) => j.name), ['fine'])
+  assert.deepEqual(evil.made, [])
+
   const huge = planDeps([], [])
   const failed = await planTransfer('up', [entry('huge', true), entry('ok', false, 1)], '/dest', huge.deps)
   assert.deepEqual(failed.failed, [{ name: 'huge', error: 'too_many_entries' }])
@@ -178,7 +204,7 @@ function fakeIo({ src = {}, failWriteAt = -1, corrupt = false, delay = 0 } = {})
   let nextId = 0
   const tick = () => new Promise((r) => setTimeout(r, delay))
   const io = {
-    begin: async (destDir, name, size, conflict) => {
+    begin: async ({ destDir, name, size, conflict }) => {
       await tick()
       const id = `w${nextId++}`
       writes.set(id, { path: `${destDir}/${name}`, size, conflict, bytes: Buffer.alloc(0) })
@@ -349,4 +375,19 @@ test('copies never hold more than the budget, and give it all back', async () =>
   const failing = { ...f.io, write: () => Promise.reject(new Error('link down')) }
   await assert.rejects(copyFile(job('/a', 40), failing, { canceled: () => false, chunk: 4, budget }), /link down/)
   assert.equal(budget.inFlight, 0)
+})
+
+test('shutdown sends the abort of every running write at once', async () => {
+  const f = fakeIo({ src: { '/a': Buffer.alloc(40, 'a'), '/b': Buffer.alloc(40, 'b') }, delay: 2 })
+  const aborted = []
+  const io = { ...f.io, abort: async (id) => (aborted.push(id), f.io.abort(id)) }
+  const q = new TransferQueue({ io: { up: io, down: io }, chunk: 4 })
+  const mk = (n) => ({ direction: 'up', src: `/${n}`, destDir: '/d', name: n, size: 40, conflict: 'fail', label: n })
+  q.add([mk('a'), mk('b')])
+  await new Promise((r) => setTimeout(r, 10))
+  q.shutdown()
+  assert.equal(aborted.length, 2, 'sent before the copies notice the cancel')
+  await q.idle()
+  assert.deepEqual(q.items.map((i) => i.status), ['canceled', 'canceled'])
+  assert.equal(f.writes.size, 0)
 })

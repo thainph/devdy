@@ -46,6 +46,8 @@ pub struct FsEntry {
     pub size: u64,
     /// Last modification, Unix milliseconds (`None` when unavailable).
     pub modified: Option<u64>,
+    /// Unix permission bits (`None` elsewhere), carried to a transferred copy.
+    pub mode: Option<u32>,
 }
 
 /// A directory listing; `truncated` when it held more than [`MAX_LIST`]
@@ -60,6 +62,21 @@ pub struct FsListing {
 pub struct FsChunk {
     pub data_base64: String,
     pub total_size: u64,
+}
+
+/// Permission bits of `meta` (`rwx` for user / group / other plus
+/// setuid / setgid / sticky); `None` off Unix.
+pub fn mode_of(meta: &Metadata) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        Some(meta.permissions().mode() & 0o7777)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        None
+    }
 }
 
 fn modified_ms(meta: &Metadata) -> Option<u64> {
@@ -84,6 +101,7 @@ fn entry(path: &Path, meta: &Metadata) -> FsEntry {
         is_dir: meta.is_dir(),
         size: if meta.is_dir() { 0 } else { meta.len() },
         modified: modified_ms(meta),
+        mode: mode_of(meta),
     }
 }
 
@@ -132,6 +150,7 @@ pub fn list_dir(path: &str, max: usize) -> Result<FsListing, String> {
                 is_dir: false,
                 size: 0,
                 modified: None,
+                mode: None,
             }),
         }
     }
@@ -363,7 +382,7 @@ mod tests {
     use super::*;
 
     fn e(name: &str, is_dir: bool) -> FsEntry {
-        FsEntry { name: name.into(), path: format!("/x/{name}"), is_dir, size: 0, modified: None }
+        FsEntry { name: name.into(), path: format!("/x/{name}"), is_dir, size: 0, modified: None, mode: None }
     }
 
     #[test]

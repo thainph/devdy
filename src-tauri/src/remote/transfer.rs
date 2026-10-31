@@ -12,6 +12,12 @@
 //!   invoke and refused to the bridge (`guard::LOCAL_ONLY_COMMANDS`): run on B
 //!   they would let a controller touch any file there.
 //!
+//! Names and relative paths of a copy come from the OTHER machine (its
+//! listing, its walk), so a compromised B could hand A `../../Library/…`. The
+//! A-side writers therefore take the folder the user picked (`root`) plus a
+//! `/`-separated relative path, and refuse anything that resolves outside
+//! `root` (`..`, absolute parts, links pointing elsewhere): [`contained`].
+//!
 //! A file is written to a hidden temp file next to its destination, hashed
 //! (SHA-256) as the chunks arrive, and renamed into place only once complete
 //! and matching the source's hash ([`crate::remote::upload::Uploads`]).
@@ -43,6 +49,8 @@ pub struct WalkEntry {
     pub rel: String,
     pub is_dir: bool,
     pub size: u64,
+    /// Unix permission bits, carried to the copy.
+    pub mode: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -112,7 +120,8 @@ pub fn walk(root: &Path, max: usize, hide: impl Fn(&Path) -> bool) -> Result<Wal
         }
         let size = if meta.is_dir() { 0 } else { meta.len() };
         out.total_bytes += size;
-        out.entries.push(WalkEntry { rel: rel.clone(), is_dir: meta.is_dir(), size });
+        let mode = crate::remote::fs_bridge::mode_of(&meta);
+        out.entries.push(WalkEntry { rel: rel.clone(), is_dir: meta.is_dir(), size, mode });
         if meta.is_dir() {
             // An unreadable sub-folder is copied empty rather than failing the lot.
             if push_children(&mut stack, &path, &rel).is_err() {
@@ -155,6 +164,42 @@ pub fn valid_name(name: &str) -> Result<&str, String> {
         return Err(format!("invalid name: {name:?}"));
     }
     Ok(name)
+}
+
+/// The folder `root` joined with the `/`-separated `rel` (`""` = `root`
+/// itself), when it exists and resolves inside `root`: every part must be a
+/// [`valid_name`] (no `..`, no separators), and links along the way must not
+/// lead out. Returns the resolved path.
+pub fn contained(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    if rel.starts_with('/') {
+        return Err(format!("not a relative path: {rel}"));
+    }
+    let root = root.canonicalize().map_err(|e| io_err(&root.to_string_lossy(), e))?;
+    let mut path = root.clone();
+    for part in rel.split('/').filter(|p| !p.is_empty()) {
+        path.push(valid_name(part)?);
+    }
+    let resolved = path.canonicalize().map_err(|e| io_err(&path.to_string_lossy(), e))?;
+    if !resolved.starts_with(&root) {
+        return Err(format!("outside the destination folder: {rel}"));
+    }
+    Ok(resolved)
+}
+
+/// Create the folder `rel` under `root` (see [`contained`]); its parent must
+/// exist. Returns the folder's path.
+pub fn make_dir_in(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    let (parent, name) = match rel.trim_end_matches('/').rsplit_once('/') {
+        Some((parent, name)) => (parent, name),
+        None => ("", rel.trim_end_matches('/')),
+    };
+    if rel.starts_with('/') {
+        return Err(format!("not a relative path: {rel}"));
+    }
+    let dir = contained(root, parent)?.join(valid_name(name)?);
+    make_dir(&dir)?;
+    // An existing link by that name must not lead out either.
+    contained(root, rel)
 }
 
 /// Create the folder `path` (its parent must exist); an existing folder is fine.
@@ -211,8 +256,18 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Sen
 /// Files being written on this machine (downloads from the controlled one).
 static LOCAL_WRITES: LazyLock<Mutex<Uploads>> = LazyLock::new(|| Mutex::new(Uploads::default()));
 
+/// For the sweeper ([`crate::remote::upload::spawn_sweeper`]).
+pub(crate) fn local_writes_map() -> &'static Mutex<Uploads> {
+    &LOCAL_WRITES
+}
+
 fn local_writes() -> std::sync::MutexGuard<'static, Uploads> {
     LOCAL_WRITES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A window closed: drop the unfinished writes it started (and their temp files).
+pub fn on_webview_destroyed(label: &str) {
+    local_writes().abort_owned_by(label);
 }
 
 #[tauri::command]
@@ -228,9 +283,11 @@ pub async fn local_fs_list(path: String) -> Result<crate::remote::fs_bridge::FsL
     blocking(move || crate::remote::fs_bridge::list_dir(&path, crate::remote::fs_bridge::MAX_LIST)).await
 }
 
+/// Create the folder `rel` (`/`-separated) inside the folder `root`, never
+/// outside it (see [`contained`]).
 #[tauri::command]
-pub async fn local_fs_mkdir(path: String) -> Result<String, String> {
-    blocking(move || make_dir(Path::new(&path)).map(|()| path)).await
+pub async fn local_fs_mkdir(root: String, rel: String) -> Result<String, String> {
+    blocking(move || make_dir_in(Path::new(&root), &rel).map(|p| p.to_string_lossy().into_owned())).await
 }
 
 #[tauri::command]
@@ -253,13 +310,33 @@ pub async fn local_fs_hash(path: String) -> Result<String, String> {
     blocking(move || hash_file(Path::new(&path))).await
 }
 
-/// Start writing a `size`-byte file named `name` into the folder `dir`;
-/// `conflict` (`overwrite` / `rename` / `fail`) decides what happens when the
-/// name is taken. See [`Uploads::begin_to`].
+/// Start writing a `size`-byte file named `name` into the folder `rel`
+/// (`/`-separated) inside `root`, the destination the user picked — never
+/// outside it (see [`contained`]). `conflict` (`overwrite` / `rename` /
+/// `fail`) decides what happens when the name is taken, `mode` is the
+/// source's permission bits. See [`Uploads::begin_to`]. The write ends with
+/// the calling window ([`on_webview_destroyed`]).
 #[tauri::command]
-pub async fn local_fs_write_begin(dir: String, name: String, size: u64, conflict: Option<String>) -> Result<UploadBegin, String> {
+#[allow(clippy::too_many_arguments)]
+pub async fn local_fs_write_begin(
+    webview: tauri::Webview,
+    root: String,
+    rel: String,
+    name: String,
+    size: u64,
+    conflict: Option<String>,
+    mode: Option<u32>,
+) -> Result<UploadBegin, String> {
     let conflict = Conflict::parse(conflict.as_deref())?;
-    blocking(move || local_writes().begin_to(Path::new(&dir), &name, size, conflict)).await
+    let label = webview.label().to_string();
+    blocking(move || {
+        let dir = contained(Path::new(&root), &rel)?;
+        let mut writes = local_writes();
+        let begun = writes.begin_to(&dir, &name, size, conflict, mode)?;
+        writes.set_owner(&begun.upload_id, &label);
+        Ok(begun)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -340,6 +417,33 @@ mod tests {
         assert_eq!(rels, ["f", "link-to-file"]);
         assert_eq!(w.skipped, 2);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn writes_stay_inside_the_destination_folder() {
+        let base = tmp().canonicalize().unwrap();
+        let root = base.join("dest");
+        fs::create_dir_all(root.join("a")).unwrap();
+        fs::create_dir(base.join("outside")).unwrap();
+        assert_eq!(contained(&root, "").unwrap(), root);
+        assert_eq!(contained(&root, "a/").unwrap(), root.join("a"));
+        for bad in ["..", "a/../..", "../outside", "a/./b", "a\\..\\..", "/etc"] {
+            assert!(contained(&root, bad).is_err(), "{bad}");
+            assert!(make_dir_in(&root, bad).is_err(), "{bad}");
+        }
+        assert_eq!(make_dir_in(&root, "a/b").unwrap(), root.join("a/b"));
+        assert!(root.join("a/b").is_dir());
+        assert!(make_dir_in(&root, "x/y").is_err(), "parent must exist");
+        assert!(!base.join("outside/..").join("x").exists());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(base.join("outside"), root.join("link")).unwrap();
+            assert!(contained(&root, "link").unwrap_err().starts_with("outside the destination"));
+            assert!(make_dir_in(&root, "link/sub").is_err());
+            assert!(!base.join("outside/sub").exists());
+            assert!(make_dir_in(&root, "link").is_err(), "an existing link out is refused");
+        }
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

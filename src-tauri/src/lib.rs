@@ -205,6 +205,8 @@ pub fn run() {
                 .expect("Failed to create rules dir");
             commands::project_links::set_backup_root(app_data_dir.join("legacy-backups"));
             commands::mcp_packages::set_root(app_data_dir.join("mcp-packages"));
+            // Unfinished file-transfer writes and their temp files (both sides).
+            remote::upload::spawn_sweeper(app.handle().clone());
 
             // Persist logs so the credential broker's audit trail and its
             // "broker unreachable / accept error" warnings are actually recorded.
@@ -820,8 +822,13 @@ pub fn run() {
                 }
                 // Exits that bypass the question (macOS Dock Quit, logout) still
                 // get the cleanup; a second run after a confirmed quit is cheap.
+                // A File Transfer window closed mid-copy: drop its partial files.
+                tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::Destroyed, .. } => {
+                    remote::transfer::on_webview_destroyed(&label);
+                }
                 tauri::RunEvent::Exit => {
                     procs::quit::on_exit(app_handle);
+                    remote::upload::abort_all_writes();
                 }
                 _ => {}
             }
