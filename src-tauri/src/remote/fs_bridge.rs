@@ -391,7 +391,8 @@ mod tests {
 
         assert_eq!(changeable(p, &proj.join("a.txt")).unwrap(), proj.join("a.txt"));
         assert!(changeable(p, &home.join("other/keep")).unwrap_err().starts_with("permission denied"));
-        assert!(changeable(p, &proj.join(".git")).unwrap_err().starts_with("permission denied"));
+        // Full control: tool config inside a writable root is the user's to change.
+        assert!(changeable(p, &proj.join(".git")).is_ok());
         assert!(changeable(p, &proj.join("missing")).unwrap_err().starts_with("not found"));
         // A link inside the project is changed itself, never its target outside.
         let link = changeable(p, &proj.join("link")).unwrap();
