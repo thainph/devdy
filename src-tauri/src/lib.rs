@@ -14,7 +14,6 @@ mod runs;
 mod secret_vault;
 mod secrets;
 mod slack_threads;
-mod sync;
 
 use commands::app_menu::set_app_menu;
 use commands::tray::set_tray_menu;
@@ -160,21 +159,6 @@ use remote::fs_bridge::{
 };
 use remote::ipc::{remote_bridge_batch, remote_bridge_ready};
 use remote::RemoteState;
-use commands::sync::{
-    sync_create_group, sync_devices_list, sync_join, sync_leave, sync_now,
-    sync_get_secrets, sync_pause, sync_revoke_device, sync_set_leader, sync_set_secrets, sync_status,
-    sync_accept_close, sync_accept_open, sync_accept_state, sync_join_respond, sync_parked_list,
-    sync_parked_retry, sync_relay_ready,
-    sync_peers_online, sync_run,
-    SyncManager,
-};
-use sync::sessions::{sync_run_owners, sync_take_over_run};
-use commands::sync_folder::{sync_folder_apply, sync_folder_cancel, sync_folder_preview};
-use commands::sync_bootstrap::{
-    sync_bootstrap_commit, sync_bootstrap_pending, sync_bootstrap_preview, sync_project_mapping_list, sync_rebootstrap,
-    sync_project_mapping_set, sync_resync_all,
-};
-use commands::sync_prefs::{sync_prefs_get, sync_prefs_set_categories, sync_prefs_set_source, sync_project_pref_set};
 use runs::broker::approver::ModalApproverResolver;
 use runs::broker::{start_broker, ApproverResolver, BrokerConfig};
 use runs::{new_broker_approvals, new_broker_runs, new_registry, RunRegistry};
@@ -252,11 +236,6 @@ pub fn run() {
             let db_path = app_data_dir.join("data.db");
             let db = tauri::async_runtime::block_on(db::init_db(&db_path))
                 .expect("Failed to initialize database");
-            // Sync change capture: device id + triggers (rebuilt only when the
-            // table registry changed). A failure must not block startup.
-            if let Err(e) = tauri::async_runtime::block_on(sync::install(&db)) {
-                eprintln!("[sync] install failed: {e}");
-            }
             // One-time, off the startup path: re-derive the usage ledger from
             // run logs (reads every log, so it can take a while).
             {
@@ -333,15 +312,8 @@ pub fn run() {
                     let slack_state = slack_state.clone();
                     async move { slack_state.start_worker() }
                 });
-                // Re-queueing unfinished threads is a singleton job (sync D6):
-                // only the leader device does it, again when it becomes leader.
-                sync::leader::watch_leadership(
-                    app.state::<db::Db>().inner().clone(),
-                    move || {
-                        let slack_state = slack_state.clone();
-                        async move { slack_state.startup_recover().await }
-                    },
-                );
+                // Re-queue threads a previous session left unfinished.
+                tauri::async_runtime::spawn(async move { slack_state.startup_recover().await });
             }
             // Focus reminders (focus::scheduler): a 60 s tick while the app runs.
             focus::scheduler::start(app.handle().clone(), app.state::<db::Db>().inner().clone());
@@ -453,33 +425,6 @@ pub fn run() {
                             tracing::warn!(event = "remote_autostart_failed", error = %e);
                         }
                     }
-                });
-            }
-
-            // Two-way sync: start the background engine when this device is in
-            // a sync group (group secrets live in the Keychain).
-            let sync_manager = SyncManager::default();
-            sync_manager.register_peer_handler(commands::sync_folder::folder_handler(
-                app.state::<db::Db>().inner().clone(),
-            ));
-            app.manage(sync_manager.clone());
-            // Keep the leases of this device's live runs fresh (cross-device sessions).
-            sync::sessions::spawn_heartbeat(
-                app.state::<db::Db>().inner().clone(),
-                app.state::<RunRegistry>().inner().clone(),
-            );
-            {
-                let app_handle = app.handle().clone();
-                let db_for_sync = app_handle.state::<db::Db>().inner().clone();
-                tauri::async_runtime::spawn(async move {
-                    let in_group = secrets::get_sync_secrets().is_some();
-                    if let Err(e) = sync::pair::reconcile_membership(&db_for_sync, in_group).await {
-                        tracing::warn!(event = "sync_membership_reconcile_failed", error = %e);
-                    }
-                    if let Err(e) = sync_manager.start(&app_handle, &db_for_sync).await {
-                        tracing::warn!(event = "sync_autostart_failed", error = %e);
-                    }
-                    sync::leader::mark_ready();
                 });
             }
 
@@ -797,42 +742,6 @@ pub fn run() {
             remote::push::commands::remote_push_remove,
             remote::push::commands::remote_push_set_events,
             remote::push::commands::remote_push_test,
-            sync_status,
-            sync_create_group,
-            sync_join,
-            sync_leave,
-            sync_pause,
-            sync_now,
-            sync_run,
-            sync_peers_online,
-            sync_set_secrets,
-            sync_run_owners,
-            sync_take_over_run,
-            sync_folder_preview,
-            sync_folder_apply,
-            sync_folder_cancel,
-            sync_get_secrets,
-            sync_devices_list,
-            sync_revoke_device,
-            sync_set_leader,
-            sync_relay_ready,
-            sync_accept_open,
-            sync_accept_close,
-            sync_accept_state,
-            sync_join_respond,
-            sync_parked_list,
-            sync_parked_retry,
-            sync_resync_all,
-            sync_bootstrap_pending,
-            sync_bootstrap_preview,
-            sync_bootstrap_commit,
-            sync_rebootstrap,
-            sync_project_mapping_list,
-            sync_project_mapping_set,
-            sync_prefs_get,
-            sync_prefs_set_source,
-            sync_prefs_set_categories,
-            sync_project_pref_set,
             remote_bridge_ready,
             remote_bridge_batch,
             remote_fs_list,

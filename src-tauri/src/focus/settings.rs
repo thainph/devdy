@@ -241,7 +241,7 @@ mod tests {
         s.notify_kinds.morning = false;
         let rows: HashMap<String, String> = s.to_rows().into_iter().collect();
         assert!(rows.keys().all(|k| k.starts_with(PREFIX)));
-        // Backups / sync carry every key but the per-machine calendar choice.
+        // Backups carry every key but the per-machine calendar choice.
         use crate::commands::settings::PORTABLE_SETTING_KEYS;
         for k in rows.keys() {
             let portable = PORTABLE_SETTING_KEYS.contains(&k.as_str());

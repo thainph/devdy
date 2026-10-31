@@ -68,9 +68,9 @@ pub struct VaultStatus {
     pub unlocked: bool,
     /// Notes of the current vault.
     pub note_count: usize,
-    /// Notes of an older vault (sync or import), mergeable with its password.
+    /// Notes of an older vault (from an import), mergeable with its password.
     pub legacy_count: usize,
-    /// Notes whose vault has not reached this device yet.
+    /// Notes whose vault header this device does not have.
     pub pending_count: usize,
     pub has_recovery: bool,
     pub auto_lock_secs: u64,
@@ -185,7 +185,7 @@ pub async fn secret_vault_change_password(
     let id = header.vault_id;
     let (new_id, dek, recovery) = blocking(move || {
         with_vault(true, |d| {
-            // Replaced meanwhile (sync): start over from the newer vault.
+            // Replaced meanwhile (backup import): start over from the newer vault.
             if current_id(d).as_deref() != Some(id.as_str()) {
                 return Err(vault::E_LOCKED.to_string());
             }

@@ -120,11 +120,6 @@ pub(crate) async fn start_run_inner(
     let db = &db;
     let registry = &registry;
 
-    // No new sidecar while a sync merge re-keys ids (sync_bootstrap_commit).
-    crate::sync::bootstrap::refuse_if_committing()?;
-    // Another device may be running this (synced) session right now.
-    crate::sync::sessions::ensure_not_held_elsewhere(db, &payload.run_id).await?;
-
     // Load run + project info
     let run_row = sqlx::query(
         "SELECT r.id, r.project_id, r.type, r.ref_number, r.input_path, r.output_path, r.engine, r.status, r.claude_account_id,
@@ -368,8 +363,6 @@ pub(crate) async fn start_run_inner(
     .execute(db)
     .await
     .map_err(|e| e.to_string())?;
-    // This device now owns the run; the lease is renewed while the sidecar lives.
-    crate::sync::sessions::claim_logged(db, &payload.run_id, &project_path).await;
 
     // Build extra args vec
     let extra: Vec<String> = extra_args
@@ -1107,13 +1100,7 @@ pub(crate) async fn cancel_run_inner(
     stamp_activity: bool,
 ) -> Result<(), String> {
     let run_id = run_id.to_string();
-    // Not running here: marking it cancelled would clobber (via sync) the
-    // device that is actually running it.
-    if !stop_local_sidecar(registry, &run_id).await {
-        crate::sync::sessions::ensure_not_held_elsewhere(db, &run_id).await?;
-        // Its owner is gone: take the run over before writing it (L6).
-        crate::sync::sessions::adopt_orphan(db, &run_id).await?;
-    }
+    stop_local_sidecar(registry, &run_id).await;
 
     let cancelled_at = chrono::Utc::now().to_rfc3339();
     let sql = if stamp_activity {
@@ -1128,7 +1115,6 @@ pub(crate) async fn cancel_run_inner(
         .execute(db)
         .await
         .map_err(|e| e.to_string())?;
-    crate::sync::sessions::release(db, &run_id).await;
 
     Ok(())
 }
@@ -1167,7 +1153,6 @@ pub(crate) async fn send_user_message_inner(
     stamp_activity: bool,
 ) -> Result<(), String> {
     use sqlx::Row;
-    crate::sync::sessions::ensure_not_held_elsewhere(db, &payload.run_id).await?;
     // A follow-up turn consumes tokens like any other, so gate it too — against
     // the guardrail for this run's engine and its assigned Claude account.
     let run_meta = sqlx::query("SELECT engine, claude_account_id FROM runs WHERE id = ?")
@@ -3352,9 +3337,6 @@ pub(crate) async fn resume_run_with(
 ) -> Result<(), String> {
     use sqlx::Row;
 
-    crate::sync::bootstrap::refuse_if_committing()?;
-    crate::sync::sessions::ensure_not_held_elsewhere(db.inner(), &run_id).await?;
-
     let row = sqlx::query(
         "SELECT r.engine, r.status, r.session_id, r.transcript_path, r.project_id, r.claude_account_id, p.path as project_path
          FROM runs r JOIN projects p ON p.id = r.project_id
@@ -3541,7 +3523,6 @@ pub(crate) async fn resume_run_with(
         .execute(db.inner())
         .await
         .map_err(|e| e.to_string())?;
-    crate::sync::sessions::claim_logged(db.inner(), &run_id, &project_path).await;
 
     let (node_bin, sidecar_script) = if engine == "codex" {
         resolve_codex_sidecar(&app, &node_path, &codex_sidecar_path)?

@@ -42,10 +42,10 @@ const LOCAL_ONLY_PREFIXES: &[&str] = &["secret_"];
 /// OAuth clients, MCP env/header values, SSH keys and passphrases, the inbox
 /// API token, backups carrying secrets), and every command that changes who can
 /// reach this machine or its secrets (Remote Control config, master password,
-/// OTP / session links, sync-group membership, leadership and secret sync).
+/// OTP / session links).
 /// Runs are not covered on purpose: they never see Keychain secrets
 /// (credential broker). Reads that only report key names or `has_*` flags stay
-/// allowed (`sync_get_secrets` returns a bool).
+/// allowed.
 const LOCAL_ONLY_COMMANDS: &[&str] = &[
     // Accounts: create / update / validate take or check a token; logins mint
     // one; deletes drop it (and the projects linked to it).
@@ -94,22 +94,6 @@ const LOCAL_ONLY_COMMANDS: &[&str] = &[
     "get_inbox_api_info",
     "regenerate_inbox_api_token",
     "set_inbox_api_enabled",
-    // Sync: pairing a device into the group hands it the synced data (and the
-    // secrets, when secret sync is on); membership, leadership, bootstrap and
-    // folder moves reshape what the group holds.
-    "sync_create_group",
-    "sync_join",
-    "sync_leave",
-    "sync_accept_open",
-    "sync_accept_close",
-    "sync_join_respond",
-    "sync_revoke_device",
-    "sync_set_leader",
-    "sync_set_secrets",
-    "sync_prefs_set_categories",
-    "sync_bootstrap_commit",
-    "sync_rebootstrap",
-    "sync_folder_apply",
     // Remote Control itself: who may connect, and how.
     "remote_enable",
     "remote_disable",
@@ -168,8 +152,8 @@ pub fn gated<R: Runtime>(handler: impl Fn(Invoke<R>) -> bool + Send + Sync + 'st
 /// Whether the bridge may write setting `key`: only the user-facing settings a
 /// backup carries ([`PORTABLE_SETTING_KEYS`]). Everything else — machine paths
 /// of the CLIs that get the credentials (`claude_path`, `codex_path`), Remote
-/// Control (`remote_*`), sync (`sync_*`, group bookkeeping), secret sync
-/// (`secret_*`), the inbox API token — stays local.
+/// Control (`remote_*`), `secret_*` keys, the inbox API token —
+/// stays local.
 ///
 /// [`PORTABLE_SETTING_KEYS`]: crate::commands::settings::PORTABLE_SETTING_KEYS
 pub fn remote_may_set_setting(key: &str) -> bool {
@@ -482,16 +466,6 @@ mod tests {
             "import_settings_backup",
             "get_inbox_api_info",
             "regenerate_inbox_api_token",
-            "sync_join_respond",
-            "sync_set_secrets",
-            "sync_prefs_set_categories",
-            "sync_revoke_device",
-            "sync_set_leader",
-            "sync_leave",
-            "sync_accept_close",
-            "sync_bootstrap_commit",
-            "sync_rebootstrap",
-            "sync_folder_apply",
             "remote_set_master_password",
             "remote_reveal_otp",
             "remote_create_session_link",
@@ -527,9 +501,6 @@ mod tests {
             "remote_status",
             "remote_end_session",
             "remote_fs_read",
-            "sync_status",
-            "sync_get_secrets",
-            "sync_prefs_get",
             "add_todo",
             "update_setting",
         ] {
@@ -611,9 +582,6 @@ mod tests {
         for key in [
             "remote_enabled",
             "remote_anything",
-            "sync_categories_off",
-            "sync_leader_device",
-            "sync_device_name:abc",
             "secret_salt",
             "secret_key_moves",
             "inbox_api_token",

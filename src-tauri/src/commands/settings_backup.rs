@@ -1585,77 +1585,7 @@ pub async fn import_settings_backup(
     .await)
 }
 
-// ---- Device transfer -----------------------------------------------------------
-
-/// A backup carried over an end-to-end encrypted device channel. The channel itself is the
-/// protection, so the secrets travel as a plain payload inside it: no password, no Argon2.
-#[allow(dead_code)] // reused by two-way sync bootstrap
-#[derive(Serialize, Deserialize)]
-struct Transfer {
-    bundle: Bundle,
-    #[serde(default)]
-    secrets: Option<SecretPayload>,
-}
-
-/// A transfer received from another machine, parsed and waiting for the user to import it.
-#[allow(dead_code)] // reused by two-way sync bootstrap
-pub struct ReceivedBackup(Transfer);
-
-#[allow(dead_code)] // reused by two-way sync bootstrap
-impl ReceivedBackup {
-    pub fn parse(raw: &[u8]) -> Result<Self, String> {
-        let transfer: Transfer = serde_json::from_slice(raw)
-            .map_err(|_| "The other device sent unreadable data".to_string())?;
-        check_bundle(&transfer.bundle)?;
-        Ok(Self(transfer))
-    }
-
-    pub fn info(&self) -> BackupInfo {
-        let mut info = self.0.bundle.info();
-        info.has_secrets = self.0.secrets.is_some();
-        info
-    }
-}
-
-/// The whole configuration of this machine, serialized for a device transfer.
-#[allow(dead_code)] // reused by two-way sync bootstrap
-pub async fn export_transfer(
-    app: &AppHandle,
-    db: &Db,
-    with_secrets: bool,
-) -> Result<Vec<u8>, String> {
-    let (bundle, payload) = collect(app, db, with_secrets).await?;
-    let transfer = Transfer {
-        bundle,
-        secrets: with_secrets.then_some(payload),
-    };
-    serde_json::to_vec(&transfer).map_err(|e| e.to_string())
-}
-
-#[allow(dead_code)] // reused by two-way sync bootstrap
-pub async fn import_received(
-    app: &AppHandle,
-    db: &Db,
-    received: ReceivedBackup,
-    create_missing_dirs: bool,
-) -> ImportReport {
-    let Transfer { bundle, secrets } = received.0;
-    let report = ImportReport {
-        secrets_imported: secrets.is_some(),
-        ..Default::default()
-    };
-    apply_bundle(
-        app,
-        db,
-        bundle,
-        secrets.unwrap_or_default(),
-        create_missing_dirs,
-        report,
-    )
-    .await
-}
-
-/// Merge `bundle` into this machine (shared by the file import and the device transfer).
+/// Merge `bundle` into this machine.
 async fn apply_bundle(
     app: &AppHandle,
     db: &Db,

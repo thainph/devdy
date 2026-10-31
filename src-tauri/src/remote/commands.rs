@@ -283,7 +283,6 @@ pub async fn remote_set_master_password(
 pub async fn remote_set_device_alias(
     db: State<'_, Db>,
     state: State<'_, RemoteState>,
-    sync: State<'_, crate::commands::sync::SyncManager>,
     alias: String,
 ) -> Result<(), String> {
     let alias = alias.trim();
@@ -296,8 +295,7 @@ pub async fn remote_set_device_alias(
     remote::set_setting(db.inner(), remote::KEY_DEVICE_ALIAS, alias).await?;
     // The agent re-arms the login slot on the new code.
     state.announce_signal.notify_one();
-    // The sync group shows the same name.
-    sync.alias_changed(db.inner(), alias).await
+    Ok(())
 }
 
 /// Kill switch: disconnect AND sign out the Controller currently attached

@@ -325,8 +325,8 @@ pub async fn update_todo_fields_inner(
     patch: &Map<String, Value>,
 ) -> Result<Todo, String> {
     // Read, patch and write under the write lock, and only the columns the
-    // patch touches: a concurrent writer (an AI plan landing, the MCP sidecar,
-    // sync) keeps its own columns.
+    // patch touches: a concurrent writer (an AI plan landing, the MCP sidecar)
+    // keeps its own columns.
     let mut tx = db
         .begin_with("BEGIN IMMEDIATE")
         .await

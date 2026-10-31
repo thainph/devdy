@@ -1225,7 +1225,7 @@ mod tests {
 
     #[test]
     fn local_only_invokes_go_out_as_an_unknown_command_without_args() {
-        for name in ["export_settings_backup", "secret_note_reveal", "sync_revoke_device", "read_local_file_chunk"] {
+        for name in ["export_settings_backup", "secret_note_reveal", "remote_set_master_password", "read_local_file_chunk"] {
             let req = invoke_of(name, serde_json::json!({ "path": "/tmp/x" }));
             assert_eq!(req["cmd"], guard::DENIED, "{name}");
             assert!(req["args"].is_null(), "{name}");
