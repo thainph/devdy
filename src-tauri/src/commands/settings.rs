@@ -275,10 +275,14 @@ pub async fn update_setting(
     if crate::remote::guard::from_remote_bridge(&webview) && !crate::remote::guard::remote_may_set_setting(&key) {
         return Err(crate::remote::guard::DENIED.to_string());
     }
+    set_setting(db.inner(), &key, &value).await
+}
+
+pub async fn set_setting(db: &Db, key: &str, value: &str) -> Result<(), String> {
     sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
-        .bind(&key)
-        .bind(&value)
-        .execute(db.inner())
+        .bind(key)
+        .bind(value)
+        .execute(db)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())

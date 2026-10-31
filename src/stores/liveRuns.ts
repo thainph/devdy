@@ -13,7 +13,6 @@ import {
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
 import { useRunsStore } from './runs'
 import { useToolPermissionsStore } from './toolPermissions'
-import { useRemoteControlStore } from './remoteControl'
 
 /**
  * In-memory streaming state for a single run. Lives in this store (not in
@@ -367,7 +366,6 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
     // and every `run:event` is then processed twice → duplicated chat entries.
     unlisteners.set(runId, [])
     const runsStore = useRunsStore()
-    const remoteControl = useRemoteControlStore()
     const s = ensure(runId, projectId)
     const toolIndex = toolIndexes.get(runId)!
     const fns: UnlistenFn[] = []
@@ -538,26 +536,14 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
       }
       if (seen.has(req.request_id)) return
       seen.add(req.request_id)
-      // When an AUTHENTICATED remote controller is WATCHING this run, the human
-      // being asked is remote — the desktop must NOT auto-allow/deny from its
-      // local per-project lists. Doing so races and beats the remote user's
-      // Deny (a local auto-`allow` fired ~24ms before the relayed deny),
-      // silently running a tool the remote user rejected. Defer to the remote:
-      // just enqueue; the controller answers and `run:permission_resolved`
-      // clears it. (A human at the desktop can still answer manually.)
-      //
-      // Scoped to runs the controller has OPEN rather than to "a phone is
-      // paired at all". A paired phone receives prompts for every run, but
-      // suppressing standing auto-allow/deny across every run the moment a
-      // phone pairs would silently disable the user's own automation on runs
-      // nobody is watching.
-      const rc = remoteControl.status
-      const remoteDriven =
-        !!rc?.session_authenticated && (rc?.subscribed_run_ids ?? []).includes(req.run_id)
+      // Standing allow/deny choices apply even while a paired phone watches
+      // this run: the phone sets them with the same Always buttons, and the
+      // Host tells it to drop a prompt answered here (`permission_resolved`),
+      // so asking again remotely would only undo the choice.
       // AskUserQuestion must always reach the user — auto-deciding it would
       // submit empty answers. Other tools honor the project's standing
       // deny/allow choices (deny wins if both somehow apply).
-      if (!remoteDriven && req.tool_name !== 'AskUserQuestion') {
+      if (req.tool_name !== 'AskUserQuestion') {
         // A failed auto-answer falls back to a visible prompt (see respond).
         if (s.deniedTools.includes(req.tool_name)) {
           void respondPermission(runId, req, 'deny', { reason: 'Auto-denied for this project' })
@@ -604,11 +590,23 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
       // desktop's own reply path already shifts the queue, so this listener
       // mainly covers the remote case: drop the still-pending prompt by
       // request_id. Idempotent — a no-op if it was already removed.
-      await listen<{ request_id: string }>(`run:permission_resolved:${runId}`, (event) => {
-        const { request_id } = event.payload
-        const i = s.permissionQueue.findIndex((p) => p.request_id === request_id)
-        if (i !== -1) s.permissionQueue.splice(i, 1)
-      }),
+      // `remember` means the remote chose Always: store the standing choice the
+      // same way the desktop's own Always buttons do.
+      await listen<{ request_id: string; remember?: 'allow' | 'deny'; tool_name?: string }>(
+        `run:permission_resolved:${runId}`,
+        (event) => {
+          const { request_id, remember, tool_name } = event.payload
+          const i = s.permissionQueue.findIndex((p) => p.request_id === request_id)
+          // The Host names the tool with an Always, so the choice is kept even
+          // when this window never queued the prompt (or already dropped it).
+          const tool = tool_name ?? (i !== -1 ? s.permissionQueue[i].tool_name : null)
+          if (tool && tool !== 'MCP' && tool !== 'AskUserQuestion' && tool !== 'ExitPlanMode') {
+            if (remember === 'allow') rememberAllowedTool(runId, tool)
+            else if (remember === 'deny') rememberDeniedTool(runId, tool)
+          }
+          if (i !== -1) s.permissionQueue.splice(i, 1)
+        },
+      ),
     )
 
     // If stopListening ran while we were awaiting the listen() calls, its slot

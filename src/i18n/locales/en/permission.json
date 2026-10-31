@@ -42,9 +42,9 @@
     "questionTitle": "Claude has a question",
     "requestTitle": "Permission request",
     "questionHint": "Pick an answer below, then submit.",
-    "requestHint": "Allow this tool call to run once, or deny it. Remembering a choice can only be done at the host machine.",
+    "requestHint": "Allow or deny this tool call. \"Always\" remembers the choice for this tool in this project, as on the desktop.",
     "cancel": "Cancel",
-    "denyOnce": "Deny once",
-    "allowOnce": "Allow once"
+    "allowAlways": "Always allow",
+    "allowAlwaysFor": "Always allow {tool} for this project"
   }
 }

@@ -19,6 +19,8 @@ export interface PermissionRequest {
   description?: string | null
   /** Short noun phrase for the action (e.g. "Edit file"). */
   display_name?: string | null
+  /** A broker prompt (gh / ssh / aws …): answered once, never Always. */
+  once_only?: boolean
 }
 
 const props = defineProps<{

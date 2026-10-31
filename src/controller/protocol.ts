@@ -176,6 +176,9 @@ export interface PermissionRequestKind {
   tool: string
   input: unknown
   cwd?: string | null
+  /** A broker prompt (gh / glab / ssh / aws / az / terraform): answer once
+   * only — the Host refuses Always for it. */
+  once_only?: boolean
 }
 /** The run finished (`run:done`). */
 export interface DoneKind {
@@ -206,6 +209,8 @@ export interface CommandAckKind {
   reason?: string | null
   /** `start_run` that created a new session: the new run's id. */
   run_id?: string | null
+  /** `todo_add` / `note_add`: the new item's id. */
+  item_id?: string | null
 }
 /** Correlated permission resolution. A stale acknowledgement must never clear a
  * newer permission request. */
@@ -215,6 +220,9 @@ export interface PermissionResolvedKind {
   request_id: string
   accepted: boolean
   reason?: string | null
+  /** Always answers only: whether the desktop could keep the standing choice
+   * (false = it applied this once). */
+  remembered?: boolean | null
 }
 /**
  * The Host granted a session token after a successful OTP (or reconnect). The
@@ -230,6 +238,8 @@ export interface SessionTokenKind {
   rendezvous_code: string
   /** Absolute idle expiry as Unix seconds (advisory; the store slides its own). */
   idle_expires_at: number
+  /** What the Host supports ({@link HostFeature}); empty from an older Host. */
+  host_features: string[]
 }
 /**
  * The outcome of an auth attempt. `ok:false` means the OTP was wrong / expired /
@@ -352,6 +362,8 @@ export interface RunInfo {
   engine: string
   created_at: string
   updated_at?: string | null
+  /** When the last turn ended (a multi-turn session finishes every turn). */
+  finished_at?: string | null
 }
 
 /** A snapshot of every run the Controller may browse/control (FR-004+). */
@@ -395,6 +407,87 @@ export interface IpcResyncKind {
   kind: 'ipc_resync'
 }
 
+// ---- Data features ({@link FEATURE_DATA}) ----
+
+/** One todo (mirror of Host `TodoInfo`). No Focus fields — the phone does not
+ * edit priority / estimate / AI plan. */
+export interface TodoInfo {
+  id: string
+  /** The full text: the first line is the title, the rest a note. */
+  text: string
+  done: boolean
+  project_id?: string | null
+  /** Local `YYYY-MM-DD`. */
+  due_date?: string | null
+  due_time?: string | null
+  created_at: string
+  completed_at?: string | null
+}
+
+/** Every todo; the Controller filters by project / done locally. */
+export interface TodoListKind {
+  kind: 'todo_list'
+  todos: TodoInfo[]
+}
+
+/** One note (Markdown) — mirror of Host `NoteInfo`. */
+export interface NoteInfo {
+  id: string
+  title: string
+  content: string
+  project_id?: string | null
+  updated_at: string
+}
+
+/** One note-list row: title + the start of the body (mirror of Host `NoteSummary`). */
+export interface NoteSummary {
+  id: string
+  title: string
+  /** The first few hundred characters of the Markdown body. */
+  preview: string
+  project_id?: string | null
+  updated_at: string
+}
+
+/** Notes matching a `note_list` / `note_search`, echoing the filter so a stale
+ * reply can be dropped. Rows carry a preview only; see {@link NoteKind}. */
+export interface NoteListKind {
+  kind: 'note_list'
+  notes: NoteSummary[]
+  project_id: string | null
+  query: string | null
+}
+
+/** One skill / rule / MCP server switch. Names + on/off only. */
+export interface ToggleItem {
+  id: string
+  name: string
+  enabled: boolean
+}
+
+/** The built-in `devdy` MCP server switch; `global` while it is app-wide. */
+export interface BuiltinToggle {
+  enabled: boolean
+  global: boolean
+}
+
+/** What is switched on for one project. Never carries server config, env /
+ * header values, tokens or accounts. */
+export interface ProjectTogglesKind {
+  kind: 'project_toggles'
+  project_id: string
+  mcp_servers: ToggleItem[]
+  skills: ToggleItem[]
+  rules: ToggleItem[]
+  builtin_devdy: BuiltinToggle
+}
+
+/** One full note (`note_get`). */
+export interface NoteKind {
+  kind: 'note'
+  note: NoteInfo
+}
+
 /** Everything the Host can send the Controller inside a sealed `stream` frame. */
 export type StreamPayload =
   | StreamKind
@@ -418,6 +511,10 @@ export type StreamPayload =
   | IpcResultKind
   | IpcEventKind
   | IpcResyncKind
+  | TodoListKind
+  | NoteListKind
+  | ProjectTogglesKind
+  | NoteKind
 
 /**
  * Narrow a decoded stream payload. Returns `null` for anything with an
@@ -456,6 +553,7 @@ export function parseStreamPayload(json: unknown): StreamPayload | null {
             tool: o.tool,
             input: o.input,
             cwd: typeof o.cwd === 'string' ? o.cwd : null,
+            once_only: o.once_only === true,
           }
         : null
     case 'done':
@@ -486,6 +584,7 @@ export function parseStreamPayload(json: unknown): StreamPayload | null {
             accepted: o.accepted,
             reason: typeof o.reason === 'string' ? o.reason : null,
             run_id: typeof o.run_id === 'string' ? o.run_id : null,
+            item_id: typeof o.item_id === 'string' ? o.item_id : null,
           }
         : null
     case 'permission_resolved':
@@ -498,6 +597,7 @@ export function parseStreamPayload(json: unknown): StreamPayload | null {
             request_id: o.request_id,
             accepted: o.accepted,
             reason: typeof o.reason === 'string' ? o.reason : null,
+            remembered: typeof o.remembered === 'boolean' ? o.remembered : null,
           }
         : null
     case 'session_token':
@@ -510,6 +610,9 @@ export function parseStreamPayload(json: unknown): StreamPayload | null {
             run_id: o.run_id,
             rendezvous_code: o.rendezvous_code,
             idle_expires_at: typeof o.idle_expires_at === 'number' ? o.idle_expires_at : 0,
+            host_features: Array.isArray(o.host_features)
+              ? o.host_features.filter((f): f is string => typeof f === 'string')
+              : [],
           }
         : null
     case 'auth_result':
@@ -623,9 +726,85 @@ export function parseStreamPayload(json: unknown): StreamPayload | null {
         : null
     case 'ipc_resync':
       return { kind: 'ipc_resync' }
+    case 'todo_list':
+      return Array.isArray(o.todos)
+        ? { kind: 'todo_list', todos: (o.todos as unknown[]).filter(isTodoInfo) }
+        : null
+    case 'note_list':
+      return Array.isArray(o.notes)
+        ? {
+            kind: 'note_list',
+            notes: (o.notes as unknown[]).filter(isNoteSummary),
+            project_id: typeof o.project_id === 'string' ? o.project_id : null,
+            query: typeof o.query === 'string' ? o.query : null,
+          }
+        : null
+    case 'note':
+      return isNoteInfo(o.note) ? { kind: 'note', note: o.note } : null
+    case 'project_toggles': {
+      if (typeof o.project_id !== 'string') return null
+      const items = (v: unknown): ToggleItem[] =>
+        (Array.isArray(v) ? v : []).filter(isToggleItem).map((i) => ({
+          id: i.id,
+          name: i.name,
+          enabled: i.enabled,
+        }))
+      const b = (o.builtin_devdy ?? {}) as Record<string, unknown>
+      return {
+        kind: 'project_toggles',
+        project_id: o.project_id,
+        mcp_servers: items(o.mcp_servers),
+        skills: items(o.skills),
+        rules: items(o.rules),
+        builtin_devdy: { enabled: b.enabled !== false, global: b.global !== false },
+      }
+    }
     default:
       return null
   }
+}
+
+/** Narrow one todo row; drops anything missing required fields. */
+function isTodoInfo(v: unknown): v is TodoInfo {
+  if (!v || typeof v !== 'object') return false
+  const o = v as Record<string, unknown>
+  return (
+    typeof o.id === 'string' &&
+    typeof o.text === 'string' &&
+    typeof o.done === 'boolean' &&
+    typeof o.created_at === 'string'
+  )
+}
+
+/** Narrow one note row. */
+function isNoteInfo(v: unknown): v is NoteInfo {
+  if (!v || typeof v !== 'object') return false
+  const o = v as Record<string, unknown>
+  return (
+    typeof o.id === 'string' &&
+    typeof o.title === 'string' &&
+    typeof o.content === 'string' &&
+    typeof o.updated_at === 'string'
+  )
+}
+
+/** Narrow one note-list row. */
+function isNoteSummary(v: unknown): v is NoteSummary {
+  if (!v || typeof v !== 'object') return false
+  const o = v as Record<string, unknown>
+  return (
+    typeof o.id === 'string' &&
+    typeof o.title === 'string' &&
+    typeof o.preview === 'string' &&
+    typeof o.updated_at === 'string'
+  )
+}
+
+/** Narrow one switch row. */
+function isToggleItem(v: unknown): v is ToggleItem {
+  if (!v || typeof v !== 'object') return false
+  const o = v as Record<string, unknown>
+  return typeof o.id === 'string' && typeof o.name === 'string' && typeof o.enabled === 'boolean'
 }
 
 /** Narrow one slash-command row. */
@@ -669,11 +848,11 @@ function isRunInfo(v: unknown): v is RunInfo {
 // ---- Commands the Controller may send (SRS §5.2 / FR-009 allow-list) ----
 
 /**
- * The only permission decisions a Controller may ever send (BR-016/SEC-011/
- * AC-17). "allow_always"/"deny_always" are NOT representable here by design —
- * they can only be set by the Owner at the Host.
+ * The permission decisions a Controller may send (BR-016/SEC-011/AC-17 v1.2).
+ * The scope is always explicit: `*_once` answers this request only, `*_always`
+ * takes the desktop's "remember" path (standing per-project choice).
  */
-export type RemoteDecision = 'allow_once' | 'deny_once'
+export type RemoteDecision = 'allow_once' | 'deny_once' | 'allow_always' | 'deny_always'
 
 /**
  * AskUserQuestion answers: `{ question text: selected answer }`. Multiple
@@ -716,6 +895,22 @@ export interface CmdPayload {
     | 'ipc_invoke'
     | 'ipc_listen'
     | 'ipc_unlisten'
+    // Inbox: re-send every open permission prompt.
+    | 'list_pending'
+    // Data features (a Controller that advertised FEATURE_DATA).
+    | 'todo_list'
+    | 'todo_add'
+    | 'todo_update'
+    | 'todo_toggle'
+    | 'todo_delete'
+    | 'note_list'
+    | 'note_search'
+    | 'note_add'
+    | 'note_update'
+    | 'note_delete'
+    | 'project_toggles_get'
+    | 'project_toggle_set'
+    | 'note_get'
   /** Per-send correlation id used for Host delivery acknowledgement. */
   command_id?: string
   run_id?: string
@@ -753,7 +948,42 @@ export interface CmdPayload {
   args?: unknown
   /** `ipc_listen` / `ipc_unlisten`: the app event name. */
   event?: string
+  // ---- Data features ({@link FEATURE_DATA}) ----
+  /** The todo / note / skill / rule / MCP server a data action targets. */
+  item_id?: string
+  /** `todo_update` / `note_update`: fields to change (missing = untouched,
+   * `null` / `''` clears). */
+  patch?: TodoPatchWire | NotePatchWire
+  /** `note_search`: text to look for in titles and contents. */
+  query?: string
+  /** `note_add`: title. */
+  title?: string
+  /** `note_add`: Markdown body. */
+  content?: string
+  /** `todo_add`: local `YYYY-MM-DD` deadline. */
+  due_date?: string
+  /** `project_toggle_set`: which kind of switch. */
+  toggle_kind?: ToggleKind
+  /** `project_toggle_set`: the new state. */
+  enabled?: boolean
 }
+
+/** The fields a `todo_update` may change (the Host refuses any other key). */
+export interface TodoPatchWire {
+  text?: string
+  due_date?: string | null
+  project_id?: string | null
+}
+
+/** The fields a `note_update` may change. */
+export interface NotePatchWire {
+  title?: string
+  content?: string
+  project_id?: string | null
+}
+
+/** `project_toggle_set` kinds; `builtin_mcp` is the app-wide `devdy` server. */
+export type ToggleKind = 'skill' | 'rule' | 'mcp' | 'builtin_mcp'
 
 /** Advertise coalesced output batches ({@link OutputBatchKind}). */
 export const FEATURE_OUTPUT_BATCH = 'output_batch'
@@ -770,8 +1000,21 @@ export const FEATURE_MULTI_RUN = 'multi_run'
  * Controller understands none of the run-streaming payloads. */
 export const FEATURE_IPC = 'ipc'
 
+/** Advertise the Todo / Note / project-switch screens (`todo_*`, `note_*`,
+ * `project_toggle*`). Without it the Host refuses those actions. */
+export const FEATURE_DATA = 'data'
+
+/** What a Host can advertise in `session_token.host_features`. An older Host
+ * sends none: the Controller then hides what it would only be refused. */
+export type HostFeature = 'data' | 'inbox' | 'remember'
+
+/** Whether the Host advertised `feature`. */
+export function hostHas(features: readonly string[] | null | undefined, feature: HostFeature): boolean {
+  return !!features && features.includes(feature)
+}
+
 /** Everything this controller bundle understands, sent on the gate frame. */
-export const CLIENT_FEATURES: string[] = [FEATURE_OUTPUT_BATCH, FEATURE_MULTI_RUN]
+export const CLIENT_FEATURES: string[] = [FEATURE_OUTPUT_BATCH, FEATURE_MULTI_RUN, FEATURE_DATA]
 
 /**
  * `respond_permission` — only `allow_once`/`deny_once` (BR-016). For
@@ -813,6 +1056,12 @@ export function ipcHelloCmd(authMode: AuthMode): CmdPayload {
 
 export function listRunsCmd(): CmdPayload {
   return { kind: 'cmd', action: 'list_runs' }
+}
+
+/** `list_pending` — the Host re-sends every open prompt as `permission_request`
+ * frames, then acks (so prompts it did not re-send are stale). */
+export function listPendingCmd(): CmdPayload {
+  return { kind: 'cmd', action: 'list_pending' }
 }
 
 /** `list_projects` — refresh the project groupings in the run browser. */
@@ -923,6 +1172,91 @@ function withTurn(cmd: CmdPayload, input: TurnInput): CmdPayload {
   if (input.slashCommand) cmd.slash_command = input.slashCommand
   if (input.mentions && input.mentions.length) cmd.mentions = input.mentions
   if (input.attachments && input.attachments.length) cmd.attachments = input.attachments
+  return cmd
+}
+
+// ---- Data commands ({@link FEATURE_DATA}) ----
+
+/** `todo_list` — every todo, answered with a {@link TodoListKind}. */
+export function todoListCmd(): CmdPayload {
+  return { kind: 'cmd', action: 'todo_list' }
+}
+
+/** `todo_add` — a new todo; the Host pushes the fresh list. */
+export function todoAddCmd(input: { text: string; projectId?: string | null; dueDate?: string | null }): CmdPayload {
+  const cmd: CmdPayload = { kind: 'cmd', action: 'todo_add', text: input.text }
+  if (input.projectId) cmd.project_id = input.projectId
+  if (input.dueDate) cmd.due_date = input.dueDate
+  return cmd
+}
+
+/** `todo_update` — change title / note (`text`), deadline or project. */
+export function todoUpdateCmd(id: string, patch: TodoPatchWire): CmdPayload {
+  return { kind: 'cmd', action: 'todo_update', item_id: id, patch }
+}
+
+/** `todo_toggle` — flip done. */
+export function todoToggleCmd(id: string): CmdPayload {
+  return { kind: 'cmd', action: 'todo_toggle', item_id: id }
+}
+
+/** `todo_delete`. */
+export function todoDeleteCmd(id: string): CmdPayload {
+  return { kind: 'cmd', action: 'todo_delete', item_id: id }
+}
+
+/** `note_list` / `note_search` — a blank query lists; answered with a {@link NoteListKind}. */
+export function noteListCmd(projectId: string | null, query = ''): CmdPayload {
+  const q = query.trim()
+  const cmd: CmdPayload = { kind: 'cmd', action: q ? 'note_search' : 'note_list' }
+  if (projectId) cmd.project_id = projectId
+  if (q) cmd.query = q
+  return cmd
+}
+
+/** `note_get` — one full note, answered with a {@link NoteKind}. */
+export function noteGetCmd(id: string): CmdPayload {
+  return { kind: 'cmd', action: 'note_get', item_id: id }
+}
+
+/** `note_add` — the Host does not push; re-list after the ack. */
+export function noteAddCmd(input: { title: string; content: string; projectId?: string | null }): CmdPayload {
+  const cmd: CmdPayload = { kind: 'cmd', action: 'note_add', title: input.title, content: input.content }
+  if (input.projectId) cmd.project_id = input.projectId
+  return cmd
+}
+
+/** `note_update` — change title, content or project. */
+export function noteUpdateCmd(id: string, patch: NotePatchWire): CmdPayload {
+  return { kind: 'cmd', action: 'note_update', item_id: id, patch }
+}
+
+/** `note_delete`. */
+export function noteDeleteCmd(id: string): CmdPayload {
+  return { kind: 'cmd', action: 'note_delete', item_id: id }
+}
+
+/** `project_toggles_get` — answered with a {@link ProjectTogglesKind}. */
+export function projectTogglesGetCmd(projectId: string): CmdPayload {
+  return { kind: 'cmd', action: 'project_toggles_get', project_id: projectId }
+}
+
+/** `project_toggle_set` — flip one switch; the Host pushes the real state back.
+ * `itemId` is ignored for `builtin_mcp`. */
+export function projectToggleSetCmd(
+  projectId: string,
+  toggleKind: ToggleKind,
+  itemId: string | null,
+  enabled: boolean,
+): CmdPayload {
+  const cmd: CmdPayload = {
+    kind: 'cmd',
+    action: 'project_toggle_set',
+    project_id: projectId,
+    toggle_kind: toggleKind,
+    enabled,
+  }
+  if (itemId && toggleKind !== 'builtin_mcp') cmd.item_id = itemId
   return cmd
 }
 

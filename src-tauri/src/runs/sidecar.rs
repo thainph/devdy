@@ -763,7 +763,17 @@ pub async fn drain_sidecar(
                             // ever arrive). Drop the prompt everywhere.
                             (Some(v), "_devdy_permission_cancelled") => {
                                 let request_id = v.get("requestId").and_then(|x| x.as_str()).unwrap_or_default().to_string();
-                                crate::runs::permission::resolve_pending(&run_id, &request_id);
+                                let was_pending = crate::runs::permission::resolve_pending(&run_id, &request_id);
+                                // A paired phone holds the prompt too (its Inbox
+                                // lists every run's): withdraw it there as well.
+                                if was_pending {
+                                    if let Some(bus) = &remote_bus {
+                                        bus.publish(crate::remote::RemoteRunEvent::PermissionResolved {
+                                            run_id: run_id.clone(),
+                                            request_id: request_id.clone(),
+                                        });
+                                    }
+                                }
                                 let _ = app.emit(
                                     &format!("run:permission_resolved:{}", run_id),
                                     serde_json::json!({ "request_id": request_id }),
@@ -786,7 +796,14 @@ pub async fn drain_sidecar(
                                     title: v.get("title").and_then(|x| x.as_str()).map(str::to_string),
                                     description: v.get("description").and_then(|x| x.as_str()).map(str::to_string),
                                     display_name: v.get("display_name").and_then(|x| x.as_str()).map(str::to_string),
+                                    once_only: false,
                                 };
+                                // Remember it until answered — BEFORE anything can see
+                                // it: the emit below is lost if no webview listener is
+                                // attached right now (a re-attached one recovers it from
+                                // this store), and an answer that races in from a phone
+                                // must find it pending or it is refused.
+                                crate::runs::permission::track_pending(evt.clone());
                                 // Remote tap: forward the permission_request with full
                                 // context so a Controller can decide (FR-006/BR-007).
                                 // Conductor workers use the SAME flow as any session:
@@ -800,12 +817,9 @@ pub async fn drain_sidecar(
                                         tool: evt.tool_name.clone(),
                                         input: evt.tool_input.clone(),
                                         cwd: evt.cwd.clone(),
+                                        once_only: false,
                                     });
                                 }
-                                // Remember it until answered: the emit below is lost if
-                                // no webview listener is attached right now, and a
-                                // re-attached listener recovers it from this store.
-                                crate::runs::permission::track_pending(evt.clone());
                                 let _ = app.emit(&format!("run:permission_request:{}", run_id), evt);
                             }
                             // ---- control: diagnostic log (codex tracing / notes) -

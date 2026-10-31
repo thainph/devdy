@@ -6,9 +6,10 @@
  *   2. Otherwise: LinkEntryView → connect + wait for the Host OTP gate →
  *      OtpEntryView → on success (session_token) → the link's run.
  *
- * Once paired, the device can drive EVERY run on the Host (SRS BR-005 v1.1), so
- * the session screen has a run browser behind it. The link's run is what we land
- * on; from there the user moves freely.
+ * Once paired, the device can drive EVERY run on the Host (SRS BR-005 v1.1).
+ * Behind the session screen sit bottom tabs — Inbox (every prompt waiting, runs
+ * finished since the last visit) · Runs · Todo · Note · Project. A fresh link
+ * pairing lands on the link's run; re-opening the app lands on the Inbox.
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -18,6 +19,23 @@ import LinkEntryView from './components/LinkEntryView.vue'
 import OtpEntryView from './components/OtpEntryView.vue'
 import SessionView from './components/SessionView.vue'
 import RunBrowserView from './components/RunBrowserView.vue'
+import InboxView from './components/InboxView.vue'
+import TodoView from './components/TodoView.vue'
+import NoteListView from './components/NoteListView.vue'
+import NoteEditorView from './components/NoteEditorView.vue'
+import ProjectTogglesView from './components/ProjectTogglesView.vue'
+import { createDataStore } from './dataStore'
+import BottomTabBar, { type ControllerTab } from './components/BottomTabBar.vue'
+import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
+import {
+  aggregatePending,
+  leaveVisit,
+  markRead,
+  parseVisitState,
+  pendingCount,
+  startVisit,
+  type VisitState,
+} from '@/lib/remoteInbox'
 import type { ComposerTurn } from './components/SessionComposer.vue'
 import { ControllerConnection, type AuthState, type ConnStatus, type SecretSource } from './connection'
 import { createRunStore } from './runStore'
@@ -25,6 +43,8 @@ import * as tokenStore from './sessionTokenStore'
 import type { LoginGrant } from './login'
 import {
   cancelRunCmd,
+  listPendingCmd,
+  hostHas,
   listProjectFilesCmd,
   listProjectsCmd,
   listRunsCmd,
@@ -33,6 +53,7 @@ import {
   respondPermissionCmd,
   sendTurnCmd,
   setRunMetaCmd,
+  type NoteSummary,
   type QuestionAnswers,
   type RemoteDecision,
   type SessionLinkPayload,
@@ -44,12 +65,68 @@ const { renderText, loadMarkdown } = useMarkdown()
 const store = createRunStore()
 const conn = shallowRef<ControllerConnection | null>(null)
 
+// Todo / Note / project-switch screens (FEATURE_DATA).
+const DATA_ERRORS = new Set([
+  'not_connected', 'connection_lost', 'host_ack_timeout', 'not_found', 'malformed',
+  'rate_limited', 'action_not_allowed', 'failed', 'load_timeout',
+])
+const data = createDataStore(
+  (cmd, onAck) => conn.value?.sendCommand(cmd, onAck) ?? false,
+  (reason) => {
+    const key = reason === 'disconnected' ? 'connection_lost' : reason
+    return key && DATA_ERRORS.has(key)
+      ? t(`controller.data.errors.${key}`)
+      : t('controller.data.errors.generic', { reason: reason ?? '?' })
+  },
+)
+const noteEditorOpen = ref(false)
+const toggleProjectId = ref<string | null>(null)
+const dataBusy = computed(() => data.state.pending > 0)
+
+// What the Host supports (`session_token.host_features`). An older Host sends
+// none: hide what it would only refuse rather than let it fail on use.
+const hostFeatures = computed(() => conn.value?.state.hostFeatures.value ?? null)
+const hasData = computed(() => hostHas(hostFeatures.value, 'data'))
+const hasInbox = computed(() => hostHas(hostFeatures.value, 'inbox'))
+const hasRemember = computed(() => hostHas(hostFeatures.value, 'remember'))
+const DATA_TABS: ControllerTab[] = ['todo', 'note', 'project']
+const hiddenTabs = computed<ControllerTab[]>(() =>
+  // Unknown until the token arrives: show everything rather than flicker.
+  hostFeatures.value === null || hasData.value ? [] : DATA_TABS,
+)
+watch(hiddenTabs, (hidden) => {
+  if (hidden.includes(tab.value)) tab.value = 'inbox'
+})
+
+/** Open the editor on a list row (fetched in full) or, with null, a new note. */
+function openNoteEditor(note: NoteSummary | null): void {
+  data.clearError()
+  if (note) data.loadNote(note.id)
+  else data.closeNote()
+  noteEditorOpen.value = true
+}
+function closeNoteEditor(): void {
+  noteEditorOpen.value = false
+  data.closeNote()
+}
+function selectToggleProject(projectId: string): void {
+  toggleProjectId.value = projectId
+  data.loadToggles(projectId)
+}
+
 /** The app phase drives which screen shows. `session` covers both the run
  * browser and an open run — `store.state.activeRunId` decides between them. */
 type Phase = 'link' | 'otp' | 'session'
 const phase = ref<Phase>('link')
 
 const link = ref<SessionLinkPayload | null>(null)
+
+// Bottom tab while no session is open. The Inbox is the home screen.
+const tab = ref<ControllerTab>('inbox')
+// Whether the first authentication opens the link's run. True for a link just
+// scanned (that run is what the QR was for); false when re-opening the app on a
+// stored token, which should land on the Inbox instead of an old run.
+let landOnLinkRun = true
 
 // Mirrored connection state (local refs for the template).
 const status = ref<ConnStatus>('idle')
@@ -185,6 +262,7 @@ onMounted(() => {
       link_secret: token.link_secret,
     }
     tokenStore.touch()
+    landOnLinkRun = !!hashLink
     startConnection({ mode: 'session', token: token.token })
     phase.value = 'session'
   }
@@ -206,6 +284,8 @@ function parseHashLink(): SessionLinkPayload | null {
 
 onBeforeUnmount(() => {
   conn.value?.close()
+  document.removeEventListener('visibilitychange', onVisibility)
+  window.removeEventListener('pagehide', onPageHide)
 })
 
 /** Parsed a link (from hash or paste) — connect IMMEDIATELY (join + pubkey
@@ -213,6 +293,7 @@ onBeforeUnmount(() => {
  * session key is derived later, once the user submits the OTP. */
 function onLink(payload: SessionLinkPayload): void {
   link.value = payload
+  landOnLinkRun = true
   phase.value = 'otp'
   startConnection(null)
 }
@@ -222,6 +303,8 @@ function onLink(payload: SessionLinkPayload): void {
 function onGranted(grant: LoginGrant): void {
   tokenStore.save({ ...grant.link, token: grant.token })
   link.value = grant.link
+  // A password login is "find my host", not "open this run".
+  landOnLinkRun = false
   phase.value = 'session'
   startConnection({ mode: 'session', token: grant.token })
 }
@@ -242,9 +325,13 @@ function startConnection(secret: SecretSource | null): void {
   if (!link.value) return
   conn.value?.close()
   store.reset()
+  data.reset()
   running.value = false
   sending.value = false
-  const c = new ControllerConnection(link.value, secret, (p) => store.apply(p))
+  const c = new ControllerConnection(link.value, secret, (p) => {
+    store.apply(p)
+    data.apply(p)
+  })
   conn.value = c
   void c.connect()
 }
@@ -254,6 +341,8 @@ function disconnect(): void {
   conn.value?.close()
   conn.value = null
   store.reset()
+  data.reset()
+  noteEditorOpen.value = false
   link.value = null
   phase.value = 'link'
   status.value = 'idle'
@@ -293,6 +382,7 @@ function openRun(id: string): void {
   // Remember where this run lives so Back lands on its project, not the root.
   const info = store.state.runList.find((r) => r.id === id)
   if (info) browserProjectId.value = info.project_id
+  saveVisit(markRead(visit.value, id))
   draftProjectId.value = null
   store.setActiveRun(id)
   conn.value?.openRun(id)
@@ -313,6 +403,78 @@ function refreshRuns(): void {
   conn.value?.sendCommand(listProjectsCmd())
 }
 
+// ── inbox ───────────────────────────────────────────────────────────────────
+/** Re-pull every open prompt (live ones that fired while this device was away
+ * went nowhere) plus the run list the "since last visit" section reads. */
+function syncInbox(): void {
+  const c = conn.value
+  if (!c) return
+  refreshRuns()
+  // An older Host has no `list_pending`: live prompts are all it can offer.
+  if (!hasInbox.value) return
+  // One sync at a time; the one in flight covers this request too.
+  const token = store.beginPendingSync()
+  if (token === null) return
+  const sent = c.sendCommand(listPendingCmd(), (accepted) => store.endPendingSync(token, accepted))
+  if (!sent) store.endPendingSync(token, false)
+}
+
+const inboxPending = computed(() =>
+  aggregatePending(store.state.pendingQueues, store.state.pendingSeenAt),
+)
+const inboxCount = computed(() => pendingCount(store.state.pendingQueues))
+
+// "Since last visit" bookkeeping, persisted across reloads.
+const VISIT_KEY = 'devdy.controller.inbox.v1'
+function loadVisit(): VisitState {
+  try {
+    return parseVisitState(localStorage.getItem(VISIT_KEY))
+  } catch {
+    return parseVisitState(null)
+  }
+}
+const visit = ref<VisitState>(startVisit(loadVisit(), Date.now()))
+function saveVisit(next: VisitState): void {
+  visit.value = next
+  try {
+    localStorage.setItem(VISIT_KEY, JSON.stringify(next))
+  } catch {
+    // Storage unavailable: the Inbox still works for this visit.
+  }
+}
+saveVisit(visit.value)
+const sinceMs = computed(() => visit.value.anchor ?? Date.now())
+
+function onVisibility(): void {
+  if (document.visibilityState === 'hidden') {
+    saveVisit(leaveVisit(visit.value, Date.now()))
+    return
+  }
+  saveVisit(startVisit(visit.value, Date.now()))
+  // The connection re-dials itself on wake; once live, catch up right away.
+  if (auth.value === 'authenticated' && status.value === 'connected') syncInbox()
+}
+function onPageHide(): void {
+  saveVisit(leaveVisit(visit.value, Date.now()))
+}
+document.addEventListener('visibilitychange', onVisibility)
+window.addEventListener('pagehide', onPageHide)
+
+function onTab(next: ControllerTab): void {
+  if (next !== tab.value) data.clearError()
+  tab.value = next
+  closeNoteEditor()
+  if (next === 'inbox') syncInbox()
+  else if (next === 'runs') refreshRuns()
+}
+
+/** Open the Inbox from a session (the "another run needs you" banner). */
+function openInbox(): void {
+  tab.value = 'inbox'
+  backToBrowser()
+  syncInbox()
+}
+
 // Land on the link's run when the session first authenticates — the Host has
 // already subscribed us to it, so this only decides what the UI shows.
 //
@@ -325,10 +487,24 @@ watch(
     if (v !== 'authenticated' || !link.value) return
     const active = store.state.activeRunId
     if (!active) {
-      store.setActiveRun(link.value.run_id)
+      if (landOnLinkRun) store.setActiveRun(link.value.run_id)
+      landOnLinkRun = false
     } else if (active !== link.value.run_id) {
       conn.value?.openRun(active)
     }
+  },
+)
+
+// Each time the session becomes usable (first pairing AND every reconnect —
+// `auth` stays `authenticated` across a re-dial, `status` does not): prompts
+// that fired while the socket was down never arrived, and ones this device
+// holds may have been answered at the desktop meanwhile.
+watch(
+  () => status.value === 'connected' && auth.value === 'authenticated',
+  (ready) => {
+    if (!ready) return
+    syncInbox()
+    if (hasData.value) data.reload()
   },
 )
 const entries = computed(() => runView.value?.entries ?? [])
@@ -507,24 +683,20 @@ function onCancel(): void {
   if (!conn.value?.sendCommand(cancelRunCmd(id))) warnNotSent()
 }
 
-function onDecide(decision: RemoteDecision): void {
-  const req = pending.value
-  if (!req) return
-  if (!conn.value?.sendCommand(respondPermissionCmd(req.run_id, req.request_id, decision))) {
+/** Answer one prompt. It stays on screen until the Host confirms the
+ * sidecar/broker accepted it (`permission_resolved`). */
+function respond(req: PermissionRequest, decision: RemoteDecision, answers?: QuestionAnswers): void {
+  if (!conn.value?.sendCommand(respondPermissionCmd(req.run_id, req.request_id, decision, answers))) {
     warnNotSent()
-    return
   }
-  // Keep the prompt until the Host confirms the sidecar/broker accepted it.
+}
+
+function onDecide(decision: RemoteDecision): void {
+  if (pending.value) respond(pending.value, decision)
 }
 
 function onAnswer(answers: QuestionAnswers): void {
-  const req = pending.value
-  if (!req) return
-  if (!conn.value?.sendCommand(respondPermissionCmd(req.run_id, req.request_id, 'allow_once', answers))) {
-    warnNotSent()
-    return
-  }
-  // Keep the prompt until the Host confirms the sidecar/broker accepted it.
+  if (pending.value) respond(pending.value, 'allow_once', answers)
 }
 
 function onRequestFiles(): void {
@@ -544,25 +716,106 @@ function onRequestFiles(): void {
     @otp="onOtp"
   />
 
-  <RunBrowserView
-    v-else-if="!runId && !draftProjectId"
-    :status="status"
-    :live="live"
-    :host-fingerprint="hostFp"
-    :status-label="browserStatusLabel"
-    :runs="store.state.runList"
+  <!-- The note editor is full height, like a session: no tab bar. -->
+  <NoteEditorView
+    v-else-if="!runId && !draftProjectId && tab === 'note' && noteEditorOpen"
+    :note="data.state.note"
+    :note-id="data.state.noteId"
+    :failed="data.state.failed.note"
     :projects="store.state.projectList"
-    :pending-run-ids="Object.keys(store.state.pendingByRun)"
-    :selected-project-id="browserProjectId"
-    @update:selected-project-id="browserProjectId = $event"
-    @open="openRun"
-    @new-session="startNewSession"
-    @refresh="refreshRuns"
-    @disconnect="disconnect"
+    :default-project-id="data.state.noteFilter.projectId ?? ''"
+    :busy="dataBusy"
+    :error="data.state.error"
+    :render-text="renderText"
+    :save="data.saveNote"
+    :remove="data.deleteNote"
+    @retry="data.state.noteId && data.loadNote(data.state.noteId)"
+    @back="closeNoteEditor"
+    @clear-error="data.clearError()"
   />
+
+  <div v-else-if="!runId && !draftProjectId" class="flex h-dvh min-h-0 flex-col">
+    <div class="flex-1 min-h-0">
+      <InboxView
+        v-if="tab === 'inbox'"
+        :status="status"
+        :live="live"
+        :host-fingerprint="hostFp"
+        :status-label="browserStatusLabel"
+        :pending="inboxPending"
+        :pending-seen-at="store.state.pendingSeenAt"
+        :runs="store.state.runList"
+        :projects="store.state.projectList"
+        :since-ms="sinceMs"
+        :read-ids="visit.read"
+        :allow-always="hasRemember"
+        @decide="respond"
+        @answer="(req, answers) => respond(req, 'allow_once', answers)"
+        @open="openRun"
+        @refresh="syncInbox"
+        @disconnect="disconnect"
+      />
+      <RunBrowserView
+        v-else-if="tab === 'runs'"
+        :status="status"
+        :live="live"
+        :host-fingerprint="hostFp"
+        :status-label="browserStatusLabel"
+        :runs="store.state.runList"
+        :projects="store.state.projectList"
+        :pending-run-ids="Object.keys(store.state.pendingByRun)"
+        :selected-project-id="browserProjectId"
+        @update:selected-project-id="browserProjectId = $event"
+        @open="openRun"
+        @new-session="startNewSession"
+        @refresh="refreshRuns"
+        @disconnect="disconnect"
+      />
+      <TodoView
+        v-else-if="tab === 'todo'"
+        :todos="data.state.todos"
+        :projects="store.state.projectList"
+        :busy="dataBusy"
+        :error="data.state.error"
+        :failed="data.state.failed.todos"
+        :save="data.saveTodo"
+        :remove="data.deleteTodo"
+        @toggle="data.toggleTodo"
+        @refresh="data.loadTodos()"
+        @clear-error="data.clearError()"
+      />
+      <NoteListView
+        v-else-if="tab === 'note'"
+        :notes="data.state.notes"
+        :projects="store.state.projectList"
+        :project-id="data.state.noteFilter.projectId"
+        :query="data.state.noteFilter.query"
+        :error="data.state.error"
+        :failed="data.state.failed.notes"
+        @filter="(p, q) => data.loadNotes(p, q)"
+        @open="openNoteEditor"
+        @new="openNoteEditor(null)"
+        @clear-error="data.clearError()"
+      />
+      <ProjectTogglesView
+        v-else
+        :projects="store.state.projectList"
+        :toggles="data.state.toggles"
+        :project-id="toggleProjectId"
+        :error="data.state.error"
+        :failed="data.state.failed.toggles"
+        @select="selectToggleProject"
+        @set="data.setToggle"
+        @clear-error="data.clearError()"
+      />
+    </div>
+    <BottomTabBar :tab="tab" :inbox-count="inboxCount" :hidden="hiddenTabs" @update:tab="onTab" />
+  </div>
 
   <SessionView
     v-else
+    :allow-always="hasRemember"
+    :run-key="runId ?? (draftProjectId ? `draft:${draftProjectId}` : null)"
     :title="title"
     :status="status"
     :live="live"
@@ -598,6 +851,7 @@ function onRequestFiles(): void {
     @answer="onAnswer"
     @disconnect="disconnect"
     @back="backToBrowser"
+    @open-inbox="openInbox"
     @clear-notice="store.clearNotice()"
     @update:engine="onEngine"
     @update:model="onModel"

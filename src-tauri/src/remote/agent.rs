@@ -19,7 +19,7 @@
 //! 6-digit OTP shown on the desktop; the first sealed frame is opened by trying
 //! `KDF(link_secret, session_secret)` (reconnect) then `KDF(link_secret, otp)`
 //! (pairing) — whichever opens authenticates the session. On success the host
-//! mints a durable session token (sliding 3h idle).
+//! mints a durable session token (sliding 7-day idle).
 
 use crate::db::Db;
 use crate::remote::audit;
@@ -79,8 +79,11 @@ const LIVENESS_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 /// the socket is certainly dead by then, so re-dial straight away.
 const SLEEP_JUMP: Duration = Duration::from_secs(20);
 
-/// Sliding idle window for a remote session token: 3 hours of inactivity.
-pub const IDLE_TTL_SECS: u64 = 3 * 3600;
+/// Sliding idle window for a remote session token: 7 days of inactivity. The
+/// phone is a "check and lock" companion, so re-typing an OTP after every
+/// screen lock defeats it; kick / revoke / end session at the desktop still
+/// end it at once.
+pub const IDLE_TTL_SECS: u64 = 7 * 24 * 3600;
 
 /// Current wall-clock time as Unix seconds (0 if the clock is before the epoch).
 pub fn now_unix() -> u64 {
@@ -1088,6 +1091,7 @@ async fn try_authenticate_first_frame(
         run_id: run_id.clone(),
         rendezvous_code,
         idle_expires_at: idle_expires,
+        host_features: crate::remote::protocol::HOST_FEATURES.iter().map(|f| f.to_string()).collect(),
     };
     if let Ok(json) = serde_json::to_vec(&token_payload) {
         let c = session.seal(&json);
@@ -1128,11 +1132,13 @@ async fn try_authenticate_first_frame(
     let batch_output = has_feature(FEATURE_OUTPUT_BATCH);
     let multi_run = has_feature(FEATURE_MULTI_RUN);
     let ipc = has_feature(crate::remote::ipc::FEATURE_IPC);
+    let data = has_feature(crate::remote::protocol::FEATURE_DATA);
     tracing::info!(
         event = "remote_client_features",
         room_id = %room_id,
         output_batch = batch_output,
         multi_run = multi_run,
+        data = data,
     );
 
     // A remote-desktop Controller drives the full UI through IPC: it needs
@@ -1218,6 +1224,7 @@ async fn try_authenticate_first_frame(
         idem: idem.clone(),
         idle: idle.clone(),
         ipc,
+        data,
     });
     *room_ctx = Some(ctx.clone());
 

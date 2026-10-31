@@ -30,6 +30,8 @@ pub enum RemoteRunEvent {
         tool: String,
         input: Value,
         cwd: Option<String>,
+        /// A broker prompt: once-only, never Always.
+        once_only: bool,
     },
     /// The run finished (was `run:done:<id>`).
     Done { run_id: String, status: String },
@@ -42,6 +44,9 @@ pub enum RemoteRunEvent {
         model: Option<String>,
         permission_mode: Option<String>,
     },
+    /// A permission request was answered at the desktop (by hand or by a
+    /// standing Always choice), so a Controller can drop its copy.
+    PermissionResolved { run_id: String, request_id: String },
 }
 
 impl RemoteRunEvent {
@@ -52,7 +57,8 @@ impl RemoteRunEvent {
             | RemoteRunEvent::Output { run_id, .. }
             | RemoteRunEvent::PermissionRequest { run_id, .. }
             | RemoteRunEvent::Done { run_id, .. }
-            | RemoteRunEvent::Meta { run_id, .. } => run_id,
+            | RemoteRunEvent::Meta { run_id, .. }
+            | RemoteRunEvent::PermissionResolved { run_id, .. } => run_id,
         }
     }
 }

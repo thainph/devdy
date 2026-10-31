@@ -100,6 +100,7 @@ impl Approver for ModalApprover {
             title: Some(format!("Cho phép `{}`?", cmd_display.trim())),
             description: Some(reason.to_string()),
             display_name: Some(format!("{} command", req.tool)),
+            once_only: true,
         };
         let topic = format!("run:permission_request:{}", self.run_id);
         // Track it like a sidecar request: the emit is lost when no webview
@@ -116,6 +117,19 @@ impl Approver for ModalApprover {
             request_id: request_id.clone(),
             approvals: self.approvals.clone(),
         };
+        // A paired phone may answer it too (full-trust model, once only): put it
+        // on the bus like a sidecar prompt.
+        publish_remote(
+            &self.app,
+            crate::remote::RemoteRunEvent::PermissionRequest {
+                run_id: self.run_id.clone(),
+                request_id: request_id.clone(),
+                tool: evt.tool_name.clone(),
+                input: evt.tool_input.clone(),
+                cwd: evt.cwd.clone(),
+                once_only: true,
+            },
+        );
         if self.app.emit(&topic, evt).is_err() {
             // Emit failed → fail-closed deny (the guard cleans up).
             return false;
@@ -128,6 +142,14 @@ impl Approver for ModalApprover {
         //    prompt). The shim's own lifetime is bounded by its caller (e.g. the
         //    Bash tool timeout), so nothing waits forever unseen.
         rx.await.unwrap_or(false)
+    }
+}
+
+/// Tap an event to a paired Controller; a no-op with Remote Control off.
+fn publish_remote(app: &AppHandle, ev: crate::remote::RemoteRunEvent) {
+    use tauri::Manager;
+    if let Some(bus) = app.try_state::<crate::remote::RemoteBus>() {
+        bus.publish(ev);
     }
 }
 
@@ -149,6 +171,13 @@ impl Drop for PendingPromptGuard {
             let _ = self.app.emit(
                 &format!("run:permission_resolved:{}", self.run_id),
                 serde_json::json!({ "request_id": self.request_id }),
+            );
+            publish_remote(
+                &self.app,
+                crate::remote::RemoteRunEvent::PermissionResolved {
+                    run_id: self.run_id.clone(),
+                    request_id: self.request_id.clone(),
+                },
             );
         }
         let approvals = self.approvals.clone();

@@ -199,6 +199,10 @@ pub enum StreamPayload {
         input: serde_json::Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
+        /// A broker prompt (gh / glab / ssh / aws / az / terraform): answer it
+        /// once only — Always is refused for it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        once_only: bool,
     },
     /// The run finished (`run:done`).
     Done { run_id: String, status: String },
@@ -225,6 +229,9 @@ pub enum StreamPayload {
         /// `start_run` that created a new session: the new run's id.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         run_id: Option<String>,
+        /// `todo_add` / `note_add`: the new item's id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        item_id: Option<String>,
     },
     /// Correlated permission outcome so an old response cannot clear a newer
     /// pending request in the Controller UI.
@@ -234,6 +241,11 @@ pub enum StreamPayload {
         accepted: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
+        /// Answers with an Always scope only: whether the standing choice was
+        /// handed to the desktop to keep (false = it applied once only, e.g.
+        /// the tool has no per-tool Always or the run has no project).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        remembered: Option<bool>,
     },
     /// An opaque session token (Host → Controller) minted once the OTP gate is
     /// passed. Lets the Controller reconnect within the sliding idle window
@@ -247,6 +259,11 @@ pub enum StreamPayload {
         rendezvous_code: String,
         /// Absolute idle expiry (Unix seconds); slides forward on activity.
         idle_expires_at: u64,
+        /// What this Host supports beyond the base protocol ([`HOST_FEATURES`]).
+        /// An older Host omits it, and a newer Controller then hides the
+        /// screens and buttons it would only get refused for.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        host_features: Vec<String>,
     },
     /// Remote desktop: the outcome of one `ipc_invoke`. `value` is the command's
     /// return value, `error` its rejection, both exactly as the local UI sees.
@@ -354,6 +371,92 @@ pub enum StreamPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         claude_account_id: Option<String>,
     },
+    // ---- Data features ([`FEATURE_DATA`]) ----
+    /// Every todo (the Controller filters by project / done locally).
+    TodoList { todos: Vec<TodoInfo> },
+    /// Notes matching a `note_list` / `note_search`, echoing the filter so the
+    /// Controller can drop a stale reply. Title + a short preview only; the
+    /// editor fetches the full note with `note_get`.
+    NoteList {
+        notes: Vec<NoteSummary>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+    },
+    /// What is switched on for one project. Names + on/off only: never an MCP
+    /// command, URL, env / header key or value, account or token.
+    ProjectToggles {
+        project_id: String,
+        mcp_servers: Vec<ToggleItem>,
+        skills: Vec<ToggleItem>,
+        rules: Vec<ToggleItem>,
+        builtin_devdy: BuiltinToggle,
+    },
+    /// One full note (`note_get`).
+    Note { note: NoteInfo },
+}
+
+/// One todo as the Controller sees it — no Focus fields (priority, estimate,
+/// AI plan…), which the phone does not edit.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TodoInfo {
+    pub id: String,
+    /// The full text: the first line is the title, the rest a note.
+    pub text: String,
+    pub done: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// Local `YYYY-MM-DD`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_time: Option<String>,
+    pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+}
+
+/// One note (Markdown) as the Controller sees it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NoteInfo {
+    pub id: String,
+    pub title: String,
+    pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    pub updated_at: String,
+}
+
+/// One row of the note list: no full body.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NoteSummary {
+    pub id: String,
+    pub title: String,
+    /// The start of the Markdown body (at most [`NOTE_PREVIEW_CHARS`] chars).
+    pub preview: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    pub updated_at: String,
+}
+
+/// How much of a note body the list carries.
+pub const NOTE_PREVIEW_CHARS: usize = 300;
+
+/// A skill / rule / MCP server switch for one project.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToggleItem {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+}
+
+/// The built-in `devdy` MCP server switch. `global` is true while the setting
+/// is app-wide (it is today): flipping it affects every project.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BuiltinToggle {
+    pub enabled: bool,
+    pub global: bool,
 }
 
 /// One managed Claude account offered in the Controller's run-settings menu.
@@ -412,6 +515,16 @@ pub const FEATURE_OUTPUT_BATCH: &str = "output_batch";
 /// forwarded. The trust boundary is unchanged either way (device approval,
 /// SRS BR-005 v1.1) — this only controls what the client is able to render.
 pub const FEATURE_MULTI_RUN: &str = "multi_run";
+
+/// Feature flag a Controller advertises to manage todos, notes and per-project
+/// switches (`todo_*`, `note_*`, `project_toggle*`). Without it those actions
+/// are refused, so an older bundle sees exactly the pre-data Host.
+pub const FEATURE_DATA: &str = "data";
+
+/// What this Host advertises in `session_token.host_features`: the data
+/// screens, the Inbox's `list_pending`, and Always (`allow_always` /
+/// `deny_always`) from a Controller.
+pub const HOST_FEATURES: [&str; 3] = ["data", "inbox", "remember"];
 
 /// One slash command exposed to the Controller's composer palette.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -487,6 +600,12 @@ pub struct RunInfo {
     /// Most recent activity timestamp (finished/started/created) for sorting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
+    /// When the run's last turn ended. A multi-turn session's sidecar exits
+    /// after every turn (status `done`, waiting for the next message) while
+    /// `updated_at` stays on the last user activity — so the Inbox's "since
+    /// last visit" keys on this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
 }
 
 /// A command from the Controller (SRS §5.2). `action` is validated against the
@@ -506,7 +625,7 @@ pub struct CmdPayload {
     pub run_id: Option<String>,
     #[serde(default)]
     pub request_id: Option<String>,
-    /// `respond_permission`: `allow_once` | `deny_once` only (BR-016/AC-17).
+    /// `respond_permission`: `allow_once` | `deny_once` | `allow_always` | `deny_always` (BR-016/AC-17).
     #[serde(default)]
     pub decision: Option<String>,
     /// `respond_permission` for `AskUserQuestion`: the selected answers
@@ -568,6 +687,32 @@ pub struct CmdPayload {
     /// `ipc_listen` / `ipc_unlisten`: the app event name.
     #[serde(default)]
     pub event: Option<String>,
+    // ---- Data features ([`FEATURE_DATA`]) ----
+    /// The todo / note / skill / rule / MCP server a data action targets.
+    #[serde(default)]
+    pub item_id: Option<String>,
+    /// `todo_update` / `note_update`: the fields to change. A missing key is
+    /// left alone, `null` clears it.
+    #[serde(default)]
+    pub patch: Option<serde_json::Value>,
+    /// `note_search`: the text to look for in titles and contents.
+    #[serde(default)]
+    pub query: Option<String>,
+    /// `note_add`: the note's title.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// `note_add`: the note's Markdown.
+    #[serde(default)]
+    pub content: Option<String>,
+    /// `todo_add`: local `YYYY-MM-DD` deadline.
+    #[serde(default)]
+    pub due_date: Option<String>,
+    /// `project_toggle_set`: `skill` | `rule` | `mcp` | `builtin_mcp`.
+    #[serde(default)]
+    pub toggle_kind: Option<String>,
+    /// `project_toggle_set`: the new state.
+    #[serde(default)]
+    pub enabled: Option<bool>,
 }
 
 /// The E2E handshake exchange (spec §3). Ephemeral public keys are NOT secret,
@@ -596,6 +741,33 @@ pub enum HandshakePayload {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_token_advertises_host_features() {
+        let v = serde_json::to_value(StreamPayload::SessionToken {
+            token: "t".into(),
+            run_id: "r".into(),
+            rendezvous_code: "c".into(),
+            idle_expires_at: 1,
+            host_features: HOST_FEATURES.iter().map(|f| f.to_string()).collect(),
+        })
+        .unwrap();
+        assert_eq!(v["host_features"], serde_json::json!(["data", "inbox", "remember"]));
+    }
+
+    #[test]
+    fn broker_prompts_are_marked_once_only_on_the_wire() {
+        let req = |once_only| StreamPayload::PermissionRequest {
+            run_id: "r".into(),
+            request_id: "q".into(),
+            tool: "gh".into(),
+            input: serde_json::Value::Null,
+            cwd: None,
+            once_only,
+        };
+        assert_eq!(serde_json::to_value(req(true)).unwrap()["once_only"], true);
+        assert!(serde_json::to_value(req(false)).unwrap().get("once_only").is_none());
+    }
 
     #[test]
     fn envelope_wire_matches_relay_field_names() {

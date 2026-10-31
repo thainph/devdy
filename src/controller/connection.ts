@@ -129,6 +129,8 @@ export type CommandAckHandler = (
   accepted: boolean,
   reason?: string | null,
   runId?: string | null,
+  /** `todo_add` / `note_add`: the created item's id. */
+  itemId?: string | null,
 ) => void
 
 /**
@@ -166,6 +168,9 @@ export interface ControllerState {
   /** A newer connection to this session (another tab or device) took it over
    * and this one stopped for good rather than fight it. */
   superseded: Ref<boolean>
+  /** What the Host advertised on the last session token; null until then, and
+   * empty from an older Host (see `hostHas`). */
+  hostFeatures: Ref<string[] | null>
 }
 
 /**
@@ -188,6 +193,8 @@ export class ControllerConnection {
   private seq = 0
   /** Set once the first drop starts the reconnect window; null while stable. */
   private reconnectDeadline: number | null = null
+  /** Last time {@link slideStoredToken} wrote (ms). */
+  private tokenTouchedAt = 0
   private backoff = BACKOFF_BASE_MS
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private closedByUser = false
@@ -276,6 +283,7 @@ export class ControllerConnection {
       decodeErrors: ref<number>(0),
       auth: ref<AuthState | null>(null),
       superseded: ref<boolean>(false),
+      hostFeatures: ref<string[] | null>(null),
     }
   }
 
@@ -406,7 +414,18 @@ export class ControllerConnection {
       if (pending) clearTimeout(pending.timer)
       this.pendingCommandAcks.delete(commandId)
     }
+    if (sent) this.slideStoredToken()
     return sent
+  }
+
+  /** The Host slides its idle window on every accepted command; slide the
+   * stored token's in step (throttled — it is a localStorage write). */
+  private slideStoredToken(): void {
+    if (this.opts.ipc || this.secret?.mode !== 'session') return
+    const now = Date.now()
+    if (now - this.tokenTouchedAt < 60_000) return
+    this.tokenTouchedAt = now
+    tokenStore.touch()
   }
 
   /** Every path that drops the session (close, reconnect, auth failure) goes
@@ -833,6 +852,7 @@ export class ControllerConnection {
 
     // Transport-level auth signals: handle here, don't forward to the run store.
     if (payload.kind === 'session_token') {
+      this.state.hostFeatures.value = payload.host_features
       this.onSessionToken(payload.token)
       return
     }
@@ -846,7 +866,7 @@ export class ControllerConnection {
       if (ack) {
         this.pendingCommandAcks.delete(payload.command_id)
         clearTimeout(ack.timer)
-        ack.handler(payload.accepted, payload.reason, payload.run_id)
+        ack.handler(payload.accepted, payload.reason, payload.run_id, payload.item_id)
       }
       return
     }

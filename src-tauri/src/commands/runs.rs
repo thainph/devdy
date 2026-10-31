@@ -1269,24 +1269,52 @@ pub struct RespondPermissionPayload {
 
 #[tauri::command]
 pub async fn respond_permission(
+    app: AppHandle,
     registry: State<'_, RunRegistry>,
     broker_approvals: State<'_, crate::runs::BrokerApprovals>,
     payload: RespondPermissionPayload,
 ) -> Result<(), String> {
-    respond_permission_inner(registry.inner(), broker_approvals.inner(), payload).await
+    let (run_id, request_id) = (payload.run_id.clone(), payload.request_id.clone());
+    match respond_permission_inner(registry.inner(), broker_approvals.inner(), payload).await {
+        Ok(_) => {}
+        // Someone else (a paired phone) answered first; the prompt is gone
+        // either way, so there is nothing to report or to republish.
+        Err(e) if e == PERMISSION_ALREADY_HANDLED => return Ok(()),
+        Err(e) => return Err(e),
+    }
+    // Answered here: a paired phone still shows the prompt (its Inbox lists
+    // every run's), so tell it to drop it. No-op with Remote Control off.
+    if let Some(bus) = app.try_state::<crate::remote::RemoteBus>() {
+        bus.publish(crate::remote::RemoteRunEvent::PermissionResolved { run_id, request_id });
+    }
+    Ok(())
 }
+
+/// Error of [`respond_permission_inner`] when the request is no longer open:
+/// another surface answered it first, or it was withdrawn.
+pub(crate) const PERMISSION_ALREADY_HANDLED: &str = "permission already handled";
 
 /// Core of [`respond_permission`] over concrete refs so background tasks (the
 /// Remote Control host agent, FR-007) can reuse the exact same permission-answer
 /// path without a Tauri `State`. Same contract as the command.
+///
+/// The request is CLAIMED first (taken out of the pending store), so when the
+/// desktop and a phone answer at once exactly one reaches the sidecar; the
+/// other gets [`PERMISSION_ALREADY_HANDLED`] and writes nothing. A delivery
+/// failure puts the request back so it can be retried. Returns the request.
 pub(crate) async fn respond_permission_inner(
     registry: &RunRegistry,
     broker_approvals: &crate::runs::BrokerApprovals,
     payload: RespondPermissionPayload,
-) -> Result<(), String> {
+) -> Result<crate::runs::permission::PermissionRequestEvent, String> {
     if !matches!(payload.decision.as_str(), "allow" | "deny" | "ask") {
         return Err(format!("unknown permission decision: {}", payload.decision));
     }
+    let Some(claimed) =
+        crate::runs::permission::take_pending(&payload.run_id, &payload.request_id)
+    else {
+        return Err(PERMISSION_ALREADY_HANDLED.to_string());
+    };
     // GĐ3: a broker-side `Ask` (gh/glab) registers its request_id here. If this
     // response matches one, resolve its oneshot and return — the sidecar knows
     // nothing about it, so we must NOT route it over stdin. Non-matching ids fall
@@ -1296,7 +1324,7 @@ pub(crate) async fn respond_permission_inner(
         if let Some(tx) = pending.remove(&payload.request_id) {
             let allow = payload.decision == "allow";
             let _ = tx.send(allow);
-            return Ok(());
+            return Ok(claimed.event);
         }
     }
     // Route the decision back to the sidecar's canUseTool callback over stdin.
@@ -1312,15 +1340,18 @@ pub(crate) async fn respond_permission_inner(
             "remember": payload.remember,
         })
     );
-    write_run_stdin(
+    if let Err(e) = write_run_stdin(
         registry,
         &payload.run_id,
         &line,
         "run is not accepting input",
     )
-    .await?;
-    crate::runs::permission::resolve_pending(&payload.run_id, &payload.request_id);
-    Ok(())
+    .await
+    {
+        crate::runs::permission::restore_pending(claimed);
+        return Err(e);
+    }
+    Ok(claimed.event)
 }
 
 /// Queue one NDJSON line for a live run's sidecar and wait (bounded) for it to

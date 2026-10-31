@@ -112,6 +112,19 @@ pub async fn list_todos(db: State<'_, Db>) -> Result<Vec<Todo>, String> {
     load_todos(db.inner()).await
 }
 
+/// Fields of a new todo. Shared by the `add_todo` command and Remote Control.
+#[derive(Debug, Default, Clone)]
+pub struct NewTodo {
+    pub text: String,
+    pub project_id: Option<String>,
+    pub run_id: Option<String>,
+    pub due_date: Option<String>,
+    pub due_time: Option<String>,
+    pub priority: Option<i64>,
+    pub estimate_min: Option<i64>,
+    pub source_url: Option<String>,
+}
+
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn add_todo(
@@ -126,6 +139,31 @@ pub async fn add_todo(
     estimate_min: Option<i64>,
     source_url: Option<String>,
 ) -> Result<Todo, String> {
+    let input = NewTodo {
+        text,
+        project_id,
+        run_id,
+        due_date,
+        due_time,
+        priority,
+        estimate_min,
+        source_url,
+    };
+    add_todo_inner(&app, db.inner(), input).await
+}
+
+/// Validate and insert a todo at the top of the list, then emit the change.
+pub async fn add_todo_inner(app: &AppHandle, db: &Db, input: NewTodo) -> Result<Todo, String> {
+    let NewTodo {
+        text,
+        project_id,
+        run_id,
+        due_date,
+        due_time,
+        priority,
+        estimate_min,
+        source_url,
+    } = input;
     let text = focus::validate::text(&text)?;
     let due_date = focus::validate::due_date(due_date.as_deref())?;
     let due_time = focus::validate::due_time(due_time.as_deref())?;
@@ -138,7 +176,6 @@ pub async fn add_todo(
         Some(u) => source::normalize(u)?,
         None => None,
     };
-    let db = db.inner();
     let id = Uuid::new_v4().to_string();
     let created_at = now();
     // New todos go to the top by taking a position below the current minimum.
@@ -175,7 +212,7 @@ pub async fn add_todo(
     // project-less capture takes the run's project with it).
     item_links::link_captured(db, ItemKind::Todo, &id, run_id.as_deref()).await;
     let todo = get_todo(db, &id).await?;
-    focus::emit_todos_changed(&app);
+    focus::emit_todos_changed(app);
     Ok(todo)
 }
 
@@ -227,6 +264,10 @@ pub async fn set_todo_due_date(
 /// Flip `done`; `completed_at` follows it, and un-doing returns to `todo`.
 #[tauri::command]
 pub async fn toggle_todo(app: AppHandle, db: State<'_, Db>, id: String) -> Result<(), String> {
+    toggle_todo_inner(&app, db.inner(), &id).await
+}
+
+pub async fn toggle_todo_inner(app: &AppHandle, db: &Db, id: &str) -> Result<(), String> {
     let now = now();
     sqlx::query(
         "UPDATE todos SET done = 1 - done, \
@@ -236,11 +277,11 @@ pub async fn toggle_todo(app: AppHandle, db: State<'_, Db>, id: String) -> Resul
     )
     .bind(&now)
     .bind(&now)
-    .bind(&id)
-    .execute(db.inner())
+    .bind(id)
+    .execute(db)
     .await
     .map_err(|e| e.to_string())?;
-    focus::emit_todos_changed(&app);
+    focus::emit_todos_changed(app);
     Ok(())
 }
 
@@ -274,17 +315,25 @@ pub async fn update_todo_fields(
     id: String,
     patch: Map<String, Value>,
 ) -> Result<Todo, String> {
+    update_todo_fields_inner(&app, db.inner(), &id, &patch).await
+}
+
+pub async fn update_todo_fields_inner(
+    app: &AppHandle,
+    db: &Db,
+    id: &str,
+    patch: &Map<String, Value>,
+) -> Result<Todo, String> {
     // Read, patch and write under the write lock, and only the columns the
     // patch touches: a concurrent writer (an AI plan landing, the MCP sidecar,
     // sync) keeps its own columns.
     let mut tx = db
-        .inner()
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|e| e.to_string())?;
-    let current = get_todo(&mut *tx, &id).await?;
-    let t = apply_patch(&current, &patch, &now())?;
-    let cols = written_columns(&current, &t, &patch);
+    let current = get_todo(&mut *tx, id).await?;
+    let t = apply_patch(&current, patch, &now())?;
+    let cols = written_columns(&current, &t, patch);
     let sets: Vec<String> = cols.iter().map(|c| format!("{c} = ?")).collect();
     let sql = format!("UPDATE todos SET {} WHERE id = ?", sets.join(", "));
     let mut q = sqlx::query(&sql);
@@ -309,12 +358,12 @@ pub async fn update_todo_fields(
             other => unreachable!("column {other}"),
         };
     }
-    q.bind(&id)
+    q.bind(id)
         .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
     tx.commit().await.map_err(|e| e.to_string())?;
-    focus::emit_todos_changed(&app);
+    focus::emit_todos_changed(app);
     Ok(t)
 }
 
@@ -449,15 +498,19 @@ pub fn apply_patch(cur: &Todo, patch: &Map<String, Value>, now: &str) -> Result<
 
 #[tauri::command]
 pub async fn delete_todo(app: AppHandle, db: State<'_, Db>, id: String) -> Result<(), String> {
-    item_links::delete_for_items(db.inner(), ItemKind::Todo, &id)
+    delete_todo_inner(&app, db.inner(), &id).await
+}
+
+pub async fn delete_todo_inner(app: &AppHandle, db: &Db, id: &str) -> Result<(), String> {
+    item_links::delete_for_items(db, ItemKind::Todo, id)
         .await
         .map_err(|e| e.to_string())?;
     sqlx::query("DELETE FROM todos WHERE id = ?")
-        .bind(&id)
-        .execute(db.inner())
+        .bind(id)
+        .execute(db)
         .await
         .map_err(|e| e.to_string())?;
-    focus::emit_todos_changed(&app);
+    focus::emit_todos_changed(app);
     Ok(())
 }
 

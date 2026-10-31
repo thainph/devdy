@@ -42,9 +42,9 @@
     "questionTitle": "Claude có một câu hỏi",
     "requestTitle": "Yêu cầu quyền",
     "questionHint": "Chọn câu trả lời bên dưới rồi gửi.",
-    "requestHint": "Cho phép lệnh gọi công cụ này chạy một lần, hoặc từ chối. Việc ghi nhớ lựa chọn chỉ thực hiện được trên máy host.",
+    "requestHint": "Cho phép hoặc từ chối lệnh gọi công cụ này. \"Luôn\" ghi nhớ lựa chọn cho công cụ này trong project, giống trên máy tính.",
     "cancel": "Hủy",
-    "denyOnce": "Từ chối một lần",
-    "allowOnce": "Cho phép một lần"
+    "allowAlways": "Luôn cho phép",
+    "allowAlwaysFor": "Luôn cho phép {tool} cho project này"
   }
 }

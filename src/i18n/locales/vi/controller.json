@@ -50,7 +50,8 @@
     "idle": "Chờ",
     "verifiedFingerprint": "Fingerprint host đã xác minh: {fp}",
     "decodeErrorsTitle": "Một số frame không thể giải mã/phân tích",
-    "disconnect": "Ngắt kết nối"
+    "disconnect": "Ngắt kết nối",
+    "newest": "Mới nhất"
   },
   "otp": {
     "title": "Nhập mật khẩu hoặc mã",
@@ -103,6 +104,124 @@
     "noResults": "Không có run nào khớp.",
     "noRuns": "Dự án này chưa có run nào.",
     "runCount": "{count} run",
-    "needsApprovalSection": "Đang chờ bạn"
+    "pendingInInbox": "Run đang chờ quyền nằm ở tab Cần xử lý."
+  },
+  "tabs": {
+    "inbox": "Cần xử lý",
+    "runs": "Runs",
+    "todo": "Todo",
+    "note": "Note",
+    "project": "Project"
+  },
+  "inbox": {
+    "title": "Cần xử lý",
+    "waiting": "Đang chờ bạn · {count}",
+    "nothingWaiting": "Không có việc nào đang chờ bạn.",
+    "sinceLastVisit": "Kể từ lần mở trước",
+    "noneFinished": "Chưa có run nào xong kể từ đó.",
+    "finishedOk": "xong {ago}",
+    "finishedFailed": "lỗi {ago}",
+    "unread": "Mới",
+    "loading": "Đang tải…",
+    "alreadyHandled": "Đã được xử lý trên máy tính.",
+    "notRemembered": "Chỉ áp dụng lần này — không lưu được \"Luôn\" cho công cụ này.",
+    "onceOnly": "Yêu cầu này chỉ trả lời được một lần (không có \"Luôn\")."
+  },
+  "data": {
+    "allProjects": "Tất cả project",
+    "noProject": "Không có project",
+    "project": "Project",
+    "back": "Quay lại",
+    "loading": "Đang tải…",
+    "dismiss": "Đóng",
+    "saving": "Đang lưu…",
+    "save": "Lưu",
+    "cancel": "Huỷ",
+    "errors": {
+      "not_connected": "Chưa kết nối tới host.",
+      "connection_lost": "Mất kết nối trước khi host xác nhận — hãy thử lại.",
+      "host_ack_timeout": "Host không phản hồi — hãy thử lại.",
+      "not_found": "Mục này không còn trên host (đã bị xoá ở nơi khác?).",
+      "malformed": "Host từ chối thay đổi (dữ liệu không hợp lệ).",
+      "rate_limited": "Thay đổi quá nhanh — đợi một chút rồi thử lại.",
+      "action_not_allowed": "Host chưa hỗ trợ chức năng này — hãy cập nhật Devdy trên máy tính.",
+      "failed": "Host không lưu được thay đổi.",
+      "generic": "Host từ chối thay đổi: {reason}",
+      "load_timeout": "Host không phản hồi — hãy thử tải lại."
+    },
+    "loadFailed": "Không tải được.",
+    "retry": "Thử lại"
+  },
+  "todo": {
+    "title": "Todo",
+    "active": "Đang làm · {count}",
+    "done": "Đã xong · {count}",
+    "groups": {
+      "overdue": "Quá hạn",
+      "today": "Hôm nay",
+      "upcoming": "Sắp tới",
+      "none": "Không có hạn"
+    },
+    "empty": "Không có việc nào.",
+    "emptyDone": "Chưa có việc nào xong.",
+    "add": "Thêm todo",
+    "markDone": "Đánh dấu xong",
+    "markOpen": "Đánh dấu chưa xong",
+    "dueToday": "Hôm nay",
+    "dueOn": "Hạn {date}",
+    "sheet": {
+      "newTitle": "Todo mới",
+      "editTitle": "Sửa todo",
+      "title": "Tiêu đề",
+      "titlePlaceholder": "Cần làm gì?",
+      "note": "Ghi chú",
+      "notePlaceholder": "Chi tiết (không bắt buộc)",
+      "due": "Hạn chót",
+      "project": "Project",
+      "delete": "Xoá",
+      "confirmDelete": "Bấm lần nữa để xoá"
+    },
+    "chips": {
+      "today": "Hôm nay",
+      "tomorrow": "Ngày mai",
+      "next_week": "Tuần sau",
+      "clear": "Bỏ hạn"
+    }
+  },
+  "notes": {
+    "title": "Note",
+    "searchPlaceholder": "Tìm trong note…",
+    "clearSearch": "Xoá tìm kiếm",
+    "empty": "Chưa có note nào.",
+    "noResults": "Không có note nào khớp.",
+    "untitled": "Không có tiêu đề",
+    "add": "Thêm note",
+    "newNote": "Note mới",
+    "view": "Xem",
+    "edit": "Sửa",
+    "titleLabel": "Tiêu đề",
+    "titlePlaceholder": "Tiêu đề",
+    "contentLabel": "Nội dung (Markdown)",
+    "contentPlaceholder": "Viết bằng Markdown…",
+    "delete": "Xoá note",
+    "confirmDelete": "Bấm lần nữa để xoá",
+    "emptyBody": "Note này trống.",
+    "needsContent": "Hãy nhập tiêu đề hoặc nội dung trước.",
+    "gone": "Note này đã bị xoá."
+  },
+  "projectToggles": {
+    "title": "Project",
+    "selectProject": "Chọn project",
+    "noProjects": "Host chưa có project nào.",
+    "mcp": "MCP server",
+    "skills": "Skill",
+    "rules": "Rule",
+    "builtin": "devdy (built-in)",
+    "builtinHint": "Notes, todos, sessions…",
+    "builtinGlobal": "Áp dụng cho mọi project",
+    "none": "Chưa cài mục nào.",
+    "footer": "Cấu hình env / token / account chỉ sửa trên máy tính.",
+    "enable": "Bật {name}",
+    "disable": "Tắt {name}"
   }
 }
