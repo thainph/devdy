@@ -536,15 +536,21 @@ const headerProjectId = computed<string>({
     if (tab.value === 'runs') return browserProjectId.value ?? ''
     if (tab.value === 'todo') return todoProjectId.value
     if (tab.value === 'note') return data.state.noteFilter.projectId ?? ''
+    if (tab.value === 'project') return toggleProjectId.value ?? ''
     return ''
   },
   set: (id) => {
     if (tab.value === 'runs') browserProjectId.value = id || null
     else if (tab.value === 'todo') todoProjectId.value = id
     else if (tab.value === 'note') data.loadNotes(id || null, data.state.noteFilter.query)
+    else if (tab.value === 'project' && id) selectToggleProject(id)
   },
 })
-const tabHasProjectFilter = computed(() => tab.value === 'runs' || tab.value === 'todo' || tab.value === 'note')
+const tabHasProjectFilter = computed(() => tab.value !== 'inbox')
+/** Setting switches belong to one project: no "All projects" there. */
+const headerProjectOptions = computed(() =>
+  tab.value === 'project' ? projectFilterOptions.value.slice(1) : projectFilterOptions.value,
+)
 
 function refreshTab(): void {
   switch (tab.value) {
@@ -863,7 +869,7 @@ function onRequestFiles(): void {
         size="xs"
         variant="outline"
         class="w-32 max-w-full"
-        :options="projectFilterOptions"
+        :options="headerProjectOptions"
       />
       <HeaderButton
         v-if="tab === 'inbox' && hasPush"
