@@ -95,9 +95,42 @@ function requireProject() {
   return id;
 }
 
-/** scope="global" detaches; anything else links to the current project (when any). */
-function scopedProjectId(scope) {
-  return scope === 'global' ? null : process.env.DEVDY_PROJECT_ID || null;
+/**
+ * Where a note / todo goes: `project` (id or name) wins, then scope="global"
+ * (null = no project), else the current project — which `strict` requires.
+ */
+function targetProjectId({ scope, project } = {}, { strict = false } = {}) {
+  if (project != null && String(project).trim()) return findProject(project).id;
+  if (scope === 'global') return null;
+  return strict ? requireProject() : process.env.DEVDY_PROJECT_ID || null;
+}
+
+/** A project by id, exact name, then case-insensitive name; throws when none or ambiguous. */
+export function findProject(key) {
+  const k = String(key ?? '').trim();
+  if (!k) throw new Error('project is required');
+  const d = db();
+  const byId = d.prepare('SELECT id, name FROM projects WHERE id = ?').get(k);
+  if (byId) return byId;
+  let rows = d.prepare('SELECT id, name FROM projects WHERE name = ?').all(k);
+  if (!rows.length) rows = d.prepare('SELECT id, name FROM projects WHERE name = ? COLLATE NOCASE').all(k);
+  if (rows.length === 1) return rows[0];
+  if (!rows.length) throw new Error(`no project matches "${k}" (see projects_list)`);
+  throw new Error(`"${k}" matches ${rows.length} projects — pass the project id instead (see projects_list)`);
+}
+
+/** Point every listed row of `table` at `projectId` (null = no project), all or nothing. */
+function setRowsProject(table, label, ids, projectId, now) {
+  const list = normIds(ids);
+  return tx((d) => {
+    const exists = d.prepare(`SELECT 1 FROM ${table} WHERE id = ?`);
+    const missing = list.filter((id) => !exists.get(id));
+    if (missing.length) throw new Error(`${label} not found: ${missing.join(', ')}`);
+    const stmt = d.prepare(`UPDATE ${table} SET project_id = ?, updated_at = ? WHERE id = ?`);
+    for (const id of list) stmt.run(projectId, now, id);
+    const project = projectId ? d.prepare('SELECT id, name FROM projects WHERE id = ?').get(projectId) : null;
+    return { ids: list, project_id: projectId, project_name: project?.name ?? null };
+  });
 }
 
 /**
@@ -169,11 +202,11 @@ export function readNote(id) {
     .get(id);
 }
 
-export function createNote({ title = '', content = '', scope = 'project' } = {}) {
+export function createNote({ title = '', content = '', scope = 'project', project } = {}) {
   const t = String(title || '').trim();
   const c = String(content || '').trim();
   if (!t && !c) throw new Error('a title or content is required');
-  const projectId = scopedProjectId(scope);
+  const projectId = targetProjectId({ scope, project });
   const min = db().prepare('SELECT MIN(position) AS m FROM notes').get();
   const position = (min && min.m != null ? min.m : 0) - 1;
   const id = randomUUID();
@@ -270,17 +303,13 @@ export function deleteNotes({ ids } = {}) {
   });
 }
 
-/** Link a note to the current project, or detach it with scope="global". */
-export function setNoteProject({ id, scope = 'project' } = {}) {
-  if (!readNote(id)) throw new Error(`note not found: ${id}`);
-  const now = nowIso();
-  if (scope === 'global') {
-    db().prepare('UPDATE notes SET project_id = NULL, updated_at = ? WHERE id = ?').run(now, id);
-    return { id, project_id: null };
-  }
-  const projectId = requireProject();
-  db().prepare('UPDATE notes SET project_id = ?, updated_at = ? WHERE id = ?').run(projectId, now, id);
-  return { id, project_id: projectId };
+/**
+ * Move notes (`id` or `ids`) to `project` (id or name), the current project, or
+ * no project with scope="global".
+ */
+export function setNoteProject({ id, ids, scope = 'project', project } = {}) {
+  const projectId = targetProjectId({ scope, project }, { strict: true });
+  return setRowsProject('notes', 'note', ids ?? id, projectId, nowIso());
 }
 
 export function reorderNotes({ ids } = {}) {
@@ -455,7 +484,7 @@ export function listTodos({ includeDone = true, scope = 'all', sort = 'due' } = 
 }
 
 /** New todos go to the top (a position below the current minimum), like the app. */
-export function addTodo({ text, scope = 'project', due, due_time, priority, estimate, estimate_min, source_url } = {}) {
+export function addTodo({ text, scope = 'project', project, due, due_time, priority, estimate, estimate_min, source_url } = {}) {
   const t = String(text || '').trim();
   if (!t) throw new Error('text is required');
   const dueDate = normDue(due);
@@ -464,7 +493,7 @@ export function addTodo({ text, scope = 'project', due, due_time, priority, esti
   const prio = priority == null || priority === '' ? 2 : parsePriority(priority);
   const est = parseEstimate(estimate ?? estimate_min);
   const src = normalizeSource(source_url);
-  const projectId = scopedProjectId(scope);
+  const projectId = targetProjectId({ scope, project });
   const min = db().prepare('SELECT MIN(position) AS m FROM todos').get();
   const position = (min && min.m != null ? min.m : 0) - 1;
   const id = randomUUID();
@@ -593,12 +622,13 @@ export function clearDoneTodos() {
   });
 }
 
-/** Link a todo to the current project, or detach it with scope="global". */
-export function setTodoProject({ id, scope = 'project' } = {}) {
-  requireTodo(id);
-  const projectId = scope === 'global' ? null : requireProject();
-  db().prepare('UPDATE todos SET project_id = ?, updated_at = ? WHERE id = ?').run(projectId, nowRfc3339(), id);
-  return { id, project_id: projectId };
+/**
+ * Move todos (`id` or `ids`) to `project` (id or name), the current project, or
+ * no project with scope="global".
+ */
+export function setTodoProject({ id, ids, scope = 'project', project } = {}) {
+  const projectId = targetProjectId({ scope, project }, { strict: true });
+  return setRowsProject('todos', 'todo', ids ?? id, projectId, nowRfc3339());
 }
 
 export function reorderTodos({ ids } = {}) {
