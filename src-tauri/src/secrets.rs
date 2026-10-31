@@ -718,6 +718,11 @@ struct RemoteSecrets {
     /// owner. `None`/empty falls back to the OTP flow.
     #[serde(default)]
     master_password: Option<String>,
+    /// Web Push VAPID private key (P-256 scalar, base64url). Generated once;
+    /// the matching public key is what every push subscription is bound to, so
+    /// losing it silently invalidates them all.
+    #[serde(default)]
+    vapid_private_key: Option<String>,
 }
 
 /// The single active remote session's durable reconnect credential.
@@ -807,6 +812,37 @@ pub fn get_remote_master_password() -> Option<String> {
 /// Whether a non-empty master password is stored WITHOUT returning its value.
 pub fn has_remote_master_password() -> bool {
     get_remote_master_password().is_some()
+}
+
+/// Read the Web Push VAPID private key (base64url), if one was generated.
+pub fn get_remote_vapid_key() -> Option<String> {
+    let mut guard = CACHE.lock().ok()?;
+    ensure_loaded(&mut guard);
+    guard
+        .as_ref()
+        .and_then(|store| store.remote.vapid_private_key.clone())
+        .filter(|k| !k.trim().is_empty())
+}
+
+/// The Web Push VAPID private key (base64url), minted with `generate` and
+/// stored if there is none yet. Read-or-create happens under one lock, so two
+/// callers racing on first use cannot each keep a different key.
+pub fn get_or_create_remote_vapid_key(generate: impl FnOnce() -> String) -> Result<String> {
+    let mut guard = CACHE.lock().map_err(|_| anyhow!("secret cache poisoned"))?;
+    ensure_loaded(&mut guard);
+    let store = guard.as_mut().expect("store loaded");
+    if let Some(k) = store.remote.vapid_private_key.clone().filter(|k| !k.trim().is_empty()) {
+        return Ok(k);
+    }
+    let key = generate();
+    store.remote.vapid_private_key = Some(key.clone());
+    if let Err(e) = persist(store) {
+        // Not kept: a later attempt mints again rather than trusting a key
+        // that would vanish with this process.
+        store.remote.vapid_private_key = None;
+        return Err(e);
+    }
+    Ok(key)
 }
 
 /// Persist (or replace) the single remote session's reconnect credential.

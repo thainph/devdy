@@ -23,7 +23,7 @@ pub const CMD_RATE_WINDOW: Duration = Duration::from_secs(60);
 /// The actions a Controller is allowed to invoke (FR-009). `list_runs` is a
 /// read-only browse of run metadata (added for full desktop parity — the trust
 /// boundary is device approval, not per-run share).
-pub const ALLOW_LIST: [&str; 28] = [
+pub const ALLOW_LIST: [&str; 33] = [
     "respond_permission",
     "start_run",
     "request_history",
@@ -57,6 +57,12 @@ pub const ALLOW_LIST: [&str; 28] = [
     "project_toggles_get",
     "project_toggle_set",
     "note_get",
+    // Web Push; refused unless the client advertised `push` (see PUSH_ACTIONS).
+    "push_config",
+    "push_visibility",
+    "push_subscribe",
+    "push_unsubscribe",
+    "push_test",
 ];
 
 /// The data actions: allow-listed, but only for a Controller that advertised
@@ -88,6 +94,26 @@ pub fn data_action_permitted(action: &str, data_enabled: bool) -> bool {
     data_enabled || !is_data_action(action)
 }
 
+/// The Web Push actions: allow-listed, but only for a Controller that
+/// advertised [`crate::remote::protocol::FEATURE_PUSH`].
+pub const PUSH_ACTIONS: [&str; 5] = [
+    "push_config",
+    "push_visibility",
+    "push_subscribe",
+    "push_unsubscribe",
+    "push_test",
+];
+
+/// Whether `action` is one of the [`PUSH_ACTIONS`].
+pub fn is_push_action(action: &str) -> bool {
+    PUSH_ACTIONS.contains(&action)
+}
+
+/// Whether a session may run `action` given its negotiated `push` flag.
+pub fn push_action_permitted(action: &str, push_enabled: bool) -> bool {
+    push_enabled || !is_push_action(action)
+}
+
 /// Whether `action` is in the frozen allow-list (AC-12).
 pub fn is_allowed_action(action: &str) -> bool {
     ALLOW_LIST.contains(&action)
@@ -99,7 +125,7 @@ pub fn is_allowed_action(action: &str) -> bool {
 /// Browsing costs the Controller several of these per screen (open a run: list
 /// + history + meta + usage + files). Charging them to the 30/min command
 /// budget would make normal navigation trip the abuse limiter.
-pub const READ_ONLY_ACTIONS: [&str; 15] = [
+pub const READ_ONLY_ACTIONS: [&str; 17] = [
     "request_history",
     "list_runs",
     "list_projects",
@@ -118,6 +144,11 @@ pub const READ_ONLY_ACTIONS: [&str; 15] = [
     "note_search",
     "project_toggles_get",
     "note_get",
+    // Push: reading the VAPID key, and the phone saying it went to / came back
+    // from the background (fires on every app switch). Subscribing, removing
+    // and test sends stay on the command budget.
+    "push_config",
+    "push_visibility",
 ];
 
 /// Whether `action` only reads state (and so uses the browse budget).
@@ -411,6 +442,32 @@ mod tests {
         for a in ["respond_permission", "start_run", "list_runs", "open_run"] {
             assert!(!is_data_action(a));
             assert!(data_action_permitted(a, false));
+        }
+    }
+
+    // ---- Web Push ----
+    #[test]
+    fn push_actions_are_allow_listed_and_gated() {
+        for a in PUSH_ACTIONS {
+            assert!(is_allowed_action(a), "{a} must be allow-listed");
+            assert!(!push_action_permitted(a, false), "{a} needs the push flag");
+            assert!(push_action_permitted(a, true));
+            assert!(!is_data_action(a), "{a} is not a data action");
+        }
+        for a in ["respond_permission", "todo_list", "list_runs"] {
+            assert!(push_action_permitted(a, false), "{a} does not depend on push");
+        }
+        for a in ["push_send", "push_list", "Push_test", "push_set_events"] {
+            assert!(!is_allowed_action(a), "{a} must be rejected");
+        }
+    }
+
+    #[test]
+    fn push_reads_and_writes_use_the_right_budget() {
+        assert!(is_read_only_action("push_config"));
+        assert!(is_read_only_action("push_visibility"));
+        for a in ["push_subscribe", "push_unsubscribe", "push_test"] {
+            assert!(!is_read_only_action(a), "{a} is on the command budget");
         }
     }
 

@@ -395,6 +395,15 @@ pub enum StreamPayload {
     },
     /// One full note (`note_get`).
     Note { note: NoteInfo },
+    // ---- Web Push ([`FEATURE_PUSH`]) ----
+    /// What the Controller needs to subscribe: the VAPID public key (base64url,
+    /// the browser's `applicationServerKey`), whether the endpoint it asked
+    /// about is subscribed, and which kinds the desktop has switched on.
+    PushConfig {
+        vapid_public_key: String,
+        subscribed: bool,
+        events: crate::remote::push::coalesce::PushEvents,
+    },
 }
 
 /// One todo as the Controller sees it — no Focus fields (priority, estimate,
@@ -521,10 +530,14 @@ pub const FEATURE_MULTI_RUN: &str = "multi_run";
 /// are refused, so an older bundle sees exactly the pre-data Host.
 pub const FEATURE_DATA: &str = "data";
 
+/// Feature flag a Controller advertises to manage Web Push (`push_*`). Without
+/// it those actions are refused.
+pub const FEATURE_PUSH: &str = "push";
+
 /// What this Host advertises in `session_token.host_features`: the data
-/// screens, the Inbox's `list_pending`, and Always (`allow_always` /
-/// `deny_always`) from a Controller.
-pub const HOST_FEATURES: [&str; 3] = ["data", "inbox", "remember"];
+/// screens, the Inbox's `list_pending`, Always (`allow_always` /
+/// `deny_always`) from a Controller, and Web Push.
+pub const HOST_FEATURES: [&str; 4] = ["data", "inbox", "remember", "push"];
 
 /// One slash command exposed to the Controller's composer palette.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -713,6 +726,26 @@ pub struct CmdPayload {
     /// `project_toggle_set`: the new state.
     #[serde(default)]
     pub enabled: Option<bool>,
+    // ---- Web Push ([`FEATURE_PUSH`]) ----
+    /// `push_*`: the browser's push endpoint (identifies the subscription).
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    /// `push_subscribe`: the subscription's P-256 public key (base64url).
+    #[serde(default)]
+    pub p256dh: Option<String>,
+    /// `push_subscribe`: the subscription's auth secret (base64url).
+    #[serde(default)]
+    pub auth: Option<String>,
+    /// `push_subscribe`: a device name for the desktop list.
+    #[serde(default)]
+    pub label: Option<String>,
+    /// `push_visibility`: whether the controller is on screen.
+    #[serde(default)]
+    pub visible: Option<bool>,
+    /// `push_subscribe`: the phone re-subscribed on its own (not a tap on
+    /// "turn on"), so a removal on the desktop stands.
+    #[serde(default)]
+    pub auto: Option<bool>,
 }
 
 /// The E2E handshake exchange (spec §3). Ephemeral public keys are NOT secret,
@@ -752,7 +785,36 @@ mod tests {
             host_features: HOST_FEATURES.iter().map(|f| f.to_string()).collect(),
         })
         .unwrap();
-        assert_eq!(v["host_features"], serde_json::json!(["data", "inbox", "remember"]));
+        assert_eq!(v["host_features"], serde_json::json!(["data", "inbox", "remember", "push"]));
+    }
+
+    #[test]
+    fn push_config_wire_matches_the_controller() {
+        let v = serde_json::to_value(StreamPayload::PushConfig {
+            vapid_public_key: "BPk".into(),
+            subscribed: true,
+            events: Default::default(),
+        })
+        .unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "kind": "push_config", "vapid_public_key": "BPk", "subscribed": true,
+                "events": { "pending": true, "done": true, "failed": true }
+            })
+        );
+    }
+
+    #[test]
+    fn cmd_payload_parses_push_subscribe() {
+        let cmd: CmdPayload = serde_json::from_value(serde_json::json!({
+            "kind": "cmd", "action": "push_subscribe", "endpoint": "https://fcm.googleapis.com/x",
+            "p256dh": "BCV", "auth": "BTB", "label": "iPhone"
+        }))
+        .unwrap();
+        assert_eq!(cmd.endpoint.as_deref(), Some("https://fcm.googleapis.com/x"));
+        assert_eq!((cmd.p256dh.as_deref(), cmd.auth.as_deref()), (Some("BCV"), Some("BTB")));
+        assert_eq!(cmd.label.as_deref(), Some("iPhone"));
     }
 
     #[test]

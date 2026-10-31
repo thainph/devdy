@@ -18,8 +18,8 @@ use crate::remote::agent::{now_unix, IdleClock, IDLE_TTL_SECS};
 use crate::remote::audit;
 use crate::remote::guard;
 use crate::remote::command::{
-    data_action_permitted, is_allowed_action, is_data_action, map_remote_decision,
-    CommandRateLimiter, IdempotencyGuard, RejectReason,
+    data_action_permitted, is_allowed_action, is_data_action, is_push_action, map_remote_decision,
+    push_action_permitted, CommandRateLimiter, IdempotencyGuard, RejectReason,
 };
 use crate::remote::forwarder::{
     replay_history, run_log_path, send_engine_model_options, send_plan_usage,
@@ -92,6 +92,13 @@ pub struct HandlerCtx {
     ///
     /// [`FEATURE_DATA`]: crate::remote::protocol::FEATURE_DATA
     pub data: bool,
+    /// The Controller manages Web Push ([`FEATURE_PUSH`]).
+    ///
+    /// [`FEATURE_PUSH`]: crate::remote::protocol::FEATURE_PUSH
+    pub push: bool,
+    /// Tags the push subscriptions this session makes, so ending or kicking
+    /// it drops them ([`crate::remote::push::session_tag`]).
+    pub push_session_tag: String,
 }
 
 impl HandlerCtx {
@@ -308,6 +315,14 @@ pub async fn handle(ctx: &HandlerCtx, cmd: CmdPayload) {
     let action = cmd.action.as_str();
     let run_id = cmd.run_id.clone();
 
+    // Any frame from a phone proves it is alive: "on screen" stays fresh.
+    if ctx.push {
+        use tauri::Manager;
+        if let Some(state) = ctx.app.try_state::<crate::remote::RemoteState>() {
+            state.push.touch();
+        }
+    }
+
     // Remote desktop: a full UI driving this app as the local user would. Its
     // calls go to the bridge verbatim — no per-command allow-list or budget,
     // by design (the paired device is trusted like the person at the keyboard)
@@ -360,11 +375,25 @@ pub async fn handle(ctx: &HandlerCtx, cmd: CmdPayload) {
         return;
     }
 
+    // Gate 3b: push actions only for a Controller that negotiated them.
+    if !push_action_permitted(action, ctx.push) {
+        reject(ctx, action, None, RejectReason::NotAllowed).await;
+        command_ack(ctx, &cmd, false, Some(RejectReason::NotAllowed.as_str())).await;
+        return;
+    }
+
     // An accepted inbound command slides the idle window forward (never output).
-    ctx.slide_idle();
+    // A visibility report is the app switching in or out, not user activity.
+    if action != "push_visibility" {
+        ctx.slide_idle();
+    }
 
     if is_data_action(action) {
         crate::remote::data::handle(ctx, &cmd).await;
+        return;
+    }
+    if is_push_action(action) {
+        crate::remote::push::actions::handle(ctx, &cmd).await;
         return;
     }
 

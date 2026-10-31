@@ -137,5 +137,32 @@
       "failed": "Couldn't copy {name} to the controlled Devdy: {error}",
       "folderSkipped": "Folders can't be dropped into a controlled Devdy yet ({name})."
     }
+  },
+  "push": {
+    "title": "Phone notifications",
+    "intro": "Paired phones that turned on notifications (bell in the phone's Inbox) are notified while Remote Control is on and the phone is not open. Notifications carry counts only.",
+    "kinds": {
+      "pending": "Waiting for approval",
+      "done": "Run finished",
+      "failed": "Run failed"
+    },
+    "kindHints": {
+      "pending": "A permission prompt, question or credential approval is waiting.",
+      "done": "A run finished, or a session finished its turn and waits for you.",
+      "failed": "A run ended with an error."
+    },
+    "devices": "Devices",
+    "noDevices": "No device yet. On the phone, open the Inbox and tap the bell.",
+    "unnamed": "Unnamed device",
+    "added": "Added {at}",
+    "lastOk": "last delivered {at}",
+    "never": "never",
+    "test": "Send a test notification",
+    "remove": "Remove device",
+    "toast": {
+      "testSent": "Test notification sent to {label}.",
+      "testFailed": "Test notification failed: {reason}",
+      "gone": "The push service no longer knows this device — it was removed."
+    }
   }
 }

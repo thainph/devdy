@@ -488,6 +488,22 @@ export interface NoteKind {
   note: NoteInfo
 }
 
+/** Which event kinds push notifications cover (desktop switches). */
+export interface PushEventsWire {
+  pending: boolean
+  done: boolean
+  failed: boolean
+}
+
+/** Web Push setup (`push_config`): the VAPID key to subscribe with, whether
+ * the endpoint asked about is subscribed, and the desktop's switches. */
+export interface PushConfigKind {
+  kind: 'push_config'
+  vapid_public_key: string
+  subscribed: boolean
+  events: PushEventsWire
+}
+
 /** Everything the Host can send the Controller inside a sealed `stream` frame. */
 export type StreamPayload =
   | StreamKind
@@ -515,6 +531,7 @@ export type StreamPayload =
   | NoteListKind
   | ProjectTogglesKind
   | NoteKind
+  | PushConfigKind
 
 /**
  * Narrow a decoded stream payload. Returns `null` for anything with an
@@ -741,6 +758,16 @@ export function parseStreamPayload(json: unknown): StreamPayload | null {
         : null
     case 'note':
       return isNoteInfo(o.note) ? { kind: 'note', note: o.note } : null
+    case 'push_config': {
+      if (typeof o.vapid_public_key !== 'string' || !o.vapid_public_key) return null
+      const e = (o.events ?? {}) as Record<string, unknown>
+      return {
+        kind: 'push_config',
+        vapid_public_key: o.vapid_public_key,
+        subscribed: o.subscribed === true,
+        events: { pending: e.pending !== false, done: e.done !== false, failed: e.failed !== false },
+      }
+    }
     case 'project_toggles': {
       if (typeof o.project_id !== 'string') return null
       const items = (v: unknown): ToggleItem[] =>
@@ -911,6 +938,12 @@ export interface CmdPayload {
     | 'project_toggles_get'
     | 'project_toggle_set'
     | 'note_get'
+    // Web Push (a Controller that advertised FEATURE_PUSH).
+    | 'push_config'
+    | 'push_visibility'
+    | 'push_subscribe'
+    | 'push_unsubscribe'
+    | 'push_test'
   /** Per-send correlation id used for Host delivery acknowledgement. */
   command_id?: string
   run_id?: string
@@ -966,6 +999,20 @@ export interface CmdPayload {
   toggle_kind?: ToggleKind
   /** `project_toggle_set`: the new state. */
   enabled?: boolean
+  // ---- Web Push ({@link FEATURE_PUSH}) ----
+  /** `push_*`: the browser's push endpoint. */
+  endpoint?: string
+  /** `push_subscribe`: subscription public key (base64url). */
+  p256dh?: string
+  /** `push_subscribe`: subscription auth secret (base64url). */
+  auth?: string
+  /** `push_subscribe`: device name shown on the desktop. */
+  label?: string
+  /** `push_visibility`: whether the controller is on screen. */
+  visible?: boolean
+  /** `push_subscribe`: sent on the phone's own initiative (a desktop removal
+   * stands), not from a tap on "turn on". */
+  auto?: boolean
 }
 
 /** The fields a `todo_update` may change (the Host refuses any other key). */
@@ -1004,9 +1051,12 @@ export const FEATURE_IPC = 'ipc'
  * `project_toggle*`). Without it the Host refuses those actions. */
 export const FEATURE_DATA = 'data'
 
+/** Advertise Web Push management (`push_*`). Without it the Host refuses them. */
+export const FEATURE_PUSH = 'push'
+
 /** What a Host can advertise in `session_token.host_features`. An older Host
  * sends none: the Controller then hides what it would only be refused. */
-export type HostFeature = 'data' | 'inbox' | 'remember'
+export type HostFeature = 'data' | 'inbox' | 'remember' | 'push'
 
 /** Whether the Host advertised `feature`. */
 export function hostHas(features: readonly string[] | null | undefined, feature: HostFeature): boolean {
@@ -1014,7 +1064,7 @@ export function hostHas(features: readonly string[] | null | undefined, feature:
 }
 
 /** Everything this controller bundle understands, sent on the gate frame. */
-export const CLIENT_FEATURES: string[] = [FEATURE_OUTPUT_BATCH, FEATURE_MULTI_RUN, FEATURE_DATA]
+export const CLIENT_FEATURES: string[] = [FEATURE_OUTPUT_BATCH, FEATURE_MULTI_RUN, FEATURE_DATA, FEATURE_PUSH]
 
 /**
  * `respond_permission` — only `allow_once`/`deny_once` (BR-016). For
@@ -1258,6 +1308,40 @@ export function projectToggleSetCmd(
   }
   if (itemId && toggleKind !== 'builtin_mcp') cmd.item_id = itemId
   return cmd
+}
+
+// ---- Web Push commands ({@link FEATURE_PUSH}) ----
+
+/** `push_config` — answered with a {@link PushConfigKind}. */
+export function pushConfigCmd(endpoint: string | null): CmdPayload {
+  const cmd: CmdPayload = { kind: 'cmd', action: 'push_config' }
+  if (endpoint) cmd.endpoint = endpoint
+  return cmd
+}
+
+/** `push_visibility` — the app went to / came back from the background. */
+export function pushVisibilityCmd(visible: boolean): CmdPayload {
+  return { kind: 'cmd', action: 'push_visibility', visible }
+}
+
+/** `push_subscribe` — the Host replies with a fresh {@link PushConfigKind}. */
+export function pushSubscribeCmd(
+  sub: { endpoint: string; p256dh: string; auth: string; label: string },
+  auto = false,
+): CmdPayload {
+  const cmd: CmdPayload = { kind: 'cmd', action: 'push_subscribe', ...sub }
+  if (auto) cmd.auto = true
+  return cmd
+}
+
+/** `push_unsubscribe`. */
+export function pushUnsubscribeCmd(endpoint: string): CmdPayload {
+  return { kind: 'cmd', action: 'push_unsubscribe', endpoint }
+}
+
+/** `push_test` — a test notification to this device. */
+export function pushTestCmd(endpoint: string): CmdPayload {
+  return { kind: 'cmd', action: 'push_test', endpoint }
 }
 
 // ---- Session link payload (per-run link: QR / copy / manual) ----

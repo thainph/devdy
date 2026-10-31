@@ -14,11 +14,13 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  CheckCircle2, Loader2, RefreshCw, ShieldCheck, Wifi, WifiOff, X, XCircle,
+  Bell, BellOff, CheckCircle2, Loader2, RefreshCw, ShieldCheck, Wifi, WifiOff, X, XCircle,
 } from 'lucide-vue-next'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
 import { agoParts, finishedKind, finishedSince, parseHostTime } from '@/lib/remoteInbox'
 import ControllerPermissionPrompt from './ControllerPermissionPrompt.vue'
+import PushSheet from './PushSheet.vue'
+import type { PushStore } from '../pushStore'
 import type { ConnStatus } from '../connection'
 import type { ProjectInfo, QuestionAnswers, RemoteDecision, RunInfo } from '../protocol'
 
@@ -39,6 +41,8 @@ const props = defineProps<{
   readIds: string[]
   /** The Host accepts Always from a Controller. */
   allowAlways?: boolean
+  /** Push notifications, when the Host supports them. */
+  push?: PushStore | null
 }>()
 
 const emit = defineEmits<{
@@ -102,6 +106,9 @@ function finishedLabel(run: RunInfo): string {
   return `${projectName(run)} · ${t(`controller.inbox.${key}`, { ago: ago(at) })}`
 }
 
+const pushOpen = ref(false)
+const pushOn = computed(() => props.push?.ui() === 'on')
+
 const sinceLabel = computed(() =>
   new Date(props.sinceMs).toLocaleString(locale.value, {
     weekday: 'short',
@@ -112,7 +119,7 @@ const sinceLabel = computed(() =>
 </script>
 
 <template>
-  <div class="flex h-full min-h-0 flex-col bg-background text-foreground">
+  <div class="relative flex h-full min-h-0 flex-col bg-background text-foreground">
     <!-- Top bar: mirrors the run browser so the tabs read as one app. -->
     <header class="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-border">
       <h1 class="text-sm font-medium shrink-0">{{ t('controller.inbox.title') }}</h1>
@@ -137,6 +144,16 @@ const sinceLabel = computed(() =>
         <ShieldCheck class="h-3 w-3 text-emerald-500" :stroke-width="2" /> {{ shortFp }}…
       </span>
       <div class="ml-auto flex items-center gap-1.5">
+        <button
+          v-if="push"
+          class="inline-flex items-center justify-center h-7 w-7 rounded-md transition-colors cursor-pointer hover:bg-accent"
+          :class="pushOn ? 'text-emerald-500' : 'text-foreground/60 hover:text-foreground'"
+          :title="t('controller.push.title')"
+          @click="pushOpen = true"
+        >
+          <Bell v-if="pushOn" class="h-4 w-4" :stroke-width="2" />
+          <BellOff v-else class="h-4 w-4" :stroke-width="2" />
+        </button>
         <button
           class="inline-flex items-center justify-center h-7 w-7 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
           :title="t('controller.browser.refresh')"
@@ -210,5 +227,7 @@ const sinceLabel = computed(() =>
         />
       </button>
     </main>
+
+    <PushSheet v-if="push && pushOpen" :push="push" @close="pushOpen = false" />
   </div>
 </template>
