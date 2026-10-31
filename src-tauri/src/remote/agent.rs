@@ -601,19 +601,25 @@ async fn ensure_grantable_session(deps: &AgentDeps) -> Option<StreamPayload> {
     };
     let run_id = match current_run {
         Some(r) => r,
-        None => sqlx::query_scalar::<_, String>(
-            "SELECT id FROM runs ORDER BY COALESCE(last_activity_at, finished_at, started_at, created_at) DESC LIMIT 1",
-        )
-        .fetch_optional(&deps.db)
-        .await
-        .ok()
-        .flatten()?,
+        None => latest_run_id(&deps.db).await?,
     };
     let fresh = crate::remote::session::generate(&run_id).ok()?;
     let _ = crate::secrets::delete_remote_session();
     let grant = grant_of(&fresh);
     *deps.bound.lock().await = Some(fresh);
     Some(grant)
+}
+
+/// The most recently active run: where a controller lands when no run was
+/// picked for it.
+pub(crate) async fn latest_run_id(db: &Db) -> Option<String> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT id FROM runs ORDER BY COALESCE(last_activity_at, finished_at, started_at, created_at) DESC LIMIT 1",
+    )
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten()
 }
 
 fn grant_of(b: &BoundSession) -> StreamPayload {

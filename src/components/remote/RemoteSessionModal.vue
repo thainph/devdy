@@ -1,9 +1,10 @@
 <script setup lang="ts">
-// Per-run remote-control session modal. A small state machine that walks the
+// Remote-control pairing modal. A small state machine that walks the
 // Owner through: create link → controller scans → OTP shown → connected.
 //
 // Flow:
-//   creating          → invoke createSessionLink(runId); spinner
+//   creating          → invoke createSessionLink(runId); spinner. Without a run
+//                       the backend lands the controller on the latest run.
 //   waiting-for-scan   → show QR + copy link; wait for controller to join
 //   controller-joined  → controller requested a session; show the OTP large
 //   connected          → controller finished the OTP handshake; live control
@@ -136,11 +137,6 @@ const rawFields = computed(() => {
 
 // ── Session lifecycle ───────────────────────────────────────────────────────
 async function createLink() {
-  if (!props.runId) {
-    phase.value = 'error'
-    errorMsg.value = t('remote.session.noRunOpen')
-    return
-  }
   phase.value = 'creating'
   errorMsg.value = ''
   attemptsLeft.value = null
@@ -161,11 +157,6 @@ async function createLink() {
  * link (which supersedes the session) would be destructive. Otherwise create a
  * fresh link, using this run as where the phone lands. */
 async function openFlow() {
-  if (!props.runId) {
-    phase.value = 'error'
-    errorMsg.value = t('remote.session.noRunOpen')
-    return
-  }
   try {
     const s = await store.refreshStatus()
     if (s.session_authenticated) {
@@ -222,8 +213,7 @@ async function stopControl() {
  * stale event from the previous session would flip us out of the pairing flow.
  */
 function matchesRun(payloadRunId: string): boolean {
-  if (!props.runId) return false
-  return phase.value !== 'creating' || payloadRunId === props.runId
+  return phase.value !== 'creating' || (!!props.runId && payloadRunId === props.runId)
 }
 
 async function subscribe() {
@@ -303,7 +293,7 @@ onBeforeUnmount(() => {
 
 // Close just dismisses the modal — it does NOT end the remote session. The
 // session keeps running so the phone stays connected; the user reopens this
-// modal (Remote button) to see status or stop it explicitly.
+// modal (sidebar Remote dot) to see status or stop it explicitly.
 function onClose() {
   emit('close')
 }

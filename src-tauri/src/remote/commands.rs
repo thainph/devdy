@@ -112,7 +112,7 @@ pub async fn remote_disable(
 pub async fn remote_create_session_link(
     db: State<'_, Db>,
     state: State<'_, RemoteState>,
-    run_id: String,
+    run_id: Option<String>,
 ) -> Result<LinkPayload, String> {
     let relay_url = remote::get_setting(db.inner(), remote::KEY_RELAY_URL)
         .await
@@ -120,9 +120,14 @@ pub async fn remote_create_session_link(
     if !state.is_running().await {
         return Err("enable Remote Control before starting a session".to_string());
     }
-    if run_id.trim().is_empty() {
-        return Err("run_id is required".to_string());
-    }
+    // The controller drives the whole app; the run only picks where it lands.
+    // Without one (paired from the sidebar), the most recently active run.
+    let run_id = match run_id.filter(|r| !r.trim().is_empty()) {
+        Some(r) => r,
+        None => remote::agent::latest_run_id(db.inner())
+            .await
+            .ok_or_else(|| "start a session first: the controller opens on a run".to_string())?,
+    };
 
     // Supersede any existing bound session: the agent switches its relay listen
     // to the new code (which drops the old code's room), and the old persisted

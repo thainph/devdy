@@ -38,7 +38,7 @@ import {
   X, Paperclip,
   ShieldQuestion, MessageCircleQuestion,
   Pin, Shield, Pencil, Check, Github, Gitlab, UserCircle,
-  HardDrive, Cloud, CloudCog, Radio, Languages, StickyNote, ListTodo, FolderTree, Loader2,
+  HardDrive, Cloud, CloudCog, Languages, StickyNote, ListTodo, FolderTree, Loader2,
   MoreHorizontal, Search, Network, ChevronLeft, ChevronRight,
   Plus, AlignJustify, Rows2, Rows3, Rows4, CircleDashed, ArrowUpDown
 } from 'lucide-vue-next'
@@ -95,8 +95,6 @@ import {
   type ImageAttachment,
 } from '@/lib/streamEvents'
 import { MODEL_OPTIONS, PERMISSION_MODE_OPTIONS, resolvePermissionMode, withCurrentModel, combinedModelOptions, engineForModel } from '@/lib/engineOptions'
-import RemoteSessionModal from '@/components/remote/RemoteSessionModal.vue'
-import { useRemoteControlStore } from '@/stores/remoteControl'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -107,7 +105,6 @@ const live = useLiveRunsStore()
 const conductorStore = useConductorStore()
 const tabsStore = useWorkspaceTabsStore()
 const draftsStore = useChatDraftsStore()
-const remoteControlStore = useRemoteControlStore()
 const ghStore = useGithubAccountsStore()
 const glStore = useGitlabAccountsStore()
 const serversStore = useServersStore()
@@ -437,53 +434,6 @@ function scrollActiveSessionIntoView() {
     if (el) el.scrollIntoView({ block: 'nearest' })
   })
 }
-// Remote-control modal: create a per-run link + OTP to drive this run from a phone.
-const remoteModalOpen = ref(false)
-// Remote state for the CURRENTLY viewed run, derived reactively from the global
-// status. A paired phone drives EVERY run, so "is a phone attached" is a
-// property of the session while "is it looking at this run" is per run.
-// Deriving with computeds — instead of a ref refreshed imperatively — means
-// switching sessions re-evaluates against THIS run's id immediately.
-const remoteStatus = computed(() => remoteControlStore.status)
-/** A phone has completed auth, so it can drive this (and any other) run. */
-const remotePaired = computed(() => !!remoteStatus.value?.session_authenticated)
-/** A pairing link exists but no phone has completed auth yet. */
-const remoteWaiting = computed(
-  () => !!remoteStatus.value?.bound_run_id && !remotePaired.value,
-)
-/** The paired phone is looking at THIS run right now. */
-const remoteActive = computed(
-  () => remotePaired.value && remoteStatus.value?.focus_run_id === currentRunId.value,
-)
-/**
- * Remote-state marker for the History list, so the user can tell AT A GLANCE
- * where the phone is without opening anything:
- *   success → the phone is looking at that run right now;
- *   warning → a pairing link exists but no phone has connected yet.
- */
-const remoteRowMarker = computed<
-  { runId: string; tone: 'success' | 'warning'; title: string } | null
->(() => {
-  const st = remoteStatus.value
-  if (!st) return null
-  if (st.session_authenticated && st.focus_run_id) {
-    return { runId: st.focus_run_id, tone: 'success', title: t('run.remoteRowDriving') }
-  }
-  if (st.bound_run_id) {
-    return { runId: st.bound_run_id, tone: 'warning', title: t('run.remoteRowWaiting') }
-  }
-  return null
-})
-/** State-aware tooltip for the Remote button. */
-const remoteButtonTitle = computed(() => {
-  if (!currentRunId.value) return t('run.remoteBtnSelectRun')
-  if (remoteActive.value) return t('run.remoteBtnActive')
-  if (remotePaired.value) return t('run.remoteBtnPaired')
-  if (remoteWaiting.value) return t('run.remoteBtnBoundHere')
-  return t('run.remoteBtnDefault')
-})
-const remoteUnlisteners: UnlistenFn[] = []
-
 // ── Remote meta sync ────────────────────────────────────────────────────────
 // The composer's engine / model / permission-mode selection is the single source
 // of truth shared with a remote controller. Local edits are pushed to the backend
@@ -533,15 +483,6 @@ watch(
   { immediate: true },
 )
 
-async function refreshRemoteActive(): Promise<void> {
-  // Pull the latest global status into the store; the computeds above re-derive
-  // this run's remote state from it (button dot + chip).
-  try {
-    await remoteControlStore.refreshStatus()
-  } catch {
-    // ignore — a stale status just means no remote indicator
-  }
-}
 const viewingLogRunId = ref<string | null>(null)
 const viewingLog = ref<string>('')
 
@@ -1829,18 +1770,6 @@ onMounted(async () => {
   window.addEventListener('keydown', onTurnNavKey)
   setupMentionBridge()
 
-  // Remote-control live indicator: reflect whether a phone is actively driving
-  // THIS run, updated by the host agent events (and an initial status read).
-  refreshRemoteActive()
-  for (const evt of [
-    'remote://connection-authenticated',
-    'remote://disconnected',
-    'remote://auth-failed',
-    'remote://session-expired',
-  ]) {
-    remoteUnlisteners.push(await listen(evt, () => refreshRemoteActive()))
-  }
-
   // Drag-and-drop files into the composer. Tauri intercepts OS file drops at the
   // native layer (dragDropEnabled defaults on), so the webview's HTML5 `drop`
   // carries no paths — we must use the native event, which gives absolute paths.
@@ -1958,8 +1887,6 @@ onUnmounted(() => {
   sessionsChangedUnlisten = null
   dragDropUnlisten?.()
   dragDropUnlisten = null
-  remoteUnlisteners.forEach((fn) => fn())
-  remoteUnlisteners.length = 0
   metaUnlisten?.()
   metaUnlisten = null
   mentionUnlisten?.()
@@ -3652,15 +3579,6 @@ function handleRefInput(val: string) {
               :aria-label="t('run.moreActions')"
             >
               <MoreHorizontal class="h-4 w-4" :stroke-width="2" />
-              <!-- The phone is looking at THIS run: keep that visible from the header. -->
-              <span
-                v-if="remoteActive"
-                class="absolute -right-0.5 -top-0.5 flex h-2.5 w-2.5"
-                :aria-label="t('run.remoteConnecting')"
-              >
-                <span class="absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-75 animate-ping" />
-                <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-background" />
-              </span>
             </Button>
           </template>
           <div class="min-w-[15rem]">
@@ -3692,20 +3610,6 @@ function handleRefInput(val: string) {
             </template>
 
             <DropdownSeparator />
-            <DropdownItem :disabled="!currentRunId" :title="remoteButtonTitle" @click="remoteModalOpen = true">
-              <Radio
-                class="h-3.5 w-3.5 shrink-0"
-                :class="remoteActive ? 'text-emerald-500' : remotePaired ? 'text-emerald-500/50' : ''"
-                :stroke-width="1.75"
-              />
-              <span class="flex-1">{{ t('run.remote') }}</span>
-              <span
-                v-if="remoteActive || remotePaired"
-                class="h-1.5 w-1.5 shrink-0 rounded-full"
-                :class="remoteActive ? 'bg-emerald-500' : 'bg-emerald-500/50'"
-                :aria-label="remoteButtonTitle"
-              />
-            </DropdownItem>
             <DropdownItem
               :title="uiLayout.focusMode ? t('run.exitFocusMode') : t('run.enterFocusMode')"
               @click="uiLayout.toggleFocus()"
@@ -4016,21 +3920,6 @@ function handleRefInput(val: string) {
                     :title="t('conductor.workerCountShort', { n: runWorkerCount(run) })"
                   >
                     <Network class="h-3 w-3" :stroke-width="1.75" />{{ runWorkerCount(run) }}
-                  </span>
-                  <!-- Remote-control marker: a phone is driving (green, pulsing) or
-                       a link is waiting for one (amber) on THIS session. Lets the
-                       user spot the remotely-controlled session in the list. -->
-                  <span
-                    v-if="remoteRowMarker && remoteRowMarker.runId === run.id"
-                    class="relative flex h-4 w-4 shrink-0 items-center justify-center"
-                    :class="remoteRowMarker.tone === 'success' ? 'text-emerald-500' : 'text-amber-500'"
-                    :title="remoteRowMarker.title"
-                  >
-                    <span
-                      v-if="remoteRowMarker.tone === 'success'"
-                      class="absolute inset-0 animate-ping rounded-full bg-emerald-500/30"
-                    />
-                    <Radio class="relative h-3.5 w-3.5" :stroke-width="2" />
                   </span>
                   <!-- Animated attention marker: this run is waiting for a
                        permission / question answer (replaces the floating toast). -->
@@ -4937,15 +4826,6 @@ function handleRefInput(val: string) {
         </Button>
       </template>
     </Modal>
-
-    <!-- Remote control: create a per-run link + OTP so a phone can drive this run -->
-    <RemoteSessionModal
-      v-if="remoteModalOpen"
-      :open="remoteModalOpen"
-      :run-id="currentRunId"
-      @close="remoteModalOpen = false; refreshRemoteActive()"
-      @open-settings="remoteModalOpen = false; router.push({ name: 'settings', query: { section: 'remote' } })"
-    />
 
     <!-- Floating actions for a text selection in the AI-result output: translate
          it, or keep it as a note filed under this run.

@@ -18,8 +18,7 @@ import PermissionWindowManager from '@/components/PermissionWindowManager.vue'
 import CalendarReminder from '@/components/CalendarReminder.vue'
 import WorkspaceTabs from '@/components/WorkspaceTabs.vue'
 import ActiveRunsDock from '@/components/ActiveRunsDock.vue'
-import ActiveRemoteDock from '@/components/ActiveRemoteDock.vue'
-import RemoteDesktopIndicator from '@/components/RemoteDesktopIndicator.vue'
+import RemoteIndicator from '@/components/RemoteIndicator.vue'
 import FileViewerWindow from '@/views/FileViewerWindow.vue'
 import PermissionWindow from '@/views/PermissionWindow.vue'
 import ThemeDecorations from '@/components/ThemeDecorations.vue'
@@ -984,12 +983,10 @@ onMounted(async () => {
           <!-- Warning row while processes outlive their session -->
           <BackgroundProcessesDock />
 
-          <!-- Active Remote Control session (phone paired to a run) -->
-          <ActiveRemoteDock />
-
           <!-- Version footer -->
           <div class="flex items-center justify-between gap-2 px-4 py-3 border-t border-border/50">
             <p v-if="appVersion" class="text-[10px] text-muted-foreground/50 font-mono">v{{ appVersion }}</p>
+            <RemoteIndicator />
           </div>
         </div>
       </aside>
@@ -1040,9 +1037,9 @@ onMounted(async () => {
     <!-- App-wide toast host (see useToast) -->
     <ToastHost />
 
-    <!-- "Being controlled from another Devdy" pill + kill switch. Lives outside
-         the sidebar so it stays visible when the sidebar is hidden. -->
-    <RemoteDesktopIndicator />
+    <!-- Sidebar hidden: the Remote Control dot moves to a corner while another
+         Devdy drives this one, so that warning is never invisible. -->
+    <RemoteIndicator v-if="!sidebarVisible" floating />
 
     <!-- App-wide side-by-side image comparison (banner + picker + compare view) -->
     <ImageCompareHost />

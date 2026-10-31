@@ -91,7 +91,6 @@
     "createNewLink": "Create new link",
     "expired": "Session expired",
     "errorOccurred": "An error occurred",
-    "noRunOpen": "No run is currently open.",
     "copyFailed": "Could not copy to clipboard",
     "disabledTitle": "Remote Control is off",
     "disabledDesc": "Remote Control isn't enabled yet. Turn it on to create a link for your phone.",
