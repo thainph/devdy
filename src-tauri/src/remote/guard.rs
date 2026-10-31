@@ -129,6 +129,7 @@ const LOCAL_ONLY_COMMANDS: &[&str] = &[
     "rdfile_respond",
     "rd_download_create",
     "rd_download_append",
+    "start_file_drag",
 ];
 
 /// Whether `name` is refused to a Controller (see [`LOCAL_ONLY_COMMANDS`]).
@@ -168,8 +169,14 @@ pub fn gated<R: Runtime>(handler: impl Fn(Invoke<R>) -> bool + Send + Sync + 'st
 ///
 /// [`PORTABLE_SETTING_KEYS`]: crate::commands::settings::PORTABLE_SETTING_KEYS
 pub fn remote_may_set_setting(key: &str) -> bool {
-    crate::commands::settings::PORTABLE_SETTING_KEYS.contains(&key)
+    crate::commands::settings::PORTABLE_SETTING_KEYS.contains(&key) && !REMOTE_LOCAL_SETTINGS.contains(&key)
 }
+
+/// Portable settings a remote desktop still may not change: they decide what
+/// every future run may do without asking (`default_permission_mode`) or pass
+/// raw flags to the CLI (`extra_args`, e.g. `--dangerously-skip-permissions`,
+/// `--mcp-config`).
+const REMOTE_LOCAL_SETTINGS: &[&str] = &["extra_args", "default_permission_mode"];
 
 // ---- On-disk credentials ----------------------------------------------------
 
@@ -213,6 +220,45 @@ const SECRET_HOME_FILE_PREFIXES: &[&str] = &[".claude.json"];
 /// server keys, sandboxed CLI logins) are named after this identifier.
 const APP_ID_PREFIX: &str = "vn.papay.devdy";
 
+/// Readable parts of this app's data dir: Slack thread downloads (previews)
+/// and the log folder (`remote_fs_log_dir`). Never credentials.
+const ALLOWED_APP_DIRS: &[&str] = &["slack-threads", "logs"];
+
+/// macOS: the data volume's firmlink. `/Users/x` and
+/// `/System/Volumes/Data/Users/x` are the same files, and `canonicalize` keeps
+/// whichever form it was given.
+const DATA_VOLUME: &str = "/System/Volumes/Data";
+
+/// A file's identity: (device, inode). Matching on it sees through every
+/// alias of a path (firmlinks, hard-linked directories, case, bind mounts).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FileId(u64, u64);
+
+impl FileId {
+    /// `None` when `path` does not exist (or on a platform without inodes).
+    pub fn of(path: &Path) -> Option<FileId> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(path).ok().map(|m| FileId(m.dev(), m.ino()))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+            None
+        }
+    }
+}
+
+/// `path` without the [`DATA_VOLUME`] prefix (`/System/Volumes/Data/Users/x`
+/// → `/Users/x`); unchanged otherwise.
+pub fn strip_data_volume(path: &Path) -> PathBuf {
+    match path.strip_prefix(DATA_VOLUME) {
+        Ok(rest) => Path::new("/").join(rest),
+        Err(_) => path.to_path_buf(),
+    }
+}
+
 /// The paths a remote-desktop read must never return.
 ///
 /// Matching is on canonical paths, component by component and
@@ -227,12 +273,28 @@ pub struct SecretPaths {
     /// Folders whose children named `vn.papay.devdy*` are denied (where the
     /// app data dir lives).
     app_parents: Vec<PathBuf>,
+    /// The same stores by identity (those that exist), for [`Self::denies`]'s
+    /// ancestor walk.
+    dir_ids: Vec<FileId>,
+    allowed_ids: Vec<FileId>,
+    file_ids: Vec<FileId>,
+    app_parent_ids: Vec<FileId>,
 }
 
 impl SecretPaths {
     /// Policy for a given HOME and this app's data dir.
     pub fn new(home: Option<&Path>, app_data: Option<&Path>) -> Self {
-        let mut p = SecretPaths { home: None, dirs: Vec::new(), allowed: Vec::new(), files: Vec::new(), app_parents: Vec::new() };
+        let mut p = SecretPaths {
+            home: None,
+            dirs: Vec::new(),
+            allowed: Vec::new(),
+            files: Vec::new(),
+            app_parents: Vec::new(),
+            dir_ids: Vec::new(),
+            allowed_ids: Vec::new(),
+            file_ids: Vec::new(),
+            app_parent_ids: Vec::new(),
+        };
         if let Some(home) = home {
             for h in both_forms(home) {
                 p.dirs.extend(SECRET_HOME_DIRS.iter().flat_map(|d| both_forms(&h.join(d))));
@@ -243,8 +305,14 @@ impl SecretPaths {
         }
         if let Some(app_data) = app_data {
             p.dirs.extend(both_forms(app_data));
+            p.allowed.extend(ALLOWED_APP_DIRS.iter().flat_map(|d| both_forms(&app_data.join(d))));
             p.app_parents.extend(app_data.parent().into_iter().flat_map(both_forms));
         }
+        let ids = |paths: &[PathBuf]| paths.iter().filter_map(|x| FileId::of(x)).collect::<Vec<_>>();
+        p.dir_ids = ids(&p.dirs);
+        p.allowed_ids = ids(&p.allowed);
+        p.file_ids = ids(&p.files);
+        p.app_parent_ids = ids(&p.app_parents);
         p
     }
 
@@ -255,8 +323,41 @@ impl SecretPaths {
         Self::new(home.as_deref(), app_data.as_deref())
     }
 
-    /// Whether `path` (already canonical) is or lies under a credential store.
+    /// Whether `path` (already canonical) is or lies under a credential store:
+    /// by name (also with the [`DATA_VOLUME`] prefix dropped) or by identity —
+    /// the closest ancestor that is a store, or an allowed part of one, decides.
     pub fn denies(&self, path: &Path) -> bool {
+        self.denies_by_name(path) || self.denies_by_name(&strip_data_volume(path)) || self.denies_by_id(path)
+    }
+
+    fn denies_by_id(&self, path: &Path) -> bool {
+        let mut first = true;
+        for ancestor in path.ancestors() {
+            let Some(id) = FileId::of(ancestor) else {
+                first = false;
+                continue;
+            };
+            if first && self.file_ids.contains(&id) {
+                return true;
+            }
+            first = false;
+            if self.allowed_ids.contains(&id) {
+                return false;
+            }
+            if self.dir_ids.contains(&id) {
+                return true;
+            }
+            let named_app = ancestor
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().to_lowercase().starts_with(APP_ID_PREFIX));
+            if named_app && ancestor.parent().and_then(FileId::of).is_some_and(|pid| self.app_parent_ids.contains(&pid)) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn denies_by_name(&self, path: &Path) -> bool {
         if self.files.iter().any(|f| same_path(path, f)) {
             return true;
         }
@@ -267,15 +368,16 @@ impl SecretPaths {
                 return true;
             }
         }
+        let allowed = self.allowed.iter().any(|a| is_under(path, a));
         for parent in &self.app_parents {
             if let Some(child) = child_under(path, parent) {
-                if child.to_lowercase().starts_with(APP_ID_PREFIX) {
+                if child.to_lowercase().starts_with(APP_ID_PREFIX) && !allowed {
                     return true;
                 }
             }
         }
         let denied = self.dirs.iter().any(|d| is_under(path, d));
-        denied && !self.allowed.iter().any(|a| is_under(path, a))
+        denied && !allowed
     }
 
     /// Resolve `raw` (symlinks, `..`, relative to the process cwd) and refuse
@@ -496,11 +598,9 @@ mod tests {
 
     #[test]
     fn remote_settings_are_limited_to_portable_keys() {
-        for key in ["theme", "language", "default_engine", "saved_prompts", "focus.work_start"] {
-            let portable = crate::commands::settings::PORTABLE_SETTING_KEYS.contains(&key);
-            assert_eq!(remote_may_set_setting(key), portable, "{key}");
+        for key in ["theme", "language", "default_engine", "saved_prompts", "claude_model", "codex_model"] {
+            assert!(remote_may_set_setting(key), "{key}");
         }
-        assert!(remote_may_set_setting("theme"));
         for key in [
             "remote_enabled",
             "remote_anything",
@@ -517,6 +617,8 @@ mod tests {
             "sidecar_path",
             "project_path_map",
             "member",
+            "extra_args",
+            "default_permission_mode",
             "",
         ] {
             assert!(!remote_may_set_setting(key), "{key}");
@@ -642,6 +744,41 @@ mod tests {
         // Case-insensitive volumes (macOS) open `.SSH` as `.ssh`.
         assert!(fx.policy.denies(&fx.home.join(".SSH/id_ed25519")));
         assert!(fx.policy.denies(&fx.home.join("library/application support/VN.PAPAY.DEVDY/x")));
+    }
+
+    #[test]
+    fn the_data_volume_firmlink_is_the_same_place() {
+        let fx = Fixture::new();
+        let aliased = Path::new(DATA_VOLUME).join(fx.home.join(".ssh/id_ed25519").strip_prefix("/").unwrap());
+        // By name, whether or not the alias exists on this machine.
+        assert!(fx.policy.denies(&aliased), "{}", aliased.display());
+        assert_eq!(strip_data_volume(&aliased), fx.home.join(".ssh/id_ed25519"));
+        // And through the real alias, where there is one (macOS).
+        if aliased.exists() {
+            assert!(fx.policy.check(&aliased.to_string_lossy()).is_err());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stores_are_matched_by_identity_too() {
+        let fx = Fixture::new();
+        // A second name for HOME the policy was not built with (a bind mount /
+        // firmlink stand-in): identity still finds `.aws` above the file.
+        let alias = fx.root.join("alias-home");
+        std::os::unix::fs::symlink(&fx.home, &alias).unwrap();
+        let via_alias = alias.join(".aws/credentials");
+        assert!(fx.policy.denies_by_id(&via_alias));
+        // Allowed parts win when they are closer.
+        assert!(!fx.policy.denies_by_id(&alias.join(".codex/sessions/2026/r.jsonl")));
+        assert!(fx.policy.denies_by_id(&alias.join(".codex/auth.json")));
+        // App-data exceptions: Slack downloads stay readable.
+        let app = fx.home.join("Library/Application Support/vn.papay.devdy");
+        fs::create_dir_all(app.join("slack-threads/t1")).unwrap();
+        fs::write(app.join("slack-threads/t1/a.png"), b"x").unwrap();
+        let policy = SecretPaths::new(Some(&fx.home), Some(&app));
+        assert!(policy.check(&app.join("slack-threads/t1/a.png").to_string_lossy()).is_ok());
+        assert!(policy.check(&app.join("server-keys/k").to_string_lossy()).is_err());
     }
 
     #[cfg(unix)]

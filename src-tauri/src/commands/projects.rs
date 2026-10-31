@@ -222,8 +222,24 @@ pub struct DetectedProjectInfo {
     pub repos: Vec<DetectedRepo>,
 }
 
+/// A remote desktop may only open what it may read ([`crate::remote::fs_policy`]).
 #[tauri::command]
-pub fn open_in_vscode(path: String, file: Option<String>) -> Result<(), String> {
+pub async fn open_in_vscode(
+    webview: tauri::Webview,
+    db: State<'_, Db>,
+    path: String,
+    file: Option<String>,
+) -> Result<(), String> {
+    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
+    let path = crate::remote::fs_policy::read(policy.as_ref(), Path::new(&path))?.to_string_lossy().into_owned();
+    let file = match file {
+        Some(f) => Some(crate::remote::fs_policy::read(policy.as_ref(), Path::new(&f))?.to_string_lossy().into_owned()),
+        None => None,
+    };
+    open_in_vscode_inner(path, file)
+}
+
+fn open_in_vscode_inner(path: String, file: Option<String>) -> Result<(), String> {
     if !Path::new(&path).exists() {
         return Err(format!("Path does not exist: {}", path));
     }
@@ -268,8 +284,19 @@ pub fn open_in_vscode(path: String, file: Option<String>) -> Result<(), String> 
     Ok(())
 }
 
+/// A remote desktop may only open what it may read ([`crate::remote::fs_policy`]).
 #[tauri::command]
-pub fn open_in_chrome(path: String) -> Result<(), String> {
+pub async fn open_in_chrome(
+    webview: tauri::Webview,
+    db: State<'_, Db>,
+    path: String,
+) -> Result<(), String> {
+    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
+    let path = crate::remote::fs_policy::read(policy.as_ref(), Path::new(&path))?.to_string_lossy().into_owned();
+    open_in_chrome_inner(path)
+}
+
+fn open_in_chrome_inner(path: String) -> Result<(), String> {
     if !Path::new(&path).exists() {
         return Err(format!("Path does not exist: {}", path));
     }
@@ -301,8 +328,19 @@ pub fn open_in_chrome(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// A remote desktop may only open what it may read ([`crate::remote::fs_policy`]).
 #[tauri::command]
-pub fn open_in_folder(path: String) -> Result<(), String> {
+pub async fn open_in_folder(
+    webview: tauri::Webview,
+    db: State<'_, Db>,
+    path: String,
+) -> Result<(), String> {
+    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
+    let path = crate::remote::fs_policy::read(policy.as_ref(), Path::new(&path))?.to_string_lossy().into_owned();
+    open_in_folder_inner(path)
+}
+
+fn open_in_folder_inner(path: String) -> Result<(), String> {
     if !Path::new(&path).exists() {
         return Err(format!("Path does not exist: {}", path));
     }
@@ -334,8 +372,20 @@ pub fn open_in_folder(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// A remote desktop may only open what it may read ([`crate::remote::fs_policy`]).
 #[tauri::command]
-pub fn open_in_terminal(path: String, terminal_app: String) -> Result<(), String> {
+pub async fn open_in_terminal(
+    webview: tauri::Webview,
+    db: State<'_, Db>,
+    path: String,
+    terminal_app: String,
+) -> Result<(), String> {
+    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
+    let path = crate::remote::fs_policy::read(policy.as_ref(), Path::new(&path))?.to_string_lossy().into_owned();
+    open_in_terminal_inner(path, terminal_app)
+}
+
+fn open_in_terminal_inner(path: String, terminal_app: String) -> Result<(), String> {
     if !Path::new(&path).exists() {
         return Err(format!("Path does not exist: {}", path));
     }
@@ -547,7 +597,13 @@ end tell
 }
 
 #[tauri::command]
-pub async fn detect_project_info(path: String) -> Result<DetectedProjectInfo, String> {
+pub async fn detect_project_info(webview: tauri::Webview, path: String) -> Result<DetectedProjectInfo, String> {
+    // Picking a NEW folder to add: outside every project by definition, so a
+    // remote desktop is only kept out of the credential stores here.
+    if crate::remote::guard::from_remote_bridge(&webview) {
+        use tauri::Manager;
+        crate::remote::guard::SecretPaths::for_app(webview.app_handle()).check(&path)?;
+    }
     if !Path::new(&path).exists() {
         return Err("Path does not exist".to_string());
     }

@@ -188,7 +188,7 @@ fn prune_old(root: &Path, max_age: Duration) {
     }
 }
 
-fn uploads_root(app: &AppHandle) -> Result<PathBuf, String> {
+pub fn uploads_root<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     let dir = app.path().app_cache_dir().map_err(|e| e.to_string())?;
     Ok(dir.join(UPLOADS_DIR))
 }

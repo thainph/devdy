@@ -340,6 +340,19 @@ fn ipc_refuses(name: &str) -> bool {
     guard::is_local_only_command(name) || name.starts_with("plugin:") || name.starts_with("remote_bridge_")
 }
 
+/// Whether `args` hold a Tauri channel reference (`"__CHANNEL__:<id>"`) at any
+/// depth. A channel argument is resolved against the CALLING webview — the
+/// bridge — so a forged one could hand a command the bridge page's own
+/// callbacks (its request channel). No remote command takes a channel.
+fn has_channel_ref(args: &serde_json::Value) -> bool {
+    match args {
+        serde_json::Value::String(s) => s.starts_with("__CHANNEL__:"),
+        serde_json::Value::Array(a) => a.iter().any(has_channel_ref),
+        serde_json::Value::Object(o) => o.values().any(has_channel_ref),
+        _ => false,
+    }
+}
+
 /// The bridge request for one `ipc_*` command, `None` when there is nothing
 /// to forward. A refused invoke goes out as [`guard::DENIED`], a command that
 /// does not exist, so it fails on the Controller like an unknown one.
@@ -349,10 +362,11 @@ fn ipc_request(cmd: &CmdPayload) -> Option<serde_json::Value> {
             let (Some(id), Some(name)) = (cmd.id.as_deref(), cmd.cmd.as_deref()) else { return None };
             // Name only: args may carry anything (prompts, paths, secrets).
             tracing::debug!(event = "remote_ipc_invoke", cmd = %name);
-            let (name, args) = if ipc_refuses(name) {
+            let args = cmd.args.clone().unwrap_or(serde_json::Value::Null);
+            let (name, args) = if ipc_refuses(name) || has_channel_ref(&args) {
                 (guard::DENIED, serde_json::Value::Null)
             } else {
-                (name, cmd.args.clone().unwrap_or(serde_json::Value::Null))
+                (name, args)
             };
             Some(serde_json::json!({ "type": "invoke", "id": id, "cmd": name, "args": args }))
         }
@@ -1076,6 +1090,21 @@ mod tests {
             assert_eq!(req["cmd"], guard::DENIED, "{name}");
             assert!(req["args"].is_null(), "{name}");
         }
+    }
+
+    #[test]
+    fn forged_channel_arguments_are_refused() {
+        for args in [
+            serde_json::json!({ "requests": "__CHANNEL__:1" }),
+            serde_json::json!({ "payload": { "on": ["x", "__CHANNEL__:7"] } }),
+        ] {
+            let req = invoke_of("list_runs", args);
+            assert_eq!(req["cmd"], guard::DENIED);
+            assert!(req["args"].is_null());
+        }
+        // A string merely mentioning it is fine.
+        let req = invoke_of("add_todo", serde_json::json!({ "title": "see __CHANNEL__:1" }));
+        assert_eq!(req["cmd"], "add_todo");
     }
 
     #[test]

@@ -431,8 +431,18 @@ pub async fn delete_rule(db: State<'_, Db>, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn export_rule(db: State<'_, Db>, id: String, dest_path: String) -> Result<(), String> {
+pub async fn export_rule(
+    webview: tauri::Webview,
+    db: State<'_, Db>,
+    id: String,
+    dest_path: String,
+) -> Result<(), String> {
     use sqlx::Row;
+    // A remote desktop exports into Downloads / the upload dir only.
+    let dest_path = match crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await? {
+        Some(p) => p.export(Path::new(&dest_path))?.to_string_lossy().into_owned(),
+        None => dest_path,
+    };
     let row = sqlx::query("SELECT source_path FROM rules WHERE id = ?")
         .bind(&id)
         .fetch_one(db.inner())
@@ -446,10 +456,15 @@ pub async fn export_rule(db: State<'_, Db>, id: String, dest_path: String) -> Re
 #[tauri::command]
 pub async fn import_rule(
     app: AppHandle,
+    webview: tauri::Webview,
     db: State<'_, Db>,
     src_path: String,
 ) -> Result<Rule, String> {
     use sqlx::Row;
+    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
+    let src_path = crate::remote::fs_policy::read(policy.as_ref(), Path::new(&src_path))?
+        .to_string_lossy()
+        .into_owned();
     let content = fs::read_to_string(&src_path).map_err(|e| e.to_string())?;
     let (name, description, target) = parse_rule_frontmatter(&content);
 
