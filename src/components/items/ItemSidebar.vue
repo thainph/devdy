@@ -3,7 +3,8 @@
 // layout: search + the window's pin / reload (no custom titlebar), project
 // filter + "+ New", a segmented filter (notes: All | Linked to a session;
 // todos: Open | Done | All), then the items grouped by project (each header
-// collapsible, remembered in localStorage per kind).
+// collapsible, remembered in localStorage per kind; its 🗑 deletes the whole
+// folder's shown items — those passing the filters — after the host confirms).
 //
 // A note row: title, a one-line preview, its age and a link mark with the
 // linked-session count. A todo row: a clickable checkbox, its first line, its
@@ -24,6 +25,7 @@ import {
   Plus,
   RotateCw,
   Search,
+  Trash2,
   X,
 } from 'lucide-vue-next'
 import { AppSelect, Button, Input } from '@/components/ui'
@@ -57,6 +59,8 @@ const emit = defineEmits<{
   select: [id: string]
   add: []
   toggleDone: [id: string]
+  /** Delete every item of a folder: a project id, or null for "No project". */
+  deleteGroup: [projectId: string | null, label: string]
   togglePin: []
   reload: []
   retry: []
@@ -257,23 +261,34 @@ const groups = computed(() => {
       </p>
 
       <div v-for="g in groups" v-else :key="g.key" class="mb-2">
-        <button
-          type="button"
-          class="flex w-full cursor-pointer items-center gap-1 rounded px-1.5 py-1 text-left text-xs font-semibold text-foreground hover:bg-accent/50"
-          :aria-expanded="!collapsed.has(g.key)"
-          @click="toggle(g.key)"
-        >
-          <component
-            :is="collapsed.has(g.key) ? ChevronRight : ChevronDown"
-            class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-            :stroke-width="2"
-          />
-          <Folder class="h-3 w-3 shrink-0 text-muted-foreground" :stroke-width="1.75" />
-          <span class="min-w-0 flex-1 truncate">{{ g.label }}</span>
-          <span class="shrink-0 text-[10px] font-normal tabular-nums text-muted-foreground/80">
-            {{ g.rows.length }}
-          </span>
-        </button>
+        <div class="group/folder flex items-center rounded hover:bg-accent/50">
+          <button
+            type="button"
+            class="flex min-w-0 flex-1 cursor-pointer items-center gap-1 px-1.5 py-1 text-left text-xs font-semibold text-foreground"
+            :aria-expanded="!collapsed.has(g.key)"
+            @click="toggle(g.key)"
+          >
+            <component
+              :is="collapsed.has(g.key) ? ChevronRight : ChevronDown"
+              class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+              :stroke-width="2"
+            />
+            <Folder class="h-3 w-3 shrink-0 text-muted-foreground" :stroke-width="1.75" />
+            <span class="min-w-0 flex-1 truncate">{{ g.label }}</span>
+            <span class="shrink-0 text-[10px] font-normal tabular-nums text-muted-foreground/80">
+              {{ g.rows.length }}
+            </span>
+          </button>
+          <button
+            type="button"
+            class="mr-1 shrink-0 cursor-pointer rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/15 hover:text-destructive focus-visible:opacity-100 group-hover/folder:opacity-100"
+            :title="t('item.deleteFolder')"
+            :aria-label="t('item.deleteFolder')"
+            @click="emit('deleteGroup', g.key === NONE ? null : g.key, g.label)"
+          >
+            <Trash2 class="h-3 w-3" :stroke-width="1.75" />
+          </button>
+        </div>
 
         <ul v-if="!collapsed.has(g.key)" class="mt-px space-y-px">
           <li v-for="row in g.rows" :key="row.id">

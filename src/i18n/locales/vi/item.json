@@ -50,7 +50,11 @@
     "deleteNoteMessage": "Gỡ ghi chú này?",
     "discardTitle": "Bỏ thay đổi",
     "discardMessage": "Rời trình soạn và bỏ các thay đổi chưa lưu?",
-    "discard": "Bỏ"
+    "discard": "Bỏ",
+    "deleteNoteFolderTitle": "Xóa thư mục ghi chú",
+    "deleteNoteFolderMessage": "Xóa {n} ghi chú đang hiển thị trong “{folder}” (theo bộ lọc hiện tại)? Không thể hoàn tác.",
+    "deleteTodoFolderTitle": "Xóa thư mục việc",
+    "deleteTodoFolderMessage": "Xóa {n} việc đang hiển thị trong “{folder}” (theo bộ lọc hiện tại)? Không thể hoàn tác."
   },
   "emptyTodoHint": "Thêm bằng nút Việc mới, hoặc để AI thêm qua các tool todos.",
   "emptyNoteHint": "Viết bằng nút Ghi chú mới, hoặc để AI lưu qua các tool notes.",
@@ -88,5 +92,8 @@
   "dueTomorrow": "Hạn ngày mai",
   "dueInDays": "Còn {n} ngày",
   "overdueDays": "Quá hạn {n} ngày | Quá hạn {n} ngày",
-  "dueOn": "Hạn {date}"
+  "dueOn": "Hạn {date}",
+  "deleteFolder": "Xóa thư mục",
+  "deleteFolderFailed": "Không xóa được thư mục: {error}",
+  "folderDeleted": "Đã xóa {n} mục"
 }
