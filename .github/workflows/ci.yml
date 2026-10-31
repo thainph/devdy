@@ -149,7 +149,7 @@ jobs:
           node --test sidecar-proxy/*.test.mjs
           run() { echo "::group::$1/$2"; (cd "$1" && node "$2"); echo "::endgroup::"; }
           run sidecar test-mocked.mjs
-          for t in always-allow deny exit-signal framing-seed mcp-permission-key \
+          for t in always-allow deny exit-signal framing-seed keychain-rules mcp-permission-key \
                    no-tools-fail-closed no-tools stdin-eof-midturn; do
             run sidecar-codex "test-$t.mjs"
           done

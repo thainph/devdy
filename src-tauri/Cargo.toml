@@ -56,10 +56,20 @@ base64 = "0.22"
 remote-e2e = { path = "../remote-e2e" }
 # Password-sealed secrets in settings backups (Argon2id + XChaCha20-Poly1305); same crate as remote-e2e.
 dryoc = "1.0"
+# Wipes the secret notes vault key from memory on lock (already a dryoc dependency).
+zeroize = "1"
 # Conductor: in-process localhost-only MCP server (Streamable HTTP) that lets a
 # conductor run drive worker runs via session_* tools. Bound to 127.0.0.1 only.
 axum = "0.7"
 drag = "2.1.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Secret notes: copy to the pasteboard (concealed, this Mac only) and clear it later.
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
+# Secret notes: lock the vault while the screen is locked.
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGSession"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFDictionary", "CFString"] }
 
 [target.'cfg(unix)'.dependencies]
 # Process-group SIGKILL on app exit / cancel, so sidecar + CLI children don't

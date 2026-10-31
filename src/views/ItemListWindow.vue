@@ -25,11 +25,12 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { ListTodo, StickyNote } from 'lucide-vue-next'
+import { ListTodo, LockKeyhole, StickyNote } from 'lucide-vue-next'
 import { ConfirmModal, ToastHost } from '@/components/ui'
 import ItemSidebar from '@/components/items/ItemSidebar.vue'
 import ItemHeader from '@/components/items/ItemHeader.vue'
 import ItemBody from '@/components/items/ItemBody.vue'
+import SecretNotesPane from '@/components/items/SecretNotesPane.vue'
 import { noteRow, todoRow, type ItemRow } from '@/components/items/itemRow'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
@@ -53,6 +54,8 @@ import {
 } from '@/lib/sessionLinks'
 import { firstLine } from '@/lib/itemText'
 import { refreshTray } from '@/lib/tray'
+import { isRemoteMode } from '@/lib/ipc/remote'
+import { secretNoteFromNote, vaultError } from '@/lib/secretVault'
 
 const { t } = useI18n()
 const { toast } = useToast()
@@ -68,6 +71,10 @@ const kind: ItemKind = params.get('kind') === 'note' ? 'note' : 'todo'
 const initialId = params.get('id') || null
 /** The project the window was opened from: the default filter and "+ New" project. */
 const contextProjectId = ref<string | null>(params.get('projectId') || null)
+/** Secret notes (the vault) are local-only: no tab when this window drives another Devdy. */
+const canSecret = kind === 'note' && !isRemoteMode()
+/** Notes window: regular notes or the secret notes vault. */
+const mode = ref<'notes' | 'secret'>(canSecret && params.get('secret') === '1' ? 'secret' : 'notes')
 
 // ── Sidebar: search + project filter + kind filter (all client-side) ───────
 
@@ -292,6 +299,34 @@ async function remove() {
   announce()
 }
 
+/** Move the selected note into the vault (the vault must be unlocked). */
+async function makeSecret() {
+  const it = item.value
+  if (!it || kind !== 'note') return
+  const ok = await confirm({
+    title: t('secretNotes.makeSecret.title'),
+    message: t('secretNotes.makeSecret.message'),
+    confirmLabel: t('secretNotes.makeSecret.confirm'),
+  })
+  if (!ok) return
+  try {
+    await secretNoteFromNote(it.id)
+    editing.value = false
+    await notes.fetchNotes()
+    selectedId.value = null
+    mode.value = 'secret'
+    toast.success(t('secretNotes.makeSecret.done'))
+  } catch (e) {
+    const { code } = vaultError(e)
+    if (code === 'vault_locked' || code === 'vault_missing') {
+      mode.value = 'secret'
+      toast.info(t(`secretNotes.makeSecret.${code === 'vault_locked' ? 'needUnlock' : 'needVault'}`))
+    } else {
+      toast.error(code ? t(`secretNotes.errors.${code}`) : String(e))
+    }
+  }
+}
+
 const copiedId = ref(false)
 async function copyId() {
   const id = selectedId.value
@@ -479,76 +514,99 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="flex h-screen w-screen overflow-hidden bg-background text-foreground">
-    <ItemSidebar
-      v-model:search="search"
-      v-model:project="projectFilter"
-      v-model:filter="filter"
-      :kind="kind"
-      :rows="visibleRows"
-      :empty-store="emptyStore"
-      :selected-id="selectedId"
-      :project-options="projectOptions"
-      :project-names="projectNames"
-      :error="loadError"
-      :pinned="pinned"
-      :reloading="reloading"
-      @select="select"
-      @add="openCreate"
-      @toggle-done="toggleDone"
-      @toggle-pin="togglePin"
-      @reload="reloadAll"
-      @retry="reloadAll"
-    />
+  <div class="flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground">
+    <!-- Notes window: regular notes | secret notes (vault) -->
+    <div v-if="canSecret" class="flex shrink-0 border-b border-border/60 px-2 text-xs font-medium" role="tablist">
+      <button
+        v-for="m in (['notes', 'secret'] as const)"
+        :key="m"
+        type="button"
+        role="tab"
+        :aria-selected="mode === m"
+        class="flex items-center gap-1.5 px-3 py-2 transition-colors cursor-pointer"
+        :class="mode === m ? 'text-foreground border-b-2 border-primary' : 'text-muted-foreground hover:text-foreground'"
+        @click="mode = m"
+      >
+        <component :is="m === 'notes' ? StickyNote : LockKeyhole" class="h-3.5 w-3.5" :stroke-width="1.75" />
+        {{ m === 'notes' ? t('secretNotes.tabs.notes') : t('secretNotes.tabs.secret') }}
+      </button>
+    </div>
+    <div class="flex min-h-0 flex-1">
+      <SecretNotesPane v-if="mode === 'secret'" :context-project-id="contextProjectId" />
+      <template v-else>
+        <ItemSidebar
+          v-model:search="search"
+          v-model:project="projectFilter"
+          v-model:filter="filter"
+          :kind="kind"
+          :rows="visibleRows"
+          :empty-store="emptyStore"
+          :selected-id="selectedId"
+          :project-options="projectOptions"
+          :project-names="projectNames"
+          :error="loadError"
+          :pinned="pinned"
+          :reloading="reloading"
+          @select="select"
+          @add="openCreate"
+          @toggle-done="toggleDone"
+          @toggle-pin="togglePin"
+          @reload="reloadAll"
+          @retry="reloadAll"
+        />
 
-    <section v-if="item" class="flex min-w-0 flex-1 flex-col">
-      <ItemHeader
-        :kind="kind"
-        :item="item"
-        :links="links"
-        :renaming="renaming"
-        :editing="editing"
-        :can-save="!!bodyRef?.canSave"
-        :saving="!!bodyRef?.saving"
-        :copied-id="copiedId"
-        @start-rename="startRename"
-        @commit-rename="commitRename"
-        @cancel-rename="renaming = false"
-        @edit="startEdit"
-        @cancel-edit="cancelEdit"
-        @save="bodyRef?.save()"
-        @toggle-done="toggleDone(item.id)"
-        @set-project="setProject"
-        @set-due-date="setDueDate"
-        @open-run="openRun"
-        @unlink-run="unlinkRun"
-        @link-run="linkRun"
-        @new-session="newSession"
-        @copy-id="copyId"
-        @delete="remove"
-      />
-      <ItemBody
-        ref="bodyRef"
-        :kind="kind"
-        :item="item"
-        :editing="editing"
-        @saved="onSaved"
-        @cancel="cancelEdit"
-      />
-    </section>
-    <div v-else class="flex min-w-0 flex-1 items-center justify-center p-6">
-      <div class="text-center">
-        <div class="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-muted">
-          <component
-            :is="kind === 'note' ? StickyNote : ListTodo"
-            class="h-5 w-5 text-muted-foreground"
-            :stroke-width="1.5"
+        <section v-if="item" class="flex min-w-0 flex-1 flex-col">
+          <ItemHeader
+            :kind="kind"
+            :item="item"
+            :links="links"
+            :renaming="renaming"
+            :editing="editing"
+            :can-save="!!bodyRef?.canSave"
+            :saving="!!bodyRef?.saving"
+            :copied-id="copiedId"
+            :can-make-secret="canSecret"
+            @start-rename="startRename"
+            @commit-rename="commitRename"
+            @cancel-rename="renaming = false"
+            @edit="startEdit"
+            @cancel-edit="cancelEdit"
+            @save="bodyRef?.save()"
+            @toggle-done="toggleDone(item.id)"
+            @set-project="setProject"
+            @set-due-date="setDueDate"
+            @open-run="openRun"
+            @unlink-run="unlinkRun"
+            @link-run="linkRun"
+            @new-session="newSession"
+            @copy-id="copyId"
+            @make-secret="makeSecret"
+            @delete="remove"
           />
+          <ItemBody
+            ref="bodyRef"
+            :kind="kind"
+            :item="item"
+            :editing="editing"
+            @saved="onSaved"
+            @cancel="cancelEdit"
+          />
+        </section>
+        <div v-else class="flex min-w-0 flex-1 items-center justify-center p-6">
+          <div class="text-center">
+            <div class="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-muted">
+              <component
+                :is="kind === 'note' ? StickyNote : ListTodo"
+                class="h-5 w-5 text-muted-foreground"
+                :stroke-width="1.5"
+              />
+            </div>
+            <p class="text-xs text-muted-foreground">
+              {{ kind === 'note' ? t('item.noSelectionNote') : t('item.noSelectionTodo') }}
+            </p>
+          </div>
         </div>
-        <p class="text-xs text-muted-foreground">
-          {{ kind === 'note' ? t('item.noSelectionNote') : t('item.noSelectionTodo') }}
-        </p>
-      </div>
+      </template>
     </div>
 
     <!-- The pop-out doesn't mount the main app's dialog/toast hosts. -->

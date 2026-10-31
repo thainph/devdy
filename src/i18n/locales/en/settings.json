@@ -475,6 +475,7 @@
       "googleAccounts": "Google accounts",
       "claudeAccounts": "Claude accounts",
       "notes": "Notes",
+      "secretNotes": "Secret notes",
       "todos": "Todos",
       "slackThreads": "Slack threads",
       "projects": "Projects"

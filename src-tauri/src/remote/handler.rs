@@ -311,6 +311,15 @@ pub async fn handle(ctx: &HandlerCtx, cmd: CmdPayload) {
     }
 }
 
+/// Stands in for a refused command: no such command exists, so the bridge's
+/// invoke fails and the Controller gets an error result.
+const DENIED_COMMAND: &str = "remote_denied_local_only";
+
+/// Commands a Controller may never run on this machine (secret notes vault).
+fn is_local_only_command(name: &str) -> bool {
+    name.starts_with("secret_")
+}
+
 /// Forward one `ipc_*` command to the bridge webview.
 async fn handle_ipc(ctx: &HandlerCtx, cmd: &CmdPayload) {
     use tauri::Manager;
@@ -320,12 +329,14 @@ async fn handle_ipc(ctx: &HandlerCtx, cmd: &CmdPayload) {
             let (Some(id), Some(name)) = (cmd.id.as_deref(), cmd.cmd.as_deref()) else { return };
             // Name only: args may carry anything (prompts, paths, secrets).
             tracing::debug!(event = "remote_ipc_invoke", cmd = %name);
-            serde_json::json!({
-                "type": "invoke",
-                "id": id,
-                "cmd": name,
-                "args": cmd.args.clone().unwrap_or(serde_json::Value::Null),
-            })
+            // Secret notes are local-only: the call fails as an unknown command
+            // (the commands also refuse the bridge webview themselves).
+            let (name, args) = if is_local_only_command(name) {
+                (DENIED_COMMAND, serde_json::Value::Null)
+            } else {
+                (name, cmd.args.clone().unwrap_or(serde_json::Value::Null))
+            };
+            serde_json::json!({ "type": "invoke", "id": id, "cmd": name, "args": args })
         }
         "ipc_listen" | "ipc_unlisten" => {
             let Some(event) = cmd.event.as_deref() else { return };
@@ -962,4 +973,17 @@ async fn create_session_run_for_remote(
     .await
     .map_err(|e| e.to_string())?;
     Ok(new_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secret_vault_commands_are_local_only() {
+        for name in ["secret_notes_list", "secret_note_reveal", "secret_vault_unlock", "secret_note_from_note"] {
+            assert!(is_local_only_command(name), "{name}");
+        }
+        assert!(!is_local_only_command("list_notes"));
+    }
 }
