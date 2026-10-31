@@ -42,41 +42,6 @@ pub enum FrameType {
     PermissionRequest,
     Cmd,
     Control,
-
-    // Sync (design on-demand-sync §P1): the relay authenticates devices of a
-    // group and forwards sealed messages between them; it stores no sync
-    // data. A sync connection opens with `sync_hello` and from then on carries
-    // only these frames + keepalive; their bodies are parsed by `sync.rs`,
-    // never logged.
-    SyncHello,
-    SyncWelcome,
-    SyncRevoke,
-    SyncInvite,
-    /// Relay → devices: the group's creator moved (`creator_device`).
-    SyncGroupInfo,
-    /// Device → relay: list the group's other connected devices.
-    /// Relay → device: the reply (`devices`).
-    SyncPeers,
-    /// Device → relay: forward `data` to `to_device`.
-    SyncPeerSend,
-    /// Relay → sender: `sync_peer_send` was forwarded.
-    SyncPeerAck,
-    /// Relay → target: a forwarded message (`from_device`, `data`).
-    SyncPeerMsg,
-
-    // Removed with the relay store (ops / blobs). Still parsed so an older
-    // device gets `error{unsupported}` instead of `bad_request`.
-    SyncPush,
-    SyncAck,
-    SyncPull,
-    SyncOps,
-    SyncNotify,
-    BlobPut,
-    BlobAck,
-    BlobGet,
-    BlobData,
-    BlobRelease,
-    BlobReleased,
 }
 
 /// The outermost envelope the relay can observe (SRS §5.1).
@@ -261,32 +226,6 @@ pub enum ErrorCode {
     Forbidden,
     /// Too many frames in the rate-limit window.
     RateLimited,
-    /// The relay runs without `RELAY_SYNC_DB`.
-    SyncDisabled,
-    /// `sync_hello` for an unknown group without `create`.
-    GroupNotFound,
-    /// The device was revoked (`sync_revoke`).
-    DeviceRevoked,
-    /// Too many open join tickets in the group.
-    QuotaExceeded,
-    /// A `sync_peer_send` message exceeds `RELAY_SYNC_MAX_BLOB_BYTES` (base64).
-    TooLarge,
-    /// The sync store failed (details only in the relay log).
-    Internal,
-    /// `sync_hello{create}` for a group that already exists, from a device it
-    /// does not know.
-    GroupExists,
-    /// `sync_hello` from a device unknown to the group, without a join ticket.
-    TicketRequired,
-    /// The join ticket is unknown, expired or already used.
-    TicketInvalid,
-    /// `sync_peer_send` target has no live sync connection in the group (or
-    /// is revoked / not a member).
-    PeerOffline,
-    /// `sync_hello` would register a third active device in the group.
-    GroupFull,
-    /// A frame type the relay no longer handles (the removed op / blob store).
-    Unsupported,
 }
 
 impl ErrorCode {
@@ -302,18 +241,6 @@ impl ErrorCode {
             ErrorCode::Superseded => "superseded",
             ErrorCode::Forbidden => "forbidden",
             ErrorCode::RateLimited => "rate_limited",
-            ErrorCode::SyncDisabled => "sync_disabled",
-            ErrorCode::GroupNotFound => "group_not_found",
-            ErrorCode::DeviceRevoked => "device_revoked",
-            ErrorCode::QuotaExceeded => "quota_exceeded",
-            ErrorCode::TooLarge => "too_large",
-            ErrorCode::Internal => "internal",
-            ErrorCode::GroupExists => "group_exists",
-            ErrorCode::TicketRequired => "ticket_required",
-            ErrorCode::TicketInvalid => "ticket_invalid",
-            ErrorCode::PeerOffline => "peer_offline",
-            ErrorCode::GroupFull => "group_full",
-            ErrorCode::Unsupported => "unsupported",
         }
     }
 }
