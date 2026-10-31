@@ -173,6 +173,7 @@ function buildSpec(state: MenuState): MenuSpec {
       SEPARATOR,
       { kind: 'item', id: 'window.todoList', label: t('menu.todoList') },
       { kind: 'item', id: 'window.noteList', label: t('menu.noteList') },
+      { kind: 'item', id: 'window.secretNotes', label: t('menu.secretNotes') },
       { kind: 'item', id: 'window.slackThreads', label: t('menu.slackThreads') },
       SEPARATOR,
       { kind: 'windowList' },

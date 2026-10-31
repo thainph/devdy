@@ -119,6 +119,7 @@ function rawLabelFor(windowLabel: string, osTitle: string): string {
   if (windowLabel === 'item-create') return meaningful || t('tray.newItem')
   if (windowLabel === 'item-list-todo') return meaningful || t('tray.todoListWindow')
   if (windowLabel === 'item-list-note') return meaningful || t('tray.noteListWindow')
+  if (windowLabel === 'secret-notes') return t('secretNotes.window.title')
   if (windowLabel === 'slack-threads') return meaningful || t('slackThread.window.title')
   if (windowLabel === 'pr-inbox') return meaningful || t('prInbox.window.title')
   if (windowLabel === 'calendar') return meaningful || t('calendar.window.title')
