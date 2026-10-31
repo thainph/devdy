@@ -24,6 +24,13 @@ export interface ProjectMcpServer extends McpServer {
   enabled_for_project: boolean
 }
 
+/** A built-in server's app-wide + per-project switches — mirrors the Rust `ProjectBuiltinMcp`. */
+export interface ProjectBuiltinMcp {
+  name: string
+  enabled_globally: boolean
+  enabled_for_project: boolean
+}
+
 /** One env/header secret row sent to the backend (`SecretEntry`). */
 export interface SecretEntry {
   key: string
@@ -109,6 +116,19 @@ export const useMcpServersStore = defineStore('mcpServers', () => {
     await invoke('set_project_mcp_servers', { projectId, serverIds })
   }
 
+  async function listBuiltinForProject(projectId: string): Promise<ProjectBuiltinMcp[]> {
+    return invoke<ProjectBuiltinMcp[]>('list_project_builtin_mcp', { projectId })
+  }
+
+  async function setBuiltinForProject(projectId: string, name: string, enabled: boolean): Promise<void> {
+    await invoke('set_project_builtin_mcp_enabled', { projectId, name, enabled })
+  }
+
+  /** Switch a built-in server on/off app-wide (`mcp_builtin_<name>_enabled`). */
+  async function setBuiltinEnabled(name: string, enabled: boolean): Promise<void> {
+    await invoke('set_builtin_mcp_enabled', { name, enabled })
+  }
+
   /** Test the editor's current (possibly unsaved) config. */
   async function testConnection(payload: TestMcpConnectionPayload): Promise<TestConnectionResult> {
     return invoke<TestConnectionResult>('test_mcp_connection', { payload })
@@ -135,6 +155,9 @@ export const useMcpServersStore = defineStore('mcpServers', () => {
     deleteServer,
     listForProject,
     setForProject,
+    listBuiltinForProject,
+    setBuiltinForProject,
+    setBuiltinEnabled,
     testConnection,
     exportServer,
     importServer,

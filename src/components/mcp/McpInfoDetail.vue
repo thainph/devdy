@@ -1,10 +1,11 @@
 <script setup lang="ts">
 // Right pane of the MCP servers screen for a row that is not a stored server:
-// a built-in native server (injected at run launch, configured in Settings) or
-// a recommended catalog entry (one click adds it as a stub to finish here).
+// a built-in native server (injected at run launch; switched on/off here or per
+// project, never deleted) or a recommended catalog entry (one click adds it as
+// a stub to finish here).
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Plus, Settings2 } from 'lucide-vue-next'
+import { Plus, Power, PowerOff, Settings2 } from 'lucide-vue-next'
 import { Badge, Button } from '@/components/ui'
 import DetailHeader from '@/components/listDetail/DetailHeader.vue'
 import DetailSection from '@/components/listDetail/DetailSection.vue'
@@ -16,10 +17,18 @@ const props = defineProps<{
   entry: CatalogEntry | null
   /** Built-in rows: their status label. */
   statusLabel: string
+  /** Built-in rows: switched on app-wide. */
+  enabled?: boolean
+  /** Built-in rows: the switch is being applied. */
+  toggling?: boolean
+  /** Built-in rows that need setup elsewhere (accounts): show a Settings button. */
+  configurable?: boolean
+  /** Built-in rows: tool groups to list. */
+  toolGroups?: string[]
   adding: boolean
 }>()
 
-const emit = defineEmits<{ add: []; settings: [] }>()
+const emit = defineEmits<{ add: []; settings: []; toggle: [] }>()
 
 const { t } = useI18n()
 
@@ -34,10 +43,16 @@ const meta = computed(() =>
     <DetailHeader :title="row.name">
       <template #meta>{{ meta }}</template>
       <template #actions>
-        <Button v-if="isBuiltin" variant="outline" size="sm" @click="emit('settings')">
-          <Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ t('mcp.list.builtin.settings') }}
-        </Button>
+        <template v-if="isBuiltin">
+          <Button v-if="configurable" variant="outline" size="sm" @click="emit('settings')">
+            <Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ t('mcp.list.builtin.settings') }}
+          </Button>
+          <Button :variant="enabled ? 'outline' : 'primary'" size="sm" :disabled="toggling" @click="emit('toggle')">
+            <component :is="enabled ? PowerOff : Power" class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ enabled ? t('mcp.list.disable') : t('mcp.list.enable') }}
+          </Button>
+        </template>
         <Button v-else size="sm" :disabled="adding" @click="emit('add')">
           <Plus class="h-3.5 w-3.5" :stroke-width="2" />
           {{ adding ? t('mcp.list.adding') : t('common.add') }}
@@ -53,6 +68,13 @@ const meta = computed(() =>
 
         <DetailSection v-if="isBuiltin" :title="t('mcp.detail.tools')">
           <code class="font-mono text-xs">{{ row.line }}</code>
+          <ul v-if="toolGroups?.length" class="mt-2 space-y-1 text-[11px] text-muted-foreground">
+            <li v-for="group in toolGroups" :key="group">{{ group }}</li>
+          </ul>
+        </DetailSection>
+
+        <DetailSection v-if="isBuiltin" :title="t('mcp.detail.perProject')">
+          <p class="text-[11px] leading-relaxed text-muted-foreground">{{ t('mcp.detail.perProjectHint') }}</p>
         </DetailSection>
 
         <template v-else-if="entry">

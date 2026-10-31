@@ -10,7 +10,6 @@
     "claude": "Tài khoản Claude",
     "engine": "Đường dẫn Engine",
     "ai": "AI & Model",
-    "mcp": "MCP Server",
     "google": "Tài khoản Google",
     "usage": "Sử dụng & Ngân sách",
     "devices": "Thiết bị",
@@ -125,14 +124,6 @@
         "tier5": "Viên mãn cảnh giới: badge nổi bật hơn và sẵn sàng hiệu ứng đột phá sang cảnh giới kế tiếp."
       }
     }
-  },
-  "mcp": {
-    "title": "MCP Server tích hợp sẵn",
-    "devdyServer": "Devdy MCP Server",
-    "enabledRecommended": "Bật (khuyến nghị)",
-    "disabled": "Tắt",
-    "devdyHint": "Chèn sẵn một devdy MCP server vào mỗi lần chạy để AI có thể dùng dữ liệu của bạn khi trò chuyện — ghi chú nhanh, gợi nhớ xuyên phiên, ngữ cảnh dự án (cây file & git) và VPS đã quản lý. Các tool xuất hiện dưới dạng mcp__devdy__*; hành động ghi & từ xa vẫn qua bước xác nhận quyền. Có hiệu lực ở lần chạy tiếp theo.",
-    "availableTools": "Tool khả dụng"
   },
   "google": {
     "title": "Tài khoản Google (Drive + Gmail + Lịch)",

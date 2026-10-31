@@ -31,6 +31,7 @@ import { useToast } from '@/composables/useToast'
 import { useMcpServersStore, type McpServer } from '@/stores/mcpServers'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import {
+  BUILTIN_PREFIX,
   MCP_CATALOG,
   availableCatalog,
   builtinRow,
@@ -69,9 +70,13 @@ const addingName = ref<string | null>(null)
 
 // ── Built-in native servers ─────────────────────────────────────────────────
 
-// The built-in `devdy` MCP server is injected at run launch (not a stored
-// server); it's toggled from Settings → MCP Server.
-const builtinEnabled = computed(() => appSettings.settings?.mcp_builtin_devdy_enabled !== 'false')
+// Built-in servers are injected at run launch (not stored servers): switched
+// on/off app-wide here (`mcp_builtin_<name>_enabled`) and per project in the
+// project's MCP tab — never deleted.
+function builtinOn(name: string): boolean {
+  const key = `mcp_builtin_${name}_enabled` as 'mcp_builtin_devdy_enabled' | 'mcp_builtin_google_enabled'
+  return appSettings.settings?.[key] !== 'false'
+}
 
 // The Google-backed built-in is injected at run launch only when an OAuth client
 // is configured AND at least one account is connected (mirrors the backend
@@ -92,25 +97,44 @@ async function loadGoogleStatus() {
 interface Builtin extends BuiltinInfo {
   description: string
   status: string
-  /** Settings section that configures it. */
-  section: string
+  enabled: boolean
+  /** Settings section that sets it up (accounts), if any. */
+  section?: string
+  toolGroups?: string[]
 }
+
+const DEVDY_TOOL_GROUPS = [
+  '📝 notes_list / read / search / create / update / append / set_project / reorder / delete',
+  '🧠 sessions_recent / search / read',
+  '✅ todos_list / add / done / update / set_project / reorder / delete / clear_done',
+  '📁 project_info / file_tree',
+  '🔀 git_status / git_diff',
+  '🖥️ vps_list / vps_run',
+  '🧩 skills_list / read / create / update / delete',
+  '📏 rules_list / read / create / update / delete',
+  '💬 slack_threads_list / read / search / rename / set_project / delete',
+]
+
 const builtins = computed<Builtin[]>(() => {
+  const devdyOn = builtinOn('devdy')
   const devdy: Builtin = {
     name: 'devdy',
     tools: 'mcp__devdy__*',
-    tone: builtinEnabled.value ? 'success' : 'neutral',
-    status: builtinEnabled.value ? t('mcp.list.builtin.active') : t('mcp.list.builtin.disabled'),
+    tone: devdyOn ? 'success' : 'neutral',
+    status: devdyOn ? t('mcp.list.builtin.active') : t('mcp.list.builtin.disabled'),
     description: t('mcp.list.builtin.description', { tools: 'mcp__devdy__*' }),
-    section: 'mcp',
+    enabled: devdyOn,
+    toolGroups: DEVDY_TOOL_GROUPS,
   }
-  const googleState = !googleHasClient.value ? 'needsClient' : googleAccountCount.value === 0 ? 'noAccount' : 'active'
+  const googleOn = builtinOn('google')
+  const googleState = !googleOn ? 'disabled' : !googleHasClient.value ? 'needsClient' : googleAccountCount.value === 0 ? 'noAccount' : 'active'
   const google: Builtin = {
     name: 'google',
     tools: 'mcp__google__*',
-    tone: googleState === 'active' ? 'success' : 'warning',
+    tone: googleState === 'active' ? 'success' : googleState === 'disabled' ? 'neutral' : 'warning',
     status: t(`mcp.list.builtin.${googleState}`),
     description: t('mcp.list.builtin.googleDescription', { tools: 'mcp__google__*' }),
+    enabled: googleOn,
     section: 'google',
   }
   return [devdy, google]
@@ -390,6 +414,19 @@ function openSettings(row: McpRow) {
   if (section) router.push({ path: '/settings', query: { section } })
 }
 
+async function handleToggleBuiltin(b: Builtin) {
+  togglingId.value = BUILTIN_PREFIX + b.name
+  try {
+    await store.setBuiltinEnabled(b.name, !b.enabled)
+    await appSettings.refresh()
+    toast.success(b.enabled ? t('mcp.list.toast.disabled') : t('mcp.list.toast.enabled'))
+  } catch (e) {
+    toast.error(String(e))
+  } finally {
+    togglingId.value = null
+  }
+}
+
 function onSaved(id: string) {
   if (id !== selectedId.value) setSelection(id)
 }
@@ -451,7 +488,7 @@ function dotClass(row: McpRow): string {
           <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="dotClass(row)" />
           <span
             class="min-w-0 flex-1 truncate font-mono text-sm font-medium leading-snug"
-            :class="row.kind === 'server' && !row.enabled && 'text-muted-foreground'"
+            :class="((row.kind === 'server' && !row.enabled) || (row.kind === 'builtin' && row.tone === 'neutral')) && 'text-muted-foreground'"
           >
             {{ row.name }}
           </span>
@@ -504,9 +541,14 @@ function dotClass(row: McpRow): string {
       :row="selectedRow"
       :entry="selectedEntry"
       :status-label="selectedBuiltin?.status ?? ''"
+      :enabled="selectedBuiltin?.enabled"
+      :toggling="togglingId === selectedRow.id"
+      :configurable="!!selectedBuiltin?.section"
+      :tool-groups="selectedBuiltin?.toolGroups"
       :adding="addingName === selectedRow.name"
       @add="selectedEntry && addFromCatalog(selectedEntry)"
       @settings="openSettings(selectedRow)"
+      @toggle="selectedBuiltin && handleToggleBuiltin(selectedBuiltin)"
     />
     <DetailEmpty
       v-else

@@ -62,6 +62,8 @@
   "codexWarning": "The default engine is Codex. Enabled SSE servers will be skipped; stdio and HTTP servers are available to Codex runs.",
   "noMcpPrefix": "No MCP servers defined yet.",
   "disabled": "disabled",
+  "builtinMcp": "built-in",
+  "builtinMcpOffGloballyTitle": "Turned off on the MCP screen, so it is off for every project",
   "claudeOnly": "Claude only",
   "claudeOnlyTitle": "Codex can't use SSE servers; this will be skipped on Codex runs.",
   "deployTargets": "Servers",

@@ -35,6 +35,7 @@ export interface AppSettings {
   translate_target_lang: string
   translate_style: string
   mcp_builtin_devdy_enabled: string
+  mcp_builtin_google_enabled: string
   cyber_fox_enabled: string
   cyber_fox_size: string
   cyber_fox_mode: string

@@ -58,21 +58,21 @@ const desktopSince = computed(() => {
 
 const relayLine = computed(() => {
   const s = status.value
-  if (tone.value === 'error') return t('remoteIndicator.agentStopped')
-  if (s?.connected) return t('remoteIndicator.relayOnline')
-  return s?.reconnecting ? t('remoteIndicator.relayReconnecting') : t('remoteIndicator.relayOffline')
+  if (tone.value === 'error') return t('misc.remoteIndicator.agentStopped')
+  if (s?.connected) return t('misc.remoteIndicator.relayOnline')
+  return s?.reconnecting ? t('misc.remoteIndicator.relayReconnecting') : t('misc.remoteIndicator.relayOffline')
 })
 
 const tooltip = computed(() => {
   const s = status.value
-  const parts = [`${t('remoteIndicator.title')}: ${relayLine.value}`]
-  if (s?.desktop_controlled) parts.push(t('remoteIndicator.desktopSince', { time: desktopSince.value }))
-  if (s?.session_authenticated) parts.push(t('remoteIndicator.controller'))
+  const parts = [`${t('misc.remoteIndicator.title')}: ${relayLine.value}`]
+  if (s?.desktop_controlled) parts.push(t('misc.remoteIndicator.desktopSince', { time: desktopSince.value }))
+  if (s?.session_authenticated) parts.push(t('misc.remoteIndicator.controller'))
   return parts.join('\n')
 })
 
 const label = computed(() =>
-  tone.value === 'desktop' ? t('remoteIndicator.controlled') : t('remoteIndicator.short'),
+  tone.value === 'desktop' ? t('misc.remoteIndicator.controlled') : t('misc.remoteIndicator.short'),
 )
 
 async function disconnect() {
@@ -81,7 +81,7 @@ async function disconnect() {
   try {
     await store.kickController()
   } catch (e) {
-    toast.error(t('remoteDesktopHost.disconnectFailed', { error: String(e) }))
+    toast.error(t('misc.remoteDesktopHost.disconnectFailed', { error: String(e) }))
   } finally {
     busy.value = false
   }
@@ -135,7 +135,7 @@ onBeforeUnmount(() => stopWatch?.())
         :class="[popoverContent, 'w-64 space-y-2.5']"
       >
         <p class="flex items-center gap-1.5 text-xs">
-          <span class="font-semibold">{{ t('remoteIndicator.title') }}</span>
+          <span class="font-semibold">{{ t('misc.remoteIndicator.title') }}</span>
           <span class="text-muted-foreground">·</span>
           <span
             class="min-w-0 truncate text-[11px]"
@@ -146,13 +146,13 @@ onBeforeUnmount(() => stopWatch?.())
         <div class="space-y-1 text-[11px]">
           <p v-if="status?.desktop_controlled" class="flex items-center gap-1.5 text-amber-600 dark:text-amber-400">
             <MonitorSmartphone class="h-3.5 w-3.5 shrink-0" :stroke-width="2" />
-            {{ t('remoteIndicator.desktopSince', { time: desktopSince }) }}
+            {{ t('misc.remoteIndicator.desktopSince', { time: desktopSince }) }}
           </p>
           <p v-if="status?.session_authenticated" class="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
             <Smartphone class="h-3.5 w-3.5 shrink-0" :stroke-width="2" />
-            {{ t('remoteIndicator.controller') }}
+            {{ t('misc.remoteIndicator.controller') }}
           </p>
-          <p v-if="!isControlled(tone)" class="text-muted-foreground">{{ t('remoteIndicator.nobody') }}</p>
+          <p v-if="!isControlled(tone)" class="text-muted-foreground">{{ t('misc.remoteIndicator.nobody') }}</p>
         </div>
 
         <Button
@@ -161,14 +161,14 @@ onBeforeUnmount(() => stopWatch?.())
           size="sm"
           class="w-full"
           :disabled="busy"
-          :title="t('remoteDesktopHost.hint')"
+          :title="t('misc.remoteDesktopHost.hint')"
           @click="disconnect"
         >
-          {{ t('remoteDesktopHost.disconnect') }}
+          {{ t('misc.remoteDesktopHost.disconnect') }}
         </Button>
         <Button v-else size="sm" variant="outline" class="w-full" :disabled="tone === 'error'" @click="pair">
           <Smartphone class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ t('remoteIndicator.pair') }}
+          {{ t('misc.remoteIndicator.pair') }}
         </Button>
 
         <button
@@ -176,7 +176,7 @@ onBeforeUnmount(() => stopWatch?.())
           class="flex w-full items-center justify-between text-[11px] text-muted-foreground hover:text-foreground"
           @click="openSettings"
         >
-          {{ t('remoteIndicator.settings') }}
+          {{ t('misc.remoteIndicator.settings') }}
           <ChevronRight class="h-3 w-3" :stroke-width="1.75" />
         </button>
       </PopoverContent>

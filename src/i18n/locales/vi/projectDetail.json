@@ -62,6 +62,8 @@
   "codexWarning": "Engine mặc định là Codex. Các SSE server đang bật sẽ bị bỏ qua; server stdio và HTTP vẫn dùng được cho Codex run.",
   "noMcpPrefix": "Chưa có MCP server nào.",
   "disabled": "đã tắt",
+  "builtinMcp": "tích hợp sẵn",
+  "builtinMcpOffGloballyTitle": "Đang tắt ở màn MCP nên mọi project đều tắt",
   "claudeOnly": "Chỉ Claude",
   "claudeOnlyTitle": "Codex không dùng được SSE server; sẽ bị bỏ qua khi chạy Codex.",
   "deployTargets": "Máy chủ",
