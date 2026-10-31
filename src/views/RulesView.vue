@@ -10,7 +10,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { open, save } from '@tauri-apps/plugin-dialog'
-import { Layers, RefreshCw, ScrollText, Trash2, Upload } from 'lucide-vue-next'
+import { Layers, RefreshCw, ScrollText, Upload } from 'lucide-vue-next'
 import { AppSelect, Badge, Button } from '@/components/ui'
 import GroupManagerModal from '@/components/GroupManagerModal.vue'
 import ListDetailSidebar from '@/components/listDetail/ListDetailSidebar.vue'
@@ -22,7 +22,7 @@ import { useToast } from '@/composables/useToast'
 import { useRulesStore, type Rule } from '@/stores/rules'
 import { useProjectsStore } from '@/stores/projects'
 import { useRuleGroupsStore, type Group } from '@/stores/groups'
-import { UNGROUPED, buildRuleGroups, type RuleEngineFilter } from '@/lib/rulesRows'
+import { UNGROUPED, buildRuleGroups } from '@/lib/rulesRows'
 
 // Named explicitly: <KeepAlive :include> in App.vue matches on component name,
 // and an inferred name is a build detail that minification can change.
@@ -47,7 +47,6 @@ const groupsOpen = ref(false)
 // ── Sidebar ─────────────────────────────────────────────────────────────────
 
 const search = ref('')
-const engineFilter = ref<RuleEngineFilter>('')
 /** '' = all groups, UNGROUPED, or a group id. */
 const groupFilter = ref('')
 
@@ -79,7 +78,6 @@ const sidebarGroups = computed(() =>
     itemGroups: groupsStore.itemGroups,
     contents: contents.value,
     search: search.value,
-    engine: engineFilter.value,
     groupFilter: groupFilter.value,
     noneLabel: t('groups.ungrouped'),
   }),
@@ -89,12 +87,6 @@ const groupOptions = computed(() => [
   { value: '', label: t('rules.detail.allGroups') },
   ...groupsStore.groups.map((g) => ({ value: g.id, label: `${g.name} (${g.member_count})` })),
   { value: UNGROUPED, label: t('groups.ungrouped') },
-])
-
-const engineFilters = computed(() => [
-  { value: '', label: t('rules.detail.filterAll') },
-  { value: 'claude', label: t('rules.detail.filterClaude') },
-  { value: 'codex', label: t('rules.detail.filterCodex') },
 ])
 
 const targetLabel = computed<Record<string, string>>(() => ({
@@ -331,13 +323,10 @@ async function handleExport(rule: Rule) {
   <div class="flex h-full min-h-0">
     <ListDetailSidebar
       v-model:search="search"
-      v-model:filter="engineFilter"
       :groups="sidebarGroups"
       :selected-id="isNew ? null : selectedId"
       collapse-key="devdy.rules.collapsedGroups"
-      :new-label="t('rules.list.newRule')"
       :search-placeholder="t('rules.detail.searchPlaceholder')"
-      :filters="engineFilters"
       :loading="store.loading"
       :error="store.error"
       :empty-store="store.rules.length === 0"
@@ -394,44 +383,21 @@ async function handleExport(rule: Rule) {
 
       <template #row="{ row, selected }">
         <span class="flex min-w-0 items-center gap-1.5">
-          <span class="min-w-0 flex-1 truncate font-mono text-[13px] font-medium" :class="selected && 'text-foreground'">
+          <span class="min-w-0 flex-1 truncate font-mono text-sm font-medium leading-snug" :class="selected && 'text-foreground'">
             {{ row.rule.name }}
           </span>
-          <Badge tone="primary" size="xs" class="shrink-0 uppercase tracking-wide">
+          <Badge v-if="row.rule.target !== 'both'" tone="primary" size="xs" class="shrink-0 uppercase tracking-wide">
             {{ targetLabel[row.rule.target] }}
           </Badge>
         </span>
-        <span class="mt-0.5 truncate text-[11px] text-muted-foreground">{{ row.rule.description }}</span>
-        <span v-if="row.otherGroupIds.length > 0" class="mt-1 flex flex-wrap gap-1">
+        <span class="mt-1 truncate text-[11px] text-muted-foreground/70">{{ row.rule.description }}</span>
+        <span v-if="row.otherGroupIds.length > 0" class="mt-1.5 flex flex-wrap gap-1">
           <template v-for="gid in row.otherGroupIds" :key="gid">
             <Badge v-if="groupById.get(gid)" :tone="groupById.get(gid)!.color ?? 'neutral'" size="xs">
               {{ groupById.get(gid)!.name }}
             </Badge>
           </template>
         </span>
-      </template>
-
-      <template #row-actions="{ row }">
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          :title="t('rules.list.reapply')"
-          :aria-label="t('rules.list.reapply')"
-          :disabled="reapplyingId !== null"
-          @click="handleReapply(row.rule)"
-        >
-          <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" :class="{ 'animate-spin': reapplyingId === row.rule.id }" />
-        </Button>
-        <Button
-          variant="destructive-ghost"
-          size="icon-sm"
-          :title="t('common.delete')"
-          :aria-label="t('common.delete')"
-          :disabled="deletingId === row.rule.id"
-          @click="handleDelete(row.rule)"
-        >
-          <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-        </Button>
       </template>
     </ListDetailSidebar>
 

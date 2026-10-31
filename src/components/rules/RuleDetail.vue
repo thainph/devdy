@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // Right pane of the Rules screen: one rule (or a new draft when `ruleId` is
-// null) edited in place. The markdown file is the source of truth — the name,
-// target and Codex mode controls just rewrite its frontmatter lines.
+// null) edited in place, laid out like SkillDetail. The markdown file is the
+// source of truth — the name, description, target and Codex mode fields just
+// rewrite its frontmatter lines.
 //
 // The host keys this component by the selection, so every rule starts from a
 // fresh draft; it asks `dirty` before switching. List-level actions (reapply,
@@ -9,10 +10,10 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  AlertCircle, Download, Eye, EyeOff, FolderCheck, FolderOpen, LayoutTemplate,
-  MoreHorizontal, RefreshCw, ScrollText, Trash2, X,
+  AlertCircle, Columns2, Download, Eye, FileText, FolderCheck, FolderOpen, LayoutTemplate,
+  MoreHorizontal, Pencil, RefreshCw, Save, Trash2, X,
 } from 'lucide-vue-next'
-import { AppSelect, Button, DropdownItem, DropdownMenu, DropdownSeparator } from '@/components/ui'
+import { AppSelect, Button, DropdownItem, DropdownMenu, DropdownSeparator, Input } from '@/components/ui'
 import SkillEditor from '@/components/SkillEditor.vue'
 import DetailHeader from '@/components/listDetail/DetailHeader.vue'
 import DetailSection from '@/components/listDetail/DetailSection.vue'
@@ -74,8 +75,6 @@ const loading = ref(false)
 /** Loading failed: the draft is still the template, so it must never be saved over the rule. */
 const loadFailed = ref(false)
 const saving = ref(false)
-const showPreview = ref(true)
-const previewHtml = ref('')
 const editorRef = ref<InstanceType<typeof SkillEditor> | null>(null)
 
 const fm = computed(() => parseFrontmatter(content.value))
@@ -141,26 +140,82 @@ watch(
   },
 )
 
+// ── Preview ─────────────────────────────────────────────────────────────────
+
+type ViewMode = 'edit' | 'split' | 'preview'
+const VIEW_KEY = 'devdy.rules.view'
+const viewMode = ref<ViewMode>(readViewMode())
+const viewModes = computed(() => [
+  { value: 'edit' as const, label: t('rules.detail.markdown'), icon: Pencil },
+  { value: 'split' as const, label: t('rules.detail.split'), icon: Columns2 },
+  { value: 'preview' as const, label: t('rules.detail.preview'), icon: Eye },
+])
+
+function readViewMode(): ViewMode {
+  try {
+    const v = localStorage.getItem(VIEW_KEY)
+    return v === 'edit' || v === 'preview' ? v : 'split'
+  } catch {
+    return 'split'
+  }
+}
+
+function setViewMode(v: ViewMode) {
+  viewMode.value = v
+  try {
+    localStorage.setItem(VIEW_KEY, v)
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+const previewHtml = ref('')
+let previewSeq = 0
 async function updatePreview(md: string) {
+  const seq = ++previewSeq
+  let html: string
   try {
     const MarkdownIt = (await import('markdown-it')).default
     const mdi = new MarkdownIt({ html: false, linkify: true, typographer: true })
     applyMermaidFence(mdi)
-    previewHtml.value = mdi.render(md)
+    html = mdi.render(md)
   } catch {
-    previewHtml.value = `<pre>${md.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c] ?? c)}</pre>`
+    html = `<pre>${md.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c] ?? c)}</pre>`
   }
+  if (seq === previewSeq) previewHtml.value = html
 }
 
-watch(content, (val) => { if (showPreview.value) void updatePreview(val) }, { immediate: true })
-watch(showPreview, (on) => { if (on) void updatePreview(content.value) })
+// Only render while a preview is on screen.
+watch([content, viewMode], ([md, mode]) => {
+  if (mode !== 'edit') void updatePreview(md)
+}, { immediate: true })
+
+// ── Metadata fields ─────────────────────────────────────────────────────────
+// Local drafts: the frontmatter stores trimmed values, so binding the inputs to
+// the parsed values directly would eat a space while it is being typed.
+const nameDraft = ref('')
+const descriptionDraft = ref('')
+
+watch(fm, (v) => {
+  if (v.name !== nameDraft.value.trim()) nameDraft.value = v.name
+  if (v.description !== descriptionDraft.value.trim()) descriptionDraft.value = v.description
+}, { immediate: true })
+
+function setText(key: 'name' | 'description', value: string) {
+  if (key === 'name') nameDraft.value = value
+  else descriptionDraft.value = value
+  setField(key, value.trim())
+}
+
+/** The rule file's name, for the file tab. */
+const fileName = computed(() => {
+  const path = props.rule?.source_path
+  if (path) return path.slice(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1)
+  return `${fm.value.name || 'rule'}.md`
+})
 
 function setField(key: string, value: string | null) {
   content.value = setFrontmatterField(content.value, key, value)
-}
-
-function rename(value: string) {
-  setField('name', value)
 }
 
 // Inline is the default, so it is expressed by leaving `codex_mode:` out.
@@ -207,75 +262,44 @@ defineExpose({ dirty, save })
 
 <template>
   <section class="flex min-w-0 flex-1 flex-col" @keydown="onKeydown">
-    <DetailHeader
-      :title="fm.name"
-      :placeholder="t('rules.editor.newRule')"
-      renamable
-      :rename-hint="t('rules.detail.renameHint')"
-      @rename="rename"
-    >
-      <template #leading>
-        <ScrollText class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="1.75" />
-      </template>
+    <DetailHeader :title="fm.name" :placeholder="t('rules.editor.newRule')">
       <template #meta>
         <span :title="metaTitle">{{ meta }}</span>
       </template>
       <template #actions>
-        <div
-          v-if="validationError && !loading"
-          class="flex min-w-0 items-center gap-1 rounded-md border border-amber-500/20 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-500"
-          :title="validationError"
-        >
-          <AlertCircle class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-          <span class="max-w-48 truncate">{{ validationError }}</span>
-        </div>
-        <Button
-          variant="primary"
-          size="xs"
-          class="shrink-0"
-          :disabled="!canSave"
-          :title="t('rules.detail.saveHint')"
-          @click="save"
-        >
+        <Button size="sm" :disabled="!canSave" :title="t('rules.detail.saveHint')" @click="save">
+          <Save class="h-3.5 w-3.5" :stroke-width="2" />
           {{ saving ? t('rules.editor.saving') : t('common.save') }}
         </Button>
-        <Button
-          v-if="!isNew"
-          variant="outline"
-          size="icon-sm"
-          class="shrink-0"
-          :title="t('rules.list.reapply')"
-          :aria-label="t('rules.list.reapply')"
-          :disabled="reapplyBusy"
-          @click="emit('reapply')"
-        >
-          <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" :class="{ 'animate-spin': reapplying }" />
-        </Button>
-        <DropdownMenu align="right" class="shrink-0">
+        <DropdownMenu align="right">
           <template #trigger>
-            <Button
-              variant="outline"
-              size="icon-sm"
-              :title="t('rules.detail.moreActions')"
-              :aria-label="t('rules.detail.moreActions')"
-            >
-              <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
+            <Button variant="ghost" size="icon-sm" :title="t('rules.detail.moreActions')" :aria-label="t('rules.detail.moreActions')">
+              <MoreHorizontal class="h-4 w-4" :stroke-width="1.75" />
             </Button>
           </template>
+          <DropdownItem :disabled="loading" @click="editorRef?.insertTemplate()">
+            <LayoutTemplate class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ t('rules.editor.insertTemplate') }}
+          </DropdownItem>
+          <DropdownItem @click="openRulesFolder">
+            <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ t('rules.editor.openFolder') }}
+          </DropdownItem>
           <template v-if="!isNew">
+            <DropdownSeparator />
             <DropdownItem :disabled="applying" @click="emit('applyAll')">
               <FolderCheck class="h-3.5 w-3.5" :stroke-width="1.75" />
               {{ t('rules.list.applyToAll') }}
+            </DropdownItem>
+            <DropdownItem :disabled="reapplyBusy" @click="emit('reapply')">
+              <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" :class="{ 'animate-spin': reapplying }" />
+              {{ t('rules.list.reapply') }}
             </DropdownItem>
             <DropdownItem @click="emit('export')">
               <Download class="h-3.5 w-3.5" :stroke-width="1.75" />
               {{ t('rules.list.exportMd') }}
             </DropdownItem>
           </template>
-          <DropdownItem @click="openRulesFolder">
-            <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ t('rules.editor.openFolder') }}
-          </DropdownItem>
           <DropdownSeparator />
           <DropdownItem v-if="isNew" variant="destructive" @click="emit('discard')">
             <X class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -293,72 +317,118 @@ defineExpose({ dirty, save })
       {{ t('common.loading') }}
     </div>
 
-    <div v-else class="flex min-h-0 flex-1 flex-col px-5">
-      <DetailSection :title="t('rules.detail.delivery')" :hint="t('rules.detail.deliveryHint')">
-        <div class="flex flex-wrap items-center gap-x-5 gap-y-2">
-          <label class="flex items-center gap-2">
-            <span class="text-xs text-muted-foreground">{{ t('rules.editor.target') }}</span>
-            <AppSelect
-              :model-value="target"
-              size="sm"
-              class="w-32"
-              :options="[
-                { value: 'both', label: t('rules.editor.targetBoth') },
-                { value: 'claude', label: t('rules.editor.targetClaude') },
-                { value: 'codex', label: t('rules.editor.targetCodex') },
-              ]"
-              @update:model-value="(v: string) => setField('target', v)"
-            />
-          </label>
-          <label v-if="target !== 'claude'" class="flex items-center gap-2" :title="t('rules.editor.codexModeHint')">
-            <span class="text-xs text-muted-foreground">{{ t('rules.editor.codexMode') }}</span>
-            <AppSelect
-              :model-value="codexMode"
-              size="sm"
-              class="w-32"
-              :options="[
-                { value: 'inline', label: t('rules.editor.codexModeInline') },
-                { value: 'skill', label: t('rules.editor.codexModeSkill') },
-              ]"
-              @update:model-value="(v: string) => setCodexMode(v as CodexMode)"
-            />
-          </label>
-        </div>
-        <p v-if="target !== 'claude'" class="text-[11px] text-muted-foreground/80">
-          {{ t('rules.editor.codexModeHint') }}
-        </p>
-      </DetailSection>
-
-      <DetailSection :title="t('rules.detail.content')" class="flex min-h-0 flex-1 flex-col">
-        <template #actions>
-          <Button variant="ghost" size="xs" :title="t('rules.editor.insertTemplate')" @click="editorRef?.insertTemplate()">
-            <LayoutTemplate class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ t('rules.editor.template') }}
-          </Button>
-          <Button
-            variant="ghost"
-            size="xs"
-            :aria-pressed="showPreview"
-            @click="showPreview = !showPreview"
-          >
-            <component :is="showPreview ? EyeOff : Eye" class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ showPreview ? t('rules.detail.hidePreview') : t('rules.detail.showPreview') }}
-          </Button>
-        </template>
-        <div class="flex min-h-0 flex-1 overflow-hidden rounded-md border border-border/60">
-          <div class="min-w-0 flex-1">
-            <SkillEditor
-              ref="editorRef"
-              v-model="content"
-              :is-dark="true"
-              :template="RULE_TEMPLATE"
-            />
-          </div>
+    <template v-else>
+      <div class="shrink-0 px-5">
+        <DetailSection :title="t('rules.detail.details')" :hint="t('rules.detail.detailsHint')">
           <div
-            v-if="showPreview"
+            class="grid gap-3"
+            :class="target !== 'claude' ? 'grid-cols-[minmax(0,1fr)_8rem_8rem]' : 'grid-cols-[minmax(0,1fr)_8rem]'"
+          >
+            <label class="block space-y-1">
+              <span class="text-[11px] font-medium text-muted-foreground">{{ t('rules.detail.name') }}</span>
+              <Input
+                :model-value="nameDraft"
+                class="font-mono"
+                placeholder="my-rule"
+                @update:model-value="(v: string) => setText('name', v)"
+              />
+            </label>
+            <label class="block space-y-1">
+              <span class="text-[11px] font-medium text-muted-foreground">{{ t('rules.editor.target') }}</span>
+              <AppSelect
+                :model-value="target"
+                :options="[
+                  { value: 'both', label: t('rules.editor.targetBoth') },
+                  { value: 'claude', label: t('rules.editor.targetClaude') },
+                  { value: 'codex', label: t('rules.editor.targetCodex') },
+                ]"
+                @update:model-value="(v: string) => setField('target', v)"
+              />
+            </label>
+            <label v-if="target !== 'claude'" class="block space-y-1" :title="t('rules.editor.codexModeHint')">
+              <span class="text-[11px] font-medium text-muted-foreground">{{ t('rules.editor.codexMode') }}</span>
+              <AppSelect
+                :model-value="codexMode"
+                :options="[
+                  { value: 'inline', label: t('rules.editor.codexModeInline') },
+                  { value: 'skill', label: t('rules.editor.codexModeSkill') },
+                ]"
+                @update:model-value="(v: string) => setCodexMode(v as CodexMode)"
+              />
+            </label>
+            <label class="block space-y-1" :class="target !== 'claude' ? 'col-span-3' : 'col-span-2'">
+              <span class="text-[11px] font-medium text-muted-foreground">{{ t('rules.detail.description') }}</span>
+              <Input
+                :model-value="descriptionDraft"
+                :placeholder="t('rules.detail.descriptionPlaceholder')"
+                @update:model-value="(v: string) => setText('description', v)"
+              />
+            </label>
+          </div>
+          <p v-if="target !== 'claude'" class="text-[11px] text-muted-foreground/80">
+            {{ t('rules.editor.codexModeHint') }}
+          </p>
+        </DetailSection>
+      </div>
+
+      <!-- File tab + view mode -->
+      <div class="flex shrink-0 items-center gap-2 border-y border-border/60 bg-muted/30 px-3 py-1">
+        <div class="flex min-w-0 flex-1 items-center gap-0.5">
+          <span
+            class="flex shrink-0 items-center gap-1 rounded bg-background px-2 py-1 font-mono text-[11px] text-foreground shadow-sm"
+            :title="rule?.source_path ?? fileName"
+          >
+            <FileText class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+            <span class="max-w-48 truncate">{{ fileName }}</span>
+            <span v-if="dirty" class="h-1.5 w-1.5 rounded-full bg-primary" />
+          </span>
+        </div>
+        <div class="flex shrink-0 rounded-md bg-muted p-0.5" role="group">
+          <button
+            v-for="m in viewModes"
+            :key="m.value"
+            type="button"
+            class="flex cursor-pointer items-center rounded p-1 transition-colors"
+            :class="viewMode === m.value
+              ? 'bg-background text-foreground shadow-sm'
+              : 'text-muted-foreground hover:text-foreground'"
+            :title="m.label"
+            :aria-label="m.label"
+            :aria-pressed="viewMode === m.value"
+            @click="setViewMode(m.value)"
+          >
+            <component :is="m.icon" class="h-3.5 w-3.5" :stroke-width="1.75" />
+          </button>
+        </div>
+      </div>
+
+      <div
+        v-if="validationError"
+        class="flex shrink-0 items-center gap-1.5 border-b border-amber-500/20 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-500"
+      >
+        <AlertCircle class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+        <span class="min-w-0 truncate" :title="validationError">{{ validationError }}</span>
+      </div>
+
+      <div class="flex min-h-0 flex-1">
+        <div
+          v-show="viewMode !== 'preview'"
+          class="flex min-w-0 flex-1 flex-col overflow-hidden"
+          :class="viewMode === 'split' && 'border-r border-border/60'"
+        >
+          <SkillEditor
+            ref="editorRef"
+            v-model="content"
+            :is-dark="true"
+            :template="RULE_TEMPLATE"
+            class="flex-1"
+          />
+        </div>
+        <div v-if="viewMode !== 'edit'" class="min-w-0 flex-1 overflow-auto p-5">
+          <div
             v-mermaid
             v-copy-code
-            class="min-w-0 flex-1 overflow-auto border-l border-border/60 p-5 text-sm leading-relaxed
+            class="text-sm leading-relaxed
               [&_h1]:text-lg [&_h1]:font-bold [&_h1]:mb-3 [&_h1]:mt-0
               [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mb-2 [&_h2]:mt-4
               [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:mb-1.5 [&_h3]:mt-3
@@ -375,7 +445,7 @@ defineExpose({ dirty, save })
             v-html="previewHtml"
           />
         </div>
-      </DetailSection>
-    </div>
+      </div>
+    </template>
   </section>
 </template>

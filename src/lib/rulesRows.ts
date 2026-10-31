@@ -6,9 +6,6 @@ import { GROUP_NONE, haystack, matchesSearch, type RowGroup } from './listGroups
 export type RuleTargetValue = 'claude' | 'codex' | 'both'
 export type CodexMode = 'inline' | 'skill'
 
-/** Segmented filter: '' = all, else the engine that gets the rule. */
-export type RuleEngineFilter = '' | 'claude' | 'codex'
-
 /** Group-filter value for rules in no group ('' = all groups). */
 export const UNGROUPED = '__ungrouped__'
 
@@ -34,11 +31,6 @@ export interface RuleRow<R extends RuleLike = RuleLike> {
   otherGroupIds: string[]
 }
 
-/** A `both` rule is delivered to Claude and to Codex alike. */
-export function matchesEngine(target: RuleTargetValue, filter: RuleEngineFilter): boolean {
-  return !filter || target === filter || target === 'both'
-}
-
 /**
  * Filters the rules and lays them out in group folders, in the groups' own
  * order with "Ungrouped" last. A rule in several groups appears under each
@@ -54,7 +46,6 @@ export function buildRuleGroups<R extends RuleLike>(
     /** rule id → file content, when known (searched too). */
     contents?: Record<string, string | undefined>
     search: string
-    engine: RuleEngineFilter
     /** '' = all, UNGROUPED, or a group id. */
     groupFilter: string
     noneLabel: string
@@ -63,7 +54,6 @@ export function buildRuleGroups<R extends RuleLike>(
   const known = new Map(opts.groups.map((g) => [g.id, g]))
   const buckets = new Map<string, RuleRow<R>[]>()
   for (const rule of rules) {
-    if (!matchesEngine(rule.target, opts.engine)) continue
     const hay = haystack(rule.name, rule.description, opts.contents?.[rule.id])
     if (!matchesSearch(hay, opts.search)) continue
     // Stale ids (a group deleted since) don't count as membership.

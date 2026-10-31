@@ -31,7 +31,7 @@ const servers = [
   server('scratch'),
 ]
 
-const all = { search: '', tag: '', status: '' }
+const all = { search: '', tag: '' }
 
 test('serverStatus maps null to unknown', () => {
   assert.equal(serverStatus({ status: null }), 'unknown')
@@ -47,12 +47,10 @@ test('filterServers searches label, host, username and tags', () => {
   assert.deepEqual(ids({ search: 'vn root' }), ['prod-admin'])
 })
 
-test('filterServers applies tag and status filters', () => {
+test('filterServers applies the tag filter', () => {
   const ids = (f) => filterServers(servers, { ...all, ...f }).map((s) => s.id)
   assert.deepEqual(ids({ tag: 'vn' }), ['prod-admin'])
-  assert.deepEqual(ids({ status: 'offline' }), ['sora'])
-  assert.deepEqual(ids({ status: 'unknown' }), ['scratch'])
-  assert.deepEqual(ids({ tag: 'stg', status: 'online' }), [])
+  assert.deepEqual(ids({ tag: 'stg', search: 'root' }), [])
 })
 
 test('allServerTags is de-duplicated and sorted', () => {

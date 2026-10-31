@@ -2,7 +2,6 @@
   "list": {
     "import": "Import",
     "importing": "Importing…",
-    "newServer": "New Server",
     "builtin": {
       "active": "Built-in · active",
       "disabled": "Built-in · disabled",
@@ -36,18 +35,15 @@
       "enabled": "Enabled"
     },
     "searchPlaceholder": "Search name, command, URL…",
-    "filter": {
-      "all": "All",
-      "enabled": "Enabled",
-      "disabled": "Disabled"
-    },
     "groups": {
       "builtin": "Built-in",
       "stdio": "stdio · local process",
       "http": "http · remote",
       "sse": "sse · remote"
     },
-    "noSelection": "Select an MCP server, or create a new one"
+    "noSelection": "Select an MCP server, or create a new one",
+    "allTypes": "All types",
+    "filterByType": "Filter by type"
   },
   "editor": {
     "newTitle": "New MCP Server",
@@ -114,6 +110,7 @@
       "title": "Discard changes?",
       "message": "This MCP server has unsaved changes. Discard them?",
       "confirm": "Discard"
-    }
+    },
+    "saveHint": "Save (⌘/Ctrl+S)"
   }
 }

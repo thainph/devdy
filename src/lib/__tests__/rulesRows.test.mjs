@@ -6,7 +6,6 @@ import { GROUP_NONE } from '../listGroups.ts'
 import {
   UNGROUPED,
   buildRuleGroups,
-  matchesEngine,
   parseFrontmatter,
   setFrontmatterField,
   validateFrontmatter,
@@ -28,7 +27,6 @@ function build(over = {}) {
     groups,
     itemGroups,
     search: '',
-    engine: '',
     groupFilter: '',
     noneLabel: 'Ungrouped',
     ...over,
@@ -38,12 +36,6 @@ function build(over = {}) {
 function shape(groupsOut) {
   return groupsOut.map((g) => [g.key, g.label, g.rows.map((r) => r.id)])
 }
-
-test('matchesEngine treats both as either engine', () => {
-  assert.equal(matchesEngine('both', 'codex'), true)
-  assert.equal(matchesEngine('claude', 'codex'), false)
-  assert.equal(matchesEngine('codex', ''), true)
-})
 
 test('rules sit under every group, in group order, ungrouped last', () => {
   const out = build()
@@ -61,11 +53,7 @@ test('group filter keeps one folder', () => {
   assert.deepEqual(shape(build({ groupFilter: UNGROUPED })), [[GROUP_NONE, 'Ungrouped', ['c']]])
 })
 
-test('engine filter and search (incl. content) narrow the rows', () => {
-  assert.deepEqual(shape(build({ engine: 'claude' })), [
-    ['g2', 'Workflow', ['a']],
-    ['g1', 'Basics', ['a', 'b']],
-  ])
+test('search (incl. content) narrows the rows', () => {
   assert.deepEqual(shape(build({ search: 'actions' })), [[GROUP_NONE, 'Ungrouped', ['c']]])
   assert.deepEqual(shape(build({ search: 'squash', contents: { b: '- Squash merge only' } })), [
     ['g1', 'Basics', ['b']],

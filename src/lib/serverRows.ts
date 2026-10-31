@@ -20,8 +20,6 @@ export interface ServerFilters {
   search: string
   /** '' = every tag. */
   tag: string
-  /** '' = every status. */
-  status: '' | ServerStatus
 }
 
 /** A never-tested server (null status) counts as unknown. */
@@ -30,7 +28,6 @@ export function serverStatus(server: Pick<ServerLike, 'status'>): ServerStatus {
 }
 
 export function matchesServer(server: ServerLike, filters: ServerFilters): boolean {
-  if (filters.status && serverStatus(server) !== filters.status) return false
   const tags = splitTags(server.tags)
   if (filters.tag && !tags.includes(filters.tag)) return false
   const hay = haystack(server.label, server.host, server.username, ...tags)

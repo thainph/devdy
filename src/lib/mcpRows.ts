@@ -126,19 +126,23 @@ export function catalogRow(c: CatalogEntry): McpRow {
   }
 }
 
-/** '' = all, else by the enabled state (catalog entries only show under all). */
-export type McpFilter = '' | 'enabled' | 'disabled'
-
-export function matchesMcpRow(row: McpRow, search: string, filter: McpFilter): boolean {
-  if (filter && row.kind === 'catalog') return false
-  if (filter === 'enabled' && !row.enabled) return false
-  if (filter === 'disabled' && row.enabled) return false
+export function matchesMcpRow(row: McpRow, search: string): boolean {
   return matchesSearch(haystack(row.name, row.line, row.description), search)
 }
 
 export const GROUP_BUILTIN = 'builtin'
 export const GROUP_CATALOG = 'catalog'
 const TRANSPORT_ORDER: McpTransport[] = ['stdio', 'http', 'sse']
+
+/** The sidebar folder a row sits in: builtin, a transport, or catalog. */
+export function mcpRowType(row: McpRow): string {
+  if (row.kind === 'builtin') return GROUP_BUILTIN
+  if (row.kind === 'catalog') return GROUP_CATALOG
+  return row.transport ?? ''
+}
+
+/** The type dropdown's order ('' = all types). */
+export const MCP_TYPES: string[] = [GROUP_BUILTIN, ...TRANSPORT_ORDER, GROUP_CATALOG]
 
 export interface McpGroupLabels {
   builtin: string

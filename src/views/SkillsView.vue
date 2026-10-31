@@ -6,12 +6,12 @@ import { computed, onDeactivated, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { onBeforeRouteUpdate, useRoute, useRouter, type LocationQuery } from 'vue-router'
 import { open, save } from '@tauri-apps/plugin-dialog'
-import { Download, FolderCheck, Layers, MoreHorizontal, Plus, Puzzle, RefreshCw, Trash2, Upload } from 'lucide-vue-next'
+import { Layers, Plus, Puzzle, RefreshCw, Upload } from 'lucide-vue-next'
 import { useActivatedRefresh } from '@/composables/useActivatedRefresh'
 import { useSkillsStore, type Skill } from '@/stores/skills'
 import { useProjectsStore } from '@/stores/projects'
 import { useSkillGroupsStore } from '@/stores/groups'
-import { AppSelect, Badge, Button, DropdownItem, DropdownMenu, DropdownSeparator } from '@/components/ui'
+import { AppSelect, Badge, Button } from '@/components/ui'
 import GroupManagerModal from '@/components/GroupManagerModal.vue'
 import ListDetailSidebar from '@/components/listDetail/ListDetailSidebar.vue'
 import DetailEmpty from '@/components/listDetail/DetailEmpty.vue'
@@ -317,7 +317,6 @@ async function handleExport(skill: Skill) {
       :groups="rowGroups"
       :selected-id="selectedId"
       collapse-key="devdy.skills.collapsed"
-      :new-label="t('skills.list.newSkill')"
       :search-placeholder="t('skills.detail.searchPlaceholder')"
       :loading="store.loading"
       :error="store.error"
@@ -367,49 +366,17 @@ async function handleExport(skill: Skill) {
 
       <template #row="{ row }">
         <span class="flex min-w-0 items-center gap-1.5">
-          <span class="min-w-0 truncate font-mono text-[13px] font-medium leading-snug">{{ row.skill.name }}</span>
-          <Badge tone="primary" size="xs" class="shrink-0 uppercase tracking-wide">{{ targetLabel[row.skill.target] }}</Badge>
+          <span class="min-w-0 truncate font-mono text-sm font-medium leading-snug">{{ row.skill.name }}</span>
+          <Badge v-if="row.skill.target !== 'both'" tone="primary" size="xs" class="shrink-0 uppercase tracking-wide">{{ targetLabel[row.skill.target] }}</Badge>
           <template v-for="gid in row.otherGroupIds" :key="gid">
             <Badge v-if="groupById(gid)" :tone="groupById(gid)?.color ?? 'neutral'" size="xs" class="shrink-0">
               {{ groupById(gid)?.name }}
             </Badge>
           </template>
         </span>
-        <span v-if="row.skill.description" class="mt-0.5 truncate text-[11px] text-muted-foreground">
+        <span v-if="row.skill.description" class="mt-1 truncate text-[11px] text-muted-foreground/70">
           {{ row.skill.description }}
         </span>
-      </template>
-
-      <template #row-actions="{ row }">
-        <DropdownMenu>
-          <template #trigger>
-            <button
-              type="button"
-              class="flex h-6 w-6 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              :title="t('skills.detail.more')"
-              :aria-label="t('skills.detail.more')"
-            >
-              <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
-            </button>
-          </template>
-          <DropdownItem :disabled="applyingId === row.id" @click="handleApplyToAll(row.skill)">
-            <FolderCheck class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ t('skills.list.applyToAll') }}
-          </DropdownItem>
-          <DropdownItem :disabled="reapplyingId !== null" @click="handleReapply(row.skill)">
-            <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ t('skills.list.reapply') }}
-          </DropdownItem>
-          <DropdownItem @click="handleExport(row.skill)">
-            <Download class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ t('skills.list.exportZip') }}
-          </DropdownItem>
-          <DropdownSeparator />
-          <DropdownItem variant="destructive" :disabled="deletingId === row.id" @click="handleDelete(row.skill)">
-            <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ t('common.delete') }}
-          </DropdownItem>
-        </DropdownMenu>
       </template>
     </ListDetailSidebar>
 
@@ -443,7 +410,7 @@ async function handleExport(skill: Skill) {
         </Button>
         <Button size="sm" @click="openNew">
           <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-          {{ t('skills.list.newSkill') }}
+          {{ t('common.new') }}
         </Button>
       </div>
     </DetailEmpty>

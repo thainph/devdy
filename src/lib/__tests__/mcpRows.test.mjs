@@ -16,6 +16,7 @@ import {
   formPayload,
   formSnapshot,
   groupMcpRows,
+  mcpRowType,
   matchesMcpRow,
   parseArgs,
   serverLine,
@@ -64,20 +65,14 @@ test('availableCatalog hides names already taken', () => {
   assert.ok(!left.some((c) => c.name === 'context7'))
 })
 
-test('matchesMcpRow searches name/line/description and filters by state', () => {
+test('matchesMcpRow searches name/line/description', () => {
   const on = serverRow(fs)
   const off = serverRow(remote)
-  const cat = catalogRow(MCP_CATALOG[0])
-  assert.equal(matchesMcpRow(on, 'server-filesystem', ''), true)
-  assert.equal(matchesMcpRow(on, 'LOCAL npx', ''), true)
-  assert.equal(matchesMcpRow(off, 'example.com', ''), true)
-  assert.equal(matchesMcpRow(on, 'sora', ''), false)
-  assert.equal(matchesMcpRow(on, '', 'enabled'), true)
-  assert.equal(matchesMcpRow(on, '', 'disabled'), false)
-  assert.equal(matchesMcpRow(off, '', 'disabled'), true)
-  // Not-yet-added catalog entries only show under "All".
-  assert.equal(matchesMcpRow(cat, '', ''), true)
-  assert.equal(matchesMcpRow(cat, '', 'disabled'), false)
+  assert.equal(matchesMcpRow(on, 'server-filesystem'), true)
+  assert.equal(matchesMcpRow(on, 'LOCAL npx'), true)
+  assert.equal(matchesMcpRow(off, 'example.com'), true)
+  assert.equal(matchesMcpRow(on, 'sora'), false)
+  assert.equal(matchesMcpRow(catalogRow(MCP_CATALOG[0]), ''), true)
 })
 
 test('builtin rows count as enabled only when active', () => {
@@ -180,4 +175,11 @@ test('formSnapshot tracks edits and optionally the enabled switch', () => {
   assert.equal(formSnapshot(a, false), formSnapshot(b, false))
   assert.notEqual(formSnapshot(a, true), formSnapshot(b, true))
   assert.notEqual(formSnapshot(blankForm(), true), formSnapshot({ ...blankForm(), name: 'x' }, true))
+})
+
+test('mcpRowType maps rows to their sidebar folder', () => {
+  const builtin = { id: 'builtin:devdy', kind: 'builtin', transport: 'stdio' }
+  const catalog = { id: 'catalog:x', kind: 'catalog', transport: 'http' }
+  const server = { id: 's1', kind: 'server', transport: 'sse' }
+  assert.deepEqual([builtin, catalog, server].map(mcpRowType), ['builtin', 'catalog', 'sse'])
 })

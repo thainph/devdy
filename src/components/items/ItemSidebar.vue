@@ -34,6 +34,7 @@ import { formatDate, ymdToDate } from '@/lib/dateValue'
 import { dueStatus, localYmd } from '@/lib/todoDue'
 import { formatFullDate } from '@/lib/slackThreadUtils'
 import type { ItemRow } from './itemRow'
+import { groupClass, groupHeaderClass, rowClass, rowListClass, rowSubClass, rowTitleClass } from '@/components/listDetail/rowStyles'
 
 const props = defineProps<{
   kind: 'note' | 'todo'
@@ -206,7 +207,7 @@ const groups = computed(() => {
         </div>
         <Button size="sm" class="shrink-0" @click="emit('add')">
           <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-          {{ kind === 'note' ? t('item.newNote') : t('item.newTodo') }}
+          {{ t('common.new') }}
         </Button>
       </div>
       <div
@@ -260,8 +261,8 @@ const groups = computed(() => {
         {{ t('item.noResults') }}
       </p>
 
-      <div v-for="g in groups" v-else :key="g.key" class="mb-2">
-        <div class="group/folder flex items-center rounded hover:bg-accent/50">
+      <div v-for="g in groups" v-else :key="g.key" :class="groupClass">
+        <div :class="groupHeaderClass">
           <button
             type="button"
             class="flex min-w-0 flex-1 cursor-pointer items-center gap-1 px-1.5 py-1 text-left text-xs font-semibold text-foreground"
@@ -290,13 +291,11 @@ const groups = computed(() => {
           </button>
         </div>
 
-        <ul v-if="!collapsed.has(g.key)" class="mt-px space-y-px">
+        <ul v-if="!collapsed.has(g.key)" :class="rowListClass">
           <li v-for="row in g.rows" :key="row.id">
             <div
-              class="flex w-full items-start gap-2 rounded-md py-1.5 pl-6 pr-2 transition-colors"
-              :class="row.id === selectedId
-                ? 'bg-primary/15 text-foreground'
-                : 'text-foreground/85 hover:bg-accent/50'"
+              class="gap-2 pl-6 pr-2"
+              :class="rowClass(row.id === selectedId)"
             >
               <button
                 v-if="kind === 'todo'"
@@ -320,8 +319,8 @@ const groups = computed(() => {
               >
                 <span class="flex w-full min-w-0 items-center gap-1.5">
                   <span
-                    class="min-w-0 flex-1 truncate text-[13px]"
-                    :class="row.done && 'text-muted-foreground line-through'"
+                    class="min-w-0 flex-1 truncate"
+                    :class="[rowTitleClass, row.done && 'text-muted-foreground line-through']"
                   >
                     {{ row.title || t('item.untitled') }}
                   </span>
@@ -346,7 +345,7 @@ const groups = computed(() => {
                     {{ relativeAge(row.at) }}
                   </span>
                 </span>
-                <span v-if="row.preview" class="mt-0.5 block w-full truncate text-[11px] text-muted-foreground">
+                <span v-if="row.preview" class="block w-full" :class="rowSubClass">
                   {{ row.preview }}
                 </span>
               </button>

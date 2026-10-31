@@ -8,8 +8,8 @@
 //   └──────────────────────────────────────┴────────────────────────────────────┘
 //
 // Folders are by transport: it decides the whole shape of a server's config
-// (process + env vs. URL + headers) and Codex support (sse is Claude-only),
-// while enabled/disabled is already the segmented filter. The built-in native
+// (process + env vs. URL + headers) and Codex support (sse is Claude-only);
+// the type dropdown narrows to one folder. The built-in native
 // servers and the not-yet-added catalog are rows too, with a read-only pane.
 //
 // Selection lives in the URL (`?id=` a server or a `builtin:` / `catalog:`
@@ -19,8 +19,8 @@ import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { invoke } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
-import { Download, Plus, Power, RotateCw, Server, Settings2, Trash2, Upload } from 'lucide-vue-next'
-import { Button } from '@/components/ui'
+import { Plus, RotateCw, Server, Upload } from 'lucide-vue-next'
+import { AppSelect, Button } from '@/components/ui'
 import ListDetailSidebar from '@/components/listDetail/ListDetailSidebar.vue'
 import DetailEmpty from '@/components/listDetail/DetailEmpty.vue'
 import McpServerDetail from '@/components/mcp/McpServerDetail.vue'
@@ -39,11 +39,13 @@ import {
   duplicateForm,
   formFromServer,
   groupMcpRows,
+  mcpRowType,
+  MCP_TYPES,
+  GROUP_CATALOG,
   matchesMcpRow,
   serverRow,
   type BuiltinInfo,
   type CatalogEntry,
-  type McpFilter,
   type McpForm,
   type McpRow,
 } from '@/lib/mcpRows'
@@ -117,13 +119,18 @@ const builtins = computed<Builtin[]>(() => {
 // ── Sidebar rows ────────────────────────────────────────────────────────────
 
 const search = ref('')
-const filter = ref('')
+/** '' = all types, else a folder key (see mcpRowType). */
+const typeFilter = ref('')
 
-const filters = computed(() => [
-  { value: '', label: t('mcp.list.filter.all') },
-  { value: 'enabled', label: t('mcp.list.filter.enabled') },
-  { value: 'disabled', label: t('mcp.list.filter.disabled') },
+const typeOptions = computed(() => [
+  { value: '', label: t('mcp.list.allTypes') },
+  ...MCP_TYPES.map((type) => ({ value: type, label: typeLabel(type) })),
 ])
+
+function typeLabel(type: string): string {
+  if (type === GROUP_CATALOG) return t('mcp.list.recommended')
+  return t(`mcp.list.groups.${type}`)
+}
 
 const catalog = computed(() => availableCatalog(MCP_CATALOG, store.items))
 
@@ -135,7 +142,9 @@ const allRows = computed<McpRow[]>(() => [
 
 const groups = computed(() =>
   groupMcpRows(
-    allRows.value.filter((r) => matchesMcpRow(r, search.value, filter.value as McpFilter)),
+    allRows.value.filter((r) =>
+      (!typeFilter.value || mcpRowType(r) === typeFilter.value)
+      && matchesMcpRow(r, search.value)),
     {
       builtin: t('mcp.list.groups.builtin'),
       catalog: t('mcp.list.recommended'),
@@ -376,14 +385,6 @@ async function addFromCatalog(item: CatalogEntry) {
   }
 }
 
-function catalogEntry(row: McpRow): CatalogEntry | null {
-  return MCP_CATALOG.find((c) => c.name === row.name) ?? null
-}
-
-function serverOf(row: McpRow): McpServer | null {
-  return store.items.find((s) => s.id === row.id) ?? null
-}
-
 function openSettings(row: McpRow) {
   const section = builtins.value.find((b) => b.name === row.name)?.section
   if (section) router.push({ path: '/settings', query: { section } })
@@ -405,13 +406,10 @@ function dotClass(row: McpRow): string {
   <div class="flex h-full min-h-0">
     <ListDetailSidebar
       v-model:search="search"
-      v-model:filter="filter"
       :groups="groups"
       :selected-id="isNew ? null : selectedId"
       collapse-key="mcp.collapsed"
-      :new-label="t('mcp.list.newServer')"
       :search-placeholder="t('mcp.list.searchPlaceholder')"
-      :filters="filters"
       :loading="store.loading"
       :error="store.error"
       :flat-when-single="false"
@@ -444,11 +442,15 @@ function dotClass(row: McpRow): string {
         </Button>
       </template>
 
+      <template #controls>
+        <AppSelect v-model="typeFilter" :options="typeOptions" :title="t('mcp.list.filterByType')" />
+      </template>
+
       <template #row="{ row }">
         <span class="flex min-w-0 items-center gap-1.5">
           <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="dotClass(row)" />
           <span
-            class="min-w-0 flex-1 truncate font-mono text-[13px] font-medium"
+            class="min-w-0 flex-1 truncate font-mono text-sm font-medium leading-snug"
             :class="row.kind === 'server' && !row.enabled && 'text-muted-foreground'"
           >
             {{ row.name }}
@@ -467,65 +469,9 @@ function dotClass(row: McpRow): string {
             {{ row.transport }}
           </span>
         </span>
-        <span class="mt-0.5 truncate pl-3 font-mono text-[10px] text-muted-foreground" :title="row.line">
+        <span class="mt-1 truncate pl-3 font-mono text-[11px] text-muted-foreground/70" :title="row.line">
           {{ row.line || '—' }}
         </span>
-      </template>
-
-      <template #row-actions="{ row }">
-        <template v-if="row.kind === 'server' && serverOf(row)">
-          <button
-            type="button"
-            class="flex h-6 w-6 cursor-pointer items-center justify-center rounded transition-colors disabled:cursor-default disabled:opacity-50"
-            :class="row.enabled ? 'text-emerald-500 hover:bg-accent' : 'text-muted-foreground hover:bg-accent hover:text-foreground'"
-            :title="row.enabled ? t('mcp.list.disable') : t('mcp.list.enable')"
-            :aria-label="row.enabled ? t('mcp.list.disable') : t('mcp.list.enable')"
-            :disabled="togglingId === row.id"
-            @click="handleToggleEnabled(serverOf(row)!)"
-          >
-            <Power class="h-3.5 w-3.5" :stroke-width="1.75" />
-          </button>
-          <button
-            type="button"
-            class="flex h-6 w-6 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            :title="t('mcp.list.exportTitle')"
-            :aria-label="t('mcp.list.exportTitle')"
-            @click="handleExport(serverOf(row)!)"
-          >
-            <Download class="h-3.5 w-3.5" :stroke-width="1.75" />
-          </button>
-          <button
-            type="button"
-            class="flex h-6 w-6 cursor-pointer items-center justify-center rounded text-destructive/60 transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
-            :title="t('common.delete')"
-            :aria-label="t('common.delete')"
-            :disabled="deletingId === row.id"
-            @click="handleDelete(serverOf(row)!)"
-          >
-            <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-          </button>
-        </template>
-        <button
-          v-else-if="row.kind === 'builtin'"
-          type="button"
-          class="flex h-6 w-6 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          :title="t('mcp.list.builtin.settings')"
-          :aria-label="t('mcp.list.builtin.settings')"
-          @click="openSettings(row)"
-        >
-          <Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-        </button>
-        <button
-          v-else-if="row.kind === 'catalog' && catalogEntry(row)"
-          type="button"
-          class="flex h-6 w-6 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
-          :title="addingName === row.name ? t('mcp.list.adding') : t('common.add')"
-          :aria-label="t('common.add')"
-          :disabled="addingName === row.name"
-          @click="addFromCatalog(catalogEntry(row)!)"
-        >
-          <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-        </button>
       </template>
     </ListDetailSidebar>
 
@@ -571,7 +517,7 @@ function dotClass(row: McpRow): string {
         <p class="mx-auto mt-1 max-w-60 text-[11px] text-muted-foreground/70">{{ t('mcp.list.empty.hint') }}</p>
         <Button class="mt-4" @click="startNew()">
           <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-          {{ t('mcp.list.newServer') }}
+          {{ t('common.new') }}
         </Button>
       </template>
     </DetailEmpty>

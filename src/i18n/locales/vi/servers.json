@@ -16,14 +16,10 @@
     },
     "toast": {
       "deleted": "Đã xóa",
-      "online": "{label} đang trực tuyến",
-      "offline": "{label} ngoại tuyến: {message}",
       "testAllSummary": "{online} trực tuyến / {offline} ngoại tuyến"
     },
-    "new": "Mới",
     "searchPlaceholder": "Tìm nhãn, host, user, thẻ",
     "allTags": "Tất cả thẻ",
-    "filterAll": "Tất cả",
     "untagged": "Chưa gắn thẻ",
     "testAll": "Kiểm tra tất cả kết nối",
     "noSelection": "Chọn một server, hoặc tạo server mới"
@@ -72,7 +68,6 @@
   },
   "detail": {
     "newTitle": "Server mới",
-    "renameHint": "Bấm để đổi tên",
     "unsavedMeta": "Chưa lưu — lưu để kiểm tra kết nối",
     "checked": "kiểm tra {age}",
     "test": "Kiểm tra",
@@ -87,6 +82,7 @@
     "notTested": "Chưa kiểm tra trong phiên này.",
     "discardTitle": "Bỏ thay đổi?",
     "discardMessage": "Server này có thay đổi chưa lưu. Bỏ các thay đổi đó?",
-    "discard": "Bỏ thay đổi"
+    "discard": "Bỏ thay đổi",
+    "saveHint": "Lưu (⌘/Ctrl+S)"
   }
 }

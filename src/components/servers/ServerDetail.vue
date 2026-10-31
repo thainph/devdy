@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Right pane of the Servers screen: one server's form (or a new draft when
-// `server` is null), edited inline and saved with Save / ⌘/Ctrl+S. The label
-// is the header title (click to rename; it stays a draft change until Save).
+// `server` is null), edited inline and saved with Save / ⌘/Ctrl+S. The header
+// title follows the Label field, like the Skills pane.
 // The host keys this component per selection, so the form is seeded once from
 // the props and later store refreshes (e.g. a test updating the status) never
 // overwrite what is being typed. Tests and deletes go through the host, which
@@ -10,7 +10,7 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { open } from '@tauri-apps/plugin-dialog'
 import {
-  AlertCircle, CheckCircle2, Copy, CopyPlus, KeyRound, MoreHorizontal, Plug, Trash2, Upload, X, XCircle,
+  AlertCircle, CheckCircle2, Copy, CopyPlus, KeyRound, MoreHorizontal, Plug, Save, Trash2, Upload, X, XCircle,
 } from 'lucide-vue-next'
 import { Button, DropdownItem, DropdownMenu, DropdownSeparator, Input } from '@/components/ui'
 import DetailHeader from '@/components/listDetail/DetailHeader.vue'
@@ -200,10 +200,6 @@ function fieldError(field: Field): string | null {
   return validationError.value?.field === field ? validationError.value.message : null
 }
 
-function onRename(value: string) {
-  label.value = value
-}
-
 async function handleSave() {
   if (!canSave.value) return
   if (tagInput.value.trim()) commitTagInput()
@@ -258,12 +254,6 @@ function onKeydown(e: KeyboardEvent) {
 
 // ── Header ──────────────────────────────────────────────────────────────────
 
-const statusDot: Record<string, string> = {
-  online: 'bg-emerald-500',
-  offline: 'bg-destructive',
-  unknown: 'bg-muted-foreground/40',
-}
-
 const meta = computed(() => {
   const s = props.server
   if (!s) return t('servers.detail.unsavedMeta')
@@ -291,63 +281,42 @@ const labelClass = 'text-[11px] font-medium text-muted-foreground uppercase trac
 
 <template>
   <section class="flex min-w-0 flex-1 flex-col" @keydown="onKeydown">
-    <DetailHeader
-      :title="label"
-      :placeholder="t('servers.detail.newTitle')"
-      renamable
-      :rename-hint="t('servers.detail.renameHint')"
-      @rename="onRename"
-    >
-      <template v-if="server" #leading>
-        <span class="h-2 w-2 shrink-0 rounded-full" :class="statusDot[serverStatus(server)]" />
-      </template>
+    <DetailHeader :title="label" :placeholder="t('servers.detail.newTitle')">
       <template #meta>{{ meta }}</template>
       <template #actions>
-        <Button
-          variant="outline"
-          size="xs"
-          class="shrink-0"
-          :disabled="isNew || testing"
-          :title="isNew ? t('servers.editor.saveFirst') : t('servers.list.testTitle')"
-          @click="emit('test')"
-        >
-          <Plug class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ testing ? t('servers.editor.testing') : t('servers.detail.test') }}
-        </Button>
-        <Button
-          variant="primary"
-          size="xs"
-          class="shrink-0"
-          :disabled="!canSave"
-          :title="'⌘/Ctrl+S'"
-          @click="handleSave"
-        >
+        <Button size="sm" :disabled="!canSave" :title="t('servers.detail.saveHint')" @click="handleSave">
+          <Save class="h-3.5 w-3.5" :stroke-width="2" />
           {{ saving ? t('servers.editor.saving') : t('common.save') }}
         </Button>
-        <DropdownMenu v-if="server" align="right" class="shrink-0">
+        <DropdownMenu align="right">
           <template #trigger>
-            <Button
-              variant="outline"
-              size="icon-sm"
-              :title="t('servers.detail.moreActions')"
-              :aria-label="t('servers.detail.moreActions')"
-            >
-              <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
+            <Button variant="ghost" size="icon-sm" :title="t('servers.detail.moreActions')" :aria-label="t('servers.detail.moreActions')">
+              <MoreHorizontal class="h-4 w-4" :stroke-width="1.75" />
             </Button>
           </template>
-          <DropdownItem @click="copySsh">
-            <Copy class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ t('servers.detail.copySsh') }}
+          <DropdownItem
+            :disabled="isNew || testing"
+            :title="isNew ? t('servers.editor.saveFirst') : t('servers.list.testTitle')"
+            @click="emit('test')"
+          >
+            <Plug class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ testing ? t('servers.editor.testing') : t('servers.detail.test') }}
           </DropdownItem>
-          <DropdownItem @click="emit('duplicate')">
-            <CopyPlus class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ t('servers.detail.duplicate') }}
-          </DropdownItem>
-          <DropdownSeparator />
-          <DropdownItem variant="destructive" :disabled="deleting" @click="emit('delete')">
-            <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ t('common.delete') }}
-          </DropdownItem>
+          <template v-if="server">
+            <DropdownItem @click="copySsh">
+              <Copy class="h-3.5 w-3.5" :stroke-width="1.75" />
+              {{ t('servers.detail.copySsh') }}
+            </DropdownItem>
+            <DropdownItem @click="emit('duplicate')">
+              <CopyPlus class="h-3.5 w-3.5" :stroke-width="1.75" />
+              {{ t('servers.detail.duplicate') }}
+            </DropdownItem>
+            <DropdownSeparator />
+            <DropdownItem variant="destructive" :disabled="deleting" @click="emit('delete')">
+              <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+              {{ t('common.delete') }}
+            </DropdownItem>
+          </template>
         </DropdownMenu>
       </template>
     </DetailHeader>
@@ -356,8 +325,7 @@ const labelClass = 'text-[11px] font-medium text-muted-foreground uppercase trac
       <div class="max-w-2xl">
         <!-- Connection -->
         <DetailSection :title="t('servers.editor.connection')">
-          <!-- A saved server is renamed from the header; a draft has no title yet. -->
-          <div v-if="isNew" class="space-y-1.5">
+          <div class="space-y-1.5">
             <label :class="labelClass">{{ t('servers.editor.label') }}</label>
             <Input v-model="label" size="sm" :placeholder="t('servers.editor.labelPlaceholder')" />
             <p v-if="fieldError('label')" class="text-[11px] text-destructive">{{ fieldError('label') }}</p>

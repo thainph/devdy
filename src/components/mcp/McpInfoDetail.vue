@@ -4,7 +4,7 @@
 // a recommended catalog entry (one click adds it as a stub to finish here).
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Plus, Server, Settings2, Sparkles } from 'lucide-vue-next'
+import { Plus, Settings2 } from 'lucide-vue-next'
 import { Badge, Button } from '@/components/ui'
 import DetailHeader from '@/components/listDetail/DetailHeader.vue'
 import DetailSection from '@/components/listDetail/DetailSection.vue'
@@ -32,16 +32,13 @@ const meta = computed(() =>
 <template>
   <section class="flex min-w-0 flex-1 flex-col">
     <DetailHeader :title="row.name">
-      <template #leading>
-        <component :is="isBuiltin ? Server : Sparkles" class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="1.75" />
-      </template>
       <template #meta>{{ meta }}</template>
       <template #actions>
-        <Button v-if="isBuiltin" variant="outline" size="xs" @click="emit('settings')">
+        <Button v-if="isBuiltin" variant="outline" size="sm" @click="emit('settings')">
           <Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />
           {{ t('mcp.list.builtin.settings') }}
         </Button>
-        <Button v-else size="xs" :disabled="adding" @click="emit('add')">
+        <Button v-else size="sm" :disabled="adding" @click="emit('add')">
           <Plus class="h-3.5 w-3.5" :stroke-width="2" />
           {{ adding ? t('mcp.list.adding') : t('common.add') }}
         </Button>
