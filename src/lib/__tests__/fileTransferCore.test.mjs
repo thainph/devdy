@@ -11,6 +11,7 @@ import {
   ConflictResolver,
   TransferQueue,
   base64Bytes,
+  breadcrumbs,
   copyFile,
   freeName,
   isInside,
@@ -33,6 +34,21 @@ test('relative paths join with the destination separator', () => {
   assert.equal(joinRel('/x', ''), '/x')
   assert.equal(relParent('a/b/c.txt'), 'a/b')
   assert.equal(relParent('c.txt'), '')
+})
+
+test('breadcrumbs split unix and windows paths', () => {
+  assert.deepEqual(breadcrumbs('/Users/me'), [
+    { label: '/', path: '/' },
+    { label: 'Users', path: '/Users' },
+    { label: 'me', path: '/Users/me' },
+  ])
+  assert.deepEqual(breadcrumbs('/'), [{ label: '/', path: '/' }])
+  assert.deepEqual(breadcrumbs('C:\\a\\b'), [
+    { label: 'C:\\', path: 'C:\\' },
+    { label: 'a', path: 'C:\\a' },
+    { label: 'b', path: 'C:\\a\\b' },
+  ])
+  assert.deepEqual(breadcrumbs(''), [])
 })
 
 test('numbered names mirror the backend', () => {

@@ -38,6 +38,7 @@ import { PR_INBOX_WINDOW_OPEN_ROUTE, type PrInboxWindowOpenRoute } from '@/lib/p
 import CalendarWindow from '@/views/CalendarWindow.vue'
 import { CALENDAR_WINDOW_OPEN_ROUTE, type CalendarWindowOpenRoute } from '@/lib/calendarWindow'
 import FocusWindow from '@/views/FocusWindow.vue'
+import FileTransferWindow from '@/views/FileTransferWindow.vue'
 import {
   SLACK_API_RECEIVED,
   type SlackApiReceived,
@@ -93,6 +94,7 @@ const isPrInboxWindow = new URLSearchParams(window.location.search).get('prInbox
 const isCalendarWindow = new URLSearchParams(window.location.search).get('calendarWindow') === '1'
 const isFocusWindow = new URLSearchParams(window.location.search).get('focusWindow') === '1'
 const isMascotWindow = new URLSearchParams(window.location.search).get('mascotWindow') === '1'
+const isFileTransferWindow = new URLSearchParams(window.location.search).get('fileTransferWindow') === '1'
 // A session pop-out is different from the bare pop-outs above: it reuses the full
 // RunView (routed to one run) with the app chrome hidden, so it still needs the
 // stores + router — only the sidebar / nav / docks / app-wide notifiers are cut.
@@ -111,7 +113,8 @@ const isPopoutWindow =
   isPrInboxWindow ||
   isCalendarWindow ||
   isFocusWindow ||
-  isMascotWindow
+  isMascotWindow ||
+  isFileTransferWindow
 
 const route = useRoute()
 const router = useRouter()
@@ -790,6 +793,9 @@ onMounted(async () => {
 
   <!-- THE Focus window: the Focus board on its own OS window. -->
   <FocusWindow v-else-if="isFocusWindow" />
+
+  <!-- THE File Transfer window (remote desktop only): this machine ⇄ the controlled Devdy. -->
+  <FileTransferWindow v-else-if="isFileTransferWindow" />
 
   <!-- Pop-out Gantt window: bare Gantt chart on its own OS window. -->
   <!-- Gantt pop-out: the board plus the dialog / toast hosts its row menu

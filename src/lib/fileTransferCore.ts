@@ -81,6 +81,21 @@ export function isInside(path: string, dir: string): boolean {
   return p === d || p.startsWith(d + '/') || p.startsWith(d + '\\')
 }
 
+/** The clickable segments of a path's breadcrumb, root first. */
+export function breadcrumbs(path: string): { label: string; path: string }[] {
+  if (!path) return []
+  const sep = separatorOf(path)
+  const drive = /^[A-Za-z]:/.exec(path)?.[0]
+  const rootPath = drive ? drive + '\\' : path.startsWith('/') || path.startsWith('\\') ? sep : ''
+  const out = rootPath ? [{ label: rootPath, path: rootPath }] : []
+  let cur = rootPath
+  for (const part of path.slice(drive ? drive.length : 0).split(/[\\/]/).filter(Boolean)) {
+    cur = cur ? joinPath(cur, part) : part
+    out.push({ label: part, path: cur })
+  }
+  return out
+}
+
 // ── Conflicts ───────────────────────────────────────────────────────────────
 
 export interface ConflictAnswer {

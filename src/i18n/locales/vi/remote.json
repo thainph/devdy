@@ -129,7 +129,9 @@
       "superseded": "Thiết bị khác đã giành quyền điều khiển",
       "reconnect": "Kết nối lại",
       "signInAgain": "Đăng nhập lại",
-      "signOut": "Đăng xuất"
+      "signOut": "Đăng xuất",
+      "files": "Tệp",
+      "filesHint": "Chép tệp giữa máy này và Devdy đang điều khiển"
     },
     "upload": {
       "progress": "Đang chép {name} sang Devdy đang điều khiển… {percent}%",

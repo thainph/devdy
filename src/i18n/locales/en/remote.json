@@ -129,7 +129,9 @@
       "superseded": "Taken over by another device",
       "reconnect": "Reconnect",
       "signInAgain": "Sign in again",
-      "signOut": "Sign out"
+      "signOut": "Sign out",
+      "files": "Files",
+      "filesHint": "Copy files between this computer and the controlled Devdy"
     },
     "upload": {
       "progress": "Copying {name} to the controlled Devdy… {percent}%",
