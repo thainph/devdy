@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { openUrl } from '@tauri-apps/plugin-opener'
 import { invoke } from '@/lib/tauri'
 import {
   Cpu, Palette, FileText, ShieldAlert, Sparkles, Github, Gitlab, Cloud, CloudCog,
@@ -1005,9 +1006,8 @@ async function handleAddClaudeAccount() {
     const acc = await claudeStore.create(label)
     claudeNewLabel.value = ''
     toast.success(t('settings.claude.accountAdded'))
-    // Immediately open the login terminal for the fresh profile.
-    await claudeStore.openLogin(acc.id, settings.value.terminal_app)
-    toast.info(t('settings.claude.loginOpened'))
+    // Immediately start the browser login for the fresh profile.
+    void startClaudeLogin(acc.id)
   } catch (e) {
     claudeAddError.value = String(e)
   } finally {
@@ -1034,14 +1034,56 @@ async function handleSaveClaudeEdit(id: string) {
   }
 }
 
-async function handleClaudeLogin(id: string) {
+// `claude auth login` runs in the background and opens the browser; the
+// command resolves when the CLI exits. If the browser can't reach the CLI's
+// localhost callback, the manual-login page shows a code the user pastes here.
+const claudeLoginWaiting = ref<Record<string, boolean>>({})
+const claudeLoginUrl = ref<Record<string, string>>({})
+const claudeLoginCode = ref<Record<string, string>>({})
+let unlistenClaudeLoginUrl: UnlistenFn | null = null
+
+async function startClaudeLogin(id: string) {
+  if (claudeLoginWaiting.value[id]) return
   claudeAccountError.value[id] = ''
+  delete claudeValidations.value[id]
+  claudeLoginWaiting.value[id] = true
+  toast.info(t('settings.claude.loginStarted'))
   try {
-    await claudeStore.openLogin(id, settings.value.terminal_app)
-    toast.info(t('settings.claude.loginOpened'))
+    const result = await claudeStore.login(id)
+    claudeValidations.value[id] = result
+    if (result.logged_in) toast.success(t('settings.claude.loginDetected', { email: result.email ?? '' }))
+  } catch (e) {
+    const msg = String(e)
+    if (!msg.includes('cancelled')) claudeAccountError.value[id] = msg
+  } finally {
+    delete claudeLoginWaiting.value[id]
+    delete claudeLoginUrl.value[id]
+    delete claudeLoginCode.value[id]
+  }
+}
+
+function handleClaudeLogin(id: string) {
+  void startClaudeLogin(id)
+}
+
+async function handleSubmitClaudeCode(id: string) {
+  const code = claudeLoginCode.value[id]?.trim()
+  if (!code) return
+  try {
+    await claudeStore.submitLoginCode(id, code)
+    claudeLoginCode.value[id] = ''
   } catch (e) {
     claudeAccountError.value[id] = String(e)
   }
+}
+
+async function handleCancelClaudeLogin(id: string) {
+  await claudeStore.cancelLogin(id).catch(() => {})
+}
+
+function openClaudeLoginUrl(id: string) {
+  const url = claudeLoginUrl.value[id]
+  if (url) void openUrl(url).catch(() => {})
 }
 
 async function handleValidateClaude(id: string) {
@@ -1102,6 +1144,9 @@ onMounted(async () => {
     unlistenBudgetStatus = await listen('budget_status_updated', () => budget.refresh())
     // Auto-balancer swapped the default account → refresh the list + star + badge.
     unlistenDefaultChanged = await listen('claude_default_changed', () => claudeStore.fetch())
+    unlistenClaudeLoginUrl = await listen<{ accountId: string; url: string }>('claude_login_url', (e) => {
+      if (claudeLoginWaiting.value[e.payload.accountId]) claudeLoginUrl.value[e.payload.accountId] = e.payload.url
+    })
     // Hydrate the persisted model caches (no discovery — refresh is manual).
     modelCatalog.ensureLoaded().catch(() => {})
   } finally {
@@ -1113,6 +1158,9 @@ onUnmounted(() => {
   if (unlistenPlanUsage) unlistenPlanUsage()
   if (unlistenBudgetStatus) unlistenBudgetStatus()
   if (unlistenDefaultChanged) unlistenDefaultChanged()
+  if (unlistenClaudeLoginUrl) unlistenClaudeLoginUrl()
+  // Don't leave a background `claude auth login` behind a screen that's gone.
+  for (const id of Object.keys(claudeLoginWaiting.value)) void claudeStore.cancelLogin(id).catch(() => {})
   // Don't lose a prompt edit made within the debounce window before leaving.
   if (savedPromptsTimer) {
     clearTimeout(savedPromptsTimer)
@@ -2418,6 +2466,7 @@ watch(() => settings.value.language, (v) => {
                       </div>
                       <div class="text-[11px] truncate" :class="claudeStatusTone(acc.status)">
                         {{ t(`settings.claude.status.${acc.status}`) }}
+                        <span v-if="claudeLoginWaiting[acc.id]" class="text-muted-foreground"> · {{ t('settings.claude.waitingLogin') }}</span>
                         <span v-if="acc.email" class="text-muted-foreground"> · {{ acc.email }}</span>
                         <span v-else-if="acc.auth_method" class="text-muted-foreground"> · {{ acc.auth_method }}</span>
                         <span
@@ -2445,7 +2494,15 @@ watch(() => settings.value.language, (v) => {
                         {{ claudeBusyAccount === acc.id ? '…' : t('settings.claude.validate') }}
                       </Button>
                       <Button
-                        v-if="acc.status !== 'ready'"
+                        v-if="claudeLoginWaiting[acc.id]"
+                        variant="outline"
+                        size="xs"
+                        @click="handleCancelClaudeLogin(acc.id)"
+                      >
+                        {{ t('common.cancel') }}
+                      </Button>
+                      <Button
+                        v-else-if="acc.status !== 'ready'"
                         variant="outline"
                         size="xs"
                         @click="handleClaudeLogin(acc.id)"
@@ -2481,7 +2538,39 @@ watch(() => settings.value.language, (v) => {
                     </div>
                   </div>
                   <div
-                    v-if="claudeValidations[acc.id]?.logged_in"
+                    v-if="claudeLoginWaiting[acc.id]"
+                    class="p-2 bg-muted/40 border border-border rounded-md text-[11px] space-y-1.5"
+                  >
+                    <p class="text-muted-foreground">{{ t('settings.claude.loginWaitingHint') }}</p>
+                    <template v-if="claudeLoginUrl[acc.id]">
+                      <button
+                        type="button"
+                        class="text-primary hover:underline"
+                        @click="openClaudeLoginUrl(acc.id)"
+                      >
+                        {{ t('settings.claude.loginManualLink') }}
+                      </button>
+                      <div class="flex items-center gap-1.5">
+                        <Input
+                          v-model="claudeLoginCode[acc.id]"
+                          size="sm"
+                          class="flex-1"
+                          :placeholder="t('settings.claude.loginCodePlaceholder')"
+                          @keyup.enter="handleSubmitClaudeCode(acc.id)"
+                        />
+                        <Button
+                          variant="outline"
+                          size="xs"
+                          :disabled="!claudeLoginCode[acc.id]?.trim()"
+                          @click="handleSubmitClaudeCode(acc.id)"
+                        >
+                          {{ t('settings.claude.loginSubmitCode') }}
+                        </Button>
+                      </div>
+                    </template>
+                  </div>
+                  <div
+                    v-else-if="claudeValidations[acc.id]?.logged_in"
                     class="p-2 bg-emerald-500/10 border border-emerald-500/20 rounded-md text-[11px]"
                   >
                     <div class="flex items-center gap-1.5 text-emerald-500 font-medium">

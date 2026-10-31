@@ -138,8 +138,22 @@ export const useClaudeAccountsStore = defineStore('claudeAccounts', () => {
     await fetch()
   }
 
-  async function openLogin(id: string, terminalApp?: string): Promise<void> {
-    await invoke('open_claude_account_login', { id, terminalApp: terminalApp ?? null })
+  // Runs `claude auth login` in the background; resolves once the browser
+  // flow finishes (or rejects on cancel/timeout/failure).
+  async function login(id: string): Promise<ClaudeValidation> {
+    try {
+      return await invoke<ClaudeValidation>('login_claude_account', { id })
+    } finally {
+      await fetch()
+    }
+  }
+
+  async function submitLoginCode(id: string, code: string): Promise<void> {
+    await invoke('submit_claude_login_code', { id, code })
+  }
+
+  async function cancelLogin(id: string): Promise<void> {
+    await invoke('cancel_claude_account_login', { id })
   }
 
   async function validate(id: string): Promise<ClaudeValidation> {
@@ -148,5 +162,5 @@ export const useClaudeAccountsStore = defineStore('claudeAccounts', () => {
     return result
   }
 
-  return { accounts, balance, loading, error, budgets, refreshingUsage, usageErrors, fetch, fetchBudget, fetchBalance, refreshUsage, create, rename, remove, setDefault, openLogin, validate }
+  return { accounts, balance, loading, error, budgets, refreshingUsage, usageErrors, fetch, fetchBudget, fetchBalance, refreshUsage, create, rename, remove, setDefault, login, submitLoginCode, cancelLogin, validate }
 })
