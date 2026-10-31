@@ -70,6 +70,12 @@ struct SecretStore {
     /// `crate::secret_vault`).
     #[serde(default)]
     secret_vault: crate::secret_vault::VaultData,
+    /// Two-way sync membership (group key + relay token) written by builds
+    /// before sync was removed. Only its presence is recorded — the value is
+    /// discarded while parsing — and it is never written back, so the next
+    /// persist drops it (see [`drop_legacy_sync`]).
+    #[serde(default, rename = "sync", skip_serializing)]
+    legacy_sync: Option<serde::de::IgnoredAny>,
     /// Per-process guard: `"<provider>:<account_id>"` keys we already attempted to
     /// migrate from a legacy per-account item. A denied or missing legacy read is
     /// recorded here so it is NEVER retried within the same run — otherwise a
@@ -79,8 +85,7 @@ struct SecretStore {
     tried_legacy: std::collections::HashSet<String>,
     /// The Keychain item exists but could not be read (access denied, bad
     /// JSON): this in-memory store is an empty stand-in and must never be
-    /// written back or listed for sync, or it would wipe the real item (and
-    /// sync would push deletes to the other devices).
+    /// written back, or it would wipe the real item.
     #[serde(skip)]
     unreadable: bool,
 }
@@ -124,12 +129,14 @@ fn provider_tag(provider: &Provider) -> &'static str {
 }
 
 /// Load the store into the cache if not already loaded. This is the ONLY place
-/// that may trigger a Keychain password prompt.
+/// that may trigger a Keychain password prompt (besides `loaded_strict`).
 fn ensure_loaded(guard: &mut Option<SecretStore>) {
     if guard.is_some() {
         return;
     }
-    *guard = Some(read_store().unwrap_or_else(|_| SecretStore { unreadable: true, ..Default::default() }));
+    let mut store = read_store().unwrap_or_else(|_| SecretStore { unreadable: true, ..Default::default() });
+    drop_legacy_sync(&mut store);
+    *guard = Some(store);
 }
 
 /// The Keychain item, or an empty store when there is none yet. Fails when it
@@ -178,6 +185,21 @@ fn persist(store: &SecretStore) -> Result<()> {
     let json = serde_json::to_string(store)?;
     store_entry()?.set_password(&json)?;
     Ok(())
+}
+
+/// Rewrite the store without the removed two-way sync membership, so its group
+/// key does not linger in the Keychain. Runs right after the store is first
+/// loaded (no extra Keychain read); a no-op when there is none. Never fails the
+/// caller: errors are logged without any secret value.
+fn drop_legacy_sync(store: &mut SecretStore) {
+    if store.unreadable || store.legacy_sync.is_none() {
+        return;
+    }
+    store.legacy_sync = None;
+    match persist(store) {
+        Ok(()) => tracing::info!(event = "legacy_sync_secrets_dropped"),
+        Err(e) => tracing::warn!(event = "legacy_sync_secrets_drop_failed", error = %e),
+    }
 }
 
 /// Read a legacy per-account item and remove it (one-time migration). Returns the
@@ -876,6 +898,7 @@ pub fn delete_remote_session() -> Result<()> {
 fn loaded_strict(guard: &mut Option<SecretStore>) -> Result<&mut SecretStore> {
     if guard.as_ref().is_none_or(|s| s.unreadable) {
         let mut store = read_store()?;
+        drop_legacy_sync(&mut store);
         if let Some(old) = guard.as_ref() {
             store.tried_legacy = old.tried_legacy.clone();
         }
@@ -905,4 +928,22 @@ pub fn with_vault<R>(
         return Err(format!("keychain write failed: {e}"));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_legacy_sync_membership_is_noticed_and_never_written_back() {
+        let json = r#"{"github":{"a1":"pat"},"sync":{"group_id":"g","group_key":"k","device_token":"t","device_id":"d"}}"#;
+        let store: SecretStore = serde_json::from_str(json).unwrap();
+        assert!(store.legacy_sync.is_some());
+        let out = serde_json::to_string(&store).unwrap();
+        assert!(!out.contains("\"sync\"") && !out.contains("group_key"), "{out}");
+        assert_eq!(store.github.get("a1").map(String::as_str), Some("pat"));
+
+        let clean: SecretStore = serde_json::from_str(&out).unwrap();
+        assert!(clean.legacy_sync.is_none());
+    }
 }
