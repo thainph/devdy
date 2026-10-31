@@ -6,7 +6,7 @@ import { useProjectsStore, type AppliedSkill, type AppliedRule, type Instruction
 import { useSkillsStore } from '@/stores/skills'
 import { useRulesStore } from '@/stores/rules'
 import type { GroupKind, ProjectGroupState } from '@/stores/groups'
-import { useMcpServersStore, type ProjectMcpServer } from '@/stores/mcpServers'
+import { useMcpServersStore, type ProjectBuiltinMcp, type ProjectMcpServer } from '@/stores/mcpServers'
 import { useServersStore, type ProjectServer, type VpsServer } from '@/stores/servers'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
@@ -165,12 +165,36 @@ const togglingMcpId = ref<string | null>(null)
 // Codex, which supports stdio + streamable HTTP MCP.
 const defaultIsCodex = computed(() => appSettings.settings?.default_engine === 'codex')
 
+// Built-in servers (devdy, google): on by default, switched off per project.
+const builtinMcp = ref<ProjectBuiltinMcp[]>([])
+const togglingBuiltin = ref<string | null>(null)
+
 async function loadProjectMcpServers() {
   loadingMcp.value = true
   try {
-    mcpServers.value = await mcpStore.listForProject(projectId.value)
+    const [servers, builtins] = await Promise.all([
+      mcpStore.listForProject(projectId.value),
+      mcpStore.listBuiltinForProject(projectId.value),
+    ])
+    mcpServers.value = servers
+    builtinMcp.value = builtins
   } finally {
     loadingMcp.value = false
+  }
+}
+
+async function handleToggleBuiltinMcp(item: ProjectBuiltinMcp) {
+  const next = !item.enabled_for_project
+  item.enabled_for_project = next
+  togglingBuiltin.value = item.name
+  try {
+    await mcpStore.setBuiltinForProject(projectId.value, item.name, next)
+    toast.success(t('projectDetail.toastSaved'))
+  } catch (e) {
+    item.enabled_for_project = !next
+    toast.error(String(e))
+  } finally {
+    togglingBuiltin.value = null
   }
 }
 
@@ -1249,6 +1273,51 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
               <p class="text-[11px] text-amber-600 dark:text-amber-400 leading-relaxed">
                 {{ t('projectDetail.codexWarning') }}
               </p>
+            </div>
+
+            <!-- Built-in servers (on by default; off per project) -->
+            <div v-if="!loadingMcp && builtinMcp.length" class="divide-y divide-border/50 border-b border-border/50">
+              <div
+                v-for="item in builtinMcp"
+                :key="item.name"
+                class="flex items-center gap-3 px-4 py-3"
+              >
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-1.5 flex-wrap">
+                    <p class="text-xs font-medium font-mono truncate">{{ item.name }}</p>
+                    <Badge tone="neutral" size="xs" class="shrink-0 uppercase tracking-wide">{{ t('projectDetail.builtinMcp') }}</Badge>
+                    <Badge
+                      v-if="!item.enabled_globally"
+                      tone="neutral"
+                      size="xs"
+                      class="shrink-0"
+                      :title="t('projectDetail.builtinMcpOffGloballyTitle')"
+                    >{{ t('projectDetail.disabled') }}</Badge>
+                  </div>
+                  <p class="text-[10px] text-muted-foreground truncate mt-0.5">mcp__{{ item.name }}__*</p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  :aria-checked="item.enabled_for_project"
+                  :disabled="togglingBuiltin !== null"
+                  class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
+                  :class="item.enabled_for_project ? 'bg-primary' : 'bg-muted'"
+                  :title="item.enabled_for_project ? t('projectDetail.disableForProject') : t('projectDetail.enableForProject')"
+                  @click="handleToggleBuiltinMcp(item)"
+                >
+                  <span
+                    class="inline-flex h-4 w-4 transform items-center justify-center rounded-full bg-white shadow transition-transform"
+                    :class="item.enabled_for_project ? 'translate-x-6' : 'translate-x-1'"
+                  >
+                    <Loader2
+                      v-if="togglingBuiltin === item.name"
+                      class="h-3 w-3 animate-spin text-primary"
+                      :stroke-width="2.5"
+                    />
+                  </span>
+                </button>
+              </div>
             </div>
 
             <!-- Loading -->

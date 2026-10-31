@@ -10,7 +10,6 @@
     "claude": "Claude Accounts",
     "engine": "Engine Paths",
     "ai": "AI & Models",
-    "mcp": "MCP Server",
     "google": "Google Account",
     "usage": "Usage & Budget",
     "devices": "Devices",
@@ -125,14 +124,6 @@
         "tier5": "Realm complete: the badge becomes more prominent and is ready for the next breakthrough effect."
       }
     }
-  },
-  "mcp": {
-    "title": "Built-in MCP Server",
-    "devdyServer": "Devdy MCP Server",
-    "enabledRecommended": "Enabled (recommended)",
-    "disabled": "Disabled",
-    "devdyHint": "Injects a built-in devdy MCP server into every run so the AI can use your own data while chatting — quick notes, cross-session recall, project context (file tree & git) and managed VPS. Tools appear as mcp__devdy__*; write & remote actions still go through the permission prompt. Takes effect on the next run.",
-    "availableTools": "Available tools"
   },
   "google": {
     "title": "Google Account (Drive + Gmail + Calendar)",

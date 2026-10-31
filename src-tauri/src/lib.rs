@@ -59,8 +59,8 @@ use commands::health::health_check;
 use commands::mascot_speak::{cancel_mascot_speak, mascot_speak, MascotSpeakState};
 use commands::mcp::{
     create_mcp_server, delete_mcp_server, export_mcp_server, get_mcp_server, import_mcp_server,
-    list_mcp_servers, list_project_mcp_servers, set_project_mcp_servers, test_mcp_connection,
-    update_mcp_server,
+    list_mcp_servers, list_project_builtin_mcp, list_project_mcp_servers, set_builtin_mcp_enabled,
+    set_project_builtin_mcp_enabled, set_project_mcp_servers, test_mcp_connection, update_mcp_server,
 };
 use commands::gcalendar::{
     create_google_calendar_event, delete_google_calendar_event, list_google_calendar_events,
@@ -490,6 +490,9 @@ pub fn run() {
             delete_mcp_server,
             list_project_mcp_servers,
             set_project_mcp_servers,
+            list_project_builtin_mcp,
+            set_project_builtin_mcp_enabled,
+            set_builtin_mcp_enabled,
             test_mcp_connection,
             export_mcp_server,
             import_mcp_server,

@@ -1218,18 +1218,137 @@ pub async fn resolve_project_mcp_servers(
     }
 }
 
-/// Whether the built-in `devdy` MCP server should be injected. Reads the
-/// `mcp_builtin_devdy_enabled` setting; defaults to `true` when unset (only an
-/// explicit `"false"` disables it).
+// ---- Built-in servers ------------------------------------------------------
+
+/// The built-in native servers injected at run launch. They can be switched
+/// off app-wide (`mcp_builtin_<name>_enabled` setting) or for one project
+/// (`project_builtin_mcp_disabled`), never deleted.
+pub const BUILTIN_MCP_NAMES: &[&str] = &["devdy", "google"];
+
+fn validate_builtin_name(name: &str) -> Result<(), String> {
+    if BUILTIN_MCP_NAMES.contains(&name) {
+        Ok(())
+    } else {
+        Err(format!("Unknown built-in MCP server: {name}"))
+    }
+}
+
+/// Whether built-in `name` is on app-wide. Reads `mcp_builtin_<name>_enabled`;
+/// defaults to `true` when unset (only an explicit `"false"` disables it).
+pub async fn builtin_mcp_globally_enabled(db: &Db, name: &str) -> bool {
+    let v = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+        .bind(format!("mcp_builtin_{name}_enabled"))
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten();
+    !matches!(v.as_deref(), Some("false"))
+}
+
+/// Whether the built-in `devdy` MCP server is on app-wide.
 pub async fn builtin_devdy_enabled(db: &Db) -> bool {
-    let v = sqlx::query_scalar::<_, String>(
-        "SELECT value FROM settings WHERE key = 'mcp_builtin_devdy_enabled'",
+    builtin_mcp_globally_enabled(db, "devdy").await
+}
+
+async fn builtin_mcp_disabled_for_project(db: &Db, name: &str, project_id: &str) -> bool {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT 1 FROM project_builtin_mcp_disabled WHERE project_id = ? AND name = ?",
     )
+    .bind(project_id)
+    .bind(name)
     .fetch_optional(db)
     .await
     .ok()
-    .flatten();
-    !matches!(v.as_deref(), Some("false"))
+    .flatten()
+    .is_some()
+}
+
+/// Whether built-in `name` should be injected into a run of `project_id`: on
+/// app-wide AND not switched off for the project.
+pub async fn builtin_mcp_enabled(db: &Db, name: &str, project_id: &str) -> bool {
+    builtin_mcp_globally_enabled(db, name).await
+        && !builtin_mcp_disabled_for_project(db, name, project_id).await
+}
+
+/// One built-in server's switches for the project MCP tab.
+#[derive(Debug, Serialize, Clone)]
+pub struct ProjectBuiltinMcp {
+    pub name: String,
+    pub enabled_globally: bool,
+    pub enabled_for_project: bool,
+}
+
+#[tauri::command]
+pub async fn list_project_builtin_mcp(
+    db: State<'_, Db>,
+    project_id: String,
+) -> Result<Vec<ProjectBuiltinMcp>, String> {
+    let mut out = Vec::with_capacity(BUILTIN_MCP_NAMES.len());
+    for name in BUILTIN_MCP_NAMES {
+        out.push(ProjectBuiltinMcp {
+            name: name.to_string(),
+            enabled_globally: builtin_mcp_globally_enabled(db.inner(), name).await,
+            enabled_for_project: !builtin_mcp_disabled_for_project(db.inner(), name, &project_id)
+                .await,
+        });
+    }
+    Ok(out)
+}
+
+/// Switch built-in `name` on/off for one project. Idempotent.
+#[tauri::command]
+pub async fn set_project_builtin_mcp_enabled(
+    db: State<'_, Db>,
+    project_id: String,
+    name: String,
+    enabled: bool,
+) -> Result<(), String> {
+    set_project_builtin_mcp(db.inner(), &project_id, &name, enabled).await
+}
+
+pub async fn set_project_builtin_mcp(
+    db: &Db,
+    project_id: &str,
+    name: &str,
+    enabled: bool,
+) -> Result<(), String> {
+    validate_builtin_name(name)?;
+    if enabled {
+        sqlx::query("DELETE FROM project_builtin_mcp_disabled WHERE project_id = ? AND name = ?")
+            .bind(project_id)
+            .bind(name)
+            .execute(db)
+            .await
+            .map_err(|e| e.to_string())?;
+    } else {
+        sqlx::query(
+            "INSERT OR IGNORE INTO project_builtin_mcp_disabled (project_id, name, created_at) \
+             VALUES (?, ?, ?)",
+        )
+        .bind(project_id)
+        .bind(name)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Switch built-in `name` on/off app-wide.
+#[tauri::command]
+pub async fn set_builtin_mcp_enabled(
+    db: State<'_, Db>,
+    name: String,
+    enabled: bool,
+) -> Result<(), String> {
+    validate_builtin_name(&name)?;
+    crate::commands::settings::set_setting(
+        db.inner(),
+        &format!("mcp_builtin_{name}_enabled"),
+        if enabled { "true" } else { "false" },
+    )
+    .await
 }
 
 /// Add the built-in `devdy` stdio MCP server (quick notes + cross-session
@@ -1284,16 +1403,21 @@ pub fn with_builtin_devdy(
 /// nothing. Tools stay distinguishable via the `drive_` / `mail_` / `cal_`
 /// prefixes applied in `sidecar-mcp/google.mjs`.
 ///
-/// No-ops (returns `mcp` unchanged) when no client creds or no accounts exist,
-/// when the script is missing, or when the map already carries a user server
-/// named `google` (user servers take precedence).
+/// No-ops (returns `mcp` unchanged) when it is switched off app-wide or for
+/// `project_id`, when no client creds or no accounts exist, when the script is
+/// missing, or when the map already carries a user server named `google` (user
+/// servers take precedence).
 pub async fn with_builtin_google(
     db: &Db,
     mcp: serde_json::Value,
     node_bin: &str,
     google_script: &std::path::Path,
+    project_id: &str,
 ) -> serde_json::Value {
     use sqlx::Row;
+    if !builtin_mcp_enabled(db, "google", project_id).await {
+        return mcp;
+    }
     let client = match secrets::get_google_client() {
         Some(c) => c,
         None => return mcp,
@@ -1433,5 +1557,51 @@ mod tests {
     #[test]
     fn stderr_reason_none_when_empty() {
         assert_eq!(stderr_reason(&lines(&["", "  "])), None);
+    }
+
+    #[tokio::test]
+    async fn builtin_switches_combine_app_wide_and_per_project() {
+        use super::{builtin_mcp_enabled, set_project_builtin_mcp};
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        for id in ["p1", "p2"] {
+            sqlx::query("INSERT INTO projects (id, name, path, created_at) VALUES (?, ?, ?, 'c')")
+                .bind(id)
+                .bind(id)
+                .bind(format!("/tmp/{id}"))
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+
+        // On by default everywhere.
+        assert!(builtin_mcp_enabled(&db, "devdy", "p1").await);
+        assert!(builtin_mcp_enabled(&db, "google", "p1").await);
+
+        // Off for p1 only, idempotently.
+        set_project_builtin_mcp(&db, "p1", "devdy", false).await.unwrap();
+        set_project_builtin_mcp(&db, "p1", "devdy", false).await.unwrap();
+        assert!(!builtin_mcp_enabled(&db, "devdy", "p1").await);
+        assert!(builtin_mcp_enabled(&db, "devdy", "p2").await);
+        assert!(builtin_mcp_enabled(&db, "google", "p1").await);
+
+        // Off app-wide wins over a project that is on.
+        crate::commands::settings::set_setting(&db, "mcp_builtin_devdy_enabled", "false")
+            .await
+            .unwrap();
+        assert!(!builtin_mcp_enabled(&db, "devdy", "p2").await);
+
+        set_project_builtin_mcp(&db, "p1", "devdy", true).await.unwrap();
+        crate::commands::settings::set_setting(&db, "mcp_builtin_devdy_enabled", "true")
+            .await
+            .unwrap();
+        assert!(builtin_mcp_enabled(&db, "devdy", "p1").await);
+
+        // Only the known built-ins can be switched.
+        assert!(set_project_builtin_mcp(&db, "p1", "github", false).await.is_err());
     }
 }

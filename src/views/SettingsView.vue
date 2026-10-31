@@ -6,7 +6,7 @@ import { invoke } from '@/lib/tauri'
 import {
   Cpu, Palette, FileText, ShieldAlert, Sparkles, Github, Gitlab, Cloud, CloudCog,
   CheckCircle2, AlertTriangle, Trash2, Plus, Pencil, Gauge, Radio,
-  RefreshCw, Loader2, BadgeCheck, Server, HardDrive, Bot, RotateCcw, UserCircle,
+  RefreshCw, Loader2, BadgeCheck, HardDrive, Bot, RotateCcw, UserCircle,
   LogIn, Star, ChevronDown, ArrowRightLeft, Inbox, GripVertical, Target,
 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
@@ -81,7 +81,6 @@ interface AppSettings {
   translate_model: string
   translate_target_lang: string
   translate_style: string
-  mcp_builtin_devdy_enabled: string
   cyber_fox_enabled: string
   cyber_fox_size: string
   cyber_fox_mode: string
@@ -122,7 +121,6 @@ const settings = ref<AppSettings>({
   translate_model: '',
   translate_target_lang: 'vi',
   translate_style: 'natural',
-  mcp_builtin_devdy_enabled: 'true',
   cyber_fox_enabled: 'false',
   cyber_fox_size: 'md',
   cyber_fox_mode: 'in-app',
@@ -448,7 +446,6 @@ const SECTIONS = [
   { id: 'claude', labelKey: 'settings.sections.claude', icon: UserCircle },
   { id: 'engine', labelKey: 'settings.sections.engine', icon: Cpu },
   { id: 'ai', labelKey: 'settings.sections.ai', icon: Sparkles },
-  { id: 'mcp', labelKey: 'settings.sections.mcp', icon: Server },
   { id: 'google', labelKey: 'settings.sections.google', icon: HardDrive },
   { id: 'usage', labelKey: 'settings.sections.usage', icon: Gauge },
   { id: 'devices', labelKey: 'settings.sections.devices', icon: Radio },
@@ -457,8 +454,8 @@ const SECTIONS = [
 ] as const
 const activeSection = ref<(typeof SECTIONS)[number]['id']>('general')
 
-// Allow deep-linking to a specific section via `/settings?section=mcp` (used by
-// the "Settings" buttons on the MCP Servers screen's built-in cards).
+// Allow deep-linking to a specific section via `/settings?section=google` (used
+// by the "Google settings" button on the MCP Servers screen's built-in row).
 const route = useRoute()
 const devicesTab = ref<DevicesTab>('remote')
 // Remote Control and Backup (once Sync) were sections of their own: now tabs of `devices`.
@@ -1752,44 +1749,6 @@ watch(() => settings.value.language, (v) => {
                   </Button>
                 </div>
               </div>
-            </div>
-          </div>
-        </Card>
-
-        <!-- MCP Server section -->
-        <Card v-show="activeSection === 'mcp'" body-class="p-4 space-y-4">
-          <template #header>
-            <Server class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-            <span class="text-xs font-semibold">{{ t('settings.mcp.title') }}</span>
-          </template>
-          <div class="space-y-1.5">
-            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-              {{ t('settings.mcp.devdyServer') }}
-            </label>
-            <AppSelect
-              size="sm"
-              v-model="settings.mcp_builtin_devdy_enabled"
-              :options="[
-                { value: 'true', label: t('settings.mcp.enabledRecommended') },
-                { value: 'false', label: t('settings.mcp.disabled') },
-              ]"
-            />
-            <p class="text-[11px] text-muted-foreground">
-              {{ t('settings.mcp.devdyHint') }}
-            </p>
-          </div>
-          <div class="rounded-md border border-border/60 bg-muted/30 p-3 space-y-2">
-            <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.mcp.availableTools') }}</div>
-            <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
-              <span>📝 notes_list / read / search / create / update / append / set_project / reorder / delete</span>
-              <span>🧠 sessions_recent / search / read</span>
-              <span>✅ todos_list / add / done / update / set_project / reorder / delete / clear_done</span>
-              <span>📁 project_info / file_tree</span>
-              <span>🔀 git_status / git_diff</span>
-              <span>🖥️ vps_list / vps_run</span>
-              <span>🧩 skills_list / read / create / update / delete</span>
-              <span>📏 rules_list / read / create / update / delete</span>
-              <span>💬 slack_threads_list / read / search / rename / set_project / delete</span>
             </div>
           </div>
         </Card>

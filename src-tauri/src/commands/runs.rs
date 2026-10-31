@@ -476,8 +476,8 @@ pub(crate) async fn start_run_inner(
                 crate::commands::mcp::resolve_project_mcp_servers(&db_pool, &project_id, "claude")
                     .await;
             // Add the built-in `devdy` MCP server (notes + recall + project + VPS)
-            // unless disabled in settings.
-            let mcp = if crate::commands::mcp::builtin_devdy_enabled(&db_pool).await {
+            // unless switched off app-wide or for this project.
+            let mcp = if crate::commands::mcp::builtin_mcp_enabled(&db_pool, "devdy", &project_id).await {
                 crate::commands::mcp::with_builtin_devdy(
                     mcp,
                     &node_bin,
@@ -490,12 +490,13 @@ pub(crate) async fn start_run_inner(
                 mcp
             };
             // Add the built-in `google` MCP server (Drive + Gmail + Calendar) when a
-            // account is connected (no-op otherwise).
+            // account is connected and it is not switched off (no-op otherwise).
             let mcp = crate::commands::mcp::with_builtin_google(
                 &db_pool,
                 mcp,
                 &node_bin,
                 &crate::runs::sidecar::resolve_mcp_script(&app, "google.mjs"),
+                &project_id,
             )
             .await;
             // Conductor runs additionally get the loopback `conductor` MCP server
@@ -601,7 +602,7 @@ pub(crate) async fn start_run_inner(
     // Codex supports stdio + streamable HTTP; legacy SSE servers land in `skipped`.
     let (codex_mcp, mcp_skipped) =
         crate::commands::mcp::resolve_project_mcp_servers(&db_pool, &project_id, "codex").await;
-    let codex_mcp = if crate::commands::mcp::builtin_devdy_enabled(&db_pool).await {
+    let codex_mcp = if crate::commands::mcp::builtin_mcp_enabled(&db_pool, "devdy", &project_id).await {
         crate::commands::mcp::with_builtin_devdy(
             codex_mcp,
             &node_bin,
@@ -618,6 +619,7 @@ pub(crate) async fn start_run_inner(
         codex_mcp,
         &node_bin,
         &crate::runs::sidecar::resolve_mcp_script(&app, "google.mjs"),
+        &project_id,
     )
     .await;
     // Conductor runs get the loopback `conductor` MCP server on Codex too.
@@ -3579,7 +3581,7 @@ pub(crate) async fn resume_run_with(
         let (codex_mcp, _skipped) =
             crate::commands::mcp::resolve_project_mcp_servers(db.inner(), &project_id, "codex")
                 .await;
-        let codex_mcp = if crate::commands::mcp::builtin_devdy_enabled(db.inner()).await {
+        let codex_mcp = if crate::commands::mcp::builtin_mcp_enabled(db.inner(), "devdy", &project_id).await {
             crate::commands::mcp::with_builtin_devdy(
                 codex_mcp,
                 &node_bin,
@@ -3596,6 +3598,7 @@ pub(crate) async fn resume_run_with(
             codex_mcp,
             &node_bin,
             &crate::runs::sidecar::resolve_mcp_script(&app, "google.mjs"),
+            &project_id,
         )
         .await;
         let codex_mcp = match (
@@ -3647,7 +3650,7 @@ pub(crate) async fn resume_run_with(
         let (mcp, _skipped) =
             crate::commands::mcp::resolve_project_mcp_servers(db.inner(), &project_id, "claude")
                 .await;
-        let mcp = if crate::commands::mcp::builtin_devdy_enabled(db.inner()).await {
+        let mcp = if crate::commands::mcp::builtin_mcp_enabled(db.inner(), "devdy", &project_id).await {
             crate::commands::mcp::with_builtin_devdy(
                 mcp,
                 &node_bin,
@@ -3664,6 +3667,7 @@ pub(crate) async fn resume_run_with(
             mcp,
             &node_bin,
             &crate::runs::sidecar::resolve_mcp_script(&app, "google.mjs"),
+            &project_id,
         )
         .await;
         // A resumed conductor must keep its `session_*` control tools. Re-inject
