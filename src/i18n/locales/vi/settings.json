@@ -475,6 +475,7 @@
       "googleAccounts": "Tài khoản Google",
       "claudeAccounts": "Tài khoản Claude",
       "notes": "Ghi chú",
+      "secretNotes": "Note bí mật",
       "todos": "Todo",
       "slackThreads": "Slack thread",
       "projects": "Project"

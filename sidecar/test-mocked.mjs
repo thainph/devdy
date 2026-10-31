@@ -211,6 +211,8 @@ const tests = {
     assert.equal(o.tools, undefined)
     assert.equal(o.strictMcpConfig, undefined)
     assert.equal(o.permissionMode, 'default')
+    // Keychain reads through the `security` CLI are denied in every session.
+    assert.ok(o.disallowedTools.includes('Bash(security find-generic-password:*)'))
   },
 }
 
