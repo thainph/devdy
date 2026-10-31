@@ -113,10 +113,11 @@ pub async fn list_aws_profiles() -> Result<Vec<AwsProfileInfo>, String> {
     Ok(out)
 }
 
-/// Refresh an SSO token by running `aws sso login --profile <name>` (browser flow)
-/// so a profile whose token expired can be re-validated from the UI.
-#[tauri::command]
-pub async fn aws_sso_login_profile(profile_name: String) -> Result<(), String> {
+/// Run `aws sso login --profile <name>` (browser flow) against the user's real
+/// `~/.aws` config and block until it finishes. Shared by the profile picker and
+/// profile-based AWS accounts. `kill_on_drop` so a timed-out login doesn't keep
+/// an `aws` process waiting on the browser forever.
+pub async fn run_sso_login(profile_name: &str) -> Result<(), String> {
     let profile_name = profile_name.trim();
     if profile_name.is_empty() {
         return Err("profile_name is required".to_string());
@@ -128,7 +129,9 @@ pub async fn aws_sso_login_profile(profile_name: String) -> Result<(), String> {
         .arg(profile_name)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    // GUI launches don't inherit the login-shell PATH; recover it so `aws` resolves.
     crate::runs::sidecar::augment_command_path(&mut cmd);
     cmd.env_remove("AWS_PROFILE");
     cmd.env_remove("AWS_DEFAULT_PROFILE");
@@ -158,4 +161,11 @@ pub async fn aws_sso_login_profile(profile_name: String) -> Result<(), String> {
         return Err(format!("AWS SSO login failed: {detail}"));
     }
     Ok(())
+}
+
+/// Refresh an SSO token for a `~/.aws/config` profile so a profile whose token
+/// expired can be re-validated from the UI.
+#[tauri::command]
+pub async fn aws_sso_login_profile(profile_name: String) -> Result<(), String> {
+    run_sso_login(&profile_name).await
 }
