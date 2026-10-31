@@ -180,6 +180,17 @@ async fn command_ack(
     accepted: bool,
     reason: Option<&str>,
 ) {
+    command_ack_for(ctx, cmd, accepted, reason, None).await;
+}
+
+/// [`command_ack`] that also names the run the command created.
+async fn command_ack_for(
+    ctx: &HandlerCtx,
+    cmd: &CmdPayload,
+    accepted: bool,
+    reason: Option<&str>,
+    run_id: Option<String>,
+) {
     let Some(command_id) = cmd.command_id.clone() else {
         return;
     };
@@ -190,6 +201,7 @@ async fn command_ack(
             action: cmd.action.clone(),
             accepted,
             reason: reason.map(str::to_string),
+            run_id,
         },
     )
     .await;
@@ -517,20 +529,40 @@ async fn handle_start_run(ctx: &HandlerCtx, cmd: &CmdPayload) {
     // project_id+text (create a session run first, mirroring the local UI). Only
     // the single bound run may be started (wrong-run gate already covers a
     // mismatching run_id; here we only accept the bound run or a fresh session).
+    let mut created = false;
     let run_id = match (cmd.run_id.clone(), cmd.project_id.clone()) {
         (Some(run_id), _) => run_id,
         (None, Some(project_id)) => {
+            // A brand-new session needs a first message, and only a multi-run
+            // Controller can navigate to a run other than its linked one.
+            let has_input = inline_mentions(cmd.text.as_deref(), &cmd.mentions)
+                .is_some_and(|t| !t.trim().is_empty())
+                || cmd.attachments.as_ref().is_some_and(|a| !a.is_empty());
+            if !ctx.multi_run || !has_input {
+                let reason = if ctx.multi_run { RejectReason::Malformed } else { RejectReason::NotAllowed };
+                reject(ctx, action, None, reason).await;
+                command_ack(ctx, cmd, false, Some(reason.as_str())).await;
+                return;
+            }
             match create_session_run_for_remote(&ctx.db, &project_id, cmd.engine.clone()).await {
-                Ok(id) => id,
+                Ok(id) => {
+                    created = true;
+                    // Stream the new run to this Controller from its first event.
+                    ctx.subscriptions.lock().await.insert(id.clone());
+                    *ctx.focus_run_id.lock().await = Some(id.clone());
+                    id
+                }
                 Err(e) => {
                     tracing::debug!(event = "remote_start_run_session_create_failed", error = %e);
                     reject(ctx, action, None, RejectReason::Malformed).await;
+                    command_ack(ctx, cmd, false, Some("malformed")).await;
                     return;
                 }
             }
         }
         (None, None) => {
             reject(ctx, action, None, RejectReason::Malformed).await;
+            command_ack(ctx, cmd, false, Some("malformed")).await;
             return;
         }
     };
@@ -652,10 +684,18 @@ async fn handle_start_run(ctx: &HandlerCtx, cmd: &CmdPayload) {
     {
         Ok(()) => {
             accept(ctx, action, Some(&run_id), None).await;
-            command_ack(ctx, cmd, true, None).await;
+            command_ack_for(ctx, cmd, true, None, created.then(|| run_id.clone())).await;
         }
         Err(e) => {
             tracing::debug!(event = "remote_start_run_failed", error = %e);
+            if created {
+                // Don't leave an empty session behind for a launch that never ran.
+                ctx.subscriptions.lock().await.remove(&run_id);
+                let _ = sqlx::query("DELETE FROM runs WHERE id = ? AND status = 'fetched'")
+                    .bind(&run_id)
+                    .execute(&ctx.db)
+                    .await;
+            }
             reject(ctx, action, Some(&run_id), RejectReason::Malformed).await;
             command_ack(ctx, cmd, false, Some("malformed")).await;
         }

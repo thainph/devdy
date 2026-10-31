@@ -204,6 +204,8 @@ export interface CommandAckKind {
   action: string
   accepted: boolean
   reason?: string | null
+  /** `start_run` that created a new session: the new run's id. */
+  run_id?: string | null
 }
 /** Correlated permission resolution. A stale acknowledgement must never clear a
  * newer permission request. */
@@ -483,6 +485,7 @@ export function parseStreamPayload(json: unknown): StreamPayload | null {
             action: o.action,
             accepted: o.accepted,
             reason: typeof o.reason === 'string' ? o.reason : null,
+            run_id: typeof o.run_id === 'string' ? o.run_id : null,
           }
         : null
     case 'permission_resolved':
@@ -898,11 +901,21 @@ export interface TurnInput {
  * (CON-05/BR-011); `permission_mode` rides along for the Host's UI/audit only.
  */
 export function sendTurnCmd(runId: string, input: TurnInput, running: boolean): CmdPayload {
-  const cmd: CmdPayload = {
-    kind: 'cmd',
-    action: running ? 'send_chat_message' : 'start_run',
-    run_id: runId,
-  }
+  return withTurn(
+    { kind: 'cmd', action: running ? 'send_chat_message' : 'start_run', run_id: runId },
+    input,
+  )
+}
+
+/**
+ * Build the command that creates a new session in `projectId` and starts it
+ * with this first turn. The Host answers with the new run's id in its ack.
+ */
+export function newSessionCmd(projectId: string, input: TurnInput): CmdPayload {
+  return withTurn({ kind: 'cmd', action: 'start_run', project_id: projectId }, input)
+}
+
+function withTurn(cmd: CmdPayload, input: TurnInput): CmdPayload {
   if (input.text) cmd.text = input.text
   if (input.engine) cmd.engine = input.engine
   if (input.model) cmd.model = input.model

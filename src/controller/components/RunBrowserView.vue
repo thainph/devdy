@@ -23,7 +23,7 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  AlertTriangle, ChevronLeft, ChevronRight, FolderGit2, Loader2, RefreshCw,
+  AlertTriangle, ChevronLeft, ChevronRight, FolderGit2, Loader2, Plus, RefreshCw,
   Search, ShieldCheck, Wifi, WifiOff, X,
 } from 'lucide-vue-next'
 import type { ConnStatus } from '../connection'
@@ -44,6 +44,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   open: [runId: string]
+  /** Start a new session in this project. */
+  'new-session': [projectId: string]
   refresh: []
   disconnect: []
   'update:selectedProjectId': [projectId: string | null]
@@ -204,6 +206,14 @@ function backToProjects(): void {
               : t('controller.browser.projectsTitle')
         }}
       </p>
+      <button
+        v-if="selectedProject && !searching"
+        class="ml-auto inline-flex items-center gap-1 h-6 shrink-0 rounded-md px-2 text-xs text-foreground/70 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+        :disabled="!isActive"
+        @click="emit('new-session', selectedProject.id)"
+      >
+        <Plus class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('controller.browser.newSession') }}
+      </button>
     </div>
 
     <!-- Search spans every project, so it is available at both levels. -->

@@ -94,6 +94,7 @@
     "pendingElsewhere": "{count} run needs your approval | {count} runs need your approval",
     "ungrouped": "Other",
     "untitled": "Run {id}",
+    "newSession": "New session",
     "projectsTitle": "Projects",
     "backToProjects": "All projects",
     "search": "Search runs",
