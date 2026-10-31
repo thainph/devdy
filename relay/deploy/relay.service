@@ -40,8 +40,7 @@ Restart=always
 RestartSec=2s
 
 # Resource limits (NFR-002/CON-02): keep the relay small.
-# 256M leaves room for forwarded sync messages (up to 4 MiB each, 16 MiB queued per target).
-MemoryMax=256M
+MemoryMax=128M
 CPUQuota=50%
 TasksMax=256
 LimitNOFILE=8192
@@ -49,8 +48,6 @@ LimitNOFILE=8192
 # Hardening (SEC-010): least privilege, no new privileges, read-only FS.
 NoNewPrivileges=true
 ProtectSystem=strict
-# Two-way sync: the directory holding RELAY_SYNC_DB must be writable.
-ReadWritePaths=/var/lib/devdy-relay
 ProtectHome=true
 PrivateTmp=true
 PrivateDevices=true
