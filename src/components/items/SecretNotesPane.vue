@@ -88,7 +88,7 @@ function forgetOpen() {
   draftTitle.value = ''
   draftContent.value = ''
   selectedId.value = null
-  recoveryKey.value = null
+  // Not the recovery key: shown only while unlocked, it must survive a lock until acknowledged.
   cancelPasswordChange()
   mustChangePassword.value = false
   mergePw.value = ''
