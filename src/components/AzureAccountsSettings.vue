@@ -257,15 +257,15 @@ onMounted(() => {
                 {{ busy[acc.id] && !loggingIn[acc.id] ? '…' : t('settings.azure.validate') }}
               </Button>
               <Button
-                :variant="needsLogin(acc) ? 'outline' : 'ghost'"
-                :size="needsLogin(acc) ? 'xs' : 'icon-sm'"
-                :title="t('settings.azure.login')"
+                v-if="loggingIn[acc.id] || needsLogin(acc)"
+                variant="outline"
+                size="xs"
                 :disabled="busy[acc.id]"
                 @click="handleLogin(acc.id)"
               >
                 <Loader2 v-if="loggingIn[acc.id]" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
                 <LogIn v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-                <template v-if="needsLogin(acc)">{{ t('settings.azure.login') }}</template>
+                {{ t('settings.azure.login') }}
               </Button>
               <Button
                 variant="ghost"
