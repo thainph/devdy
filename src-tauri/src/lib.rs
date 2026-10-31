@@ -135,7 +135,7 @@ use commands::notes::{
     add_note, delete_note, delete_notes, list_notes, reorder_notes, set_note_project, update_note,
 };
 use commands::secret_vault::{
-    secret_note_copy, secret_note_create, secret_note_delete, secret_note_from_note, secret_note_reveal, secret_note_set_project,
+    rd_copy_secret, secret_note_copy, secret_note_create, secret_note_delete, secret_note_from_note, secret_note_reveal, secret_note_set_project,
     secret_note_update, secret_notes_list, secret_notes_reorder, secret_vault_change_password, secret_vault_lock,
     secret_vault_merge_old, secret_vault_setup, secret_vault_status, secret_vault_touch, secret_vault_unlock, secret_vault_unlock_recovery,
 };
@@ -753,6 +753,7 @@ pub fn run() {
             secret_note_delete,
             secret_notes_reorder,
             secret_note_from_note,
+            rd_copy_secret,
             get_inbox_api_info,
             regenerate_inbox_api_token,
             set_inbox_api_enabled,

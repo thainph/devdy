@@ -54,7 +54,7 @@ import {
 import { firstLine } from '@/lib/itemText'
 import { refreshTray } from '@/lib/tray'
 import { secretNoteFromNote, vaultError } from '@/lib/secretVault'
-import { canOpenSecretNotes, openSecretNotesWindow } from '@/lib/secretNotesWindow'
+import { openSecretNotesWindow } from '@/lib/secretNotesWindow'
 
 const { t } = useI18n()
 const { toast } = useToast()
@@ -70,8 +70,8 @@ const kind: ItemKind = params.get('kind') === 'note' ? 'note' : 'todo'
 const initialId = params.get('id') || null
 /** The project the window was opened from: the default filter and "+ New" project. */
 const contextProjectId = ref<string | null>(params.get('projectId') || null)
-/** "Make secret" (into the vault, its own window) is local-only: not when driving another Devdy. */
-const canSecret = kind === 'note' && canOpenSecretNotes()
+/** "Make secret": into the vault, its own window. */
+const canSecret = kind === 'note'
 
 // ── Sidebar: search + project filter + kind filter (all client-side) ───────
 

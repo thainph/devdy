@@ -84,6 +84,7 @@ const LOCAL_ONLY_COMMANDS: &[&str] = &[
     "rdfile_respond",
     "rd_download_create",
     "rd_download_append",
+    "rd_copy_secret",
     "start_file_drag",
 ];
 
@@ -475,6 +476,7 @@ mod tests {
             "rdfile_respond",
             "rd_download_create",
             "rd_download_append",
+            "rd_copy_secret",
             "start_file_drag",
         ] {
             assert!(is_local_only_command(name), "{name}");

@@ -59,7 +59,7 @@ import { useChatDraftsStore } from '@/stores/chatDrafts'
 import { useToast } from '@/composables/useToast'
 import { openItemCreateWindow } from '@/lib/itemWindow'
 import { openItemListWindow } from '@/lib/itemListWindow'
-import { canOpenSecretNotes, openSecretNotesWindow } from '@/lib/secretNotesWindow'
+import { openSecretNotesWindow } from '@/lib/secretNotesWindow'
 import { applyAppMenu, isMenuActionBound, listenMenuActions, registerMenuAction } from '@/lib/appMenu'
 import { openPath, openUrl } from '@tauri-apps/plugin-opener'
 import { appDataDir, join } from '@tauri-apps/api/path'
@@ -909,9 +909,8 @@ onMounted(async () => {
                   <span class="flex-1 truncate text-left">{{ t('item.navNotes') }}</span>
                 </button>
 
-                <!-- Secret notes: their own window, on this machine only. -->
+                <!-- Secret notes: their own window. -->
                 <button
-                  v-if="canOpenSecretNotes()"
                   type="button"
                   class="relative flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors cursor-pointer select-none text-muted-foreground hover:text-foreground hover:bg-accent/50"
                   :title="t('secretNotes.nav')"

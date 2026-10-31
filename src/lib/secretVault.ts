@@ -1,7 +1,9 @@
 // Typed wrappers for the secret notes vault commands (src-tauri/src/commands/secret_vault.rs).
-// Local windows only: the commands refuse the Remote Control bridge, so hide the UI in remote mode.
+// The Secret notes window only (or, from a remote desktop, the controlled Devdy's bridge).
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { invoke as localInvoke } from '@tauri-real/core'
 import { invoke } from '@/lib/tauri'
+import { isRemoteMode } from '@/lib/ipc/remote'
 import type { SecretNoteMeta, VaultStatus } from '@/lib/secretVaultCore'
 
 export * from '@/lib/secretVaultCore'
@@ -30,8 +32,14 @@ export const vaultMergeOld = (password: string) => invoke<number>('secret_vault_
 
 export const secretNotesList = () => invoke<SecretNoteMeta[]>('secret_notes_list')
 export const secretNoteReveal = (id: string) => invoke<string>('secret_note_reveal', { id })
-/** Copies in the backend (content never reaches here); resolves to the seconds until it is cleared. */
-export const secretNoteCopy = (id: string) => invoke<number>('secret_note_copy', { id })
+/**
+ * Copies in the backend (content never reaches here); resolves to the seconds until it is cleared.
+ * Driving another Devdy, its clipboard is out of reach: reveal there, copy onto this machine's.
+ */
+export async function secretNoteCopy(id: string): Promise<number> {
+  if (!isRemoteMode()) return invoke<number>('secret_note_copy', { id })
+  return localInvoke<number>('rd_copy_secret', { content: await secretNoteReveal(id) })
+}
 export const secretNoteCreate = (title: string, content: string, projectId: string | null) =>
   invoke<SecretNoteMeta>('secret_note_create', { title, content, projectId })
 export const secretNoteUpdate = (id: string, title: string, content: string) =>
