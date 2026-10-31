@@ -613,7 +613,7 @@ pub async fn rename_entry(
             .parent()
             .ok_or_else(|| "Could not determine parent directory".to_string())?;
         let dest = parent.join(&new_name);
-        fs_policy::write(policy.as_ref(), &src)?;
+        fs_policy::change(policy.as_ref(), &src)?;
         fs_policy::write(policy.as_ref(), &dest)?;
         if dest == src {
             return Ok(rel_of(&root, &dest));
@@ -640,7 +640,7 @@ pub async fn delete_entry(
     tokio::task::spawn_blocking(move || {
         let root = canonical_root(&project_path)?;
         let target = resolve_existing(&root, &rel_path)?;
-        fs_policy::write(policy.as_ref(), &target)?;
+        fs_policy::change(policy.as_ref(), &target)?;
         if target == root {
             return Err("Cannot delete the project root".to_string());
         }
@@ -708,7 +708,7 @@ pub async fn move_entry(
             .ok_or_else(|| "Invalid source name".to_string())?;
         let dest = dir.join(&name);
         if let Some(p) = policy.as_ref() {
-            p.write(&src)?;
+            p.change(&src)?;
             p.tree(&src)?;
             p.write(&dest)?;
         }

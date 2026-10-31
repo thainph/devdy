@@ -221,10 +221,15 @@ const APP_ID_PREFIX: &str = "vn.papay.devdy";
 /// and the log folder (`remote_fs_log_dir`). Never credentials.
 const ALLOWED_APP_DIRS: &[&str] = &["slack-threads", "logs"];
 
+/// Backup stores, anywhere (a Time Machine disk holds copies of every
+/// credential store above): folder names, and bundle extensions.
+const BACKUP_NAMES: &[&str] = &["backups.backupdb", ".timemachine", ".mobilebackups", "com.apple.timemachine.localsnapshots"];
+const BACKUP_SUFFIXES: &[&str] = &[".backupbundle", ".sparsebundle"];
+
 /// macOS: the data volume's firmlink. `/Users/x` and
 /// `/System/Volumes/Data/Users/x` are the same files, and `canonicalize` keeps
 /// whichever form it was given.
-const DATA_VOLUME: &str = "/System/Volumes/Data";
+pub const DATA_VOLUME: &str = "/System/Volumes/Data";
 
 /// A file's identity: (device, inode). Matching on it sees through every
 /// alias of a path (firmlinks, hard-linked directories, case, bind mounts).
@@ -232,6 +237,11 @@ const DATA_VOLUME: &str = "/System/Volumes/Data";
 pub struct FileId(u64, u64);
 
 impl FileId {
+    /// The device the file lives on.
+    pub fn dev(&self) -> u64 {
+        self.0
+    }
+
     /// `None` when `path` does not exist (or on a platform without inodes).
     pub fn of(path: &Path) -> Option<FileId> {
         #[cfg(unix)]
@@ -355,6 +365,9 @@ impl SecretPaths {
     }
 
     fn denies_by_name(&self, path: &Path) -> bool {
+        if self.in_backup_or_other_home(path) {
+            return true;
+        }
         if self.files.iter().any(|f| same_path(path, f)) {
             return true;
         }
@@ -375,6 +388,71 @@ impl SecretPaths {
         }
         let denied = self.dirs.iter().any(|d| is_under(path, d));
         denied && !allowed
+    }
+
+    /// Whether `path` is in a backup store, or in a credential store of a home
+    /// other than this user's (`…/Users/<name>/.ssh`, `…/Users/<name>/Library/
+    /// Application Support/vn.papay.devdy*`, …) — the internal disk of another
+    /// Mac or a backup mounted under `/Volumes`. By name: those are not ours.
+    fn in_backup_or_other_home(&self, path: &Path) -> bool {
+        let p = parts(&strip_data_volume(path));
+        if p.iter().any(|c| BACKUP_NAMES.contains(&c.as_str()) || BACKUP_SUFFIXES.iter().any(|s| c.ends_with(s))) {
+            return true;
+        }
+        let own = self.home.as_deref().map(parts);
+        let split = |rel: &str| -> Vec<String> { rel.split('/').map(str::to_lowercase).collect() };
+        let starts = |rest: &[String], rel: &str| {
+            let r = split(rel);
+            rest.len() >= r.len() && rest[..r.len()] == r[..]
+        };
+        for i in 0..p.len().saturating_sub(2) {
+            if p[i] != "users" || own.as_deref() == Some(&p[..i + 2]) {
+                continue;
+            }
+            let rest = &p[i + 2..];
+            if ALLOWED_HOME_DIRS.iter().any(|d| starts(rest, d)) {
+                continue;
+            }
+            let app = starts(rest, "library/application support")
+                && rest.get(2).is_some_and(|n| n.starts_with(APP_ID_PREFIX));
+            if app
+                || SECRET_HOME_DIRS.iter().any(|d| starts(rest, d))
+                || SECRET_HOME_FILES.iter().any(|f| split(f) == rest)
+                || (rest.len() == 1 && SECRET_HOME_FILE_PREFIXES.iter().any(|pre| rest[0].starts_with(pre)))
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Every credential store this policy knows that exists, Devdy's app data
+    /// folders included: what a rename / delete must never take along.
+    pub fn protected(&self) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = self.dirs.iter().chain(&self.files).filter(|p| p.exists()).cloned().collect();
+        for parent in &self.app_parents {
+            let Ok(entries) = std::fs::read_dir(parent) else { continue };
+            out.extend(
+                entries
+                    .flatten()
+                    .filter(|e| e.file_name().to_string_lossy().to_lowercase().starts_with(APP_ID_PREFIX))
+                    .map(|e| e.path()),
+            );
+        }
+        if let Some(home) = &self.home {
+            if let Ok(entries) = std::fs::read_dir(home) {
+                out.extend(
+                    entries
+                        .flatten()
+                        .filter(|e| {
+                            let n = e.file_name().to_string_lossy().to_lowercase();
+                            SECRET_HOME_FILE_PREFIXES.iter().any(|pre| n.starts_with(pre))
+                        })
+                        .map(|e| e.path()),
+                );
+            }
+        }
+        out
     }
 
     /// Resolve `raw` (symlinks, `..`, relative to the process cwd) and refuse

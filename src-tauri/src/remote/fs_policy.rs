@@ -22,15 +22,23 @@
 //! Roots are matched by identity ((device, inode) of the target's ancestors),
 //! so `..`, symlinks, case and the `/System/Volumes/Data` firmlink cannot
 //! reach outside them; the closest root decides (a read-only folder inside
-//! HOME stays read-only). A project root above HOME (`/`, `/Users`) is
-//! ignored: it would open everything.
+//! HOME stays read-only). A registered project root that would open far more
+//! than a project — HOME's ancestors (`/`, `/Users`), a volume root, `/Volumes`
+//! — is ignored.
+//!
+//! Renaming or deleting ([`RemoteFs::change`]) is held to more: never a root,
+//! a mount point, nor a folder holding a credential store, Devdy's app data
+//! or the log folder (`~/.claude`, `~/.config`, `~/Library/…`) — moving those
+//! away would take them out of the name-based checks, deleting them would
+//! wipe them.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use tauri::{Manager, Runtime, Webview};
 
 use crate::db::Db;
-use crate::remote::guard::{from_remote_bridge, FileId, SecretPaths};
+use crate::remote::guard::{from_remote_bridge, FileId, SecretPaths, DATA_VOLUME};
 
 /// Most entries a copied / moved / imported tree may hold before the check
 /// gives up (and refuses).
@@ -52,14 +60,19 @@ struct Root {
 #[derive(Debug, Clone)]
 pub struct RemoteFs {
     roots: Vec<Root>,
+    /// Never renamed / deleted: the roots, and every folder a credential store
+    /// or the log folder lies in (the stores themselves included).
+    fixed: HashSet<FileId>,
     secrets: SecretPaths,
 }
 
 /// Roots a [`RemoteFs`] is built from.
 #[derive(Debug, Default)]
 pub struct Roots {
-    /// HOME, mounted volumes, project / repo roots and the upload dir.
+    /// HOME, mounted volumes and the upload dir.
     pub writable: Vec<PathBuf>,
+    /// Registered project / repo roots (writable, unless too wide).
+    pub projects: Vec<PathBuf>,
     /// Logs, Slack downloads.
     pub read_only: Vec<PathBuf>,
 }
@@ -71,24 +84,34 @@ fn refused(raw: &Path, why: &str) -> String {
 
 impl RemoteFs {
     pub fn new(roots: Roots, home: Option<&Path>, secrets: SecretPaths) -> Self {
-        // Above HOME: a root there would open other users' homes, or `/`.
-        let too_wide: Vec<FileId> = home
+        // Above HOME: a project root there would open other users' homes, or `/`.
+        let mut too_wide: Vec<FileId> = home
             .map(|h| h.ancestors().skip(1).filter_map(FileId::of).collect())
             .unwrap_or_default();
-        let build = |paths: Vec<PathBuf>, writable: bool| -> Vec<Root> {
+        #[cfg(target_os = "macos")]
+        too_wide.extend(FileId::of(Path::new(VOLUMES)));
+        too_wide.extend(FileId::of(Path::new(DATA_VOLUME)));
+        let build = |paths: Vec<PathBuf>, writable: bool, project: bool| -> Vec<Root> {
             paths
                 .into_iter()
                 .filter_map(|p| {
                     let path = p.canonicalize().ok()?;
                     let id = FileId::of(&path)?;
-                    let wide = too_wide.contains(&id) || path.parent().is_none();
+                    let wide = path.parent().is_none() || (project && (too_wide.contains(&id) || is_mount_point(&path)));
                     (!wide).then_some(Root { id, writable })
                 })
                 .collect()
         };
-        let mut all = build(roots.read_only, false);
-        all.extend(build(roots.writable, true));
-        RemoteFs { roots: all, secrets }
+        let read_only = roots.read_only.clone();
+        let mut all = build(roots.read_only, false, false);
+        all.extend(build(roots.writable, true, false));
+        all.extend(build(roots.projects, true, true));
+        let mut fixed: HashSet<FileId> = all.iter().map(|r| r.id).collect();
+        for p in secrets.protected().into_iter().chain(read_only) {
+            let Ok(p) = p.canonicalize() else { continue };
+            fixed.extend(p.ancestors().filter_map(FileId::of));
+        }
+        RemoteFs { roots: all, fixed, secrets }
     }
 
     /// The policy for a call from `webview`, or `None` when it is not the
@@ -105,7 +128,7 @@ impl RemoteFs {
         let paths = app.path();
         let home = paths.home_dir().ok();
         let app_data = paths.app_data_dir().ok();
-        let mut roots = Roots { writable: projects.into_iter().map(PathBuf::from).collect(), ..Roots::default() };
+        let mut roots = Roots { projects: projects.into_iter().map(PathBuf::from).collect(), ..Roots::default() };
         roots.writable.extend(home.clone());
         #[cfg(target_os = "macos")]
         roots.writable.push(PathBuf::from(VOLUMES));
@@ -156,6 +179,18 @@ impl RemoteFs {
         Ok(resolved)
     }
 
+    /// The existing entry `raw` resolved, when the caller may rename, move or
+    /// delete it: writable, and none of the [`RemoteFs::fixed`] folders (a
+    /// root, a mount point, or a folder holding a credential store / the logs).
+    pub fn change(&self, raw: &Path) -> Result<PathBuf, String> {
+        let resolved = self.write(raw)?;
+        let held = FileId::of(&resolved).is_some_and(|id| self.fixed.contains(&id));
+        if held || is_mount_point(&resolved) {
+            return Err(refused(raw, "a root or a folder holding credentials / logs, not movable"));
+        }
+        Ok(resolved)
+    }
+
     /// Before copying / moving the tree at `src` (already checked itself):
     /// every entry must be readable — a link inside could point at a
     /// credential store, and copies follow links.
@@ -177,6 +212,15 @@ impl RemoteFs {
     }
 }
 
+/// Whether `path` is where a file system is mounted (its device differs from
+/// its parent's): a volume root.
+fn is_mount_point(path: &Path) -> bool {
+    match (FileId::of(path), path.parent().and_then(FileId::of)) {
+        (Some(id), Some(parent)) => id.dev() != parent.dev(),
+        _ => false,
+    }
+}
+
 /// `raw` resolved: itself when it exists, else its (existing) parent resolved
 /// plus its name.
 fn resolve_for_write(raw: &Path) -> Option<PathBuf> {
@@ -192,6 +236,14 @@ fn resolve_for_write(raw: &Path) -> Option<PathBuf> {
 pub fn read(policy: Option<&RemoteFs>, path: &Path) -> Result<PathBuf, String> {
     match policy {
         Some(p) => p.read(path),
+        None => Ok(path.to_path_buf()),
+    }
+}
+
+/// `Ok(path)` unchanged for a local caller, else `policy.change(path)`.
+pub fn change(policy: Option<&RemoteFs>, path: &Path) -> Result<PathBuf, String> {
+    match policy {
+        Some(p) => p.change(path),
         None => Ok(path.to_path_buf()),
     }
 }
@@ -231,6 +283,7 @@ mod tests {
         let volumes = base.join("Volumes");
         let app_data = home.join("Library/Application Support/vn.papay.devdy");
         for d in [
+            home.join(".config/gh"),
             proj.join("src"),
             proj.join(".git/hooks"),
             proj.join(".claude"),
@@ -241,6 +294,8 @@ mod tests {
             app_data.join("logs"),
             app_data.join("server-keys"),
             volumes.join("USB/photos"),
+            volumes.join("USB/Users/bob/.ssh"),
+            volumes.join("TM/Backups.backupdb/mac"),
             base.join("outside"),
             base.join("uploads"),
             base.join("elsewhere-proj"),
@@ -254,25 +309,22 @@ mod tests {
             "Documents/private.txt",
             ".claude/projects/p/s.jsonl",
             ".netrc",
+            ".claude/.credentials.json",
+            ".config/gh/hosts.yml",
             "Library/Application Support/vn.papay.devdy/logs/devdy.log",
             "Library/Application Support/vn.papay.devdy/server-keys/k",
         ] {
             fs::write(home.join(f), b"x").unwrap();
         }
-        fs::write(volumes.join("USB/photos/a.jpg"), b"x").unwrap();
+        for f in ["USB/photos/a.jpg", "USB/Users/bob/notes.txt", "USB/Users/bob/.ssh/id_rsa", "TM/Backups.backupdb/mac/f"] {
+            fs::write(volumes.join(f), b"x").unwrap();
+        }
         fs::write(base.join("outside/x.txt"), b"x").unwrap();
         fs::write(base.join("elsewhere-proj/main.rs"), b"x").unwrap();
         let roots = Roots {
+            writable: vec![home.clone(), volumes.clone(), PathBuf::from("/"), base.join("uploads")],
             // A project above HOME (here: the temp base) must not open it all.
-            writable: vec![
-                proj.clone(),
-                home.clone(),
-                volumes.clone(),
-                base.join("elsewhere-proj"),
-                base.clone(),
-                PathBuf::from("/"),
-                base.join("uploads"),
-            ],
+            projects: vec![proj.clone(), base.join("elsewhere-proj"), base.clone(), PathBuf::from("/")],
             read_only: vec![app_data.join("logs")],
         };
         let fs = RemoteFs::new(roots, Some(&home), SecretPaths::new(Some(&home), Some(&app_data)));
@@ -319,6 +371,51 @@ mod tests {
             assert!(f.fs.write(&p).is_err(), "{}", p.display());
         }
         assert!(f.fs.write(&f.base.join("outside/new.txt")).is_err());
+    }
+
+    #[test]
+    fn other_homes_and_backups_on_a_volume_are_refused() {
+        let f = fx();
+        assert!(f.fs.read(&f.volumes.join("USB/Users/bob/notes.txt")).is_ok());
+        for rel in ["USB/Users/bob/.ssh/id_rsa", "USB/Users/bob/.ssh", "TM/Backups.backupdb/mac/f"] {
+            assert!(f.fs.read(&f.volumes.join(rel)).unwrap_err().starts_with("permission denied"), "{rel}");
+        }
+        assert!(f.fs.write(&f.volumes.join("USB/Users/bob/.ssh/authorized_keys")).is_err());
+    }
+
+    #[test]
+    fn folders_holding_credentials_or_logs_cannot_be_moved_or_deleted() {
+        let f = fx();
+        for p in [
+            f.home.clone(),
+            f.volumes.clone(),
+            f.home.join(".claude"),
+            f.home.join(".config"),
+            f.home.join(".ssh"),
+            f.home.join("Library"),
+            f.home.join("Library/Application Support"),
+            f.home.join("Library/Application Support/vn.papay.devdy"),
+            f.home.join("Library/Application Support/vn.papay.devdy/logs"),
+        ] {
+            assert!(f.fs.change(&p).unwrap_err().starts_with("permission denied"), "{}", p.display());
+        }
+        // Ordinary entries, files next to a store included, still move.
+        for p in [f.home.join("Documents"), f.home.join("Documents/private.txt"), f.proj.join("src"), f.home.join(".claude/projects/p")] {
+            assert!(f.fs.change(&p).is_ok(), "{}", p.display());
+        }
+    }
+
+    #[test]
+    fn wide_project_roots_are_ignored() {
+        let home = std::env::temp_dir().canonicalize().unwrap().join(format!("devdy-rfs-wide-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&home).unwrap();
+        let mut projects = vec![PathBuf::from("/"), home.parent().unwrap().to_path_buf()];
+        projects.push(PathBuf::from(DATA_VOLUME));
+        #[cfg(target_os = "macos")]
+        projects.push(PathBuf::from(VOLUMES));
+        let policy = RemoteFs::new(Roots { projects, ..Roots::default() }, Some(&home), SecretPaths::new(Some(&home), None));
+        assert!(policy.roots.is_empty(), "{:?}", policy.roots);
+        let _ = fs::remove_dir_all(&home);
     }
 
     #[test]

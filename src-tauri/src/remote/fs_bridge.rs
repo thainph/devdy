@@ -227,7 +227,8 @@ fn readable(policy: Option<&RemoteFs>, secrets: &SecretPaths, path: &str) -> Res
 }
 
 /// The entry `raw` itself (a link is not followed), when the caller may
-/// change or remove it: its folder must be writable, and so must the entry.
+/// change or remove it: its folder must be writable, and the entry movable
+/// ([`RemoteFs::change`]: not a root, nor a folder holding credentials).
 fn changeable(policy: Option<&RemoteFs>, raw: &Path) -> Result<PathBuf, String> {
     let name = raw.file_name().ok_or_else(|| format!("cannot change {}", raw.display()))?;
     let parent = raw.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
@@ -235,7 +236,7 @@ fn changeable(policy: Option<&RemoteFs>, raw: &Path) -> Result<PathBuf, String> 
     let meta = fs::symlink_metadata(&own).map_err(|e| io_err(&raw.to_string_lossy(), e))?;
     // A link is changed in its (checked) folder; its target is not touched.
     if !meta.file_type().is_symlink() {
-        fs_policy::write(policy, &own)?;
+        fs_policy::change(policy, &own)?;
     }
     Ok(own)
 }
@@ -401,6 +402,27 @@ mod tests {
         assert!(readable(p, &SecretPaths::new(Some(&home), None), &home.join("other/keep").to_string_lossy()).is_err());
         // A local caller is not restricted.
         assert!(changeable(None, &home.join("other/keep")).is_ok());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn renaming_or_deleting_a_folder_holding_credentials_is_refused() {
+        use crate::remote::fs_policy::Roots;
+        let base = std::env::temp_dir().canonicalize().unwrap().join(format!("devdy-fsb-{}", uuid::Uuid::new_v4()));
+        let home = base.join("home");
+        let app = home.join("Library/Application Support/vn.papay.devdy");
+        fs::create_dir_all(home.join(".claude")).unwrap();
+        fs::create_dir_all(app.join("server-keys")).unwrap();
+        fs::create_dir_all(home.join("Documents")).unwrap();
+        fs::write(home.join(".claude/.credentials.json"), b"x").unwrap();
+        let roots = Roots { writable: vec![home.clone()], ..Roots::default() };
+        let policy = RemoteFs::new(roots, Some(&home), SecretPaths::new(Some(&home), Some(&app)));
+        let p = Some(&policy);
+        for dir in [home.join(".claude"), home.join("Library"), home.join("Library/Application Support"), app.clone()] {
+            assert!(changeable(p, &dir).unwrap_err().starts_with("permission denied"), "{}", dir.display());
+        }
+        assert!(changeable(p, &home.join("Documents")).is_ok());
         fs::remove_dir_all(base).unwrap();
     }
 
