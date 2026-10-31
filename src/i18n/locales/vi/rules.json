@@ -1,6 +1,5 @@
 {
   "list": {
-    "title": "Rules",
     "importing": "Đang nhập…",
     "importMd": "Nhập .md",
     "newRule": "Rule mới",
@@ -35,9 +34,7 @@
     "toastReappliedPartial": "Đã áp dụng lại {applied} lượt dự án.\n\nThất bại {failed}:\n{details}"
   },
   "editor": {
-    "backToRules": "Quay lại Rules",
     "newRule": "Rule mới",
-    "editing": "— đang sửa",
     "target": "Đích",
     "targetBoth": "Cả hai",
     "targetClaude": "Claude",
@@ -45,11 +42,7 @@
     "insertTemplate": "Chèn mẫu frontmatter",
     "template": "Mẫu",
     "openFolder": "Mở thư mục rules trong Finder",
-    "openInFinder": "Mở trong Finder",
-    "save": "Lưu",
     "saving": "Đang lưu…",
-    "markdown": "Markdown",
-    "preview": "Xem trước",
     "toastSaved": "Đã lưu",
     "errMissingName": "Frontmatter thiếu trường bắt buộc: name",
     "errNameSlug": "name phải là slug (chữ cái, số, gạch ngang, gạch dưới)",
@@ -60,5 +53,30 @@
     "codexModeSkill": "Skill",
     "codexModeHint": "Cách Codex nhận rule này: nhúng vào AGENTS.md (luôn được nạp) hoặc thành skill trong .agents/skills (chỉ nạp khi liên quan — hợp với rule dài, theo tình huống).",
     "errCodexModeInvalid": "codex_mode phải là một trong: inline, skill"
+  },
+  "detail": {
+    "searchPlaceholder": "Tìm rule",
+    "filterAll": "Tất cả",
+    "filterClaude": "Claude",
+    "filterCodex": "Codex",
+    "allGroups": "Tất cả nhóm",
+    "noSelection": "Chọn một rule, hoặc tạo rule mới",
+    "renameHint": "Bấm để đổi tên (sửa name trong frontmatter)",
+    "metaDraft": "Chưa lưu",
+    "metaUpdated": "Cập nhật {age}",
+    "metaTarget": "Đích: {target}",
+    "metaCodex": "Codex qua {mode}",
+    "metaGroups": "Nhóm: {names}",
+    "delivery": "Phân phối",
+    "deliveryHint": "Engine nào nhận rule này, và Codex nạp nó theo cách nào.",
+    "content": "Nội dung",
+    "showPreview": "Hiện xem trước",
+    "hidePreview": "Ẩn xem trước",
+    "saveHint": "Lưu (⌘/Ctrl+S)",
+    "moreActions": "Thao tác khác",
+    "discardDraft": "Bỏ bản nháp",
+    "confirmDiscardTitle": "Bỏ thay đổi?",
+    "confirmDiscardMessage": "Rule này có thay đổi chưa lưu. Bỏ các thay đổi đó?",
+    "confirmDiscard": "Bỏ"
   }
 }

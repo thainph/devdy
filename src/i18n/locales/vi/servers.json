@@ -1,7 +1,5 @@
 {
   "list": {
-    "title": "Servers",
-    "newServer": "Server mới",
     "empty": {
       "title": "Chưa có server nào",
       "hint": "Thêm một VPS một lần, sau đó kiểm tra kết nối và tái sử dụng cho nhiều dự án"
@@ -17,15 +15,21 @@
       "message": "Xóa server \"{label}\"? Thao tác này cũng xóa passphrase đã lưu. Không thể hoàn tác."
     },
     "toast": {
-      "deleted": "Đã xóa"
-    }
+      "deleted": "Đã xóa",
+      "online": "{label} đang trực tuyến",
+      "offline": "{label} ngoại tuyến: {message}",
+      "testAllSummary": "{online} trực tuyến / {offline} ngoại tuyến"
+    },
+    "new": "Mới",
+    "searchPlaceholder": "Tìm nhãn, host, user, thẻ",
+    "allTags": "Tất cả thẻ",
+    "filterAll": "Tất cả",
+    "untagged": "Chưa gắn thẻ",
+    "testAll": "Kiểm tra tất cả kết nối",
+    "noSelection": "Chọn một server, hoặc tạo server mới"
   },
   "editor": {
-    "backTitle": "Quay lại Servers",
-    "newTitle": "Server mới",
-    "editing": "— đang chỉnh sửa",
     "saving": "Đang lưu…",
-    "general": "Chung",
     "label": "Nhãn",
     "labelPlaceholder": "Production SG",
     "host": "Host",
@@ -34,9 +38,7 @@
     "username": "Tên đăng nhập",
     "usernamePlaceholder": "root",
     "tags": "Thẻ",
-    "tagsPlaceholder": "prod, sg (phân tách bằng dấu phẩy)",
     "authentication": "Xác thực",
-    "authMethod": "Phương thức xác thực",
     "authOptionAgent": "agent (ssh-agent)",
     "authOptionKey": "key (private key file)",
     "agentHint": "Dùng ssh-agent đang chạy; không cần đường dẫn khóa.",
@@ -53,7 +55,6 @@
     "passphraseOptional": "tùy chọn",
     "passphraseHint": "Chỉ lưu trong keychain của hệ điều hành. Để trống để giữ giá trị hiện tại.",
     "connection": "Kết nối",
-    "testConnection": "Kiểm tra kết nối",
     "testing": "Đang kiểm tra…",
     "saveFirst": "Lưu trước để bật kiểm tra",
     "selectKeyDialog": "Chọn khóa riêng SSH",
@@ -64,10 +65,28 @@
       "portRange": "Port phải nằm trong khoảng từ 1 đến 65535",
       "keyRequired": "Phương thức xác thực 'key' cần một file khóa riêng"
     },
-    "serverNotFound": "Không tìm thấy server",
     "saveFirstThenTest": "Lưu server trước, sau đó kiểm tra kết nối.",
     "toast": {
       "saved": "Đã lưu"
     }
+  },
+  "detail": {
+    "newTitle": "Server mới",
+    "renameHint": "Bấm để đổi tên",
+    "unsavedMeta": "Chưa lưu — lưu để kiểm tra kết nối",
+    "checked": "kiểm tra {age}",
+    "test": "Kiểm tra",
+    "moreActions": "Thao tác khác",
+    "copySsh": "Sao chép lệnh SSH",
+    "sshCopied": "Đã sao chép lệnh SSH",
+    "duplicate": "Nhân bản",
+    "copyLabel": "{label} bản sao",
+    "tagsHint": "Thẻ đầu tiên dùng để nhóm server ở thanh bên.",
+    "tagsPlaceholder": "Thêm thẻ (Enter hoặc dấu phẩy)",
+    "lastTest": "Kết quả kiểm tra gần nhất",
+    "notTested": "Chưa kiểm tra trong phiên này.",
+    "discardTitle": "Bỏ thay đổi?",
+    "discardMessage": "Server này có thay đổi chưa lưu. Bỏ các thay đổi đó?",
+    "discard": "Bỏ thay đổi"
   }
 }

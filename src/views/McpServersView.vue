@@ -1,40 +1,79 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+// MCP servers, Notes-style master-detail:
+//
+//   ┌ sidebar: search · import · refresh   │ detail: name / transport · enabled │
+//   │ + New, All | Enabled | Disabled      │ · added   [switch][Test][Save][⋯]  │
+//   │ Built-in · stdio · http · sse ·      │ General / Process+Environment or   │
+//   │ Recommended folders                  │ Endpoint+Headers                   │
+//   └──────────────────────────────────────┴────────────────────────────────────┘
+//
+// Folders are by transport: it decides the whole shape of a server's config
+// (process + env vs. URL + headers) and Codex support (sse is Claude-only),
+// while enabled/disabled is already the segmented filter. The built-in native
+// servers and the not-yet-added catalog are rows too, with a read-only pane.
+//
+// Selection lives in the URL (`?id=` a server or a `builtin:` / `catalog:`
+// row, `?new=1` a blank draft) — never anything secret.
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useActivatedRefresh } from '@/composables/useActivatedRefresh'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { invoke } from '@tauri-apps/api/core'
-import { useMcpServersStore, type McpServer } from '@/stores/mcpServers'
-import { useAppSettingsStore } from '@/stores/appSettings'
 import { open, save } from '@tauri-apps/plugin-dialog'
-import { Button, Card, Badge } from '@/components/ui'
+import { Download, Plus, Power, RotateCw, Server, Settings2, Trash2, Upload } from 'lucide-vue-next'
+import { Button } from '@/components/ui'
+import ListDetailSidebar from '@/components/listDetail/ListDetailSidebar.vue'
+import DetailEmpty from '@/components/listDetail/DetailEmpty.vue'
+import McpServerDetail from '@/components/mcp/McpServerDetail.vue'
+import McpInfoDetail from '@/components/mcp/McpInfoDetail.vue'
+import { useActivatedRefresh } from '@/composables/useActivatedRefresh'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
-import { Plus, Upload, Download, Pencil, Trash2, Server, CalendarDays, Power, AlertTriangle, Sparkles, Settings2 } from 'lucide-vue-next'
+import { useMcpServersStore, type McpServer } from '@/stores/mcpServers'
+import { useAppSettingsStore } from '@/stores/appSettings'
+import {
+  MCP_CATALOG,
+  availableCatalog,
+  builtinRow,
+  catalogRow,
+  copyName,
+  duplicateForm,
+  formFromServer,
+  groupMcpRows,
+  matchesMcpRow,
+  serverRow,
+  type BuiltinInfo,
+  type CatalogEntry,
+  type McpFilter,
+  type McpForm,
+  type McpRow,
+} from '@/lib/mcpRows'
 
 // Named explicitly: <KeepAlive :include> in App.vue matches on component name,
 // and an inferred name is a build detail that minification can change.
 defineOptions({ name: 'McpServersView' })
 
+const route = useRoute()
 const router = useRouter()
 const store = useMcpServersStore()
 const appSettings = useAppSettingsStore()
 const { confirm } = useConfirm()
 const { toast } = useToast()
 const { t } = useI18n()
+
 const deletingId = ref<string | null>(null)
 const togglingId = ref<string | null>(null)
 const importing = ref(false)
 const addingName = ref<string | null>(null)
 
-// The built-in `devdy` MCP server is injected at run launch (not a row in the
-// list); it's toggled from Settings → MCP Server.
+// ── Built-in native servers ─────────────────────────────────────────────────
+
+// The built-in `devdy` MCP server is injected at run launch (not a stored
+// server); it's toggled from Settings → MCP Server.
 const builtinEnabled = computed(() => appSettings.settings?.mcp_builtin_devdy_enabled !== 'false')
 
 // The Google-backed built-in is injected at run launch only when an OAuth client
 // is configured AND at least one account is connected (mirrors the backend
-// `with_builtin_google` gate). Fetch that status so the cards below can reflect
-// it accurately instead of pretending only `devdy` exists.
+// `with_builtin_google` gate). Fetch that status so its row reflects it.
 const googleAccountCount = ref(0)
 const googleHasClient = ref(false)
 async function loadGoogleStatus() {
@@ -48,94 +87,173 @@ async function loadGoogleStatus() {
   }
 }
 
-// The native Devdy MCP servers, each with its real runtime status so the screen
-// shows the truth (active / disabled / needs setup) rather than a single
-// hardcoded devdy card.
-type NativeStatus = { tone: 'success' | 'neutral' | 'warning'; label: string }
-interface NativeServer {
-  name: string
-  tools: string
+interface Builtin extends BuiltinInfo {
   description: string
-  status: NativeStatus
+  status: string
+  /** Settings section that configures it. */
   section: string
 }
-const nativeServers = computed<NativeServer[]>(() => {
-  const google: NativeStatus = !googleHasClient.value
-    ? { tone: 'warning', label: 'Built-in · needs OAuth client' }
-    : googleAccountCount.value === 0
-      ? { tone: 'warning', label: 'Built-in · no account' }
-      : { tone: 'success', label: 'Built-in · active' }
-  return [
-    {
-      name: 'devdy',
-      tools: 'mcp__devdy__*',
-      description:
-        'Auto-injected into every run. Gives the AI your notes, cross-session recall, project context (file tree & git) and managed VPS.',
-      status: builtinEnabled.value
-        ? { tone: 'success', label: 'Built-in · active' }
-        : { tone: 'neutral', label: 'Built-in · disabled' },
-      section: 'mcp',
-    },
-    {
-      name: 'google',
-      tools: 'mcp__google__*',
-      description:
-        'Drive (drive_*): list, search, read, upload, share, delete files. Gmail (mail_*): search, read, attachments, send, reply, labels. Calendar (cal_*): view events, check free slots, create and update meetings. Injected when a Google account is connected.',
-      status: google,
-      section: 'google',
-    },
-  ]
+const builtins = computed<Builtin[]>(() => {
+  const devdy: Builtin = {
+    name: 'devdy',
+    tools: 'mcp__devdy__*',
+    tone: builtinEnabled.value ? 'success' : 'neutral',
+    status: builtinEnabled.value ? t('mcp.list.builtin.active') : t('mcp.list.builtin.disabled'),
+    description: t('mcp.list.builtin.description', { tools: 'mcp__devdy__*' }),
+    section: 'mcp',
+  }
+  const googleState = !googleHasClient.value ? 'needsClient' : googleAccountCount.value === 0 ? 'noAccount' : 'active'
+  const google: Builtin = {
+    name: 'google',
+    tools: 'mcp__google__*',
+    tone: googleState === 'active' ? 'success' : 'warning',
+    status: t(`mcp.list.builtin.${googleState}`),
+    description: t('mcp.list.builtin.googleDescription', { tools: 'mcp__google__*' }),
+    section: 'google',
+  }
+  return [devdy, google]
 })
 
-// One-click catalog of commonly useful third-party MCP servers. Adding one
-// creates a disabled-secrets stub the user finishes in the editor (args/paths/
-// tokens). Names must be unique, so already-added entries are filtered out.
-interface CatalogEntry {
-  name: string
-  description: string
-  transport: McpServer['transport']
-  command?: string
-  args?: string[]
-  url?: string
-  env?: string[]
-}
-const CATALOG: CatalogEntry[] = [
-  { name: 'sequential-thinking', description: 'Structured step-by-step reasoning scratchpad.', transport: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-sequential-thinking'] },
-  { name: 'context7', description: 'Up-to-date library docs to reduce hallucinated APIs.', transport: 'http', url: 'https://mcp.context7.com/mcp' },
-  { name: 'slack', description: 'Read Slack channels & threads (user token, xoxp-).', transport: 'stdio', command: 'npx', args: ['-y', 'slack-mcp-server@latest', '--transport', 'stdio'], env: ['SLACK_MCP_XOXP_TOKEN'] },
-  { name: 'notion', description: 'Search & edit Notion pages and databases (integration secret).', transport: 'stdio', command: 'npx', args: ['-y', '@notionhq/notion-mcp-server'], env: ['NOTION_TOKEN'] },
-  { name: 'atlassian', description: 'Jira issues & Confluence pages. Requires uv (uvx).', transport: 'stdio', command: 'uvx', args: ['mcp-atlassian'], env: ['JIRA_URL', 'JIRA_USERNAME', 'JIRA_API_TOKEN', 'CONFLUENCE_URL', 'CONFLUENCE_USERNAME', 'CONFLUENCE_API_TOKEN'] },
-  { name: 'figma', description: 'Design context from Figma Desktop (enable the MCP server in Dev Mode).', transport: 'http', url: 'http://127.0.0.1:3845/mcp' },
-  { name: 'chrome-devtools', description: 'Inspect console, network & performance in a live Chrome.', transport: 'stdio', command: 'npx', args: ['-y', 'chrome-devtools-mcp@latest'] },
-  { name: 'playwright', description: 'Drive a real browser for testing & scraping.', transport: 'stdio', command: 'npx', args: ['-y', '@playwright/mcp@latest'] },
-]
-const catalogAvailable = computed(() => CATALOG.filter(c => !store.items.some(s => s.name === c.name)))
+// ── Sidebar rows ────────────────────────────────────────────────────────────
 
-async function addFromCatalog(item: CatalogEntry) {
-  addingName.value = item.name
-  try {
-    await store.createServer({
-      name: item.name,
-      description: item.description,
-      transport: item.transport,
-      command: item.command ?? null,
-      args: item.args ?? [],
-      url: item.url ?? null,
-      env: (item.env ?? []).map(key => ({ key, value: '' })),
-      headers: [],
-      enabled: true,
-    })
-    toast.success(t('mcp.list.toast.added', { name: item.name }))
-  } catch (e) {
-    toast.error(String(e))
-  } finally {
-    addingName.value = null
-  }
-}
+const search = ref('')
+const filter = ref('')
+
+const filters = computed(() => [
+  { value: '', label: t('mcp.list.filter.all') },
+  { value: 'enabled', label: t('mcp.list.filter.enabled') },
+  { value: 'disabled', label: t('mcp.list.filter.disabled') },
+])
+
+const catalog = computed(() => availableCatalog(MCP_CATALOG, store.items))
+
+const allRows = computed<McpRow[]>(() => [
+  ...builtins.value.map((b) => builtinRow(b, b.description)),
+  ...store.items.map(serverRow),
+  ...catalog.value.map(catalogRow),
+])
+
+const groups = computed(() =>
+  groupMcpRows(
+    allRows.value.filter((r) => matchesMcpRow(r, search.value, filter.value as McpFilter)),
+    {
+      builtin: t('mcp.list.groups.builtin'),
+      catalog: t('mcp.list.recommended'),
+      transport: (tr) => t(`mcp.list.groups.${tr}`),
+    },
+  ),
+)
 
 // The MCP list is global (not project-scoped). Codex supports stdio and
 // streamable HTTP; legacy SSE remains Claude-only.
 const defaultIsCodex = computed(() => appSettings.settings?.default_engine === 'codex')
+
+// ── Selection (URL query) ───────────────────────────────────────────────────
+
+const selectedId = ref<string | null>(null)
+const isNew = ref(false)
+/** Bumped by "+ New" so a fresh draft remounts the pane. */
+const draftKey = ref(0)
+/** A draft's prefill (Duplicate); kept in memory, never in the URL. */
+const draftSeed = ref<McpForm | null>(null)
+const detailRef = ref<InstanceType<typeof McpServerDetail> | null>(null)
+
+function queryToString(q: { id: string | null; isNew: boolean }): string {
+  return q.isNew ? 'new' : q.id ?? ''
+}
+
+/** Puts the selection in the URL; the refs change first so the watcher below sees no news. */
+function setSelection(id: string | null, draft = false) {
+  selectedId.value = draft ? null : id
+  isNew.value = draft
+  if (!draft) draftSeed.value = null
+  router.replace({ path: '/mcp', query: draft ? { new: '1' } : id ? { id } : {} }).catch(() => {})
+}
+
+function restoreQuery() {
+  router
+    .replace({ path: '/mcp', query: isNew.value ? { new: '1' } : selectedId.value ? { id: selectedId.value } : {} })
+    .catch(() => {})
+}
+
+// KeepAlive keeps this view alive on other routes: only /mcp's own query
+// drives the selection. A bare /mcp (the nav link) restores the current one; a
+// different ?id= / ?new=1 from outside (e.g. an old editor URL) asks first
+// when there are unsaved edits.
+watch(
+  () => [route.name, route.query.id, route.query.new],
+  async () => {
+    if (route.name !== 'mcp') return
+    const id = typeof route.query.id === 'string' && route.query.id ? route.query.id : null
+    const incoming = { id, isNew: !id && route.query.new === '1' }
+    const current = { id: selectedId.value, isNew: isNew.value }
+    if (!incoming.id && !incoming.isNew) {
+      if (current.id || current.isNew) restoreQuery()
+      return
+    }
+    if (queryToString(incoming) === queryToString(current)) return
+    if (!(await confirmDiscard())) {
+      restoreQuery()
+      return
+    }
+    if (incoming.isNew) draftKey.value++
+    selectedId.value = incoming.id
+    isNew.value = incoming.isNew
+    if (!incoming.isNew) draftSeed.value = null
+  },
+  { immediate: true },
+)
+
+const selectedServer = computed(() => store.items.find((s) => s.id === selectedId.value) ?? null)
+const selectedRow = computed(() => allRows.value.find((r) => r.id === selectedId.value) ?? null)
+const selectedEntry = computed(() =>
+  selectedRow.value?.kind === 'catalog' ? MCP_CATALOG.find((c) => c.name === selectedRow.value?.name) ?? null : null,
+)
+const selectedBuiltin = computed(() =>
+  selectedRow.value?.kind === 'builtin' ? builtins.value.find((b) => b.name === selectedRow.value?.name) ?? null : null,
+)
+
+/** Leaving unsaved edits takes a confirm; true = go ahead. */
+async function confirmDiscard(): Promise<boolean> {
+  if (!detailRef.value?.dirty) return true
+  return confirm({
+    title: t('mcp.detail.confirmDiscard.title'),
+    message: t('mcp.detail.confirmDiscard.message'),
+    confirmLabel: t('mcp.detail.confirmDiscard.confirm'),
+  })
+}
+
+async function select(id: string) {
+  if (id === selectedId.value && !isNew.value) return
+  if (!(await confirmDiscard())) return
+  setSelection(id)
+}
+
+/** Opens a blank (or prefilled) draft; false = the user kept their edits. */
+async function startNew(seed: McpForm | null = null): Promise<boolean> {
+  if (!(await confirmDiscard())) return false
+  draftKey.value++
+  setSelection(null, true)
+  draftSeed.value = seed
+  return true
+}
+
+// The selected row vanished (deleted elsewhere, or a catalog entry got added
+// under the same name): clear the selection once the store has settled.
+watch(
+  () => [store.loading, allRows.value] as const,
+  ([loading]) => {
+    if (loading || route.name !== 'mcp' || !selectedId.value) return
+    if (!selectedRow.value) setSelection(null)
+  },
+)
+
+// ── Data ────────────────────────────────────────────────────────────────────
+
+function refresh() {
+  void store.fetchServers()
+  void loadGoogleStatus()
+}
 
 onMounted(() => {
   store.fetchServers()
@@ -146,14 +264,9 @@ onMounted(() => {
 // Cached by <KeepAlive> (App.vue): onMounted fires once for the app's whole
 // lifetime, so re-show the screen with fresh data instead of whatever it read
 // the very first time.
-useActivatedRefresh(() => {
-  store.fetchServers()
-  loadGoogleStatus()
-})
+useActivatedRefresh(refresh)
 
-function isSse(server: McpServer): boolean {
-  return server.transport === 'sse'
-}
+// ── Actions ─────────────────────────────────────────────────────────────────
 
 async function handleImport() {
   const selected = await open({
@@ -163,8 +276,9 @@ async function handleImport() {
   if (!selected) return
   importing.value = true
   try {
-    await store.importServer(selected as string)
+    const server = await store.importServer(selected as string)
     toast.success(t('mcp.list.toast.imported'))
+    void select(server.id)
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -188,14 +302,16 @@ async function handleExport(server: McpServer) {
 
 async function handleDelete(server: McpServer) {
   if (!(await confirm({
-    title: 'Delete MCP server',
-    message: `Delete MCP server "${server.name}"? This also removes its stored secrets. This cannot be undone.`,
-    confirmLabel: 'Delete',
+    title: t('mcp.list.confirmDelete.title'),
+    message: t('mcp.list.confirmDelete.message', { name: server.name }),
+    confirmLabel: t('common.delete'),
   }))) return
   deletingId.value = server.id
   try {
     await store.deleteServer(server.id)
-    toast.success('Deleted')
+    // The delete confirm covers any unsaved edits of the open server.
+    if (selectedId.value === server.id) setSelection(null)
+    toast.success(t('mcp.list.toast.deleted'))
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -220,7 +336,7 @@ async function handleToggleEnabled(server: McpServer) {
       headers: server.header_keys.map(key => ({ key })),
       enabled: !server.enabled,
     })
-    toast.success(server.enabled ? 'Disabled' : 'Enabled')
+    toast.success(server.enabled ? t('mcp.list.toast.disabled') : t('mcp.list.toast.enabled'))
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -228,214 +344,236 @@ async function handleToggleEnabled(server: McpServer) {
   }
 }
 
-function formatDate(iso: string) {
-  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+function handleDuplicate(server: McpServer) {
+  const seed = duplicateForm(formFromServer(server), copyName(server.name, store.items.map((s) => s.name)))
+  void startNew(seed).then((opened) => {
+    if (opened && (server.env_keys.length || server.header_keys.length)) toast.info(t('mcp.detail.duplicated'))
+  })
+}
+
+// One-click add from the catalog: a stub with empty secret values, selected
+// right away so the user finishes it in the detail pane.
+async function addFromCatalog(item: CatalogEntry) {
+  addingName.value = item.name
+  try {
+    const server = await store.createServer({
+      name: item.name,
+      description: item.description,
+      transport: item.transport,
+      command: item.command ?? null,
+      args: item.args ?? [],
+      url: item.url ?? null,
+      env: (item.env ?? []).map(key => ({ key, value: '' })),
+      headers: [],
+      enabled: true,
+    })
+    toast.success(t('mcp.list.toast.added', { name: item.name }))
+    void select(server.id)
+  } catch (e) {
+    toast.error(String(e))
+  } finally {
+    addingName.value = null
+  }
+}
+
+function catalogEntry(row: McpRow): CatalogEntry | null {
+  return MCP_CATALOG.find((c) => c.name === row.name) ?? null
+}
+
+function serverOf(row: McpRow): McpServer | null {
+  return store.items.find((s) => s.id === row.id) ?? null
+}
+
+function openSettings(row: McpRow) {
+  const section = builtins.value.find((b) => b.name === row.name)?.section
+  if (section) router.push({ path: '/settings', query: { section } })
+}
+
+function onSaved(id: string) {
+  if (id !== selectedId.value) setSelection(id)
+}
+
+/** Status dot of a row: on, off, or a built-in that needs setup. */
+function dotClass(row: McpRow): string {
+  if (row.tone === 'warning') return 'bg-amber-500'
+  if (row.kind === 'catalog') return 'bg-transparent border border-muted-foreground/40'
+  return row.enabled ? 'bg-emerald-500' : 'bg-muted-foreground/40'
 }
 </script>
 
 <template>
-  <div class="flex flex-col h-full">
-    <!-- Page header -->
-    <div class="flex items-center justify-between px-6 h-13 border-b border-border/60 shrink-0">
-      <div class="flex items-center gap-2">
-        <h1 class="text-sm font-semibold">MCP Servers</h1>
-        <span
-          v-if="!store.loading && store.items.length > 0"
-          class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-medium text-muted-foreground"
-        >
-          {{ store.items.length }}
-        </span>
-      </div>
-      <div class="flex items-center gap-2">
+  <div class="flex h-full min-h-0">
+    <ListDetailSidebar
+      v-model:search="search"
+      v-model:filter="filter"
+      :groups="groups"
+      :selected-id="isNew ? null : selectedId"
+      collapse-key="mcp.collapsed"
+      :new-label="t('mcp.list.newServer')"
+      :search-placeholder="t('mcp.list.searchPlaceholder')"
+      :filters="filters"
+      :loading="store.loading"
+      :error="store.error"
+      :flat-when-single="false"
+      @select="select"
+      @add="startNew()"
+      @retry="refresh"
+    >
+      <template #toolbar>
         <Button
           variant="outline"
+          size="icon-sm"
+          class="shrink-0"
           :disabled="importing"
+          :title="importing ? t('mcp.list.importing') : t('mcp.list.import')"
+          :aria-label="t('mcp.list.import')"
           @click="handleImport"
         >
           <Upload class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ importing ? 'Importing…' : 'Import' }}
         </Button>
-        <Button @click="router.push('/mcp/new')">
-          <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-          New Server
-        </Button>
-      </div>
-    </div>
-
-    <!-- Content -->
-    <div class="flex-1 overflow-auto p-6 space-y-6">
-      <!-- Built-in native servers (injected at run launch, not list rows) -->
-      <div class="space-y-2">
-        <div class="flex items-center gap-2">
-          <Sparkles class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.75" />
-          <h2 class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Built-in servers</h2>
-        </div>
-        <div
-          v-for="native in nativeServers"
-          :key="native.name"
-          class="rounded-lg border p-4 flex items-start gap-3"
-          :class="native.status.tone === 'success' ? 'border-primary/30 bg-primary/5' : 'border-border/60 bg-muted/20 opacity-70'"
+        <Button
+          variant="outline"
+          size="icon-sm"
+          class="shrink-0"
+          :disabled="store.loading"
+          :title="t('common.refresh')"
+          :aria-label="t('common.refresh')"
+          @click="refresh"
         >
-          <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 border border-primary/15 text-primary">
-            <Server class="h-4.5 w-4.5" :stroke-width="1.75" />
-          </div>
-          <div class="min-w-0 flex-1">
-            <div class="flex items-center gap-2 flex-wrap">
-              <p class="text-sm font-semibold font-mono leading-tight">{{ native.name }}</p>
-              <Badge :tone="native.status.tone" size="xs" class="shrink-0">
-                {{ native.status.label }}
-              </Badge>
-            </div>
-            <p class="text-xs text-muted-foreground mt-1 leading-relaxed">
-              {{ native.description }} Exposed as <code>{{ native.tools }}</code> tools.
-            </p>
-          </div>
-          <Button variant="outline" size="sm" class="shrink-0" @click="router.push({ path: '/settings', query: { section: native.section } })">
-            <Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-            Settings
-          </Button>
-        </div>
-      </div>
-
-      <!-- Loading skeleton -->
-      <div v-if="store.loading" class="grid grid-cols-2 xl:grid-cols-3 gap-3">
-        <div v-for="i in 5" :key="i" class="h-27 rounded-lg border border-border bg-card animate-pulse" />
-      </div>
-
-      <!-- Error -->
-      <div v-else-if="store.error" class="p-4 bg-destructive/10 text-destructive rounded-lg text-sm border border-destructive/20">
-        {{ store.error }}
-      </div>
-
-      <!-- Empty state -->
-      <div v-else-if="store.items.length === 0" class="flex flex-col items-center justify-center h-full min-h-80 text-center">
-        <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-muted mb-4">
-          <Server class="h-6 w-6 text-muted-foreground" :stroke-width="1.5" />
-        </div>
-        <p class="text-sm font-medium">No MCP servers yet</p>
-        <p class="text-xs text-muted-foreground mt-1 max-w-50">Define an MCP server once, then enable it per project</p>
-        <Button class="mt-4" @click="router.push('/mcp/new')">
-          <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-          New Server
+          <RotateCw class="h-3.5 w-3.5" :class="{ 'animate-spin': store.loading }" :stroke-width="1.75" />
         </Button>
-      </div>
+      </template>
 
-      <!-- Cards grid -->
-      <div v-else class="grid grid-cols-2 xl:grid-cols-3 gap-3">
-        <Card
-          v-for="server in store.items"
-          :key="server.id"
-          class="group relative flex flex-col transition-all duration-150 cursor-pointer hover:border-primary/40 hover:shadow-[0_1px_3px_0_rgb(0_0_0/0.08)] hover:-translate-y-0.5"
-          body-class="flex flex-col flex-1 p-4"
-          :class="!server.enabled && 'opacity-60'"
-          @click="router.push(`/mcp/${server.id}/edit`)"
-        >
-          <!-- hover accent line -->
-          <span class="absolute inset-x-0 top-0 h-0.5 origin-left scale-x-0 bg-linear-to-r from-primary to-primary/30 transition-transform duration-200 group-hover:scale-x-100" />
-
-          <!-- Icon + name/desc -->
-          <div class="flex items-start gap-3 mb-3">
-            <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 border border-primary/15 text-primary transition-colors group-hover:bg-primary/15 group-hover:border-primary/25">
-              <Server class="h-4.5 w-4.5" :stroke-width="1.75" />
-            </div>
-            <div class="min-w-0 flex-1">
-              <div class="flex items-center gap-1.5 flex-wrap">
-                <p class="text-sm font-semibold font-mono truncate leading-tight">{{ server.name }}</p>
-                <Badge
-                  v-if="isSse(server) && defaultIsCodex"
-                  tone="warning"
-                  size="xs"
-                  class="shrink-0"
-                  title="SSE transport is only supported by Claude. Codex runs will skip this server."
-                >
-                  <AlertTriangle class="h-2.5 w-2.5" :stroke-width="2" />
-                  Claude only
-                </Badge>
-              </div>
-              <p class="text-xs text-muted-foreground mt-1 line-clamp-2 leading-relaxed">{{ server.description }}</p>
-            </div>
-          </div>
-
-          <!-- Footer -->
-          <div class="flex items-center justify-between pt-2.5 border-t border-border/60 mt-auto">
-            <div class="flex items-center gap-2 min-w-0">
-              <Badge tone="primary" size="xs" class="shrink-0 uppercase tracking-wide">
-                {{ server.transport }}
-              </Badge>
-              <div class="flex items-center gap-1 text-[10px] text-muted-foreground/60">
-                <CalendarDays class="h-3 w-3" :stroke-width="1.5" />
-                <span>{{ formatDate(server.created_at) }}</span>
-              </div>
-            </div>
-            <!-- Actions on hover -->
-            <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity" @click.stop>
-              <button
-                class="flex h-6 w-6 items-center justify-center rounded transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-default"
-                :class="server.enabled ? 'text-emerald-500 hover:bg-accent' : 'text-muted-foreground hover:text-foreground hover:bg-accent'"
-                :title="server.enabled ? 'Disable' : 'Enable'"
-                :disabled="togglingId === server.id"
-                @click="handleToggleEnabled(server)"
-              >
-                <Power class="h-3.5 w-3.5" :stroke-width="1.75" />
-              </button>
-              <button
-                class="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-                title="Export JSON (includes secrets)"
-                @click="handleExport(server)"
-              >
-                <Download class="h-3.5 w-3.5" :stroke-width="1.75" />
-              </button>
-              <button
-                class="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-                title="Edit"
-                @click="router.push(`/mcp/${server.id}/edit`)"
-              >
-                <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
-              </button>
-              <button
-                class="flex h-6 w-6 items-center justify-center rounded text-destructive/60 hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer disabled:opacity-40"
-                title="Delete"
-                :disabled="deletingId === server.id"
-                @click="handleDelete(server)"
-              >
-                <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-              </button>
-            </div>
-          </div>
-        </Card>
-      </div>
-
-      <!-- Recommended catalog (one-click add) -->
-      <div v-if="!store.loading && catalogAvailable.length" class="space-y-3">
-        <div class="flex items-center gap-2">
-          <Sparkles class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.75" />
-          <h2 class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Recommended servers</h2>
-        </div>
-        <div class="grid grid-cols-2 xl:grid-cols-3 gap-3">
-          <Card
-            v-for="item in catalogAvailable"
-            :key="item.name"
-            class="flex flex-col"
-            body-class="flex flex-col flex-1 p-4"
+      <template #row="{ row }">
+        <span class="flex min-w-0 items-center gap-1.5">
+          <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="dotClass(row)" />
+          <span
+            class="min-w-0 flex-1 truncate font-mono text-[13px] font-medium"
+            :class="row.kind === 'server' && !row.enabled && 'text-muted-foreground'"
           >
-            <div class="flex items-start justify-between gap-2 mb-1">
-              <p class="text-sm font-semibold font-mono leading-tight truncate">{{ item.name }}</p>
-              <Badge tone="primary" size="xs" class="shrink-0 uppercase tracking-wide">{{ item.transport }}</Badge>
-            </div>
-            <p class="text-xs text-muted-foreground line-clamp-2 leading-relaxed flex-1">{{ item.description }}</p>
-            <Button
-              variant="outline"
-              size="sm"
-              class="mt-3 self-start"
-              :disabled="addingName === item.name"
-              @click="addFromCatalog(item)"
-            >
-              <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-              {{ addingName === item.name ? 'Adding…' : 'Add' }}
-            </Button>
-          </Card>
-        </div>
-      </div>
-    </div>
+            {{ row.name }}
+          </span>
+          <span
+            v-if="row.transport === 'sse' && defaultIsCodex"
+            class="shrink-0 rounded bg-amber-500/15 px-1 text-[9px] font-semibold text-amber-600 dark:text-amber-400"
+            :title="t('mcp.list.claudeOnlyTitle')"
+          >
+            {{ t('mcp.list.claudeOnly') }}
+          </span>
+          <span
+            v-if="row.kind === 'catalog'"
+            class="shrink-0 rounded bg-muted px-1 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground"
+          >
+            {{ row.transport }}
+          </span>
+        </span>
+        <span class="mt-0.5 truncate pl-3 font-mono text-[10px] text-muted-foreground" :title="row.line">
+          {{ row.line || '—' }}
+        </span>
+      </template>
+
+      <template #row-actions="{ row }">
+        <template v-if="row.kind === 'server' && serverOf(row)">
+          <button
+            type="button"
+            class="flex h-6 w-6 cursor-pointer items-center justify-center rounded transition-colors disabled:cursor-default disabled:opacity-50"
+            :class="row.enabled ? 'text-emerald-500 hover:bg-accent' : 'text-muted-foreground hover:bg-accent hover:text-foreground'"
+            :title="row.enabled ? t('mcp.list.disable') : t('mcp.list.enable')"
+            :aria-label="row.enabled ? t('mcp.list.disable') : t('mcp.list.enable')"
+            :disabled="togglingId === row.id"
+            @click="handleToggleEnabled(serverOf(row)!)"
+          >
+            <Power class="h-3.5 w-3.5" :stroke-width="1.75" />
+          </button>
+          <button
+            type="button"
+            class="flex h-6 w-6 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            :title="t('mcp.list.exportTitle')"
+            :aria-label="t('mcp.list.exportTitle')"
+            @click="handleExport(serverOf(row)!)"
+          >
+            <Download class="h-3.5 w-3.5" :stroke-width="1.75" />
+          </button>
+          <button
+            type="button"
+            class="flex h-6 w-6 cursor-pointer items-center justify-center rounded text-destructive/60 transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
+            :title="t('common.delete')"
+            :aria-label="t('common.delete')"
+            :disabled="deletingId === row.id"
+            @click="handleDelete(serverOf(row)!)"
+          >
+            <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+          </button>
+        </template>
+        <button
+          v-else-if="row.kind === 'builtin'"
+          type="button"
+          class="flex h-6 w-6 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          :title="t('mcp.list.builtin.settings')"
+          :aria-label="t('mcp.list.builtin.settings')"
+          @click="openSettings(row)"
+        >
+          <Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+        </button>
+        <button
+          v-else-if="row.kind === 'catalog' && catalogEntry(row)"
+          type="button"
+          class="flex h-6 w-6 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+          :title="addingName === row.name ? t('mcp.list.adding') : t('common.add')"
+          :aria-label="t('common.add')"
+          :disabled="addingName === row.name"
+          @click="addFromCatalog(catalogEntry(row)!)"
+        >
+          <Plus class="h-3.5 w-3.5" :stroke-width="2" />
+        </button>
+      </template>
+    </ListDetailSidebar>
+
+    <McpServerDetail
+      v-if="isNew"
+      :key="`new-${draftKey}`"
+      ref="detailRef"
+      :server="null"
+      :seed="draftSeed"
+      :default-is-codex="defaultIsCodex"
+      :toggling="false"
+      @saved="onSaved"
+    />
+    <McpServerDetail
+      v-else-if="selectedServer"
+      :key="selectedServer.id"
+      ref="detailRef"
+      :server="selectedServer"
+      :default-is-codex="defaultIsCodex"
+      :toggling="togglingId === selectedServer.id"
+      @saved="onSaved"
+      @toggle-enabled="handleToggleEnabled(selectedServer)"
+      @export="handleExport(selectedServer)"
+      @duplicate="handleDuplicate(selectedServer)"
+      @delete="handleDelete(selectedServer)"
+    />
+    <McpInfoDetail
+      v-else-if="selectedRow && selectedRow.kind !== 'server'"
+      :key="selectedRow.id"
+      :row="selectedRow"
+      :entry="selectedEntry"
+      :status-label="selectedBuiltin?.status ?? ''"
+      :adding="addingName === selectedRow.name"
+      @add="selectedEntry && addFromCatalog(selectedEntry)"
+      @settings="openSettings(selectedRow)"
+    />
+    <DetailEmpty
+      v-else
+      :icon="Server"
+      :text="store.items.length === 0 && !store.loading ? t('mcp.list.empty.title') : t('mcp.list.noSelection')"
+    >
+      <template v-if="store.items.length === 0 && !store.loading">
+        <p class="mx-auto mt-1 max-w-60 text-[11px] text-muted-foreground/70">{{ t('mcp.list.empty.hint') }}</p>
+        <Button class="mt-4" @click="startNew()">
+          <Plus class="h-3.5 w-3.5" :stroke-width="2" />
+          {{ t('mcp.list.newServer') }}
+        </Button>
+      </template>
+    </DetailEmpty>
   </div>
 </template>

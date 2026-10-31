@@ -1,65 +1,225 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+// Rules — a list-detail screen like the Notes window: the sidebar lists the
+// rules in their group folders (search, group select, Claude/Codex filter,
+// Manage groups · Re-apply all · Import .md), the right pane edits the
+// selected rule in place (components/rules/RuleDetail).
+//
+// The selection lives in the URL query (`?id=<rule>`, `?new=1` for a blank
+// draft) so a reload or a link reopens it.
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useActivatedRefresh } from '@/composables/useActivatedRefresh'
-import { useRouter } from 'vue-router'
-import { useRulesStore, type Rule } from '@/stores/rules'
-import { useProjectsStore } from '@/stores/projects'
-import { useRuleGroupsStore } from '@/stores/groups'
+import { useRoute, useRouter } from 'vue-router'
 import { open, save } from '@tauri-apps/plugin-dialog'
-import { Button, Card, Badge } from '@/components/ui'
+import { Layers, RefreshCw, ScrollText, Trash2, Upload } from 'lucide-vue-next'
+import { AppSelect, Badge, Button } from '@/components/ui'
 import GroupManagerModal from '@/components/GroupManagerModal.vue'
+import ListDetailSidebar from '@/components/listDetail/ListDetailSidebar.vue'
+import DetailEmpty from '@/components/listDetail/DetailEmpty.vue'
+import RuleDetail from '@/components/rules/RuleDetail.vue'
+import { useActivatedRefresh } from '@/composables/useActivatedRefresh'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
-import { Plus, Upload, Download, Pencil, Trash2, ScrollText, CalendarDays, FolderCheck, Layers, RefreshCw } from 'lucide-vue-next'
+import { useRulesStore, type Rule } from '@/stores/rules'
+import { useProjectsStore } from '@/stores/projects'
+import { useRuleGroupsStore, type Group } from '@/stores/groups'
+import { UNGROUPED, buildRuleGroups, type RuleEngineFilter } from '@/lib/rulesRows'
 
 // Named explicitly: <KeepAlive :include> in App.vue matches on component name,
 // and an inferred name is a build detail that minification can change.
 defineOptions({ name: 'RulesView' })
 
 const { t } = useI18n()
+const route = useRoute()
 const router = useRouter()
 const store = useRulesStore()
 const projectsStore = useProjectsStore()
+const groupsStore = useRuleGroupsStore()
 const { confirm } = useConfirm()
 const { toast } = useToast()
+
 const deletingId = ref<string | null>(null)
 const applyingId = ref<string | null>(null)
-/** Item id being re-applied, 'all' for the header action, null when idle. */
+/** Item id being re-applied, 'all' for the toolbar action, null when idle. */
 const reapplyingId = ref<string | null>(null)
 const importing = ref(false)
-const groupsStore = useRuleGroupsStore()
 const groupsOpen = ref(false)
-/** Group id, or 'ungrouped' / null for the two catch-all chips. */
-const groupFilter = ref<string | null>(null)
 
-const visibleRules = computed(() => {
-  if (!groupFilter.value) return store.rules
-  if (groupFilter.value === 'ungrouped') {
-    return store.rules.filter(r => (groupsStore.itemGroups[r.id]?.length ?? 0) === 0)
-  }
-  return store.rules.filter(r => groupsStore.itemGroups[r.id]?.includes(groupFilter.value!))
-})
+// ── Sidebar ─────────────────────────────────────────────────────────────────
 
-function groupsOf(ruleId: string) {
-  const ids = groupsStore.itemGroups[ruleId] ?? []
-  return groupsStore.groups.filter(g => ids.includes(g.id))
+const search = ref('')
+const engineFilter = ref<RuleEngineFilter>('')
+/** '' = all groups, UNGROUPED, or a group id. */
+const groupFilter = ref('')
+
+/**
+ * Rule bodies, so the search reaches the content too (the list only carries
+ * name + description). Refetched per rule when its `updated_at` moves.
+ */
+const contents = ref<Record<string, string>>({})
+const contentStamps = new Map<string, string>()
+
+async function loadContents() {
+  const stale = store.rules.filter((r) => contentStamps.get(r.id) !== r.updated_at)
+  await Promise.all(stale.map(async (r) => {
+    try {
+      const rc = await store.getRule(r.id)
+      contents.value = { ...contents.value, [r.id]: rc.content }
+      contentStamps.set(r.id, r.updated_at)
+    } catch {
+      /* search falls back to name + description */
+    }
+  }))
 }
 
-onMounted(() => {
-  store.fetchRules()
-  projectsStore.fetchProjects()
-  groupsStore.fetchGroups()
-})
+watch(() => store.rules, () => void loadContents())
+
+const sidebarGroups = computed(() =>
+  buildRuleGroups(store.rules, {
+    groups: groupsStore.groups,
+    itemGroups: groupsStore.itemGroups,
+    contents: contents.value,
+    search: search.value,
+    engine: engineFilter.value,
+    groupFilter: groupFilter.value,
+    noneLabel: t('groups.ungrouped'),
+  }),
+)
+
+const groupOptions = computed(() => [
+  { value: '', label: t('rules.detail.allGroups') },
+  ...groupsStore.groups.map((g) => ({ value: g.id, label: `${g.name} (${g.member_count})` })),
+  { value: UNGROUPED, label: t('groups.ungrouped') },
+])
+
+const engineFilters = computed(() => [
+  { value: '', label: t('rules.detail.filterAll') },
+  { value: 'claude', label: t('rules.detail.filterClaude') },
+  { value: 'codex', label: t('rules.detail.filterCodex') },
+])
+
+const targetLabel = computed<Record<string, string>>(() => ({
+  claude: t('rules.editor.targetClaude'),
+  codex: t('rules.editor.targetCodex'),
+  both: t('rules.editor.targetBoth'),
+}))
+
+const groupById = computed(() => new Map(groupsStore.groups.map((g) => [g.id, g])))
+
+function groupsOf(ruleId: string): Group[] {
+  const ids = groupsStore.itemGroups[ruleId] ?? []
+  return groupsStore.groups.filter((g) => ids.includes(g.id))
+}
+
+// ── Selection (URL query) ───────────────────────────────────────────────────
+
+const selectedId = ref<string | null>(null)
+const isNew = ref(false)
+const detailRef = ref<InstanceType<typeof RuleDetail> | null>(null)
+/** Bumped by "+ New" so a second click starts over from a blank draft. */
+const draftSeq = ref(0)
+/** Remounts the detail per selection, so each one starts from a clean draft. */
+const detailKey = computed(() => (isNew.value ? `new-${draftSeq.value}` : selectedId.value ?? ''))
+const selectedRule = computed(() => store.rules.find((r) => r.id === selectedId.value) ?? null)
+const rulesLoaded = ref(false)
+
+function readQuery() {
+  const id = typeof route.query.id === 'string' ? route.query.id : null
+  return { id, isNew: !id && route.query.new === '1' }
+}
+
+// The view stays alive (KeepAlive) on other routes: only /rules' own query
+// drives the selection, and coming back via a bare /rules restores it.
+watch(
+  () => [route.path, route.query.id, route.query.new],
+  () => {
+    if (route.path !== '/rules') return
+    const q = readQuery()
+    if (q.id || q.isNew) {
+      if (q.id === selectedId.value && q.isNew === isNew.value) return
+      void adoptQuery(q)
+    } else if (selectedId.value || isNew.value) {
+      void router.replace({ query: isNew.value ? { new: '1' } : { id: selectedId.value! } })
+    }
+  },
+  { immediate: true },
+)
+
+/**
+ * A selection arriving from outside (a link, an old editor URL's redirect):
+ * our own changes set the local state first, so only these reach here.
+ * Unsaved edits are not dropped silently — declining restores the URL.
+ */
+async function adoptQuery(q: { id: string | null; isNew: boolean }) {
+  if (!(await confirmDiscard())) {
+    void router.replace({ query: isNew.value ? { new: '1' } : selectedId.value ? { id: selectedId.value } : {} })
+    return
+  }
+  selectedId.value = q.id
+  isNew.value = q.isNew
+}
+
+function setSelection(id: string | null, draft = false) {
+  selectedId.value = id
+  isNew.value = draft
+  void router.replace({ query: draft ? { new: '1' } : id ? { id } : {} })
+}
+
+/** Leaving unsaved edits takes a confirm; true = go ahead. */
+async function confirmDiscard(): Promise<boolean> {
+  if (!detailRef.value?.dirty) return true
+  return confirm({
+    title: t('rules.detail.confirmDiscardTitle'),
+    message: t('rules.detail.confirmDiscardMessage'),
+    confirmLabel: t('rules.detail.confirmDiscard'),
+  })
+}
+
+async function select(id: string) {
+  if (id === selectedId.value && !isNew.value) return
+  if (!(await confirmDiscard())) return
+  setSelection(id)
+}
+
+async function startNew() {
+  if (isNew.value && !detailRef.value?.dirty) return
+  if (!(await confirmDiscard())) return
+  // A fresh draft even when one is already open (it was confirmed above).
+  draftSeq.value++
+  setSelection(null, true)
+}
+
+async function discardDraft() {
+  if (!(await confirmDiscard())) return
+  setSelection(null)
+}
+
+function onSaved(rule: Rule, created: boolean) {
+  if (created) setSelection(rule.id)
+}
+
+// The selected rule vanished (deleted elsewhere, or a stale ?id=).
+watch(
+  () => [store.rules, rulesLoaded.value] as const,
+  () => {
+    if (rulesLoaded.value && selectedId.value && !store.error && !selectedRule.value) setSelection(null)
+  },
+)
+
+// ── Data ────────────────────────────────────────────────────────────────────
+
+async function refresh() {
+  await Promise.all([store.fetchRules(), projectsStore.fetchProjects(), groupsStore.fetchGroups()])
+  rulesLoaded.value = true
+}
+
+onMounted(() => void refresh())
 
 // Cached by <KeepAlive> (App.vue): onMounted fires once for the app's whole
 // lifetime, so re-show the screen with fresh data instead of whatever it read
 // the very first time.
-useActivatedRefresh(() => {
-  store.fetchRules()
-  projectsStore.fetchProjects()
-  groupsStore.fetchGroups()
-})
+useActivatedRefresh(refresh)
+
+// ── Actions ─────────────────────────────────────────────────────────────────
 
 async function handleApplyToAll(rule: Rule) {
   const total = projectsStore.projects.length
@@ -88,8 +248,6 @@ async function handleApplyToAll(rule: Rule) {
     applyingId.value = null
   }
 }
-
-const targetLabel: Record<string, string> = { claude: t('rules.editor.targetClaude'), codex: t('rules.editor.targetCodex'), both: t('rules.editor.targetBoth') }
 
 /** Re-write one rule (or all of them) into the projects it is already applied to. */
 async function handleReapply(rule?: Rule) {
@@ -125,6 +283,8 @@ async function handleDelete(rule: Rule) {
   }))) return
   deletingId.value = rule.id
   try {
+    // Cleared first so the vanished-selection watcher has nothing to do.
+    if (selectedId.value === rule.id) setSelection(null)
     await store.deleteRule(rule.id)
     toast.success(t('rules.list.toastDeleted'))
   } catch (e) {
@@ -142,8 +302,9 @@ async function handleImport() {
   if (!selected) return
   importing.value = true
   try {
-    await store.importRule(selected as string)
+    const rule = await store.importRule(selected as string)
     toast.success(t('rules.list.toastImported'))
+    if (await confirmDiscard()) setSelection(rule.id)
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -164,202 +325,136 @@ async function handleExport(rule: Rule) {
     toast.error(String(e))
   }
 }
-
-function formatDate(iso: string) {
-  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-}
 </script>
 
 <template>
-  <div class="flex flex-col h-full">
-    <!-- Page header -->
-    <div class="flex items-center justify-between px-6 h-13 border-b border-border/60 shrink-0">
-      <div class="flex items-center gap-2">
-        <h1 class="text-sm font-semibold">{{ t('rules.list.title') }}</h1>
-        <span
-          v-if="!store.loading && store.rules.length > 0"
-          class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-medium text-muted-foreground"
-        >
-          {{ store.rules.length }}
-        </span>
-      </div>
-      <div class="flex items-center gap-2">
+  <div class="flex h-full min-h-0">
+    <ListDetailSidebar
+      v-model:search="search"
+      v-model:filter="engineFilter"
+      :groups="sidebarGroups"
+      :selected-id="isNew ? null : selectedId"
+      collapse-key="devdy.rules.collapsedGroups"
+      :new-label="t('rules.list.newRule')"
+      :search-placeholder="t('rules.detail.searchPlaceholder')"
+      :filters="engineFilters"
+      :loading="store.loading"
+      :error="store.error"
+      :empty-store="store.rules.length === 0"
+      :empty-title="t('rules.list.emptyTitle')"
+      :empty-hint="t('rules.list.emptyHint')"
+      @select="select"
+      @add="startNew"
+      @retry="refresh"
+    >
+      <template #toolbar>
         <Button
-          variant="outline"
+          variant="ghost"
+          size="icon-sm"
+          class="shrink-0"
+          :title="t('groups.manageRuleGroups')"
+          :aria-label="t('groups.manageRuleGroups')"
           @click="groupsOpen = true"
         >
           <Layers class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ t('groups.manageRuleGroups') }}
         </Button>
         <Button
-          v-if="store.rules.length > 0"
-          variant="outline"
-          :disabled="reapplyingId !== null"
-          :title="t('rules.list.reapplyAllHint')"
+          variant="ghost"
+          size="icon-sm"
+          class="shrink-0"
+          :disabled="reapplyingId !== null || store.rules.length === 0"
+          :title="reapplyingId === 'all' ? t('rules.list.reapplying') : `${t('rules.list.reapplyAll')} — ${t('rules.list.reapplyAllHint')}`"
+          :aria-label="t('rules.list.reapplyAll')"
           @click="handleReapply()"
         >
           <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" :class="{ 'animate-spin': reapplyingId === 'all' }" />
-          {{ reapplyingId === 'all' ? t('rules.list.reapplying') : t('rules.list.reapplyAll') }}
         </Button>
         <Button
-          variant="outline"
+          variant="ghost"
+          size="icon-sm"
+          class="shrink-0"
           :disabled="importing"
+          :title="importing ? t('rules.list.importing') : t('rules.list.importMd')"
+          :aria-label="t('rules.list.importMd')"
           @click="handleImport"
         >
-          <Upload class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ importing ? t('rules.list.importing') : t('rules.list.importMd') }}
+          <Upload class="h-3.5 w-3.5" :stroke-width="1.75" :class="{ 'animate-pulse': importing }" />
+        </Button>
+      </template>
+
+      <template #controls>
+        <AppSelect
+          v-if="groupsStore.groups.length > 0"
+          v-model="groupFilter"
+          size="sm"
+          :options="groupOptions"
+          :title="t('groups.filterByGroup')"
+        />
+      </template>
+
+      <template #row="{ row, selected }">
+        <span class="flex min-w-0 items-center gap-1.5">
+          <span class="min-w-0 flex-1 truncate font-mono text-[13px] font-medium" :class="selected && 'text-foreground'">
+            {{ row.rule.name }}
+          </span>
+          <Badge tone="primary" size="xs" class="shrink-0 uppercase tracking-wide">
+            {{ targetLabel[row.rule.target] }}
+          </Badge>
+        </span>
+        <span class="mt-0.5 truncate text-[11px] text-muted-foreground">{{ row.rule.description }}</span>
+        <span v-if="row.otherGroupIds.length > 0" class="mt-1 flex flex-wrap gap-1">
+          <template v-for="gid in row.otherGroupIds" :key="gid">
+            <Badge v-if="groupById.get(gid)" :tone="groupById.get(gid)!.color ?? 'neutral'" size="xs">
+              {{ groupById.get(gid)!.name }}
+            </Badge>
+          </template>
+        </span>
+      </template>
+
+      <template #row-actions="{ row }">
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          :title="t('rules.list.reapply')"
+          :aria-label="t('rules.list.reapply')"
+          :disabled="reapplyingId !== null"
+          @click="handleReapply(row.rule)"
+        >
+          <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" :class="{ 'animate-spin': reapplyingId === row.rule.id }" />
         </Button>
         <Button
-          @click="router.push('/rules/new')"
+          variant="destructive-ghost"
+          size="icon-sm"
+          :title="t('common.delete')"
+          :aria-label="t('common.delete')"
+          :disabled="deletingId === row.rule.id"
+          @click="handleDelete(row.rule)"
         >
-          <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-          {{ t('rules.list.newRule') }}
+          <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
         </Button>
-      </div>
-    </div>
+      </template>
+    </ListDetailSidebar>
 
-    <!-- Content -->
-    <div class="flex-1 overflow-auto p-6">
-      <!-- Loading skeleton -->
-      <div v-if="store.loading" class="grid grid-cols-2 xl:grid-cols-3 gap-3">
-        <div v-for="i in 5" :key="i" class="h-27 rounded-lg border border-border bg-card animate-pulse" />
-      </div>
-
-      <!-- Error -->
-      <div v-else-if="store.error" class="p-4 bg-destructive/10 text-destructive rounded-lg text-sm border border-destructive/20">
-        {{ store.error }}
-      </div>
-
-      <!-- Empty state -->
-      <div v-else-if="store.rules.length === 0" class="flex flex-col items-center justify-center h-full min-h-80 text-center">
-        <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-muted mb-4">
-          <ScrollText class="h-6 w-6 text-muted-foreground" :stroke-width="1.5" />
-        </div>
-        <p class="text-sm font-medium">{{ t('rules.list.emptyTitle') }}</p>
-        <p class="text-xs text-muted-foreground mt-1 max-w-56">{{ t('rules.list.emptyHint') }}</p>
-        <Button
-          class="mt-4"
-          @click="router.push('/rules/new')"
-        >
-          <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-          {{ t('rules.list.newRule') }}
-        </Button>
-      </div>
-
-      <!-- Group filter chips -->
-      <div v-else-if="groupsStore.groups.length > 0" class="flex items-center gap-1.5 flex-wrap mb-3">
-        <button
-          class="px-2 py-1 rounded-md text-[11px] transition-colors cursor-pointer"
-          :class="groupFilter === null ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:text-foreground'"
-          @click="groupFilter = null"
-        >{{ t('groups.allGroups') }}</button>
-        <button
-          v-for="group in groupsStore.groups"
-          :key="group.id"
-          class="px-2 py-1 rounded-md text-[11px] transition-colors cursor-pointer"
-          :class="groupFilter === group.id ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:text-foreground'"
-          @click="groupFilter = group.id"
-        >{{ group.name }} <span class="opacity-60">{{ group.member_count }}</span></button>
-        <button
-          class="px-2 py-1 rounded-md text-[11px] transition-colors cursor-pointer"
-          :class="groupFilter === 'ungrouped' ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:text-foreground'"
-          @click="groupFilter = 'ungrouped'"
-        >{{ t('groups.ungrouped') }}</button>
-      </div>
-
-      <!-- Cards grid -->
-      <div v-if="!store.loading && !store.error && store.rules.length > 0" class="grid grid-cols-2 xl:grid-cols-3 gap-3">
-        <Card
-          v-for="rule in visibleRules"
-          :key="rule.id"
-          class="group relative flex flex-col transition-all duration-150 cursor-pointer hover:border-primary/40 hover:shadow-[0_1px_3px_0_rgb(0_0_0/0.08)] hover:-translate-y-0.5"
-          body-class="flex flex-col flex-1 p-4"
-          @click="router.push(`/rules/${rule.id}/edit`)"
-        >
-          <!-- hover accent line -->
-          <span class="absolute inset-x-0 top-0 h-0.5 origin-left scale-x-0 bg-linear-to-r from-primary to-primary/30 transition-transform duration-200 group-hover:scale-x-100" />
-
-          <!-- Icon + name/desc -->
-          <div class="flex items-start gap-3 mb-3">
-            <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 border border-primary/15 text-primary transition-colors group-hover:bg-primary/15 group-hover:border-primary/25">
-              <ScrollText class="h-4.5 w-4.5" :stroke-width="1.75" />
-            </div>
-            <div class="min-w-0 flex-1">
-              <div class="flex items-center gap-1.5 flex-wrap">
-                <p class="text-sm font-semibold font-mono truncate leading-tight">{{ rule.name }}</p>
-                <Badge
-                  v-for="group in groupsOf(rule.id)"
-                  :key="group.id"
-                  :tone="group.color ?? 'neutral'"
-                  size="xs"
-                  class="shrink-0"
-                >{{ group.name }}</Badge>
-              </div>
-              <p class="text-xs text-muted-foreground mt-1 line-clamp-2 leading-relaxed">{{ rule.description }}</p>
-            </div>
-          </div>
-
-          <!-- Footer -->
-          <div class="flex items-center justify-between pt-2.5 border-t border-border/60 mt-auto">
-            <div class="flex items-center gap-2 min-w-0">
-              <Badge tone="primary" size="xs" class="shrink-0 uppercase tracking-wide">
-                {{ targetLabel[rule.target] }}
-              </Badge>
-              <div class="flex items-center gap-1 text-[10px] text-muted-foreground/60">
-                <CalendarDays class="h-3 w-3" :stroke-width="1.5" />
-                <span>{{ formatDate(rule.updated_at) }}</span>
-              </div>
-            </div>
-            <!-- Actions on hover -->
-            <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity" @click.stop>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                :title="t('rules.list.applyToAll')"
-                :disabled="applyingId === rule.id"
-                @click="handleApplyToAll(rule)"
-              >
-                <FolderCheck class="h-3.5 w-3.5" :stroke-width="1.75" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                :title="t('rules.list.reapply')"
-                :disabled="reapplyingId !== null"
-                @click="handleReapply(rule)"
-              >
-                <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" :class="{ 'animate-spin': reapplyingId === rule.id }" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                :title="t('rules.list.exportMd')"
-                @click="handleExport(rule)"
-              >
-                <Download class="h-3.5 w-3.5" :stroke-width="1.75" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                :title="t('common.edit')"
-                @click="router.push(`/rules/${rule.id}/edit`)"
-              >
-                <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
-              </Button>
-              <Button
-                variant="destructive-ghost"
-                size="icon-sm"
-                :title="t('common.delete')"
-                :disabled="deletingId === rule.id"
-                @click="handleDelete(rule)"
-              >
-                <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-              </Button>
-            </div>
-          </div>
-        </Card>
-      </div>
-    </div>
+    <RuleDetail
+      v-if="isNew || selectedRule"
+      ref="detailRef"
+      :key="detailKey"
+      :rule-id="isNew ? null : selectedId"
+      :rule="isNew ? null : selectedRule"
+      :groups="isNew || !selectedId ? [] : groupsOf(selectedId)"
+      :reapplying="!!selectedId && reapplyingId === selectedId"
+      :reapply-busy="reapplyingId !== null"
+      :applying="!!selectedId && applyingId === selectedId"
+      :deleting="!!selectedId && deletingId === selectedId"
+      @saved="onSaved"
+      @reapply="selectedRule && handleReapply(selectedRule)"
+      @apply-all="selectedRule && handleApplyToAll(selectedRule)"
+      @export="selectedRule && handleExport(selectedRule)"
+      @delete="selectedRule && handleDelete(selectedRule)"
+      @discard="discardDraft"
+      @missing="setSelection(null)"
+    />
+    <DetailEmpty v-else :icon="ScrollText" :text="t('rules.detail.noSelection')" />
 
     <GroupManagerModal
       :open="groupsOpen"

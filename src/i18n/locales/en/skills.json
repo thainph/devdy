@@ -1,6 +1,5 @@
 {
   "list": {
-    "title": "Skills",
     "importing": "Importing…",
     "import": "Import",
     "newSkill": "New Skill",
@@ -35,16 +34,11 @@
     "toastReappliedPartial": "Re-applied {applied} project link(s).\n\nFailed for {failed}:\n{details}"
   },
   "editor": {
-    "backToSkills": "Back to Skills",
-    "newSkill": "New Skill",
-    "editing": "— editing",
     "target": "Target",
     "targetBoth": "Both",
     "targetClaude": "Claude",
     "targetCodex": "Codex",
     "insertTemplate": "Insert frontmatter template",
-    "template": "Template",
-    "openFolder": "Open skill folder in Finder",
     "openInFinder": "Open in Finder",
     "save": "Save",
     "saving": "Saving…",
@@ -57,5 +51,28 @@
     "errNameSlug": "name must be a slug (letters, numbers, hyphens, underscores)",
     "errMissingDescription": "Frontmatter missing required field: description",
     "errTargetInvalid": "target must be one of: claude, codex, both"
+  },
+  "detail": {
+    "searchPlaceholder": "Search skills",
+    "importHint": "Import a skill from a ZIP / .skill archive",
+    "noSelection": "Select a skill to view or edit it",
+    "untitled": "Untitled skill",
+    "newDraft": "New skill — not saved yet",
+    "updated": "Updated {date}",
+    "more": "More actions",
+    "details": "Details",
+    "detailsHint": "Stored in the SKILL.md frontmatter — editing here rewrites it.",
+    "name": "Name",
+    "description": "Description",
+    "descriptionPlaceholder": "What this skill does and when to use it",
+    "split": "Side by side",
+    "readOnly": "Read-only",
+    "readOnlyHint": "Extra files are edited in the skill folder.",
+    "fileTooLarge": "This file is too large to preview.",
+    "fileBinary": "Binary file — no preview.",
+    "fileUnreadable": "This file can't be read.",
+    "discardTitle": "Discard changes",
+    "discardMessage": "Leave this skill and drop the unsaved changes?",
+    "discard": "Discard"
   }
 }

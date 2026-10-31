@@ -1,59 +1,261 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+// Servers screen, laid out like the Notes window: the sidebar lists the VPS
+// servers (search, tag filter, status filter, folders by first tag) and the
+// right pane edits the selected one inline (ServerDetail). The selection lives
+// in the URL query — `?id=<id>` a server, `?new=1` a blank draft — so a
+// reload reopens it.
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRoute, useRouter } from 'vue-router'
+import { HardDrive, KeyRound, Plug, RotateCw, Trash2, UserCog } from 'lucide-vue-next'
+import { AppSelect, Button } from '@/components/ui'
+import ListDetailSidebar from '@/components/listDetail/ListDetailSidebar.vue'
+import DetailEmpty from '@/components/listDetail/DetailEmpty.vue'
+import ServerDetail, { type ServerPrefill } from '@/components/servers/ServerDetail.vue'
 import { useActivatedRefresh } from '@/composables/useActivatedRefresh'
-import { useRouter } from 'vue-router'
-import { useServersStore, type VpsServer } from '@/stores/servers'
-import { Button, Card, Badge } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
-import { Plus, Pencil, Trash2, HardDrive, CalendarDays, Plug, KeyRound, UserCog } from 'lucide-vue-next'
+import { relativeAge } from '@/lib/itemText'
+import {
+  allServerTags,
+  filterServers,
+  groupServers,
+  serverStatus,
+  summarizeTests,
+  type ServerStatus,
+} from '@/lib/serverRows'
+import { useServersStore, type TestConnectionResult, type VpsServer } from '@/stores/servers'
 
 // Named explicitly: <KeepAlive :include> in App.vue matches on component name,
 // and an inferred name is a build detail that minification can change.
 defineOptions({ name: 'ServersView' })
 
+const route = useRoute()
 const router = useRouter()
 const store = useServersStore()
 const { confirm } = useConfirm()
 const { toast } = useToast()
 const { t } = useI18n()
-const deletingId = ref<string | null>(null)
-const testingId = ref<string | null>(null)
 
-// Status dot colour: online → green, offline → red, unknown/null → gray.
-const statusColor: Record<string, string> = {
+// ── Sidebar ─────────────────────────────────────────────────────────────────
+
+const search = ref('')
+const tagFilter = ref('')
+const statusFilter = ref<'' | ServerStatus>('')
+
+const tags = computed(() => allServerTags(store.items))
+const tagOptions = computed(() => [
+  { value: '', label: t('servers.list.allTags') },
+  ...tags.value.map((tag) => ({ value: tag, label: tag })),
+])
+// The filtered tag left with its last server: show everything again.
+watch(tags, (list) => {
+  if (tagFilter.value && !list.includes(tagFilter.value)) tagFilter.value = ''
+})
+
+const statusFilters = computed(() => [
+  { value: '', label: t('servers.list.filterAll') },
+  { value: 'online', label: t('servers.list.status.online') },
+  { value: 'offline', label: t('servers.list.status.offline') },
+  { value: 'unknown', label: t('servers.list.status.notChecked') },
+])
+
+const groups = computed(() =>
+  groupServers(
+    filterServers(store.items, { search: search.value, tag: tagFilter.value, status: statusFilter.value }),
+    t('servers.list.untagged'),
+  ),
+)
+
+const statusDot: Record<ServerStatus, string> = {
   online: 'bg-emerald-500',
   offline: 'bg-destructive',
+  unknown: 'bg-muted-foreground/40',
 }
 
-function dotColor(status: VpsServer['status']): string {
-  return (status && statusColor[status]) || 'bg-muted-foreground/40'
+// ── Selection (URL query) ───────────────────────────────────────────────────
+
+type Selection = { kind: 'none' } | { kind: 'server'; id: string } | { kind: 'new' }
+
+const selection = ref<Selection>({ kind: 'none' })
+/** Bumped per blank draft so ServerDetail remounts with a fresh form. */
+const draftSeq = ref(0)
+const draftPrefill = ref<ServerPrefill | null>(null)
+const detailRef = ref<InstanceType<typeof ServerDetail> | null>(null)
+
+function selectionQuery(sel: Selection): Record<string, string> {
+  if (sel.kind === 'server') return { id: sel.id }
+  if (sel.kind === 'new') return { new: '1' }
+  return {}
 }
 
-function statusLabel(status: VpsServer['status']): string {
-  if (status === 'online') return t('servers.list.status.online')
-  if (status === 'offline') return t('servers.list.status.offline')
-  return t('servers.list.status.notChecked')
+function sameSelection(a: Selection, b: Selection): boolean {
+  return a.kind === b.kind && (a.kind !== 'server' || a.id === (b as { id: string }).id)
 }
 
-function tagList(tags: string | null): string[] {
-  return (tags ?? '')
-    .split(',')
-    .map(t => t.trim())
-    .filter(t => t.length > 0)
+// In-screen moves (already confirmed) set the selection first, then the URL,
+// so the query watcher sees nothing new and only outside changes reach it.
+function navigate(sel: Selection) {
+  selection.value = sel
+  void router.replace({ query: selectionQuery(sel) })
+}
+
+// Only this route's query: a kept-alive screen still sees other routes'.
+watch(
+  () => (route.name === 'servers' ? route.query : null),
+  async (query, before) => {
+    if (!query) return
+    // Back from another screen via a bare /servers link: keep what was open
+    // (and any unsaved draft) rather than dropping it.
+    if (before === null && Object.keys(query).length === 0 && selection.value.kind !== 'none') {
+      void router.replace({ query: selectionQuery(selection.value) })
+      return
+    }
+    const id = typeof query.id === 'string' ? query.id : ''
+    const next: Selection = id ? { kind: 'server', id } : query.new === '1' ? { kind: 'new' } : { kind: 'none' }
+    if (sameSelection(next, selection.value)) return
+    // An outside ?id= / ?new=1 (e.g. a redirect) must not drop a dirty draft silently.
+    if (!(await confirmDiscard())) {
+      void router.replace({ query: selectionQuery(selection.value) })
+      return
+    }
+    if (next.kind === 'new') {
+      draftPrefill.value = null
+      draftSeq.value++
+    }
+    selection.value = next
+  },
+  { immediate: true },
+)
+
+const selectedId = computed(() => (selection.value.kind === 'server' ? selection.value.id : null))
+const selectedServer = computed(() =>
+  selectedId.value ? store.items.find((s) => s.id === selectedId.value) ?? null : null,
+)
+const detailKey = computed(() =>
+  selection.value.kind === 'server' ? selection.value.id : `new-${draftSeq.value}`,
+)
+
+/** Leaving unsaved edits takes a confirm; true = go ahead. */
+async function confirmDiscard(): Promise<boolean> {
+  if (!detailRef.value?.dirty) return true
+  return confirm({
+    title: t('servers.detail.discardTitle'),
+    message: t('servers.detail.discardMessage'),
+    confirmLabel: t('servers.detail.discard'),
+  })
+}
+
+async function select(id: string) {
+  if (id === selectedId.value) return
+  if (!(await confirmDiscard())) return
+  navigate({ kind: 'server', id })
+}
+
+async function openDraft(prefill: ServerPrefill | null) {
+  if (!(await confirmDiscard())) return
+  draftPrefill.value = prefill
+  draftSeq.value++
+  navigate({ kind: 'new' })
+}
+
+function duplicate() {
+  const s = selectedServer.value
+  if (!s) return
+  // No key file / passphrase: those are per-server secrets.
+  void openDraft({
+    label: t('servers.detail.copyLabel', { label: s.label }),
+    host: s.host,
+    port: s.port,
+    username: s.username,
+    auth_method: s.auth_method,
+    tags: s.tags,
+  })
+}
+
+function onSaved(server: VpsServer, created: boolean) {
+  if (created) navigate({ kind: 'server', id: server.id })
+}
+
+// ── Load ────────────────────────────────────────────────────────────────────
+
+const loaded = ref(false)
+
+async function refresh() {
+  await store.fetchServers()
+  loaded.value = true
 }
 
 onMounted(() => {
-  store.fetchServers()
+  void refresh()
 })
 
 // Cached by <KeepAlive> (App.vue): onMounted fires once for the app's whole
 // lifetime, so re-show the screen with fresh data instead of whatever it read
 // the very first time.
-useActivatedRefresh(() => {
-  store.fetchServers()
+useActivatedRefresh(() => refresh())
+
+// A stale ?id= (deleted here or elsewhere) clears the selection.
+watch([selectedId, selectedServer, loaded], () => {
+  if (route.name !== 'servers' || !loaded.value || store.loading || store.error) return
+  if (selectedId.value && !selectedServer.value) navigate({ kind: 'none' })
 })
+
+// ── Tests ───────────────────────────────────────────────────────────────────
+
+/** Last result per server id, while the screen lives. */
+const testResults = reactive(new Map<string, TestConnectionResult>())
+const testingIds = reactive(new Set<string>())
+const testingAll = ref(false)
+
+async function runTest(id: string): Promise<TestConnectionResult> {
+  testingIds.add(id)
+  try {
+    const result = await store.testConnection(id)
+    testResults.set(id, result)
+    return result
+  } catch (e) {
+    const result = { ok: false, message: String(e) }
+    testResults.set(id, result)
+    throw e
+  } finally {
+    testingIds.delete(id)
+  }
+}
+
+async function testRow(server: VpsServer) {
+  try {
+    const result = await runTest(server.id)
+    if (result.ok) toast.success(t('servers.list.toast.online', { label: server.label }))
+    else toast.error(t('servers.list.toast.offline', { label: server.label, message: result.message }))
+  } catch (e) {
+    toast.error(String(e))
+  }
+}
+
+async function testSelected() {
+  if (!selectedId.value) return
+  // The detail pane shows the outcome inline.
+  await runTest(selectedId.value).catch(() => {})
+}
+
+async function testAll() {
+  if (testingAll.value || store.items.length === 0) return
+  testingAll.value = true
+  try {
+    const results = await Promise.allSettled(store.items.map((s) => runTest(s.id)))
+    const { online, offline } = summarizeTests(results)
+    const message = t('servers.list.toast.testAllSummary', { online, offline })
+    if (offline === 0) toast.success(message)
+    else toast.error(message)
+  } finally {
+    testingAll.value = false
+  }
+}
+
+// ── Delete ──────────────────────────────────────────────────────────────────
+
+const deletingId = ref<string | null>(null)
 
 async function handleDelete(server: VpsServer) {
   if (!(await confirm({
@@ -64,6 +266,8 @@ async function handleDelete(server: VpsServer) {
   deletingId.value = server.id
   try {
     await store.deleteServer(server.id)
+    testResults.delete(server.id)
+    if (selectedId.value === server.id) navigate({ kind: 'none' })
     toast.success(t('servers.list.toast.deleted'))
   } catch (e) {
     toast.error(String(e))
@@ -72,154 +276,106 @@ async function handleDelete(server: VpsServer) {
   }
 }
 
-async function handleTest(server: VpsServer) {
-  testingId.value = server.id
-  try {
-    await store.testConnection(server.id)
-  } catch (e) {
-    toast.error(String(e))
-  } finally {
-    testingId.value = null
-  }
-}
-
-function formatDate(iso: string) {
-  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-}
+const rowAction =
+  'flex h-6 w-6 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40'
 </script>
 
 <template>
-  <div class="flex flex-col h-full">
-    <!-- Page header -->
-    <div class="flex items-center justify-between px-6 h-13 border-b border-border/60 shrink-0">
-      <div class="flex items-center gap-2">
-        <h1 class="text-sm font-semibold">{{ t('servers.list.title') }}</h1>
-        <span
-          v-if="!store.loading && store.items.length > 0"
-          class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-medium text-muted-foreground"
+  <div class="flex h-full min-h-0">
+    <ListDetailSidebar
+      v-model:search="search"
+      v-model:filter="statusFilter"
+      :groups="groups"
+      :selected-id="selectedId"
+      collapse-key="devdy.servers.collapsedGroups"
+      :new-label="t('servers.list.new')"
+      :search-placeholder="t('servers.list.searchPlaceholder')"
+      :filters="statusFilters"
+      :loading="store.loading && !loaded"
+      :error="store.error"
+      :empty-store="loaded && store.items.length === 0"
+      :empty-title="t('servers.list.empty.title')"
+      :empty-hint="t('servers.list.empty.hint')"
+      @select="select"
+      @add="openDraft(null)"
+      @retry="refresh"
+    >
+      <template #toolbar>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          class="shrink-0"
+          :disabled="testingAll || store.items.length === 0"
+          :title="t('servers.list.testAll')"
+          :aria-label="t('servers.list.testAll')"
+          @click="testAll"
         >
-          {{ store.items.length }}
-        </span>
-      </div>
-      <div class="flex items-center gap-2">
-        <Button @click="router.push('/servers/new')">
-          <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-          {{ t('servers.list.newServer') }}
+          <RotateCw class="h-3.5 w-3.5" :class="testingAll && 'animate-spin'" :stroke-width="1.75" />
         </Button>
-      </div>
-    </div>
-
-    <!-- Content -->
-    <div class="flex-1 overflow-auto p-6">
-      <!-- Loading skeleton -->
-      <div v-if="store.loading" class="grid grid-cols-2 xl:grid-cols-3 gap-3">
-        <div v-for="i in 5" :key="i" class="h-27 rounded-lg border border-border bg-card animate-pulse" />
-      </div>
-
-      <!-- Error -->
-      <div v-else-if="store.error" class="p-4 bg-destructive/10 text-destructive rounded-lg text-sm border border-destructive/20">
-        {{ store.error }}
-      </div>
-
-      <!-- Empty state -->
-      <div v-else-if="store.items.length === 0" class="flex flex-col items-center justify-center h-full min-h-80 text-center">
-        <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-muted mb-4">
-          <HardDrive class="h-6 w-6 text-muted-foreground" :stroke-width="1.5" />
+      </template>
+      <template #controls>
+        <AppSelect v-model="tagFilter" size="sm" :options="tagOptions" />
+      </template>
+      <template #row="{ row }">
+        <div class="flex min-w-0 items-center gap-1.5">
+          <span class="h-2 w-2 shrink-0 rounded-full" :class="statusDot[serverStatus(row)]" />
+          <span class="min-w-0 truncate text-[13px] font-medium">{{ row.label }}</span>
+          <span
+            class="flex shrink-0 items-center gap-0.5 rounded bg-muted px-1 py-px text-[9px] font-medium uppercase tracking-wide text-muted-foreground"
+          >
+            <KeyRound v-if="row.auth_method === 'key'" class="h-2.5 w-2.5" :stroke-width="2" />
+            <UserCog v-else class="h-2.5 w-2.5" :stroke-width="2" />
+            {{ row.auth_method }}
+          </span>
+          <span
+            v-if="row.last_checked_at"
+            class="ml-auto shrink-0 pl-1 text-[10px] tabular-nums text-muted-foreground/80"
+          >
+            {{ relativeAge(row.last_checked_at) }}
+          </span>
         </div>
-        <p class="text-sm font-medium">{{ t('servers.list.empty.title') }}</p>
-        <p class="text-xs text-muted-foreground mt-1 max-w-50">{{ t('servers.list.empty.hint') }}</p>
-        <Button class="mt-4" @click="router.push('/servers/new')">
-          <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-          {{ t('servers.list.newServer') }}
-        </Button>
-      </div>
-
-      <!-- Cards grid -->
-      <div v-else class="grid grid-cols-2 xl:grid-cols-3 gap-3">
-        <Card
-          v-for="server in store.items"
-          :key="server.id"
-          class="group relative flex flex-col transition-all duration-150 cursor-pointer hover:border-primary/40 hover:shadow-[0_1px_3px_0_rgb(0_0_0/0.08)] hover:-translate-y-0.5"
-          body-class="flex flex-col flex-1 p-4"
-          @click="router.push(`/servers/${server.id}/edit`)"
+        <span class="mt-0.5 truncate pl-3.5 font-mono text-[11px] text-muted-foreground">
+          {{ row.username }}@{{ row.host }}:{{ row.port }}
+        </span>
+      </template>
+      <template #row-actions="{ row }">
+        <button
+          type="button"
+          :class="rowAction"
+          :title="t('servers.list.testTitle')"
+          :aria-label="t('servers.list.testTitle')"
+          :disabled="testingIds.has(row.id)"
+          @click="testRow(row)"
         >
-          <!-- hover accent line -->
-          <span class="absolute inset-x-0 top-0 h-0.5 origin-left scale-x-0 bg-linear-to-r from-primary to-primary/30 transition-transform duration-200 group-hover:scale-x-100" />
+          <Plug class="h-3.5 w-3.5" :class="testingIds.has(row.id) && 'animate-pulse'" :stroke-width="1.75" />
+        </button>
+        <button
+          type="button"
+          :class="[rowAction, 'hover:bg-destructive/10 hover:text-destructive']"
+          :title="t('common.delete')"
+          :aria-label="t('common.delete')"
+          :disabled="deletingId === row.id"
+          @click="handleDelete(row)"
+        >
+          <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+        </button>
+      </template>
+    </ListDetailSidebar>
 
-          <!-- Icon + label/host -->
-          <div class="flex items-start gap-3 mb-3">
-            <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 border border-primary/15 text-primary transition-colors group-hover:bg-primary/15 group-hover:border-primary/25">
-              <HardDrive class="h-4.5 w-4.5" :stroke-width="1.75" />
-            </div>
-            <div class="min-w-0 flex-1">
-              <div class="flex items-center gap-1.5 flex-wrap">
-                <p class="text-sm font-semibold truncate leading-tight">{{ server.label }}</p>
-              </div>
-              <p class="text-xs text-muted-foreground mt-1 font-mono truncate leading-relaxed">
-                {{ server.username }}@{{ server.host }}:{{ server.port }}
-              </p>
-            </div>
-          </div>
-
-          <!-- Status + tags -->
-          <div class="flex items-center gap-2 flex-wrap mb-3">
-            <span class="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-              <span class="h-2 w-2 rounded-full shrink-0" :class="dotColor(server.status)" />
-              {{ statusLabel(server.status) }}
-            </span>
-            <Badge
-              v-for="tag in tagList(server.tags)"
-              :key="tag"
-              tone="neutral"
-              size="xs"
-              class="shrink-0"
-            >
-              {{ tag }}
-            </Badge>
-          </div>
-
-          <!-- Footer -->
-          <div class="flex items-center justify-between pt-2.5 border-t border-border/60 mt-auto">
-            <div class="flex items-center gap-2 min-w-0">
-              <Badge tone="primary" size="xs" class="shrink-0 uppercase tracking-wide">
-                <KeyRound v-if="server.auth_method === 'key'" class="h-2.5 w-2.5" :stroke-width="2" />
-                <UserCog v-else class="h-2.5 w-2.5" :stroke-width="2" />
-                {{ server.auth_method }}
-              </Badge>
-              <div class="flex items-center gap-1 text-[10px] text-muted-foreground/60">
-                <CalendarDays class="h-3 w-3" :stroke-width="1.5" />
-                <span>{{ formatDate(server.created_at) }}</span>
-              </div>
-            </div>
-            <!-- Actions on hover -->
-            <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity" @click.stop>
-              <button
-                class="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-40"
-                :title="t('servers.list.testTitle')"
-                :disabled="testingId === server.id"
-                @click="handleTest(server)"
-              >
-                <Plug class="h-3.5 w-3.5" :stroke-width="1.75" />
-              </button>
-              <button
-                class="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-                :title="t('common.edit')"
-                @click="router.push(`/servers/${server.id}/edit`)"
-              >
-                <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
-              </button>
-              <button
-                class="flex h-6 w-6 items-center justify-center rounded text-destructive/60 hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer disabled:opacity-40"
-                :title="t('common.delete')"
-                :disabled="deletingId === server.id"
-                @click="handleDelete(server)"
-              >
-                <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-              </button>
-            </div>
-          </div>
-        </Card>
-      </div>
-    </div>
+    <ServerDetail
+      v-if="selection.kind === 'new' || selectedServer"
+      ref="detailRef"
+      :key="detailKey"
+      :server="selection.kind === 'new' ? null : selectedServer"
+      :prefill="selection.kind === 'new' ? draftPrefill : null"
+      :test-result="selectedId ? testResults.get(selectedId) ?? null : null"
+      :testing="!!selectedId && testingIds.has(selectedId)"
+      :deleting="!!selectedId && deletingId === selectedId"
+      @saved="onSaved"
+      @test="testSelected"
+      @delete="selectedServer && handleDelete(selectedServer)"
+      @duplicate="duplicate"
+    />
+    <DetailEmpty v-else :icon="HardDrive" :text="t('servers.list.noSelection')" />
   </div>
 </template>

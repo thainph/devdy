@@ -1,6 +1,5 @@
 {
   "list": {
-    "title": "MCP Servers",
     "import": "Nhập",
     "importing": "Đang nhập…",
     "newServer": "Server mới",
@@ -8,7 +7,10 @@
       "active": "Tích hợp sẵn · hoạt động",
       "disabled": "Tích hợp sẵn · đã tắt",
       "description": "Tự động chèn vào mọi run. Cung cấp cho AI ghi chú của bạn, khả năng nhớ xuyên phiên, ngữ cảnh dự án (cây thư mục & git) và VPS được quản lý — dưới dạng các tool {tools}.",
-      "settings": "Cài đặt"
+      "settings": "Cài đặt",
+      "needsClient": "Tích hợp sẵn · cần OAuth client",
+      "noAccount": "Tích hợp sẵn · chưa có tài khoản",
+      "googleDescription": "Drive (drive_*): liệt kê, tìm, đọc, tải lên, chia sẻ, xóa file. Gmail (mail_*): tìm, đọc, tệp đính kèm, gửi, trả lời, nhãn. Calendar (cal_*): xem sự kiện, tìm giờ trống, tạo và cập nhật cuộc họp. Được chèn khi đã kết nối tài khoản Google — dưới dạng các tool {tools}."
     },
     "empty": {
       "title": "Chưa có MCP server nào",
@@ -26,18 +28,29 @@
       "message": "Xóa MCP server \"{name}\"? Thao tác này cũng xóa các secret đã lưu. Không thể hoàn tác."
     },
     "toast": {
-      "added": "Đã thêm \"{name}\" — mở để hoàn tất thiết lập",
+      "added": "Đã thêm \"{name}\" — hoàn tất thiết lập tại đây",
       "imported": "Đã nhập",
       "exported": "Đã xuất",
       "deleted": "Đã xóa",
       "disabled": "Đã tắt",
       "enabled": "Đã bật"
-    }
+    },
+    "searchPlaceholder": "Tìm theo tên, lệnh, URL…",
+    "filter": {
+      "all": "Tất cả",
+      "enabled": "Đã bật",
+      "disabled": "Đã tắt"
+    },
+    "groups": {
+      "builtin": "Tích hợp sẵn",
+      "stdio": "stdio · tiến trình cục bộ",
+      "http": "http · từ xa",
+      "sse": "sse · từ xa"
+    },
+    "noSelection": "Chọn một MCP server, hoặc tạo server mới"
   },
   "editor": {
-    "backTitle": "Quay lại MCP Servers",
     "newTitle": "MCP Server mới",
-    "editing": "— đang chỉnh sửa",
     "enabled": "Đã bật",
     "disabled": "Đã tắt",
     "saving": "Đang lưu…",
@@ -65,7 +78,6 @@
     "headers": "Headers",
     "noHeaders": "Không có header",
     "authorizationPlaceholder": "Authorization",
-    "connection": "Kết nối",
     "testConnection": "Kiểm tra kết nối",
     "testing": "Đang kiểm tra…",
     "validation": {
@@ -78,6 +90,30 @@
     },
     "toast": {
       "saved": "Đã lưu"
+    }
+  },
+  "detail": {
+    "addedOn": "Thêm ngày {date}",
+    "notSaved": "Chưa lưu",
+    "builtin": "Tích hợp sẵn",
+    "notAdded": "Đề xuất · chưa thêm",
+    "moreActions": "Thao tác khác",
+    "duplicate": "Nhân bản",
+    "duplicated": "Giá trị secret không được sao chép — hãy điền lại trước khi lưu",
+    "dismiss": "Đóng",
+    "about": "Giới thiệu",
+    "tools": "Tools",
+    "builtinHint": "Được chèn khi khởi chạy run, không lưu như một server. Bật/tắt và thiết lập trong Cài đặt.",
+    "command": "Lệnh",
+    "secretsToFill": "Secret cần điền",
+    "noSecrets": "Không cần secret",
+    "addHint": "Thêm với giá trị secret rỗng; hoàn tất thiết lập tại đây.",
+    "generalHint": "Định nghĩa một MCP server một lần, sau đó bật cho từng dự án ở trang của dự án.",
+    "secretsHint": "Giá trị được lưu trong OS Keychain và không bao giờ hiển thị; để trống giá trị đã lưu để giữ nguyên.",
+    "confirmDiscard": {
+      "title": "Bỏ thay đổi?",
+      "message": "MCP server này có thay đổi chưa lưu. Bỏ các thay đổi đó?",
+      "confirm": "Bỏ"
     }
   }
 }
