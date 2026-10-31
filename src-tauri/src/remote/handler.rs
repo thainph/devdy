@@ -18,8 +18,8 @@ use crate::remote::agent::{now_unix, IdleClock, IDLE_TTL_SECS};
 use crate::remote::audit;
 use crate::remote::guard;
 use crate::remote::command::{
-    data_action_permitted, is_allowed_action, is_data_action, map_remote_decision,
-    CommandRateLimiter, IdempotencyGuard, RejectReason,
+    data_action_permitted, is_allowed_action, is_data_action, is_push_action, map_remote_decision,
+    push_action_permitted, CommandRateLimiter, IdempotencyGuard, RejectReason,
 };
 use crate::remote::forwarder::{
     replay_history, run_log_path, send_engine_model_options, send_plan_usage,
@@ -92,6 +92,10 @@ pub struct HandlerCtx {
     ///
     /// [`FEATURE_DATA`]: crate::remote::protocol::FEATURE_DATA
     pub data: bool,
+    /// The Controller manages Web Push ([`FEATURE_PUSH`]).
+    ///
+    /// [`FEATURE_PUSH`]: crate::remote::protocol::FEATURE_PUSH
+    pub push: bool,
 }
 
 impl HandlerCtx {
@@ -360,11 +364,25 @@ pub async fn handle(ctx: &HandlerCtx, cmd: CmdPayload) {
         return;
     }
 
+    // Gate 3b: push actions only for a Controller that negotiated them.
+    if !push_action_permitted(action, ctx.push) {
+        reject(ctx, action, None, RejectReason::NotAllowed).await;
+        command_ack(ctx, &cmd, false, Some(RejectReason::NotAllowed.as_str())).await;
+        return;
+    }
+
     // An accepted inbound command slides the idle window forward (never output).
-    ctx.slide_idle();
+    // A visibility report is the app switching in or out, not user activity.
+    if action != "push_visibility" {
+        ctx.slide_idle();
+    }
 
     if is_data_action(action) {
         crate::remote::data::handle(ctx, &cmd).await;
+        return;
+    }
+    if is_push_action(action) {
+        crate::remote::push::actions::handle(ctx, &cmd).await;
         return;
     }
 

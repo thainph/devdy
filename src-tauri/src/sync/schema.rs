@@ -9,6 +9,8 @@
 //! `every_table_is_classified` test fails when a new table is neither synced
 //! nor listed in `EXCLUDED_TABLES`:
 //! - `remote_audit`: Remote Control audit of this machine's host agent.
+//! - `remote_push_subscriptions`: phones subscribed to THIS host's VAPID key
+//!   (the key lives in this machine's Keychain); another host cannot push to them.
 //! - `conductor_sessions`, `conductor_events`: live state of an in-process
 //!   conductor, meaningless on another machine.
 //! - `sync_*`: the sync bookkeeping itself.
@@ -183,6 +185,7 @@ pub static SYNCED_TABLES: &[TableSpec] = &[
 #[cfg_attr(not(test), allow(dead_code))]
 pub static EXCLUDED_TABLES: &[&str] = &[
     "remote_audit",
+    "remote_push_subscriptions",
     "conductor_sessions",
     "conductor_events",
     "sync_conflicts",

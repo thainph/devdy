@@ -8,6 +8,16 @@
     />
     <meta name="color-scheme" content="dark light" />
     <meta name="theme-color" content="#0b0b12" />
+    <!-- Installable PWA ("Add to Home Screen"). The manifest is a .json file on
+         purpose: the relay's nginx has no MIME type for .webmanifest. -->
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Devdy" />
+    <!-- Opaque status bar: standalone content starts below it, so no view has
+         to pad for the top safe area (the bottom one is handled per view). -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
     <title>Devdy Remote</title>
   </head>
 

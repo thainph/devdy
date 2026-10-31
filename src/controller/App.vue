@@ -25,6 +25,7 @@ import NoteListView from './components/NoteListView.vue'
 import NoteEditorView from './components/NoteEditorView.vue'
 import ProjectTogglesView from './components/ProjectTogglesView.vue'
 import { createDataStore } from './dataStore'
+import { createPushStore } from './pushStore'
 import BottomTabBar, { type ControllerTab } from './components/BottomTabBar.vue'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
 import {
@@ -79,6 +80,8 @@ const data = createDataStore(
       : t('controller.data.errors.generic', { reason: reason ?? '?' })
   },
 )
+// Web Push (host feature `push`): this phone's notification switch.
+const push = createPushStore((cmd, onAck) => conn.value?.sendCommand(cmd, onAck) ?? false)
 const noteEditorOpen = ref(false)
 const toggleProjectId = ref<string | null>(null)
 const dataBusy = computed(() => data.state.pending > 0)
@@ -89,6 +92,7 @@ const hostFeatures = computed(() => conn.value?.state.hostFeatures.value ?? null
 const hasData = computed(() => hostHas(hostFeatures.value, 'data'))
 const hasInbox = computed(() => hostHas(hostFeatures.value, 'inbox'))
 const hasRemember = computed(() => hostHas(hostFeatures.value, 'remember'))
+const hasPush = computed(() => hostHas(hostFeatures.value, 'push'))
 const DATA_TABS: ControllerTab[] = ['todo', 'note', 'project']
 const hiddenTabs = computed<ControllerTab[]>(() =>
   // Unknown until the token arrives: show everything rather than flicker.
@@ -286,6 +290,7 @@ onBeforeUnmount(() => {
   conn.value?.close()
   document.removeEventListener('visibilitychange', onVisibility)
   window.removeEventListener('pagehide', onPageHide)
+  navigator.serviceWorker?.removeEventListener('message', onWorkerMessage)
 })
 
 /** Parsed a link (from hash or paste) — connect IMMEDIATELY (join + pubkey
@@ -331,6 +336,7 @@ function startConnection(secret: SecretSource | null): void {
   const c = new ControllerConnection(link.value, secret, (p) => {
     store.apply(p)
     data.apply(p)
+    push.apply(p)
   })
   conn.value = c
   void c.connect()
@@ -446,6 +452,11 @@ saveVisit(visit.value)
 const sinceMs = computed(() => visit.value.anchor ?? Date.now())
 
 function onVisibility(): void {
+  // Pushes are held back while the app is on screen; say when that changes
+  // (the socket may still carry this before the OS suspends the page).
+  if (hasPush.value && auth.value === 'authenticated' && status.value === 'connected') {
+    push.setVisible(document.visibilityState === 'visible')
+  }
   if (document.visibilityState === 'hidden') {
     saveVisit(leaveVisit(visit.value, Date.now()))
     return
@@ -459,6 +470,13 @@ function onPageHide(): void {
 }
 document.addEventListener('visibilitychange', onVisibility)
 window.addEventListener('pagehide', onPageHide)
+
+// A tapped notification (service worker → open window): show the Inbox.
+function onWorkerMessage(e: MessageEvent): void {
+  const msg = e.data as { type?: unknown } | null
+  if (msg?.type === 'devdy:open-inbox' && phase.value === 'session') openInbox()
+}
+navigator.serviceWorker?.addEventListener('message', onWorkerMessage)
 
 function onTab(next: ControllerTab): void {
   if (next !== tab.value) data.clearError()
@@ -505,6 +523,7 @@ watch(
     if (!ready) return
     syncInbox()
     if (hasData.value) data.reload()
+    if (hasPush.value) void push.refresh()
   },
 )
 const entries = computed(() => runView.value?.entries ?? [])
@@ -749,6 +768,7 @@ function onRequestFiles(): void {
         :since-ms="sinceMs"
         :read-ids="visit.read"
         :allow-always="hasRemember"
+        :push="hasPush ? push : null"
         @decide="respond"
         @answer="(req, answers) => respond(req, 'allow_once', answers)"
         @open="openRun"

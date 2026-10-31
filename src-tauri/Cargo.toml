@@ -53,6 +53,11 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 rand = "0.8"
 base64 = "0.22"
+# Remote Control Web Push: VAPID (ES256) signing + RFC 8291 aes128gcm payload
+# encryption, done with RustCrypto so the RFC test vector can pin the ephemeral key.
+p256 = { version = "0.13", default-features = false, features = ["ecdh", "ecdsa", "std"] }
+hkdf = "0.12"
+aes-gcm = "0.10"
 remote-e2e = { path = "../remote-e2e" }
 # Password-sealed secrets in settings backups (Argon2id + XChaCha20-Poly1305); same crate as remote-e2e.
 dryoc = "1.0"

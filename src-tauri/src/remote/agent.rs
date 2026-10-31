@@ -1133,13 +1133,23 @@ async fn try_authenticate_first_frame(
     let multi_run = has_feature(FEATURE_MULTI_RUN);
     let ipc = has_feature(crate::remote::ipc::FEATURE_IPC);
     let data = has_feature(crate::remote::protocol::FEATURE_DATA);
+    let push = has_feature(crate::remote::protocol::FEATURE_PUSH);
     tracing::info!(
         event = "remote_client_features",
         room_id = %room_id,
         output_batch = batch_output,
         multi_run = multi_run,
         data = data,
+        push = push,
     );
+    // A Controller that just authenticated is on screen; it reports otherwise
+    // with `push_visibility` when it goes to the background.
+    {
+        use tauri::Manager;
+        if let Some(state) = deps.app.try_state::<crate::remote::RemoteState>() {
+            state.push.set_visible(true);
+        }
+    }
 
     // A remote-desktop Controller drives the full UI through IPC: it needs
     // none of the phone-controller streams, only its replies routed back.
@@ -1225,6 +1235,7 @@ async fn try_authenticate_first_frame(
         idle: idle.clone(),
         ipc,
         data,
+        push,
     });
     *room_ctx = Some(ctx.clone());
 

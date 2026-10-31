@@ -137,5 +137,32 @@
       "failed": "Không chép được {name} sang Devdy đang điều khiển: {error}",
       "folderSkipped": "Chưa thể thả thư mục vào Devdy đang điều khiển ({name})."
     }
+  },
+  "push": {
+    "title": "Thông báo điện thoại",
+    "intro": "Điện thoại đã ghép cặp và bật thông báo (nút chuông ở tab Cần xử lý) sẽ được báo khi Remote Control đang bật và điện thoại không mở app. Thông báo chỉ chứa số lượng.",
+    "kinds": {
+      "pending": "Cần duyệt",
+      "done": "Phiên chạy xong",
+      "failed": "Phiên bị lỗi"
+    },
+    "kindHints": {
+      "pending": "Có permission, câu hỏi hoặc yêu cầu dùng credential đang chờ.",
+      "done": "Một run đã xong, hoặc session đã xong lượt và đang chờ bạn.",
+      "failed": "Một run kết thúc với lỗi."
+    },
+    "devices": "Thiết bị",
+    "noDevices": "Chưa có thiết bị. Trên điện thoại, mở tab Cần xử lý và bấm nút chuông.",
+    "unnamed": "Thiết bị không tên",
+    "added": "Thêm lúc {at}",
+    "lastOk": "gửi được lần cuối {at}",
+    "never": "chưa có",
+    "test": "Gửi thông báo thử",
+    "remove": "Gỡ thiết bị",
+    "toast": {
+      "testSent": "Đã gửi thông báo thử tới {label}.",
+      "testFailed": "Gửi thông báo thử thất bại: {reason}",
+      "gone": "Push service không còn nhận thiết bị này — đã gỡ."
+    }
   }
 }

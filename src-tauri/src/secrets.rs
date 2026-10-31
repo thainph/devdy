@@ -718,6 +718,11 @@ struct RemoteSecrets {
     /// owner. `None`/empty falls back to the OTP flow.
     #[serde(default)]
     master_password: Option<String>,
+    /// Web Push VAPID private key (P-256 scalar, base64url). Generated once;
+    /// the matching public key is what every push subscription is bound to, so
+    /// losing it silently invalidates them all.
+    #[serde(default)]
+    vapid_private_key: Option<String>,
 }
 
 /// The single active remote session's durable reconnect credential.
@@ -807,6 +812,25 @@ pub fn get_remote_master_password() -> Option<String> {
 /// Whether a non-empty master password is stored WITHOUT returning its value.
 pub fn has_remote_master_password() -> bool {
     get_remote_master_password().is_some()
+}
+
+/// Read the Web Push VAPID private key (base64url), if one was generated.
+pub fn get_remote_vapid_key() -> Option<String> {
+    let mut guard = CACHE.lock().ok()?;
+    ensure_loaded(&mut guard);
+    guard
+        .as_ref()
+        .and_then(|store| store.remote.vapid_private_key.clone())
+        .filter(|k| !k.trim().is_empty())
+}
+
+/// Persist the Web Push VAPID private key (base64url).
+pub fn set_remote_vapid_key(key: &str) -> Result<()> {
+    let mut guard = CACHE.lock().map_err(|_| anyhow!("secret cache poisoned"))?;
+    ensure_loaded(&mut guard);
+    let store = guard.as_mut().expect("store loaded");
+    store.remote.vapid_private_key = Some(key.to_string());
+    persist(store)
 }
 
 /// Persist (or replace) the single remote session's reconnect credential.

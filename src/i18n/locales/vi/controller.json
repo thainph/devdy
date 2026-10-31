@@ -223,5 +223,43 @@
     "footer": "Cấu hình env / token / account chỉ sửa trên máy tính.",
     "enable": "Bật {name}",
     "disable": "Tắt {name}"
+  },
+  "push": {
+    "title": "Thông báo",
+    "state": {
+      "on": "Đang bật — điện thoại sẽ báo khi có việc cần duyệt hoặc phiên chạy xong.",
+      "off": "Đang tắt — bật để nhận thông báo cả khi khoá máy.",
+      "loading": "Đang kiểm tra…",
+      "denied": "Thông báo của Devdy đang bị chặn. Cho phép lại trong cài đặt trình duyệt hoặc hệ thống rồi quay lại đây.",
+      "unsupported": "Trình duyệt này không nhận được thông báo đẩy.",
+      "needs_install": "Trên iPhone/iPad, thông báo chỉ hoạt động khi Devdy đã được thêm vào Màn hình chính:"
+    },
+    "install": {
+      "share": "Trong Safari, bấm nút Chia sẻ",
+      "add": "Chọn “Thêm vào MH chính”",
+      "open": "Mở Devdy từ Màn hình chính, đăng nhập rồi bật thông báo tại đây"
+    },
+    "kinds": {
+      "pending": "việc cần duyệt",
+      "done": "phiên đã xong",
+      "failed": "phiên bị lỗi"
+    },
+    "sends": "Máy tính đang gửi: {kinds}",
+    "privacy": "Thông báo chỉ chứa số lượng — không có lệnh, tên tool hay project.",
+    "enable": "Bật thông báo",
+    "disable": "Tắt",
+    "sendTest": "Gửi thử",
+    "close": "Đóng",
+    "test": {
+      "sent": "Đã gửi — thông báo sẽ đến trong giây lát.",
+      "failed": "Không gửi được thông báo thử."
+    },
+    "errors": {
+      "not_ready": "Chưa nhận được cấu hình từ máy tính — thử lại sau giây lát.",
+      "permission": "Chưa được cấp quyền thông báo.",
+      "subscribe": "Trình duyệt này không đăng ký nhận thông báo được.",
+      "host": "Máy tính không nhận thiết bị này — kiểm tra kết nối rồi thử lại.",
+      "test": "Không gửi được thông báo thử."
+    }
   }
 }

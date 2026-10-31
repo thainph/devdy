@@ -223,5 +223,43 @@
     "footer": "Env, tokens and accounts can only be changed on the desktop.",
     "enable": "Turn on {name}",
     "disable": "Turn off {name}"
+  },
+  "push": {
+    "title": "Notifications",
+    "state": {
+      "on": "On — this phone is notified when something needs you or a run finishes.",
+      "off": "Off — turn on to get notified while the phone is locked.",
+      "loading": "Checking…",
+      "denied": "Notifications are blocked for Devdy. Allow them in the browser or system settings, then come back.",
+      "unsupported": "This browser cannot receive push notifications.",
+      "needs_install": "On iPhone and iPad, notifications only work once Devdy is on your Home Screen:"
+    },
+    "install": {
+      "share": "In Safari, tap Share",
+      "add": "Choose “Add to Home Screen”",
+      "open": "Open Devdy from the Home Screen, sign in, and turn notifications on here"
+    },
+    "kinds": {
+      "pending": "approvals",
+      "done": "finished runs",
+      "failed": "failed runs"
+    },
+    "sends": "The desktop sends: {kinds}",
+    "privacy": "Notifications carry counts only — never commands, tool names or projects.",
+    "enable": "Turn on notifications",
+    "disable": "Turn off",
+    "sendTest": "Send a test",
+    "close": "Close",
+    "test": {
+      "sent": "Sent — it should arrive in a moment.",
+      "failed": "The test notification could not be sent."
+    },
+    "errors": {
+      "not_ready": "Still waiting for the desktop — try again in a moment.",
+      "permission": "Notification permission was not granted.",
+      "subscribe": "This browser could not subscribe to notifications.",
+      "host": "The desktop did not accept this device — check your connection and try again.",
+      "test": "The test notification could not be sent."
+    }
   }
 }

@@ -120,6 +120,10 @@ const LOCAL_ONLY_COMMANDS: &[&str] = &[
     "remote_create_session_link",
     "remote_kick_controller",
     "remote_clear_audit",
+    // Web Push: who gets notified, about what (and a send from this Host).
+    "remote_push_remove",
+    "remote_push_set_events",
+    "remote_push_test",
     // Plumbing of the CONTROLLING side of a remote desktop: a remote window
     // calls these on its own machine (real invoke), never over the bridge. Run
     // here they would read / write arbitrary files of this machine.
@@ -496,6 +500,9 @@ mod tests {
             "remote_enable",
             "remote_disable",
             "remote_clear_audit",
+            "remote_push_remove",
+            "remote_push_set_events",
+            "remote_push_test",
             "read_local_file_chunk",
             "stat_local_files",
             "rd_download_create",

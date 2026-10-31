@@ -34,6 +34,7 @@ pub mod login;
 pub mod meta;
 pub mod outbound;
 pub mod protocol;
+pub mod push;
 pub mod session;
 pub mod upload;
 
@@ -101,6 +102,8 @@ pub struct RemoteState {
     pub focus_run_id: FocusRun,
     /// Remote-desktop IPC routing (another Devdy driving this one).
     pub ipc: ipc::IpcHub,
+    /// Web Push to subscribed phones; its dispatcher runs with the agent.
+    pub push: push::PushHub,
     agent: Arc<TokioMutex<Option<AgentControl>>>,
 }
 
@@ -122,6 +125,7 @@ impl RemoteState {
             subscriptions: Arc::new(TokioMutex::new(HashSet::new())),
             focus_run_id: Arc::new(TokioMutex::new(None)),
             ipc: ipc::IpcHub::default(),
+            push: push::PushHub::default(),
             agent: Arc::new(TokioMutex::new(None)),
         }
     }
@@ -172,6 +176,7 @@ impl RemoteState {
             device_id,
         };
         let handle = tokio::spawn(agent::run_agent(config, deps, auth_token, stop_rx));
+        self.push.start(db.clone(), self.bus.clone(), self.connected.clone());
         *self.agent.lock().await = Some(AgentControl {
             stop: stop_tx,
             handle,
@@ -185,6 +190,7 @@ impl RemoteState {
             let _ = ctrl.stop.send(true);
             ctrl.handle.abort();
         }
+        self.push.stop();
         self.connected
             .store(false, std::sync::atomic::Ordering::SeqCst);
         self.reconnecting

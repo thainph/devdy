@@ -12,6 +12,7 @@ import { useConfirm } from '@/composables/useConfirm'
 import { useRemoteControlStore } from '@/stores/remoteControl'
 import { isRemoteMode } from '@/lib/ipc/remote'
 import { openRemoteDesktopWindow } from '@/lib/remoteDesktopWindow'
+import RemotePushSettings from './RemotePushSettings.vue'
 import { Radio, Wifi, WifiOff, ShieldCheck, RefreshCw, Loader2, Trash2, MonitorSmartphone } from 'lucide-vue-next'
 
 const store = useRemoteControlStore()
@@ -205,6 +206,9 @@ function resultTone(r: string): 'success' | 'error' | 'neutral' {
         </div>
       </div>
     </Card>
+
+    <!-- Web Push to paired phones -->
+    <RemotePushSettings v-if="!remoteMode" />
 
     <!-- Audit log -->
     <Card>

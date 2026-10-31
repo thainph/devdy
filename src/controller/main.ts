@@ -5,6 +5,7 @@ import { createApp } from 'vue'
 import '@/assets/main.css'
 import { i18n } from '@/i18n'
 import App from './App.vue'
+import { registerControllerServiceWorker } from './pushStore'
 
 // Framework-independent error surface (requirement: never fail silently). If
 // anything throws — including a failed dynamic import / chunk 404, or a bug that
@@ -39,3 +40,7 @@ app.config.errorHandler = (err) => {
   console.error(err)
 }
 app.mount('#app')
+
+// Installed-app (PWA) support + Web Push. The worker caches nothing, so a
+// relay redeploy is live on the next load.
+registerControllerServiceWorker()
