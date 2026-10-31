@@ -250,33 +250,47 @@ const hiddenServerTitle = computed(() =>
   hiddenServerChips.value.map((c) => c.label).join('\n'),
 )
 
-// The project's linked AWS account (credentials brokered per run). Label + region
-// on the chip; account id + ARN in the tooltip.
+// Labels of the enabled cloud accounts other than the default, for the "+N" tag
+// and the "Also enabled" tooltip line (like the GitHub / GitLab chips).
+function otherCloudLabels(ids: string[] | undefined, defaultId: string, accounts: { id: string; label: string }[]) {
+  return (ids ?? [])
+    .filter((id) => id !== defaultId)
+    .map((id) => accounts.find((a) => a.id === id)?.label)
+    .filter((l): l is string => !!l)
+}
+
+// The project's default AWS account (credentials brokered per run). Label + region
+// on the chip; account id + ARN and other enabled accounts in the tooltip.
 const awsChip = computed(() => {
   const id = project.value?.aws_account_id
   if (!id) return null
   const acc = awsStore.accounts.find((a) => a.id === id)
   if (!acc) return null
-  const parts = [`AWS: ${acc.label}`]
+  const parts = [`AWS: ${acc.label} (default)`]
   if (acc.account_id) parts.push(`account ${acc.account_id}`)
   parts.push(`region ${acc.region}`)
+  const others = otherCloudLabels(project.value?.aws_account_ids, id, awsStore.accounts)
   const title = parts.join(' · ') + (acc.arn ? `\n${acc.arn}` : '')
-  return { label: acc.label, region: acc.region, title }
+    + (others.length ? `\nAlso enabled: ${others.join(', ')}` : '')
+  return { label: acc.label, region: acc.region, title, tag: others.length ? `+${others.length}` : undefined }
 })
 
-// The project's linked Azure account (isolated az login per account). Label +
-// subscription name on the chip; subscription/tenant ids + user in the tooltip.
+// The project's default Azure account (isolated az login per account). Label +
+// subscription name on the chip; subscription/tenant ids + user and other
+// enabled accounts in the tooltip.
 const azureChip = computed(() => {
   const id = project.value?.azure_account_id
   if (!id) return null
   const acc = azureStore.accounts.find((a) => a.id === id)
   if (!acc) return null
-  const parts = [`Azure: ${acc.label}`]
+  const parts = [`Azure: ${acc.label} (default)`]
   if (acc.subscription_name) parts.push(`subscription ${acc.subscription_name}`)
   if (acc.subscription_id) parts.push(acc.subscription_id)
   if (acc.tenant_id) parts.push(`tenant ${acc.tenant_id}`)
+  const others = otherCloudLabels(project.value?.azure_account_ids, id, azureStore.accounts)
   const title = parts.join(' · ') + (acc.user_name ? `\n${acc.user_name}` : '')
-  return { label: acc.label, subscription: acc.subscription_name ?? '', title }
+    + (others.length ? `\nAlso enabled: ${others.join(', ')}` : '')
+  return { label: acc.label, subscription: acc.subscription_name ?? '', title, tag: others.length ? `+${others.length}` : undefined }
 })
 
 const activeRunId = computed(() => route.params.runId as string | undefined)
@@ -3744,7 +3758,7 @@ function handleRefInput(val: string) {
           <HardDrive class="h-3 w-3" :stroke-width="2" />
           +{{ hiddenServerChips.length }}
         </Badge>
-        <!-- Linked AWS account (credentials brokered per run). -->
+        <!-- Default AWS account (credentials brokered per run); +N other enabled. -->
         <Badge
           v-if="awsChip"
           tone="primary"
@@ -3755,8 +3769,9 @@ function handleRefInput(val: string) {
           <Cloud class="h-3 w-3" :stroke-width="2" />
           {{ awsChip.label }}
           <span class="opacity-90 font-mono">{{ awsChip.region }}</span>
+          <span v-if="awsChip.tag" class="font-sans text-[10px] uppercase tracking-wide opacity-70">{{ awsChip.tag }}</span>
         </Badge>
-        <!-- Linked Azure account (az login isolated per account). -->
+        <!-- Default Azure account (az login isolated per account); +N other enabled. -->
         <Badge
           v-if="azureChip"
           tone="primary"
@@ -3767,6 +3782,7 @@ function handleRefInput(val: string) {
           <CloudCog class="h-3 w-3" :stroke-width="2" />
           {{ azureChip.label }}
           <span v-if="azureChip.subscription" class="opacity-90">{{ azureChip.subscription }}</span>
+          <span v-if="azureChip.tag" class="font-sans text-[10px] uppercase tracking-wide opacity-70">{{ azureChip.tag }}</span>
         </Badge>
       </div>
       <!-- Icon-only actions: the linked Slack / todo / note menus, then one ⋯

@@ -17,8 +17,13 @@ export interface Project {
   /** Default GitLab account (one of `gitlab_account_ids`). */
   gitlab_account_id: string | null
   gitlab_account_ids: string[]
+  /** Default AWS account (one of `aws_account_ids`). */
   aws_account_id: string | null
+  /** AWS accounts enabled for the project; runs may pick any per command. */
+  aws_account_ids: string[]
+  /** Default Azure account (one of `azure_account_ids`). */
   azure_account_id: string | null
+  azure_account_ids: string[]
   claude_account_id: string | null
   github_project_board_url: string | null
   github_project_field_mappings: string | null
@@ -314,6 +319,17 @@ export const useProjectsStore = defineStore('projects', () => {
     await fetchProjects()
   }
 
+  /** Enable / disable one AWS or Azure account for a project. */
+  async function setProjectCloudAccountEnabled(
+    project_id: string,
+    provider: 'aws' | 'azure',
+    account_id: string,
+    enabled: boolean,
+  ): Promise<void> {
+    await invoke('set_project_cloud_account_enabled', { projectId: project_id, provider, accountId: account_id, enabled })
+    await fetchProjects()
+  }
+
   async function setProjectClaudeAccount(project_id: string, account_id: string | null): Promise<void> {
     await invoke('set_project_claude_account', { projectId: project_id, accountId: account_id })
     await fetchProjects()
@@ -384,7 +400,7 @@ export const useProjectsStore = defineStore('projects', () => {
     fetchProjects, reorder, detectProjectInfo, addProject, removeProject, updateProject,
     resolveProjectBoard, listRepos, addRepo, updateRepo, removeRepo,
     getAppliedSkills, applySkill, removeSkillFromProject,
-    setProjectAccount, setProjectGitAccountEnabled, setProjectGitlabAccount, setProjectAwsAccount, setProjectAzureAccount, setProjectClaudeAccount, fetchConflicts, resolveConflict,
+    setProjectAccount, setProjectGitAccountEnabled, setProjectGitlabAccount, setProjectAwsAccount, setProjectAzureAccount, setProjectCloudAccountEnabled, setProjectClaudeAccount, fetchConflicts, resolveConflict,
     openInVscode, openInFolder, openInTerminal,
     getAppliedRules, applyRule, removeRuleFromProject,
     fetchRuleConflicts, resolveRuleConflict, getInstructionWarnings,

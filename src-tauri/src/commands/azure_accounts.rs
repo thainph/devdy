@@ -582,11 +582,19 @@ pub async fn delete_azure_account(
         .bind(&id)
         .execute(db.inner())
         .await;
+    // project_azure_accounts cascades; a project that used it as the default
+    // falls back to another enabled account.
     sqlx::query("DELETE FROM azure_accounts WHERE id = ?")
         .bind(&id)
         .execute(db.inner())
         .await
         .map_err(|e| e.to_string())?;
+    super::project_git_accounts::repair_defaults(
+        db.inner(),
+        super::project_git_accounts::AZURE,
+        None,
+    )
+    .await?;
     // Dropping the dir discards the account's az session and token cache. There
     // are no per-project Azure sandboxes to clean: runs only ever see the shared
     // empty dir, and the shims hand out the account dir per call.
@@ -674,19 +682,21 @@ pub async fn list_azure_subscriptions(
         .collect())
 }
 
+/// Make `account_id` the project's default Azure account (enabling it), or
+/// clear the default with `None`.
 #[tauri::command]
 pub async fn set_project_azure_account(
     db: State<'_, Db>,
     project_id: String,
     account_id: Option<String>,
 ) -> Result<(), String> {
-    sqlx::query("UPDATE projects SET azure_account_id = ? WHERE id = ?")
-        .bind(&account_id)
-        .bind(&project_id)
-        .execute(db.inner())
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    super::project_git_accounts::set_default(
+        db.inner(),
+        super::project_git_accounts::AZURE,
+        &project_id,
+        account_id.as_deref(),
+    )
+    .await
 }
 
 #[cfg(test)]

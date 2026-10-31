@@ -2,7 +2,7 @@
 // Run with: node --test sidecar-proxy/shim.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { scrubCloudEnv, pathWithoutDir, azureMfaRequired, gitAccountSelector, remoteHost, glabTargetHost } from './shim.mjs'
+import { scrubCloudEnv, pathWithoutDir, azureMfaRequired, gitAccountSelector, cloudAccountSelector, stripAwsProfileArgs, remoteHost, glabTargetHost } from './shim.mjs'
 
 const inherited = () => ({
   PATH: '/usr/bin',
@@ -65,6 +65,18 @@ test('gitAccountSelector: trimmed DEVDY_GIT_ACCOUNT, blank/unset → default', (
   assert.equal(gitAccountSelector({ DEVDY_GIT_ACCOUNT: ' work ' }), 'work')
   assert.equal(gitAccountSelector({ DEVDY_GIT_ACCOUNT: '  ' }), null)
   assert.equal(gitAccountSelector({}), null)
+})
+
+test('cloudAccountSelector: trimmed DEVDY_AWS_ACCOUNT / DEVDY_AZURE_ACCOUNT, blank/unset → default', () => {
+  assert.equal(cloudAccountSelector({ DEVDY_AWS_ACCOUNT: ' prod ' }, 'DEVDY_AWS_ACCOUNT'), 'prod')
+  assert.equal(cloudAccountSelector({ DEVDY_AWS_ACCOUNT: 'prod' }, 'DEVDY_AZURE_ACCOUNT'), null)
+  assert.equal(cloudAccountSelector({ DEVDY_AZURE_ACCOUNT: ' ' }, 'DEVDY_AZURE_ACCOUNT'), null)
+})
+
+test('stripAwsProfileArgs: drops --profile and reports its value', () => {
+  assert.deepEqual(stripAwsProfileArgs(['s3', 'ls', '--profile', 'prod']), { argv: ['s3', 'ls'], stripped: true, profile: 'prod' })
+  assert.deepEqual(stripAwsProfileArgs(['--profile=dev', 'sts', 'get-caller-identity']), { argv: ['sts', 'get-caller-identity'], stripped: true, profile: 'dev' })
+  assert.deepEqual(stripAwsProfileArgs(['s3', 'ls']), { argv: ['s3', 'ls'], stripped: false, profile: null })
 })
 
 test('remoteHost: https / ssh / scp-like remotes, null otherwise', () => {

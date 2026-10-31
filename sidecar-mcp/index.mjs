@@ -616,6 +616,32 @@ const tools = {
     },
   },
 
+  // ---- Cloud accounts -----------------------------------------------------
+
+  cloud_accounts_list: {
+    description:
+      'List the AWS / Azure accounts enabled for the current project and which one is the default for each provider. aws / az / terraform use the default unless a command is prefixed with DEVDY_AWS_ACCOUNT=<label> (e.g. `DEVDY_AWS_ACCOUNT=prod aws s3 ls`) or DEVDY_AZURE_ACCOUNT=<label> (e.g. `DEVDY_AZURE_ACCOUNT=staging az group list`) — pick the account that owns the resources. No secrets are returned.',
+    inputSchema: { type: 'object', properties: {} },
+    handler: () => {
+      const { aws, azure } = store.listCloudAccounts();
+      if (!aws.length && !azure.length) return 'No AWS or Azure accounts are enabled for this project.';
+      const lines = [
+        ...aws.map(
+          (a) =>
+            `- AWS: "${a.label}"${a.account_id ? ` · account ${a.account_id}` : ''} · region ${a.region}` +
+            `${a.profile_name ? ` · profile ${a.profile_name}` : ''}${a.is_default ? ' · default' : ''}`,
+        ),
+        ...azure.map(
+          (a) =>
+            `- Azure: "${a.label}"${a.subscription_name ? ` · subscription ${a.subscription_name}` : ''}` +
+            `${a.subscription_id ? ` (${a.subscription_id})` : ''}${a.tenant_id ? ` · tenant ${a.tenant_id}` : ''}` +
+            `${a.is_default ? ' · default' : ''}`,
+        ),
+      ];
+      return lines.join('\n');
+    },
+  },
+
   // ---- Phase 4: VPS / managed servers --------------------------------------
 
   vps_list: {

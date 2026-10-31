@@ -54,6 +54,20 @@ pub struct BrokerRequest {
     /// (`https://<user>@host/...`). Selects that account when it is enabled.
     #[serde(default)]
     pub username: Option<String>,
+    /// aws / terraform: the AWS account the command picked (`DEVDY_AWS_ACCOUNT`)
+    /// — label, account id, profile name or id of an enabled account. Absent →
+    /// the default account.
+    #[serde(default)]
+    pub aws_account: Option<String>,
+    /// aws only: the `--profile` value the shim stripped from the command. Picks
+    /// that enabled account; with several enabled, an unknown one is denied.
+    #[serde(default)]
+    pub aws_profile: Option<String>,
+    /// az / terraform: the Azure account the command picked
+    /// (`DEVDY_AZURE_ACCOUNT`) — label, subscription or id of an enabled account.
+    /// Absent → the default account.
+    #[serde(default)]
+    pub azure_account: Option<String>,
     /// terraform only: the shim found code in the config that runs outside
     /// Terraform (`data "external"`, `local-exec`, `data "http"`), or could not
     /// read the config (fail-closed). Absent → false (other shims never send it).
@@ -95,6 +109,10 @@ pub struct BrokerResponse {
     pub aws_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aws_region: Option<String>,
+    /// Label of the AWS account the creds belong to (not a secret), so the aws
+    /// shim can tell the agent which account a `--profile` resolved to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aws_account_label: Option<String>,
     /// Azure fields for the az/terraform shims: the linked account's isolated
     /// AZURE_CONFIG_DIR plus tenant/subscription ids. The path itself is not a
     /// credential, but the dir holds a plaintext MSAL token cache (refresh
@@ -154,6 +172,7 @@ impl BrokerResponse {
             resp.aws_session_token = creds.session_token;
             resp.aws_profile = creds.profile_name;
             resp.aws_region = Some(creds.region);
+            resp.aws_account_label = Some(creds.account_label);
         }
         if let Some(az) = azure {
             resp.azure_config_dir = Some(az.config_dir);
@@ -385,6 +404,34 @@ async fn process_line(
         decision
     };
 
+    // aws / az / terraform: likewise settle the cloud account(s) up front.
+    let (aws_sel, azure_sel) = match cloud_selectors(db, &req).await {
+        Ok(v) => v,
+        Err(e) => {
+            audit::audit_request(run_id, &req.tool, &req.argv, "deny", Some(token::UNKNOWN_CLOUD_ACCOUNT));
+            return BrokerResponse::deny(e);
+        }
+    };
+    let decision = if is_cloud_tool(&req.tool) && !matches!(decision, PolicyDecision::Deny { .. }) {
+        match cloud_ask_suffix(db, &req, aws_sel.as_deref(), azure_sel.as_deref()).await {
+            Err(e) if e.starts_with(token::UNKNOWN_CLOUD_ACCOUNT) => {
+                // Lists enabled account labels/ids only — no secret.
+                audit::audit_request(run_id, &req.tool, &req.argv, "deny", Some(token::UNKNOWN_CLOUD_ACCOUNT));
+                return BrokerResponse::deny(e);
+            }
+            Ok(Some(suffix)) => match decision {
+                PolicyDecision::Ask { reason } => PolicyDecision::Ask {
+                    reason: format!("{reason} ({suffix})"),
+                },
+                d => d,
+            },
+            // No account / DB error: the resolve step below denies.
+            _ => decision,
+        }
+    } else {
+        decision
+    };
+
     // 3. Resolve decision → whether we proceed to token resolution.
     let (proceed, base_resp): (bool, Option<BrokerResponse>) = match &decision {
         PolicyDecision::Deny { reason } => {
@@ -416,7 +463,7 @@ async fn process_line(
     }
 
     if req.tool == "aws" {
-        return match token::resolve_aws_credentials_for_project(db, &req.project_id).await {
+        return match token::resolve_aws_credentials_for_project(db, &req.project_id, aws_sel.as_deref()).await {
             Ok(Some(resolved)) => {
                 audit::audit_request(run_id, &req.tool, &req.argv, "allow", None);
                 BrokerResponse::allow_aws(resolved)
@@ -431,7 +478,7 @@ async fn process_line(
     }
 
     if req.tool == "az" {
-        return match token::resolve_azure_for_project(db, &req.project_id).await {
+        return match token::resolve_azure_for_project(db, &req.project_id, azure_sel.as_deref()).await {
             Ok(Some(resolved)) => {
                 audit::audit_request(run_id, &req.tool, &req.argv, "allow", None);
                 BrokerResponse::allow_azure(resolved)
@@ -449,11 +496,11 @@ async fn process_line(
     // backend via env creds) and/or Azure (azurerm via Azure CLI auth). Allowed
     // when at least one is linked; every linked account must resolve.
     if req.tool == "terraform" {
-        let aws = match token::resolve_aws_credentials_for_project(db, &req.project_id).await {
+        let aws = match token::resolve_aws_credentials_for_project(db, &req.project_id, aws_sel.as_deref()).await {
             Ok(v) => v,
             Err(e) => return aws_resolve_error_deny(app, &req, run_id, &e),
         };
-        let azure = match token::resolve_azure_for_project(db, &req.project_id).await {
+        let azure = match token::resolve_azure_for_project(db, &req.project_id, azure_sel.as_deref()).await {
             Ok(v) => v,
             Err(e) => return azure_resolve_error_deny(app, &req, run_id, &e),
         };
@@ -531,7 +578,9 @@ async fn az_subscription_guard(
     let Some(target) = policy::az_subscription_arg(&req.argv) else {
         return decision;
     };
-    let Ok(Some(meta)) = token::resolve_azure_runtime_metadata(db, &req.project_id).await else {
+    let Ok(Some(meta)) =
+        token::pick_azure_account(db, &req.project_id, req.azure_account.as_deref()).await
+    else {
         return decision;
     };
     let target_trim = target.trim();
@@ -543,7 +592,8 @@ async fn az_subscription_guard(
         return decision;
     }
     let reason = format!(
-        "az targets subscription \"{target_trim}\", not the project's linked default subscription — needs confirmation"
+        "az targets subscription \"{target_trim}\", not the default subscription of Azure account \"{}\" — needs confirmation",
+        meta.account_label
     );
     match decision {
         PolicyDecision::Ask { reason: r } => PolicyDecision::Ask {
@@ -561,6 +611,11 @@ fn aws_resolve_error_deny(
     run_id: &str,
     err: &str,
 ) -> BrokerResponse {
+    if err.starts_with(token::UNKNOWN_CLOUD_ACCOUNT) {
+        // Lists enabled account labels/ids only — no secret.
+        audit::audit_request(run_id, &req.tool, &req.argv, "deny", Some(token::UNKNOWN_CLOUD_ACCOUNT));
+        return BrokerResponse::deny(err);
+    }
     if err == token::AWS_SSO_LOGIN_REQUIRED {
         // Actionable, machine-detectable reason: the linked SSO session
         // expired. The `aws_sso_login_required` prefix lets the UI offer
@@ -594,6 +649,11 @@ fn azure_resolve_error_deny(
     run_id: &str,
     err: &str,
 ) -> BrokerResponse {
+    if err.starts_with(token::UNKNOWN_CLOUD_ACCOUNT) {
+        // Lists enabled account labels/ids only — no secret.
+        audit::audit_request(run_id, &req.tool, &req.argv, "deny", Some(token::UNKNOWN_CLOUD_ACCOUNT));
+        return BrokerResponse::deny(err);
+    }
     if err == token::AZURE_LOGIN_REQUIRED {
         let reason = format!(
             "{}: the linked Azure account is not signed in — sign in again from Devdy → Settings → Azure",
@@ -659,6 +719,71 @@ fn notify_login_required(app: Option<&AppHandle>, key: &str, title: &str, body: 
     }
     use tauri_plugin_notification::NotificationExt;
     let _ = app.notification().builder().title(title).body(body).show();
+}
+
+/// Tools whose credentials are AWS / Azure accounts.
+fn is_cloud_tool(tool: &str) -> bool {
+    matches!(tool, "aws" | "az" | "terraform")
+}
+
+/// The AWS / Azure account selectors of a cloud call. `aws --profile <p>`
+/// selects the enabled account it names; a profile naming none is ignored with
+/// a single enabled account (the old behavior) and denied with several, so a
+/// call never silently runs as the wrong account. `Err` = deny reason.
+async fn cloud_selectors(
+    db: &Db,
+    req: &BrokerRequest,
+) -> Result<(Option<String>, Option<String>), String> {
+    let trimmed = |v: &Option<String>| v.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let mut aws = match req.tool.as_str() {
+        "aws" | "terraform" => trimmed(&req.aws_account),
+        _ => None,
+    };
+    let azure = match req.tool.as_str() {
+        "az" | "terraform" => trimmed(&req.azure_account),
+        _ => None,
+    };
+    if req.tool == "aws" && aws.is_none() {
+        if let Some(profile) = trimmed(&req.aws_profile) {
+            match token::pick_aws_account(db, &req.project_id, Some(&profile)).await {
+                Ok(_) => aws = Some(profile),
+                Err(e) if e.starts_with(token::UNKNOWN_CLOUD_ACCOUNT) => {
+                    let several = token::aws_accounts_for(db, &req.project_id)
+                        .await
+                        .map(|a| a.len() > 1)
+                        .unwrap_or(true);
+                    if several {
+                        return Err(e);
+                    }
+                }
+                // DB error: the resolve step below fails closed.
+                Err(_) => {}
+            }
+        }
+    }
+    Ok((aws, azure))
+}
+
+/// `as AWS account "x"` (and/or Azure) for an approval prompt naming the
+/// account(s) the call uses. `Ok(None)` when no account applies.
+async fn cloud_ask_suffix(
+    db: &Db,
+    req: &BrokerRequest,
+    aws_sel: Option<&str>,
+    azure_sel: Option<&str>,
+) -> Result<Option<String>, String> {
+    let mut parts = Vec::new();
+    if matches!(req.tool.as_str(), "aws" | "terraform") {
+        if let Some(a) = token::pick_aws_account(db, &req.project_id, aws_sel).await? {
+            parts.push(format!("as AWS account {}", token::aws_display(&a)));
+        }
+    }
+    if matches!(req.tool.as_str(), "az" | "terraform") {
+        if let Some(a) = token::pick_azure_account(db, &req.project_id, azure_sel).await? {
+            parts.push(format!("as Azure account {}", token::azure_display(&a)));
+        }
+    }
+    Ok(if parts.is_empty() { None } else { Some(parts.join(", ")) })
 }
 
 /// Tools whose credentials are GitHub / GitLab accounts.
@@ -728,7 +853,7 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        for t in ["project_github_accounts", "project_gitlab_accounts"] {
+        for t in ["project_github_accounts", "project_gitlab_accounts", "project_aws_accounts", "project_azure_accounts"] {
             sqlx::query(&format!("CREATE TABLE {t} (project_id TEXT, account_id TEXT, created_at TEXT)"))
                 .execute(&pool)
                 .await
@@ -785,6 +910,7 @@ mod tests {
             aws_session_token: field("aws_session_token"),
             aws_profile: field("aws_profile"),
             aws_region: field("aws_region"),
+            aws_account_label: field("aws_account_label"),
             azure_config_dir: field("azure_config_dir"),
             azure_tenant_id: field("azure_tenant_id"),
             azure_subscription_id: field("azure_subscription_id"),
@@ -1332,5 +1458,156 @@ mod tests {
         let reasons = approver.0.lock().unwrap().clone();
         assert_eq!(reasons.len(), 1);
         assert!(reasons[0].ends_with("(as GitHub account \"work\" (@worker))"), "{reasons:?}");
+    }
+
+    // ---- several enabled cloud accounts ----
+
+    /// Link a second, signed-in Azure account ("Prod", sub-2) as an enabled,
+    /// non-default account of `project_id`. Returns its dir.
+    async fn enable_second_azure(db: &Db, project_id: &str) -> std::path::PathBuf {
+        let account_id = uuid::Uuid::new_v4().to_string();
+        let dir = test_azure_root().join(&account_id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("azureProfile.json"), b"{\"subscriptions\": [{\"id\": \"sub-2\"}]}").unwrap();
+        sqlx::query("INSERT INTO azure_accounts (id, label, tenant_id, subscription_id, subscription_name) VALUES (?, 'Prod', 'ten-2', 'sub-2', 'Production')")
+            .bind(&account_id)
+            .execute(db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO project_azure_accounts (project_id, account_id) VALUES (?, ?)")
+            .bind(project_id)
+            .bind(&account_id)
+            .execute(db)
+            .await
+            .unwrap();
+        dir
+    }
+
+    #[tokio::test]
+    async fn az_picks_the_named_azure_account() {
+        let db = mem_db().await;
+        let default_dir = link_azure(&db, "p1", true).await;
+        let prod_dir = enable_second_azure(&db, "p1").await;
+        let resp = round_trip(
+            db.clone(),
+            Arc::new(DenyAllApprover),
+            r#"{"project_id":"p1","tool":"az","argv":["group","list"],"azure_account":"prod"}"#,
+        )
+        .await;
+        assert_eq!(resp.decision, "allow");
+        assert_eq!(resp.azure_config_dir.as_deref(), Some(prod_dir.to_str().unwrap()));
+        assert_eq!(resp.azure_subscription_id.as_deref(), Some("sub-2"));
+        // The picked account's own subscription needs no confirmation.
+        let resp = round_trip(
+            db.clone(),
+            Arc::new(FixedApprover(false)),
+            r#"{"project_id":"p1","tool":"az","argv":["vm","list","--subscription","sub-2"],"azure_account":"Prod"}"#,
+        )
+        .await;
+        assert_eq!(resp.decision, "allow");
+        // No selector → the default account.
+        let resp = round_trip(
+            db,
+            Arc::new(DenyAllApprover),
+            r#"{"project_id":"p1","tool":"az","argv":["group","list"]}"#,
+        )
+        .await;
+        assert_eq!(resp.azure_config_dir.as_deref(), Some(default_dir.to_str().unwrap()));
+        let _ = std::fs::remove_dir_all(default_dir);
+        let _ = std::fs::remove_dir_all(prod_dir);
+    }
+
+    #[tokio::test]
+    async fn unknown_azure_account_is_denied_before_asking() {
+        let db = mem_db().await;
+        let dir = link_azure(&db, "p1", true).await;
+        let approver = Arc::new(RecordingApprover::default());
+        let resp = round_trip(
+            db,
+            approver.clone(),
+            r#"{"project_id":"p1","tool":"terraform","argv":["apply"],"azure_account":"nobody"}"#,
+        )
+        .await;
+        assert_eq!(resp.decision, "deny");
+        let reason = resp.reason.unwrap();
+        assert!(reason.starts_with(token::UNKNOWN_CLOUD_ACCOUNT), "{reason}");
+        assert!(reason.contains("\"Az\" (Dev)"), "{reason}");
+        assert!(resp.azure_config_dir.is_none());
+        assert!(approver.0.lock().unwrap().is_empty(), "the user must not be asked");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    async fn seed_aws_accounts(db: &Db, n: usize) {
+        for (id, label, acct) in [("aws1", "main", "111111111111"), ("aws2", "prod", "222222222222")].into_iter().take(n) {
+            sqlx::query("INSERT INTO aws_accounts (id, label, auth_method, account_id, region, profile_name) VALUES (?, ?, 'keys', ?, 'ap-1', ?)")
+                .bind(id)
+                .bind(label)
+                .bind(acct)
+                .bind(format!("{label}-profile"))
+                .execute(db)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO project_aws_accounts (project_id, account_id) VALUES ('p1', ?)")
+                .bind(id)
+                .execute(db)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO projects (id, aws_account_id) VALUES ('p1', 'aws1')")
+            .execute(db)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn unknown_aws_account_is_denied_before_asking() {
+        let db = mem_db().await;
+        seed_aws_accounts(&db, 2).await;
+        for req in [
+            r#"{"project_id":"p1","tool":"aws","argv":["s3","rm","s3://b/k"],"aws_account":"nobody"}"#,
+            // With several accounts, a --profile naming none is refused too.
+            r#"{"project_id":"p1","tool":"aws","argv":["s3","rm","s3://b/k"],"aws_profile":"stray"}"#,
+        ] {
+            let approver = Arc::new(RecordingApprover::default());
+            let resp = round_trip(db.clone(), approver.clone(), req).await;
+            assert_eq!(resp.decision, "deny");
+            let reason = resp.reason.unwrap();
+            assert!(reason.starts_with(token::UNKNOWN_CLOUD_ACCOUNT), "{reason}");
+            assert!(reason.contains("\"prod\" (222222222222)"), "{reason}");
+            assert!(approver.0.lock().unwrap().is_empty(), "the user must not be asked");
+        }
+    }
+
+    #[tokio::test]
+    async fn aws_ask_names_the_picked_account() {
+        let db = mem_db().await;
+        seed_aws_accounts(&db, 2).await;
+        for (req, want) in [
+            (r#"{"project_id":"p1","tool":"aws","argv":["s3","rm","s3://b/k"],"aws_account":"222222222222"}"#, "prod"),
+            (r#"{"project_id":"p1","tool":"aws","argv":["s3","rm","s3://b/k"],"aws_profile":"prod-profile"}"#, "prod"),
+            (r#"{"project_id":"p1","tool":"aws","argv":["s3","rm","s3://b/k"]}"#, "main"),
+        ] {
+            let approver = Arc::new(RecordingApprover::default());
+            let _ = round_trip(db.clone(), approver.clone(), req).await;
+            let reasons = approver.0.lock().unwrap().clone();
+            assert_eq!(reasons.len(), 1, "{req}");
+            assert!(reasons[0].contains(&format!("(as AWS account \"{want}\"")), "{reasons:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn stray_aws_profile_is_ignored_with_one_account() {
+        let db = mem_db().await;
+        seed_aws_accounts(&db, 1).await;
+        let approver = Arc::new(RecordingApprover::default());
+        let _ = round_trip(
+            db,
+            approver.clone(),
+            r#"{"project_id":"p1","tool":"aws","argv":["s3","rm","s3://b/k"],"aws_profile":"stray"}"#,
+        )
+        .await;
+        let reasons = approver.0.lock().unwrap().clone();
+        assert_eq!(reasons.len(), 1);
+        assert!(reasons[0].contains("(as AWS account \"main\""), "{reasons:?}");
     }
 }

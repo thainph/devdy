@@ -398,7 +398,7 @@ async function handleOpenInFolder(project: { path: string }) {
                 <HardDrive class="h-2.5 w-2.5" :stroke-width="2" />
                 +{{ projectChips[project.id].hiddenCount }}
               </Badge>
-              <!-- Linked AWS account. -->
+              <!-- Default AWS account (+N other enabled). -->
               <Badge
                 v-if="awsAccount(project.aws_account_id)"
                 tone="primary"
@@ -407,8 +407,9 @@ async function handleOpenInFolder(project: { path: string }) {
               >
                 <Cloud class="h-2.5 w-2.5 shrink-0" :stroke-width="2" />
                 <span class="truncate">{{ awsAccount(project.aws_account_id)!.label }}</span>
+                <span v-if="project.aws_account_ids.length > 1" class="shrink-0 opacity-70">+{{ project.aws_account_ids.length - 1 }}</span>
               </Badge>
-              <!-- Linked Azure account. -->
+              <!-- Default Azure account (+N other enabled). -->
               <Badge
                 v-if="azureAccount(project.azure_account_id)"
                 tone="primary"
@@ -421,6 +422,7 @@ async function handleOpenInFolder(project: { path: string }) {
               >
                 <CloudCog class="h-2.5 w-2.5 shrink-0" :stroke-width="2" />
                 <span class="truncate">{{ azureAccount(project.azure_account_id)!.label }}</span>
+                <span v-if="project.azure_account_ids.length > 1" class="shrink-0 opacity-70">+{{ project.azure_account_ids.length - 1 }}</span>
               </Badge>
             </div>
             <!-- Actions on hover: grouped into a segmented toolbar for a crisper, cohesive look -->
