@@ -260,7 +260,9 @@ pub async fn handle(ctx: &HandlerCtx, cmd: CmdPayload) {
 
     // Remote desktop: a full UI driving this app as the local user would. Its
     // calls go to the bridge verbatim — no per-command allow-list or budget,
-    // by design (the paired device is trusted like the person at the keyboard).
+    // by design (the paired device is trusted like the person at the keyboard)
+    // — except the credential / security commands of `is_local_only_command`:
+    // the `ipc` flag is self-advertised, so any signed-in device can claim it.
     if action.starts_with("ipc_") {
         if !ctx.ipc {
             reject(ctx, action, None, RejectReason::NotAllowed).await;
@@ -327,9 +329,84 @@ pub async fn handle(ctx: &HandlerCtx, cmd: CmdPayload) {
 /// invoke fails and the Controller gets an error result.
 const DENIED_COMMAND: &str = "remote_denied_local_only";
 
-/// Commands a Controller may never run on this machine (secret notes vault).
+/// Command-name prefixes a Controller may never run on this machine: the secret
+/// notes vault (`secret_*`).
+const LOCAL_ONLY_PREFIXES: &[&str] = &["secret_"];
+
+/// Commands a Controller may never run on this machine.
+///
+/// The `ipc` feature is self-advertised and the Host cannot tell a remote
+/// desktop from a phone (both sign in the same way), so this list is what keeps
+/// a paired device away from the Keychain. Rule: deny every command that
+/// returns, sets or validates a credential (PATs, cloud/CLI logins, OAuth
+/// clients, MCP env/header values, SSH keys and passphrases, the inbox API
+/// token, backups carrying secrets), and every command that changes who can
+/// reach this machine or its secrets (Remote Control config, master password,
+/// OTP / session links, sync-group pairing and secret sync). Runs are not
+/// covered on purpose: they never see Keychain secrets (credential broker).
+/// Reads that only report key names or `has_*` flags stay allowed.
+const LOCAL_ONLY_COMMANDS: &[&str] = &[
+    // Accounts: create / update / validate take or check a token; logins mint one.
+    "create_github_account",
+    "update_github_account",
+    "validate_github_account",
+    "create_gitlab_account",
+    "update_gitlab_account",
+    "validate_gitlab_account",
+    "create_aws_account",
+    "update_aws_account",
+    "validate_aws_account",
+    "aws_sso_login",
+    "aws_sso_login_profile",
+    "create_azure_account",
+    "update_azure_account",
+    "validate_azure_account",
+    "azure_login",
+    "create_claude_account",
+    "validate_claude_account",
+    "login_claude_account",
+    "submit_claude_login_code",
+    "add_google_account",
+    "reauth_google_account",
+    "validate_google_account",
+    // MCP servers: create / update / import set env + header values; export
+    // writes them out in clear.
+    "create_mcp_server",
+    "update_mcp_server",
+    "import_mcp_server",
+    "export_mcp_server",
+    // VPS servers: create / update set the SSH key and passphrase.
+    "create_vps_server",
+    "update_vps_server",
+    // Backups carry (or overwrite) every secret above.
+    "export_settings_backup",
+    "import_settings_backup",
+    // Inbox API: returns / rotates its bearer token, opens a local listener.
+    "get_inbox_api_info",
+    "regenerate_inbox_api_token",
+    "set_inbox_api_enabled",
+    // Sync: pairing a device into the group hands it the synced data (and the
+    // secrets, when secret sync is on).
+    "sync_create_group",
+    "sync_join",
+    "sync_accept_open",
+    "sync_join_respond",
+    "sync_set_secrets",
+    // Remote Control itself: who may connect, and how.
+    "remote_enable",
+    "remote_disable",
+    "remote_set_config",
+    "remote_set_master_password",
+    "remote_set_device_alias",
+    "remote_reveal_otp",
+    "remote_create_session_link",
+    "remote_kick_controller",
+    "remote_clear_audit",
+];
+
+/// Whether `name` is refused over `ipc_invoke` (see [`LOCAL_ONLY_COMMANDS`]).
 fn is_local_only_command(name: &str) -> bool {
-    name.starts_with("secret_")
+    LOCAL_ONLY_PREFIXES.iter().any(|p| name.starts_with(p)) || LOCAL_ONLY_COMMANDS.contains(&name)
 }
 
 /// Forward one `ipc_*` command to the bridge webview.
@@ -341,8 +418,8 @@ async fn handle_ipc(ctx: &HandlerCtx, cmd: &CmdPayload) {
             let (Some(id), Some(name)) = (cmd.id.as_deref(), cmd.cmd.as_deref()) else { return };
             // Name only: args may carry anything (prompts, paths, secrets).
             tracing::debug!(event = "remote_ipc_invoke", cmd = %name);
-            // Secret notes are local-only: the call fails as an unknown command
-            // (the commands also refuse the bridge webview themselves).
+            // Secrets and security config are local-only: the call fails as an
+            // unknown command (the vault commands also refuse the bridge webview).
             let (name, args) = if is_local_only_command(name) {
                 (DENIED_COMMAND, serde_json::Value::Null)
             } else {
@@ -1025,5 +1102,79 @@ mod tests {
             assert!(is_local_only_command(name), "{name}");
         }
         assert!(!is_local_only_command("list_notes"));
+    }
+
+    #[test]
+    fn credential_and_security_commands_are_local_only() {
+        for name in [
+            "create_github_account",
+            "validate_gitlab_account",
+            "update_aws_account",
+            "aws_sso_login_profile",
+            "azure_login",
+            "login_claude_account",
+            "submit_claude_login_code",
+            "add_google_account",
+            "reauth_google_account",
+            "update_mcp_server",
+            "export_mcp_server",
+            "create_vps_server",
+            "export_settings_backup",
+            "import_settings_backup",
+            "get_inbox_api_info",
+            "regenerate_inbox_api_token",
+            "sync_join_respond",
+            "sync_set_secrets",
+            "remote_set_master_password",
+            "remote_reveal_otp",
+            "remote_create_session_link",
+            "remote_kick_controller",
+            "remote_set_config",
+            "remote_enable",
+            "remote_disable",
+            "remote_clear_audit",
+        ] {
+            assert!(is_local_only_command(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn everyday_commands_stay_available_over_ipc() {
+        // Remote desktop drives the normal UI: reads that expose only key names
+        // or `has_*` flags, and non-credential work, must still go through.
+        for name in [
+            "list_runs",
+            "start_run",
+            "send_user_message",
+            "list_github_accounts",
+            "list_mcp_servers",
+            "get_mcp_server",
+            "set_project_mcp_servers",
+            "list_vps_servers",
+            "remote_status",
+            "remote_end_session",
+            "remote_bridge_ready",
+            "sync_status",
+            "sync_get_secrets",
+            "add_todo",
+            "update_setting",
+        ] {
+            assert!(!is_local_only_command(name), "{name}");
+        }
+        // Exact names only: no accidental prefix match.
+        assert!(!is_local_only_command("remote_enable_extra"));
+    }
+
+    #[test]
+    fn local_only_commands_are_registered() {
+        // A renamed command would silently fall off the list.
+        let lib = include_str!("../lib.rs");
+        let handler = &lib[lib.find("generate_handler![").expect("generate_handler! in lib.rs")..];
+        for name in LOCAL_ONLY_COMMANDS {
+            assert!(
+                handler.lines().any(|l| l.trim().trim_end_matches(',').rsplit("::").next() == Some(name)),
+                "{name} is not in generate_handler!"
+            );
+        }
     }
 }
