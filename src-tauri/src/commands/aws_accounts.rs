@@ -12,7 +12,6 @@ const DEFAULT_REGION: &str = "ap-northeast-1";
 const STS_TIMEOUT: Duration = Duration::from_secs(15);
 // SSO login opens a browser and blocks until the user finishes the flow, so it
 // needs a much more generous window than a plain STS call.
-const SSO_LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 // Sentinel error the frontend matches to offer an "SSO login" button instead of
 // a generic validation-failed message.
 pub(crate) const SSO_LOGIN_REQUIRED: &str = "SSO_LOGIN_REQUIRED";
@@ -369,45 +368,7 @@ pub async fn aws_sso_login(db: State<'_, Db>, id: String) -> Result<(), String> 
         .as_deref()
         .ok_or_else(|| "profile_name is missing".to_string())?;
 
-    let mut cmd = Command::new("aws");
-    cmd.arg("sso")
-        .arg("login")
-        .arg("--profile")
-        .arg(profile_name)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    // GUI launches don't inherit the login-shell PATH; recover it like the STS
-    // validation path does so `aws` resolves.
-    crate::runs::sidecar::augment_command_path(&mut cmd);
-    cmd.env_remove("AWS_ACCESS_KEY_ID");
-    cmd.env_remove("AWS_SECRET_ACCESS_KEY");
-    cmd.env_remove("AWS_SESSION_TOKEN");
-    // Use the user's real ~/.aws config, not any inherited per-run override.
-    cmd.env_remove("AWS_CONFIG_FILE");
-    cmd.env_remove("AWS_SHARED_CREDENTIALS_FILE");
-
-    let output = match tokio::time::timeout(SSO_LOGIN_TIMEOUT, cmd.output()).await {
-        Ok(Ok(output)) => output,
-        Ok(Err(e)) => return Err(format!("Failed to run aws CLI: {e}")),
-        Err(_) => {
-            return Err(format!(
-                "AWS SSO login timed out after {}s",
-                SSO_LOGIN_TIMEOUT.as_secs()
-            ))
-        }
-    };
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let detail = stderr.trim();
-        if detail.is_empty() {
-            return Err("AWS SSO login failed.".to_string());
-        }
-        return Err(format!("AWS SSO login failed: {detail}"));
-    }
-
-    Ok(())
+    crate::commands::aws_sso::run_sso_login(profile_name).await
 }
 
 #[tauri::command]
