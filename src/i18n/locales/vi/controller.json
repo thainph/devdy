@@ -85,7 +85,7 @@
     "deviceInvalid": "Tên thiết bị chỉ gồm chữ thường, số và '-' (tối đa 32 ký tự)."
   },
   "browser": {
-    "title": "Các run",
+    "title": "Sessions",
     "backToRuns": "Tất cả run",
     "openRun": "Mở run",
     "empty": "Chưa có run nào.",
@@ -108,10 +108,10 @@
   },
   "tabs": {
     "inbox": "Cần xử lý",
-    "runs": "Runs",
+    "runs": "Sessions",
     "todo": "Todo",
     "note": "Note",
-    "project": "Project"
+    "project": "Setting"
   },
   "inbox": {
     "title": "Cần xử lý",
@@ -179,14 +179,18 @@
       "due": "Hạn chót",
       "project": "Project",
       "delete": "Xoá",
-      "confirmDelete": "Bấm lần nữa để xoá"
+      "confirmDelete": "Bấm lần nữa để xoá",
+      "needsTitle": "Nhập tiêu đề trước đã."
     },
     "chips": {
       "today": "Hôm nay",
       "tomorrow": "Ngày mai",
       "next_week": "Tuần sau",
       "clear": "Bỏ hạn"
-    }
+    },
+    "searchPlaceholder": "Tìm todo…",
+    "clearSearch": "Xoá tìm kiếm",
+    "noResults": "Không có todo nào khớp."
   },
   "notes": {
     "title": "Note",
@@ -210,7 +214,7 @@
     "gone": "Note này đã bị xoá."
   },
   "projectToggles": {
-    "title": "Project",
+    "title": "Setting",
     "selectProject": "Chọn project",
     "noProjects": "Host chưa có project nào.",
     "mcp": "MCP server",

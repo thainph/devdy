@@ -14,6 +14,8 @@ import { useI18n } from 'vue-i18n'
 import { ChevronLeft, Loader2, X } from 'lucide-vue-next'
 import { AppSelect, Button, Input, Textarea } from '@/components/ui'
 import { noteDisplayTitle } from '@/lib/remoteTodos'
+import ControllerHeader from './ControllerHeader.vue'
+import HeaderButton from './HeaderButton.vue'
 import type { NoteInfo, ProjectInfo } from '../protocol'
 import type { NoteSave } from '../dataStore'
 
@@ -156,15 +158,12 @@ function clearBanner(): void {
 
 <template>
   <div class="relative flex h-dvh min-h-0 flex-col bg-background text-foreground">
-    <header class="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-border">
-      <button
-        class="inline-flex items-center justify-center h-7 w-7 -ml-1 shrink-0 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-        :title="t('controller.data.back')"
-        @click="emit('back')"
-      >
-        <ChevronLeft class="h-4 w-4" :stroke-width="2" />
-      </button>
-      <h1 class="min-w-0 flex-1 truncate text-sm font-semibold">{{ heading }}</h1>
+    <ControllerHeader :title="heading">
+      <template #leading>
+        <HeaderButton class="-ml-1.5" :label="t('controller.data.back')" @click="emit('back')">
+          <ChevronLeft class="h-5 w-5" :stroke-width="2" />
+        </HeaderButton>
+      </template>
       <div v-if="note" class="flex shrink-0 gap-0.5 rounded-lg border border-border bg-card p-0.5">
         <button
           v-for="m in (['view', 'edit'] as const)"
@@ -176,7 +175,7 @@ function clearBanner(): void {
           {{ t(`controller.notes.${m}`) }}
         </button>
       </div>
-    </header>
+    </ControllerHeader>
 
     <div
       v-if="banner"

@@ -85,7 +85,7 @@
     "deviceInvalid": "Device names use only lowercase letters, digits and '-' (up to 32)."
   },
   "browser": {
-    "title": "Runs",
+    "title": "Sessions",
     "backToRuns": "All runs",
     "openRun": "Open run",
     "empty": "No runs yet.",
@@ -108,10 +108,10 @@
   },
   "tabs": {
     "inbox": "Inbox",
-    "runs": "Runs",
+    "runs": "Sessions",
     "todo": "Todo",
     "note": "Notes",
-    "project": "Project"
+    "project": "Setting"
   },
   "inbox": {
     "title": "Inbox",
@@ -179,14 +179,18 @@
       "due": "Due date",
       "project": "Project",
       "delete": "Delete",
-      "confirmDelete": "Tap again to delete"
+      "confirmDelete": "Tap again to delete",
+      "needsTitle": "Add a title first."
     },
     "chips": {
       "today": "Today",
       "tomorrow": "Tomorrow",
       "next_week": "Next week",
       "clear": "No date"
-    }
+    },
+    "searchPlaceholder": "Search todos…",
+    "clearSearch": "Clear search",
+    "noResults": "No todo matches that."
   },
   "notes": {
     "title": "Notes",
@@ -210,7 +214,7 @@
     "gone": "This note was deleted."
   },
   "projectToggles": {
-    "title": "Project",
+    "title": "Setting",
     "selectProject": "Choose a project",
     "noProjects": "No projects on the host.",
     "mcp": "MCP server",

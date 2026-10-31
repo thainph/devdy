@@ -16,6 +16,7 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Loader2, X } from 'lucide-vue-next'
 import { AppSelect } from '@/components/ui'
+import ControllerHeader from './ControllerHeader.vue'
 import type { ClaudeAccountToggle, ProjectInfo, ProjectTogglesKind, ToggleItem, ToggleKind } from '../protocol'
 
 const props = defineProps<{
@@ -114,9 +115,7 @@ function isDefaultAccount(item: ToggleItem | ClaudeAccountToggle): boolean {
 
 <template>
   <div class="relative flex h-full min-h-0 flex-col bg-background text-foreground">
-    <header class="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-border">
-      <h1 class="text-base font-semibold">{{ t('controller.projectToggles.title') }}</h1>
-    </header>
+    <ControllerHeader :title="t('controller.projectToggles.title')" />
 
     <div
       v-if="error"

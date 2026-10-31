@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * The controller's bottom navigation: Inbox · Runs · Todo · Note · Project.
+ * The controller's bottom navigation: Inbox · Sessions · Todo · Note · Setting.
  * Hidden while a session is open (that screen is full height). The Inbox tab
  * carries the count of prompts waiting for an answer.
  */

@@ -9,10 +9,12 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Loader2, Plus, Search, X } from 'lucide-vue-next'
+import { Loader2, Plus, X } from 'lucide-vue-next'
 import { AppSelect } from '@/components/ui'
 import { relativeAge } from '@/lib/itemText'
 import { noteDisplayTitle, noteListPreview } from '@/lib/remoteTodos'
+import ControllerHeader from './ControllerHeader.vue'
+import SearchField from './SearchField.vue'
 import type { NoteSummary, ProjectInfo } from '../protocol'
 
 const props = defineProps<{
@@ -68,16 +70,9 @@ function previewOf(note: NoteSummary): string {
 
 <template>
   <div class="relative flex h-full min-h-0 flex-col bg-background text-foreground">
-    <header class="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-border">
-      <h1 class="text-base font-semibold">{{ t('controller.notes.title') }}</h1>
-      <AppSelect
-        v-model="projectFilter"
-        size="xs"
-        variant="outline"
-        class="ml-auto w-40 max-w-full"
-        :options="projectOptions"
-      />
-    </header>
+    <ControllerHeader :title="t('controller.notes.title')">
+      <AppSelect v-model="projectFilter" size="xs" variant="outline" class="w-36 max-w-full" :options="projectOptions" />
+    </ControllerHeader>
 
     <div
       v-if="error"
@@ -89,30 +84,11 @@ function previewOf(note: NoteSummary): string {
       </button>
     </div>
 
-    <div class="shrink-0 px-3 py-2 border-b border-border/40">
-      <div class="relative">
-        <Search
-          class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-foreground/40"
-          :stroke-width="2"
-        />
-        <input
-          v-model="search"
-          type="search"
-          inputmode="search"
-          autocomplete="off"
-          :placeholder="t('controller.notes.searchPlaceholder')"
-          class="search-input w-full rounded-md border border-border bg-background py-1.5 pl-7 pr-7 text-sm outline-none placeholder:text-foreground/40 focus:border-foreground/30"
-        />
-        <button
-          v-if="searching"
-          class="absolute right-1.5 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-foreground/40 hover:text-foreground cursor-pointer"
-          :title="t('controller.notes.clearSearch')"
-          @click="search = ''"
-        >
-          <X class="h-3.5 w-3.5" :stroke-width="2" />
-        </button>
-      </div>
-    </div>
+    <SearchField
+      v-model="search"
+      :placeholder="t('controller.notes.searchPlaceholder')"
+      :clear-label="t('controller.notes.clearSearch')"
+    />
 
     <main class="flex-1 min-h-0 overflow-auto px-3 pt-3 pb-24">
       <div v-if="notes === null && failed" class="flex flex-col items-center gap-3 py-10 text-sm text-foreground/50">
@@ -166,12 +142,3 @@ function previewOf(note: NoteSummary): string {
     </button>
   </div>
 </template>
-
-<style scoped>
-/* Same as RunBrowserView: drop WebKit's native clear button next to ours. */
-.search-input::-webkit-search-cancel-button,
-.search-input::-webkit-search-decoration {
-  -webkit-appearance: none;
-  appearance: none;
-}
-</style>
