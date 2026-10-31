@@ -13,23 +13,15 @@
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Bell, BellOff, CheckCircle2, RefreshCw, X, XCircle } from 'lucide-vue-next'
+import { CheckCircle2, XCircle } from 'lucide-vue-next'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
 import { agoParts, finishedKind, finishedSince, parseHostTime } from '@/lib/remoteInbox'
 import ControllerPermissionPrompt from './ControllerPermissionPrompt.vue'
-import PushSheet from './PushSheet.vue'
-import ConnectionBadge from './ConnectionBadge.vue'
-import ControllerHeader from './ControllerHeader.vue'
-import HeaderButton from './HeaderButton.vue'
-import type { PushStore } from '../pushStore'
 import type { ConnStatus } from '../connection'
 import type { ProjectInfo, QuestionAnswers, RemoteDecision, RunInfo } from '../protocol'
 
 const props = defineProps<{
   status: ConnStatus
-  live: boolean
-  hostFingerprint: string | null
-  statusLabel: string
   /** Every open prompt, already in display order. */
   pending: PermissionRequest[]
   /** request id → when this device first saw it (ms). */
@@ -42,16 +34,12 @@ const props = defineProps<{
   readIds: string[]
   /** The Host accepts Always from a Controller. */
   allowAlways?: boolean
-  /** Push notifications, when the Host supports them. */
-  push?: PushStore | null
 }>()
 
 const emit = defineEmits<{
   decide: [request: PermissionRequest, decision: RemoteDecision]
   answer: [request: PermissionRequest, answers: QuestionAnswers]
   open: [runId: string]
-  refresh: []
-  disconnect: []
 }>()
 
 const { t, locale } = useI18n()
@@ -106,9 +94,6 @@ function finishedLabel(run: RunInfo): string {
   return `${projectName(run)} · ${t(`controller.inbox.${key}`, { ago: ago(at) })}`
 }
 
-const pushOpen = ref(false)
-const pushOn = computed(() => props.push?.ui() === 'on')
-
 const sinceLabel = computed(() =>
   new Date(props.sinceMs).toLocaleString(locale.value, {
     weekday: 'short',
@@ -120,21 +105,6 @@ const sinceLabel = computed(() =>
 
 <template>
   <div class="relative flex h-full min-h-0 flex-col bg-background text-foreground">
-    <ControllerHeader :title="t('controller.inbox.title')">
-      <template #badge>
-        <ConnectionBadge :status="status" :live="live" :status-label="statusLabel" :host-fingerprint="hostFingerprint" />
-      </template>
-      <HeaderButton v-if="push" :label="t('controller.push.title')" :active="pushOn" @click="pushOpen = true">
-        <Bell v-if="pushOn" class="h-4 w-4" :stroke-width="2" />
-        <BellOff v-else class="h-4 w-4" :stroke-width="2" />
-      </HeaderButton>
-      <HeaderButton :label="t('controller.browser.refresh')" @click="emit('refresh')">
-        <RefreshCw class="h-4 w-4" :stroke-width="2" />
-      </HeaderButton>
-      <HeaderButton :label="t('controller.session.disconnect')" @click="emit('disconnect')">
-        <X class="h-4 w-4" :stroke-width="2" />
-      </HeaderButton>
-    </ControllerHeader>
 
     <main class="flex-1 min-h-0 overflow-auto">
       <!-- ── Waiting for you ─────────────────────────────────────────────── -->
@@ -192,7 +162,5 @@ const sinceLabel = computed(() =>
         />
       </button>
     </main>
-
-    <PushSheet v-if="push && pushOpen" :push="push" @close="pushOpen = false" />
   </div>
 </template>

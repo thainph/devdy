@@ -12,18 +12,17 @@
  * The built-in `devdy` MCP server is an app-wide setting today; while the Host
  * reports it `global`, its row says so, since flipping it changes every project.
  */
-import { computed, ref, watch } from 'vue'
+import { computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Loader2, X } from 'lucide-vue-next'
-import { AppSelect } from '@/components/ui'
-import ControllerHeader from './ControllerHeader.vue'
 import type { ClaudeAccountToggle, ProjectInfo, ProjectTogglesKind, ToggleItem, ToggleKind } from '../protocol'
 
 const props = defineProps<{
   projects: ProjectInfo[]
   /** Switches of the selected project; null while loading. */
   toggles: ProjectTogglesKind | null
-  /** The project shown; owned by the parent so it survives leaving the screen. */
+  /** The project shown, picked in the tab header; owned by the parent so it
+   * survives leaving the screen. */
   projectId: string | null
   /** Loading the switches failed (refused / no answer). */
   failed?: boolean
@@ -39,35 +38,22 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
-const selected = ref(props.projectId ?? '')
-
 // Land on the first project when none is chosen yet, and fetch the chosen
 // one's switches (also when coming back to this screen).
 watch(
   () => [props.projects, props.projectId] as const,
-  ([projects, pid]) => {
-    if (pid) {
-      selected.value = pid
-    } else if (projects.length && !selected.value) {
-      selected.value = projects[0].id
+  ([projects, pid], prev) => {
+    if (!pid) {
+      if (projects.length) emit('select', projects[0].id)
+    } else if (!prev) {
+      emit('select', pid)
     }
   },
   { immediate: true },
 )
-watch(
-  selected,
-  (pid) => {
-    if (pid) emit('select', pid)
-  },
-  { immediate: true },
-)
-
-const projectOptions = computed(() =>
-  props.projects.map((p) => ({ value: p.id, label: p.name, description: p.path })),
-)
 
 /** Only show switches that belong to the selected project. */
-const current = computed(() => (props.toggles?.project_id === selected.value ? props.toggles : null))
+const current = computed(() => (props.toggles?.project_id === props.projectId ? props.toggles : null))
 
 interface Section {
   kind: ToggleKind
@@ -115,7 +101,6 @@ function isDefaultAccount(item: ToggleItem | ClaudeAccountToggle): boolean {
 
 <template>
   <div class="relative flex h-full min-h-0 flex-col bg-background text-foreground">
-    <ControllerHeader :title="t('controller.projectToggles.title')" />
 
     <div
       v-if="error"
@@ -132,19 +117,11 @@ function isDefaultAccount(item: ToggleItem | ClaudeAccountToggle): boolean {
         {{ t('controller.projectToggles.noProjects') }}
       </p>
       <template v-else>
-        <AppSelect
-          v-model="selected"
-          size="md"
-          class="w-full"
-          :placeholder="t('controller.projectToggles.selectProject')"
-          :options="projectOptions"
-        />
-
         <div v-if="!current && failed" class="flex flex-col items-center gap-3 py-10 text-sm text-foreground/50">
           {{ t('controller.data.loadFailed') }}
           <button
             class="rounded-md border border-border bg-secondary px-3 py-1.5 text-xs text-foreground hover:bg-accent cursor-pointer"
-            @click="selected && emit('select', selected)"
+            @click="projectId && emit('select', projectId)"
           >
             {{ t('controller.data.retry') }}
           </button>

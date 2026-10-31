@@ -25,6 +25,12 @@ import TodoEditorView from './components/TodoEditorView.vue'
 import NoteListView from './components/NoteListView.vue'
 import NoteEditorView from './components/NoteEditorView.vue'
 import ProjectTogglesView from './components/ProjectTogglesView.vue'
+import ControllerHeader from './components/ControllerHeader.vue'
+import HeaderButton from './components/HeaderButton.vue'
+import ConnectionBadge from './components/ConnectionBadge.vue'
+import PushSheet from './components/PushSheet.vue'
+import { AppSelect } from '@/components/ui'
+import { Bell, BellOff, RefreshCw, X } from 'lucide-vue-next'
 import { createDataStore } from './dataStore'
 import { setAppearance } from './appearance'
 import { createPushStore } from './pushStore'
@@ -508,6 +514,68 @@ function onTab(next: ControllerTab): void {
   else if (next === 'runs') refreshRuns()
 }
 
+// ── tab header ──────────────────────────────────────────────────────────────
+// One header for every tab: title, connection state, Refresh and Disconnect;
+// Sessions / Todo / Notes add a project dropdown, the Inbox its push bell.
+const TAB_TITLES: Record<ControllerTab, string> = {
+  inbox: 'controller.inbox.title',
+  runs: 'controller.browser.title',
+  todo: 'controller.todo.title',
+  note: 'controller.notes.title',
+  project: 'controller.projectToggles.title',
+}
+const tabTitle = computed(() => t(TAB_TITLES[tab.value]))
+
+const projectFilterOptions = computed(() => [
+  { value: '', label: t('controller.data.allProjects') },
+  ...store.state.projectList.map((p) => ({ value: p.id, label: p.name })),
+])
+/** The header dropdown of the current tab ('' = every project). */
+const headerProjectId = computed<string>({
+  get: () => {
+    if (tab.value === 'runs') return browserProjectId.value ?? ''
+    if (tab.value === 'todo') return todoProjectId.value
+    if (tab.value === 'note') return data.state.noteFilter.projectId ?? ''
+    if (tab.value === 'project') return toggleProjectId.value ?? ''
+    return ''
+  },
+  set: (id) => {
+    if (tab.value === 'runs') browserProjectId.value = id || null
+    else if (tab.value === 'todo') todoProjectId.value = id
+    else if (tab.value === 'note') data.loadNotes(id || null, data.state.noteFilter.query)
+    else if (tab.value === 'project' && id) selectToggleProject(id)
+  },
+})
+const tabHasProjectFilter = computed(() => tab.value !== 'inbox')
+/** Setting switches belong to one project: no "All projects" there. */
+const headerProjectOptions = computed(() =>
+  tab.value === 'project' ? projectFilterOptions.value.slice(1) : projectFilterOptions.value,
+)
+
+function refreshTab(): void {
+  switch (tab.value) {
+    case 'inbox':
+      syncInbox()
+      break
+    case 'runs':
+      refreshRuns()
+      break
+    case 'todo':
+      data.loadTodos()
+      break
+    case 'note':
+      data.loadNotes()
+      break
+    case 'project':
+      refreshRuns()
+      if (toggleProjectId.value) data.loadToggles(toggleProjectId.value)
+      break
+  }
+}
+
+const pushOpen = ref(false)
+const pushOn = computed(() => push.ui() === 'on')
+
 /** Open the Inbox from a session (the "another run needs you" banner). */
 function openInbox(): void {
   tab.value = 'inbox'
@@ -790,14 +858,39 @@ function onRequestFiles(): void {
     @clear-error="data.clearError()"
   />
 
-  <div v-else-if="!runId && !draftProjectId" class="flex h-dvh min-h-0 flex-col">
-    <div class="flex-1 min-h-0">
+  <div v-else-if="!runId && !draftProjectId" class="flex h-dvh min-h-0 flex-col bg-background text-foreground">
+    <ControllerHeader :title="tabTitle">
+      <template #badge>
+        <ConnectionBadge :status="status" :live="live" :status-label="browserStatusLabel" :host-fingerprint="hostFp" />
+      </template>
+      <AppSelect
+        v-if="tabHasProjectFilter"
+        v-model="headerProjectId"
+        size="xs"
+        variant="outline"
+        class="w-32 max-w-full"
+        :options="headerProjectOptions"
+      />
+      <HeaderButton
+        v-if="tab === 'inbox' && hasPush"
+        :label="t('controller.push.title')"
+        :active="pushOn"
+        @click="pushOpen = true"
+      >
+        <Bell v-if="pushOn" class="h-4 w-4" :stroke-width="2" />
+        <BellOff v-else class="h-4 w-4" :stroke-width="2" />
+      </HeaderButton>
+      <HeaderButton :label="t('controller.browser.refresh')" @click="refreshTab">
+        <RefreshCw class="h-4 w-4" :stroke-width="2" />
+      </HeaderButton>
+      <HeaderButton :label="t('controller.session.disconnect')" @click="disconnect">
+        <X class="h-4 w-4" :stroke-width="2" />
+      </HeaderButton>
+    </ControllerHeader>
+    <div class="relative flex-1 min-h-0">
       <InboxView
         v-if="tab === 'inbox'"
         :status="status"
-        :live="live"
-        :host-fingerprint="hostFp"
-        :status-label="browserStatusLabel"
         :pending="inboxPending"
         :pending-seen-at="store.state.pendingSeenAt"
         :runs="store.state.runList"
@@ -805,19 +898,13 @@ function onRequestFiles(): void {
         :since-ms="sinceMs"
         :read-ids="visit.read"
         :allow-always="hasRemember"
-        :push="hasPush ? push : null"
         @decide="respond"
         @answer="(req, answers) => respond(req, 'allow_once', answers)"
         @open="openRun"
-        @refresh="syncInbox"
-        @disconnect="disconnect"
       />
       <RunBrowserView
         v-else-if="tab === 'runs'"
         :status="status"
-        :live="live"
-        :host-fingerprint="hostFp"
-        :status-label="browserStatusLabel"
         :runs="store.state.runList"
         :projects="store.state.projectList"
         :pending-run-ids="Object.keys(store.state.pendingByRun)"
@@ -825,8 +912,6 @@ function onRequestFiles(): void {
         @update:selected-project-id="browserProjectId = $event"
         @open="openRun"
         @new-session="startNewSession"
-        @refresh="refreshRuns"
-        @disconnect="disconnect"
       />
       <TodoView
         v-else-if="tab === 'todo'"
@@ -866,6 +951,7 @@ function onRequestFiles(): void {
         @set="data.setToggle"
         @clear-error="data.clearError()"
       />
+      <PushSheet v-if="hasPush && pushOpen" :push="push" @close="pushOpen = false" />
     </div>
     <BottomTabBar :tab="tab" :inbox-count="inboxCount" :hidden="hiddenTabs" @update:tab="onTab" />
   </div>

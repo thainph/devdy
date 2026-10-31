@@ -1,7 +1,8 @@
 <script setup lang="ts">
 /**
- * Note list of the phone Controller (spec §2.B2): search, a project filter, a
- * plain-text preview per note and a floating + for a new one.
+ * Note list of the phone Controller (spec §2.B2): search, a plain-text
+ * preview per note and a floating + for a new one. The project filter is the
+ * tab header's dropdown (the `projectId` prop).
  *
  * Search runs on the Host (title + content), so the filter goes out as a
  * debounced `filter` event and the matching notes come back in via `notes`.
@@ -10,10 +11,8 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Loader2, Plus, X } from 'lucide-vue-next'
-import { AppSelect } from '@/components/ui'
 import { relativeAge } from '@/lib/itemText'
 import { noteDisplayTitle, noteListPreview } from '@/lib/remoteTodos'
-import ControllerHeader from './ControllerHeader.vue'
 import SearchField from './SearchField.vue'
 import type { NoteSummary, ProjectInfo } from '../protocol'
 
@@ -39,27 +38,20 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
-const projectFilter = ref(props.projectId ?? '')
 const search = ref(props.query)
 
-onMounted(() => emit('filter', projectFilter.value || null, search.value))
+onMounted(() => emit('filter', props.projectId, search.value))
 
-// The project switch is one tap — refetch at once. Typing is debounced so a
-// word costs one round trip, not one per keystroke.
-watch(projectFilter, (p) => emit('filter', p || null, search.value))
+// Typing is debounced so a word costs one round trip, not one per keystroke.
 let timer: ReturnType<typeof setTimeout> | null = null
 watch(search, (q) => {
   if (timer) clearTimeout(timer)
-  timer = setTimeout(() => emit('filter', projectFilter.value || null, q), 300)
+  timer = setTimeout(() => emit('filter', props.projectId, q), 300)
 })
 onBeforeUnmount(() => {
   if (timer) clearTimeout(timer)
 })
 
-const projectOptions = computed(() => [
-  { value: '', label: t('controller.data.allProjects') },
-  ...props.projects.map((p) => ({ value: p.id, label: p.name })),
-])
 const projectNames = computed(() => new Map(props.projects.map((p) => [p.id, p.name])))
 const searching = computed(() => search.value.trim().length > 0)
 /** The Host sends the start of the body; flatten it for one or two lines. */
@@ -70,9 +62,6 @@ function previewOf(note: NoteSummary): string {
 
 <template>
   <div class="relative flex h-full min-h-0 flex-col bg-background text-foreground">
-    <ControllerHeader :title="t('controller.notes.title')">
-      <AppSelect v-model="projectFilter" size="xs" variant="outline" class="w-36 max-w-full" :options="projectOptions" />
-    </ControllerHeader>
 
     <div
       v-if="error"
@@ -95,7 +84,7 @@ function previewOf(note: NoteSummary): string {
         {{ t('controller.data.loadFailed') }}
         <button
           class="rounded-md border border-border bg-secondary px-3 py-1.5 text-xs text-foreground hover:bg-accent cursor-pointer"
-          @click="emit('filter', projectFilter || null, search)"
+          @click="emit('filter', projectId, search)"
         >
           {{ t('controller.data.retry') }}
         </button>

@@ -110,9 +110,52 @@ pub async fn send(client: &reqwest::Client, vapid: &SecretKey, subject: &str, su
         .send()
         .await;
     match res {
-        Ok(r) => classify(r.status().as_u16()),
+        Ok(r) => {
+            let status = r.status().as_u16();
+            let outcome = classify(status);
+            if outcome == Outcome::Delivered {
+                return outcome;
+            }
+            // Apple answers `{"reason":"VapidPkHashMismatch"}` and the like;
+            // without it a refusal is just a status code.
+            let reason = service_reason(r).await;
+            tracing::warn!(event = "remote_push_refused", host = ?url_host(&sub.endpoint), status, reason = %reason);
+            match outcome {
+                Outcome::Failed(s) if !reason.is_empty() => Outcome::Failed(format!("{s} {reason}")),
+                other => other,
+            }
+        }
         Err(e) => Outcome::Failed(if e.is_timeout() { "timeout".into() } else { "network".into() }),
     }
+}
+
+/// Longest refusal body read from a push service.
+const MAX_REASON_BODY: usize = 1024;
+
+/// Why a push service refused: the `reason` of a JSON body (Apple, Mozilla),
+/// else the start of a text one (Google) — printable characters only.
+async fn service_reason(r: reqwest::Response) -> String {
+    let body = r.bytes().await.unwrap_or_default();
+    reason_from_body(&body[..body.len().min(MAX_REASON_BODY)])
+}
+
+pub fn reason_from_body(body: &[u8]) -> String {
+    let text = String::from_utf8_lossy(body);
+    let raw = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| v.get("reason").and_then(|r| r.as_str()).map(str::to_string))
+        .unwrap_or_else(|| text.into_owned());
+    raw.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(120)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// The endpoint's host only: its path is a bearer capability.
+fn url_host(endpoint: &str) -> Option<String> {
+    Url::parse(endpoint).ok().and_then(|u| u.host_str().map(str::to_string))
 }
 
 /// Record what a delivery attempt means for the stored subscription.
@@ -130,9 +173,7 @@ pub async fn apply_outcome(db: &Db, sub: &Subscription, outcome: &Outcome) {
             tracing::info!(event = "remote_push_subscription_gone", id = %sub.id);
         }
         Outcome::Failed(reason) => {
-            // Host only: the endpoint path is a bearer capability.
-            let host = Url::parse(&sub.endpoint).ok().and_then(|u| u.host_str().map(str::to_string));
-            tracing::warn!(event = "remote_push_failed", id = %sub.id, host = ?host, reason = %reason);
+            tracing::warn!(event = "remote_push_failed", id = %sub.id, host = ?url_host(&sub.endpoint), reason = %reason);
         }
     }
 }
@@ -193,6 +234,14 @@ mod tests {
         assert_eq!(classify(403), Outcome::Unauthorized);
         assert_eq!(classify(429), Outcome::Failed("http 429".into()));
         assert_eq!(classify(413), Outcome::Failed("http 413".into()));
+    }
+
+    #[test]
+    fn refusal_reasons_are_short_and_printable() {
+        assert_eq!(reason_from_body(br#"{"reason":"VapidPkHashMismatch"}"#), "VapidPkHashMismatch");
+        assert_eq!(reason_from_body(b"invalid JWT provided\n"), "invalid JWT provided");
+        assert_eq!(reason_from_body(b""), "");
+        assert_eq!(reason_from_body("x".repeat(500).as_bytes()).len(), 120);
     }
 
     #[tokio::test]
