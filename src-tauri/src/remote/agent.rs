@@ -1128,11 +1128,13 @@ async fn try_authenticate_first_frame(
     let batch_output = has_feature(FEATURE_OUTPUT_BATCH);
     let multi_run = has_feature(FEATURE_MULTI_RUN);
     let ipc = has_feature(crate::remote::ipc::FEATURE_IPC);
+    let data = has_feature(crate::remote::protocol::FEATURE_DATA);
     tracing::info!(
         event = "remote_client_features",
         room_id = %room_id,
         output_batch = batch_output,
         multi_run = multi_run,
+        data = data,
     );
 
     // A remote-desktop Controller drives the full UI through IPC: it needs
@@ -1218,6 +1220,7 @@ async fn try_authenticate_first_frame(
         idem: idem.clone(),
         idle: idle.clone(),
         ipc,
+        data,
     });
     *room_ctx = Some(ctx.clone());
 

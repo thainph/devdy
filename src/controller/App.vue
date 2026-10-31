@@ -18,6 +18,11 @@ import LinkEntryView from './components/LinkEntryView.vue'
 import OtpEntryView from './components/OtpEntryView.vue'
 import SessionView from './components/SessionView.vue'
 import RunBrowserView from './components/RunBrowserView.vue'
+import TodoView from './components/TodoView.vue'
+import NoteListView from './components/NoteListView.vue'
+import NoteEditorView from './components/NoteEditorView.vue'
+import ProjectTogglesView from './components/ProjectTogglesView.vue'
+import { createDataStore } from './dataStore'
 import type { ComposerTurn } from './components/SessionComposer.vue'
 import { ControllerConnection, type AuthState, type ConnStatus, type SecretSource } from './connection'
 import { createRunStore } from './runStore'
@@ -33,6 +38,7 @@ import {
   respondPermissionCmd,
   sendTurnCmd,
   setRunMetaCmd,
+  type NoteInfo,
   type QuestionAnswers,
   type RemoteDecision,
   type SessionLinkPayload,
@@ -43,6 +49,49 @@ const { renderText, loadMarkdown } = useMarkdown()
 
 const store = createRunStore()
 const conn = shallowRef<ControllerConnection | null>(null)
+
+// Todo / Note / project-switch screens (FEATURE_DATA).
+const DATA_ERRORS = new Set([
+  'not_connected', 'connection_lost', 'host_ack_timeout', 'not_found', 'malformed',
+  'rate_limited', 'action_not_allowed', 'failed',
+])
+const data = createDataStore(
+  (cmd, onAck) => conn.value?.sendCommand(cmd, onAck) ?? false,
+  (reason) => {
+    const key = reason === 'disconnected' ? 'connection_lost' : reason
+    return key && DATA_ERRORS.has(key)
+      ? t(`controller.data.errors.${key}`)
+      : t('controller.data.errors.generic', { reason: reason ?? '?' })
+  },
+)
+type DataScreen = 'todo' | 'notes' | 'project'
+/** The data screen showing over the run browser; null = none. */
+const dataScreen = ref<DataScreen | null>(null)
+/** The note open in the editor (a snapshot), or null for a new note. */
+const openNote = ref<NoteInfo | null>(null)
+const noteEditorOpen = ref(false)
+const toggleProjectId = ref<string | null>(null)
+const dataBusy = computed(() => data.state.pending > 0)
+
+function openDataScreen(screen: DataScreen): void {
+  data.clearError()
+  noteEditorOpen.value = false
+  dataScreen.value = screen
+}
+function closeDataScreen(): void {
+  data.clearError()
+  noteEditorOpen.value = false
+  dataScreen.value = null
+}
+function openNoteEditor(note: NoteInfo | null): void {
+  data.clearError()
+  openNote.value = note
+  noteEditorOpen.value = true
+}
+function selectToggleProject(projectId: string): void {
+  toggleProjectId.value = projectId
+  data.loadToggles(projectId)
+}
 
 /** The app phase drives which screen shows. `session` covers both the run
  * browser and an open run — `store.state.activeRunId` decides between them. */
@@ -242,9 +291,13 @@ function startConnection(secret: SecretSource | null): void {
   if (!link.value) return
   conn.value?.close()
   store.reset()
+  data.reset()
   running.value = false
   sending.value = false
-  const c = new ControllerConnection(link.value, secret, (p) => store.apply(p))
+  const c = new ControllerConnection(link.value, secret, (p) => {
+    store.apply(p)
+    data.apply(p)
+  })
   conn.value = c
   void c.connect()
 }
@@ -254,6 +307,8 @@ function disconnect(): void {
   conn.value?.close()
   conn.value = null
   store.reset()
+  data.reset()
+  dataScreen.value = null
   link.value = null
   phase.value = 'link'
   status.value = 'idle'
@@ -323,6 +378,7 @@ watch(
   () => auth.value,
   (v) => {
     if (v !== 'authenticated' || !link.value) return
+    data.reload()
     const active = store.state.activeRunId
     if (!active) {
       store.setActiveRun(link.value.run_id)
@@ -544,6 +600,63 @@ function onRequestFiles(): void {
     @otp="onOtp"
   />
 
+  <TodoView
+    v-else-if="dataScreen === 'todo'"
+    :todos="data.state.todos"
+    :projects="store.state.projectList"
+    :busy="dataBusy"
+    :error="data.state.error"
+    :save="data.saveTodo"
+    :remove="data.deleteTodo"
+    show-back
+    @toggle="data.toggleTodo"
+    @refresh="data.loadTodos()"
+    @back="closeDataScreen"
+    @clear-error="data.clearError()"
+  />
+
+  <NoteEditorView
+    v-else-if="dataScreen === 'notes' && noteEditorOpen"
+    :note="openNote"
+    :projects="store.state.projectList"
+    :default-project-id="data.state.noteFilter.projectId ?? ''"
+    :busy="dataBusy"
+    :error="data.state.error"
+    :render-text="renderText"
+    :save="data.saveNote"
+    :remove="data.deleteNote"
+    @back="noteEditorOpen = false"
+    @clear-error="data.clearError()"
+  />
+
+  <NoteListView
+    v-else-if="dataScreen === 'notes'"
+    :notes="data.state.notes"
+    :projects="store.state.projectList"
+    :project-id="data.state.noteFilter.projectId"
+    :query="data.state.noteFilter.query"
+    :error="data.state.error"
+    show-back
+    @filter="(p, q) => data.loadNotes(p, q)"
+    @open="openNoteEditor"
+    @new="openNoteEditor(null)"
+    @back="closeDataScreen"
+    @clear-error="data.clearError()"
+  />
+
+  <ProjectTogglesView
+    v-else-if="dataScreen === 'project'"
+    :projects="store.state.projectList"
+    :toggles="data.state.toggles"
+    :project-id="toggleProjectId"
+    :error="data.state.error"
+    show-back
+    @select="selectToggleProject"
+    @set="data.setToggle"
+    @back="closeDataScreen"
+    @clear-error="data.clearError()"
+  />
+
   <RunBrowserView
     v-else-if="!runId && !draftProjectId"
     :status="status"
@@ -559,6 +672,7 @@ function onRequestFiles(): void {
     @new-session="startNewSession"
     @refresh="refreshRuns"
     @disconnect="disconnect"
+    @open-data="openDataScreen"
   />
 
   <SessionView

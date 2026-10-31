@@ -22,6 +22,7 @@ pub mod audit;
 pub mod bus;
 pub mod command;
 pub mod commands;
+pub mod data;
 pub mod file_proxy;
 pub mod forwarder;
 pub mod fs_bridge;

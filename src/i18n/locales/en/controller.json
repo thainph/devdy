@@ -104,5 +104,102 @@
     "noRuns": "No runs in this project yet.",
     "runCount": "{count} run | {count} runs",
     "needsApprovalSection": "Waiting for you"
+  },
+  "data": {
+    "allProjects": "All projects",
+    "noProject": "No project",
+    "project": "Project",
+    "back": "Back",
+    "openTodo": "Todo",
+    "openNotes": "Notes",
+    "openProject": "Project switches",
+    "loading": "Loading…",
+    "dismiss": "Dismiss",
+    "saving": "Saving…",
+    "save": "Save",
+    "cancel": "Cancel",
+    "errors": {
+      "not_connected": "Not connected to the host.",
+      "connection_lost": "Connection lost before the host confirmed — try again.",
+      "host_ack_timeout": "The host did not answer — try again.",
+      "not_found": "It no longer exists on the host (deleted elsewhere?).",
+      "malformed": "The host refused the change (invalid input).",
+      "rate_limited": "Too many changes — wait a moment and try again.",
+      "action_not_allowed": "This host does not support this yet — update Devdy on the desktop.",
+      "failed": "The host could not save the change.",
+      "generic": "The host refused the change: {reason}"
+    }
+  },
+  "todo": {
+    "title": "Todo",
+    "active": "Active · {count}",
+    "done": "Done · {count}",
+    "groups": {
+      "overdue": "Overdue",
+      "today": "Today",
+      "upcoming": "Upcoming",
+      "none": "No due date"
+    },
+    "empty": "Nothing to do here.",
+    "emptyDone": "No finished todos.",
+    "add": "New todo",
+    "markDone": "Mark as done",
+    "markOpen": "Mark as not done",
+    "dueToday": "Today",
+    "dueOn": "Due {date}",
+    "sheet": {
+      "newTitle": "New todo",
+      "editTitle": "Edit todo",
+      "title": "Title",
+      "titlePlaceholder": "What needs doing?",
+      "note": "Note",
+      "notePlaceholder": "Details (optional)",
+      "due": "Due date",
+      "project": "Project",
+      "delete": "Delete",
+      "confirmDelete": "Tap again to delete"
+    },
+    "chips": {
+      "today": "Today",
+      "tomorrow": "Tomorrow",
+      "next_week": "Next week",
+      "clear": "No date"
+    }
+  },
+  "notes": {
+    "title": "Notes",
+    "searchPlaceholder": "Search notes…",
+    "clearSearch": "Clear search",
+    "empty": "No notes yet.",
+    "noResults": "No note matches that.",
+    "untitled": "Untitled",
+    "add": "New note",
+    "newNote": "New note",
+    "view": "View",
+    "edit": "Edit",
+    "titleLabel": "Title",
+    "titlePlaceholder": "Title",
+    "contentLabel": "Content (Markdown)",
+    "contentPlaceholder": "Write in Markdown…",
+    "delete": "Delete note",
+    "confirmDelete": "Tap again to delete",
+    "emptyBody": "This note is empty.",
+    "needsContent": "Add a title or some content first.",
+    "gone": "This note was deleted."
+  },
+  "projectToggles": {
+    "title": "Project",
+    "selectProject": "Choose a project",
+    "noProjects": "No projects on the host.",
+    "mcp": "MCP server",
+    "skills": "Skill",
+    "rules": "Rule",
+    "builtin": "devdy (built-in)",
+    "builtinHint": "Notes, todos, sessions…",
+    "builtinGlobal": "Applies to every project",
+    "none": "None installed.",
+    "footer": "Env, tokens and accounts can only be changed on the desktop.",
+    "enable": "Turn on {name}",
+    "disable": "Turn off {name}"
   }
 }

@@ -23,8 +23,8 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  AlertTriangle, ChevronLeft, ChevronRight, FolderGit2, Loader2, Plus, RefreshCw,
-  Search, ShieldCheck, Wifi, WifiOff, X,
+  AlertTriangle, ChevronLeft, ChevronRight, FileText, FolderGit2, ListTodo, Loader2, Plus,
+  RefreshCw, Search, ShieldCheck, SlidersHorizontal, Wifi, WifiOff, X,
 } from 'lucide-vue-next'
 import type { ConnStatus } from '../connection'
 import type { ProjectInfo, RunInfo } from '../protocol'
@@ -49,11 +49,20 @@ const emit = defineEmits<{
   refresh: []
   disconnect: []
   'update:selectedProjectId': [projectId: string | null]
+  /** Open the Todo / Note / project-switch screen. */
+  'open-data': [screen: 'todo' | 'notes' | 'project']
 }>()
 
 const { t } = useI18n()
 
 const isActive = computed(() => props.status === 'connected')
+
+// Entry points to the data screens until the bottom tab bar replaces them.
+const dataEntries = computed(() => [
+  { screen: 'todo' as const, icon: ListTodo, label: t('controller.data.openTodo') },
+  { screen: 'notes' as const, icon: FileText, label: t('controller.data.openNotes') },
+  { screen: 'project' as const, icon: SlidersHorizontal, label: t('controller.data.openProject') },
+])
 const shortFp = computed(() => (props.hostFingerprint ? props.hostFingerprint.slice(0, 12) : ''))
 const pending = computed(() => new Set(props.pendingRunIds))
 
@@ -170,6 +179,16 @@ function backToProjects(): void {
         <ShieldCheck class="h-3 w-3 text-emerald-500" :stroke-width="2" /> {{ shortFp }}…
       </span>
       <div class="ml-auto flex items-center gap-1.5">
+        <button
+          v-for="d in dataEntries"
+          :key="d.screen"
+          class="inline-flex items-center justify-center h-7 w-7 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+          :title="d.label"
+          :aria-label="d.label"
+          @click="emit('open-data', d.screen)"
+        >
+          <component :is="d.icon" class="h-4 w-4" :stroke-width="2" />
+        </button>
         <button
           class="inline-flex items-center justify-center h-7 w-7 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
           :title="t('controller.browser.refresh')"

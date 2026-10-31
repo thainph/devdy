@@ -43,21 +43,68 @@ pub async fn list_notes(
     db: State<'_, Db>,
     project_id: Option<String>,
 ) -> Result<Vec<Note>, String> {
+    list_notes_inner(db.inner(), project_id.as_deref(), None).await
+}
+
+/// Escape `%`, `_` and the escape char itself for a `LIKE ... ESCAPE '\'`.
+fn like_pattern(query: &str) -> String {
+    let mut out = String::with_capacity(query.len() + 2);
+    out.push('%');
+    for c in query.chars() {
+        if matches!(c, '%' | '_' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('%');
+    out
+}
+
+/// [`list_notes`] plus an optional case-insensitive (ASCII) substring search
+/// over title and content. A blank `query` means no search.
+pub async fn list_notes_inner(
+    db: &Db,
+    project_id: Option<&str>,
+    query: Option<&str>,
+) -> Result<Vec<Note>, String> {
+    let query = query.map(str::trim).filter(|q| !q.is_empty());
     let mut sql = format!(
         "SELECT n.id, n.title, n.content, n.project_id, n.position, n.created_at, n.updated_at, \
-         {} FROM notes n",
+         {} FROM notes n WHERE 1 = 1",
         item_links::linked_count_sql(ItemKind::Note, "n")
     );
     if project_id.is_some() {
-        sql.push_str(" WHERE n.project_id = ?");
+        sql.push_str(" AND n.project_id = ?");
+    }
+    if query.is_some() {
+        sql.push_str(" AND (n.title LIKE ? ESCAPE '\\' OR n.content LIKE ? ESCAPE '\\')");
     }
     sql.push_str(" ORDER BY n.position ASC, n.updated_at DESC");
     let mut q = sqlx::query(&sql);
     if let Some(pid) = project_id {
         q = q.bind(pid);
     }
-    let rows = q.fetch_all(db.inner()).await.map_err(|e| e.to_string())?;
+    if let Some(text) = query {
+        let pattern = like_pattern(text);
+        q = q.bind(pattern.clone()).bind(pattern);
+    }
+    let rows = q.fetch_all(db).await.map_err(|e| e.to_string())?;
     Ok(rows.iter().map(row_to_note).collect())
+}
+
+/// One note by id.
+pub async fn get_note(db: &Db, id: &str) -> Result<Note, String> {
+    let row = sqlx::query(&format!(
+        "SELECT n.id, n.title, n.content, n.project_id, n.position, n.created_at, n.updated_at, \
+         {} FROM notes n WHERE n.id = ?",
+        item_links::linked_count_sql(ItemKind::Note, "n")
+    ))
+    .bind(id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| format!("note not found: {id}"))?;
+    Ok(row_to_note(&row))
 }
 
 #[tauri::command]
@@ -65,6 +112,16 @@ pub async fn add_note(
     db: State<'_, Db>,
     title: String,
     content: String,
+    project_id: Option<String>,
+    run_id: Option<String>,
+) -> Result<Note, String> {
+    add_note_inner(db.inner(), &title, &content, project_id, run_id).await
+}
+
+pub async fn add_note_inner(
+    db: &Db,
+    title: &str,
+    content: &str,
     project_id: Option<String>,
     run_id: Option<String>,
 ) -> Result<Note, String> {
@@ -78,7 +135,7 @@ pub async fn add_note(
     // New notes go to the top (highest priority) by taking a position below the
     // current minimum.
     let min_pos: Option<i64> = sqlx::query("SELECT MIN(position) AS min_pos FROM notes")
-        .fetch_one(db.inner())
+        .fetch_one(db)
         .await
         .map_err(|e| e.to_string())?
         .get("min_pos");
@@ -95,15 +152,14 @@ pub async fn add_note(
     .bind(position)
     .bind(&now)
     .bind(&now)
-    .execute(db.inner())
+    .execute(db)
     .await
     .map_err(|e| e.to_string())?;
     // The run it was captured from becomes a `captured` session link.
-    let linked =
-        item_links::link_captured(db.inner(), ItemKind::Note, &id, run_id.as_deref()).await;
+    let linked = item_links::link_captured(db, ItemKind::Note, &id, run_id.as_deref()).await;
     // A project-less capture took the run's project with the link.
     let project_id = match project_id {
-        None if linked => item_links::project_of(db.inner(), ItemKind::Note, &id).await,
+        None if linked => item_links::project_of(db, ItemKind::Note, &id).await,
         other => other,
     };
 
@@ -126,6 +182,10 @@ pub async fn update_note(
     title: String,
     content: String,
 ) -> Result<(), String> {
+    update_note_inner(db.inner(), &id, &title, &content).await
+}
+
+pub async fn update_note_inner(db: &Db, id: &str, title: &str, content: &str) -> Result<(), String> {
     let title = title.trim().to_string();
     let content = content.trim().to_string();
     if title.is_empty() && content.is_empty() {
@@ -136,8 +196,8 @@ pub async fn update_note(
         .bind(&title)
         .bind(&content)
         .bind(&now)
-        .bind(&id)
-        .execute(db.inner())
+        .bind(id)
+        .execute(db)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -151,12 +211,20 @@ pub async fn set_note_project(
     id: String,
     project_id: Option<String>,
 ) -> Result<(), String> {
+    set_note_project_inner(db.inner(), &id, project_id.as_deref()).await
+}
+
+pub async fn set_note_project_inner(
+    db: &Db,
+    id: &str,
+    project_id: Option<&str>,
+) -> Result<(), String> {
     let now = chrono::Utc::now().to_rfc3339();
     sqlx::query("UPDATE notes SET project_id = ?, updated_at = ? WHERE id = ?")
-        .bind(&project_id)
+        .bind(project_id)
         .bind(&now)
-        .bind(&id)
-        .execute(db.inner())
+        .bind(id)
+        .execute(db)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -164,12 +232,16 @@ pub async fn set_note_project(
 
 #[tauri::command]
 pub async fn delete_note(db: State<'_, Db>, id: String) -> Result<(), String> {
-    item_links::delete_for_items(db.inner(), ItemKind::Note, &id)
+    delete_note_inner(db.inner(), &id).await
+}
+
+pub async fn delete_note_inner(db: &Db, id: &str) -> Result<(), String> {
+    item_links::delete_for_items(db, ItemKind::Note, id)
         .await
         .map_err(|e| e.to_string())?;
     sqlx::query("DELETE FROM notes WHERE id = ?")
-        .bind(&id)
-        .execute(db.inner())
+        .bind(id)
+        .execute(db)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -213,4 +285,45 @@ pub async fn reorder_notes(db: State<'_, Db>, ids: Vec<String>) -> Result<(), St
     }
     tx.commit().await.map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn db() -> Db {
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        db
+    }
+
+    #[test]
+    fn like_pattern_escapes_wildcards() {
+        assert_eq!(like_pattern("50%_off"), "%50\\%\\_off%");
+        assert_eq!(like_pattern("a\\b"), "%a\\\\b%");
+    }
+
+    #[tokio::test]
+    async fn search_matches_title_or_content_and_respects_project() {
+        let db = db().await;
+        add_note_inner(&db, "Release plan", "ship it", Some("p1".into()), None).await.unwrap();
+        add_note_inner(&db, "", "the release is 50% done", None, None).await.unwrap();
+        add_note_inner(&db, "Groceries", "milk", Some("p1".into()), None).await.unwrap();
+
+        let hits = list_notes_inner(&db, None, Some("RELEASE")).await.unwrap();
+        assert_eq!(hits.len(), 2, "case-insensitive over title and content");
+        let hits = list_notes_inner(&db, Some("p1"), Some("release")).await.unwrap();
+        assert_eq!(hits.len(), 1);
+        // A literal % is not a wildcard.
+        let hits = list_notes_inner(&db, None, Some("50%")).await.unwrap();
+        assert_eq!(hits.len(), 1);
+        let hits = list_notes_inner(&db, None, Some("%")).await.unwrap();
+        assert_eq!(hits.len(), 1);
+        // Blank query = plain list.
+        assert_eq!(list_notes_inner(&db, None, Some("  ")).await.unwrap().len(), 3);
+    }
 }

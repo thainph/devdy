@@ -17,7 +17,8 @@ use crate::db::Db;
 use crate::remote::agent::{now_unix, IdleClock, IDLE_TTL_SECS};
 use crate::remote::audit;
 use crate::remote::command::{
-    is_allowed_action, map_remote_decision, CommandRateLimiter, IdempotencyGuard, RejectReason,
+    data_action_permitted, is_allowed_action, is_data_action, map_remote_decision,
+    CommandRateLimiter, IdempotencyGuard, RejectReason,
 };
 use crate::remote::forwarder::{
     replay_history, run_log_path, send_engine_model_options, send_plan_usage,
@@ -71,6 +72,10 @@ pub struct HandlerCtx {
     pub idle: IdleClock,
     /// A remote-desktop Controller (drives the UI over `ipc_*` commands).
     pub ipc: bool,
+    /// The Controller manages todos / notes / project switches ([`FEATURE_DATA`]).
+    ///
+    /// [`FEATURE_DATA`]: crate::remote::protocol::FEATURE_DATA
+    pub data: bool,
 }
 
 impl HandlerCtx {
@@ -166,7 +171,7 @@ async fn notice(ctx: &HandlerCtx, run_id: Option<String>, text: &str) {
     }
 }
 
-async fn send_payload(ctx: &HandlerCtx, payload: StreamPayload) {
+pub(super) async fn send_payload(ctx: &HandlerCtx, payload: StreamPayload) {
     if let Ok(json) = serde_json::to_vec(&payload) {
         let cipher = ctx.session.seal(&json);
         let env = Envelope::data(FrameType::Stream, &ctx.room_id, cipher, ctx.seq.next());
@@ -174,7 +179,7 @@ async fn send_payload(ctx: &HandlerCtx, payload: StreamPayload) {
     }
 }
 
-async fn command_ack(
+pub(super) async fn command_ack(
     ctx: &HandlerCtx,
     cmd: &CmdPayload,
     accepted: bool,
@@ -228,7 +233,7 @@ async fn permission_resolved(
 
 /// Audit a rejection with a machine-readable reason (AC-14) and notify the
 /// Controller so it can surface the refusal.
-async fn reject(ctx: &HandlerCtx, action: &str, run_id: Option<&str>, reason: RejectReason) {
+pub(super) async fn reject(ctx: &HandlerCtx, action: &str, run_id: Option<&str>, reason: RejectReason) {
     audit::audit(
         &ctx.db,
         None,
@@ -300,8 +305,20 @@ pub async fn handle(ctx: &HandlerCtx, cmd: CmdPayload) {
         return;
     }
 
+    // Gate 3: data actions only for a Controller that negotiated them.
+    if !data_action_permitted(action, ctx.data) {
+        reject(ctx, action, None, RejectReason::NotAllowed).await;
+        command_ack(ctx, &cmd, false, Some(RejectReason::NotAllowed.as_str())).await;
+        return;
+    }
+
     // An accepted inbound command slides the idle window forward (never output).
     ctx.slide_idle();
+
+    if is_data_action(action) {
+        crate::remote::data::handle(ctx, &cmd).await;
+        return;
+    }
 
     match action {
         "respond_permission" => handle_respond_permission(ctx, &cmd).await,
@@ -363,7 +380,7 @@ async fn handle_ipc(ctx: &HandlerCtx, cmd: &CmdPayload) {
 }
 
 /// Record an accepted command (AC-14).
-async fn accept(ctx: &HandlerCtx, action: &str, run_id: Option<&str>, reason: Option<&str>) {
+pub(super) async fn accept(ctx: &HandlerCtx, action: &str, run_id: Option<&str>, reason: Option<&str>) {
     audit::audit(
         &ctx.db,
         None,

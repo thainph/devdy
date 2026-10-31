@@ -22,7 +22,7 @@ pub const CMD_RATE_WINDOW: Duration = Duration::from_secs(60);
 /// The actions a Controller is allowed to invoke (FR-009). `list_runs` is a
 /// read-only browse of run metadata (added for full desktop parity — the trust
 /// boundary is device approval, not per-run share).
-pub const ALLOW_LIST: [&str; 14] = [
+pub const ALLOW_LIST: [&str; 26] = [
     "respond_permission",
     "start_run",
     "request_history",
@@ -38,7 +38,49 @@ pub const ALLOW_LIST: [&str; 14] = [
     // Navigation between runs; refused unless the client advertised multi_run.
     "open_run",
     "close_run",
+    // Todos, notes and project switches; refused unless the client advertised
+    // `data` (see DATA_ACTIONS).
+    "todo_list",
+    "todo_add",
+    "todo_update",
+    "todo_toggle",
+    "todo_delete",
+    "note_list",
+    "note_search",
+    "note_add",
+    "note_update",
+    "note_delete",
+    "project_toggles_get",
+    "project_toggle_set",
 ];
+
+/// The data actions: allow-listed, but only for a Controller that advertised
+/// [`crate::remote::protocol::FEATURE_DATA`].
+pub const DATA_ACTIONS: [&str; 12] = [
+    "todo_list",
+    "todo_add",
+    "todo_update",
+    "todo_toggle",
+    "todo_delete",
+    "note_list",
+    "note_search",
+    "note_add",
+    "note_update",
+    "note_delete",
+    "project_toggles_get",
+    "project_toggle_set",
+];
+
+/// Whether `action` is one of the [`DATA_ACTIONS`].
+pub fn is_data_action(action: &str) -> bool {
+    DATA_ACTIONS.contains(&action)
+}
+
+/// Whether a session may run `action` given its negotiated `data` flag. Every
+/// non-data action is unaffected by the flag.
+pub fn data_action_permitted(action: &str, data_enabled: bool) -> bool {
+    data_enabled || !is_data_action(action)
+}
 
 /// Whether `action` is in the frozen allow-list (AC-12).
 pub fn is_allowed_action(action: &str) -> bool {
@@ -51,7 +93,7 @@ pub fn is_allowed_action(action: &str) -> bool {
 /// Browsing costs the Controller several of these per screen (open a run: list
 /// + history + meta + usage + files). Charging them to the 30/min command
 /// budget would make normal navigation trip the abuse limiter.
-pub const READ_ONLY_ACTIONS: [&str; 9] = [
+pub const READ_ONLY_ACTIONS: [&str; 13] = [
     "request_history",
     "list_runs",
     "list_projects",
@@ -62,6 +104,12 @@ pub const READ_ONLY_ACTIONS: [&str; 9] = [
     // Navigation: changes only what this session streams, never run state.
     "open_run",
     "close_run",
+    // Data browsing. Their writes (add / update / toggle / delete / set) stay
+    // on the 30/min command budget.
+    "todo_list",
+    "note_list",
+    "note_search",
+    "project_toggles_get",
 ];
 
 /// Whether `action` only reads state (and so uses the browse budget).
@@ -138,6 +186,8 @@ pub enum RejectReason {
     Unauthorized,
     /// Command carried a run_id that is not the single bound session run.
     WrongRun,
+    /// A data action named a todo / note / project / switch that does not exist.
+    NotFound,
 }
 
 impl RejectReason {
@@ -152,6 +202,7 @@ impl RejectReason {
             RejectReason::Malformed => "malformed",
             RejectReason::Unauthorized => "unauthorized",
             RejectReason::WrongRun => "wrong_run",
+            RejectReason::NotFound => "not_found",
         }
     }
 }
@@ -306,6 +357,67 @@ mod tests {
             "close_run",
         ] {
             assert!(is_allowed_action(a), "{a} should be allowed");
+        }
+    }
+
+    // ---- Data features (todos / notes / project switches) ----
+    #[test]
+    fn data_actions_are_allow_listed() {
+        for a in [
+            "todo_list",
+            "todo_add",
+            "todo_update",
+            "todo_toggle",
+            "todo_delete",
+            "note_list",
+            "note_search",
+            "note_add",
+            "note_update",
+            "note_delete",
+            "project_toggles_get",
+            "project_toggle_set",
+        ] {
+            assert!(is_allowed_action(a), "{a} should be allowed");
+            assert!(is_data_action(a), "{a} is a data action");
+        }
+        for a in DATA_ACTIONS {
+            assert!(is_allowed_action(a), "{a} must be allow-listed");
+        }
+        // Lookalikes stay refused.
+        for a in ["todo_clear_done", "note_reorder", "secret_notes_list", "mcp_set_env", "Todo_list"] {
+            assert!(!is_allowed_action(a), "{a} must be rejected");
+        }
+    }
+
+    #[test]
+    fn data_actions_need_the_data_flag() {
+        for a in DATA_ACTIONS {
+            assert!(!data_action_permitted(a, false), "{a} needs the data flag");
+            assert!(data_action_permitted(a, true));
+        }
+        // Run actions do not depend on the flag.
+        for a in ["respond_permission", "start_run", "list_runs", "open_run"] {
+            assert!(!is_data_action(a));
+            assert!(data_action_permitted(a, false));
+        }
+    }
+
+    #[test]
+    fn data_reads_and_writes_use_the_right_budget() {
+        for a in ["todo_list", "note_list", "note_search", "project_toggles_get"] {
+            assert!(is_read_only_action(a), "{a} only reads");
+        }
+        for a in [
+            "todo_add",
+            "todo_update",
+            "todo_toggle",
+            "todo_delete",
+            "note_add",
+            "note_update",
+            "note_delete",
+            "project_toggle_set",
+        ] {
+            assert!(!is_read_only_action(a), "{a} changes state");
         }
     }
 

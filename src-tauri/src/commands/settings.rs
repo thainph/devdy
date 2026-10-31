@@ -270,10 +270,14 @@ pub async fn update_setting(
     key: String,
     value: String,
 ) -> Result<(), String> {
+    set_setting(db.inner(), &key, &value).await
+}
+
+pub async fn set_setting(db: &Db, key: &str, value: &str) -> Result<(), String> {
     sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
-        .bind(&key)
-        .bind(&value)
-        .execute(db.inner())
+        .bind(key)
+        .bind(value)
+        .execute(db)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())

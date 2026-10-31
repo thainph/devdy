@@ -354,6 +354,74 @@ pub enum StreamPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         claude_account_id: Option<String>,
     },
+    // ---- Data features ([`FEATURE_DATA`]) ----
+    /// Every todo (the Controller filters by project / done locally).
+    TodoList { todos: Vec<TodoInfo> },
+    /// Notes matching a `note_list` / `note_search`, echoing the filter so the
+    /// Controller can drop a stale reply.
+    NoteList {
+        notes: Vec<NoteInfo>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+    },
+    /// What is switched on for one project. Names + on/off only: never an MCP
+    /// command, URL, env / header key or value, account or token.
+    ProjectToggles {
+        project_id: String,
+        mcp_servers: Vec<ToggleItem>,
+        skills: Vec<ToggleItem>,
+        rules: Vec<ToggleItem>,
+        builtin_devdy: BuiltinToggle,
+    },
+}
+
+/// One todo as the Controller sees it — no Focus fields (priority, estimate,
+/// AI plan…), which the phone does not edit.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TodoInfo {
+    pub id: String,
+    /// The full text: the first line is the title, the rest a note.
+    pub text: String,
+    pub done: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// Local `YYYY-MM-DD`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_time: Option<String>,
+    pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+}
+
+/// One note (Markdown) as the Controller sees it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NoteInfo {
+    pub id: String,
+    pub title: String,
+    pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    pub updated_at: String,
+}
+
+/// A skill / rule / MCP server switch for one project.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToggleItem {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+}
+
+/// The built-in `devdy` MCP server switch. `global` is true while the setting
+/// is app-wide (it is today): flipping it affects every project.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BuiltinToggle {
+    pub enabled: bool,
+    pub global: bool,
 }
 
 /// One managed Claude account offered in the Controller's run-settings menu.
@@ -412,6 +480,11 @@ pub const FEATURE_OUTPUT_BATCH: &str = "output_batch";
 /// forwarded. The trust boundary is unchanged either way (device approval,
 /// SRS BR-005 v1.1) — this only controls what the client is able to render.
 pub const FEATURE_MULTI_RUN: &str = "multi_run";
+
+/// Feature flag a Controller advertises to manage todos, notes and per-project
+/// switches (`todo_*`, `note_*`, `project_toggle*`). Without it those actions
+/// are refused, so an older bundle sees exactly the pre-data Host.
+pub const FEATURE_DATA: &str = "data";
 
 /// One slash command exposed to the Controller's composer palette.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -568,6 +641,32 @@ pub struct CmdPayload {
     /// `ipc_listen` / `ipc_unlisten`: the app event name.
     #[serde(default)]
     pub event: Option<String>,
+    // ---- Data features ([`FEATURE_DATA`]) ----
+    /// The todo / note / skill / rule / MCP server a data action targets.
+    #[serde(default)]
+    pub item_id: Option<String>,
+    /// `todo_update` / `note_update`: the fields to change. A missing key is
+    /// left alone, `null` clears it.
+    #[serde(default)]
+    pub patch: Option<serde_json::Value>,
+    /// `note_search`: the text to look for in titles and contents.
+    #[serde(default)]
+    pub query: Option<String>,
+    /// `note_add`: the note's title.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// `note_add`: the note's Markdown.
+    #[serde(default)]
+    pub content: Option<String>,
+    /// `todo_add`: local `YYYY-MM-DD` deadline.
+    #[serde(default)]
+    pub due_date: Option<String>,
+    /// `project_toggle_set`: `skill` | `rule` | `mcp` | `builtin_mcp`.
+    #[serde(default)]
+    pub toggle_kind: Option<String>,
+    /// `project_toggle_set`: the new state.
+    #[serde(default)]
+    pub enabled: Option<bool>,
 }
 
 /// The E2E handshake exchange (spec §3). Ephemeral public keys are NOT secret,

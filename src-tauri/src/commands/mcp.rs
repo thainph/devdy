@@ -533,6 +533,36 @@ pub async fn set_project_mcp_servers(
     Ok(())
 }
 
+/// Assign (`enabled`) or unassign one server for a project, leaving the
+/// project's other assignments alone. Idempotent.
+pub async fn set_project_mcp_server_enabled(
+    db: &Db,
+    project_id: &str,
+    server_id: &str,
+    enabled: bool,
+) -> Result<(), String> {
+    if enabled {
+        sqlx::query(
+            "INSERT OR IGNORE INTO project_mcp_servers (project_id, server_id, enabled_at) \
+             VALUES (?, ?, ?)",
+        )
+        .bind(project_id)
+        .bind(server_id)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    } else {
+        sqlx::query("DELETE FROM project_mcp_servers WHERE project_id = ? AND server_id = ?")
+            .bind(project_id)
+            .bind(server_id)
+            .execute(db)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 // ---- Import / export -------------------------------------------------------
 
 #[tauri::command]
