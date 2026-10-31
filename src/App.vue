@@ -12,7 +12,7 @@ import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useUILayoutStore } from '@/stores/uiLayout'
 import { useI18n } from 'vue-i18n'
 import { setLocale } from '@/i18n'
-import { ListTodo, PanelLeftClose, PanelLeftOpen, Slack, StickyNote } from 'lucide-vue-next'
+import { ListTodo, LockKeyhole, PanelLeftClose, PanelLeftOpen, Slack, StickyNote } from 'lucide-vue-next'
 import PermissionNotifier from '@/components/PermissionNotifier.vue'
 import PermissionWindowManager from '@/components/PermissionWindowManager.vue'
 import CalendarReminder from '@/components/CalendarReminder.vue'
@@ -31,6 +31,7 @@ import CyberFoxHost from '@/components/CyberFoxHost.vue'
 import MascotWindow from '@/views/MascotWindow.vue'
 import ItemWindow from '@/views/ItemWindow.vue'
 import ItemListWindow from '@/views/ItemListWindow.vue'
+import SecretNotesWindow from '@/views/SecretNotesWindow.vue'
 import SlackThreadsWindow from '@/views/SlackThreadsWindow.vue'
 import PrInboxWindow from '@/views/PrInboxWindow.vue'
 import { PR_INBOX_WINDOW_OPEN_ROUTE, type PrInboxWindowOpenRoute } from '@/lib/prInboxWindow'
@@ -58,6 +59,7 @@ import { useChatDraftsStore } from '@/stores/chatDrafts'
 import { useToast } from '@/composables/useToast'
 import { openItemCreateWindow } from '@/lib/itemWindow'
 import { openItemListWindow } from '@/lib/itemListWindow'
+import { canOpenSecretNotes, openSecretNotesWindow } from '@/lib/secretNotesWindow'
 import { applyAppMenu, isMenuActionBound, listenMenuActions, registerMenuAction } from '@/lib/appMenu'
 import { openPath, openUrl } from '@tauri-apps/plugin-opener'
 import { appDataDir, join } from '@tauri-apps/api/path'
@@ -84,6 +86,7 @@ const isFileWindow = new URLSearchParams(window.location.search).get('fileWindow
 const isPermissionWindow = new URLSearchParams(window.location.search).get('permissionWindow') === '1'
 const isItemWindow = new URLSearchParams(window.location.search).get('itemWindow') === '1'
 const isItemListWindow = new URLSearchParams(window.location.search).get('itemListWindow') === '1'
+const isSecretNotesWindow = new URLSearchParams(window.location.search).get('secretNotesWindow') === '1'
 const isGanttWindow = new URLSearchParams(window.location.search).get('ganttWindow') === '1'
 const isSlackWindow = new URLSearchParams(window.location.search).get('slackWindow') === '1'
 const isPrInboxWindow = new URLSearchParams(window.location.search).get('prInboxWindow') === '1'
@@ -102,6 +105,7 @@ const isPopoutWindow =
   isPermissionWindow ||
   isItemWindow ||
   isItemListWindow ||
+  isSecretNotesWindow ||
   isGanttWindow ||
   isSlackWindow ||
   isPrInboxWindow ||
@@ -404,6 +408,9 @@ function bindGlobalMenuActions() {
     ),
     registerMenuAction('window.noteList', () =>
       openItemListWindow('note', { projectId: routeCaptureContext().projectId }),
+    ),
+    registerMenuAction('window.secretNotes', () =>
+      openSecretNotesWindow({ projectId: routeCaptureContext().projectId }),
     ),
     registerMenuAction('window.slackThreads', () =>
       openSlackWindow({ projectId: routeCaptureContext().projectId }),
@@ -769,6 +776,9 @@ onMounted(async () => {
   <!-- THE todo / note LIST window: stands beside the main window, replacing the drawer. -->
   <ItemListWindow v-else-if="isItemListWindow" />
 
+  <!-- THE Secret notes window: the password-sealed vault (local only). -->
+  <SecretNotesWindow v-else-if="isSecretNotesWindow" />
+
   <!-- THE Slack threads window: Slack-like reader of the fetched + translated threads. -->
   <SlackThreadsWindow v-else-if="isSlackWindow" />
 
@@ -897,6 +907,18 @@ onMounted(async () => {
                 >
                   <StickyNote class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
                   <span class="flex-1 truncate text-left">{{ t('item.navNotes') }}</span>
+                </button>
+
+                <!-- Secret notes: their own window, on this machine only. -->
+                <button
+                  v-if="canOpenSecretNotes()"
+                  type="button"
+                  class="relative flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors cursor-pointer select-none text-muted-foreground hover:text-foreground hover:bg-accent/50"
+                  :title="t('secretNotes.nav')"
+                  @click="openSecretNotesWindow({ projectId: routeCaptureContext().projectId })"
+                >
+                  <LockKeyhole class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
+                  <span class="flex-1 truncate text-left">{{ t('secretNotes.nav') }}</span>
                 </button>
 
                 <!-- Slack threads have their own window. -->

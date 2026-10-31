@@ -1,9 +1,11 @@
 //! Tauri commands of the secret notes vault (`crate::secret_vault`).
 //!
-//! Notes window only: every command refuses any other webview — the Remote
+//! Secret notes window only: every command refuses any other webview — the Remote
 //! Control bridge (the remote handler also rewrites `secret_*` calls before
 //! they reach it), remote-desktop windows, and the windows that render agent
-//! output. Argon2id runs on the blocking pool; password attempts are serialized
+//! output. The one exception is `secret_note_from_note`, which the Notes window
+//! may also call ("Make secret"): it only writes into the vault, never reads it.
+//! Argon2id runs on the blocking pool; password attempts are serialized
 //! so parallel calls cannot slip past the backoff. Changes emit `SECRET_VAULT_EVENT` so
 //! the other windows refresh; it carries no note data.
 
@@ -16,11 +18,22 @@ use tauri::{AppHandle, Emitter, State, Webview};
 
 pub const SECRET_VAULT_EVENT: &str = "secret-vault://changed";
 
+/// The local Secret notes window (`SECRET_NOTES_WINDOW_LABEL` in src/lib/secretNotesWindow.ts).
+const SECRET_NOTES_WINDOW: &str = "secret-notes";
 /// The local Notes window (`itemListWindowLabel('note')` in src/lib/itemListWindow.ts).
 const NOTES_WINDOW: &str = "item-list-note";
 
+fn allowed(label: &str, extra: &[&str]) -> bool {
+    label == SECRET_NOTES_WINDOW || extra.contains(&label)
+}
+
 fn local_only(webview: &Webview) -> Result<(), String> {
-    if webview.label() != NOTES_WINDOW {
+    local_only_or(webview, &[])
+}
+
+/// `local_only`, also letting the `extra` local windows through.
+fn local_only_or(webview: &Webview, extra: &[&str]) -> Result<(), String> {
+    if !allowed(webview.label(), extra) {
         return Err("remote_denied".into());
     }
     Ok(())
@@ -313,7 +326,7 @@ pub async fn secret_note_from_note(
     db: State<'_, Db>,
     note_id: String,
 ) -> Result<SecretNoteMeta, String> {
-    local_only(&webview)?;
+    local_only_or(&webview, &[NOTES_WINDOW])?;
     let row = sqlx::query("SELECT title, content, project_id FROM notes WHERE id = ?")
         .bind(&note_id)
         .fetch_optional(db.inner())
@@ -348,4 +361,24 @@ pub fn spawn_auto_lock(app: AppHandle) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_secret_notes_window_is_allowed() {
+        assert!(allowed(SECRET_NOTES_WINDOW, &[]));
+        for label in [NOTES_WINDOW, "main", "remote-secret-notes", "remote-bridge", "session-1", "item-list-todo"] {
+            assert!(!allowed(label, &[]), "{label} must be refused");
+        }
+    }
+
+    #[test]
+    fn make_secret_is_also_allowed_from_the_notes_window() {
+        assert!(allowed(NOTES_WINDOW, &[NOTES_WINDOW]));
+        assert!(allowed(SECRET_NOTES_WINDOW, &[NOTES_WINDOW]));
+        assert!(!allowed("remote-item-list-note", &[NOTES_WINDOW]));
+    }
 }
