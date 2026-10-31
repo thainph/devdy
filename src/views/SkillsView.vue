@@ -1,23 +1,31 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+// Skills as a list-detail screen (the Notes window's layout): the sidebar
+// lists the skills in their groups, the right pane edits the selected one.
+// The selection lives in the URL — `?id=<id>` or `?new=1` for a draft.
+import { computed, onDeactivated, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { onBeforeRouteUpdate, useRoute, useRouter, type LocationQuery } from 'vue-router'
+import { open, save } from '@tauri-apps/plugin-dialog'
+import { Download, FolderCheck, Layers, MoreHorizontal, Plus, Puzzle, RefreshCw, Trash2, Upload } from 'lucide-vue-next'
 import { useActivatedRefresh } from '@/composables/useActivatedRefresh'
-import { useRouter } from 'vue-router'
 import { useSkillsStore, type Skill } from '@/stores/skills'
 import { useProjectsStore } from '@/stores/projects'
 import { useSkillGroupsStore } from '@/stores/groups'
-import { open, save } from '@tauri-apps/plugin-dialog'
-import { Button, Card, Badge } from '@/components/ui'
+import { AppSelect, Badge, Button, DropdownItem, DropdownMenu, DropdownSeparator } from '@/components/ui'
 import GroupManagerModal from '@/components/GroupManagerModal.vue'
+import ListDetailSidebar from '@/components/listDetail/ListDetailSidebar.vue'
+import DetailEmpty from '@/components/listDetail/DetailEmpty.vue'
+import SkillDetail from '@/components/skills/SkillDetail.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
-import { Plus, Upload, Download, Pencil, Trash2, Puzzle, CalendarDays, FolderCheck, Layers, RefreshCw } from 'lucide-vue-next'
+import { FILTER_UNGROUPED, buildSkillGroups } from '@/lib/skillRows'
 
 // Named explicitly: <KeepAlive :include> in App.vue matches on component name,
 // and an inferred name is a build detail that minification can change.
 defineOptions({ name: 'SkillsView' })
 
 const { t } = useI18n()
+const route = useRoute()
 const router = useRouter()
 const store = useSkillsStore()
 const projectsStore = useProjectsStore()
@@ -30,37 +38,170 @@ const applyingId = ref<string | null>(null)
 const reapplyingId = ref<string | null>(null)
 const importingZip = ref(false)
 const groupsOpen = ref(false)
-/** Group id, or 'ungrouped' / null for the two catch-all chips. */
-const groupFilter = ref<string | null>(null)
-const targetLabel: Record<string, string> = { claude: t('skills.editor.targetClaude'), codex: t('skills.editor.targetCodex'), both: t('skills.editor.targetBoth') }
+const search = ref('')
+/** '' = all groups, a group id, or FILTER_UNGROUPED. */
+const groupFilter = ref('')
+const targetLabel = computed<Record<string, string>>(() => ({
+  claude: t('skills.editor.targetClaude'),
+  codex: t('skills.editor.targetCodex'),
+  both: t('skills.editor.targetBoth'),
+}))
 
-const visibleSkills = computed(() => {
-  if (!groupFilter.value) return store.skills
-  if (groupFilter.value === 'ungrouped') {
-    return store.skills.filter(s => (groupsStore.itemGroups[s.id]?.length ?? 0) === 0)
+const rowGroups = computed(() =>
+  buildSkillGroups(store.skills, groupsStore.itemGroups, groupsStore.groups, {
+    search: search.value,
+    group: groupFilter.value,
+    ungroupedLabel: t('groups.ungrouped'),
+  }),
+)
+
+const groupOptions = computed(() => [
+  { value: '', label: t('groups.allGroups') },
+  ...groupsStore.groups.map((g) => ({ value: g.id, label: `${g.name} (${g.member_count})` })),
+  { value: FILTER_UNGROUPED, label: t('groups.ungrouped') },
+])
+
+// A filtered-out group was deleted in the group manager.
+watch(() => groupsStore.groups, (list) => {
+  if (groupFilter.value && groupFilter.value !== FILTER_UNGROUPED && !list.some((g) => g.id === groupFilter.value)) {
+    groupFilter.value = ''
   }
-  return store.skills.filter(s => groupsStore.itemGroups[s.id]?.includes(groupFilter.value!))
 })
 
 function groupsOf(skillId: string) {
   const ids = groupsStore.itemGroups[skillId] ?? []
-  return groupsStore.groups.filter(g => ids.includes(g.id))
+  return groupsStore.groups.filter((g) => ids.includes(g.id))
 }
 
-onMounted(() => {
+function groupById(id: string) {
+  return groupsStore.groups.find((g) => g.id === id)
+}
+
+// ── Selection (URL) ─────────────────────────────────────────────────────────
+
+interface Selection {
+  id: string | null
+  isNew: boolean
+}
+
+function fromQuery(q: LocationQuery): Selection {
+  const id = typeof q.id === 'string' && q.id ? q.id : null
+  return { id, isNew: !id && q.new === '1' }
+}
+
+function sameSelection(a: Selection, b: Selection): boolean {
+  return a.id === b.id && a.isNew === b.isNew
+}
+
+const selection = ref<Selection>(fromQuery(route.query))
+const selectedId = computed(() => selection.value.id)
+const isNew = computed(() => selection.value.isNew)
+const selectedSkill = computed(() => store.skills.find((s) => s.id === selectedId.value) ?? null)
+/** Remounts the detail per selection: fresh editor, fresh dirty baseline. */
+const detailKey = computed(() => selectedId.value ?? (isNew.value ? 'new' : null))
+
+function toQuery(s: Selection): Record<string, string> {
+  return s.id ? { id: s.id } : s.isNew ? { new: '1' } : {}
+}
+
+// The nav link opens a bare /skills. Coming back that way restores the URL of
+// what the cached screen still shows instead of dropping it (and its unsaved
+// edits). Entering with another selection (a link from elsewhere) bypasses
+// onBeforeRouteUpdate, so unsaved edits are confirmed here and a "no" puts the
+// URL back. Within the screen the URL is followed as is.
+let prevRouteName = route.name
+let enterSeq = 0
+watch(() => route.fullPath, async () => {
+  const entering = prevRouteName !== route.name
+  prevRouteName = route.name
+  if (route.name !== 'skills') return
+  const next = fromQuery(route.query)
+  const showing = selection.value
+  const seq = ++enterSeq
+  if (entering && !sameSelection(next, showing) && (showing.id || showing.isNew)) {
+    if (!next.id && !next.isNew) {
+      void router.replace({ query: toQuery(showing) })
+      return
+    }
+    if (!(await confirmDiscard())) {
+      if (seq === enterSeq) void router.replace({ query: toQuery(showing) })
+      return
+    }
+    if (seq !== enterSeq) return
+  }
+  selection.value = next
+})
+// In case a cached view's watchers are paused while it is hidden.
+onDeactivated(() => {
+  prevRouteName = undefined
+})
+const detailRef = ref<InstanceType<typeof SkillDetail> | null>(null)
+/** >0 while a replace must not ask about unsaved changes (they were just deleted). */
+let skipDiscardCheck = 0
+
+async function confirmDiscard(): Promise<boolean> {
+  if (skipDiscardCheck > 0 || !detailRef.value?.dirty) return true
+  return confirm({
+    title: t('skills.detail.discardTitle'),
+    message: t('skills.detail.discardMessage'),
+    confirmLabel: t('skills.detail.discard'),
+  })
+}
+
+// Every selection change goes through the URL, so this one guard covers row
+// clicks, "+ New", and back/forward alike.
+onBeforeRouteUpdate(async (to) => {
+  if (!sameSelection(fromQuery(to.query), selection.value) && !(await confirmDiscard())) return false
+})
+
+function select(id: string | null) {
+  void router.replace({ query: id ? { id } : {} })
+}
+
+function openNew() {
+  void router.replace({ query: { new: '1' } })
+}
+
+async function replaceWithoutCheck(query: Record<string, string>) {
+  skipDiscardCheck++
+  try {
+    await router.replace({ query })
+  } finally {
+    skipDiscardCheck--
+  }
+}
+
+function onSaved(skill: Skill, created: boolean) {
+  if (created) void replaceWithoutCheck({ id: skill.id })
+}
+
+// The selected skill vanished (deleted elsewhere, e.g. by the AI).
+let loadedOnce = false
+watch(() => store.loading, (now, before) => {
+  if (before && !now && !store.error) loadedOnce = true
+})
+watch(() => store.skills, (list) => {
+  if (loadedOnce && selectedId.value && !list.some((s) => s.id === selectedId.value)) {
+    void replaceWithoutCheck({})
+  }
+})
+
+// ── Data ────────────────────────────────────────────────────────────────────
+
+function refresh() {
   store.fetchSkills()
   projectsStore.fetchProjects()
   groupsStore.fetchGroups()
-})
+}
+
+onMounted(refresh)
 
 // Cached by <KeepAlive> (App.vue): onMounted fires once for the app's whole
 // lifetime, so re-show the screen with fresh data instead of whatever it read
 // the very first time.
-useActivatedRefresh(() => {
-  store.fetchSkills()
-  projectsStore.fetchProjects()
-  groupsStore.fetchGroups()
-})
+useActivatedRefresh(refresh)
+
+// ── Actions ─────────────────────────────────────────────────────────────────
 
 async function handleApplyToAll(skill: Skill) {
   const total = projectsStore.projects.length
@@ -126,6 +267,8 @@ async function handleDelete(skill: Skill) {
   try {
     await store.deleteSkill(skill.id)
     toast.success(t('skills.list.toastDeleted'))
+    // Its unsaved edits (if any) go with it — the delete was confirmed.
+    if (selectedId.value === skill.id) await replaceWithoutCheck({})
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -141,8 +284,9 @@ async function handleImport() {
   if (!selected) return
   importingZip.value = true
   try {
-    await store.importSkillZip(selected)
+    const skill = await store.importSkillZip(selected)
     toast.success(t('skills.list.toastImported'))
+    select(skill.id)
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -164,196 +308,145 @@ async function handleExport(skill: Skill) {
   }
 }
 
-function formatDate(iso: string) {
-  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-}
 </script>
 
 <template>
-  <div class="flex flex-col h-full">
-    <!-- Page header -->
-    <div class="flex items-center justify-between px-6 h-13 border-b border-border/60 shrink-0">
-      <div class="flex items-center gap-2">
-        <h1 class="text-sm font-semibold">{{ t('skills.list.title') }}</h1>
-        <span
-          v-if="!store.loading && store.skills.length > 0"
-          class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-medium text-muted-foreground"
-        >
-          {{ store.skills.length }}
-        </span>
-      </div>
-      <div class="flex items-center gap-2">
+  <div class="flex h-full overflow-hidden">
+    <ListDetailSidebar
+      v-model:search="search"
+      :groups="rowGroups"
+      :selected-id="selectedId"
+      collapse-key="devdy.skills.collapsed"
+      :new-label="t('skills.list.newSkill')"
+      :search-placeholder="t('skills.detail.searchPlaceholder')"
+      :loading="store.loading"
+      :error="store.error"
+      :empty-store="!store.loading && store.skills.length === 0"
+      :empty-title="t('skills.list.emptyTitle')"
+      :empty-hint="t('skills.list.emptyHint')"
+      @select="select"
+      @add="openNew"
+      @retry="refresh"
+    >
+      <template #toolbar>
         <Button
-          variant="outline"
+          variant="ghost"
+          size="icon-sm"
+          :title="t('groups.manageSkillGroups')"
+          :aria-label="t('groups.manageSkillGroups')"
           @click="groupsOpen = true"
         >
           <Layers class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ t('groups.manageSkillGroups') }}
         </Button>
         <Button
           v-if="store.skills.length > 0"
-          variant="outline"
+          variant="ghost"
+          size="icon-sm"
           :disabled="reapplyingId !== null"
-          :title="t('skills.list.reapplyAllHint')"
+          :title="reapplyingId === 'all' ? t('skills.list.reapplying') : `${t('skills.list.reapplyAll')} — ${t('skills.list.reapplyAllHint')}`"
+          :aria-label="t('skills.list.reapplyAll')"
           @click="handleReapply()"
         >
           <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" :class="{ 'animate-spin': reapplyingId === 'all' }" />
-          {{ reapplyingId === 'all' ? t('skills.list.reapplying') : t('skills.list.reapplyAll') }}
         </Button>
         <Button
-          variant="outline"
+          variant="ghost"
+          size="icon-sm"
           :disabled="importingZip"
+          :title="importingZip ? t('skills.list.importing') : t('skills.detail.importHint')"
+          :aria-label="t('skills.list.import')"
           @click="handleImport"
         >
+          <Upload class="h-3.5 w-3.5" :stroke-width="1.75" :class="{ 'animate-pulse': importingZip }" />
+        </Button>
+      </template>
+
+      <template #controls>
+        <AppSelect v-if="groupsStore.groups.length > 0" v-model="groupFilter" :options="groupOptions" />
+      </template>
+
+      <template #row="{ row }">
+        <span class="flex min-w-0 items-center gap-1.5">
+          <span class="min-w-0 truncate font-mono text-[13px] font-medium leading-snug">{{ row.skill.name }}</span>
+          <Badge tone="primary" size="xs" class="shrink-0 uppercase tracking-wide">{{ targetLabel[row.skill.target] }}</Badge>
+          <template v-for="gid in row.otherGroupIds" :key="gid">
+            <Badge v-if="groupById(gid)" :tone="groupById(gid)?.color ?? 'neutral'" size="xs" class="shrink-0">
+              {{ groupById(gid)?.name }}
+            </Badge>
+          </template>
+        </span>
+        <span v-if="row.skill.description" class="mt-0.5 truncate text-[11px] text-muted-foreground">
+          {{ row.skill.description }}
+        </span>
+      </template>
+
+      <template #row-actions="{ row }">
+        <DropdownMenu>
+          <template #trigger>
+            <button
+              type="button"
+              class="flex h-6 w-6 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              :title="t('skills.detail.more')"
+              :aria-label="t('skills.detail.more')"
+            >
+              <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
+            </button>
+          </template>
+          <DropdownItem :disabled="applyingId === row.id" @click="handleApplyToAll(row.skill)">
+            <FolderCheck class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ t('skills.list.applyToAll') }}
+          </DropdownItem>
+          <DropdownItem :disabled="reapplyingId !== null" @click="handleReapply(row.skill)">
+            <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ t('skills.list.reapply') }}
+          </DropdownItem>
+          <DropdownItem @click="handleExport(row.skill)">
+            <Download class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ t('skills.list.exportZip') }}
+          </DropdownItem>
+          <DropdownSeparator />
+          <DropdownItem variant="destructive" :disabled="deletingId === row.id" @click="handleDelete(row.skill)">
+            <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ t('common.delete') }}
+          </DropdownItem>
+        </DropdownMenu>
+      </template>
+    </ListDetailSidebar>
+
+    <SkillDetail
+      v-if="detailKey"
+      ref="detailRef"
+      :key="detailKey"
+      :skill-id="selectedId"
+      :skill="selectedSkill"
+      :groups="selectedId ? groupsOf(selectedId) : []"
+      :applying="applyingId === selectedId"
+      :reapply-busy="reapplyingId !== null"
+      :reapplying="reapplyingId === selectedId"
+      :deleting="deletingId === selectedId"
+      @saved="onSaved"
+      @missing="replaceWithoutCheck({})"
+      @apply-all="selectedSkill && handleApplyToAll(selectedSkill)"
+      @reapply="selectedSkill && handleReapply(selectedSkill)"
+      @export="selectedSkill && handleExport(selectedSkill)"
+      @delete="selectedSkill && handleDelete(selectedSkill)"
+    />
+    <DetailEmpty
+      v-else
+      :icon="Puzzle"
+      :text="store.skills.length ? t('skills.detail.noSelection') : t('skills.list.emptyHint')"
+    >
+      <div class="mt-4 flex items-center justify-center gap-2">
+        <Button variant="outline" size="sm" :disabled="importingZip" @click="handleImport">
           <Upload class="h-3.5 w-3.5" :stroke-width="1.75" />
           {{ importingZip ? t('skills.list.importing') : t('skills.list.import') }}
         </Button>
-        <Button
-          @click="router.push('/skills/new')"
-        >
+        <Button size="sm" @click="openNew">
           <Plus class="h-3.5 w-3.5" :stroke-width="2" />
           {{ t('skills.list.newSkill') }}
         </Button>
       </div>
-    </div>
-
-    <!-- Content -->
-    <div class="flex-1 overflow-auto p-6">
-      <!-- Loading skeleton -->
-      <div v-if="store.loading" class="grid grid-cols-2 xl:grid-cols-3 gap-3">
-        <div v-for="i in 5" :key="i" class="h-27 rounded-lg border border-border bg-card animate-pulse" />
-      </div>
-
-      <!-- Error -->
-      <div v-else-if="store.error" class="p-4 bg-destructive/10 text-destructive rounded-lg text-sm border border-destructive/20">
-        {{ store.error }}
-      </div>
-
-      <!-- Empty state -->
-      <div v-else-if="store.skills.length === 0" class="flex flex-col items-center justify-center h-full min-h-80 text-center">
-        <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-muted mb-4">
-          <Puzzle class="h-6 w-6 text-muted-foreground" :stroke-width="1.5" />
-        </div>
-        <p class="text-sm font-medium">{{ t('skills.list.emptyTitle') }}</p>
-        <p class="text-xs text-muted-foreground mt-1 max-w-50">{{ t('skills.list.emptyHint') }}</p>
-        <Button
-          class="mt-4"
-          @click="router.push('/skills/new')"
-        >
-          <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-          {{ t('skills.list.newSkill') }}
-        </Button>
-      </div>
-
-      <!-- Group filter chips -->
-      <div v-else-if="groupsStore.groups.length > 0" class="flex items-center gap-1.5 flex-wrap mb-3">
-        <button
-          class="px-2 py-1 rounded-md text-[11px] transition-colors cursor-pointer"
-          :class="groupFilter === null ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:text-foreground'"
-          @click="groupFilter = null"
-        >{{ t('groups.allGroups') }}</button>
-        <button
-          v-for="group in groupsStore.groups"
-          :key="group.id"
-          class="px-2 py-1 rounded-md text-[11px] transition-colors cursor-pointer"
-          :class="groupFilter === group.id ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:text-foreground'"
-          @click="groupFilter = group.id"
-        >{{ group.name }} <span class="opacity-60">{{ group.member_count }}</span></button>
-        <button
-          class="px-2 py-1 rounded-md text-[11px] transition-colors cursor-pointer"
-          :class="groupFilter === 'ungrouped' ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:text-foreground'"
-          @click="groupFilter = 'ungrouped'"
-        >{{ t('groups.ungrouped') }}</button>
-      </div>
-
-      <!-- Cards grid -->
-      <div v-if="!store.loading && !store.error && store.skills.length > 0" class="grid grid-cols-2 xl:grid-cols-3 gap-3">
-        <Card
-          v-for="skill in visibleSkills"
-          :key="skill.id"
-          class="group relative flex flex-col transition-all duration-150 cursor-pointer hover:border-primary/40 hover:shadow-[0_1px_3px_0_rgb(0_0_0/0.08)] hover:-translate-y-0.5"
-          body-class="flex flex-col flex-1 p-4"
-          @click="router.push(`/skills/${skill.id}/edit`)"
-        >
-          <!-- hover accent line -->
-          <span class="absolute inset-x-0 top-0 h-0.5 origin-left scale-x-0 bg-linear-to-r from-primary to-primary/30 transition-transform duration-200 group-hover:scale-x-100" />
-
-          <!-- Icon + name/desc -->
-          <div class="flex items-start gap-3 mb-3">
-            <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 border border-primary/15 text-primary transition-colors group-hover:bg-primary/15 group-hover:border-primary/25">
-              <Puzzle class="h-4.5 w-4.5" :stroke-width="1.75" />
-            </div>
-            <div class="min-w-0 flex-1">
-              <div class="flex items-center gap-1.5 flex-wrap">
-                <p class="text-sm font-semibold font-mono truncate leading-tight">{{ skill.name }}</p>
-                <Badge
-                  v-for="group in groupsOf(skill.id)"
-                  :key="group.id"
-                  :tone="group.color ?? 'neutral'"
-                  size="xs"
-                  class="shrink-0"
-                >{{ group.name }}</Badge>
-              </div>
-              <p class="text-xs text-muted-foreground mt-1 line-clamp-2 leading-relaxed">{{ skill.description }}</p>
-            </div>
-          </div>
-
-          <!-- Footer -->
-          <div class="flex items-center justify-between pt-2.5 border-t border-border/60 mt-auto">
-            <div class="flex items-center gap-2 min-w-0">
-              <Badge tone="primary" size="xs" class="shrink-0 uppercase tracking-wide">
-                {{ targetLabel[skill.target] }}
-              </Badge>
-              <div class="flex items-center gap-1 text-[10px] text-muted-foreground/60">
-                <CalendarDays class="h-3 w-3" :stroke-width="1.5" />
-                <span>{{ formatDate(skill.updated_at) }}</span>
-              </div>
-            </div>
-            <!-- Actions on hover -->
-            <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity" @click.stop>
-              <button
-                class="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-default"
-                :title="t('skills.list.applyToAll')"
-                :disabled="applyingId === skill.id"
-                @click="handleApplyToAll(skill)"
-              >
-                <FolderCheck class="h-3.5 w-3.5" :stroke-width="1.75" />
-              </button>
-              <button
-                class="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-default"
-                :title="t('skills.list.reapply')"
-                :disabled="reapplyingId !== null"
-                @click="handleReapply(skill)"
-              >
-                <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" :class="{ 'animate-spin': reapplyingId === skill.id }" />
-              </button>
-              <button
-                class="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-                :title="t('skills.list.exportZip')"
-                @click="handleExport(skill)"
-              >
-                <Download class="h-3.5 w-3.5" :stroke-width="1.75" />
-              </button>
-              <button
-                class="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-                :title="t('common.edit')"
-                @click="router.push(`/skills/${skill.id}/edit`)"
-              >
-                <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
-              </button>
-              <button
-                class="flex h-6 w-6 items-center justify-center rounded text-destructive/60 hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer disabled:opacity-40"
-                :title="t('common.delete')"
-                :disabled="deletingId === skill.id"
-                @click="handleDelete(skill)"
-              >
-                <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-              </button>
-            </div>
-          </div>
-        </Card>
-      </div>
-    </div>
+    </DetailEmpty>
 
     <GroupManagerModal
       :open="groupsOpen"

@@ -1,6 +1,5 @@
 {
   "list": {
-    "title": "MCP Servers",
     "import": "Import",
     "importing": "Importing…",
     "newServer": "New Server",
@@ -8,7 +7,10 @@
       "active": "Built-in · active",
       "disabled": "Built-in · disabled",
       "description": "Auto-injected into every run. Gives the AI your notes, cross-session recall, project context (file tree & git) and managed VPS — as {tools} tools.",
-      "settings": "Settings"
+      "settings": "Settings",
+      "needsClient": "Built-in · needs OAuth client",
+      "noAccount": "Built-in · no account",
+      "googleDescription": "Drive (drive_*): list, search, read, upload, share, delete files. Gmail (mail_*): search, read, attachments, send, reply, labels. Calendar (cal_*): view events, check free slots, create and update meetings. Injected when a Google account is connected — as {tools} tools."
     },
     "empty": {
       "title": "No MCP servers yet",
@@ -26,18 +28,29 @@
       "message": "Delete MCP server \"{name}\"? This also removes its stored secrets. This cannot be undone."
     },
     "toast": {
-      "added": "Added \"{name}\" — open it to finish setup",
+      "added": "Added \"{name}\" — finish its setup here",
       "imported": "Imported",
       "exported": "Exported",
       "deleted": "Deleted",
       "disabled": "Disabled",
       "enabled": "Enabled"
-    }
+    },
+    "searchPlaceholder": "Search name, command, URL…",
+    "filter": {
+      "all": "All",
+      "enabled": "Enabled",
+      "disabled": "Disabled"
+    },
+    "groups": {
+      "builtin": "Built-in",
+      "stdio": "stdio · local process",
+      "http": "http · remote",
+      "sse": "sse · remote"
+    },
+    "noSelection": "Select an MCP server, or create a new one"
   },
   "editor": {
-    "backTitle": "Back to MCP Servers",
     "newTitle": "New MCP Server",
-    "editing": "— editing",
     "enabled": "Enabled",
     "disabled": "Disabled",
     "saving": "Saving…",
@@ -65,7 +78,6 @@
     "headers": "Headers",
     "noHeaders": "No headers",
     "authorizationPlaceholder": "Authorization",
-    "connection": "Connection",
     "testConnection": "Test connection",
     "testing": "Testing…",
     "validation": {
@@ -78,6 +90,30 @@
     },
     "toast": {
       "saved": "Saved"
+    }
+  },
+  "detail": {
+    "addedOn": "Added {date}",
+    "notSaved": "Not saved yet",
+    "builtin": "Built-in",
+    "notAdded": "Recommended · not added",
+    "moreActions": "More actions",
+    "duplicate": "Duplicate",
+    "duplicated": "Secret values aren't copied — fill them in before saving",
+    "dismiss": "Dismiss",
+    "about": "About",
+    "tools": "Tools",
+    "builtinHint": "Injected at run launch, not stored as a server. Turn it on or off and set it up in Settings.",
+    "command": "Command",
+    "secretsToFill": "Secrets to fill in",
+    "noSecrets": "No secrets needed",
+    "addHint": "Adds it with empty secret values; finish the setup here.",
+    "generalHint": "Define an MCP server once, then enable it per project from the project's page.",
+    "secretsHint": "Values live in the OS Keychain and are never shown; leave a stored one blank to keep it.",
+    "confirmDiscard": {
+      "title": "Discard changes?",
+      "message": "This MCP server has unsaved changes. Discard them?",
+      "confirm": "Discard"
     }
   }
 }

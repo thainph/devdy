@@ -1,6 +1,5 @@
 {
   "list": {
-    "title": "Rules",
     "importing": "Importing…",
     "importMd": "Import .md",
     "newRule": "New Rule",
@@ -35,9 +34,7 @@
     "toastReappliedPartial": "Re-applied {applied} project link(s).\n\nFailed for {failed}:\n{details}"
   },
   "editor": {
-    "backToRules": "Back to Rules",
     "newRule": "New Rule",
-    "editing": "— editing",
     "target": "Target",
     "targetBoth": "Both",
     "targetClaude": "Claude",
@@ -45,11 +42,7 @@
     "insertTemplate": "Insert frontmatter template",
     "template": "Template",
     "openFolder": "Open rules folder in Finder",
-    "openInFinder": "Open in Finder",
-    "save": "Save",
     "saving": "Saving…",
-    "markdown": "Markdown",
-    "preview": "Preview",
     "toastSaved": "Saved",
     "errMissingName": "Frontmatter missing required field: name",
     "errNameSlug": "name must be a slug (letters, numbers, hyphens, underscores)",
@@ -60,5 +53,30 @@
     "codexModeSkill": "Skill",
     "codexModeHint": "How Codex gets this rule: inlined into AGENTS.md (always loaded) or as a skill in .agents/skills (loaded when relevant — better for long, situational rules).",
     "errCodexModeInvalid": "codex_mode must be one of: inline, skill"
+  },
+  "detail": {
+    "searchPlaceholder": "Search rules",
+    "filterAll": "All",
+    "filterClaude": "Claude",
+    "filterCodex": "Codex",
+    "allGroups": "All groups",
+    "noSelection": "Select a rule, or create a new one",
+    "renameHint": "Click to rename (edits the name in the frontmatter)",
+    "metaDraft": "Not saved yet",
+    "metaUpdated": "Updated {age}",
+    "metaTarget": "Target: {target}",
+    "metaCodex": "Codex via {mode}",
+    "metaGroups": "Groups: {names}",
+    "delivery": "Delivery",
+    "deliveryHint": "Which engines get this rule, and how Codex loads it.",
+    "content": "Content",
+    "showPreview": "Show preview",
+    "hidePreview": "Hide preview",
+    "saveHint": "Save (⌘/Ctrl+S)",
+    "moreActions": "More actions",
+    "discardDraft": "Discard draft",
+    "confirmDiscardTitle": "Discard changes?",
+    "confirmDiscardMessage": "This rule has unsaved changes. Discard them?",
+    "confirmDiscard": "Discard"
   }
 }

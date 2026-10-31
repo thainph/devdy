@@ -1,7 +1,5 @@
 {
   "list": {
-    "title": "Servers",
-    "newServer": "New Server",
     "empty": {
       "title": "No servers yet",
       "hint": "Add a VPS once, then test its connection and reuse it across projects"
@@ -17,15 +15,21 @@
       "message": "Delete server \"{label}\"? This also removes its stored passphrase. This cannot be undone."
     },
     "toast": {
-      "deleted": "Deleted"
-    }
+      "deleted": "Deleted",
+      "online": "{label} is online",
+      "offline": "{label} is offline: {message}",
+      "testAllSummary": "{online} online / {offline} offline"
+    },
+    "new": "New",
+    "searchPlaceholder": "Search label, host, user, tag",
+    "allTags": "All tags",
+    "filterAll": "All",
+    "untagged": "Untagged",
+    "testAll": "Test all connections",
+    "noSelection": "Select a server, or create a new one"
   },
   "editor": {
-    "backTitle": "Back to Servers",
-    "newTitle": "New Server",
-    "editing": "— editing",
     "saving": "Saving…",
-    "general": "General",
     "label": "Label",
     "labelPlaceholder": "Production SG",
     "host": "Host",
@@ -34,9 +38,7 @@
     "username": "Username",
     "usernamePlaceholder": "root",
     "tags": "Tags",
-    "tagsPlaceholder": "prod, sg (comma-separated)",
     "authentication": "Authentication",
-    "authMethod": "Auth method",
     "authOptionAgent": "agent (ssh-agent)",
     "authOptionKey": "key (private key file)",
     "agentHint": "Uses the running ssh-agent; no key path needed.",
@@ -53,7 +55,6 @@
     "passphraseOptional": "optional",
     "passphraseHint": "Stored in the OS keychain only. Leave blank to keep the existing value.",
     "connection": "Connection",
-    "testConnection": "Test connection",
     "testing": "Testing…",
     "saveFirst": "Save first to enable testing",
     "selectKeyDialog": "Select SSH Private Key",
@@ -64,10 +65,28 @@
       "portRange": "Port must be between 1 and 65535",
       "keyRequired": "Auth method 'key' requires a private key file"
     },
-    "serverNotFound": "Server not found",
     "saveFirstThenTest": "Save the server first, then test its connection.",
     "toast": {
       "saved": "Saved"
     }
+  },
+  "detail": {
+    "newTitle": "New server",
+    "renameHint": "Click to rename",
+    "unsavedMeta": "Not saved yet — save to test the connection",
+    "checked": "checked {age}",
+    "test": "Test",
+    "moreActions": "More actions",
+    "copySsh": "Copy SSH command",
+    "sshCopied": "SSH command copied",
+    "duplicate": "Duplicate",
+    "copyLabel": "{label} copy",
+    "tagsHint": "The first tag groups the server in the sidebar.",
+    "tagsPlaceholder": "Add a tag (Enter or comma)",
+    "lastTest": "Last test result",
+    "notTested": "Not tested yet in this session.",
+    "discardTitle": "Discard changes?",
+    "discardMessage": "This server has unsaved changes. Discard them?",
+    "discard": "Discard"
   }
 }

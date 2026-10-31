@@ -1,12 +1,8 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import SkillsView from '../views/SkillsView.vue'
-import SkillEditorView from '../views/SkillEditorView.vue'
 import RulesView from '../views/RulesView.vue'
-import RuleEditorView from '../views/RuleEditorView.vue'
 import McpServersView from '../views/McpServersView.vue'
-import McpServerEditorView from '../views/McpServerEditorView.vue'
 import ServersView from '../views/ServersView.vue'
-import ServerEditorView from '../views/ServerEditorView.vue'
 import ProjectsView from '../views/ProjectsView.vue'
 import PrInboxView from '../views/PrInboxView.vue'
 import { openPrInboxWindow } from '../lib/prInboxWindow'
@@ -23,22 +19,27 @@ import FocusView from '../views/FocusView.vue'
 import AboutView from '../views/AboutView.vue'
 import BackgroundProcessesView from '../views/BackgroundProcessesView.vue'
 
+// Skills / Rules / MCP / Servers edit in their list's detail pane now; the old
+// editor URLs redirect there so stale links keep working.
+function editorRedirects(base: string): RouteRecordRaw[] {
+  return [
+    { path: `${base}/new`, redirect: { path: base, query: { new: '1' } } },
+    { path: `${base}/:id/edit`, redirect: (to) => ({ path: base, query: { id: String(to.params.id) } }) },
+  ]
+}
+
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/', redirect: '/projects' },
     { path: '/skills', name: 'skills', component: SkillsView },
-    { path: '/skills/new', name: 'skill-new', component: SkillEditorView },
-    { path: '/skills/:id/edit', name: 'skill-edit', component: SkillEditorView },
+    ...editorRedirects('/skills'),
     { path: '/rules', name: 'rules', component: RulesView },
-    { path: '/rules/new', name: 'rule-new', component: RuleEditorView },
-    { path: '/rules/:id/edit', name: 'rule-edit', component: RuleEditorView },
+    ...editorRedirects('/rules'),
     { path: '/mcp', name: 'mcp', component: McpServersView },
-    { path: '/mcp/new', name: 'mcp-new', component: McpServerEditorView },
-    { path: '/mcp/:id/edit', name: 'mcp-edit', component: McpServerEditorView },
+    ...editorRedirects('/mcp'),
     { path: '/servers', name: 'servers', component: ServersView },
-    { path: '/servers/new', name: 'server-new', component: ServerEditorView },
-    { path: '/servers/:id/edit', name: 'server-edit', component: ServerEditorView },
+    ...editorRedirects('/servers'),
     { path: '/projects', name: 'projects', component: ProjectsView },
     // The PR Inbox lives in its own window (lib/prInboxWindow), like the Slack
     // threads window; the route only stays so old links / navigation open it.

@@ -1,6 +1,5 @@
 {
   "list": {
-    "title": "Skills",
     "importing": "Đang nhập…",
     "import": "Nhập",
     "newSkill": "Skill mới",
@@ -35,16 +34,11 @@
     "toastReappliedPartial": "Đã áp dụng lại {applied} lượt dự án.\n\nThất bại {failed}:\n{details}"
   },
   "editor": {
-    "backToSkills": "Quay lại Skills",
-    "newSkill": "Skill mới",
-    "editing": "— đang sửa",
     "target": "Đích",
     "targetBoth": "Cả hai",
     "targetClaude": "Claude",
     "targetCodex": "Codex",
     "insertTemplate": "Chèn mẫu frontmatter",
-    "template": "Mẫu",
-    "openFolder": "Mở thư mục skill trong Finder",
     "openInFinder": "Mở trong Finder",
     "save": "Lưu",
     "saving": "Đang lưu…",
@@ -57,5 +51,28 @@
     "errNameSlug": "name phải là slug (chữ cái, số, gạch ngang, gạch dưới)",
     "errMissingDescription": "Frontmatter thiếu trường bắt buộc: description",
     "errTargetInvalid": "target phải là một trong: claude, codex, both"
+  },
+  "detail": {
+    "searchPlaceholder": "Tìm skill",
+    "importHint": "Nhập skill từ tệp ZIP / .skill",
+    "noSelection": "Chọn một skill để xem hoặc sửa",
+    "untitled": "Skill chưa đặt tên",
+    "newDraft": "Skill mới — chưa lưu",
+    "updated": "Cập nhật {date}",
+    "more": "Thao tác khác",
+    "details": "Thông tin",
+    "detailsHint": "Lưu trong frontmatter của SKILL.md — sửa ở đây sẽ ghi lại frontmatter.",
+    "name": "Tên",
+    "description": "Mô tả",
+    "descriptionPlaceholder": "Skill này làm gì và khi nào dùng",
+    "split": "Song song",
+    "readOnly": "Chỉ đọc",
+    "readOnlyHint": "Các tệp phụ được sửa trong thư mục skill.",
+    "fileTooLarge": "Tệp quá lớn để xem trước.",
+    "fileBinary": "Tệp nhị phân — không xem trước được.",
+    "fileUnreadable": "Không đọc được tệp này.",
+    "discardTitle": "Bỏ thay đổi",
+    "discardMessage": "Rời skill này và bỏ các thay đổi chưa lưu?",
+    "discard": "Bỏ"
   }
 }
