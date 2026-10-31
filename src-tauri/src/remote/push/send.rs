@@ -97,12 +97,16 @@ pub async fn send(client: &reqwest::Client, vapid: &SecretKey, subject: &str, su
     let audience = url.origin().ascii_serialization();
     let authorization = crypto::vapid_authorization(vapid, &audience, subject, crate::remote::agent::now_unix());
     let urgency = if msg.pending.unwrap_or(0) > 0 || msg.t == "test" { "high" } else { "normal" };
-    let res = client
+    let send_topic = sends_topic(&url);
+    let mut req = client
         .post(url)
         .header("TTL", TTL_SECS.to_string())
-        .header("Urgency", urgency)
+        .header("Urgency", urgency);
+    if send_topic {
         // A queued, undelivered notification is replaced by the next one.
-        .header("Topic", "devdy")
+        req = req.header("Topic", "devdy");
+    }
+    let res = req
         .header("Content-Encoding", "aes128gcm")
         .header("Content-Type", "application/octet-stream")
         .header("Authorization", authorization)
@@ -127,6 +131,14 @@ pub async fn send(client: &reqwest::Client, vapid: &SecretKey, subject: &str, su
         }
         Err(e) => Outcome::Failed(if e.is_timeout() { "timeout".into() } else { "network".into() }),
     }
+}
+
+/// Whether to send the RFC 8030 `Topic` header. Apple's push service refuses
+/// it (`400 BadWebPushTopic`), so iPhones get every queued notification
+/// instead of only the latest.
+fn sends_topic(url: &Url) -> bool {
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    !(host == "push.apple.com" || host.ends_with(".push.apple.com"))
 }
 
 /// Longest refusal body read from a push service.
@@ -234,6 +246,14 @@ mod tests {
         assert_eq!(classify(403), Outcome::Unauthorized);
         assert_eq!(classify(429), Outcome::Failed("http 429".into()));
         assert_eq!(classify(413), Outcome::Failed("http 413".into()));
+    }
+
+    #[test]
+    fn apple_gets_no_topic_header() {
+        let topic = |u: &str| sends_topic(&Url::parse(u).unwrap());
+        assert!(!topic("https://web.push.apple.com/QGx"));
+        assert!(topic("https://fcm.googleapis.com/fcm/send/abc"));
+        assert!(topic("https://updates.push.services.mozilla.com/wpush/v2/x"));
     }
 
     #[test]
