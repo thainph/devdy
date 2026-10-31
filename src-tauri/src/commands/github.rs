@@ -597,7 +597,7 @@ pub async fn fetch_pr(
 
     // Optional GitHub account to pin this review run to (the PR inbox passes the
     // account that was asked to review). Must be a configured account; blank =
-    // no pin, so the run resolves the project's reviewer/default account.
+    // no pin, so the run resolves the project's default account.
     let github_account_id = github_account_id
         .map(|a| a.trim().to_string())
         .filter(|a| !a.is_empty());
@@ -654,7 +654,7 @@ pub async fn fetch_pr(
                 .ok_or("Repo has no GitHub repo configured")?;
             let client = match &github_account_id {
                 Some(account_id) => github::client_for_account(account_id),
-                None => github::client_for_review(db.inner(), &project_id).await,
+                None => github::client_for_project(db.inner(), &project_id).await,
             }
             .map_err(|e| e.to_string())?;
             build_pr_markdown(

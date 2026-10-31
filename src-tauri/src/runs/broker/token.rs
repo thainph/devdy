@@ -289,18 +289,34 @@ impl TokenProvider for GitlabProjectTokenProvider {
     }
 }
 
+/// Which account one brokered call asks for. All optional; none → the default.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AccountSelect<'a> {
+    /// The run issuing the call: a pinned run (PR-inbox review) defaults its
+    /// GitHub calls to the pinned account.
+    pub run_id: Option<&'a str>,
+    /// Account the command names ([`GIT_ACCOUNT_ENV`]): label, username or id.
+    /// Must be one of the project's enabled accounts, else the call is denied.
+    pub account: Option<&'a str>,
+    /// git only: the username in the remote URL (`https://<user>@host/...`).
+    /// Picks that account when it matches one, otherwise ignored.
+    pub url_username: Option<&'a str>,
+}
+
 /// Resolve the token for a project + tool. Fail-closed: `Ok(None)` when no usable
-/// account is linked. `Err` only on genuine DB errors (message is generic — never
-/// contains secrets).
+/// account is linked. `Err` on genuine DB errors (message is generic — never
+/// contains secrets) or, prefixed [`UNKNOWN_GIT_ACCOUNT`], when the call names
+/// an account that is not enabled for the project.
 pub async fn resolve_token_for_project(
     db: &Db,
     project_id: &str,
     tool: &str,
     host: Option<&str>,
+    sel: AccountSelect<'_>,
 ) -> Result<Option<ResolvedToken>, String> {
-    // Public signature unchanged; delegate through the default PAT provider so
-    // the behavior is identical to before the seam existed.
-    resolve_token_for_project_with(&PatTokenProvider, db, project_id, tool, host).await
+    // Delegate through the default PAT provider so the behavior is identical to
+    // before the seam existed.
+    resolve_token_for_project_with(&PatTokenProvider, db, project_id, tool, host, sel).await
 }
 
 /// Internal variant that takes a `TokenProvider`, enabling mock injection in
@@ -311,11 +327,51 @@ async fn resolve_token_for_project_with(
     project_id: &str,
     tool: &str,
     host: Option<&str>,
+    sel: AccountSelect<'_>,
 ) -> Result<Option<ResolvedToken>, String> {
+    match pick_git_account(db, project_id, tool, host, sel).await? {
+        Some(acct) if acct.provider == "github" => {
+            resolve_github_account(provider, db, &acct.id).await
+        }
+        Some(acct) => resolve_gitlab_account(provider, &acct),
+        None => Ok(None), // not linked / unknown host → fail-closed
+    }
+}
+
+/// The account one gh / glab / git call would use, without fetching a token.
+/// `host`: git's remote host, or glab's target host when the shim knows it —
+/// GitLab accounts are then limited to that host. `Ok(None)` when no account
+/// applies (fail-closed); `Err` prefixed [`UNKNOWN_GIT_ACCOUNT`] when the call
+/// names an account that is not enabled.
+pub async fn pick_git_account(
+    db: &Db,
+    project_id: &str,
+    tool: &str,
+    host: Option<&str>,
+    sel: AccountSelect<'_>,
+) -> Result<Option<GitAccount>, String> {
     match tool {
-        "github" | "gh" => resolve_github(provider, db, project_id).await,
-        "gitlab" | "glab" => resolve_gitlab(provider, db, project_id).await,
-        "git" => resolve_git(provider, db, project_id, host).await,
+        // gh honors a run's pin (a PR-inbox review runs as the requested account).
+        "github" | "gh" => pick_github(db, project_id, sel, true).await,
+        "gitlab" | "glab" => pick_gitlab(db, project_id, host, sel).await,
+        "git" => {
+            let Some(host) = host else {
+                return Ok(None); // no host → cannot safely pick → fail-closed
+            };
+            // GitHub: only the canonical hosts are trusted. The schema does not
+            // store a per-account GitHub Enterprise host, so accept exactly
+            // `github.com` and `api.github.com` (dotted-boundary), and nothing
+            // else. A spoofed host such as `github.attacker.io` or
+            // `notgithub.com` must NOT match. git keeps the project's default
+            // (not a run's pin): fetch/push need the project's access.
+            if host_matches(host, "github.com") || host_matches(host, "api.github.com") {
+                return pick_github(db, project_id, sel, false).await;
+            }
+            // GitLab: only accounts whose own host matches exactly (or a valid
+            // dotted-boundary subdomain) — a host that matches no enabled account
+            // resolves to nothing (unknown/spoofed remote).
+            pick_gitlab(db, project_id, Some(host), sel).await
+        }
         _ => Ok(None),
     }
 }
@@ -636,24 +692,186 @@ pub async fn resolve_azure_for_project(
     }))
 }
 
-async fn resolve_github(
-    provider: &dyn TokenProvider,
+/// Deny-reason marker: the command named an account ([`GIT_ACCOUNT_ENV`]) that
+/// is not enabled for the project. The reason lists the enabled accounts
+/// (labels/usernames only, never a secret).
+pub const UNKNOWN_GIT_ACCOUNT: &str = "unknown_git_account";
+
+/// Env var a command sets to pick one of the project's enabled git accounts
+/// (`DEVDY_GIT_ACCOUNT=work gh pr list`). Read by the gh/glab shims and the git
+/// credential helper.
+pub const GIT_ACCOUNT_ENV: &str = "DEVDY_GIT_ACCOUNT";
+
+/// One GitHub/GitLab account a project may use. Metadata only — no secret.
+#[derive(Debug, Clone)]
+pub struct GitAccount {
+    /// `github` | `gitlab`.
+    pub provider: &'static str,
+    pub id: String,
+    pub label: String,
+    pub username: Option<String>,
+    pub email: Option<String>,
+    /// `github.com`, or the GitLab account's host as stored.
+    pub host: String,
+}
+
+impl GitAccount {
+    fn from_row(provider: &'static str, row: &sqlx::sqlite::SqliteRow, host: Option<String>) -> Self {
+        let non_empty = |v: Option<String>| v.filter(|s| !s.trim().is_empty());
+        GitAccount {
+            provider,
+            id: row.get("id"),
+            label: row.get("label"),
+            username: non_empty(row.get("username")),
+            email: non_empty(row.get("email")),
+            host: non_empty(host).unwrap_or_else(|| "gitlab.com".to_string()),
+        }
+    }
+
+    /// `"label" (@user)` for prompts and deny reasons.
+    pub fn display(&self) -> String {
+        match &self.username {
+            Some(u) => format!("\"{}\" (@{u})", self.label),
+            None => format!("\"{}\"", self.label),
+        }
+    }
+}
+
+/// The project's enabled GitHub accounts, plus its default and `extra` (a run's
+/// pin) even when those are not in the enabled list. Ordered by label.
+pub async fn github_accounts_for(
     db: &Db,
     project_id: &str,
-) -> Result<Option<ResolvedToken>, String> {
-    let row = sqlx::query("SELECT github_account_id FROM projects WHERE id = ?")
+    extra: Option<&str>,
+) -> Result<Vec<GitAccount>, String> {
+    let rows = sqlx::query(
+        "SELECT a.id, a.label, a.username, a.email FROM github_accounts a \
+         WHERE a.id IN (SELECT account_id FROM project_github_accounts WHERE project_id = ?1) \
+            OR a.id = (SELECT github_account_id FROM projects WHERE id = ?1) \
+            OR a.id = ?2 \
+         ORDER BY a.label COLLATE NOCASE, a.id",
+    )
+    .bind(project_id)
+    .bind(extra)
+    .fetch_all(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(rows
+        .iter()
+        .map(|r| GitAccount::from_row("github", r, Some("github.com".to_string())))
+        .collect())
+}
+
+/// The project's enabled GitLab accounts plus its default. Ordered by label.
+pub async fn gitlab_accounts_for(db: &Db, project_id: &str) -> Result<Vec<GitAccount>, String> {
+    let rows = sqlx::query(
+        "SELECT a.id, a.label, a.username, a.email, a.host FROM gitlab_accounts a \
+         WHERE a.id IN (SELECT account_id FROM project_gitlab_accounts WHERE project_id = ?1) \
+            OR a.id = (SELECT gitlab_account_id FROM projects WHERE id = ?1) \
+         ORDER BY a.label COLLATE NOCASE, a.id",
+    )
+    .bind(project_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(rows
+        .iter()
+        .map(|r| GitAccount::from_row("gitlab", r, r.get("host")))
+        .collect())
+}
+
+/// The project's default account column (`github_account_id` /
+/// `gitlab_account_id`). `None` when unset or the project is unknown.
+async fn project_default_account(
+    db: &Db,
+    project_id: &str,
+    column: &str,
+) -> Result<Option<String>, String> {
+    let sql = format!("SELECT {column} AS account_id FROM projects WHERE id = ?");
+    let row = sqlx::query(&sql)
         .bind(project_id)
         .fetch_optional(db)
         .await
         .map_err(|e| e.to_string())?;
-    let account_id: Option<String> = match row {
-        Some(r) => r.get("github_account_id"),
-        None => return Ok(None),
-    };
-    match account_id {
-        Some(id) => resolve_github_account(provider, db, &id).await,
-        None => Ok(None), // not linked → fail-closed
+    Ok(row.and_then(|r| r.get("account_id")))
+}
+
+/// Find the account a selector names: id, then label, then username
+/// (case-insensitive, a leading `@` ignored).
+fn find_account<'a>(accounts: &'a [GitAccount], selector: &str) -> Option<&'a GitAccount> {
+    let want = selector.trim();
+    let want = want.strip_prefix('@').unwrap_or(want);
+    if want.is_empty() {
+        return None;
     }
+    accounts
+        .iter()
+        .find(|a| a.id == want)
+        .or_else(|| accounts.iter().find(|a| a.label.eq_ignore_ascii_case(want)))
+        .or_else(|| {
+            accounts.iter().find(|a| {
+                a.username
+                    .as_deref()
+                    .is_some_and(|u| u.eq_ignore_ascii_case(want))
+            })
+        })
+}
+
+/// Pick the account for one call: the named one (must be enabled), else the
+/// URL username's account when it is one, else the default, else the first
+/// enabled account. `Ok(None)` only when no account applies (fail-closed).
+fn pick_account<'a>(
+    accounts: &'a [GitAccount],
+    default: Option<&str>,
+    sel: &AccountSelect<'_>,
+    provider: &str,
+) -> Result<Option<&'a GitAccount>, String> {
+    if let Some(want) = sel.account.map(str::trim).filter(|s| !s.is_empty()) {
+        return match find_account(accounts, want) {
+            Some(a) => Ok(Some(a)),
+            None => Err(unknown_account_reason(provider, want, accounts)),
+        };
+    }
+    if let Some(a) = sel.url_username.and_then(|u| find_account(accounts, u)) {
+        return Ok(Some(a));
+    }
+    Ok(default
+        .and_then(|d| accounts.iter().find(|a| a.id == d))
+        .or_else(|| accounts.first()))
+}
+
+fn unknown_account_reason(provider: &str, want: &str, accounts: &[GitAccount]) -> String {
+    let enabled = if accounts.is_empty() {
+        "none".to_string()
+    } else {
+        accounts
+            .iter()
+            .map(GitAccount::display)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    format!(
+        "{UNKNOWN_GIT_ACCOUNT}: no {provider} account \"{want}\" is enabled for this project. \
+         Enabled: {enabled}. Set {GIT_ACCOUNT_ENV} to one of these labels/usernames, or leave it \
+         unset to use the default account."
+    )
+}
+
+/// GitHub account for a call. `use_pin`: a run's pinned account (or its
+/// conductor's) is the default and may be picked; otherwise the project's default.
+async fn pick_github(
+    db: &Db,
+    project_id: &str,
+    sel: AccountSelect<'_>,
+    use_pin: bool,
+) -> Result<Option<GitAccount>, String> {
+    let default = if use_pin {
+        github_run_default(db, project_id, sel.run_id).await?.0
+    } else {
+        project_default_account(db, project_id, "github_account_id").await?
+    };
+    let accounts = github_accounts_for(db, project_id, default.as_deref()).await?;
+    Ok(pick_account(&accounts, default.as_deref(), &sel, "GitHub")?.cloned())
 }
 
 /// Token + metadata for one GitHub account. Fail-closed `Ok(None)` when the PAT
@@ -688,56 +906,32 @@ async fn resolve_github_account(
     }))
 }
 
-/// GitHub accounts a run's `gh` calls resolve to. Ids only — no secret.
+/// GitHub accounts a run may use. Ids only — no secret.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct GithubRunAccounts {
-    /// Account for ordinary `gh` calls (also git/commit identity when the run is
-    /// not pinned): the project's default account.
+    /// Account gh / git use when a command names none: the run's pin, else the
+    /// project's default account.
     pub default: Option<String>,
-    /// Account for review work (`gh pr review`/`comment`, review API calls).
-    pub review: Option<String>,
-    /// Account `gh` uses for everything else in this run. Differs from `default`
-    /// only for pinned runs and `review_pr` runs.
-    pub general: Option<String>,
+    /// `default` is the run's pin (e.g. a review started from the PR inbox as
+    /// the account that was asked to review).
+    pub pinned: bool,
+    /// Every account the run may pick (enabled + default/pin), by label.
+    pub enabled: Vec<String>,
 }
 
-/// Decide which GitHub account a run's `gh` calls use:
-/// - run pinned to an account (`runs.github_account_id`, e.g. a review started
-///   from the PR inbox) → that account for every `gh` call;
-/// - `review_pr` run → the project's reviewer account for every `gh` call;
-/// - otherwise → default account, except review actions use the reviewer.
-/// The reviewer falls back to the default account when unset. A `run_id` that
-/// does not belong to `project_id` is ignored (a run can't borrow another
-/// project's account).
-pub async fn resolve_github_run_accounts(
+/// The account a run's GitHub calls default to: the run's pin — or its
+/// conductor's, so workers of an inbox review keep the requested account —
+/// else the project's default. A `run_id` that does not belong to `project_id`
+/// is ignored (a run can't borrow another project's account). Returns
+/// `(account, pinned)`.
+async fn github_run_default(
     db: &Db,
     project_id: &str,
     run_id: Option<&str>,
-) -> Result<GithubRunAccounts, String> {
-    let row = sqlx::query(
-        "SELECT github_account_id, github_reviewer_account_id FROM projects WHERE id = ?",
-    )
-    .bind(project_id)
-    .fetch_optional(db)
-    .await
-    .map_err(|e| e.to_string())?;
-    let Some(row) = row else {
-        return Ok(GithubRunAccounts {
-            default: None,
-            review: None,
-            general: None,
-        });
-    };
-    let default: Option<String> = row.get("github_account_id");
-    let reviewer: Option<String> = row.get("github_reviewer_account_id");
-    let review = reviewer.or_else(|| default.clone());
-
-    // A Conductor worker inherits its conductor's pin / review type, so workers
-    // of an inbox review keep reviewing as the requested account.
-    let run = match run_id {
+) -> Result<(Option<String>, bool), String> {
+    let pinned: Option<String> = match run_id {
         Some(id) => sqlx::query(
-            "SELECT r.type, r.github_account_id, c.type AS conductor_type, \
-                    c.github_account_id AS conductor_github_account_id \
+            "SELECT COALESCE(r.github_account_id, c.github_account_id) AS pinned \
              FROM runs r \
              LEFT JOIN runs c ON c.id = r.conductor_run_id AND c.project_id = r.project_id \
              WHERE r.id = ? AND r.project_id = ?",
@@ -746,64 +940,36 @@ pub async fn resolve_github_run_accounts(
         .bind(project_id)
         .fetch_optional(db)
         .await
-        .map_err(|e| e.to_string())?,
+        .map_err(|e| e.to_string())?
+        .and_then(|r| r.get("pinned")),
         None => None,
     };
-    let (is_review_run, pinned) = match run {
-        Some(r) => {
-            let run_type: Option<String> = r.get("type");
-            let conductor_type: Option<String> = r.get("conductor_type");
-            let pinned: Option<String> = r.get("github_account_id");
-            let conductor_pinned: Option<String> = r.get("conductor_github_account_id");
-            (
-                run_type.as_deref() == Some("review_pr")
-                    || conductor_type.as_deref() == Some("review_pr"),
-                pinned.or(conductor_pinned),
-            )
-        }
-        None => (false, None),
-    };
-
-    Ok(if let Some(pinned) = pinned {
-        GithubRunAccounts {
-            default,
-            review: Some(pinned.clone()),
-            general: Some(pinned),
-        }
-    } else if is_review_run {
-        GithubRunAccounts {
-            default,
-            general: review.clone(),
-            review,
-        }
-    } else {
-        GithubRunAccounts {
-            general: default.clone(),
-            default,
-            review,
-        }
-    })
+    if let Some(pinned) = pinned {
+        return Ok((Some(pinned), true));
+    }
+    Ok((
+        project_default_account(db, project_id, "github_account_id").await?,
+        false,
+    ))
 }
 
-/// Resolve the token for one `gh` call of a run, picking the account with
-/// [`resolve_github_run_accounts`]. Fail-closed `Ok(None)` when no account
-/// applies or its PAT is missing.
-pub async fn resolve_gh_token_for_run(
+/// Which GitHub accounts a run uses (see [`GithubRunAccounts`]).
+pub async fn resolve_github_run_accounts(
     db: &Db,
     project_id: &str,
     run_id: Option<&str>,
-    review_action: bool,
-) -> Result<Option<ResolvedToken>, String> {
-    let accounts = resolve_github_run_accounts(db, project_id, run_id).await?;
-    let account = if review_action {
-        accounts.review
-    } else {
-        accounts.general
-    };
-    match account {
-        Some(id) => resolve_github_account(&PatTokenProvider, db, &id).await,
-        None => Ok(None),
-    }
+) -> Result<GithubRunAccounts, String> {
+    let (default, pinned) = github_run_default(db, project_id, run_id).await?;
+    let enabled = github_accounts_for(db, project_id, default.as_deref())
+        .await?
+        .into_iter()
+        .map(|a| a.id)
+        .collect();
+    Ok(GithubRunAccounts {
+        default,
+        pinned,
+        enabled,
+    })
 }
 
 async fn fetch_github_meta(db: &Db, account_id: &str) -> (Option<String>, Option<String>) {
@@ -819,71 +985,58 @@ async fn fetch_github_meta(db: &Db, account_id: &str) -> (Option<String>, Option
     }
 }
 
-async fn resolve_gitlab(
-    provider: &dyn TokenProvider,
+/// GitLab account for a call. `host` limits the choice to accounts on that
+/// host, so a token never goes to an unknown/spoofed remote.
+async fn pick_gitlab(
     db: &Db,
     project_id: &str,
+    host: Option<&str>,
+    sel: AccountSelect<'_>,
+) -> Result<Option<GitAccount>, String> {
+    let default = project_default_account(db, project_id, "gitlab_account_id").await?;
+    let mut accounts = gitlab_accounts_for(db, project_id).await?;
+    let provider_name = match host {
+        Some(h) => {
+            accounts.retain(|a| host_matches(h, &a.host));
+            format!("GitLab ({h})")
+        }
+        None => "GitLab".to_string(),
+    };
+    Ok(pick_account(&accounts, default.as_deref(), &sel, &provider_name)?.cloned())
+}
+
+/// Token for one GitLab account. Fail-closed `Ok(None)` when the PAT is missing.
+fn resolve_gitlab_account(
+    provider: &dyn TokenProvider,
+    acct: &GitAccount,
 ) -> Result<Option<ResolvedToken>, String> {
-    let row = sqlx::query("SELECT gitlab_account_id FROM projects WHERE id = ?")
-        .bind(project_id)
-        .fetch_optional(db)
-        .await
-        .map_err(|e| e.to_string())?;
-    let account_id: Option<String> = match row {
-        Some(r) => r.get("gitlab_account_id"),
-        None => return Ok(None),
-    };
-    let account_id = match account_id {
-        Some(id) => id,
-        None => return Ok(None),
-    };
-    let meta = fetch_gitlab_meta(db, &account_id).await;
-    let host = meta.host.unwrap_or_else(|| "gitlab.com".to_string());
     // Delegated to the provider seam; PatTokenProvider preserves fail-closed.
     let scope = TokenScope {
         provider_kind: "gitlab".to_string(),
-        account_id: account_id.clone(),
-        host: host.clone(),
+        account_id: acct.id.clone(),
+        host: acct.host.clone(),
     };
     let pt = match provider.fetch(&scope) {
         Ok(Some(pt)) => pt,
         Ok(None) | Err(_) => return Ok(None),
     };
-    let username = meta.username.or(pt.username);
     Ok(Some(ResolvedToken {
         token: pt.token,
-        host,
-        account_label: meta.label.unwrap_or(account_id),
-        username,
+        host: acct.host.clone(),
+        account_label: acct.label.clone(),
+        username: acct.username.clone().or(pt.username),
         expires_at: pt.expires_at,
     }))
 }
 
-struct GitlabMeta {
-    host: Option<String>,
-    label: Option<String>,
-    username: Option<String>,
-}
-
-async fn fetch_gitlab_meta(db: &Db, account_id: &str) -> GitlabMeta {
-    let row = sqlx::query("SELECT host, label, username FROM gitlab_accounts WHERE id = ?")
+async fn fetch_gitlab_username(db: &Db, account_id: &str) -> Option<String> {
+    let row = sqlx::query("SELECT username FROM gitlab_accounts WHERE id = ?")
         .bind(account_id)
         .fetch_optional(db)
         .await
         .ok()
-        .flatten();
-    match row {
-        Some(r) => GitlabMeta {
-            host: r.get("host"),
-            label: r.get("label"),
-            username: r.get("username"),
-        },
-        None => GitlabMeta {
-            host: None,
-            label: None,
-            username: None,
-        },
-    }
+        .flatten()?;
+    row.get("username")
 }
 
 /// Normalize a raw host string into a bare, lowercased hostname suitable for
@@ -935,53 +1088,6 @@ fn host_matches(req: &str, account_host: &str) -> bool {
     req == acct || req.ends_with(&format!(".{acct}"))
 }
 
-/// git: pick the account by host. Fail-closed for unknown/None host.
-async fn resolve_git(
-    provider: &dyn TokenProvider,
-    db: &Db,
-    project_id: &str,
-    host: Option<&str>,
-) -> Result<Option<ResolvedToken>, String> {
-    let host = match host {
-        Some(h) => h,
-        None => return Ok(None), // no host → cannot safely pick → fail-closed
-    };
-
-    // GitHub: only the canonical hosts are trusted. The schema does not store a
-    // per-account GitHub Enterprise host, so accept exactly `github.com` and
-    // `api.github.com` (dotted-boundary), and nothing else. A spoofed host such
-    // as `github.attacker.io` or `notgithub.com` must NOT match.
-    if host_matches(host, "github.com") || host_matches(host, "api.github.com") {
-        return resolve_github(provider, db, project_id).await;
-    }
-
-    // For gitlab: match the linked account's own host exactly (or a valid
-    // dotted-boundary subdomain). Guards against unknown/spoofed remotes.
-    let row = sqlx::query("SELECT gitlab_account_id FROM projects WHERE id = ?")
-        .bind(project_id)
-        .fetch_optional(db)
-        .await
-        .map_err(|e| e.to_string())?;
-    let account_id: Option<String> = match row {
-        Some(r) => r.get("gitlab_account_id"),
-        None => return Ok(None),
-    };
-    let account_id = match account_id {
-        Some(id) => id,
-        None => return Ok(None),
-    };
-    let acct_host = fetch_gitlab_meta(db, &account_id)
-        .await
-        .host
-        .unwrap_or_else(|| "gitlab.com".to_string());
-    if host_matches(host, &acct_host) {
-        return resolve_gitlab(provider, db, project_id).await;
-    }
-
-    // Host matches no linked account → reject unknown remote (host allowlist spirit).
-    Ok(None)
-}
-
 /// Resolve the git commit identity (name/email) for a project's linked account.
 ///
 /// Rule (plan §4, AC3): prefer the GitHub account when both are linked; else the
@@ -1012,8 +1118,7 @@ pub async fn resolve_commit_identity(db: &Db, project_id: &str) -> CommitIdentit
         let (_label, username) = fetch_github_meta(db, &id).await;
         (username, fetch_github_email(db, &id).await)
     } else if let Some(id) = gitlab_id {
-        let meta = fetch_gitlab_meta(db, &id).await;
-        (meta.username, fetch_gitlab_email(db, &id).await)
+        (fetch_gitlab_username(db, &id).await, fetch_gitlab_email(db, &id).await)
     } else {
         return none;
     };
@@ -1029,63 +1134,85 @@ pub async fn resolve_commit_identity(db: &Db, project_id: &str) -> CommitIdentit
 /// the caller adds no `appendSystemPrompt` field and behavior is unchanged
 /// (AC6). NEVER includes a token/PAT — only label / username / host metadata.
 ///
-/// When both GitHub and GitLab are linked, both provider lines are listed.
+/// Every enabled GitHub / GitLab account is listed; with more than one, the
+/// default is marked and the agent is told how to pick another per command.
 pub async fn build_account_context(
     db: &Db,
     project_id: &str,
     run_id: Option<&str>,
 ) -> Option<String> {
-    let row = sqlx::query("SELECT gitlab_account_id FROM projects WHERE id = ?")
-        .bind(project_id)
-        .fetch_optional(db)
+    let gitlab_default = project_default_account(db, project_id, "gitlab_account_id")
         .await
-        .ok()
-        .flatten()?;
-    let gitlab_id: Option<String> = row.get("gitlab_account_id");
+        .ok()?;
     let github = resolve_github_run_accounts(db, project_id, run_id)
         .await
         .ok()?;
+    let gh_accounts = github_accounts_for(db, project_id, github.default.as_deref())
+        .await
+        .ok()?;
+    let gl_accounts = gitlab_accounts_for(db, project_id).await.ok()?;
+    // The account a call without a selector would pick (default, else first).
+    let gh_default = pick_account(&gh_accounts, github.default.as_deref(), &AccountSelect::default(), "GitHub")
+        .ok()
+        .flatten()
+        .map(|a| a.id.clone());
+    let gl_default = pick_account(&gl_accounts, gitlab_default.as_deref(), &AccountSelect::default(), "GitLab")
+        .ok()
+        .flatten()
+        .map(|a| a.id.clone());
+    let multi = gh_accounts.len() > 1 || gl_accounts.len() > 1;
+    // git fetch/push (and commit identity) keep the project's default even in a
+    // pinned session.
+    let git_default = if github.pinned {
+        project_default_account(db, project_id, "github_account_id")
+            .await
+            .ok()
+            .flatten()
+            .and_then(|id| gh_accounts.iter().find(|a| a.id == id))
+    } else {
+        None
+    };
 
     let mut lines: Vec<String> = Vec::new();
 
-    if let Some(id) = &github.general {
-        lines.push(github_account_line(db, "GitHub", id).await);
+    for a in &gh_accounts {
+        let mut line = account_line("GitHub", &a.label, a.username.as_deref(), "github.com");
+        if multi {
+            line.push_str(&account_line_extras(a, gh_default.as_deref() == Some(&a.id)));
+            if github.pinned && gh_default.as_deref() == Some(&a.id) {
+                line.push_str(" (this session was started for this account; default for gh only)");
+            }
+        }
+        lines.push(line);
     }
-    if let Some(id) = github
-        .review
-        .as_ref()
-        .filter(|r| Some(*r) != github.general.as_ref())
-    {
-        let line = github_account_line(db, "GitHub reviewer", id).await;
+    for a in &gl_accounts {
+        let host = normalize_host(&a.host).unwrap_or_else(|| "gitlab.com".to_string());
+        let mut line = account_line("GitLab", &a.label, a.username.as_deref(), &host);
+        if multi {
+            line.push_str(&account_line_extras(a, gl_default.as_deref() == Some(&a.id)));
+        }
+        lines.push(line);
+    }
+    if let Some(a) = git_default {
         lines.push(format!(
-            "{line} — used automatically for review work: `gh pr review`, `gh pr comment` \
-             and PR review/comment API calls (`gh api repos/<o>/<r>/pulls/<n>/reviews|comments`). \
-             Review and comment on PRs through those commands; other gh calls run as the GitHub account above."
+            "git fetch/push and commits on github.com use the project's default account {} \
+             unless a command picks another one.",
+            a.display()
         ));
     }
-    if let Some(id) = github
-        .default
-        .as_ref()
-        .filter(|d| Some(*d) != github.general.as_ref())
-    {
-        let line = github_account_line(db, "Git", id).await;
+    if multi {
         lines.push(format!(
-            "{line} — used for git fetch/push and commit identity."
-        ));
-    }
-    if let Some(id) = gitlab_id {
-        let meta = fetch_gitlab_meta(db, &id).await;
-        let label = meta.label.unwrap_or(id);
-        let host = meta
-            .host
-            .as_deref()
-            .and_then(normalize_host)
-            .unwrap_or_else(|| "gitlab.com".to_string());
-        lines.push(account_line(
-            "GitLab",
-            &label,
-            meta.username.as_deref(),
-            &host,
+            "Several git accounts are enabled. A command uses the default account of its provider \
+             unless you pick another one: prefix it with `{GIT_ACCOUNT_ENV}=<label or username>` \
+             (e.g. `{GIT_ACCOUNT_ENV}=work gh pr list`, `{GIT_ACCOUNT_ENV}=work git push`). For git \
+             you can also put the username in the remote URL \
+             (`https://<username>@github.com/<owner>/<repo>.git`). Choose the account that has \
+             access to the repository / organization you are working on. Commits are authored as \
+             the project's default account (set through GIT_AUTHOR_* / GIT_COMMITTER_*); to \
+             commit as another one, override those variables for the command: \
+             `GIT_AUTHOR_NAME=<username> GIT_AUTHOR_EMAIL=<email> GIT_COMMITTER_NAME=<username> \
+             GIT_COMMITTER_EMAIL=<email> git commit ...`. The devdy MCP tool \
+             `git_accounts_list` lists these accounts again."
         ));
     }
     if let Ok(Some(meta)) = resolve_aws_runtime_metadata(db, project_id).await {
@@ -1130,11 +1257,20 @@ pub async fn build_account_context(
     }
 }
 
-/// One GitHub account line for the account context (label/username only).
-async fn github_account_line(db: &Db, provider: &str, account_id: &str) -> String {
-    let (label, username) = fetch_github_meta(db, account_id).await;
-    let label = label.unwrap_or_else(|| account_id.to_string());
-    account_line(provider, &label, username.as_deref(), "github.com")
+/// ` — default, email x` suffix for an account line when several are enabled.
+fn account_line_extras(a: &GitAccount, is_default: bool) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if is_default {
+        parts.push("default".to_string());
+    }
+    if let Some(email) = &a.email {
+        parts.push(format!("email {email}"));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" — {}", parts.join(", "))
+    }
 }
 
 /// Format one provider line for the account context. Drops the `(@username)`
@@ -1238,6 +1374,12 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+        for t in ["project_github_accounts", "project_gitlab_accounts"] {
+            sqlx::query(&format!("CREATE TABLE {t} (project_id TEXT, account_id TEXT, created_at TEXT)"))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
         pool
     }
 
@@ -1248,12 +1390,12 @@ mod tests {
             .execute(&db)
             .await
             .unwrap();
-        let r = resolve_token_for_project(&db, "p1", "gh", None)
+        let r = resolve_token_for_project(&db, "p1", "gh", None, AccountSelect::default())
             .await
             .unwrap();
         assert!(r.is_none(), "expected None when no github account linked");
 
-        let r = resolve_token_for_project(&db, "p1", "glab", None)
+        let r = resolve_token_for_project(&db, "p1", "glab", None, AccountSelect::default())
             .await
             .unwrap();
         assert!(r.is_none(), "expected None when no gitlab account linked");
@@ -1262,7 +1404,7 @@ mod tests {
     #[tokio::test]
     async fn resolver_fail_closed_for_unknown_project() {
         let db = mem_db().await;
-        let r = resolve_token_for_project(&db, "missing", "gh", None)
+        let r = resolve_token_for_project(&db, "missing", "gh", None, AccountSelect::default())
             .await
             .unwrap();
         assert!(r.is_none());
@@ -1275,7 +1417,7 @@ mod tests {
             .execute(&db)
             .await
             .unwrap();
-        let r = resolve_token_for_project(&db, "p1", "git", None)
+        let r = resolve_token_for_project(&db, "p1", "git", None, AccountSelect::default())
             .await
             .unwrap();
         assert!(r.is_none());
@@ -1284,7 +1426,7 @@ mod tests {
     #[tokio::test]
     async fn resolver_unknown_tool_is_none() {
         let db = mem_db().await;
-        let r = resolve_token_for_project(&db, "p1", "svn", None)
+        let r = resolve_token_for_project(&db, "p1", "svn", None, AccountSelect::default())
             .await
             .unwrap();
         assert!(r.is_none());
@@ -1356,7 +1498,7 @@ mod tests {
             "evilgithub.com",
             "github.com.evil.io",
         ] {
-            let r = resolve_git(&PatTokenProvider, &db, "p1", Some(spoof))
+            let r = resolve_token_for_project(&db, "p1", "git", Some(spoof), AccountSelect::default())
                 .await
                 .unwrap();
             assert!(
@@ -1376,7 +1518,7 @@ mod tests {
             "xgitlab.com",
             "gitlab.com.attacker.net",
         ] {
-            let r = resolve_git(&PatTokenProvider, &db, "p1", Some(spoof))
+            let r = resolve_token_for_project(&db, "p1", "git", Some(spoof), AccountSelect::default())
                 .await
                 .unwrap();
             assert!(
@@ -1398,7 +1540,7 @@ mod tests {
         for good in ["gitlab.example.com", "runner.gitlab.example.com"] {
             // No Keychain PAT → Ok(None) via fail-closed; the point is it does not
             // error and does not panic, i.e. the host was accepted for lookup.
-            let r = resolve_git(&PatTokenProvider, &db, "p1", Some(good)).await;
+            let r = resolve_token_for_project(&db, "p1", "git", Some(good), AccountSelect::default()).await;
             assert!(r.is_ok(), "valid host {good} must not error");
         }
     }
@@ -1688,7 +1830,7 @@ mod tests {
         // Injected provider yields an expiring token → proves the seam is used
         // and expires_at flows into ResolvedToken (PAT path would be None).
         let mock = MockProvider::new("some_expiring", Some(9_999));
-        let r = resolve_token_for_project_with(&mock, &db, "p1", "gh", None)
+        let r = resolve_token_for_project_with(&mock, &db, "p1", "gh", None, AccountSelect::default())
             .await
             .unwrap()
             .expect("token resolved via injected provider");
@@ -1711,9 +1853,9 @@ mod tests {
             .unwrap();
         let mock = MockProvider::new("err", None);
         // Provider Err → resolver collapses to Ok(None) (fail-closed intact).
-        let r = resolve_token_for_project_with(&mock, &db, "gh", "gh", None).await;
+        let r = resolve_token_for_project_with(&mock, &db, "gh", "gh", None, AccountSelect::default()).await;
         assert!(matches!(r, Ok(None)), "provider error must fail closed");
-        let r = resolve_token_for_project_with(&mock, &db, "p1", "gh", None).await;
+        let r = resolve_token_for_project_with(&mock, &db, "p1", "gh", None, AccountSelect::default()).await;
         assert!(matches!(r, Ok(None)));
     }
 
@@ -1797,175 +1939,97 @@ mod tests {
         assert!(get_cached_aws_secret(profile, now + 3600 - AWS_CREDS_SKEW_SECS + 1).is_none());
     }
 
-    // ---- reviewer account / per-run GitHub account ----
+    // ---- several enabled accounts / per-run GitHub account ----
 
-    async fn seed_reviewer_project(db: &Db, reviewer: Option<&str>) {
+    async fn seed_multi_project(db: &Db) {
         for (id, label, user) in [
             ("gh1", "main", "author"),
-            ("gh2", "rev", "reviewer"),
+            ("gh2", "work", "worker"),
             ("gh3", "inbox", "asked"),
         ] {
-            sqlx::query("INSERT INTO github_accounts (id, label, username) VALUES (?, ?, ?)")
+            sqlx::query("INSERT INTO github_accounts (id, label, username, email) VALUES (?, ?, ?, ?)")
                 .bind(id)
                 .bind(label)
                 .bind(user)
+                .bind(format!("{user}@x.io"))
                 .execute(db)
                 .await
                 .unwrap();
         }
-        sqlx::query("INSERT INTO projects (id, github_account_id, github_reviewer_account_id) VALUES ('p1', 'gh1', ?)")
-            .bind(reviewer)
+        sqlx::query("INSERT INTO projects (id, github_account_id) VALUES ('p1', 'gh1'), ('p2', 'gh1')")
             .execute(db)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO projects (id, github_account_id) VALUES ('p2', 'gh1')")
+        sqlx::query("INSERT INTO project_github_accounts (project_id, account_id) VALUES ('p1', 'gh1'), ('p1', 'gh2')")
             .execute(db)
             .await
             .unwrap();
-        for (id, project, ty, pinned) in [
-            ("run-task", "p1", "task", None),
-            ("run-review", "p1", "review_pr", None),
-            ("run-inbox", "p1", "review_pr", Some("gh3")),
-            ("run-other", "p2", "review_pr", Some("gh3")),
+        for (id, project, pinned) in [
+            ("run-task", "p1", None),
+            ("run-inbox", "p1", Some("gh3")),
+            ("run-other", "p2", Some("gh3")),
         ] {
-            sqlx::query(
-                "INSERT INTO runs (id, project_id, type, github_account_id) VALUES (?, ?, ?, ?)",
-            )
-            .bind(id)
-            .bind(project)
-            .bind(ty)
-            .bind(pinned)
-            .execute(db)
-            .await
-            .unwrap();
+            sqlx::query("INSERT INTO runs (id, project_id, type, github_account_id) VALUES (?, ?, 'task', ?)")
+                .bind(id)
+                .bind(project)
+                .bind(pinned)
+                .execute(db)
+                .await
+                .unwrap();
         }
     }
 
-    fn accounts(default: &str, review: &str, general: &str) -> GithubRunAccounts {
-        GithubRunAccounts {
-            default: Some(default.to_string()),
-            review: Some(review.to_string()),
-            general: Some(general.to_string()),
-        }
+    fn ids(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn find_account_matches_id_label_then_username() {
+        let acct = |id: &str, label: &str, user: &str| GitAccount {
+            provider: "github",
+            id: id.into(),
+            label: label.into(),
+            username: Some(user.into()),
+            email: None,
+            host: "github.com".into(),
+        };
+        let accounts = vec![acct("a", "Work", "alice"), acct("b", "alice", "bob")];
+        assert_eq!(find_account(&accounts, "b").unwrap().id, "b");
+        // A label wins over another account's username.
+        assert_eq!(find_account(&accounts, "ALICE").unwrap().id, "b");
+        assert_eq!(find_account(&accounts, "@bob").unwrap().id, "b");
+        assert_eq!(find_account(&accounts, " work ").unwrap().id, "a");
+        assert!(find_account(&accounts, "nobody").is_none());
+        assert!(find_account(&accounts, "@").is_none());
     }
 
     #[tokio::test]
-    async fn github_run_accounts_default_run_routes_reviews_to_reviewer() {
+    async fn github_run_accounts_lists_enabled_and_default() {
         let db = mem_db().await;
-        seed_reviewer_project(&db, Some("gh2")).await;
-        let a = resolve_github_run_accounts(&db, "p1", Some("run-task"))
-            .await
-            .unwrap();
-        assert_eq!(a, accounts("gh1", "gh2", "gh1"));
-        // No run id (e.g. legacy shim) behaves like an ordinary run.
+        seed_multi_project(&db).await;
+        let a = resolve_github_run_accounts(&db, "p1", Some("run-task")).await.unwrap();
+        // Ordered by label: main, work.
+        assert_eq!(a, GithubRunAccounts { default: Some("gh1".into()), pinned: false, enabled: ids(&["gh1", "gh2"]) });
         let a = resolve_github_run_accounts(&db, "p1", None).await.unwrap();
-        assert_eq!(a, accounts("gh1", "gh2", "gh1"));
+        assert_eq!(a.default.as_deref(), Some("gh1"));
     }
 
     #[tokio::test]
-    async fn github_run_accounts_reviewer_falls_back_to_default() {
+    async fn github_run_accounts_pinned_run_adds_its_account() {
         let db = mem_db().await;
-        seed_reviewer_project(&db, None).await;
-        let a = resolve_github_run_accounts(&db, "p1", Some("run-task"))
-            .await
-            .unwrap();
-        assert_eq!(a, accounts("gh1", "gh1", "gh1"));
-        let a = resolve_github_run_accounts(&db, "p1", Some("run-review"))
-            .await
-            .unwrap();
-        assert_eq!(a, accounts("gh1", "gh1", "gh1"));
-    }
-
-    #[tokio::test]
-    async fn github_run_accounts_review_run_uses_reviewer_for_everything() {
-        let db = mem_db().await;
-        seed_reviewer_project(&db, Some("gh2")).await;
-        let a = resolve_github_run_accounts(&db, "p1", Some("run-review"))
-            .await
-            .unwrap();
-        assert_eq!(a, accounts("gh1", "gh2", "gh2"));
-    }
-
-    #[tokio::test]
-    async fn github_run_accounts_pinned_run_wins() {
-        let db = mem_db().await;
-        seed_reviewer_project(&db, Some("gh2")).await;
-        let a = resolve_github_run_accounts(&db, "p1", Some("run-inbox"))
-            .await
-            .unwrap();
-        assert_eq!(a, accounts("gh1", "gh3", "gh3"));
-    }
-
-    #[tokio::test]
-    async fn github_run_accounts_ignores_run_of_another_project() {
-        let db = mem_db().await;
-        seed_reviewer_project(&db, Some("gh2")).await;
+        seed_multi_project(&db).await;
+        let a = resolve_github_run_accounts(&db, "p1", Some("run-inbox")).await.unwrap();
+        assert_eq!(a, GithubRunAccounts { default: Some("gh3".into()), pinned: true, enabled: ids(&["gh3", "gh1", "gh2"]) });
         // run-other is pinned to gh3 but belongs to p2: p1 must not borrow it.
-        let a = resolve_github_run_accounts(&db, "p1", Some("run-other"))
-            .await
-            .unwrap();
-        assert_eq!(a, accounts("gh1", "gh2", "gh1"));
+        let a = resolve_github_run_accounts(&db, "p1", Some("run-other")).await.unwrap();
+        assert_eq!(a, GithubRunAccounts { default: Some("gh1".into()), pinned: false, enabled: ids(&["gh1", "gh2"]) });
     }
 
     #[tokio::test]
-    async fn account_context_lists_reviewer_line() {
+    async fn github_run_accounts_worker_inherits_conductor_pin() {
         let db = mem_db().await;
-        seed_reviewer_project(&db, Some("gh2")).await;
-        let ctx = build_account_context(&db, "p1", Some("run-task"))
-            .await
-            .unwrap();
-        assert!(
-            ctx.contains("- GitHub: account \"main\" (@author) on github.com"),
-            "{ctx}"
-        );
-        assert!(
-            ctx.contains("- GitHub reviewer: account \"rev\" (@reviewer)"),
-            "{ctx}"
-        );
-        assert!(ctx.contains("`gh pr review`"), "{ctx}");
-        assert!(!ctx.contains("- Git: "), "{ctx}");
-    }
-
-    #[tokio::test]
-    async fn account_context_pinned_run_names_git_account() {
-        let db = mem_db().await;
-        seed_reviewer_project(&db, Some("gh2")).await;
-        let ctx = build_account_context(&db, "p1", Some("run-inbox"))
-            .await
-            .unwrap();
-        assert!(
-            ctx.contains("- GitHub: account \"inbox\" (@asked)"),
-            "{ctx}"
-        );
-        assert!(!ctx.contains("GitHub reviewer"), "{ctx}");
-        assert!(ctx.contains("- Git: account \"main\" (@author)"), "{ctx}");
-    }
-
-    #[tokio::test]
-    async fn account_context_without_reviewer_is_unchanged() {
-        let db = mem_db().await;
-        seed_reviewer_project(&db, None).await;
-        let ctx = build_account_context(&db, "p1", Some("run-task"))
-            .await
-            .unwrap();
-        assert!(
-            ctx.contains("- GitHub: account \"main\" (@author)"),
-            "{ctx}"
-        );
-        assert!(!ctx.contains("GitHub reviewer"), "{ctx}");
-        assert!(!ctx.contains("- Git: "), "{ctx}");
-    }
-
-    #[tokio::test]
-    async fn github_run_accounts_worker_inherits_conductor() {
-        let db = mem_db().await;
-        seed_reviewer_project(&db, Some("gh2")).await;
-        for (id, parent) in [
-            ("w-inbox", "run-inbox"),
-            ("w-review", "run-review"),
-            ("w-task", "run-task"),
-            ("w-other", "run-other"),
-        ] {
+        seed_multi_project(&db).await;
+        for (id, parent) in [("w-inbox", "run-inbox"), ("w-task", "run-task"), ("w-other", "run-other")] {
             sqlx::query("INSERT INTO runs (id, project_id, type, conductor_run_id) VALUES (?, 'p1', 'task', ?)")
                 .bind(id)
                 .bind(parent)
@@ -1973,22 +2037,140 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let a = resolve_github_run_accounts(&db, "p1", Some("w-inbox"))
-            .await
-            .unwrap();
-        assert_eq!(a, accounts("gh1", "gh3", "gh3"));
-        let a = resolve_github_run_accounts(&db, "p1", Some("w-review"))
-            .await
-            .unwrap();
-        assert_eq!(a, accounts("gh1", "gh2", "gh2"));
-        let a = resolve_github_run_accounts(&db, "p1", Some("w-task"))
-            .await
-            .unwrap();
-        assert_eq!(a, accounts("gh1", "gh2", "gh1"));
+        let default = |id: &'static str| {
+            let db = db.clone();
+            async move { resolve_github_run_accounts(&db, "p1", Some(id)).await.unwrap().default }
+        };
+        assert_eq!(default("w-inbox").await.as_deref(), Some("gh3"));
+        assert_eq!(default("w-task").await.as_deref(), Some("gh1"));
         // A conductor from another project never lends its pin.
-        let a = resolve_github_run_accounts(&db, "p1", Some("w-other"))
+        assert_eq!(default("w-other").await.as_deref(), Some("gh1"));
+    }
+
+    #[tokio::test]
+    async fn selector_picks_enabled_account_or_denies() {
+        let db = mem_db().await;
+        seed_multi_project(&db).await;
+        let mock = MockProvider::new("some_pat", None);
+        let sel = |account: Option<&'static str>| AccountSelect { run_id: Some("run-task"), account, url_username: None };
+        let user = |r: Option<ResolvedToken>| r.and_then(|t| t.username);
+        let r = resolve_token_for_project_with(&mock, &db, "p1", "gh", None, sel(None)).await.unwrap();
+        assert_eq!(user(r).as_deref(), Some("author"));
+        let r = resolve_token_for_project_with(&mock, &db, "p1", "gh", None, sel(Some("work"))).await.unwrap();
+        assert_eq!(user(r).as_deref(), Some("worker"));
+        let r = resolve_token_for_project_with(&mock, &db, "p1", "git", Some("github.com"), sel(Some("@worker")))
             .await
             .unwrap();
-        assert_eq!(a, accounts("gh1", "gh2", "gh1"));
+        assert_eq!(user(r).as_deref(), Some("worker"));
+        // gh3 exists but is not enabled for p1 → deny, naming the enabled ones.
+        let e = resolve_token_for_project_with(&mock, &db, "p1", "gh", None, sel(Some("inbox")))
+            .await
+            .err()
+            .expect("unknown account must be denied");
+        assert!(e.starts_with(UNKNOWN_GIT_ACCOUNT), "{e}");
+        assert!(e.contains("\"main\" (@author), \"work\" (@worker)"), "{e}");
+        // A pinned run may also use its pinned account.
+        let pinned = AccountSelect { run_id: Some("run-inbox"), account: Some("inbox"), url_username: None };
+        let r = resolve_token_for_project_with(&mock, &db, "p1", "gh", None, pinned).await.unwrap();
+        assert_eq!(user(r).as_deref(), Some("asked"));
+    }
+
+    #[tokio::test]
+    async fn pinned_run_pins_gh_but_git_keeps_project_default() {
+        let db = mem_db().await;
+        seed_multi_project(&db).await;
+        let mock = MockProvider::new("some_pat", None);
+        let sel = AccountSelect { run_id: Some("run-inbox"), account: None, url_username: None };
+        let user = |r: Option<ResolvedToken>| r.and_then(|t| t.username);
+        let r = resolve_token_for_project_with(&mock, &db, "p1", "gh", None, sel).await.unwrap();
+        assert_eq!(user(r).as_deref(), Some("asked"));
+        let r = resolve_token_for_project_with(&mock, &db, "p1", "git", Some("github.com"), sel).await.unwrap();
+        assert_eq!(user(r).as_deref(), Some("author"));
+        // git cannot pick the pinned account when it is not enabled for the project.
+        let sel = AccountSelect { account: Some("inbox"), ..sel };
+        assert!(resolve_token_for_project_with(&mock, &db, "p1", "git", Some("github.com"), sel).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn git_url_username_selects_account_when_enabled() {
+        let db = mem_db().await;
+        seed_multi_project(&db).await;
+        let mock = MockProvider::new("some_pat", None);
+        let sel = |u: &'static str| AccountSelect { run_id: None, account: None, url_username: Some(u) };
+        let user = |r: Option<ResolvedToken>| r.and_then(|t| t.username);
+        let r = resolve_token_for_project_with(&mock, &db, "p1", "git", Some("github.com"), sel("worker")).await.unwrap();
+        assert_eq!(user(r).as_deref(), Some("worker"));
+        // An unknown URL username is ignored → default account.
+        let r = resolve_token_for_project_with(&mock, &db, "p1", "git", Some("github.com"), sel("x-access-token"))
+            .await
+            .unwrap();
+        assert_eq!(user(r).as_deref(), Some("author"));
+    }
+
+    #[tokio::test]
+    async fn gitlab_accounts_route_by_host() {
+        let db = mem_db().await;
+        sqlx::query("INSERT INTO gitlab_accounts (id, label, host, username) VALUES ('gl1', 'cloud', 'gitlab.com', 'u1'), ('gl2', 'corp', 'git.corp.io', 'u2')")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO projects (id, gitlab_account_id) VALUES ('p1', 'gl1')")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO project_gitlab_accounts (project_id, account_id) VALUES ('p1', 'gl1'), ('p1', 'gl2')")
+            .execute(&db)
+            .await
+            .unwrap();
+        let mock = MockProvider::new("some_pat", None);
+        let none = AccountSelect::default();
+        let user = |r: Option<ResolvedToken>| r.and_then(|t| t.username);
+        // The default does not serve git.corp.io; the account on that host does.
+        let r = resolve_token_for_project_with(&mock, &db, "p1", "git", Some("git.corp.io"), none).await.unwrap();
+        assert_eq!(user(r).as_deref(), Some("u2"));
+        let r = resolve_token_for_project_with(&mock, &db, "p1", "git", Some("gitlab.com"), none).await.unwrap();
+        assert_eq!(user(r).as_deref(), Some("u1"));
+        // An account of another host is never sent to this one.
+        let sel = AccountSelect { account: Some("corp"), ..none };
+        let e = resolve_token_for_project_with(&mock, &db, "p1", "git", Some("gitlab.com"), sel)
+            .await
+            .err()
+            .expect("account of another host must be denied");
+        assert!(e.starts_with(UNKNOWN_GIT_ACCOUNT), "{e}");
+        let r = resolve_token_for_project_with(&mock, &db, "p1", "git", Some("evil.io"), none).await.unwrap();
+        assert!(r.is_none());
+        // glab (no host) picks by selector among all enabled accounts.
+        let r = resolve_token_for_project_with(&mock, &db, "p1", "glab", None, sel).await.unwrap();
+        assert_eq!(user(r).as_deref(), Some("u2"));
+    }
+
+    #[tokio::test]
+    async fn account_context_single_account_is_unchanged() {
+        let db = mem_db().await;
+        seed_multi_project(&db).await;
+        let ctx = build_account_context(&db, "p2", None).await.unwrap();
+        assert!(ctx.contains("- GitHub: account \"main\" (@author) on github.com\n"), "{ctx}");
+        assert!(!ctx.contains(GIT_ACCOUNT_ENV), "{ctx}");
+    }
+
+    #[tokio::test]
+    async fn account_context_lists_every_enabled_account() {
+        let db = mem_db().await;
+        seed_multi_project(&db).await;
+        let ctx = build_account_context(&db, "p1", Some("run-task")).await.unwrap();
+        assert!(
+            ctx.contains("- GitHub: account \"main\" (@author) on github.com — default, email author@x.io"),
+            "{ctx}"
+        );
+        assert!(ctx.contains("- GitHub: account \"work\" (@worker) on github.com — email worker@x.io"), "{ctx}");
+        assert!(ctx.contains("DEVDY_GIT_ACCOUNT=work gh pr list"), "{ctx}");
+        // A pinned run defaults to its pin.
+        let ctx = build_account_context(&db, "p1", Some("run-inbox")).await.unwrap();
+        assert!(
+            ctx.contains("account \"inbox\" (@asked) on github.com — default, email asked@x.io (this session"),
+            "{ctx}"
+        );
+        assert!(!ctx.contains("\"main\" (@author) on github.com — default"), "{ctx}");
+        assert!(ctx.contains("git fetch/push and commits on github.com use the project's default account \"main\" (@author)"), "{ctx}");
     }
 }

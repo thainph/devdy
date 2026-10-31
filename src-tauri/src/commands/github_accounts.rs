@@ -175,13 +175,20 @@ pub async fn update_github_account(
 #[tauri::command]
 pub async fn delete_github_account(db: State<'_, Db>, id: String) -> Result<(), String> {
     let _ = secrets::delete_account_pat(&id);
-    // projects.github_account_id is ON DELETE SET NULL, so linked projects simply unlink.
+    // projects.github_account_id is ON DELETE SET NULL and project_github_accounts
+    // cascades, so linked projects simply unlink; a project that used it as the
+    // default falls back to another enabled account.
     sqlx::query("DELETE FROM github_accounts WHERE id = ?")
         .bind(&id)
         .execute(db.inner())
         .await
         .map_err(|e| e.to_string())?;
-    Ok(())
+    super::project_git_accounts::repair_defaults(
+        db.inner(),
+        super::project_git_accounts::GITHUB,
+        None,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -204,41 +211,26 @@ pub async fn validate_github_account(
     Ok(validation)
 }
 
+/// Make `account_id` the project's default GitHub account (enabling it), or
+/// clear the default with `None`.
 #[tauri::command]
 pub async fn set_project_github_account(
     db: State<'_, Db>,
     project_id: String,
     account_id: Option<String>,
 ) -> Result<(), String> {
-    sqlx::query("UPDATE projects SET github_account_id = ? WHERE id = ?")
-        .bind(&account_id)
-        .bind(&project_id)
-        .execute(db.inner())
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    super::project_git_accounts::set_default(
+        db.inner(),
+        super::project_git_accounts::GITHUB,
+        &project_id,
+        account_id.as_deref(),
+    )
+    .await
 }
 
-/// Link (or clear with `None`) the project's optional reviewer account — used for
-/// PR reviews/comments; when unset, review work falls back to the default account.
-#[tauri::command]
-pub async fn set_project_github_reviewer_account(
-    db: State<'_, Db>,
-    project_id: String,
-    account_id: Option<String>,
-) -> Result<(), String> {
-    sqlx::query("UPDATE projects SET github_reviewer_account_id = ? WHERE id = ?")
-        .bind(&account_id)
-        .bind(&project_id)
-        .execute(db.inner())
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Which GitHub accounts a session uses (`general` for ordinary gh calls,
-/// `review` for review/comment actions, `default` for git). Ids only — lets the
-/// session view badge the account a pinned/review run actually runs as.
+/// Which GitHub accounts a session uses: the default (the run's pin, else the
+/// project's default) and every account it may pick. Ids only — lets the session
+/// view badge the account a pinned run actually runs as.
 #[tauri::command]
 pub async fn get_run_github_accounts(
     db: State<'_, Db>,

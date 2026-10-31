@@ -18,10 +18,13 @@ pub struct Project {
     pub github_repo: Option<String>,
     pub created_at: String,
     pub github_account_id: Option<String>,
-    /// Optional GitHub account for review work (PR reviews/comments). `None` =
-    /// reviews fall back to `github_account_id`.
+    /// GitHub accounts enabled for the project (`github_account_id` is the
+    /// default among them). Runs may pick any of these per command.
     #[serde(default)]
-    pub github_reviewer_account_id: Option<String>,
+    pub github_account_ids: Vec<String>,
+    /// GitLab accounts enabled for the project (`gitlab_account_id` = default).
+    #[serde(default)]
+    pub gitlab_account_ids: Vec<String>,
     /// GĐ6: linked GitLab account (mirrors `github_account_id`). `None` when the
     /// project has no GitLab account attached (backward-compatible default).
     #[serde(default)]
@@ -651,13 +654,21 @@ pub async fn detect_project_info(webview: tauri::Webview, path: String) -> Resul
     })
 }
 
+/// `GROUP_CONCAT` of account ids → ids (account ids are UUIDs, no commas).
+fn split_ids(csv: Option<String>) -> Vec<String> {
+    csv.map(|s| s.split(',').map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
 #[tauri::command]
 pub async fn list_projects(db: State<'_, Db>) -> Result<Vec<Project>, String> {
     use sqlx::Row;
     // Manual order first (drag-and-drop), then usage frequency / recency / name
     // as a stable tiebreaker for any projects sharing a position.
     let rows = sqlx::query(
-        "SELECT p.id, p.name, p.path, p.created_at, p.github_account_id, p.github_reviewer_account_id, p.gitlab_account_id, p.aws_account_id, p.azure_account_id, p.claude_account_id, \
+        "SELECT p.id, p.name, p.path, p.created_at, p.github_account_id, p.gitlab_account_id, \
+                (SELECT GROUP_CONCAT(account_id) FROM project_github_accounts WHERE project_id = p.id) AS github_account_ids, \
+                (SELECT GROUP_CONCAT(account_id) FROM project_gitlab_accounts WHERE project_id = p.id) AS gitlab_account_ids, p.aws_account_id, p.azure_account_id, p.claude_account_id, \
                 p.github_project_board_url, p.github_project_field_mappings, p.position, \
                 COUNT(r.id) AS run_count, MAX(r.created_at) AS last_used_at \
          FROM projects p \
@@ -679,7 +690,8 @@ pub async fn list_projects(db: State<'_, Db>) -> Result<Vec<Project>, String> {
             github_repo: None,
             created_at: row.get("created_at"),
             github_account_id: row.get("github_account_id"),
-            github_reviewer_account_id: row.get("github_reviewer_account_id"),
+            github_account_ids: split_ids(row.get("github_account_ids")),
+            gitlab_account_ids: split_ids(row.get("gitlab_account_ids")),
             gitlab_account_id: row.get("gitlab_account_id"),
             aws_account_id: row.get("aws_account_id"),
             azure_account_id: row.get("azure_account_id"),
@@ -763,7 +775,8 @@ pub async fn add_project(db: State<'_, Db>, payload: AddProjectPayload) -> Resul
         github_repo: None,
         created_at: now,
         github_account_id: None,
-        github_reviewer_account_id: None,
+        github_account_ids: Vec::new(),
+        gitlab_account_ids: Vec::new(),
         gitlab_account_id: None,
         aws_account_id: None,
         azure_account_id: None,
@@ -828,7 +841,9 @@ pub async fn update_project(
         .map_err(|e| e.to_string())?;
 
     let row = sqlx::query(
-        "SELECT p.id, p.name, p.path, p.created_at, p.github_account_id, p.github_reviewer_account_id, p.gitlab_account_id, p.aws_account_id, p.azure_account_id, p.claude_account_id, \
+        "SELECT p.id, p.name, p.path, p.created_at, p.github_account_id, p.gitlab_account_id, \
+                (SELECT GROUP_CONCAT(account_id) FROM project_github_accounts WHERE project_id = p.id) AS github_account_ids, \
+                (SELECT GROUP_CONCAT(account_id) FROM project_gitlab_accounts WHERE project_id = p.id) AS gitlab_account_ids, p.aws_account_id, p.azure_account_id, p.claude_account_id, \
                 p.github_project_board_url, p.github_project_field_mappings, p.position, \
                 COUNT(r.id) AS run_count, MAX(r.created_at) AS last_used_at \
          FROM projects p LEFT JOIN runs r ON r.project_id = p.id WHERE p.id = ? GROUP BY p.id"
@@ -846,7 +861,8 @@ pub async fn update_project(
         github_repo: None,
         created_at: row.get("created_at"),
         github_account_id: row.get("github_account_id"),
-        github_reviewer_account_id: row.get("github_reviewer_account_id"),
+        github_account_ids: split_ids(row.get("github_account_ids")),
+        gitlab_account_ids: split_ids(row.get("gitlab_account_ids")),
         gitlab_account_id: row.get("gitlab_account_id"),
         aws_account_id: row.get("aws_account_id"),
         azure_account_id: row.get("azure_account_id"),

@@ -2,7 +2,7 @@
 // Run with: node --test sidecar-proxy/shim.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { scrubCloudEnv, pathWithoutDir, azureMfaRequired } from './shim.mjs'
+import { scrubCloudEnv, pathWithoutDir, azureMfaRequired, gitAccountSelector, remoteHost, glabTargetHost } from './shim.mjs'
 
 const inherited = () => ({
   PATH: '/usr/bin',
@@ -59,4 +59,30 @@ test('azureMfaRequired spots Entra / ARM MFA rejections only', () => {
   assert.ok(!azureMfaRequired('ERROR: (RequestDisallowedByAzure) Resource was disallowed by policy.'))
   assert.ok(!azureMfaRequired('AADSTS700082: The refresh token has expired due to inactivity.'))
   assert.ok(!azureMfaRequired('ERROR: (ResourceNotFound) not found'))
+})
+
+test('gitAccountSelector: trimmed DEVDY_GIT_ACCOUNT, blank/unset → default', () => {
+  assert.equal(gitAccountSelector({ DEVDY_GIT_ACCOUNT: ' work ' }), 'work')
+  assert.equal(gitAccountSelector({ DEVDY_GIT_ACCOUNT: '  ' }), null)
+  assert.equal(gitAccountSelector({}), null)
+})
+
+test('remoteHost: https / ssh / scp-like remotes, null otherwise', () => {
+  assert.equal(remoteHost('https://oauth2@Git.Corp.io:8443/g/r.git'), 'git.corp.io')
+  assert.equal(remoteHost('ssh://git@gitlab.com:2222/g/r'), 'gitlab.com')
+  assert.equal(remoteHost('git@git.corp.io:group/r.git'), 'git.corp.io')
+  assert.equal(remoteHost('group/repo'), null)
+  assert.equal(remoteHost(''), null)
+  assert.equal(remoteHost(null), null)
+})
+
+test('glabTargetHost: -R URL > GITLAB_HOST > origin remote', () => {
+  const origin = () => 'git@git.corp.io:g/r.git'
+  assert.equal(glabTargetHost(['mr', 'list', '-R', 'https://gitlab.com/g/r'], { GITLAB_HOST: 'x.io' }, origin), 'gitlab.com')
+  assert.equal(glabTargetHost(['mr', 'list', '--repo=git@a.io:g/r'], {}, origin), 'a.io')
+  // A plain OWNER/REPO does not name a host.
+  assert.equal(glabTargetHost(['mr', 'list', '-R', 'g/r'], { GITLAB_HOST: 'https://x.io' }, origin), 'x.io')
+  assert.equal(glabTargetHost(['mr', 'list'], { GL_HOST: 'Y.io' }, origin), 'y.io')
+  assert.equal(glabTargetHost(['mr', 'list'], {}, origin), 'git.corp.io')
+  assert.equal(glabTargetHost(['mr', 'list'], {}, () => null), null)
 })

@@ -22,7 +22,7 @@
 //     socket path never leaks to child tools.
 
 import net from 'node:net'
-import { spawn } from 'node:child_process'
+import { spawn, execFileSync } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs'
 import { scanTerraformExternalCode, terraformWorkDir } from './terraform-scan.mjs'
@@ -38,7 +38,7 @@ const EXIT_EXEC_FAILED = 95 // spawning the real binary failed
  * Ask the broker for a decision. Sends one NDJSON request line, reads one
  * NDJSON response line.
  * @param {string} sockPath
- * @param {{project_id: string, tool: string, argv: string[], host: string|null, run_id?: string|null, tf_external_code?: boolean, tf_external_hits?: string[]}} req
+ * @param {{project_id: string, tool: string, argv: string[], host: string|null, run_id?: string|null, account?: string|null, username?: string, tf_external_code?: boolean, tf_external_hits?: string[]}} req
  * @returns {Promise<{decision: string, reason?: string, token?: string, aws_access_key_id?: string, aws_secret_access_key?: string, aws_session_token?: string, aws_profile?: string, aws_region?: string, azure_config_dir?: string, azure_tenant_id?: string, azure_subscription_id?: string}>}
  */
 export function ask(sockPath, req) {
@@ -217,6 +217,16 @@ export async function run(tool) {
     host: null,
     run_id: runId,
   }
+  if (tool === 'gh' || tool === 'glab') {
+    // The command may pick one of the project's enabled accounts
+    // (`DEVDY_GIT_ACCOUNT=work gh ...`); unset → the default account.
+    req.account = gitAccountSelector(process.env)
+  }
+  if (tool === 'glab') {
+    // The host glab will talk to, so the broker only hands out a token of an
+    // account on that host (several GitLab hosts may be enabled).
+    req.host = glabTargetHost(argv, process.env, () => originRemoteUrl(process.cwd()))
+  }
   if (tool === 'terraform') {
     // Code that runs outside Terraform (data.external, local-exec, data.http)
     // would execute with the linked credentials during plan/validate; the
@@ -353,6 +363,11 @@ export async function run(tool) {
       childEnv.GH_TOKEN = resp.token
     } else {
       childEnv.GITLAB_TOKEN = resp.token
+      // Pin glab to the token's own host: it must never send it elsewhere.
+      if (resp.host) {
+        childEnv.GITLAB_HOST = resp.host
+        delete childEnv.GL_HOST
+      }
     }
   }
 
@@ -384,6 +399,75 @@ export async function run(tool) {
     // Propagate the real binary's exit code; a signal maps to a generic non-zero.
     process.exit(signal ? 1 : code ?? 1)
   })
+}
+
+/**
+ * The account a command picked via DEVDY_GIT_ACCOUNT (label, username or id of
+ * an enabled account), or null for the default. Pure.
+ * @param {Record<string, string|undefined>} env
+ * @returns {string|null}
+ */
+export function gitAccountSelector(env) {
+  const v = (env.DEVDY_GIT_ACCOUNT || '').trim()
+  return v === '' ? null : v
+}
+
+/**
+ * Host of a git remote URL: `scheme://[user@]host[:port]/...` or scp-like
+ * `[user@]host:path`. Lowercased; null when it is neither. Pure.
+ * @param {string|null|undefined} url
+ * @returns {string|null}
+ */
+export function remoteHost(url) {
+  const u = String(url || '').trim()
+  if (!u) return null
+  const scheme = /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/]*@)?(\[[^\]]+\]|[^/:?#]+)/i.exec(u)
+  if (scheme) return scheme[1].toLowerCase()
+  const scp = /^(?:[^@/:]+@)?([^/:]+):(?!\/\/)/.exec(u)
+  // A one-letter "host" is a Windows drive (`C:\\path`), not a remote.
+  if (scp && scp[1].length > 1) return scp[1].toLowerCase()
+  return null
+}
+
+/**
+ * The GitLab host a glab call targets: a URL given to -R/--repo, else
+ * GITLAB_HOST / GL_HOST, else the host of the cwd's `origin` remote (resolved
+ * lazily). Null when unknown (the broker then picks among all enabled
+ * accounts). Pure apart from `origin()`.
+ * @param {string[]} argv
+ * @param {Record<string, string|undefined>} env
+ * @param {() => string|null} origin
+ * @returns {string|null}
+ */
+export function glabTargetHost(argv, env, origin) {
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]
+    let v = null
+    if (a === '-R' || a === '--repo') v = argv[i + 1]
+    else if (a.startsWith('--repo=')) v = a.slice('--repo='.length)
+    else if (a.startsWith('-R') && a.length > 2) v = a.slice(2)
+    if (v && (v.includes('://') || /^[^/]*@/.test(v))) {
+      const h = remoteHost(v)
+      if (h) return h
+    }
+  }
+  const fromEnv = remoteHost(env.GITLAB_HOST) || remoteHost(env.GL_HOST) ||
+    (env.GITLAB_HOST || env.GL_HOST || '').trim().toLowerCase() || null
+  if (fromEnv) return fromEnv
+  return remoteHost(origin())
+}
+
+/** URL of the `origin` remote of `cwd`'s repo, or null. */
+function originRemoteUrl(cwd) {
+  try {
+    return execFileSync('git', ['-C', cwd, 'remote', 'get-url', 'origin'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 3000,
+    }).trim() || null
+  } catch {
+    return null
+  }
 }
 
 export const AZURE_MFA_HINT =

@@ -135,12 +135,20 @@ struct ProjectEntry {
     github_project_board_url: Option<String>,
     #[serde(default)]
     github_project_field_mappings: Option<String>,
+    /// Default GitHub account (label).
     #[serde(default)]
     github_account: Option<String>,
-    #[serde(default)]
+    /// Retired reviewer account of older backups; imported as an enabled account.
+    #[serde(default, skip_serializing)]
     github_reviewer_account: Option<String>,
+    /// Default GitLab account (label).
     #[serde(default)]
     gitlab_account: Option<String>,
+    /// Every GitHub / GitLab account enabled for the project (labels).
+    #[serde(default)]
+    github_accounts: Vec<String>,
+    #[serde(default)]
+    gitlab_accounts: Vec<String>,
     #[serde(default)]
     aws_account: Option<String>,
     #[serde(default)]
@@ -1159,12 +1167,10 @@ async fn collect_projects(db: &Db) -> Result<Vec<ProjectEntry>, String> {
     for row in sqlx::query(
         "SELECT p.id, p.name, p.path, p.github_owner, p.github_repo, p.default_engine, p.created_at, \
                 p.position, p.github_project_board_url, p.github_project_field_mappings, \
-                gh.label AS github_account, ghr.label AS github_reviewer_account, \
-                gl.label AS gitlab_account, aws.label AS aws_account, az.label AS azure_account, \
+                gh.label AS github_account, gl.label AS gitlab_account, aws.label AS aws_account, az.label AS azure_account, \
                 cl.label AS claude_account \
          FROM projects p \
          LEFT JOIN github_accounts gh ON gh.id = p.github_account_id \
-         LEFT JOIN github_accounts ghr ON ghr.id = p.github_reviewer_account_id \
          LEFT JOIN gitlab_accounts gl ON gl.id = p.gitlab_account_id \
          LEFT JOIN aws_accounts aws ON aws.id = p.aws_account_id \
          LEFT JOIN azure_accounts az ON az.id = p.azure_account_id \
@@ -1249,6 +1255,16 @@ async fn collect_projects(db: &Db) -> Result<Vec<ProjectEntry>, String> {
              WHERE pm.project_id = ? ORDER BY m.name",
         )
         .await?;
+        let github_accounts = names(
+            "SELECT a.label FROM project_github_accounts pa JOIN github_accounts a ON a.id = pa.account_id \
+             WHERE pa.project_id = ? ORDER BY a.label",
+        )
+        .await?;
+        let gitlab_accounts = names(
+            "SELECT a.label FROM project_gitlab_accounts pa JOIN gitlab_accounts a ON a.id = pa.account_id \
+             WHERE pa.project_id = ? ORDER BY a.label",
+        )
+        .await?;
         let servers = sqlx::query(
             "SELECT s.label, ps.role FROM project_servers ps JOIN servers s ON s.id = ps.server_id \
              WHERE ps.project_id = ? ORDER BY ps.role, s.label",
@@ -1275,8 +1291,10 @@ async fn collect_projects(db: &Db) -> Result<Vec<ProjectEntry>, String> {
             github_project_board_url: row.get("github_project_board_url"),
             github_project_field_mappings: row.get("github_project_field_mappings"),
             github_account: row.get("github_account"),
-            github_reviewer_account: row.get("github_reviewer_account"),
+            github_reviewer_account: None,
             gitlab_account: row.get("gitlab_account"),
+            github_accounts,
+            gitlab_accounts,
             aws_account: row.get("aws_account"),
             azure_account: row.get("azure_account"),
             claude_account: row.get("claude_account"),
@@ -2861,8 +2879,6 @@ async fn import_project(
     }
 
     let github = id_by_label(db, "github_accounts", &entry.github_account).await?;
-    let github_reviewer =
-        id_by_label(db, "github_accounts", &entry.github_reviewer_account).await?;
     let gitlab = id_by_label(db, "gitlab_accounts", &entry.gitlab_account).await?;
     let aws = id_by_label(db, "aws_accounts", &entry.aws_account).await?;
     let azure = id_by_label(db, "azure_accounts", &entry.azure_account).await?;
@@ -2877,7 +2893,6 @@ async fn import_project(
                  github_project_board_url = COALESCE(?, github_project_board_url), \
                  github_project_field_mappings = COALESCE(?, github_project_field_mappings), \
                  github_account_id = COALESCE(?, github_account_id), \
-                 github_reviewer_account_id = COALESCE(?, github_reviewer_account_id), \
                  gitlab_account_id = COALESCE(?, gitlab_account_id), \
                  aws_account_id = COALESCE(?, aws_account_id), \
                  azure_account_id = COALESCE(?, azure_account_id), \
@@ -2887,7 +2902,6 @@ async fn import_project(
                  OR (? IS NOT NULL AND github_project_board_url IS NOT ?) \
                  OR (? IS NOT NULL AND github_project_field_mappings IS NOT ?) \
                  OR (? IS NOT NULL AND github_account_id IS NOT ?) \
-                 OR (? IS NOT NULL AND github_reviewer_account_id IS NOT ?) \
                  OR (? IS NOT NULL AND gitlab_account_id IS NOT ?) \
                  OR (? IS NOT NULL AND aws_account_id IS NOT ?) \
                  OR (? IS NOT NULL AND azure_account_id IS NOT ?) \
@@ -2899,7 +2913,6 @@ async fn import_project(
                 &entry.github_project_board_url,
                 &entry.github_project_field_mappings,
                 &github,
-                &github_reviewer,
                 &gitlab,
                 &aws,
                 &azure,
@@ -2933,9 +2946,9 @@ async fn import_project(
             sqlx::query(
                 "INSERT INTO projects (id, name, path, github_owner, github_repo, default_engine, \
                  created_at, position, github_project_board_url, github_project_field_mappings, \
-                 github_account_id, github_reviewer_account_id, gitlab_account_id, aws_account_id, \
+                 github_account_id, gitlab_account_id, aws_account_id, \
                  azure_account_id, claude_account_id) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&id)
             .bind(&entry.name)
@@ -2948,7 +2961,6 @@ async fn import_project(
             .bind(&entry.github_project_board_url)
             .bind(&entry.github_project_field_mappings)
             .bind(&github)
-            .bind(&github_reviewer)
             .bind(&gitlab)
             .bind(&aws)
             .bind(&azure)
@@ -3039,6 +3051,40 @@ async fn import_project(
             }
             None => warnings.push(format!("VPS server '{}' not found", link.server)),
         }
+    }
+
+    // Enabled git accounts: the listed ones plus the default (and an old
+    // backup's reviewer), so the default stays inside the enabled set.
+    for (provider, table, labels) in [
+        (
+            super::project_git_accounts::GITHUB,
+            "github_accounts",
+            entry
+                .github_accounts
+                .iter()
+                .chain(&entry.github_account)
+                .chain(&entry.github_reviewer_account)
+                .collect::<Vec<_>>(),
+        ),
+        (
+            super::project_git_accounts::GITLAB,
+            "gitlab_accounts",
+            entry.gitlab_accounts.iter().chain(&entry.gitlab_account).collect(),
+        ),
+    ] {
+        let mut labels = labels;
+        labels.sort();
+        labels.dedup();
+        for label in labels {
+            match id_by(db, table, "label", label).await? {
+                Some(account_id) => {
+                    touched |= super::project_git_accounts::enable(db, provider, &id, &account_id)
+                        .await?;
+                }
+                None => warnings.push(format!("git account '{label}' not found")),
+            }
+        }
+        super::project_git_accounts::repair_defaults(db, provider, Some(&id)).await?;
     }
 
     // Groups first: enabling one applies its members (as group-owned, not manual).

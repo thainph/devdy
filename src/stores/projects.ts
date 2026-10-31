@@ -10,9 +10,13 @@ export interface Project {
   github_owner: string | null
   github_repo: string | null
   created_at: string
+  /** Default GitHub account (one of `github_account_ids`). */
   github_account_id: string | null
-  github_reviewer_account_id: string | null
+  /** GitHub accounts enabled for the project; runs may pick any per command. */
+  github_account_ids: string[]
+  /** Default GitLab account (one of `gitlab_account_ids`). */
   gitlab_account_id: string | null
+  gitlab_account_ids: string[]
   aws_account_id: string | null
   azure_account_id: string | null
   claude_account_id: string | null
@@ -284,8 +288,14 @@ export const useProjectsStore = defineStore('projects', () => {
     await fetchProjects()
   }
 
-  async function setProjectReviewerAccount(project_id: string, account_id: string | null): Promise<void> {
-    await invoke('set_project_github_reviewer_account', { projectId: project_id, accountId: account_id })
+  /** Enable / disable one GitHub or GitLab account for a project. */
+  async function setProjectGitAccountEnabled(
+    project_id: string,
+    provider: 'github' | 'gitlab',
+    account_id: string,
+    enabled: boolean,
+  ): Promise<void> {
+    await invoke('set_project_git_account_enabled', { projectId: project_id, provider, accountId: account_id, enabled })
     await fetchProjects()
   }
 
@@ -374,7 +384,7 @@ export const useProjectsStore = defineStore('projects', () => {
     fetchProjects, reorder, detectProjectInfo, addProject, removeProject, updateProject,
     resolveProjectBoard, listRepos, addRepo, updateRepo, removeRepo,
     getAppliedSkills, applySkill, removeSkillFromProject,
-    setProjectAccount, setProjectReviewerAccount, setProjectGitlabAccount, setProjectAwsAccount, setProjectAzureAccount, setProjectClaudeAccount, fetchConflicts, resolveConflict,
+    setProjectAccount, setProjectGitAccountEnabled, setProjectGitlabAccount, setProjectAwsAccount, setProjectAzureAccount, setProjectClaudeAccount, fetchConflicts, resolveConflict,
     openInVscode, openInFolder, openInTerminal,
     getAppliedRules, applyRule, removeRuleFromProject,
     fetchRuleConflicts, resolveRuleConflict, getInstructionWarnings,

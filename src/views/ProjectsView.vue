@@ -372,10 +372,12 @@ async function handleOpenInFolder(project: { path: string }) {
               <Badge v-if="project.github_account_id" tone="info" class="max-w-[9rem]">
                 <Github class="h-2.5 w-2.5 shrink-0" :stroke-width="2" />
                 <span class="truncate">{{ accountLabel(project.github_account_id) }}</span>
+                <span v-if="project.github_account_ids.length > 1" class="shrink-0 opacity-70">+{{ project.github_account_ids.length - 1 }}</span>
               </Badge>
               <Badge v-if="project.gitlab_account_id" tone="warning" class="max-w-[9rem]">
                 <Gitlab class="h-2.5 w-2.5 shrink-0" :stroke-width="2" />
                 <span class="truncate">{{ gitlabAccountLabel(project.gitlab_account_id) }}</span>
+                <span v-if="project.gitlab_account_ids.length > 1" class="shrink-0 opacity-70">+{{ project.gitlab_account_ids.length - 1 }}</span>
               </Badge>
               <!-- Mapped VPS servers (tone by connection status). -->
               <Badge
