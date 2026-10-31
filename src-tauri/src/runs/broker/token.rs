@@ -47,6 +47,8 @@ pub struct CommitIdentity {
 /// Metadata for a project's linked AWS account. Contains no secret and is safe
 /// for prompts/per-run env setup.
 pub struct AwsRuntimeMetadata {
+    /// Devdy's account id (`aws_accounts.id`).
+    pub id: String,
     pub account_label: String,
     pub auth_method: String,
     pub account_id: Option<String>,
@@ -57,7 +59,6 @@ pub struct AwsRuntimeMetadata {
 
 /// Resolved AWS credential for a project. Secret fields must never be logged.
 pub struct ResolvedAwsCredentials {
-    #[allow(dead_code)]
     pub account_label: String,
     #[allow(dead_code)]
     pub auth_method: String,
@@ -541,14 +542,18 @@ fn resolved_from_minted(meta: &AwsRuntimeMetadata, sec: CachedAwsSecret) -> Reso
     }
 }
 
-/// Resolve AWS credentials for a project. Fail-closed: returns `Ok(None)` when
-/// no account is linked, metadata is incomplete, or a keys account is missing
-/// its Keychain secret.
+/// Resolve AWS credentials for a project. `selector` names one of the
+/// project's enabled accounts ([`AWS_ACCOUNT_ENV`] or `--profile`); `None` → the
+/// default. Fail-closed: returns `Ok(None)` when no account is linked, metadata
+/// is incomplete, or a keys account is missing its Keychain secret; `Err`
+/// prefixed [`UNKNOWN_CLOUD_ACCOUNT`] when the selector matches no enabled
+/// account.
 pub async fn resolve_aws_credentials_for_project(
     db: &Db,
     project_id: &str,
+    selector: Option<&str>,
 ) -> Result<Option<ResolvedAwsCredentials>, String> {
-    let Some(meta) = resolve_aws_runtime_metadata(db, project_id).await? else {
+    let Some(meta) = pick_aws_account(db, project_id, selector).await? else {
         return Ok(None);
     };
 
@@ -575,35 +580,136 @@ pub async fn resolve_aws_credentials_for_project(
     Ok(Some(resolved_from_minted(&meta, sec)))
 }
 
-/// Resolve non-secret AWS metadata for prompt/context and per-run env setup.
-/// Returns `Ok(None)` when no AWS account is linked or the linked row is gone.
+/// Non-secret metadata of the project's DEFAULT AWS account, for per-run env
+/// setup (sandbox region). Returns `Ok(None)` when no AWS account is linked or
+/// the linked row is gone.
 pub async fn resolve_aws_runtime_metadata(
     db: &Db,
     project_id: &str,
 ) -> Result<Option<AwsRuntimeMetadata>, String> {
-    let row = sqlx::query(
-        "SELECT a.label, a.auth_method, a.account_id, a.arn, a.region, a.profile_name \
-         FROM projects p \
-         JOIN aws_accounts a ON a.id = p.aws_account_id \
-         WHERE p.id = ?",
+    pick_aws_account(db, project_id, None).await
+}
+
+/// The project's enabled AWS accounts plus its default. Ordered by label.
+pub async fn aws_accounts_for(db: &Db, project_id: &str) -> Result<Vec<AwsRuntimeMetadata>, String> {
+    let rows = sqlx::query(
+        "SELECT a.id, a.label, a.auth_method, a.account_id, a.arn, a.region, a.profile_name \
+         FROM aws_accounts a \
+         WHERE a.id IN (SELECT account_id FROM project_aws_accounts WHERE project_id = ?1) \
+            OR a.id = (SELECT aws_account_id FROM projects WHERE id = ?1) \
+         ORDER BY a.label COLLATE NOCASE, a.id",
     )
     .bind(project_id)
-    .fetch_optional(db)
+    .fetch_all(db)
     .await
     .map_err(|e| e.to_string())?;
+    Ok(rows
+        .iter()
+        .map(|row| AwsRuntimeMetadata {
+            id: row.get("id"),
+            account_label: row.get("label"),
+            auth_method: row.get("auth_method"),
+            account_id: row.get("account_id"),
+            arn: row.get("arn"),
+            region: row.get("region"),
+            profile_name: row.get("profile_name"),
+        })
+        .collect())
+}
 
-    let Some(row) = row else {
-        return Ok(None);
+/// The AWS account one call uses: the one `selector` names (id, label, 12-digit
+/// account id or profile name, case-insensitive) — which must be enabled — else
+/// the project's default, else the first enabled account.
+pub async fn pick_aws_account(
+    db: &Db,
+    project_id: &str,
+    selector: Option<&str>,
+) -> Result<Option<AwsRuntimeMetadata>, String> {
+    let default = project_default_account(db, project_id, "aws_account_id").await?;
+    let accounts = aws_accounts_for(db, project_id).await?;
+    let idx = pick_cloud_index(
+        &accounts,
+        |a| &a.id,
+        |a| {
+            [Some(a.account_label.as_str()), a.account_id.as_deref(), a.profile_name.as_deref()]
+                .into_iter()
+                .flatten()
+                .collect()
+        },
+        default.as_deref(),
+        selector,
+    )
+    .map_err(|want| unknown_cloud_account_reason("AWS", AWS_ACCOUNT_ENV, want, accounts.iter().map(aws_display)))?;
+    Ok(idx.map(|i| accounts.into_iter().nth(i).expect("index in range")))
+}
+
+/// `"label" (123456789012)` for prompts and deny reasons.
+pub fn aws_display(a: &AwsRuntimeMetadata) -> String {
+    match a.account_id.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(id) => format!("\"{}\" ({id})", a.account_label),
+        None => format!("\"{}\"", a.account_label),
+    }
+}
+
+/// Deny-reason marker: the command named an AWS / Azure account
+/// ([`AWS_ACCOUNT_ENV`] / [`AZURE_ACCOUNT_ENV`] / `aws --profile`) that is not
+/// enabled for the project. The reason lists the enabled accounts (labels and
+/// ids only, never a secret).
+pub const UNKNOWN_CLOUD_ACCOUNT: &str = "unknown_cloud_account";
+
+/// Env var a command sets to pick one of the project's enabled AWS accounts
+/// (`DEVDY_AWS_ACCOUNT=prod aws s3 ls`). Read by the aws / terraform shims.
+pub const AWS_ACCOUNT_ENV: &str = "DEVDY_AWS_ACCOUNT";
+
+/// Env var a command sets to pick one of the project's enabled Azure accounts
+/// (`DEVDY_AZURE_ACCOUNT=prod az group list`). Read by the az / terraform shims.
+pub const AZURE_ACCOUNT_ENV: &str = "DEVDY_AZURE_ACCOUNT";
+
+/// Index of the account one call uses: the one `selector` names (`id` exact,
+/// else any of `names` case-insensitively), else `default`, else the first.
+/// `Err(selector)` when the selector names no account. `Ok(None)` only when
+/// there is no account at all.
+fn pick_cloud_index<'a, T>(
+    accounts: &'a [T],
+    id: impl Fn(&'a T) -> &'a str,
+    names: impl Fn(&'a T) -> Vec<&'a str>,
+    default: Option<&str>,
+    selector: Option<&'a str>,
+) -> Result<Option<usize>, &'a str> {
+    if let Some(want) = selector.map(str::trim).filter(|s| !s.is_empty()) {
+        return accounts
+            .iter()
+            .position(|a| id(a) == want)
+            .or_else(|| {
+                accounts
+                    .iter()
+                    .position(|a| names(a).iter().any(|n| n.trim().eq_ignore_ascii_case(want)))
+            })
+            .map(Some)
+            .ok_or(want);
+    }
+    Ok(default
+        .and_then(|d| accounts.iter().position(|a| id(a) == d))
+        .or(if accounts.is_empty() { None } else { Some(0) }))
+}
+
+fn unknown_cloud_account_reason(
+    provider: &str,
+    env: &str,
+    want: &str,
+    accounts: impl Iterator<Item = String>,
+) -> String {
+    let enabled = accounts.collect::<Vec<_>>();
+    let enabled = if enabled.is_empty() {
+        "none".to_string()
+    } else {
+        enabled.join(", ")
     };
-
-    Ok(Some(AwsRuntimeMetadata {
-        account_label: row.get("label"),
-        auth_method: row.get("auth_method"),
-        account_id: row.get("account_id"),
-        arn: row.get("arn"),
-        region: row.get("region"),
-        profile_name: row.get("profile_name"),
-    }))
+    format!(
+        "{UNKNOWN_CLOUD_ACCOUNT}: no {provider} account \"{want}\" is enabled for this project. \
+         Enabled: {enabled}. Set {env} to one of these labels, or leave it unset to use the \
+         default account."
+    )
 }
 
 // ============================================================================
@@ -638,44 +744,82 @@ pub struct ResolvedAzureAccount {
     pub subscription_id: Option<String>,
 }
 
-/// Resolve non-secret Azure metadata for prompt context. `Ok(None)` when no
-/// Azure account is linked or the linked row is gone.
-pub async fn resolve_azure_runtime_metadata(
+/// The project's enabled Azure accounts plus its default. Ordered by label.
+pub async fn azure_accounts_for(
     db: &Db,
     project_id: &str,
-) -> Result<Option<AzureRuntimeMetadata>, String> {
-    let row = sqlx::query(
+) -> Result<Vec<AzureRuntimeMetadata>, String> {
+    let rows = sqlx::query(
         "SELECT a.id, a.label, a.tenant_id, a.subscription_id, a.subscription_name \
-         FROM projects p \
-         JOIN azure_accounts a ON a.id = p.azure_account_id \
-         WHERE p.id = ?",
+         FROM azure_accounts a \
+         WHERE a.id IN (SELECT account_id FROM project_azure_accounts WHERE project_id = ?1) \
+            OR a.id = (SELECT azure_account_id FROM projects WHERE id = ?1) \
+         ORDER BY a.label COLLATE NOCASE, a.id",
     )
     .bind(project_id)
-    .fetch_optional(db)
+    .fetch_all(db)
     .await
     .map_err(|e| e.to_string())?;
-
-    let Some(row) = row else {
-        return Ok(None);
-    };
     let non_empty = |v: Option<String>| v.filter(|s| !s.trim().is_empty());
-    Ok(Some(AzureRuntimeMetadata {
-        account_id: row.get("id"),
-        account_label: row.get("label"),
-        tenant_id: non_empty(row.get("tenant_id")),
-        subscription_id: non_empty(row.get("subscription_id")),
-        subscription_name: non_empty(row.get("subscription_name")),
-    }))
+    Ok(rows
+        .iter()
+        .map(|row| AzureRuntimeMetadata {
+            account_id: row.get("id"),
+            account_label: row.get("label"),
+            tenant_id: non_empty(row.get("tenant_id")),
+            subscription_id: non_empty(row.get("subscription_id")),
+            subscription_name: non_empty(row.get("subscription_name")),
+        })
+        .collect())
 }
 
-/// Resolve the linked Azure account for a project. `Ok(None)` when none is
-/// linked; `Err(AZURE_LOGIN_REQUIRED)` when the account dir holds no signed-in
-/// session (never created, or wiped); `Err(_)` (generic) on other failures.
+/// The Azure account one call uses: the one `selector` names (id, label,
+/// subscription name or id, case-insensitive) — which must be enabled — else
+/// the project's default, else the first enabled account.
+pub async fn pick_azure_account(
+    db: &Db,
+    project_id: &str,
+    selector: Option<&str>,
+) -> Result<Option<AzureRuntimeMetadata>, String> {
+    let default = project_default_account(db, project_id, "azure_account_id").await?;
+    let accounts = azure_accounts_for(db, project_id).await?;
+    let idx = pick_cloud_index(
+        &accounts,
+        |a| &a.account_id,
+        |a| {
+            [Some(a.account_label.as_str()), a.subscription_name.as_deref(), a.subscription_id.as_deref()]
+                .into_iter()
+                .flatten()
+                .collect()
+        },
+        default.as_deref(),
+        selector,
+    )
+    .map_err(|want| {
+        unknown_cloud_account_reason("Azure", AZURE_ACCOUNT_ENV, want, accounts.iter().map(azure_display))
+    })?;
+    Ok(idx.map(|i| accounts.into_iter().nth(i).expect("index in range")))
+}
+
+/// `"label" (subscription name)` for prompts and deny reasons.
+pub fn azure_display(a: &AzureRuntimeMetadata) -> String {
+    match a.subscription_name.as_deref().or(a.subscription_id.as_deref()) {
+        Some(sub) => format!("\"{}\" ({sub})", a.account_label),
+        None => format!("\"{}\"", a.account_label),
+    }
+}
+
+/// Resolve the Azure account a call uses (`selector`, else the default).
+/// `Ok(None)` when none is linked; `Err(AZURE_LOGIN_REQUIRED)` when the account
+/// dir holds no signed-in session (never created, or wiped); `Err` prefixed
+/// [`UNKNOWN_CLOUD_ACCOUNT`] for a selector that matches no enabled account;
+/// `Err(_)` (generic) on other failures.
 pub async fn resolve_azure_for_project(
     db: &Db,
     project_id: &str,
+    selector: Option<&str>,
 ) -> Result<Option<ResolvedAzureAccount>, String> {
-    let Some(meta) = resolve_azure_runtime_metadata(db, project_id).await? else {
+    let Some(meta) = pick_azure_account(db, project_id, selector).await? else {
         return Ok(None);
     };
     let root = crate::azure_sandbox::registered_accounts_root()
@@ -1215,12 +1359,7 @@ pub async fn build_account_context(
              `git_accounts_list` lists these accounts again."
         ));
     }
-    if let Ok(Some(meta)) = resolve_aws_runtime_metadata(db, project_id).await {
-        lines.push(aws_account_line(&meta));
-    }
-    if let Ok(Some(meta)) = resolve_azure_runtime_metadata(db, project_id).await {
-        lines.push(azure_account_line(&meta));
-    }
+    lines.extend(cloud_account_lines(db, project_id).await);
 
     // ssh-transparent-connect (AC-308): append the project's mapped-VPS block so
     // Claude knows the ssh aliases. Empty string when no server is mapped
@@ -1282,7 +1421,70 @@ fn account_line(provider: &str, label: &str, username: Option<&str>, host: &str)
     }
 }
 
-fn aws_account_line(meta: &AwsRuntimeMetadata) -> String {
+/// Account-context lines for the project's enabled AWS / Azure accounts. With
+/// several of one provider, the default is marked and the agent is told how to
+/// pick another per command.
+async fn cloud_account_lines(db: &Db, project_id: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    let aws = aws_accounts_for(db, project_id).await.unwrap_or_default();
+    let aws_default = pick_aws_account(db, project_id, None).await.ok().flatten().map(|a| a.id);
+    let multi_aws = aws.len() > 1;
+    for a in &aws {
+        lines.push(aws_account_line(a, multi_aws && aws_default.as_deref() == Some(&a.id)));
+    }
+    if !aws.is_empty() {
+        lines.push(if multi_aws {
+            format!(
+                "Several AWS accounts are enabled. `aws` and terraform use the default AWS account \
+                 unless you pick another one: prefix the command with `{AWS_ACCOUNT_ENV}=<label>` \
+                 (e.g. `{AWS_ACCOUNT_ENV}=prod aws s3 ls`), or for `aws` pass `--profile <label or \
+                 profile>`. Do not put credentials or real profiles in the environment; an unknown \
+                 account is refused."
+            )
+        } else {
+            "Run `aws` WITHOUT a `--profile` flag — the linked AWS account is selected \
+             automatically."
+                .to_string()
+        });
+    }
+    let azure = azure_accounts_for(db, project_id).await.unwrap_or_default();
+    let azure_default = pick_azure_account(db, project_id, None)
+        .await
+        .ok()
+        .flatten()
+        .map(|a| a.account_id);
+    let multi_azure = azure.len() > 1;
+    for a in &azure {
+        lines.push(azure_account_line(a, multi_azure && azure_default.as_deref() == Some(&a.account_id)));
+    }
+    if !azure.is_empty() {
+        lines.push(
+            "Run `az` (and terraform's azurerm provider via Azure CLI auth) without logging in. \
+             `az login` / `az account set` are blocked; `az --subscription <other>` needs user \
+             confirmation. terraform receives the account's default subscription \
+             (ARM_SUBSCRIPTION_ID), but a provider block may still set its own."
+                .to_string(),
+        );
+        if multi_azure {
+            lines.push(format!(
+                "Several Azure accounts are enabled. `az` and terraform use the default Azure \
+                 account unless you pick another one: prefix the command with \
+                 `{AZURE_ACCOUNT_ENV}=<label>` (e.g. `{AZURE_ACCOUNT_ENV}=prod az group list`). An \
+                 unknown account is refused."
+            ));
+        }
+    }
+    if multi_aws || multi_azure {
+        lines.push(
+            "Choose the cloud account that owns the resources you are working on. The devdy MCP \
+             tool `cloud_accounts_list` lists these accounts again."
+                .to_string(),
+        );
+    }
+    lines
+}
+
+fn aws_account_line(meta: &AwsRuntimeMetadata, is_default: bool) -> String {
     let account = meta
         .account_id
         .as_deref()
@@ -1297,15 +1499,14 @@ fn aws_account_line(meta: &AwsRuntimeMetadata) -> String {
     } else {
         "access keys".to_string()
     };
+    let default = if is_default { " — default" } else { "" };
     format!(
-        "- AWS: account \"{}\" ({account}) in {} via {auth}. Run `aws` WITHOUT a \
-         `--profile` flag — the linked account is selected automatically; a \
-         `--profile` argument is ignored.",
+        "- AWS: account \"{}\" ({account}) in {} via {auth}{default}",
         meta.account_label, meta.region
     )
 }
 
-fn azure_account_line(meta: &AzureRuntimeMetadata) -> String {
+fn azure_account_line(meta: &AzureRuntimeMetadata, is_default: bool) -> String {
     let subscription = match (&meta.subscription_name, &meta.subscription_id) {
         (Some(name), Some(id)) => format!("subscription \"{name}\" ({id})"),
         (None, Some(id)) => format!("subscription {id}"),
@@ -1317,12 +1518,9 @@ fn azure_account_line(meta: &AzureRuntimeMetadata) -> String {
         .as_deref()
         .map(|t| format!(" in tenant {t}"))
         .unwrap_or_default();
+    let default = if is_default { " — default" } else { "" };
     format!(
-        "- Azure: account \"{}\" with default {subscription}{tenant}. Run `az` (and \
-         terraform's azurerm provider via Azure CLI auth) without logging in. `az login` / \
-         `az account set` are blocked; `az --subscription <other>` needs user confirmation. \
-         terraform receives the default subscription (ARM_SUBSCRIPTION_ID), but a provider \
-         block may still set its own.",
+        "- Azure: account \"{}\" with default {subscription}{tenant}{default}",
         meta.account_label
     )
 }
@@ -2172,5 +2370,38 @@ mod tests {
         );
         assert!(!ctx.contains("\"main\" (@author) on github.com — default"), "{ctx}");
         assert!(ctx.contains("git fetch/push and commits on github.com use the project's default account \"main\" (@author)"), "{ctx}");
+    }
+
+    #[tokio::test]
+    async fn account_context_lists_every_enabled_cloud_account() {
+        let db = mem_db().await;
+        for sql in [
+            "ALTER TABLE projects ADD COLUMN aws_account_id TEXT",
+            "ALTER TABLE projects ADD COLUMN azure_account_id TEXT",
+            "CREATE TABLE aws_accounts (id TEXT PRIMARY KEY, label TEXT, auth_method TEXT, account_id TEXT, arn TEXT, region TEXT, profile_name TEXT)",
+            "CREATE TABLE azure_accounts (id TEXT PRIMARY KEY, label TEXT, tenant_id TEXT, subscription_id TEXT, subscription_name TEXT)",
+            "CREATE TABLE project_aws_accounts (project_id TEXT, account_id TEXT, created_at TEXT)",
+            "CREATE TABLE project_azure_accounts (project_id TEXT, account_id TEXT, created_at TEXT)",
+            "INSERT INTO aws_accounts VALUES ('a1', 'main', 'profile', '111111111111', NULL, 'ap-1', 'main-sso'), ('a2', 'prod', 'profile', '222222222222', NULL, 'us-1', 'prod-sso')",
+            "INSERT INTO azure_accounts VALUES ('z1', 'Az', 'ten-1', 'sub-1', 'Dev')",
+            "INSERT INTO projects (id, aws_account_id, azure_account_id) VALUES ('p1', 'a2', 'z1')",
+            "INSERT INTO project_aws_accounts (project_id, account_id) VALUES ('p1', 'a1'), ('p1', 'a2')",
+            "INSERT INTO project_azure_accounts (project_id, account_id) VALUES ('p1', 'z1')",
+        ] {
+            sqlx::query(sql).execute(&db).await.unwrap();
+        }
+        let ctx = build_account_context(&db, "p1", None).await.unwrap();
+        assert!(ctx.contains("- AWS: account \"main\" (111111111111) in ap-1 via profile main-sso\n"), "{ctx}");
+        assert!(ctx.contains("- AWS: account \"prod\" (222222222222) in us-1 via profile prod-sso — default\n"), "{ctx}");
+        assert!(ctx.contains("DEVDY_AWS_ACCOUNT=prod aws s3 ls"), "{ctx}");
+        // A single Azure account is listed without a default marker or selector hint.
+        assert!(ctx.contains("- Azure: account \"Az\" with default subscription \"Dev\" (sub-1) in tenant ten-1\n"), "{ctx}");
+        assert!(!ctx.contains(AZURE_ACCOUNT_ENV), "{ctx}");
+        assert!(ctx.contains("cloud_accounts_list"), "{ctx}");
+        // The selector picks among enabled accounts; anything else is refused.
+        let a = pick_aws_account(&db, "p1", Some("MAIN-SSO")).await.unwrap().unwrap();
+        assert_eq!(a.id, "a1");
+        let e = pick_aws_account(&db, "p1", Some("other")).await.err().unwrap();
+        assert!(e.starts_with(UNKNOWN_CLOUD_ACCOUNT), "{e}");
     }
 }

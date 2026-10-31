@@ -37,6 +37,12 @@ pub struct Project {
     /// `None` when the project has no Azure account attached.
     #[serde(default)]
     pub azure_account_id: Option<String>,
+    /// AWS / Azure accounts enabled for the project (`aws_account_id` /
+    /// `azure_account_id` = default). Runs may pick any of these per command.
+    #[serde(default)]
+    pub aws_account_ids: Vec<String>,
+    #[serde(default)]
+    pub azure_account_ids: Vec<String>,
     /// Linked Claude account (isolated by CLAUDE_CONFIG_DIR). `None` = use the
     /// default Claude account, or the global profile when none exists.
     #[serde(default)]
@@ -669,6 +675,8 @@ pub async fn list_projects(db: State<'_, Db>) -> Result<Vec<Project>, String> {
         "SELECT p.id, p.name, p.path, p.created_at, p.github_account_id, p.gitlab_account_id, \
                 (SELECT GROUP_CONCAT(account_id) FROM project_github_accounts WHERE project_id = p.id) AS github_account_ids, \
                 (SELECT GROUP_CONCAT(account_id) FROM project_gitlab_accounts WHERE project_id = p.id) AS gitlab_account_ids, p.aws_account_id, p.azure_account_id, p.claude_account_id, \
+                (SELECT GROUP_CONCAT(account_id) FROM project_aws_accounts WHERE project_id = p.id) AS aws_account_ids, \
+                (SELECT GROUP_CONCAT(account_id) FROM project_azure_accounts WHERE project_id = p.id) AS azure_account_ids, \
                 p.github_project_board_url, p.github_project_field_mappings, p.position, \
                 COUNT(r.id) AS run_count, MAX(r.created_at) AS last_used_at \
          FROM projects p \
@@ -695,6 +703,8 @@ pub async fn list_projects(db: State<'_, Db>) -> Result<Vec<Project>, String> {
             gitlab_account_id: row.get("gitlab_account_id"),
             aws_account_id: row.get("aws_account_id"),
             azure_account_id: row.get("azure_account_id"),
+            aws_account_ids: split_ids(row.get("aws_account_ids")),
+            azure_account_ids: split_ids(row.get("azure_account_ids")),
             claude_account_id: row.get("claude_account_id"),
             github_project_board_url: row.get("github_project_board_url"),
             github_project_field_mappings: row.get("github_project_field_mappings"),
@@ -788,6 +798,8 @@ pub async fn add_project(webview: tauri::Webview, db: State<'_, Db>, payload: Ad
         gitlab_account_id: None,
         aws_account_id: None,
         azure_account_id: None,
+        aws_account_ids: Vec::new(),
+        azure_account_ids: Vec::new(),
         claude_account_id: None,
         github_project_board_url: None,
         github_project_field_mappings: None,
@@ -852,6 +864,8 @@ pub async fn update_project(
         "SELECT p.id, p.name, p.path, p.created_at, p.github_account_id, p.gitlab_account_id, \
                 (SELECT GROUP_CONCAT(account_id) FROM project_github_accounts WHERE project_id = p.id) AS github_account_ids, \
                 (SELECT GROUP_CONCAT(account_id) FROM project_gitlab_accounts WHERE project_id = p.id) AS gitlab_account_ids, p.aws_account_id, p.azure_account_id, p.claude_account_id, \
+                (SELECT GROUP_CONCAT(account_id) FROM project_aws_accounts WHERE project_id = p.id) AS aws_account_ids, \
+                (SELECT GROUP_CONCAT(account_id) FROM project_azure_accounts WHERE project_id = p.id) AS azure_account_ids, \
                 p.github_project_board_url, p.github_project_field_mappings, p.position, \
                 COUNT(r.id) AS run_count, MAX(r.created_at) AS last_used_at \
          FROM projects p LEFT JOIN runs r ON r.project_id = p.id WHERE p.id = ? GROUP BY p.id"
@@ -874,6 +888,8 @@ pub async fn update_project(
         gitlab_account_id: row.get("gitlab_account_id"),
         aws_account_id: row.get("aws_account_id"),
         azure_account_id: row.get("azure_account_id"),
+        aws_account_ids: split_ids(row.get("aws_account_ids")),
+        azure_account_ids: split_ids(row.get("azure_account_ids")),
         claude_account_id: row.get("claude_account_id"),
         github_project_board_url: row.get("github_project_board_url"),
         github_project_field_mappings: row.get("github_project_field_mappings"),

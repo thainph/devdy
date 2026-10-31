@@ -22,7 +22,7 @@ pub async fn init_db(db_path: &Path) -> Result<Db> {
 
 /// Two-way sync (removed) installed change-capture triggers on most tables at
 /// runtime, under dynamic names (`sync_cap_*`, `sync_past_owner_*`,
-/// `sync_prefs_ref_*`). They write into the `sync_*` tables migration 0072
+/// `sync_prefs_ref_*`). They write into the `sync_*` tables migration 0073
 /// drops, so any left behind would break every insert/update on their table:
 /// drop every `sync_*` trigger before migrating. No other trigger uses that
 /// prefix. Idempotent, and a no-op on a fresh DB.
@@ -62,7 +62,7 @@ mod tests {
         sqlx::query_scalar(sql).fetch_one(pool).await.unwrap()
     }
 
-    /// A DB that had sync installed (migrated up to 0071, a runtime capture
+    /// A DB that had sync installed (migrated up to 0072, a runtime capture
     /// trigger writing into a sync table) still accepts writes after startup,
     /// and only sync's own tables, triggers and settings are gone.
     #[tokio::test]
@@ -73,11 +73,13 @@ mod tests {
         {
             let pool = SqlitePool::connect(&format!("sqlite://{}?mode=rwc", path.to_string_lossy())).await.unwrap();
             let mut before = sqlx::migrate!("./migrations");
-            before.migrations = before.migrations.iter().filter(|m| m.version < 72).cloned().collect();
+            before.migrations = before.migrations.iter().filter(|m| m.version < 73).cloned().collect();
             before.run(&pool).await.unwrap();
             for sql in [
                 "CREATE TRIGGER sync_cap_todos_ins AFTER INSERT ON todos BEGIN \
                  INSERT INTO sync_outbox (tbl, pk, op, changed_at) VALUES ('todos', NEW.id, 'I', 0); END",
+                "CREATE TRIGGER sync_cap_project_aws_accounts_ins AFTER INSERT ON project_aws_accounts BEGIN \
+                 INSERT INTO sync_outbox (tbl, pk, op, changed_at) VALUES ('project_aws_accounts', NEW.project_id, 'I', 0); END",
                 "INSERT OR REPLACE INTO settings (key, value) VALUES ('sync_paused', 'true'), ('sync_device_name:abc', 'mini'), ('theme', 'dark')",
             ] {
                 sqlx::query(sql).execute(&pool).await.unwrap();
