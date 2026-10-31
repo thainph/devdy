@@ -125,7 +125,11 @@ export type SecretSource =
 
 /** A callback invoked for each decrypted business payload from the Host. */
 export type StreamHandler = (payload: StreamPayload) => void
-export type CommandAckHandler = (accepted: boolean, reason?: string | null) => void
+export type CommandAckHandler = (
+  accepted: boolean,
+  reason?: string | null,
+  runId?: string | null,
+) => void
 
 /**
  * Optional behaviour switches. Without `ipc` the connection is the phone/web
@@ -842,7 +846,7 @@ export class ControllerConnection {
       if (ack) {
         this.pendingCommandAcks.delete(payload.command_id)
         clearTimeout(ack.timer)
-        ack.handler(payload.accepted, payload.reason)
+        ack.handler(payload.accepted, payload.reason, payload.run_id)
       }
       return
     }

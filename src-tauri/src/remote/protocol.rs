@@ -222,6 +222,9 @@ pub enum StreamPayload {
         accepted: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
+        /// `start_run` that created a new session: the new run's id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_id: Option<String>,
     },
     /// Correlated permission outcome so an old response cannot clear a newer
     /// pending request in the Controller UI.

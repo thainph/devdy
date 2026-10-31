@@ -28,6 +28,7 @@ import {
   listProjectFilesCmd,
   listProjectsCmd,
   listRunsCmd,
+  newSessionCmd,
   parseSessionLink,
   respondPermissionCmd,
   sendTurnCmd,
@@ -277,11 +278,22 @@ const pendingElsewhere = computed(() => store.pendingElsewhere(runId.value))
 // project list every time would make moving between two runs tedious.
 const browserProjectId = ref<string | null>(null)
 
+// A new session being composed: the project it will be created in. Its run only
+// exists once the Host accepts the first turn (the ack carries the new run id).
+const draftProjectId = ref<string | null>(null)
+
+function startNewSession(projectId: string): void {
+  browserProjectId.value = projectId
+  draftProjectId.value = projectId
+  running.value = false
+}
+
 /** Open a run: tell the Host to stream it, then show it. */
 function openRun(id: string): void {
   // Remember where this run lives so Back lands on its project, not the root.
   const info = store.state.runList.find((r) => r.id === id)
   if (info) browserProjectId.value = info.project_id
+  draftProjectId.value = null
   store.setActiveRun(id)
   conn.value?.openRun(id)
 }
@@ -289,6 +301,7 @@ function openRun(id: string): void {
 /** Back to the browser: stop streaming the run we were reading (its prompts and
  * status still arrive) and refresh the list so it is not stale. */
 function backToBrowser(): void {
+  draftProjectId.value = null
   const id = runId.value
   store.clearActiveRun()
   if (id) conn.value?.closeRun(id)
@@ -352,10 +365,10 @@ watch(
 // the run has not been titled yet.
 const title = computed(() => {
   const id = runId.value
-  if (!id) return 'Run'
+  if (!id) return draftProjectId.value ? t('controller.browser.newSession') : 'Run'
   const info = store.state.runList.find((r) => r.id === id)
-  const t = info?.title?.trim()
-  return t ? t : `Run ${id.slice(0, 8)}`
+  const runTitle = info?.title?.trim()
+  return runTitle ? runTitle : `Run ${id.slice(0, 8)}`
 })
 
 // The OTP screen's inline error: only while auth actually failed (not a
@@ -399,7 +412,10 @@ function warnNotSent(): void {
 
 function onSend(turn: ComposerTurn): void {
   const id = runId.value
-  if (!id) return
+  if (!id) {
+    if (draftProjectId.value) sendNewSession(draftProjectId.value, turn)
+    return
+  }
   const cmd = sendTurnCmd(
     id,
     {
@@ -432,6 +448,50 @@ function onSend(turn: ComposerTurn): void {
       turn.attachments.map((a) => ({ media_type: a.mime, data: a.data_base64 })),
     )
     running.value = true
+  })
+  if (sent) {
+    sending.value = true
+  } else {
+    sending.value = false
+    warnNotSent()
+  }
+}
+
+/** First turn of a new session: the Host creates the run, subscribes us to it
+ * and returns its id, then we switch the view onto it. */
+function sendNewSession(projectId: string, turn: ComposerTurn): void {
+  const cmd = newSessionCmd(projectId, {
+    text: turn.text,
+    engine: engine.value,
+    model: model.value,
+    permissionMode: permissionMode.value,
+    mentions: turn.mentions,
+    attachments: turn.attachments,
+  })
+  const sent = conn.value?.sendCommand(cmd, (accepted, reason, newRunId) => {
+    sending.value = false
+    if (!accepted || !newRunId) {
+      store.state.notice =
+        reason === 'connection_lost' || reason === 'disconnected'
+          ? t('controller.app.connectionLost')
+          : reason
+            ? t('controller.app.hostRejectedReason', { reason })
+            : t('controller.app.hostRejected')
+      return
+    }
+    turn.accept()
+    // The user may have backed out while the Host was starting it.
+    if (draftProjectId.value === projectId) {
+      draftProjectId.value = null
+      store.setActiveRun(newRunId)
+    }
+    store.pushUser(
+      newRunId,
+      turn.text,
+      turn.attachments.map((a) => ({ media_type: a.mime, data: a.data_base64 })),
+    )
+    running.value = true
+    refreshRuns()
   })
   if (sent) {
     sending.value = true
@@ -485,7 +545,7 @@ function onRequestFiles(): void {
   />
 
   <RunBrowserView
-    v-else-if="!runId"
+    v-else-if="!runId && !draftProjectId"
     :status="status"
     :live="live"
     :host-fingerprint="hostFp"
@@ -496,6 +556,7 @@ function onRequestFiles(): void {
     :selected-project-id="browserProjectId"
     @update:selected-project-id="browserProjectId = $event"
     @open="openRun"
+    @new-session="startNewSession"
     @refresh="refreshRuns"
     @disconnect="disconnect"
   />
