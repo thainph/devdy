@@ -13,16 +13,23 @@
 //! data, `~/.ssh`, cloud CLI logins, …, [`crate::remote::guard::SecretPaths`]).
 //! Reading is held to the remote desktop's allowlist (projects, uploads,
 //! transcripts, [`crate::remote::fs_policy::RemoteFs`]): the remote desktop
-//! must not be a way to copy files off this machine.
+//! must not be a way to copy files off this machine. The File Transfer
+//! window's commands (`remote_fs_mkdir` / `rename` / `delete` / `walk` /
+//! `hash`, see `transfer.rs`) are held to the same [`RemoteFs`]: reads to its
+//! allowlist, changes to its writable roots.
 
 use std::fs::{self, Metadata};
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use base64::Engine;
 use serde::Serialize;
 use tauri::Manager;
+
+use crate::remote::fs_policy::{self, RemoteFs};
+use crate::remote::guard::SecretPaths;
+use crate::remote::transfer;
 
 /// Most bytes one [`remote_fs_read`] returns (binary crosses the relay as
 /// base64 in JSON; callers chunk above this).
@@ -208,6 +215,108 @@ pub async fn remote_fs_read(
     .await
 }
 
+// ---- File Transfer window (see `transfer.rs`) ----
+
+/// An existing path the caller may read: the bridge's allowlist, else only
+/// never a credential store.
+fn readable(policy: Option<&RemoteFs>, secrets: &SecretPaths, path: &str) -> Result<PathBuf, String> {
+    match policy {
+        Some(p) => p.read(Path::new(path)),
+        None => secrets.check(path),
+    }
+}
+
+/// The entry `raw` itself (a link is not followed), when the caller may
+/// change or remove it: its folder must be writable, and so must the entry.
+fn changeable(policy: Option<&RemoteFs>, raw: &Path) -> Result<PathBuf, String> {
+    let name = raw.file_name().ok_or_else(|| format!("cannot change {}", raw.display()))?;
+    let parent = raw.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let own = fs_policy::write(policy, parent)?.join(name);
+    let meta = fs::symlink_metadata(&own).map_err(|e| io_err(&raw.to_string_lossy(), e))?;
+    // A link is changed in its (checked) folder; its target is not touched.
+    if !meta.file_type().is_symlink() {
+        fs_policy::write(policy, &own)?;
+    }
+    Ok(own)
+}
+
+async fn policy_for(webview: &tauri::Webview, db: &crate::db::Db) -> Result<Option<RemoteFs>, String> {
+    RemoteFs::for_caller(webview, db).await
+}
+
+/// Create the folder `path` (its parent must exist); returns its path.
+#[tauri::command]
+pub async fn remote_fs_mkdir(webview: tauri::Webview, db: tauri::State<'_, crate::db::Db>, path: String) -> Result<String, String> {
+    let policy = policy_for(&webview, db.inner()).await?;
+    blocking(move || {
+        let target = fs_policy::write(policy.as_ref(), Path::new(&path))?;
+        transfer::make_dir(&target)?;
+        Ok(target.to_string_lossy().into_owned())
+    })
+    .await
+}
+
+/// Rename a file or folder in place (never replacing another); returns the new path.
+#[tauri::command]
+pub async fn remote_fs_rename(
+    webview: tauri::Webview,
+    db: tauri::State<'_, crate::db::Db>,
+    path: String,
+    new_name: String,
+) -> Result<String, String> {
+    let policy = policy_for(&webview, db.inner()).await?;
+    blocking(move || {
+        let own = changeable(policy.as_ref(), Path::new(&path))?;
+        let new_name = transfer::valid_name(&new_name)?;
+        let parent = own.parent().unwrap_or(Path::new("."));
+        fs_policy::write(policy.as_ref(), &parent.join(new_name))?;
+        transfer::rename_entry(&own, new_name).map(|p| p.to_string_lossy().into_owned())
+    })
+    .await
+}
+
+/// Delete a file, a link or a folder with everything in it.
+#[tauri::command]
+pub async fn remote_fs_delete(webview: tauri::Webview, db: tauri::State<'_, crate::db::Db>, path: String) -> Result<(), String> {
+    let policy = policy_for(&webview, db.inner()).await?;
+    blocking(move || {
+        let own = changeable(policy.as_ref(), Path::new(&path))?;
+        transfer::delete_entry(&own)
+    })
+    .await
+}
+
+/// Everything under a folder (relative paths and sizes), to copy it; at most
+/// [`transfer::MAX_WALK`] entries. Credential stores inside are left out.
+#[tauri::command]
+pub async fn remote_fs_walk(
+    app: tauri::AppHandle,
+    webview: tauri::Webview,
+    db: tauri::State<'_, crate::db::Db>,
+    path: String,
+) -> Result<transfer::Walk, String> {
+    let policy = policy_for(&webview, db.inner()).await?;
+    let secrets = SecretPaths::for_app(&app);
+    blocking(move || {
+        let root = readable(policy.as_ref(), &secrets, &path)?;
+        transfer::walk(&root, transfer::MAX_WALK, |p| secrets.denies(p))
+    })
+    .await
+}
+
+/// SHA-256 (hex) of a file, to check a copy of it.
+#[tauri::command]
+pub async fn remote_fs_hash(
+    app: tauri::AppHandle,
+    webview: tauri::Webview,
+    db: tauri::State<'_, crate::db::Db>,
+    path: String,
+) -> Result<String, String> {
+    let policy = policy_for(&webview, db.inner()).await?;
+    let secrets = SecretPaths::for_app(&app);
+    blocking(move || transfer::hash_file(&readable(policy.as_ref(), &secrets, &path)?)).await
+}
+
 #[tauri::command]
 pub fn remote_fs_home(app: tauri::AppHandle) -> Result<String, String> {
     app.path()
@@ -263,6 +372,35 @@ mod tests {
         sort_entries(&mut v);
         let names: Vec<_> = v.iter().map(|x| x.name.as_str()).collect();
         assert_eq!(names, ["alpha", "Zeta", ".hidden", "A.txt", "b.txt"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn transfer_changes_stay_inside_the_writable_roots() {
+        use crate::remote::fs_policy::Roots;
+        let base = std::env::temp_dir().canonicalize().unwrap().join(format!("devdy-fsb-{}", uuid::Uuid::new_v4()));
+        let (home, proj) = (base.join("home"), base.join("home/proj"));
+        fs::create_dir_all(proj.join(".git")).unwrap();
+        fs::create_dir_all(home.join("other")).unwrap();
+        fs::write(proj.join("a.txt"), b"x").unwrap();
+        fs::write(home.join("other/keep"), b"x").unwrap();
+        std::os::unix::fs::symlink(home.join("other"), proj.join("link")).unwrap();
+        let roots = Roots { writable: vec![proj.clone()], ..Roots::default() };
+        let policy = RemoteFs::new(roots, Some(&home), SecretPaths::new(Some(&home), None));
+        let p = Some(&policy);
+
+        assert_eq!(changeable(p, &proj.join("a.txt")).unwrap(), proj.join("a.txt"));
+        assert!(changeable(p, &home.join("other/keep")).unwrap_err().starts_with("permission denied"));
+        assert!(changeable(p, &proj.join(".git")).unwrap_err().starts_with("permission denied"));
+        assert!(changeable(p, &proj.join("missing")).unwrap_err().starts_with("not found"));
+        // A link inside the project is changed itself, never its target outside.
+        let link = changeable(p, &proj.join("link")).unwrap();
+        transfer::delete_entry(&link).unwrap();
+        assert!(home.join("other/keep").exists());
+        assert!(readable(p, &SecretPaths::new(Some(&home), None), &home.join("other/keep").to_string_lossy()).is_err());
+        // A local caller is not restricted.
+        assert!(changeable(None, &home.join("other/keep")).is_ok());
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

@@ -36,6 +36,7 @@ pub mod outbound;
 pub mod protocol;
 pub mod push;
 pub mod session;
+pub mod transfer;
 pub mod upload;
 
 pub use bus::{RemoteBus, RemoteRunEvent};
