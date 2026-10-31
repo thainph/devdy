@@ -44,7 +44,8 @@ const selectedEntries = computed(() => entries.value.filter((e) => selected.valu
 const dateFmt = computed(() => new Intl.DateTimeFormat(locale.value, { dateStyle: 'medium', timeStyle: 'short' }))
 
 function message(e: unknown): string {
-  return e instanceof Error ? e.message : String(e)
+  const text = e instanceof Error ? e.message : String(e)
+  return text === 'unsafe_name' ? t('fileTransfer.errors.unsafeName') : text
 }
 
 async function navigate(path: string, keepSelection = false) {
@@ -138,7 +139,7 @@ async function newFolder() {
   const name = (await prompt({ title: t('fileTransfer.newFolder'), label: t('fileTransfer.folderName') }))?.trim()
   if (!name) return
   try {
-    await props.fs.mkdir(joinPath(dir.value, name))
+    await props.fs.mkdir(dir.value, name)
     await navigate(dir.value)
     selected.value = new Set([joinPath(dir.value, name)])
   } catch (e) {

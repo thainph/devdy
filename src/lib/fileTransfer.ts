@@ -10,7 +10,7 @@ import { invoke as localInvoke } from '@tauri-real/core'
 import { invoke } from '@/lib/tauri'
 import type { FsEntry, FsListing } from '@/lib/ipc/nativeCore'
 import type { LocalFileStat } from '@/lib/remoteUploadCore'
-import type { CopyIo, Direction, Walk } from '@/lib/fileTransferCore'
+import { joinRel, safeRel, type CopyIo, type Direction, type Walk } from '@/lib/fileTransferCore'
 
 export type Side = 'local' | 'remote'
 
@@ -19,7 +19,8 @@ export interface PaneFs {
   side: Side
   home: () => Promise<string>
   list: (path: string) => Promise<FsListing>
-  mkdir: (path: string) => Promise<string>
+  /** Create the folder `rel` (`/`-separated) inside `root`. */
+  mkdir: (root: string, rel: string) => Promise<string>
   rename: (path: string, newName: string) => Promise<string>
   remove: (path: string) => Promise<void>
   walk: (path: string) => Promise<Walk>
@@ -29,7 +30,8 @@ export const localPaneFs: PaneFs = {
   side: 'local',
   home: () => localInvoke<string>('local_fs_home'),
   list: (path) => localInvoke<FsListing>('local_fs_list', { path }),
-  mkdir: (path) => localInvoke<string>('local_fs_mkdir', { path }),
+  // Never outside `root`: checked again by the backend (names may come from B).
+  mkdir: (root, rel) => localInvoke<string>('local_fs_mkdir', { root, rel }),
   rename: (path, newName) => localInvoke<string>('local_fs_rename', { path, newName }),
   remove: (path) => localInvoke<void>('local_fs_delete', { path }),
   walk: (path) => localInvoke<Walk>('local_fs_walk', { path }),
@@ -39,7 +41,7 @@ export const remotePaneFs: PaneFs = {
   side: 'remote',
   home: () => invoke<string>('remote_fs_home'),
   list: (path) => invoke<FsListing>('remote_fs_list', { path }),
-  mkdir: (path) => invoke<string>('remote_fs_mkdir', { path }),
+  mkdir: (root, rel) => invoke<string>('remote_fs_mkdir', { path: joinRel(root, safeRel(rel)) }),
   rename: (path, newName) => invoke<string>('remote_fs_rename', { path, newName }),
   remove: (path) => invoke<void>('remote_fs_delete', { path }),
   walk: (path) => invoke<Walk>('remote_fs_walk', { path }),
@@ -58,8 +60,8 @@ export function destSide(direction: Direction): Side {
 export const transferIo: Record<Direction, CopyIo> = {
   // This machine → controlled machine.
   up: {
-    begin: async (destDir, name, size, conflict) =>
-      (await invoke<{ upload_id: string }>('remote_upload_begin', { name, size, destDir, conflict })).upload_id,
+    begin: async ({ destDir, name, size, conflict, mode }) =>
+      (await invoke<{ upload_id: string }>('remote_upload_begin', { name, size, destDir, conflict, mode })).upload_id,
     read: (src, offset, len) => localInvoke<string>('read_local_file_chunk', { path: src, offset, len }),
     write: (id, offset, dataBase64) => invoke<number>('remote_upload_chunk', { uploadId: id, offset, dataBase64 }),
     hash: (src) => localInvoke<string>('local_fs_hash', { path: src }),
@@ -68,8 +70,19 @@ export const transferIo: Record<Direction, CopyIo> = {
   },
   // Controlled machine → this machine.
   down: {
-    begin: async (dir, name, size, conflict) =>
-      (await localInvoke<{ upload_id: string }>('local_fs_write_begin', { dir, name, size, conflict })).upload_id,
+    // The folder the user picked + a relative path: the backend refuses a
+    // destination outside it, whatever names B sent.
+    begin: async ({ destRoot, destRel, name, size, conflict, mode }) =>
+      (
+        await localInvoke<{ upload_id: string }>('local_fs_write_begin', {
+          root: destRoot,
+          rel: destRel,
+          name,
+          size,
+          conflict,
+          mode,
+        })
+      ).upload_id,
     read: async (src, offset, len) =>
       (await invoke<{ data_base64: string }>('remote_fs_read', { path: src, offset, len })).data_base64,
     write: (id, offset, dataBase64) => localInvoke<number>('local_fs_write_chunk', { uploadId: id, offset, dataBase64 }),
@@ -85,7 +98,7 @@ export async function droppedEntries(paths: string[]): Promise<{ entries: FsEntr
   return {
     entries: stats
       .filter((s) => !s.error)
-      .map((s) => ({ name: s.name, path: s.path, is_dir: s.is_dir, size: s.size, modified: null })),
+      .map((s) => ({ name: s.name, path: s.path, is_dir: s.is_dir, size: s.size, modified: null, mode: s.mode })),
     failed: stats.filter((s) => !!s.error),
   }
 }

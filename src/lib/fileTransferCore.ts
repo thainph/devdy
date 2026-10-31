@@ -5,6 +5,12 @@
 // the queue that runs them. Free of Vue / Tauri so it can be unit-tested in
 // plain Node; lib/fileTransfer.ts wires it to the commands
 // (src-tauri/src/remote/transfer.rs).
+//
+// Names and walk paths come from the OTHER machine, which may be compromised:
+// each one must be a plain name (safeName / safeRel) before it is joined into
+// a path here, in both directions. Writes on this machine additionally go
+// through `local_fs_*` commands that take the destination folder the user
+// picked plus a relative path and refuse anything resolving outside it.
 import { baseName, joinPath, separatorOf, type FsEntry } from './ipc/nativeCore.ts'
 
 /** Raw bytes per chunk (base64 in JSON stays well under the 4 MiB per call limit). */
@@ -17,8 +23,10 @@ export const MAX_PARALLEL = 2
  * the connection beyond that (frames ≤ `RELAY_MAX_MESSAGE_BYTES`, 32 MiB by
  * default), so the copy never pipelines unboundedly: a chunk reserves its bytes
  * before it is read and frees them only once the receiver has acked its write
- * (each chunk call is awaited). 16 MiB is a few chunks — per file at most one
- * crosses the relay while the next is read on the other end.
+ * (each chunk call is awaited). With the defaults it never binds — 2 files ×
+ * (one write + one read-ahead) × ~2.7 MiB ≈ 11 MiB — it is the backstop that
+ * keeps a future change of {@link MAX_PARALLEL} / {@link TRANSFER_CHUNK} from
+ * flooding the link.
  */
 export const MAX_IN_FLIGHT_BYTES = 16 * 1024 * 1024
 
@@ -34,6 +42,8 @@ export interface WalkEntry {
   rel: string
   is_dir: boolean
   size: number
+  /** Unix permission bits (`null` elsewhere). */
+  mode?: number | null
 }
 export interface Walk {
   entries: WalkEntry[]
@@ -43,6 +53,22 @@ export interface Walk {
 }
 
 // ── Paths ───────────────────────────────────────────────────────────────────
+
+/** `name` when it is a plain entry name, else throws `unsafe_name`: never
+ * empty, `.`, `..`, nor holding a separator, NUL or control character. */
+export function safeName(name: string): string {
+  if (!name || name === '.' || name === '..' || /[/\\\u0000-\u001f\u007f]/.test(name)) {
+    throw new Error('unsafe_name')
+  }
+  return name
+}
+
+/** `rel` when it is a `/`-separated path of {@link safeName}s (not absolute,
+ * no empty part), else throws `unsafe_name`. */
+export function safeRel(rel: string): string {
+  for (const part of rel.split('/')) safeName(part)
+  return rel
+}
 
 /** `dir` joined with a `/`-separated relative path, in `dir`'s own separator. */
 export function joinRel(dir: string, rel: string): string {
@@ -136,10 +162,16 @@ export interface FileJob {
   direction: Direction
   /** Path on the source side. */
   src: string
-  /** Existing folder on the destination side (created by planning). */
+  /** The destination folder the user picked. */
+  destRoot: string
+  /** `/`-separated folder under {@link destRoot} the file goes into (`''` = itself). */
+  destRel: string
+  /** `destRoot` + `destRel` in the destination's separator (created by planning). */
   destDir: string
   name: string
   size: number
+  /** Unix permission bits of the source (carried to the copy). */
+  mode: number | null
   conflict: WriteConflict
   /** Shown in the queue: the path relative to what the user picked. */
   label: string
@@ -150,8 +182,9 @@ export interface PlanDeps {
   walk: (path: string) => Promise<Walk>
   /** Names in a destination folder. */
   list: (dir: string) => Promise<FsEntry[]>
-  /** Create a destination folder (fine when it exists). */
-  mkdir: (path: string) => Promise<unknown>
+  /** Create the folder `rel` (`/`-separated) under the destination `root`
+   * (fine when it exists). */
+  mkdir: (root: string, rel: string) => Promise<unknown>
   resolver: ConflictResolver
 }
 
@@ -168,28 +201,38 @@ function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
 }
 
-/** The folders and files to copy for a picked folder, under `destRoot`. */
+/**
+ * The folders (relative to `destRoot`, parents first) and files to copy for a
+ * picked folder copied as `destRoot/folder`. Throws `unsafe_name` when the
+ * walk holds a path that is not plain names.
+ */
 export function planFolder(
   direction: Direction,
   srcRoot: string,
   destRoot: string,
+  folder: string,
   walk: Walk,
   conflict: WriteConflict,
 ): { dirs: string[]; jobs: FileJob[] } {
   const top = baseName(srcRoot)
-  const dirs = [destRoot]
+  const dirs = [safeName(folder)]
   const jobs: FileJob[] = []
   for (const e of walk.entries) {
+    const rel = `${folder}/${safeRel(e.rel)}`
     if (e.is_dir) {
-      dirs.push(joinRel(destRoot, e.rel))
+      dirs.push(rel)
       continue
     }
+    const destRel = relParent(rel)
     jobs.push({
       direction,
       src: joinRel(srcRoot, e.rel),
-      destDir: joinRel(destRoot, relParent(e.rel)),
+      destRoot,
+      destRel,
+      destDir: joinRel(destRoot, destRel),
       name: baseName(e.rel),
       size: e.size,
+      mode: e.mode ?? null,
       conflict,
       label: `${top}/${e.rel}`,
     })
@@ -212,6 +255,12 @@ export async function planTransfer(
   const plan: Plan = { jobs: [], skipped: [], failed: [], canceled: false }
   const existing = new Set((await deps.list(destDir)).map((e) => e.name))
   for (const entry of picked) {
+    try {
+      safeName(entry.name)
+    } catch (e) {
+      plan.failed.push({ name: entry.name, error: message(e) })
+      continue
+    }
     let choice: ConflictChoice | null = null
     if (existing.has(entry.name)) {
       choice = await deps.resolver.resolve(entry.name, entry.is_dir)
@@ -225,9 +274,12 @@ export async function planTransfer(
       plan.jobs.push({
         direction,
         src: entry.path,
+        destRoot: destDir,
+        destRel: '',
         destDir,
         name: entry.name,
         size: entry.size,
+        mode: entry.mode ?? null,
         conflict: writeConflict(choice),
         label: entry.name,
       })
@@ -239,8 +291,8 @@ export async function planTransfer(
       const name = choice === 'rename' ? freeName(entry.name, existing) : entry.name
       existing.add(name)
       // A merged folder replaces what it clashes with; a fresh one cannot clash.
-      const { dirs, jobs } = planFolder(direction, entry.path, joinPath(destDir, name), walk, choice === 'overwrite' ? 'overwrite' : 'fail')
-      for (const d of dirs) await deps.mkdir(d)
+      const { dirs, jobs } = planFolder(direction, entry.path, destDir, name, walk, choice === 'overwrite' ? 'overwrite' : 'fail')
+      for (const d of dirs) await deps.mkdir(destDir, d)
       plan.jobs.push(...jobs)
     } catch (e) {
       plan.failed.push({ name: entry.name, error: message(e) })
@@ -253,8 +305,8 @@ export async function planTransfer(
 
 /** Both ends of one direction (the source read, the destination write). */
 export interface CopyIo {
-  /** Start writing; returns the write's id. */
-  begin: (destDir: string, name: string, size: number, conflict: WriteConflict) => Promise<string>
+  /** Start writing `job.name` into its destination folder; returns the write's id. */
+  begin: (job: Pick<FileJob, 'destRoot' | 'destRel' | 'destDir' | 'name' | 'size' | 'mode' | 'conflict'>) => Promise<string>
   /** Base64 of up to `len` bytes of the source at `offset`. */
   read: (src: string, offset: number, len: number) => Promise<string>
   /** Append a chunk; returns the bytes written so far. */
@@ -321,6 +373,8 @@ export function base64Bytes(b64: string): number {
 export interface CopyOptions {
   canceled: () => boolean
   onProgress?: (done: number) => void
+  /** The write started (its id, to abort it from outside). */
+  onBegin?: (writeId: string) => void
   chunk?: number
   /** Shared in-flight allowance (see {@link MAX_IN_FLIGHT_BYTES}). */
   budget?: ByteBudget
@@ -334,7 +388,7 @@ export interface CopyOptions {
  * into place. A failure or cancel drops the partial write.
  */
 export async function copyFile(
-  job: Pick<FileJob, 'src' | 'destDir' | 'name' | 'size' | 'conflict'>,
+  job: Pick<FileJob, 'src' | 'destRoot' | 'destRel' | 'destDir' | 'name' | 'size' | 'mode' | 'conflict'>,
   io: CopyIo,
   opts: CopyOptions,
 ): Promise<string> {
@@ -344,7 +398,8 @@ export async function copyFile(
     if (opts.canceled()) throw new CanceledError()
   }
   check()
-  const id = await io.begin(job.destDir, job.name, job.size, job.conflict)
+  const id = await io.begin(job)
+  opts.onBegin?.(id)
   let held = 0
   const readAt = (offset: number) => {
     const len = Math.min(chunk, job.size - offset)
@@ -456,6 +511,8 @@ export class TransferQueue {
   private readonly wrap: <T extends object>(o: T) => T
   private readonly cancelled = new Set<number>()
   private readonly running = new Map<number, Promise<void>>()
+  /** Write id of each running item, once begun. */
+  private readonly writes = new Map<number, string>()
   /** Shared by every copy of this queue: see {@link MAX_IN_FLIGHT_BYTES}. */
   private readonly budget: ByteBudget
   private nextId = 1
@@ -483,6 +540,19 @@ export class TransferQueue {
 
   cancelAll(): void {
     for (const it of this.items) this.cancel(it.id)
+  }
+
+  /**
+   * The window is going away: cancel everything and send the abort of every
+   * write under way right now, without waiting for the copies to notice (a
+   * closing page may not get that far). Best effort; aborting twice is fine.
+   */
+  shutdown(): void {
+    this.cancelAll()
+    for (const it of this.items) {
+      const id = this.writes.get(it.id)
+      if (it.status === 'running' && id) void this.opts.io[it.direction].abort(id).catch(() => {})
+    }
   }
 
   /** Queue a failed or cancelled item again. */
@@ -536,6 +606,7 @@ export class TransferQueue {
       const dest = await copyFile(it, this.opts.io[it.direction], {
         canceled: () => this.cancelled.has(it.id),
         onProgress: (done) => (it.done = done),
+        onBegin: (writeId) => this.writes.set(it.id, writeId),
         chunk: this.opts.chunk,
         budget: this.budget,
       })
@@ -543,10 +614,12 @@ export class TransferQueue {
       it.done = it.size
       this.settle(it, 'done', null)
     } catch (e) {
-      if (e instanceof CanceledError) this.settle(it, 'canceled', null)
+      // Cancelled meanwhile: an error is the write aborted under it (shutdown).
+      if (e instanceof CanceledError || this.cancelled.has(it.id)) this.settle(it, 'canceled', null)
       else this.settle(it, 'failed', message(e))
     } finally {
       this.cancelled.delete(it.id)
+      this.writes.delete(it.id)
     }
   }
 }
